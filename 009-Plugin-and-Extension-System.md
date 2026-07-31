@@ -128,7 +128,7 @@ Candidates, in rough priority order:
 | Embedded data | SQLite, DuckDB | A database dependency in the host process |
 | Tokenization | tokenizer libraries | Local token counting (004 Q3) |
 | Local inference | ONNX Runtime (WASM build) | Embeddings/classification without a host ML dependency |
-| Portable shell | `dash`/`toybox`-class POSIX shell | One identical shell surface on Win/Linux/macOS and across sandbox profiles (010 §2), instead of exposing the host's own `cmd.exe`/PowerShell/`bash` |
+| CLI-style tools | `git`, `ripgrep`, `fd`, and similar, wrapped as `ae:tool` components | Named commands `ShellRunner` (010 §1a) can dispatch to, without ever resolving or exec'ing an arbitrary host binary — see 010 §2 for why the shell itself is engine-native, not a wrapped binary |
 
 **Rule:** a proposed *host* dependency must be evaluated as a plugin first, and the RFC or ADR
 adopting it as a host dependency must say why the plugin path was rejected.

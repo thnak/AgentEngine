@@ -113,12 +113,14 @@ Two different problems get two different answers (008, 009, 010):
   artifact runs bit-identically on Windows, Linux, and macOS; capability-based by construction;
   language-agnostic; instantiation in microseconds. Ecosystem risk is low because *we* define the
   WIT world and the plugin author compiles to it.
-- **The Python code interpreter and the shell** are a **sandbox profile**, not a hardcoded runtime,
-  and share one execution context (010 §3a) — a `cd` or an exported variable is visible to both. Its
-  default backend is a **jailed native CPython** because that is where the Python package ecosystem
-  actually is; a WASM-Python profile exists for portable, deterministic, stdlib-only execution. The
-  shell itself is one bundled, portable binary identical on every OS and profile — never the host's
-  own `cmd.exe`/PowerShell/`bash` (010 §2).
+- **The Python code interpreter and the shell** are `Runner`s (010 §1a) sharing one `ExecState` —
+  a `cd` or an exported variable is visible to both. Python's default backend is a **jailed native
+  CPython** (a **sandbox profile**, not a hardcoded runtime) because that is where the Python package
+  ecosystem actually is; a WASM-Python profile exists for portable, deterministic, stdlib-only
+  execution. **The shell is not a wrapped binary at all** — `ShellRunner` is engine-native code that
+  never resolves a name against a search path; it dispatches to builtins over the worktree or to
+  other registered `Runner`s and `Tool`s, so there is no ambient exec surface to sandbox in the first
+  place (010 §2).
 
 The evidence for splitting them is in [docs/research/2026-standards-landscape.md](docs/research/2026-standards-landscape.md)
 and summarized in 010 §2: as of July 2026 the rich WASM Python ecosystem (NumPy, pandas, SciPy,
@@ -173,11 +175,15 @@ every turn, competes with the actual task for attention, and does not make the m
 
 **Worktree, shell, interpreter, and CodeAct are one feature, seen from four angles, not four
 features that happen to cooperate.** The worktree (D4) is the one disk; the interpreter and the
-shell are two front doors onto one execution context that shares that disk's `cwd` and environment
-(010 §3a); CodeAct is what that context is *for*. An agent that `cd`s in the shell, reads the result
-with `open()` in Python, and calls a tool from either is operating one ordinary machine, not
-switching between subsystems — that coherence, not any one mechanism alone, is what "unremarkable
-environment" means.
+shell are two `Runner`s (010 §1a) sharing one `ExecState` — the same `cwd` and environment (010
+§3a); CodeAct is what that context is *for*. An agent that `cd`s in the shell, reads the result with
+`open()` in Python, and calls a tool from either is operating one ordinary machine, not switching
+between subsystems — that coherence, not any one mechanism alone, is what "unremarkable environment"
+means. It is also why the shell is engine-native rather than a wrapped binary: a real shell's
+name-to-binary resolution is exactly the kind of ambient authority **I2** rules out, so `ShellRunner`
+dispatches only to capability-gated primitives and other `Runner`s/`Tool`s (010 §2) — more to build
+than adopting an existing shell, and the difference between covering a gap and designing the system
+properly.
 
 **This is a prompt-surface decision and never a security mechanism.** Assume the model knows it is
 isolated, assume an attacker tells it, assume it probes — 007 and 008 hold regardless. RFC 026 §8 G4

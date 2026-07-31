@@ -42,9 +42,9 @@ be load-bearing for safety. Specifically:
 |---|---|---|
 | Filesystem | `/work`, `/input`, `/out` — ordinary directories (025 §7) | Mount ids, worktree digests, object store, profile names |
 | Python | A normal interpreter with stdlib | Interpreter build, WASI vs native, snapshot/restore |
-| Shell | An ordinary POSIX shell — `cd`, `ls`, pipes, env vars, exit codes (010 §1) | That it is a bundled binary, not the host OS's own shell (010 §2) |
+| Shell | An ordinary-looking shell — `cd`, `ls`, pipes, env vars, exit codes (010 §1) | That there is no real shell process: commands are parsed and dispatched to capability-gated primitives and other `Runner`s/`Tool`s, never resolved against a search path (010 §2) |
 | Files | Files persist between executions | That persistence is a content-addressed commit per turn |
-| Working directory / env | `cd` and env vars persist across calls, and are shared between Python and Shell (010 §3a) | That this is reconciled host-side rather than one OS process |
+| Working directory / env | `cd` and env vars persist across calls, and are shared between Python and Shell (010 §3a) | That this is one `ExecState` object, or that `Runner`/`ExecState` are engine concepts at all |
 | Network | Reachable hosts work; others fail like an unreachable host | Allowlists, egress proxy, capability names |
 | Errors | `FileNotFoundError`, `PermissionError`, `TimeoutError` | Policy rule ids, capability names, profile fallbacks |
 | Time/limits | Long work is interrupted like a timeout | Fuel, epochs, cgroup/Job Object accounting |
@@ -105,19 +105,25 @@ Generated from the same tool metadata as everything else (006 §1), so they cann
 Every call still traverses the complete tool pipeline (006 §3) with the **sandbox's** capability set
 (007 §6). Idiomatic surface, unchanged enforcement.
 
-### 4a. The shell is plain POSIX shell, and it is the same machine as the interpreter
+### 4a. The shell reads like a shell; underneath, it is not one
 
-`execute_shell` (010 §1) takes an ordinary shell command line — no bespoke flags, no engine-specific
-builtins the agent must learn. The same "ordinary knowledge, not our API" argument from §1 applies:
-a model has run `grep`, `ls -la`, `git status`, and a pipeline more times than it has seen any tool
-we could design.
+`execute_shell` (010 §1) takes an ordinary-looking shell command line — no bespoke flags, no
+engine-specific builtins the agent must learn, and unrecognized commands fail with an ordinary
+"command not found" (§3). The same "ordinary knowledge, not our API" argument from §1 applies: a
+model has run `grep`, `ls -la`, `git status`, and a pipeline more times than it has seen any tool we
+could design, and it is not told — because it does not need to be, and telling it would cost tokens
+for no benefit (§1a) — that there is no `PATH`, no binary resolution, and no process being exec'd
+underneath: every command is either a builtin over the worktree or a dispatch to a registered
+`Runner`/`Tool` (010 §1a, §2). This is the transparency principle (§1) applied to the shell
+specifically: the surface is honest about what works, silent about the architecture that makes it
+safe.
 
-What makes it worth having *alongside* the Python interpreter rather than only through
-`subprocess` is exactly the shared-context guarantee in 010 §3a: `cd`, exported environment
-variables, and the worktree mounts are the **same state** whether the agent reaches them from a
-shell command or from Python. An agent that runs `cd /work/data && ls` in the shell and then opens a
-file with a relative path in Python is not coordinating two subsystems — it is doing the same thing
-a person does at one terminal with one Python REPL open beside it.
+What makes the shell worth having *alongside* the Python interpreter rather than only through
+`subprocess` is the shared-state guarantee in 010 §3a: `cd`, exported environment variables, and the
+worktree mounts are the **same `ExecState`** whether the agent reaches them from a shell command or
+from Python. An agent that runs `cd /work/data && ls` in the shell and then opens a file with a
+relative path in Python is not coordinating two subsystems — it is doing the same thing a person
+does at one terminal with one Python REPL open beside it.
 
 ## 5. The `agent` library — this *is* CodeAct
 

@@ -103,6 +103,8 @@ word is free, and we take it. §5 records the collision so nobody re-imports the
 | **`EffectContext`** | The mandatory attribution parameter carried into every effect (007, I4) | **ours** |
 | **`Sandbox`** / **`Profile`** | An isolation boundary instance / a named backend + limits configuration (008) | **ours** |
 | **`Worktree`** | The session's content-addressed virtual disk (025) | **ours** |
+| **`Runner`** / **`PythonRunner`** / **`ShellRunner`** | A code/shell execution unit inside a session's sandbox (010 §1a) | **ours** |
+| **`ExecState`** | The `{cwd, env}` shared by reference across every `Runner` call in a session (010 §3a) | **ours** |
 | `Actor` · `Activation` · `Worker` · `Shard` · `Mailbox` · `ActorRef<A>` · `Policy` | Quark's runtime vocabulary, used **verbatim and unchanged** | Quark |
 | `ae::task<T>` · `ae::result<T>` | Coroutine return type · `std::expected<T, error>` | Quark |
 
@@ -122,7 +124,7 @@ these has caused a real bug or a real misunderstanding somewhere in the ecosyste
 | **`Skill`** | A `SKILL.md` bundle (§3) | **A2A**: `AgentSkill`, a discovery record in an Agent Card — no instructions body, no files, no progressive disclosure. Functionally closer to a tool listing | `a2a::AgentSkill` is never abbreviated to `Skill`, in code or prose. |
 | **`Plugin`** | A signed WASM component package (009) | **Semantic Kernel**: a group of functions ≈ our tool set | Do not re-import the SK meaning. |
 | **`Session`** | `AgentSession` — durable conversation state | **MCP ≤ 2025-11-25**: a transport-level session, **removed** in `2026-07-28` | Never use "session" for a connection or transport concept. That word is now free precisely because MCP gave it up. |
-| **`Executor`** | A workflow graph node (014) | **Quark**: informally, the worker currently holding an activation | In AgentEngine prose "executor" always means the graph node; Quark's sense is written as "the worker holding the activation". |
+| **`Executor`** | A workflow graph node (014) | **Quark**: informally, the worker currently holding an activation | In AgentEngine prose "executor" always means the graph node; Quark's sense is written as "the worker holding the activation". **Code/shell execution units (010) are deliberately named `Runner`, not `Executor`**, precisely to avoid a third meaning of a word this table already has to disambiguate twice. |
 | **`Context`** | Four distinct types | `SessionContext` (per-run session view), `WorkflowContext` (per-executor), `MessageContext` (Quark: ambient per-message stop token, deadline, trace id), `EffectContext` (attribution for an effect) | Never write bare `Context`. Each is spelled in full at every use. |
 | **`Provider`** | `ContextProvider`, `HistoryProvider`, `SkillsProvider` | Colloquially, "provider" often means the *model vendor* | The inference seam is `ChatClient`, never `Provider`. **This supersedes RFC 004's use of "provider".** |
 | **`Content`** | One element of a message (§2) | **A2A**: `Part`. **MCP**: content block | `Content` in core; `Part` appears only in `a2a::` mapping code. |

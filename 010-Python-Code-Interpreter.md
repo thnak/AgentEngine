@@ -20,13 +20,38 @@ choice grounded in what the Python ecosystem actually supports today.
 CodeAct is a *configuration* of the interpreter, not a separate subsystem: same tool, same sandbox,
 same approval, with the library granted or not. This mirrors the design MAF settled on (ADR 0024)
 and avoids two code paths for one capability. Shell is a **peer** to the interpreter, not a
-capability reached only through it (`subprocess`, `os.system`) — see §3a for why, and for what
-"peer" guarantees.
+capability reached only through it (`subprocess`, `os.system`) — see §1a for the concept that makes
+that true, and §3a for the state it shares.
 
 **What makes it CodeAct is the library, not the interpreter.** An interpreter with no host-backed
 library is a calculator; the action space is defined by what the program can *reach* — tools,
 worktree, memory, artifacts, sub-agents, structured output — which is 026 §5's subject. That RFC
 owns the surface; this one owns the execution.
+
+### 1a. The `Runner` concept
+
+Each mode above is backed by a `Runner` — deliberately not named `Executor`, which already means
+"a workflow graph node" (014, 027 §5) and does not need a third meaning:
+
+```cpp
+struct Runner {                                        // concept, not a base class
+    ae::task<result<ExecOutcome>> run(ExecRequest, ExecState&, EffectContext&);
+};
+```
+
+`PythonRunner` backs Interpreter/CodeAct; `ShellRunner` backs Shell. Both run inside the same
+session sandbox (008 §6) and share one `ExecState` by reference (§3a) — not a copy, not a
+synchronized mirror, the same object — which is what makes "shared context" an exact guarantee
+rather than a best effort.
+
+**`ShellRunner` composes with other `Runner`s instead of exec'ing a real shell.** When a shell
+command needs to run Python, `ShellRunner` calls `PythonRunner.run(...)` directly, under a declared
+`RunnerCall<python>` capability — the same idiom as `ToolCall<name>` (006) and `AgentCall<agent>`
+(026 §5): crossing from one execution unit into another is a capability, never ambient, even when
+both units live in the same process. §2 explains why this composition, not a bundled shell binary,
+is the design — the short version is that a real shell's entire purpose is resolving and exec'ing
+arbitrary named programs, which is the one thing a capability-based system cannot make safe by
+sandboxing alone; a `Runner` that never does that removes the hazard instead of containing it.
 
 ## 2. Runtime selection — the decision and its evidence
 
@@ -58,16 +83,40 @@ recorded so it can be revisited when the facts change:
 ecosystem, `wasm` becomes the default by changing one default — the tool, its contract, its
 approval model, and its telemetry do not move. That is the entire reason 008 is a seam.
 
-**The shell is one bundled, portable binary — never the host's own shell.** AgentEngine is
-cross-platform (CONVENTIONS §Cross-platform); a host's native shell is not: `cmd.exe`/PowerShell on
-Windows, `bash`/`zsh`/`dash`-as-`sh` variance on Linux and macOS. Exposing whichever one the host
-happens to have would mean the agent's guesses about shell syntax — the entire economic argument for
-CodeAct and for 026's transparency principle — depend on which OS the operator deployed to, and would
-break `wasm`-profile determinism (§7) outright, since the host shell is not a component. We instead
-ship one POSIX-compatible shell implementation (candidate: `dash`/`toybox`-class, small enough to be
-a first-party plugin, 009 §7) built once for `native-jail`/`microvm` and once for `wasm`, so shell
-behaviour is identical across every OS and every profile — the same guarantee §2's table already
-makes for the Python runtime.
+**There is no real shell, on any platform or profile — bundled or otherwise.** An earlier draft of
+this RFC proposed shipping one portable shell binary (`dash`/`toybox`-class) so behaviour would be
+identical across Windows, Linux, and macOS instead of exposing whichever native shell the host
+happens to have. That solves the *cross-platform consistency* problem but not the deeper one: **a
+real shell's job is resolving a name against a search path and exec'ing whatever it finds.** That is
+exactly the ambient-authority shape **I2** forbids — "reachable" would mean "anything on `PATH`,"
+sandboxed or not, and every hardening technique available (seccomp filters, allowlisted binaries,
+restricted `PATH`) is a way of *containing* that authority, never a way of not having granted it.
+
+**`ShellRunner` (§1a) is engine-native code, not a wrapped shell,** and it never resolves or exec's
+an arbitrary named program:
+
+- It parses a **small, explicitly non-POSIX-complete grammar** — pipes, redirects, variable
+  assignment and expansion, `&&`/`||`, and minimal control flow. We do not claim POSIX conformance;
+  claiming it and being wrong is worse than stating the subset (the same honesty 013 §2.0 applies to
+  AG-UI's maturity).
+- A **fixed builtin set** — `cd`, `pwd`, `ls`, `cat`, `echo`, `export`, `mkdir`, `rm`, `mv`, `cp`, and
+  similarly ordinary commands — is implemented directly against worktree operations (025) and the
+  capability layer (007), not by shelling out to a coreutils binary.
+- **Anything else resolves only to a registered `Runner` or a registered `Tool`** (006, 009) — e.g. a
+  `git` or `ripgrep` component, if the operator has installed one, is invoked through the ordinary
+  tool pipeline, not found on a search path. A name that resolves to neither produces the same
+  "command not found" the agent would see from a real shell (026 §3) — the *experience* is ordinary,
+  but underneath it is "no capability or registration," not "no file in `PATH`."
+- Because behaviour is engine code rather than a ported binary, **identical behaviour across
+  Windows, Linux, and macOS is automatic**, not something that has to be built and verified per
+  platform the way §2's Python runtime table does.
+
+This is more implementation than adopting an existing shell would have been — a grammar, a builtin
+set, and a dispatch layer, instead of one `dlopen`/component call into something that already works.
+That cost buys a structural property a wrapped shell cannot: **I2 holds for shell commands by
+construction**, the same way it already holds for the CodeAct tool bridge (§6) — there is no
+privilege to contain because there was never a name-to-binary resolution step that could reach
+something ungranted.
 
 Non-Python languages (JavaScript/TypeScript via a JS component, and native code via `ae:codec`
 plugins) reuse the same tool with a different `language`; the interpreter is not Python-only by
@@ -93,31 +142,26 @@ Every `execute_code` invocation:
 large becomes an artifact `BlobRef` (003 §3). An agent that prints a 200 MB dataframe gets a
 truncation notice, not an OOM'd host.
 
-### 3a. Shared execution context — the same session backs Python and Shell
+### 3a. `ExecState` — the same session backs Python and Shell
 
 The point of a session-scoped sandbox (008 §6) is that a conversation feels like **one machine**,
-not a bundle of specialized tools that happen to share a filesystem. That guarantee is worth stating
-precisely rather than leaving it implied by two modes reusing "the sandbox":
+not a bundle of specialized tools that happen to share a filesystem. That guarantee has a concrete
+carrier: `ExecState`, `{cwd, env}`, one instance per session, held by the sandbox and passed **by
+reference** into whichever `Runner` (§1a) executes.
 
-- **One working directory, one environment, shared by both modes.** A `cd` in `execute_shell` is
-  visible to the next `execute_code`'s `os.getcwd()`, and `os.chdir()` in Python is visible to the
-  next shell command's `pwd` — same for environment variables set by `export` or `os.environ[...] =
-  ...`. Two front doors onto one house, not two houses that happen to share a mailbox.
-- **This is a behavioural contract, not an implementation mandate.** Whether the backend realizes it
-  as one OS process hosting both an embedded interpreter and a shell, or as two persistent processes
-  whose `{cwd, env}` are read and reconciled by the host at each call boundary, is a backend decision
-  — 008's "same contract, different backend" pattern applies here exactly as it does to profiles.
-  What is not permitted is a fresh, state-reset process per `execute_shell` call: that would make the
-  shell amnesiac while the interpreter remembers, and the asymmetry itself teaches the model the
-  architecture it is not supposed to need (026 §1).
-- **The worktree already makes files consistent** (§4, 025) — this section is about the process-level
-  state files were never the problem for: current directory and environment.
-- **Python's own `subprocess`/`os.system` and the dedicated `execute_shell` mode observe the same
-  state.** An agent that shells out from Python gets the same `cwd`/env it would get from the Shell
-  mode; there is exactly one notion of "the current directory of this session," not one per surface.
-- **Cross-session isolation is unchanged**: this state lives in the session's sandbox, subject to the
-  same per-session lifetime, passivation behaviour (008 §6a), and cross-session prohibition as
-  everything else in it. Two sessions never share a `cwd` any more than they share a heap.
+- **One working directory, one environment, shared by every `Runner`.** A `cd` in a shell command
+  mutates the same `ExecState` a subsequent `execute_code` call reads via `os.getcwd()`; `os.chdir()`
+  in Python mutates the one a subsequent shell command reads via `pwd`. It is the same object, not a
+  synchronized pair — sharing by reference is what makes this exact rather than eventually
+  consistent.
+- **Python's own `subprocess`/`os` calls and `ShellRunner` observe the same `ExecState`.** An agent
+  that shells out from Python gets the same `cwd`/env it would get from the Shell mode; there is
+  exactly one notion of "the current directory of this session," not one per `Runner`.
+- **The worktree already makes files consistent** (§4, 025) — `ExecState` is the process-level
+  counterpart: the state files were never the problem for.
+- **Cross-session isolation is unchanged**: `ExecState` lives in the session's sandbox, subject to
+  the same per-session lifetime, passivation behaviour (008 §6a), and cross-session prohibition as
+  everything else in it. Two sessions never share an `ExecState` any more than they share a heap.
 - **Background/long-running shell processes** (a dev server started with `&`, a watcher) are a real
   consequence of a persistent shell and are not fully specified here — see Q6.
 
@@ -195,22 +239,27 @@ traces are comparable across frameworks.
   unavailable-package error rather than a mysterious import failure.
 - **G2 (containment)** — the hostile corpus (008 §7) plus interpreter-specific attacks (`os.system`,
   `ctypes`, `/proc` and registry probing, symlink escape from the workspace, egress to
-  `169.254.169.254`, fork bomb, memory bomb, output flood, `sys.settrace` shenanigans) **and**
-  shell-specific attacks (command substitution/backtick injection via untrusted arguments, `PATH`
-  hijacking, function/alias shadowing of builtins, glob-based traversal) is contained on every
-  backend, with positive controls proving the tests are not vacuous.
+  `169.254.169.254`, fork bomb, memory bomb, output flood, `sys.settrace` shenanigans) is contained
+  on every backend, with positive controls proving the tests are not vacuous. **For `ShellRunner`,
+  the equivalent classes — `PATH` hijacking, command substitution reaching an unregistered binary,
+  function/alias shadowing of builtins — must not merely be contained, they must not exist as a
+  reachable code path**: a positive control that asks `ShellRunner` to run a name that is neither a
+  builtin nor a registered `Runner`/`Tool` must fail closed with "command not found" and must be
+  provable to never reach `exec`/`CreateProcess` for that name (§2).
 - **G3 (state boundary)** — within a session, a variable defined in execution *n* is present in
-  *n+1*, and **a `cwd`/environment-variable change made in one mode (§3a) is visible to the other and
-  to the next call in the same mode**; across sessions, a variable, open handle, background thread,
-  monkeypatch, `cwd`, environment variable, or file written by session A is unreachable from session
-  B on every backend, including pooled and snapshot-restored ones (008 §9 G7).
+  *n+1*, and **an `ExecState` (§3a) mutation made through one `Runner` is visible to every other
+  `Runner` and to the next call on the same `Runner`**; across sessions, a variable, open handle,
+  background thread, monkeypatch, `ExecState`, or file written by session A is unreachable from
+  session B on every backend, including pooled and snapshot-restored ones (008 §9 G7).
 - **G4 (bridge)** — a bridged `call_tool` cannot reach a capability the sandbox lacks but the agent
-  holds; proven with a deliberately over-privileged control that the check catches.
+  holds; proven with a deliberately over-privileged control that the check catches. The same proof
+  is required for `RunnerCall<python>` (§1a): `ShellRunner` cannot invoke `PythonRunner` without the
+  capability, and cannot exceed the capability set it was itself granted when it does.
 - **G5 (budget)** — cold and warm `execute_code`/`execute_shell` p50/p99 per profile against 023.
 - **G6 (parity)** — the same command's effect (write a file, read `cwd`, read an env var) is
-  observable identically whether reached via `execute_shell` or via `execute_code`'s
-  `subprocess`/`os` calls (§3a); and shell behaviour (builtins, globbing, exit codes) is
-  byte-identical across Windows, Linux, and macOS.
+  observable identically whether reached via `ShellRunner` or via `PythonRunner`'s `subprocess`/`os`
+  calls (§3a); and `ShellRunner`'s documented grammar and builtins behave identically across Windows,
+  Linux, and macOS.
 
 ## 10. Open questions
 
@@ -227,3 +276,8 @@ traces are comparable across frameworks.
   (§3) assumes the process ends with the call. Open: whether backgrounding is permitted at all, how
   its resource use is charged against the session rather than a single call, how the agent lists/
   kills what it started, and whether it survives passivation (008 §6a) on any profile.
+- **Q7** — `ShellRunner`'s grammar parser processes text that may be tainted (003 §2) — model output,
+  or content quoted from a tool result. §2 argues the *actions* it can cause are capability-gated by
+  construction, but the *parser itself* is still first-party code parsing adversarial input, the same
+  risk category 009 §7 pushes to a WASM plugin for file formats. Open whether the parser needs the
+  same treatment (fuzzed hard and/or run as a component) rather than trusted host code by default.
