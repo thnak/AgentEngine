@@ -173,7 +173,12 @@ The format's three-level disclosure — ~100 tokens of `name` + `description` fo
 `SKILL.md` body on activation (target < 5 000 tokens), bundled files only on demand — is exactly the
 shape an ordinary filesystem affords. So skills are **mounted read-only at `/skills/<name>`**
 (025 §3) and the agent reads them with ordinary file operations (026 §6). We do not introduce
-`load_skill` / `read_skill_resource` tool wrappers; the mount is the mechanism.
+`load_skill` / `read_skill_resource` tool wrappers; the mount is the mechanism. This is a deliberate
+divergence from MAF's own implementation, which uses exactly those two tools (plus `run_skill_script`)
+as a fixed three-tool surface regardless of catalog size, rather than a filesystem mount — confirmed
+by reading its source, not assumed (`docs/research/2026-maf-provider-concepts.md` §1). Neither MAF
+nor anything else surveyed does vector/semantic search over skills or tools; "many skills" is solved
+by advertising cheaply and loading lazily, not by search, in both designs.
 
 The token property that makes skills worth having is preserved: a bundled script's **stdout enters
 the context, its source does not**.

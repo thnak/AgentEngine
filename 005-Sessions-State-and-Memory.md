@@ -47,12 +47,16 @@ What the model sees is **derived**, never simply "the history". Per turn:
 
 ```
 context = instructions
-        ⊕ memory_provider outputs        (ordered, each budgeted)
+        ⊕ context_provider outputs       (ordered, each budgeted — instructions ⊕ messages ⊕ tools)
         ⊕ selected history window        (compaction strategy)
-        ⊕ tool declarations              (006)
+        ⊕ statically declared tools      (002, 006)
         ⊕ middleware additions           (002 §5)
 subject to: context_window, TokenBudget, per-source token budgets
 ```
+
+**Tools are not solely a static declaration.** A context provider's contribution can include tools,
+not just text (§5) — the statically declared set (002) and every provider's tool contribution are
+unioned into one per-run table (006 §6), which is where the snapshot-at-run-start rule applies.
 
 **Rules:**
 
@@ -91,7 +95,19 @@ struct ContextProvider {
     ae::task<result<ContextContribution>> on_context(SessionContext&, EffectContext&);
     ae::task<> on_turn_end(TurnView, EffectContext&);
 };
+
+struct ContextContribution {
+    std::optional<std::string> instructions;   // appended, budgeted (§3)
+    std::vector<Message>       messages;        // injected before the history window (003)
+    std::vector<ToolDecl>      tools;            // unioned into the run's tool table (006 §6)
+};
 ```
+
+`ContextContribution` deliberately mirrors MAF's `AIContext` (`Instructions` / `Messages` / `Tools`
+— `docs/research/2026-maf-provider-concepts.md` §1): a provider is not limited to injecting text. A
+retrieval provider that exposes an on-demand search tool rather than always dumping results into
+context is the concrete precedent (MAF's `TextSearchProvider`), and the same shape covers any
+provider that needs to hand the model a capability rather than a paragraph.
 
 Kinds: `HistoryProvider` (conversation history) · `SkillsProvider` (009 §8) · **working** memory
 (in-session scratch) · **episodic** (past sessions of this principal) · **semantic** (retrieval over
@@ -99,6 +115,16 @@ a corpus) · **procedural** (learned instructions).
 
 This is also the seam CodeAct attaches to, matching the integration point MAF settled on — which is
 why keeping it singular matters (010, 026).
+
+**On "tool search" for large tool/skill catalogs — not adopted, on evidence.** MAF's source has no
+vector- or embedding-based search over tools or skills; its actual answer is progressive disclosure
+— a small fixed set of loader tools, or in our case (009 §8b) no loader tools at all, since skills
+are mounted read-only on the worktree and read with ordinary file operations. A `ContextProvider`
+contributing a *specific* tool per turn (the retrieval-provider case above) is a different, narrower
+thing than "search across the whole tool catalog," and we do not build the latter as a core
+mechanism — it is exactly the kind of heavy, stateful dependency (embeddings, a vector index) that
+CONVENTIONS' dependency tiers push to a plugin (009 §7) or a `SemanticSkillsProvider`-shaped WASM
+plugin, never the core.
 
 **Rules:**
 
@@ -108,6 +134,9 @@ why keeping it singular matters (010, 026).
   cross-principal leakage through a shared index is a release-blocking defect class.
 - Memory providers may ship as **WASM plugins** (009) — this is the intended path for vector
   stores, embedding pipelines, and third-party memory services.
+- **A tool contributed via `ContextContribution.tools` still traverses the full invocation pipeline**
+  (006 §3) — a provider can make a tool *available*, never bypass authorize/approve/admit for it.
+  Provider-contributed tools carry the provider's identity in the audit record, same as a plugin's.
 
 ## 6. Fork, redact, delete
 

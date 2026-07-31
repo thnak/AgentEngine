@@ -103,9 +103,11 @@ history is deterministic regardless of completion order — a precondition for I
 ## 6. Tool discovery and dynamic tool sets
 
 - **Static** tools come from `Tools<...>` (002).
-- **Dynamic** tools come from MCP servers, A2A peers, and loaded skills. They are resolved at run
-  start into an immutable per-run tool table (snapshotted, like MAF's per-run tool surface), so a
-  mid-run change to a remote server cannot alter what a run is allowed to do.
+- **Dynamic** tools come from MCP servers, A2A peers, loaded skills, and **context providers**
+  (005 §5 — a provider's `ContextContribution.tools`, the precedent being MAF's `TextSearchProvider`
+  exposing an on-demand search tool). All are resolved at run start into an immutable per-run tool
+  table (snapshotted, like MAF's per-run tool surface), so a mid-run change to a remote server or a
+  provider's own state cannot alter what a run is allowed to do.
 - **Caching:** MCP list results carry `ttlMs` and `cacheScope` (2026-07-28); we honour both and
   prefer deterministic ordering for prompt-cache stability (011).
 - **Tool-name collisions across sources are an error**, resolved by declared namespacing, never by

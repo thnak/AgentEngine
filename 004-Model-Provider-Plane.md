@@ -57,6 +57,16 @@ fails at startup (002 §6) rather than at the first user request.
 one HTTP/TLS dependency, behind a CMake option, never in the core. A provider may also ship as a
 **WASM plugin** (009) when its protocol is exotic and its performance envelope allows.
 
+**Porting note, not copying:** MAF ships no C++ SDK, and its own Anthropic/OpenAI backends are thin
+adapters over each vendor's official SDK (`docs/research/2026-maf-provider-concepts.md` §2) — there
+is no vendored HTTP/SSE implementation to port. What *is* worth porting as design, because it is
+translation logic independent of language or transport: Anthropic's cumulative→incremental `Usage`
+conversion on stream events (needed for uniform per-chunk `Usage`, 003 §6, since Anthropic reports
+usage cumulatively per event and OpenAI does not), tool-schema shaping per vendor wire format, the
+MCP-tool-vs-native-tool routing split, and structured-output shaping that forces
+`additionalProperties: false` into the JSON Schema before it reaches the provider. Each is a
+concrete pre-implementation checklist item for its `ChatClient` backend, not a research question.
+
 ## 4. Reliability
 
 - **Retry** applies to `Transient` only (001 §6), bounded exponential with jitter, and **must
