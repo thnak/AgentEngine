@@ -21,7 +21,7 @@ CRTP policy idiom** instead of runtime configuration objects.
 
 ```cpp
 struct Researcher : Agent<Researcher,
-        ChatClient<"anthropic:claude-opus-5">,
+        ChatClientId<"anthropic:claude-opus-5">,
         Tools<WebSearch, CodeInterpreter, Handoff<Writer>>,
         SandboxProfile<Profile::Strict>,
         MaxTurns<12>> {
