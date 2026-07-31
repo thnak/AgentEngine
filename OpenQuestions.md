@@ -35,12 +35,26 @@ capability with caveats is the known answer; it adds a crypto dependency, a revo
 a new forgery surface. Without it, each remote path invents its own bespoke authority protocol —
 which is worse.
 
-## 🟠 OQ-4 — Unifying long-running work
+## 🔴 OQ-4 — Unifying human-in-the-loop and long-running work
 
-001 §2 / 006 Q2 / 019 Q2. Four shapes for one idea: our `Suspended` run state, MCP's `tasks`
-extension, A2A's task lifecycle, and the workflow request port. `InputRequired` is already unified
-across three surfaces; long-running work is not. The risk of deferring is four half-compatible
-mechanisms.
+**Escalated from 🟠 after the A2A/AG-UI research**, which showed the three protocols do not merely
+differ in encoding — they differ in *control flow*, and each demands a different correlation
+identity:
+
+| Protocol | Shape | Identity it requires |
+|---|---|---|
+| **MCP** `2026-07-28` | Client **retries the original request** with a *new* JSON-RPC id | `requestState` (opaque, client **MUST NOT** parse) |
+| **A2A** v1.0 | Task **stays alive** in `INPUT_REQUIRED`; client sends a new message | `taskId` |
+| **AG-UI** | Run **ends** with an interrupt outcome; client starts a **new run** | `interruptId` |
+
+A retry, a continuation, and a restart. Our internal `InputRequired` (001 §2) must project to all
+three while preserving whichever identity each peer will present on the way back — and AG-UI adds an
+ordering obligation (state needed for resume must be emitted *before* the run-ending event) that has
+no analogue in the other two.
+
+The same problem recurs for long-running work: our `Suspended` state, MCP's `tasks` extension, A2A's
+task lifecycle, and the workflow request port (014). Deferring risks four half-compatible mechanisms
+and a correlation table nobody can reason about.
 
 ## 🟠 OQ-5 — Span-level taint
 
