@@ -1,0 +1,55 @@
+# Build
+build/
+build-*/
+out/
+cmake-build-*/
+CMakeUserPresets.json
+compile_commands.json
+.cache/
+
+# Artifacts
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+*.exe
+*.pdb
+*.ilk
+*.exp
+
+# WASM plugin build output
+*.wasm
+*.aepkg
+wit-bindgen-out/
+
+# Python (interpreter fixtures, tooling venvs)
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local runtime state
+*.log
+recordings/
+checkpoints/
+workspaces/
+.aengine/
+
+# Secrets — never commit
+.env
+.env.*
+*.pem
+*.key
+secrets.toml
+
+# Editors / OS
+.vs/
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
