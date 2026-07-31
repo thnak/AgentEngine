@@ -279,12 +279,17 @@ traces are comparable across frameworks.
   observable identically whether reached via `ShellRunner` or via `PythonRunner`'s mediated `os`
   surface (§3a, 008 §1b); and `ShellRunner`'s documented grammar and builtins behave identically
   across Windows, Linux, and macOS.
-- **G7 (interpreter mediation, 008 §1b)** — a call to `open()`/`socket()`/`subprocess.*`/`os.system`/
-  `ctypes` without the corresponding capability raises the exact 026 §3 exception **before any
-  syscall is attempted**, proven by a syscall-level trace (strace/ETW) showing zero attempts, not
-  merely a caught exception at the Python level. With the capability granted, the call succeeds and
-  is indistinguishable in effect from the same operation reached through a `Tool` or `ShellRunner`
-  builtin (G6).
+- **G7 (interpreter mediation, 008 §1b)** — two claims, both proven:
+  - **Import allowlist**: `import` of any module outside the granted package policy (§5) —
+    including a native extension not on it — raises `ImportError` and never reaches the dynamic
+    loader for that module. Proven with a deliberately planted native extension the test tries to
+    import; loading it must fail closed, not merely be undocumented.
+  - **Mediated calls**: a call to `open()`/`socket()`/`subprocess.*`/`os.system` without the
+    corresponding capability raises the exact 026 §3 exception **before any syscall is attempted**,
+    proven by a syscall-level trace (strace/ETW) showing zero attempts, not merely a caught
+    exception at the Python level. With the capability granted, the call succeeds and is
+    indistinguishable in effect from the same operation reached through a `Tool` or `ShellRunner`
+    builtin (G6).
 
 ## 10. Open questions
 

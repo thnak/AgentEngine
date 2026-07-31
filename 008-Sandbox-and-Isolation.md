@@ -82,25 +82,35 @@ Sandbox (native-jail instance, per session, 010 §3a)
 └── Runner/Tool registry     — what a name can resolve to (010 §2, 006, 009)
 ```
 
-**Consequence: CPython does not get to reach `open()`, `socket()`, `subprocess`/`os.system`/
-`os.exec*`, or `ctypes` unmediated, regardless of what the OS jail alone would already stop.**
-Two enforcement layers, deliberately redundant:
+**The mechanism is an allowlist over what can be imported, not a blocklist of dangerous calls.**
+Enumerating hazardous entry points — `open`, `socket`, `subprocess`, `ctypes`, and then `mmap`,
+`multiprocessing`, `os.fork`/`os.posix_spawn`, `signal`, `resource`, or an arbitrary native
+`.pyd`/`.so` extension imported by name — and patching each one is how blocklists rot: the next one
+nobody thought of is a matter of when, not if, and a native extension's own C code is invisible to
+any Python-level wrapper regardless. Instead:
 
-1. **Interpreter-level mediation (primary).** At embedding time, these entry points are replaced
-   with capability-checked wrappers: `open` resolves against the worktree mount and `FsRead`/
-   `FsWrite` (025 §5), `socket` proxies through the same host-mediated egress every other profile
-   uses (§4), `subprocess`/`os.system` do not exist as a way to run something — running something is
-   `ShellRunner`/another `Tool` via a declared `RunnerCall`/`ToolCall` (010 §1a, 006), never a raw
-   fork. A call the capability set does not cover raises the exact `PermissionError`/`OSError` 026
-   §3 already specifies, **before any syscall is attempted** — a precise, attributable denial (I4)
-   instead of whatever the kernel happens to report.
-2. **Kernel-level jail (backstop).** The OS-level boundary (seccomp-BPF/namespaces, AppContainer,
-   sandbox profile) remains exactly as specified in §3 — for a compiled C extension that reaches
-   `libc` directly, for a bug in layer 1, for anything the interpreter-level wrapper did not
-   anticipate. It is the backstop, not the primary mechanism, which is why layer 1 exists at all:
-   relying solely on the kernel produces a raw, unattributable failure far from the capability
-   system; relying solely on interpreter mediation has no answer for code that bypasses the
-   interpreter's own builtins.
+1. **The importable module set is closed by construction (primary).** At embedding time, only
+   modules present in the granted package policy (010 §5) plus a fixed, reviewed stdlib
+   safe-subset exist to `import` at all — `sys.modules`/`__import__` see a set the spec granted,
+   never an open one with holes patched into it after the fact. A name outside that set raises
+   `ImportError`, the ordinary shape a missing package already takes (010 §5), not a caught security
+   exception. `ctypes` and arbitrary native extensions are simply absent unless explicitly granted —
+   the same "ungranted module is absent" pattern 026 §5 already uses for the `agent` library.
+2. **Modules that *are* allowed still have their dangerous behaviour mediated (also primary, not a
+   fallback).** `open` resolves against the worktree mount and `FsRead`/`FsWrite` (025 §5) because
+   `os`/`builtins` are always in the allowlist; `socket` proxies through the same host-mediated
+   egress every other profile uses (§4); running a program is `ShellRunner`/another `Tool` via a
+   declared `RunnerCall`/`ToolCall` (010 §1a, 006), never a raw fork, so `subprocess`/`os.system`
+   exist as names but not as a way to reach an ungranted effect. A call the capability set does not
+   cover raises the exact `PermissionError`/`OSError` 026 §3 already specifies, **before any syscall
+   is attempted** — a precise, attributable denial (I4) instead of whatever the kernel happens to
+   report.
+3. **Kernel-level jail (backstop).** The OS-level boundary (seccomp-BPF/namespaces, AppContainer,
+   sandbox profile) remains exactly as specified in §3 — for a bug in layers 1–2, or anything an
+   allowed module does that its wrapper did not anticipate. It is the backstop, not the primary
+   mechanism, which is why layers 1–2 exist at all: relying solely on the kernel produces a raw,
+   unattributable failure far from the capability system; relying solely on interpreter mediation has
+   no answer for a bug in the mediation itself.
 
 This is the same idiom `ShellRunner` already uses (010 §2): remove the ambient path at the point of
 use rather than grant it and try to contain what it can reach. Applying it to the interpreter, not
