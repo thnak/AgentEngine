@@ -140,6 +140,13 @@ Third-party code is a trust decision made *before* runtime:
   because 011 already caches list results by digest.
 - **A revoked plugin or server is unloadable at runtime**, and in-flight uses are canceled.
 
+**Registry presence is not a trust signal.** The official MCP Registry is in preview and states that
+consumers *"should assume minimal-to-no moderation"* — it explicitly does not remove servers with
+known security vulnerabilities. Publication proves namespace ownership, nothing more. No code path
+in this engine may treat presence in any registry, index, or marketplace as evidence of
+trustworthiness; the controls above carry the full weight
+([research](docs/research/2026-mcp-ecosystem.md) §1, 011 §9).
+
 ## 8. Audit
 
 Every effect writes an audit record: `{timestamp, run_id, session_id, agent_id+version, principal,

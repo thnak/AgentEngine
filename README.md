@@ -140,8 +140,21 @@ Start with the [specification](AgentEngineSpecification.md), then
 | 024 | [Versioning, Compatibility and Governance](024-Versioning-Compatibility-and-Governance.md) | Versioning, deprecation, the decision process, RFC hygiene | Draft |
 
 Supporting documents: [`OpenQuestions.md`](OpenQuestions.md) (cross-cutting unresolved questions),
-[`decisions/`](decisions/) (the ADR process and record),
-[`docs/research/`](docs/research/) (dated, cited research records).
+[`decisions/`](decisions/) (the ADR process and record), and the dated, cited research records —
+[the 2026 standards landscape](docs/research/2026-standards-landscape.md) (protocol content,
+sandboxing trade space, the Python-on-WASM finding) and
+[the MCP ecosystem](docs/research/2026-mcp-ecosystem.md) (registry, SDKs, the C/C++ landscape, and
+the official conformance suite).
+
+### Conformance is a number, not a paragraph
+
+MCP publishes an **official conformance suite** that tests both client and server roles and
+validates every message against the spec's schema, and SEP-2484 explicitly permits any
+implementation to run it and report a compliance percentage. RFC 011's gate is therefore executable:
+`conformance server --url … --suite all` and `conformance client --command … --spec-version
+2026-07-28`, with a published percentage per role, pinned to a conformance release. Notably, **no C
+or C++ implementation currently claims `2026-07-28` conformance** — AgentEngine would be among the
+first.
 
 ## Maturity ladder
 

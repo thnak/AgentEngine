@@ -195,31 +195,80 @@ An MCP server is **T2 third-party code** (007 §6). Concretely:
 - **Tool results are tainted** and delimited (017 §3).
 - **Revocation is runtime**: unbinding a server cancels in-flight calls.
 
-## 9. Pending research
+## 9. The registry, and why it is not a trust signal
 
-Being completed from primary sources and folded in as normative tables:
+The **official MCP Registry** (`registry.modelcontextprotocol.io`) is **still in preview** — its own
+documentation warns of breaking changes and data resets before GA. Its publication model is sound
+(namespace ownership proven by npm/PyPI/NuGet metadata, OCI labels, DNS TXT records, or a
+`.well-known/mcp-registry-auth` document; immutable versions; `server.json` schema `2025-12-11`), and
+we can validate our own `server.json` against it via `POST /v0.1/validate`.
 
-- Field-by-field request/result shapes for tools, resources, resource templates, and prompts,
-  including pagination, annotations/hints, and `isError` semantics.
-- **Skills**: whether MCP specifies a skill primitive or an official extension, how that relates to
-  `SKILL.md`-style packaging and to MAF's agent skills, and therefore whether 009 §8 needs an
-  importer, a native mapping, or both.
-- The official server registry, its API and publication model.
-- Tier 1 SDK list, whether any C/C++ SDK exists, and the state of official conformance/inspector
-  tooling we can run as the §10 gate.
-- The specification's own security best-practices requirements (confused deputy, token passthrough,
-  session hijacking) restated as MUST/SHOULD obligations we check.
+Its **moderation policy is deliberately minimal**, and this is the load-bearing fact:
 
-## 10. Promotion gate
+> *"We only remove illegal content, malware, spam, and completely broken servers."* Explicitly **not**
+> removed: low-quality servers, **servers with security vulnerabilities**, duplicates.
+> *"Consumers should assume minimal-to-no moderation."*
 
-- **G1** — the official conformance/inspector tooling passes against our server at `2026-07-28`, on
-  Windows and Linux, with zero deprecated features implemented.
-- **G2** — our client interoperates with a corpus of real servers covering tools, resources,
-  templates, prompts, MRTR, subscriptions, and the tasks extension.
-- **G3 (statelessness)** — every request is independently serviceable: a proxy that round-robins our
-  requests across N server replicas produces identical results to a single replica.
-- **G4 (re-issue safety)** — a stream broken mid-request is re-issued and produces exactly one
-  external effect, proven by an external counter under fault injection.
+**Therefore: registry presence is never a trust signal in this engine, and no code path may treat it
+as one.** Every control in §8 — digest pinning, per-server capability grants, re-approval on change,
+taint — carries the entire weight. Registry metadata may inform a human's approval decision; it may
+never substitute for one.
+
+The registry's own guidance is that host applications should **not** consume it live: aggregators
+poll `GET /v0.1/servers` roughly hourly and persist locally, because the registry offers no uptime
+or durability guarantee. If we ever consume it, we do so as an aggregator, never in a request path.
+
+Details and sources: [`docs/research/2026-mcp-ecosystem.md`](docs/research/2026-mcp-ecosystem.md).
+
+## 10. Conformance tooling — the gate is executable
+
+There is an **official conformance suite**, `@modelcontextprotocol/conformance`, that tests both
+roles and validates every message against the spec's `schema.json`:
+
+```bash
+conformance server --url http://localhost:3000/mcp --suite all
+conformance client --command "./agentengine-mcp-client" --spec-version 2026-07-28 --suite all
+```
+
+Its scenario list maps almost one-to-one onto the hard parts of this RFC — server: `stateless`,
+`input-required-result`, `caching`, `http-standard-headers`, `json-schema-2020-12`, `tools`,
+`resources`, `prompts`, `lifecycle`, `dns-rebinding`, `tasks/`, `negative-mrtr`; client:
+`mrtr-client`, `request-metadata`, `json-schema-ref-deref`, `http-custom-headers`, `auth/`.
+
+**Baseline discipline:** the suite supports an expected-failures baseline where an unbaselined
+failure exits non-zero *and a baselined-but-now-passing check also exits non-zero*, so the baseline
+cannot rot silently. That is exactly the property a conformance gate needs, and we adopt it as-is
+rather than writing our own harness.
+
+Two governance points from **SEP-2484** (Final) are adopted verbatim as project policy:
+
+> *"Where a test and the spec disagree, the spec is authoritative and the test is a bug."*
+
+and — the sentence that makes **I7** measurable —
+
+> *"The conformance suite itself is not restricted to official SDKs. Any implementation … may run it
+> and report a compliance percentage."*
+
+**We publish that percentage, per role, per suite, pinned to a conformance release.** A claim of MCP
+support in this project means a number from this tool, not a paragraph.
+
+The **Inspector** is a debugging aid, not a validator, and is not part of any gate.
+
+**Ecosystem context:** no C or C++ implementation currently claims `2026-07-28` conformance (the
+closest is one project's "in progress"), while all four Tier 1 SDKs shipped support within a day of
+the revision. AgentEngine would be among the first `2026-07-28`-native C++ implementations — which
+is a reason to lean harder on the official suite, not less.
+
+### Promotion gate
+
+- **G1** — `conformance server` passes at `2026-07-28` on Windows and Linux, with a published
+  percentage and a baseline containing only justified entries; zero deprecated features implemented.
+- **G2** — `conformance client` passes across `core`, `extensions`, `backcompat`, and `auth` suites,
+  with a published percentage.
+- **G3 (statelessness)** — a proxy round-robining our requests across N server replicas produces
+  identical results to a single replica (the property the removed session was hiding).
+- **G4 (re-issue safety)** — a stream broken mid-request, re-issued per the spec's recovery path,
+  produces exactly one external effect under fault injection, proven by an external counter.
 - **G5 (cache correctness)** — `ttlMs`/`cacheScope` honoured; a `private` result is never served
   across principals (canary test).
 - **G6 (rug-pull)** — a server that mutates a tool's description or schema between calls is detected
@@ -228,8 +277,25 @@ Being completed from primary sources and folded in as normative tables:
   reused across authorization servers, and token passthrough are each rejected.
 - **G8 (trace)** — `traceparent` propagation produces one connected trace across the boundary
   (016 §7 G2).
+- **G9 (registry)** — our published `server.json` validates against schema `2025-12-11` and
+  `POST /v0.1/validate`; and a test proves no code path treats registry presence as trust.
 
-## 11. Open questions
+## 11. Still being researched
+
+Folded in as normative tables when the primary-source research completes:
+
+- **Field-by-field shapes** for tools, resources, resource templates, and prompts: exact request and
+  result field names, pagination, where `ttlMs`/`cacheScope` sit structurally, `structuredContent`,
+  content block kinds, `isError` semantics, and whether the tool annotation hints
+  (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`) survive this revision.
+- **Skills** — whether MCP specifies a skill primitive or an official extension at all, and how that
+  relates to `SKILL.md`-style packaging, MAF's agent skills, and A2A's Agent Card `skills` field.
+  Four things share the word; 009 §8 and §4 above cannot be finished until it is known where they
+  are the same idea and where they merely collide on vocabulary.
+- **The specification's own security best-practices** (confused deputy, token passthrough, session
+  hijacking, tool poisoning) restated as checkable MUST/SHOULD conformance clauses alongside §8.
+
+## 12. Open questions
 
 - **Q1** — Which revisions to support simultaneously. Two constants and two suites (CONVENTIONS), or
   `2026-07-28` only and require peers to upgrade? The deprecation window makes the second defensible
