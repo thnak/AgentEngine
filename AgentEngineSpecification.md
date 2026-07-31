@@ -4,8 +4,8 @@
 
 AgentEngine is a **C++23 engine for building agent applications**: a runtime that hosts agents,
 sessions, tools, and multi-agent workflows on top of the [Quark](https://github.com/thnak/QuarkCpp)
-actor engine, with **untrusted code isolation and a Python code interpreter as first-class,
-built-in subsystems**, speaking the **open agent protocols of 2026** (MCP, A2A, AG-UI,
+actor engine, with **untrusted code isolation and a Python code interpreter and shell as
+first-class, built-in subsystems**, speaking the **open agent protocols of 2026** (MCP, A2A, AG-UI,
 OpenTelemetry GenAI) rather than a proprietary surface.
 
 Its developer model is deliberately **MAF-shaped** — the agent / session / tool / middleware /
@@ -113,9 +113,12 @@ Two different problems get two different answers (008, 009, 010):
   artifact runs bit-identically on Windows, Linux, and macOS; capability-based by construction;
   language-agnostic; instantiation in microseconds. Ecosystem risk is low because *we* define the
   WIT world and the plugin author compiles to it.
-- **The Python code interpreter** is a **sandbox profile**, not a hardcoded runtime. Its default
-  backend is a **jailed native CPython** because that is where the Python package ecosystem
-  actually is; a WASM-Python profile exists for portable, deterministic, stdlib-only execution.
+- **The Python code interpreter and the shell** are a **sandbox profile**, not a hardcoded runtime,
+  and share one execution context (010 §3a) — a `cd` or an exported variable is visible to both. Its
+  default backend is a **jailed native CPython** because that is where the Python package ecosystem
+  actually is; a WASM-Python profile exists for portable, deterministic, stdlib-only execution. The
+  shell itself is one bundled, portable binary identical on every OS and profile — never the host's
+  own `cmd.exe`/PowerShell/`bash` (010 §2).
 
 The evidence for splitting them is in [docs/research/2026-standards-landscape.md](docs/research/2026-standards-landscape.md)
 and summarized in 010 §2: as of July 2026 the rich WASM Python ecosystem (NumPy, pandas, SciPy,
@@ -150,8 +153,9 @@ makes the sandbox genuinely disposable — which is what allows 008's backend ch
 performance-and-ecosystem decision rather than a data-loss decision.
 
 The sandbox itself is **session-scoped** (008 §6): it lives with the session's actor, so a
-conversation keeps its interpreter state across turns. The isolation boundary that matters is
-*between sessions*, and cross-session reuse is prohibited in every profile.
+conversation keeps its interpreter *and shell* state — working directory, environment variables,
+in-memory objects — across turns (010 §3a). The isolation boundary that matters is *between
+sessions*, and cross-session reuse is prohibited in every profile.
 
 ### D5 — CodeAct is the primary action space, and the environment is unremarkable
 
@@ -166,6 +170,14 @@ That surface is **deliberately ordinary**: normal Python, normal paths, normal e
 prompt text explaining sandboxes, capabilities, or profiles** (026 §1). A model has seen millions of
 lines of ordinary Python and none of our architecture; describing the architecture costs tokens on
 every turn, competes with the actual task for attention, and does not make the model better at it.
+
+**Worktree, shell, interpreter, and CodeAct are one feature, seen from four angles, not four
+features that happen to cooperate.** The worktree (D4) is the one disk; the interpreter and the
+shell are two front doors onto one execution context that shares that disk's `cwd` and environment
+(010 §3a); CodeAct is what that context is *for*. An agent that `cd`s in the shell, reads the result
+with `open()` in Python, and calls a tool from either is operating one ordinary machine, not
+switching between subsystems — that coherence, not any one mechanism alone, is what "unremarkable
+environment" means.
 
 **This is a prompt-surface decision and never a security mechanism.** Assume the model knows it is
 isolated, assume an attacker tells it, assume it probes — 007 and 008 hold regardless. RFC 026 §8 G4

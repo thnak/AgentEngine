@@ -1,23 +1,27 @@
-# 010 — Python Code Interpreter
+# 010 — Code Interpreter and Shell
 
 **Status:** Draft · **Depends on:** 006, 007, 008, 009 · **Gate:** §9 · **Research:** [2026 landscape §6](docs/research/2026-standards-landscape.md)
 
 ## Goal
 
-A **built-in, default-on** Python execution capability that agents use to compute, transform data,
-and orchestrate tool calls in code — with the isolation contract of 008 and no host trust — and a
-runtime choice grounded in what the Python ecosystem actually supports today.
+A **built-in, default-on** execution capability — Python and a shell, sharing one sandboxed
+execution context — that agents use to compute, transform data, run ordinary commands, and
+orchestrate tool calls in code, with the isolation contract of 008, no host trust, and a runtime
+choice grounded in what the Python ecosystem actually supports today.
 
-## 1. Two modes, one tool
+## 1. Three modes, one execution context
 
 | Mode | Shape | Use |
 |---|---|---|
 | **Interpreter** | `execute_code(code, language="python") → outputs, artifacts` | Data work, computation, file transformation |
 | **CodeAct** | The same tool, with the `agent` library present in the sandbox (026 §5) | The agent's primary action space: multi-step logic, conditional tool chains, filtering large results — one execution instead of N model round trips |
+| **Shell** | `execute_shell(command) → outputs, artifacts` | Running ordinary commands — `ls`, `grep`, `git`, a build tool, a script — the things a person would reach for a terminal to do rather than write Python for |
 
 CodeAct is a *configuration* of the interpreter, not a separate subsystem: same tool, same sandbox,
 same approval, with the library granted or not. This mirrors the design MAF settled on (ADR 0024)
-and avoids two code paths for one capability.
+and avoids two code paths for one capability. Shell is a **peer** to the interpreter, not a
+capability reached only through it (`subprocess`, `os.system`) — see §3a for why, and for what
+"peer" guarantees.
 
 **What makes it CodeAct is the library, not the interpreter.** An interpreter with no host-backed
 library is a calculator; the action space is defined by what the program can *reach* — tools,
@@ -54,6 +58,17 @@ recorded so it can be revisited when the facts change:
 ecosystem, `wasm` becomes the default by changing one default — the tool, its contract, its
 approval model, and its telemetry do not move. That is the entire reason 008 is a seam.
 
+**The shell is one bundled, portable binary — never the host's own shell.** AgentEngine is
+cross-platform (CONVENTIONS §Cross-platform); a host's native shell is not: `cmd.exe`/PowerShell on
+Windows, `bash`/`zsh`/`dash`-as-`sh` variance on Linux and macOS. Exposing whichever one the host
+happens to have would mean the agent's guesses about shell syntax — the entire economic argument for
+CodeAct and for 026's transparency principle — depend on which OS the operator deployed to, and would
+break `wasm`-profile determinism (§7) outright, since the host shell is not a component. We instead
+ship one POSIX-compatible shell implementation (candidate: `dash`/`toybox`-class, small enough to be
+a first-party plugin, 009 §7) built once for `native-jail`/`microvm` and once for `wasm`, so shell
+behaviour is identical across every OS and every profile — the same guarantee §2's table already
+makes for the Python runtime.
+
 Non-Python languages (JavaScript/TypeScript via a JS component, and native code via `ae:codec`
 plugins) reuse the same tool with a different `language`; the interpreter is not Python-only by
 design, only Python-first by priority.
@@ -77,6 +92,34 @@ Every `execute_code` invocation:
 **Output discipline:** stdout/stderr are size-capped with explicit truncation markers; anything
 large becomes an artifact `BlobRef` (003 §3). An agent that prints a 200 MB dataframe gets a
 truncation notice, not an OOM'd host.
+
+### 3a. Shared execution context — the same session backs Python and Shell
+
+The point of a session-scoped sandbox (008 §6) is that a conversation feels like **one machine**,
+not a bundle of specialized tools that happen to share a filesystem. That guarantee is worth stating
+precisely rather than leaving it implied by two modes reusing "the sandbox":
+
+- **One working directory, one environment, shared by both modes.** A `cd` in `execute_shell` is
+  visible to the next `execute_code`'s `os.getcwd()`, and `os.chdir()` in Python is visible to the
+  next shell command's `pwd` — same for environment variables set by `export` or `os.environ[...] =
+  ...`. Two front doors onto one house, not two houses that happen to share a mailbox.
+- **This is a behavioural contract, not an implementation mandate.** Whether the backend realizes it
+  as one OS process hosting both an embedded interpreter and a shell, or as two persistent processes
+  whose `{cwd, env}` are read and reconciled by the host at each call boundary, is a backend decision
+  — 008's "same contract, different backend" pattern applies here exactly as it does to profiles.
+  What is not permitted is a fresh, state-reset process per `execute_shell` call: that would make the
+  shell amnesiac while the interpreter remembers, and the asymmetry itself teaches the model the
+  architecture it is not supposed to need (026 §1).
+- **The worktree already makes files consistent** (§4, 025) — this section is about the process-level
+  state files were never the problem for: current directory and environment.
+- **Python's own `subprocess`/`os.system` and the dedicated `execute_shell` mode observe the same
+  state.** An agent that shells out from Python gets the same `cwd`/env it would get from the Shell
+  mode; there is exactly one notion of "the current directory of this session," not one per surface.
+- **Cross-session isolation is unchanged**: this state lives in the session's sandbox, subject to the
+  same per-session lifetime, passivation behaviour (008 §6a), and cross-session prohibition as
+  everything else in it. Two sessions never share a `cwd` any more than they share a heap.
+- **Background/long-running shell processes** (a dev server started with `&`, a watcher) are a real
+  consequence of a persistent shell and are not fully specified here — see Q6.
 
 ## 4. Worktree and artifacts
 
@@ -152,15 +195,22 @@ traces are comparable across frameworks.
   unavailable-package error rather than a mysterious import failure.
 - **G2 (containment)** — the hostile corpus (008 §7) plus interpreter-specific attacks (`os.system`,
   `ctypes`, `/proc` and registry probing, symlink escape from the workspace, egress to
-  `169.254.169.254`, fork bomb, memory bomb, output flood, `sys.settrace` shenanigans) is contained
-  on every backend, with positive controls proving the tests are not vacuous.
+  `169.254.169.254`, fork bomb, memory bomb, output flood, `sys.settrace` shenanigans) **and**
+  shell-specific attacks (command substitution/backtick injection via untrusted arguments, `PATH`
+  hijacking, function/alias shadowing of builtins, glob-based traversal) is contained on every
+  backend, with positive controls proving the tests are not vacuous.
 - **G3 (state boundary)** — within a session, a variable defined in execution *n* is present in
-  *n+1*; across sessions, a variable, open handle, background thread, monkeypatch, or file written by
-  session A is unreachable from session B on every backend, including pooled and snapshot-restored
-  ones (008 §9 G7).
+  *n+1*, and **a `cwd`/environment-variable change made in one mode (§3a) is visible to the other and
+  to the next call in the same mode**; across sessions, a variable, open handle, background thread,
+  monkeypatch, `cwd`, environment variable, or file written by session A is unreachable from session
+  B on every backend, including pooled and snapshot-restored ones (008 §9 G7).
 - **G4 (bridge)** — a bridged `call_tool` cannot reach a capability the sandbox lacks but the agent
   holds; proven with a deliberately over-privileged control that the check catches.
-- **G5 (budget)** — cold and warm `execute_code` p50/p99 per profile against 023.
+- **G5 (budget)** — cold and warm `execute_code`/`execute_shell` p50/p99 per profile against 023.
+- **G6 (parity)** — the same command's effect (write a file, read `cwd`, read an env var) is
+  observable identically whether reached via `execute_shell` or via `execute_code`'s
+  `subprocess`/`os` calls (§3a); and shell behaviour (builtins, globbing, exit codes) is
+  byte-identical across Windows, Linux, and macOS.
 
 ## 10. Open questions
 
@@ -172,3 +222,8 @@ traces are comparable across frameworks.
 - **Q4** — GPU access for interpreter workloads is unsolved in every profile (008 Q5).
 - **Q5** — Whether to track the Pyodide/Emscripten path at all via an out-of-process JS host, purely
   to unlock the WASM package ecosystem for the `remote`/out-of-process case.
+- **Q6** — Background shell processes (`command &`, a dev server, a watcher) are a natural
+  consequence of a persistent shell (§3a) but are not designed here: per-call wall-clock bounding
+  (§3) assumes the process ends with the call. Open: whether backgrounding is permitted at all, how
+  its resource use is charged against the session rather than a single call, how the agent lists/
+  kills what it started, and whether it survives passivation (008 §6a) on any profile.

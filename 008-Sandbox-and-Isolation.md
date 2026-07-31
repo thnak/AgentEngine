@@ -163,7 +163,7 @@ Quark passivates idle sessions (ADR-028/034). What happens to in-memory interpre
 | | `wasm` | `native-jail` / `microvm` |
 |---|---|---|
 | Files across passivation | Worktree — always | Worktree — always |
-| In-memory state across passivation | **Snapshot and restore** | **Lost**; session resumes with a clean interpreter |
+| In-memory state across passivation | **Snapshot and restore** | **Lost**; session resumes with a clean interpreter and shell (010 §3a) |
 
 The `wasm` snapshot is **only taken at quiescent points** — between executions, when no guest stack
 exists — at which moment the interpreter's heap *is* its linear memory, so a snapshot is a memory
