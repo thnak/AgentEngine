@@ -80,7 +80,7 @@ A **filter** is a `ae:filter` plugin (009) or a native component, invoked at dec
 | Tool poisoning / rug pull (server changes descriptions) | Digest pinning + re-approval on change (007 §7, 011) |
 | Confused deputy (agent used to reach what caller cannot) | Principal propagation + derived-principal attenuation (007 §2) |
 | Exfiltration via tool arguments or URLs | Egress allowlist + host-mediated egress + audit (008 §4) |
-| Data poisoning of memory/retrieval | Memory writes are capability-gated and attributed (005 §5) |
+| Data poisoning of memory/retrieval | Memory writes are capability-gated and attributed (005 §5, 029 §3–4); model-inferred items can never satisfy a policy predicate requiring user assertion (029 §6) |
 | Approval-then-substitute | Approval bound to an argument hash (006 §4) |
 | Sandbox escape | 008 hostile suite; release-blocking defect class |
 | Cross-principal leakage via shared memory index | Principal-scoped memory; release-blocking defect class |

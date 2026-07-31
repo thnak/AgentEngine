@@ -110,8 +110,9 @@ context is the concrete precedent (MAF's `TextSearchProvider`), and the same sha
 provider that needs to hand the model a capability rather than a paragraph.
 
 Kinds: `HistoryProvider` (conversation history) · `SkillsProvider` (009 §8) · **working** memory
-(in-session scratch) · **episodic** (past sessions of this principal) · **semantic** (retrieval over
-a corpus) · **procedural** (learned instructions).
+(in-session scratch, this RFC's `state`) · **episodic** / **semantic** / **procedural** memory,
+whose storage model, writing, retrieval ranking, and consolidation are their own RFC (029) — this
+section owns the seam they attach through, not the memory architecture itself.
 
 This is also the seam CodeAct attaches to, matching the integration point MAF settled on — which is
 why keeping it singular matters (010, 026).
@@ -133,7 +134,7 @@ plugin, never the core.
 - Memory reads and writes are **capability-gated** (007) and scoped to the session's principal;
   cross-principal leakage through a shared index is a release-blocking defect class.
 - Memory providers may ship as **WASM plugins** (009) — this is the intended path for vector
-  stores, embedding pipelines, and third-party memory services.
+  stores, embedding pipelines, and third-party memory services (029 §5).
 - **A tool contributed via `ContextContribution.tools` still traverses the full invocation pipeline**
   (006 §3) — a provider can make a tool *available*, never bypass authorize/approve/admit for it.
   Provider-contributed tools carry the provider's identity in the audit record, same as a plugin's.

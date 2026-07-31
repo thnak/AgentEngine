@@ -164,8 +164,8 @@ reads to the model as "not available here" rather than as a policy essay.
 | `agent.tools` | The agent's tools as callables (§4) | `ToolCall<name>` per tool |
 | `agent.files` | Convenience over the worktree — `artifact()`, `input()`, listing | `FsRead`/`FsWrite` |
 | `agent.data` | Tabular/JSON helpers over inputs without loading them wholly into memory | `FsRead` |
-| `agent.memory` | Session memory read/write (005 §5) | `Memory` |
-| `agent.notes` | Durable scratch notes across turns | `FsWrite` |
+| `agent.memory` | Read the default-ranked view of the principal's memory (005 §5, 029 §5, 029 Q5) | `FsRead<mount>` on `/memory` |
+| `agent.notes` | Durable notes across turns and sessions — ordinary writes into `/memory`, landing as `AgentAuthored` `MemoryItem`s (029 §4) | `FsWrite<mount>` on `/memory` |
 | `agent.output` | Emit structured output conforming to the run's schema (003 §4) | — |
 | `agent.progress` | Report progress on long work → run event stream (013 §1) | — |
 | `agent.ask` | Ask the caller/user a question → `InputRequired` (001 §2) | `Elicit` |
