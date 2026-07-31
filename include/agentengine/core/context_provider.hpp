@@ -25,10 +25,12 @@ struct ContextContribution {
 
 struct SessionContext; // fwd — the per-run view a provider reads (005 §3), not yet modeled
 
+// Return types constrained to their synchronous equivalents, same reason and same caveat as
+// `Runner`/`ChatClient`/`SandboxBackend`: `ae::task<T>` is not yet wired in here.
 template <class T>
 concept ContextProvider = requires(T provider, SessionContext& session_ctx, EffectContext& ctx) {
-    { provider.on_context(session_ctx, ctx) };  // ae::task<result<ContextContribution>>
-    { provider.on_turn_end(ctx) };              // ae::task<> — TurnView elided, see 005 §5
+    { provider.on_context(session_ctx, ctx) } -> std::same_as<result<ContextContribution>>;
+    { provider.on_turn_end(ctx) } -> std::same_as<void>;  // TurnView elided, see 005 §5
 };
 
 } // namespace agentengine

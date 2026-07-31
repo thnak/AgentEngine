@@ -73,13 +73,16 @@ struct ExecOutcome {
     // artifacts, usage: 010 §3, elided pending BlobRef-backed artifact vocabulary.
 };
 
-// concept, not a base class (008 §2).
+// concept, not a base class (008 §2). Return types are constrained to their synchronous
+// equivalents (`result<T>`, `void`) for the same reason `Runner`/`ChatClient` are — `ae::task<T>`
+// is not yet wired into this header; each becomes `ae::task<result<T>>` (or `ae::task<>` for
+// `destroy`) once it is.
 template <class T>
 concept SandboxBackend = requires(T backend, SandboxSpec spec, SandboxHandle& handle,
                                    ExecRequest request, EffectContext& ctx) {
-    { backend.create(spec, ctx) };            // ae::task<result<SandboxHandle>>
-    { backend.exec(handle, request, ctx) };   // ae::task<result<ExecOutcome>>
-    { backend.destroy(handle) };              // ae::task<>
+    { backend.create(spec, ctx) } -> std::same_as<result<SandboxHandle>>;
+    { backend.exec(handle, request, ctx) } -> std::same_as<result<ExecOutcome>>;
+    { backend.destroy(handle) } -> std::same_as<void>;
 };
 
 } // namespace agentengine

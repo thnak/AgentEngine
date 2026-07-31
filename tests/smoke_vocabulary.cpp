@@ -30,8 +30,10 @@ namespace {
 
 struct DummyChatClient {
     [[nodiscard]] ae::ChatClientCapabilities capabilities() const { return {}; }
-    int chat(ae::ChatRequest const&, ae::EffectContext&) { return 0; }
-    int chat_stream(ae::ChatRequest const&, ae::EffectContext&) { return 0; }
+    ae::result<ae::ChatResponse> chat(ae::ChatRequest const&, ae::EffectContext&) {
+        return ae::ChatResponse{};
+    }
+    int chat_stream(ae::ChatRequest const&, ae::EffectContext&) { return 0; }  // unconstrained (see chat_client.hpp)
 };
 static_assert(ae::ChatClient<DummyChatClient>,
               "DummyChatClient must satisfy the ChatClient concept (004 §1)");
@@ -48,9 +50,13 @@ static_assert(ae::Runner<DummyRunner>, "DummyRunner must satisfy the Runner conc
 // ---- SandboxBackend concept (sandbox/sandbox.hpp) — trivial conforming type ----------------------
 
 struct DummySandboxBackend {
-    int create(ae::SandboxSpec const&, ae::EffectContext&) { return 0; }
-    int exec(ae::SandboxHandle&, ae::ExecRequest const&, ae::EffectContext&) { return 0; }
-    int destroy(ae::SandboxHandle&) { return 0; }
+    ae::result<ae::SandboxHandle> create(ae::SandboxSpec const&, ae::EffectContext&) {
+        return ae::SandboxHandle{};
+    }
+    ae::result<ae::ExecOutcome> exec(ae::SandboxHandle&, ae::ExecRequest const&, ae::EffectContext&) {
+        return ae::ExecOutcome{};
+    }
+    void destroy(ae::SandboxHandle&) {}
 };
 static_assert(ae::SandboxBackend<DummySandboxBackend>,
               "DummySandboxBackend must satisfy the SandboxBackend concept (008 §2)");
@@ -58,8 +64,10 @@ static_assert(ae::SandboxBackend<DummySandboxBackend>,
 // ---- ContextProvider concept (core/context_provider.hpp) — trivial conforming type ---------------
 
 struct DummyContextProvider {
-    int on_context(ae::SessionContext&, ae::EffectContext&) { return 0; }
-    int on_turn_end(ae::EffectContext&) { return 0; }
+    ae::result<ae::ContextContribution> on_context(ae::SessionContext&, ae::EffectContext&) {
+        return ae::ContextContribution{};
+    }
+    void on_turn_end(ae::EffectContext&) {}
 };
 static_assert(ae::ContextProvider<DummyContextProvider>,
               "DummyContextProvider must satisfy the ContextProvider concept (005 §5)");

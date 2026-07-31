@@ -50,11 +50,18 @@ struct ChatResponseUpdate {
 
 // concept, not a base class (004 §1) — a backend satisfies this shape; it is never inherited from
 // on the hot path (CONVENTIONS.md: "no virtual for policy on the hot path").
+//
+// `chat`'s return type is constrained to `result<ChatResponse>` (synchronous) for the same reason
+// `Runner::run` is (sandbox/runner.hpp): `ae::task<T>`, the Quark coroutine type CONVENTIONS.md/027
+// name as the eventual real signature, is not yet wired into this header. `chat_stream` is left
+// unconstrained beyond "callable" because no streaming vocabulary (`ae::stream<T>`, Quark
+// credit-controlled streams per 004 §1) exists yet either — tracked here, not silently glossed
+// over. Both become real `std::same_as<...>` constraints once those types land.
 template <class T>
 concept ChatClient = requires(T client, ChatRequest request, EffectContext& ctx) {
     { client.capabilities() } -> std::same_as<ChatClientCapabilities>;
-    { client.chat(request, ctx) };        // ae::task<result<ChatResponse>> — Quark coroutine type
-    { client.chat_stream(request, ctx) }; // ae::stream<ChatResponseUpdate>
+    { client.chat(request, ctx) } -> std::same_as<result<ChatResponse>>;
+    { client.chat_stream(request, ctx) }; // ae::stream<ChatResponseUpdate> — not yet a real type
 };
 
 } // namespace agentengine
