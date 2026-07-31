@@ -65,9 +65,8 @@ mistake once is enough.
 
 - **Session placement** and reactivation come from Quark; AgentEngine chooses the key
   (`session_id`) and the placement policy.
-- **Sandbox locality**: a `native-jail`/`microvm` sandbox is node-local; a session that migrates
-  loses warm sandboxes, which is a cost, not a correctness issue (010 §3 clean-state contract makes
-  it safe).
+- **Sandbox locality**: a `native-jail` sandbox is node-local; a session that migrates loses warm
+  sandboxes, which is a cost, not a correctness issue (010 §3 clean-state contract makes it safe).
 - **Rolling upgrade**: drain, fenced hand-off, version-skew policy for in-flight runs (019 §4).
 - **Capacity**: sandbox pools, provider connection pools, and session density are the three limits
   that matter; each has a budget in 023.

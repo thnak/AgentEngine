@@ -43,7 +43,7 @@ spec:
     net_out: ["api.search.example"]
   sandbox:
     profile: strict
-    fallback: [microvm, native-jail]
+    fallback: [native-jail, remote]
   limits:
     max_turns: 12
     token_budget: 200000

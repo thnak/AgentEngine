@@ -79,7 +79,6 @@ Whether the bytes are *copied* is a property of the profile, and — like everyt
 |---|---|---|
 | `wasm` | Host writes directly into guest linear memory, or the guest reads through a host import returning a view. **memory64** (Wasm 3.0, 008 §1a) is what makes datasets above 4 GB possible at all | 1 (host → linear memory) |
 | `native-jail` | **Read-only `mmap` of a worktree file** — POSIX `mmap` / Windows file mapping | 0 |
-| `microvm` | virtio-fs mapped region, or a shared memory window | 0–1 |
 | `remote` | **Not possible.** Data streams over the transport | ≥ 1, plus network |
 
 **The portable path is the memory-mapped worktree file**, and it is the default for a reason: 025

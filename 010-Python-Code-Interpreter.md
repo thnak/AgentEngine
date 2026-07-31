@@ -53,10 +53,13 @@ is the design — the short version is that a real shell's entire purpose is res
 arbitrary named programs, which is the one thing a capability-based system cannot make safe by
 sandboxing alone; a `Runner` that never does that removes the hazard instead of containing it.
 
-## 2. Runtime selection — the decision and its evidence
+## 2. Runtime selection — one runtime, permanently, and why
 
-**Default backend: `native-jail` CPython (008). Not WASM.** The reasoning is empirical, dated, and
-recorded so it can be revisited when the facts change:
+**The runtime is embedded native CPython, under `native-jail` (008 §1b), or cluster-managed under
+`remote`. There is no `wasm` Python backend and no `microvm` profile.** Two distinct arguments back
+this, and neither alone would be enough:
+
+**The ecosystem argument (empirical, dated, revisitable in itself):**
 
 - The **rich Python-on-WASM ecosystem is Emscripten-targeted**: Pyodide ships NumPy, pandas, SciPy,
   Matplotlib, scikit-learn, cryptography and more, and since April 2026 PyPI accepts PEP 783
@@ -70,18 +73,26 @@ recorded so it can be revisited when the facts change:
   outstanding. With no wheel tag there is no binary-wheel ecosystem: a WASI Python interpreter
   today is **stdlib + pure-Python wheels** and cannot `import numpy`.
 
-**Therefore:**
+**The architectural argument (permanent, does not expire when the ecosystem argument does):** even
+a fully mature WASI Python would still be a *second* Python — its own startup cost, its own subtly
+different semantics (threading, C-extension availability, float/GC edge cases), its own place in
+every test matrix. An agent's generated code, and the humans verifying it, would have to know which
+Python they were dealing with, and a bug that reproduces on one and not the other is exactly the
+kind of confusion the "one ordinary machine" principle (026 §1) exists to prevent. **This project
+chooses one Python runtime by design, not as a stopgap** — the ecosystem argument is corroborating
+evidence for why that costs nothing today, not the reason itself. `microvm` is dropped on the
+equivalent logic (008 §1): the workloads it would have served either run fine under `native-jail`
+with §1b's interpreter-level mediation, or genuinely need cluster-grade hardware isolation, which is
+`remote`'s job, not a second local profile's.
 
-| Profile | Runtime | What you get | When it is the default |
+| Profile | Runtime | What you get | When it is used |
 |---|---|---|---|
-| `native-jail` | Real CPython + venv + PyPI | Full ecosystem: NumPy, pandas, SciPy, whatever the operator allows | **Default**: local dev, single-tenant, trusted-tenant deployments |
-| `microvm` | Real CPython in a micro-VM | Full ecosystem + hardware boundary | Hostile input, multi-tenant, untrusted users |
-| `wasm` | CPython on WASI | stdlib + pure-Python wheels; deterministic, instant, snapshot-able, identical on 3 OSes | Deterministic replay, ultra-cheap short computations, platforms where the others are unavailable |
-| `remote` | Cluster-managed CPython | Full ecosystem, cluster lifecycle | Production scale-out |
+| `native-jail` | Real CPython + venv + PyPI, mediated per 008 §1b | Full ecosystem: NumPy, pandas, SciPy, whatever the operator allows | **Default**, every deployment tier |
+| `remote` | Cluster-managed CPython | Full ecosystem, cluster lifecycle, hardware-isolated where the cluster provides it | Production scale-out, hostile/untrusted-multi-tenant workloads |
 
-**This is a profile default, not an architecture.** When WASI Python grows a wheel tag and a binary
-ecosystem, `wasm` becomes the default by changing one default — the tool, its contract, its
-approval model, and its telemetry do not move. That is the entire reason 008 is a seam.
+This is still a **seam** (008), not a hardcoded call site — a future profile is not architecturally
+foreclosed — but it is not a placeholder waiting for WASI to mature, and "when WASI Python is ready"
+is not, by itself, a reason to reopen it.
 
 **There is no real shell, on any platform or profile — bundled or otherwise.** An earlier draft of
 this RFC proposed shipping one portable shell binary (`dash`/`toybox`-class) so behaviour would be
@@ -220,9 +231,13 @@ has. The enforcement below is unchanged by that choice — only the spelling dif
 
 ## 7. Determinism
 
-Under the `wasm` profile with determinism enabled (008 §5), an execution is a pure function of
-`(code, inputs, capabilities)` — cacheable by digest and replayable offline. Under `native-jail` and
-`microvm`, execution is recorded, not deterministic, and the spec says so rather than pretending.
+Execution under `native-jail` and `remote` is **recorded, not deterministic** (I5) — every
+`execute_code`/`execute_shell` call is captured for replay (§8, 004 §6's recording discipline
+applies equally here), but re-running the same code is not guaranteed to reproduce byte-identical
+output the way a `wasm` component under 008 §5's deterministic mode is. This is the accepted cost of
+§2's one-runtime decision, stated plainly rather than implied away: `wasm`'s determinism property
+remains real and available to **plugins** (009) that use it; it is not a property of the code
+interpreter or shell, by choice, not by oversight.
 
 ## 8. Observability
 
@@ -235,8 +250,9 @@ traces are comparable across frameworks.
 ## 9. Promotion gate
 
 - **G1 (ecosystem)** — under `native-jail`, a scripted data task using NumPy + pandas produces a
-  chart artifact on Windows and Linux; under `wasm`, the same task fails with a *clear, structured*
-  unavailable-package error rather than a mysterious import failure.
+  chart artifact identically on Windows, Linux, and macOS from the same pinned `preinstalled` image
+  (§5, §10 Q1); a package outside the image produces a *clear, structured* unavailable-package error
+  naming the policy (§5), never a mysterious import failure.
 - **G2 (containment)** — the hostile corpus (008 §7) plus interpreter-specific attacks (`os.system`,
   `ctypes`, `/proc` and registry probing, symlink escape from the workspace, egress to
   `169.254.169.254`, fork bomb, memory bomb, output flood, `sys.settrace` shenanigans) is contained
@@ -257,9 +273,15 @@ traces are comparable across frameworks.
   capability, and cannot exceed the capability set it was itself granted when it does.
 - **G5 (budget)** — cold and warm `execute_code`/`execute_shell` p50/p99 per profile against 023.
 - **G6 (parity)** — the same command's effect (write a file, read `cwd`, read an env var) is
-  observable identically whether reached via `ShellRunner` or via `PythonRunner`'s `subprocess`/`os`
-  calls (§3a); and `ShellRunner`'s documented grammar and builtins behave identically across Windows,
-  Linux, and macOS.
+  observable identically whether reached via `ShellRunner` or via `PythonRunner`'s mediated `os`
+  surface (§3a, 008 §1b); and `ShellRunner`'s documented grammar and builtins behave identically
+  across Windows, Linux, and macOS.
+- **G7 (interpreter mediation, 008 §1b)** — a call to `open()`/`socket()`/`subprocess.*`/`os.system`/
+  `ctypes` without the corresponding capability raises the exact 026 §3 exception **before any
+  syscall is attempted**, proven by a syscall-level trace (strace/ETW) showing zero attempts, not
+  merely a caught exception at the Python level. With the capability granted, the call succeeds and
+  is indistinguishable in effect from the same operation reached through a `Tool` or `ShellRunner`
+  builtin (G6).
 
 ## 10. Open questions
 
@@ -269,8 +291,10 @@ traces are comparable across frameworks.
 - **Q3** — Whether long-running executions should be able to stream partial output (they should) and
   how that interacts with the recording seam.
 - **Q4** — GPU access for interpreter workloads is unsolved in every profile (008 Q5).
-- **Q5** — Whether to track the Pyodide/Emscripten path at all via an out-of-process JS host, purely
-  to unlock the WASM package ecosystem for the `remote`/out-of-process case.
+- ~~**Q5** — Whether to track the Pyodide/Emscripten path via an out-of-process JS host for the
+  `remote` case.~~ **Effectively closed by §2's architectural argument**: an Emscripten-backed
+  Python for `remote` would be exactly the second-runtime confusion §2 rules out, just relocated to
+  a different profile. Reopening it would need an ADR revisiting §2, not a narrower carve-out.
 - **Q6** — Background shell processes (`command &`, a dev server, a watcher) are a natural
   consequence of a persistent shell (§3a) but are not designed here: per-call wall-clock bounding
   (§3) assumes the process ends with the call. Open: whether backgrounding is permitted at all, how

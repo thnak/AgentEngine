@@ -2,6 +2,13 @@
 
 **Compiled:** 2026-07-31 · **Status:** dated snapshot · **Decides:** 008 §1 runtime requirement, 008 §6 lifetime, 010 §2
 
+**Note (later same day):** §2's framing of the wasm/native trade as an operator choice, and the
+`microvm` profile referenced throughout, are **superseded** by 008 §1/§1b and 010 §2 — the Python
+interpreter is embedded native CPython permanently (no WASM Python backend, regardless of this
+section's snapshot-portability finding) and `microvm` is dropped as a profile entirely. The
+technical findings below are not wrong and are left as compiled; the *trade-off framing* built on
+top of them no longer reflects the current decision.
+
 Triggered by two questions: *"can we use WASM3 because it has more features"*, and *"keep the WASM
 sandbox live with the session so files and state can be kept/restored"*.
 

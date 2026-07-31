@@ -17,9 +17,9 @@ specialist workload.
 **Scope discipline**, per CONVENTIONS' dependency tiers: everything below is either
 
 1. a `ShellRunner` **builtin** (010 §2 — engine-native, no process, no binary),
-2. a **pinned, pure-Python package** in the `preinstalled` policy image (010 §5) — works even under
-   the `wasm` profile's stdlib-only interpreter,
-3. a **pinned, native/binary-wheel package** — `native-jail`/`microvm` only, or
+2. a **pinned, pure-Python package** in the `preinstalled` policy image (010 §5) — no native
+   extension, so it imposes no additional platform-build burden beyond the interpreter itself,
+3. a **pinned, native/binary-wheel package** — needs a compiled extension per platform, or
 4. a candidate **`ae:tool` plugin** (009 §7) — a separate process or component `ShellRunner`/CodeAct
    dispatch to, never bundled into the Python process itself.
 
@@ -56,7 +56,7 @@ concern already flagged in 010 Q7.
 `datetime` · `decimal` · `statistics` · `pathlib` · `difflib` · `textwrap` · `re` · `hashlib` ·
 `uuid` · `configparser`.
 
-## 3. Python — pure-Python packages (work even under the `wasm` profile, 010 §2)
+## 3. Python — pure-Python packages (no native extension to build or pin per platform)
 
 | Package | Task it serves | License |
 |---|---|---|
@@ -76,10 +76,10 @@ question the way static linking would be), but it is the one entry here that isn
 024/OQ-11's licensing governance should have a documented position on LGPL Python dependencies
 before this list is locked, not discover the question later.
 
-## 4. Python — native/binary-wheel packages (`native-jail` / `microvm` only)
+## 4. Python — native/binary-wheel packages
 
-Unavailable under the `wasm` profile's stdlib-only interpreter today (010 §2) — the same ecosystem
-split that RFC already documents, just enumerated for this persona specifically.
+These need a compiled extension per platform, available in the interpreter's real ecosystem
+(010 §2) — the same PyPI packages a desktop Python install would use.
 
 | Package | Task it serves | License |
 |---|---|---|
@@ -98,7 +98,7 @@ what 009's plugin track exists for.
 | Candidate | Task it serves | License | Note |
 |---|---|---|---|
 | **Pandoc** | Universal document conversion: `.docx` ⇄ Markdown ⇄ HTML ⇄ PDF and more | GPL-2.0-or-later ⚠ | Arguably the single highest-leverage tool for this persona. Invoked as a separate process/component, not linked — the usual GPL linking concern doesn't apply, but 024/OQ-11 should record that position explicitly rather than assume it. |
-| **LibreOffice** (headless, `--convert-to`) | High-fidelity conversion of legacy formats (`.doc`, `.ppt`, `.xls`) and rendering `.docx`/`.pptx` to PDF/PNG for preview | MPL-2.0 | Heavy — `microvm`/`remote` profile territory, not a per-turn `native-jail` cost. |
+| **LibreOffice** (headless, `--convert-to`) | High-fidelity conversion of legacy formats (`.doc`, `.ppt`, `.xls`) and rendering `.docx`/`.pptx` to PDF/PNG for preview | MPL-2.0 | Heavy — better suited to the `remote` profile's cluster-managed lifecycle than a per-turn `native-jail` cost. |
 | **Tesseract OCR** | Text extraction from scanned documents and images — invoices, signed forms | Apache-2.0 | Common real office need; no pure-Python equivalent of comparable quality. |
 | **poppler** (already 009 §7) | PDF rendering/text extraction, lighter than LibreOffice for PDF-only work | GPL-2.0-or-later ⚠ | Same invocation-not-linking note as Pandoc. |
 | **libarchive / 7-Zip** (already 009 §7) | Opening `.zip`/`.7z` email attachments | BSD-2 / LGPL-2.1 | Already listed in 009 §7 for the general case; office attachments are the concrete motivating case. |

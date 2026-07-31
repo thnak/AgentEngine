@@ -16,8 +16,8 @@ shareability between agents, auditability, rewind — becomes a property of whic
 technology happens to be selected. That is backwards.
 
 **The worktree is durable engine state; the sandbox is a disposable execution boundary that mounts
-it.** File semantics are then identical under `wasm`, `native-jail`, `microvm`, and `remote`
-(008), and a destroyed sandbox loses nothing.
+it.** File semantics are then identical under `wasm`, `native-jail`, and `remote` (008), and a
+destroyed sandbox loses nothing.
 
 ## 2. Model
 

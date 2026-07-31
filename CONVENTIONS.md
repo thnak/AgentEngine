@@ -73,7 +73,7 @@ include/agentengine/
   plugin/          L1 WASM component host + WIT bindings
   detail/          private internals — not user-facing
 src/
-  backends/        sandbox backends (wasm/, native_jail/, microvm/, remote/) + provider clients
+  backends/        sandbox backends (wasm/, native_jail/, remote/) + provider clients
   ...              non-template translation units
 third_party/quark/ Quark submodule — unmodified, never patched in tree
 wit/               WIT worlds defining the plugin ABI (009) — versioned, the contract of record

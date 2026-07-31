@@ -22,7 +22,7 @@ falsifiable rather than aspirational.
 |---|---|---|
 | Windows 11 / x86-64 | **Supported** | Primary development platform; MSVC + clang-cl |
 | Linux / x86-64 | **Supported** | Quark's own reference target |
-| macOS / arm64 | **Supported** | `microvm` unavailable (008 Q1) |
+| macOS / arm64 | **Supported** | No profile-specific gap: `microvm` was dropped project-wide (008 §1), not just here |
 | Linux / arm64 | CI-verified | Quark runs its matrix here; budgets not re-baselined |
 | Windows / arm64 | Best-effort | — |
 
@@ -37,9 +37,8 @@ hand. A tier is a statement about what CI proves.
 | Networking / TLS | PAL sockets + a TLS seam backend | Platform TLS stores differ; certificate handling is the usual trap |
 | Filesystem / workspaces | PAL file IO + path canonicalization | **High**: case-insensitivity, ADS, long paths, reparse points, `\\?\`, symlinks. Path escape is a security bug, so this is tested as security, not convenience |
 | `wasm` profile | wasmtime (WASI 0.3) | **Lowest** — identical semantics on all three |
-| `native-jail` profile | AppContainer + Job Object + restricted token · namespaces + seccomp + cgroups v2 · sandbox profile | **Highest**: three separate implementations of one contract (008 §9 G1 is the gate) |
-| `microvm` profile | WHP · KVM/mshv | Unavailable on macOS |
-| Python interpreter | Per-platform CPython + venv | Package availability differs by platform; pinning is the mitigation |
+| `native-jail` profile | AppContainer + Job Object + restricted token · namespaces + seccomp + cgroups v2 · sandbox profile, plus interpreter-level mediation (008 §1b) | **Highest**: three separate OS-level implementations of one contract (008 §9 G1 is the gate); the mediation layer on top is platform-independent engine code |
+| Python interpreter | Embedded native CPython, one runtime everywhere (010 §2) | Package availability differs by platform; pinning the `preinstalled` image is the mitigation |
 | Secrets | DPAPI · keyring/file · Keychain | Different capabilities and different failure modes |
 | Process/resource limits | Job Objects · cgroups v2 · `setrlimit`+sandbox | Semantics differ; the seam exposes only what all three enforce |
 

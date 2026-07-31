@@ -41,7 +41,6 @@ until then.
 | Plugin instantiate | Pooled instance acquire, p99 | ≤ 1 ms | Goal |
 | Sandbox `wasm` | create+exec+destroy, trivial, p50 / p99 | ≤ 5 ms / ≤ 20 ms | Goal |
 | Sandbox `native-jail` | cold create+exec, p50 | ≤ 200 ms | Goal |
-| Sandbox `microvm` | cold create+exec, p50 | ≤ 500 ms | Goal |
 | Session | Activation from store, p50 / p99 | ≤ 1 ms / ≤ 10 ms | Goal |
 | Session | Idle sessions per GB (10-message history) | ≥ 100 k/GB | Goal |
 | Checkpoint | Turn-boundary checkpoint write, p99 | ≤ 5 ms | Goal |

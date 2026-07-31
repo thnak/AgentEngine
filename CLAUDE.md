@@ -43,10 +43,18 @@ model output influence a permission decision, it is wrong regardless of how well
 - **Quark is a submodule, never forked or patched in-tree.** Runtime changes go upstream.
 - **WASM Component Model (WASI 0.3) is the plugin ABI** — tools, skills, providers, memory stores,
   filters, and the C/C++ library track (009 §7).
-- **The Python code interpreter defaults to jailed native CPython, not WASM** — because the rich
-  Python-on-WASM ecosystem is Emscripten (needs a JS host) and WASI Python has no binary-wheel
-  ecosystem yet. Evidence: `docs/research/2026-standards-landscape.md` §6. This is a *profile
-  default*; the sandbox seam (008) is the architecture.
+- **The Python code interpreter is embedded native CPython, permanently — never WASM, never a
+  second runtime**, regardless of WASI Python's future maturity. The rich Python-on-WASM ecosystem
+  is Emscripten (needs a JS host) and WASI Python has no binary-wheel ecosystem yet (evidence:
+  `docs/research/2026-standards-landscape.md` §6) — corroborating, not the reason: two Python
+  runtimes would mean an agent's generated code, and the humans verifying it, must know which one
+  they're dealing with. The sandbox seam (008) still lets the *isolation backend* evolve; the
+  interpreter itself does not fork.
+- **No `microvm` sandbox profile.** Isolation strength for the interpreter/shell comes from treating
+  the whole execution environment as the sandbox — worktree, capabilities, resource limits, network
+  policy — with CPython's dangerous entry points mediated at the point of use and the OS-level jail
+  as a second layer (008 §1b), not from a second local isolation technology. A workload that would
+  need hardware isolation uses the `remote` profile against infrastructure that already provides it.
 - **v1 authoring surfaces are C++ CRTP and declarative YAML/JSON.** Python/.NET bindings deferred.
 
 ## Working within this repo

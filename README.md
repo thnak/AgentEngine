@@ -74,18 +74,24 @@ The most consequential decision in the design, and the one most likely to be que
 - **WASM Component Model (WASI 0.3) is the plugin ABI — locked.** Portable, capability-based by
   construction, language-agnostic, microsecond instantiation. The ecosystem risk is low because
   *we* define the WIT world and authors compile to it.
-- **The Python code interpreter defaults to jailed native CPython, not WASM.** As of July 2026 the
-  rich Python-on-WASM ecosystem (NumPy, pandas, SciPy, and PEP 783 wheels on PyPI) is
-  **Emscripten**-targeted and needs a JavaScript host, so it cannot be embedded via wasmtime; the
-  embeddable **WASI** CPython — governed by the now-accepted PEP 816 — still lacks sockets, threads,
-  a wheel platform tag, and a binary-wheel ecosystem. A WASI Python interpreter today cannot
-  `import numpy`, which is most of the reason to have one.
+- **The Python code interpreter is embedded native CPython, permanently — never WASM, and never a
+  second runtime.** As of July 2026 the rich Python-on-WASM ecosystem (NumPy, pandas, SciPy, and
+  PEP 783 wheels on PyPI) is **Emscripten**-targeted and needs a JavaScript host, so it cannot be
+  embedded via wasmtime; the embeddable **WASI** CPython — governed by the now-accepted PEP 816 —
+  still lacks sockets, threads, a wheel platform tag, and a binary-wheel ecosystem. That evidence is
+  corroborating, not the reason: even a mature WASI Python would still be a second Python runtime,
+  and this project deliberately chooses one, permanently, so an agent's generated code — and the
+  humans verifying it — never have to know which runtime they're dealing with.
 
-Both are consequences of one architectural choice: **isolation is a seam with named profiles**
-(`wasm`, `native-jail`, `microvm`, `remote`), identical in *contract* and differing only in
-*strength*. When WASI Python grows binary wheels, `wasm` becomes the interpreter default by changing
-a default — not by redesigning the engine. Evidence:
-[`docs/research/2026-standards-landscape.md`](docs/research/2026-standards-landscape.md) §6–8.
+Isolation is still a seam with named profiles (`wasm`, `native-jail`, `remote`), identical in
+*contract* and differing only in *strength* — but the interpreter itself does not fork across them.
+Isolation strength for CPython comes from treating the **whole execution environment** (worktree,
+runners, capabilities, network policy) as the sandbox, with CPython's own dangerous entry points
+mediated at the point of use and the OS-level jail as a second layer (008 §1b) — not from swapping
+the interpreter for a differently-capable one. There is no `microvm` profile: a workload that would
+have reached for hardware isolation uses `remote` against infrastructure that already provides it.
+Evidence: [`docs/research/2026-standards-landscape.md`](docs/research/2026-standards-landscape.md)
+§6–8.
 
 ## Core invariants
 

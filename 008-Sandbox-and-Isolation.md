@@ -22,11 +22,23 @@ Two things are nonetheless **locked**, because leaving them open would leave the
   is language-agnostic — including the large permissively-licensed **C/C++ library ecosystem**,
   which `wasi-sdk` compiles directly. A heavy library is *safer* as a plugin than as a linked host
   dependency, because a plugin holds only the capabilities the host hands it.
-- **The Python code interpreter does not default to WASM** (010). As of July 2026 the rich
-  Python-on-WASM ecosystem is **Emscripten**-targeted and requires a JavaScript host, so it cannot
-  be embedded via wasmtime; the embeddable **WASI** CPython has no sockets, no threads, no wheel
-  platform tag, and no binary-wheel ecosystem. A WASI-Python interpreter today cannot
-  `import numpy`, which is most of the reason to have one.
+- **The Python code interpreter is embedded native CPython, permanently — never WASM, never a
+  second runtime** (010 §2). As of July 2026 the rich Python-on-WASM ecosystem is
+  **Emscripten**-targeted and requires a JavaScript host, so it cannot be embedded via wasmtime; the
+  embeddable **WASI** CPython has no sockets, no threads, no wheel platform tag, and no
+  binary-wheel ecosystem, and cannot `import numpy`. That evidence would only ever justify a WASM
+  Python as a *second* backend alongside native CPython — and a second backend is exactly what this
+  decision rules out regardless of WASI's future maturity: one Python means one behaviour for the
+  agent to reason about and one thing to test, not two runtimes whose subtle differences (available
+  packages, threading, extension modules) surface as bugs nobody can reproduce on the other one.
+- **No `microvm` profile.** An earlier draft of this RFC offered `microvm` (Firecracker/Hyperlight-
+  class hardware isolation) as the strongest local boundary for hostile or multi-tenant workloads.
+  It is dropped: it has no macOS backend, and a workload that genuinely needs hardware-level
+  isolation is better served by the `remote` profile against infrastructure that already does this
+  well (e.g. Kubernetes Agent Sandbox CRD backed by Kata/Firecracker) than by AgentEngine building
+  and cross-platform-maintaining a second local isolation technology of its own. `native-jail`
+  stays a kernel-enforced, per-OS boundary — §1b adds interpreter-level mediation as defense in
+  depth on top of it, not a claim that it now matches hardware isolation.
 
 The contract below is what makes that split safe: profiles differ in backend, never in semantics.
 
@@ -52,6 +64,49 @@ depends on it has fewer, not more. It may still earn a scoped place for ultra-sh
 constrained deployments, behind the same host interface and behind a gate; that is
 [OQ-12](OpenQuestions.md), not a plan. Evidence:
 [`docs/research/2026-wasm-runtime-and-state-persistence.md`](docs/research/2026-wasm-runtime-and-state-persistence.md) §1.
+
+### 1b. The sandbox is the whole execution environment, not a wrapper around Python
+
+For `native-jail` — the profile CodeAct and Shell actually run under — the boundary that matters is
+not "an OS jail around a Python process." It is one composed unit, and CPython is one component of
+it, not the boundary itself:
+
+```
+Sandbox (native-jail instance, per session, 010 §3a)
+├── Worktree mount           — the VFS the guest sees (025)
+├── ShellRunner              — the virtual shell (010 §1a, §2)
+├── PythonRunner             — embedded CPython (010 §1a) — a component, not the boundary
+├── ResourceLimits           — cpu_ms, wall_ms, memory_bytes, pids, fds, disk_bytes, output_bytes
+├── CapabilitySet            — the permission manager (007) every access is checked against
+├── NetPolicy                — deny-all default, host-mediated egress
+└── Runner/Tool registry     — what a name can resolve to (010 §2, 006, 009)
+```
+
+**Consequence: CPython does not get to reach `open()`, `socket()`, `subprocess`/`os.system`/
+`os.exec*`, or `ctypes` unmediated, regardless of what the OS jail alone would already stop.**
+Two enforcement layers, deliberately redundant:
+
+1. **Interpreter-level mediation (primary).** At embedding time, these entry points are replaced
+   with capability-checked wrappers: `open` resolves against the worktree mount and `FsRead`/
+   `FsWrite` (025 §5), `socket` proxies through the same host-mediated egress every other profile
+   uses (§4), `subprocess`/`os.system` do not exist as a way to run something — running something is
+   `ShellRunner`/another `Tool` via a declared `RunnerCall`/`ToolCall` (010 §1a, 006), never a raw
+   fork. A call the capability set does not cover raises the exact `PermissionError`/`OSError` 026
+   §3 already specifies, **before any syscall is attempted** — a precise, attributable denial (I4)
+   instead of whatever the kernel happens to report.
+2. **Kernel-level jail (backstop).** The OS-level boundary (seccomp-BPF/namespaces, AppContainer,
+   sandbox profile) remains exactly as specified in §3 — for a compiled C extension that reaches
+   `libc` directly, for a bug in layer 1, for anything the interpreter-level wrapper did not
+   anticipate. It is the backstop, not the primary mechanism, which is why layer 1 exists at all:
+   relying solely on the kernel produces a raw, unattributable failure far from the capability
+   system; relying solely on interpreter mediation has no answer for code that bypasses the
+   interpreter's own builtins.
+
+This is the same idiom `ShellRunner` already uses (010 §2): remove the ambient path at the point of
+use rather than grant it and try to contain what it can reach. Applying it to the interpreter, not
+only the shell, is what makes "the sandbox" mean the whole execution environment §1b diagrams above,
+with CPython as one tenant of it — never a synonym for "the Python process is isolated," which is a
+narrower and weaker claim than this RFC makes.
 
 ## 2. The contract
 
@@ -95,16 +150,15 @@ limit does not offer it; it does not offer it and ignore it.
 
 | Profile | Backend | Boundary | Cold start | Platforms | Intended use |
 |---|---|---|---|---|---|
-| **`wasm`** | wasmtime, WASI 0.3 components | Software; capability-based, no ambient authority | µs–low ms | Win · Linux · macOS, identical | Plugins (default), deterministic execution, replay, hostile multi-tenant code that fits the WASI surface |
-| **`native-jail`** | OS process jail | Kernel-enforced, per-OS | ms | Win (AppContainer + Job Object + restricted token) · Linux (namespaces + seccomp-BPF + cgroups v2 + no_new_privs) · macOS (sandbox profile + resource limits) | Full-ecosystem Python interpreter (010) on trusted-tenant deployments |
-| **`microvm`** | KVM (Linux) / WHP (Windows); Firecracker-class or Hyperlight-class | Hardware, own kernel or micro-guest | ~2 ms (micro-guest) – hundreds of ms (full kernel) | Win · Linux; macOS **not supported** | Hostile input + full ecosystem; strongest local boundary |
-| **`remote`** | Kubernetes **Agent Sandbox** CRD, or a vendor sandbox API | Cluster-side, backend-decoupled | network + backend | Any (client side) | Production scale-out, cluster-managed lifecycle, pause/resume |
+| **`wasm`** | wasmtime, WASI 0.3 components | Software; capability-based, no ambient authority | µs–low ms | Win · Linux · macOS, identical | Plugins (default, 009), deterministic execution, replay, hostile multi-tenant *plugin* code that fits the WASI surface |
+| **`native-jail`** | OS process jail + interpreter-level mediation (§1b) | Kernel-enforced, per-OS, plus mediated at the point of use | ms | Win (AppContainer + Job Object + restricted token) · Linux (namespaces + seccomp-BPF + cgroups v2 + no_new_privs) · macOS (sandbox profile + resource limits) | The code interpreter and shell (010), full-ecosystem Python, on trusted-tenant deployments — the default |
+| **`remote`** | Kubernetes **Agent Sandbox** CRD, or a vendor sandbox API | Cluster-side, backend-decoupled — may itself use hardware isolation | network + backend | Any (client side) | Production scale-out, cluster-managed lifecycle, pause/resume, and hostile/untrusted-multi-tenant workloads that need a stronger boundary than `native-jail` offers — this profile, not one we build, is where that strength comes from |
 | **`none`** | In-process | **No boundary** | 0 | All | First-party trusted code only; **refuses to load T2/T3 code** (007 §6) |
 
 **Profile resolution.** An agent declares `SandboxProfile<P>` (002). At startup, the engine resolves
 `P` to an available backend on this platform. If unavailable:
 
-- with a declared fallback chain (e.g. `microvm → native-jail`), it takes the first available and
+- with a declared fallback chain (e.g. `native-jail → remote`), it takes the first available and
   **records the downgrade** in startup diagnostics, run traces, and metrics;
 - with no fallback, **startup fails**. Silently running unisolated because the preferred isolation
   was unavailable is the single worst failure mode in this design, and it is prohibited.
@@ -114,14 +168,14 @@ never `none`" and is the default for every agent (002 §3).
 
 ## 4. Capability enforcement per backend
 
-| Capability | `wasm` | `native-jail` | `microvm` | `remote` |
-|---|---|---|---|---|
-| `FsRead`/`FsWrite` | preopened dirs (no path escape by construction) | bind/junction mounts + path canonicalization + FS restrictions | virtio-fs / injected image | volume grant |
-| `NetOut` | host-mediated: guest has no sockets; egress via a host proxy that enforces the allowlist | network namespace + proxy; Windows: WFP/AppContainer capability | tap + host proxy | network policy |
-| `Secret` | never mounted; resolved host-side at point of use, injected per-exec only if granted | same | same | same |
-| `ToolCall` | host function import (WIT) | RPC over a controlled channel | vsock/virtio channel | API callback |
-| `Clock`/`Entropy` | virtualizable (determinism mode) | limited virtualization | limited | backend |
-| `Exec` (nested) | denied | denied | denied | denied |
+| Capability | `wasm` | `native-jail` | `remote` |
+|---|---|---|---|
+| `FsRead`/`FsWrite` | preopened dirs (no path escape by construction) | bind/junction mounts + path canonicalization + FS restrictions, **and** interpreter-level mediation of `open` (§1b) | volume grant |
+| `NetOut` | host-mediated: guest has no sockets; egress via a host proxy that enforces the allowlist | network namespace + proxy; Windows: WFP/AppContainer capability, **and** interpreter-level mediation of `socket` (§1b) | network policy |
+| `Secret` | never mounted; resolved host-side at point of use, injected per-exec only if granted | same | same |
+| `ToolCall` | host function import (WIT) | `RunnerCall`/`ToolCall` dispatch (§1b, 010 §1a) — never a raw fork | API callback |
+| `Clock`/`Entropy` | virtualizable (determinism mode) | limited virtualization | backend |
+| `Exec` (nested) | denied | denied — `subprocess`/`os.system`/`os.exec*` do not exist as a way to run something (§1b) | denied |
 
 **Two rules the table exists to make explicit:**
 
@@ -160,24 +214,27 @@ for its duration is what makes a conversation feel continuous rather than amnesi
 Quark passivates idle sessions (ADR-028/034). What happens to in-memory interpreter state then is
 **profile-dependent, and the difference is stated rather than papered over**:
 
-| | `wasm` | `native-jail` / `microvm` |
+| | `wasm` (plugins, 009) | `native-jail` (interpreter and shell, 010) |
 |---|---|---|
 | Files across passivation | Worktree — always | Worktree — always |
 | In-memory state across passivation | **Snapshot and restore** | **Lost**; session resumes with a clean interpreter and shell (010 §3a) |
 
 The `wasm` snapshot is **only taken at quiescent points** — between executions, when no guest stack
-exists — at which moment the interpreter's heap *is* its linear memory, so a snapshot is a memory
-dump plus store/table/global state. Wasmtime provides no built-in snapshot API (the upstream
-requests date to 2021–2022 and remain open), so this is ours to implement; it is portable because
-linear memory is linear memory on every OS.
+exists — at which moment a component's heap *is* its linear memory, so a snapshot is a memory dump
+plus store/table/global state. Wasmtime provides no built-in snapshot API (the upstream requests
+date to 2021–2022 and remain open), so this is ours to implement; it is portable because linear
+memory is linear memory on every OS. It is a real property of the `wasm` profile, available to
+**plugins** that use it (009).
 
 There is no portable equivalent for native processes: CRIU is Linux-only and, by its own
 documentation, frequently fails on live network connections and device-mapped workloads. We
 therefore do not offer a cross-platform contract we cannot keep.
 
-**This is a real argument for the `wasm` profile that 010 §2 did not weigh**, and it makes the
-interpreter backend a genuine operator trade — full package ecosystem with a clean interpreter after
-passivation, versus portable restorable state with a stdlib-only Python. Evidence:
+**This is an accepted, permanent limitation for the interpreter and shell, not a gap to close by
+picking a different backend for them.** §1's decision already rules out a WASM Python runtime for
+the reasons stated there; this is the cost of that decision made explicit rather than left as a
+surprise discovered later. A session's Python/shell state does not survive passivation on any
+profile it can run under — only the worktree does. Evidence for the wasm-side property:
 [`docs/research/2026-wasm-runtime-and-state-persistence.md`](docs/research/2026-wasm-runtime-and-state-persistence.md) §2.
 
 ## 7. Failure and abuse
@@ -215,18 +272,19 @@ downgrade shows up as a graph change, not as a surprise in an incident review.
 - **G7 (session boundary)** — a guest instance is never reused across sessions or principals; a
   canary written in session A is unreachable from session B on every profile, including under
   pooling and snapshot-restore. Positive control: a deliberately shared pool is caught.
-- **G8 (snapshot fidelity)** — under `wasm`, a session passivated mid-conversation and reactivated
-  resumes with interpreter state intact (variables, imports) and a worktree byte-identical to the
-  pre-passivation state; a snapshot attempted at a non-quiescent point is refused rather than
-  producing a corrupt image.
+- **G8 (snapshot fidelity)** — under `wasm`, a stateful plugin instance (009) passivated
+  mid-conversation and reactivated resumes with its linear memory intact (globals, any in-guest
+  state) and a worktree byte-identical to the pre-passivation state; a snapshot attempted at a
+  non-quiescent point is refused rather than producing a corrupt image. Does not apply to
+  `native-jail`'s interpreter/shell state, which §6a states plainly does not survive passivation.
 
 ## 10. Open questions
 
-- **Q1** — macOS `microvm`: Virtualization.framework is plausible but unproven here. Until proven,
-  macOS strict = `native-jail`, and the parity table says so.
-- **Q2** — Hyperlight is attractive (<2 ms, Windows WHP + Linux KVM/mshv, CNCF Sandbox) but its own
-  project describes it as experimental and not production-grade. Adopt as an *option* behind the
-  `microvm` profile; do not make it the default until a gate proves it.
+- ~~**Q1** — macOS `microvm`: Virtualization.framework is plausible but unproven here.~~
+  **Resolved:** `microvm` is dropped as a profile entirely (§1); this question no longer applies.
+- ~~**Q2** — Hyperlight as an option behind the `microvm` profile.~~ **Resolved:** `microvm` is
+  dropped as a profile entirely (§1); Hyperlight is not adopted. A workload that would have reached
+  for it belongs on the `remote` profile instead.
 - **Q3** — Whether the egress proxy should be a first-party component or a host-provided seam.
 - **Q4** — Whether capabilities should cross to the `remote` profile as bearer tokens (007 Q1).
 - **Q5** — GPU access from a sandbox (needed for local inference plugins) has no good story in any

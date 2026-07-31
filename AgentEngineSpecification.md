@@ -114,26 +114,33 @@ Two different problems get two different answers (008, 009, 010):
   language-agnostic; instantiation in microseconds. Ecosystem risk is low because *we* define the
   WIT world and the plugin author compiles to it.
 - **The Python code interpreter and the shell** are `Runner`s (010 §1a) sharing one `ExecState` —
-  a `cd` or an exported variable is visible to both. Python's default backend is a **jailed native
-  CPython** (a **sandbox profile**, not a hardcoded runtime) because that is where the Python package
-  ecosystem actually is; a WASM-Python profile exists for portable, deterministic, stdlib-only
-  execution. **The shell is not a wrapped binary at all** — `ShellRunner` is engine-native code that
-  never resolves a name against a search path; it dispatches to builtins over the worktree or to
-  other registered `Runner`s and `Tool`s, so there is no ambient exec surface to sandbox in the first
-  place (010 §2).
+  a `cd` or an exported variable is visible to both. Python is **embedded native CPython,
+  permanently — one runtime, never a WASM alternative** (010 §2), running under `native-jail` or
+  cluster-managed under `remote`; there is no `microvm` profile (008 §1). **The shell is not a
+  wrapped binary at all** — `ShellRunner` is engine-native code that never resolves a name against a
+  search path; it dispatches to builtins over the worktree or to other registered `Runner`s and
+  `Tool`s, so there is no ambient exec surface to sandbox in the first place (010 §2).
 
-The evidence for splitting them is in [docs/research/2026-standards-landscape.md](docs/research/2026-standards-landscape.md)
+The ecosystem evidence is in [docs/research/2026-standards-landscape.md](docs/research/2026-standards-landscape.md)
 and summarized in 010 §2: as of July 2026 the rich WASM Python ecosystem (NumPy, pandas, SciPy,
 scikit-learn, plus PEP 783 `pyemscripten_*_wasm32` wheels published straight to PyPI) is
 **Emscripten**-targeted and requires a JavaScript host, so it cannot be embedded in a C++ host via
 wasmtime; while **WASI** CPython — the embeddable one — is governed and improving (PEP 816,
 accepted, binding from Python 3.15) but still has no sockets, no threads, no wheel platform tag,
-and no binary-wheel ecosystem. Betting the interpreter on WASI today would ship a Python that
-cannot `import numpy`.
+and no binary-wheel ecosystem. That evidence explains why a WASM Python costs nothing to *not* have
+today — it is not the reason one Python runtime is the permanent decision. The reason is
+architectural: two Python runtimes means an agent's generated code, and the humans verifying it,
+must know which one they are dealing with, and a bug that reproduces on one and not the other is
+the exact confusion the "ordinary environment" principle (026 §1) exists to prevent. Even a mature
+WASI Python would still be a second runtime.
 
-**What this buys:** the isolation *contract* (capabilities, limits, audit, replay) is the
-invariant; backends are swappable. When WASI Python grows binary wheels, it becomes the default by
-changing a profile default — not by redesigning the engine.
+**What this buys:** the isolation *contract* (capabilities, limits, audit, replay) is the invariant;
+the isolation **backend** for the interpreter can still evolve (008 is a seam), but the *interpreter
+itself* does not fork into two. Isolation strength for CPython comes from 008 §1b — the sandbox is
+the whole execution environment (worktree, `Runner`s, resource limits, capabilities, network policy,
+tool registry), with CPython's own dangerous entry points (`open`, `socket`, `subprocess`, `ctypes`)
+mediated at the point of use, backed by the OS-level jail as a second layer — not from swapping
+CPython for a differently-capable interpreter.
 
 ### D3 — Authoring surfaces for v1: native C++ and declarative
 
@@ -203,7 +210,7 @@ architecture detail: containment results must be identical.
 | **Worktree** | The session's virtual disk: a content-addressed object store plus a mutable tree, owned by the engine and mounted into sandboxes. Agents share it or branch from it. |
 | **Capability** | An unforgeable handle authorizing one class of effect (a mounted path, an outbound host, a secret, a tool). Held by the host, passed explicitly, never inferred. |
 | **Sandbox** | An isolation boundary instance with an attached capability set and resource limits. Created per execution; profiles select the backend. |
-| **Profile** | A named sandbox configuration (`wasm`, `native-jail`, `microvm`, `remote`) resolved at startup to a backend + limits. |
+| **Profile** | A named sandbox configuration (`wasm`, `native-jail`, `remote`, `none`) resolved at startup to a backend + limits. |
 | **Plugin** | A signed package containing one or more WASM components implementing a WIT world (tool, skill, provider, store, filter). |
 | **Workflow** | A typed graph of executors (agents, functions, sub-workflows) with edges, checkpointing, and human-in-the-loop request points. |
 | **Provider** | The seam to an inference API (OpenAI-compatible, Anthropic, local, hosted). |
