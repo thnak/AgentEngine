@@ -1,0 +1,15 @@
+{
+  "message": {
+    "role": "assistant",
+    "message_id": "m-2",
+    "content": [
+      {
+        "kind": "tool_call",
+        "call_id": "call-1",
+        "tool_name": "get_weather",
+        "arguments_json": "{\"location\":\"Seattle\"}"
+      }
+    ]
+  },
+  "usage": { "input_tokens": 20, "output_tokens": 8 }
+}

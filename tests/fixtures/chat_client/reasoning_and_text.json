@@ -1,0 +1,20 @@
+{
+  "message": {
+    "role": "assistant",
+    "message_id": "m-3",
+    "content": [
+      {
+        "kind": "reasoning",
+        "text": "The user wants the weather; I should call the tool.",
+        "encrypted": false
+      },
+      { "kind": "text", "text": "Let me check that for you." }
+    ]
+  },
+  "usage": {
+    "input_tokens": 42,
+    "output_tokens": 17,
+    "reasoning_tokens": 12,
+    "cost_estimate": 0.0031
+  }
+}

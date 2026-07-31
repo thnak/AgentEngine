@@ -1,0 +1,10 @@
+{
+  "message": {
+    "role": "assistant",
+    "message_id": "m-1",
+    "content": [
+      { "kind": "text", "text": "hello from a fixture" }
+    ]
+  },
+  "usage": { "input_tokens": 10, "output_tokens": 5 }
+}
