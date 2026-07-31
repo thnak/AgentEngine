@@ -132,7 +132,8 @@ A tool result is external content and is the primary prompt-injection vector (01
 
 - Tainted, provenance-marked, and delimited when rendered into the prompt.
 - **Size-bounded** with declared truncation; large payloads become `BlobRef`s (003 §3).
-- **Structured where possible** — a `Data` part with a schema beats prose the model must parse.
+- **Structured where possible** — a `Data` content item with a schema beats prose the model must
+  parse.
 - Results never carry executable directives that the engine acts on. There is no in-band control
   channel from a tool to the engine; control flows through typed fields only.
 

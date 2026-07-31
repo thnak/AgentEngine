@@ -9,8 +9,15 @@ what a model actually sees, with a persistence story that survives process resta
 
 ## 1. Session
 
+**Terminology (027 §7):** the type is `AgentSession`. The bare word "session" is unambiguous in
+prose — MCP's own transport-level session concept is gone as of `2026-07-28` (027 §5), so nothing
+external claims it — but the public *type name* is still qualified for the same reason `Agent`,
+`AgentSkillsProvider`, and this project's other public types are: a bare generic English noun is a
+weak name for a type meant to be imported into arbitrary host code. Only the declaration changes;
+this RFC still says "session" throughout in prose, as before.
+
 ```
-Session = { session_id, principal, history[], state, metadata, created_at, updated_at }
+AgentSession = { session_id, principal, history[], state, metadata, created_at, updated_at }
 ```
 
 - One **Quark actor instance**, keyed by `session_id` (001 §1). Single-executor by I1.

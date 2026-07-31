@@ -21,7 +21,7 @@ CRTP policy idiom** instead of runtime configuration objects.
 
 ```cpp
 struct Researcher : Agent<Researcher,
-        Provider<"anthropic:claude-opus-5">,
+        ChatClient<"anthropic:claude-opus-5">,
         Tools<WebSearch, CodeInterpreter, Handoff<Writer>>,
         SandboxProfile<Profile::Strict>,
         MaxTurns<12>> {
@@ -113,7 +113,7 @@ Full statements: [AgentEngineSpecification.md §4](AgentEngineSpecification.md).
 ```
  L4  Protocol surfaces     MCP server + client · A2A · AG-UI · OpenAI-compatible HTTP
  L3  Orchestration         workflow graph, handoff, group chat, checkpoint / resume / time-travel
- L2  Agent core            Agent · Session · Tool plane · Model provider plane · Middleware
+ L2  Agent core            Agent · AgentSession · Tool plane · ChatClient plane · Middleware
  L1  Trust & isolation     capability model · sandbox seam · WASM component plugin ABI
  L0  Runtime substrate     Quark: scheduler, mailbox, cluster, persistence, timers, PAL
 ```
@@ -133,9 +133,9 @@ Start with the [specification](AgentEngineSpecification.md), then
 | — | [CONVENTIONS.md](CONVENTIONS.md) | The binding coding contract | Draft |
 | 001 | [Execution Model](001-Execution-Model.md) | Run lifecycle, turn loop, concurrency, cancellation, failure, replay | Draft |
 | 002 | [Agent Model and Authoring](002-Agent-Model-and-Authoring.md) | CRTP policy surface, composition, middleware, metadata validation | Draft |
-| 003 | [Message and Content Model](003-Message-and-Content-Model.md) | Parts, provenance and taint, blobs, structured output, usage | Draft |
-| 004 | [Model Provider Plane](004-Model-Provider-Plane.md) | Provider seam, capability-driven degradation, reliability, cost, recording | Draft |
-| 005 | [Sessions, State and Memory](005-Sessions-State-and-Memory.md) | Session actor, persistence, context assembly, compaction, memory, redaction | Draft |
+| 003 | [Message and Content Model](003-Message-and-Content-Model.md) | `Content` items, provenance and taint, blobs, structured output, usage | Draft |
+| 004 | [ChatClient Plane](004-Model-Provider-Plane.md) | `ChatClient` seam, capability-driven degradation, reliability, cost, recording | Draft |
+| 005 | [Sessions, State and Memory](005-Sessions-State-and-Memory.md) | `AgentSession` actor, persistence, context assembly, compaction, memory, redaction | Draft |
 | 006 | [Tool and Function Plane](006-Tool-and-Function-Plane.md) | Declaration, the 10-step invocation pipeline, approval, concurrency, result hygiene | Draft |
 | 007 | [Capability and Trust Model](007-Capability-and-Trust-Model.md) | Threat model, principals, capabilities, taint, policy, trust tiers, supply chain, audit | Draft |
 | 008 | [Sandbox and Isolation](008-Sandbox-and-Isolation.md) | The isolation contract, profiles, per-backend enforcement, determinism, abuse handling | Draft |

@@ -146,18 +146,18 @@ collision register short — most collisions cannot reach the core because the t
 
 ## 7. Terminology debt
 
-Names settled here that existing RFCs have not yet adopted. Tracked, not silently ignored:
+Names settled here that existing RFCs had not yet adopted, applied in a follow-up commit
+(2026-07-31) — this table is the record of what changed and why, not a live TODO list:
 
-| RFC | Change |
-|---|---|
-| 003 | `Part` → `Content` (keep `Part` only in `a2a::` mapping prose) |
-| 004 | "Provider" / "Model Provider Plane" → `ChatClient`; retitle |
-| 005 | `MemoryProvider` → `ContextProvider`, memory as a kind (§3) |
-| 005, 001, 019 | `Session` → `AgentSession` for the type; "session" stays fine in prose |
-| 026 | `agent.memory` module name reviewed against `ContextProvider` naming |
+| RFC | Change | Status |
+|---|---|---|
+| 003 | `Part` → `Content` (kept as `Part` only in `a2a::` mapping prose, 012) | Applied |
+| 004 | "Provider" / "Model Provider Plane" → `ChatClient`; retitled, including the `ChatClient<"vendor:model">` policy tag (002) | Applied |
+| 005 | `MemoryProvider` → `ContextProvider`, memory as a kind (§3) | Applied |
+| 005, 001 | `Session` → `AgentSession` for the type; "session" stays fine in prose | Applied |
+| 026 | `agent.memory` reviewed against `ContextProvider` naming | No rename needed — it is a Python-facing module name describing a task, not a competing type; 029 §4–5 grounds what it actually reads |
 
-A follow-up commit applies these; this table exists so the debt is visible rather than discovered
-later by someone reading two RFCs that disagree.
+**G3 is satisfied**: the table is empty of unresolved rows.
 
 ## 8. Rules for introducing a new name
 

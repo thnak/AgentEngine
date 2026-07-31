@@ -1,23 +1,24 @@
-# 004 — Model Provider Plane
+# 004 — ChatClient Plane
 
 **Status:** Draft · **Depends on:** 003, 016, 018 · **Gate:** §7
 
 ## Goal
 
 One seam between the engine and every inference API, modelled on **capabilities** rather than on
-any vendor's request shape — so that adding a provider is implementing a declared capability set,
-and an agent's behaviour degrades explicitly (never silently) when a provider lacks one.
+any vendor's request shape — so that adding a backend is implementing a declared capability set,
+and an agent's behaviour degrades explicitly (never silently) when a backend lacks one.
 
-> **Terminology note (027 §5).** The type is named **`ChatClient`**, matching MAF, not `Provider` —
-> "provider" is colloquially the model *vendor*, and overloading it for the seam invites confusion.
-> This RFC's title and prose still say "provider" in places; that is tracked terminology debt
-> (027 §7), and `ChatClient` is the name of record.
+> **Terminology (027 §5, §7).** The type is `ChatClient`, matching MAF, not `Provider` — "provider"
+> is colloquially the model *vendor*, and overloading it for the seam invited confusion. This RFC
+> is retitled and its type names use `ChatClient`; "provider" still appears where it means the
+> vendor/backend identity itself (e.g. a `{provider, model, credential}` metric key), which is the
+> colloquial sense 027 leaves alone.
 
 ## 1. The seam
 
 ```cpp
 struct ChatClient {                                 // concept, not a base class
-    ProviderCapabilities capabilities() const noexcept;
+    ChatClientCapabilities capabilities() const noexcept;
     ae::task<result<ChatResponse>>  chat(ChatRequest, EffectContext&);
     ae::stream<ChatResponseUpdate>  chat_stream(ChatRequest, EffectContext&);
 };
@@ -31,14 +32,14 @@ struct ChatClient {                                 // concept, not a base class
 
 ## 2. Capabilities
 
-`ProviderCapabilities` is a declared bitset, not a runtime probe:
+`ChatClientCapabilities` is a declared bitset, not a runtime probe:
 
 `streaming` · `tool_calling` · `parallel_tool_calls` · `structured_output_native` ·
 `json_mode` · `reasoning` · `reasoning_encrypted` · `prompt_caching` · `multimodal_in{image,audio,
 video,file}` · `multimodal_out` · `logprobs` · `stop_sequences` · `seed` · `token_counting` ·
 `batch` · `context_window` · `max_output_tokens`
 
-**The degradation rule:** when an agent needs a capability the bound provider lacks, the engine
+**The degradation rule:** when an agent needs a capability the bound `ChatClient` lacks, the engine
 applies a **declared** fallback (e.g. native structured output → tool-shaped, 003 §4) and records
 it in the run trace and metrics. It never silently ignores the request, and it never invents a
 fallback that changes semantics without saying so. If no fallback exists, `register_agent<A>()`
@@ -50,12 +51,13 @@ fails at startup (002 §6) rather than at the first user request.
 |---|---|---|
 | **OpenAI-compatible** (Chat Completions + Responses) | Widest: OpenAI, gateways, vLLM/llama.cpp/Ollama-style local servers, most vendor compat endpoints | Default. Capability set is *per endpoint*, discovered from config, not assumed |
 | **Anthropic** | Claude 5 family (Fable 5, Opus 5, Sonnet 5), Haiku 4.5 | First-class: reasoning parts, prompt caching, tool use |
-| **Local / embedded** | On-device via an OpenAI-compatible server, or a plugin provider (009) | Keeps heavy inference deps out of the host process |
-| **Remote agent as provider** | An A2A peer used where a model would be (012) | Makes "delegate the whole turn" uniform |
+| **Local / embedded** | On-device via an OpenAI-compatible server, or a plugin `ChatClient` (009) | Keeps heavy inference deps out of the host process |
+| **Remote agent as `ChatClient`** | An A2A peer used where a model would be (012) | Makes "delegate the whole turn" uniform |
 
-**Dependency posture:** provider clients are seam backends (CONVENTIONS §Dependencies tier 2) —
-one HTTP/TLS dependency, behind a CMake option, never in the core. A provider may also ship as a
-**WASM plugin** (009) when its protocol is exotic and its performance envelope allows.
+**Dependency posture:** `ChatClient` backends are seam backends (CONVENTIONS §Dependencies tier 2)
+— one HTTP/TLS dependency, behind a CMake option, never in the core. A `ChatClient` may also ship
+as a **WASM plugin** (009 — the `ae:provider` world) when its protocol is exotic and its
+performance envelope allows.
 
 **Porting note, not copying:** MAF ships no C++ SDK, and its own Anthropic/OpenAI backends are thin
 adapters over each vendor's official SDK (`docs/research/2026-maf-provider-concepts.md` §2) — there
@@ -92,7 +94,7 @@ Pricing tables are **configuration, not code** — they change weekly and must n
 
 ## 6. Recording and replay
 
-The provider seam is the primary I5 recording point: request, response or full ordered chunk
+The `ChatClient` seam is the primary I5 recording point: request, response or full ordered chunk
 sequence, timing, and usage. Replay serves from the recording with identical chunk boundaries so
 that streaming-dependent behaviour (early tool dispatch, UI cadence) reproduces exactly.
 

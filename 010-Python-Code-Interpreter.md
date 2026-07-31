@@ -189,8 +189,8 @@ Files are the **worktree** (025) — durable engine state, not sandbox state:
   migration, and a change of profile. This is the property that makes §2's backend choice a
   performance-and-ecosystem decision rather than a data-loss decision.
 - **Artifacts** written under `/out` are collected, digested, content-addressed, and surfaced as
-  parts (003) so a chart or CSV flows into the conversation and into A2A artifacts (012) with no
-  special case.
+  `Content` items (003) so a chart or CSV flows into the conversation and into A2A artifacts (012)
+  with no special case.
 - **Inputs** are mounted, never pasted into the prompt: a 40 MB CSV costs a mount, not a context
   window.
 - Multiple agents in one session share the worktree or branch from it (025 §3), which is how

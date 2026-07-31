@@ -48,7 +48,7 @@ the entire design budget on (2)–(5).
 ```
  L4  Protocol surfaces     MCP server + client · A2A · AG-UI · OpenAI-compatible HTTP
  L3  Orchestration         workflow graph, handoff, group chat, checkpoint / resume / time-travel
- L2  Agent core            Agent · Session · Tool plane · Model provider plane · Middleware
+ L2  Agent core            Agent · AgentSession · Tool plane · ChatClient plane · Middleware
  L1  Trust & isolation     capability model · sandbox seam · WASM component plugin ABI
  L0  Runtime substrate     Quark: scheduler, mailbox, cluster, persistence, timers, PAL
 ```
@@ -202,7 +202,7 @@ architecture detail: containment results must be identical.
 | Term | Meaning |
 |---|---|
 | **Agent** | A named, addressable unit that turns input into output using a model, tools, and instructions. Hosted as a Quark actor type. |
-| **Session** | The durable conversation state an agent operates on: message history, state bag, and the seam to persistence. One Quark actor instance per session. |
+| **`AgentSession`** | The durable conversation state an agent operates on: message history, state bag, and the seam to persistence. One Quark actor instance per session. |
 | **Run** | One invocation of an agent against a session, producing a response (possibly streamed) and zero or more effects. The unit of tracing, checkpointing, and replay. |
 | **Turn** | One model call plus the tool invocations it triggers, inside a run. |
 | **Tool** | A declared, schema-typed capability an agent may invoke. Backed by a native function, a WASM component, an MCP server, or a remote agent. |
@@ -213,7 +213,7 @@ architecture detail: containment results must be identical.
 | **Profile** | A named sandbox configuration (`wasm`, `native-jail`, `remote`, `none`) resolved at startup to a backend + limits. |
 | **Plugin** | A signed package containing one or more WASM components implementing a WIT world (tool, skill, provider, store, filter). |
 | **Workflow** | A typed graph of executors (agents, functions, sub-workflows) with edges, checkpointing, and human-in-the-loop request points. |
-| **Provider** | The seam to an inference API (OpenAI-compatible, Anthropic, local, hosted). |
+| **`ChatClient`** | The seam to an inference API (OpenAI-compatible, Anthropic, local, hosted). Not named `Provider` — that word stays free for the colloquial "model vendor" sense (004, 027 §5). |
 | **Principal** | The authenticated identity on whose behalf a run executes; propagated into every effect and every outbound protocol call. |
 
 Quark's vocabulary (Actor, Activation, Worker, Shard, Mailbox, Policy, `ActorRef`) is used
@@ -223,7 +223,7 @@ verbatim where it appears; AgentEngine does not rename it.
 
 | AgentEngine concept | Quark mechanism | Spec |
 |---|---|---|
-| Session | Actor instance, keyed by `session_id`, `Sequential` | Quark 001/005 |
+| `AgentSession` | Actor instance, keyed by `session_id`, `Sequential` | Quark 001/005 |
 | Run | Ask-message to the session actor; `ask_stream` when streamed | Quark 006, ADR-018 |
 | Streaming response | `ask_stream` reply-credit-ring | Quark 006/024 |
 | Session history durability | `Store` seam — snapshot + event-sourced | Quark 012 |

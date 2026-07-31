@@ -32,7 +32,7 @@ thereafter read-only. **I6** requires that the declarative format (015) produces
 using namespace ae;
 
 struct Researcher : Agent<Researcher,
-        Provider<"anthropic:claude-opus-5">,
+        ChatClient<"anthropic:claude-opus-5">,
         Tools<WebSearch, CodeInterpreter, Handoff<Writer>>,
         SandboxProfile<Profile::Strict>,
         MaxTurns<12>,
@@ -84,7 +84,7 @@ while (auto update = block_on(stream.next())) { render(*update); }
 
 | Policy | Meaning | Default |
 |---|---|---|
-| `Provider<"vendor:model">` | Provider binding; overridable per run and by config | required |
+| `ChatClient<"vendor:model">` | Model backend binding (004); overridable per run and by config | required |
 | `Tools<Ts...>` | Declared tool set | empty |
 | `SandboxProfile<P>` | Isolation profile for this agent's sandboxed effects (008) | `Profile::Strict` |
 | `Capabilities<Cs...>` | Capability ceiling (007) | empty |
@@ -145,8 +145,8 @@ At `register_agent<A>()` the engine compiles metadata and **validates**, failing
 - a tool whose schema does not compile or whose name collides;
 - a capability referenced by a tool but absent from the agent's ceiling;
 - a `SandboxProfile` unavailable on this platform with no declared fallback (008);
-- a `Provider` binding with no configured credentials or endpoint;
-- an `OutputSchema` the bound provider cannot enforce and no fallback strategy;
+- a `ChatClient` binding with no configured credentials or endpoint;
+- an `OutputSchema` the bound `ChatClient` cannot enforce and no fallback strategy;
 - a handoff cycle without a bound;
 - `Stateless<N>` combined with session-state usage.
 
@@ -176,5 +176,5 @@ so a behavioural change is attributable to a version rather than to a mystery. A
 - **Q1** — Should `instructions` support a typed template with compile-time-checked placeholders,
   or remain a runtime-assembled string? Typed is safer; it complicates the declarative parity.
 - **Q2** — Per-run policy override: which policies may a caller override at `run()` time
-  (`Provider` and `MaxTurns` clearly; `Capabilities` clearly not) — the full matrix needs writing.
+  (`ChatClient` and `MaxTurns` clearly; `Capabilities` clearly not) — the full matrix needs writing.
 - **Q3** — Whether `Stateless<N>` agents should be the default for tool-only agents.

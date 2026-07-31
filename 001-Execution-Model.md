@@ -15,7 +15,7 @@ proven invariants.
 
 | Concept | Quark realization |
 |---|---|
-| **Session** | One actor instance, key = `session_id`, `Sequential`, durable via Quark 012 |
+| **`AgentSession`** | One actor instance, key = `session_id`, `Sequential`, durable via Quark 012 (027 §7: the type is `AgentSession`; "session" stays fine in prose) |
 | **Run** | An `Ask<StartRun, RunResponse>` to the session actor; `ask_stream` for streaming |
 | **Turn** | A segment of a run's coroutine between model calls |
 | **Agent** | An actor *type* + its compiled metadata (002); stateless agents may be `Stateless<N>` pools |
