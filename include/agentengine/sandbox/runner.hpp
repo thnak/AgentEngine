@@ -22,9 +22,15 @@ struct ExecState {
 // concept, not a base class (010 §1a). PythonRunner and ShellRunner are the concrete kinds;
 // neither is declared here — each is a seam backend (CONVENTIONS tier 2) with its own
 // implementation, not core vocabulary.
+//
+// Return type is constrained to `result<ExecOutcome>` (synchronous) because `ae::task<T>` — the
+// Quark coroutine type CONVENTIONS.md/027 name as the eventual real signature — is not yet wired
+// into this header; it depends on the Quark submodule being linked (root CMakeLists.txt). Once it
+// is, this constraint becomes `-> std::same_as<ae::task<result<ExecOutcome>>>` and every conforming
+// `run()` changes with it — tracked here rather than left as a silently unconstrained `requires`.
 template <class T>
 concept Runner = requires(T runner, ExecRequest request, ExecState& state, EffectContext& ctx) {
-    { runner.run(request, state, ctx) };  // ae::task<result<ExecOutcome>>
+    { runner.run(request, state, ctx) } -> std::same_as<result<ExecOutcome>>;
 };
 
 } // namespace agentengine
