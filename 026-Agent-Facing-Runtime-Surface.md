@@ -93,7 +93,9 @@ rows = [h for h in hits if "bytecodealliance" in h.url]
 tools.save_note(title="sources", body="\n".join(r.url for r in rows))
 ```
 
-Generated from the same tool metadata as everything else (006 §1), so they cannot drift:
+Generated from the same tool metadata as everything else (006 §1) — including whatever
+`ShellRunner` dispatches to for the identical operation (010 §2, 006 §2's cross-frontend uniformity
+rule) — so they cannot drift:
 
 - **Real signatures** with real parameter names, defaults, and type hints from the tool's argument
   type.

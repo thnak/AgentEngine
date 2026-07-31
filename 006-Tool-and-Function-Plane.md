@@ -48,6 +48,19 @@ struct WebSearch : Tool<WebSearch,
 **Uniformity rule:** the model sees one tool list; the author writes one declaration syntax; the
 engine emits one span shape. Source appears in metadata and policy, never in the calling convention.
 
+**The same rule binds across *frontends*, not only across sources.** A domain-level operation
+reachable from more than one place an agent can act from — the model's tool-call channel,
+`agent.tools` inside CodeAct (026 §4), `ShellRunner`'s dispatch (010 §2) — is **exactly one Tool
+implementation**, never two that merely agree by convention. `grep`-in-a-shell-pipeline and
+`agent.tools.search(...)` in Python must resolve to the same registered Tool if both exist, not to
+independently written code that happens to behave similarly today and silently diverges later. This
+does **not** pull `ShellRunner`'s cheap, worktree-native builtins (`cd`, `ls`, `cat`, and similarly
+ordinary commands, 010 §2) into the tool pipeline — those stay builtins deliberately, because paying
+the full ten-step pipeline (§3) for listing a directory is overhead with no matching benefit. The
+rule applies once an operation is rich enough to be Tool-shaped in the first place (search, diff,
+document/spreadsheet/PDF/image manipulation, and anything in 009 §7's library track): at that point
+there is one implementation, and every frontend that reaches it reaches the same one.
+
 ## 3. Invocation pipeline
 
 Every tool call, regardless of source, traverses exactly this pipeline:

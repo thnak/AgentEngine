@@ -117,7 +117,10 @@ an arbitrary named program:
   `git` or `ripgrep` component, if the operator has installed one, is invoked through the ordinary
   tool pipeline, not found on a search path. A name that resolves to neither produces the same
   "command not found" the agent would see from a real shell (026 §3) — the *experience* is ordinary,
-  but underneath it is "no capability or registration," not "no file in `PATH`."
+  but underneath it is "no capability or registration," not "no file in `PATH`." **It is the same
+  registered Tool an `agent.tools.*` call in Python would reach** — 006 §2's uniformity rule now
+  binds across frontends, not only across sources, precisely so `grep` in a shell pipeline and a
+  Python search call can never quietly diverge into two implementations.
 - Because behaviour is engine code rather than a ported binary, **identical behaviour across
   Windows, Linux, and macOS is automatic**, not something that has to be built and verified per
   platform the way §2's Python runtime table does.
