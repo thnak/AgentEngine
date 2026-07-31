@@ -37,6 +37,26 @@ target_link_libraries(agentengine_core INTERFACE quark::quark)
 target_compile_features(agentengine_core INTERFACE cxx_std_23)
 add_library(agentengine::core ALIAS agentengine_core)
 
+# ---- native_jail ShellRunner backend (src/backends/native_jail/) --------------
+# Implements decisions/ADR-001-shellrunner-grammar-and-dispatch.md — Design A: the
+# recursive-descent parser, the pmr-backed AST, the tree-walking evaluator, the fixed builtin
+# table, CommandRegistry, and RealFileSystemAdapter. A STATIC library (not header-only) so Sh-S1's
+# static "zero references to a process-creation primitive" check (ADR-001 §7 finding 1's fix) can
+# be stated at link-target granularity: this library links ONLY against agentengine::core (header
+# -only vocabulary + Quark) and the C++ standard library — nothing here can pull in an object that
+# defines CreateProcess/_wspawnv/system/LoadLibrary/posix_spawn/exec*/fork by construction of what
+# it's linked against, which tests/test_shell_runner_proof.cpp verifies against the actual built
+# artifact, not against prose.
+add_library(agentengine_shell_runner STATIC
+  src/backends/native_jail/shell_parser.cpp
+  src/backends/native_jail/shell_dispatch.cpp
+  src/backends/native_jail/real_filesystem_adapter.cpp)
+target_include_directories(agentengine_shell_runner PUBLIC
+  "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(agentengine_shell_runner PUBLIC agentengine::core)
+target_link_libraries(agentengine_shell_runner PRIVATE agentengine_warnings)
+add_library(agentengine::shell_runner ALIAS agentengine_shell_runner)
+
 # ---- Tests --------------------------------------------------------------------
 option(AGENTENGINE_BUILD_TESTS "Build AgentEngine tests" ON)
 if(AGENTENGINE_BUILD_TESTS)

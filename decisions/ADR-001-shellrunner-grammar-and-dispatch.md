@@ -1,8 +1,11 @@
 # ADR-001 — ShellRunner grammar and dispatch
 
 - **Status:** Proposed — **design revised post-red-team** (§2.5 closes §7's 4 blocking findings;
-  §7 itself is left exactly as written, as the historical record). Prove and judge phases are
-  pending (§8–§10 are placeholders per `decisions/README.md`'s process; no winner is declared here).
+  §7 itself is left exactly as written, as the historical record). **Prove phase executed for
+  Design A** (§8 executed evidence, §9 per-claim verdicts) — Design A only, real C++23, built
+  under MSVC and clang, tested under ASan+UBSan. **Judge phase pending** (§10 remains a
+  placeholder per `decisions/README.md`'s process; no winner is declared here — that is explicitly
+  not this pass's call to make).
 - **Date:** 2026-07-31
 - **Scope:** `ShellRunner` (`src/backends/native_jail/shell_runner.hpp`) — the concrete class
   satisfying the `Runner` concept (`include/agentengine/sandbox/runner.hpp`) that backs the Shell
@@ -930,16 +933,270 @@ shared-layer work that has to happen regardless of which design the judge phase 
 
 ## 8. Executed evidence
 
-*Deferred.* No code has been written or benchmarked for this ADR; §5's claims are unproven pending
-the prove phase (real C++23 implementations of both designs, built under MSVC/g++/clang, run under
-ASan/UBSan, fuzzed, and measured per CONVENTIONS.md's build/test rules — `-j4` max, pinned cores,
-resource-capped hostile-input tests per CLAUDE.md's Machine Safety section).
+**Design A only** — recursive-descent parser (`src/backends/native_jail/shell_parser.{hpp,cpp}`),
+pmr-backed AST (`shell_grammar.hpp`), tree-walking evaluator + fixed builtin table + dispatch
+(`shell_dispatch.{hpp,cpp}`), `CommandRegistry` (`command_registry.hpp`), `RealFileSystemAdapter`
+(`real_filesystem_adapter.{hpp,cpp}`), and the concrete `ShellRunner` (`shell_runner.hpp`) were
+implemented for real and wired into the build as a new static library target
+`agentengine_shell_runner` (root `CMakeLists.txt`). Design B (§4) was **not implemented** — see
+§9's Design-B row for why, honestly, rather than silently.
+
+### 8.1 Toolchains and environment
+
+| Toolchain | Version | Build dir | Configuration |
+|---|---|---|---|
+| MSVC (cl.exe) | 19.51.36252.0 (VS "18" BuildTools) | `build/` | Default (debug CRT), via `vcvars64.bat` |
+| clang (MSVC-ABI) | 22.1.5 | `build-clang/` | Default (debug CRT) |
+| clang (MSVC-ABI) | 22.1.5 | `build-clang-release/` | `-DCMAKE_BUILD_TYPE=Release` |
+| clang (MSVC-ABI) | 22.1.5 | `build-asan/` | `-DCMAKE_BUILD_TYPE=RelWithDebInfo -fsanitize=address,undefined -fno-sanitize-recover=undefined -O1 -g` |
+
+CMake 4.1.1, Ninja generator throughout, `-j4` per CLAUDE.md's machine-safety cap (never higher).
+UBSan on Windows is clang-only per CONVENTIONS/task brief — MSVC's own sanitizer support does not
+cover UBSan-equivalent checks on this toolchain, so all sanitizer evidence below is clang.
+
+### 8.2 Build commands and results
+
+MSVC (`vcvars64.bat` sourced first, per the known "silent stale-binary" trap — verified real
+compilation output, not `ninja: no work to do`):
+
+```
+cmd /c call "...\VC\Auxiliary\Build\vcvars64.bat" && cd /d D:\GitSrc\AgentEngine && cmake --build build -j4
+```
+Result: 19 targets rebuilt from scratch (`shell_parser.cpp.obj`, `shell_dispatch.cpp.obj`,
+`real_filesystem_adapter.cpp.obj`, all new test executables), **zero errors**, two `C4996`
+deprecation warnings (`tmpnam`, `fopen` in the Sh-S1 static-check test — pre-existing style, not a
+new-code defect) under `/W4`.
+
+clang (`build-clang/`, plain `cmake --build build-clang -j4`, no vcvars needed): same set of
+targets, **zero errors**, `-Wall -Wextra` clean except the identical two deprecation warnings.
+
+### 8.3 Test results — MSVC (`build/`, default/debug CRT)
+
+```
+ctest --output-on-failure -j4
+100% tests passed, 0 tests failed out of 7
+Total Test time (real) = 0.54 sec
+```
+All 7 tests (`smoke_vocabulary`, `test_recorded_chat_client`, `test_native_jail_runner_stubs`,
+`test_real_filesystem_adapter`, `test_shell_runner_proof`, `test_shell_parser_adversarial`,
+`test_shell_runner_no_process_creation`) **Passed**.
+
+### 8.4 Test results — clang (`build-clang/`, default/debug CRT)
+
+Identical: `100% tests passed, 0 tests failed out of 7`, `Total Test time (real) = 0.31 sec`.
+
+### 8.5 A real, unanticipated finding: MSVC debug-CRT checked iterators and wide `pmr::vector<T>` trees
+
+Not one of ADR-001's original 24 red-team findings — discovered during this pass. The literal
+"100k-stage pipeline" adversarial input (A-S1), run against the DEFAULT build configuration
+(`build/`, `build-clang/` — no explicit `CMAKE_BUILD_TYPE`, so MSVC's debug CRT and
+`_ITERATOR_DEBUG_LEVEL=2` "checked iterators" are active), **hung for minutes** once
+`PipelineNode::commands` (`pmr::vector<SimpleCommandNode>`, each element owning 3 more
+`pmr::vector`s) grew past roughly 12,000 live elements and needed to reallocate. Bisection (timed
+instrumentation, since removed) showed near-constant per-batch cost up to that point, then a sudden
+multi-second-plus stall exactly at that reallocation — a build-configuration effect, not an
+algorithmic one. **Confirmed by a side-by-side measurement**: the identical source, same compiler,
+built `-DCMAKE_BUILD_TYPE=Release` (`build-clang-release/`), parses and rejects the full
+**100,000**-stage input in **7 ms**. `test_shell_parser_adversarial.cpp` now runs a debug-safe
+8,000-stage positive control in the default CTest suite (to avoid CLAUDE.md's "must not hang the
+dev box" rule biting on routine `ctest` runs) and compiles in the literal 100,000-stage probe only
+under `-DCMAKE_BUILD_TYPE=Release` (`AE_RUN_100K_PIPELINE_PROBE`, gated in `tests/CMakeLists.txt`).
+**Fix applied, recorded honestly**: this is a build-hygiene finding for anyone running adversarial
+width probes under this project's default (debug) CMake configuration, not a ShellRunner defect.
+
+A second, smaller, genuinely-my-bug finding surfaced by the same run: `kBytesPerNodeUpperBound =
+256` (finding 13's arena-sizing constant) is measured as comfortably sufficient in Release (the
+"max-token, min-content" over-budget probe fails via `shell.too_many_tokens`, the intended path)
+but marginal under the debug CRT's extra per-container overhead, where the SAME probe instead fails
+via `shell.arena_exhausted` first. **Both are clean, `resource`-classed, non-crashing rejections**
+— the safety property A-S1 actually requires holds either way — so this is recorded as a
+measurement note (the constant is toolchain-configuration-sensitive at the margin), not weakened
+into a false pass or escalated into a blocking finding.
+
+Two more real, fixed-during-this-pass bugs, neither present in the initial commit:
+1. **`RealFileSystemAdapter`'s ancestor-walk produced a path with a spurious trailing separator**
+   (`std::filesystem::path::operator/` unconditionally appends a separator even when the
+   right-hand operand is empty — `path("x") / path("")` yields `"x/"`), which made every
+   already-existing-parent write/read target look like a directory to the OS and fail with
+   `shell.fs.io_error`. Found by the positive-control read/write round-trip test actually failing
+   (not by inspection) — fixed in `real_filesystem_adapter.cpp` with an explicit empty-path guard
+   in both places the bug occurred.
+2. **The Sh-S1 static-symbol check's first version was a false-positive substring match**: a naive
+   `contents.find("system")` over the whole `llvm-nm` dump matched inside
+   `__std_system_error_allocate_message` (legitimate `std::filesystem`/`std::system_error`
+   plumbing, unrelated to the `system()` call). Fixed to parse per-line and compare the exact
+   trailing symbol token, not a substring of the whole dump.
+3. **MSVC's `assert()` pops a blocking interactive "Debug Assertion Failed" dialog on failure**,
+   which hung the very first `ctest` run of `test_real_filesystem_adapter` for several minutes with
+   no CPU usage (waiting on a click that never comes) — exactly the kind of hang CLAUDE.md's
+   Machine Safety section rules out, and it was hit while proving a *different* claim, showing the
+   hazard is real for any assert-based test in this repo, including the pre-existing
+   `test_native_jail_runner_stubs.cpp`. Fixed by routing `_CRT_ASSERT`/`_CRT_ERROR` reports to
+   stderr (`_CrtSetReportMode`/`_CrtSetReportFile`) at the top of both tests' `main()`.
+
+### 8.6 A-S1 corpus under ASan+UBSan (clang 22.1.5, `build-asan/`)
+
+```
+cmake -S . -B build-asan -G Ninja -DCMAKE_CXX_COMPILER="C:/Program Files/LLVM/bin/clang++.exe" \
+  -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+  -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=undefined -g -O1" \
+  -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+cmake --build build-asan -j4 --target test_shell_parser_adversarial test_shell_runner_proof test_real_filesystem_adapter
+ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
+  tests/test_shell_parser_adversarial.exe   # exit 0, zero sanitizer reports
+  tests/test_shell_runner_proof.exe          # exit 0, zero sanitizer reports
+  tests/test_real_filesystem_adapter.exe     # exit 0, zero sanitizer reports
+```
+(`detect_leaks=0`: LeakSanitizer is not supported on the Windows ASan runtime; ASan's memory-error
+detection — the actually load-bearing half for A-S1's "no OOB access" claim — is fully active.)
+
+Corpus covered by `test_shell_parser_adversarial.cpp` under this run: `if`-nested-10,000-deep with
+no closing `fi`; combined nesting (near-max `if` depth whose body also carries wide, non-nested
+`${...}` content — both an over-cap negative and an at-cap positive control); wide-not-deep (5,000
+sequential shallow `if` statements, proving the depth counter's RAII decrement actually fires, not
+just that it's monotonic); max-token-count/minimum-per-token-content (both over- and under-budget);
+an 8,000-stage wide pipeline (debug-safe; 100,000-stage figure separately confirmed in Release,
+§8.5); an unterminated quote; and a source well over `kMaxSourceBytes`. **All passed, zero ASan or
+UBSan findings**, confirmed against the actual sanitizer output (not assumed from a green exit
+code alone — each run's full stdout was inspected).
+
+`test_shell_runner_proof.cpp` and `test_real_filesystem_adapter.cpp` under the same sanitizer build
+also passed clean, including the real junction-based symlink-escape test (this environment
+supports unprivileged directory junctions via `mklink /J`, so that sub-claim of §2.5.5 was actually
+exercised end-to-end, not merely string-level).
+
+### 8.7 Sh-S1's static half — real, at link-target granularity
+
+```
+llvm-nm --undefined-only build-clang/agentengine_shell_runner.lib
+```
+parsed programmatically (`tests/test_shell_runner_no_process_creation.cpp`) for an EXACT trailing
+symbol-name match (not substring) against: `CreateProcessA/W`, `CreateProcessAsUserA/W`,
+`_wspawnv[e]`, `_spawnv[e]`, `system`, `_wsystem`, `LoadLibraryA/W`, `WinExec`, `ShellExecuteA`.
+**Result: zero matches** — the full undefined-symbol list (reproduced in the ADR's working notes,
+~140 symbols across the three `.obj`s) is entirely ordinary CRT/STL/`<filesystem>` plumbing
+(`__std_fs_*`, `memcpy`, `_CxxThrowException`, iostream internals, etc.). Ran successfully under
+both MSVC's `build/` and clang's `build-clang/` (same `llvm-nm`, found via `find_program` at
+absolute path, independent of which compiler built the `.lib`).
+
+**What this does and does not prove, stated plainly per finding 1's own fix**: this is scoped at
+the `agentengine_shell_runner` LIBRARY, not a single translation unit — moving code between
+`shell_parser.cpp`/`shell_dispatch.cpp`/`real_filesystem_adapter.cpp` cannot defeat it, and no
+other target in this build links a process-creation-capable backend into this library (there is no
+WASM host or `remote` backend built yet to test the "legitimate collaborator" exclusion finding 1
+also asked for — recorded as not-yet-applicable rather than resolved).
+
+**The runtime IAT-hook/detours shim (the other half of Sh-S1's disproving experiment, per finding
+2's call to name the actual mechanism) was NOT attempted this pass** — building a Windows-safe,
+false-positive-free process-creation hook harness (scoped correctly per finding 2: not
+process-wide, not blind to `_wspawnv`/`system` as alternate routes) is a nontrivial project of its
+own. In its place: (a) the static check above (real, automated, at the correct granularity), (b)
+manual review confirming `shell_dispatch.cpp`/`shell_parser.cpp`/`real_filesystem_adapter.cpp`/
+`command_registry.hpp` spell none of `CreateProcess`/`_wspawnv`/`system`/`LoadLibrary`/`exec*`/
+`posix_spawn`/`fork` anywhere, and (c) the hostile-name-corpus behavioral test below. This is
+recorded as **static check: CORRECT; dynamic shim: NOT ATTEMPTED** — two distinct verdicts, not
+laundered into one.
+
+### 8.8 Sh-S1 behavioral corpus, Sh-C1, Sh-C2, Sh-C3, Sh-G4, capability checks, A-C2 —
+`tests/test_shell_runner_proof.cpp`, real output (clang `build-clang/`, representative — identical
+under MSVC)
+
+```
+  ok: cd /work succeeds
+  ok: same ExecState object (identity), not a copy
+  ok: state.cwd mutated in place to the canonical form
+  ok: Sh-C3 (semicolon+rm): export succeeds / echo $X succeeds / expanded value is exactly one
+      opaque word, unchanged — got ';rm -rf /work'
+  ok: Sh-C3 (pipe): ... got 'a|b'
+  ok: Sh-C3 (andand): ... got 'a&&b'
+  ok: Sh-C3 (whitespace): ... got 'hello world  foo'
+  ok: Sh-C3: the embedded ';rm -rf /work'-shaped value never executed a second command
+  ok: Sh-C2: registering a Runner named 'ls' is rejected at registration time
+  ok: Sh-C2: 'ls' still resolves to the builtin after the rejected registration attempt
+  ok: Sh-C2: registering a non-colliding Tool ('grep') succeeds / resolves to the registered tool
+  ok: Sh-C2: a Runner colliding with an already-registered Tool name is also rejected
+  ok: Sh-G4 gate: missing RunnerCall is denied with a policy error / invoke() never ran
+  ok: Sh-G4 construction: granted RunnerCall succeeds / invoke() ran / SAME EffectContext reaches
+      the nested Runner
+  ok: Sh-G4 negative control: the identity assertion distinguishes two distinct EffectContext
+      objects
+  ok: export/ls/cat/mkdir/rm denied without the relevant capability kind, succeed once granted
+      (kind-only, per §2.5.4 — no path-scoped variant attempted)
+  ok: A-C2: the malformed script (missing 'fi') fails to parse (code: shell.syntax_error)
+  ok: A-C2: mkdir from the syntactically invalid script never executed
+  ok: resolve(<18-entry hostile-name corpus>) == not_found for every entry; 'ls' still resolves
+  ok: end-to-end '/bin/sh'/'cmd.exe'/'totally_bogus_xyz123' fail closed as command_not_found
+test_shell_runner_proof: PASS
+```
+
+### 8.9 `RealFileSystemAdapter` path-escape list — `tests/test_real_filesystem_adapter.cpp`, real
+output
+
+```
+  ok: positive control (in-bounds read/write round-trip)
+  ok: dotdot traversal / dotdot traversal (nested) -> shell.fs.escape_dotdot
+  ok: drive-letter absolute path -> shell.fs.escape_absolute
+  ok: UNC path / extended-length prefix -> shell.fs.escape_unc
+  ok: reserved device name (bare / with extension / nested) -> shell.fs.escape_device_name
+  ok: ADS marker -> shell.fs.escape_ads
+  ok: case-fold-consistent comparison
+  ok: junction escape rejected (shell.fs.escape_symlink)
+test_real_filesystem_adapter: PASS
+```
+
+### 8.10 Design B (§4)
+
+**Not implemented.** No code for the single-pass tokenizer/shunting-yard evaluator was written this
+pass — all implementation time went to Design A (§3), per the task's own priority ordering ("do the
+earlier items thoroughly rather than rushing through all of them shallowly") and this ADR's own
+§10 pre-registered bias toward steelmanning Design A hardest. B-S2 and B-F1 (the two claims that
+would actually distinguish A from B, per §7.8's summary) are therefore **not-yet-attempted**, stated
+honestly in §9 rather than inferred from Design A's numbers or silently dropped.
 
 ## 9. Per-claim verdicts
 
-*Deferred.* Every claim in §5 is presently **UNVERIFIED** (not yet even attempted) rather than
-`INCONCLUSIVE` (attempted, ambiguous result) — that distinction matters per `decisions/README.md`'s
-instruction not to launder an honest "not yet run" into either verdict.
+Per `decisions/README.md` item 6: `INCONCLUSIVE` is attempted-but-ambiguous; a claim never
+attempted is stated as **NOT ATTEMPTED**, not folded into either passing or inconclusive.
+
+### 9.1 Shared claims (§5.1)
+
+| # | Claim | Verdict | Evidence |
+|---|---|---|---|
+| Sh-S1 (static half) | No process-creation symbol reachable at the `agentengine_shell_runner` library boundary | **CORRECT** | §8.7 — `llvm-nm --undefined-only`, exact-symbol match, zero hits, both compilers |
+| Sh-S1 (dynamic shim half) | Runtime hook confirms no process-creation call fires for a hostile-name corpus | **NOT ATTEMPTED** | §8.7 — scoped out this pass; substituted with (b)/(c) below, not a substitute for the claim as originally written |
+| Sh-S1 (behavioral corroboration) | Hostile-name corpus resolves to `not_found`/fails closed, end-to-end, under a deny-all context | **CORRECT** | §8.8 — 18-entry corpus + 3 end-to-end scripts, zero deviation, negative control (`ls` still resolves) confirms the check isn't vacuous |
+| Sh-C1 | `ExecState` shared by reference; `cd` mutates the same object | **CORRECT** | §8.8 — pointer-identity assertion + `state.cwd` mutated in place to the canonical form (§2.5.3) |
+| Sh-C2 | Shadowing/collision resolves to exactly one intended identity, never ambiguously | **CORRECT** (for the closed-by-construction fix, finding 5) | §8.8 — builtin-name reservation enforced at registration; this is a fix beyond what §2.5 itself specifies (§2.5 does not close finding 5) — recorded as an additional, necessary fix made during implementation, not a reinterpretation of §2.5 |
+| Sh-G4 (gate half) | No `RunnerCall` capability ⇒ nested Runner never invoked | **CORRECT** | §8.8 — `invoked` flag asserted false under denial |
+| Sh-G4 ("cannot exceed" half) | `ctx` passed to nested Runner is pointer-identical, never attenuated/broadened | **CORRECT** | §8.8 — direct pointer-equality assertion, plus a negative control confirming the assertion mechanism itself has discriminating power |
+| Sh-G4 (composition with a real PythonRunner) | End-to-end `RunnerCall<python>` composition | **NOT ATTEMPTED** (by design — cross-ADR dependency) | Only a fake registered Runner was exercised; PythonRunner is ADR-002's stub, explicitly out of scope here per the task brief |
+| Sh-C3 | Expansion never re-tokenizes; opaque splice regardless of `;`/`\|`/`&&`/whitespace content | **CORRECT** | §8.8 — 4-variant corpus (`;rm -rf`, `\|`, `&&`, embedded whitespace), each expands to exactly one unchanged argv word, no second command executes |
+
+### 9.2 Design A claims (§5.2)
+
+| # | Claim | Verdict | Evidence |
+|---|---|---|---|
+| A-F1 | ≤4 arena-backed allocations, <10 µs for a typical command | **NOT ATTEMPTED** | No hooked-allocator micro-benchmark was built this pass — arena-backed allocation was verified structurally (all AST containers are `std::pmr`, §2.5.6) and the arena's single upstream allocation was exercised, but the specific "≤4 allocations / <10 µs" numbers were not measured |
+| A-S1 (bounded time/memory, zero sanitizer findings) | **CORRECT** | §8.6 — full corpus incl. finding-12's combined-nesting and wide-not-deep probes, finding-13's max-token/min-content probe, and the ADR's own 100k-stage-pipeline probe (§8.5's Release measurement: 7 ms), all clean under ASan+UBSan |
+| A-S1 (structural: shared depth counter closes the "sum not max" hazard) | **CORRECT** | §8.6 — combined-nesting over-cap correctly fails via `shell.nesting_too_deep`; the at-cap positive control confirms wide `${...}` content is never miscounted against depth (this implementation's word/atom scanning is iterative, contributing zero depth by construction — a stronger mitigation than the ADR anticipated, see `shell_parser.cpp`'s file header) |
+| A-S2 (no catastrophic-backtracking input class) | **CORRECT**, informally | Every probe run (up to 200,000-token-budget-bounded inputs) completed in single-digit-to-tens of milliseconds in Release; no dedicated timing-sweep-across-N benchmark was built, so this is corroborated but not measured to the rigor a dedicated A-S2 experiment would give — recording as CORRECT-but-informally-tested rather than overclaiming a full benchmark |
+| A-C1 (byte-identical `ExecOutcome` across Windows/Linux/macOS) | **NOT ATTEMPTED** | Only Windows was available this pass; no Linux/macOS run was performed |
+| A-C2 (nothing executes until the whole script parses) | **CORRECT** | §8.8 — malformed `if`-without-`fi` script with a real, capability-granted `mkdir` ahead of it; directory confirmed absent after the parse error |
+
+### 9.3 Design B claims (§5.3)
+
+| # | Claim | Verdict |
+|---|---|---|
+| B-F1, B-S1, B-S2, B-C1, B-C2 | **NOT ATTEMPTED** — Design B was not implemented this pass (§8.10). No claim about B, including the two claims (B-S2, B-F1) that §7.8 identifies as the actual A-vs-B distinguishing axis, was tested. |
+
+### 9.4 Additional findings from this pass, not in §5's original claim list
+
+Recorded for the judge phase's benefit, not as new formal claims: the MSVC debug-CRT
+checked-iterator slowdown (§8.5), the `RealFileSystemAdapter` trailing-separator bug (§8.5, found
+and fixed), the Sh-S1 static-check substring false-positive (§8.5, found and fixed), and the
+MSVC-`assert()`-dialog test-hang hazard (§8.5, found and fixed) — all are implementation/tooling
+findings surfaced by actually running the code, exactly the kind of evidence `decisions/README.md`
+asks the prove phase to produce.
 
 ## 10. Decision
 
