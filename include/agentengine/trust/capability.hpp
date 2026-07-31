@@ -18,6 +18,9 @@ enum class capability_kind {
     clock,
     entropy,
     memory,        // 029 — FsRead/FsWrite scoped to a /memory mount, not a distinct mechanism
+    env_write,     // ADR-001 §2.5 — mutating ExecState.env (`export`), which PythonRunner reads by
+                   // reference (010 §3a); without this, shell text (ordinary model output) could
+                   // set PYTHONPATH/PIP_INDEX_URL/proxy vars with no authorization check at all.
 };
 
 // A single granted effect, opaque outside the trust boundary (007 §3). Fields are backend-specific
