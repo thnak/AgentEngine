@@ -57,15 +57,56 @@ returns `UnsupportedProtocolVersionError`.
 ### 3.1 Tools
 
 - Discovered via `tools/list`, mapped into the tool plane (006 §2) as a distinct source.
-- **Schemas are JSON Schema 2020-12** with any keywords permitted, `$ref` resolution requirements,
-  and composition-keyword resource bounds. We validate arguments against them **strictly** (006 §3
-  step 2 — reject, never coerce), and enforce our own bounds on `$ref` depth and schema size,
-  because a schema is attacker-controlled input when the server is not first-party.
-- `structuredContent` may be any JSON value; results map to content parts (003).
-- **Caching**: `tools/list`, `prompts/list`, `resources/list`, `resources/read`, and
-  `resources/templates/list` results carry `ttlMs` and `cacheScope` (`public`/`private`). We honour
-  both — `private` results are never shared across principals — and combine them with `listChanged`
-  notifications rather than polling.
+- **Schemas are JSON Schema 2020-12** (the default dialect when `$schema` is absent). We must support
+  at least 2020-12 and **MUST** handle an unsupported dialect with an explicit error rather than a
+  best-effort parse. `inputSchema.type` **MUST** be `"object"`; `outputSchema` carries no such
+  constraint and `structuredContent` may be **any** JSON value.
+- **`$ref` is a hardening obligation, not a parsing convenience.** We **MUST NOT** automatically
+  dereference `$ref` values resolving to a network URI. Any opt-in fetch mode **MUST** be disabled by
+  default and enforce a host allowlist, reject loopback/link-local/private addresses, apply timeouts
+  and size limits, and log what it dereferenced. A schema with an unresolved external `$ref` is
+  **rejected**, never treated as permissive. (Conformance scenario: `json-schema-ref-deref`.)
+- **Composition-keyword bounds are ours to set and enforce.** The spec explicitly licenses hard
+  limits — maximum schema depth, a cap on total subschemas, a per-validation time budget — because
+  `anyOf`/`oneOf`/`allOf`/`if`/`$defs` from a third-party server is a DoS vector against our
+  validator. A server's schema is attacker-controlled input.
+- Arguments are validated **strictly** (006 §3 step 2 — reject, never coerce).
+- **Tool annotations exist and carry a `Hint` suffix**: `readOnlyHint` (default false),
+  `destructiveHint` (**default true**), `idempotentHint` (default false), `openWorldHint` (default
+  true). Two cautions we encode: these names are normative **only in the schema**, not the prose
+  page, so we generate from the schema; and clients **MUST** treat annotations as **untrusted** unless
+  the server is trusted. We map them to advisory metadata only — an annotation never relaxes a
+  capability check or an approval requirement (**I3**). They are under active revision by an interest
+  group with four Draft SEPs in flight, so our type is forward-extensible by construction.
+- **`x-mcp-header` is a mandatory client-side surface** on Streamable HTTP, and it is easy to miss.
+  We validate every constraint (non-empty, HTTP token syntax, no control characters, case-insensitive
+  uniqueness, primitives only — **`number` is not permitted** — and static reachability through
+  `properties` chains only, never through `items`, composition, conditionals, or `$ref`), and a
+  violation means **excluding that tool from the result of `tools/list`**, not merely warning.
+- Tool names are `A-Za-z0-9_-.`, 1–128 chars, case-sensitive. **`serverInfo.name` is not guaranteed
+  unique and must not be used for disambiguation** — our namespacing (006 §6) uses the binding id.
+- **`isError` vs JSON-RPC error is a semantic split we honour on both sides**: protocol errors
+  (unknown tool, malformed request) are JSON-RPC errors; execution errors — including **input
+  validation failures** — are results with `isError: true`, which we surface to the model for
+  self-correction (001 §6's "a tool failure is not a run failure").
+- **Caching** is a correctness surface, not an optimization. `server/discover`, `tools/list`,
+  `prompts/list`, `resources/list`, `resources/templates/list`, and `resources/read` carry `ttlMs`
+  and `cacheScope`. Our obligations:
+  - **Cache key = method + the parameters that affect the result.** Never serve a cached response to
+    a request whose method or parameters differ.
+  - **Never cache an MRTR retry result** — anything carrying `inputResponses` or `requestState`.
+  - `cacheScope: "private"` **MUST NOT** cross authorization contexts; a different token is a
+    different cache. `"public"` may be shared, and the spec warns that this holds *even for results
+    from authenticated endpoints* — so as a **server** we apply per-primitive access control and
+    never rely on `cacheScope` for authorization.
+  - `ttlMs` absent or negative → treat as `0`. TTL is **not** a polling interval; if we poll at all,
+    we apply jitter and backoff.
+  - All pages of one list request share a `cacheScope`; a relevant `listChanged` notification
+    **invalidates** a still-fresh cached entry.
+- **Pagination**: cursors are opaque and **an empty string is a valid cursor**, not end-of-results —
+  a classic off-by-one that silently truncates a tool list. Page size is server-determined. An
+  invalidated cursor means discarding cached pages and restarting; there is no cross-page consistency
+  guarantee.
 - Servers **SHOULD** return tools in deterministic order for prompt-cache stability; we preserve
   server order and never re-sort, so their cache-friendliness is not undone by us.
 
@@ -195,6 +236,56 @@ An MCP server is **T2 third-party code** (007 §6). Concretely:
 - **Tool results are tainted** and delimited (017 §3).
 - **Revocation is runtime**: unbinding a server cancels in-flight calls.
 
+### 8a. Spec-mandated obligations we implement as conformance clauses
+
+Lifted from the specification's own security material, restated as checkable requirements
+([detail](docs/research/2026-mcp-protocol-detail.md) §13):
+
+- **Token passthrough is forbidden.** We **MUST NOT** accept a token not issued for us, **MUST**
+  validate audience per RFC 8707 (401 on failure), and **MUST NOT** forward a received token
+  upstream. Outbound calls use credentials issued to this engine, with delegation as `on_behalf_of`
+  (007 §2). As a client we send the `resource` parameter on both authorization and token requests.
+- **State handles are not authentication.** Server-side, we **MUST NOT** treat possession of a
+  server-minted handle (or a task id) as authenticating anyone; handles are high-entropy, expiring,
+  and bound server-side as `<user_id>:<handle>` where **the user id comes from the verified token,
+  never from the client**.
+- **`requestState` is attacker-controlled input.** Where it influences authorization or business
+  logic we integrity-protect it (HMAC/AEAD) and reject what fails verification; single-use, where
+  required, is enforced server-side rather than assumed.
+- **SSRF defence on every discovery fetch**: HTTPS in production, and block private, loopback,
+  link-local, and **cloud metadata** ranges. The spec's own warning — *"avoid implementing IP
+  validation manually"* — is why this routes through the same host-mediated egress as everything
+  else (008 §4) rather than a bespoke parser.
+- **Origin validation and localhost binding** for our HTTP surface (403 on invalid `Origin`).
+  Conformance scenario: `dns-rebinding`.
+- **Local stdio servers get consent showing the exact command, untruncated**, and run in a sandbox
+  with minimal privileges — which is simply 007 §6's T2 tier applied to a subprocess.
+- **Elicitation discipline**: never form-mode for credentials; never pre-fetch or auto-open a URL;
+  always show the full URL; never transmit credentials obtained via URL elicitation back to a client.
+- **Icons are untrusted bytes**: safe schemes only, fetched without credentials, content type
+  detected by magic bytes with the declared MIME type treated as advisory.
+
+**We import the spec's stdio boundary verbatim into our threat model:** *"The SDK's stdio transport
+is not a sandbox."* A local MCP server is code we spawned with our privileges — which is exactly why
+008's `Exec` capability and profile selection govern it, and why we do not pretend the transport
+provides isolation it does not.
+
+### 8b. Two negative findings — what we specify as local policy
+
+Verified against the specification: **there is no section on tool poisoning or rug pulls, and neither
+term appears in it. Prompt injection likewise has no named section.** The nearest normative
+statements are that annotations and behaviour descriptions are untrusted, that clients **SHOULD**
+show tool inputs before calling, and that results **SHOULD** be validated before reaching the model.
+
+Structurally the rug-pull surface is wide open: a server may change its tool set at any moment via
+`notifications/tools/list_changed`, or simply by letting `ttlMs` expire — and **nothing in the spec
+requires a client to re-confirm consent when a tool definition changes.**
+
+**Therefore our digest-pinning and re-approval control (§8), and the injection defences in 017, are
+local policy, and this RFC labels them as such.** They are not conformance, we do not claim them as
+conformance, and a peer that lacks them is not non-conformant. Being explicit about that line is the
+difference between a security posture and a marketing one.
+
 ## 9. The registry, and why it is not a trust signal
 
 The **official MCP Registry** (`registry.modelcontextprotocol.io`) is **still in preview** — its own
@@ -280,22 +371,40 @@ is a reason to lean harder on the official suite, not less.
 - **G9 (registry)** — our published `server.json` validates against schema `2025-12-11` and
   `POST /v0.1/validate`; and a test proves no code path treats registry presence as trust.
 
-## 11. Still being researched
+## 11. Skills over MCP — we specify nothing
 
-Folded in as normative tables when the primary-source research completes:
+**There is no skill primitive in MCP at `2026-07-28` and no official extension for skills**; the
+string does not appear in the normative schema. A Skills Over MCP Working Group exists, and its
+current direction — **SEP-2640, an unmerged Draft** proposing `io.modelcontextprotocol/skills` with
+`skills/list` and `skills/get` — **has already replaced its own earlier design once**. The roadmap
+places skills under "On the Horizon".
 
-- **Field-by-field shapes** for tools, resources, resource templates, and prompts: exact request and
-  result field names, pagination, where `ttlMs`/`cacheScope` sit structurally, `structuredContent`,
-  content block kinds, `isError` semantics, and whether the tool annotation hints
-  (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`) survive this revision.
-- **Skills** — whether MCP specifies a skill primitive or an official extension at all, and how that
-  relates to `SKILL.md`-style packaging, MAF's agent skills, and A2A's Agent Card `skills` field.
-  Four things share the word; 009 §8 and §4 above cannot be finished until it is known where they
-  are the same idea and where they merely collide on vocabulary.
-- **The specification's own security best-practices** (confused deputy, token passthrough, session
-  hijacking, tool poisoning) restated as checkable MUST/SHOULD conformance clauses alongside §8.
+We therefore implement no skills-over-MCP conformance, and instead keep extension negotiation (§3.6)
+general enough that the extension slots in as configuration if it lands. Our skill format is
+`SKILL.md` / agentskills.io (009 §8), which is a real open standard adopted by more than one vendor
+and is independent of any transport.
 
-## 12. Open questions
+One clause from that Draft is adopted now on its merits regardless of the SEP's fate:
+
+> Hosts **MUST NOT** treat a digest match as a security boundary — digests are unsigned and
+> server-supplied.
+
+## 12. Migration and interoperability
+
+- **Era is a property of the server, not of a request.** We cache the determination per server
+  process (stdio) or origin (HTTP) and re-probe when a cached assumption fails.
+- **stdio probe**: `DiscoverResult` → modern; a *recognized modern* JSON-RPC error → modern with a
+  version mismatch, and we **do not** fall back to `initialize`; anything else or a timeout → legacy.
+  The fallback **MUST NOT** be keyed to one error code, because legacy servers answer unknown
+  pre-`initialize` requests with implementation-defined errors or not at all.
+- **HTTP probe**: inspect the body before falling back on a `400` — modern servers also return `400`
+  for `UnsupportedProtocolVersionError`, `MissingRequiredClientCapabilityError`, and header-validation
+  failures.
+- **Legacy clients cannot fall forward.** As a server we speak only the modern era, and per the
+  spec's courtesy clause we name our supported versions in the error we return to an `initialize`
+  request — that error may be the only diagnostic a legacy client can show its user.
+
+## 13. Open questions
 
 - **Q1** — Which revisions to support simultaneously. Two constants and two suites (CONVENTIONS), or
   `2026-07-28` only and require peers to upgrade? The deprecation window makes the second defensible

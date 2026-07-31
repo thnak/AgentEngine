@@ -30,6 +30,29 @@ Two things are nonetheless **locked**, because leaving them open would leave the
 
 The contract below is what makes that split safe: profiles differ in backend, never in semantics.
 
+### 1a. The WASM runtime requirement
+
+The plugin host requires a runtime providing **all three** of:
+
+1. **The Component Model** — WIT worlds, typed imports/exports. The entire plugin ABI (009) is built
+   on it.
+2. **WASI 0.3** (released 2026-06-11) — `async func`, `stream<T>`, `future<T>` in the Canonical ABI,
+   so guest async maps onto Quark coroutines instead of a thread per call.
+3. **WebAssembly 3.0** core features (completed 2025-09-17) — at minimum **exception handling**
+   (real C++ libraries assume exceptions, which the C/C++ plugin track needs) and **memory64**
+   (removes the 4 GB ceiling for data-heavy codecs and interpreters). GC and tail calls widen which
+   languages can author plugins.
+
+Today that is **Wasmtime 46+**, which ships WASI 0.3 with Component Model Async on by default.
+
+**`wasm3` is explicitly not a candidate for this role.** It is an excellent interpreter — the
+cold-start winner, tiny, portable down to microcontrollers — but it has only *partial* WASI Preview 2
+and Component Model support, which is the one axis that matters here. On the features this design
+depends on it has fewer, not more. It may still earn a scoped place for ultra-short guest calls or
+constrained deployments, behind the same host interface and behind a gate; that is
+[OQ-12](OpenQuestions.md), not a plan. Evidence:
+[`docs/research/2026-wasm-runtime-and-state-persistence.md`](docs/research/2026-wasm-runtime-and-state-persistence.md) §1.
+
 ## 2. The contract
 
 ```cpp
@@ -117,13 +140,45 @@ honest about the difference rather than claiming determinism it cannot enforce.
 
 ## 6. Lifetime, pooling, and state
 
-- **Default lifetime is `per_exec`**: a fresh boundary per execution, and **in-memory guest state
-  never persists across executions**. Persistence across executions is via the workspace mount —
-  external state, explicitly granted — matching the CodeAct contract MAF settled on.
-- `per_run` / `per_session` lifetimes exist for cost reasons and **must be declared**, because a
-  reused guest is a cross-execution information channel.
-- **Pooling and snapshot-restore** are performance mechanisms that must not weaken §6's first bullet:
-  a pooled instance is reset to a snapshot taken before any untrusted input, never merely "cleaned".
+The isolation boundary that matters is **between sessions**, not between executions within one
+session. A session is one principal, one conversation, one capability set; keeping a live sandbox
+for its duration is what makes a conversation feel continuous rather than amnesiac.
+
+- **Default lifetime is `per_session`**, bound to the session's Quark actor: created on first use,
+  retained while the session is active, destroyed when the session ends. `per_run` and `per_exec`
+  remain available and are the right choice for one-shot or adversarial workloads.
+- **Cross-session reuse is prohibited in every profile.** A guest instance is never handed to a
+  different session or principal. This is the line that pooling may not cross.
+- **Pooled instances are reset to a snapshot taken before any untrusted input** — never merely
+  "cleaned". A pool is a performance mechanism, not a state-sharing mechanism.
+- **Files do not depend on any of this.** Persistence across turns, restarts, and profiles is the
+  **worktree** (025), which is durable engine state mounted into the sandbox. Destroying a sandbox
+  loses no files, on any profile.
+
+### 6a. Surviving passivation
+
+Quark passivates idle sessions (ADR-028/034). What happens to in-memory interpreter state then is
+**profile-dependent, and the difference is stated rather than papered over**:
+
+| | `wasm` | `native-jail` / `microvm` |
+|---|---|---|
+| Files across passivation | Worktree — always | Worktree — always |
+| In-memory state across passivation | **Snapshot and restore** | **Lost**; session resumes with a clean interpreter |
+
+The `wasm` snapshot is **only taken at quiescent points** — between executions, when no guest stack
+exists — at which moment the interpreter's heap *is* its linear memory, so a snapshot is a memory
+dump plus store/table/global state. Wasmtime provides no built-in snapshot API (the upstream
+requests date to 2021–2022 and remain open), so this is ours to implement; it is portable because
+linear memory is linear memory on every OS.
+
+There is no portable equivalent for native processes: CRIU is Linux-only and, by its own
+documentation, frequently fails on live network connections and device-mapped workloads. We
+therefore do not offer a cross-platform contract we cannot keep.
+
+**This is a real argument for the `wasm` profile that 010 §2 did not weigh**, and it makes the
+interpreter backend a genuine operator trade — full package ecosystem with a clean interpreter after
+passivation, versus portable restorable state with a stdlib-only Python. Evidence:
+[`docs/research/2026-wasm-runtime-and-state-persistence.md`](docs/research/2026-wasm-runtime-and-state-persistence.md) §2.
 
 ## 7. Failure and abuse
 
@@ -157,6 +212,13 @@ downgrade shows up as a graph change, not as a surprise in an incident review.
 - **G5 (cold start)** — measured p50/p99 create+exec per profile against the 023 budgets.
 - **G6 (downgrade visibility)** — an unavailable profile with no fallback fails startup; with a
   fallback, the downgrade appears in diagnostics, trace, and metrics. Proven by a negative test.
+- **G7 (session boundary)** — a guest instance is never reused across sessions or principals; a
+  canary written in session A is unreachable from session B on every profile, including under
+  pooling and snapshot-restore. Positive control: a deliberately shared pool is caught.
+- **G8 (snapshot fidelity)** — under `wasm`, a session passivated mid-conversation and reactivated
+  resumes with interpreter state intact (variables, imports) and a worktree byte-identical to the
+  pre-passivation state; a snapshot attempted at a non-quiescent point is refused rather than
+  producing a corrupt image.
 
 ## 10. Open questions
 

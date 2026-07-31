@@ -13,11 +13,16 @@ runtime choice grounded in what the Python ecosystem actually supports today.
 | Mode | Shape | Use |
 |---|---|---|
 | **Interpreter** | `execute_code(code, language="python") → outputs, artifacts` | Data work, computation, file transformation |
-| **CodeAct** | The same tool, plus a `call_tool(name, args)` bridge inside the sandbox | Multi-step logic, conditional tool chains, filtering large results — one sandbox invocation instead of N model round-trips |
+| **CodeAct** | The same tool, with the `agent` library present in the sandbox (026 §5) | The agent's primary action space: multi-step logic, conditional tool chains, filtering large results — one execution instead of N model round trips |
 
 CodeAct is a *configuration* of the interpreter, not a separate subsystem: same tool, same sandbox,
-same approval, with the tool bridge granted or not. This mirrors the design MAF settled on
-(ADR 0024) and avoids two code paths for one capability.
+same approval, with the library granted or not. This mirrors the design MAF settled on (ADR 0024)
+and avoids two code paths for one capability.
+
+**What makes it CodeAct is the library, not the interpreter.** An interpreter with no host-backed
+library is a calculator; the action space is defined by what the program can *reach* — tools,
+worktree, memory, artifacts, sub-agents, structured output — which is 026 §5's subject. That RFC
+owns the surface; this one owns the execution.
 
 ## 2. Runtime selection — the decision and its evidence
 
@@ -57,9 +62,12 @@ design, only Python-first by priority.
 
 Every `execute_code` invocation:
 
-1. Starts from **clean interpreter state**. In-memory variables never persist across calls.
-   Persistence is the workspace (§4) — external state, explicitly granted. (Same contract as MAF's
-   CodeAct ADR; it exists to stop a sandbox from becoming an unaudited memory.)
+1. Runs in the **session's interpreter** (008 §6). Within a session, in-memory state persists
+   across executions — a conversation that computed `df` on turn 3 still has it on turn 7, which is
+   what makes an interpreter feel like an interpreter rather than a series of amnesiac scripts.
+   Across **sessions**, nothing persists: cross-session reuse is prohibited in every profile, and
+   that boundary — not the per-execution one — is where isolation lives.
+   Callers that want the stricter one-shot semantics select `per_exec` lifetime explicitly.
 2. Runs with the **capability set granted for this call** (007), empty unless granted.
 3. Is **bounded**: wall clock, CPU, memory, processes, file count, disk quota, output bytes.
 4. Returns a **structured outcome**: `{stdout, stderr, result_repr, artifacts[], outcome_class,
@@ -70,14 +78,22 @@ Every `execute_code` invocation:
 large becomes an artifact `BlobRef` (003 §3). An agent that prints a 200 MB dataframe gets a
 truncation notice, not an OOM'd host.
 
-## 4. Workspace and artifacts
+## 4. Worktree and artifacts
 
-- A **workspace** is a mounted directory, per-session or per-run, granted via `FsRead`/`FsWrite`
-  with a quota. It is the only sanctioned persistence across executions.
-- **Artifacts** — files the code writes to a designated output area — are collected, digested,
-  content-addressed, and surfaced as parts (003) so a chart or CSV flows into the conversation and
-  into A2A artifacts (012) without a special case.
-- **Inputs** are mounted read-only by `BlobRef`, never copied through the prompt.
+Files are the **worktree** (025) — durable engine state, not sandbox state:
+
+- `/work` (read-write, quota'd), `/input` (read-only mounts), `/out` (artifacts) — ordinary
+  directories inside the guest, granted through `FsRead`/`FsWrite` capabilities scoped to subtrees.
+- **Files survive everything the sandbox does not**: destruction, passivation, process restart, node
+  migration, and a change of profile. This is the property that makes §2's backend choice a
+  performance-and-ecosystem decision rather than a data-loss decision.
+- **Artifacts** written under `/out` are collected, digested, content-addressed, and surfaced as
+  parts (003) so a chart or CSV flows into the conversation and into A2A artifacts (012) with no
+  special case.
+- **Inputs** are mounted, never pasted into the prompt: a 40 MB CSV costs a mount, not a context
+  window.
+- Multiple agents in one session share the worktree or branch from it (025 §3), which is how
+  concurrent agents collaborate on one set of files without corrupting each other.
 
 ## 5. Packages
 
@@ -93,9 +109,16 @@ Package availability is **operator policy, never model choice** (I3):
 grants both the policy and the egress. A model that asks for a missing package receives a
 structured error naming the policy, which is a better failure than a silent network call.
 
-## 6. The `call_tool` bridge (CodeAct)
+## 6. Tools from code (CodeAct)
 
-- Available only when the `ToolCall` capability is granted for the execution.
+**The surface is ordinary Python, not a bridge API** — `from agent import tools` and then
+`tools.web_search(query=...)`, with real signatures, type hints, docstrings and typed results
+generated from tool metadata (026 §4). A `call_tool("name", {...})` indirection would force the
+model to guess argument shapes it cannot see; a normal function signature is knowledge it already
+has. The enforcement below is unchanged by that choice — only the spelling differs.
+
+- Available only when the `ToolCall` capability is granted for the execution; ungranted tools are
+  simply absent from the module rather than present and failing.
 - Calls from inside the sandbox execute at the **sandbox's trust tier (T3)**, with the sandbox's
   capability set — never the agent's (007 §6). Otherwise the sandbox would be a privilege-escalation
   gadget rather than a boundary.
@@ -131,8 +154,10 @@ traces are comparable across frameworks.
   `ctypes`, `/proc` and registry probing, symlink escape from the workspace, egress to
   `169.254.169.254`, fork bomb, memory bomb, output flood, `sys.settrace` shenanigans) is contained
   on every backend, with positive controls proving the tests are not vacuous.
-- **G3 (state isolation)** — a variable, an open file handle, a background thread, and a monkeypatch
-  from execution *n* are all absent in execution *n+1*, including on pooled/snapshot backends.
+- **G3 (state boundary)** — within a session, a variable defined in execution *n* is present in
+  *n+1*; across sessions, a variable, open handle, background thread, monkeypatch, or file written by
+  session A is unreachable from session B on every backend, including pooled and snapshot-restored
+  ones (008 §9 G7).
 - **G4 (bridge)** — a bridged `call_tool` cannot reach a capability the sandbox lacks but the agent
   holds; proven with a deliberately over-privileged control that the check catches.
 - **G5 (budget)** — cold and warm `execute_code` p50/p99 per profile against 023.

@@ -50,6 +50,17 @@ is a tested invariant, not a convention.
   library becomes *safer* as a plugin than as a linked host dependency.
 - **A Python interpreter that can actually `import numpy`.** The runtime choice is grounded in
   dated research rather than fashion: see [the decision](#the-sandbox-decision).
+- **Files outlive the sandbox.** Every session owns a **worktree** — a content-addressed virtual disk
+  the engine manages — so persistence, rewind, and multi-agent sharing are engine properties, not
+  properties of whichever isolation technology is selected. Agents in one session share it or branch
+  from it with an explicit merge.
+- **CodeAct is the action space.** The agent's primary way of acting is writing a program that calls
+  a host-backed library, not emitting one tool-call JSON per step — so control flow and large
+  intermediate data stay inside the sandbox instead of transiting the context window.
+- **An unremarkable environment.** Normal Python, normal paths, normal exceptions, and *zero* prompt
+  text about sandboxes or capabilities. A model has seen millions of lines of ordinary Python and
+  none of our architecture. This is a prompt-surface choice and never a security mechanism — proven
+  by re-running the hostile suite against an agent that has been *told* the architecture.
 - **Standards-native.** MCP `2026-07-28` (stateless core, MRTR), A2A v1.0, AG-UI, OTel GenAI — each
   with a named revision and an executable conformance suite. "Supports MCP" without a passing suite
   is not a claim this project makes.
@@ -138,6 +149,8 @@ Start with the [specification](AgentEngineSpecification.md), then
 | 022 | [Testing and Evaluation](022-Testing-and-Evaluation.md) | Deterministic simulation, golden traces, evaluation, positive controls | Draft |
 | 023 | [Performance Targets and Budgets](023-Performance-Targets-and-Budgets.md) | Budget classes, provisional numbers, machine-independent invariants | Draft |
 | 024 | [Versioning, Compatibility and Governance](024-Versioning-Compatibility-and-Governance.md) | Versioning, deprecation, the decision process, RFC hygiene | Draft |
+| 025 | [Worktree and Virtual Filesystem](025-Worktree-and-Virtual-Filesystem.md) | The session's virtual disk: content-addressed objects, sub-worktrees, sharing and merge, mounts, per-turn commit | Draft |
+| 026 | [Agent-Facing Runtime Surface](026-Agent-Facing-Runtime-Surface.md) | What the model sees: the ordinary environment, plain Python, and the `agent` library that *is* CodeAct's action space | Draft |
 
 Supporting documents: [`OpenQuestions.md`](OpenQuestions.md) (cross-cutting unresolved questions),
 [`decisions/`](decisions/) (the ADR process and record), and the dated, cited research records —

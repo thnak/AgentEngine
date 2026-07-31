@@ -134,17 +134,103 @@ adopting it as a host dependency must say why the plugin path was rejected.
 
 ## 8. Skills
 
-A **skill** is a plugin kind (`ae:skill`) that bundles instructions, tools, and resources an agent
-loads on demand — the "give the agent a new competence" unit. It is deliberately the same artifact
-and the same trust pipeline as any other plugin: signed, capability-declaring, revocable.
+A **skill** bundles instructions, resources, and optional scripts that give an agent a competence on
+demand. Four different things in this ecosystem share the word, so this section states precisely
+which one we implement.
+
+### 8a. The interchange format is `SKILL.md` (agentskills.io)
+
+**Adopted as the skill format of record.** It is a genuine open standard — published at
+`agentskills.io/specification`, Apache-2.0, originally authored by Anthropic and released as an open
+standard in December 2025 — and it is implemented by both Anthropic's products and Microsoft Agent
+Framework with the *identical* directory layout and frontmatter. Adopting anything else would mean
+being incompatible with the entire existing skill corpus for no benefit.
+
+```
+skill-name/
+├── SKILL.md          # YAML frontmatter + Markdown instructions (the frontmatter IS the manifest)
+├── scripts/          # optional executable code
+├── references/       # optional documentation
+└── assets/           # optional templates and resources
+```
+
+Frontmatter: **`name`** (required, 1–64 chars, `a-z0-9` and hyphens, no leading/trailing hyphen, no
+`--`, **must match the directory name**), **`description`** (required, 1–1024 chars, stating what it
+does *and when to use it*), `license`, `compatibility`, `metadata` (string→string), `allowed-tools`
+(space-separated, marked experimental upstream).
+
+Two properties of the format we must handle rather than assume away:
+
+- **There is no `version` field.** Convention places it in `metadata.version`. Our loader records
+  the package digest as the real identity and treats `metadata.version` as a label.
+- **The spec is prose plus a constraints table** — no JSON Schema, no RFC-2119 language, and no
+  version identifier on the specification itself. Our importer therefore validates against the
+  constraints explicitly and rejects rather than guessing.
+
+### 8b. Progressive disclosure comes free from the worktree
+
+The format's three-level disclosure — ~100 tokens of `name` + `description` for every skill, the
+`SKILL.md` body on activation (target < 5 000 tokens), bundled files only on demand — is exactly the
+shape an ordinary filesystem affords. So skills are **mounted read-only at `/skills/<name>`**
+(025 §3) and the agent reads them with ordinary file operations (026 §6). We do not introduce
+`load_skill` / `read_skill_resource` tool wrappers; the mount is the mechanism.
+
+The token property that makes skills worth having is preserved: a bundled script's **stdout enters
+the context, its source does not**.
+
+### 8c. Executable skills are plugins
+
+A skill that ships **code** is packaged as an `ae:skill` plugin (§3) and inherits the whole trust
+pipeline: signed, capability-declaring, operator-approved, digest-pinned, revocable. A skill that is
+pure instructions and references needs no component and is mounted directly.
+
+**`allowed-tools` is advisory, never a grant.** Upstream marks it experimental and its support
+varies by runtime — Anthropic's own Agent SDK documents that it is not honoured through the SDK and
+that skill filtering "is a context filter, not a sandbox". We treat it as a *request* to be
+reconciled against the operator's grant, exactly like a plugin manifest (§3): the manifest declares,
+the operator grants, capabilities enforce (007 §3).
+
+**Skill names are labels, not identifiers.** Skills are namespaced per origin so a skill fetched
+from a remote source can never shadow a local one — a shadowing attack is otherwise trivial.
 
 Skill loading is dynamic but **snapshotted per run** (006 §6): a skill loaded mid-run does not
 retroactively change what earlier turns were permitted to do.
 
-Interop with external skill conventions (Anthropic's `SKILL.md` packaging, MAF's agent skills, and
-anything MCP standardizes) is an **importer**, not a second mechanism: an external skill package is
-converted into an `ae:skill` at load, subject to the same approval. The exact mapping is pending the
-MCP/skills research feeding RFC 011.
+### 8d. Skills over MCP: we specify nothing yet, deliberately
+
+Verified against the specification, the schema, and the extension registry: **there is no skill
+primitive in MCP at `2026-07-28`, and no official MCP extension for skills.** The string does not
+appear in the normative schema.
+
+What exists is a **Skills Over MCP Working Group** (formed February 2026, promoted to a WG in April)
+whose current direction is **SEP-2640, an unmerged Draft** on the Extensions Track that would add
+`io.modelcontextprotocol/skills` with `skills/list` and `skills/get` over a `skill://` URI scheme.
+Its design **has already changed once**: the earlier `skill://index.json` discovery approach was
+superseded — and Microsoft's shipped, experimental `UseMcpSkills` / `MCPSkillsSource` implements the
+*superseded* design. The MCP roadmap places skills under "On the Horizon", explicitly not a priority.
+
+**Therefore we implement no skills-over-MCP conformance.** What we do instead is cheap and
+sufficient: keep extension negotiation (011 §3.6) general enough that
+`io.modelcontextprotocol/skills` slots in as configuration when and if it lands. Building against a
+Draft whose wire shape has already turned over once would be building a migration.
+
+One clause from that draft is worth adopting *now*, on its merits, whatever happens to the SEP:
+
+> Hosts **MUST NOT** treat a digest match as a security boundary — digests are unsigned and
+> server-supplied.
+
+That is exactly why §3 requires signatures and §4 verifies them before parsing anything.
+
+### 8e. What "skill" does *not* mean here
+
+- **A2A `AgentSkill`** (012) is a discovery record inside an Agent Card — `{id, name, description,
+  tags, examples}`. No `SKILL.md`, no instructions body, no bundled files, no progressive
+  disclosure. Functionally it is closer to an MCP `Tool` listing than to a skill in this section's
+  sense. Pure vocabulary collision; the two must never be conflated in code or documentation.
+- **Semantic Kernel "skills"** were renamed to *plugins* years ago and mean a group of functions —
+  i.e. our tools, not our skills.
+
+Details and sources: [`docs/research/2026-mcp-ecosystem.md`](docs/research/2026-mcp-ecosystem.md).
 
 ## 9. Observability
 

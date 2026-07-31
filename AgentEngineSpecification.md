@@ -136,6 +136,42 @@ v1 ships **C++23 CRTP-policy authoring** (002) and the **declarative YAML/JSON f
 bound by I6. Python and .NET bindings are explicitly deferred, not designed out: the C ABI in 020
 is the seam they will use.
 
+### D4 — Files belong to the worktree, not to the sandbox
+
+Every session owns a **worktree** (025): a content-addressed virtual disk the engine manages,
+durable through Quark's `Store` seam, mounted into sandboxes as ordinary directories. Multiple agents
+in one session share it or branch from it with an explicit merge.
+
+The reason this is a locked decision rather than an implementation detail: if files live inside the
+sandbox, then persistence, crash survival, portability across profiles, shareability between agents,
+auditability, and rewind all become properties of whichever isolation technology is selected.
+Hoisting them into engine state makes file semantics **identical on every profile and every OS**, and
+makes the sandbox genuinely disposable — which is what allows 008's backend choice to be a
+performance-and-ecosystem decision rather than a data-loss decision.
+
+The sandbox itself is **session-scoped** (008 §6): it lives with the session's actor, so a
+conversation keeps its interpreter state across turns. The isolation boundary that matters is
+*between sessions*, and cross-session reuse is prohibited in every profile.
+
+### D5 — CodeAct is the primary action space, and the environment is unremarkable
+
+The agent's main way of acting is **writing a program** that calls a host-backed library
+(`agent.tools`, `agent.files`, `agent.memory`, …), not emitting one tool-call JSON object per step
+(026 §5). Control flow, filtering, and aggregation happen inside the sandbox; only results transit
+the context window. The tool-call channel remains for single high-consequence actions, where an
+approval over one call with concrete arguments is reviewable in a way that an approval over a whole
+program is not.
+
+That surface is **deliberately ordinary**: normal Python, normal paths, normal exceptions, and **no
+prompt text explaining sandboxes, capabilities, or profiles** (026 §1). A model has seen millions of
+lines of ordinary Python and none of our architecture; describing the architecture costs tokens on
+every turn, competes with the actual task for attention, and does not make the model better at it.
+
+**This is a prompt-surface decision and never a security mechanism.** Assume the model knows it is
+isolated, assume an attacker tells it, assume it probes — 007 and 008 hold regardless. RFC 026 §8 G4
+proves it by re-running the full hostile suite against an agent that has been given accurate
+architecture detail: containment results must be identical.
+
 ## 6. Vocabulary
 
 | Term | Meaning |
@@ -145,7 +181,8 @@ is the seam they will use.
 | **Run** | One invocation of an agent against a session, producing a response (possibly streamed) and zero or more effects. The unit of tracing, checkpointing, and replay. |
 | **Turn** | One model call plus the tool invocations it triggers, inside a run. |
 | **Tool** | A declared, schema-typed capability an agent may invoke. Backed by a native function, a WASM component, an MCP server, or a remote agent. |
-| **Skill** | A named bundle of instructions + tools + resources an agent can load on demand. A plugin package kind. |
+| **Skill** | A bundle of instructions, resources, and optional scripts giving an agent a competence on demand. Format of record is `SKILL.md` (agentskills.io); skills that ship code are packaged as plugins. |
+| **Worktree** | The session's virtual disk: a content-addressed object store plus a mutable tree, owned by the engine and mounted into sandboxes. Agents share it or branch from it. |
 | **Capability** | An unforgeable handle authorizing one class of effect (a mounted path, an outbound host, a secret, a tool). Held by the host, passed explicitly, never inferred. |
 | **Sandbox** | An isolation boundary instance with an attached capability set and resource limits. Created per execution; profiles select the backend. |
 | **Profile** | A named sandbox configuration (`wasm`, `native-jail`, `microvm`, `remote`) resolved at startup to a backend + limits. |
@@ -165,6 +202,8 @@ verbatim where it appears; AgentEngine does not rename it.
 | Run | Ask-message to the session actor; `ask_stream` when streamed | Quark 006, ADR-018 |
 | Streaming response | `ask_stream` reply-credit-ring | Quark 006/024 |
 | Session history durability | `Store` seam — snapshot + event-sourced | Quark 012 |
+| Worktree objects and refs | Same `Store` seam, content-addressed | Quark 012 |
+| Live sandbox bound to a conversation | Sandbox owned by the session actor; passivation drives snapshot/teardown | Quark ADR-028/034 |
 | Long-running / scheduled agents | Durable reminders (SEGSTREAM) | Quark 027 |
 | Tool invocation | Message to a tool actor / stateless worker pool | Quark 025 |
 | Multi-node agent placement | HRW / VirtualBins placement | Quark 010/026 |

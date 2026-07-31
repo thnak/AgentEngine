@@ -80,6 +80,35 @@ A2UI is additive. AP2 and X42 would touch 007 and 018 structurally — payments 
 work, and a corpus without an owner and a cadence decays into a fixed set of attacks that the code
 has been tuned against.
 
+## 🟠 OQ-12 — A second WASM runtime?
+
+008 §1a rejects `wasm3` for the plugin ABI: it has only partial Component Model and WASI P2 support,
+which is the one axis the ABI depends on. But its advantages are real — best-in-class cold start,
+tiny footprint, portability down to microcontrollers — and they matter for two niches: ultra-short
+high-frequency guest calls (a content filter evaluated per message) and constrained deployments where
+Wasmtime's footprint is prohibitive.
+
+A second runtime behind the same host interface means **two sandbox-escape surfaces and two
+conformance stories**. That is a real cost, and the benefit is currently an assumption: the cited
+cold-start comparison is generic, not measured on our workload. Blocked on a 023-budget measurement
+before it is even a candidate.
+
+## 🟠 OQ-13 — Worktree merge policy for concurrent agents
+
+025 §4 fails a merge on conflict and surfaces it, retaining both versions. Two unresolved parts:
+whether the *model* should be offered conflict resolution as a task (it is often capable, and it is
+also a good way to lose work silently), and whether `shared` mode should be permitted at all for
+concurrent siblings — single-writer serialization makes it *safe* but still means an agent's files
+change under it between reads.
+
+## 🟠 OQ-14 — In-sandbox library surface area
+
+026 §5 makes the `agent` library the CodeAct action space, which means every module added widens both
+what the agent can accomplish and the host's attack surface. `agent.spawn` is the sharpest case:
+model-written code creating runs is powerful and is a recursion-and-cost hazard; depth and budget
+bounds are necessary and not obviously sufficient. There is no principle yet for what earns a place
+in the library beyond case-by-case justification.
+
 ## 🟡 OQ-11 — Licence and governance
 
 024 Q1/Q3/Q4. Licence (MIT assumed, matching Quark), release cadence versus Quark, ADR judging
