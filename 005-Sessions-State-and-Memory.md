@@ -79,19 +79,26 @@ durable log (event-sourced mode) and is addressable for audit and time-travel. C
 audited, attributed operation with its own span. A compaction that drops a pending tool-call/result
 pair is a defect (checked).
 
-## 5. Memory providers
+## 5. Context providers
 
-A memory provider contributes context and observes turns:
+**Terminology (027 §3):** there is one seam for "contribute to the context before the model is
+called", named `ContextProvider` after MAF. Memory, history, skills, and retrieval are *kinds* of
+context provider, not parallel concepts. An earlier draft of this RFC specified a separate
+`MemoryProvider`; that was two seams doing one job and is superseded.
 
 ```cpp
-struct MemoryProvider {
-    ae::task<result<MemoryContribution>> on_context(SessionView, EffectContext&);
+struct ContextProvider {
+    ae::task<result<ContextContribution>> on_context(SessionContext&, EffectContext&);
     ae::task<> on_turn_end(TurnView, EffectContext&);
 };
 ```
 
-Kinds: **working** (in-session scratch), **episodic** (past sessions of this principal),
-**semantic** (retrieval over a corpus), **procedural** (learned instructions/skills).
+Kinds: `HistoryProvider` (conversation history) · `SkillsProvider` (009 §8) · **working** memory
+(in-session scratch) · **episodic** (past sessions of this principal) · **semantic** (retrieval over
+a corpus) · **procedural** (learned instructions).
+
+This is also the seam CodeAct attaches to, matching the integration point MAF settled on — which is
+why keeping it singular matters (010, 026).
 
 **Rules:**
 

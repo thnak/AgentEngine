@@ -8,10 +8,15 @@ One seam between the engine and every inference API, modelled on **capabilities*
 any vendor's request shape — so that adding a provider is implementing a declared capability set,
 and an agent's behaviour degrades explicitly (never silently) when a provider lacks one.
 
+> **Terminology note (027 §5).** The type is named **`ChatClient`**, matching MAF, not `Provider` —
+> "provider" is colloquially the model *vendor*, and overloading it for the seam invites confusion.
+> This RFC's title and prose still say "provider" in places; that is tracked terminology debt
+> (027 §7), and `ChatClient` is the name of record.
+
 ## 1. The seam
 
 ```cpp
-struct Provider {                                   // concept, not a base class
+struct ChatClient {                                 // concept, not a base class
     ProviderCapabilities capabilities() const noexcept;
     ae::task<result<ChatResponse>>  chat(ChatRequest, EffectContext&);
     ae::stream<ChatResponseUpdate>  chat_stream(ChatRequest, EffectContext&);
