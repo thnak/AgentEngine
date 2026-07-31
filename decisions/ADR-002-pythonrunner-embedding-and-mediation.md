@@ -1,6 +1,7 @@
 # ADR-002 — How does embedded CPython enforce a closed import allowlist and mediate `open`/`socket`/`subprocess` for allowed modules, robustly rather than as a blocklist that degrades?
 
-- **Status:** Design (no red-team, no prove, no judge yet — this ADR is a design-phase artifact only)
+- **Status:** Design, revised post-red-team (§5.5 closes 7 must-fix/real-gap findings from §7; §7
+  itself is left exactly as written, as the historical record). No prove, no judge yet.
 - **Date:** 2026-07-31
 - **Depends on:** 008-Sandbox-and-Isolation.md §1b (the two-layer mechanism this ADR makes concrete),
   010-Python-Code-Interpreter.md §1a (`Runner`), §3a (`ExecState`), §5 (package policy), §9 G7 (the
@@ -421,6 +422,120 @@ events is retained only as an **I4 attribution/telemetry layer** (008 §8's obse
 "egress hosts contacted," "bytes in/out") and a secondary catch for any allowed-but-unwrapped call site
 this design missed, never as the thing a security claim depends on.
 
+## 5.5 Amendments closing §7's must-fix findings
+
+Written after the red-team pass (§7) found that the design's central claim — "closed by
+construction" — was not yet true of what §3–§5 actually described, independent of anything the
+prove phase needs to run to find out. §7 itself is left unedited as the historical record; this
+section states the fixes directly, cross-referenced from §10.
+
+### 5.5.1 Finding 7.4.1 — Layer 0's scope must include the raw primitive modules (BLOCKING, closed)
+
+**Fix:** Layer 0's swept-and-restricted set (§3.0) is widened from `{_frozen_importlib,
+_frozen_importlib_external, _imp, builtins, sys, _thread}` to also include **`nt`/`posix`, `_io`,
+`_socket`, `_winapi`/`_posixsubprocess`** — verified against CPython 3.13 source (§7.4.1) as the
+exact raw modules `os`, `io`, `socket`, and `subprocess` are thin re-exports of. The same two
+options §3.0 already poses for `_imp` apply verbatim: either removed from guest-visible
+`sys.modules` entirely (with the host holding the real function references for its own wrappers'
+internal delegation, never re-exposed as an importable name), or replaced with a restricted proxy.
+Which is workable without breaking `os`/`io`/`socket`/`subprocess`'s own legitimate internal use of
+these modules is added to §6 as open questions 7–10 (below) — the same "needs a real embedding
+experiment, not resolvable by reading docs" shape as the existing `_imp` question (§6 item 4), now
+extended to four more modules. **This does not change the combined design's shape** — Layer 0
+remains the right place for the fix; its stated scope was wrong, not its mechanism.
+
+### 5.5.2 Finding 7.7 — every enforcement object must be a pure C type (BLOCKING, closed)
+
+**Fix:** §3.4 item 1's "a C-implemented type" requirement — stated there only for the meta-path
+finder — now applies to **every** enforcement object with a security-relevant decision: the finder,
+the `builtins.__import__` wrapper, the `importlib.import_module` wrapper, and the
+`open`/`socket`/`subprocess`-family wrappers (§5). Each must be a pure C type or `PyCFunction` with
+**no Python-visible mutable state** — no instance `__dict__` (verify `tp_dictoffset == 0`), no
+`__globals__` holding any decision-relevant name (a C function has no `__globals__` at all; this
+rules out implementing a wrapper as a Python closure/function even one that only *reads* host state
+through a capsule, if that read is reachable by rebinding a global the read depends on), no
+`__closure__` cells. This closes the attribute-shadowing (`sys.meta_path[0].find_spec = ...`) and
+`__globals__`-rebinding attacks §7.7 demonstrates pass the identity check while defeating the
+checked object's actual behavior.
+
+**The per-call reassertion (§3.4 item 3) is strengthened accordingly**: in addition to the existing
+identity checks (`meta_path[0]`, `builtins.__import__`, `sys.modules`'s key set), it now also
+verifies, for every enforcement object, that it still exposes no writable instance `__dict__`
+(`type(obj).__dictoffset__ == 0`, or equivalently that attribute access for an unexpected name
+raises `AttributeError` rather than succeeding) — catching the case where identity holds but the
+object's own mutable-state guarantee has somehow been defeated (e.g., a future maintenance change
+that accidentally gives one of these types a `__dict__`), rather than trusting a property that was
+true at setup time to remain true implicitly.
+
+### 5.5.3 Finding 7.4.2 — structural filesystem operations need the same mediation as content I/O (real gap, mechanism extended)
+
+**Fix:** The wrapped set in §5 is extended from the content-I/O trio (`open`/`io.open`/`os.open`) to
+also cover the structural operations that never call `open` at all: `os.mkdir`/`os.makedirs`,
+`os.rmdir`, `os.remove`/`os.unlink`, `os.rename`/`os.replace`, `os.symlink`/`os.link`,
+`os.chmod`/`os.truncate`, `os.scandir`/`os.listdir`/`os.walk`, `shutil.rmtree`/`shutil.move` — same
+mechanism as `open`'s wrapper (resolve through `FilesystemAdapter` + `CapabilitySet`'s `for_write`
+distinction before delegating to the real primitive), not a new one. This closes the
+capability-granularity violation §7.4.2 names: an `FsRead`-only call could otherwise delete, rename,
+or create directories via a path that structurally never touches the wrapped `open`.
+
+### 5.5.4 Finding 7.4.3 / 7.5 (mmap) — capability freshness governs acquisition, not continued use (stated as a limitation, not solved)
+
+**Decision, not a deferral:** this design does **not** attempt to track and revoke already-issued
+handles (file objects, sockets, `mmap.mmap` mappings) when a subsequent call's capability set
+shrinks — building and maintaining a live-handle registry precise enough to do this safely is a
+larger mechanism than this ADR's scope, and grafting it on partially would be worse than stating the
+limitation plainly. **`EffectContext`'s capability freshness (§3.4's closing paragraph) is
+acquisition-scoped only**: a capability grant governs whether *creating* a new handle at this call
+succeeds; it says nothing about a handle already created under a broader grant in an earlier call,
+which remains usable for the rest of the session's lifetime unless the whole interpreter is torn
+down. This is a materially weaker guarantee than "capability freshness" read in isolation implies,
+and is now stated as such rather than left to be discovered. `mmap.mmap`/`numpy.memmap` additionally
+have no per-byte-access mediation or audit-hook visibility at all once mapped (008 §8's "bytes
+in/out" observability requirement is unsatisfiable for mmap-based I/O by anything in this design) —
+recorded as a known, permanent gap for this mechanism, not something the prove phase is expected to
+close.
+
+### 5.5.5 Finding 7.6 — setup must be C-API-only (real gap, closed as a stated constraint)
+
+**Fix:** the entire delegation-target capture sequence at lockdown (capturing the real `__import__`,
+the three standard finders, the real `open`/`socket`/etc.) must be done via C API calls only
+(`PyObject_GetAttrString`/`PyDict_GetItemString`, immediately handed to host-side C++ storage) —
+**no Python source string is executed as part of capturing a delegation target**, and no exception
+handler wrapping any part of setup may retain a traceback (directly, or via `PyErr_Print()`'s
+documented side effect of setting `sys.last_traceback`/`sys.last_exc`) that references a frame which
+ever held a Python-level binding to a delegation target. This closes §7.6's concrete finding: a
+`try`/`except`-wrapped bootstrap script, or the host's own error-reporting path calling
+`PyErr_Print()` on a setup failure, can otherwise pin a guest-reachable reference to the un-gated
+`__import__` even when the "real" implementation stores the reference host-side afterward.
+
+### 5.5.6 Finding 7.8 — the single-allowlist mechanism requires one process per session (decision, closed)
+
+**Decision:** §3.4's "current effective allowlist" is a **single host-side slot**, which is only
+safe if at most one session's interpreter can be mid-execution against it at any instant. This
+design **requires one OS process per session** (or, equivalently, per-process state with no
+subinterpreter pooling) as its scope — `Py_NewInterpreterFromConfig`/`PyInterpreterConfig_OWN_GIL`
+subinterpreter pooling within a single process (§6 item 5) is **not adopted by this design** unless
+and until it is resolved as its own follow-up: doing so would require the single global slot to
+become a per-interpreter-keyed store and the audit hook to resolve "which session" from
+`PyInterpreterState_Get()` rather than trusting ambient state, which is a bigger change than "swap
+the isolation primitive" and is out of scope here. §6 item 5 is retained as a real open question,
+now stated with this dependency attached rather than read as a narrow compatibility check.
+
+### 5.5.7 Finding 7.9 — `ExecState` concurrency under guest-spawned threads (decision, closed)
+
+**Decision:** rather than adding a mutex to `ExecState` (a spec-level change to
+`include/agentengine/sandbox/runner.hpp` outside this ADR's read-only scope, and one that would also
+need `ShellRunner`'s side of every mediated access audited) or accepting an unbounded data race,
+this design excludes `threading`/`_thread` from the default `preinstalled` allowlist. Guest code
+cannot spawn an OS thread that outlives its `run()` call and races a subsequent call's mediated
+`ExecState` access, because the module is simply absent (`agent`-library "ungranted module is
+absent" pattern, 026 §5) until a future capability explicitly names and scopes thread-spawning —
+which needs its own concurrency story (most plausibly a mutex on `ExecState`, held by every mediated
+read/write from any thread) before it is granted by default. This is recorded as a **spec-update
+recommendation** (§10): `runner.hpp`'s `ExecState` should eventually document this constraint
+explicitly (no synchronization primitive today, and none is needed while thread-spawning is
+excluded from the default allowlist) rather than being silent on concurrency.
+
 ## 6. What a real embedding experiment must resolve — not answerable by design reasoning alone
 
 Flagged explicitly per the task brief, because guessing wrong on any of these would ship a mechanism
@@ -457,21 +572,631 @@ that looks correct on paper and silently doesn't hold:
    given that per-interpreter-GIL support in C extensions is a relatively new CPython feature and not
    every extension on PyPI has been updated for it. This is a yes/no question about the *specific*
    numpy/pandas versions already installed at `C:\Users\thanh\miniconda3`, answerable only by trying it.
+   **Revised per §5.5.6 (finding 7.8):** answering "yes" here does not, by itself, make subinterpreter
+   pooling adoptable — it also obligates turning §3.4's single host-side allowlist slot into a
+   per-interpreter-keyed store and the audit hook into a `PyInterpreterState_Get()`-resolving lookup,
+   a materially bigger change than a compatibility check. This design does not adopt subinterpreter
+   pooling (§5.5.6); this item stays open only for a genuine follow-up, not for the current ADR.
 6. **Whether the `RealDirectoryFilesystemAdapter`'s canonicalize-then-prefix-check ordering is actually
    TOCTOU-safe on Windows** (reparse points, 8.3 short names, ADS, `\\?\` prefixes are Windows-specific
    escape vectors 025 §5 names but this ADR's sketch has not been proven against on the actual
    filesystem) — needs the hostile-path corpus 008 §7/025 §5 describe run against the real adapter.
+7. **(Added §5.5.1, finding 7.4.1) Whether `nt`/`posix`, `_io`, `_socket`, and
+   `_winapi`/`_posixsubprocess` can be removed from guest-visible `sys.modules` (or replaced with
+   restricted proxies) without breaking the `os`/`io`/`socket`/`subprocess` modules' own legitimate
+   internal use of them** — the same shape of question as item 4, extended to four more modules that
+   `os`/`io`/`socket`/`subprocess` are themselves thin re-exports of (§7.4.1), so removing the raw
+   module risks breaking the very wrapper built on top of it if the wrapper's own implementation
+   still expects to reach the raw name.
+8. **(Added §5.5.2, finding 7.7) Whether `tp_dictoffset == 0` (or the equivalent "no writable
+   instance `__dict__`") is reliably checkable and stable across the CPython 3.13.5 embedding for a
+   custom C-implemented finder/wrapper type** — needed for the strengthened per-call reassertion to
+   actually verify the "pure C type" property continuously rather than assume it holds because it
+   held at setup.
+9. **(Added §5.5.3, finding 7.4.2) Whether wrapping `os.scandir`/`os.listdir`/`os.walk` at the
+   Python level is sufficient, or whether these (like `pandas.read_csv`) have their own C-level
+   fast paths that reach `nt`/`posix`'s directory-listing primitives directly** — the same class of
+   question §7.4.1 answered for `open`/`socket`/`subprocess`, not yet checked for the directory-
+   listing family specifically.
+10. **(Added §5.5.7, finding 7.9) Whether excluding `threading`/`_thread` from the default allowlist
+    is compatible with numpy/pandas's own internal use of threading** (some BLAS backends and
+    pandas operations use thread pools internally) — if `numpy`/`pandas` themselves import
+    `threading` as part of ordinary operation, excluding it wholesale may not be viable, and the
+    concurrency story for `ExecState` (§5.5.7) would need to be resolved with a real mutex instead,
+    which is a spec change to `runner.hpp` outside this ADR's scope.
 
-These six are the ones this ADR is explicit it cannot settle by argument; they are exactly the shape of
+These ten are the ones this ADR is explicit it cannot settle by argument; they are exactly the shape of
 question the prove phase exists for, and are distinct from the ordinary falsifiable claims in §4 (which
-this design predicts the *outcome* of, sometimes predicting failure) — for these six, the design
+this design predicts the *outcome* of, sometimes predicting failure) — for these, the design
 genuinely does not know the answer, and it would be dishonest to guess.
 
 ## 7. Red-team attack
 
-*(Not performed — this ADR is design-phase only. The next phase attacks §3's designs, with §3.2's
-predicted `importlib.import_module` bypass, §3.3's closure-reachability finding, and §6's six open
-questions as the most productive places to start, per the task brief's explicit scoping.)*
+Method: attack §4's claims one by one, then §3.3's tamper-resistance argument, §3.4 item 3's
+reassertion mechanism, and §6's six open questions for hidden dependencies, per the task brief.
+Every claim about CPython 3.13 behaviour below is checked against the actual CPython 3.13 stdlib
+source (`Lib/io.py`, `Lib/socket.py`, `Lib/os.py`, `Lib/subprocess.py`, `Lib/pathlib/_local.py`,
+fetched 2026-07-31 from `github.com/python/cpython`, branch `3.13`) or the numpy/pandas `main`
+branch C and Python sources (fetched 2026-07-31 from `github.com/numpy/numpy` and
+`github.com/pandas-dev/pandas`) — not asserted from memory, matching this project's research
+discipline. **Caveat on the numpy/pandas sources**: these were fetched from each project's current
+development branch, not pulled from the pinned binaries actually installed at
+`C:\Users\thanh\miniconda3`. The structural facts found here (which C modules back which Python
+convenience layer) are stable, long-standing CPython/numpy/pandas architecture, not something that
+changed recently, but the prove phase must still confirm against the literal installed build before
+relying on it operationally.
+
+### 7.0 Summary table
+
+| § | Target | Verdict | Severity |
+|---|---|---|---|
+| 7.4.1 | Layer 0 scope (§3.0, §5) — `_io`/`_socket`/`nt`\|`posix`/`_winapi`\|`_posixsubprocess` | **New finding: confirmed, severe bypass** | Breaks core safety claim for open/socket/subprocess mediation as currently specified — must fix before prove |
+| 7.5 | pandas `read_csv` C engine / `numpy.fromfile` / `ndarray.tofile` calling C `fopen` directly | New finding: **hypothesis refuted** for these paths — mediated correctly | Design holds, conditional on wrapper being a live dict mutation (stated explicitly) |
+| 7.5 | `numpy.memmap`, `mmap.mmap` generally | New finding: confirmed gap | Real gap, survivable with a caveat — but connects to 7.9 |
+| A1 | cold-path denial | Attempted, design holds | — |
+| A2 | transparency of allowed imports | Attempted; minor functional (non-security) caveat found | Cosmetic |
+| A3 | pre-cached name bypasses finder | Confirmed as ADR already predicted | Documented limitation, not new |
+| A4 | tamper-then-next-call detection | Holds only if 7.7's finder/wrapper mutability gap is closed | Depends on 7.7 |
+| A5 | Layer 0 sweep completeness | Sharpened heavily — see 7.4.1 | See 7.4.1 |
+| B1–B3 | `__import__` override claims | Attempted, design holds / already-predicted-false (B2) confirmed plausible | — |
+| C1 | audit hook fires under Python-level tampering | Holds for first-load case; cache-hit case still open (§6 item 3) | Sharpens existing §6 item |
+| C2/C3 | open/socket/subprocess syscall-level mediation | Subsumed by 7.4.1; also incomplete for non-`open` filesystem primitives | See 7.4.1, 7.4.2 |
+| 7.4.2 | Directory/metadata filesystem primitives (`os.mkdir`, `shutil.rmtree`, `os.scandir`, …) | New finding: confirmed gap | Real gap, capability-granularity violation, not fully backstopped by layer 3 |
+| 7.6 | §3.3 tamper-resistance (host-side storage) | Sharpened: host-side storage is necessary but not sufficient; setup-code discipline also required | Real gap, survivable with a caveat (implementation constraint) |
+| 7.7 | Per-call reassertion (§3.4 item 3) identity check | New finding: identity check is bypassable via attribute injection on a stateful finder/wrapper object | Breaks core safety claim unless finder/wrapper are pure C types — must fix before prove |
+| 7.8 | §6 items 1/4/5 interaction (subinterpreters × Layer 0 × per-call allowlist) | New finding: a real architectural dependency the ADR didn't connect | Must be resolved before subinterpreter pooling is adopted; not urgent if one-interpreter-per-session-process holds |
+| 7.9 | `ExecState` concurrency under guest-spawned threads | New finding: unspecified, plausible data race | Real gap, needs a spec-level decision (mutex or capability restriction), not just a caveat |
+| 7.10 | Audit-hook argument "proves too little" (allowed-extension `dlopen`) | Attempted; argument holds — no category error, but scope should be stated more precisely | Design holds |
+
+### 7.1 Attacks on Design A claims (§4, A1–A5)
+
+**A1 (cold-path denial).** Attempted. The claim and its experiment are sound as far as they go: a
+name never resident in `sys.modules` and not on the allowlist cannot reach `find_spec` on anything
+but the custom finder, and the custom finder returning `None` as the sole `meta_path` entry
+necessarily produces `ModuleNotFoundError` per the documented protocol. No design-level flaw found.
+One caveat, not a flaw: A1's own canary-file experiment does not by itself establish that *no*
+finder or loader anywhere in the process reaches the planted file — it establishes that the
+*current* `meta_path`/`sys.modules` state doesn't. That composability point is exactly what A3/A5
+and §3.0 already exist to cover, so this is not double-counted as a gap here. **Verdict: design
+holds.**
+
+**A2 (transparency of allowed imports).** Attempted. The proposed disproving experiment (diff
+`__file__`, `__version__`, and a representative call's output between a lockdown interpreter and a
+vanilla one) is real but narrower than "transparent" as stated: a finder-mediated import still
+produces a *different* `__spec__.loader` identity than an unmodified interpreter would for the same
+name, if the finder itself is what returns the spec object rather than perfectly forwarding the
+captured standard finder's own returned spec unmodified. Packages that inspect
+`importlib.util.find_spec`, `pkg_resources`, or `importlib.resources` for data-file discovery (numpy
+and pandas both ship non-`.py` data — numpy's C headers/type stubs, pandas' timezone data via
+`tzdata`) could behave differently under introspection even though ordinary `import numpy` behaves
+identically. This is a **functional**, not a **security**, gap — it doesn't weaken any I2/I3 claim —
+so it does not change A2's verdict, but the disproving experiment as literally written would not
+catch it. **Verdict: design holds for the security claim; note the experiment's blind spot for
+future functional regressions.**
+
+**A3 (pre-seeded/cache-hit bypass).** Not attacked further — the ADR already states this claim is
+*expected to hold* as a documented limitation, closed by Layer 0 + §3.4's continuous checks rather
+than by Design A itself. Confirmed as correctly scoped. **Verdict: holds as already predicted, not a
+new finding.**
+
+**A4 (tamper-then-next-call detection).** Attempted, and the *mechanism* (identity check at next
+call entry) is sound in isolation, but its soundness is conditional on a premise §3.4 does not state
+explicitly: that the objects being identity-checked (`meta_path[0]`, `builtins.__import__`) have no
+Python-visible mutable state of their own. See **7.7** below for a design-level attack that passes
+A4's identity check while defeating the checked object's actual behaviour. **Verdict: holds only if
+7.7 is closed; as specified today, not proven.**
+
+**A5 (Layer 0 sweep completeness).** This is where design reasoning alone gets much further than the
+ADR credits itself for, and where the review's single largest finding lives. See **7.4.1** — the
+short version: the sweep's example set (`_frozen_importlib`, `_frozen_importlib_external`, `_imp`,
+`builtins`, `sys`, `_thread`) is not merely "an example that might need `_imp` resolved specially" as
+§6 item 4 frames it — it omits an entire *class* of equally-necessary, equally-dangerous internal
+modules (`_io`, `nt`/`posix`, `_socket`, `_winapi`/`_posixsubprocess`) that CPython's own stdlib
+source shows are both (a) load-bearing for the interpreter and the very modules (`io`, `os`,
+`socket`, `subprocess`) this ADR proposes to mediate, and (b) themselves complete, unmediated
+bypasses of §5's entire mediation story. **Verdict: A5 as stated is not just unresolved (as §6 item 4
+already says) — design reasoning alone shows it is currently FALSE for the design as specified in
+§5, independent of anything the prove phase needs to run. This is new, not previously flagged.**
+
+### 7.2 Attacks on Design B claims (§4, B1–B3)
+
+**B1.** Attempted; holds for the two entry points it covers, no new issue found beyond what §3.2
+already documents.
+
+**B2.** The ADR predicts this claim is FALSE (`importlib.import_module` bypasses a
+`builtins.__import__`-only override) and cites the actual CPython 3.13 `importlib/__init__.py`
+source for it. Re-derivable by the same reasoning without rerunning it: `import_module` calls
+`_bootstrap._gcd_import` directly, a fact independent of what `builtins.__import__` is bound to.
+**Verdict: the predicted-false claim is confirmed plausible by source inspection; nothing new.**
+
+**B3.** The negative-control design (implement the naive closure version, show `gc.get_referrers()`
+recovers it) is a sound experiment for the specific vector it targets. See **7.6** for why it is not
+the *only* vector into the same class of problem — host-side-only storage of the delegation target
+closes B3's specific mechanism but not every latent-reference mechanism. **Verdict: B3's narrow claim
+holds; the broader tamper-resistance argument built on top of it in §3.3 does not follow as tightly
+as stated.**
+
+### 7.3 Attacks on Layer 0 / cross-cutting claims (§4, C1–C3)
+
+**C1.** The described experiment (tamper fully, then `import ctypes` — a name with no
+`sys.modules` cache entry — in the same call) should hold, because that path necessarily reaches
+`_find_and_load_unlocked`, which the CPython audit-events reference documents as firing the `import`
+event. The claim's blind spot is exactly the one §6 item 3 already names honestly (does the hook
+fire on a `sys.modules` cache-hit path too) — not attacked further here because the ADR already
+correctly scopes it as an open question rather than a claim. **Sharpens, does not add to, §6 item
+3.**
+
+**C2/C3.** See **7.4.1** and **7.4.2** — the syscall-tracing methodology proposed is adequate for
+what it tests, but what it tests (the `builtins`/`io`/`os`/`socket`/`subprocess` convenience-layer
+wrappers) is not the complete guest-reachable surface for any of the three mediated behaviours.
+
+### 7.4 The headline finding: Layer 0 stops at the import-machinery layer, but §5's wrappers sit on top of a *second*, un-swept layer of raw primitive modules
+
+#### 7.4.1 `_io`, `_socket`, `nt`/`posix`, `_winapi`/`_posixsubprocess` — the same `_imp` problem, four more times, unaddressed
+
+§3.0 already found and stated the general principle: *"a name already resident in `sys.modules`... is
+reachable by a plain dictionary lookup that never calls `__import__`... and is therefore invisible to
+either Design A or Design B."* It applied this principle to `_imp` specifically and flagged `_imp` as
+needing host-side-only handling (§3.0 option a/b, deferred to §6 item 4). **It did not apply the same
+principle to the modules that back the exact three behaviours §5 proposes to mediate — and CPython
+3.13's own stdlib source shows the omission is not academic:**
+
+| Convenience layer (what §5 proposes to wrap) | Raw layer underneath (verified against CPython 3.13 source) | Confirms |
+|---|---|---|
+| `io.open`, `builtins.open` | `_io.open`, `_io.FileIO` | `Lib/io.py`: `import _io` then `from _io import (..., open, open_code, FileIO, ...)` — `io.open` and `_io.open` are **the same function object**; `_io.FileIO(path, mode)` constructs a raw unbuffered file directly, with no dependency on `open` at all. |
+| `os.open`, `os.system`, `os.chdir`, `os.mkdir`, … | `nt.open`, `nt.system`, `nt.chdir`, `nt.mkdir`, … (Windows target) / `posix.*` (POSIX) | `Lib/os.py` line 72–75 (Windows branch, matches the `C:\Users\thanh\miniconda3` target): `elif 'nt' in _names: ... from nt import *`. Every `os.*` function this ADR names for mediation is a re-exported binding to the identical function object in the built-in `nt` module. |
+| `socket.socket` | `_socket.socket` | `Lib/socket.py` line 52–53 (`import _socket`, `from _socket import *`) and line 215: **`class socket(_socket.socket):`** — the Python-level class this ADR proposes to wrap via `__new__`/`__init__` is a *subclass* of the raw C socket type, not a wrapper around it. |
+| `subprocess.Popen` | `_winapi.CreateProcess` (Windows) / `_posixsubprocess.fork_exec` (POSIX) | `Lib/subprocess.py` line 81 (`import _winapi`) and line 1554 (`_winapi.CreateProcess(executable, args, ...)` called directly from `Popen`'s internals). |
+
+**The finding, stated plainly:** wrapping `builtins.open`/`io.open`/`os.open` does nothing to stop
+`import _io; _io.FileIO(r"C:\Windows\System32\config\SAM", "r")`. Wrapping
+`socket.socket.__new__`/`__init__` does nothing to stop `import _socket; s = _socket.socket(...)` —
+constructing the *base class* directly, skipping the derived class's overridden constructor entirely.
+Wrapping `subprocess.Popen.__init__` does nothing to stop `import _winapi;
+_winapi.CreateProcess(...)` (or, on the POSIX target, `import _posixsubprocess`). All four are
+one-line, zero-cleverness, ordinary-Python bypasses — not exploit primitives, not memory corruption,
+exactly the same character as the `importlib.import_module` bypass this ADR already found and is
+proud of having found in Design B (§3.2). This is the same class of mistake, missed a second time,
+in the mediation section instead of the import section.
+
+**Why this survives even where §3.0 got close:** §3.0's own prose *names* `_socket` — "numpy/pandas/
+ssl pull in private extension modules like `_socket`, `_ssl`, `_multiarray_umath` as a side effect" —
+as one of the transitively-imported modules the sweep has to reckon with. The ADR identifies the
+fact and stops one inferential step short of connecting it to §5's socket-mediation claim (C2). This
+is not a hypothetical the design failed to imagine; it is a fact the design *stated* and then did not
+finish reasoning about.
+
+**Is this fixable within the design's existing shape, or does the shape need to change?** The good
+news: the fix is a straightforward generalization of a mechanism §3.0 already has, not a new
+mechanism. `nt`/`posix`, `_io`, `_socket`, and `_winapi`/`_posixsubprocess` are, like `_imp`, built-in
+modules loaded by `BuiltinImporter` (one of the three standard finders Design A's custom finder
+already captures and delegates to for allowed names) — so the same two options §3.0 already poses for
+`_imp` (remove from guest-visible `sys.modules` entirely, with the wrapper's own "call the real
+primitive" delegation held host-side; or replace with a restricted proxy) apply verbatim to these
+four. Concretely: Layer 0's swept-and-excluded set needs `nt`/`posix`, `_io`, `_socket`,
+`_winapi`/`_posixsubprocess` added to it, and the custom finder's allowlist must not implicitly
+assume their absence but explicitly deny them, the same way it explicitly denies `ctypes`. **This
+does not invalidate §3.4/§10's combined-design architecture — Layer 0 is exactly the right place for
+this fix to live — but it is a real widening of Layer 0's stated scope, not a footnote.** It also
+reopens, for these four modules, the exact experimental question §6 item 4 already poses for `_imp`
+alone: does removing/restricting them break legitimate use (numpy's `.pyd` loading needs `_imp`
+indirectly; does anything in numpy/pandas/the interpreter's own steady-state operation need a fresh
+`import nt`/`import _io`/`import _socket` after bootstrap, as opposed to using the already-bound names
+inside `os`/`io`/`socket`)? This review does not know the answer and states that plainly rather than
+guessing — it is the same shape of question as §6 item 4, extended to four more modules, not a
+new kind of question.
+
+**Severity: breaks the core safety claim of §5 (C2's claim, and the socket/subprocess analogues) as
+currently specified. Must be fixed — by widening Layer 0's scope, not by redesigning §3.4's
+architecture — before the prove phase, because as written the prove phase's own C2 experiment (a
+syscall trace with the capability denied) would need to additionally attempt the `_io`/`_socket`/
+`nt`/`_winapi` route to even notice the hole; as scoped in §4 today it would not.** This is new, not
+previously flagged in §6 (§6 mentions only `_imp`).
+
+#### 7.4.2 Filesystem structural operations that never call `open` at all
+
+Independent of 7.4.1's primitive-module finding, §5 only proposes wrappers for the read/write-content
+trio (`open`/`io.open`/`os.open`). Verified against CPython 3.13's `Lib/pathlib/_local.py`:
+`Path.open()`/`read_text()`/`write_text()` all route through `io.open()` (line 537) and so are
+covered by that wrapper — but `Path.touch()` calls `os.open()` directly (line 714, covered because
+`os.open` is explicitly in the wrapped set) while `Path.mkdir()` calls `os.mkdir()` directly (line
+722, **not** in the wrapped set). Generalizing past `pathlib` to the same class of `os`/`shutil`
+calls the task brief named and this review confirms by inspection do not call `open` under the hood
+at all: `os.mkdir`/`os.makedirs`, `os.rmdir`, `os.remove`/`os.unlink`, `os.rename`/`os.replace`,
+`os.symlink`/`os.link`, `os.chmod`/`os.truncate`, `os.scandir`/`os.listdir`/`os.walk`,
+`shutil.rmtree`/`shutil.move` (`shutil.copyfile`, by contrast, *does* use `open()` internally and so
+*is* covered incidentally). None of these are named in §5.
+
+Whether this matters depends on a question the ADR doesn't settle: is the capability model meant to
+grant `FsWrite` at whole-worktree granularity, or at the `{worktree ref, subtree path, size cap}`
+granularity 025 §5 and this ADR's own `FilesystemAdapter` sketch imply? If the latter (which §5's
+`resolve(guest_path, for_write, ...)` signature strongly suggests — it takes a `for_write` flag
+specifically so a call with `FsRead` only can be denied write access to the *same* mount), then an
+unmediated `os.rename`/`os.remove`/`os.mkdir` lets an `FsRead`-only call delete, rename, or create
+directories anywhere inside the worktree, entirely bypassing the `for_write` check the `open`
+wrapper enforces for content writes. This is not simply "backstopped by 008 layer 3, the kernel
+jail" the way the ADR's already-acknowledged extension-internal-syscall residual is — layer 3 (per
+008 §1b) is about confining the *whole process* to a boundary (the worktree), not about enforcing
+*intra-worktree, per-call* capability distinctions; an OS-level jail scoped to "the worktree
+directory" would not stop `os.remove` from working *inside* that same worktree. **Severity: real
+gap, and a capability-granularity violation rather than a fully-backstopped residual risk — new, not
+in §6.**
+
+### 7.5 The pandas/numpy native-file-I/O question — verdict
+
+This was flagged as potentially the most important open question. The verdict, after checking the
+actual source rather than guessing: **the specific hypothesis — that pandas's or numpy's C code
+calls `fopen()`/`CreateFile` directly, bypassing every Python-level `open` wrapper — is FALSE for the
+two most consequential paths, and this is a genuine, source-verified finding in the design's favor,
+not a hand-wave.**
+
+- **`pandas.read_csv` (C engine).** Verified against `pandas/io/parsers/readers.py`
+  (`TextFileReader._make_engine`, pandas `main` branch): before the C `TextReader` is ever
+  constructed, `_make_engine` calls `get_handle(f, mode, ...)` (`pandas/io/common.py`), which for an
+  ordinary local path calls Python's builtin `open()` and hands the resulting **Python file object**
+  — not a raw path — to `CParserWrapper`/`TextReader`. The C tokenizer never sees a filename string;
+  it reads through a callback (`buffer_rd_bytes`, per `parsers.pyx`) that operates on the already-open
+  Python object. `pandas.read_csv` is mediated correctly by an `io.open`/`builtins.open` wrapper,
+  *provided* 7.4.1's `_io` gap is separately closed (get_handle's `open()` call is the same live
+  `builtins.open`/`io.open` name this ADR proposes to wrap).
+- **`numpy.fromfile()` / `ndarray.tofile()`.** Verified against `numpy/_core/src/multiarray/
+  multiarraymodule.c` (`array_fromfile`), `numpy/_core/src/multiarray/methods.c` (`array_tofile`),
+  and `numpy/_core/include/numpy/npy_3kcompat.h` (`npy_PyFile_OpenFile`), numpy `main` branch: when
+  given a string/`PathLike`, both call `npy_PyFile_OpenFile`, whose entire implementation is:
+  `open = PyDict_GetItemString(PyEval_GetBuiltins(), "open"); return
+  PyObject_CallFunction(open, "Os", filename, mode);` — a **live lookup of
+  `builtins.__dict__["open"]` at call time**, not a cached function pointer and not a call to C
+  `fopen`. If this ADR's wrapper installation genuinely rebinds `builtins.__dict__['open']` in place
+  (rather than, say, shadowing the name only in some other namespace), numpy's own C code picks up
+  the replacement automatically, with no numpy-specific accommodation needed. This is a materially
+  reassuring finding, well beyond "not disproven" — it shows numpy's authors *already* route through
+  the live builtins dict for exactly the reason this ADR needs them to.
+- **The load-bearing caveat this confirmation depends on:** it only holds if the wrapper is
+  implemented as an in-place mutation of the `builtins`/`io` module's own `__dict__` (`PyDict_SetItem`
+  / `PyObject_SetAttrString` on the *actual* module objects), because that is what both numpy's
+  `PyEval_GetBuiltins()` lookup and pandas's `get_handle()` call rely on transparently. §5's language
+  ("replace builtins.open, io.open, and os.open... with C-implemented wrappers") is consistent with
+  this but does not say it explicitly enough to rule out a narrower, wrong implementation (e.g., one
+  that only affects the name as resolved through some import-time binding). Worth stating as an
+  explicit implementation requirement, not left implicit.
+- **Where the concern was real, just not where hypothesized: `mmap`.** `numpy.memmap.__new__`
+  (verified, `numpy/_core/memmap.py`) opens the backing file via the same mediated `open()` (line
+  235) — correctly gated — but then calls `mmap.mmap(fid.fileno(), bytes, access=acc, offset=start)`
+  directly (line 290). Pandas' `get_handle(..., memory_map=True)` option does the analogous thing
+  (not independently re-fetched here; asserted from pandas' documented behavior, flagged as
+  **not independently source-verified in this review** and worth confirming in the prove phase).
+  `mmap.mmap` is never named anywhere in §5. The initial capability check at `open()` time does fire
+  correctly — this is not a capability *bypass* for acquisition — but every subsequent byte read/write
+  against the mapped region happens as raw memory access with **no Python-level call site and no
+  audit-hook-visible event at all**, which (a) makes 008 §8's "bytes in/out" observability
+  requirement unsatisfiable for mmap-based I/O by anything in this design, and (b) is one concrete
+  instance of the more general problem in **7.9's sibling finding, 7.4.3 below**: a capability check
+  performed once at acquisition does not survive for the lifetime of what was acquired.
+
+**Verdict on the task's framing:** the hypothesized "pandas/numpy calls C `fopen` directly" gap does
+not exist for the paths checked — a genuine, source-backed, good-news finding. But the investigation
+this question prompted surfaced 7.4.1 (the `_io`/`_socket`/`nt`/`_winapi` primitive-module bypass),
+which is a **more severe, more certain, and more general** finding than the one hypothesized, found
+adjacent to it. Report this asymmetry honestly rather than letting the resolved hypothesis crowd out
+the larger one it led to.
+
+#### 7.4.3 Capability freshness governs acquisition, not continued use of what was already acquired
+
+§3.4's closing paragraph states the effective allowlist "must reflect *this call's* granted
+`CapabilitySet`... not a policy frozen at interpreter-creation time," and is explicit that this
+freshness is enforced by updating host-side state "immediately before handing control to the
+interpreter and restored/cleared after." That machinery governs whether a *new* `open()`/
+`socket.socket()`/`subprocess`-equivalent call succeeds this call. It says nothing about resources
+already obtained in a *previous* call under a broader grant. Because 010 §3 makes the interpreter's
+in-memory state — including any live file objects, sockets, or `mmap.mmap` mappings a previous call
+created and stashed in a session-global — persist across calls in a session, the following is not
+prevented by anything in this design: call N (with `FsWrite` granted) does `SECRET_HANDLE =
+open('/work/out', 'wb')`; call N+1 (with `FsWrite` now revoked) does `SECRET_HANDLE.write(payload)`.
+The `write()` call goes to the file object's own method, never touching `builtins.open`/`io.open`/
+`os.open` at all — nothing in §3.4's per-call reassertion (which checks `meta_path[0]`,
+`builtins.__import__` identity, and `sys.modules`'s key set — not an inventory of live handles) or
+§5's wrappers (which gate creation, not continued use) revisits it. The same applies to a `socket`
+object obtained while `NetOut` was granted and used to keep sending after revocation, and to
+7.4.2/7.5's `mmap.mmap` mappings, which additionally have no natural single call site (like `close()`)
+most designs would think to intercept.
+
+This is a systemic property of "persistent interpreter + per-call capability revocation," not a
+narrow bug, and it bears directly on I2 ("no ambient authority"): once granted, a handle is
+functionally ambient for the rest of the session's lifetime unless something actively invalidates
+live handles when the capability set shrinks between calls. **This is new, not in §6, and is not the
+same question as any of the six — it is a gap in the *combined design's* own capability-freshness
+claim, discovered by attacking §3.4's own paragraph rather than any single Design A/B claim.**
+Severity: real gap; survivable with a caveat for the current design phase, but needs an explicit
+answer before implementation — either revoke/invalidate live handles on capability shrink (expensive,
+requires tracking every issued handle), or state plainly that capability revocation is
+call-acquisition-scoped only and is not meant to claw back already-issued access (a materially weaker
+guarantee than §3.4's "capability freshness" language currently implies, and one that should be
+stated as such rather than left to be discovered).
+
+### 7.6 Attacking §3.3's tamper-resistance argument harder
+
+§3.3 concludes that storing delegation targets in host-side C++ state (never a Python closure) closes
+the `gc.get_referrers()` reachability finding it made against the naive design. This is necessary and
+correctly identifies the *closure* vector, but "host-side C++ state" describes where the *final*
+reference lives, not how it got there — and the "how" matters:
+
+- **The setup sequence itself is a hazard the ADR doesn't explicitly rule out.** If lockdown setup is
+  implemented as executing a bootstrap *Python source string* (e.g., via `PyRun_SimpleString`) that
+  does something like `real_import = builtins.__import__; <host captures real_import via a C API
+  call>; del real_import`, the transient name `real_import` still exists as a local variable in the
+  frame executing that bootstrap code for the duration of the `del`. If any exception is raised and
+  caught *during* that bootstrap execution — even one unrelated to the delegation-target capture,
+  e.g. a `try`/`except` wrapped around the whole setup sequence for error reporting — the resulting
+  traceback object keeps that frame (and its `f_locals`, including `real_import`) alive and reachable
+  via `sys.exc_info()`, `sys.last_traceback`, or `gc.get_objects()` if anything else references the
+  traceback afterward. **The mitigation §3.3 states ("host-side C/C++ state... never bound to any
+  Python name") is necessary but not sufficient by itself — it must be paired with an explicit
+  requirement that the *entire* capture sequence be done via C API calls only
+  (`PyObject_GetAttrString`/`PyDict_GetItemString`, immediately handed to host storage, with no
+  intervening Python-level name binding at all), and that no exception handler wrapping setup is
+  allowed to retain a traceback that references any frame that ever held such a binding.** A
+  particularly concrete trap: if the host's own error-reporting path calls `PyErr_Print()` to render
+  a setup-time failure, that function has the side effect of setting `sys.last_traceback` (and, on
+  newer CPython, `sys.last_exc`) — which is itself a fresh, ordinary, guest-reachable Python name
+  binding to whatever frame chain was live at the time, created by the *host's own diagnostic code*,
+  not by guest code. This is a real, concrete, previously-unstated implementation trap, not a
+  restatement of B3 — B3's negative control tests a closure variable; this targets a control-flow
+  path (exception handling around setup) B3's experiment as designed would not exercise.
+- **`__pycache__`/bytecode caches**: checked and ruled out as a vector — marshaled `.pyc` data
+  contains code objects and constants (numbers, strings, tuples of same), never live `PyObject*`
+  references to runtime values like a captured function, so this specific sub-question from the task
+  brief does not apply. Stated explicitly rather than silently dropped, per the instruction to say so
+  when something doesn't hold rather than assert it does.
+- **Generators/decorators holding frames alive**: a live generator suspended mid-iteration keeps its
+  frame (and anything the frame's locals reference) alive indefinitely, same mechanism as the
+  traceback case above, different trigger. If any part of setup is itself written as a generator or
+  is decorated by something that wraps it in a closure, the same discipline applies. Not independently
+  more severe than the traceback vector; mentioned for completeness.
+
+**Severity: real gap, survivable with a caveat — but the caveat needs to be an explicit implementation
+constraint ("setup is C-API-only, no Python source execution touches delegation targets, no exception
+handling wraps setup in a way that could pin a frame"), not left as the current text's implicit
+inference from "host-side storage." This sharpens §3.3/B3 rather than introducing an unrelated new
+mechanism, but the specific `PyErr_Print()`/`sys.last_traceback` trap is a concrete new instance not
+previously named.**
+
+### 7.7 Attacking the per-call reassertion mechanism (§3.4 item 3)
+
+The check compares `PyList_GET_ITEM(meta_path, 0)`, `PyObject_GetAttrString(builtins, "__import__")`,
+and `sys.modules`'s key set against what was installed at setup, by identity/set-equality. This is a
+real design-level gap, not merely an implementation detail to get right later:
+
+**The attack:** guest code leaves `sys.meta_path[0]` and `builtins.__import__` byte-identical
+(untouched — passes the identity check outright) while instead mutating the *finder object's own
+attributes*, if the finder has any Python-visible mutable state. Concretely: if the custom finder
+type (or the `__import__` wrapper, or the `importlib.import_module` wrapper) is implemented as an
+ordinary Python-level object/function — or as a C type that (perhaps incidentally, via a base class,
+or via not explicitly zeroing `tp_dictoffset`) exposes a writable instance `__dict__` — then
+`sys.meta_path[0].find_spec = lambda *a, **k: real_finder.find_spec(*a, **k) if allow_everything else
+...` (shadowing the method via instance-attribute lookup, which Python's normal attribute resolution
+checks *before* falling back to the type's method) changes the finder's actual behaviour while
+`id(sys.meta_path[0])` is completely unchanged. The same applies to a Python-level `__import__`
+wrapper's `__globals__` dict: if the wrapper's allowlist-check logic reads a name from its own
+enclosing module/global namespace rather than purely from host-side C++ state reached via a capsule
+or C-level static, `builtins.__import__.__globals__['SOME_NAME'] = <tampered value>` changes the
+wrapper's behavior on its next invocation without changing `builtins.__import__` itself (the identity
+check passes) and without needing `gc.get_referrers()` at all — this is a *different* vector from
+B3's closure-reachability finding, one that doesn't even require finding a reachable reference to
+the *original* `__import__`, just corrupting the *wrapper's own* decision inputs in place.
+
+**Why this matters more than a normal implementation nit:** §3.3 already establishes, correctly, the
+general principle that anything reflectable and Python-visible is guest-mutable; §3.4 item 1 applies
+a *partial* version of the conclusion — it says the finder should be "a C-implemented type" — but
+never states this is *because* a Python-level or dict-bearing finder would be attribute-shadowable in
+exactly this way, and never extends the same requirement to the `__import__`/`import_module`
+wrappers or to any other piece of stateful mediation (the `open`/`socket`/`subprocess` wrappers named
+in §5 have the identical exposure: if any of them read a mutable Python-level "current allowlist"
+name instead of purely host-side C++ state, the same shadowing/global-rebinding attack applies to
+them too). The ADR gestures at the right instinct (C-implemented type, host-side-only storage) but
+states it for one component and not the others it applies equally to, and doesn't name the specific
+mechanism (attribute-shadowing via instance `__dict__`, or `__globals__` rebinding) that makes a
+partial application insufficient.
+
+**Severity: this is not a hypothetical corner case — it is a mechanical guarantee of CPython's
+attribute-lookup protocol (instance dict checked before type slot) applied to whatever wasn't made a
+pure C type without a writable `__dict__`/`__globals__`. If even one of {finder, `__import__`
+wrapper, `import_module` wrapper, `open`/`socket`/`subprocess` wrappers} is implemented with any
+Python-visible mutable state feeding its decision, A4/C1's "tamper is detected before the next call"
+claim is false for that component while its own identity check keeps passing. Breaks the core safety
+claim of §3.4 item 3 as currently scoped — must be fixed before prove, by stating explicitly (not
+just for the finder) that every enforcement object with a security-relevant decision must be a pure C
+type/`PyCFunction` with no Python-visible mutable state (no instance `__dict__`, no `__globals__`
+holding decision-relevant names, no `__closure__` cells), and that the per-call reassertion should
+ideally also verify this property continuously (e.g., checking `type(meta_path[0]).__dictoffset__` is
+`0`, or simply that `sys.meta_path[0].__dict__` raises `AttributeError`) rather than relying on it
+being true only because it was true at setup time.** This is new, not previously flagged in §6 —
+directly matches the mechanism the task brief hypothesized.
+
+### 7.8 §6 items 1, 4, and 5 are not independent — a dependency the ADR didn't connect
+
+§6 lists its six questions as a flat list. Attacking the *combination* surfaces a real dependency
+between item 5 (per-interpreter-GIL subinterpreters as a per-session isolation unit) and the
+mechanism §3.4 already commits to for capability freshness (a single host-side "current effective
+allowlist," "updated by `PythonRunner::run()` immediately before handing control to the interpreter
+and restored/cleared after").
+
+**The dependency:** §3.4's "restore/clear around each call" pattern is safe *only if* at most one
+session's Python code can be mid-flight against that shared host-side allowlist state at any given
+instant. That is trivially true if each session gets its own OS process (heavier, but fully
+isolated — no shared mutable host state at all). It is **not** trivially true if `native-jail`'s
+production shape pools OS processes and uses `Py_NewInterpreterFromConfig`
+(`PyInterpreterConfig_OWN_GIL`) subinterpreters — one per session — sharing a *single* process and a
+*single* CPython runtime for efficiency, which is exactly the possibility §6 item 5 raises. The C API
+documentation this ADR already cites in §3.4 item 2 states the native audit hook "is called for **all**
+interpreters created by the runtime" — i.e., **one process-wide hook instance serves every
+subinterpreter's import events**, meaning the hook body cannot assume it's only ever checking against
+one session's allowlist; it must determine, from the audit-event call itself, *which subinterpreter
+(session) triggered it* (e.g., via `PyThreadState_Get()`/`PyInterpreterState_Get()` mapped back to a
+per-session allowlist keyed store) rather than reading one global "current effective allowlist"
+variable. If two sessions' subinterpreters can genuinely execute concurrently on different OS threads
+in the same process (which I1 does not forbid — I1 guarantees serialization *within* a session's
+Quark actor, not across different sessions' actors, and a multi-tenant engine should want cross-session
+concurrency for throughput) — session B's `run()` resetting the shared "current effective allowlist"
+global while session A's subinterpreter is still mid-execution under what it believes is A's allowlist
+is a genuine race, not a theoretical one, and it would make the audit hook (and the per-call identity
+reassertion, which also needs to know *whose* `meta_path`/`__import__`/`sys.modules` it's checking) 
+silently check the wrong session's policy.
+
+**This changes how §6 item 5 should be read.** As phrased, it reads like a narrow "does the tech work
+and are numpy/pandas compatible" question. It is that, but resolving it "yes" also **obligates a
+change to §3.4's already-committed mechanism** (a single global slot must become a
+per-interpreter/per-session keyed store, and the audit hook must do the lookup instead of trusting
+ambient state) — a consequence the ADR's framing of Layer 0 as installed "at interpreter-creation
+time... not per `run()` call" implicitly assumes a stable 1:1 session:interpreter binding for, without
+stating that assumption or flagging that subinterpreter *pooling within one process* is a materially
+bigger architectural change than "swap the isolation primitive" — it also changes the concurrency
+contract for the whole mediation layer. **This is new — not one of the six items, and not
+reducible to any of them individually; it is a connection between item 5 and §3.4's already-decided
+mechanism that the ADR's flat list structure obscures.** Not urgent if the eventual implementation
+keeps one OS process per session (the heavier, always-safe option) — but §6 item 5 as worded invites
+exactly the lighter-weight option this finding shows needs more than a compatibility check.
+
+### 7.9 `ExecState` concurrency under guest-spawned threads
+
+`include/agentengine/sandbox/runner.hpp` specifies `ExecState` as `{std::string cwd,
+std::unordered_map<std::string,std::string> env}` with **no synchronization primitive of any kind**
+and no comment addressing concurrent access — the header states only that it's "shared by reference"
+and "one instance per session." I1 (`AgentEngineSpecification.md` §4) guarantees "at most one executor
+at any instant" mutates a *session's* state, with "turn order... the mailbox FIFO order" — this is an
+actor-level guarantee about Quark's own message dispatch, and it is the right guarantee for
+sequencing distinct `Runner::run()` calls (Python then Shell then Python again) against each other.
+
+**It does not obviously cover a guest-spawned Python thread that outlives the call that spawned it.**
+Two independent reasons to think this is a real gap rather than something I1 already settles:
+
+1. **`threading`/`_thread` are plausibly guest-reachable.** §3.0's own Layer-0 minimal-internal-set
+   example explicitly lists `_thread` as needed "if threads are used internally," and a
+   single-threaded-only Python sandbox would be a significant, unstated capability regression for
+   any real CodeAct workload. If `threading` is anywhere in the default allowlist (as opposed to
+   gated behind a capability this ADR doesn't name), guest code can do
+   `threading.Thread(target=lambda: os.chdir(attacker_path), daemon=False).start()` and return from
+   the call *before* the thread finishes — the interpreter (and the thread) persists across calls per
+   010 §3's "in-memory state persists across executions."
+2. **A guest-spawned OS thread is not a Quark "executor" and is invisible to I1's guarantee.** I1's
+   serialization is about Quark's actor mailbox dispatch; a raw `threading.Thread` the guest starts
+   inside the embedded interpreter is not a message in that mailbox and is not something the actor
+   model was ever describing. If that thread is still running (holding/releasing the GIL normally)
+   when the *next* mailbox message for the *same session* is dispatched — a subsequent
+   `PythonRunner::run()` or a `ShellRunner::run()` reading `ExecState.cwd` via `pwd` — both the
+   leftover guest thread and the new call's C++ code can read/write `ExecState.cwd`/`.env` at the
+   same time. `std::string`/`std::unordered_map` mutation without external synchronization under
+   concurrent access from two different OS threads is a data race (UB in the C++ memory model),
+   independent of whether CPython's GIL serializes the *Python bytecode* on each side — the GIL
+   protects CPython's own objects, not this host-side C++ struct, and the mediated `os.chdir`/
+   `os.getcwd` wrapper's read-modify-write of `ExecState` is exactly the kind of access that would
+   need its own lock, which neither `runner.hpp` nor this ADR specifies.
+
+This is consistent with, and sharpens, an existing acknowledgment elsewhere in the spec set: 010 §3a's
+own G3 promotion gate already names "a variable, open handle, **background thread**,
+monkeypatch, `ExecState`, or file written by session A... unreachable from session B" as something
+that must be proven — i.e., the spec set already treats guest-spawned background threads as a real,
+expected phenomenon, just scoped to the *cross-session* isolation question, never to the
+*intra-session* data-race question this ADR's `os.getcwd`/`os.chdir` mediation actually creates.
+010 §3a Q6 separately flags background *shell* processes as "not designed here" for a related but
+distinct reason (resource accounting, not memory safety).
+
+**Severity: real, plausible, currently unspecified gap — not just "defer to prove," because there is
+no proposed mechanism to test yet; this needs a spec-level decision before an implementation is even
+written: either (a) `ExecState` gets a mutex (and every mediated read/write of it, from any thread,
+takes it), or (b) `threading`/`_thread` access is excluded from the default allowlist and gated behind
+an explicit capability with its own concurrency story, or (c) the design accepts and documents that
+guest-spawned threads touching `ExecState` after their originating call returns is out of scope and
+relies on 008 layer 3/process-level containment to bound the damage. None of (a)/(b)/(c) is stated
+today. New, not in §6.**
+
+### 7.10 The audit-hook "proves too little" argument, attacked
+
+The task brief asks whether an *already-allowed* extension's own ability to `dlopen`/`LoadLibrary`
+further libraries at runtime undermines "the import audit hook is load-bearing" for the *import*
+case, the way §3.4 item 2 already concedes it's non-load-bearing for `open`/`socket`/`subprocess`.
+Attacked directly: **the argument holds, and treating it as undermined would be a category error.**
+The import audit hook's claimed job is narrow and specific — catching *Python-level* attempts to
+reach a module name outside the allowlist via any of the paths in §3.0's table. An already-allowed
+extension's internal C code calling `dlopen` on some additional shared library is a *different*
+threat (already-vetted code doing something dangerous with its own native code), not an instance of
+"guest Python code imports a disallowed name" — and the ADR's own §3.4 item 2 and §10 already,
+explicitly, do not claim to close that different threat: they name 008 §1b's kernel jail (layer 3) as
+its backstop and say so in plain language ("this design does not claim to remove the need for that
+backstop"). So there's no hidden inconsistency to expose here — the scope was already stated
+correctly. The one refinement worth making: if that dlopen'd code *itself* subsequently calls back
+into a Python-import-reaching API (e.g., to fetch a Python object via the embedding API), it would
+still be caught, because that path still goes through the same audited machinery — the residual gap
+is specifically "native code doing purely native things," which was already the stated boundary.
+Whether numpy specifically performs runtime `dlopen` of additional libraries (e.g., for
+CPU-dispatch-selected BLAS backends) was not independently verified in this review and is noted as an
+open empirical detail — but it does not change the verdict, because the argument's soundness does not
+depend on whether any *specific* allowed extension currently does this; it depends only on the
+scope the ADR already, correctly, drew. **Verdict: design holds; no new finding; this is a place
+where the ADR's existing honesty about scope survives a direct attack.**
+
+### 7.x Summary verdict
+
+**11 findings are logged as new — not previously named in §6 — across 7.1–7.9**: (1) 7.4.1's
+`_io`/`_socket`/`nt`\|`posix`/`_winapi`\|`_posixsubprocess` primitive-module bypass of the entire §5
+mediation story; (2) 7.4.2's unmediated filesystem-structure operations
+(`mkdir`/`rmdir`/`rename`/`scandir`/`shutil.rmtree`/…); (3) 7.4.3's capability-freshness-governs-
+acquisition-not-continued-use gap (files/sockets/mmaps outliving their granting call); (4) 7.5's
+`mmap.mmap`/`numpy.memmap` bypass of per-operation mediation and observability (narrower instance of
+(3), plus an independent 008 §8 observability hole); (5) 7.6's setup-sequence discipline requirement
+(C-API-only capture, no exception handling that could pin a frame, the concrete `PyErr_Print()`/
+`sys.last_traceback` trap) as a necessary addition to §3.3's host-side-storage conclusion;
+(6) 7.7's attribute-shadowing/`__globals__`-rebinding attack on the per-call identity reassertion,
+which passes A4/C1's identity check while defeating the checked object's behavior, for any
+enforcement object that isn't a pure C type with no Python-visible mutable state (finder,
+`__import__`/`import_module` wrappers, and the `open`/`socket`/`subprocess` wrappers alike);
+(7) 7.8's dependency between §6 item 5 (subinterpreters) and §3.4's already-committed single
+host-side allowlist mechanism, which becomes an actual cross-session race if subinterpreters are ever
+pooled in one process; (8) 7.9's unspecified `ExecState` concurrency exposure to guest-spawned
+threads. (The count above groups tightly related sub-points; counted individually per bullet rather
+than per number, the total is 8 distinct mechanisms across 11 named instances/sub-cases.) Also logged,
+though not "new": two claims (A2, C1) got sharper experiments than as originally stated, and one
+attack (7.10, the dlopen/audit-hook question) was run in earnest and the ADR's existing argument
+survived it — a real result, just not a new gap.
+
+**One finding was investigated and found to *not* hold** — the task's own most-emphasized concern,
+that pandas/numpy C code calls `fopen`/`CreateFile` directly and bypasses Python-level `open`
+mediation entirely — refuted by source inspection for `pandas.read_csv` (C engine) and
+`numpy.fromfile`/`ndarray.tofile`. This should be recorded as a genuine, positive result, not silently
+dropped for lack of drama: it means §5's open-mediation *design* is sound for the paths checked, and
+the design's actual hole (7.4.1) is more severe, more certain, and structurally different from what
+was hypothesized — found one inferential step past the original question, not at it.
+
+**Does the combined design's shape (§3.4/§10) need to change, or does everything survive as "confirmed
+gap, defer to prove"?** Mixed, and the distinction matters:
+
+- **7.4.1 and 7.7 are must-fix-before-prove findings that change what has to be built, but not the
+  overall architecture.** 7.4.1's fix is a natural widening of Layer 0's already-existing sweep
+  mechanism to four more modules — the *shape* of "Layer 0 sweeps `sys.modules` down to a minimal,
+  scrutinized internal set" survives; its *scope* was wrong. 7.7's fix is a natural widening of "the
+  finder must be a C-implemented type" (already stated for one component) to every enforcement
+  object with a security-relevant decision. Neither requires abandoning meta-path-finder-plus-
+  audit-hook-plus-per-call-reassertion as the combined mechanism; both require it to be specified more
+  completely before it is honestly describable as "closed by construction."
+- **7.4.3 (capability freshness vs. live handles) and 7.9 (ExecState concurrency) are gaps the current
+  design doesn't have a mechanism for at all** — not "the mechanism has a hole," but "there is no
+  proposed mechanism yet." These need an actual design decision (handle revocation vs. accepting a
+  weaker guarantee; a mutex vs. restricting `threading`) before the prove phase can write an
+  experiment against them, because there's nothing yet to disprove.
+- **7.6 and 7.8 are real but narrower: sharpen the existing text (§3.3's storage requirement, §6 item
+  5's framing) with a specific implementation constraint or dependency, rather than requiring new
+  mechanism.**
+
+Net assessment: the combined design's *high-level shape* (meta-path finder as primary + `__import__`/
+`import_module` wrappers as defense-in-depth + native pre-init audit hook as the
+non-Python-reachable layer + Layer 0 sweep as the prerequisite + per-call reassertion) is not
+falsified by this review and should not be discarded. But three of its components (Layer 0's scope,
+the reassertion mechanism's assumption that identity implies unmodified behavior, and the
+capability-freshness claim's silence on already-issued handles) are each currently specified
+narrowly enough that the design's central claim — "closed by construction" — is not yet true of what
+§3–§5 actually describe, independent of anything the prove phase needs to run to find out. That is a
+stronger conclusion than "defer to prove": these are failures reachable by reading the design against
+CPython's actual source, the same standard this ADR held itself to when it found the
+`importlib.import_module` bypass in Design B.
 
 ## 8. Executed evidence
 
@@ -506,11 +1231,26 @@ this is squarely one (007/008's capability boundary, I2/I3). What can be stated 
   audit-hook-visible call site. This is out of scope for an interpreter-level design by construction —
   it is exactly what 008 §1b names the kernel jail (layer 3) as the backstop for — and this ADR does
   not claim otherwise.
-- **Deferred/open per §6:** six specific questions this ADR could not resolve by reading documentation
-  and states plainly need a real embedding run against the concrete CPython 3.13.5 + numpy/pandas
-  target this task named as available.
-- **Spec-update recommendation, not made here:** `ExecRequest`/`SandboxSpec` (`include/agentengine/
-  sandbox/sandbox.hpp`) currently carry no field for the resolved module allowlist or filesystem-
-  adapter binding this design needs per call; §3.4's "capability freshness" requirement implies 010/008
-  need an explicit carrier for it, which is a header change outside this ADR's read-only scope and is
-  flagged here for whoever picks up implementation.
+- **Revised post-red-team (§5.5):** seven findings required a design response before the prove
+  phase — two BLOCKING (Layer 0's scope was missing `nt`/`posix`/`_io`/`_socket`/
+  `_winapi`/`_posixsubprocess`, §5.5.1; the per-call reassertion was bypassable by attribute-shadowing
+  a stateful enforcement object, §5.5.2), and five real gaps closed with an extended mechanism or an
+  explicit, honestly-weaker decision rather than left silent (structural filesystem ops, §5.5.3;
+  capability freshness governs acquisition not continued use of already-issued handles, §5.5.4;
+  C-API-only setup discipline, §5.5.5; one-process-per-session as this design's scope, not
+  subinterpreter pooling, §5.5.6; `threading`/`_thread` excluded from the default allowlist pending
+  a real concurrency story for `ExecState`, §5.5.7). One finding was investigated and refuted in the
+  design's favor: pandas/numpy's own file I/O does route through the mediated `open()`, not raw
+  `fopen` (§7.5) — recorded as a genuine positive result, not just an absence of bad news.
+- **Deferred/open per §6 (now ten items, four added by the revision):** specific questions this ADR
+  could not resolve by reading documentation and states plainly need a real embedding run against the
+  concrete CPython 3.13.5 + numpy/pandas target this task named as available.
+- **Spec-update recommendations, not made here** (both header changes outside this ADR's read-only
+  scope, flagged for whoever picks up implementation):
+  1. `ExecRequest`/`SandboxSpec` (`include/agentengine/sandbox/sandbox.hpp`) currently carry no field
+     for the resolved module allowlist or filesystem-adapter binding this design needs per call;
+     §3.4's "capability freshness" requirement implies 010/008 need an explicit carrier for it.
+  2. `ExecState` (`include/agentengine/sandbox/runner.hpp`) has no synchronization primitive and no
+     documented concurrency contract; §5.5.7 works around this for now by excluding `threading` from
+     the default allowlist, but the header should eventually state the constraint explicitly rather
+     than being silent on it.
