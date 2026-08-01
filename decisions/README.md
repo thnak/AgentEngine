@@ -40,9 +40,7 @@ part of the record.
 
 ## Index
 
-*(empty — the project is in its design phase; the first ADRs will come from the promotion gates
-named in the RFCs, and from the questions in [`../OpenQuestions.md`](../OpenQuestions.md))*
-
 | ADR | Question | Outcome |
 |---|---|---|
-| — | — | — |
+| [001](ADR-001-shellrunner-grammar-and-dispatch.md) | How does `ShellRunner` parse and dispatch without a name ever resolving to an arbitrary process, and with the parser itself safe against adversarial input? | **Judged.** Design A (recursive-descent → AST → tree-walking eval) accepted, scoped to Windows/MSVC+clang; Design B never implemented (not defeated on evidence). Partial evidence toward 010 §9 G2/G3/G4; G6 (cross-platform) and others remain open. |
+| [002](ADR-002-pythonrunner-embedding-and-mediation.md) | How does embedded CPython enforce a closed import allowlist and mediate `open`/`socket`/`subprocess`, robustly rather than as a degrading blocklist? | Design revised post-red-team. Prove phase not yet run. |

@@ -1,12 +1,10 @@
 # ADR-001 — ShellRunner grammar and dispatch
 
-- **Status:** Proposed — **design revised post-red-team** (§2.5 closes §7's 4 blocking findings;
-  §7 itself is left exactly as written, as the historical record). **Prove phase executed for
-  Design A** (§8 executed evidence, §9 per-claim verdicts) — Design A only, real C++23, built
-  under MSVC and clang, tested under ASan+UBSan. **Judge phase pending** (§10 remains a
-  placeholder per `decisions/README.md`'s process; no winner is declared here — that is explicitly
-  not this pass's call to make).
-- **Date:** 2026-07-31
+- **Status:** **Judged — Design A accepted** (§10.1), scoped precisely to what was tested: Windows,
+  MSVC + clang, Design A only. Design B was never implemented — not defeated on evidence, never
+  built (§10.1 states this distinction explicitly). Cross-platform proving (010 §9 G6) and several
+  other gates remain open (§10.2); this ADR does not promote 010 to Proven by itself.
+- **Date:** 2026-07-31 (design + red-team + revision), 2026-08-01 (prove + judge)
 - **Scope:** `ShellRunner` (`src/backends/native_jail/shell_runner.hpp`) — the concrete class
   satisfying the `Runner` concept (`include/agentengine/sandbox/runner.hpp`) that backs the Shell
   mode (010 §1). Excludes `PythonRunner` (separate, concurrent ADR) and excludes 025's real
@@ -1200,6 +1198,13 @@ asks the prove phase to produce.
 
 ## 10. Decision
 
+### 10.0 Pre-prove framing (superseded by 10.1–10.4 below, kept for the record)
+
+*The paragraphs immediately below this note were written at the end of the design phase, before
+red-team or prove — "no winner is declared... recommend steelmanning Design A hardest." They are
+left in place rather than deleted, per `decisions/README.md`'s rule that a superseded position is
+marked, not erased. The judge phase has since run; §10.1 is the actual decision.*
+
 **No winner is declared in this document.** Per `decisions/README.md`, the decision belongs to the
 judge phase, weighing claims that *survived* red-team attack and were *proven* — neither of which
 has happened yet. What this design phase can responsibly state is which design its author would
@@ -1226,6 +1231,82 @@ This is a starting bias for the red-team phase to attack, not a judgment that De
 B's F1 allocation claim for the dominant case is real and untested, and the judge phase may yet
 find it decisive once both are measured. Recording a bias here is meant to focus adversarial effort,
 not to shortcut it.
+
+### 10.1 The judge decision
+
+**Design A wins, on the evidence in §8/§9 — not by default and not because Design B lost a fair
+fight, because Design B was never built.** That distinction matters and is stated precisely rather
+than blurred:
+
+- **Design A's claims that were tested came back CORRECT**, under real ASan+UBSan runs, against
+  the adversarial corpus the red-team specifically demanded (§9.1/§9.2): the shared-depth-counter
+  fix for finding 12's "sum, not max" hazard, the per-token arena-sizing fix for finding 13, the
+  literal 100k-stage-pipeline probe, `Sh-C1`/`C2`/`C3`, both halves of `Sh-G4`, `Sh-S1`'s static
+  half, and `A-C2`. None of these were asserted from argument — every one has a command, a compiler,
+  and an observed result behind it (§8).
+- **Design B was never implemented this pass (§8.10, §9.3)** — not because the judge phase found it
+  wanting, but because the prove phase's own scoping (correctly, given limited effort) prioritized
+  proving the design the red-team's own summary (§7.8) had already concluded was the stronger
+  candidate on the one axis that actually separates them: A structurally cannot execute any part of
+  a syntactically invalid script, while B must affirmatively defend that property (B-S2), and B-S2
+  was flagged by both the design and red-team phases as the harder claim for B to sustain. **B-S2 and
+  B-F1 — the two claims §7.8 names as the actual distinguishing axis — were never tested. B did not
+  lose the comparison; the comparison was never run**, and this ADR does not pretend otherwise.
+- **Given that, choosing A is the correct decision on the evidence that exists, not a coin flip
+  dressed as a verdict**: A's central safety property (whole-script-parses-before-any-eval) is
+  structurally stronger against the exact threat model (Q7, adversarial/tainted input) this
+  subsystem exists to defend, A's claims that bear on that property are now proven rather than
+  argued, and nothing in B's favor (the F1 allocation claim for the common case) was ever measured
+  to compare against. If B's allocation advantage later turns out to be large enough to matter, that
+  is a new question for a new ADR to open against a *working, proven* Design A — not a reason to
+  have withheld a decision here pending a comparison this project has no present need to run.
+
+**This decision is scoped to what was actually tested — Windows, one compiler pair, Design A
+only — and does not claim more:**
+
+- `A-C1`'s cross-platform claim is **NOT ATTEMPTED** (§9.2) — only Windows was available this pass.
+  This ADR's decision does not extend to Linux/macOS parity; that remains an open gate (010 §9 G6),
+  not something this judge phase can close.
+- `A-F1`'s specific allocation-count/latency numbers are **NOT ATTEMPTED** — the arena-backed
+  property was verified structurally (§2.5.6's `std::pmr` fix), but the "≤4 allocations, <10 µs"
+  figures themselves were not measured. A budget claim without a measured number is not proven by
+  this ADR merely because the mechanism it depends on is real.
+- `Sh-S1`'s dynamic runtime-shim half, and `Sh-G4`'s full end-to-end composition with a real
+  `PythonRunner`, remain **NOT ATTEMPTED** — the former needs the Windows-safe hooking mechanism
+  §7 finding 2 asked for and named, the latter is blocked on ADR-002's own prove phase landing a
+  real `PythonRunner` to compose against.
+- Every "scoped" capability claim (§2.5.4) is tested at kind-level only, exactly as that section
+  commits to — this ADR does not claim path-scoped authorization is proven, because `CapabilitySet`
+  still has no scope field to test it with (007's own pending work).
+
+### 10.2 What this binds
+
+010 §1a (`Runner` concept usage), §2 (grammar/builtin-set/dispatch shape, as revised by §2.5), and
+§3a (`ExecState` sharing, the `ShellRunner`-only half) move from "designed" to "implemented and
+partially gate-proven" for Design A specifically, on Windows, under MSVC and clang. 010 §9's
+promotion gates: **G2 (containment)** and **G3 (state boundary)** have real, if partial, evidence
+behind them for `ShellRunner` (the hostile-name corpus, the `ExecState` identity proofs) — full
+promotion of those gates still needs `PythonRunner`'s side (cross-`Runner` state-boundary proof) and
+the cross-platform run **G6** explicitly requires. **G4 (bridge)** is proven for the gate half of
+`Sh-G4`; the full composition proof is blocked on ADR-002. No RFC promotes from Draft to Proven on
+this ADR alone — that requires the full gate list 010 §9 names, several of which (G1, G5, full G6)
+this ADR does not touch.
+
+### 10.3 Residual risks carried forward, not resolved by this decision
+
+Everything in §11 remains open regardless of this decision (`ExecOutcome`'s missing `artifacts`
+field, `CapabilitySet`'s scope-field gap, the undesigned argv-to-Tool-`Args` mapping, command
+substitution and background processes out of scope, the depth-counter/recursion residual). Choosing
+Design A does not retire any of them — none are specific to which design won.
+
+### 10.4 What would reopen this decision
+
+A future ADR revisiting Design B is legitimate if: (a) `A-F1`'s measured allocation/latency numbers,
+once actually benchmarked, turn out to matter for a real workload's budget (023), or (b) cross-
+platform proving (G6) surfaces a Design-A-specific portability problem Design B's shape would not
+share. Absent either, this decision stands without needing Design B built merely for comparison's
+own sake — `decisions/README.md`'s "an ADR for everything is an ADR for nothing" cuts against
+implementing a second design with no present evidence it's needed.
 
 ## 11. Residual risks and open items surfaced by this design work
 
