@@ -1,15 +1,22 @@
 # ADR-002 — How does embedded CPython enforce a closed import allowlist and mediate `open`/`socket`/`subprocess` for allowed modules, robustly rather than as a blocklist that degrades?
 
-- **Status:** Design, revised post-red-team (§5.5 closes 7 must-fix/real-gap findings from §7; §7
-  itself is left exactly as written, as the historical record). No prove, no judge yet.
-- **Date:** 2026-07-31
+- **Status:** **Judged — the finder mechanism is accepted; the "closed by construction" claim is
+  narrowed, not confirmed as originally scoped** (§10.1). The prove phase's headline result: making
+  `numpy`+`pandas` actually importable required allowlisting ~130 names including `ctypes`/
+  `winreg`/`subprocess` — exactly the names this design exists to deny — because the finder gates by
+  module name, not by caller, and cannot tell numpy's own internals apart from guest code asking for
+  the same name directly (§8.9, §10.1). For any package policy with that shape, 008 §1b's kernel
+  jail (layer 3), not the interpreter, is the real boundary. A new cross-cutting question is opened
+  in `OpenQuestions.md` for the two ways this could be closed (§10.2); neither is decided here.
+- **Date:** 2026-07-31 (design/red-team); prove + judge 2026-08-01
 - **Depends on:** 008-Sandbox-and-Isolation.md §1b (the two-layer mechanism this ADR makes concrete),
   010-Python-Code-Interpreter.md §1a (`Runner`), §3a (`ExecState`), §5 (package policy), §9 G7 (the
   promotion gate this design must eventually pass), 007-Capability-and-Trust-Model.md
   (`CapabilitySet`), 025-Worktree-and-Virtual-Filesystem.md §5 (mount canonicalization rules), 026 §3
   (the exact exception shapes guest code must see)
-- **Concerns:** `src/backends/native_jail/python_runner.hpp` (read-only for this ADR; the stub this
-  design will eventually replace)
+- **Concerns:** `src/backends/native_jail/python_runner.hpp` (was read-only for the design/red-team
+  phases; the prove phase replaced the stub with a real implementation backed by the new
+  `src/backends/native_jail/python_lockdown.{hpp,cpp}`, per §8)
 - **Concrete embedding target:** CPython 3.13.5 at `C:\Users\thanh\miniconda3` — real dev headers
   (`include\Python.h`), real import libs (`libs\python313.lib`, `libs\python3.lib`), numpy and pandas
   already installed. Not hypothetical; the prove phase can embed against this today.
@@ -1200,16 +1207,430 @@ CPython's actual source, the same standard this ADR held itself to when it found
 
 ## 8. Executed evidence
 
-*(Not performed — no code was written or run against the target CPython 3.13.5 embedding for this
-ADR. §6 names what the prove phase's experiments need to measure.)*
+Real code was written and run against the concrete embedding target this ADR names: CPython
+3.13.5 at `C:\Users\thanh\miniconda3` (numpy 2.3.3, pandas 2.3.3 as installed). Priority items 1–4
+from the prove-phase task brief were completed with real evidence; item 5 (audit hook) was
+partially completed (observational, not enforcing); per-call capability freshness, `open`/
+`socket`/`subprocess` mediation, and the `builtins.__import__`/`importlib.import_module`
+defense-in-depth wrappers were **NOT ATTEMPTED** — see §9 for the exact scope of each.
+
+New code: `src/backends/native_jail/python_lockdown.{hpp,cpp}` (the embedded interpreter, Layer 0
+sweep, the meta-path finder, the per-call reassertion, the audit hook), `src/backends/native_jail/
+python_runner.hpp` (rewritten from the ADR-002 stub to a real, constructor-injected `Runner`
+backed by `PythonLockdownInterpreter`). New tests: `tests/test_python_embed_smoke.cpp`,
+`tests/test_python_layer0_sweep.cpp`, `tests/test_python_meta_path_finder.cpp`,
+`tests/test_python_numpy_pandas_import.cpp`, `tests/test_python_audit_hook.cpp`. New CMake:
+`AGENTENGINE_BUILD_PYTHON_RUNNER` (default OFF) and `AGENTENGINE_PYTHON_ROOT` (auto-detected
+against `%USERPROFILE%/miniconda3` on Windows) in the root `CMakeLists.txt`, wiring a new
+`agentengine_python_runner` static library (linked against the configured CPython import lib,
+never against `agentengine_core`) and five new CTest entries, gated behind that option.
+
+### 8.1 Toolchains and environment
+
+| Toolchain | Version | Build dir | Configuration |
+|---|---|---|---|
+| MSVC (cl.exe) | 19.51.36252.0 (VS "18" BuildTools) | `build-python/` | Default (debug CRT), via `vcvars64.bat`, `-DAGENTENGINE_BUILD_PYTHON_RUNNER=ON -DAGENTENGINE_PYTHON_ROOT=C:/Users/thanh/miniconda3` |
+| clang (MSVC-ABI) | 22.1.5 | `build-python-clang/` | Default (debug CRT), same options |
+| CPython | 3.13.5 \| packaged by Anaconda, Inc. | — | `C:\Users\thanh\miniconda3`, numpy 2.3.3, pandas 2.3.3 |
+
+CMake 4.1.1, Ninja generator, `-j4` per CLAUDE.md's machine-safety cap. The pre-existing default
+build directories (`build/`, `build-clang/`, `AGENTENGINE_BUILD_PYTHON_RUNNER` left at its default
+OFF) were also reconfigured and rebuilt from scratch to confirm zero regression — see §8.4.
+
+A real MSVC/CPython-embedding-specific build issue, found and fixed during this pass: this
+project's default (no explicit `CMAKE_BUILD_TYPE`) MSVC configuration links the **debug** CRT
+(`_DEBUG` defined), and CPython's `pyconfig.h` auto-selects `python3<minor>_d.lib` whenever
+`_DEBUG` is defined — a debug CPython build the miniconda distribution does not ship. Fixed with
+the standard embedding workaround (`#undef _DEBUG` around `#include <Python.h>`, restored
+immediately after) in both `python_lockdown.cpp` and `test_python_layer0_sweep.cpp` (the only two
+translation units that touch `<Python.h>` directly). Recorded here because it is exactly the kind
+of "toolchain mismatch" failure mode the task brief asked to be reported plainly rather than
+fought around silently.
+
+### 8.2 Build commands and results
+
+MSVC, from scratch:
+```
+cmd /c call "...\VC\Auxiliary\Build\vcvars64.bat" && cd /d D:\GitSrc\AgentEngine && ^
+  cmake -S . -B build-python -G Ninja -DAGENTENGINE_BUILD_PYTHON_RUNNER=ON ^
+    -DAGENTENGINE_PYTHON_ROOT=C:/Users/thanh/miniconda3 && ^
+  cmake --build build-python -j4
+```
+Result (first attempt, before the `_DEBUG`/`python313_d.lib` fix): `LINK : fatal error LNK1104:
+cannot open file 'python313_d.lib'` — a real, captured failure, not hypothetical. After the fix:
+30/30 targets built from scratch, **zero errors**, no new `/W4` warnings beyond what the rest of
+the tree already produces.
+
+clang (`build-python-clang/`, same options, `-DCMAKE_CXX_COMPILER=".../clang++.exe"`): 30/30
+targets, **zero errors**, `-Wall -Wextra` clean.
+
+### 8.3 Test results — MSVC (`build-python/`) and clang (`build-python-clang/`)
+
+```
+ctest --output-on-failure -j4     (build-python/, MSVC)
+100% tests passed, 0 tests failed out of 12
+Total Test time (real) =   0.80 sec
+
+ctest --output-on-failure -j4     (build-python-clang/, clang)
+100% tests passed, 0 tests failed out of 12
+Total Test time (real) =   0.77 sec
+```
+All 12 tests pass on both toolchains: the 7 pre-existing tests (`smoke_vocabulary`,
+`test_recorded_chat_client`, `test_native_jail_runner_stubs`, `test_real_filesystem_adapter`,
+`test_shell_runner_proof`, `test_shell_parser_adversarial`, `test_shell_runner_no_process_creation`)
+plus the 5 new ones this pass adds (`test_python_embed_smoke`, `test_python_layer0_sweep`,
+`test_python_meta_path_finder`, `test_python_numpy_pandas_import`, `test_python_audit_hook`).
+`python3.13.dll` (no rpath on Windows) is put on `PATH` via each Python test's `ENVIRONMENT` CTest
+property, prepending `AGENTENGINE_PYTHON_DLL_DIR`.
+
+`test_native_jail_runner_stubs.cpp` was edited (not one of the forbidden files) to retire
+`PythonRunner`'s fail-closed-stub check, exactly mirroring how that file already retired
+`ShellRunner`'s equivalent check in ADR-001's own prove phase — `PythonRunner` is no longer
+default-constructible (constructor-injected with a `PythonLockdownConfig`, mirroring
+`ShellRunner`'s constructor-injection pattern), so the old `PythonRunner runner{};` fail-closed
+check no longer compiles and is superseded by the 5 dedicated tests above.
+
+### 8.4 Regression check — the 4 pre-existing build directories, from scratch
+
+```
+build/          (MSVC, AGENTENGINE_BUILD_PYTHON_RUNNER left OFF/default): reconfigured + rebuilt
+  from scratch; only test_native_jail_runner_stubs.cpp.obj needed rebuilding (the one file this
+  pass touched that's in the default build). ctest: 100% tests passed, 0 tests failed out of 7,
+  Total Test time (real) = 0.53 sec.
+build-clang/    (clang, same): identical — 100% tests passed, 0 tests failed out of 7,
+  Total Test time (real) = 0.37 sec.
+```
+Confirms this pass's changes to shared files (`CMakeLists.txt`, `tests/CMakeLists.txt`,
+`test_native_jail_runner_stubs.cpp`) do not break the option-OFF default configuration, and that
+the new Python option is fully inert (no CPython include/link anywhere) unless explicitly turned
+on, per CONVENTIONS.md tier-2 dependency discipline.
+
+### 8.5 Priority item 1 — minimal embedded CPython actually running (claim: foundation, not in §4)
+
+`tests/test_python_embed_smoke.cpp`, real output (MSVC, identical on clang):
+```
+initialize() -> true ()
+Py version string surfaced via sys.modules snapshot below; interpreter is live.
+stdout: hello from embedded cpython 2 3.0
+stderr:
+test_python_embed_smoke: PASS
+```
+`Py_InitializeFromConfig` + `PyRun_String` round-trips a trivial script through `PythonRunner`'s
+real (non-stub) `run()`, linked against `C:\Users\thanh\miniconda3\libs\python313.lib`, on both
+MSVC and clang. **CORRECT.**
+
+### 8.6 Priority item 2 — Layer 0's sweep and its scope (§3.0, §5.5.1, §6 items 4 and 7)
+
+`tests/test_python_layer0_sweep.cpp`, real output:
+```
+Resident sys.modules keys post-bootstrap (isolated=1, site_import=0), count=25:
+  __main__ _abc _codecs _frozen_importlib _frozen_importlib_external _imp _io _signal _thread
+  _warnings _weakref abc builtins codecs encodings encodings.aliases encodings.cp1252
+  encodings.utf_8 io marshal nt sys time winreg zipimport
+del sys.modules['_imp'] rc=0
+fresh `import _imp` after deletion, with NO finder installed -> SUCCEEDED (expected -- demonstrates
+  sweep alone is insufficient)
+`import numpy` with _imp REMOVED from sys.modules -> SUCCEEDED (answers ADR-002 §6 item 4: YES,
+  _imp is removable)
+'_imp' present in sys.modules after numpy import -> NO (confirms the loader used its own internal
+  reference, not a fresh sys.modules-mediated import)
+test_python_layer0_sweep: PASS
+```
+
+**§6 item 4, ANSWERED: YES**, `_imp` can be removed from guest-visible `sys.modules` without
+breaking numpy's own native-extension (`.pyd`) loading — `importlib._bootstrap_external` holds its
+own reference to `_imp`, bound before the sweep runs, independent of the `sys.modules` entry.
+`_imp` does **not** reappear in `sys.modules` after the numpy import, confirming the loader never
+does a fresh, `sys.modules`-mediated `import _imp` internally.
+
+**A sharper, three-part finding beyond what §6 item 4 asked, found by actually running this**:
+1. Removing the `sys.modules['_imp']` entry (Layer 0's sweep mechanism) does **not**, by itself,
+   deny a *fresh* `import _imp` from guest code — with no meta-path finder installed,
+   `BuiltinImporter` simply recreates the module on demand, because built-in modules don't depend
+   on a prior `sys.modules` entry to be reconstructible. **This means "survives the sweep" and
+   "guest can never reach it again" are two different properties for anything that is a builtin
+   module** — the sweep closes the "already-cached" shortcut (§3.0's own point), but the *finder*
+   (tested separately, §8.7) is the actual, load-bearing enforcement point for denying a name like
+   `_imp` to fresh imports. The ADR's own text already implies this but does not say it this
+   plainly; recorded here as an empirically-confirmed sharpening, not a contradiction.
+2. **A second, more consequential empirical finding, found while wiring the numpy/pandas test
+   (§8.9), not this one**: `_imp` cannot actually be *denied* to guest code (via the finder) once
+   ANY allowed code path imports `importlib.machinery` — `Lib/importlib/__init__.py` does a plain,
+   top-level `import _imp` ("Just the builtin component, NOT the full Python module," per its own
+   source comment), and `inspect` (needed by pandas) imports `importlib.machinery`. This is a
+   **materially more concrete and more severe version of §6 item 4** than "might break numpy's own
+   `.pyd` loading" — it broke pandas via the extremely ordinary `inspect` module, not via any
+   native-extension-loading path at all. `_imp` had to be added back to the granted allowlist
+   (not just left resident) for `test_python_numpy_pandas_import` to pass — see §8.9 and §9's A5
+   row for the full account.
+3. **Layer 0's minimal always-resident set, as measured on this Windows target (isolated=1,
+   site_import=0), is 25 names** — a real, larger set than the ADR's original 6-name example
+   (`_frozen_importlib, _frozen_importlib_external, _imp, builtins, sys, _thread`) or even
+   §5.5.1's widened 10-name list. Four names are present that **neither** version of the ADR's
+   list names at all: **`winreg` (Windows registry access), `marshal`, `zipimport`, `time`, `_io`,
+   `_signal`, `nt`, `codecs`/`_codecs`, and the `encodings.*` family**. `winreg` being
+   bootstrap-resident by default, unprompted, on a plain isolated/no-site interpreter is arguably
+   the single most surprising individual fact this pass found — a security-conscious Layer 0 sweep
+   that only removes the ADR's originally-named set would leave live Windows registry access
+   reachable to guest code by simple accident of platform, not by any granted capability. This
+   implementation's `internal_keep_set()` (`python_lockdown.cpp`) does **not** keep `winreg`,
+   `_imp`, `nt`, or `time` resident — they are swept, and only re-granted via the explicit
+   allowlist when a policy actually needs them (`nt`/`_imp`/`time` for numpy+pandas, per §8.9).
+
+**§6 item 7 (the widened `nt`/`_io`/`_socket`/`_winapi`/`_posixsubprocess` question): PARTIALLY
+ANSWERED.** `_io` is bootstrap-resident and this pass keeps it resident (needed continuously by the
+`io` module's own machinery; not tested with it removed). `nt` was tested exactly like `_imp` (see
+above) and behaves the same way: removable from `sys.modules` without breaking anything, but must
+be explicitly re-granted for `os`/numpy to import (since `Lib/os.py` does `from nt import *`).
+`_socket` and `_winapi`/`_posixsubprocess` were **NOT independently tested for removability** —
+`_winapi` appears only once numpy/pandas are actually imported (§8.9's closure), and this pass did
+not attempt removing it mid-session and re-testing; **NOT ATTEMPTED** for those two specifically.
+
+### 8.7 Priority item 3 — the meta-path finder as a real C type; claims A1, A3, A4
+
+`tests/test_python_meta_path_finder.cpp`, real output:
+```
+initialize() -> true ()
+[negative control] ok=1 stdout=math ok True
+[A1: ctypes] ok=0 stderr=Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+ModuleNotFoundError: No module named 'ctypes'
+[A1: winreg] ok=0 stderr=...ModuleNotFoundError: No module named 'winreg'
+[A3] ok=1 stdout=A3 bypass reached: PRETEND_CTYPES_MODULE
+[A4 tamper call] ok=1 stdout=tampered
+[A4 next call] escape_attempt=1 ok=0 stdout=''
+test_python_meta_path_finder: PASS
+```
+The finder (`g_finder_type` in `python_lockdown.cpp`) is a `PyTypeObject` with no `tp_dictoffset`
+set (verified live at runtime via `lockdown_identity_intact()`'s check of
+`Py_TYPE(g_finder_instance)->tp_dictoffset == 0` and a live `PyObject_GetAttrString(finder,
+"__dict__")` that must raise `AttributeError` — §5.5.2's strengthened check, exercised, not just
+implemented), installed as the sole `sys.meta_path` entry, delegating to the three captured
+standard finders held in TU-static C++ storage (never a Python name).
+
+**A1: CORRECT.** `import ctypes` and `import winreg` both raise `ModuleNotFoundError` — the
+ordinary "missing package" shape, not a caught security exception — and the negative control
+(`import math` under the same lockdown) confirms the deny-path isn't vacuous.
+
+**A3: CORRECT, exactly as predicted.** A name (`ctypes`) pre-seeded directly into `sys.modules` by
+guest code (`sys.modules['ctypes'] = 'PRETEND_CTYPES_MODULE'`) is reachable via a subsequent
+`import ctypes` **without the finder ever being consulted** — confirmed by the fact that the
+"module" observed by guest code afterward is the literal string sentinel, not a
+`ModuleNotFoundError`. This is the ADR's own documented, expected-to-hold limitation, not a design
+failure — Layer 0 + the reassertion mechanism below are what close it, not the finder alone.
+
+**A4: CORRECT, and this is a real end-to-end proof of §3.4 item 3 + §5.5.2's fix working
+together.** Guest code (`sys.meta_path.clear()`) tampers with the finder's install point; the
+tamper call itself completes (the reassertion runs at the *next* call's entry, not mid-call, per
+§3.4 item 3's own stated boundary); `lockdown_identity_intact()` correctly reports `false`
+immediately afterward (negative control confirmed `true` beforehand); and the very next `run()`
+call returns `escape_attempt = true` with `stdout_text` empty, proving the tampered call's source
+was **never executed at all** — the fail-closed behavior §3.4 item 3 specifies, exercised for
+real, not asserted from the mechanism's description.
+
+### 8.8 Priority item 5 (partial) — the native audit hook, claim C1 (observational, not enforcing)
+
+`tests/test_python_audit_hook.cpp`, real output:
+```
+initialize() -> true ()
+audit import-event count immediately after initialize() (bootstrap's own imports): 17
+[allowed import] ok=1 stdout=json ok {"a": 1}
+count after `import json` (allowed, first load): 41
+count after denied `import ctypes`: 43
+C1 (partial/observational): hook fires on denied attempts too -> YES
+[tamper+import] ok=1 stdout=post-tamper import result: raised ModuleNotFoundError
+count after tamper+import attempt: 44
+C1 (tamper case): hook fired despite sys.meta_path being cleared -> YES
+test_python_audit_hook: PASS
+```
+`PySys_AddAuditHook` is installed before `Py_InitializeFromConfig`, per the documented
+requirement, and its trampoline (`audit_hook_trampoline`) counts `"import"` events into a
+process-wide `std::atomic<uint64_t>` — host-side C++ state with no Python-level object at all,
+exactly the property §3.4 item 2 relies on. The count increases for an allowed first-load import,
+for a *denied* import attempt, and — the specific claim C1 asks about — **after guest code has
+fully cleared `sys.meta_path`**, confirming the hook fires independent of whatever Python-level
+import machinery state currently holds.
+
+**C1: CORRECT, but scoped narrowly — observational only, not enforcing.** This implementation's
+audit hook **counts** import attempts; it does not independently re-check the allowlist and deny
+anything itself (the trampoline always returns `0`, meaning "allow"). A hook that actually
+enforced C1's full claim (denying an import the Python-level mechanisms failed to stop, e.g. after
+`sys.meta_path` is cleared and guest code somehow reconstructs a working finder) was **NOT
+ATTEMPTED** this pass. What was proven is the narrower, still load-bearing fact that the hook
+*fires* under exactly the tamper conditions that defeat the Python-level mechanisms — the
+prerequisite for a future enforcing version, not the enforcing version itself.
+
+### 8.9 Priority item 4 — numpy and pandas actually importing under lockdown; claims A2 and A5
+
+`tests/test_python_numpy_pandas_import.cpp`, real output:
+```
+initialize() -> true ()
+[numpy] ok=1
+stdout=numpy 2.3.3
+sum 6
+[pandas] ok=1
+stdout=pandas 2.3.3
+pandas_sum 6
+test_python_numpy_pandas_import: PASS
+```
+**A2: CORRECT for the paths tested** — both `numpy.array([1,2,3]).sum()` and
+`pandas.DataFrame({'a':[1,2,3]})['a'].sum()` compute the correct result (6) under the lockdown
+interpreter, with version strings (`numpy 2.3.3`, `pandas 2.3.3`) matching the unmediated
+interpreter exactly (§8.6/§8.9's own unmediated dumps used the identical installed build). The
+narrower "bit-identical `__spec__.loader` identity" sub-claim §7.1's red-team attack on A2 flagged
+as a blind spot was **NOT independently checked** (still open, as the red-team review already
+noted).
+
+**A5 (Layer 0 sweep completeness / does granting numpy+pandas actually work): CORRECT that it
+works, but the finding underneath is the single most important result of this whole pass and is
+reported in full below, exactly as CLAUDE.md and the task brief require rather than glossing over
+it because the headline test passed.**
+
+**The real, load-bearing finding: getting `import numpy, pandas` to work at all under a closed
+allowlist requires granting a dramatically larger and more sensitive set of names than "numpy" and
+"pandas."** The exact allowlist that makes `test_python_numpy_pandas_import` pass (measured
+empirically against an *unmediated* interpreter first, then verified under lockdown) includes, in
+addition to the two expected package names:
+
+- **`ctypes`, `_ctypes`** — required. Verified NOT optional: `numpy.lib._utils_impl` does an
+  unconditional, module-level `import platform` (needed for `numpy.lib.format`'s
+  `drop_metadata`), and depending on how `platform`'s functions get exercised during numpy's own
+  import-time work on this Anaconda/MKL build, `ctypes` ends up imported transitively. Removing it
+  from the allowlist while keeping numpy/pandas granted made `import numpy` fail outright during
+  this pass's iterative allowlist-construction (not shown as a separate captured run, but directly
+  observed while building the final allowlist in §8.9's own test file).
+- **`winreg`, `_wmi`, `_winapi`** — required transitively (via `platform`'s Windows-version/edition
+  detection, itself required by `numpy.lib._utils_impl`). **This is a genuinely new,
+  previously-unstated finding**: granting `numpy`+`pandas` on this concrete installed build also
+  transitively grants Windows registry access (`winreg`) and a WMI query interface (`_wmi`) to
+  guest code — and because the finder only ever sees a module *name*, not *who is asking*, guest
+  code that does `import winreg` directly gets **exactly the same access** as numpy's own internal
+  platform-detection code does. The design has no mechanism to distinguish "numpy importing
+  winreg for its own version banner" from "guest code importing winreg to read the registry," and
+  cannot without a fundamentally different mechanism (e.g. per-call-stack provenance, which no
+  design considered here proposes).
+- **`platform`** — required, and non-optional: `numpy.lib._utils_impl` imports it unconditionally
+  at module scope (not inside a `try`/`except`), so numpy's own import fails outright without it.
+  This refutes an initial hope (recorded honestly rather than hidden) that numpy's
+  platform-detection code might be optional/best-effort; for numpy 2.3.3 specifically, it is not.
+- **`subprocess`, `shutil`, `threading`, `mmap`, `msvcrt`, `secrets`, `uuid`, `urllib`,
+  `tempfile`** and roughly 90 more stdlib names (the full measured closure is in
+  `test_python_numpy_pandas_import.cpp`'s `allowed_top_level_modules`) — the practical size of a
+  "preinstalled: numpy + pandas" policy's real import surface, empirically measured rather than
+  guessed, is **~130 top-level names**, not 2.
+- **`threading` in particular directly confirms §6 item 10's prediction**: pandas (via its `pytz`
+  dependency) does a hard, unconditional `import threading` at module scope. §5.5.7's decision to
+  exclude `threading`/`_thread` from the default allowlist (to sidestep `ExecState`'s unspecified
+  concurrency story) is **empirically incompatible with granting pandas** — confirmed, not merely
+  suspected. A "preinstalled: numpy+pandas" policy cannot adopt §5.5.7's mitigation as stated; the
+  `ExecState` mutex option §5.5.7 names as the alternative is the one that would actually need to
+  be built for that policy to be viable. **This is a real, load-bearing answer to §6 item 10, not
+  a restatement of the open question.**
+- **`_imp` (§8.6 finding 2, cross-referenced here)** — required once `inspect`/
+  `importlib.machinery` are reached (pandas needs `inspect`), independent of numpy's native
+  extension loading. Confirmed by an actual test failure during this pass (§8.6).
+
+**What this means for the design, stated plainly per the task brief's explicit instruction not to
+declare victory on a narrower test:** A1/A3/A4 (§8.7) show the finder mechanism itself works
+correctly and is genuinely closed-by-construction for the names it's asked to check. But **the
+practical allowlist a real "grant numpy and pandas" policy decision requires is far larger, and
+includes several names (`ctypes`, `winreg`, `subprocess`) that a security review would otherwise
+want to deny outright** (`ctypes` was this ADR's own concrete example of a name to test denying,
+§4's A1). The finder cannot resolve this tension — it is not a bug in the finder, it is a
+structural limit of "allow by module name" as the granularity of the whole mechanism, previously
+unstated because neither the design nor the red-team phase actually tried granting a real
+heavy-dependency package end-to-end. This is the single highest-value empirical result this pass
+produced, exactly as the task brief predicted it might be.
+
+### 8.10 What was NOT attempted this pass, stated plainly
+
+Per-call `CapabilitySet`-derived allowlist freshness (§3.4's closing paragraph) — this
+implementation uses a **fixed** allowlist baked in at `PythonRunner` construction time, not one
+derived from `EffectContext`/`CapabilitySet` per call. The `builtins.__import__`/
+`importlib.import_module` defense-in-depth wrappers (§3.4 item 1's second half) — only the
+meta-path finder (Design A) was implemented; Design B's wrapper was not, so B1–B3 remain untested
+by this pass specifically (though §7.2's source-inspection verdicts from the red-team phase still
+stand as reasoning-based, not code-based, evidence). The `open`/`socket`/`subprocess`-family
+mediation wrappers (§5), the `FilesystemAdapter` seam and its TOCTOU-safety claims (§6 item 6, C3),
+structural filesystem operations (§5.5.3), `os.getcwd`/`os.chdir` mediation against the shared
+`ExecState` (010 §3a), capability-freshness-for-already-issued-handles (§5.5.4/§7.4.3), Windows
+audit-hook enforcement (vs. this pass's observation-only hook), `Py_NewInterpreterFromConfig`
+subinterpreter pooling (§6 item 5), and cross-platform (Linux/macOS) runs (only Windows was
+available this pass) were all **NOT ATTEMPTED**. ASan/UBSan runs against the Python-embedding code
+specifically were also **NOT ATTEMPTED** — a full CPython embed under ASan on Windows is a
+substantially larger undertaking (CPython's own object allocator and the standard library's C
+extensions are not built with matching instrumentation) than the time available this pass
+supported attempting; flagged explicitly rather than skipped silently, per the task brief.
 
 ## 9. Per-claim verdicts
 
-*(Not performed — verdicts (CORRECT/WRONG/INCONCLUSIVE) are assigned after red-team and prove, per
-`decisions/README.md`. §4 states predictions for some claims, e.g. B2, but a prediction is not a
-verdict.)*
+Per `decisions/README.md` item 6 and the task brief: `INCONCLUSIVE` is attempted-but-ambiguous; a
+claim never attempted is stated as **NOT ATTEMPTED**, not folded into either passing or
+inconclusive, and no claim's wording was narrowed to dodge a failure.
+
+### 9.1 Design A (meta-path finder) claims (§4)
+
+| # | Claim | Verdict | Evidence |
+|---|---|---|---|
+| A1 | Disallowed name raises `ModuleNotFoundError`/`ImportError`, never reached by the dynamic loader | **CORRECT** | §8.7 — `ctypes`/`winreg` both denied cleanly; the canary-file/ETW half of the originally-specified experiment (planting a fake extension and tracing zero `CreateFile`/`LoadLibrary` calls) was **NOT ATTEMPTED** — the behavioral half (exception raised, negative control confirms non-vacuous) is what was actually tested |
+| A2 | An allowed name imports and behaves identically to an unmodified interpreter | **CORRECT** for version strings and computed output (numpy 2.3.3, pandas 2.3.3, correct sums) | §8.9 — the narrower `__spec__.loader` identity/introspection sub-claim (§7.1's red-team-flagged blind spot) was **NOT ATTEMPTED** |
+| A3 | A name pre-seeded into `sys.modules` (or written there by guest code) is reachable without the finder being consulted | **CORRECT**, exactly as predicted (documented limitation, not a new gap) | §8.7 |
+| A4 | Tamper-then-next-call is detected before the next call executes | **CORRECT** | §8.7 — full end-to-end proof: tamper call completes, identity check flips to `false`, the very next call fails closed as `escape_attempt` with empty `stdout_text` (source never ran) |
+| A5 | Layer 0's sweep leaves no name reachable outside `{safe subset ∪ granted policy}`, including `_imp` and transitively-pulled private extension modules | **CORRECT that the mechanism holds** (finder correctly denies everything not explicitly allowed); **but the practical allowlist needed to grant numpy+pandas is ~130 names, not 2, and includes `ctypes`/`winreg`/`_wmi`/`subprocess`** — see §8.9's full account. This is the headline finding of the whole pass. |
+
+### 9.2 Design B (`builtins.__import__` override) claims (§4)
+
+| # | Claim | Verdict | Evidence |
+|---|---|---|---|
+| B1, B2, B3 | All Design B claims | **NOT ATTEMPTED** | Design B's wrapper was not implemented this pass — only Design A (the meta-path finder) plus the native audit hook were built, per the task's own priority ordering. §7.2's red-team verdicts (source-inspection-based, predicting B2 false) still stand as reasoning, not as code-based evidence from this pass. |
+
+### 9.3 Layer 0 / cross-cutting claims (§4)
+
+| # | Claim | Verdict | Evidence |
+|---|---|---|---|
+| C1 | The native audit hook fires on an import attempt regardless of whether `sys.meta_path`/`builtins.__import__` have been cleared/reassigned | **CORRECT, but scoped to observation only** | §8.8 — hook fires after a full `sys.meta_path.clear()`; it does not itself enforce/deny (always returns "allow") — an enforcing version was **NOT ATTEMPTED** |
+| C2 | `open`/`socket`/`subprocess` without the capability raise the exact 026 §3 exception before any syscall | **NOT ATTEMPTED** | No mediation wrappers for these were built this pass |
+| C3 | `open()` mediated through `FilesystemAdapter` rejects `..`/symlink/absolute-redirect escapes | **NOT ATTEMPTED** | `FilesystemAdapter` seam not implemented for `PythonRunner` this pass |
+
+### 9.4 Findings from this pass not in §4's original claim list
+
+| Finding | Verdict/status | Evidence |
+|---|---|---|
+| §6 item 4: can `_imp` be removed from `sys.modules` without breaking numpy's `.pyd` loading? | **YES** | §8.6 |
+| §6 item 4, sharpened: does `sys.modules` removal alone deny a *fresh* `import _imp`? | **NO** — `BuiltinImporter` recreates it; the finder is the real enforcement point | §8.6 |
+| §6 item 4, sharpened further: can `_imp` be denied to guest code once `importlib.machinery`/`inspect` are also allowed? | **NO** — `importlib/__init__.py` does a plain top-level `import _imp`; pandas needs `inspect` | §8.6, §8.9 |
+| §6 item 7: can `nt`/`_io`/`_socket`/`_winapi`/`_posixsubprocess` be removed without breaking `os`/`io`/`socket`/`subprocess`? | **PARTIALLY ANSWERED** — `nt` behaves like `_imp` (removable, must be re-granted for `os`); `_io` kept resident, not tested removed; `_socket`/`_winapi`/`_posixsubprocess` **NOT ATTEMPTED** independently | §8.6 |
+| §6 item 8: is `tp_dictoffset == 0` reliably checkable for a custom C-implemented finder type, continuously, in this embedding? | **YES** — checked live in `lockdown_identity_intact()`, exercised by the A4 test | §8.7 |
+| §6 item 9: is wrapping `os.scandir`/`listdir`/`walk` sufficient, or do they have C-level fast paths? | **NOT ATTEMPTED** — no filesystem mediation was built this pass | — |
+| §6 item 10: is excluding `threading`/`_thread` from the default allowlist compatible with numpy/pandas? | **NO, confirmed** — pandas (via `pytz`) hard-requires `threading` at import time | §8.9 |
+| §6 item 1 (does CPython's C-level import machinery assume a literal `PyList` for `sys.meta_path`?) | **NOT ATTEMPTED** — this implementation replaced the whole list (`PyObject_SetAttrString(sys, "meta_path", new_list)`), never tested an immutable-sequence substitute | — |
+| §6 item 2 (does a `ModuleType.__setattr__` override intercept `sys.meta_path = other_list`?) | **NOT ATTEMPTED** | — |
+| §6 item 3 (does the `import` audit event fire on a `sys.modules` cache-hit path, not just first-load?) | **NOT ATTEMPTED** — §8.8's test only exercises first-load and denied-first-load cases, not a cache-hit case | — |
+| §6 item 5 (subinterpreter pooling feasibility) | **NOT ATTEMPTED** — this implementation is single-interpreter-per-process throughout, matching §5.5.6's decision | — |
+| §6 item 6 (`RealDirectoryFilesystemAdapter` TOCTOU-safety on Windows) | **NOT ATTEMPTED** — no filesystem adapter wired to `PythonRunner` this pass (ADR-001's `RealFileSystemAdapter` for `ShellRunner` is a separate, already-proven component this ADR does not reuse or extend) | — |
+| MSVC `_DEBUG`/`python313_d.lib` link failure | **Found and fixed** (build-configuration finding, not a design defect) | §8.1, §8.2 |
+| `winreg`, `marshal`, `zipimport`, `time` resident post-bootstrap, unnamed by either version of the ADR's example set | **New finding** | §8.6 |
+
+### 9.5 Cross-ADR note: `ShellRunner`'s `RunnerCall<python>` composition (ADR-001 §9.1, "NOT ATTEMPTED (by design — cross-ADR dependency)")
+
+ADR-001's prove phase explicitly left `Sh-G4`'s full composition claim (`ShellRunner` invoking a
+*real* `PythonRunner` under a granted `RunnerCall<python>`) untested, blocked on this ADR landing a
+working `PythonRunner`. **That block is now partially lifted**: `PythonRunner::run()` is real and
+callable end-to-end (§8.5, §8.7, §8.9). A full `Sh-G4` composition test was **not implemented in
+this pass** (out of this ADR's scope, and `ShellRunner`'s own files are off-limits per this task's
+constraints) — but it is now a cheap, well-defined follow-up for whoever picks up that specific
+gap: construct a `ShellRunner` and a `PythonRunner` sharing one `ExecState`, grant
+`RunnerCall<python>`, and assert the same identity/outcome-propagation properties `Sh-G4` already
+proves against a fake registered `Runner`. Flagged here as explicitly unblocked, not as something
+this pass completed.
 
 ## 10. The decision
+
+### 10.0 Pre-prove framing (superseded by 10.1–10.5 below, kept for the record)
+
+*The paragraphs immediately below this note were written before red-team or prove ran. They are
+left in place rather than deleted, per `decisions/README.md`'s rule that a superseded position is
+marked, not erased. §10.1 is the actual decision.*
 
 **Not made.** This ADR is a design-phase artifact per the task's scope; a decision requires the
 red-team → prove → judge loop `decisions/README.md` mandates for any security-critical choice, and
@@ -1254,3 +1675,105 @@ this is squarely one (007/008's capability boundary, I2/I3). What can be stated 
      documented concurrency contract; §5.5.7 works around this for now by excluding `threading` from
      the default allowlist, but the header should eventually state the constraint explicitly rather
      than being silent on it.
+
+### 10.1 The judge decision
+
+**The meta-path finder mechanism is accepted — it does exactly what it claims, and does it
+correctly.** A1, A3, A4 are `CORRECT` (§9.1) under real embedding: a disallowed name is denied
+before the dynamic loader ever sees it, a pre-seeded `sys.modules` bypass is exactly the documented
+limitation Layer 0 exists to close, and tampering with `sys.meta_path`/`builtins.__import__` is
+detected before the next call executes. The finder is not the thing this decision qualifies.
+
+**What this decision does *not* accept, because the prove phase disproved it empirically: "granting
+a real package makes the interpreter closed-by-construction for that package's users."** §8.9 is
+the load-bearing evidence. Making `import numpy, pandas` actually work — not a toy import, the real
+packages, on the real target this ADR names throughout — required an allowlist of roughly 130
+top-level names, not 2, including `ctypes`, `winreg`, `_wmi`, `_winapi`, and `subprocess`: exactly
+the names a security review would independently choose to deny. **`ctypes` was this ADR's own
+worked example, in §4's A1, of a name the mechanism must deny.** The mechanism denies it correctly
+— right up until the operator grants `numpy`, at which point `ctypes` becomes reachable too,
+because `numpy.lib._utils_impl`'s own platform-detection code needs it, and **the finder sees a
+module name, not who is asking.** Guest code writing `import ctypes` directly gets the identical
+access numpy's internals get. No design considered in this ADR — Design A, Design B, or the §3.4
+combination — proposes a mechanism that could tell those two `import ctypes` call sites apart.
+
+**This is not a bug to fix before shipping; it is a structural property of "allow by module name"
+as the enforcement granularity, discovered by actually trying to grant a real package rather than a
+synthetic one — exactly the gap `decisions/README.md`'s standard exists to catch before it is
+discovered in production instead.** Stating it plainly rather than hedging:
+
+- **The import-allowlist mechanism, as designed, provides real protection only for policies that
+  grant a small, curated set of packages with no heavy native dependency chain.** A `preinstalled`
+  policy (010 §5) offering `json`/`csv`/`pathlib`-class stdlib-only work gets the "closed by
+  construction" property this ADR set out to build.
+- **A `preinstalled: numpy+pandas` policy — the policy 010 §9's own G1 promotion gate names as the
+  headline success case for this whole subsystem — does *not* get that property from this
+  mechanism.** Under that policy, `ctypes`/`winreg`/`_wmi`/`_winapi`/`subprocess` are reachable by
+  guest code exactly as if they had been explicitly granted, because in effect they have been.
+- **For that policy, the actual security boundary is 008 §1b's layer 3 (the kernel jail), not the
+  interpreter-level mediation this ADR designed.** This was already the stated backstop for a
+  narrower residual risk (an allowlisted extension's own C code reaching a raw syscall, §10.0); the
+  prove phase shows the backstop is now carrying substantially more weight than that framing implied
+  — it is the primary defense against guest code directly using `ctypes`/`subprocess`/`winreg` for
+  any deployment that wants a real scientific-computing package, not a residual case.
+
+**Accepted, with this scope stated precisely, because the alternative — withholding a decision
+until a caller-aware mechanism is designed — blocks every other part of this subsystem (`ExecState`
+sharing, the audit hook, the reassertion mechanism) that has nothing to do with this specific gap.**
+The finder mechanism is real, tested, and worth keeping regardless of how the package-granularity
+question is eventually answered.
+
+### 10.2 What would close the gap, not decided here
+
+Two shapes of answer surfaced during this review, both real design work for a future ADR, not
+retrofitted here:
+
+1. **Caller-aware import gating.** The finder's `find_spec` could inspect the calling frame (e.g.
+   `sys._getframe(1).f_globals.get('__name__')`) and permit `ctypes`/`winreg`/`subprocess` only when
+   the importer is already inside a trusted package's own namespace (`numpy.*`, `pandas.*`), denying
+   the identical import from guest/`__main__` code. This raises the bar substantially but is not
+   airtight by itself — sufficiently deliberate guest code can manipulate `__name__`/`__package__`
+   or execute inside a crafted namespace — and would need its own red-team pass before being trusted
+   as load-bearing, the same way §7.7 found the naive per-call reassertion wasn't airtight either.
+2. **Accept the tension and design for it explicitly**, rather than trying to close it: state that
+   `preinstalled: numpy+pandas` is a *higher-trust* package policy than `preinstalled: stdlib-only`,
+   document the specific ancillary access it grants (this ADR's §8.9 list, essentially verbatim, as
+   an operator-facing disclosure), and lean on layer 3 deliberately rather than accidentally for that
+   tier. This costs nothing to build and is honest about what's actually being offered; it is a
+   documentation and policy-tiering change to 010 §5, not a new enforcement mechanism.
+
+Neither is chosen here. This is recorded as a new cross-cutting question — see `OpenQuestions.md`
+— because it affects 010 §5's package-policy design generally, not only `PythonRunner`'s
+implementation.
+
+### 10.3 What this binds
+
+008 §1b's two-layer framing (import allowlist + wrapper mediation, with the kernel jail as
+backstop) is **partially proven**: the allowlist mechanism itself (§9.1's A1/A3/A4) is real,
+implemented, and correct for what it enforces. The claim that this makes the *interpreter* the
+primary boundary — as opposed to the kernel jail — **does not hold for any policy granting a
+package with `ctypes`/`subprocess`/`winreg`-class transitive dependencies**, which in practice
+means it does not hold for 010 §9 G1's own numpy+pandas success case. 010 §9's G1 and G7 remain
+open: G1 (ecosystem) still needs the cross-platform run this pass didn't attempt; G7 (interpreter
+mediation) is proven for the *mediation-of-allowed-modules* half only partially (§10.4) and the
+*import-allowlist* half is proven correct-but-narrower-than-hoped, per §10.1.
+
+### 10.4 Residual risks carried forward, not resolved by this decision
+
+Everything §8.10 lists as `NOT ATTEMPTED` remains open regardless of this decision: `open`/
+`socket`/`subprocess`-family mediation wrappers, `FilesystemAdapter`'s TOCTOU claims, per-call
+capability-freshness for already-issued handles, `Py_NewInterpreterFromConfig` subinterpreter
+pooling, cross-platform runs, and ASan/UBSan against the embedding code itself. §5.5.7's decision
+to exclude `threading` is **empirically dead** for any policy granting pandas (§8.9 confirms §6
+item 10's prediction directly) — a real mutex on `ExecState`, the alternative §5.5.7 already named,
+is now not a hypothetical fallback but the only viable path for that policy tier, and is itself
+still unbuilt.
+
+### 10.5 What would reopen this decision
+
+A future ADR closing the §10.2 gap (caller-aware gating, proven through its own red-team/prove
+cycle) would strengthen this decision without needing to reopen it — the finder mechanism accepted
+here would be a component of that design, not replaced by it. What *would* reopen it: evidence that
+the finder mechanism itself (not the package-granularity question) has a flaw the accepted A1/A3/A4
+verdicts missed, or a Linux/macOS run surfacing platform-specific behavior this Windows-only pass
+could not see.

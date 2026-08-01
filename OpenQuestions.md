@@ -130,6 +130,47 @@ authority, and a security disclosure process. All required before any public rel
 
 ---
 
+## 🔴 OQ-15 — Module-name import gating can't distinguish a trusted package's internals from guest code
+
+Raised by `decisions/ADR-002-pythonrunner-embedding-and-mediation.md`'s prove phase (2026-08-01),
+which is the first place in this project an actual security mechanism was measured against a real
+dependency instead of a synthetic example. The result: making `import numpy, pandas` work at all
+under `PythonRunner`'s import allowlist required granting roughly 130 top-level module names, not
+2 — including `ctypes`, `winreg`, `_wmi`, `_winapi`, and `subprocess`, all transitively required by
+numpy's own platform-detection code. `ctypes` was 008 §1b's and ADR-002's own worked example of a
+name the mechanism exists to deny.
+
+**The mechanism (a `sys.meta_path` finder gating by module name) is not broken — it enforces
+exactly the allowlist it's given, correctly (ADR-002 §9's A1/A3/A4 verdicts).** The problem is
+granularity: the finder sees *which module* is being imported, never *which code is asking*. Once
+an operator grants `numpy`, guest code writing `import ctypes` directly is indistinguishable from
+numpy's own internals doing the same thing, and gets the identical access.
+
+This means 010 §9 G1's own flagship success case — "a scripted data task using NumPy + pandas
+produces a chart artifact" — is exactly the case where the interpreter-level import allowlist does
+**not** provide the "closed by construction" property 008 §1b claims for it. For that policy tier,
+008 §1b's kernel jail (layer 3) is the real boundary against guest code directly abusing
+`ctypes`/`subprocess`/`winreg`, not a documented residual risk sitting behind a boundary that mostly
+holds.
+
+**Candidate resolutions, neither designed yet (ADR-002 §10.2):**
+
+1. **Caller-aware import gating** — the finder inspects the calling frame's `__name__` and permits
+   `ctypes`-class names only when the importer is already inside a granted package's own namespace,
+   denying the identical import from guest/`__main__` code. Raises the bar substantially; not
+   airtight against a sufficiently deliberate guest program manipulating its own namespace, and
+   would need its own red-team pass before being trusted as load-bearing.
+2. **Accept and document the tiering** — treat `preinstalled: numpy+pandas`-class policies as
+   explicitly higher-trust than stdlib-only policies, disclose the specific ancillary access they
+   grant, and lean on the kernel jail deliberately for that tier rather than by accident. Costs
+   nothing to build; is a policy and documentation decision (010 §5), not a new mechanism.
+
+**Owner:** unassigned. **Blocks:** 010 §9 G1's promotion for any non-trivial package policy, and any
+claim that `preinstalled` policies beyond stdlib-only are "closed by construction" rather than
+"kernel-jail-bounded."
+
+---
+
 ## Resolved
 
 *(none yet — this section records questions closed by an ADR, with the ADR reference)*
