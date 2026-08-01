@@ -130,47 +130,33 @@ authority, and a security disclosure process. All required before any public rel
 
 ---
 
-## 🔴 OQ-15 — Module-name import gating can't distinguish a trusted package's internals from guest code
-
-Raised by `decisions/ADR-002-pythonrunner-embedding-and-mediation.md`'s prove phase (2026-08-01),
-which is the first place in this project an actual security mechanism was measured against a real
-dependency instead of a synthetic example. The result: making `import numpy, pandas` work at all
-under `PythonRunner`'s import allowlist required granting roughly 130 top-level module names, not
-2 — including `ctypes`, `winreg`, `_wmi`, `_winapi`, and `subprocess`, all transitively required by
-numpy's own platform-detection code. `ctypes` was 008 §1b's and ADR-002's own worked example of a
-name the mechanism exists to deny.
-
-**The mechanism (a `sys.meta_path` finder gating by module name) is not broken — it enforces
-exactly the allowlist it's given, correctly (ADR-002 §9's A1/A3/A4 verdicts).** The problem is
-granularity: the finder sees *which module* is being imported, never *which code is asking*. Once
-an operator grants `numpy`, guest code writing `import ctypes` directly is indistinguishable from
-numpy's own internals doing the same thing, and gets the identical access.
-
-This means 010 §9 G1's own flagship success case — "a scripted data task using NumPy + pandas
-produces a chart artifact" — is exactly the case where the interpreter-level import allowlist does
-**not** provide the "closed by construction" property 008 §1b claims for it. For that policy tier,
-008 §1b's kernel jail (layer 3) is the real boundary against guest code directly abusing
-`ctypes`/`subprocess`/`winreg`, not a documented residual risk sitting behind a boundary that mostly
-holds.
-
-**Candidate resolutions, neither designed yet (ADR-002 §10.2):**
-
-1. **Caller-aware import gating** — the finder inspects the calling frame's `__name__` and permits
-   `ctypes`-class names only when the importer is already inside a granted package's own namespace,
-   denying the identical import from guest/`__main__` code. Raises the bar substantially; not
-   airtight against a sufficiently deliberate guest program manipulating its own namespace, and
-   would need its own red-team pass before being trusted as load-bearing.
-2. **Accept and document the tiering** — treat `preinstalled: numpy+pandas`-class policies as
-   explicitly higher-trust than stdlib-only policies, disclose the specific ancillary access they
-   grant, and lean on the kernel jail deliberately for that tier rather than by accident. Costs
-   nothing to build; is a policy and documentation decision (010 §5), not a new mechanism.
-
-**Owner:** unassigned. **Blocks:** 010 §9 G1's promotion for any non-trivial package policy, and any
-claim that `preinstalled` policies beyond stdlib-only are "closed by construction" rather than
-"kernel-jail-bounded."
-
----
-
 ## Resolved
 
-*(none yet — this section records questions closed by an ADR, with the ADR reference)*
+### OQ-15 — Module-name import gating can't distinguish a trusted package's internals from guest code
+
+Originally raised by `decisions/ADR-002-pythonrunner-embedding-and-mediation.md`'s prove phase
+(2026-08-01): making `import numpy, pandas` work under `PythonRunner`'s import allowlist required
+granting roughly 130 top-level module names, not 2 — including `ctypes`, `winreg`, `_wmi`, `_winapi`,
+and `subprocess`, all transitively required by numpy's own platform-detection code, and all worked
+examples (008 §1b, ADR-002) of names the mechanism exists to deny. The finder itself was not broken
+(it enforces exactly the allowlist it's given, correctly) — the problem was granularity: it sees
+*which module* is being imported, never *which code is asking*, so granting `numpy` also grants
+guest code identical, indistinguishable access to `ctypes` directly.
+
+**Resolved by `decisions/ADR-003-caller-aware-import-gating.md` (2026-08-01)**, candidate resolution
+1 (caller-aware import gating): designed, red-teamed, revised twice (once after red-team, once after
+an additional gap surfaced during independent prove-phase re-verification), implemented, and proven
+against the real target (CPython 3.13.5, numpy 2.3.3, pandas 2.3.3, Windows/MSVC+clang) for the
+gated-name set `ctypes`/`_ctypes`/`winreg`/`_wmi`/`_winapi`/`subprocess`. 010 §9 G1's flagship
+NumPy+pandas success case may now be described as closed-by-construction for these six names
+specifically, not merely kernel-jail-bounded, within the scope below.
+
+**Not airtight — read ADR-003 §9 in full before relying on this for a new package policy.** §9.2/§9.3
+name the residual risks explicitly: a gadget-chaining variant (§6.1) and a fail-closed C-reentrancy
+question (§6.5) remain open; registry-pointer address-reuse safety (claim B12) is INCONCLUSIVE rather
+than proven; and the mechanism has a demonstrated history — three independent misses across design,
+red-team, and the initial prove pass, each finding a different unhandled entry point into CPython's
+import machinery — of missing entry points, not a hypothetical risk. A future caller-gated name or
+CPython version should be specifically re-verified, never assumed covered by the existing skip-anchor
+set. Candidate resolution 2 (accept-and-document tiering, ADR-002 §10.2) remains the fallback for any
+gated name or package this mechanism has not been checked against.

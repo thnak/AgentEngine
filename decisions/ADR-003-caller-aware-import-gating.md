@@ -1,12 +1,10 @@
 # ADR-003 — How does the import gate distinguish a granted package's own internal use of a sensitive module from guest code importing the same module directly, given that CPython exposes essentially every piece of frame/module provenance as an ordinary, guest-forgeable Python object?
 
-- **Status:** **Design revised after red-team; prove and judge still outstanding.** §6 (red-team) is
-  complete and left unedited as historical record. §3.3 (added below) closes the two structural
-  findings §6.x's summary verdict required before prove (§6.2 cache-hit bypass, §6.3 module-top-level
-  registration gap) plus the two low-cost fixes it asked folded in (§6.4 registry ownership, §6.9
-  heap-type mutability). §7–§9 remain placeholders naming what prove/judge must do, not content for
-  them to redo.
-- **Date:** 2026-08-01 (design); 2026-08-01 (red-team); 2026-08-01 (design revision)
+- **Status:** **Judged. Design B, as revised (§3.3) and further corrected during prove (§7.2),
+  accepted** — scoped precisely in §9. Full cycle complete: design (§1–§5), red-team (§6, left
+  unedited as historical record), revision (§3.3), prove (§7–§8, including one additional real gap
+  found and fixed during independent re-verification, not by any earlier phase), judge (§9).
+- **Date:** 2026-08-01 (design, red-team, revision, prove, judge — all same day)
 - **Depends on:** `decisions/ADR-002-pythonrunner-embedding-and-mediation.md` (the mechanism this
   design extends — §3 the meta-path finder, §3.3/§5.5.2/§7.7 the host-side-only-state lesson,
   §5.5.1 Layer 0's sweep, §8.9/§10.1 the finding this ADR exists to answer, §10.2 the two candidate
@@ -506,6 +504,7 @@ prediction is not evidence, per this project's own standard applied to ADR-002's
 | B11 | With §3.3.2's `get_code`-based registration, loading a real, unmodified `ctypes` (whose `__init__.py` performs a module-scope `from _ctypes import ...`) succeeds end to end when `_ctypes` is in `caller_gated_modules`, and the resulting module is fully functional (`ctypes.WinDLL`, `ctypes.c_int`, etc. all resolve), while the identical `import ctypes` attempted as guest top-level code is still denied. | Move `_ctypes` into the gated tier; import `ctypes` from inside a synthetic trusted package's own code (registered normally) and assert success plus functional use; separately assert guest top-level `import ctypes` is denied in the same session. A regression on the trusted path falsifies the fix one way; identical behavior to guest denial falsifies it the other way — the fix must be asymmetric, not "always deny" or "always allow." |
 | B12 | Registry entries survive a GC cycle that would otherwise free and reuse the underlying object's memory, because §3.3.3's `Py_INCREF` holds a strong reference. | Force address-reuse-prone churn (import and fully dereference a submodule via `del sys.modules[...]`/`gc.collect()`, then allocate many same-size objects via repeated `compile()` calls) with and without the fix; assert the fixed build's registry membership check is unaffected by the allocator churn, contrasted with a deliberately-reverted unfixed build shown vulnerable to the collision — the same positive-control discipline ADR-002 used for its own naive-variant negative controls. |
 | B13 | `TrustedLoaderProxy` rejects class-level monkeypatching (`TrustedLoaderProxy.exec_module = evil`) the same way `g_finder_type` already does, and `lockdown_identity_intact()`'s extended check catches a build that violates §3.3.4's requirement. | Attempt the monkeypatch from guest code; assert `TypeError` (classic static type) as the primary defense, **and** separately assert `lockdown_identity_intact()` returns false against a test-only build variant deliberately constructed as a mutable heap type without `Py_TPFLAGS_IMMUTABLETYPE` — proving the reassertion check is itself load-bearing, not merely descriptive of an accident. |
+| B14 (found and fixed during prove, not predicted by any earlier phase) | A **trusted** package's own top-level code calling `importlib.import_module()` (not the `import` statement) for a caller-gated name that is **not yet** `sys.modules`-cached still succeeds, and guest code is still denied the same name afterward. | §7.2 explains the gap this claim exists to close: the real, captured `import_module`'s own Python frame (globals = real `importlib`'s dict) sits between the frozen bootstrap frames and the true caller on a cache miss, and — before the fix — was neither registered trusted nor skipped, so the finder's own redundant check denied a caller the §3.3.1 wrapper had already correctly judged trustworthy. Disproving experiment: a fixture package loaded through the real finder→`TrustedLoaderProxy` path, whose top-level code calls `importlib.import_module()` for a gated name confirmed absent from `sys.modules` immediately beforehand (non-vacuous); assert the call succeeds and a subsequent guest `import` of the same name is still denied. |
 
 ## 5. What a real embedding experiment must resolve — not answerable by design reasoning alone
 
@@ -1034,28 +1033,281 @@ redesigned (not merely patched) as described above; §6.4/§6.9 folded in as che
 §6.6's wording sharpened; §6.5/§6.1's residual questions carried into the embedding experiment
 alongside §5's existing open items.**
 
-## 7. Executed evidence — NOT PERFORMED (placeholder)
+## 7. Executed evidence
 
-No code was written or run for this ADR. The prove phase, when it runs, should follow ADR-002 §8's
-own pattern: real code against the real CPython 3.13.5 + numpy 2.3.3 + pandas 2.3.3 target, built on
-MSVC and clang, `-j4`, with CTest entries for each of §4's claims, percentiles (not means) for B9, and
-positive controls (the naive-variant negative-control pattern B3/B4 already specify) for every
-security claim, per `decisions/README.md` item 5's mandate.
+Design B, as revised by §3.3, was implemented in full inside `src/backends/native_jail/
+python_lockdown.{hpp,cpp}` (extended in place, not forked — the file grew from 435 to roughly 1,220
+lines) and tested against the same real, concrete target every prior ADR in this project has used:
+CPython 3.13.5, numpy 2.3.3, pandas 2.3.3 at `C:\Users\thanh\miniconda3`. New test binaries:
+`test_python_caller_gated_import` (B1–B8, B10, B11, B13-primary, B14), `test_python_caller_gated_
+benchmark` (B9), `test_python_trusted_loader_proxy_heap_type_negative_control` (B13's second half, a
+separate compilation of `python_lockdown.cpp` with `AE_TEST_FORCE_HEAP_TRUSTED_LOADER_PROXY`
+defined, never linked into the real `agentengine_python_runner` library).
 
-## 8. Per-claim verdicts — NOT PERFORMED (placeholder)
+**Two passes of work, not one.** A background agent did the initial implementation and an initial
+prove pass (§7.1). Per this project's own standing discipline (never trust an agent's report without
+independently re-running it from a clean state — the same discipline already applied to ShellRunner's
+and PythonRunner's earlier prove phases), the resulting diff was read in full, line by line, before
+being accepted. That reading surfaced one additional, real, previously-unfound gap (§7.2), which was
+fixed, tested, and independently verified with its own positive control before this ADR was judged.
 
-Not applicable until §7 exists. When it does, verdicts should use exactly the three-way vocabulary
-`decisions/README.md` item 6 requires (`CORRECT`/`WRONG`/`INCONCLUSIVE`, plus `NOT ATTEMPTED` for
-anything genuinely untried, per ADR-002 §9's own precedent for distinguishing the two).
+### 7.1 The agent's implementation and its own findings
 
-## 9. The decision — NOT MADE (placeholder); pre-prove framing only
+Full clean rebuilds (deleted, reconfigured, rebuilt — no incremental trust), `-j4`, `vcvars64.bat`
+sourced in the same shell invocation as the build, on three configurations: MSVC 19.51.36252.0 (40/40
+targets, 15/15 CTest), clang 22.1.5 targeting MSVC (40/40 targets, 15/15 CTest), and MSVC with
+`AGENTENGINE_BUILD_PYTHON_RUNNER` at its default OFF (20/20 targets, 7/7 CTest — confirming the
+option-OFF path stays fully inert, i.e. B9's "zero cost unless a host opts in" property holds at the
+build-configuration level too, not just at runtime).
 
-**Not made.** Per `decisions/README.md`, a decision requires the full red-team → prove → judge loop.
-Red-team (§6) and the design revision it required (§3.3, closing B10–B13's claims) are now complete;
-prove (§7) and judge (§9 proper) are what remains. What can be stated honestly at this stage,
-mirroring ADR-002 §10.0's own pattern for a pre-prove checkpoint — the paragraphs below are largely
-superseded by §6/§3.3 and kept for the historical record of what the design phase believed before
-red-team ran, not as current guidance:
+Eight real implementation findings, none predicted by §3.2/§3.3's design reasoning, all confirmed
+against the real target rather than assumed:
+
+1. **§3.3.2's own `hasattr(loader, "get_code")` test is wrong on this target.** `ExtensionFileLoader`,
+   `FrozenImporter`, and `BuiltinImporter` all define their own `get_code` too — the actual
+   distinguishing signal is whether `type(loader).exec_module IS _LoaderBasics.exec_module` (true
+   only for `SourceFileLoader`/`SourcelessFileLoader`). Fixed via `loader_uses_generic_exec_module()`.
+2. **`PyEval_EvalCode` needs manual `__builtins__` seeding** — the `exec()` *builtin* auto-inserts
+   `globals['__builtins__']` when absent; calling `PyEval_EvalCode` directly, as §3.3.2 literally
+   instructs, does not. Without this, real numpy/pandas module-level code hit `KeyError:
+   '__builtins__'`. Fixed by mirroring `builtin_exec_impl`'s own check.
+3. **`register_code_objects_in`'s cycle guard was broken and crashed against real numpy/pandas.** A
+   class's `__dict__` accessor returns a fresh `mappingproxy` on every access, so keying the
+   recursion guard on that proxy's identity never deduplicates a revisited class — real
+   numpy/pandas class cross-references drove this into a stack-overflow crash. Fixed by keying on
+   the class object itself.
+4. **`exec_module` is an ordinary, Python-reachable bound method — unaddressed by §3.2/§3.3.** Guest
+   code could call `sys.modules['numpy'].__loader__.exec_module(types.ModuleType('evil'))` directly,
+   registering an arbitrary module's dict as trusted. Closed with a caller-frame bootstrap check
+   (dict-identity against `_frozen_importlib`/`_frozen_importlib_external`) at the top of
+   `TrustedLoaderProxy_exec_module`.
+5. **§3.2 item 4's claim that the frame walk covers the `importlib.import_module` bypass "for free"
+   is wrong**, confirmed by a direct frame-chain probe: on a cache miss, `import_module`'s own frame
+   (globals = the real, non-frozen `importlib` dict) sits between the bootstrap frames and the true
+   caller, and is itself untrusted (but also un-skipped) once `importlib` is resident — this is
+   exactly why §3.3.1's separate wrapper is required, and it is the same root cause §7.2 below traces
+   to its remaining, unfixed half.
+6. **Wrapping `importlib.import_module` requires importing `importlib` *before* installing the
+   custom finder**, or `initialize()` deadlocks against its own gate for any policy that doesn't
+   already grant `importlib`. Fixed by reordering, and adding `importlib` to `internal_keep_set()`
+   for policy-honesty (it is unconditionally resident regardless of host policy).
+7. **A real regression against ADR-002's own strict invariant:** `six` (a real pandas dependency)
+   legitimately does `sys.meta_path.append(_SixMetaPathImporter())` at its own import time, which
+   broke `lockdown_identity_intact()`'s `len(sys.meta_path)==1` check on the *next* `run()` call —
+   exposed only because ADR-003's own claims require multiple `run()` calls per session, which
+   ADR-002's own tests never did. Fixed by tracking `exec_module` nesting depth and unconditionally
+   resetting `sys.meta_path` back to exactly `[our finder]` the instant the outermost nested load
+   returns — restoring, not weakening, ADR-002's original invariant.
+8. **`TrustedLoaderProxy` needed a `tp_getattro` delegating to the real loader** for loader-protocol
+   methods beyond `exec_module` (`get_data`, `is_package`, …) that some packages reach — not shown in
+   §3.2's struct sketch, which showed only `exec_module`.
+
+Per-claim results (B1–B13), all independently reproduced in this ADR's own re-verification (§7.2):
+B1, B2, B10, B3, B4, B5, B6, B7, B11, B13 all **CORRECT**; B9 measured (gated p50≈423µs/p99≈772µs vs.
+open p50≈334µs/p99≈598µs — a walk-attributable delta of roughly 90µs/175µs, both conditions dominated
+by real file I/O and compilation); B12 explicitly **INCONCLUSIVE** — no reliable trigger for a
+registry entry's freed address being reused by a fresh allocation was constructed in the time
+available, reported honestly rather than laundered into a pass, matching this project's own standard
+for `INCONCLUSIVE` verdicts.
+
+### 7.2 Independent re-verification: a real gap found by re-reading the code, fixed, and re-proven
+
+Reading `python_lockdown.cpp` in full (not merely re-running the reported test suite) surfaced a
+ninth gap the agent's own pass did not find, adjacent to finding 5 above. **The finder's own,
+supposedly-redundant check (Finder_find_spec, kept as "free defense-in-depth" per §3.2 item 4) is
+reachable on a genuine `sys.modules` cache miss** — exactly the case the §3.3.1 wrapper delegates to
+after its own check passes. Reasoning, then confirmed empirically with a standalone frame-chain probe
+against the real CPython 3.13.5 target (not the C++ build — a pure-Python reproduction, matching this
+ADR's own §6 red-team method) *before* writing any fix:
+
+```
+depth=0 func='find_spec'              module='__main__'            (the probe's own hook)
+depth=1 func='_find_spec'             module='importlib._bootstrap' frozen
+depth=2 func='_find_and_load_unlocked' module='importlib._bootstrap' frozen
+depth=3 func='_find_and_load'         module='importlib._bootstrap' frozen
+depth=4 func='_gcd_import'            module='importlib._bootstrap' frozen
+depth=5 func='import_module'          module='importlib'            NOT frozen, real importlib dict
+depth=6 func='<module>'               module='__main__'             the TRUE caller
+```
+
+The dict-identity skip logic (§3.2 item 4, as implemented) only recognized `_frozen_importlib`/
+`_frozen_importlib_external` as skip-worthy. Depth 5's frame — `import_module`'s own, genuinely
+non-frozen, non-bootstrap frame — was therefore treated as "the first non-bootstrap frame" the walk
+stops at, checked against `g_trusted_globals`, and found absent (real `importlib` is imported
+directly during `initialize()`, never through the finder+`TrustedLoaderProxy` path, so its dict was
+never registered). **Net effect: a legitimately trusted caller using `importlib.import_module()`
+for a gated name not yet in `sys.modules` would be incorrectly denied** by the finder's own redundant
+check, even though the §3.3.1 wrapper's own check (which runs *before* `import_module`'s real body
+ever executes, so sees no such frame) had already, correctly, judged the caller trustworthy. Grepping
+the real installed numpy/pandas trees found no current use of `importlib.import_module()` for any
+gated name (all such imports use the plain `import` statement), so this did not break any of §7.1's
+measured B1/B11 results — it is a real, confirmable, but previously-latent functional-regression gap
+(fail-closed, not fail-open — the same shape as §6.5's already-disclosed residual risk), not a
+security hole and not a contradiction of anything already measured.
+
+**Fix.** A third frame-walk skip-anchor, `g_importlib_dict` — real `importlib`'s own module dict,
+captured once at setup alongside the two frozen dicts. Skipping a frame only means "this is not a
+candidate to check trust against, keep walking outward for the true caller" — it never grants trust
+by itself, so this introduces no new forgery surface (a guest reusing `importlib.__dict__` as `exec()`
+argument, mirroring B3's numpy-dict forgery, is walked *past*, landing the check on guest's own real,
+untrusted frame, exactly as B3 already covers for numpy's dict).
+
+**Verification, including a genuine positive control (mandatory for a security-relevant fix, per
+`decisions/README.md` item 5 — not merely asserted, executed):**
+
+1. New fixture (`tests/fixtures/python_caller_gated_trusted_probe/trusted_import_module_probe.py`, an
+   ordinary allowlisted module whose top-level code calls `importlib.import_module("winreg")`) and a
+   new test, B14, inserted before B1 so `winreg` is genuinely uncached at the point it runs.
+2. **A full, clean rebuild in the project's own default configuration was required to make this
+   verification mean anything.** The first attempt used `-DCMAKE_BUILD_TYPE=Release`, which defines
+   `NDEBUG` and compiles every `assert()` in every test to a no-op — under that configuration, B14
+   (and, by the same logic, every other `assert`-based claim in this ADR and ADR-002) would report
+   "PASS" regardless of whether the underlying condition held, because the process simply never
+   evaluates the assertion at all. Reconfiguring without an explicit build type (`third_party/quark/
+   CMakeLists.txt`'s own `if(NOT CMAKE_BUILD_TYPE ...) set(... Release ...)` guard does not fire once
+   a prior configure has already cached a non-empty value, which is how this was first missed) restored
+   the project's actual default and produced a build where `assert()` is live — matching how ADR-001's
+   own MSVC-`assert()`-dialog finding already implied this project's tests assume a debug-CRT default.
+3. **Positive control, executed for real:** with the fix temporarily reverted, `test_python_caller_
+   gated_import` genuinely crashes — `Assertion failed: b14.ok && "B14: ..."`, exit code 3 — proving
+   B14 is not vacuous. With the fix restored, a full clean rebuild passes **15/15** CTest, including
+   B14, whose own stdout shows the exact intended sequence: `B14_WINREG_PRECACHED False` →
+   `B14_TRUSTED_IMPORT_MODULE_OK True` → `B14_GUEST_IMPORT DENIED No module named 'winreg'`.
+
+This finding and fix are folded into §3.3.1's description above (`g_importlib_dict`'s own comment in
+`python_lockdown.cpp` carries the full account) and into B14 in §4's claims table, added retroactively
+so the claim this fix answers has a name.
+
+## 8. Per-claim verdicts
+
+Design A (§3.1): **A1 CORRECT / A2 CORRECT** (both halves of the prediction confirmed by design
+reasoning against the documented `compile()` contract, per §3.1/§4 — no C++ build was made of Design
+A, consistent with it never being a candidate past §3).
+
+Design B, as revised by §3.3, decided by observed output on the real CPython 3.13.5 + numpy 2.3.3 +
+pandas 2.3.3 target (§7):
+
+| # | Verdict | Evidence |
+|---|---|---|
+| B1 | **CORRECT** | `numpy 2.3.3`/`sum 6`; `pandas 2.3.3`/`pandas_sum 6`/`errors_ok True` (exercises §6.3's fix directly: `pandas.errors`'s own unconditional module-scope `import ctypes`) — with ctypes/_ctypes/winreg/_wmi/_winapi/subprocess moved into `caller_gated_modules` |
+| B2 | **CORRECT** | `ctypes_cached True`/`_ctypes_cached True` confirmed before denial (non-vacuous); `import ctypes` → `ModuleNotFoundError` |
+| B3 | **CORRECT** | Positive control (`B3_NAIVE_WOULD_ALLOW True`) plus real denial (`B3_REAL_MECHANISM DENIED`) against `exec(compile(...), numpy.__dict__)` |
+| B4 | **CORRECT** | Same structure via `types.FunctionType(forged_code, numpy.__dict__)` |
+| B5 | **CORRECT** | Fake `'<frozen importlib._bootstrap>'` filename has zero effect — skip logic is dict-identity only |
+| B6 | **CORRECT** | Zero suspect set containers; finder has no `__dict__`; proxy type exposes no trust/registry-named attribute |
+| B7 | **CORRECT** | `importlib.reload(pandas.errors)` succeeds |
+| B8 | **CORRECT (predicted-TRUE limitation, confirmed, not defeated)** | `sys.path`-shadowing remains a stated, precondition-bounded gap per §3.3.5's sharpened wording — not attacked further in prove, since 008/025's `sys.path` construction owns the precondition |
+| B9 | **Measured, not pass/fail** | N=300/condition: gated p50≈423µs/p99≈772µs vs. open p50≈334µs/p99≈598µs; delta (≈90µs p50, ≈175µs p99) is the walk-attributable cost, both conditions dominated by real file I/O and compilation |
+| B10 | **CORRECT** | `importlib.import_module('ctypes')` denied identically to B2, same session, cache already populated |
+| B11 | **CORRECT** | Trusted `ctypes` load succeeds and is resident (`B11_TRUSTED_CTYPES_RESIDENT True`) while guest's own top-level `import ctypes` is denied in the same session — the required asymmetry |
+| B12 | **INCONCLUSIVE** | Allocator-churn probe run (20k `compile()` calls post-dereference); no reliable address-reuse trigger constructed; reported honestly rather than laundered into a pass |
+| B13 | **CORRECT (both halves)** | Primary: `TypeError` on class-level monkeypatch (classic static type). Second half: a dedicated `PyType_FromSpec`-built, non-immutable heap-type variant makes `lockdown_identity_intact()` correctly return `false` |
+| B14 | **CORRECT (after fix; WRONG before it — both states executed, §7.2)** | Positive control: reverting the `g_importlib_dict` fix reproduces a genuine assertion failure (exit 3); with the fix, a trusted `importlib.import_module()` call for a not-yet-cached gated name succeeds while guest denial for the same name still holds afterward |
+
+§6's revision claims (§3.3.3 registry ownership, §3.3.4 heap-type requirement) are covered by B12
+(INCONCLUSIVE on the ownership half specifically — see §7.1) and B13 (CORRECT on the heap-type half)
+respectively; no separate verdict rows were needed beyond those already in the table above.
+
+## 9. The decision
+
+**Judged. Design B, as revised by §3.3 and further corrected during prove (§7.2's `g_importlib_dict`
+fix), is accepted** as the mechanism resolving OQ-15's caller-aware-gating candidate, scoped precisely
+below. Design A (§3.1) is rejected, not merely deprioritized — falsified by design reasoning alone
+(A2), confirmed rather than merely predicted (§8).
+
+### 9.1 What is accepted, and exactly how far it goes
+
+The finder + dual-registry + frame-stack-walk + import-wrapper combination in `src/backends/
+native_jail/python_lockdown.cpp` correctly distinguishes a granted package's own internal use of a
+caller-gated name from guest code's direct use of the same name, for the concrete `caller_gated_
+modules = {ctypes, _ctypes, winreg, _wmi, _winapi, subprocess}` set this ADR was built and measured
+against, on the real CPython 3.13.5 + numpy 2.3.3 + pandas 2.3.3 target. Every claim in §4/§8 that
+was executed (B1–B11, B13, B14) returned **CORRECT**; the one claim not fully resolved (B12,
+registry-pointer address-reuse) is honestly **INCONCLUSIVE**, not laundered into a pass.
+
+This directly narrows ADR-002 §10.1's accepted scope-limitation for exactly the case OQ-15 named: a
+`preinstalled: numpy+pandas` policy under this mechanism no longer hands guest code `ctypes`/
+`winreg`/`_wmi`/`_winapi`/`subprocess` access **directly** (B2/B10/B11), while numpy's and pandas's
+own internal use of those names, including at their own module top level (B1, the §6.3 fix) and via
+`importlib.import_module()` on a cache miss (B14, the §7.2 fix), continues to work.
+
+### 9.2 What this decision does not claim
+
+- **Not airtight, and not claimed to be.** OQ-15 itself named this limitation before design started;
+  this ADR designs the mechanism honestly, including every place it falls short, rather than
+  overselling it. §6.1's gadget-chaining variant (trusted code B run against trusted globals A) and
+  §6.5's narrower fail-closed C-reentrancy question (a granted package's own C-level code performing
+  a caller-gated import via the C API with no Python frame of its own) remain **genuinely open**,
+  named rather than resolved, carried forward as residual risk (§9.3).
+- **Not a replacement for the kernel jail.** 008 §1b's layer-3 backstop remains the boundary against
+  an allowlisted native extension's own C code reaching a raw syscall with no Python-level call site
+  at all — out of scope for any interpreter-level design, this one included.
+- **Scoped to the concrete, measured target.** Windows, MSVC 19.51/clang 22.1, CPython 3.13.5,
+  this specific numpy/pandas build. A different CPython minor version, a different package, or a
+  different platform's frame/loader internals are not claims this ADR makes evidence for — matching
+  ADR-001's own precedent of scoping a judged decision to what was actually tested, not what seems
+  likely to generalize.
+- **A generalization warning, earned the hard way this pass:** §7.2's `g_importlib_dict` gap was a
+  *third* skip-anchor need, found only by independently re-reading the implementation after §7.1's
+  own extensive test suite (13 claims, 3 toolchains, three build configurations) had already reported
+  a clean pass. §3.2's original design reasoning, §6's red-team, and §7.1's initial prove pass each,
+  independently, missed this exact gap. This is not evidence the mechanism is fragile in some open-
+  ended way — every gap found across all three passes had a small, buildable fix and none was a
+  fail-open security hole — but it is concrete evidence that **this class of design (frame-identity
+  walks against a growing set of legitimate entry points into CPython's import machinery) has a
+  real, demonstrated history of missed entry points, not a hypothetical one.** A future CPython
+  version, a future caller-gated name, or a future entry point (e.g. `zipimport`, or a package using
+  `__import__` directly rather than the `import` statement — not audited this pass) should be treated
+  as "probably fine, but not verified" rather than assumed covered by the existing skip-anchor set,
+  until it is specifically checked the way B14 checked `import_module`.
+
+### 9.3 Residual risks, carried forward explicitly rather than left implicit
+
+1. **B12 (registry pointer ownership under GC/allocator churn) is INCONCLUSIVE, not CORRECT.** The
+   `Py_INCREF`-at-registration fix (§3.3.3) is implemented and is the textbook-correct fix for the
+   dangling-identity mechanism §6.4 named, but no test in this ADR constructed a reliable trigger
+   proving it defeats a real address-reuse collision. Recommended before this mechanism is promoted
+   further: a dedicated pymalloc-arena-control experiment, or accept this as a permanently
+   INCONCLUSIVE-but-textbook-correct fix the way some claims never get a clean disproof either way.
+2. **§6.1's gadget-chaining variant and §6.5's fail-closed C-reentrancy question** remain open, per
+   §9.2, unresolved by this prove pass (they were not claims in §4's table, and no experiment in §7
+   addressed either).
+3. **§6.6/B8's `sys.path`-shadowing** remains a stated, accepted limitation, entirely contingent on
+   008/025's `sys.path` construction — not this ADR's mechanism to close.
+4. **The entry-point-completeness question §9.2's generalization warning names is itself now a
+   residual risk, not merely a lesson.** `g_frozen_importlib_dict`, `g_frozen_importlib_external_
+   dict`, and `g_importlib_dict` are the three skip-anchors this pass found necessary; a future
+   caller-gated name or CPython version could exercise a fourth entry point not yet identified.
+
+### 9.4 What specs this binds
+
+- **OQ-15**: narrows to "resolved for the measured target and gated-name set, via caller-aware
+  gating (candidate resolution 1), with the residual risks in §9.3 carried forward as their own
+  named items" — update `OpenQuestions.md` accordingly (moved to `## Resolved`, referencing this ADR,
+  with §9.3's residuals restated there rather than silently dropped).
+- **010 §9 G1**: the "NumPy + pandas scripted data task" flagship success case may now be described as
+  closed-by-construction for the six named ancillary names specifically, not merely kernel-jail-
+  bounded — still subject to §9.2's scope limits (this target, this platform, this toolchain).
+- **ADR-002 §10.1's scope-limitation note** should be cross-referenced to this ADR as the mechanism
+  that narrows it, not supersedes it — ADR-002's own finder/allowlist mechanism is unchanged and
+  still the primary enforcement for every non-gated name.
+
+### 9.5 What would reopen this decision
+
+- A future granted package (or a version bump of numpy/pandas) found to use a caller-gated import via
+  an entry point this pass did not audit (`zipimport`, direct `__import__()` C-API calls from an
+  extension, a subinterpreter) without going through one of the three now-known skip-anchors.
+- Resolution of B12 in the *unfavorable* direction (a real, reproducible address-reuse collision
+  defeating the `Py_INCREF` fix) — not expected, since the fix is textbook-correct, but not yet
+  disproven-impossible either.
+- A future CPython version changing `PyFrame_GetGlobals`/`PyFrame_GetBack`/`PyFrame_GetCode`'s
+  Stable-ABI status or frame-representation internals (§5 item 1's still-open question, not resolved
+  by this prove pass — the benchmark measured cost, not ABI stability across versions).
+
+---
+
+*Historical record, pre-red-team framing (superseded by §6/§3.3/§7/§8/§9 above; kept per
+`decisions/README.md`'s rule that superseded reasoning is retained, not deleted):*
 
 - **The working hypothesis for red-team to attack hardest: Design B (the host-side dict-identity +
   code-object-identity registry, checked via a C-level frame-stack walk that never reads a Python-

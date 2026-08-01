@@ -5,6 +5,13 @@
 // reassertion), and §5.5.2's fix (every enforcement object is a pure C type with no Python-visible
 // mutable state). Backend: native_jail (008 §1b, §3).
 //
+// ALSO implements decisions/ADR-003-caller-aware-import-gating.md (prove phase) §3.2/§3.3 --
+// Design B, revised: the caller-gated import tier (`PythonLockdownConfig::caller_gated_modules`),
+// the host-side `g_trusted_globals`/`g_trusted_code` registries, `TrustedLoaderProxy`, the C-level
+// frame-stack walk, and the `builtins.__import__`/`importlib.import_module` wrappers that close
+// §6.2's sys.modules cache-hit bypass. All of this new state and machinery lives entirely in
+// python_lockdown.cpp; this header only gains one new `PythonLockdownConfig` field.
+//
 // This header intentionally does NOT include <Python.h> or expose any `PyObject*` -- consumers
 // (including python_runner.hpp) see only std types, so a TU that never builds with
 // AGENTENGINE_BUILD_PYTHON_RUNNER off doesn't need CPython headers on its include path at all.
@@ -31,10 +38,28 @@ namespace agentengine::native_jail {
 // running `site.py` (this implementation always disables `site_import`, per the embedding
 // experiment's finding that `site.py` pulls in far more than a lockdown interpreter should trust
 // unreviewed -- see the ADR's §8 evidence).
+//
+// `caller_gated_modules` implements decisions/ADR-003-caller-aware-import-gating.md §3.2/§3.3
+// (Design B, revised): a second, smaller tier, DISJOINT from `allowed_top_level_modules`, for
+// names that a granted package's own internal code may legitimately import but guest code must
+// not be able to reach directly (e.g. "ctypes", "_ctypes", "winreg", "_wmi", "_winapi",
+// "subprocess" -- ADR-002 §8.9's own worked examples of names a security review wants denied to
+// guest code, but which numpy/pandas's own transitive closure requires granting to *someone*).
+// A name in this set is resolved only when the C-level frame-stack walk (python_lockdown.cpp)
+// finds the immediate, non-bootstrap caller's globals dict AND code object both already recorded
+// as trusted (loaded via the finder's own delegated path) -- never by trusting anything
+// Python-visible (`__name__`, `f_globals` contents, `co_filename`). See the ADR §3.3 for exactly
+// which structural gaps (§6.2 sys.modules cache-hit bypass, §6.3 module-top-level registration
+// gap) the implementation must close, not just §3.2's original sketch.
 struct PythonLockdownConfig {
     std::string python_home; // e.g. "C:/Users/thanh/miniconda3"
     std::vector<std::string> extra_sys_path;
     std::unordered_set<std::string> allowed_top_level_modules;
+    std::unordered_set<std::string> caller_gated_modules; // ADR-003 §3.2 item 2 -- disjoint from
+                                                            // allowed_top_level_modules; empty by
+                                                            // default (feature is fully inert, zero
+                                                            // extra cost, unless a host populates
+                                                            // it -- ADR-003 claim B9).
     bool install_audit_hook = false; // ADR-002 §3.4 item 2 / claim C1 -- opt-in, NOT ATTEMPTED by
                                       // default in every test (only the dedicated audit-hook test
                                       // exercises it), because PySys_AddAuditHook is irreversible
@@ -86,7 +111,10 @@ public:
 
     // True iff sys.meta_path is still exactly [the one finder instance installed at setup] by
     // pointer identity, AND that instance's type still has tp_dictoffset == 0 (no writable
-    // instance __dict__ -- §5.5.2's strengthened check). Exposed standalone (not just folded into
+    // instance __dict__ -- §5.5.2's strengthened check). ALSO (ADR-003 §3.3.4/§3.3.1) checks that
+    // TrustedLoaderProxy's type is still a non-heap type (or Py_TPFLAGS_IMMUTABLETYPE-set), and
+    // that sys.modules['builtins'].__import__ / sys.modules['importlib'].import_module still point
+    // at the caller-gated wrappers installed at setup. Exposed standalone (not just folded into
     // run()) so tests can assert the identity check itself has discriminating power (a negative
     // control), per this project's testing standard (ADR-001 §8.8).
     bool lockdown_identity_intact() const;

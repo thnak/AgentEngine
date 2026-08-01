@@ -161,4 +161,64 @@ if(AGENTENGINE_BUILD_PYTHON_RUNNER)
   add_test(NAME test_python_audit_hook COMMAND test_python_audit_hook)
   set_tests_properties(test_python_audit_hook PROPERTIES
     ENVIRONMENT "${AE_PYTHON_TEST_ENV}" TIMEOUT 60)
+
+  # ---- decisions/ADR-003-caller-aware-import-gating.md prove-phase gates (Design B, revised) ----
+
+  # Claims B1-B8, B10, B11, B13 (primary half): the caller-gated import tier end to end, against
+  # the same real numpy/pandas target ADR-002 already measured, with ctypes/_ctypes/winreg/_wmi/
+  # _winapi/subprocess moved into caller_gated_modules.
+  add_executable(test_python_caller_gated_import test_python_caller_gated_import.cpp)
+  target_link_libraries(test_python_caller_gated_import PRIVATE
+    agentengine::core agentengine::python_runner agentengine_warnings)
+  target_compile_definitions(test_python_caller_gated_import PRIVATE
+    AE_PYTHON_HOME="${AGENTENGINE_PYTHON_HOME}"
+    AE_PYTHON_SITE_PACKAGES="${AGENTENGINE_PYTHON_SITE_PACKAGES}"
+    # B14 (added during this prove pass's own verification, not in the ADR's original §4 table):
+    # a trusted package using importlib.import_module() -- not the `import` statement -- for a
+    # not-yet-cached gated name. See python_lockdown.cpp's g_importlib_dict comment.
+    AE_PYTHON_CALLER_GATED_TRUSTED_PROBE_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/python_caller_gated_trusted_probe")
+  add_test(NAME test_python_caller_gated_import COMMAND test_python_caller_gated_import)
+  set_tests_properties(test_python_caller_gated_import PROPERTIES
+    ENVIRONMENT "${AE_PYTHON_TEST_ENV}" TIMEOUT 120)
+
+  # Claim B9 (performance): stack walk vs. O(1) allowed-name lookup, N fresh imports each,
+  # p50/p99. Uses tiny synthetic fixture modules (tests/fixtures/python_caller_gated_bench/), not
+  # numpy/pandas, so the two conditions differ ONLY in which tier decides the name is allowed.
+  add_executable(test_python_caller_gated_benchmark test_python_caller_gated_benchmark.cpp)
+  target_link_libraries(test_python_caller_gated_benchmark PRIVATE
+    agentengine::core agentengine::python_runner agentengine_warnings)
+  target_compile_definitions(test_python_caller_gated_benchmark PRIVATE
+    AE_PYTHON_HOME="${AGENTENGINE_PYTHON_HOME}"
+    AE_PYTHON_CALLER_GATED_BENCH_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/python_caller_gated_bench")
+  add_test(NAME test_python_caller_gated_benchmark COMMAND test_python_caller_gated_benchmark)
+  set_tests_properties(test_python_caller_gated_benchmark PROPERTIES
+    ENVIRONMENT "${AE_PYTHON_TEST_ENV}" TIMEOUT 60)
+
+  # Claim B13, second half: lockdown_identity_intact() must detect a TrustedLoaderProxy built as a
+  # mutable heap type (no Py_TPFLAGS_IMMUTABLETYPE). Needs its OWN compilation of
+  # python_lockdown.cpp with AE_TEST_FORCE_HEAP_TRUSTED_LOADER_PROXY defined -- a separate static
+  # library, never linked into agentengine_python_runner (the real backend), so the real target's
+  # own §3.3.4 construction is never at risk of picking up this test-only branch by accident.
+  add_library(agentengine_python_runner_heap_proxy_probe STATIC
+    "${CMAKE_SOURCE_DIR}/src/backends/native_jail/python_lockdown.cpp")
+  target_include_directories(agentengine_python_runner_heap_proxy_probe PUBLIC
+    "${CMAKE_SOURCE_DIR}/src")
+  target_include_directories(agentengine_python_runner_heap_proxy_probe PRIVATE
+    "${AGENTENGINE_PYTHON_ROOT}/include")
+  target_link_libraries(agentengine_python_runner_heap_proxy_probe PUBLIC agentengine::core)
+  target_link_libraries(agentengine_python_runner_heap_proxy_probe PRIVATE
+    "${AE_PYTHON_IMPORT_LIB}" agentengine_warnings)
+  target_compile_definitions(agentengine_python_runner_heap_proxy_probe PRIVATE
+    AE_TEST_FORCE_HEAP_TRUSTED_LOADER_PROXY)
+
+  add_executable(test_python_trusted_loader_proxy_heap_type_negative_control
+    test_python_trusted_loader_proxy_heap_type_negative_control.cpp)
+  target_link_libraries(test_python_trusted_loader_proxy_heap_type_negative_control PRIVATE
+    agentengine::core agentengine_python_runner_heap_proxy_probe agentengine_warnings)
+  target_compile_definitions(test_python_trusted_loader_proxy_heap_type_negative_control PRIVATE
+    AE_PYTHON_HOME="${AGENTENGINE_PYTHON_HOME}")
+  add_test(NAME test_python_trusted_loader_proxy_heap_type_negative_control
+    COMMAND test_python_trusted_loader_proxy_heap_type_negative_control)
+  set_tests_properties(test_python_trusted_loader_proxy_heap_type_negative_control PROPERTIES
+    ENVIRONMENT "${AE_PYTHON_TEST_ENV}" TIMEOUT 60)
 endif()
