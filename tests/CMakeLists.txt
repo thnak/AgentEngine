@@ -91,6 +91,27 @@ target_compile_definitions(test_shell_runner_no_process_creation PRIVATE
 add_test(NAME test_shell_runner_no_process_creation COMMAND test_shell_runner_no_process_creation)
 set_tests_properties(test_shell_runner_no_process_creation PROPERTIES SKIP_RETURN_CODE 77)
 
+# ---- Job Object resource-limit layer (decisions/ADR-004-appcontainer-native-jail-windows-backend.md) --
+# Windows only -- see CMakeLists.txt's agentengine_job_object_limits target comment.
+if(WIN32)
+  # Deliberately hostile test-only helper process (tests/helpers/hostile_child.cpp) the Job Object
+  # tests launch and try to contain -- never a product target, never linked into anything else.
+  add_executable(job_object_hostile_child helpers/hostile_child.cpp)
+
+  add_executable(test_job_object_limits test_job_object_limits.cpp)
+  target_link_libraries(test_job_object_limits PRIVATE
+    agentengine::core agentengine::job_object_limits agentengine_warnings)
+  target_compile_definitions(test_job_object_limits PRIVATE
+    AE_HOSTILE_CHILD_EXE="$<TARGET_FILE:job_object_hostile_child>")
+  add_dependencies(test_job_object_limits job_object_hostile_child)
+  add_test(NAME test_job_object_limits COMMAND test_job_object_limits)
+  # Generous but finite: this test spawns real hostile child processes (unbounded memory growth,
+  # CPU spin, unbounded process spawning) whose containment is exactly what is under test --
+  # CLAUDE.md Machine Safety requires a backstop even though every individual wait inside the test
+  # already has its own bounded deadline.
+  set_tests_properties(test_job_object_limits PROPERTIES TIMEOUT 90)
+endif()
+
 # ---- PythonRunner prove-phase gates (decisions/ADR-002-pythonrunner-embedding-and-mediation.md)
 # Only built when AGENTENGINE_BUILD_PYTHON_RUNNER is ON (CMakeLists.txt) -- these link a real
 # CPython import lib and need python3<minor>.dll reachable via PATH at run time (Windows has no

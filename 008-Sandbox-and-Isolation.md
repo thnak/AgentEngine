@@ -254,7 +254,13 @@ Handled, tested, and named:
 fork bombs · OOM · infinite loops · unbounded output · filesystem quota exhaustion · symlink and
 `..` path escape · TOCTOU on mounts · DNS-rebinding around an egress allowlist · SSRF to link-local
 metadata endpoints (`169.254.169.254` and friends — **blocked by default in every profile**) ·
-guest→host time manipulation · resource exhaustion of the host by many concurrent sandboxes.
+guest→host time manipulation · resource exhaustion of the host by many concurrent sandboxes ·
+**read-access leak via inherited OS-default ACEs on `native-jail`/Windows** — a curated set of host
+files (e.g. `win.ini`, `drivers\etc\hosts`) carry `ALL APPLICATION PACKAGES`/`ALL RESTRICTED
+APPLICATION PACKAGES` read grants by Windows' own default, independent of any capability this
+profile grants or withholds (`decisions/ADR-004-appcontainer-native-jail-windows-backend.md` §6.1) —
+this is exactly why §1b makes interpreter-level `open()` mediation primary rather than relying on the
+kernel jail's ACL model for reads.
 
 Each has a test in the hostile suite. Per CONVENTIONS, hostile tests are themselves resource-capped
 so they cannot take the dev box down.
