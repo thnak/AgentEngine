@@ -123,6 +123,41 @@ model-written code creating runs is powerful and is a recursion-and-cost hazard;
 bounds are necessary and not obviously sufficient. There is no principle yet for what earns a place
 in the library beyond case-by-case justification.
 
+## 🟠 OQ-16 — CodeAct has no discoverability story for its own granted surface
+
+026 §4 gives `agent.tools` a real introspection story — generated docstrings, a `.pyi` stub,
+`dir(tools)`/`help()` sourced from each Tool's declared metadata (006). That treatment stops at
+`agent.tools`: the other seven `agent.*` modules (`files`, `data`, `memory`, `notes`, `output`,
+`progress`, `ask`, `spawn`) have no equivalent, and nothing tells the model *which* top-level
+modules are even present for this session before it tries one. §5's "an ungranted module is simply
+absent" (I2's enforcement) has no discovery-side counterpart — today the only way to find out is
+`import agent.spawn` and catch the failure. This is not OQ-14 (which is about what should be allowed
+to *exist* in the library, i.e. curation) — it is about the model discovering what has already been
+*granted*, a distinct question no existing OQ tracks.
+
+**Candidate resolution, two parts, both sourced from the same run-start-resolved `CapabilitySet`/
+Tool table (006 §6) so there is one source of truth, not two that can drift:**
+
+1. **Pull side** — generalize 026 §4's existing pattern from `agent.tools` to the whole `agent`
+   namespace: `dir(agent)` shows only modules granted this session, `help(agent)` gives a one-shot
+   overview, every present module gets the same docstring/`.pyi` treatment `tools` already has. The
+   smaller change — applying a pattern the spec already committed to, uniformly.
+2. **Push side** — a short capability summary assembled into `instructions` at session start
+   (002 §1/§2), extending 026 §7's existing token-budget line for "Tool surface (names + one-line
+   descriptions)" from tools-only to the full action space, so the model doesn't burn a turn probing
+   before it can act correctly at all.
+
+Two open sub-questions a real design pass should resolve, not decided here: whether an ungranted
+module should be listed explicitly ("`agent.spawn`: not granted") or simply omitted — explicit
+listing costs more tokens but prevents more wasted attempts, and does not itself weaken I2 since
+naming a capability is not granting it; and whether the push-side summary needs its own persistent,
+re-readable artifact or whether pull-side `dir()`/`help()` already covers the "give me detail on
+demand" case well enough to skip a third mechanism. **Naming caution:** whatever this becomes, it
+should not be called or mounted as a "skill" (009 §8's vocabulary is for externally-authored,
+versioned, distributable bundles) — an engine-generated, per-session capability manifest is a
+different kind of artifact that would only confuse "the skill I loaded" with "the engine telling me
+what I have" if it reused that name or mount point.
+
 ## 🟡 OQ-11 — Licence and governance
 
 024 Q1/Q3/Q4. Licence (MIT assumed, matching Quark), release cadence versus Quark, ADR judging
