@@ -62,6 +62,9 @@ explicitly, and revocable.
 | `Env<key>` | Read one environment variable | key |
 | `AgentCall<agent>` | Invoke another agent | agent id, depth budget |
 
+**The depth budget is proven, in-process only, by `decisions/ADR-006-agent-spawn-depth-budget-bound.md`**
+(`trust/spawn_budget.hpp`) — resolves the depth half of 026 §9 Q1 / OQ-14 (OpenQuestions.md).
+
 **Properties:**
 
 1. **Empty by default.** A sandbox, a plugin instance, or a tool invocation with no explicit grants

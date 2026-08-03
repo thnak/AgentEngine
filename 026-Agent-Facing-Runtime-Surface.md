@@ -189,6 +189,69 @@ reads to the model as "not available here" rather than as a policy essay.
 is therefore justified individually, capability-gated individually, and testable individually —
 rather than shipping one `agent.engine` god-object that grows without review.
 
+**The curation rubric (resolves OQ-14).** "Justified individually" was correct but not falsifiable
+— it let any module in as long as *someone* argued for it. A candidate module must instead pass all
+four:
+
+1. **Maps to exactly one thing crossing the trust boundary** — either a single named 007 capability
+   class (an effect that needs a grant), or a zero-capability reporting channel back into the run's
+   own event stream/output schema (`output`, `progress` — nothing to gate because nothing leaves the
+   run). A candidate that doesn't cleanly fit either shape is scope creep, not a missing module.
+2. **Removing it forces a strictly worse channel for a task class this project already commits to
+   supporting** — not "would be convenient somewhere," a concrete regression: more model round
+   trips, a large result forced through the context window (§5's own "data stays out of the context
+   window" argument), or a capability the 006 tool pipeline already exists to gate, reinvented.
+3. **Not expressible as an ordinary combination of the other granted modules.** If it would just be
+   a two-line wrapper over another module's existing calls, it isn't a module. (`agent.notes` passes
+   this one narrowly: it isn't `agent.files.write` under a different mount, because notes must land
+   as `AgentAuthored` `MemoryItem`s (029 §4) — a structural tag `agent.files` has no way to apply.)
+4. **Every symbol still passes §5's "guessable from its name" bar on its own** — a module that only
+   earns its place via 1–3 but whose functions need a paragraph of explanation fails here and must
+   be redesigned, not shipped with worse docs to compensate.
+
+**Applied to the current nine** (§5's table): all pass, each for a different reason worth stating
+rather than assuming — `tools`/`files`/`data`/`memory`/`notes`/`ask`/`spawn` each map to exactly one
+named capability class (rule 1's first branch); `output`/`progress` are the zero-capability
+reporting case (rule 1's second branch); `notes` clears rule 3 as shown above; none needed rule 4 to
+fail and be cut.
+
+**Applied to a plausible rejected candidate**, so the rubric is shown to discriminate rather than
+rubber-stamp: a hypothetical `agent.email` module wrapping SMTP/IMAP directly fails rule 3 — email
+is already reachable via stdlib `smtplib`/`imaplib` (010 §10; a granted `NetOut` capability is all
+either needs) or, for a richer provider API, via an ordinary registered `Tool` through `agent.tools`
+— a dedicated module would just be a two-line wrapper over calls already available through an
+existing module, exactly the case rule 3 exists to reject
+(`docs/planning/v1-office-user-toolkit.md` §2 already reaches this conclusion independently, for the
+same reason).
+
+### 5a. Discovering what's granted (resolves OQ-16)
+
+§4 gives `agent.tools` a real introspection story — docstrings, a `.pyi` stub, `dir()`/`help()`.
+Nothing before this section said what happens for the other seven modules, or told the model which
+top-level modules are even present before it tries one. Two parts, both sourced from the same
+run-start-resolved `CapabilitySet` (007 §6) so pull side and push side cannot drift from each other —
+prototyped and proven in `include/agentengine/trust/agent_library_manifest.hpp`:
+
+- **Pull side** — §4's `dir()`/`help()` pattern generalizes from `agent.tools` to the whole `agent`
+  namespace: `dir(agent)` shows only modules granted this session; every present module gets the
+  same docstring treatment `tools` already has.
+- **Push side** — a short capability summary assembled into `instructions` at session start (002
+  §1/§2), extending §7's existing "Tool surface (names + one-line descriptions) ≤ 30 tokens/tool"
+  line from tools-only to the full action space, so the model doesn't burn a turn probing before it
+  can act correctly at all.
+
+**The two sub-questions OQ-16 named, decided:**
+
+- **An ungranted module is omitted, not listed as denied.** §1a's "we omit architecture, we do not
+  lie" already sets this precedent elsewhere in this RFC; explicit denial-listing costs tokens per
+  §7's budget discipline for a benefit pull-side `dir()`/`help()` already covers cheaply — a model
+  that tries `import agent.spawn` anyway gets an ordinary, instant `ImportError`, not a wasted turn.
+- **No third, persistent artifact.** The push-side summary is injected once at session start, the
+  same way §7 already injects the tool surface; pull-side `dir()`/`help()` is queryable at any point
+  during the run at zero additional prompt cost (it is Python introspection, not a prompt insertion),
+  which already covers "give me detail on demand" without a separate mechanism to keep in sync with
+  the other two.
+
 ## 6. Skills as ordinary files
 
 Loaded skills are mounted read-only at `/skills/<name>` (025 §3) and the agent reads them with
@@ -235,7 +298,11 @@ when it grows. Prompt bloat is a regression like any other; without a gate it on
 
 - **Q1** — Whether `agent.spawn` belongs in the sandbox at all: it lets model-written code create
   runs, which is powerful and is also a recursion/cost hazard. Depth and budget bounds are
-  necessary; whether they are sufficient is unproven.
+  necessary; whether they are sufficient is unproven. **Partially resolved by
+  `decisions/ADR-006-agent-spawn-depth-budget-bound.md`**: the depth half is proven sufficient
+  against unbounded recursion, conditional on the effect-mediation boundary (006 §9 G4) holding —
+  see that ADR for the exact scope. The cost half (wall-clock/token spend per spawned run) remains
+  open, tracked against 023's budgets, not this ADR.
 - **Q2** — Non-actionable failure phrasing (§3) is the hardest part to get right: too vague and the
   agent retries forever, too specific and it becomes an architecture description.
 - **Q3** — Whether the `tools` module should expose *all* tools or only those marked

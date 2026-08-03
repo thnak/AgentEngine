@@ -61,7 +61,16 @@ also a good way to lose work silently), and whether `shared` mode should be perm
 concurrent siblings — single-writer serialization makes it *safe* but still means an agent's files
 change under it between reads.
 
-## 🟠 OQ-14 — In-sandbox library surface area
+## 🟡 OQ-11 — Licence and governance
+
+024 Q1/Q3/Q4. Licence (MIT assumed, matching Quark), release cadence versus Quark, ADR judging
+authority, and a security disclosure process. All required before any public release.
+
+---
+
+## Resolved
+
+### OQ-14 — In-sandbox library surface area
 
 026 §5 makes the `agent` library the CodeAct action space, which means every module added widens both
 what the agent can accomplish and the host's attack surface. `agent.spawn` is the sharpest case:
@@ -69,7 +78,19 @@ model-written code creating runs is powerful and is a recursion-and-cost hazard;
 bounds are necessary and not obviously sufficient. There is no principle yet for what earns a place
 in the library beyond case-by-case justification.
 
-## 🟠 OQ-16 — CodeAct has no discoverability story for its own granted surface
+**Resolved 2026-08-03, two parts.** First, a falsifiable curation rubric (026 §5, four rules: maps
+to exactly one trust-boundary-crossing thing or a zero-capability reporting channel; removing it
+forces a strictly worse channel for a task class already argued for; not expressible as an ordinary
+combination of other granted modules; every symbol still passes the "guessable from its name" bar on
+its own) — applied to all nine current modules (all pass, for stated reasons) and to a plausible
+rejected candidate (`agent.email`, which fails rule 3) to show the rubric actually discriminates
+rather than rubber-stamps. Second, `agent.spawn`'s named "sharpest case" — small-proved and
+red-teamed in `decisions/ADR-006-agent-spawn-depth-budget-bound.md`: depth bounds are sufficient
+against unbounded recursion, conditional on the effect-mediation boundary already assumed elsewhere
+(006 §9 G4) holding. The cost half of "depth and budget bounds" remains genuinely open — tracked
+against 023, not resolved by ADR-006.
+
+### OQ-16 — CodeAct has no discoverability story for its own granted surface
 
 026 §4 gives `agent.tools` a real introspection story — generated docstrings, a `.pyi` stub,
 `dir(tools)`/`help()` sourced from each Tool's declared metadata (006). That treatment stops at
@@ -81,37 +102,21 @@ absent" (I2's enforcement) has no discovery-side counterpart — today the only 
 to *exist* in the library, i.e. curation) — it is about the model discovering what has already been
 *granted*, a distinct question no existing OQ tracks.
 
-**Candidate resolution, two parts, both sourced from the same run-start-resolved `CapabilitySet`/
-Tool table (006 §6) so there is one source of truth, not two that can drift:**
-
-1. **Pull side** — generalize 026 §4's existing pattern from `agent.tools` to the whole `agent`
-   namespace: `dir(agent)` shows only modules granted this session, `help(agent)` gives a one-shot
-   overview, every present module gets the same docstring/`.pyi` treatment `tools` already has. The
-   smaller change — applying a pattern the spec already committed to, uniformly.
-2. **Push side** — a short capability summary assembled into `instructions` at session start
-   (002 §1/§2), extending 026 §7's existing token-budget line for "Tool surface (names + one-line
-   descriptions)" from tools-only to the full action space, so the model doesn't burn a turn probing
-   before it can act correctly at all.
-
-Two open sub-questions a real design pass should resolve, not decided here: whether an ungranted
-module should be listed explicitly ("`agent.spawn`: not granted") or simply omitted — explicit
-listing costs more tokens but prevents more wasted attempts, and does not itself weaken I2 since
-naming a capability is not granting it; and whether the push-side summary needs its own persistent,
-re-readable artifact or whether pull-side `dir()`/`help()` already covers the "give me detail on
-demand" case well enough to skip a third mechanism. **Naming caution:** whatever this becomes, it
-should not be called or mounted as a "skill" (009 §8's vocabulary is for externally-authored,
-versioned, distributable bundles) — an engine-generated, per-session capability manifest is a
-different kind of artifact that would only confuse "the skill I loaded" with "the engine telling me
-what I have" if it reused that name or mount point.
-
-## 🟡 OQ-11 — Licence and governance
-
-024 Q1/Q3/Q4. Licence (MIT assumed, matching Quark), release cadence versus Quark, ADR judging
-authority, and a security disclosure process. All required before any public release.
-
----
-
-## Resolved
+**Resolved 2026-08-03 by the two-part candidate resolution already sketched here, small-proved
+in `include/agentengine/trust/agent_library_manifest.hpp`** (026 §5a): pull side generalizes
+`agent.tools`' `dir()`/`help()` pattern to the whole `agent` namespace; push side extends 026 §7's
+tool-surface token budget to a capability summary injected into `instructions` at session start.
+Both are generated from the same `CapabilitySet`, proven (not just asserted) to agree with each
+other across several grant combinations, including that an ungranted module is absent from both.
+**The two named sub-questions are decided**: an ungranted module is **omitted**, not listed as
+denied (026 §1a's existing "we omit, we do not lie" precedent, and pull-side `dir()`/`help()`
+already covers the wasted-attempt case cheaply); **no separate persistent artifact** — pull-side
+introspection already covers "detail on demand" at zero additional prompt cost. **Known limitation,
+not solved here**: today's placeholder `Capability{kind}` (trust/capability.hpp) can't yet
+distinguish a `/memory`-mount grant from any other mount, so `agent.memory`/`agent.notes` are gated
+by plain `fs_read`/`fs_write` rather than mount-scoped grants — sharpens automatically once 007's
+parameterized capability representation exists (007 §9, still open), not this resolution's job to
+build.
 
 ### OQ-7 — Wasmtime version pinning
 

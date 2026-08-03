@@ -21,6 +21,9 @@ enum class capability_kind {
     env_write,     // ADR-001 §2.5 — mutating ExecState.env (`export`), which PythonRunner reads by
                    // reference (010 §3a); without this, shell text (ordinary model output) could
                    // set PYTHONPATH/PIP_INDEX_URL/proxy vars with no authorization check at all.
+    elicit,        // 026 §5 — agent.ask's capability; named in 026's agent.* table but not yet in
+                   // 007 §3's own capability table (a pre-existing drift between that prose table
+                   // and this enum this entry does not otherwise attempt to reconcile).
 };
 
 // A single granted effect, opaque outside the trust boundary (007 §3). Fields are backend-specific

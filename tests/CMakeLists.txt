@@ -8,6 +8,20 @@ target_link_libraries(smoke_vocabulary PRIVATE agentengine::core agentengine_war
 
 add_test(NAME smoke_vocabulary COMMAND smoke_vocabulary)
 
+# ---- agent.spawn depth/budget bound (decisions/ADR-006-agent-spawn-depth-budget-bound.md) -------
+# Header-only (trust/spawn_budget.hpp), core-tier (std only, no crypto -- in-process, never crosses
+# a process boundary the way trust/capability_token.hpp's ADR-005 token does) -- links only
+# agentengine::core.
+add_executable(test_spawn_budget test_spawn_budget.cpp)
+target_link_libraries(test_spawn_budget PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_spawn_budget COMMAND test_spawn_budget)
+
+# ---- CodeAct discoverability manifest (resolves OQ-16, OpenQuestions.md) -----------------------
+# Header-only (trust/agent_library_manifest.hpp), core-tier -- links only agentengine::core.
+add_executable(test_agent_library_manifest test_agent_library_manifest.cpp)
+target_link_libraries(test_agent_library_manifest PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_agent_library_manifest COMMAND test_agent_library_manifest)
+
 # ---- RecordedChatClient fixture player (test-only) ---------------------------------------------
 # Proves the ChatClient concept and ChatRequest/ChatResponse vocabulary are usable end-to-end
 # against hand-authored JSON fixtures, without a real network call or API key (CLAUDE.md task
