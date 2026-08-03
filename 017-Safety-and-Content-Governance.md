@@ -110,7 +110,11 @@ enabled — because a policy that cannot be trialled will be deployed with enfor
 - **Q1** — Whether to ship first-party injection/PII classifiers or only the seam. Shipping them
   creates an expectation of quality we would have to maintain; not shipping them leaves the default
   posture weaker.
-- **Q2** — Span-level taint (003 Q3) would make structural separation far more precise.
+- ~~**Q2** — Span-level taint (003 Q3) would make structural separation far more precise.~~
+  **Resolved 2026-08-03: no** — see `decisions/ADR-007-span-level-taint-vs-per-item.md`. Structural
+  separation (§3, delimited external content) already gives per-item taint the precision span-level
+  tracking would have added for the concrete case tested; span tracking's own bug surface (a missed
+  offset-shift silently under-taints real danger bytes) was judged the worse risk.
 - **Q3** — Whether `require_approval` from a filter should be able to escalate to a *different*
   approver (a security team) rather than the end user.
 - **Q4** — Evaluation of safety controls: an adversarial suite that grows over time needs an owner

@@ -107,5 +107,12 @@ the model, not a telemetry side-effect, because budgets (002 `TokenBudget<N>`) e
   disagree; A2A and MCP both lean annotation.
 - **Q2** — Cross-provider reasoning: some providers require their own reasoning blocks be echoed
   back. The pass-through rule handles it, but multi-provider sessions need a stated policy.
-- **Q3** — Whether taint should be tracked at sub-string granularity (span-level) rather than
-  per-item. Span-level is strictly better and materially harder.
+- ~~**Q3** — Whether taint should be tracked at sub-string granularity (span-level) rather than
+  per-item.~~ **Resolved 2026-08-03 (see OpenQuestions.md OQ-5,
+  `decisions/ADR-007-span-level-taint-vs-per-item.md`): no, keep per-item.** A small prove found
+  span-level taint is not merely "materially harder" as this line assumed — a naive, otherwise
+  plausible `concat` implementation silently under-taints genuinely tainted bytes on the very first
+  attempt, a security-relevant bug class per-item taint cannot have because it carries no offsets to
+  mis-shift. The concrete precision gap this question worried about (a message mixing trusted and
+  tainted material) is already solvable today via 017 §3's structural-separation idiom (two
+  `ContentItem`s instead of one mixed string), at the same precision, with none of that risk.

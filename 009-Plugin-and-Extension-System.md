@@ -291,8 +291,29 @@ dimension so a misbehaving plugin is visible without code changes.
 
 - **Q1** — Whether `ae:provider` plugins are viable for latency-sensitive streaming, or whether
   providers should stay host-side seams.
-- **Q2** — Distribution: a first-party registry, or reuse of an existing artifact registry (OCI)?
-  OCI is tempting — content-addressed, signed, mirrorable, already deployed everywhere.
+- ~~**Q2** — Distribution: a first-party registry, or reuse of an existing artifact registry (OCI)?~~
+  **Resolved 2026-08-03 (see OpenQuestions.md OQ-6): reuse OCI, pull-only, no first-party registry.**
+  A real, executed pull round trip against a public OCI registry (Docker Hub: anonymous bearer-token
+  exchange → image-index manifest → platform manifest → content-addressed config blob, the blob
+  fetch redirecting to separate CDN storage) needed nothing beyond plain HTTPS and a SHA-256 check —
+  every returned digest verified byte-for-byte against an independently computed hash. §3's
+  distribution needs (content-addressed identity, digest pinning, signature carriage) are already
+  what the protocol gives for free; building a first-party registry means also building auth,
+  storage, GC, and mirroring that OCI registries already operate at the scale this project would
+  otherwise have to reach on its own. **What AgentEngine builds is a minimal pull-only client**
+  (token exchange, manifest fetch, blob fetch by digest, SHA-256 verify — a few hundred lines against
+  an existing HTTP capability, the same "system-API, not a third-party dependency" framing as
+  Windows CNG/BCrypt in `decisions/ADR-005-capability-bearer-tokens-cross-process.md`) — push,
+  garbage collection, and chunked resumable upload are out of scope entirely, because AgentEngine is
+  never the publisher: whoever authors a plugin publishes it with existing standard tooling (`oras`,
+  `docker`, `skopeo`). **One concrete detail this decision surfaces, not solved here**: the blob fetch
+  redirected to a host distinct from the registry API host, so an egress allowlist (007 §3 `NetOut`,
+  008 §4) for the plugin-pull path must cover the registry's blob-storage host(s) too, not just the
+  registry hostname — a per-provider detail for whoever implements §4's host imports. **Also not
+  solved here**: how `plugin.aepkg` (§3) maps onto an OCI artifact (one layer blob plus
+  `manifest.toml` fields projected to annotations, `SIGNATURE` moved to an OCI referrer per the
+  Notation/cosign convention rather than bundled in the zip) — named as follow-on design work, not
+  this pass's job.
 - **Q3** — Whether plugins should be able to declare *typed* WIT interfaces for their own tools
   rather than JSON Schema, with the schema generated from WIT (better typing, harder MCP interop).
 - ~~**Q4** — Pinning to a Wasmtime version that ships WASI 0.3 by default (46+) versus supporting a

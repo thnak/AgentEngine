@@ -8,19 +8,6 @@ shape of the project.
 
 ---
 
-## 🟠 OQ-5 — Span-level taint
-
-003 Q3 / 007 Q2 / 017 Q2. Per-part taint is what 003 specifies and it is coarse: a message that
-mixes user text with a quoted tool result taints wholesale. Span-level taint would make
-declassification and structural separation far more precise, at a real cost in the content model's
-complexity and in every mapping layer.
-
-## 🟠 OQ-6 — Plugin distribution
-
-009 Q2. First-party registry versus OCI artifacts. OCI is content-addressed, signed, mirrorable, and
-already deployed in every environment that would run this — which is a strong argument for not
-building a registry. It also drags in an OCI client dependency and an authentication story.
-
 ## 🟡 OQ-8 — Second authoring surface
 
 Python and .NET bindings are deferred (Specification §D3), with a C ABI as the intended seam
@@ -40,7 +27,16 @@ A2UI is additive. AP2 and X42 would touch 007 and 018 structurally — payments 
 work, and a corpus without an owner and a cadence decays into a fixed set of attacks that the code
 has been tuned against.
 
-## 🟠 OQ-12 — A second WASM runtime?
+## 🟡 OQ-11 — Licence and governance
+
+024 Q1/Q3/Q4. Licence (MIT assumed, matching Quark), release cadence versus Quark, ADR judging
+authority, and a security disclosure process. All required before any public release.
+
+---
+
+## Resolved
+
+### OQ-12 — A second WASM runtime?
 
 008 §1a rejects `wasm3` for the plugin ABI: it has only partial Component Model and WASI P2 support,
 which is the one axis the ABI depends on. But its advantages are real — best-in-class cold start,
@@ -53,7 +49,48 @@ conformance stories**. That is a real cost, and the benefit is currently an assu
 cold-start comparison is generic, not measured on our workload. Blocked on a 023-budget measurement
 before it is even a candidate.
 
-## 🟠 OQ-13 — Worktree merge policy for concurrent agents
+**Resolved 2026-08-03 by `decisions/ADR-008-wasm3-cold-start-vs-wasmtime.md`: the measurement now
+exists, and it clears the gate.** A real, symmetric, correctness-checked cold-start comparison (fresh
+parse/compile+instantiate+call+teardown per iteration, 1000 iterations, four consistent runs on this
+machine) found wasm3's p50 ≈ 0.7 µs against Wasmtime's p50 ≈ 111-128 µs (**160-180x**), p99 ≈
+0.7-1.0 µs against 241-289 µs (**250-400x**) — a real, structural gap (bytecode interpretation vs.
+full JIT compilation every cold-start cycle), not measurement noise. **This does not change 008
+§1a's rejection of wasm3 as the primary plugin runtime** — that rejection is about Component
+Model/WASI 0.3 support, which this measurement is silent on. **What it resolves is narrower and
+exactly what OQ-12 asked**: the cold-start assumption was untested and is now tested, on our own
+workload shape, and it holds up strongly. Whether to actually build a scoped wasm3 backend behind
+008's `SandboxBackend` contract remains a separate, larger decision this ADR does not make — it
+would need its own pass evaluating 008 §1a's named cost ("two sandbox-escape surfaces and two
+conformance stories"), and Wasmtime's realistic cached/precompiled deployment shape (which was not
+measured here and could substantially narrow the practical gap) is still unmeasured.
+
+### OQ-5 — Span-level taint
+
+003 Q3 / 007 Q2 / 017 Q2. Per-part taint is what 003 specifies and it is coarse: a message that
+mixes user text with a quoted tool result taints wholesale. Span-level taint would make
+declassification and structural separation far more precise, at a real cost in the content model's
+complexity and in every mapping layer.
+
+**Resolved 2026-08-03 by `decisions/ADR-007-span-level-taint-vs-per-item.md`: no, keep per-item
+taint.** A small prove built both a span-level taint prototype and the naive way someone would
+plausibly implement it, and red-teamed the naive version rather than assuming it correct. Result: the
+precision claim is real (per-item taint does deny genuinely trusted material that shares an item with
+tainted material — confirmed with 003's own named scenario, a preamble concatenated with a tool
+payload) but the naive `concat` implementation silently **under-tainted the actual danger bytes**
+(and over-tainted the trusted ones) on the first attempt — a new, security-relevant bug class that
+per-item taint structurally cannot have, because it carries no byte offsets to mis-shift. Separately,
+the concrete scenario the precision claim was worried about is **already solved today** without spans
+— keeping the trusted and tainted material as two separate `ContentItem`s (017 §3's existing
+structural-separation idiom) reaches identical precision, using only mechanisms 003/017 already
+specify. Net: span-level taint would trade a coarse-but-structurally-safe mechanism for a
+precise-but-fragile one, for a case already covered another way — judged not worth it. Left
+explicitly open: a single `ContentItem` needing to stay *partially* tainted after partial
+declassification (e.g. a mostly-trusted summary embedding one still-tainted verbatim quote) is not
+served by the two-item split and is not addressed by this ADR; if a concrete instance blocks a real
+declassifier later, it should be re-opened narrowly against that case, not as "add span-level taint
+generally" again.
+
+### OQ-13 — Worktree merge policy for concurrent agents
 
 025 §4 fails a merge on conflict and surfaces it, retaining both versions. Two unresolved parts:
 whether the *model* should be offered conflict resolution as a task (it is often capable, and it is
@@ -61,14 +98,44 @@ also a good way to lose work silently), and whether `shared` mode should be perm
 concurrent siblings — single-writer serialization makes it *safe* but still means an agent's files
 change under it between reads.
 
-## 🟡 OQ-11 — Licence and governance
+**Resolved 2026-08-03, two parts.** First (model-assisted resolution): escalate to a human by
+default; the model may **draft** a merged file but applying it always goes through the same
+argument-hash-bound approval 006 §4 already requires elsewhere — never an auto-apply, because "the
+model resolved it" is the same forbidden pattern 007 §4 already names in a different guise (a
+data-loss decision derived from model output). Second (whether `shared` should be permitted for
+concurrent siblings): confirmed by a small deterministic concurrency prove (scratchpad,
+`shared_mode_readskew.cpp`, MSVC ASan, 10/10 clean runs, no Quark dependency — it models 025 §4's
+single-writer-per-tree contract, not the real worktree actor) that single-writer serialization
+prevents data races and lost single-file updates but **does not** prevent a concurrent sibling from
+observing a torn *cross-file* view mid-update (one file already updated, a related one not yet) — a
+reliable, on-every-run hazard given a forced interleaving, not a rare timing accident. **Decision:
+`shared` stays available but is not the default for concurrent siblings** — 025 §3's existing
+default (`branch`) was already right, and this prove is the falsifiable reason why; using `shared`
+for concurrent siblings now requires an explicit opt-in that documents the read-skew hazard rather
+than a bare mode flag. See `025-Worktree-and-Virtual-Filesystem.md` §3 and §10 Q1/Q2 for the full
+resolution.
 
-024 Q1/Q3/Q4. Licence (MIT assumed, matching Quark), release cadence versus Quark, ADR judging
-authority, and a security disclosure process. All required before any public release.
+### OQ-6 — Plugin distribution
 
----
+009 Q2. First-party registry versus OCI artifacts. OCI is content-addressed, signed, mirrorable, and
+already deployed in every environment that would run this — which is a strong argument for not
+building a registry. It also drags in an OCI client dependency and an authentication story.
 
-## Resolved
+**Resolved 2026-08-03 by a real, executed pull round trip** (not a design debate) against a public
+OCI registry (Docker Hub, `library/hello-world`): anonymous bearer-token exchange (one plain HTTPS
+GET returning JSON) → image-index manifest fetch → platform-specific manifest fetch → content-
+addressed config blob fetch (redirecting to separate CDN storage) — five HTTPS requests total, every
+returned digest independently re-hashed with SHA-256 and matched byte-for-byte against the server's
+`docker-content-digest`. This confirms the "drags in a client dependency" cost was overstated for
+AgentEngine's actual need: a **pull-only** client (token exchange, manifest fetch, blob fetch by
+digest, SHA-256 verify) is a few hundred lines against an HTTP capability the engine needs anyway,
+not a heavyweight OCI SDK — push, garbage collection, and resumable chunked upload are never needed
+because AgentEngine is never the publisher (009 §7/§8 already assume third-party or operator-side
+tooling publishes plugins and skills). **Decision: reuse OCI, no first-party registry** — see
+`009-Plugin-and-Extension-System.md` §11 Q2 for the full resolution, including the one concrete gap
+this surfaced (blob storage lives on a host distinct from the registry API host, so the egress
+allowlist for a plugin pull must name both) and the one item explicitly left as follow-on design
+work (mapping `plugin.aepkg`, §3, onto an OCI artifact's layer/annotation/referrer shape).
 
 ### OQ-14 — In-sandbox library surface area
 

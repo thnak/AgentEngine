@@ -187,7 +187,12 @@ duration, trace/span id}`.
   any capability that needs immediate revocation, rather than solving revocation inside the token
   mechanism itself. Performance was measured **inconclusive**, not favorable — see the ADR §9 for
   what a follow-up measurement needs before that claim can be settled either way.
-- **Q2** — Span-level taint (003 Q3) would make declassification far more precise.
+- ~~**Q2** — Span-level taint (003 Q3) would make declassification far more precise.~~ **Resolved
+  2026-08-03: no** — see 003 §7 Q3 and `decisions/ADR-007-span-level-taint-vs-per-item.md`. The
+  precision gain is real but the concrete case it would fix is already fixed by keeping trusted and
+  tainted material as separate `ContentItem`s; the mechanism itself was found to introduce a new
+  under-taint bug class on the first naive implementation attempt, which is a worse trade for a
+  declassification mechanism than the coarseness it would remove.
 - **Q3** — Whether policy should have a formal semantics + solver (decidable, verifiable) rather
   than ordered rules with default-deny.
 - **Q4** — Agent identity standards: OAuth/OIDC covers principals today, but workload-identity

@@ -68,6 +68,14 @@ default to `shared` (the natural reading of "they work on the same disk"); agent
 *concurrently* default to `branch`, because concurrent blind writes to one tree is precisely how
 multi-agent systems destroy each other's work.
 
+**`shared` for concurrent siblings requires an explicit opt-in (resolves OQ-13 Q2).** Single-writer
+serialization makes `shared` free of data races and lost updates even between concurrent siblings,
+but a small concurrency prove (`OpenQuestions.md` OQ-13) confirmed it does not make cross-file reads
+consistent: a sibling can deterministically observe one file of a related pair already updated and
+the other not yet, on every run, not occasionally. An operator who wants concurrent siblings on
+`shared` anyway (e.g. a genuinely single-artifact collaboration) sets it explicitly, acknowledging
+the read-skew hazard; it is never reached by a plain default.
+
 ## 4. Concurrency and merge
 
 - **One writer per tree.** A worktree node is a Quark actor; writes to a given tree serialize
@@ -152,12 +160,33 @@ practical value of content addressing for an audited system.
 
 ## 10. Open questions
 
-- **Q1** — Should merge conflicts be presented to the *model* as a task (it can often resolve them)
-  or escalated to a human by default? Current position is escalate; model-assisted resolution is an
-  obvious extension and an obvious way to lose data.
-- **Q2** — Whether `shared` mode should be permitted at all for concurrent agents given §4's
-  single-writer serialization makes it *safe* but still makes it *confusing* (an agent's file
-  changes under it between reads).
+- ~~**Q1** — Should merge conflicts be presented to the *model* as a task (it can often resolve them)
+  or escalated to a human by default?~~ **Resolved 2026-08-03 (see OpenQuestions.md OQ-13):**
+  escalate by default, model-assisted resolution allowed only as a **policy-gated proposal, never an
+  auto-apply**. The model may draft a merged file from the two conflicting versions retained at
+  `/conflicts/<path>.<agent>` — that draft is `Tainted` output like any other model output (003 §2)
+  and is data, not authority (I3, 007 §4): it is presented for the same argument-hash-bound approval
+  006 §4 already requires for other irreversible effects, never applied because "the model resolved
+  it," which 007 §4 already names as a concretely forbidden derivation in a different guise (deriving
+  a data-loss decision from model-supplied content). Default is escalate-to-human with no model
+  drafting; enabling model-assisted drafting is an explicit per-session/operator policy opt-in, not a
+  standing behavior.
+- ~~**Q2** — Whether `shared` mode should be permitted at all for concurrent agents given §4's
+  single-writer serialization makes it *safe* but still makes it *confusing*.~~ **Resolved 2026-08-03
+  by a small, deterministic concurrency prove** (scratchpad, `shared_mode_readskew.cpp`; not shipped
+  code — it models the §4 contract, not the real worktree actor): two threads share one
+  mutex-guarded tree; a forced (condition-variable, not timing-based) interleaving has agent A
+  perform a two-file logical update (`a.txt` then `b.txt`) while a concurrent sibling B reads both
+  files in the gap between A's two writes. Result, reproduced deterministically on 10/10 runs under
+  MSVC ASan (zero findings): B **never** observes a corrupted or lost single-file write (per-call
+  atomicity holds, confirming §4's serialization guarantee), but B **reliably** observes a torn
+  cross-file pair (`a.txt` = new, `b.txt` = old) — a real, on-every-run hazard, not a hypothetical
+  one. **Decision: `shared` remains available but is not the default for concurrent siblings** — §3's
+  existing default (`branch` for concurrent siblings) was already correct and this prove is the
+  falsifiable reason why, not just "taste": `shared` for concurrent siblings requires an explicit,
+  named opt-in that documents the read-skew hazard, the same posture as any other capability that is
+  safe-but-hazardous-if-misused elsewhere in this spec (007 §3.5), rather than a bare mode flag with
+  no attached warning.
 - **Q3** — Large-file strategy: chunked content addressing for multi-GB files versus whole-blob.
 - **Q4** — Whether the worktree should be exposed to the *user* as a browsable, downloadable
   artifact of the conversation (it probably should) and what that means for retention policy.
