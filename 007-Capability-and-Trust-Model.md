@@ -174,9 +174,16 @@ duration, trace/span id}`.
 
 ## 10. Open questions
 
-- **Q1** — Whether capabilities should be representable as **bearer tokens** (macaroon-style, with
-  caveats) so they can cross a process boundary to a remote sandbox without a bespoke protocol.
-  Attractive for the `remote` profile (008); adds a crypto dependency and a revocation problem.
+- ~~**Q1** — Whether capabilities should be representable as **bearer tokens** (macaroon-style, with
+  caveats) so they can cross a process boundary to a remote sandbox without a bespoke protocol.~~
+  **Resolved by `decisions/ADR-005-capability-bearer-tokens-cross-process.md`: yes, for the
+  `ExpiresAt`/`PathPrefix` caveat classes proven there** — accepted narrowly, not as a blanket
+  replacement for host-side state. The revocation problem this question anticipated is real and
+  confirmed (a minted token is valid until its own caveats lapse, with no way to unmint it early);
+  the ADR's answer is to use a host-side registry (also proven there) instead of a bearer token for
+  any capability that needs immediate revocation, rather than solving revocation inside the token
+  mechanism itself. Performance was measured **inconclusive**, not favorable — see the ADR §9 for
+  what a follow-up measurement needs before that claim can be settled either way.
 - **Q2** — Span-level taint (003 Q3) would make declassification far more precise.
 - **Q3** — Whether policy should have a formal semantics + solver (decidable, verifiable) rather
   than ordered rules with default-deny.

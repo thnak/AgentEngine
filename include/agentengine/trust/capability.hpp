@@ -37,6 +37,12 @@ struct Capability {
 // Deliberately no grant/check/attenuate/revoke behaviour here. This struct fixes the *shape* of
 // the vocabulary; the enforcement mechanism is security-critical and, per CLAUDE.md, goes through
 // design -> red-team -> prove -> judge and an ADR before it is real code, not a header comment.
+//
+// In-process attenuation/enforcement over THIS type is still open (007 §9 gate). The cross-process
+// case -- a capability that must leave this process, e.g. to the `remote` sandbox profile or a
+// delegated A2A call -- is a different mechanism (unforgeable by cryptography, not by the type
+// system) and is resolved: see trust/capability_token.hpp and
+// decisions/ADR-005-capability-bearer-tokens-cross-process.md.
 struct CapabilitySet {
     std::vector<Capability> granted;  // placeholder representation; not the final storage
 };

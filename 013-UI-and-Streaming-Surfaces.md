@@ -125,7 +125,11 @@ unrecoverable, because the run is over.
 
 This is the third of three incompatible shapes for one idea (012 §5a) — MCP retries a request, A2A
 continues a task, AG-UI restarts a run — and it is the strongest argument that our internal
-`InputRequired` needs a correlation identity that survives all three.
+`InputRequired` needs a correlation identity that survives all three. **Resolved (OQ-4):** that
+identity is the `request_id`-shaped token defined in 001 §2; for AG-UI specifically, it maps
+directly onto `interruptId` — and, per MAF's own precedent for this binding
+(`docs/research/2026-08-03-maf-workflow-and-hitl-model.md` §2), the *same* token may simultaneously
+back a `toolCallId` for a tool-bound interrupt without needing a second identity.
 
 ## 3. Other surfaces
 

@@ -101,8 +101,9 @@ struct SecretStore {                                  // concept
 
 - **Q1** — Workload identity for agent-to-agent trust (SPIFFE-style) versus OAuth-only. OAuth covers
   human-delegated flows well and service-to-service less well.
-- **Q2** — Capability bearer tokens (007 Q1) would let the `remote` sandbox profile and remote
-  plugins carry attenuated authority without a bespoke protocol.
+- ~~**Q2** — Capability bearer tokens (007 Q1) would let the `remote` sandbox profile and remote
+  plugins carry attenuated authority without a bespoke protocol.~~ **Resolved — see 007 §10 Q1 and
+  `decisions/ADR-005-capability-bearer-tokens-cross-process.md`.**
 - **Q3** — Whether the audit log needs its own signing identity so it can be verified by a third
   party.
 - **Q4** — Agent identity in a registry sense: if agents are published and discovered, who vouches

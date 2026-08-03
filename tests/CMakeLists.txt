@@ -112,6 +112,26 @@ if(WIN32)
   set_tests_properties(test_job_object_limits PROPERTIES TIMEOUT 90)
 endif()
 
+# ---- Capability bearer-token prove phase (decisions/ADR-005-capability-bearer-tokens-cross-process.md)
+# Resolves OQ-3. Design A (capability_token.hpp) correctness + red-team, Design B
+# (capability_registry.hpp) red-team, and the verify()-vs-check() cost comparison §5 rests on.
+if(WIN32)
+  add_executable(test_capability_token_proof test_capability_token_proof.cpp)
+  target_link_libraries(test_capability_token_proof PRIVATE
+    agentengine::core agentengine::capability_token agentengine_warnings)
+  add_test(NAME test_capability_token_proof COMMAND test_capability_token_proof)
+
+  add_executable(test_capability_token_redteam test_capability_token_redteam.cpp)
+  target_link_libraries(test_capability_token_redteam PRIVATE
+    agentengine::core agentengine::capability_token agentengine_warnings)
+  add_test(NAME test_capability_token_redteam COMMAND test_capability_token_redteam)
+
+  add_executable(test_capability_token_benchmark test_capability_token_benchmark.cpp)
+  target_link_libraries(test_capability_token_benchmark PRIVATE
+    agentengine::core agentengine::capability_token agentengine_warnings)
+  add_test(NAME test_capability_token_benchmark COMMAND test_capability_token_benchmark)
+endif()
+
 # ---- PythonRunner prove-phase gates (decisions/ADR-002-pythonrunner-embedding-and-mediation.md)
 # Only built when AGENTENGINE_BUILD_PYTHON_RUNNER is ON (CMakeLists.txt) -- these link a real
 # CPython import lib and need python3<minor>.dll reachable via PATH at run time (Windows has no

@@ -86,7 +86,9 @@ a claim without a positive control (022 §5) does not count as proven at all.
 - **Q1** — Licence. Quark is MIT; matching it is the default assumption and is not yet decided by
   the project owner.
 - **Q2** — Whether AgentEngine and Quark should share a release cadence, given the submodule
-  coupling and that AgentEngine will drive Quark requirements (macOS PAL, 021 Q1).
+  coupling. (Previously framed around AgentEngine driving a macOS PAL requirement into Quark; 021 §7
+  Q1 resolved macOS out of scope entirely, so this question now turns only on Windows/Linux PAL
+  needs, both already met upstream.)
 - **Q3** — Governance if the project takes outside contributions: who judges an ADR, and what
   quorum promotes an RFC.
 - **Q4** — Security disclosure process and a `SECURITY.md` — required before any public release,

@@ -6,8 +6,8 @@
 
 Define **one isolation contract** and the named profiles that implement it, so that untrusted
 execution — plugins, generated code, third-party tools — has the same capability semantics, the
-same limits, the same failure shapes, and the same audit trail on Windows, Linux, and macOS, while
-the *strength* of the boundary remains a deployment choice.
+same limits, the same failure shapes, and the same audit trail across the target platform set (021
+§2 — Windows now, Linux next), while the *strength* of the boundary remains a deployment choice.
 
 ## 1. The decision, and why
 
@@ -18,7 +18,8 @@ tabulated in the research record §8 — and the axis a deployment cares about d
 Two things are nonetheless **locked**, because leaving them open would leave the whole design open:
 
 - **The WASM Component Model (WASI 0.3) is the plugin ABI** (009). One artifact runs bit-identically
-  on all three OSes, holds no ambient authority by construction, instantiates in microseconds, and
+  across the target platform set (021 §2), holds no ambient authority by construction, instantiates
+  in microseconds, and
   is language-agnostic — including the large permissively-licensed **C/C++ library ecosystem**,
   which `wasi-sdk` compiles directly. A heavy library is *safer* as a plugin than as a linked host
   dependency, because a plugin holds only the capabilities the host hands it.
@@ -171,8 +172,8 @@ limit does not offer it; it does not offer it and ignore it.
 
 | Profile | Backend | Boundary | Cold start | Platforms | Intended use |
 |---|---|---|---|---|---|
-| **`wasm`** | wasmtime, WASI 0.3 components | Software; capability-based, no ambient authority | µs–low ms | Win · Linux · macOS, identical | Plugins (default, 009), deterministic execution, replay, hostile multi-tenant *plugin* code that fits the WASI surface |
-| **`native-jail`** | OS process jail + interpreter-level mediation (§1b) | Kernel-enforced, per-OS, plus mediated at the point of use | ms | Win (AppContainer + Job Object + restricted token) · Linux (namespaces + seccomp-BPF + cgroups v2 + no_new_privs) · macOS (sandbox profile + resource limits) | The code interpreter and shell (010), full-ecosystem Python, on trusted-tenant deployments — the default |
+| **`wasm`** | wasmtime, WASI 0.3 components | Software; capability-based, no ambient authority | µs–low ms | Win · Linux, identical (021 §2 — macOS not targeted) | Plugins (default, 009), deterministic execution, replay, hostile multi-tenant *plugin* code that fits the WASI surface |
+| **`native-jail`** | OS process jail + interpreter-level mediation (§1b) | Kernel-enforced, per-OS, plus mediated at the point of use | ms | Win (AppContainer + Job Object + restricted token) · Linux (namespaces + seccomp-BPF + cgroups v2 + no_new_privs), next | The code interpreter and shell (010), full-ecosystem Python, on trusted-tenant deployments — the default |
 | **`remote`** | Kubernetes **Agent Sandbox** CRD, or a vendor sandbox API | Cluster-side, backend-decoupled — may itself use hardware isolation | network + backend | Any (client side) | Production scale-out, cluster-managed lifecycle, pause/resume, and hostile/untrusted-multi-tenant workloads that need a stronger boundary than `native-jail` offers — this profile, not one we build, is where that strength comes from |
 | **`none`** | In-process | **No boundary** | 0 | All | First-party trusted code only; **refuses to load T2/T3 code** (007 §6) |
 
@@ -284,9 +285,9 @@ downgrade shows up as a graph change, not as a surprise in an incident review.
 
 ## 9. Promotion gate
 
-- **G1 (parity)** — one hostile test corpus runs against every available backend on Windows and
-  Linux (plus `wasm` + `native-jail` on macOS) and produces the **same outcome classification** for
-  every case. Semantics identical, strength documented.
+- **G1 (parity)** — one hostile test corpus runs against every available backend on every platform
+  in the current target set (021 §2 — Windows now, Linux next) and produces the **same outcome
+  classification** for every case. Semantics identical, strength documented.
 - **G2 (containment)** — every §7 abuse case is contained, with a measured kill time, and a
   positive control (limits deliberately disabled) demonstrably fails — so the test is not vacuous.
 - **G3 (no ambient authority)** — a probe guest enumerating filesystem, network, env, and processes
@@ -313,6 +314,7 @@ downgrade shows up as a graph change, not as a surprise in an incident review.
   dropped as a profile entirely (§1); Hyperlight is not adopted. A workload that would have reached
   for it belongs on the `remote` profile instead.
 - **Q3** — Whether the egress proxy should be a first-party component or a host-provided seam.
-- **Q4** — Whether capabilities should cross to the `remote` profile as bearer tokens (007 Q1).
+- ~~**Q4** — Whether capabilities should cross to the `remote` profile as bearer tokens (007 Q1).~~
+  **Resolved — see 007 §10 Q1 and `decisions/ADR-005-capability-bearer-tokens-cross-process.md`.**
 - **Q5** — GPU access from a sandbox (needed for local inference plugins) has no good story in any
   profile and is currently out of scope.

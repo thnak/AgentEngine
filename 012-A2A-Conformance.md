@@ -202,6 +202,15 @@ continuation, and a restart. Our internal `InputRequired` (001 §2) must project
 losing the correlation identity each requires. That is a stronger constraint than "emit an event",
 and it is why the unification is a design question rather than a mapping detail.
 
+**Resolved (OQ-4), 2026-08-03:** `InputRequired` carries one internal `request_id`-shaped token
+(001 §2); `requestState`/`taskId`/`interruptId` are each a projection of it at this table's
+respective boundary, grounded in MAF's own precedent for this exact problem
+(`docs/research/2026-08-03-maf-workflow-and-hitl-model.md` §2-3). For the A2A binding specifically:
+`taskId` is the identity that outlives the `INPUT_REQUIRED` transition (the task stays alive), so it
+maps to the run/session identity rather than to the per-request token; the per-request `request_id`
+travels as task metadata for the case where more than one `InputRequired` could be outstanding
+against the same task.
+
 ## 8. Promotion gate
 
 - **G1** — **`a2a-tck` passes** against our server at v1.0 for each implemented binding, on Windows

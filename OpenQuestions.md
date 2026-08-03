@@ -8,54 +8,6 @@ shape of the project.
 
 ---
 
-## 🔴 OQ-1 — macOS and Quark's PAL
-
-Quark has `linux_x86_64` and `windows_x86_64` PAL backends; **there is no macOS backend**. RFC 021
-claims macOS as a Supported tier. Either the backend is contributed upstream (the clean answer,
-and AgentEngine is the natural driver for it), or macOS support is reduced to a lower tier and the
-support table says so. This is the largest single portability risk in the project.
-
-**Owner:** unassigned. **Blocks:** 021 promotion, any macOS claim in README.
-
-## 🔴 OQ-2 — Is the single-agent turn loop a workflow?
-
-001 Q1 / 014 Q1. Making the turn loop a special case of the workflow graph buys one execution
-model, one checkpointing story, one visualization, and one replay mechanism. It risks paying graph
-overhead on the overwhelmingly common single-agent path. This decision shapes 001, 014, and 019 and
-gets harder to reverse with every RFC that assumes the current split.
-
-**Candidate resolution:** a design→prove loop measuring the overhead of a graph-of-one against the
-direct loop under the 023 budgets.
-
-## 🔴 OQ-3 — Do capabilities cross process boundaries as tokens?
-
-007 Q1 / 008 Q4 / 018 Q2. The `remote` sandbox profile, remote plugins, and delegated A2A calls all
-want to carry *attenuated* authority across a process or network boundary. A macaroon-style bearer
-capability with caveats is the known answer; it adds a crypto dependency, a revocation problem, and
-a new forgery surface. Without it, each remote path invents its own bespoke authority protocol —
-which is worse.
-
-## 🔴 OQ-4 — Unifying human-in-the-loop and long-running work
-
-**Escalated from 🟠 after the A2A/AG-UI research**, which showed the three protocols do not merely
-differ in encoding — they differ in *control flow*, and each demands a different correlation
-identity:
-
-| Protocol | Shape | Identity it requires |
-|---|---|---|
-| **MCP** `2026-07-28` | Client **retries the original request** with a *new* JSON-RPC id | `requestState` (opaque, client **MUST NOT** parse) |
-| **A2A** v1.0 | Task **stays alive** in `INPUT_REQUIRED`; client sends a new message | `taskId` |
-| **AG-UI** | Run **ends** with an interrupt outcome; client starts a **new run** | `interruptId` |
-
-A retry, a continuation, and a restart. Our internal `InputRequired` (001 §2) must project to all
-three while preserving whichever identity each peer will present on the way back — and AG-UI adds an
-ordering obligation (state needed for resume must be emitted *before* the run-ending event) that has
-no analogue in the other two.
-
-The same problem recurs for long-running work: our `Suspended` state, MCP's `tasks` extension, A2A's
-task lifecycle, and the workflow request port (014). Deferring risks four half-compatible mechanisms
-and a correlation table nobody can reason about.
-
 ## 🟠 OQ-5 — Span-level taint
 
 003 Q3 / 007 Q2 / 017 Q2. Per-part taint is what 003 specifies and it is coarse: a message that
@@ -68,12 +20,6 @@ complexity and in every mapping layer.
 009 Q2. First-party registry versus OCI artifacts. OCI is content-addressed, signed, mirrorable, and
 already deployed in every environment that would run this — which is a strong argument for not
 building a registry. It also drags in an OCI client dependency and an authentication story.
-
-## 🟠 OQ-7 — Wasmtime version pinning
-
-009 Q4 / 021 Q3. WASI 0.3 ships enabled by default from Wasmtime 46; earlier versions need the
-0.3 release candidate. The async ABI difference between 0.2 and 0.3 is not a small compatibility
-surface, and the plugin ABI is supposed to be stable. Pin, or support a range?
 
 ## 🟡 OQ-8 — Second authoring surface
 
@@ -166,6 +112,125 @@ authority, and a security disclosure process. All required before any public rel
 ---
 
 ## Resolved
+
+### OQ-7 — Wasmtime version pinning
+
+009 Q4 / 021 Q3. WASI 0.3 ships enabled by default from Wasmtime 46; earlier versions need the
+0.3 release candidate. The async ABI difference between 0.2 and 0.3 is not a small compatibility
+surface, and the plugin ABI is supposed to be stable. Pin, or support a range?
+
+**Resolved 2026-08-03 by a small, concrete build-and-check** (not a design debate, per the project
+owner's direction): **pin to a single version, currently 47.0.3** (the latest release as of this
+date — v46 has already been superseded), no 0.2/0.3-RC range. Evidence: downloaded the real,
+official `wasmtime-v47.0.3-x86_64-windows-c-api.zip` release directly from GitHub; confirmed the
+shipped headers contain full Component Model support (`include/wasmtime/component/*`) and WASI
+0.3's async primitives (`stream`/`future` types referenced in `component/func.h`,
+`component/linker.h`, `component/types/val.h`) — grounded in the actual downloaded artifact, not
+documentation; compiled and linked a minimal C++ smoke test against `wasmtime.dll.lib` with MSVC
+19.51.36252 (the same toolset the rest of this project builds with) and ran a real
+engine→store→module→instance→function-call round trip, which returned the correct result. A range
+was rejected because there is no existing deployment depending on an older pin (design phase, no
+external users) and because testing both 0.2 and 0.3 async ABI paths for zero present benefit is
+exactly the "not a small compatibility surface" cost the question itself flagged — a straight
+`GIT_TAG`/version pin (matching the existing `FetchContent` pattern already used for `nlohmann_json`
+in `tests/CMakeLists.txt`) is simpler and sufficient. **Not attempted:** actually instantiating a
+real `.wasm` component (as opposed to a core module) through the `wasmtime_component_*` APIs — that
+needs `wasm-tools`/`cargo-component` to produce a component binary, out of this small prove's scope;
+the Component Model support claim rests on header inspection plus the module-level round trip, not
+a component-level execution.
+
+### OQ-3 — Do capabilities cross process boundaries as tokens?
+
+007 Q1 / 008 Q4 / 018 Q2. The `remote` sandbox profile, remote plugins, and delegated A2A calls all
+want to carry *attenuated* authority across a process or network boundary. A macaroon-style bearer
+capability with caveats is the known answer; it adds a crypto dependency, a revocation problem, and
+a new forgery surface. Without it, each remote path invents its own bespoke authority protocol —
+which is worse.
+
+**Resolved 2026-08-03 by `decisions/ADR-005-capability-bearer-tokens-cross-process.md`**, a small
+prove (per the project owner's direction: real C++23, red-teamed, not a full-scale build) rather
+than a design→prove loop measuring overhead first: **yes, narrowly.** A self-verifying HMAC-chained
+bearer token (`trust/capability_token.hpp`) is accepted for the `ExpiresAt`/`PathPrefix` caveat
+classes proven there — attenuation-only and forge-resistant under red-team (bit-flip, field tamper,
+caveat-strip, caveat-reorder, fabricated-parent derivation all rejected; clean under MSVC ASan, zero
+findings). The anticipated revocation problem is real and was not solved inside the token: a minted
+token is valid until its own caveats lapse, with no way to unmint it early, so any capability needing
+immediate revocation should use the ADR's other proven design (a host-side `CapabilityRegistry`)
+instead, or a short-lived token re-minted frequently. The anticipated performance win was **not**
+established — measured **INCONCLUSIVE**, favoring the registry in this pass's specific (unoptimized,
+same-process) measurement — see the ADR §6-§9 before assuming either design is faster. Windows-only
+for now (021 §2); a Linux HMAC backend is unbuilt and named as a residual risk, not urgent given the
+Windows-now/Linux-next sequencing (OQ-1).
+
+### OQ-2 — Is the single-agent turn loop a workflow?
+
+001 Q1 / 014 Q1. Making the turn loop a special case of the workflow graph would buy one execution
+model, one checkpointing story, one visualization, and one replay mechanism, at the risk of paying
+graph overhead on the overwhelmingly common single-agent path.
+
+**Resolved 2026-08-03, by grounding in MAF's own source rather than a design→prove overhead
+measurement** (candidate resolution originally proposed): **no, keep them separate.**
+`docs/research/2026-08-03-maf-workflow-and-hitl-model.md` §1 shows MAF's `agent.run()` never touches
+`Workflow`/`Executor` machinery, and the dependency direction is the opposite of "agent is a
+special-cased workflow" — `AgentExecutor` wraps `agent.run()` to let an agent opt into being one node
+of a graph, not the reverse. Since AgentEngine's developer model is deliberately MAF-shaped
+(CLAUDE.md), this settles the question by precedent rather than by re-deriving it from an overhead
+benchmark: 001 §3's turn loop stays its own lightweight coroutine; 014 §1's `Executor = an agent | a
+function | a sub-workflow | a request port` already has the right shape for the opt-in case.
+
+### OQ-4 — Unifying human-in-the-loop and long-running work
+
+**Escalated from 🟠 after the A2A/AG-UI research**, which showed the three protocols do not merely
+differ in encoding — they differ in *control flow*, and each demands a different correlation
+identity:
+
+| Protocol | Shape | Identity it requires |
+|---|---|---|
+| **MCP** `2026-07-28` | Client **retries the original request** with a *new* JSON-RPC id | `requestState` (opaque, client **MUST NOT** parse) |
+| **A2A** v1.0 | Task **stays alive** in `INPUT_REQUIRED`; client sends a new message | `taskId` |
+| **AG-UI** | Run **ends** with an interrupt outcome; client starts a **new run** | `interruptId` |
+
+A retry, a continuation, and a restart. Our internal `InputRequired` (001 §2) must project to all
+three while preserving whichever identity each peer will present on the way back — and AG-UI adds an
+ordering obligation (state needed for resume must be emitted *before* the run-ending event) that has
+no analogue in the other two. The same problem recurs for long-running work: our `Suspended` state,
+MCP's `tasks` extension, A2A's task lifecycle, and the workflow request port (014).
+
+**Resolved 2026-08-03**: `InputRequired`/`Suspended` carry one internal `request_id`-shaped
+correlation token — 001 §2 — matching MAF's own `request_info`/checkpoint mechanism exactly
+(`docs/research/2026-08-03-maf-workflow-and-hitl-model.md` §2). Each protocol's identity
+(`requestState`/`taskId`/`interruptId`) is a **projection** of that one token at its boundary, not a
+parallel identity to keep synchronized — following MAF's own AG-UI bridge, which reuses one
+`request_id` as both an interrupt `id` and a `tool_call_id` simultaneously without conflict. For A2A
+specifically, `taskId` maps to the run/session identity (it outlives `INPUT_REQUIRED`), with the
+per-request token carried as task metadata for the case of multiple outstanding requests against one
+task (012 §5a). Updated: `001-Execution-Model.md` §2, `014-Workflow-and-Orchestration.md` §4,
+`012-A2A-Conformance.md` §5a, `013-UI-and-Streaming-Surfaces.md` §2.
+
+### OQ-1 — macOS and Quark's PAL
+
+Quark has `linux_x86_64` and `windows_x86_64` PAL backends; there was no macOS backend, and RFC 021
+claimed macOS as a Supported tier anyway — the largest inconsistency between claim and reality in
+the project.
+
+**Resolved 2026-08-03 (project-owner decision): macOS is not a target, full stop** — no PAL backend
+will be contributed upstream for it, and no RFC may claim macOS support. Delivery is explicitly
+sequenced rather than simultaneous: **Windows x86-64 is the v1 target and the only platform under
+active implementation now; Linux x86-64 is the next target, taken up once the Windows
+implementation reaches a stable state.** This replaces the "contribute upstream vs. downgrade the
+tier" framing the question was originally posed with — neither candidate resolution was taken;
+macOS is dropped outright rather than downgraded to a lower tier.
+
+Updated to match: `021-Platform-Support-and-Portability.md` §2 (target matrix), §3 (per-subsystem
+table), §5 (CI matrix), §6 (G1), §7 (this question); `CONVENTIONS.md` Target & scope;
+`AgentEngineSpecification.md` (portability property, WASM-artifact claim); `008-Sandbox-and-
+Isolation.md` (goal statement, locked-decision bullet, `wasm`/`native-jail` profile table, G1 gate);
+`009-Plugin-and-Extension-System.md` (goal statement, G1 gate); `010-Python-Code-Interpreter.md`
+(shell-portability discussion, G1 and G6 gates); `024-Versioning-Compatibility-and-Governance.md`
+Q2; `025-Worktree-and-Virtual-Filesystem.md` G2; `README.md` (plugin-portability line);
+`src/backends/native_jail/README.md` and `src/backends/wasm/README.md`. `decisions/ADR-001/002/004`
+and the dated `docs/research/*.md` notes are left as-is — they are historical records of what was
+actually run/researched, not live claims.
 
 ### OQ-17 — No generic/first-party skills or tools catalog
 

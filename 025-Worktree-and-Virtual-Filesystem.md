@@ -139,8 +139,8 @@ practical value of content addressing for an audited system.
 
 - **G1 (durability)** — a worktree survives sandbox destruction, process restart, and simulated node
   migration with byte-identical content; proven for every profile in 008.
-- **G2 (isolation)** — the path-escape corpus (§5) fails to read or write outside a mount on
-  Windows, Linux, and macOS.
+- **G2 (isolation)** — the path-escape corpus (§5) fails to read or write outside a mount on every
+  platform in the current target set (021 §2 — Windows now, Linux next).
 - **G3 (concurrency)** — N concurrent `branch` agents produce a deterministic merge result; every
   genuine conflict is surfaced, never silently resolved; no lost update over 10⁴ randomized
   interleavings.

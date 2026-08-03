@@ -45,6 +45,17 @@ behind three external mechanisms — A2A `INPUT_REQUIRED`, MCP Multi Round-Trip 
 workflow request/response port (014). Unifying these is deliberate: an agent author writes one
 "ask the human/caller something" primitive.
 
+**Correlation identity (resolves OQ-4).** Every `InputRequired` carries one flat internal
+`request_id`-shaped token — the single source of truth an implementation checks a caller's response
+against — matching MAF's own mechanism exactly
+(`docs/research/2026-08-03-maf-workflow-and-hitl-model.md` §2: `WorkflowContext.request_info()`'s
+`request_id`, checked on resume against a pending-requests map keyed by that same string). Each
+protocol's own correlation identity (MCP `requestState`, A2A `taskId`, AG-UI `interruptId`, 012 §5a)
+is a **projection** of this one token at the protocol boundary, not a second identity to keep in
+sync — including reusing the same token as more than one protocol-facing field at once where that
+protocol calls for it, the way MAF's AG-UI bridge aliases one `request_id` to both the interrupt
+`id` and a `tool_call_id` simultaneously without conflict (same research note).
+
 **Terminal states are terminal.** A run in `Completed`/`Failed`/`Canceled`/`Rejected` rejects
 further input; a continuation is a *new run* on the same session.
 
@@ -166,9 +177,14 @@ This RFC moves Draft → Proven when an executed ADR demonstrates, on Windows an
 
 ## 10. Open questions
 
-- **Q1** — Should a run's turn loop itself be expressible as a workflow graph (014), making
-  "agent" a special case of "workflow"? Attractive for uniformity; risks paying graph overhead on
-  the common single-agent path.
+- ~~**Q1** — Should a run's turn loop itself be expressible as a workflow graph (014)?~~ **Resolved
+  2026-08-03: no.** Grounded in MAF's own source
+  (`docs/research/2026-08-03-maf-workflow-and-hitl-model.md` §1): a plain agent run never touches
+  `Workflow`/`Executor` machinery, and the dependency runs the other way — `AgentExecutor` wraps
+  `agent.run()` to let an agent become *one node* in a graph, opt-in via an explicit builder, not the
+  reverse. The turn loop above stays its own lightweight coroutine; 014 §1's `Executor = an agent |
+  a function | a sub-workflow | a request port` is already the right shape for the opt-in case and
+  needs no change.
 - **Q2** — Fork-and-merge semantics for sessions (§4.3) need a defined merge policy, or must be
   restricted to fork-only.
 - **Q3** — Should `AuthRequired` be a distinct state, or an `InputRequired` variant? A2A separates

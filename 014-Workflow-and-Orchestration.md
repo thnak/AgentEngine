@@ -61,7 +61,10 @@ shape, four surfaces (013 §5).
 
 A suspended workflow **holds no resources**: it is checkpointed, its activations passivate, and it
 resumes on the response, on a durable reminder (Quark 027), or never — an abandoned workflow is
-garbage-collected by policy, not leaked.
+garbage-collected by policy, not leaked. The request port's `InputRequired` carries the same
+`request_id`-shaped correlation token defined in 001 §2; a checkpoint taken while suspended stores
+the pending request indexed by that token, matching MAF's own checkpoint/request-info coupling
+(`docs/research/2026-08-03-maf-workflow-and-hitl-model.md` §2).
 
 ## 5. Checkpointing, resume, and time-travel
 

@@ -20,11 +20,11 @@ falsifiable rather than aspirational.
 
 | Platform | Tier (intent) | Notes |
 |---|---|---|
-| Windows 11 / x86-64 | **Supported** | Primary development platform; MSVC + clang-cl |
-| Linux / x86-64 | **Supported** | Quark's own reference target |
-| macOS / arm64 | **Supported** | No profile-specific gap: `microvm` was dropped project-wide (008 §1), not just here |
-| Linux / arm64 | CI-verified | Quark runs its matrix here; budgets not re-baselined |
+| Windows 11 / x86-64 | **Supported** | The v1 target — primary and, for now, only platform under active implementation; MSVC + clang-cl |
+| Linux / x86-64 | **Next** (not yet gated) | Quark's own reference target; taken up once the Windows implementation reaches a stable state — a sequenced follow-on, not simultaneous v1 work |
+| Linux / arm64 | CI-verified (deferred with Linux/x86-64) | Quark runs its matrix here; budgets not re-baselined |
 | Windows / arm64 | Best-effort | — |
+| macOS (any arch) | **Unsupported — not a target** | Quark has no macOS PAL backend and none is planned; no AgentEngine RFC may claim macOS support. Resolved 2026-08-03 (see OpenQuestions.md); previously listed here as Supported on the reasoning that dropping `microvm` (008 §1) removed the only profile-specific gap — that reasoning never addressed the PAL gap itself, which is the actual blocker |
 
 **Honesty requirement:** the README's support table is generated from CI results, not written by
 hand. A tier is a statement about what CI proves.
@@ -33,14 +33,14 @@ hand. A tier is a statement about what CI proves.
 
 | Subsystem | Mechanism | Portability risk |
 |---|---|---|
-| Scheduler, mailbox, timers, cluster | Quark + PAL (`linux_x86_64`, `windows_x86_64` backends exist) | macOS PAL backend is the gap; it is Quark's to fill, upstream |
+| Scheduler, mailbox, timers, cluster | Quark + PAL (`linux_x86_64`, `windows_x86_64` backends exist) | None for the current target set — both backends AgentEngine needs (Windows now, Linux next) already exist upstream in Quark |
 | Networking / TLS | PAL sockets + a TLS seam backend | Platform TLS stores differ; certificate handling is the usual trap |
 | Filesystem / workspaces | PAL file IO + path canonicalization | **High**: case-insensitivity, ADS, long paths, reparse points, `\\?\`, symlinks. Path escape is a security bug, so this is tested as security, not convenience |
-| `wasm` profile | wasmtime (WASI 0.3) | **Lowest** — identical semantics on all three |
+| `wasm` profile | wasmtime (WASI 0.3) | **Lowest** — identical semantics on both targeted OSes |
 | `native-jail` profile | AppContainer + Job Object + restricted token · namespaces + seccomp + cgroups v2 · sandbox profile, plus interpreter-level mediation (008 §1b) | **Highest**: three separate OS-level implementations of one contract (008 §9 G1 is the gate); the mediation layer on top is platform-independent engine code |
 | Python interpreter | Embedded native CPython, one runtime everywhere (010 §2) | Package availability differs by platform; pinning the `preinstalled` image is the mitigation |
-| Secrets | DPAPI · keyring/file · Keychain | Different capabilities and different failure modes |
-| Process/resource limits | Job Objects · cgroups v2 · `setrlimit`+sandbox | Semantics differ; the seam exposes only what all three enforce |
+| Secrets | DPAPI (Windows) · keyring/file (Linux) | Different capabilities and different failure modes |
+| Process/resource limits | Job Objects (Windows) · cgroups v2 (Linux) | Semantics differ; the seam exposes only what both targeted OSes enforce |
 
 ## 4. Portability rules
 
@@ -60,26 +60,30 @@ hand. A tier is a statement about what CI proves.
 - CMake ≥ 3.28, C++23. Compilers: MSVC 19.4x, g++ 14+, clang 20+ (clang-cl on Windows).
 - Quark as a submodule; wasmtime and other backend dependencies behind CMake options, each
   independently disable-able (a minimal build is core + `wasm` profile).
-- CI matrix: {Windows, Linux, macOS} × {Release, ASan+UBSan} × {MSVC/clang-cl, gcc, clang}, plus TSan
-  on Linux, plus the conformance suites, plus the budget gate on the reference machine.
+- CI matrix (current target set): {Windows} × {Release, ASan+UBSan} × {MSVC, clang-cl}, plus the
+  conformance suites and the budget gate on the reference machine. Linux ({gcc, clang} × {Release,
+  ASan+UBSan+TSan}) is added when Linux implementation begins (§2). No macOS row — not a target.
 - The machine-safety caps in CONVENTIONS (`-j4`, pinned tests) apply to CI configuration too.
 
 ## 6. Promotion gate
 
-- **G1** — the full correctness suite passes on all three Supported platforms.
+- **G1** — the full correctness suite passes on every Supported platform in the current target set
+  (§2) — Windows now; Linux is added to this gate once its implementation begins.
 - **G2** — the 008 parity gate (identical outcome classification across backends) passes per
   platform, with the availability table matching reality.
 - **G3** — the path-escape corpus (`..`, symlinks, junctions, `\\?\`, ADS, case tricks, unicode
   normalization) fails to escape a mount on any platform.
-- **G4** — one `ae:tool` component produces byte-identical results on all three (009 G1).
+- **G4** — one `ae:tool` component produces byte-identical results on every platform in the current
+  target set (009 G1).
 - **G5** — the README support table is generated from CI, and a deliberately broken platform job
   changes it.
 
 ## 7. Open questions
 
-- **Q1** — macOS: Quark has no macOS PAL backend today. Either it is contributed upstream or macOS
-  support is limited to what the engine can do without Quark's PAL-dependent paths. **This is the
-  single largest portability risk in the project and it needs an owner.**
+- ~~**Q1** — macOS: Quark has no macOS PAL backend today.~~ **Resolved 2026-08-03 (project-owner
+  decision, see OpenQuestions.md): macOS is not a target.** No PAL backend will be contributed
+  upstream for it; the target matrix (§2) and every other RFC's platform claims are normalized to
+  Windows (current) → Linux (next, once Windows is stable), with no macOS row.
 - **Q2** — Windows `native-jail`: AppContainer + Job Objects is the plan, but proving it enforces
   the same limits as cgroups v2 is unvalidated — **partially answered for the Windows half**
   (`decisions/ADR-004-appcontainer-native-jail-windows-backend.md` §10, 2026-08-02): memory and
@@ -92,5 +96,10 @@ hand. A tier is a statement about what CI proves.
   `JOB_OBJECT_LIMIT_JOB_TIME` behaves this way is unexplored (root cause, not just measurement),
   and LPAC (vs. plain AppContainer) was reasoned about but not tested against the read-leak finding
   in the same ADR (008 §7).
-- **Q3** — Whether to ship prebuilt wasmtime binaries or build from source in CI.
+- **Q3** — Whether to ship prebuilt wasmtime binaries or build from source in CI. **Informed, not
+  fully resolved, by OQ-7's small prove (OpenQuestions.md, 2026-08-03):** the official prebuilt
+  Windows x64 C API release (v47.0.3) downloads, links, and runs correctly with no build-from-source
+  step, which is at least evidence against needing to build from source on this platform. Whether CI
+  should still build from source anyway (reproducibility, supply-chain preference) is a separate
+  question this evidence doesn't settle either way.
 - **Q4** — arm64 budget re-baselining (inherits Quark's open question).

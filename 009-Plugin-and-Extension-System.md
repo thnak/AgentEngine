@@ -6,12 +6,12 @@
 
 One extension mechanism for everything third parties contribute — tools, skills, model providers,
 memory stores, content filters — built on the **WASM Component Model**, so that an extension is a
-single signed artifact that runs identically on Windows, Linux, and macOS, holds only the
+single signed artifact that runs identically across the target platform set (021 §2), holds only the
 capabilities the host hands it, and cannot take the host down.
 
 ## 1. Why the component model, specifically
 
-- **One artifact, three OSes.** No per-platform build matrix, no per-platform loader, no
+- **One artifact, every targeted OS.** No per-platform build matrix, no per-platform loader, no
   `dlopen`/`LoadLibrary` ABI hazard, and no native-plugin crash taking the engine with it.
 - **Capability-based by construction.** A component has no ambient authority: it reaches the world
   only through imports the host supplies. This is **I2** enforced by the runtime rather than by
@@ -275,8 +275,8 @@ dimension so a misbehaving plugin is visible without code changes.
 
 ## 10. Promotion gate
 
-- **G1** — the same `ae:tool` component binary loads and produces identical results on Windows,
-  Linux, and macOS (byte-identical outputs for a deterministic fixture).
+- **G1** — the same `ae:tool` component binary loads and produces identical results on every
+  platform in the current target set (021 §2 — byte-identical outputs for a deterministic fixture).
 - **G2** — a component whose imports exceed its manifest fails to load; a component that requests a
   capability the operator did not grant fails to instantiate. Positive controls included.
 - **G3** — a trapping/looping/allocating-forever/output-flooding plugin is contained within its
@@ -295,5 +295,11 @@ dimension so a misbehaving plugin is visible without code changes.
   OCI is tempting — content-addressed, signed, mirrorable, already deployed everywhere.
 - **Q3** — Whether plugins should be able to declare *typed* WIT interfaces for their own tools
   rather than JSON Schema, with the schema generated from WIT (better typing, harder MCP interop).
-- **Q4** — Pinning to a Wasmtime version that ships WASI 0.3 by default (46+) versus supporting a
-  range; the async ABI difference is not a small compatibility surface.
+- ~~**Q4** — Pinning to a Wasmtime version that ships WASI 0.3 by default (46+) versus supporting a
+  range.~~ **Resolved 2026-08-03 (see OpenQuestions.md OQ-7): pin to a single version, currently
+  47.0.3** (the latest release as of this date) — no 0.2/0.3-RC compatibility range. Verified against
+  the real, downloaded Windows x64 C API release: Component Model headers
+  (`wasmtime/component/*`) and WASI 0.3's async primitives (`stream`/`future`, referenced in
+  `component/func.h`, `component/linker.h`, `component/types/val.h`) are present in the shipped
+  headers, not just documented; a real engine/store/module/instance/call round trip against this
+  exact release succeeds under MSVC 19.51.36252 (the same toolset the rest of this project uses).
