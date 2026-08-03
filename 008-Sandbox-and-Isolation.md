@@ -139,6 +139,17 @@ struct SandboxSpec {
 };
 ```
 
+**`cpu_ms` is best-effort, not a dependable bound, on Windows `native-jail`.** Measured evidence
+(`decisions/ADR-004-appcontainer-native-jail-windows-backend.md` §10): `JOB_OBJECT_LIMIT_JOB_TIME`
+fired automatically in only 3 of 11 runs, with 1.38x-8.22x overrun when it did, and no relationship
+between the configured budget and the actual overrun. **A caller that needs a dependable CPU/time
+bound sets `wall_ms` to the value it actually wants enforced** — that field, not `cpu_ms`, is what
+this backend's wall-clock watcher reliably enforces (measured at 500-504ms for a 500ms deadline,
+independent of any native kernel limit). This is a per-backend reliability difference, not a
+contract violation: §9 G1 still requires identical *outcome classification* across backends (a
+CPU-bound guest is always killed and always reported as resource-exceeded), not identical enforcement
+latency or an identical trustworthy mechanism per platform.
+
 **Every backend must provide, or it is not a backend:**
 
 1. **Empty-by-default authority.** Nothing is reachable that the spec did not grant (**I2**).

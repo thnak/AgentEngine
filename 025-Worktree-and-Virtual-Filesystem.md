@@ -163,3 +163,6 @@ practical value of content addressing for an audited system.
   artifact of the conversation (it probably should) and what that means for retention policy.
 - **Q5** — Cross-session worktree sharing (a project disk spanning conversations) is desirable and
   breaks the "one worktree, one principal, one session" simplicity that makes §5 sound.
+  **Resolved by 030**: don't share one worktree across sessions — index N independent worktree refs
+  at a new Project layer above sessions instead. §5's per-session mount/capability model is
+  unmodified; 030 §2 has the detail.

@@ -1,6 +1,6 @@
 # 006 — Tool and Function Plane
 
-**Status:** Draft · **Depends on:** 003, 007, 008, 009, 011, 012 · **Gate:** §8
+**Status:** Draft · **Depends on:** 003, 007, 008, 009, 011, 012, 013 · **Gate:** §8
 
 ## Goal
 
@@ -73,7 +73,8 @@ Every tool call, regardless of source, traverses exactly this pipeline:
 5. approve       policy → auto | require approval → InputRequired (001 §2)
 6. admit         rate limit, concurrency, quota                  (Quark 022)
 7. bind          materialize capability handles for this call only
-8. invoke        with deadline + stop_token, in the declared isolation
+8. invoke        with deadline + stop_token, in the declared isolation — may emit interim
+                 progress via `EffectContext.report_progress` (§6a)
 9. normalize     result → parts (003); errors → structured ToolResult{is_error}
 10. account      usage, duration, bytes; span closed; audit record written
 ```
@@ -126,12 +127,56 @@ history is deterministic regardless of completion order — a precondition for I
 - **Tool-name collisions across sources are an error**, resolved by declared namespacing, never by
   silent last-wins.
 
+## 6a. Progress reporting during invoke
+
+A tool whose work is incremental or long-running — writing a large file, walking a big tree,
+running a multi-step search — can report interim status without the model waiting on a silent call
+until it returns.
+
+- **`EffectContext` carries `report_progress(ProgressUpdate)`.** It is the only way to emit
+  progress — there is no ambient stream a tool could reach for instead, consistent with §1's "no
+  ambient-context accessor" rule.
+- **`invoke()` (§3 step 8) may call it zero or more times before returning.** Each call emits a
+  `ToolCallDelta` onto the run's internal event stream (013 §1) — the same stream every other run
+  event rides, not a second channel — which 013 already projects onto AG-UI's `TOOL_CALL_CHUNK`
+  (013 §2.1), MCP's `notifications/progress` (013 §3, 011 §3.4), and A2A's task/artifact updates
+  (013 §3, 012). No new transport, no new protocol mapping — the wiring already exists; this is the
+  one producer-side hook that was missing.
+- **Progress never enters the model's context.** It is a UI/observability signal only; the model
+  sees exactly one thing from a tool call — the final `ToolResult` normalized at step 9. This is
+  what keeps `report_progress` free of §7's token-budget hazard: however many deltas a call emits,
+  none of them are appended to the transcript, so they cannot be the mechanism that exhausts a
+  turn's budget.
+- **Still bounded, for a different reason.** Unbounded chunk size or rate is a transport and
+  audit-log cost even though it never reaches the prompt. `ProgressUpdate` is a small, fixed-shape
+  struct (e.g. `{done, total, message}`, not arbitrary content) and is rate-limited per call — a
+  cap independent of, and much tighter than, §7's model-context budget.
+- **Attribution, not a new capability.** `report_progress` is telemetry about an effect already
+  authorized at pipeline step 4; it grants and checks nothing of its own. It carries the call's
+  `EffectContext` so the emitted event is attributed (I4) to the same span as the call it
+  describes.
+- **Purely optional for tool authors.** A tool that never calls it behaves exactly as today:
+  `ToolCallStarted` then `ToolCallFinished`, no deltas between them.
+
 ## 7. Tool result hygiene
 
 A tool result is external content and is the primary prompt-injection vector (017):
 
 - Tainted, provenance-marked, and delimited when rendered into the prompt.
-- **Size-bounded** with declared truncation; large payloads become `BlobRef`s (003 §3).
+- **Size-bounded against the run's actual budget, not a fixed constant.** A truncation threshold set
+  in bytes independent of the model in play is not a safety mechanism — a "small" fixed cap can still
+  be a context-window-consuming disaster against a small-context model, and a generous one does
+  nothing against a large-context model with little headroom left. The threshold for a given call is
+  **derived from the run's effective per-turn token budget** (005 §3's `TokenBudget` and per-source
+  budgets), scaled to a declared fraction, never a global byte constant applied uniformly regardless
+  of model or how much of the turn's budget is already spent. This is what stops an agent's very
+  first tool call — reading one extremely large file, say — from consuming the run's entire budget in
+  one shot: truncation happens *before* the result is appended, scaled to what the next model call can
+  actually afford, not discovered after that call has already failed against an oversized context.
+- Above that threshold, the result becomes a `BlobRef` (003 §3); the agent opens it explicitly and
+  pages through what it needs — the same content-goes-to-a-handle pattern 028 §2 codifies for bulk
+  structured data, generalized here to every tool result, differing only in what "threshold" is
+  measured in (rows/bytes there, tokens here).
 - **Structured where possible** — a `Data` content item with a schema beats prose the model must
   parse.
 - Results never carry executable directives that the engine acts on. There is no in-band control
@@ -146,6 +191,10 @@ A tool result is external content and is the primary prompt-injection vector (01
   `ToolResult{is_error}` with the correct classification and no leaked capability.
 - **G3** — a capability handle from call *n* is unusable in call *n+1* (proven, not asserted).
 - **G4** — parallel batches produce deterministic history order across 10⁴ randomized completions.
+- **G5** — a tool that calls `report_progress` 10³ times with maximal-size payloads produces zero
+  bytes in the model-visible transcript and zero change to the run's token budget; only the final
+  `ToolResult` appears there. Positive control: a deliberately mis-wired projection that leaks one
+  progress chunk into the prompt is caught by the test, not just described as prevented.
 
 ## 9. Open questions
 
@@ -155,3 +204,9 @@ A tool result is external content and is the primary prompt-injection vector (01
   `Suspended` state are three shapes for one idea (see 019 Q2).
 - **Q3** — Whether `Parallelizable` can be *inferred* for pure WASM plugins with no capabilities
   (arguably yes, and it would be free).
+- **Q4** — The exact fraction of a turn's token budget a single tool result may claim (§7) is
+  unspecified — a fixed fraction (e.g. 25%) is simple but arbitrary; scaling by remaining budget, by
+  the tool's declared risk, or some other function are all plausible and untested. The sharper case is
+  a **parallel batch** (§5): N results each individually under the per-result cap can still
+  collectively exceed the turn's budget, and this section does not yet say whether the cap applies
+  per-result or per-batch.

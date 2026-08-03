@@ -101,9 +101,12 @@ word is free, and we take it. §5 records the collision so nobody re-imports the
 | **`Capability`** | An unforgeable handle authorizing one class of effect (007) | **ours** |
 | **`Principal`** | The authenticated identity a run executes on behalf of (007) | **ours** |
 | **`EffectContext`** | The mandatory attribution parameter carried into every effect (007, I4) | **ours** |
+| **`Handoff`** | `Handoff<Writer>` exposes another agent as a tool that transfers control of the run to it (002 §4) | MAF (`HandoffBuilder`, verified: `agent_framework_orchestrations/_handoff.py`) |
 | **`Sandbox`** / **`Profile`** | An isolation boundary instance / a named backend + limits configuration (008) | **ours** |
 | **`Worktree`** | The session's content-addressed virtual disk (025) | **ours** |
 | **`Runner`** / **`PythonRunner`** / **`ShellRunner`** | A code/shell execution unit inside a session's sandbox (010 §1a) | **ours** |
+| **`EmbeddedHost`** | The in-process bring-up object a C++ application constructs to link the engine as a library and mint `Run`/`ReplyStream` handles (020 §3a) | **ours** |
+| **`Project`** | A durable index above a session — a root session plus every session it transitively owns, with directed pause/restore distinct from idle passivation (030) | **ours** |
 | **`ExecState`** | The `{cwd, env}` shared by reference across every `Runner` call in a session (010 §3a) | **ours** |
 | `Actor` · `Activation` · `Worker` · `Shard` · `Mailbox` · `ActorRef<A>` · `Policy` | Quark's runtime vocabulary, used **verbatim and unchanged** | Quark |
 | `ae::task<T>` · `ae::result<T>` | Coroutine return type · `std::expected<T, error>` | Quark |

@@ -113,7 +113,16 @@ Plugins run in the `wasm` profile (008) under the same contract as any sandbox: 
 CPU limits, wall clock, output size, and a bounded cancellation. A plugin trap is a structured
 result, never a host fault. The host never blocks a session activation on a plugin call (001 §8).
 
-## 7. The C/C++ library track (first-party plugins)
+## 7. The C/C++ library track (first-party plugins) — the generic tool catalog
+
+**This table is the generic tool catalog**, resolving `OpenQuestions.md` OQ-17: every candidate below
+is source-agnostic and first-party, ships as a plugin under §6's contract, and exists so applications
+stop reinventing the same dozen capability-crossing operations. The split that decides what belongs
+here versus needing no `Tool` at all: an operation that crosses a capability boundary (network,
+filesystem, hostile-input decode) belongs here; pure computation (math, JSON transforms, unit
+conversion) needs no `Tool` declaration — the code interpreter (026 §1) already gives the model an
+ordinary environment for that, and wrapping it as a tool would be a capability boundary with nothing
+on the other side of it.
 
 An explicit program, not a side effect: wrap high-value open-source native libraries as `ae:codec`
 and `ae:tool` components so that capability-heavy functionality is available *without* host trust.
@@ -121,6 +130,7 @@ Candidates, in rough priority order:
 
 | Plugin | Library | Capability it replaces |
 |---|---|---|
+| **Content reading** | Engine-native, not a wrapped library | A generic `read_content`-class tool for text/bytes from any granted source (worktree path, mounted input, or a URL under `NetOut`) — returns a bounded preview plus a `BlobRef` (003 §3) above the 006 §7 threshold, never raw materialized content, so "read this file" can never by itself exhaust a run's token budget (006 §7, 028 §2). First on this list because every application needs it on day one and it is the candidate most exposed to that hazard — it ships built-in rather than deferred to an operator plugin |
 | Document extraction | poppler / mupdf-class PDF, libxml2 | Parsing hostile files in-process |
 | Structured code understanding | tree-sitter | Running a parser on untrusted source |
 | Archive handling | libarchive, zlib/zstd | Zip-bomb exposure in the host |
@@ -237,6 +247,25 @@ That is exactly why §3 requires signatures and §4 verifies them before parsing
   i.e. our tools, not our skills.
 
 Details and sources: [`docs/research/2026-mcp-ecosystem.md`](docs/research/2026-mcp-ecosystem.md).
+
+### 8f. Generic skills (the other half of OQ-17)
+
+First-party `SKILL.md` bundles, mounted exactly like any other skill (§8b) — no special loader, no
+special trust tier — teaching the model how to use surfaces the engine itself provides. These earn
+their place precisely because a model has *not* seen a million examples of them, unlike ordinary
+Python (026 §1's whole point):
+
+| Skill | Teaches |
+|---|---|
+| `using-the-code-interpreter` | Idioms for `execute_code` (010 §1); when a single call suffices versus when CodeAct's multi-step form pays for itself |
+| `using-codeact` | Worked `agent.*` examples (026 §5) — filtering large results in-process instead of round-tripping every row through the model |
+| `reading-large-content` | When to use §7's content-reading tool's preview-then-page pattern instead of asking for a whole file, tying directly to 006 §7's token-budget rule |
+| `producing-structured-output` | Shaping a final response against a declared schema (003 §5) reliably |
+| `shell-pipelines` | `ShellRunner`'s grammar (010 §2) — composing pipes/redirects idiomatically within its documented subset |
+
+These ship in this repo, not as a separate download, and are mounted by default subject to the same
+per-session grant model as any skill (§8c) — "built-in" means "shipped and trusted by default," not
+"ungoverned."
 
 ## 9. Observability
 

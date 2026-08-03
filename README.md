@@ -13,7 +13,7 @@ graph-workflow vocabulary Microsoft Agent Framework established), expressed in *
 CRTP policy idiom** instead of runtime configuration objects.
 
 > **Status: design phase.** There is no implementation yet. This repository currently contains the
-> specification set: 24 RFCs, the conventions contract, and a dated research record. Every RFC is
+> specification set: 30 RFCs, the conventions contract, and a dated research record. Every RFC is
 > **Draft**, and each names the gate that would promote it. That is deliberate — the design is the
 > product right now.
 
@@ -160,6 +160,7 @@ Start with the [specification](AgentEngineSpecification.md), then
 | 027 | [Vocabulary and Naming](027-Vocabulary-and-Naming.md) | The canonical name for every concept, aligned to MAF, plus the collision register for words that mean different things in different specs | Draft |
 | 028 | [Bulk Data Transfer and Zero-Copy](028-Bulk-Data-Transfer-and-Zero-Copy.md) | Moving large data without JSON, without copies, and without touching the context window: handles, Arrow, per-profile mapping | Draft |
 | 029 | [Memory System](029-Memory-System.md) | Memory as a principal-scoped worktree, not a wrapped vector database: structured `MemoryItem`s, attributed extraction, deterministic default retrieval, vectors as an optional upgrade | Draft |
+| 030 | [Project: Workspace Grouping and Lifecycle](030-Project-Workspace-and-Lifecycle.md) | A durable unit above a session — root session + owned sub-sessions + their worktree refs — with directed pause/restore/resume and no cap on concurrently open projects | Draft |
 
 Supporting documents: [`OpenQuestions.md`](OpenQuestions.md) (cross-cutting unresolved questions),
 [`decisions/`](decisions/) (the ADR process and record), and the dated, cited research records —

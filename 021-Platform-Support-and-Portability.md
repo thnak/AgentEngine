@@ -81,6 +81,16 @@ hand. A tier is a statement about what CI proves.
   support is limited to what the engine can do without Quark's PAL-dependent paths. **This is the
   single largest portability risk in the project and it needs an owner.**
 - **Q2** — Windows `native-jail`: AppContainer + Job Objects is the plan, but proving it enforces
-  the same limits as cgroups v2 (particularly memory and pid caps) is unvalidated.
+  the same limits as cgroups v2 is unvalidated — **partially answered for the Windows half**
+  (`decisions/ADR-004-appcontainer-native-jail-windows-backend.md` §10, 2026-08-02): memory and
+  pid caps are measured precise and reliable (matches expectation); CPU-time caps
+  (`JOB_OBJECT_LIMIT_JOB_TIME`) are measured *unreliable* — fired in only 3/11 runs, 1.38x-8.22x
+  overrun when it did — so `wall_ms`, not `cpu_ms`, is the dependable enforcement point on this
+  backend (008 §2). Still open: no Linux cgroups v2 `native-jail` backend exists yet to give this
+  question its actual comparison point, so it remains unvalidated in the sense this question
+  asks — the Windows measurement is new information, not a close. Also open: why
+  `JOB_OBJECT_LIMIT_JOB_TIME` behaves this way is unexplored (root cause, not just measurement),
+  and LPAC (vs. plain AppContainer) was reasoned about but not tested against the read-leak finding
+  in the same ADR (008 §7).
 - **Q3** — Whether to ship prebuilt wasmtime binaries or build from source in CI.
 - **Q4** — arm64 budget re-baselining (inherits Quark's open question).

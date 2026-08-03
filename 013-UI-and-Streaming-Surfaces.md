@@ -1,6 +1,6 @@
 # 013 — UI and Streaming Surfaces
 
-**Status:** Draft · **Depends on:** 001, 003, 012 · **Gate:** §6
+**Status:** Draft · **Depends on:** 001, 003, 006, 012 · **Gate:** §6
 
 ## Goal
 
@@ -24,6 +24,12 @@ InputRequired · InputResolved
 ApprovalRequested · ApprovalResolved
 Warning · PolicyDecision
 ```
+
+**`ToolCallDelta`'s producer**, since it is the one event in this list a tool implementation emits
+rather than the engine: a call to `EffectContext.report_progress` during `invoke()` (006 §6a) is the
+only source. It is distinct from the tool-call argument streaming folded into `ModelDelta` above —
+that is the *model* incrementally producing a call's arguments before invocation starts;
+`ToolCallDelta` is the *tool* reporting on work already in flight.
 
 **Properties:**
 
@@ -71,7 +77,7 @@ Its categories map onto §1 with no structural gaps:
 |---|---|
 | `RunStarted/Finished/Error`, `StepStarted/Finished` | `RunStarted/Finished/Failed`, `TurnStarted/Finished` |
 | `TextMessageStart/Content/End/Chunk` | `ModelDelta` (text) |
-| `ToolCallStart/Args/End/Result/Chunk` | `ToolCall*` |
+| `ToolCallStart/Args/End/Result/Chunk` | `ToolCall*`, `CHUNK` from `ToolCallDelta` (006 §6a) |
 | `StateSnapshot/StateDelta/MessagesSnapshot` | `StateChanged` + session view |
 | `ActivitySnapshot/Delta` | `SandboxExec*`, long-running tool progress |
 | `Reasoning*` (incl. `ReasoningEncryptedValue`) | `ModelDelta` (reasoning); encrypted reasoning passes through opaque (003 §1) |
@@ -126,7 +132,7 @@ continues a task, AG-UI restarts a run — and it is the strongest argument that
 | Surface | Projection |
 |---|---|
 | **A2A streaming** (012) | Task status + artifact updates from the same stream |
-| **MCP progress** (011) | `notifications/progress` on the originating request's response stream, when serving a tool call |
+| **MCP progress** (011) | `notifications/progress` on the originating request's response stream, when serving a tool call — sourced from `ToolCallDelta` (006 §6a) exactly like the AG-UI projection above |
 | **OpenAI-compatible SSE** | Chat-completion-shaped chunks, for drop-in clients that already speak it |
 | **Terminal / CLI** | Direct consumption, no projection |
 | **Recording** | Verbatim, for replay |
@@ -190,5 +196,19 @@ Approval payloads carry the **exact validated arguments** and the hash the appro
   credit or a shared cursor. Quark's `Topic<M>` is best-effort at-most-once, which is *wrong* here —
   and A2A makes it a **MUST** that every concurrent subscriber to a task receives identical events in
   identical order, so best-effort fan-out is not merely undesirable, it is non-conformant. This needs
-  a real primitive.
+  a real primitive. **Partially addressed for the embedded-host case**: 020 §3a licenses `Topic<M>`
+  for *secondary, in-process-only* observers of a run (a debug pane alongside a primary view, where a
+  dropped UI frame is not a correctness bug), explicitly not as an answer for A2A's stricter
+  requirement — that half of this question is still open.
+
+  **Upstream primitive requested and scoped**: filed as
+  [QuarkCpp#10](https://github.com/thnak/QuarkCpp/issues/10), pre-registered as
+  [Quark ADR-039](https://github.com/thnak/QuarkCpp/blob/master/decisions/ADR-039-ordered-reliable-multi-subscriber-fanout.md)
+  (Draft — sketch only, no red-team/prove pass yet). Checking our own §2.3/§2.4 against Quark's
+  proposed two-policy design (`EvictAfter<N>` vs `Block`) settled which one we actually need: A2A's
+  ordering MUST applies only to *currently attached* subscribers, and §2.4 explicitly disclaims
+  gap-free delivery on reconnect (`GetTask`, not the stream, is the source of truth). So
+  `EvictAfter<N>` alone — bounded buffer, then evict with an explicit gap signal, treated by our
+  client exactly like any other A2A disconnect/resubscribe — is sufficient; `Block` is not required
+  for this need. Still blocked on Quark actually proving and shipping the primitive.
 - **Q3** — How much history a late-attaching consumer receives (snapshot + tail, or full replay).

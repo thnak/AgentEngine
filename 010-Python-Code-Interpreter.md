@@ -152,9 +152,13 @@ Every `execute_code` invocation:
    usage}`. Timeout, OOM, crash, and policy violation are outcome classes, never exceptions.
 5. Emits a span nested in the run and an audit record (I4).
 
-**Output discipline:** stdout/stderr are size-capped with explicit truncation markers; anything
-large becomes an artifact `BlobRef` (003 §3). An agent that prints a 200 MB dataframe gets a
-truncation notice, not an OOM'd host.
+**Output discipline:** stdout/stderr **and `result_repr`** are size-capped with explicit truncation
+markers; anything large becomes an artifact `BlobRef` (003 §3). Naming `result_repr` explicitly
+closes a specific gap: a value never `print()`-ed — `data = open(huge_file).read(); data` as the
+last expression, say — is captured as `result_repr`, not `stdout`, and needs the identical cap or it
+is a silent way around the discipline this sentence exists to state. The cap itself follows 006 §7's
+rule — scaled to the run's effective token budget, not a fixed byte constant. An agent that prints or
+returns a 200 MB dataframe gets a truncation notice, not an OOM'd host or a blown context window.
 
 ### 3a. `ExecState` — the same session backs Python and Shell
 

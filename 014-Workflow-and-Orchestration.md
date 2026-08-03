@@ -113,3 +113,22 @@ that cannot be drawn is a workflow nobody can review.
   the "snapshot the graph per run" property that makes replay sound.
 - **Q4** — Distributed workflows spanning nodes: Quark makes it possible; the checkpoint consistency
   model across nodes is unspecified.
+- **Q5** — §3's pattern table has no row for MAF's fifth named orchestration pattern, **Magentic**:
+  a manager that maintains a task/progress ledger, dynamically assigns work, and can trigger
+  replanning — meaningfully more than "a moderator executor cycling among participants with a
+  bound" (the closest existing row, Group chat/debate). Undecided whether ledger/replan behavior is
+  meant to be business logic inside a moderator executor — consistent with §3's stated philosophy
+  that patterns are graph configurations, not separate subsystems, and needs no new primitive — or
+  whether it's common enough to deserve its own named row so every application doesn't reinvent
+  ledger/replan semantics independently.
+- **Q6** — Mid-run amendment of a running executor's goal/instructions (as opposed to routing a new
+  *message* to it, already supported). No MAF precedent: neither its Python nor .NET SDK supports
+  live-editing a running executor's instructions — both only steer through new messages fixed at
+  builder-configuration time. §2's superstep model already delivers typed messages to executors as
+  ordinary graph edges, so a goal update that **queues and applies at the next superstep boundary**
+  needs no new primitive — same discipline as everything else here. What's open is the same tension
+  Q3 already names for dynamic graph mutation: whether a goal update should be able to **interrupt**
+  a turn already in flight (powerful, but breaks the snapshot-the-graph-per-run property that makes
+  replay sound) versus always waiting for the next boundary (safe, replay-sound, but not "mid-turn"
+  in the sense a caller invoking this might expect). Treat as a specific instance of Q3, not a
+  separate mechanism, until Q3 itself is resolved.

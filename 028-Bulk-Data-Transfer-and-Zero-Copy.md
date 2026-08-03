@@ -37,7 +37,11 @@ The first and largest win costs nothing to implement: **a tool that produces bul
 reference, not the data.**
 
 - A tool result above a configured threshold becomes a `BlobRef`/dataset handle (003 §3), written
-  once into the worktree (025) and content-addressed.
+  once into the worktree (025) and content-addressed. **§1's example is tabular, but the mechanism is
+  general**: an oversized text read (a large log, a large source file) follows the identical path,
+  per 006 §7's rule that the threshold is scaled to the run's token budget rather than a fixed byte
+  constant — only the summary shown to the model differs (shape/columns here, a byte-count-plus-
+  head/tail preview for arbitrary text).
 - The model sees a small summary — shape, columns, a few sample rows — not the payload.
 - The agent's code opens it when and if it needs it, and typically never materializes all of it:
 

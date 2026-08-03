@@ -50,6 +50,73 @@ turn off the sandbox through an environment variable does not have a sandbox.
 
 **The same binary serves all five**; the shape is configuration plus which surfaces are enabled.
 
+### 3a. Embedded library: the host contract
+
+§3's "Embedded library" row names the shape; this states what a linked-in C++ host — a desktop app,
+a game, a native UI shell — actually calls. No protocol surface (011/012/013 §2) sits between host
+and engine here: the host is in the same process as the `Run`, so it consumes 013 §1's event stream
+directly, in its native struct form, with none of the wire translation AG-UI/A2A/MCP exist to do.
+
+**Bring-up.** The host constructs an **`EmbeddedHost`** from resolved configuration (§2), which
+brings up Quark's actor system in-process. §3 already names the choice: the host's own loop pumps
+the scheduler, or the engine owns its worker threads outright. For a host with a UI message pump it
+cannot give up — WinUI's `DispatcherQueue`, Win32's `GetMessage`, Qt's `QEventLoop` — the fit is
+**the engine owns its threads**: a UI thread must never be the thread the actor scheduler blocks on.
+
+**Starting and draining a run.** No new primitive: `ask_stream<RunEvent>(StartRun{...})` (already
+named in 001 §2) has the signature Quark's ADR-018 gives it —
+`task<expected<ReplyStream<RunEvent>, error>>` — and the host `co_await`s it once to obtain the
+`ReplyStream<RunEvent>`, then drains it in an ordinary coroutine loop. That drain **is** the
+backpressure signal 013 §1 already promises ("a slow consumer applies backpressure to the provider
+read instead of buffering unboundedly") — it was never a protocol-only property, it is Quark's
+credit-controlled reply ring (ADR-018), and an embedded host gets it for free by doing nothing
+special. This is what makes "asynchronous by default" true here rather than aspirational: a run was
+never going to emit faster than whatever is draining it, embedded host or not.
+
+**One handle, one `Run`.** A tab per subagent (per the earlier discussion: 001 §4 sub-agents are
+already separate `Run`s on separate `AgentSession`s) is exactly one independently-drained
+`ReplyStream<RunEvent>` per tab. No new concept — N tabs is N ordinary drain loops.
+
+**Threading is the host's problem, explicitly.** The engine delivers `ReplyStream` resumption on
+whichever Quark worker thread produced the event — never on a thread the host designated, because
+the engine has no way to know a host has a UI thread, let alone which one. A host that mutates a UI
+object from inside the drain coroutine without marshaling (`winrt::resume_foreground(dispatcherQueue)`
+or equivalent) has a host bug, not an engine defect. Stated plainly so it doesn't get discovered by
+a flaky WinUI reference app: this has to be documented, not assumed away.
+
+**Secondary local observers on one run — a partial answer to 013 Q2.** 013 Q2 flags that Quark's
+`Topic<M>` (ADR-019) is the wrong primitive for A2A's multi-subscriber requirement, because A2A
+**must** deliver identical events in identical order to every concurrent subscriber and `Topic<M>` is
+deliberately best-effort, at-most-once, per-subscriber drop-on-full. That disqualification is
+specific to the A2A conformance obligation — it is not a defect in `Topic<M>` itself. For a second
+in-process observer on one run (a debug pane alongside the tab's primary view, say), best-effort is
+exactly the right shape: a coalesced or dropped UI frame is not a correctness bug the way a missed
+A2A task update would be. So: a run's **primary** stream is always the credit-controlled
+`ReplyStream` from `ask_stream` above; a run **may** additionally `publish` its events onto a
+`Topic<RunEvent>` for secondary in-process observers only, never as a substitute for a protocol
+surface's delivery guarantee. This closes the embedded-only slice of 013 Q2; A2A's stricter
+requirement is untouched and still needs its own primitive.
+
+**Feeding input back and cancelling.** Both are already-named mechanisms, not embedding-specific
+ones: resolving `InputRequired`/`ApprovalRequested` (001 §2) is an ordinary `ask` carrying the resume
+payload, the same one a web caller uses; cancelling a tab's run triggers the `std::stop_token` (001
+§5) the host was given at `start_run`.
+
+**What this contract does not promise.** Source-level embedding, not binary-stable embedding. The C
+ABI 020 Q3 anticipates is for out-of-process bindings (future Python/.NET); a linked-in C++ host
+builds against the same compiler and ABI as the engine, and `RunEvent` and friends can change shape
+between engine versions like any other internal type. A host that needs to embed across independent
+builds without recompiling wants the C ABI seam, not this one.
+
+**Concretely, for a WinUI host: only the C++/WinRT face of WinUI 3 is in scope today.** WinUI 3
+(Windows App SDK) is consumable two ways — the common C#/.NET one, and a native **C++/WinRT**
+projection that compiles to ordinary native code with no CLR involved. This contract is source-level
+C++ embedding, so a C++/WinRT host links the engine exactly like any other embedded-library host
+(§3a above) and is not a ".NET binding" in the sense CLAUDE.md's locked decisions defer — C++/WinRT
+never touches managed code. A **C#/.NET WinUI** host is a different question entirely: it needs the
+still-unspecified C ABI (Q3 below), not this contract, and is out of scope until that seam is
+designed.
+
 ## 4. Server surfaces
 
 Each is independently enable-able, and each is off unless configured:
@@ -91,6 +158,10 @@ mistake once is enough.
   (negative corpus per knob class).
 - **G4** — graceful shutdown under load: zero lost acknowledged turns, zero orphaned sandboxes,
   audit flushed, within the declared bound.
+- **G5 (§3a)** — a reference embedded C++ host (headless, no UI) drives N concurrent runs, each
+  through its own `ReplyStream<RunEvent>` obtained via `ask_stream`: zero cross-run event
+  interleaving observed by any drain loop, and a stalled drain measurably applies backpressure to
+  its run (the run's provider read slows or blocks) without affecting the other N-1 runs.
 
 ## 8. Open questions
 
@@ -101,3 +172,18 @@ mistake once is enough.
   and will constrain those bindings once frozen.
 - **Q4** — Deployment descriptor for the `remote` sandbox profile: reuse the Kubernetes Agent
   Sandbox CRD directly, or wrap it?
+- **Q5 (§3a)** — Default event-loop ownership for an embedded UI host: this RFC recommends
+  "engine owns its worker threads" for hosts with their own message pump, but does not yet require
+  it. Whether a host should be able to choose the other mode at all, or whether "host owns the loop"
+  should be restricted to headless/single-threaded embeddings (games, CLI-adjacent tools) where no
+  UI framework is fighting for the same thread, is undecided.
+- **Q6 (§3a)** — Whether the `Topic<RunEvent>` secondary-observer pattern should become a documented,
+  supported API (`Run::observe()` or similar) or stay purely a host-side composition over `publish`/
+  `subscribe` that this RFC merely licenses. A first-class API is more discoverable; leaving it as
+  composition keeps the engine surface smaller, consistent with 026 §5's "small and boring" bias.
+  **Update:** once Quark ships the ordered multi-subscriber primitive requested in
+  [QuarkCpp#10](https://github.com/thnak/QuarkCpp/issues/10) (013 Q2), that primitive — not
+  `Topic<M>` — becomes the natural fit for a first-class `Run::observe()`, since it would give every
+  local observer (not just the primary drain) ordered, gap-signaled delivery instead of best-effort
+  drop. `Topic<M>` composition would then be reserved for observers that genuinely don't care about
+  gaps (e.g. a live metrics tick), rather than being the only local multi-observer option.

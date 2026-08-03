@@ -167,6 +167,22 @@ authority, and a security disclosure process. All required before any public rel
 
 ## Resolved
 
+### OQ-17 — No generic/first-party skills or tools catalog
+
+006, 009 §7/§8, 026 §5. MAF ships no first-party generic skills or tools — every `SKILL.md` in its
+repo is sample/demo content, not a shipped standard library — so a generic catalog for AgentEngine
+was new design surface, not something to port.
+
+**Resolved by candidate (a):** 009 §7 is now explicitly the generic tool catalog (source-agnostic,
+capability-crossing operations only — math/JSON/unit-conversion stays un-Tooled per 026 §1's code
+interpreter), headed by a first-party `read_content`-class tool whose preview-plus-`BlobRef` shape
+(006 §7, 028 §2) exists specifically to close the token-budget hazard a naive "read this file" tool
+would open. 009 §8f adds the generic-skills half: `using-the-code-interpreter`, `using-codeact`,
+`reading-large-content`, `producing-structured-output`, `shell-pipelines`, shipped in-repo and
+mounted by default under the same grant model as any skill. Related, still open: **OQ-14** (agent.*
+library curation) is the same "what earns a place" question one level down, at the Python-surface
+level rather than the tool/skill-catalog level.
+
 ### OQ-15 — Module-name import gating can't distinguish a trusted package's internals from guest code
 
 Originally raised by `decisions/ADR-002-pythonrunner-embedding-and-mediation.md`'s prove phase
