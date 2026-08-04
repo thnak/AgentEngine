@@ -1,53 +1,545 @@
 #pragma once
-// Implements 007-Capability-and-Trust-Model.md — the unforgeable handle authorizing one class of
-// effect. Held by the host, passed explicitly, never inferred (I2). Never derived from model
-// output (I3) — there is no constructor that takes a TaintedText and returns a Capability.
+// Implements 007-Capability-and-Trust-Model.md §3 — the unforgeable handle authorizing one class of
+// effect, and its in-process representation/enforcement (grant, check, attenuate, per-invocation
+// bind + revoke). Design settled by
+// decisions/ADR-009-capability-set-enforcement-mechanism.md (design -> red-team -> prove -> judge,
+// required here per CLAUDE.md and decisions/README.md because this mechanism is what actually
+// upholds I2 in-process — "there is no constructor that grants everything" is not just a comment on
+// this type, it is what the API surface below is built to make true, not merely follow by
+// convention).
+//
+// Held by the host, passed explicitly, never inferred (I2). Never derived from model output (I3) —
+// there is no constructor that takes a TaintedText and returns a Capability.
 
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cstdint>
+#include <memory>
+#include <optional>
+#include <string>
+#include <type_traits>
+#include <variant>
 #include <vector>
+
+#include "agentengine/core/error.hpp"
+#include "agentengine/core/fixed_string.hpp"
+#include "agentengine/trust/spawn_budget.hpp"
 
 namespace agentengine {
 
-enum class capability_kind {  // ae-naming-lint: allow capability_kind — pre-existing M0 scaffolding, reconcile at owning milestone
+// 007 §3's table, plus documented, RFC-external extensions this codebase already needed before 007
+// named them (each cites its source). This enum is the lightweight "what kind of effect" tag — used
+// for audit records and for the kind-only checks the pre-M2 native_jail spike deliberately
+// downgraded to (shell_dispatch.hpp: "Capability checks are KIND-ONLY per §2.5.4's downgrade") —
+// never as capability storage itself. `capability_kind_of()` derives it from a real `Capability`, so
+// there is exactly one place (the `cap::` variant below) that can drift out of sync with reality.
+enum class capability_kind {
     fs_read,
     fs_write,
     net_out,
+    net_listen,
     secret,
     tool_call,
-    runner_call,   // 010 §1a — ShellRunner invoking PythonRunner, etc.
-    agent_call,    // 026 §5 — agent.spawn
+    runner_call,   // 010 §1a — ShellRunner invoking PythonRunner, etc.; not in 007 §3's own table.
+    exec,
     clock,
     entropy,
-    memory,        // 029 — FsRead/FsWrite scoped to a /memory mount, not a distinct mechanism
-    env_write,     // ADR-001 §2.5 — mutating ExecState.env (`export`), which PythonRunner reads by
-                   // reference (010 §3a); without this, shell text (ordinary model output) could
-                   // set PYTHONPATH/PIP_INDEX_URL/proxy vars with no authorization check at all.
-    elicit,        // 026 §5 — agent.ask's capability; named in 026's agent.* table but not yet in
-                   // 007 §3's own capability table (a pre-existing drift between that prose table
-                   // and this enum this entry does not otherwise attempt to reconcile).
+    env_read,      // 007 §3's Env<key> — read one environment variable.
+    env_write,     // ADR-001 §2.5 extension, not in 007 §3's table — mutating ExecState.env
+                   // (`export`) is a different authority than reading one: PythonRunner reads
+                   // ExecState.env by reference (010 §3a), so without this, shell text (ordinary
+                   // model output) could set PYTHONPATH/PIP_INDEX_URL/proxy vars with no check.
+    agent_call,    // 026 §5 — agent.spawn.
+    schedule,      // 006 §6b.
+    background,    // 006 §6b.
+    elicit,        // 026 §5 — agent.ask; not yet in 007 §3's own table (pre-existing drift this
+                   // enum does not otherwise attempt to reconcile).
+};
+// `memory` (029) is deliberately NOT its own kind: it is FsRead/FsWrite scoped to a `/memory` mount
+// (trust/agent_library_manifest.hpp's own comment already said so). The parameterized FsRead/FsWrite
+// below express that directly via `mount_id`, closing the gap OQ-16 flagged ("today's placeholder
+// Capability{kind} can't yet distinguish a /memory-mount grant from any other mount").
+
+// Per-kind runtime parameters (007 §3's "Parameters" column), namespaced separately from
+// `agentengine` proper: `cap::ToolCall` (the capability "may invoke a named tool from sandboxed
+// code") would otherwise collide with `agentengine::ToolCall`, core/content.hpp's unrelated
+// message-content-item type (003's wire shape for a model's tool-call turn) — same short name, two
+// different RFCs, two different concepts. Everything that operates ON a `cap::` type (the
+// `Capability` variant alias, `CapabilitySet`, `BoundCapability`) stays unqualified in `agentengine`
+// to match how pervasively `ae::Capability`/`ae::CapabilitySet` are already used.
+namespace cap {
+
+// `std::nullopt` on a cap/quota field means "no explicit limit carried by this capability instance"
+// (valid on a *granted* capability — uncapped); `subsumes()` below treats a capped parent and an
+// uncapped request as a widening attempt, never as an implicitly-fine omission.
+
+struct FsRead {
+    std::string mount_id;
+    std::string path_prefix;                      // "" = the mount's own root
+    std::optional<std::uint64_t> size_cap_bytes;
+};
+struct FsWrite {
+    std::string mount_id;
+    std::string path_prefix;
+    std::optional<std::uint64_t> quota_bytes;
+    std::optional<std::uint32_t> file_count_cap;
+};
+struct NetOut {
+    std::vector<std::string> host_allowlist;       // "host:port:scheme" entries
+    std::optional<std::uint64_t> byte_cap;
+    std::vector<std::string> method_restrictions;  // empty = unrestricted
+};
+struct NetListen {
+    std::vector<std::uint16_t> port_allowlist;
+};
+struct Secret {
+    std::string name;
+    std::chrono::seconds ttl{0};
+};
+struct ToolCall {
+    std::string tool_name;
+};
+struct RunnerCall {  // 010 §1a extension — see capability_kind::runner_call.
+    std::string runner_name;
+};
+struct Exec {
+    // A string, not sandbox::sandbox_profile, deliberately: sandbox/sandbox.hpp already depends on
+    // this header for CapabilitySet, so depending back on it here would be a header cycle. Values
+    // match sandbox_profile's enumerators ("wasm" | "native_jail" | "remote" | "none") by
+    // convention until Phase C reconciles the two when SandboxBackend needs to consume this
+    // directly.
+    std::string profile_name;
+    std::optional<std::uint64_t> cpu_ms_cap;
+    std::optional<std::uint64_t> wall_ms_cap;
+    std::optional<std::uint64_t> memory_bytes_cap;
+};
+struct Clock {
+    std::chrono::milliseconds resolution{0};       // finer (smaller) resolution = more authority
+};
+struct Entropy {};
+struct EnvRead {
+    std::string key;
+};
+struct EnvWrite {
+    std::string key;
+};
+struct AgentCall {
+    std::string agent_id;
+    trust::SpawnBudget budget;                     // ADR-006 — reused, not reinvented
+};
+struct Schedule {
+    std::chrono::seconds max_horizon{0};
+    std::uint32_t max_active = 0;
+};
+struct Background {
+    std::uint32_t max_concurrent = 0;
+};
+struct Elicit {};
+
+}  // namespace cap
+
+// One capability instance: exactly one kind, carrying that kind's real parameters (007 §3 property
+// 5 — "parameterized, not boolean, ... NetOut with no allowlist is not a capability, it is a
+// hole"). `capability_kind_of` derives the tag from the active alternative so nothing stores it
+// twice.
+using Capability = std::variant<cap::FsRead, cap::FsWrite, cap::NetOut, cap::NetListen, cap::Secret,
+                                 cap::ToolCall, cap::RunnerCall, cap::Exec, cap::Clock, cap::Entropy,
+                                 cap::EnvRead, cap::EnvWrite, cap::AgentCall, cap::Schedule,
+                                 cap::Background, cap::Elicit>;
+
+[[nodiscard]] inline capability_kind capability_kind_of(Capability const& c) {
+    return std::visit(
+        []<class T>(T const&) -> capability_kind {
+            if constexpr (std::is_same_v<T, cap::FsRead>) return capability_kind::fs_read;
+            else if constexpr (std::is_same_v<T, cap::FsWrite>) return capability_kind::fs_write;
+            else if constexpr (std::is_same_v<T, cap::NetOut>) return capability_kind::net_out;
+            else if constexpr (std::is_same_v<T, cap::NetListen>) return capability_kind::net_listen;
+            else if constexpr (std::is_same_v<T, cap::Secret>) return capability_kind::secret;
+            else if constexpr (std::is_same_v<T, cap::ToolCall>) return capability_kind::tool_call;
+            else if constexpr (std::is_same_v<T, cap::RunnerCall>) return capability_kind::runner_call;
+            else if constexpr (std::is_same_v<T, cap::Exec>) return capability_kind::exec;
+            else if constexpr (std::is_same_v<T, cap::Clock>) return capability_kind::clock;
+            else if constexpr (std::is_same_v<T, cap::Entropy>) return capability_kind::entropy;
+            else if constexpr (std::is_same_v<T, cap::EnvRead>) return capability_kind::env_read;
+            else if constexpr (std::is_same_v<T, cap::EnvWrite>) return capability_kind::env_write;
+            else if constexpr (std::is_same_v<T, cap::AgentCall>) return capability_kind::agent_call;
+            else if constexpr (std::is_same_v<T, cap::Schedule>) return capability_kind::schedule;
+            else if constexpr (std::is_same_v<T, cap::Background>) return capability_kind::background;
+            else if constexpr (std::is_same_v<T, cap::Elicit>) return capability_kind::elicit;
+            else static_assert(sizeof(T) == 0, "unhandled Capability alternative in capability_kind_of");
+        },
+        c);
+}
+
+// Kind-only capability construction, for callers that don't have (or, like the pre-M2 native_jail
+// spike, don't yet check) real parameters — the widest/most-permissive shape for that kind ("" /
+// empty mount+prefix = the mount's own root, empty allowlists = unrestricted). Appropriate ONLY for
+// kind-only-checking callers (paired with `CapabilitySet::contains_kind`); real subsumption
+// (`CapabilitySet::contains`/`attenuate`/`bind`) needs a fully-parameterized `Capability`
+// constructed directly, which Phase B's tool pipeline does.
+[[nodiscard]] inline Capability capability_from_kind(capability_kind kind) {
+    switch (kind) {
+        case capability_kind::fs_read:     return cap::FsRead{};
+        case capability_kind::fs_write:    return cap::FsWrite{};
+        case capability_kind::net_out:     return cap::NetOut{};
+        case capability_kind::net_listen:  return cap::NetListen{};
+        case capability_kind::secret:      return cap::Secret{};
+        case capability_kind::tool_call:   return cap::ToolCall{};
+        case capability_kind::runner_call: return cap::RunnerCall{};
+        case capability_kind::exec:        return cap::Exec{};
+        case capability_kind::clock:       return cap::Clock{};
+        case capability_kind::entropy:     return cap::Entropy{};
+        case capability_kind::env_read:    return cap::EnvRead{};
+        case capability_kind::env_write:   return cap::EnvWrite{};
+        case capability_kind::agent_call:  return cap::AgentCall{"", trust::SpawnBudget::mint_root(0)};
+        case capability_kind::schedule:    return cap::Schedule{};
+        case capability_kind::background:  return cap::Background{};
+        case capability_kind::elicit:      return cap::Elicit{};
+    }
+    return cap::Entropy{};  // unreachable (every enumerator handled above) — a defined fallback
+                             // rather than UB if the enum is ever extended without updating this
+                             // switch.
+}
+
+// Compile-time capability *declaration* tags (002-Agent-Model-and-Authoring.md §3 / 006-Tool-and-
+// Function-Plane.md §1's own examples: `Capabilities<NetOut<"api.search.example">>`) — distinct
+// from the runtime `cap::*` instances above, and necessarily so: `cap::NetOut` carries a
+// `std::vector<std::string>` and is therefore not a structural type, so it cannot itself be used as
+// a non-type template parameter (a class-type NTTP must be structural — literal members only, no
+// containers). `cap::decl::NetOut<"host">` is the structural, single-host compile-time stand-in
+// `Capabilities<...>`/`Tool<...>`'s policy-tag position actually needs; `to_capability()` turns one
+// into the real runtime `Capability` a `CapabilitySet` grant is checked against, once something
+// (Phase E's `register_agent<A>()`) needs to compute an agent's actual capability ceiling from its
+// declared tags.
+//
+// Nested under `cap`, not `agentengine` directly, for the same reason the runtime types are:
+// `cap::decl::ToolCall<"...">` would otherwise collide with `agentengine::ToolCall`
+// (core/content.hpp's unrelated message-content-item type) if declared unqualified.
+namespace cap::decl {
+
+template <agentengine::fixed_string Mount>
+struct FsRead {
+    static constexpr std::string_view mount = std::string_view{Mount};
+};
+template <agentengine::fixed_string Mount>
+struct FsWrite {
+    static constexpr std::string_view mount = std::string_view{Mount};
+};
+template <agentengine::fixed_string Host>
+struct NetOut {
+    static constexpr std::string_view host = std::string_view{Host};
+};
+struct NetListen {};
+template <agentengine::fixed_string Name>
+struct Secret {
+    static constexpr std::string_view name = std::string_view{Name};
+};
+template <agentengine::fixed_string Name>
+struct ToolCall {
+    static constexpr std::string_view tool_name = std::string_view{Name};
+};
+template <agentengine::fixed_string Name>
+struct RunnerCall {
+    static constexpr std::string_view runner_name = std::string_view{Name};
+};
+template <agentengine::fixed_string Profile>
+struct Exec {
+    static constexpr std::string_view profile_name = std::string_view{Profile};
+};
+template <std::uint64_t ResolutionMs = 0>
+struct Clock {};
+struct Entropy {};
+template <agentengine::fixed_string Key>
+struct EnvRead {
+    static constexpr std::string_view key = std::string_view{Key};
+};
+template <agentengine::fixed_string Key>
+struct EnvWrite {
+    static constexpr std::string_view key = std::string_view{Key};
+};
+template <agentengine::fixed_string AgentId, std::uint32_t MaxDepth>
+struct AgentCall {
+    static constexpr std::string_view agent_id = std::string_view{AgentId};
+    static constexpr std::uint32_t max_depth = MaxDepth;
+};
+template <std::uint64_t MaxHorizonSeconds, std::uint32_t MaxActive>
+struct Schedule {};
+template <std::uint32_t MaxConcurrent>
+struct Background {};
+struct Elicit {};
+
+}  // namespace cap::decl
+
+// One overload per declaration tag, each producing the widest runtime grant that tag's own
+// parameters actually specify (an unqualified mount/host, no cap/quota — 002 §6's metadata
+// compiler is what would later narrow this against operator-supplied limits; this conversion's job
+// is only "turn the declared identity into a real Capability", not policy).
+template <agentengine::fixed_string Mount>
+[[nodiscard]] inline Capability to_capability(cap::decl::FsRead<Mount> const&) {
+    return cap::FsRead{std::string(std::string_view{Mount}), "", std::nullopt};
+}
+template <agentengine::fixed_string Mount>
+[[nodiscard]] inline Capability to_capability(cap::decl::FsWrite<Mount> const&) {
+    return cap::FsWrite{std::string(std::string_view{Mount}), "", std::nullopt, std::nullopt};
+}
+template <agentengine::fixed_string Host>
+[[nodiscard]] inline Capability to_capability(cap::decl::NetOut<Host> const&) {
+    return cap::NetOut{{std::string(std::string_view{Host})}, std::nullopt, {}};
+}
+[[nodiscard]] inline Capability to_capability(cap::decl::NetListen const&) {
+    return cap::NetListen{};
+}
+template <agentengine::fixed_string Name>
+[[nodiscard]] inline Capability to_capability(cap::decl::Secret<Name> const&) {
+    return cap::Secret{std::string(std::string_view{Name}), std::chrono::seconds{0}};
+}
+template <agentengine::fixed_string Name>
+[[nodiscard]] inline Capability to_capability(cap::decl::ToolCall<Name> const&) {
+    return cap::ToolCall{std::string(std::string_view{Name})};
+}
+template <agentengine::fixed_string Name>
+[[nodiscard]] inline Capability to_capability(cap::decl::RunnerCall<Name> const&) {
+    return cap::RunnerCall{std::string(std::string_view{Name})};
+}
+template <agentengine::fixed_string Profile>
+[[nodiscard]] inline Capability to_capability(cap::decl::Exec<Profile> const&) {
+    return cap::Exec{std::string(std::string_view{Profile}), std::nullopt, std::nullopt, std::nullopt};
+}
+template <std::uint64_t ResolutionMs>
+[[nodiscard]] inline Capability to_capability(cap::decl::Clock<ResolutionMs> const&) {
+    return cap::Clock{std::chrono::milliseconds{ResolutionMs}};
+}
+[[nodiscard]] inline Capability to_capability(cap::decl::Entropy const&) { return cap::Entropy{}; }
+template <agentengine::fixed_string Key>
+[[nodiscard]] inline Capability to_capability(cap::decl::EnvRead<Key> const&) {
+    return cap::EnvRead{std::string(std::string_view{Key})};
+}
+template <agentengine::fixed_string Key>
+[[nodiscard]] inline Capability to_capability(cap::decl::EnvWrite<Key> const&) {
+    return cap::EnvWrite{std::string(std::string_view{Key})};
+}
+template <agentengine::fixed_string AgentId, std::uint32_t MaxDepth>
+[[nodiscard]] inline Capability to_capability(cap::decl::AgentCall<AgentId, MaxDepth> const&) {
+    return cap::AgentCall{std::string(std::string_view{AgentId}), trust::SpawnBudget::mint_root(MaxDepth)};
+}
+template <std::uint64_t MaxHorizonSeconds, std::uint32_t MaxActive>
+[[nodiscard]] inline Capability to_capability(cap::decl::Schedule<MaxHorizonSeconds, MaxActive> const&) {
+    return cap::Schedule{std::chrono::seconds{MaxHorizonSeconds}, MaxActive};
+}
+template <std::uint32_t MaxConcurrent>
+[[nodiscard]] inline Capability to_capability(cap::decl::Background<MaxConcurrent> const&) {
+    return cap::Background{MaxConcurrent};
+}
+[[nodiscard]] inline Capability to_capability(cap::decl::Elicit const&) { return cap::Elicit{}; }
+
+// Named `capability_detail`, not the more obvious `detail` -- `agentengine::trust::detail` already
+// exists (trust/agent_library_manifest.hpp) and a caller with both `using namespace agentengine;`
+// and `using namespace agentengine::trust;` in scope (tests/test_agent_library_manifest.cpp does
+// exactly this) would otherwise hit a genuine ambiguous-symbol error on unqualified `detail::`.
+namespace capability_detail {
+
+[[nodiscard]] inline bool path_prefix_covers(std::string const& parent_prefix,
+                                              std::string const& requested_prefix) {
+    if (parent_prefix.empty()) return true;  // "" = the mount's own root, covers everything under it
+    if (requested_prefix.size() < parent_prefix.size()) return false;
+    if (requested_prefix.compare(0, parent_prefix.size(), parent_prefix) != 0) return false;
+    // Must land on a path-segment boundary — "/work" must not be treated as covering "/workshop".
+    return requested_prefix.size() == parent_prefix.size() || parent_prefix.back() == '/' ||
+           requested_prefix[parent_prefix.size()] == '/';
+}
+
+template <class T>
+[[nodiscard]] bool cap_covers(std::optional<T> const& parent_cap,
+                               std::optional<T> const& requested_cap) {
+    if (!parent_cap.has_value()) return true;    // parent uncapped -- covers any request
+    if (!requested_cap.has_value()) return false; // parent capped, request claims uncapped -- widening
+    return *requested_cap <= *parent_cap;
+}
+
+[[nodiscard]] inline bool subsumes_payload(cap::FsRead const& parent, cap::FsRead const& requested) {
+    return parent.mount_id == requested.mount_id &&
+           path_prefix_covers(parent.path_prefix, requested.path_prefix) &&
+           cap_covers(parent.size_cap_bytes, requested.size_cap_bytes);
+}
+[[nodiscard]] inline bool subsumes_payload(cap::FsWrite const& parent, cap::FsWrite const& requested) {
+    return parent.mount_id == requested.mount_id &&
+           path_prefix_covers(parent.path_prefix, requested.path_prefix) &&
+           cap_covers(parent.quota_bytes, requested.quota_bytes) &&
+           cap_covers(parent.file_count_cap, requested.file_count_cap);
+}
+[[nodiscard]] inline bool subsumes_payload(cap::NetOut const& parent, cap::NetOut const& requested) {
+    for (auto const& host : requested.host_allowlist) {
+        if (std::find(parent.host_allowlist.begin(), parent.host_allowlist.end(), host) ==
+            parent.host_allowlist.end()) {
+            return false;
+        }
+    }
+    if (!cap_covers(parent.byte_cap, requested.byte_cap)) return false;
+    if (!parent.method_restrictions.empty()) {
+        if (requested.method_restrictions.empty()) return false;  // requested = unrestricted, parent isn't
+        for (auto const& m : requested.method_restrictions) {
+            if (std::find(parent.method_restrictions.begin(), parent.method_restrictions.end(), m) ==
+                parent.method_restrictions.end()) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+[[nodiscard]] inline bool subsumes_payload(cap::NetListen const& parent, cap::NetListen const& requested) {
+    for (auto port : requested.port_allowlist) {
+        if (std::find(parent.port_allowlist.begin(), parent.port_allowlist.end(), port) ==
+            parent.port_allowlist.end()) {
+            return false;
+        }
+    }
+    return true;
+}
+[[nodiscard]] inline bool subsumes_payload(cap::Secret const& parent, cap::Secret const& requested) {
+    return parent.name == requested.name && requested.ttl <= parent.ttl;
+}
+[[nodiscard]] inline bool subsumes_payload(cap::ToolCall const& parent, cap::ToolCall const& requested) {
+    return parent.tool_name == requested.tool_name;
+}
+[[nodiscard]] inline bool subsumes_payload(cap::RunnerCall const& parent, cap::RunnerCall const& requested) {
+    return parent.runner_name == requested.runner_name;
+}
+[[nodiscard]] inline bool subsumes_payload(cap::Exec const& parent, cap::Exec const& requested) {
+    return parent.profile_name == requested.profile_name &&
+           cap_covers(parent.cpu_ms_cap, requested.cpu_ms_cap) &&
+           cap_covers(parent.wall_ms_cap, requested.wall_ms_cap) &&
+           cap_covers(parent.memory_bytes_cap, requested.memory_bytes_cap);
+}
+[[nodiscard]] inline bool subsumes_payload(cap::Clock const& parent, cap::Clock const& requested) {
+    return requested.resolution >= parent.resolution;  // coarser-or-equal resolution is narrower
+}
+[[nodiscard]] inline bool subsumes_payload(cap::Entropy const&, cap::Entropy const&) { return true; }
+[[nodiscard]] inline bool subsumes_payload(cap::EnvRead const& parent, cap::EnvRead const& requested) {
+    return parent.key == requested.key;
+}
+[[nodiscard]] inline bool subsumes_payload(cap::EnvWrite const& parent, cap::EnvWrite const& requested) {
+    return parent.key == requested.key;
+}
+[[nodiscard]] inline bool subsumes_payload(cap::AgentCall const& parent, cap::AgentCall const& requested) {
+    return parent.agent_id == requested.agent_id &&
+           requested.budget.remaining_depth() <= parent.budget.remaining_depth();
+}
+[[nodiscard]] inline bool subsumes_payload(cap::Schedule const& parent, cap::Schedule const& requested) {
+    return requested.max_horizon <= parent.max_horizon && requested.max_active <= parent.max_active;
+}
+[[nodiscard]] inline bool subsumes_payload(cap::Background const& parent, cap::Background const& requested) {
+    return requested.max_concurrent <= parent.max_concurrent;
+}
+[[nodiscard]] inline bool subsumes_payload(cap::Elicit const&, cap::Elicit const&) { return true; }
+
+struct InvocationTicket {
+    std::atomic<bool> live{true};
 };
 
-// A single granted effect, opaque outside the trust boundary (007 §3). Fields are backend-specific
-// (a mount + subtree + quota for fs_read, a host:port:scheme for net_out, ...) and therefore not
-// modeled here — the abstract vocabulary is the kind and the fact that possession is the only
-// authority, never a name or a string a model could have produced.
-struct Capability {
-    capability_kind kind;
+}  // namespace capability_detail
+
+// The one enforcement primitive everything else (`CapabilitySet::contains`/`attenuate`/`bind`) is
+// built on: `requested` is authorized under `parent` iff they are the same kind AND `requested`'s
+// parameters are no broader than `parent`'s along every axis that kind has (007 §3 property 2 —
+// attenuation, never widen — made concrete per kind instead of left as a boolean).
+[[nodiscard]] inline bool subsumes(Capability const& parent, Capability const& requested) {
+    if (parent.index() != requested.index()) return false;
+    return std::visit(
+        [&parent]<class T>(T const& requested_payload) -> bool {
+            return capability_detail::subsumes_payload(std::get<T>(parent), requested_payload);
+        },
+        requested);
+}
+
+// The per-invocation handle a tool call actually holds (006 §3 step 7, "bind"). Bound to exactly
+// one invocation's `InvocationTicket`; `revoke()` flips that ticket, and every copy of this handle
+// — however many the invoked code made or stashed — shares the same ticket, so a copy squirreled
+// away past the call's end is exactly as dead as the original (007 §9 G4 / 006 §8 G3: "a capability
+// handle from call n is unusable in call n+1").
+class BoundCapability {
+public:
+    [[nodiscard]] result<Capability> use() const {
+        if (!ticket_->live.load(std::memory_order_acquire)) {
+            return std::unexpected(error{failure_class::policy,
+                                          "capability handle used after its invocation ended",
+                                          "capability.handle_revoked"});
+        }
+        return granted_;
+    }
+
+    // Idempotent — the pipeline calls this once at step 10 regardless of whether step 8 (invoke)
+    // succeeded or failed, so a second call (e.g. from an error path) must not be an error itself.
+    void revoke() const { ticket_->live.store(false, std::memory_order_release); }
+
+private:
+    friend class CapabilitySet;
+    BoundCapability(Capability granted, std::shared_ptr<capability_detail::InvocationTicket> ticket)
+        : granted_(std::move(granted)), ticket_(std::move(ticket)) {}
+
+    Capability                                granted_;
+    std::shared_ptr<capability_detail::InvocationTicket> ticket_;
 };
 
 // The set an agent, a sandbox, or a single tool invocation is scoped to (007 §6). Empty by
-// construction — CONVENTIONS.md: "there is no constructor that grants everything."
-//
-// Deliberately no grant/check/attenuate/revoke behaviour here. This struct fixes the *shape* of
-// the vocabulary; the enforcement mechanism is security-critical and, per CLAUDE.md, goes through
-// design -> red-team -> prove -> judge and an ADR before it is real code, not a header comment.
-//
-// In-process attenuation/enforcement over THIS type is still open (007 §9 gate). The cross-process
-// case -- a capability that must leave this process, e.g. to the `remote` sandbox profile or a
-// delegated A2A call -- is a different mechanism (unforgeable by cryptography, not by the type
-// system) and is resolved: see trust/capability_token.hpp and
-// decisions/ADR-005-capability-bearer-tokens-cross-process.md.
-struct CapabilitySet {  // ae-naming-lint: allow CapabilitySet — pre-existing M0 scaffolding, reconcile at owning milestone
-    std::vector<Capability> granted;  // placeholder representation; not the final storage
+// construction — there is no public constructor, factory, or method, anywhere on this type, that
+// produces a non-empty set except `grant_root` (the one explicitly-named, greppable entry point
+// host policy calls — never reachable from anything derived from model output, I3). No convenience
+// "give me everything" shortcut exists; that is the actual property 007 §9 G1 tests, not merely a
+// comment promising it.
+class CapabilitySet {
+public:
+    CapabilitySet() = default;  // always empty -- there is no other public default state
+
+    [[nodiscard]] static CapabilitySet grant_root(std::vector<Capability> caps) {
+        CapabilitySet set;
+        set.granted_ = std::move(caps);
+        return set;
+    }
+
+    // True iff some granted capability subsumes `requirement`.
+    [[nodiscard]] bool contains(Capability const& requirement) const {
+        return std::any_of(granted_.begin(), granted_.end(),
+                            [&requirement](Capability const& c) { return subsumes(c, requirement); });
+    }
+
+    // The kind-only convenience the pre-M2 native_jail spike already deliberately downgraded to
+    // (shell_dispatch.hpp: "Capability checks are KIND-ONLY per §2.5.4's downgrade") — expressed
+    // honestly on top of the real representation instead of a fake unparameterized one. New callers
+    // doing real enforcement should prefer `contains()`.
+    [[nodiscard]] bool contains_kind(capability_kind kind) const {
+        return std::any_of(granted_.begin(), granted_.end(),
+                            [kind](Capability const& c) { return capability_kind_of(c) == kind; });
+    }
+
+    // A strictly-narrower derived set (007 §3 property 2 — attenuation only). Fails closed the
+    // moment ANY requested entry isn't subsumed by something in this set: an all-or-nothing
+    // derivation, never a partial grant a caller might mistake for "the rest was silently dropped".
+    [[nodiscard]] result<CapabilitySet> attenuate(std::vector<Capability> const& narrower) const {
+        for (Capability const& requirement : narrower) {
+            if (!contains(requirement)) {
+                return std::unexpected(
+                    error{failure_class::policy,
+                          "attenuation requested a capability the parent set does not grant",
+                          "capability.attenuation_not_subsumed"});
+            }
+        }
+        return grant_root(narrower);
+    }
+
+    // 006 §3 step 7: mint the per-invocation handle. Fails closed if `requirement` isn't covered.
+    [[nodiscard]] result<BoundCapability> bind(Capability const& requirement) const {
+        if (!contains(requirement)) {
+            return std::unexpected(
+                error{failure_class::policy, "capability not held", "capability.not_granted"});
+        }
+        return BoundCapability(requirement, std::make_shared<capability_detail::InvocationTicket>());
+    }
+
+    [[nodiscard]] std::size_t size() const noexcept { return granted_.size(); }
+
+private:
+    std::vector<Capability> granted_;
 };
 
-} // namespace agentengine
+}  // namespace agentengine

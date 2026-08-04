@@ -17,14 +17,13 @@
 // I2 enforcement: a module whose gating capability is not present in the caller's CapabilitySet is
 // simply absent from both outputs -- never listed as "present" and never explained as denied.
 //
-// KNOWN LIMITATION, stated rather than papered over: today's `Capability` (trust/capability.hpp) is
-// explicitly a placeholder -- `{kind}` only, no parameters -- so this registry can distinguish
-// FsRead from FsWrite but cannot yet distinguish "/memory mount" from any other mount an agent's
-// FsRead/FsWrite might cover. `agent.memory`/`agent.notes` are modeled here as gated by plain
-// fs_read/fs_write, which is coarser than 026 §5's "FsRead<mount> on /memory" / "FsWrite<mount> on
-// /memory" -- correct on read-vs-write, not yet correct on mount-scoping. This sharpens
-// automatically once 007's parameterized capability representation exists; it is not this header's
-// job to build that.
+// KNOWN LIMITATION, stated rather than papered over: `trust/capability.hpp` now has a real
+// parameterized `Capability` (decisions/ADR-009-capability-set-enforcement-mechanism.md) that CAN
+// distinguish a "/memory mount" FsRead/FsWrite from any other mount's — but this registry still
+// gates on plain `capability_kind` (`contains_kind`, kind-only), coarser than 026 §5's actual
+// "FsRead<mount> on /memory" / "FsWrite<mount> on /memory". Sharpening `ModuleDescriptor` to gate on
+// real `Capability` values (checked via `CapabilitySet::contains`) instead of bare kinds is now
+// possible but is its own follow-up, not bundled into the ADR that unblocked it.
 
 #include <algorithm>
 #include <string>
@@ -61,8 +60,7 @@ inline std::vector<ModuleDescriptor> const& agent_library_registry() {
 namespace detail {
 
 inline bool has_kind(CapabilitySet const& granted, capability_kind kind) {
-    return std::any_of(granted.granted.begin(), granted.granted.end(),
-                        [kind](Capability const& c) { return c.kind == kind; });
+    return granted.contains_kind(kind);
 }
 
 inline bool module_is_granted(ModuleDescriptor const& module, CapabilitySet const& granted) {

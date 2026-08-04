@@ -14,29 +14,13 @@
 
 #include "agentengine/core/chat_client.hpp"
 #include "agentengine/core/effect_context.hpp"
+#include "agentengine/core/fixed_string.hpp"
+#include "agentengine/core/policy_tags.hpp"
+#include "agentengine/core/tool.hpp"  // approval_mode / Approval<M> (006 §4 owns this; reused here)
 #include "agentengine/sandbox/sandbox.hpp"
 #include "agentengine/trust/capability.hpp"
 
 namespace agentengine {
-
-// A structural-type wrapper making string literals usable as class-type non-type template
-// parameters (bug fix: the RFC 002 §2 / README example `ChatClientId<"vendor:model">` binds a
-// string-literal prvalue, which cannot bind to a `std::string_view const&` NTTP — that reference
-// form requires a named object with linkage. `fixed_string` is the standard C++20 structural-NTTP
-// idiom: CTAD deduces `N` from the literal, so `ChatClientId<"...">` deduces
-// `fixed_string<N>` and the type is usable directly as written in every RFC example.
-template <std::size_t N>
-struct fixed_string {  // ae-naming-lint: allow fixed_string — pre-existing M0 scaffolding, reconcile at owning milestone
-    char value[N]{};
-
-    constexpr fixed_string(char const (&str)[N]) noexcept {
-        for (std::size_t i = 0; i < N; ++i) value[i] = str[i];
-    }
-
-    [[nodiscard]] constexpr operator std::string_view() const noexcept {
-        return std::string_view{value, N - 1};
-    }
-};
 
 // -- Policy tags (002 §3) — compile-time configuration, never runtime objects on the hot path --
 
@@ -51,8 +35,9 @@ struct Tools {};  // ae-naming-lint: allow Tools — pre-existing M0 scaffolding
 template <sandbox_profile P>
 struct SandboxProfile {};  // ae-naming-lint: allow SandboxProfile — pre-existing M0 scaffolding, reconcile at owning milestone
 
-template <capability_kind... Ks>
-struct Capabilities {};  // ae-naming-lint: allow Capabilities — pre-existing M0 scaffolding, reconcile at owning milestone
+// `Capabilities<Cs...>` (matching the host/mount-parameterized form 002 §2 and 006 §1's own
+// examples show, `Capabilities<NetOut<"api.search.example">>`) now lives in core/policy_tags.hpp,
+// shared with Tool's declaration site (006 §1) — not redefined here.
 
 template <std::uint32_t N>
 struct MaxTurns {};  // ae-naming-lint: allow MaxTurns — pre-existing M0 scaffolding, reconcile at owning milestone
@@ -60,10 +45,9 @@ struct MaxTurns {};  // ae-naming-lint: allow MaxTurns — pre-existing M0 scaff
 template <std::uint64_t N>
 struct TokenBudget {};  // ae-naming-lint: allow TokenBudget — pre-existing M0 scaffolding, reconcile at owning milestone
 
-enum class approval_policy_mode { never_require, always_require, policy_driven };  // ae-naming-lint: allow approval_policy_mode — pre-existing M0 scaffolding, reconcile at owning milestone
-
-template <approval_policy_mode M>
-struct Approval {};  // ae-naming-lint: allow Approval — pre-existing M0 scaffolding, reconcile at owning milestone
+// `approval_mode`/`Approval<M>` now live in core/tool.hpp (006 §4 owns Approval's semantics) and
+// are reused here rather than redefined — collapses what used to be a duplicate
+// `approval_policy_mode` enum with identical enumerators (M2 Phase B breakdown decision 7).
 
 enum class telemetry_capture { none, metadata_only, full };  // ae-naming-lint: allow telemetry_capture — pre-existing M0 scaffolding, reconcile at owning milestone
 

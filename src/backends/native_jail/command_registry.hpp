@@ -134,10 +134,7 @@ private:
 // `ctx.capabilities` without going through this helper.
 [[nodiscard]] inline bool has_capability(EffectContext const& ctx, capability_kind kind) {
     if (ctx.capabilities == nullptr) return false;
-    for (Capability const& cap : ctx.capabilities->granted) {
-        if (cap.kind == kind) return true;
-    }
-    return false;
+    return ctx.capabilities->contains_kind(kind);
 }
 
 } // namespace agentengine::native_jail

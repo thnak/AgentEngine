@@ -122,8 +122,7 @@ elsewhere (021 §7 Q2/Q4 stayed explicitly open rather than guessing a number wi
 measure against) — estimation shouldn't hold itself to a lower evidence bar than the spec does.
 
 **Where it lives:** a per-milestone breakdown doc under `docs/planning/`, written when that milestone
-starts. This project evaluated a live project-management tool for this and deliberately did not use
-it — see §5's note. Migrates to issues/a tracker once a remote exists; not blocked on that existing.
+starts. Migrates to issues/a tracker once a remote exists; not blocked on that existing.
 
 ## 5. Handover & Kick-off
 
@@ -141,13 +140,3 @@ that's a signal the spec itself is underspecified for a reader who wasn't in the
 loops back to stage 1 for the specific gap, not a whole re-review.
 
 **Exit:** the milestone is in progress; code is being written against a Reviewed spec.
-
-## A note on tooling
-
-This project has access to a live project-management system (`viot-tasks`) used for real client
-delivery tracking at a Vietnamese dev shop — 14 active projects, real customers, real budgets. It was
-checked for reuse here (2026-08-05) and deliberately **not** used: AgentEngine is unrelated internal
-R&D with no client and no remote, and creating a project inside a live client-tracking system for it
-would be the wrong home for it and visible to people it has nothing to do with. Stages 4–5 stay
-repo-doc-based until this project has its own tracker, consistent with the earlier choice to draft
-the roadmap itself as a repo doc rather than standing up a remote first.

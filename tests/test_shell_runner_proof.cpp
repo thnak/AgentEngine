@@ -50,9 +50,9 @@ int g_failures = 0;
     } while (0)
 
 CapabilitySet make_capabilities(std::initializer_list<capability_kind> kinds) {
-    CapabilitySet set;
-    for (auto k : kinds) set.granted.push_back(Capability{k});
-    return set;
+    std::vector<Capability> caps;
+    for (auto k : kinds) caps.push_back(capability_from_kind(k));
+    return CapabilitySet::grant_root(std::move(caps));
 }
 
 // `_getpid` (process.h) is the MSVC CRT spelling; POSIX has no leading underscore and lives in

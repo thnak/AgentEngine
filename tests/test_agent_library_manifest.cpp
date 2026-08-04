@@ -50,8 +50,8 @@ int main() {
     // M-C2 / I2: granting ToolCall surfaces exactly `tools` in addition to the always-present two,
     // and no other capability-gated module leaks in as a side effect.
     {
-        CapabilitySet granted{};
-        granted.granted.push_back(Capability{capability_kind::tool_call});
+        CapabilitySet granted =
+            CapabilitySet::grant_root({capability_from_kind(capability_kind::tool_call)});
         auto modules = granted_modules(granted);
         AE_CHECK(modules.size() == 3, "M-C2: tool_call grant surfaces exactly 3 modules");
         AE_CHECK(contains_module(modules, "tools"), "M-C2: tools is present");
@@ -66,8 +66,8 @@ int main() {
     // semantics) or `notes` (write-gated) -- confirms the ANY-of-gating_kinds logic is exact, not
     // approximate.
     {
-        CapabilitySet granted{};
-        granted.granted.push_back(Capability{capability_kind::fs_read});
+        CapabilitySet granted =
+            CapabilitySet::grant_root({capability_from_kind(capability_kind::fs_read)});
         auto modules = granted_modules(granted);
         AE_CHECK(contains_module(modules, "data"), "M-C3: fs_read grants data");
         AE_CHECK(contains_module(modules, "memory"), "M-C3: fs_read grants memory");
@@ -77,8 +77,8 @@ int main() {
 
     // M-C4: agent_call grants spawn, and ONLY spawn among the capability-gated modules.
     {
-        CapabilitySet granted{};
-        granted.granted.push_back(Capability{capability_kind::agent_call});
+        CapabilitySet granted =
+            CapabilitySet::grant_root({capability_from_kind(capability_kind::agent_call)});
         auto modules = granted_modules(granted);
         AE_CHECK(contains_module(modules, "spawn"), "M-C4: agent_call grants spawn");
         AE_CHECK(!contains_module(modules, "tools") && !contains_module(modules, "files") &&
@@ -91,9 +91,10 @@ int main() {
     // two outputs cannot drift because they are read from the same registry via the same gating
     // check, not independently maintained.
     {
-        CapabilitySet granted{};
-        granted.granted.push_back(Capability{capability_kind::fs_write});
-        granted.granted.push_back(Capability{capability_kind::elicit});
+        CapabilitySet granted = CapabilitySet::grant_root({
+            capability_from_kind(capability_kind::fs_write),
+            capability_from_kind(capability_kind::elicit),
+        });
         auto modules = granted_modules(granted);
         auto summary = push_side_summary(granted);
         for (auto const& module : agent_library_registry()) {

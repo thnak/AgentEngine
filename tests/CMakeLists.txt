@@ -41,6 +41,38 @@ message(STATUS
   "007 §9 G2 compile-fail proof: OK (Tainted<T> rejects implicit conversion; explicit "
   "declassification compiles)")
 
+# ---- 007 §9 G1 / ADR-009 compile-fail proof (M2 Phase A task A4) -------------------------------
+# Miniature "no ambient authority" claim, one level below A4's original full scope (a tool/agent
+# declaration site doesn't exist yet -- that's Phase B/E): CapabilitySet itself has no construction
+# path except grant_root(). Same try_compile() idiom as the 007 §9 G2 gate above.
+try_compile(AE_CAPABILITY_SET_REJECTS_DIRECT_CONSTRUCTION
+  "${CMAKE_CURRENT_BINARY_DIR}/compile_fail_checks/capability_set_no_direct_construction"
+  "${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/capability_set_no_direct_construction.cpp"
+  CXX_STANDARD 23
+  CMAKE_FLAGS "-DINCLUDE_DIRECTORIES=${PROJECT_SOURCE_DIR}/include"
+  OUTPUT_VARIABLE AE_CAPABILITY_SET_REJECTS_DIRECT_CONSTRUCTION_LOG)
+if(AE_CAPABILITY_SET_REJECTS_DIRECT_CONSTRUCTION)
+  message(FATAL_ERROR
+    "007 §9 G1 VIOLATED: tests/compile_fail/capability_set_no_direct_construction.cpp compiled, "
+    "but CapabilitySet must have NO construction path except grant_root() (no ambient-authority "
+    "shortcut). Build log:\n${AE_CAPABILITY_SET_REJECTS_DIRECT_CONSTRUCTION_LOG}")
+endif()
+
+try_compile(AE_CAPABILITY_SET_GRANT_ROOT_POSITIVE_CONTROL
+  "${CMAKE_CURRENT_BINARY_DIR}/compile_fail_checks/capability_set_grant_root_positive_control"
+  "${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/capability_set_grant_root_positive_control.cpp"
+  CXX_STANDARD 23
+  CMAKE_FLAGS "-DINCLUDE_DIRECTORIES=${PROJECT_SOURCE_DIR}/include"
+  OUTPUT_VARIABLE AE_CAPABILITY_SET_GRANT_ROOT_POSITIVE_CONTROL_LOG)
+if(NOT AE_CAPABILITY_SET_GRANT_ROOT_POSITIVE_CONTROL)
+  message(FATAL_ERROR
+    "007 §9 G1 positive control FAILED: tests/compile_fail/capability_set_grant_root_positive_control.cpp "
+    "must compile (grant_root() is the intended, legitimate construction path) but did not. "
+    "Build log:\n${AE_CAPABILITY_SET_GRANT_ROOT_POSITIVE_CONTROL_LOG}")
+endif()
+message(STATUS
+  "007 §9 G1 compile-fail proof: OK (CapabilitySet rejects direct construction; grant_root() compiles)")
+
 add_executable(smoke_vocabulary smoke_vocabulary.cpp)
 target_link_libraries(smoke_vocabulary PRIVATE agentengine::core agentengine_warnings)
 
@@ -52,6 +84,17 @@ add_test(NAME smoke_vocabulary COMMAND smoke_vocabulary)
 add_executable(test_m1_walking_skeleton test_m1_walking_skeleton.cpp)
 target_link_libraries(test_m1_walking_skeleton PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_m1_walking_skeleton COMMAND test_m1_walking_skeleton)
+
+# ---- CapabilitySet enforcement mechanism (decisions/ADR-009-capability-set-enforcement-mechanism.md) --
+# Header-only (trust/capability.hpp), core-tier -- links only agentengine::core.
+add_executable(test_capability_enforcement test_capability_enforcement.cpp)
+target_link_libraries(test_capability_enforcement PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_capability_enforcement COMMAND test_capability_enforcement)
+
+# ---- Compile-time capability declaration tags (M2 Phase A task A2) -----------------------------
+add_executable(test_capability_declaration_tags test_capability_declaration_tags.cpp)
+target_link_libraries(test_capability_declaration_tags PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_capability_declaration_tags COMMAND test_capability_declaration_tags)
 
 # ---- agent.spawn depth/budget bound (decisions/ADR-006-agent-spawn-depth-budget-bound.md) -------
 # Header-only (trust/spawn_budget.hpp), core-tier (std only, no crypto -- in-process, never crosses
@@ -90,6 +133,39 @@ target_compile_definitions(test_recorded_chat_client PRIVATE
   AE_TEST_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/chat_client")
 
 add_test(NAME test_recorded_chat_client COMMAND test_recorded_chat_client)
+
+# ---- Dependency-free JSON value/parser/serializer (M2 Phase B task B2, core/json_value.hpp) ----
+# Header-only, core-tier -- links only agentengine::core (no nlohmann::json; this IS the seam that
+# keeps nlohmann out of product code, see CONVENTIONS.md dependency-tier discipline).
+add_executable(test_json_value test_json_value.cpp)
+target_link_libraries(test_json_value PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_json_value COMMAND test_json_value)
+
+# ---- Tool JSON-Schema derivation (M2 Phase B task B1, 006 §1) ----------------------------------
+# Header-only (core/json_schema.hpp, core/tool.hpp); nlohmann_json is test-only here too (parses
+# the emitted schema string to assert real JSON structure, not substring-match it).
+add_executable(test_tool_json_schema test_tool_json_schema.cpp)
+target_link_libraries(test_tool_json_schema PRIVATE
+  agentengine::core agentengine_warnings nlohmann_json::nlohmann_json)
+add_test(NAME test_tool_json_schema COMMAND test_tool_json_schema)
+
+# ---- Tool JSON codec: to_json/from_json (M2 Phase B task B2, 006 §3 steps 2/9) ------------------
+# Header-only (core/json_schema.hpp's AE_JSON_SCHEMA-generated ae_to_json/ae_from_json), core-tier
+# -- links only agentengine::core (no nlohmann::json; exercises the dependency-free codec itself).
+add_executable(test_json_schema_codec test_json_schema_codec.cpp)
+target_link_libraries(test_json_schema_codec PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_json_schema_codec COMMAND test_json_schema_codec)
+
+# ---- Ten-step tool invocation pipeline (M2 Phase B tasks B2/B3, 006 §3, miniature §8 G2) --------
+# Header-only (core/tool_pipeline.hpp), core-tier -- links only agentengine::core.
+add_executable(test_tool_pipeline test_tool_pipeline.cpp)
+target_link_libraries(test_tool_pipeline PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_tool_pipeline COMMAND test_tool_pipeline)
+
+# ---- Capability-handle-reuse-denial, at the pipeline level (M2 Phase B task B4, 006 §8 G3) ------
+add_executable(test_tool_pipeline_capability_reuse test_tool_pipeline_capability_reuse.cpp)
+target_link_libraries(test_tool_pipeline_capability_reuse PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_tool_pipeline_capability_reuse COMMAND test_tool_pipeline_capability_reuse)
 
 # ---- native_jail Runner stub contract ---------------------------------------------------------
 # Proves PythonRunner (still a stub) satisfies Runner and fails closed, and that ShellRunner (now

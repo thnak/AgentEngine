@@ -121,10 +121,10 @@ int main() {
     assert(!failed.has_value() && failed.error().klass == ae::failure_class::contract);
 
     // -- Trust vocabulary (trust/capability.hpp, trust/principal.hpp) --
-    ae::Capability cap{ae::capability_kind::fs_read};
-    ae::CapabilitySet set{};
-    set.granted.push_back(cap);
-    assert(set.granted.size() == 1);
+    ae::Capability cap = ae::capability_from_kind(ae::capability_kind::fs_read);
+    ae::CapabilitySet set = ae::CapabilitySet::grant_root({cap});
+    assert(set.size() == 1);
+    assert(set.contains_kind(ae::capability_kind::fs_read));
 
     // -- Worktree vocabulary (core/worktree.hpp) --
     ae::Blob blob{"digest-1"};
