@@ -28,8 +28,8 @@ Every production agent platform re-solves the same five problems, badly and sepa
    treadmill.
 4. **Observability and replay** — a run that cannot be replayed cannot be debugged, evaluated, or
    audited.
-5. **Portability** — Windows, Linux, and macOS, with the *same* isolation guarantees, not three
-   different security stories.
+5. **Portability** — Windows and Linux, with the *same* isolation guarantees, not two different
+   security stories. (macOS is explicitly out of scope — 021 §7 OQ-1, resolved 2026-08-04.)
 
 AgentEngine's thesis: solve (1) by *not* solving it — layer on a proven actor engine — and spend
 the entire design budget on (2)–(5).
@@ -110,7 +110,7 @@ Two different problems get two different answers (008, 009, 010):
 
 - **Plugins/extensions** — tools, skills, model providers, memory stores, content filters
   contributed by third parties — are **WASI 0.3 / Component Model components**, locked. One
-  artifact runs bit-identically on Windows, Linux, and macOS; capability-based by construction;
+  artifact runs bit-identically on Windows and Linux; capability-based by construction;
   language-agnostic; instantiation in microseconds. Ecosystem risk is low because *we* define the
   WIT world and the plugin author compiles to it.
 - **The Python code interpreter and the shell** are `Runner`s (010 §1a) sharing one `ExecState` —
@@ -146,7 +146,8 @@ CPython for a differently-capable interpreter.
 
 v1 ships **C++23 CRTP-policy authoring** (002) and the **declarative YAML/JSON format** (015),
 bound by I6. Python and .NET bindings are explicitly deferred, not designed out: the C ABI in 020
-is the seam they will use.
+is the seam they will use — design starts against a small set of stable concepts now, freezing is
+gated on a reference out-of-process consumer (020 §8 Q3, resolved 2026-08-04).
 
 ### D4 — Files belong to the worktree, not to the sandbox
 

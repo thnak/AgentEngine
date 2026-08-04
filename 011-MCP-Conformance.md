@@ -1,6 +1,6 @@
 # 011 — MCP Conformance
 
-**Status:** Draft · **Protocol revision:** MCP **`2026-07-28`** · **Depends on:** 003, 006, 007, 016, 018 · **Gate:** §10
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Protocol revision:** MCP **`2026-07-28`** · **Depends on:** 003, 006, 007, 016, 018 · **Gate:** §10
 
 > **Revision note.** `2026-07-28` is the largest revision since MCP launched and it changed the
 > protocol's *shape*, not just its surface. A client written against `2025-11-25` is not a client
@@ -140,13 +140,15 @@ earlier-revision servers that omit it **MUST** be treated as `"complete"`.
 
 **This is a first-class control-flow shape in our client, not a callback.** It maps onto the
 unified `InputRequired` run state (001 §2) — the same mechanism as tool approval, workflow request
-ports, and A2A `INPUT_REQUIRED`. A server needing to correlate an elicitation across retries encodes
-its own identifier in `requestState`; the `notifications/elicitation/complete` notification and the
-`elicitationId` field are gone.
+ports, and A2A `INPUT_REQUIRED`. As a client, our own `interaction_id` (001 §2, resolving OQ-4) is
+what we encode into `requestState`, HMAC/AEAD-protected per §8a below; a retry decodes it, looks up
+the `Interaction`, and resolves it. A peer server needing to correlate its own elicitation across
+retries encodes its own identifier in the same field, on its own side of the boundary; the
+`notifications/elicitation/complete` notification and the `elicitationId` field are gone.
 
 **Security note:** an MRTR input request is a server asking our host for something. It is subject to
 the same authority rules as everything else — a server cannot obtain data or authority through
-`inputRequests` that the principal does not hold (007 I3).
+`inputRequests` that the principal does not hold (**I3**).
 
 ### 3.5 Deprecated features we do not adopt
 
@@ -174,6 +176,11 @@ servers permitted to return task handles unsolicited.
 
 That extension is the natural mapping for our long-running/`Suspended` runs (019 §2) — and it is one
 of the four competing shapes OQ-4 needs to unify.
+
+**Extensions are disabled by default and require explicit opt-in** — we advertise only the extensions
+we actually implement in `clientCapabilities`/our server's own capabilities (§2), never a blanket
+acceptance of whatever a peer offers, and an unrequested extension is never assumed enabled on either
+side of the connection.
 
 ## 4. Exposing AgentEngine (server role)
 
@@ -406,11 +413,64 @@ One clause from that Draft is adopted now on its merits regardless of the SEP's 
 
 ## 13. Open questions
 
-- **Q1** — Which revisions to support simultaneously. Two constants and two suites (CONVENTIONS), or
+- ~~**Q1** — Which revisions to support simultaneously. Two constants and two suites (CONVENTIONS), or
   `2026-07-28` only and require peers to upgrade? The deprecation window makes the second defensible
-  and unfriendly.
-- **Q2** — The tasks extension versus A2A tasks versus our `Suspended` state (OQ-4).
-- **Q3** — Whether to publish our tools with `outputSchema` and enforce it on results (006 Q1).
-- **Q4** — MCP server versus A2A peer: two spellings for exposing an agent (012 Q4). Guidance needed.
-- **Q5** — Whether to implement a client-side MCP **proxy/aggregator** so many servers appear as one
-  tool surface, which is convenient and concentrates trust badly.
+  and unfriendly.~~ **Resolved — this was mostly already answered in §12, just not marked closed
+  (2026-08-04):** **as a server, `2026-07-28`-only** (§12 already states this explicitly: "as a
+  server we speak only the modern era"). **As a client, legacy-server tolerance stays best-effort**
+  (§12's era-detection probing), never a second gated conformance suite — reusing 021 §1's tier
+  vocabulary one layer up (Supported/CI-verified/Best-effort/Unsupported, applied to a protocol
+  revision instead of a platform): `2026-07-28` is Supported (gated by §10's G1/G2), tolerating a
+  legacy server we happen to detect is Best-effort (builds/runs, not CI-gated). This avoids the
+  two-constants-two-suites maintenance burden 024 §2 would otherwise commit us to for a revision
+  population that's shrinking under its own 12-month deprecation window (024 §2), while still being a
+  reasonable citizen during the transition rather than refusing legacy peers outright.
+- ~~**Q2** — The tasks extension versus A2A tasks versus our `Suspended` state.~~ **Resolved
+  (OQ-4, 019 §8 Q2):** the tasks extension maps onto `Backgroundable`/`StandingEffect` (006 §6b) for
+  a single long tool call; a whole-run pause is carried via `interaction_id` in `requestState`, the
+  same mechanism §3.4's MRTR mapping already uses. A2A tasks needed no mapping — `Task ← Run` (012
+  §1) already is one.
+- ~~**Q3** — Whether to publish our tools with `outputSchema` and enforce it on results (006 Q1).~~
+  **Resolved, split by whose schema it is (2026-08-04):** **as a server**, yes to both — publish
+  `outputSchema` for our tools (§4 already generates listings from one schema source, so this is
+  free) and enforce our own output against it strictly, the same "reject, never coerce" discipline
+  §3.1 already applies to inputs — it's our own contract, and failing it is our own bug to catch at
+  the boundary, not a peer-compatibility risk. **As a client**, validating a *third-party* server's
+  `structuredContent` against *its own* claimed `outputSchema` is the harder case the "may break real
+  servers" caution was actually about: a mismatch there is degraded to an annotated marker surfaced
+  to the model alongside the raw content (the same "surfaced to the model for self-correction"
+  treatment §3.1 already gives `isError` results), never a hard client-side rejection — schema
+  conformance was never a trust signal to begin with (§8's tool results are tainted either way, per
+  017), only a shape-correctness one, so a mismatch is worth surfacing, not worth breaking
+  interoperability with an imperfect but functioning peer over. Same resolution written into 006
+  §9 Q1.
+- ~~**Q4** — MCP server versus A2A peer: two spellings for exposing an agent (012 Q4). Guidance
+  needed.~~ **Resolved, publish both by default; they serve different consumer populations, not one
+  redundant choice (2026-08-04):** 002 §7 already guarantees both are generated from one metadata
+  table with no drift risk, so publishing both costs nothing extra and there's no real "pick one"
+  tension once that's true. What actually differs is who each protocol serves: an MCP tool listing is
+  for the (currently much larger) population of LLM-tool-calling clients that want to invoke a
+  bounded operation like a function; an A2A Agent Card is for peer orchestrators that want to delegate
+  an open-ended goal and manage a task lifecycle — progress, artifacts, multi-turn negotiation (012
+  §5's "inter-organization / inter-process seam"). The remaining judgment call is authoring, not
+  architecture: an agent whose actual behavior is bounded and function-like should be *described*
+  that way even where both surfaces are technically available, and an agent that's genuinely
+  autonomous/long-running should be described accordingly — over- or under-selling an agent's
+  interaction style in its skills description is a documentation quality issue, not a protocol-
+  exposure restriction. Enabling either surface stays an ordinary per-agent 020 §4 configuration
+  choice. Same resolution written into 012 §9 Q4.
+- ~~**Q5** — Whether to implement a client-side MCP **proxy/aggregator** so many servers appear as one
+  tool surface, which is convenient and concentrates trust badly.~~ **Resolved, the convenience
+  already exists without the hazard; the hazard is a different, narrower thing we don't do
+  (2026-08-04):** the union-with-attribution pattern this project already has (005 §5's
+  `ContextContribution.tools`, unioned into one per-run tool table while still "carr[ying] the
+  provider's identity in the audit record, same as a plugin's") is exactly what a convenience
+  aggregator would need — a unified, browsable tool surface across N MCP servers for **our own
+  agents**, without collapsing each server's independent capability grant, digest pinning, or audit
+  attribution (§8's "least privilege per server" stays intact underneath the union). That isn't
+  really "a proxy" in the trust-concentrating sense the question worried about, and it needs no new
+  mechanism — 006's tool-table union already does this. What we explicitly do **not** do: re-publish
+  that aggregate as a single external-facing MCP server to **third parties** — that would be the real
+  hazard (a third-party client trusting "us" without knowing it's actually N independently-trust-
+  tiered backends, so a compromise of any one appears to originate from us). The line is who the
+  client is, not whether aggregation happens.

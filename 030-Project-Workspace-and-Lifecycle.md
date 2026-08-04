@@ -1,6 +1,6 @@
 # 030 — Project: Workspace Grouping and Directed Lifecycle
 
-**Status:** Draft · **Depends on:** 001, 005, 007, 014, 020, 025, Quark 012/ADR-034 · **Gate:** §7
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Depends on:** 001, 005, 007, 014, 020, 025, Quark 012/ADR-034 · **Gate:** §7
 
 ## Goal
 
@@ -36,7 +36,11 @@ Project = {
   project_id,             // stable handle; independent of any session_id, survives session churn
   principal,               // 007; a project belongs to exactly one, like a session does
   root_session_id,
-  members: [
+  active_members: [
+    { session_id, parent_session_id?, role, spawned_at, worktree_ref, status }
+    ...
+  ],
+  archived_members: [
     { session_id, parent_session_id?, role, spawned_at, worktree_ref, status }
     ...
   ],
@@ -46,11 +50,14 @@ Project = {
 }
 ```
 
-- **`members` is the missing index.** 001 §4 links a sub-agent's *run* to its parent via
-  `parent_run_id`; nothing links the *sessions*. A Project's `members` list is that index, built
-  incrementally as sub-agent sessions are created under it — not derived by walking every member's
-  full run history at load time, which would mean scanning N session logs just to answer "what's in
-  this project."
+- **`active_members` / `archived_members` is the missing index, split in two.** 001 §4 links a
+  sub-agent's *run* to its parent via `parent_run_id`; nothing links the *sessions*. A Project's
+  member list is that index, built incrementally as sub-agent sessions are created under it — not
+  derived by walking every member's full run history at load time, which would mean scanning N
+  session logs just to answer "what's in this project." A member starts in `active_members` and moves
+  to `archived_members` once its role completes (its parent's run finishes, or ordinary session
+  retention, 005 §1/025 §6) — the split §8 Q1 resolves, carried into the normative model rather than
+  left implicit.
 - **Each member session keeps its own independent worktree.** 025's "one worktree, one principal, one
   session" (025 §3) is unbroken by this RFC. This is the resolution to 025 §10 Q5 ("cross-session
   worktree sharing... breaks the simplicity that makes §5 sound"): don't share one mutable tree across
@@ -64,9 +71,12 @@ Project = {
 Project's manifest is a new *record type*, stored through Quark 012's `Store` seam exactly like
 `AgentSession` is (005 §2) — keyed by `project_id` instead of `session_id`. It needs none of
 `AgentSession`'s two-mode complexity: a manifest changes rarely (a member added, a status flip, a
-title edit) and stays small, so **it is always snapshot-mode**, never event-sourced — there is no
-"Project history" to replay, only current membership and status. This is the "new file structure"
-in the concrete sense: a new schema on the existing seam, not a new persistence engine.
+title edit) and its active-member list stays small, so **it is always snapshot-mode**, never
+event-sourced — there is no "Project history" to replay, only current membership (active and
+archived) and status. The archived tail can grow unboundedly over a Project's long lifetime (§8 Q1);
+§7 G4 is the check that this growth never costs a write proportional to history. This is the "new
+file structure" in the concrete sense: a new schema on the existing seam, not a new persistence
+engine.
 
 ## 4. Directed lifecycle: pause is not idle eviction
 
@@ -87,6 +97,12 @@ converge on exactly one retirement — `engine_passivate_test`, ADR-034 evidence
   already made every turn boundary a checkpoint and ADR-034's flush persists exactly that latest
   checkpoint. A paused Project holds zero session activations and zero sandboxes: 008 §6a already
   guarantees the latter per session, and pausing every member session inherits it project-wide.
+- **Pause and workflow-supervising actors.** §8 Q4 extends `.passivate()` to any workflow-supervising
+  actor (014) hosted under a member session. That actor may be mid-superstep when pause is requested;
+  passivation is not assumed to interrupt it instantaneously. Consistent with 014 §2's round model,
+  the pause signal is queued and delivered as an ordinary message, processed at that actor's next
+  superstep boundary — the pause completes once that boundary is reached and the checkpoint flushed,
+  same as any other message the actor processes, not before.
 - **Restore** — read the manifest back by `project_id`. This does **not** need to eagerly reactivate
   every member session: 005 §1's "activated on demand" already covers that — the moment a host issues
   a Run against any member, Quark's lazy activation (`declare_lazy<A>`) brings that one session back
@@ -112,15 +128,22 @@ no shared lock.
 
 For the embedded-host case that motivated this: `EmbeddedHost` gains four calls — `create_project`,
 `pause_project`, `restore_project` (→ manifest only, no activation), `list_projects`
-(principal-scoped manifest query) — each an ordinary `ask` against a small Project-registry actor, not
-a new protocol surface. A WinUI tab closing calls `pause_project`; reopening calls `restore_project`
-then drives Runs against the member sessions exactly as 020 §3a already describes.
+(principal-scoped manifest query). `create_project` and `list_projects` are ordinary `ask`s against a
+small Project-registry actor — the shared index a new Project needs to register into, and a
+principal-scoped list needs to query. `pause_project` and `restore_project` do **not** route through
+that registry actor: each acts directly on the named Project's own supervising actor (§4), addressed
+by `project_id`, exactly as §4's `.passivate()` sequence already assumes. Pausing a Project is
+therefore dispatch to that one actor, not a call serialized through an actor shared by every Project —
+which is what makes §7 G1's "zero observable effect on the other N-1" hold. None of this is a new
+protocol surface. A WinUI tab closing calls `pause_project`; reopening calls `restore_project` then
+drives Runs against the member sessions exactly as 020 §3a already describes.
 
 ## 7. Promotion gate
 
 - **G1** — N concurrently active Projects (N ≥ 100, host-configured; no engine-side cap observed at
   any N tested): pausing one measurably drops its member sessions' activation count to zero and its
-  sandbox count to zero, with zero observable effect (latency, event ordering) on the other N-1.
+  sandbox count to zero, and any workflow-supervising actor(s) hosted under those sessions also drop
+  to zero activations, with zero observable effect (latency, event ordering) on the other N-1.
 - **G2** — a Project paused, then restored after a full process restart, presents an identical member
   list and identical latest worktree refs to the pre-pause state; a Run issued against any member
   session after restore produces output identical to the same Run issued without ever having paused
@@ -128,26 +151,60 @@ then drives Runs against the member sessions exactly as 020 §3a already describ
 - **G3** — `list_projects` for principal P never returns a Project belonging to another principal,
   under concurrent create/pause/restore from multiple principals (007's cross-principal denial,
   exercised at this layer).
-- **G4** — the manifest snapshot write is a bounded, small operation (023 budget) independent of
-  member-session count growth up to the tested N — adding a member session never triggers a full
-  manifest rewrite proportional to history.
+- **G4** — the manifest snapshot write is a bounded, small operation (023 budget) tested against two
+  independent growth axes, each up to the tested N: active-member-count growth and archived-tail size
+  growth (§2, §8 Q1). Adding a member session never triggers a full manifest rewrite proportional to
+  active-member count, and a member session moving to the archived tail never triggers a full
+  manifest rewrite proportional to archived-tail size.
 
 ## 8. Open questions
 
-- **Q1** — Should `members` be capped per Project, or does truly unbounded sub-agent fan-out (an
-  agent that spawns hundreds of short-lived helper sessions over a project's lifetime) need the
-  manifest format to handle a rolling/archived-members tail before it becomes a 023 budget problem?
-- **Q2** — Whether `archive_project` should trigger worktree GC (025 §6) immediately or only once
-  retention policy independently reclaims it — archiving is a lifecycle state change, and reclaiming
-  storage eagerly on archive could surprise a host that expects "archived" to mean "hidden," not
-  "shrunk."
-- **Q3** — Whether a Project needs its own principal-scoped capability set distinct from the union of
-  its member sessions'. 007's "never a superset" rule for sub-agent capability inheritance (001 §4)
-  should already forbid a sub-agent session reaching a capability the root never had, but this RFC
-  introduces a new record referencing multiple sessions and deserves an explicit check that it isn't
-  a second, weaker path to the same authority — not assumed safe by analogy.
-- **Q4** — Relationship to 014's workflow checkpoint/resume: when a workflow executor is itself an
-  agent running inside a Project's root session, does pausing the Project need to reach into the
-  workflow's own checkpoint store, or is "the session is paused" already sufficient because the
-  workflow's supervising actor is itself session-scoped? Needs checking against 014 §5's actual actor
-  placement, not assumed.
+- ~~**Q1** — Should `members` be capped per Project, or does truly unbounded sub-agent fan-out need
+  the manifest format to handle a rolling/archived-members tail before it becomes a 023 budget
+  problem?~~ **Resolved, No cap, but a rolling/archived tail is needed (2026-08-04):** a hard cap
+  would be an artificial limit, contradicting §5's own "concurrency is a capacity question, never an
+  artificial limit" principle extended to member count. But §3's "always snapshot-mode... stays
+  small" assumption genuinely breaks for a project with hundreds of short-lived helper sessions over
+  its lifetime — §7 G4's own gate ("up to the tested N") already implicitly flags this without
+  stating the fix. Fix: `members` splits into an active list (what §3's manifest already assumes,
+  kept small) and an archived tail a short-lived helper session moves to once its role completes (its
+  parent's run finishes, or ordinary session retention, 005 §1/025 §6) — the same distinction 019 §5
+  already draws between different retention lifetimes for different record kinds, applied here to one
+  record's internal structure. G4 is extended to test that manifest write cost stays bounded as the
+  archived tail grows, not just active-member count.
+- ~~**Q2** — Whether `archive_project` should trigger worktree GC immediately or only once retention
+  policy independently reclaims it.~~ **Resolved, No, retention policy reclaims independently, never
+  eagerly on archive (2026-08-04):** consistent with every other retention/GC mechanism in this
+  project — 025 §6's GC runs "by policy," decoupled from any particular state transition; 005 §6's
+  redaction/deletion is explicit and separate, never an automatic side-effect of an unrelated
+  lifecycle change. Making archive trigger immediate reclaim would be an exception to that pattern
+  for no stated benefit, and would violate the expectation the question itself correctly names as
+  right: "archived" means "hidden," not "shrunk." §4's existing wording already implied this; stated
+  explicitly now so it isn't re-litigated as ambiguous.
+- ~~**Q3** — Whether a Project needs its own principal-scoped capability set distinct from the union
+  of its member sessions'.~~ **Resolved, No — forced by §1, not assumed by analogy (2026-08-04):**
+  §1 states plainly a Project "owns no turn loop, no history of its own, no model calls" — it never
+  itself produces an effect, so there is nothing for a capability set to gate at the Project level
+  beyond the ordinary principal-scoping §2's struct already has. Project-level verbs (pause/restore/
+  archive/create/list) are ordinary effects authorized against the calling principal's existing
+  capability set through the same pipeline (007 §5, 018 §2) every other effect goes through — there
+  is no second authority path, because `members` is just data (session ids, worktree refs); reaching
+  what a member session can *do* still requires going through that session's own capability set
+  independently, governed by 007's attenuation-only rule unchanged. §7 G3 (already specified) *is*
+  the explicit check this question asked for, not an assumption by analogy — it proves the no-bypass
+  property rather than assuming it.
+- ~~**Q4** — Relationship to 014's workflow checkpoint/resume: does pausing the Project need to reach
+  into the workflow's own checkpoint store, or is "the session is paused" already sufficient?~~
+  **Resolved, Yes, pause must explicitly reach a workflow's own supervising actor too — extending
+  §4's same primitive, not assuming session-pause covers it (2026-08-04):** 001 §1's actor-mapping
+  table lists "Workflow" and "AgentSession" as distinct rows ("a supervising actor owning a graph of
+  executor actors" versus "one actor instance") — a workflow running inside a session is, per that
+  table, its own Quark actor, not the session's own activation wearing a different hat. The
+  conservative answer, given the question's own genuine uncertainty: `pause_project` (§4) is extended
+  to `.passivate()` any workflow-supervising actor(s) hosted under a member session, using the
+  identical ADR-034 primitive already built on, not a second mechanism. Assuming session-pause
+  transitively covers a separately-addressed actor risks leaving a workflow actor — and transitively
+  its own checkpoint store — live after a Project reports itself `Paused`, contradicting §4's own "a
+  paused Project holds zero session activations and zero sandboxes" claim. §7 G1's activation-count-
+  drops-to-zero gate is what makes this claim actually hold, provided pause's iteration covers
+  workflow actors explicitly rather than by assumption.

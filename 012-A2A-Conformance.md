@@ -1,6 +1,6 @@
 # 012 — A2A Conformance
 
-**Status:** Draft · **Protocol revision:** A2A **v1.0** (April 2026, Linux Foundation) · **Depends on:** 001, 003, 006, 018 · **Gate:** §8
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Protocol revision:** A2A **v1.0** (April 2026, Linux Foundation) · **Depends on:** 001, 003, 006, 018 · **Gate:** §8
 
 ## Goal
 
@@ -80,7 +80,13 @@ implementations — and the TCK checks each binding separately (§8).
   a 10–30 s timeout, backoff, idempotent processing on receipt (duplicates are expected), task-id
   verification, and **SSRF validation of webhook URLs** — which routes through the same host-mediated
   egress as everything else (008 §4) rather than a bespoke check. Config deletion **MUST** be
-  idempotent.
+  idempotent. **The event id a delivery is deduplicated by is `task_id` + the event's sequence
+  number** — no separate id scheme, since 013 §1's internal stream is already ordered and
+  sequence-numbered per run and `task_id` already **is** `run_id` (§1); a receiver dedupes on that
+  pair directly. **Dead-lettering is bounded**: a notification that exhausts its retry/backoff budget
+  moves to a capped, operator-visible dead-letter queue rather than retrying unboundedly or being
+  silently dropped, with an alert on entries arriving and a manual or policy-driven drain — the same
+  "bounded, visible, never silent" shape 008 applies to resource denial elsewhere in this project.
 - **`INPUT_REQUIRED`** is emitted by the unified human-in-the-loop mechanism (001 §2). Note that A2A's
   shape — the task **stays alive** and the client sends a new message on the same `taskId` — is one
   of *three* incompatible shapes for this one idea (§5a).
@@ -171,6 +177,26 @@ A2A is the **inter-organization / inter-process** seam; in-process composition s
 mailbox message for an HTTP round trip. The call-site uniformity rule (002 §4) means an author can
 move an agent across that boundary without rewriting callers.
 
+## 5a. Human-in-the-loop has three incompatible shapes
+
+The single most useful cross-protocol finding, and it sharpens [OQ-4](OpenQuestions.md):
+
+| Protocol | Shape | Correlation identity |
+|---|---|---|
+| **MCP** `2026-07-28` | Client **retries the original request**, with a *new* JSON-RPC id | `requestState` |
+| **A2A** v1.0 | Task **stays alive**; client sends a new message on the same task | `taskId` |
+| **AG-UI** | Run **ends**; client starts a **new run** carrying `resume[]` | `interruptId` |
+
+One conceptual event — *the agent needs something from a human* — expressed as a retry, a
+continuation, and a restart. Our internal `InputRequired` (001 §2) must project to all three without
+losing the correlation identity each requires. That is a stronger constraint than "emit an event",
+and it is why the unification is a design question rather than a mapping detail.
+
+**Resolved:** the internal identity is `Interaction.interaction_id` (001 §2); each row above maps
+it into that protocol's required shape (013 §2.2 has the full mapping). For A2A specifically, no
+new mapping was needed — §1's `Task ← Run` identity already means `taskId` disambiguates the run's
+one outstanding `INPUT_REQUIRED` without carrying anything extra.
+
 ## 6. Interop hygiene
 
 - **Round-trip fidelity**: `internal → A2A → internal` preserves every part including unknown ones
@@ -187,21 +213,6 @@ id, binding, state transitions}`, linked to the run's trace via standard context
 audit record per effect. Task state transitions are events, so a stuck task is visible as a state
 histogram rather than as a support ticket.
 
-## 5a. Human-in-the-loop has three incompatible shapes
-
-The single most useful cross-protocol finding, and it sharpens [OQ-4](OpenQuestions.md):
-
-| Protocol | Shape | Correlation identity |
-|---|---|---|
-| **MCP** `2026-07-28` | Client **retries the original request**, with a *new* JSON-RPC id | `requestState` |
-| **A2A** v1.0 | Task **stays alive**; client sends a new message on the same task | `taskId` |
-| **AG-UI** | Run **ends**; client starts a **new run** carrying `resume[]` | `interruptId` |
-
-One conceptual event — *the agent needs something from a human* — expressed as a retry, a
-continuation, and a restart. Our internal `InputRequired` (001 §2) must project to all three without
-losing the correlation identity each requires. That is a stronger constraint than "emit an event",
-and it is why the unification is a design question rather than a mapping detail.
-
 ## 8. Promotion gate
 
 - **G1** — **`a2a-tck` passes** against our server at v1.0 for each implemented binding, on Windows
@@ -212,18 +223,57 @@ and it is why the unification is a design question rather than a mapping detail.
 - **G2** — round-trip fidelity test (§6) passes over a corpus covering every part kind, including
   unknown parts.
 - **G3** — full lifecycle coverage: each state transition, including `INPUT_REQUIRED`,
-  `AUTH_REQUIRED`, cancel-in-flight, and terminal-state rejection, exercised end to end.
+  `AUTH_REQUIRED` (projected from the internal `AuthRequired`/`AuthResolved` events, 013 §1/§2.2),
+  cancel-in-flight, and terminal-state rejection, exercised end to end.
 - **G4** — push notification delivery is reliable under injected failures: no loss, no duplicate
-  effects (idempotent by task+event id), bounded dead-lettering.
+  effects (idempotent by task+event id — `task_id` + 013 §1 sequence number, per §2.3), bounded
+  dead-lettering (§2.3's capped queue with operator-visible alert and drain).
 - **G5** — a remote agent bound as a tool is indistinguishable at the call site from a local one
   (compile-time + behavioural test).
 
 ## 9. Open questions
 
-- **Q1** — gRPC binding: worth the dependency, or leave to a deployment-side proxy?
-- **Q2** — Agent card signing: which trust root, and how does key rotation work for a self-hosted
-  engine?
-- **Q3** — Whether `context_id` should map to our session id directly or to a group of sessions;
-  multi-agent sessions (005 Q2) forces the answer.
-- **Q4** — A2A + MCP overlap: an MCP server exposing an agent-shaped tool and an A2A peer are two
-  spellings of the same thing. Guidance on which to publish is missing.
+- ~~**Q1** — gRPC binding: worth the dependency, or leave to a deployment-side proxy?~~ **Resolved,
+  deployment-side proxy, no first-party gRPC binding for v1 (2026-08-04):** §2.2 already flags gRPC
+  as the CONVENTIONS heavy-dependency binding; adding it as a third in-engine encoder would extend
+  §2.2's "one implementation, N encoders" equivalence obligation — and therefore the TCK gate (§8 G1)
+  — to a protobuf/gRPC stack for a binding that's mechanically redundant with our already-implemented
+  JSON-RPC (same `a2a.proto`-generated wire types, §0, different encoding only). A standard gRPC↔JSON
+  transcoding proxy (grpc-gateway, Envoy's grpc-json transcoder) in front of our HTTP+JSON/REST
+  binding is exactly the well-understood mechanical translation a deployment-side proxy does well.
+  We do not claim gRPC conformance ourselves — an operator fronting us with a transcoding proxy owns
+  that interoperability claim, honestly outside what our own TCK run can prove (021 §1's "no claim"
+  discipline, the same move as OQ-1's macOS drop). A first-party adapter is addable later, as an
+  optional seam backend, if real deployment demand shows the proxy approach insufficient — not
+  designed speculatively now.
+- ~~**Q2** — Agent card signing: which trust root, and how does key rotation work for a self-hosted
+  engine?~~ **Resolved, self-signed, no built-in CA/PKI; rotation reuses the existing change-triggers-
+  re-approval rule (2026-08-04):** there is no assumption of a shared root across arbitrary A2A
+  peers the way TLS has a web PKI, and there doesn't need to be — 018 §8 Q4's resolution already
+  establishes that the actual trust decision is the **caller's own configured pin** per known peer,
+  never a chain-of-trust to an authority. That means the JWS signature's job (§4a) is narrower than a
+  CA chain would imply: it proves in-transit/storage integrity between publish and fetch, not identity
+  vouching — vouching was already answered elsewhere. So: the signing key is self-generated by the
+  operator, resolved through the existing secret seam (018 §4) like any other credential, with the
+  public key discoverable alongside the card (a `.well-known`/`jwks`-style reference) — no new
+  key-management subsystem. **Rotation needs no new mechanism either**: a signing-key change changes
+  the card, which already triggers §3's "a card whose skills or schemas change is re-approved rather
+  than silently trusted" — the identical rug-pull defense already covers a key change, since the
+  card's digest changes along with its signature. An operator wanting zero-downtime rotation
+  dual-signs or dual-publishes during a transition window — an operational practice, not new engine
+  machinery.
+- ~~**Q3** — Whether `context_id` should map to our session id directly or to a group of sessions;
+  multi-agent sessions (005 Q2) forces the answer.~~ **Resolved (005 §8 Q2, 2026-08-04):**
+  `context_id` maps to `session_id` one-to-one, never to a group. 005 §1's data model has exactly one
+  `history[]` per session by construction, and multi-agent-in-one-session cases (Handoff, 014 §3
+  patterns) get per-agent *views* over that one history, not separate storage — there is never a
+  "group of sessions" for one context to span in the first place.
+- ~~**Q4** — A2A + MCP overlap: an MCP server exposing an agent-shaped tool and an A2A peer are two
+  spellings of the same thing. Guidance on which to publish is missing.~~ **Resolved (011 §13 Q4,
+  2026-08-04):** publish both by default — 002 §7 generates them from one metadata table with no
+  drift risk, so there's no real cost to picking one over the other. They serve different consumer
+  populations: MCP tool listings for LLM-tool-calling clients wanting a bounded function call, A2A
+  Agent Cards for peer orchestrators wanting to delegate an open-ended goal with task-lifecycle
+  machinery. Which style an agent's skills description emphasizes is an authoring-quality question,
+  not a protocol-exposure restriction; enabling either surface is an ordinary per-agent 020 §4
+  configuration choice.

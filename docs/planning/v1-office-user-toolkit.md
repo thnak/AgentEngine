@@ -71,10 +71,9 @@ concern already flagged in 010 Q7.
 | `PyYAML` | Read/write YAML config or data files | MIT |
 | `tabulate` | Pretty tables from Python data — pairs well with CodeAct's "last expression printed" model (010 §1) | MIT |
 
-⚠ `docxtpl` is LGPL — fine to *depend on* (dynamic/import-time linking, not a derivative-work
-question the way static linking would be), but it is the one entry here that isn't permissive, and
-024/OQ-11's licensing governance should have a documented position on LGPL Python dependencies
-before this list is locked, not discover the question later.
+`docxtpl` is LGPL — consumed via dynamic/import-time linking, not static, which is exactly the case
+024 §7 Q1's dependency-licensing position (resolved 2026-08-04, OQ-11) adopts without a case-by-case
+exception.
 
 ## 4. Python — native/binary-wheel packages
 
@@ -97,10 +96,10 @@ what 009's plugin track exists for.
 
 | Candidate | Task it serves | License | Note |
 |---|---|---|---|
-| **Pandoc** | Universal document conversion: `.docx` ⇄ Markdown ⇄ HTML ⇄ PDF and more | GPL-2.0-or-later ⚠ | Arguably the single highest-leverage tool for this persona. Invoked as a separate process/component, not linked — the usual GPL linking concern doesn't apply, but 024/OQ-11 should record that position explicitly rather than assume it. |
+| **Pandoc** | Universal document conversion: `.docx` ⇄ Markdown ⇄ HTML ⇄ PDF and more | GPL-2.0-or-later | Arguably the single highest-leverage tool for this persona. Invoked as a separate process/component, not linked — covered by 024 §7 Q1's dependency-licensing position (resolved 2026-08-04, OQ-11). |
 | **LibreOffice** (headless, `--convert-to`) | High-fidelity conversion of legacy formats (`.doc`, `.ppt`, `.xls`) and rendering `.docx`/`.pptx` to PDF/PNG for preview | MPL-2.0 | Heavy — better suited to the `remote` profile's cluster-managed lifecycle than a per-turn `native-jail` cost. |
 | **Tesseract OCR** | Text extraction from scanned documents and images — invoices, signed forms | Apache-2.0 | Common real office need; no pure-Python equivalent of comparable quality. |
-| **poppler** (already 009 §7) | PDF rendering/text extraction, lighter than LibreOffice for PDF-only work | GPL-2.0-or-later ⚠ | Same invocation-not-linking note as Pandoc. |
+| **poppler** (already 009 §7) | PDF rendering/text extraction, lighter than LibreOffice for PDF-only work | GPL-2.0-or-later | Same invocation-not-linking coverage as Pandoc. |
 | **libarchive / 7-Zip** (already 009 §7) | Opening `.zip`/`.7z` email attachments | BSD-2 / LGPL-2.1 | Already listed in 009 §7 for the general case; office attachments are the concrete motivating case. |
 
 **Deliberately not on this list, and not `mupdf`:** `mupdf`-class PDF libraries are dual-licensed
@@ -126,6 +125,6 @@ existing table should be read with this distinction in mind.
 This is the **default** curated set for the office-user profile under the `preinstalled` policy
 (010 §5) — it is not a ceiling. An operator can still select `allowlist` or `open` package policy
 to add more, per agent, per deployment. It also does not resolve 010 §10 Q1 (who owns the pinned
-image's CVE cadence) or the licensing-governance question 024/OQ-11 already tracks — it gives both
-questions something concrete to be asked about instead of an abstract "the interpreter has
-packages."
+image's CVE cadence), which stays open — the licensing question this list previously raised against
+024/OQ-11 is now resolved (§5 above). 010 §10 Q1 gives that remaining question something concrete to
+be asked about instead of an abstract "the interpreter has packages."

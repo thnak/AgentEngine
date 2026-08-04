@@ -1,6 +1,6 @@
 # 028 — Bulk Data Transfer and Zero-Copy
 
-**Status:** Draft · **Depends on:** 003, 008, 010, 025, 026 · **Gate:** §8
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Depends on:** 003, 008, 010, 025, 026 · **Gate:** §8
 
 ## Goal
 
@@ -163,13 +163,57 @@ writes.
 
 ## 9. Open questions
 
-- **Q1** — Whether Arrow is a plugin or a host dependency. Plugin is the stated preference (§3), but
-  the host must at minimum *produce* Arrow buffers, which may pull a slice of it host-side anyway.
-- **Q2** — Query pushdown depth: §2's example implies filter/projection pushdown into the host. How
-  far that goes before it becomes a query engine we did not intend to write needs a boundary.
-- **Q3** — Writable shared regions (guest→host bulk output) are stated as capability-gated and
-  non-default; the actual protocol for them is unspecified, and it is the riskiest part of this RFC.
-- **Q4** — Whether `remote` should transparently degrade (stream) or refuse bulk operations loudly.
-  Transparent degradation is friendlier and hides a 100× performance cliff.
-- **Q5** — Whether tool *inputs* need the same treatment as tool outputs; the asymmetry is currently
-  unjustified beyond "outputs are usually bigger".
+- ~~**Q1** — Whether Arrow is a plugin or a host dependency. Plugin is the stated preference (§3),
+  but the host must at minimum *produce* Arrow buffers, which may pull a slice of it host-side
+  anyway.~~ **Resolved, a minimal host-side IPC *writer* only, the full library stays a plugin
+  (2026-08-04):** not a compromise of §3's position — writing a narrow, well-specified binary
+  framing format (schema + record-batch messages) from already-trusted host data is a fundamentally
+  smaller, safer surface than *reading* arbitrary/possibly-hostile Arrow bytes or running compute
+  kernels over them, exactly the "hostile-input decode belongs in a plugin, producing ordinary
+  structured output doesn't" line 009 §7 already draws. Reading, compute (filter/aggregate/convert)
+  stay in the plugin, matching §2's `rows.filter(...)`/`hits.count()` examples, which already run
+  inside the sandbox against the mapped bytes, not host-side.
+- ~~**Q2** — Query pushdown depth: §2's example implies filter/projection pushdown into the host.
+  How far that goes before it becomes a query engine we did not intend to write needs a boundary.~~
+  **Resolved, stops at a single Arrow compute-kernel operation (2026-08-04):** the test — an
+  operation belongs here if it's *one* compute-kernel invocation (filter, projection, simple
+  aggregation) over an already-mapped buffer, with no need to materialize an intermediate result or
+  coordinate across multiple datasets. Anything needing a query *planner* (join ordering, cost-based
+  optimization) is explicitly out. An agent with a genuinely query-engine-shaped task uses DuckDB —
+  already on 009 §7's candidate plugin list specifically for "a database dependency in the host
+  process" — rather than this RFC growing one feature-by-feature, matching 026 §5's "small and
+  boring" discipline applied here too.
+- ~~**Q3** — Writable shared regions (guest→host bulk output) are stated as capability-gated and
+  non-default; the actual protocol for them is unspecified, and it is the riskiest part of this
+  RFC.~~ **Resolved by not building it — guest→host bulk output reuses the ordinary worktree write
+  path (2026-08-04):** a live, concurrently-writable shared region needs real synchronization (locks,
+  memory barriers, a handoff protocol) — exactly the kind of contested, security-critical design
+  CLAUDE.md routes through design→red-team→prove→judge, not something to invent in a spec-editing
+  pass. It isn't needed: the guest writes its output, incrementally or all at once, through an
+  ordinary `FsWrite`-capable worktree mount (025), the same well-specified, already capability-gated
+  mechanism every other guest write already uses; the host reads the resulting content-addressed
+  blob when the guest is done. The accepted cost is asymmetry — host→guest gets true zero-copy via
+  read-only `mmap` (§4), guest→host is an ordinary copy through the worktree — consistent with §4's
+  own acceptance of real asymmetries (`remote`'s "not possible... ≥1, plus network") rather than
+  forcing symmetry the mechanism doesn't need. §5's constraints already describe this path correctly,
+  since a worktree write already has all of them.
+- ~~**Q4** — Whether `remote` should transparently degrade (stream) or refuse bulk operations
+  loudly. Transparent degradation is friendlier and hides a 100× performance cliff.~~ **Resolved,
+  transparently degrade — confirming what §4 already states (2026-08-04):** §4's own table already
+  answers the mechanism ("remote... Data streams over the transport") and already states the
+  visibility answer too ("the budget table [023] makes the difference visible rather than
+  mysterious"). Refusing loudly would make `remote` unable to do bulk work at all, worse than a
+  slower-but-working path; the actual risk this question named (hiding a real cliff) is closed by
+  023's operator-facing budget visibility, not by refusing the operation. The agent itself is never
+  told (§8 G7, 026 §1) — this is architecture, invisible in-prompt like every other profile
+  difference.
+- ~~**Q5** — Whether tool *inputs* need the same treatment as tool outputs; the asymmetry is
+  currently unjustified beyond "outputs are usually bigger".~~ **Resolved, Yes, symmetric — and
+  already covered, not a gap (2026-08-04):** the apparent asymmetry was about which mechanism was
+  described where, not an actual gap. §2's handle-passing mechanism is already symmetric by
+  construction — 003 §3's `BlobRef` is usable in any content position, a tool *call*'s arguments
+  exactly as much as a tool *result*'s, and §2's own example already shows a handle being *consumed*
+  (`.filter()`, `.count()`), which is what an input is. §3/§4's Arrow-columnar/zero-copy machinery
+  isn't input- or output-specific — it describes how any consumer of an already-content-addressed
+  worktree object reads it, whether that consumer is agent code opening a handle or a tool invoked
+  with a `BlobRef` argument that opens the same reference through the same path.

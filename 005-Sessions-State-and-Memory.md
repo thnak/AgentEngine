@@ -1,6 +1,6 @@
 # 005 — Sessions, State and Memory
 
-**Status:** Draft · **Depends on:** 001, 003, 019, Quark 012/027 · **Gate:** §7
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Depends on:** 001, 003, 019, Quark 012/027 · **Gate:** §7
 
 ## Goal
 
@@ -45,8 +45,11 @@ Defaults follow Quark's dependency posture: `InMemoryStore` for tests, `FileStor
 behind the same seam. **AgentEngine adds no storage engine of its own.**
 
 **Durability contract:** a turn is acknowledged to the caller only after its effects and history
-delta are durable, or the run is explicitly marked `at-most-once` (019). Silently acknowledging
-before durability is the failure mode that loses a user's conversation on a crash.
+delta are durable, or the session declares an `at_most_once_ack` durability policy — a
+session-level acknowledgment policy defined here in 005, distinct from 019 §3's per-effect
+`pure`/`idempotent`/`at-most-once` classification, which governs individual tool effects, not
+turn acknowledgment. Silently acknowledging before durability is the failure mode that loses a
+user's conversation on a crash.
 
 ## 3. Context assembly
 
@@ -86,9 +89,13 @@ Long sessions exceed context windows. Strategies, selected by policy:
 | `Hierarchical` | Recursive summaries with retained anchors |
 
 **Invariants:** compaction never silently deletes — the pre-compaction history remains in the
-durable log (event-sourced mode) and is addressable for audit and time-travel. Compaction is an
-audited, attributed operation with its own span. A compaction that drops a pending tool-call/result
-pair is a defect (checked).
+durable log and is addressable for audit and time-travel. This guarantee is **Event-sourced-mode
+only** (§2): it is backed by the append-only log that mode retains, and there is no equivalent
+retention mechanism for Snapshot mode. A Snapshot-mode session accepts **lossy compaction** — the
+prior snapshot is overwritten, not archived — as the accepted cost of that mode's simplicity,
+rather than this RFC inventing a second retention mechanism to give Snapshot mode the same
+guarantee. Compaction is an audited, attributed operation with its own span in either mode. A
+compaction that drops a pending tool-call/result pair is a defect (checked).
 
 ## 5. Context providers
 
@@ -165,14 +172,45 @@ under a privacy regime, and they are specified here rather than deferred.
   partially applied.
 - **G3** — a compaction pass followed by a full replay produces the same final response as the
   uncompacted control for a scripted session (bounded divergence for `Summarize`, exact for
-  `Window`).
+  `Window`). **Event-sourced mode only** — Snapshot mode's compaction is lossy by §4 and has no
+  pre-compaction record to replay against.
 - **G4** — redaction propagates to every derived artifact; a search over the store finds no residue.
 
 ## 8. Open questions
 
-- **Q1** — Whether `state` should be schema-typed and versioned like messages (003 §5). Untyped is
-  convenient and ages badly.
-- **Q2** — Multi-agent sessions: does a session hold one history shared by several agents, or one
-  per agent with a shared transcript view? Handoff (002 §4) needs this answered.
-- **Q3** — Where memory-provider results sit relative to compaction: before (compactable) or after
-  (always fresh)?
+- ~~**Q1** — Whether `state` should be schema-typed and versioned like messages (003 §5). Untyped is
+  convenient and ages badly.~~ **Resolved, typed, not separately versioned (2026-08-04):** typed —
+  `state` becomes a declared C++ type per agent/workflow (the same "declared, schema-typed"
+  discipline 002 already applies to tools and output schemas), which catches an author's own
+  shape-drift at compile time instead of at a runtime read. Not separately versioned — 024 §2's
+  persistence-migration contract ("checkpoints and sessions are readable across engine upgrades
+  within a major version... a format change ships a forward migration") already covers *every*
+  persisted format generically; giving `state` its own bespoke version field would duplicate a
+  mechanism that already applies to it rather than close a gap.
+- ~~**Q2** — Multi-agent sessions: does a session hold one history shared by several agents, or one
+  per agent with a shared transcript view? Handoff (002 §4) needs this answered.~~ **Resolved, one
+  shared `history[]`, per-agent *views* (2026-08-04):** the answer was already implied by combining
+  parts of this spec that hadn't been read together. §1's data model has a single `history[]` per
+  `AgentSession`, not one per agent; §3's context assembly already derives a per-turn view via each
+  agent's own declared compaction/window/salience policy. Put together: storage is singular, and
+  "sees the history per its own policy" (002 §4's Handoff description) was already describing a
+  *view*, not separate storage — no new mechanism needed, just naming what was already specified.
+  This also explains why no third option was missing: 002 §4's two composition modes already map
+  onto the two real cases — **Handoff** (same session, shared `history[]`, per-agent views) for
+  agents that should see the same conversation, and **Sub-agent** (a separate run on a separate
+  session, 001 §4) for agents that need real isolation, e.g. a sub-agent's internal deliberation the
+  parent shouldn't see verbatim. Feeds 012 §9 Q3 directly: `context_id` maps to `session_id`
+  one-to-one, never to a group, because there is exactly one history per session by construction.
+- ~~**Q3** — Where memory-provider results sit relative to compaction: before (compactable) or after
+  (always fresh)?~~ **Resolved, the framing was a category error — always fresh, never compacted
+  (2026-08-04):** §4's compaction is specifically an operation on the *accumulating* `history[]`
+  (it exists because history grows unboundedly and needs pruning); a memory provider's
+  `ContextContribution` (§5) is recomputed fresh every turn and never appended to `history[]` at
+  all — there is structurally nothing there for §4's compaction mechanism to act on. What providers
+  *do* share with the history window is §3's ordinary per-turn token-budget enforcement ("every
+  contributor declares a token budget... drops are recorded in the trace") — but that's budget
+  enforcement, not compaction; the two were being conflated. One more piece worth stating explicitly:
+  retrieval should query the **durable, uncompacted record** (the full event-sourced log, or 029's
+  own consolidated memory store), never the display-trimmed history window — compaction fits what
+  the *model* sees this turn to the context window, it does not change what is true about the
+  conversation, and a memory provider's job is squarely the latter.

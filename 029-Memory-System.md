@@ -1,6 +1,6 @@
 # 029 — Memory System
 
-**Status:** Draft · **Depends on:** 003, 005, 007, 009, 025 · **Gate:** §9
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Depends on:** 003, 005, 007, 009, 025 · **Gate:** §9
 
 ## Goal
 
@@ -109,7 +109,11 @@ standing of a `UserStated` one — see §6.
 - **Semantic (vector) retrieval is an optional `ae:memory` plugin** (009 §2) — the embedding
   pipeline and the vector index both live inside it, never in the core. An operator who wants it
   gets it by granting the plugin's capabilities; the embedding call it makes is an effect, recorded
-  and budgeted exactly like a `ChatClient` call, because it is one (§1).
+  and budgeted exactly like a `ChatClient` call, because it is one (§1). The plugin's default
+  configuration is one embedding index per principal, mirroring the one-worktree-per-principal
+  model above (§2); a "shared index" — one embedding index deliberately configured to serve
+  multiple principals, e.g. for cross-tenant retrieval efficiency — is a non-default, adversarial
+  configuration this RFC does not recommend and §9 G5 exists specifically to prove safe.
 - Either mechanism is exposed to the model the way MAF's `TextSearchProvider` precedent already
   established for `ContextProvider` in general (005 §5, `docs/research/2026-maf-provider-concepts.md`
   §1): a short, budgeted set of high-ranked items is injected into `ContextContribution.messages`
@@ -166,7 +170,8 @@ Items decayed below a threshold are consolidation candidates, never silently gon
   checkpoints, and unreferenced objects, matching 025 §6 / 005 §6.
 - **G5 (cross-principal isolation)** — N principals with concurrent sessions; no memory item is
   retrievable outside its owning principal, proven against a deliberately adversarial shared-index
-  configuration, not merely asserted.
+  configuration — an `ae:memory` plugin instance deliberately configured to share one embedding
+  index across principals (§5) — not merely asserted.
 - **G6 (upgrade path)** — the same agent, unchanged, runs against the default structured provider
   and against a vector-based `ae:memory` plugin; both satisfy G2–G5 unchanged. G1's determinism is
   explicitly **waived**, not silently dropped, for the vector case, and the waiver itself is recorded
@@ -174,21 +179,63 @@ Items decayed below a threshold are consolidation candidates, never silently gon
 
 ## 10. Open questions
 
-- **Q1** — Decay function and its parameters (half-life vs. step). Needs an evidence-based default
-  from a real usage corpus, not a guess baked into the spec.
-- **Q2** — Whether procedural memory ("learned instructions") may modify an agent's effective
-  `instructions` directly, or only ever arrive as a `ContextContribution.instructions` append. The
-  former is more powerful and a materially larger I3 risk surface — an accumulating, self-modifying
-  instruction set is a plausible route to instructions the operator never reviewed.
-- **Q3** — Consolidation cadence: per-turn (cheap per step, many small merges) versus periodic batch
-  (cheaper overall, a staleness window in between). 005 §4 doesn't have to answer this for history
-  because history's compaction is triggered by context-window pressure; memory has no equivalent
-  forcing function.
-- **Q4** — Whether the agent-writable portion of `/memory` should default to read-only with writes
-  only through `agent.notes` (§4), or genuinely read-write. A read-write mount lets an agent
-  overwrite or corrupt structured records the host's own extraction depends on; a read-only default
-  with a separate writable `notes/` subtree avoids that at the cost of a slightly less "ordinary"
-  filesystem.
-- **Q5** — Whether `agent.memory` (026 §5) should expose read access to the *default-ranked* view
-  (what `on_context` would inject) as a callable, so an agent inside CodeAct can ask "what does
-  memory say about X" without waiting for the next turn's automatic injection.
+- ~~**Q1** — Decay function and its parameters (half-life vs. step). Needs an evidence-based default
+  from a real usage corpus, not a guess baked into the spec.~~ **Resolved, shape only — exponential
+  half-life; the parameter value stays genuinely evidence-gated (2026-08-04):** the shape is
+  answerable by reasoning even without a corpus: `salience`'s continuous `0..1` field (§3) already
+  implies smooth decay, not discrete tiers, which is what a step function would fit better —
+  exponential half-life avoids the sharp-cliff discontinuity (fully usable one turn, gone the next)
+  this project's other design choices consistently avoid (008's graceful profile downgrade, §7's
+  consolidation-not-deletion). The specific half-life *value* can't be picked from reasoning alone
+  and stays exactly what this question already says it needs — an evidence-based default measured
+  through 022's evaluation framework once an implementation exists, not guessed into the spec now.
+  §7's "explicit, operator-declared schedule" is the shipping mechanism regardless: an operator can
+  override the shape entirely, and the engine-shipped default value is a tunable starting point,
+  never a claim of correctness.
+- ~~**Q2** — Whether procedural memory ("learned instructions") may modify an agent's effective
+  `instructions` directly, or only ever arrive as a `ContextContribution.instructions` append.~~
+  **Resolved, No — append only, never direct modification (2026-08-04):** this is §6's already-
+  established principle (memory is model-derived content the moment it passes through extraction,
+  confined to data, never authority) applied to a bigger version of the same hazard. `instructions`
+  is part of 002 §1's compiled, operator-reviewed agent metadata table, built once at startup and
+  read-only by design — a procedural-memory item directly modifying it would be model-derived
+  content reaching something 002 treats as trusted policy, exactly the authority-laundering §6
+  already forbids for approval predicates, except persistent across every future turn rather than
+  one decision — worse, not equivalent. `ContextContribution.instructions` (005 §5, already the
+  designed per-turn, attributed, tainted injection path) is the only route: a learned instruction is
+  injected alongside the static instructions each turn, visibly sourced (§6), never silently becoming
+  part of the agent's reviewed baseline.
+- ~~**Q3** — Consolidation cadence: per-turn (cheap per step, many small merges) versus periodic
+  batch (cheaper overall, a staleness window in between).~~ **Resolved, operator-configurable,
+  defaulting to periodic batch (2026-08-04):** this dissolves the per-turn-vs-batch framing as a
+  false binary once *when* consolidation runs is recognized as a genuine 020 §1 configuration knob —
+  it doesn't change what the agent does given the same input, only an operational cost/staleness
+  tradeoff, the same category §4 already puts extraction cadence in ("whether extraction happens, on
+  what cadence... is an operator decision"). Consolidation gets the identical treatment rather than a
+  different, hardcoded answer for a sibling mechanism. Default: periodic batch, the safer
+  absent-evidence choice (§7's own framing: "cheaper overall"), matching how other periodic-
+  maintenance obligations in this project already default to scheduled rather than continuous (the
+  interpreter image's cadence, 010 §10 Q1; the safety corpus's cadence, OQ-10).
+- ~~**Q4** — Whether the agent-writable portion of `/memory` should default to read-only with writes
+  only through `agent.notes` (§4), or genuinely read-write.~~ **Resolved, read-only outside
+  `notes/`, confirming what §4's own example already does (2026-08-04):** §4 already shows the write
+  path as `/memory/notes/project-x.md`, and `agent.notes` (026 §5) is already scoped narrowly to
+  exactly that subtree — the choice was already made; only §10 hadn't marked it. Stated explicitly:
+  an agent's write access to `/memory` is scoped to `notes/`, never generalized read-write access to
+  the structured records under `{kind, id}` (§3) that the host's own extraction/consolidation logic
+  depends on being well-formed — a genuine, not speculative, corruption hazard. The cost is real but
+  small: `/memory` still reads as an ordinary, browsable directory (026 §1); only the write boundary
+  is scoped, the same shape ordinary filesystems already have (a user's home directory has read-only
+  system paths alongside a writable one) — not an unfamiliar pattern.
+- ~~**Q5** — Whether `agent.memory` (026 §5) should expose read access to the *default-ranked* view
+  as a callable, so an agent inside CodeAct can ask "what does memory say about X" without waiting
+  for the next turn's automatic injection.~~ **Resolved, No — already served by `recall`, applying
+  026 §5a's admission test (2026-08-04):** the "default-ranked view" §5 above describes is
+  explicitly "a short, budgeted set of high-ranked items" — not bulk, which is the only bar (besides
+  run-intrinsic, which this isn't) 026 §5a's admission test allows a module to clear. A short,
+  budgeted read is served equally well by `recall` called with no query — the same already-designed
+  `ContextContribution.tools`-contributed tool (§5 above), reachable via `agent.tools.recall(...)`
+  like any other tool — which is exactly 026 §5a's disqualifying condition for a *new* top-level
+  module. `agent.memory` (026 §5's table) stays what its capability already says it is — ordinary
+  `FsRead<mount>` access to the memory worktree's files — not a second, ranked-query surface
+  duplicating `recall`.

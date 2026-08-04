@@ -8,9 +8,12 @@ negotiable here either.
 
 ## Target & scope
 
-- **Cross-platform is a v1 requirement, not a later port.** Windows 11 / x86-64, Linux / x86-64,
-  and macOS / arm64 are all first-class. The engine is developed on Windows and Linux
-  simultaneously; a change that builds on only one is not done.
+- **Cross-platform is a v1 requirement, not a later port.** Windows 11 / x86-64 and Linux / x86-64
+  are both first-class. The engine is developed on Windows and Linux simultaneously; a change that
+  builds on only one is not done. **macOS is not a target platform** (021 §7 OQ-1, resolved
+  2026-08-04): Quark has no macOS PAL backend, nobody has claimed the work of building one, and
+  every macOS claim in this project was aspirational rather than CI-backed. Dropped rather than
+  carried as permanent debt.
 - **All OS specifics go through a seam.** Quark's PAL (spec 019) for scheduler/IO/clock/net; the
   Sandbox backend interface (008) for isolation; the plugin host (009) for WASM. AgentEngine core
   contains **no** `#ifdef _WIN32` outside those seams.

@@ -1,6 +1,6 @@
 # 014 — Workflow and Orchestration
 
-**Status:** Draft · **Depends on:** 001, 002, 005, 013, 019 · **Gate:** §8
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Depends on:** 001, 002, 005, 013, 019 · **Gate:** §8
 
 ## Goal
 
@@ -45,19 +45,26 @@ The named patterns are configurations of the graph, not separate subsystems:
 | **Sequential** | chain |
 | **Concurrent** | fan-out + fan-in with an aggregator |
 | **Handoff** | switch/case on a routing decision, control transfer |
-| **Group chat / debate** | a moderator executor cycling among participants with a bound |
+| **Group chat / debate** | a moderator executor cycling among participants with a caller-set round bound as the primary termination contract |
+| **Planner (Magentic)** | the same cyclic-moderator shape as Group chat/debate, but the moderator maintains a task/progress ledger, picks the next participant and decides completion itself, and self-triggers a replan on stall detection — round/stall/reset bounds are a safety valve, not the termination contract |
 | **Map-reduce** | fan-out over a collection + fan-in reducer |
 | **Router** | switch/case on a classifier's typed output |
 | **Reflection / critic** | a cycle with an explicit iteration bound |
 
 **Guidance:** an agent-to-agent interaction with structure belongs here, not in a handoff chain
-(002 §4). Handoff is for one hop; a graph is for a process.
+(002 §4). Handoff is for one hop; a graph is for a process. **Group chat/debate vs. Planner:** pick
+Group chat/debate when the caller wants to author the routing and stopping condition explicitly;
+pick Planner when the caller wants to hand over a goal and let the moderator own routing, completion,
+and recovery from a stalled round — "send it a goal and it finishes" is Planner's defining case, not
+Group chat's (see `docs/research/2026-maf-orchestration-patterns.md`).
 
 ## 4. Human-in-the-loop
 
 A **request port** is an executor that emits `InputRequired` (001 §2) and suspends the workflow
 until a response arrives. It is the same mechanism as tool approval and A2A `INPUT_REQUIRED` — one
-shape, four surfaces (013 §5).
+shape, four surfaces (013 §5). Multiple request ports open concurrently in different branches
+produce multiple concurrent `Interaction` records (001 §2) on the same run — the case that makes
+`interaction_id` a set rather than a singleton, resolving OQ-4.
 
 A suspended workflow **holds no resources**: it is checkpointed, its activations passivate, and it
 resumes on the response, on a durable reminder (Quark 027), or never — an abandoned workflow is
@@ -103,32 +110,82 @@ that cannot be drawn is a workflow nobody can review.
   declarative form.
 - **G5** — a workflow suspended at a request port holds no activation, no sandbox, and no connection
   (measured), and resumes correctly after a process restart.
+- **G6 (§9 Q4, cross-node checkpoint consistency)** — a workflow with executors placed on ≥3 distinct
+  cluster nodes, killed at a superstep boundary via a node failure injected between checkpoint-pending
+  and checkpoint-committed, resumes with output identical to the uninterrupted control; a failure
+  injected strictly before checkpoint-pending is observed leaves no partial/ambiguous checkpoint —
+  resume falls back to the prior committed one.
 
 ## 9. Open questions
 
-- **Q1** — Should the single-agent turn loop *be* a workflow (001 Q1)? Uniformity versus overhead.
-- **Q2** — Cyclic graphs: required for reflection patterns, and the hard part of static validation.
-  Current position is "cycles allowed with a mandatory bound"; the validation story is incomplete.
-- **Q3** — Dynamic graph mutation at runtime (adding an executor mid-run) — powerful, and it breaks
-  the "snapshot the graph per run" property that makes replay sound.
-- **Q4** — Distributed workflows spanning nodes: Quark makes it possible; the checkpoint consistency
-  model across nodes is unspecified.
-- **Q5** — §3's pattern table has no row for MAF's fifth named orchestration pattern, **Magentic**:
-  a manager that maintains a task/progress ledger, dynamically assigns work, and can trigger
-  replanning — meaningfully more than "a moderator executor cycling among participants with a
-  bound" (the closest existing row, Group chat/debate). Undecided whether ledger/replan behavior is
-  meant to be business logic inside a moderator executor — consistent with §3's stated philosophy
-  that patterns are graph configurations, not separate subsystems, and needs no new primitive — or
-  whether it's common enough to deserve its own named row so every application doesn't reinvent
-  ledger/replan semantics independently.
-- **Q6** — Mid-run amendment of a running executor's goal/instructions (as opposed to routing a new
-  *message* to it, already supported). No MAF precedent: neither its Python nor .NET SDK supports
-  live-editing a running executor's instructions — both only steer through new messages fixed at
-  builder-configuration time. §2's superstep model already delivers typed messages to executors as
-  ordinary graph edges, so a goal update that **queues and applies at the next superstep boundary**
-  needs no new primitive — same discipline as everything else here. What's open is the same tension
-  Q3 already names for dynamic graph mutation: whether a goal update should be able to **interrupt**
-  a turn already in flight (powerful, but breaks the snapshot-the-graph-per-run property that makes
-  replay sound) versus always waiting for the next boundary (safe, replay-sound, but not "mid-turn"
-  in the sense a caller invoking this might expect). Treat as a specific instance of Q3, not a
-  separate mechanism, until Q3 itself is resolved.
+- ~~**Q1** — Should the single-agent turn loop *be* a workflow (001 Q1)? Uniformity versus
+  overhead.~~ **Resolved, No (OQ-2, 2026-08-04):** see 001 §10 Q1 for the full reasoning — merging
+  would invert the dependency direction between the two RFCs (§1's `Executor = an agent | ...`
+  already builds workflows *from* agents) and would route the dominant single-agent path through
+  supervising-actor and typed-edge machinery it cannot exercise. The uniformity this question wanted
+  — one checkpoint story, one replay mechanism — is achieved at the 019/013 layer instead (turn
+  boundaries and superstep boundaries are peer checkpoint-boundary kinds), without collapsing the
+  execution models themselves.
+- ~~**Q2** — Cyclic graphs: required for reflection patterns, and the hard part of static validation.
+  Current position is "cycles allowed with a mandatory bound"; the validation story is incomplete.~~
+  **Resolved — the story was already complete, just not stated for the cyclic case (2026-08-04):**
+  no new validation category is needed. **Type-checking** is already local and pairwise (§1: "an
+  edge that connects incompatible types fails to build") and doesn't care whether the edge it's
+  checking happens to close a cycle — the loop-closing edge is validated exactly like any other.
+  **Bound enforcement** is already global, not per-cycle: §2's round counter is a whole-workflow
+  clock ("all messages delivered in round *n* are processed before round *n+1* begins"), so
+  `MaxRounds` transitively bounds every cycle's iteration count by construction — a cycle cannot
+  iterate more times than there are total rounds, so there is no graph shape that structurally
+  bypasses the bound. The "incomplete" feeling came from these two facts never having been stated
+  together for the cyclic case specifically; nothing about them changes for it.
+- ~~**Q3** — Dynamic graph mutation at runtime (adding an executor mid-run) — powerful, and it breaks
+  the "snapshot the graph per run" property that makes replay sound.~~ **Resolved, No — the graph
+  stays fixed per run (2026-08-04):** true topology mutation would turn "the graph" into versioned,
+  replayable state in its own right (what did it look like at checkpoint *k*?) — a materially bigger
+  feature than anything else here, for needs that turn out to already be served without it. The two
+  real motivations dissolve on inspection: **data-driven fan-out cardinality** (Map-reduce, §3) is
+  already a runtime instance count, not a change to "the graph" as §1 defines it (executors/edges are
+  typed *kinds*; how many parallel instances a fan-out spawns is orthogonal to which kinds exist).
+  **Open-ended agent invocation** ("call an agent kind the graph wasn't wired to") is already
+  `AgentCall` (007 §3) — an ordinary, capability-gated tool call from inside an executor, not a
+  graph-structural change. An author who wants the topology itself to differ builds two workflows and
+  routes between them from an outer decision; "the graph" stays the one stable, checkpointable,
+  drawable (§7) thing this RFC promises. This also resolves Q6 below, which was explicitly deferred
+  to this answer.
+- ~~**Q4** — Distributed workflows spanning nodes: Quark makes it possible; the checkpoint consistency
+  model across nodes is unspecified.~~ **Resolved — the superstep barrier already is the
+  distributed-consistency mechanism (2026-08-04):** a round boundary already requires the supervising
+  actor to have observed every round-*n* executor's completion, regardless of which node hosts it —
+  that's a precondition §2's fan-in semantics already needs to be well-defined, not a new
+  requirement. Checkpointing at that boundary (§5) is therefore checkpointing at a point already
+  known to be globally quiescent; no distributed-snapshot protocol (Chandy-Lamport or similar) needs
+  inventing. What's added, concretely: the checkpoint commits in two phases from the supervising
+  actor's view — mark checkpoint-pending once every round-*n* completion is observed, wait for each
+  executor's own per-actor persistence (Quark 012's `Store`, node-local, already durable regardless
+  of placement) to confirm, then mark the checkpoint committed — the same intent-then-confirm
+  discipline 019 §3 already applies to effects, applied here to the checkpoint itself. A node failure
+  between "pending" and "committed" leaves an incomplete checkpoint that resume treats as "hadn't
+  happened," never as ambiguous partial state. This is the same question as 019 §8 Q3 (now resolved
+  there too, pointing back here) — one resolution, not two.
+- ~~**Q5** — §3's pattern table has no row for MAF's fifth named orchestration pattern, Magentic.~~
+  **Resolved:** given its own row, **Planner (Magentic)**, distinct from Group chat/debate — see §3.
+  Grounded in `docs/research/2026-maf-orchestration-patterns.md` (2026-08-04): the graph shape is the
+  same cyclic moderator as Group chat/debate (Microsoft's own docs say so directly), but the defining
+  property — the moderator owns its own completion decision and self-triggers a replan on stall,
+  bounded only by safety-valve counters rather than a caller-authored round contract — is exactly the
+  "hand it a goal and it finishes without babysitting" experience §3's other rows don't offer. No new
+  engine primitive: cyclic graphs with a mandatory bound (§2) and a request port for optional human
+  plan review (§4) already express it, consistent with §3's "patterns are graph configurations, not
+  separate subsystems." Naming it earns the row anyway, per 027 §1's rule to adopt MAF's name wherever
+  the concept is genuinely the same.
+- ~~**Q6** — Mid-run amendment of a running executor's goal/instructions (as opposed to routing a new
+  *message* to it, already supported).~~ **Resolved, queue and apply at the next superstep boundary,
+  never interrupt (2026-08-04):** once separated from Q3 (a goal update is a *message* to an existing
+  executor, not a topology change, so Q3's "no mutation" answer doesn't actually block it), the
+  tension collapses on its own terms: interrupting a turn already in flight would violate 001 §3's
+  "every iteration is a checkpoint boundary" at the agent level, the identical reasoning that closed
+  Q3 at the graph level. §2's superstep model already delivers typed messages to executors as
+  ordinary graph edges landing at the next round — a goal update needs no new primitive, it is that
+  mechanism carrying updated goal content, applied when the executor's own turn loop next reads it.
+  No MAF precedent supports live-editing either (neither SDK live-edits a running executor's
+  instructions), consistent with not inventing one here.

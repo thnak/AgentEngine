@@ -1,6 +1,6 @@
 # 015 — Declarative Agent and Workflow Format
 
-**Status:** Draft · **Depends on:** 002, 006, 014 · **Gate:** §7
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Depends on:** 002, 006, 014 · **Gate:** §7
 
 ## Goal
 
@@ -118,13 +118,48 @@ same metadata, so the three cannot drift.
 
 ## 8. Open questions
 
-- **Q1** — Whether to align `apiVersion`/`kind`/`metadata`/`spec` with Kubernetes conventions
+- ~~**Q1** — Whether to align `apiVersion`/`kind`/`metadata`/`spec` with Kubernetes conventions
   (as written here) or adopt a lighter shape. The K8s shape buys familiarity, tooling, and a natural
-  path to a `remote` deployment CRD (008), at the cost of verbosity.
-- **Q2** — Inline code in documents: powerful (a small Python transform as a node) and a direct
+  path to a `remote` deployment CRD (008), at the cost of verbosity.~~ **Resolved, K8s shape,
+  confirming what §2/§3's own examples already committed to (2026-08-04):** the concrete reason it's
+  right for this project, not just convention-following — 008 §3's `remote` profile targets the
+  Kubernetes Agent Sandbox CRD directly, and 020 §8 Q4 is already weighing whether a future `remote`
+  deployment descriptor reuses that CRD's own shape. Anyone deploying to `remote` is near-certainly
+  K8s-fluent already; the accepted cost is verbosity, not unfamiliarity.
+- ~~**Q2** — Inline code in documents: powerful (a small Python transform as a node) and a direct
   route to "config that is actually untrusted code". Currently prohibited; the sandbox makes it
-  *possible* to allow, which is not the same as advisable.
-- **Q3** — Whether declarative documents should be signable like plugins (009), so a deployed agent
-  definition carries provenance.
-- **Q4** — Interop with MAF's declarative agent YAML and with `SKILL.md`-style packaging: importer
-  or native support? (Pending the RFC 011 skills research.)
+  *possible* to allow, which is not the same as advisable.~~ **Resolved, No, stays prohibited
+  (2026-08-04):** the motivating case is already served without it — "a small Python transform as a
+  node" is exactly 014 §1's `function` executor kind, referenced by name from the registry the same
+  way §1 already references tools by name, going through 009's ordinary review/signing/capability-
+  declaration pipeline before it runs. Allowing inline code would let a document — reviewed under
+  configuration-shaped scrutiny, which the "sandbox makes it possible" framing already flags as the
+  wrong bar — carry unsigned, unpinned T3-tier code with none of that pipeline's checks. If a genuine
+  need for truly ad hoc, author-here-run-immediately transform code ever appears, that's new,
+  narrowly-scoped design surface for an explicitly-code document type, not a reason to weaken this
+  format's config/code boundary.
+- ~~**Q3** — Whether declarative documents should be signable like plugins (009), so a deployed agent
+  definition carries provenance.~~ **Resolved, Yes, the same trust model as plugins (2026-08-04):**
+  hot-reloadable documents (§6) share plugins' deployment shape — loaded and updated independently of
+  a full engine rebuild — not compiled C++'s, where the build pipeline itself already is the
+  provenance. A document carries an optional `SIGNATURE` (mirroring 009 §3's package format),
+  verified before parsing (009 §4's rule, applied here too), with operator approval keyed to the
+  digest §6 already tracks — extending an existing mechanism, not adding a new one, and matching
+  012 §4a's card signing and 018 §8 Q4's caller-pinned-trust posture. Unsigned documents stay
+  loadable for the common case of a document built and reviewed entirely through the operator's own
+  pipeline (their own git repo, their own CI); signing is required only when §5's `$ref`/registry
+  resolution pulls a document from outside that pipeline — the same boundary 009 already draws for
+  plugins.
+- ~~**Q4** — Interop with MAF's declarative agent YAML and with `SKILL.md`-style packaging: importer
+  or native support? (Pending the RFC 011 skills research.)~~ **Resolved, split — one half was
+  already answered, the other stays deferred (2026-08-04):** the `SKILL.md` half isn't actually an
+  open question anymore: 009 §8a already adopted it as *the* skill format of record, natively, not
+  as something translated into via an importer. What remains is MAF's own *agent-definition* YAML —
+  a genuinely different, harder problem, because it very likely references language-specific
+  callables (a Python function, a .NET type) with no general equivalent in a C++/WASM-plugin engine,
+  unlike `SKILL.md`'s genuinely portable declarative content. **No importer for v1** — resolving
+  arbitrary cross-language callable references is real, speculative design work with no concrete
+  demonstrated need (no real MAF deployment has asked to migrate here yet); if one does, that's a
+  scoped, evidence-driven pass at that time. 002/015 already carry most of the familiarity benefit by
+  borrowing MAF's own vocabulary (CLAUDE.md: "the developer model is MAF-shaped") without needing to
+  solve callable portability.

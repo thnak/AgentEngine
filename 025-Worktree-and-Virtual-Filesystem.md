@@ -1,6 +1,6 @@
 # 025 — Worktree and Virtual Filesystem
 
-**Status:** Draft · **Depends on:** 003, 005, 007, 008, 019 · **Gate:** §9
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Depends on:** 003, 005, 007, 008, 010, 019 · **Gate:** §9
 
 ## Goal
 
@@ -80,9 +80,15 @@ multi-agent systems destroy each other's work.
   - **conflict → the merge fails and is surfaced**, with both versions retained at
     `/conflicts/<path>.<agent>`, and the run's supervising agent or a human resolves it.
 - **Conflicts are never resolved by guessing, and never by last-writer-wins.** Silently discarding
-  an agent's work is worse than a visible conflict.
+  an agent's work is worse than a visible conflict. A model may be offered a surfaced conflict as a
+  **drafting** task — both versions plus the common ancestor, produce a proposed merge — but a
+  proposal is never auto-committed; writing it back as the accepted resolution is a write effect
+  gated the same as any other (007, 006 §4), confirmed by the supervising agent or a human (OQ-13).
 - Merges are audited and produce a diff summary usable as model context ("the writer changed 3
-  files") without dumping content.
+  files") without dumping content. The same mechanism runs proactively for **`shared`** sub-
+  worktrees: if the tree has moved since an agent's last read, its next turn opens with the same
+  kind of short diff-summary note, so cross-visibility stays ordinary-computer-like (026 §1) without
+  the staleness being silent (OQ-13).
 
 ## 5. Mounts and capabilities
 
@@ -138,9 +144,13 @@ practical value of content addressing for an audited system.
 ## 9. Promotion gate
 
 - **G1 (durability)** — a worktree survives sandbox destruction, process restart, and simulated node
-  migration with byte-identical content; proven for every profile in 008.
+  migration with byte-identical content; proven for every profile in 008. Passivation and a change
+  of sandbox profile (010 §4) are covered by this same gate without separate test scenarios: both
+  restore through the identical digest-fetch mechanism (§6) G1 already exercises, so a worktree that
+  survives destruction, restart, and migration by that mechanism survives passivation and profile
+  changes by construction.
 - **G2 (isolation)** — the path-escape corpus (§5) fails to read or write outside a mount on
-  Windows, Linux, and macOS.
+  Windows and Linux.
 - **G3 (concurrency)** — N concurrent `branch` agents produce a deterministic merge result; every
   genuine conflict is surfaced, never silently resolved; no lost update over 10⁴ randomized
   interleavings.
@@ -149,20 +159,69 @@ practical value of content addressing for an audited system.
 - **G5 (rewind)** — restoring an arbitrary retained turn digest reproduces that turn's tree exactly.
 - **G6 (redaction)** — deleting content removes it from live trees, checkpoints, and unreferenced
   objects; a store scan finds no residue.
+- **G7 (conflict drafting and shared staleness, OQ-13)** — a model-drafted merge proposal never
+  reaches the accepted tree without a separate confirming write; a positive control (a draft
+  auto-committed by a deliberately miswired path) is caught. A `shared` sub-worktree that changed
+  since an agent's last read surfaces the staleness note on its next turn, measured, not asserted.
 
 ## 10. Open questions
 
-- **Q1** — Should merge conflicts be presented to the *model* as a task (it can often resolve them)
+- ~~**Q1** — Should merge conflicts be presented to the *model* as a task (it can often resolve them)
   or escalated to a human by default? Current position is escalate; model-assisted resolution is an
-  obvious extension and an obvious way to lose data.
-- **Q2** — Whether `shared` mode should be permitted at all for concurrent agents given §4's
+  obvious extension and an obvious way to lose data.~~ **Resolved (OQ-13, 2026-08-04): split
+  proposing from confirming, don't conflate them.** §4's "never resolved by guessing" rule is about
+  *silent* resolution — nothing becomes the accepted tree without an explicit act — not about *who*
+  may draft a proposal. The model may be offered the conflict as a drafting task (both versions plus
+  the common ancestor, produce a proposed merge); that proposal is never auto-committed. Writing a
+  resolution back to the worktree stays exactly what §4 already specifies today — surfaced, and
+  requiring the run's supervising agent or a human to confirm it — except the confirmer now reviews
+  one proposed merge instead of two raw diffs. Escalation-by-default is unchanged; what's added is a
+  drafting step ahead of it, gated the same way any other write is (007, 006 §4), never a shortcut
+  around confirmation.
+- ~~**Q2** — Whether `shared` mode should be permitted at all for concurrent agents given §4's
   single-writer serialization makes it *safe* but still makes it *confusing* (an agent's file
-  changes under it between reads).
-- **Q3** — Large-file strategy: chunked content addressing for multi-GB files versus whole-blob.
-- **Q4** — Whether the worktree should be exposed to the *user* as a browsable, downloadable
-  artifact of the conversation (it probably should) and what that means for retention policy.
-- **Q5** — Cross-session worktree sharing (a project disk spanning conversations) is desirable and
-  breaks the "one worktree, one principal, one session" simplicity that makes §5 sound.
+  changes under it between reads).~~ **Resolved, permitted as an explicit override, not banned
+  (OQ-13, 2026-08-04):** banning it would make the worktree *more* restrictive than an ordinary
+  computer for a case ordinary computers handle constantly — two processes sharing a directory — and
+  026 §1's whole design commits to the environment reading as ordinary. Real collaborative patterns
+  (a concurrent producer/consumer pair, live co-editing) genuinely want immediate cross-visibility,
+  which forcing `branch`+merge would tax for no benefit. What §4 already flags as "confusing" is a
+  real, distinct hazard, though — silent staleness with no retained-both-versions safety net, unlike
+  a `branch` conflict — so it gets the same treatment §4 already gives merges: a short diff-summary-
+  as-context note ("the shared worktree changed since your last turn: 3 files modified by `writer`")
+  surfaced at the start of a turn when the tree has moved since the agent's last read. This is an
+  extension of §4's existing merge-audit mechanism applied proactively to `shared` staleness, not a
+  new one — it closes the silent half of the hazard without banning the mode. `branch` stays the
+  default for concurrent siblings (§3, unchanged); `shared` remains available as an explicit,
+  non-default choice.
+- ~~**Q3** — Large-file strategy: chunked content addressing for multi-GB files versus whole-blob.~~
+  **Resolved, No, stay whole-blob for v1 (2026-08-04):** whole-blob dedup already delivers the
+  property that matters most (§2: identical files stored once); content-defined chunking would trade
+  §2's simple `Blob → Tree → Ref` model for a genuinely more complex chunk-tree object model, for a
+  benefit — efficient storage of similar-but-not-identical large files with small deltas — that no
+  workload in this spec currently demonstrates needing. CONVENTIONS' "don't design for hypothetical
+  future requirements" applies directly. Whole-blob's actual cost at multi-GB scale (a one-byte
+  change re-storing the whole file) is bounded by §6's GC reclaiming the old blob once unreferenced —
+  a temporary storage spike, not unbounded growth, survivable rather than design-blocking. If a real
+  workload later demonstrates this cost is prohibitive, that's evidence-driven design work for a
+  dedicated ADR at that time, matching how other genuinely-hard, evidence-needing questions in this
+  project (021 §7 Q2) are left open rather than solved speculatively.
+- ~~**Q4** — Whether the worktree should be exposed to the *user* as a browsable, downloadable
+  artifact of the conversation (it probably should) and what that means for retention policy.~~
+  **Resolved, Yes, and it needs no new mechanism (2026-08-04):** it's an ordinary `FsRead<mount>`
+  grant (007 §3) to the end-user principal, surfaced through 020's server surfaces, not a bypass of
+  the mount model. §3's existing subtree structure gives natural scoping — an operator grants the
+  user-facing principal read access to whichever subtrees should be browsable (typically `/work` and
+  `/out`, not `/skills/*` or another agent's `/agents/<name>` working directory) — the identical
+  capability-gated, principal-scoped model every other mount already goes through, including 018 §6's
+  cross-principal-access-denied rule unchanged. **Retention**: browsability doesn't add a new
+  category — it's a read view over the same content-addressed store, still subject to §6's existing
+  GC and redaction/deletion rules. What it does add is that "downloadable" makes the worktree a real,
+  human-visible surface a data-subject deletion request (017 §5) must actually reach — which §6's
+  existing "redaction and deletion must reach the object store" language already requires, not a new
+  rule to write.
+- ~~**Q5** — Cross-session worktree sharing (a project disk spanning conversations) is desirable and
+  breaks the "one worktree, one principal, one session" simplicity that makes §5 sound.~~
   **Resolved by 030**: don't share one worktree across sessions — index N independent worktree refs
   at a new Project layer above sessions instead. §5's per-session mount/capability model is
   unmodified; 030 §2 has the detail.

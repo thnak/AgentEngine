@@ -1,6 +1,6 @@
 # 027 — Vocabulary and Naming
 
-**Status:** Draft · **Depends on:** all · **Gate:** §8 · **Normative for:** every public identifier
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Depends on:** all · **Gate:** §8 · **Normative for:** every public identifier
 
 ## Goal
 
@@ -155,7 +155,7 @@ Names settled here that existing RFCs had not yet adopted, applied in a follow-u
 | RFC | Change | Status |
 |---|---|---|
 | 003 | `Part` → `Content` (kept as `Part` only in `a2a::` mapping prose, 012) | Applied |
-| 004 | "Provider" / "Model Provider Plane" → `ChatClient`; retitled, including the `ChatClient<"vendor:model">` policy tag (002) | Applied |
+| 004 | "Provider" / "Model Provider Plane" → `ChatClient`; retitled, including the `ChatClientId<"vendor:model">` policy tag (002) | Applied |
 | 005 | `MemoryProvider` → `ContextProvider`, memory as a kind (§3) | Applied |
 | 005, 001 | `Session` → `AgentSession` for the type; "session" stays fine in prose | Applied |
 | 026 | `agent.memory` reviewed against `ContextProvider` naming | No rename needed — it is a Python-facing module name describing a task, not a competing type; 029 §4–5 grounds what it actually reads |
@@ -184,14 +184,39 @@ Names settled here that existing RFCs had not yet adopted, applied in a follow-u
 
 ## 10. Open questions
 
-- **Q1** — `ChatClient` is MAF's name and it is slightly wrong for a seam that also covers embeddings
-  and non-chat completion; MAF handles that with a separate `BaseEmbeddingClient` and
+- ~~**Q1** — `ChatClient` is MAF's name and it is slightly wrong for a seam that also covers
+  embeddings and non-chat completion; MAF handles that with a separate `BaseEmbeddingClient` and
   `Supports*` capability protocols. Adopting that split wholesale is probably right and is not yet
-  decided.
-- **Q2** — MAF's capability-detection pattern (`SupportsCodeInterpreterTool`,
+  decided.~~ **Resolved, No, keep one `ChatClient` seam (2026-08-04):** 004 §2's capability bitset
+  already covers this (`multimodal_in`/`multimodal_out` and similar bits let a backend declare what
+  it doesn't support), and nothing in this project's current scope needs embeddings as a first-class
+  separate seam — no embedding-consuming feature exists anywhere in the spec yet. Splitting
+  speculatively, with no concrete driver, is the premature abstraction CLAUDE.md warns against. If a
+  concrete embedding-consuming feature is designed later (e.g. a retrieval provider needing
+  embeddings, 029), that's the point to decide whether it needs its own seam — evidence-driven, not
+  speculative.
+- ~~**Q2** — MAF's capability-detection pattern (`SupportsCodeInterpreterTool`,
   `SupportsWebSearchTool`, `SupportsMCPTool`…) is very close to RFC 004's capability bitset. Whether
-  to mirror the protocol-per-capability shape in C++ concepts, or keep the bitset, is open.
-- **Q3** — Whether `Run` should be renamed to `Task` to match A2A, accepting the collision with
-  `ae::task<>`. Current answer is no, emphatically, but it will be asked again.
-- **Q4** — Whether the declarative format (015) should use these names verbatim as its YAML keys
-  (probably yes — one vocabulary, two syntaxes).
+  to mirror the protocol-per-capability shape in C++ concepts, or keep the bitset, is open.~~
+  **Resolved, keep the bitset (2026-08-04):** this is a language-idiom difference, not a concept
+  difference, so §1's naming rule doesn't actually push toward MAF's shape here. A `constexpr` bitset
+  checked once at registration time is more aligned with this project's own established CRTP-policy
+  idiom (002's whole authoring model) than porting C#/Python's structural-typing `Supports*` pattern
+  would be, and it's trivially composable (query/iterate/log several capabilities at once) in a way N
+  separate protocol-conformance checks aren't as naturally. 004 §2 stays as specified.
+- ~~**Q3** — Whether `Run` should be renamed to `Task` to match A2A, accepting the collision with
+  `ae::task<>`. Current answer is no, emphatically, but it will be asked again.~~ **Resolved, No,
+  formalizing what §2 already argues (2026-08-04):** the collision with `ae::task<>` (§5's "never
+  declare a bare `Task` type") and MAF having no first-class run object at all (§2: "inventing `Run`
+  is cheaper than overloading `AgentResponse` with a lifecycle it does not have") are structural
+  reasons, not preferences — this was never actually open, only flagged as likely to be re-asked,
+  which this entry now states explicitly rather than leaving the question looking undecided.
+  Revisiting it needs an ADR (CLAUDE.md's locked-decision discipline), not a re-ask.
+- ~~**Q4** — Whether the declarative format (015) should use these names verbatim as its YAML keys
+  (probably yes — one vocabulary, two syntaxes).~~ **Resolved, Yes, same vocabulary, YAML-idiomatic
+  spelling — confirming what 015's own examples already do (2026-08-04):** "verbatim" was never fully
+  literal — `MaxTurns<N>` isn't valid YAML key syntax to begin with, so the real question was always
+  "same concept, what casing," and 015's examples already answer it (`max_turns`, `capabilities`,
+  `sandbox.profile` map 1:1 to `MaxTurns<N>`/`Capabilities<Cs...>`/`SandboxProfile<P>` in ordinary
+  snake_case). Stated now as a rule rather than left implicit: a new policy name introduced under
+  §8 rule 3 gets its YAML key as the same name in snake_case, in the same commit.

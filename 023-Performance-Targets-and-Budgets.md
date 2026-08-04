@@ -1,6 +1,6 @@
 # 023 — Performance Targets and Budgets
 
-**Status:** Draft · **Depends on:** all · **Gate:** §7
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Depends on:** all · **Gate:** §7
 
 ## Goal
 
@@ -81,8 +81,14 @@ this project does not ship an empty results file to look organized).
 
 ## 7. Promotion gate
 
-- **G1** — every §3 cell has a benchmark and a baselined number on the reference machine, replacing
-  the provisional target with a measurement.
+- **G1** — every Hard- and Goal-class §3 cell has a benchmark and a baselined number on the
+  reference machine, replacing the provisional target with a measurement.
+- **G1b** — every Free-class §3 cell is verified by a passing pass/fail CTest gate, the same
+  mechanism §4 already uses for its machine-independent invariants — a Free-class row is a
+  structural/codegen check (indistinguishable from hand-written, no added branch or indirect call),
+  not a numeric benchmark, so it has no baselined number to demand. This CTest gate runs on every
+  build; that is what catches a Free-class row regressing — a zero-cost claim that silently gains a
+  branch or allocation fails the next build, not just a scheduled benchmark run.
 - **G2** — every §4 invariant has a passing CTest gate with a positive control.
 - **G3** — the gate detects a deliberately introduced 20 % regression in each Hard cell.
 - **G4** — budgets are re-baselined on a second platform (Windows and Linux), with divergences
@@ -90,9 +96,41 @@ this project does not ship an empty results file to look organized).
 
 ## 8. Open questions
 
-- **Q1** — Which reference machine. Quark's is a virtualized Xeon Silver 4208; sharing it makes
-  cross-project comparison possible and understates modern hardware.
-- **Q2** — Whether sandbox cold-start budgets should be per-profile absolutes (as written) or
-  ratios against a measured floor, given they are dominated by the OS and hypervisor.
-- **Q3** — Token-throughput budgets require a provider model; a mock cannot represent real
-  streaming cadence, and a real one is not reproducible.
+- ~~**Q1** — Which reference machine. Quark's is a virtualized Xeon Silver 4208; sharing it makes
+  cross-project comparison possible and understates modern hardware.~~ **Resolved, Quark's own
+  reference machine (2026-08-04):** the quantity this RFC measures — engine *overhead*, what
+  AgentEngine adds on top of Quark (§1) — is only meaningfully comparable against Quark's own
+  baseline if measured on the identical machine; a different one would need cross-machine
+  normalization for the one comparison that matters most to a project built as a layer over Quark.
+  "Understates modern hardware" is a real but weaker cost here than for raw-throughput numbers:
+  these are relative overhead budgets (avoided allocations, avoided atomic RMW, coroutine dispatch
+  cost), which are less hardware-generation-sensitive than absolute compute throughput. A second,
+  modern-hardware baseline can be added later as an informational addendum in `PERFORMANCE.md`
+  without changing which machine gates the merge, extending §7 G4's own "re-baselined on a second
+  platform, divergences explained rather than averaged" pattern from platform to hardware generation.
+- ~~**Q2** — Whether sandbox cold-start budgets should be per-profile absolutes (as written) or
+  ratios against a measured floor, given they are dominated by the OS and hypervisor.~~ **Resolved,
+  a measured-floor delta, matching this RFC's own §1 principle applied consistently (2026-08-04):**
+  §3's absolute `native-jail` cold-start number was actually an inconsistency with §1's own stated
+  philosophy — measure what the *engine* adds, not what the underlying platform costs — since a
+  number dominated by AppContainer/Job-Object creation is mostly measuring Windows' own baseline,
+  which can drift for reasons entirely outside AgentEngine's code (an OS update), producing false
+  regression alarms under §6's gate discipline. The gate measures **AgentEngine's added overhead**:
+  `(AgentEngine sandbox create+exec+destroy) − (a bare OS-level equivalent measured on the same
+  machine at gate time, e.g. a minimal AppContainer/namespace+cgroup creation with no engine code
+  involved)`, as a delta or ratio once §7 G1's real measurement determines which is more stable —
+  isolating engine regressions from platform noise the way every other budget in §3 already does.
+  This is a methodology fix, not a number change; §3's cells were already `TBD-baselined`.
+- ~~**Q3** — Token-throughput budgets require a provider model; a mock cannot represent real
+  streaming cadence, and a real one is not reproducible.~~ **Resolved — neither; a recorded-and-
+  replayed real stream, which this project already has the machinery for (2026-08-04):** 004 §7 G3
+  already requires "a recorded streamed run replays offline with identical chunk boundaries" — the
+  exact tool this question needs. Capture a real provider's actual streaming cadence once (001 §7's
+  recording mechanism), then replay it deterministically for every benchmark run: realistic (real
+  chunk timing from an actual provider, not a guessed synthetic cadence) and reproducible (replay is
+  deterministic, satisfying §5's fixture-based isolation). §5's "mock providers and fixtures" line is
+  clarified to mean recorded-real-provider fixtures specifically for the chunk-cadence-sensitive
+  budgets — a synthetic mock stays fine for the rest of §3's table, which doesn't depend on cadence.
+  Recordings should be refreshed periodically as providers change their own infrastructure — an
+  operational-freshness responsibility, the same pattern already applied to the interpreter image
+  (010 §10 Q1) and pricing tables (016 §8 Q2), not a new mechanism.

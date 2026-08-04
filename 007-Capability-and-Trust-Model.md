@@ -1,6 +1,6 @@
 # 007 — Capability and Trust Model
 
-**Status:** Draft · **Depends on:** 003, 006, 008, 018 · **Gate:** §9
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Depends on:** 003, 006, 008, 018 · **Gate:** §9
 
 ## Goal
 
@@ -61,6 +61,8 @@ explicitly, and revocable.
 | `Entropy` | CSPRNG | — |
 | `Env<key>` | Read one environment variable | key |
 | `AgentCall<agent>` | Invoke another agent | agent id, depth budget |
+| `Schedule<max_horizon, max_active>` | Register a durable wake condition that outlives the current turn (006 §6b, 019 §2) | max horizon into the future, max concurrently-active registrations |
+| `Background<max_concurrent>` | Detach a `Backgroundable` tool call (006 §5) from the turn that invoked it (006 §6b) | max concurrently-running detached calls |
 
 **Properties:**
 
@@ -171,14 +173,66 @@ duration, trace/span id}`.
   plugin's in-flight call is canceled and cannot complete an effect.
 - **G5 (attribution)** — under a randomized workload with injected failures, every effect in the
   audit log reconciles 1:1 with an emitted span, with zero unattributed effects.
+- **G6 (policy reachability, §10 Q3)** — a reachability tool enumerates every `{capability kind,
+  tool, taint level}` combination against a reference policy set; every combination's reached
+  decision matches a hand-computed oracle, and every rule in the set is exercised by at least one
+  combination (dead-rule detection).
 
 ## 10. Open questions
 
-- **Q1** — Whether capabilities should be representable as **bearer tokens** (macaroon-style, with
+- ~~**Q1** — Whether capabilities should be representable as **bearer tokens** (macaroon-style, with
   caveats) so they can cross a process boundary to a remote sandbox without a bespoke protocol.
-  Attractive for the `remote` profile (008); adds a crypto dependency and a revocation problem.
-- **Q2** — Span-level taint (003 Q3) would make declassification far more precise.
-- **Q3** — Whether policy should have a formal semantics + solver (decidable, verifiable) rather
-  than ordered rules with default-deny.
-- **Q4** — Agent identity standards: OAuth/OIDC covers principals today, but workload-identity
-  (SPIFFE-style) for agent-to-agent trust is unresolved (018).
+  Attractive for the `remote` profile (008); adds a crypto dependency and a revocation problem.~~
+  **Resolved, No (OQ-3, 2026-08-04):** `Capability` (§3) stays exactly as specified — host-process-
+  only, unforgeable by private construction, never serialized. What actually needed solving was
+  narrower: authenticating a remote sandbox's callback to the host that issued it. 008 §4a's
+  `RemoteExecToken` does that with an HMAC'd lookup key into a host-side registry, not a portable,
+  self-describing bearer capability — avoiding both concerns this question named: the crypto
+  dependency stays to an HMAC already needed elsewhere (011 §8a), and revocation is subsumed by the
+  same exec-liveness registry `destroy` already maintains, rather than a new distributed revocation
+  channel. Macaroon-style attenuable caveats were rejected specifically because their headline
+  property — offline verifiability without contacting the issuer — has no use here: §4's own rule
+  is that egress, and therefore every callback, is always host-mediated.
+- ~~**Q2** — Span-level taint (003 Q3) would make declassification far more precise.~~ **Resolved,
+  No (OQ-5, 2026-08-04):** see 003 §8 Q3. The decisive reason lives here, not there: G2's
+  compile-fail proof that `Tainted<T>` has no implicit conversion is a whole-value, compile-time
+  property. Span-level taint would need a runtime interval check instead, weakening I3's static
+  half for every text-touching path in exchange for less over-tainting friction — a precision gain,
+  not a security fix, since per-item taint never under-taints. Kept per-item.
+- ~~**Q3** — Whether policy should have a formal semantics + solver (decidable, verifiable) rather
+  than ordered rules with default-deny.~~ **Resolved, No solver — the existing rule shape already
+  gives verifiability for free
+  (2026-08-04):** a solver's value is answering "can any rule combination reach capability X?", but
+  §5's rule language is already a finite match over a bounded set of fields (`tool`, `capability`,
+  `path_under`, `host_not_in`, `taint`, ...) with no recursion and no unbounded quantifiers — that is
+  already decidable by **exhaustive enumeration**, not general theorem proving. Building a
+  formal-semantics stack to answer a question brute-force search over a finite rule set already
+  answers would add a second language (with its own soundness-relative-to-the-runtime proof
+  obligation — the solver's model of the system is not the system) for a property already reachable
+  the way this RFC proves everything else (G1–G5: scan, fuzz, enumerate — never a solver). Concretely
+  adopted instead: a **reachability tool**, run at CI time, that enumerates every `{capability kind,
+  tool, taint level}` combination against the full deployed rule set and reports the decision each
+  reaches — surfacing dead rules (never matched) and unintended default-deny fallthrough (a
+  combination nobody wrote a rule for, which may or may not be intentional) as findings an operator
+  reviews, not proofs a solver asserts. Folded into the promotion gate as new **G6**: no
+  `{capability, tool, taint}` combination in a reference policy set reaches a decision other than the
+  one a hand-computed oracle expects, and every rule in the set is exercised by at least one
+  combination (dead-rule detection).
+- ~~**Q4** — Agent identity standards: OAuth/OIDC covers principals today, but workload-identity
+  (SPIFFE-style) for agent-to-agent trust is unresolved (018).~~ **Resolved, not either/or — SPIFFE
+  is an implementation of an already-listed A2A scheme, not a competing one (2026-08-04):** 018 §1
+  already lists `mTLS` among A2A's Agent-Card-declared auth
+  schemes; SPIFFE-style workload identity (short-lived X.509-SVID, automatically rotated, verified as
+  mTLS) is one way to *implement* that existing scheme, not a fourth mechanism needing new plumbing.
+  OAuth/OIDC stays the default for calls to/from arbitrary A2A peers — it needs no prior trust-domain
+  federation and is what a publicly reachable agent card can assume its caller has. SPIFFE-backed
+  mTLS is adopted as the fit for the case OAuth serves worst (the original framing: "service-to-service
+  less well" — client-credentials grants typically mean a shared AS and long-lived static secrets):
+  service-to-service calls within an operator-controlled trust domain (their own multi-deployment
+  estate, or a federated partner via SPIFFE trust-domain federation), and 020 §3b's triggered runs
+  with no calling human to derive a principal from. This mirrors a choice already made one layer down
+  — Quark 020 §1's `NodeAuthority` seam already names SPIFFE IDs as a pluggable cluster-admission
+  backend alongside a shared CA — rather than inventing a different answer for the principal layer.
+  X42 (OpenQuestions.md OQ-9), if adopted, would be a governance layer *above* this (cross-
+  organizational trust federation), not a replacement for it. Full text and the identical resolution
+  for the 018-side duplicate: 018 §8 Q1.

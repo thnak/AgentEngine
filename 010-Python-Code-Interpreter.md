@@ -1,6 +1,6 @@
 # 010 — Code Interpreter and Shell
 
-**Status:** Draft · **Depends on:** 006, 007, 008, 009 · **Gate:** §9 · **Research:** [2026 landscape §6](docs/research/2026-standards-landscape.md)
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Depends on:** 006, 007, 008, 009, 025 · **Gate:** §9 · **Research:** [2026 landscape §6](docs/research/2026-standards-landscape.md)
 
 ## Goal
 
@@ -96,7 +96,7 @@ is not, by itself, a reason to reopen it.
 
 **There is no real shell, on any platform or profile — bundled or otherwise.** An earlier draft of
 this RFC proposed shipping one portable shell binary (`dash`/`toybox`-class) so behaviour would be
-identical across Windows, Linux, and macOS instead of exposing whichever native shell the host
+identical across Windows and Linux instead of exposing whichever native shell the host
 happens to have. That solves the *cross-platform consistency* problem but not the deeper one: **a
 real shell's job is resolving a name against a search path and exec'ing whatever it finds.** That is
 exactly the ambient-authority shape **I2** forbids — "reachable" would mean "anything on `PATH`,"
@@ -122,7 +122,7 @@ an arbitrary named program:
   binds across frontends, not only across sources, precisely so `grep` in a shell pipeline and a
   Python search call can never quietly diverge into two implementations.
 - Because behaviour is engine code rather than a ported binary, **identical behaviour across
-  Windows, Linux, and macOS is automatic**, not something that has to be built and verified per
+  Windows and Linux is automatic**, not something that has to be built and verified per
   platform the way §2's Python runtime table does.
 
 This is more implementation than adopting an existing shell would have been — a grammar, a builtin
@@ -257,7 +257,7 @@ traces are comparable across frameworks.
 ## 9. Promotion gate
 
 - **G1 (ecosystem)** — under `native-jail`, a scripted data task using NumPy + pandas produces a
-  chart artifact identically on Windows, Linux, and macOS from the same pinned `preinstalled` image
+  chart artifact identically on Windows and Linux from the same pinned `preinstalled` image
   (§5, §10 Q1); a package outside the image produces a *clear, structured* unavailable-package error
   naming the policy (§5), never a mysterious import failure.
 - **G2 (containment)** — the hostile corpus (008 §7) plus interpreter-specific attacks (`os.system`,
@@ -282,7 +282,7 @@ traces are comparable across frameworks.
 - **G6 (parity)** — the same command's effect (write a file, read `cwd`, read an env var) is
   observable identically whether reached via `ShellRunner` or via `PythonRunner`'s mediated `os`
   surface (§3a, 008 §1b); and `ShellRunner`'s documented grammar and builtins behave identically
-  across Windows, Linux, and macOS.
+  across Windows and Linux.
 - **G7 (interpreter mediation, 008 §1b)** — two claims, both proven:
   - **Import allowlist**: `import` of any module outside the granted package policy (§5) —
     including a native extension not on it — raises `ImportError` and never reaches the dynamic
@@ -294,26 +294,87 @@ traces are comparable across frameworks.
     exception at the Python level. With the capability granted, the call succeeds and is
     indistinguishable in effect from the same operation reached through a `Tool` or `ShellRunner`
     builtin (G6).
+- **G8 (grammar parser hardening, §10 Q7)** — continuous corpus-driven fuzzing against
+  `ShellRunner`'s grammar parser, under ASan/UBSan, finds zero crashes/hangs/OOB reads over a
+  declared minimum run; a deliberately reintroduced known-bug class is caught by the harness.
 
 ## 10. Open questions
 
-- **Q1** — Whether to ship a curated first-party interpreter image, and who owns its CVE cadence.
-  A pinned image is the only way `preinstalled` is reproducible, and it is a real maintenance load.
-- **Q2** — Nested per-tool approval inside CodeAct: better fidelity, worse UX. Left open.
-- **Q3** — Whether long-running executions should be able to stream partial output (they should) and
-  how that interacts with the recording seam.
-- **Q4** — GPU access for interpreter workloads is unsolved in every profile (008 Q5).
+- ~~**Q1** — Whether to ship a curated first-party interpreter image, and who owns its CVE cadence.
+  A pinned image is the only way `preinstalled` is reproducible, and it is a real maintenance load.~~
+  **Resolved (2026-08-04):** the "whether" was already decided by §5 — `preinstalled` is the default
+  policy, and its reproducibility/offline/fast promise only exists if a curated image backs it, so
+  shipping one isn't optional, only ownership and cadence needed stating. **Owner**: the same
+  authority that judges an ADR (024 §7 Q3's resolution — the project owner, while solo). **Cadence**:
+  a fixed minimum rescan (monthly) plus an out-of-band bump for any CVSS-High-or-above finding in a
+  pinned package, each bump a deliberate, single-commit change gated on the full §9 promotion suite
+  passing clean before the pin moves — the identical discipline already applied to the Wasmtime pin
+  (009 §11 Q4) and Quark's submodule commit, extended to this pinned artifact rather than left
+  ungoverned.
+- ~~**Q2** — Nested per-tool approval inside CodeAct: better fidelity, worse UX. Left open.~~
+  **Resolved, No new interactive mode — the fidelity gap closes through policy, not through
+  interrupting the run (2026-08-04):** the tension dissolves once "fidelity" is split into two
+  different things. §6 already states each bridged call traverses the full tool pipeline (006 §3),
+  including `PolicyDriven` argument-predicate evaluation (006 §4) against the *actual* runtime
+  arguments — a call whose computed argument fails a predicate (e.g. an externally-derived email
+  recipient) is **denied** at that call, a `Policy`-classified tool failure the model observes and
+  can recover from (001 §6: "a tool failure is not a run failure by default"), without a human ever
+  being interrupted mid-execution. That already delivers per-call fidelity for everything a policy
+  predicate can evaluate — the large majority of the "better fidelity" motivation — without the UX
+  cost. What's explicitly **not** offered: pausing a running execution for live interactive human
+  confirmation mid-flight, for exactly the reason already stated ("interrupts long CodeAct runs
+  badly"). An operator who genuinely needs per-call human-in-the-loop for one specific tool keeps
+  that tool **outside** the CodeAct-bridged set and calls it through the ordinary per-turn path
+  instead, where `InputRequired`-based approval (006 §4) already applies naturally per call — CodeAct's
+  entire value (multiple actions per model round-trip) is fundamentally in tension with per-call
+  human pausing, so the right answer for that need is not using CodeAct for that call, not adding a
+  mode that partially defeats CodeAct's own point.
+- ~~**Q3** — Whether long-running executions should be able to stream partial output (they should) and
+  how that interacts with the recording seam.~~ **Resolved, Yes, via the mechanism that already
+  exists (2026-08-04):** `execute_code`/`execute_shell` are ordinary tool calls (§8), so streaming
+  partial `stdout`/`stderr` is an ordinary application of `ToolCallDelta` (006 §6a) — the same
+  mechanism any long-running tool already streams progress through, already projected onto MCP's
+  `notifications/progress` and AG-UI's tool-call chunk events (013 §3). No interpreter-specific
+  streaming mechanism is needed. **Recording**: §7's "every call is captured for replay" already
+  extends to the full ordered `ToolCallDelta` chunk sequence when streaming was used, not just the
+  final structured outcome — the identical fidelity bar 004 §6/G3 already sets for provider-call
+  streaming ("identical chunk boundaries" on replay), applied here to tool-call streaming instead of
+  model-call streaming with no new gate needed.
+- ~~**Q4** — GPU access for interpreter workloads is unsolved in every profile (008 Q5).~~
+  **Resolved (008 §10 Q5, 2026-08-04):** out of scope for `wasm`/`native-jail` by construction — a
+  GPU-needing workload is a `remote`-profile case, the same pattern already used for hardware
+  isolation and wasm3's footprint niche. Local in-process GPU inference stays out of scope for v1;
+  point `ChatClientId` at a remote-hosted inference server instead (004 §3). Full text: 008 §10 Q5.
 - ~~**Q5** — Whether to track the Pyodide/Emscripten path via an out-of-process JS host for the
   `remote` case.~~ **Effectively closed by §2's architectural argument**: an Emscripten-backed
   Python for `remote` would be exactly the second-runtime confusion §2 rules out, just relocated to
   a different profile. Reopening it would need an ADR revisiting §2, not a narrower carve-out.
-- **Q6** — Background shell processes (`command &`, a dev server, a watcher) are a natural
-  consequence of a persistent shell (§3a) but are not designed here: per-call wall-clock bounding
-  (§3) assumes the process ends with the call. Open: whether backgrounding is permitted at all, how
-  its resource use is charged against the session rather than a single call, how the agent lists/
-  kills what it started, and whether it survives passivation (008 §6a) on any profile.
-- **Q7** — `ShellRunner`'s grammar parser processes text that may be tainted (003 §2) — model output,
-  or content quoted from a tool result. §2 argues the *actions* it can cause are capability-gated by
-  construction, but the *parser itself* is still first-party code parsing adversarial input, the same
-  risk category 009 §7 pushes to a WASM plugin for file formats. Open whether the parser needs the
-  same treatment (fuzzed hard and/or run as a component) rather than trusted host code by default.
+- ~~**Q6** — Background shell processes (`command &`, a dev server, a watcher) are a natural
+  consequence of a persistent shell (§3a) but are not designed here.~~ **Resolved by 006 §6b**: a
+  `Backgroundable`-declared tool (which `ShellRunner`'s long-lived-process case is expected to be, per
+  §2's uniformity rule) detaches via `background_task`, gated by the `Background<max_concurrent>`
+  capability (007 §3); resource use is charged to the session at pipeline step 10 like any call; the
+  agent lists/kills what it started through `list_standing_effects`/`cancel_standing_effect` (one
+  surface shared with scheduled wakeups and watches, not a bespoke one for shell processes); and
+  survival across passivation follows the sandbox profile's own properties (008 §6a) rather than a
+  rule invented here.
+- ~~**Q7** — `ShellRunner`'s grammar parser processes text that may be tainted (003 §2) — model
+  output, or content quoted from a tool result. §2 argues the *actions* it can cause are
+  capability-gated by construction, but the *parser itself* is still first-party code parsing
+  adversarial input, the same risk category 009 §7 pushes to a WASM plugin for file formats. Open
+  whether the parser needs the same treatment (fuzzed hard and/or run as a component) rather than
+  trusted host code by default.~~ **Resolved, mandatory continuous fuzzing, not the WASM-component
+  treatment (2026-08-04):** the rigor transfers from 009 §7's discipline, but not the isolation
+  mechanism — the two don't fit the same target. 009 §7 targets large, third-party C libraries with
+  a history of CVEs (PDF/image/archive parsers); this grammar is small, engine-authored, deliberately
+  non-POSIX-complete (§2), and tightly coupled to `ExecState` by reference (§3a: "not a copy, not a
+  synchronized mirror, the same object" — explicitly load-bearing). Moving it into a WASM component
+  would either break that by-reference guarantee (state would have to cross a host↔guest boundary
+  per invocation) or only wrap the parse step while leaving execution against `ExecState` in-process
+  anyway — added complexity without safety proportional to it, since a compromised parser could
+  already hand the execution step a malformed-but-plausible result either way. What genuinely reduces
+  risk for a small, well-specified grammar is exactly what fuzzing is best at: **new gate, §9 G8** —
+  continuous corpus-driven fuzzing (libFuzzer-class) against the grammar parser under ASan/UBSan,
+  gated in CI, finds zero crashes/hangs/OOB reads over a declared minimum run, and a deliberately
+  reintroduced known-bug class is caught by the harness (the same positive-control discipline every
+  other security gate in this project already requires).

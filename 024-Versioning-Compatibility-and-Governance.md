@@ -1,6 +1,6 @@
 # 024 — Versioning, Compatibility and Governance
 
-**Status:** Draft · **Depends on:** all · **Gate:** §6
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Depends on:** all · **Gate:** §6
 
 ## Goal
 
@@ -11,7 +11,8 @@ becomes binding, and how the RFCs themselves are amended.
 
 | Artifact | Scheme | Breaking means |
 |---|---|---|
-| **Engine** | SemVer | Source or ABI break for embedders |
+| **Engine** | SemVer | Source break for embedders (020 §3a: source-level embedding, not binary-stable) |
+| **C ABI** (020 §8 Q3) | SemVer, independent of Engine | Binary break for out-of-process bindings; frozen only after a reference consumer exists (OQ-8) |
 | **Agent** | SemVer (002 §7) | Behaviour change: instructions, tools, output schema |
 | **WIT worlds** (009) | SemVer per world | A plugin compiled for it no longer loads |
 | **Declarative format** (015) | `apiVersion` | A document no longer loads or means something different |
@@ -83,11 +84,54 @@ a claim without a positive control (022 §5) does not count as proven at all.
 
 ## 7. Open questions
 
-- **Q1** — Licence. Quark is MIT; matching it is the default assumption and is not yet decided by
-  the project owner.
-- **Q2** — Whether AgentEngine and Quark should share a release cadence, given the submodule
-  coupling and that AgentEngine will drive Quark requirements (macOS PAL, 021 Q1).
-- **Q3** — Governance if the project takes outside contributions: who judges an ADR, and what
-  quorum promotes an RFC.
-- **Q4** — Security disclosure process and a `SECURITY.md` — required before any public release,
-  given the project's threat surface.
+- ~~**Q1** — Licence. Quark is MIT; matching it is the default assumption and is not yet decided by
+  the project owner.~~ **Resolved, MIT (OQ-11, 2026-08-04):** confirmed by the project owner,
+  matching Quark exactly — avoids a licence mismatch between the engine and the submodule it depends
+  on for everything (CLAUDE.md's locked decision that Quark is never forked, only depended on), and
+  is the assumption this RFC was already carrying. `LICENSE` at the repo root.
+
+  **Third-party dependency licensing position** (raised by `docs/planning/v1-office-user-toolkit.md`
+  against Pandoc/GPL-2.0-or-later and `docxtpl`/LGPL): MIT places no copyleft obligation on the
+  engine itself, and it places none on dependencies either, so the question is really about *how*
+  each dependency is consumed. A GPL tool invoked as a separate process (Pandoc via subprocess, no
+  static or dynamic linking into the engine binary) does not make the engine a derivative work under
+  the FSF's own stated position on mere aggregation/process invocation. An LGPL library consumed via
+  dynamic/import-time linking (a Python package like `docxtpl`, resolved at runtime rather than
+  compiled in) is exactly the case LGPL was written to permit without imposing its terms on the
+  linking application. Both are adoptable under this policy; a dependency that would require *static*
+  linking of GPL/LGPL code into the engine binary is not, and needs a case-by-case legal read before
+  adoption, not an assumption either way. This is a general policy for future dependency choices, not
+  a review of every current one — `010 §10 Q1` (pinned-image CVE cadence) is the adjacent, still-open
+  operational question for the same Python-package surface.
+- ~~**Q2** — Whether AgentEngine and Quark should share a release cadence, given the submodule
+  coupling.~~ **Resolved, No, independent cadences (2026-08-04, no longer entangled with a macOS PAL
+  requirement — 021 §7 OQ-1 resolved macOS out of scope entirely):** the same deliberate-pin-bump
+  discipline already established for every other pinned dependency this session (Wasmtime, the
+  interpreter image, GenAI semconv) applies to the Quark submodule pin too, and that pattern doesn't
+  need a synchronized release cadence to work — AgentEngine bumps its Quark pin on its own schedule,
+  gated on its own full suite passing against the new commit, never automatically tracking Quark's
+  release dates. Sharing a cadence would add cross-project release-train coordination for no benefit
+  this already-working pattern doesn't deliver. The two projects sharing contributors (§4's stated
+  reason for sharing a *decision process*) is a different, weaker coupling than sharing a *release
+  schedule*, and only the former is actually needed.
+- ~~**Q3** — Governance if the project takes outside contributions: who judges an ADR, and what
+  quorum promotes an RFC.~~ **Resolved for the current phase, deferred by construction for the
+  question it's actually asking (OQ-11, 2026-08-04):** there is no remote and no outside contributor
+  today (git state: local repository only) — §4's judge role is held by the project owner alone, the
+  same way Quark's own repo has no separate governance document either (checked: none exists). A
+  quorum rule is meaningless with one contributor, so it is not invented speculatively; it is owed
+  once the project actually takes outside contributions, at which point it is new design work done
+  at that time — matching Quark's if Quark has settled one by then (§4's "contributors move between
+  the repos" reasoning), a fresh minimal default (e.g. two-maintainer approval) otherwise. What *is*
+  resolved now: the judge is unambiguous while solo, so nothing about promoting an RFC or landing an
+  ADR is blocked by this question in the meantime. **Extended (2026-08-05):**
+  `docs/planning/v1-review-signoff-workflow.md` §3 designs the mechanism for once collaborators
+  exist — judge-must-not-be-author separation-of-duties, not a fixed quorum number, which stays
+  exactly as open as this entry left it.
+- ~~**Q4** — Security disclosure process and a `SECURITY.md` — required before any public release,
+  given the project's threat surface.~~ **Resolved (OQ-11, 2026-08-04):** `SECURITY.md` written at
+  the repo root — private reporting channel (placeholder contact until a public remote exists),
+  acknowledgement/disclosure timeline, the §3 security-exception deprecation carve-out cross-
+  referenced, and the corpus publication split (classification public, payloads private) that OQ-10
+  resolved for 017 §9 Q4 / 022 §8 Q2. Written now, ahead of any public release, so it exists before
+  it's needed rather than being drafted under incident pressure.

@@ -1,6 +1,6 @@
 # 004 — ChatClient Plane
 
-**Status:** Draft · **Depends on:** 003, 016, 018 · **Gate:** §7
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Depends on:** 003, 016, 018 · **Gate:** §7
 
 ## Goal
 
@@ -29,6 +29,13 @@ struct ChatClient {                                 // concept, not a base class
 - **Streaming is a Quark credit-controlled stream** (Quark 024/ADR-018), so a slow consumer stalls
   the provider read rather than growing an unbounded buffer.
 - **Cancellation is `stop_token`**, propagated into the HTTP/socket layer.
+- **Outbound credentials follow 018 §3's rule, not an exception to it.** A native `ChatClient`
+  backend is constructed with a `SecretRef` (018 §4) identifying its provider credential, never a
+  resolved value — nothing a backend holds across calls can leak through a crash dump or a config
+  dump. Resolution happens inside `chat()`/`chat_stream()`, against the `SecretStore` capability
+  reachable through `EffectContext&`, at the point of use — the same `SecretStore::resolve(SecretRef,
+  EffectContext&)` shape 018 §4 defines for plugins. A `ChatClient` backend is a native seam backend,
+  not a plugin, but it earns no exemption from "never read into a config struct at startup."
 
 ## 2. Capabilities
 
@@ -77,8 +84,9 @@ concrete pre-implementation checklist item for its `ChatClient` backend, not a r
 - **Idempotency:** a retried call carries a stable idempotency key so a provider that supports it
   does not double-charge or double-execute.
 - **Rate limits and overload** use Quark 022 (token buckets, deadline-aware shedding, circuit
-  breaking) rather than a bespoke limiter. A provider-level breaker trips per `{provider, model,
-  credential}`.
+  breaking) rather than a bespoke limiter. A provider-level breaker trips per `{tenant, provider,
+  model, SecretRef}` — tenant is part of the key, not an afterthought, so one tenant tripping a
+  breaker cannot silently degrade another's calls through the same provider (018 §6).
 - **Failover** between providers is *explicit policy*, never implicit: a failover that silently
   changes model is a correctness change, and must appear in the trace and in the response metadata.
 
@@ -87,10 +95,20 @@ concrete pre-implementation checklist item for its `ChatClient` backend, not a r
 Every response carries `Usage` (003 §6). The plane enforces:
 
 - per-run `TokenBudget<N>` — exceeded → `Resource` failure at the turn boundary;
-- per-session and per-principal ceilings from configuration (020);
-- an estimated-cost metric per `{provider, model, agent, principal}` for the metrics surface (016).
+- per-tenant, per-session, and per-principal ceilings from configuration (020);
+- an estimated-cost metric per `{tenant, provider, model, agent, principal}` for the metrics
+  surface (016).
 
 Pricing tables are **configuration, not code** — they change weekly and must never require a build.
+
+**Invariant-touching, ADR-track:** making tenant part of the breaker key (§4) and the budget-ceiling
+list and cost-metric key above is what makes 018 §6's "resource limits and cost budgets are per
+tenant" actually true for model calls, not just asserted — I8 depends on it. Per this project's
+review workflow (`docs/planning/v1-review-signoff-workflow.md` §3), a change that touches an
+invariant this directly doesn't clear on a textual fix alone: it still owes the full
+design→red-team→prove→judge cycle and an ADR under `decisions/` before this section is more than
+Draft-consistent, the same posture the roadmap already flags for other security-critical items
+(`docs/planning/v1-implementation-roadmap.md`'s ADR-track call-outs).
 
 ## 6. Recording and replay
 
@@ -113,8 +131,36 @@ and hashed-content modes for environments where prompts may not be persisted.
 
 ## 8. Open questions
 
-- **Q1** — Whether the seam should expose batch APIs as first-class or leave batching to callers.
-- **Q2** — Prompt-cache management: providers differ enough that a portable cache-hint abstraction
-  may be leakier than exposing per-provider hints.
-- **Q3** — Token counting without a provider round-trip requires vendored tokenizers (a natural
-  WASM plugin, 009); which tokenizers ship first-party is unresolved.
+- ~~**Q1** — Whether the seam should expose batch APIs as first-class or leave batching to callers.~~
+  **Resolved, first-class, as an instance of existing async machinery, not a new one (2026-08-04):**
+  a vendor batch call (submit now, complete hours later, poll or webhook) is structurally the same
+  shape already unified for OQ-4 — long-running work with a "come back later" completion model. §2's
+  capability bitset already reserves a `batch` bit; wiring it up means a batch-eligible `chat()` call
+  is classified `Backgroundable` (006 §6b) and completes via 019 §2's existing wake-condition table
+  ("Remote task completion"), not a bespoke batch-tracking structure. Opting in is an explicit policy
+  choice (it trades latency for cost), gated the same way any other policy is (002 §3's "changes what
+  the agent is" test), not automatic.
+- ~~**Q2** — Prompt-cache management: providers differ enough that a portable cache-hint abstraction
+  may be leakier than exposing per-provider hints.~~ **Resolved, no new hint abstraction — the
+  existing context-assembly segmentation already is the boundary a caching backend needs
+  (2026-08-04):** 005 §3's context formula (`instructions ⊕ context_provider outputs ⊕ selected
+  history window ⊕ tools ⊕ middleware`) is already ordered roughly stable-to-volatile without having
+  been designed for caching. A backend declaring `prompt_caching` inserts its own vendor-specific
+  breakpoints at those existing segment boundaries as backend-internal translation logic (explicit
+  `cache_control`-style markers where a vendor needs them, nothing at all where a vendor caches
+  automatically) — matching §3's "Porting note" pattern of vendor translation living inside each
+  backend, not at the seam. A portable byte-offset/breakpoint API would just be one vendor's shape
+  leaking onto every other backend, the "per-provider hints in disguise" outcome the question was
+  trying to avoid; the segment boundaries already specified elsewhere avoid that without a new type.
+- ~~**Q3** — Token counting without a provider round-trip requires vendored tokenizers (a natural
+  WASM plugin, 009); which tokenizers ship first-party is unresolved.~~ **Resolved by scope, not by
+  naming packages (2026-08-04):** first-party tokenizer plugins (009 WASM components) ship only for
+  the backends §3 already commits to as default/first-class — OpenAI-compatible and Anthropic — one
+  tokenizer each, pinned with the same deliberate-upgrade discipline already applied to Wasmtime
+  (009 §11 Q4). Every other backend's `token_counting` bit is simply absent rather than approximated
+  — 002 §2's honest-degradation rule (no fallback exists → fail fast at `register_agent`, never a
+  silent approximation) applies here exactly as it does to any other missing capability. This
+  deliberately does not commit to shipping a growing, open-ended library of vendored tokenizers with
+  their own CVE/update burden (010 §10 Q1 names the same cautionary shape for the interpreter image).
+  Which specific tokenizer libraries are appropriate to vendor — licensing, offline availability,
+  update cadence — is dated implementation-phase research (CLAUDE.md), not asserted here.

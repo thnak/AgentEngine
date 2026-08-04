@@ -1,12 +1,12 @@
 # 009 — Plugin and Extension System
 
-**Status:** Draft · **Depends on:** 006, 007, 008 · **Gate:** §10 · **Contract of record:** [`wit/`](wit/)
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Depends on:** 006, 007, 008 · **Gate:** §10 · **Contract of record:** [`wit/`](wit/)
 
 ## Goal
 
 One extension mechanism for everything third parties contribute — tools, skills, model providers,
 memory stores, content filters — built on the **WASM Component Model**, so that an extension is a
-single signed artifact that runs identically on Windows, Linux, and macOS, holds only the
+single signed artifact that runs identically on Windows and Linux, holds only the
 capabilities the host hands it, and cannot take the host down.
 
 ## 1. Why the component model, specifically
@@ -75,6 +75,37 @@ wall_ms      = 30000
 
 Load fails closed if the component imports anything the manifest does not declare — the manifest
 cannot under-declare its way past the operator's approval.
+
+## 3a. Distribution: OCI artifacts, no first-party registry (resolves OQ-6)
+
+**Plugins distribute as OCI artifacts, pushed to and pulled from any OCI-conformant registry** —
+not through a first-party AgentEngine registry. Every property §3/§4 already specifies is something
+OCI registries already provide, for free, at ecosystem scale:
+
+- **Content addressing** — an OCI reference resolves to a digest; §4's "digest pinning by default"
+  is simply what pulling `@sha256:...` already means, not a mechanism this project has to build.
+- **Signing** — `plugin.aepkg`'s `SIGNATURE` file duplicates what Sigstore/cosign or Notation
+  already do natively for OCI artifacts (keyless or key-based signing, verifiable by any consumer
+  with standard tooling); a future package-format revision can attach the signature as an OCI
+  referrer instead of a bundled file, though that is a format detail, not part of this decision.
+- **Mirroring** — private registries, air-gapped copies (`oras cp` / `skopeo`), and pull-through
+  caches are ordinary OCI operations, already deployed in every environment that would run this
+  engine (011 §9 made exactly this argument about the MCP registry's own OCI-labels option).
+
+**Why not a first-party registry:** it would mean standing up and operating infrastructure —
+hosting, uptime, auth, quota, abuse moderation — to reinvent what OCI already does, and it would
+recreate the exact hazard 011 §9 already documents for the MCP registry: **presence in a registry
+reads as an implicit trust signal to users even when the registry explicitly disclaims one.** A
+first-party registry we operate would face the identical choice — moderate content (expensive,
+ongoing) or state plainly that presence proves nothing (which raises "then why build it"). OCI
+carries none of that operational or trust-signaling burden, because nobody mistakes pushing to a
+registry *we don't run* for our endorsement.
+
+**What OCI does not solve — discovery — gets the lightest fix that works:** a curated, versioned
+index (a git-hosted list of `{id, oci-ref, description}` entries, PR-reviewable, not a live service)
+rather than a registry-side search feature. An index entry is a pointer, never an endorsement beyond
+"known to exist" — keeping the same posture 011 §9 insists on for the MCP registry, applied to our
+own plugin ecosystem instead of exempting it.
 
 ## 4. Lifecycle
 
@@ -275,25 +306,67 @@ dimension so a misbehaving plugin is visible without code changes.
 
 ## 10. Promotion gate
 
-- **G1** — the same `ae:tool` component binary loads and produces identical results on Windows,
-  Linux, and macOS (byte-identical outputs for a deterministic fixture).
+- **G1** — the same `ae:tool` component binary loads and produces identical results on Windows and
+  Linux (byte-identical outputs for a deterministic fixture).
 - **G2** — a component whose imports exceed its manifest fails to load; a component that requests a
   capability the operator did not grant fails to instantiate. Positive controls included.
 - **G3** — a trapping/looping/allocating-forever/output-flooding plugin is contained within its
   declared limits, with measured kill time, and the host is unaffected.
 - **G4** — warm invocation overhead (host→guest→host, trivial function) within the 023 budget;
   pooled instantiation p99 measured.
+- **G4a** — a real streaming fixture (§11 Q1) run against an `ae:provider` plugin, measuring
+  per-chunk host↔guest crossing cost against 004 §7 G4's existing host-side streaming budget;
+  determines whether `ae:provider` stays viable for latency-sensitive streaming or falls back to a
+  direct 004 §3 backend addition.
 - **G5** — revocation cancels in-flight calls; a retained host handle is unusable afterwards.
 - **G6** — one real C/C++ library from §7 ships as a plugin end-to-end, with the sandboxed build
   reproducible from source.
 
 ## 11. Open questions
 
-- **Q1** — Whether `ae:provider` plugins are viable for latency-sensitive streaming, or whether
-  providers should stay host-side seams.
-- **Q2** — Distribution: a first-party registry, or reuse of an existing artifact registry (OCI)?
-  OCI is tempting — content-addressed, signed, mirrorable, already deployed everywhere.
-- **Q3** — Whether plugins should be able to declare *typed* WIT interfaces for their own tools
-  rather than JSON Schema, with the schema generated from WIT (better typing, harder MCP interop).
-- **Q4** — Pinning to a Wasmtime version that ships WASI 0.3 by default (46+) versus supporting a
-  range; the async ABI difference is not a small compatibility surface.
+- ~~**Q1** — Whether `ae:provider` plugins are viable for latency-sensitive streaming, or whether
+  providers should stay host-side seams.~~ **Resolved, conditionally viable, gated on a measurement
+  rather than asserted (2026-08-04):** the architectural question is already answered — WASI 0.3's
+  `stream<T>`/`future<T>` map onto Quark coroutines (§1) specifically so guest streaming doesn't need
+  a thread per call, so there's no structural reason `ae:provider` can't stream. What's unproven, with
+  no implementation to measure (design phase), is the marginal per-chunk host↔guest crossing cost
+  against a real streaming provider, which 004 §7 G4's existing host-side budget doesn't include.
+  Resolved as: **default stays host-side `ChatClient` seams** (004 §3) for the two first-class
+  backends — `ae:provider` remains the stated extensibility path for exotic/local backends (already
+  in 004 §3's table), provisional on a promotion-gate measurement (this RFC's §10 G4a) rather than a
+  blanket verdict.
+  If that measurement shows per-chunk overhead materially worse than the host-side budget, a
+  latency-sensitive exotic backend is documented as belonging as a direct 004 §3 backend addition
+  instead of an `ae:provider` plugin — a fallback stated now so the decision isn't reopened from
+  scratch if the measurement is unfavorable.
+- ~~**Q3** — Whether plugins should be able to declare *typed* WIT interfaces for their own tools
+  rather than JSON Schema, with the schema generated from WIT (better typing, harder MCP interop).~~
+  **Resolved, Yes — WIT is the source of truth, JSON Schema is generated from it (2026-08-04):** this
+  is the same single-source-of-truth discipline the project already applies everywhere a schema
+  exists (011 §4: "Tools are generated from tool metadata — one schema source, so a listing cannot
+  drift from the tool's actual contract") — §3's package format already ships a `schema/` directory
+  described as "generated," and this makes explicit what it's generated *from*: the component's own
+  WIT-typed exports, mechanically, never a separately hand-authored JSON Schema merely checked for
+  consistency against them (which is how the two would silently drift). The "harder MCP interop"
+  concern turns out narrower than it sounds: MCP still receives ordinary JSON Schema 2020-12 at the
+  wire boundary either way (011 §3.1), so interop doesn't get harder at the protocol level — what's
+  harder is only authoring a JSON-Schema-idiomatic shape WIT's simpler type system can't naturally
+  express (some `oneOf`/`anyOf` compositions). For that narrow case, a plugin author uses a typed
+  escape hatch (a WIT `json-value`-shaped type for that one parameter) rather than the tool's whole
+  schema falling back to hand-authored — the same "declared shape plus an escape hatch for what
+  doesn't fit" pattern already used elsewhere (003 §1's `Custom` content kind).
+- ~~**Q2** — Distribution: a first-party registry, or reuse of an existing artifact registry (OCI)?
+  OCI is tempting — content-addressed, signed, mirrorable, already deployed everywhere.~~
+  **Resolved, OCI (OQ-6, 2026-08-04):** see §3a.
+- ~~**Q4** — Pinning to a Wasmtime version that ships WASI 0.3 by default (46+) versus supporting a
+  range; the async ABI difference is not a small compatibility surface.~~ **Resolved, pin (OQ-7,
+  2026-08-04):** unlike MCP/A2A, Wasmtime is a build-time embedded dependency, not a wire peer whose
+  independently-released versions we must interoperate with regardless of our own choice — nothing
+  external forces us to support more than one at a time. Pin to one specific version, the same
+  discipline CONVENTIONS already applies to Quark's submodule commit, CMake's floor, and the
+  compiler versions in 021 §5: a bump is a deliberate, single-commit change gated on the full
+  008/009 hostile and conformance suites passing clean against the new version before the pin
+  moves, never an ongoing dual-version support burden. Doubling conformance and sandbox-escape
+  surface to track two Wasmtime majors concurrently — real cost the "async ABI is not a small
+  compatibility surface" framing was right to flag — buys nothing when no external actor requires
+  it.

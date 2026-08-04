@@ -1,6 +1,6 @@
 # 001 — Execution Model
 
-**Status:** Draft · **Depends on:** Quark 001/002/006/015/018 · **Gate:** §9
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Depends on:** 003, 006, 007, Quark 001/002/006/015/018 · **Gate:** §9
 
 ## Goal
 
@@ -45,6 +45,23 @@ behind three external mechanisms — A2A `INPUT_REQUIRED`, MCP Multi Round-Trip 
 workflow request/response port (014). Unifying these is deliberate: an agent author writes one
 "ask the human/caller something" primitive.
 
+**Correlation identity (resolves OQ-4).** Entering `InputRequired` or `AuthRequired` mints one or
+more durable `Interaction{interaction_id, run_id, reason ∈ {input, auth}, opened_at, expires_at?}`
+records — one per outstanding "the agent needs something" point; usually one, but a workflow with
+multiple concurrent request ports open in different branches (014 §4) can hold several at once. The
+`reason` tag is what lets one mechanism serve both states (§10 Q3) without a UI or protocol adapter
+needing to guess from context which kind of "waiting" it's looking at. `interaction_id` is the *one* internal
+correlation identity; MCP, A2A, and AG-UI each need a differently-shaped external identity to carry
+it (013 §2.2, 012 §5a), and each protocol adapter is responsible for the mapping — the run itself
+only ever knows `Interaction` records, never a protocol's id shape. A run does not leave
+`InputRequired`/`Suspended` for its "waiting" reason until every `Interaction` a given resolution
+call names is resolved; whether *all* open interactions on a run must resolve together is an
+adapter-level policy (AG-UI's structural "no partial resumes" is the strict case, 013 §2.2), not a
+property this state machine enforces uniformly. **Before signaling any pause externally, a run
+finalizes and emits pending state** — this is what AG-UI's pre-`RUN_FINISHED` state-emission
+ordering (013 §2.2) actually depends on, generalized so every adapter gets the same guarantee, not
+only the one protocol whose spec says so explicitly.
+
 **Terminal states are terminal.** A run in `Completed`/`Failed`/`Canceled`/`Rejected` rejects
 further input; a continuation is a *new run* on the same session.
 
@@ -87,8 +104,9 @@ Three distinct concurrency axes, with different answers:
    state is the common case, and silently interleaving those is how agent frameworks corrupt data.
 3. **Across runs on one session** — serialized by I1 by default. A caller that genuinely wants
    concurrent runs against shared history must either (a) accept FIFO queueing, or (b) fork the
-   session (`fork_session`, producing a new session id with copy-on-write history) and merge
-   explicitly. There is no third option: concurrent mutation of one history is not offered.
+   session (`fork_session`, producing a new session id with copy-on-write history) into two
+   independent timelines. There is no third option: concurrent mutation of one history is not
+   offered. A fork is fork-only — there is no merge back into one history (§10 Q2).
 
 **Sub-agents** (an agent invoked as another agent's tool) run as *separate runs on separate
 sessions*, linked by `parent_run_id`. They inherit the parent's deadline and a **subset** of its
@@ -166,10 +184,61 @@ This RFC moves Draft → Proven when an executed ADR demonstrates, on Windows an
 
 ## 10. Open questions
 
-- **Q1** — Should a run's turn loop itself be expressible as a workflow graph (014), making
+- ~~**Q1** — Should a run's turn loop itself be expressible as a workflow graph (014), making
   "agent" a special case of "workflow"? Attractive for uniformity; risks paying graph overhead on
-  the common single-agent path.
-- **Q2** — Fork-and-merge semantics for sessions (§4.3) need a defined merge policy, or must be
-  restricted to fork-only.
-- **Q3** — Should `AuthRequired` be a distinct state, or an `InputRequired` variant? A2A separates
-  them; unifying loses a useful distinction for UIs.
+  the common single-agent path.~~ **Resolved, No (OQ-2, 2026-08-04):** kept as two distinct
+  execution models, not merged. Two reasons, the first structural and decisive on its own, the
+  second about cost:
+  1. **It would invert or merge the 001↔014 dependency direction.** 014 §1 already defines
+     `Executor = an agent | a function | a sub-workflow | a request port` — an agent is one kind of
+     thing a workflow is built *from*. Making the turn loop *itself* a workflow graph reverses that:
+     001 would need to depend on 014's graph machinery to define what an agent's own run is, while
+     014 still depends on 001 to know what an agent *is* as an executor kind. That is a cycle, not a
+     layering, unless the turn loop is special-cased as "the graph-of-one that doesn't go through
+     the graph machinery" — which is exactly the non-uniform carve-out this question was trying to
+     avoid, arrived at anyway.
+  2. **The turn loop's placement is deliberately cheap** (§8: "Turn loop, context assembly,
+     middleware" on the session activation directly — no supervising actor). 014 §1 builds a
+     workflow as "a supervising actor owning [executors]" with typed-edge validation (§1) and
+     per-round scheduling obligations (§2). Routing every single-agent run through that machinery
+     puts graph bookkeeping on the dominant hot path for a benefit — one visualization, one
+     time-travel story — that a one-node graph cannot actually exercise (there is nothing to
+     fan-out, fan-in, or route).
+  
+  **What *is* unified, at the correct layer instead:** turn boundaries and workflow superstep
+  boundaries are already peer checkpoint-boundary kinds sharing one `Store` and one replay mechanism
+  (019 §1), and both project onto the same internal event stream (013 §1). The uniformity the
+  candidate resolution was chasing — one checkpointing story, one replay mechanism, one observable
+  shape — is achieved there without collapsing the two execution models that produce the
+  checkpoints. A multi-agent author who wants graph properties (typed edges, fan-out, visualization,
+  time-travel) opts into 014 explicitly by building a `Workflow`; the default single-agent path
+  never pays for what it did not ask for. (No implementation exists yet to measure the graph-of-one
+  overhead the original candidate resolution proposed benchmarking — this decision rests on the
+  layering argument above, which does not depend on a measurement; §1's overhead concern becomes
+  moot rather than unresolved, since the models are not being merged.)
+- ~~**Q2** — Fork-and-merge semantics for sessions (§4.3) need a defined merge policy, or must be
+  restricted to fork-only.~~ **Resolved, fork-only, no merge primitive (2026-08-04):** a session's
+  two forked branches are alternative *continuations* of a conversation — each assistant turn after
+  the fork point was generated conditioned on that branch's own history, not the other's. That has no
+  principled three-way-merge semantics the way 025's worktree files do: a worktree conflict is two
+  edits to shared mutable state, reconcilable by taking disjoint changes and surfacing real
+  collisions (025 §4, OQ-13); a session fork is two equally-valid *futures*, and splicing branch B's
+  later messages after branch A's would produce a transcript the model never actually saw when
+  generating what comes next in either branch — not a merge, a fabrication. What the engine offers
+  instead, and what actually has coherent semantics: the two branches can be **compared** (a diff
+  view over the message list from the fork point) so a human or agent can **select** one branch to
+  continue as the session's history going forward, or **cherry-pick** specific messages/artifacts
+  from one branch as new appended content on the other — an ordinary append, explicitly not a merge.
+  No merge operation is offered because none would mean anything.
+- ~~**Q3** — Should `AuthRequired` be a distinct state, or an `InputRequired` variant? A2A separates
+  them; unifying loses a useful distinction for UIs.~~ **Resolved, distinct state, confirming what §2's
+  lifecycle diagram already assumed (2026-08-04):** the two differ in both **UI treatment** (render a
+  text input vs. render a credential/OAuth-consent affordance) and **resume trigger** (an ordinary
+  content answer vs. a credential becoming resolvable — a `SecretRef` resolving or an operator
+  provisioning one), so collapsing them would force `InputRequired`'s generic answer payload to also
+  carry credential-resolution semantics it doesn't otherwise need. A2A already keeps `AUTH_REQUIRED`
+  and `INPUT_REQUIRED` separate (018 §5), so distinguishing them costs nothing at that mapping and
+  keeping them merged would have required *inventing* a translation A2A doesn't need. This isn't two
+  state machines: both states mint the same `Interaction` record (§2), now tagged
+  `reason ∈ {input, auth}` — one mechanism, one correlation identity, one suspension/resume path
+  (019 §2), with the tag carrying exactly the distinction UIs and protocol adapters need.

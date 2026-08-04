@@ -1,6 +1,6 @@
 # 002 — Agent Model and Authoring
 
-**Status:** Draft · **Depends on:** 001, 003, 004, 006, 015 · **Gate:** §8
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Depends on:** 001, 003, 004, 006, 015 · **Gate:** §8
 
 ## Goal
 
@@ -34,6 +34,7 @@ using namespace ae;
 struct Researcher : Agent<Researcher,
         ChatClientId<"anthropic:claude-opus-5">,
         Tools<WebSearch, CodeInterpreter, Handoff<Writer>>,
+        Capabilities<NetOut<"api.search.example">>,
         SandboxProfile<Profile::Strict>,
         MaxTurns<12>,
         TokenBudget<200'000>,
@@ -104,6 +105,15 @@ class template cannot share one identifier in the same namespace. `ChatClientId`
 | `Stateless<N>` | Agent holds no cross-run state; hosted as a Quark pool | off |
 | `OutputSchema<T>` | Structured-output contract (003) | free text |
 
+**What `SandboxProfile<P>` governs.** It is not one dial over every sandboxed effect an agent can
+reach: 009 §6 hardcodes plugins to run in the `wasm` profile regardless of what an agent declares
+here, and 008 §1/CLAUDE.md permanently lock the code interpreter to `native-jail` — neither is
+redirected by this policy. `SandboxProfile<P>` selects the backend for the agent's *other*
+script-executing tools: a custom `Tool` that needs sandboxed execution but is neither a plugin (009)
+nor the built-in interpreter (010) runs under the profile declared here, or is rejected at
+`register_agent()` (§6) if its own backend requirement is incompatible with it. See 008 §3 for the
+profile table this selects among.
+
 **The rule for adding a policy:** a knob belongs here only if it changes *what the agent is*.
 Knobs that change *how the deployment runs* (worker counts, endpoints, timeouts, credentials) are
 configuration (020), never policies. This is Quark's policy-vs-config boundary (Quark 013),
@@ -139,7 +149,8 @@ struct RedactPii {
 ```
 
 **Constraints:** middleware may inspect, annotate, rewrite content, short-circuit with a result, or
-deny — it may **not** widen capabilities (I3/I7 of 007), and its effects are attributed to it by
+deny — it may **not** widen capabilities (**I2**, no ambient authority; 007 §3.2's attenuation-only
+rule is the same constraint applied to this call site), and its effects are attributed to it by
 name in the trace. Deny-capable middleware is how content policy (017) plugs in without the core
 knowing about content policy.
 
@@ -150,6 +161,9 @@ At `register_agent<A>()` the engine compiles metadata and **validates**, failing
 - a tool whose schema does not compile or whose name collides;
 - a capability referenced by a tool but absent from the agent's ceiling;
 - a `SandboxProfile` unavailable on this platform with no declared fallback (008);
+- a declared tool requiring a backend incompatible with the agent's `SandboxProfile<P>` (§3) — a
+  tool/profile mismatch distinct from the platform-unavailability case above, since the declared
+  profile may otherwise be perfectly available;
 - a `ChatClientId` binding with no configured credentials or endpoint;
 - an `OutputSchema` the bound `ChatClient` cannot enforce and no fallback strategy;
 - a handoff cycle without a bound;
@@ -178,8 +192,51 @@ so a behavioural change is attributable to a version rather than to a mystery. A
 
 ## 9. Open questions
 
-- **Q1** — Should `instructions` support a typed template with compile-time-checked placeholders,
-  or remain a runtime-assembled string? Typed is safer; it complicates the declarative parity.
-- **Q2** — Per-run policy override: which policies may a caller override at `run()` time
-  (`ChatClientId` and `MaxTurns` clearly; `Capabilities` clearly not) — the full matrix needs writing.
-- **Q3** — Whether `Stateless<N>` agents should be the default for tool-only agents.
+- ~~**Q1** — Should `instructions` support a typed template with compile-time-checked placeholders,
+  or remain a runtime-assembled string? Typed is safer; it complicates the declarative parity.~~
+  **Resolved, No, stay a runtime-assembled string (2026-08-04):** nothing else in this spec currently
+  needs `instructions` to be a typed template — the §2 example uses a plain literal, and dynamic
+  content already has a designed path through middleware's `before_model` hook (§5) without
+  `instructions` itself becoming a template type. Paying I6's declarative-parity cost (a
+  compile-time-checked C++ type needs a *second*, runtime-checked validation path for YAML, per §6's
+  existing dual-path pattern for `OutputSchema`/tool schemas) for a feature nothing currently demands
+  is exactly the speculative-abstraction cost this project's own discipline argues against. If
+  placeholder-safety becomes a real, demonstrated problem later, the cheaper fix is a **runtime-only**
+  validation at `register_agent()` (checking a string's declared placeholders are satisfiable,
+  reusing §6's existing validation-at-load-time mechanism) — addable without breaking existing C++
+  agents and without inventing a new compile-time-checked type or paying I6's parity cost twice.
+- ~~**Q2** — Per-run policy override: which policies may a caller override at `run()` time
+  (`ChatClientId` and `MaxTurns` clearly; `Capabilities` clearly not) — the full matrix needs writing.~~
+  **Resolved by a test, not a hand-written matrix (2026-08-04):** the question only feels like it needs
+  a per-policy matrix because it was framed as "list every row." The two invariants already governing
+  every other override surface in this project answer it directly — 007 §3.2's attenuation-only rule
+  and 020 §1's "configuration may never widen" rule, applied here for the first time to call-site
+  overrides: **a per-run override may only move a policy in the direction that reduces authority,
+  cost, or blast radius relative to the agent's compiled default, never increase it.** Applying that
+  test across §3's table:
+  - **Never overridable** — `Capabilities`: it's the ceiling every other check is measured against;
+    narrowing happens through derivation (007 §2), not a caller request naming a smaller set.
+  - **Narrowing-only** — `SandboxProfile` (stricter, never looser — matches 020 §1's floor rule
+    exactly), `MaxTurns`/`TokenBudget` (lower, never above the compiled ceiling), `Approval` (more
+    cautious, never less), `Concurrency` (force-sequential, never force-parallel beyond what the tool
+    set already declared safe), `Memory` (disable a declared provider, never add one), `Telemetry`
+    (reduce capture, never increase it beyond the agent's/operator's declared posture, 016/017 §5).
+  - **Freely overridable** — `ChatClientId` (already stated overridable; bounded to an operator-
+    declared allowlist of acceptable substitutes, since it's a cost/quality choice, not an authority
+    one) and `Retry` (touches only `Transient`-classified retries, §6's failure classification is a
+    hardcoded rule the retry policy can't reach around, so it's a genuine 020 §1 "configuration" knob
+    — it doesn't change what the agent would do given the same input, only how reliably).
+  - **Not a runtime axis** — `Tools`, `Middleware`, `Stateless<N>`, `OutputSchema`: compile-time
+    template parameters with no runtime override mechanism to design in the first place.
+- ~~**Q3** — Whether `Stateless<N>` agents should be the default for tool-only agents.~~ **Resolved,
+  No, keep off as the default (2026-08-04):** "default for tool-only agents" isn't implementable as
+  stated — whether an agent touches session state isn't generally decidable without the same static
+  analysis this question would need to invent, so a conditional default can't exist; the real choice
+  is only "should the *global* default flip to on." Flipping it is a regression risk with no
+  compensating benefit: §6 already rejects `Stateless<N>` combined with session-state usage, but only
+  when `Stateless<N>` is written explicitly — if it became the default, an author who never wrote it
+  and later adds session-state usage to a previously tool-only agent would hit that rejection out of
+  nowhere, for a policy they never asked for. `Stateless<N>` has no authority implication (007's
+  threat model doesn't touch hosting shape), so the safer route to the same performance win is a
+  **lint**, not a default: `register_agent()` validation (§6) can suggest `Stateless<N>` when it can
+  statically prove no session-state usage, leaving the conservative off-by-default unchanged.

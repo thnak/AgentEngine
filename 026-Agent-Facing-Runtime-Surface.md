@@ -1,6 +1,6 @@
 # 026 — Agent-Facing Runtime Surface
 
-**Status:** Draft · **Depends on:** 006, 007, 008, 010, 025 · **Gate:** §8
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Depends on:** 006, 007, 008, 010, 025 · **Gate:** §8
 
 ## Goal
 
@@ -68,6 +68,7 @@ an ordinary shell equivalent — a nonzero exit code and a `stderr` line ("no su
 | Memory exceeded | `MemoryError` |
 | Tool denied by policy | the tool function raises `PermissionError` with a short, actionable message |
 | Approval required | execution suspends (001 §2); the agent is not asked to reason about approval |
+| Command not found (name resolves to neither a builtin nor a registered Runner/Tool) | nonzero exit + `stderr` line ("command not found") |
 
 **Rules:**
 
@@ -166,11 +167,11 @@ reads to the model as "not available here" rather than as a policy essay.
 | `agent.tools` | The agent's tools as callables (§4) | `ToolCall<name>` per tool |
 | `agent.files` | Convenience over the worktree — `artifact()`, `input()`, listing | `FsRead`/`FsWrite` |
 | `agent.data` | Tabular/JSON helpers over inputs without loading them wholly into memory | `FsRead` |
-| `agent.memory` | Read the default-ranked view of the principal's memory (005 §5, 029 §5, 029 Q5) | `FsRead<mount>` on `/memory` |
+| `agent.memory` | Ordinary read access to the memory worktree's files under `/memory` (029 §2) — the ranked/on-demand view is `agent.tools.recall`, an ordinary tool (005 §5, 029 §5, resolved 029 §10 Q5) | `FsRead<mount>` on `/memory` |
 | `agent.notes` | Durable notes across turns and sessions — ordinary writes into `/memory`, landing as `AgentAuthored` `MemoryItem`s (029 §4) | `FsWrite<mount>` on `/memory` |
 | `agent.output` | Emit structured output conforming to the run's schema (003 §4) | — |
 | `agent.progress` | Report progress on long work → run event stream (013 §1) | — |
-| `agent.ask` | Ask the caller/user a question → `InputRequired` (001 §2) | `Elicit` |
+| `agent.ask` | Ask the caller/user a question → `InputRequired` (001 §2) | — |
 | `agent.spawn` | Run a sub-agent, returning its result | `AgentCall<agent>` |
 
 **Design constraints:**
@@ -188,6 +189,81 @@ reads to the model as "not available here" rather than as a policy essay.
 (fewer round trips, less token spend, better results) *and* a wider host attack surface. Each module
 is therefore justified individually, capability-gated individually, and testable individually —
 rather than shipping one `agent.engine` god-object that grows without review.
+
+## 5a. What earns a place in `agent.*` (resolves OQ-14)
+
+"Justified individually" above was, until now, a case-by-case judgment call with no stated test. A
+candidate module earns a place only if it passes **both**:
+
+1. **Capability fidelity** — it maps to one or more capabilities, each already in 007 §3's table
+   (`agent.files` is the one module that needs two at once, `FsRead` and `FsWrite` together, still
+   each individually already named there), or to none because it is a control primitive over the
+   *run's own state* rather than an effect on anything outside it (`output`, `progress`, `ask` —
+   ending the run's structured output, reporting progress, pausing for input are transitions in
+   001's state machine, not authority over the world). A module is never the place a new,
+   library-local authority class gets invented; if an operation needs authority 007 doesn't already
+   name, the fix is a new capability in 007 §3, not a bespoke check inside a library function.
+2. **In-process necessity** — the operation could not be served equally well as an ordinary Tool
+   (006), reached generically through `agent.tools`, without defeating something CodeAct exists to
+   provide. Two ways to clear this bar, and only two:
+   - **(a) Run-intrinsic** — it touches the run's own control state, which no Tool has the standing
+     to reach (minting a new run, ending the current one's structured output, pausing the current
+     one for input, streaming a status update into the run's own event stream). `output`, `progress`,
+     `ask`, `spawn` clear it this way.
+   - **(b) Bulk/streaming necessity** — it operates over already-granted content in a loop, where
+     routing each access through the tool-call JSON round-trip would defeat §5's stated point: "data
+     stays out of the context window." `files`, `data`, `memory`, `notes` clear it this way; `memory`
+     and `notes` are the same justification specialized to the `/memory` mount, not a second one.
+
+A discrete, single-shot external effect that needs neither clears the bar for a **Tool** (arbitrary
+capability, vetted through 006's pipeline like any other) but not for a **new top-level module** —
+that is what keeps the library from growing by "this would be convenient" alone, which is the
+concern Q1 raises about `agent.spawn` specifically and this principle raises about the library in
+general. **This resolves what earns a place; it does not re-decide whether an admitted module's
+bounds are sufficient** — `agent.spawn` passes this test cleanly (run-intrinsic, maps to
+`AgentCall<agent>`) while whether its depth/budget bounds are *enough*, given the module belongs,
+stays open as Q1.
+
+**Correction found by applying the test:** §5's table listed `agent.ask` against a capability named
+`Elicit`, which 007 §3's table has never defined — an ungoverned exception to rule 1 above. Brought
+in line with `output`/`progress`: pausing for input is a run-intrinsic control transition (001 §2),
+not an effect requiring its own capability grant, so the table now reads `—` for `agent.ask` like
+its two siblings.
+
+## 5b. Discovering the granted surface (resolves OQ-16)
+
+§4 already gives `agent.tools` a real introspection story — generated docstrings, a `.pyi` stub,
+`dir(tools)`/`help()` sourced from each tool's declared metadata. That treatment stopped at
+`agent.tools`; the other modules in §5's table had no equivalent, and nothing told the model *which*
+top-level modules were even present before it tried one — the only way to find out was
+`import agent.spawn` and catch the failure. Two changes close the gap, both sourced from the same
+run-start-resolved capability set (007) §5's table already keys module presence to, so there is one
+source of truth rather than two that can drift:
+
+- **Pull side.** §4's `agent.tools` pattern generalizes to the whole `agent` namespace: `dir(agent)`
+  lists only modules granted this session, `help(agent)` gives a one-line-per-module overview, and
+  every present module gets the same docstring/`.pyi` treatment `tools` already has. This is not new
+  machinery — it is applying a pattern this RFC already committed to, uniformly, instead of stopping
+  at one module.
+- **Push side.** A short one-line-per-granted-module summary is folded into `instructions` at
+  session start, extending §7's existing "Tool surface (names + one-line descriptions)" budget line
+  from tools-only to the full action space — so the model does not have to spend a turn probing
+  before it can act correctly. No new persistent artifact: `dir()`/`help()` already cover "give me
+  detail on demand," and a third mechanism duplicating what pull-side already answers would cost
+  tokens for information the model can already get, which §5's "small and boring" constraint rules
+  out.
+
+**An ungranted module is omitted, not listed as denied.** This follows §5's existing rule for the
+same case ("an ungranted module is simply absent, which reads to the model as 'not available here'
+rather than as a policy essay") rather than introducing a new policy — an explicit
+`agent.spawn: not granted` line would itself be exactly the kind of capability enumeration §1
+already rules out for the sandbox generally, spent on a module the agent cannot use regardless of
+whether it knows the name.
+
+**Naming:** this mechanism is engine-generated and per-session, not a mounted, authored, versioned
+bundle — it must not be called or mounted as a "skill" (009 §8's vocabulary is reserved for
+externally-authored, distributable content); doing so would confuse "the skill I loaded" with "the
+engine telling me what I have."
 
 ## 6. Skills as ordinary files
 
@@ -208,6 +284,7 @@ The environment description is a **measured budget, not a style preference**:
 |---|---|
 | Environment description (paths, what persists) | ≤ 60 tokens |
 | Tool surface (names + one-line descriptions) | ≤ 30 tokens per tool |
+| `agent.*` module surface (names + one-line purpose, §5b) | ≤ 20 tokens per granted module |
 | Per-skill advertisement (name + description) | ≤ 100 tokens |
 | Sandbox/capability/safety architecture | **0 tokens** |
 
@@ -230,17 +307,50 @@ when it grows. Prompt bloat is a regression like any other; without a gate it on
   closed, proven per module with a positive control.
 - **G6 (errors)** — each §3 cause produces the mapped exception with an actionable message and no
   architecture terms.
+- **G7 (discoverability, §5b)** — `dir(agent)` and `help(agent)` reflect exactly the run's granted
+  module set with no drift from the capability set that produced it; an ungranted module is absent
+  from both, never listed as denied.
 
 ## 9. Open questions
 
 - **Q1** — Whether `agent.spawn` belongs in the sandbox at all: it lets model-written code create
   runs, which is powerful and is also a recursion/cost hazard. Depth and budget bounds are
-  necessary; whether they are sufficient is unproven.
-- **Q2** — Non-actionable failure phrasing (§3) is the hardest part to get right: too vague and the
-  agent retries forever, too specific and it becomes an architecture description.
-- **Q3** — Whether the `tools` module should expose *all* tools or only those marked
-  code-callable — 010 §6's registry is per-execution, and the two lists may reasonably differ.
-- **Q4** — Whether to offer a JavaScript/TypeScript surface with the same library shape, given the
-  same "model has seen a lot of it" argument applies.
+  necessary; whether they are sufficient is unproven. (§5a settles that `spawn` *earns a place* by
+  the library-admission test; this question is about whether its bounds are enough, a narrower and
+  still-open claim.)
+- ~~**Q2** — Non-actionable failure phrasing (§3) is the hardest part to get right: too vague and the
+  agent retries forever, too specific and it becomes an architecture description.~~ **Resolved: don't
+  hand-tune wording — source it from real occurrences of the same exception class (2026-08-04):**
+  this is §1's transparency principle applied to phrasing specifically, not a fresh judgment call
+  per message. A model already knows, from ordinary Python experience, that a bare `ConnectionError`
+  for a genuinely unreachable host is usually not worth blind-retrying while a `TimeoutError`
+  sometimes is — that calibration is exactly the "ordinary knowledge it already has" property this
+  RFC leans on everywhere else, and inventing bespoke non-actionable-sounding text would be
+  re-solving a problem the exception *type* already solves. Message text is sourced from (and tested
+  against, G6) a corpus of real-world instances of the same mapped exception class, never authored
+  fresh per error site — removing the manual "too vague / too specific" balancing act by not asking
+  anyone to strike it.
+- ~~**Q3** — Whether the `tools` module should expose *all* tools or only those marked
+  code-callable — 010 §6's registry is per-execution, and the two lists may reasonably differ.~~
+  **Resolved, only what's granted for this execution — forced by existing rules, not a new choice
+  (2026-08-04):** `agent.tools` reflects the per-execution `ToolCall<name>` grant (007 §3's existing
+  per-invocation capability binding), never the agent's full declared tool set unconditionally — the
+  same "ungranted is absent" rule §5 already states for whole modules, confirmed here to apply
+  per-tool too. This is what makes §5's own claim true rather than aspirational: "high-consequence
+  effects belong on the channel that can be reviewed atomically" only holds if a tool an operator
+  wants reviewed one-call-at-a-time can be *excluded* from the bundled-approval CodeAct grant — an
+  operator withholds `ToolCall<name>` for that tool from CodeAct executions specifically (while still
+  granting it for the ordinary per-turn channel), and it's simply absent from `agent.tools`. No new
+  mechanism; 010 §6's per-execution registry and 007 §3's per-invocation binding already jointly
+  determine this.
+- ~~**Q4** — Whether to offer a JavaScript/TypeScript surface with the same library shape, given the
+  same "model has seen a lot of it" argument applies.~~ **Resolved, deferred, inheriting 010 §2's
+  already-stated Python-first priority (2026-08-04):** 010 §2 already designs JS/TS as a future
+  `execute_code` language option, explicitly lower priority than Python, and nothing about a JS
+  runtime embedding is otherwise specced anywhere in this project (unlike Python, which has the whole
+  of 010). Building a JS-idiomatic `agent.*` surface before the runtime embedding itself exists would
+  be speculative work with no foundation under it. When it is designed, §5a's admission test
+  (capability fidelity + in-process necessity) applies unchanged — a JS surface offers the same
+  modules for the same reasons, in JS idiom, not a fresh design question.
 - **Q5** — G1's threshold and corpus need to exist before this RFC can be promoted; without them the
   central claim of this document is an assertion.
