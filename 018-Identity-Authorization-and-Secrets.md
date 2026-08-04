@@ -115,16 +115,13 @@ struct SecretStore {                                  // concept
   federation), not a replacement for the mTLS/SPIFFE mechanism itself. Full text and the identical
   resolution for the 007-side duplicate: 007 §10 Q4.
 - ~~**Q2** — Capability bearer tokens (007 Q1) would let the `remote` sandbox profile and remote
-  plugins carry attenuated authority without a bespoke protocol.~~ **Resolved (OQ-3, 2026-08-04),
-  and split in two:** the `remote` sandbox / remote-plugin-hosting case is 008 §4a's
-  `RemoteExecToken` — a callback authenticator, not a capability-bearing token. The **delegated A2A
-  call** case this question also named turns out not to need capability tokens at all: §1's existing
-  "no token passthrough" rule plus `on_behalf_of` (007 §2) already carry exactly what crosses an A2A
-  boundary — a **principal**, not a capability set. Each side re-derives its own attenuated
-  capability set locally from policy (007 §5) keyed to the arriving derived principal; nothing about
-  *authority* needs to be encoded in a wire token for this path, only *identity*, which §1 already
-  specifies. This question's two halves therefore had two different right answers, and neither one
-  was "make `Capability` a bearer token."
+  plugins carry attenuated authority without a bespoke protocol.~~ **Resolved — see 007 §10 Q1 and
+  `decisions/ADR-005-capability-bearer-tokens-cross-process.md`: yes, narrowly, for the
+  `ExpiresAt`/`PathPrefix` caveat classes proven there** — a macaroon-style HMAC-chain bearer token,
+  not a blanket replacement for host-side state; any capability needing immediate revocation still
+  uses a host-side registry rather than the token mechanism itself. Real, executed, red-teamed,
+  ASan-clean implementation: `include/agentengine/trust/capability_token.hpp` and
+  `src/trust/capability_token.cpp`.
 - ~~**Q3** — Whether the audit log needs its own signing identity so it can be verified by a third
   party.~~ **Resolved, No by default (2026-08-04):** a separately-signed chain's only genuine value
   is defending against an actor who can rewrite the audit store *and* is trusted by the rest of the

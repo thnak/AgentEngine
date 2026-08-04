@@ -1,10 +1,10 @@
 # `src/backends/native_jail`
 
 Implements `agentengine::SandboxBackend` (`include/agentengine/sandbox/sandbox.hpp`) for the
-`native-jail` profile: OS-level process jailing — namespaces + seccomp-BPF + cgroups v2 on Linux,
-AppContainer + Job Object + restricted token on Windows — per **008-Sandbox-and-Isolation.md §3**.
-This is the default profile for the code interpreter and shell (010). macOS is not a target
-platform (021 §7 OQ-1, resolved).
+`native-jail` profile: OS-level process jailing — AppContainer + Job Object + restricted token on
+Windows (the v1 target), namespaces + seccomp-BPF + cgroups v2 on Linux (next, once Windows is
+stable) — per **008-Sandbox-and-Isolation.md §3**. macOS is not a target (021 §2/§7 OQ-1). This is
+the default profile for the code interpreter and shell (010).
 
 Per 008 §1b, the sandbox here is the *whole execution environment*, not a wrapper around Python:
 the kernel jail is the backstop layer, and this directory is also where **010-Python-Code-

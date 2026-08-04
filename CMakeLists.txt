@@ -73,6 +73,23 @@ if(WIN32)
   add_library(agentengine::job_object_limits ALIAS agentengine_job_object_limits)
 endif()
 
+# ---- Cross-process capability tokens (src/trust/) -- Windows only ------------------------------
+# Implements decisions/ADR-005-capability-bearer-tokens-cross-process.md (resolves OQ-3): both
+# competing designs it prove-phases -- Design A (trust/capability_token.hpp, a self-verifying
+# macaroon-style bearer token) and Design B (trust/capability_registry.hpp, the status-quo
+# host-side-registry alternative it is measured against). HMAC-SHA256 and randomness come from
+# Windows CNG/BCrypt, a system API (bcrypt.lib) -- not a third-party dependency, same posture as
+# job_object_limits.cpp's direct use of Job Objects, so this needs no CMake option gate beyond the
+# platform check.
+if(WIN32)
+  add_library(agentengine_capability_token STATIC
+    src/trust/capability_token.cpp
+    src/trust/capability_registry.cpp)
+  target_link_libraries(agentengine_capability_token PUBLIC agentengine::core)
+  target_link_libraries(agentengine_capability_token PRIVATE agentengine_warnings bcrypt)
+  add_library(agentengine::capability_token ALIAS agentengine_capability_token)
+endif()
+
 # ---- native_jail PythonRunner backend (src/backends/native_jail/) -- OPTIONAL, OFF by default ---
 # Implements decisions/ADR-002-pythonrunner-embedding-and-mediation.md (prove phase): the embedded
 # CPython interpreter, Layer 0's sys.modules sweep, and the sys.meta_path allowlist finder

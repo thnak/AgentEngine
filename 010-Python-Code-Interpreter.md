@@ -96,8 +96,8 @@ is not, by itself, a reason to reopen it.
 
 **There is no real shell, on any platform or profile — bundled or otherwise.** An earlier draft of
 this RFC proposed shipping one portable shell binary (`dash`/`toybox`-class) so behaviour would be
-identical across Windows and Linux instead of exposing whichever native shell the host
-happens to have. That solves the *cross-platform consistency* problem but not the deeper one: **a
+identical across the target platform set (021 §2) instead of exposing whichever native shell the
+host happens to have. That solves the *cross-platform consistency* problem but not the deeper one: **a
 real shell's job is resolving a name against a search path and exec'ing whatever it finds.** That is
 exactly the ambient-authority shape **I2** forbids — "reachable" would mean "anything on `PATH`,"
 sandboxed or not, and every hardening technique available (seccomp filters, allowlisted binaries,
@@ -121,8 +121,8 @@ an arbitrary named program:
   registered Tool an `agent.tools.*` call in Python would reach** — 006 §2's uniformity rule now
   binds across frontends, not only across sources, precisely so `grep` in a shell pipeline and a
   Python search call can never quietly diverge into two implementations.
-- Because behaviour is engine code rather than a ported binary, **identical behaviour across
-  Windows and Linux is automatic**, not something that has to be built and verified per
+- Because behaviour is engine code rather than a ported binary, **identical behaviour across the
+  target platform set (021 §2) is automatic**, not something that has to be built and verified per
   platform the way §2's Python runtime table does.
 
 This is more implementation than adopting an existing shell would have been — a grammar, a builtin
@@ -257,9 +257,9 @@ traces are comparable across frameworks.
 ## 9. Promotion gate
 
 - **G1 (ecosystem)** — under `native-jail`, a scripted data task using NumPy + pandas produces a
-  chart artifact identically on Windows and Linux from the same pinned `preinstalled` image
-  (§5, §10 Q1); a package outside the image produces a *clear, structured* unavailable-package error
-  naming the policy (§5), never a mysterious import failure.
+  chart artifact identically across the target platform set (021 §2) from the same pinned
+  `preinstalled` image (§5, §10 Q1); a package outside the image produces a *clear, structured*
+  unavailable-package error naming the policy (§5), never a mysterious import failure.
 - **G2 (containment)** — the hostile corpus (008 §7) plus interpreter-specific attacks (`os.system`,
   `ctypes`, `/proc` and registry probing, symlink escape from the workspace, egress to
   `169.254.169.254`, fork bomb, memory bomb, output flood, `sys.settrace` shenanigans) is contained
@@ -282,7 +282,7 @@ traces are comparable across frameworks.
 - **G6 (parity)** — the same command's effect (write a file, read `cwd`, read an env var) is
   observable identically whether reached via `ShellRunner` or via `PythonRunner`'s mediated `os`
   surface (§3a, 008 §1b); and `ShellRunner`'s documented grammar and builtins behave identically
-  across Windows and Linux.
+  across the target platform set (021 §2).
 - **G7 (interpreter mediation, 008 §1b)** — two claims, both proven:
   - **Import allowlist**: `import` of any module outside the granted package policy (§5) —
     including a native extension not on it — raises `ImportError` and never reaches the dynamic

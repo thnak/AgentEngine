@@ -6,12 +6,12 @@
 
 One extension mechanism for everything third parties contribute — tools, skills, model providers,
 memory stores, content filters — built on the **WASM Component Model**, so that an extension is a
-single signed artifact that runs identically on Windows and Linux, holds only the
+single signed artifact that runs identically across the target platform set (021 §2), holds only the
 capabilities the host hands it, and cannot take the host down.
 
 ## 1. Why the component model, specifically
 
-- **One artifact, three OSes.** No per-platform build matrix, no per-platform loader, no
+- **One artifact, every targeted OS.** No per-platform build matrix, no per-platform loader, no
   `dlopen`/`LoadLibrary` ABI hazard, and no native-plugin crash taking the engine with it.
 - **Capability-based by construction.** A component has no ambient authority: it reaches the world
   only through imports the host supplies. This is **I2** enforced by the runtime rather than by
@@ -306,8 +306,8 @@ dimension so a misbehaving plugin is visible without code changes.
 
 ## 10. Promotion gate
 
-- **G1** — the same `ae:tool` component binary loads and produces identical results on Windows and
-  Linux (byte-identical outputs for a deterministic fixture).
+- **G1** — the same `ae:tool` component binary loads and produces identical results on every
+  platform in the current target set (021 §2 — byte-identical outputs for a deterministic fixture).
 - **G2** — a component whose imports exceed its manifest fails to load; a component that requests a
   capability the operator did not grant fails to instantiate. Positive controls included.
 - **G3** — a trapping/looping/allocating-forever/output-flooding plugin is contained within its
@@ -339,6 +339,30 @@ dimension so a misbehaving plugin is visible without code changes.
   latency-sensitive exotic backend is documented as belonging as a direct 004 §3 backend addition
   instead of an `ae:provider` plugin — a fallback stated now so the decision isn't reopened from
   scratch if the measurement is unfavorable.
+- ~~**Q2** — Distribution: a first-party registry, or reuse of an existing artifact registry (OCI)?
+  OCI is tempting — content-addressed, signed, mirrorable, already deployed everywhere.~~
+  **Resolved, OCI, pull-only, no first-party registry (OQ-6, 2026-08-03/04; see also §3a):** a real,
+  executed pull round trip against a public OCI registry (Docker Hub: anonymous bearer-token
+  exchange → image-index manifest → platform manifest → content-addressed config blob, the blob
+  fetch redirecting to separate CDN storage) needed nothing beyond plain HTTPS and a SHA-256 check —
+  every returned digest verified byte-for-byte against an independently computed hash. §3's
+  distribution needs (content-addressed identity, digest pinning, signature carriage) are already
+  what the protocol gives for free; building a first-party registry means also building auth,
+  storage, GC, and mirroring that OCI registries already operate at the scale this project would
+  otherwise have to reach on its own. **What AgentEngine builds is a minimal pull-only client**
+  (token exchange, manifest fetch, blob fetch by digest, SHA-256 verify — a few hundred lines against
+  an existing HTTP capability, the same "system-API, not a third-party dependency" framing as
+  Windows CNG/BCrypt in `decisions/ADR-005-capability-bearer-tokens-cross-process.md`) — push,
+  garbage collection, and chunked resumable upload are out of scope entirely, because AgentEngine is
+  never the publisher: whoever authors a plugin publishes it with existing standard tooling (`oras`,
+  `docker`, `skopeo`). **One concrete detail this decision surfaces, not solved here**: the blob fetch
+  redirected to a host distinct from the registry API host, so an egress allowlist (007 §3 `NetOut`,
+  008 §4) for the plugin-pull path must cover the registry's blob-storage host(s) too, not just the
+  registry hostname — a per-provider detail for whoever implements §4's host imports. **Also not
+  solved here**: how `plugin.aepkg` (§3) maps onto an OCI artifact (one layer blob plus
+  `manifest.toml` fields projected to annotations, `SIGNATURE` moved to an OCI referrer per the
+  Notation/cosign convention rather than bundled in the zip) — named as follow-on design work, not
+  this pass's job.
 - ~~**Q3** — Whether plugins should be able to declare *typed* WIT interfaces for their own tools
   rather than JSON Schema, with the schema generated from WIT (better typing, harder MCP interop).~~
   **Resolved, Yes — WIT is the source of truth, JSON Schema is generated from it (2026-08-04):** this
@@ -355,18 +379,20 @@ dimension so a misbehaving plugin is visible without code changes.
   escape hatch (a WIT `json-value`-shaped type for that one parameter) rather than the tool's whole
   schema falling back to hand-authored — the same "declared shape plus an escape hatch for what
   doesn't fit" pattern already used elsewhere (003 §1's `Custom` content kind).
-- ~~**Q2** — Distribution: a first-party registry, or reuse of an existing artifact registry (OCI)?
-  OCI is tempting — content-addressed, signed, mirrorable, already deployed everywhere.~~
-  **Resolved, OCI (OQ-6, 2026-08-04):** see §3a.
 - ~~**Q4** — Pinning to a Wasmtime version that ships WASI 0.3 by default (46+) versus supporting a
-  range; the async ABI difference is not a small compatibility surface.~~ **Resolved, pin (OQ-7,
-  2026-08-04):** unlike MCP/A2A, Wasmtime is a build-time embedded dependency, not a wire peer whose
-  independently-released versions we must interoperate with regardless of our own choice — nothing
-  external forces us to support more than one at a time. Pin to one specific version, the same
-  discipline CONVENTIONS already applies to Quark's submodule commit, CMake's floor, and the
-  compiler versions in 021 §5: a bump is a deliberate, single-commit change gated on the full
-  008/009 hostile and conformance suites passing clean against the new version before the pin
-  moves, never an ongoing dual-version support burden. Doubling conformance and sandbox-escape
-  surface to track two Wasmtime majors concurrently — real cost the "async ABI is not a small
-  compatibility surface" framing was right to flag — buys nothing when no external actor requires
-  it.
+  range; the async ABI difference is not a small compatibility surface.~~ **Resolved 2026-08-03/04
+  (see OpenQuestions.md OQ-7): pin to a single version, currently 47.0.3** (the latest release as of
+  this date) — no 0.2/0.3-RC compatibility range. Unlike MCP/A2A, Wasmtime is a build-time embedded
+  dependency, not a wire peer whose independently-released versions we must interoperate with
+  regardless of our own choice — nothing external forces us to support more than one at a time. Pin
+  to one specific version, the same discipline CONVENTIONS already applies to Quark's submodule
+  commit, CMake's floor, and the compiler versions in 021 §5: a bump is a deliberate, single-commit
+  change gated on the full 008/009 hostile and conformance suites passing clean against the new
+  version before the pin moves, never an ongoing dual-version support burden. Doubling conformance
+  and sandbox-escape surface to track two Wasmtime majors concurrently — real cost the "async ABI is
+  not a small compatibility surface" framing was right to flag — buys nothing when no external actor
+  requires it. Verified against the real, downloaded Windows x64 C API release: Component Model
+  headers (`wasmtime/component/*`) and WASI 0.3's async primitives (`stream`/`future`, referenced in
+  `component/func.h`, `component/linker.h`, `component/types/val.h`) are present in the shipped
+  headers, not just documented; a real engine/store/module/instance/call round trip against this
+  exact release succeeds under MSVC 19.51.36252 (the same toolset the rest of this project uses).

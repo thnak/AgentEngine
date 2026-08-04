@@ -68,6 +68,14 @@ default to `shared` (the natural reading of "they work on the same disk"); agent
 *concurrently* default to `branch`, because concurrent blind writes to one tree is precisely how
 multi-agent systems destroy each other's work.
 
+**`shared` for concurrent siblings requires an explicit opt-in (resolves OQ-13 Q2).** Single-writer
+serialization makes `shared` free of data races and lost updates even between concurrent siblings,
+but a small concurrency prove (`OpenQuestions.md` OQ-13) confirmed it does not make cross-file reads
+consistent: a sibling can deterministically observe one file of a related pair already updated and
+the other not yet, on every run, not occasionally. An operator who wants concurrent siblings on
+`shared` anyway (e.g. a genuinely single-artifact collaboration) sets it explicitly, acknowledging
+the read-skew hazard; it is never reached by a plain default.
+
 ## 4. Concurrency and merge
 
 - **One writer per tree.** A worktree node is a Quark actor; writes to a given tree serialize
@@ -149,8 +157,8 @@ practical value of content addressing for an audited system.
   restore through the identical digest-fetch mechanism (§6) G1 already exercises, so a worktree that
   survives destruction, restart, and migration by that mechanism survives passivation and profile
   changes by construction.
-- **G2 (isolation)** — the path-escape corpus (§5) fails to read or write outside a mount on
-  Windows and Linux.
+- **G2 (isolation)** — the path-escape corpus (§5) fails to read or write outside a mount on every
+  platform in the current target set (021 §2 — Windows now, Linux next).
 - **G3 (concurrency)** — N concurrent `branch` agents produce a deterministic merge result; every
   genuine conflict is surfaced, never silently resolved; no lost update over 10⁴ randomized
   interleavings.
@@ -167,17 +175,16 @@ practical value of content addressing for an audited system.
 ## 10. Open questions
 
 - ~~**Q1** — Should merge conflicts be presented to the *model* as a task (it can often resolve them)
-  or escalated to a human by default? Current position is escalate; model-assisted resolution is an
-  obvious extension and an obvious way to lose data.~~ **Resolved (OQ-13, 2026-08-04): split
-  proposing from confirming, don't conflate them.** §4's "never resolved by guessing" rule is about
-  *silent* resolution — nothing becomes the accepted tree without an explicit act — not about *who*
-  may draft a proposal. The model may be offered the conflict as a drafting task (both versions plus
-  the common ancestor, produce a proposed merge); that proposal is never auto-committed. Writing a
-  resolution back to the worktree stays exactly what §4 already specifies today — surfaced, and
-  requiring the run's supervising agent or a human to confirm it — except the confirmer now reviews
-  one proposed merge instead of two raw diffs. Escalation-by-default is unchanged; what's added is a
-  drafting step ahead of it, gated the same way any other write is (007, 006 §4), never a shortcut
-  around confirmation.
+  or escalated to a human by default?~~ **Resolved 2026-08-03 (see OpenQuestions.md OQ-13):**
+  escalate by default, model-assisted resolution allowed only as a **policy-gated proposal, never an
+  auto-apply**. The model may draft a merged file from the two conflicting versions retained at
+  `/conflicts/<path>.<agent>` — that draft is `Tainted` output like any other model output (003 §2)
+  and is data, not authority (I3, 007 §4): it is presented for the same argument-hash-bound approval
+  006 §4 already requires for other irreversible effects, never applied because "the model resolved
+  it," which 007 §4 already names as a concretely forbidden derivation in a different guise (deriving
+  a data-loss decision from model-supplied content). Default is escalate-to-human with no model
+  drafting; enabling model-assisted drafting is an explicit per-session/operator policy opt-in, not a
+  standing behavior.
 - ~~**Q2** — Whether `shared` mode should be permitted at all for concurrent agents given §4's
   single-writer serialization makes it *safe* but still makes it *confusing* (an agent's file
   changes under it between reads).~~ **Resolved, permitted as an explicit override, not banned

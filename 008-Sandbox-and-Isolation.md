@@ -6,8 +6,8 @@
 
 Define **one isolation contract** and the named profiles that implement it, so that untrusted
 execution — plugins, generated code, third-party tools — has the same capability semantics, the
-same limits, the same failure shapes, and the same audit trail on Windows and Linux, while
-the *strength* of the boundary remains a deployment choice.
+same limits, the same failure shapes, and the same audit trail across the target platform set (021
+§2 — Windows now, Linux next), while the *strength* of the boundary remains a deployment choice.
 
 ## 1. The decision, and why
 
@@ -18,7 +18,8 @@ tabulated in the research record §8 — and the axis a deployment cares about d
 Two things are nonetheless **locked**, because leaving them open would leave the whole design open:
 
 - **The WASM Component Model (WASI 0.3) is the plugin ABI** (009). One artifact runs bit-identically
-  on both target OSes, holds no ambient authority by construction, instantiates in microseconds, and
+  across the target platform set (021 §2), holds no ambient authority by construction, instantiates
+  in microseconds, and
   is language-agnostic — including the large permissively-licensed **C/C++ library ecosystem**,
   which `wasi-sdk` compiles directly. A heavy library is *safer* as a plugin than as a linked host
   dependency, because a plugin holds only the capabilities the host hands it.
@@ -77,24 +78,35 @@ Today that is **Wasmtime 46+**, which ships WASI 0.3 with Component Model Async 
 **`wasm3` is explicitly not a candidate for this role.** It is an excellent interpreter — the
 cold-start winner, tiny, portable down to microcontrollers — but it has only *partial* WASI Preview 2
 and Component Model support, which is the one axis that matters here. On the features this design
-depends on it has fewer, not more. Evidence:
+depends on it has fewer, not more. It may still earn a scoped place for ultra-short guest calls or
+constrained deployments, behind the same host interface and behind a gate; that was
+[OQ-12](OpenQuestions.md), now resolved (2026-08-03,
+`decisions/ADR-008-wasm3-cold-start-vs-wasmtime.md`): a real, measured cold-start comparison on this
+project's own trivial-workload shape found wasm3 160-180x faster at p50 and 250-400x at p99 — the
+gate this paragraph named is cleared, so wasm3 is now a real candidate for that scoped niche, not a
+hypothetical one. This paragraph's rejection of wasm3 **as the primary runtime** is unchanged — the
+measurement is silent on Component Model/WASI 0.3 support, which is why the primary-runtime decision
+above stands regardless. Whether to actually build the scoped second runtime is a separate decision
+the ADR does not make. Evidence:
 [`docs/research/2026-wasm-runtime-and-state-persistence.md`](docs/research/2026-wasm-runtime-and-state-persistence.md) §1.
 
-**Resolved (OQ-12, 2026-08-04): the engine does not ship it, in any scoped role, and does not need
-to.** The question as framed weighed wasm3's real cold-start/footprint advantages against "two
-sandbox-escape surfaces and two conformance stories" as an engine-maintained cost — but §2a already
-built the mechanism that makes the engine bearing that cost unnecessary: `SandboxBackend` is an
-open seam, and a deployer with a genuine ultra-short-guest-call or microcontroller-footprint need
-can supply a wasm3-backed custom backend themselves, to the same §9 gate bar any custom backend
-must clear, without the core project taking on a second conformance story for a niche it does not
-itself have. This is the identical move §1's `native-jail`-first priority already makes for
-stronger-than-`native-jail` isolation, applied to the opposite end of the cold-start/footprint axis
-— the engine backs a small number of profiles well; the open seam absorbs the rest. It also removes
-what the question was blocked on: no 023-budget measurement is needed to justify the engine
-adopting a second runtime, because the engine isn't adopting one. A deployer choosing this route
-inherits the responsibility §2a already states — verifying their specific plugins only exercise the
-WASI P2/Component Model subset wasm3 actually implements, since the plugin ABI's Component Model
-requirement (above) doesn't relax for them.
+**Where this leaves the engine (OQ-12 gate cleared, 2026-08-04): the measurement above makes wasm3
+a real candidate for a scoped niche — it does not, by itself, commit the engine to shipping one.**
+The question as framed weighed wasm3's real cold-start/footprint advantages against "two
+sandbox-escape surfaces and two conformance stories" as an engine-maintained cost — §2a already
+built the mechanism that lets a deployer capture that advantage without forcing the cost onto the
+core project: `SandboxBackend` is an open seam, and a deployer with a genuine
+ultra-short-guest-call or microcontroller-footprint need can supply a wasm3-backed custom backend
+themselves today, to the same §9 gate bar any custom backend must clear. This is the identical move
+§1's `native-jail`-first priority already makes for stronger-than-`native-jail` isolation, applied
+to the opposite end of the cold-start/footprint axis — the engine backs a small number of profiles
+well; the open seam absorbs the rest, at least until an engine-maintained wasm3 backend is
+separately proposed and gated. **Whether the project itself builds and maintains a first-party
+wasm3 backend — taking on the second conformance story — remains a separate, still-open decision;**
+ADR-008 supplies the evidence such a proposal would need, it does not make the call. A deployer
+choosing the custom-backend route today inherits the responsibility §2a already states — verifying
+their specific plugins only exercise the WASI P2/Component Model subset wasm3 actually implements,
+since the plugin ABI's Component Model requirement (above) doesn't relax for them.
 
 ### 1b. The sandbox is the whole execution environment, not a wrapper around Python
 
@@ -228,8 +240,8 @@ The four the engine ships and backs with a promotion gate (§9) — not the exha
 
 | Profile | Backend | Boundary | Cold start | Platforms | Intended use |
 |---|---|---|---|---|---|
-| **`wasm`** | wasmtime, WASI 0.3 components | Software; capability-based, no ambient authority | µs–low ms | Win · Linux, identical | Plugins (default, 009), deterministic execution, replay, hostile multi-tenant *plugin* code that fits the WASI surface |
-| **`native-jail`** | OS process jail + interpreter-level mediation (§1b) | Kernel-enforced, per-OS, plus mediated at the point of use | ms | Win (AppContainer + Job Object + restricted token) · Linux (namespaces + seccomp-BPF + cgroups v2 + no_new_privs) | The code interpreter and shell (010), full-ecosystem Python, on trusted-tenant deployments — the default |
+| **`wasm`** | wasmtime, WASI 0.3 components | Software; capability-based, no ambient authority | µs–low ms | Win · Linux, identical (021 §2 — macOS not targeted) | Plugins (default, 009), deterministic execution, replay, hostile multi-tenant *plugin* code that fits the WASI surface |
+| **`native-jail`** | OS process jail + interpreter-level mediation (§1b) | Kernel-enforced, per-OS, plus mediated at the point of use | ms | Win (AppContainer + Job Object + restricted token) · Linux (namespaces + seccomp-BPF + cgroups v2 + no_new_privs), next | The code interpreter and shell (010), full-ecosystem Python, on trusted-tenant deployments — the default |
 | **`remote`** | Kubernetes **Agent Sandbox** CRD, or a vendor sandbox API | Cluster-side, backend-decoupled — may itself use hardware isolation | network + backend | Any (client side) | Production scale-out, cluster-managed lifecycle, pause/resume, and hostile/untrusted-multi-tenant workloads that need a stronger boundary than `native-jail` offers — this profile, not one we build, is where that strength comes from |
 | **`none`** | In-process | **No boundary** | 0 | All | First-party trusted code only; **refuses to load T2/T3 code** (007 §6) |
 
@@ -289,45 +301,48 @@ host-mediated" rule routes through the host — **how does the host know which `
 therefore which already-computed `SandboxSpec`, that callback belongs to**, given the backend is not
 a process the host directly mediates syscalls for the way `native-jail` is?
 
-**Decision: a purpose-built, host-minted `RemoteExecToken`, not a general bearer-capability system.**
+**Decision: `RemoteExecToken` is the self-verifying, macaroon-style bearer token ADR-005 proved out
+(Design A), not an opaque lookup key into a host-side registry.** An earlier draft of this section
+argued for the opaque-reference alternative (Design B) specifically to avoid taking on a crypto
+dependency and a caveat-parsing forgery surface; `decisions/ADR-005-capability-bearer-tokens-cross-
+process.md` (007 §10 Q1, executed, red-teamed, ASan-clean) settled that argument the other way for
+capabilities crossing a process boundary generally, and `RemoteExecToken` is that mechanism applied
+to this RFC's specific callback-authentication problem, not a separate bespoke protocol.
 
 ```
-RemoteExecToken = { exec_id, run_id, issued_at, expires_at, mac }
+RemoteExecToken = CapabilityToken{
+    capability_kind = remote_exec_callback,
+    param           = { exec_id, run_id },
+    caveats         = [ ExpiresAt(expires_at) ],
+    signature       = HMAC-chain over the above (root key held only by the minting host)
+}
 ```
+
+(`include/agentengine/trust/capability_token.hpp`, `src/trust/capability_token.cpp` — the same
+`mint_root`/`attenuate`/`verify` triple ADR-005 §3 Design A specifies.)
 
 - Minted by the host at the same point it constructs the `SandboxSpec` for an `Exec`, handed to the
   remote backend alongside (not instead of) the out-of-band spec delivery above.
-- `mac` is an HMAC over the other fields using key material the host already holds — no new crypto
-  dependency beyond what 011 §8a's `requestState` protection and 018's secret handling already
-  require.
-- **The token carries no authority of its own.** It is a lookup key plus an authentication factor:
-  on every callback, the host verifies the MAC, then looks up `exec_id` in its own server-side
-  registry of live execs and enforces from the `SandboxSpec` recorded there — exactly the same
-  enforcement path §4's table already describes for `wasm`/`native-jail`. A forged or replayed token
-  with a valid MAC but an `exec_id` the registry does not recognize as live is rejected the same way
-  an expired one is.
-- **Expiry, not a revocation channel, is how a killed exec stops being honored.** `expires_at` is
-  bound to the `SandboxSpec.lifetime` already declared for that exec; `destroy` (§2's backend
-  contract, full teardown) removes the registry entry immediately, so a callback arriving after kill
-  fails the registry lookup regardless of whether `expires_at` has technically passed yet. This is
-  the resolution to 007 Q1's "adds... a revocation problem" concern: there is no separate revocation
-  list to maintain, because liveness is already tracked for teardown accounting and the callback path
-  reuses it.
-
-**Why not macaroon-style caveats, which is what 007 Q1/008 Q4/018 Q2 actually asked about:** the
-property that makes macaroons valuable elsewhere — offline verifiability, so a holder can prove
-attenuated authority to a party that never talks to the issuer, and further attenuate for a
-sub-delegate without contacting it either — is not needed here. §4's own rule is that **egress is
-always host-mediated**: a `remote` sandbox's callback always reaches the issuing host, by
-construction, because that is what "host-mediated" means. Building offline-verifiable, further-
-attenuable, caveat-bearing tokens to solve a problem this design doesn't have would be exactly the
-kind of unforced complexity CONVENTIONS' "don't design for hypothetical future requirements"
-warns about — a real crypto dependency and a real new forgery surface (a caveat-parsing bug is a
-capability bug) purchased for a property (offline operation) nothing here exercises. If a future
-`remote` backend or a remote-plugin-hosting mode (009, not yet specified) needs *sub-delegation* —
-the remote side minting its own further-attenuated token for something *it* spawns without asking
-the original host — that is a materially different requirement from what's resolved here and would
-need its own design pass, not a retrofit of `RemoteExecToken`.
+- **`verify` is a pure local computation.** The host recomputes the HMAC chain from its own root key
+  and the token's own `(capability_kind, param, caveats)` and compares against `signature` in
+  constant time — no round trip to any external party is structurally required to establish
+  authenticity (ADR-005 claim A5), unlike the opaque-reference design this section previously
+  specified. A bit-flipped signature, a tampered `exec_id`/`run_id`, or a widened/stripped
+  `ExpiresAt` caveat all fail `verify` the same way ADR-005 §5/§6's red-team corpus (R-A1–R-A6)
+  proved for the general mechanism.
+- **Immediate revocation on `destroy` still needs a liveness check, because a self-verifying token
+  structurally cannot be "unminted" early (ADR-005 §6 claim B3, §8).** `destroy` (§2's backend
+  contract, full teardown) removes the exec's entry from the host's own live-exec table the instant
+  teardown completes; a callback presenting a token that verifies cryptographically but names an
+  `exec_id` no longer live is still rejected. This is the same liveness bookkeeping the previous
+  design used, layered on top of a token that also carries real, self-verifying authority rather
+  than none — the host is both the minting and the verifying party here, so this liveness check
+  costs nothing beyond what teardown accounting already does; it is not a reintroduction of Design
+  B's registry-as-the-source-of-authority, only of its revocation property, exactly as ADR-005 §8
+  recommends for capabilities that need immediate revocation.
+- **`expires_at`** is bound to the `SandboxSpec.lifetime` already declared for that exec, as a
+  bound on how long a token can outlive a liveness check that might be delayed or lost, not as the
+  primary revocation mechanism — the live-exec check above is.
 
 **Scope:** this mechanism is specific to `SandboxBackend` instances (008) and generalizes to any
 future host-external execution surface built the same way (a remote-hosted plugin instance, 009,
@@ -417,9 +432,9 @@ downgrade shows up as a graph change, not as a surprise in an incident review.
 
 ## 9. Promotion gate
 
-- **G1 (parity)** — one hostile test corpus runs against every available backend on Windows and
-  Linux and produces the **same outcome classification** for every case. Semantics identical,
-  strength documented.
+- **G1 (parity)** — one hostile test corpus runs against every available backend on every platform
+  in the current target set (021 §2 — Windows now, Linux next) and produces the **same outcome
+  classification** for every case. Semantics identical, strength documented.
 - **G2 (containment)** — every §7 abuse case is contained, with a measured kill time, and a
   positive control (limits deliberately disabled) demonstrably fails — so the test is not vacuous.
 - **G3 (no ambient authority)** — a probe guest enumerating filesystem, network, env, and processes
@@ -462,15 +477,12 @@ downgrade shows up as a graph change, not as a surprise in an incident review.
   `SandboxBackend`-is-a-concept pattern §2a already uses) for a deployer who wants to substitute a
   corporate proxy, an existing SSRF appliance, or an mTLS-terminating gateway.
 - ~~**Q4** — Whether capabilities should cross to the `remote` profile as bearer tokens (007 Q1).~~
-  **Resolved, No — narrower mechanism instead (OQ-3, 2026-08-04):** see §4a. Capabilities themselves
-  stay host-only; a purpose-built `RemoteExecToken` authenticates a remote sandbox's callback to a
-  host-side capability lookup, which is a smaller and differently-shaped thing than a portable
-  bearer capability. Macaroon-style caveats were considered and rejected — the offline-verifiability
-  property they buy is unneeded given "egress is always host-mediated" (§4) already guarantees every
-  callback reaches the issuing host. **Not yet proven**: this is a design decision with no
-  implementation to measure against (project is pre-implementation); an implementation-phase ADR
-  owes at minimum a forged/replayed/expired-token negative corpus and a registry-lookup-under-load
-  measurement before this moves from Draft design to a gated claim.
+  **Resolved — see 007 §10 Q1 and `decisions/ADR-005-capability-bearer-tokens-cross-process.md`.**
+  Capabilities do cross a process boundary, as narrowly-scoped, self-verifying bearer tokens: a
+  macaroon-style HMAC-chain construction with caveats such as `ExpiresAt`/`PathPrefix`, executed and
+  red-teamed, ASan-clean (`include/agentengine/trust/capability_token.hpp`,
+  `src/trust/capability_token.cpp`). §4a's `RemoteExecToken` is this mechanism applied to the
+  `remote` profile's callback-authentication problem specifically.
 - ~~**Q5** — GPU access from a sandbox (needed for local inference plugins) has no good story in any
   profile and is currently out of scope.~~ **Resolved, out of scope for `wasm`/`native-jail` by
   construction, not a gap to close there — `remote` absorbs it (2026-08-04):** the third application

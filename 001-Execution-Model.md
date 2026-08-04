@@ -187,8 +187,7 @@ This RFC moves Draft → Proven when an executed ADR demonstrates, on Windows an
 - ~~**Q1** — Should a run's turn loop itself be expressible as a workflow graph (014), making
   "agent" a special case of "workflow"? Attractive for uniformity; risks paying graph overhead on
   the common single-agent path.~~ **Resolved, No (OQ-2, 2026-08-04):** kept as two distinct
-  execution models, not merged. Two reasons, the first structural and decisive on its own, the
-  second about cost:
+  execution models, not merged. Three reasons, each independently sufficient:
   1. **It would invert or merge the 001↔014 dependency direction.** 014 §1 already defines
      `Executor = an agent | a function | a sub-workflow | a request port` — an agent is one kind of
      thing a workflow is built *from*. Making the turn loop *itself* a workflow graph reverses that:
@@ -204,7 +203,13 @@ This RFC moves Draft → Proven when an executed ADR demonstrates, on Windows an
      puts graph bookkeeping on the dominant hot path for a benefit — one visualization, one
      time-travel story — that a one-node graph cannot actually exercise (there is nothing to
      fan-out, fan-in, or route).
-  
+  3. **This is also where the developer model AgentEngine tracks already lands.** MAF's own source
+     (`docs/research/2026-08-03-maf-workflow-and-hitl-model.md` §1) has a plain agent run never touch
+     `Workflow`/`Executor` machinery, with the dependency running the same direction as reason 1:
+     `AgentExecutor` wraps `agent.run()` to let an agent become *one node* in a graph, opt-in via an
+     explicit builder, not the reverse. 014 §1's `Executor = an agent | a function | a sub-workflow |
+     a request port` is already the right shape for that opt-in case and needs no change.
+
   **What *is* unified, at the correct layer instead:** turn boundaries and workflow superstep
   boundaries are already peer checkpoint-boundary kinds sharing one `Store` and one replay mechanism
   (019 §1), and both project onto the same internal event stream (013 §1). The uniformity the
@@ -214,8 +219,8 @@ This RFC moves Draft → Proven when an executed ADR demonstrates, on Windows an
   time-travel) opts into 014 explicitly by building a `Workflow`; the default single-agent path
   never pays for what it did not ask for. (No implementation exists yet to measure the graph-of-one
   overhead the original candidate resolution proposed benchmarking — this decision rests on the
-  layering argument above, which does not depend on a measurement; §1's overhead concern becomes
-  moot rather than unresolved, since the models are not being merged.)
+  layering and source-grounded arguments above, neither of which depends on a measurement; §1's
+  overhead concern becomes moot rather than unresolved, since the models are not being merged.)
 - ~~**Q2** — Fork-and-merge semantics for sessions (§4.3) need a defined merge policy, or must be
   restricted to fork-only.~~ **Resolved, fork-only, no merge primitive (2026-08-04):** a session's
   two forked branches are alternative *continuations* of a conversation — each assistant turn after

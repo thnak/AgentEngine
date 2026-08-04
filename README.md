@@ -45,8 +45,9 @@ is a tested invariant, not a convention.
   starts with *none*. There is no "allow everything" constructor.
 - **Model output is data, never authority.** Nothing a model emits can widen a capability, approve
   an action, or change policy. Enforced by the type system, not by discipline.
-- **Plugins are WASM components.** One signed artifact runs bit-identically on Windows and Linux,
-  holding only what it is granted. That includes the open-source **C/C++ library ecosystem**
+- **Plugins are WASM components.** One signed artifact runs bit-identically on Windows and Linux
+  (the targeted OSes, 021 §2), holding only what it is granted. That includes the open-source
+  **C/C++ library ecosystem**
   via `wasi-sdk` — SQLite, tree-sitter, libarchive, codecs, tokenizers, ONNX Runtime — where a heavy
   library becomes *safer* as a plugin than as a linked host dependency.
 - **A Python interpreter that can actually `import numpy`.** The runtime choice is grounded in

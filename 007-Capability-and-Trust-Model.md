@@ -64,6 +64,9 @@ explicitly, and revocable.
 | `Schedule<max_horizon, max_active>` | Register a durable wake condition that outlives the current turn (006 §6b, 019 §2) | max horizon into the future, max concurrently-active registrations |
 | `Background<max_concurrent>` | Detach a `Backgroundable` tool call (006 §5) from the turn that invoked it (006 §6b) | max concurrently-running detached calls |
 
+**The depth budget is proven, in-process only, by `decisions/ADR-006-agent-spawn-depth-budget-bound.md`**
+(`trust/spawn_budget.hpp`) — resolves the depth half of 026 §9 Q1 / OQ-14 (OpenQuestions.md).
+
 **Properties:**
 
 1. **Empty by default.** A sandbox, a plugin instance, or a tool invocation with no explicit grants
@@ -183,22 +186,25 @@ duration, trace/span id}`.
 - ~~**Q1** — Whether capabilities should be representable as **bearer tokens** (macaroon-style, with
   caveats) so they can cross a process boundary to a remote sandbox without a bespoke protocol.
   Attractive for the `remote` profile (008); adds a crypto dependency and a revocation problem.~~
-  **Resolved, No (OQ-3, 2026-08-04):** `Capability` (§3) stays exactly as specified — host-process-
-  only, unforgeable by private construction, never serialized. What actually needed solving was
-  narrower: authenticating a remote sandbox's callback to the host that issued it. 008 §4a's
-  `RemoteExecToken` does that with an HMAC'd lookup key into a host-side registry, not a portable,
-  self-describing bearer capability — avoiding both concerns this question named: the crypto
-  dependency stays to an HMAC already needed elsewhere (011 §8a), and revocation is subsumed by the
-  same exec-liveness registry `destroy` already maintains, rather than a new distributed revocation
-  channel. Macaroon-style attenuable caveats were rejected specifically because their headline
-  property — offline verifiability without contacting the issuer — has no use here: §4's own rule
-  is that egress, and therefore every callback, is always host-mediated.
+  **Resolved by `decisions/ADR-005-capability-bearer-tokens-cross-process.md`: yes, for the
+  `ExpiresAt`/`PathPrefix` caveat classes proven there** — accepted narrowly, not as a blanket
+  replacement for host-side state. The revocation problem this question anticipated is real and
+  confirmed (a minted token is valid until its own caveats lapse, with no way to unmint it early);
+  the ADR's answer is to use a host-side registry (also proven there) instead of a bearer token for
+  any capability that needs immediate revocation, rather than solving revocation inside the token
+  mechanism itself. Performance was measured **inconclusive**, not favorable — see the ADR §9 for
+  what a follow-up measurement needs before that claim can be settled either way. The executed,
+  red-teamed, ASan-clean implementation is real code at `include/agentengine/trust/capability_token.hpp`
+  and `src/trust/capability_token.cpp` (macaroon-style HMAC-chain, narrow caveats).
 - ~~**Q2** — Span-level taint (003 Q3) would make declassification far more precise.~~ **Resolved,
-  No (OQ-5, 2026-08-04):** see 003 §8 Q3. The decisive reason lives here, not there: G2's
-  compile-fail proof that `Tainted<T>` has no implicit conversion is a whole-value, compile-time
-  property. Span-level taint would need a runtime interval check instead, weakening I3's static
-  half for every text-touching path in exchange for less over-tainting friction — a precision gain,
-  not a security fix, since per-item taint never under-taints. Kept per-item.
+  No (OQ-5, 2026-08-04):** see 003 §8 Q3 and `decisions/ADR-007-span-level-taint-vs-per-item.md`.
+  The decisive reason lives here, not there: G2's compile-fail proof that `Tainted<T>` has no
+  implicit conversion is a whole-value, compile-time property. Span-level taint would need a
+  runtime interval check instead, weakening I3's static half for every text-touching path in
+  exchange for less over-tainting friction — a precision gain, not a security fix, since per-item
+  taint never under-taints; the ADR's prove also found a naive span-aware `concat` under-taints on
+  its first implementation attempt, a security-relevant bug class per-item taint structurally
+  cannot have. Kept per-item.
 - ~~**Q3** — Whether policy should have a formal semantics + solver (decidable, verifiable) rather
   than ordered rules with default-deny.~~ **Resolved, No solver — the existing rule shape already
   gives verifiability for free

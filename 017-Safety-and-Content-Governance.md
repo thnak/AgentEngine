@@ -147,14 +147,16 @@ Draft-consistent, the same posture 004 §5 flags for its own invariant-touching 
   of the open-ended-quality-bar cost the question was actually worried about, so it ships first-party.
   Full text: §4.
 - ~~**Q2** — Span-level taint (003 Q3) would make structural separation far more precise.~~
-  **Resolved, No (OQ-5, 2026-08-04):** see 003 §8 Q3 / 007 §10 Q2 — rejected because it would
-  downgrade I3's static (compile-fail) guarantee to a runtime one across every text-touching path,
-  for a precision gain rather than a security fix. §3's structural separation already gets most of
-  the practical benefit for free: ingested content is delimited into separate, independently-tainted
-  items *during assembly*, so the coarse "mixing" scenario mostly only arises in model-*generated*
-  output that paraphrases tainted material inline — a narrower case than the general ingestion path
-  this question was framed against, and one `Citation` (003 §1 Q1) can address at the display layer
-  without touching the taint type itself.
+  **Resolved, No (OQ-5, 2026-08-04):** see 003 §8 Q3 / 007 §10 Q2 and
+  `decisions/ADR-007-span-level-taint-vs-per-item.md` — rejected because it would downgrade I3's
+  static (compile-fail) guarantee to a runtime one across every text-touching path, for a precision
+  gain rather than a security fix, and the ADR's prove found span tracking's own bug surface (a
+  missed offset-shift silently under-taints real danger bytes) to be the worse risk. §3's structural
+  separation already gets most of the practical benefit for free: ingested content is delimited into
+  separate, independently-tainted items *during assembly*, so the coarse "mixing" scenario mostly
+  only arises in model-*generated* output that paraphrases tainted material inline — a narrower case
+  than the general ingestion path this question was framed against, and one `Citation` (003 §1 Q1)
+  can address at the display layer without touching the taint type itself.
 - ~~**Q3** — Whether `require_approval` from a filter should be able to escalate to a *different*
   approver (a security team) rather than the end user.~~ **Resolved, Yes (2026-08-04):** routing a
   filter-triggered hold back to the same principal whose session produced the flagged content is a

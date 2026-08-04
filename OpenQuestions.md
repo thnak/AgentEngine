@@ -113,61 +113,6 @@ timing feel harder than it is.
 
 Full text: 020 §8 Q3, 024 §1, Specification §D3.
 
-### OQ-13 — Worktree merge policy for concurrent agents
-
-025 §4 fails a merge on conflict and surfaces it, retaining both versions. Two unresolved parts:
-whether the *model* should be offered conflict resolution as a task (it is often capable, and it is
-also a good way to lose work silently), and whether `shared` mode should be permitted at all for
-concurrent siblings — single-writer serialization makes it *safe* but still means an agent's files
-change under it between reads.
-
-**Resolved, both parts (2026-08-04):**
-
-1. **Model-assisted resolution** — split proposing from confirming rather than treating it as one
-   decision. §4's "never resolved by guessing" is about silent resolution, not about who may draft a
-   proposal: a model may draft a merge from both versions plus the common ancestor, but writing that
-   draft back as the accepted tree stays exactly what §4 already specified — surfaced, confirmed by
-   the supervising agent or a human, gated like any other write (007, 006 §4). Escalation-by-default
-   is unchanged; a drafting step was added ahead of it, never a shortcut around it.
-2. **`shared` mode for concurrent siblings** — permitted as an explicit, non-default override, not
-   banned. Banning it would make the worktree stricter than an ordinary computer for something
-   ordinary computers do constantly (two processes sharing a directory), cutting against 026 §1's
-   whole design commitment, and real collaborative patterns (concurrent producer/consumer, live
-   co-editing) genuinely need the live cross-visibility `branch`+merge would tax for no reason. The
-   real hazard — silent staleness, with no retained-both-versions safety net unlike a `branch`
-   conflict — gets closed by extending §4's existing merge-diff-summary mechanism to run proactively
-   for `shared` trees too: a short note when the tree moved since an agent's last read, not a ban.
-   `branch` stays the default for concurrent siblings.
-
-Full text: 025 §4, §10 Q1/Q2, new gate G7.
-
-### OQ-6 — Plugin distribution
-
-009 Q2. First-party registry versus OCI artifacts. OCI is content-addressed, signed, mirrorable, and
-already deployed in every environment that would run this — which is a strong argument for not
-building a registry.
-
-**Resolved, OCI, no first-party registry (2026-08-04):** every property a registry would need —
-content addressing, signing, mirroring — is already what OCI provides, and a first-party registry
-would recreate the exact false-trust-signal hazard 011 §9 already documents for the MCP registry
-(presence read as endorsement even when explicitly disclaimed), except we'd own the disclaiming.
-Discovery, which OCI doesn't solve, gets a curated git-hosted index rather than a live registry
-service — a pointer, not an endorsement. Full text: 009 §3a.
-
-### OQ-7 — Wasmtime version pinning
-
-009 Q4 / 021 Q3. WASI 0.3 ships enabled by default from Wasmtime 46; earlier versions need the
-0.3 release candidate. The async ABI difference between 0.2 and 0.3 is not a small compatibility
-surface, and the plugin ABI is supposed to be stable. Pin, or support a range?
-
-**Resolved, pin (2026-08-04):** Wasmtime is a build-time embedded dependency here, not a wire peer
-with independently-released versions in the wild we must interoperate with — nothing external
-forces multi-version support the way MCP/A2A peers do. Pinned to one version at a time, upgraded
-deliberately and gated on the full 008/009 suites passing clean, the same discipline already applied
-to Quark's submodule pin and the compiler/CMake floors (021 §5). 021 Q3 (prebuilt vs. build-from-
-source in CI) is a separate, still-open question about *how* to obtain the one pinned build. Full
-text: 009 §11 Q4.
-
 ### OQ-12 — A second WASM runtime?
 
 008 §1a rejects `wasm3` for the plugin ABI: it has only partial Component Model and WASI P2 support,
@@ -181,14 +126,93 @@ conformance stories**. That is a real cost, and the benefit is currently an assu
 cold-start comparison is generic, not measured on our workload. Blocked on a 023-budget measurement
 before it is even a candidate.
 
-**Resolved, the engine ships none, and doesn't need the measurement (2026-08-04):** 008 §2a's open
-`SandboxBackend` seam already lets a deployer with a genuine ultra-short-call or microcontroller-
-footprint need supply a wasm3-backed custom backend themselves, to the same gate bar any custom
-backend clears — without the core project taking on a second conformance story for a niche it
-doesn't itself have. Same move as `native-jail`-first (§1) applied to the opposite end of the
-cold-start axis: back a small number of profiles well, let the open seam absorb the rest. This
-dissolves the blocking measurement rather than answering it — the engine isn't adopting a second
-runtime, so there's nothing of its own to benchmark. Full text: 008 §1a.
+**Resolved 2026-08-03 by `decisions/ADR-008-wasm3-cold-start-vs-wasmtime.md`: the measurement now
+exists, and it clears the gate.** A real, symmetric, correctness-checked cold-start comparison (fresh
+parse/compile+instantiate+call+teardown per iteration, 1000 iterations, four consistent runs on this
+machine) found wasm3's p50 ≈ 0.7 µs against Wasmtime's p50 ≈ 111-128 µs (**160-180x**), p99 ≈
+0.7-1.0 µs against 241-289 µs (**250-400x**) — a real, structural gap (bytecode interpretation vs.
+full JIT compilation every cold-start cycle), not measurement noise. **This does not change 008
+§1a's rejection of wasm3 as the primary plugin runtime** — that rejection is about Component
+Model/WASI 0.3 support, which this measurement is silent on. **What it resolves is narrower and
+exactly what OQ-12 asked**: the cold-start assumption was untested and is now tested, on our own
+workload shape, and it holds up strongly. Whether to actually build a scoped wasm3 backend behind
+008's `SandboxBackend` contract remains a separate, larger decision this ADR does not make — it
+would need its own pass evaluating 008 §1a's named cost ("two sandbox-escape surfaces and two
+conformance stories"), and Wasmtime's realistic cached/precompiled deployment shape (which was not
+measured here and could substantially narrow the practical gap) is still unmeasured.
+
+### OQ-5 — Span-level taint
+
+003 Q3 / 007 Q2 / 017 Q2. Per-part taint is what 003 specifies and it is coarse: a message that
+mixes user text with a quoted tool result taints wholesale. Span-level taint would make
+declassification and structural separation far more precise, at a real cost in the content model's
+complexity and in every mapping layer.
+
+**Resolved 2026-08-03 by `decisions/ADR-007-span-level-taint-vs-per-item.md`: no, keep per-item
+taint.** A small prove built both a span-level taint prototype and the naive way someone would
+plausibly implement it, and red-teamed the naive version rather than assuming it correct. Result: the
+precision claim is real (per-item taint does deny genuinely trusted material that shares an item with
+tainted material — confirmed with 003's own named scenario, a preamble concatenated with a tool
+payload) but the naive `concat` implementation silently **under-tainted the actual danger bytes**
+(and over-tainted the trusted ones) on the first attempt — a new, security-relevant bug class that
+per-item taint structurally cannot have, because it carries no byte offsets to mis-shift. Separately,
+the concrete scenario the precision claim was worried about is **already solved today** without spans
+— keeping the trusted and tainted material as two separate `ContentItem`s (017 §3's existing
+structural-separation idiom) reaches identical precision, using only mechanisms 003/017 already
+specify. Net: span-level taint would trade a coarse-but-structurally-safe mechanism for a
+precise-but-fragile one, for a case already covered another way — judged not worth it. Left
+explicitly open: a single `ContentItem` needing to stay *partially* tainted after partial
+declassification (e.g. a mostly-trusted summary embedding one still-tainted verbatim quote) is not
+served by the two-item split and is not addressed by this ADR; if a concrete instance blocks a real
+declassifier later, it should be re-opened narrowly against that case, not as "add span-level taint
+generally" again.
+
+### OQ-13 — Worktree merge policy for concurrent agents
+
+025 §4 fails a merge on conflict and surfaces it, retaining both versions. Two unresolved parts:
+whether the *model* should be offered conflict resolution as a task (it is often capable, and it is
+also a good way to lose work silently), and whether `shared` mode should be permitted at all for
+concurrent siblings — single-writer serialization makes it *safe* but still means an agent's files
+change under it between reads.
+
+**Resolved 2026-08-03, two parts.** First (model-assisted resolution): escalate to a human by
+default; the model may **draft** a merged file but applying it always goes through the same
+argument-hash-bound approval 006 §4 already requires elsewhere — never an auto-apply, because "the
+model resolved it" is the same forbidden pattern 007 §4 already names in a different guise (a
+data-loss decision derived from model output). Second (whether `shared` should be permitted for
+concurrent siblings): confirmed by a small deterministic concurrency prove (scratchpad,
+`shared_mode_readskew.cpp`, MSVC ASan, 10/10 clean runs, no Quark dependency — it models 025 §4's
+single-writer-per-tree contract, not the real worktree actor) that single-writer serialization
+prevents data races and lost single-file updates but **does not** prevent a concurrent sibling from
+observing a torn *cross-file* view mid-update (one file already updated, a related one not yet) — a
+reliable, on-every-run hazard given a forced interleaving, not a rare timing accident. **Decision:
+`shared` stays available but is not the default for concurrent siblings** — 025 §3's existing
+default (`branch`) was already right, and this prove is the falsifiable reason why; using `shared`
+for concurrent siblings now requires an explicit opt-in that documents the read-skew hazard rather
+than a bare mode flag. See `025-Worktree-and-Virtual-Filesystem.md` §3 and §10 Q1/Q2 for the full
+resolution.
+
+### OQ-6 — Plugin distribution
+
+009 Q2. First-party registry versus OCI artifacts. OCI is content-addressed, signed, mirrorable, and
+already deployed in every environment that would run this — which is a strong argument for not
+building a registry. It also drags in an OCI client dependency and an authentication story.
+
+**Resolved 2026-08-03 by a real, executed pull round trip** (not a design debate) against a public
+OCI registry (Docker Hub, `library/hello-world`): anonymous bearer-token exchange (one plain HTTPS
+GET returning JSON) → image-index manifest fetch → platform-specific manifest fetch → content-
+addressed config blob fetch (redirecting to separate CDN storage) — five HTTPS requests total, every
+returned digest independently re-hashed with SHA-256 and matched byte-for-byte against the server's
+`docker-content-digest`. This confirms the "drags in a client dependency" cost was overstated for
+AgentEngine's actual need: a **pull-only** client (token exchange, manifest fetch, blob fetch by
+digest, SHA-256 verify) is a few hundred lines against an HTTP capability the engine needs anyway,
+not a heavyweight OCI SDK — push, garbage collection, and resumable chunked upload are never needed
+because AgentEngine is never the publisher (009 §7/§8 already assume third-party or operator-side
+tooling publishes plugins and skills). **Decision: reuse OCI, no first-party registry** — see
+`009-Plugin-and-Extension-System.md` §11 Q2 for the full resolution, including the one concrete gap
+this surfaced (blob storage lives on a host distinct from the registry API host, so the egress
+allowlist for a plugin pull must name both) and the one item explicitly left as follow-on design
+work (mapping `plugin.aepkg`, §3, onto an OCI artifact's layer/annotation/referrer shape).
 
 ### OQ-14 — In-sandbox library surface area
 
@@ -198,21 +222,17 @@ model-written code creating runs is powerful and is a recursion-and-cost hazard;
 bounds are necessary and not obviously sufficient. There is no principle yet for what earns a place
 in the library beyond case-by-case justification.
 
-**Resolved (2026-08-04):** a two-part admission test (026 §5a) — **capability fidelity** (maps to an
-existing 007 §3 capability, or to none if it's a control primitive over the run's own state rather
-than an effect on the world) **and in-process necessity** (either run-intrinsic — touches control
-state no Tool has standing to reach — or a genuine bulk/streaming need that a tool-call round trip
-would defeat). An operation that clears neither belongs as an ordinary Tool, reachable via
-`agent.tools`, not as a new top-level module — which is what actually bounds the library's growth,
-replacing "justified individually" with a test rather than a judgment call each time. Validated
-against every existing module (§5a walks all eight); one inconsistency the test surfaced was fixed
-in the process — `agent.ask` cited a capability (`Elicit`) 007 never defined, corrected to `—`
-alongside its `output`/`progress` siblings, all three being run-intrinsic control transitions rather
-than effects needing a capability grant.
-
-**Explicitly not re-decided:** whether `agent.spawn`'s depth/budget bounds are *sufficient* once it
-has earned its place — that stays open as 026 §9 Q1, a narrower question this resolution doesn't
-touch.
+**Resolved 2026-08-03, two parts.** First, a falsifiable curation rubric (026 §5, four rules: maps
+to exactly one trust-boundary-crossing thing or a zero-capability reporting channel; removing it
+forces a strictly worse channel for a task class already argued for; not expressible as an ordinary
+combination of other granted modules; every symbol still passes the "guessable from its name" bar on
+its own) — applied to all nine current modules (all pass, for stated reasons) and to a plausible
+rejected candidate (`agent.email`, which fails rule 3) to show the rubric actually discriminates
+rather than rubber-stamps. Second, `agent.spawn`'s named "sharpest case" — small-proved and
+red-teamed in `decisions/ADR-006-agent-spawn-depth-budget-bound.md`: depth bounds are sufficient
+against unbounded recursion, conditional on the effect-mediation boundary already assumed elsewhere
+(006 §9 G4) holding. The cost half of "depth and budget bounds" remains genuinely open — tracked
+against 023, not resolved by ADR-006.
 
 ### OQ-16 — CodeAct has no discoverability story for its own granted surface
 
@@ -224,38 +244,51 @@ were even present for this session before it tried one. Not the same question as
 about what should be allowed to *exist* in the library, i.e. curation) — this one is about the model
 discovering what has already been *granted*.
 
-**Resolved by candidate (2026-08-04)**, both parts adopted, both open sub-questions decided:
-
-1. **Pull side** — 026 §4's `agent.tools` pattern generalized to the whole `agent` namespace (026
-   §5b): `dir(agent)`/`help(agent)` now reflect exactly the granted module set, with the same
-   docstring/`.pyi` treatment every present module gets.
-2. **Push side** — a one-line-per-granted-module summary folded into `instructions` at session
-   start, extending 026 §7's tool-surface budget line (now ≤ 20 tokens/module) rather than adding a
-   third mechanism — pull-side `dir()`/`help()` already covers "detail on demand."
-3. **Ungranted modules are omitted, not listed as denied** — resolved by following §5's existing
-   rule for the identical case rather than carving out an exception; an explicit "not granted" line
-   would itself be the kind of capability enumeration §1 already rules out.
+**Resolved 2026-08-03 by the two-part candidate resolution already sketched here, small-proved
+in `include/agentengine/trust/agent_library_manifest.hpp`** (026 §5a): pull side generalizes
+`agent.tools`' `dir()`/`help()` pattern to the whole `agent` namespace; push side extends 026 §7's
+tool-surface token budget to a capability summary injected into `instructions` at session start.
+Both are generated from the same `CapabilitySet`, proven (not just asserted) to agree with each
+other across several grant combinations, including that an ungranted module is absent from both.
+**The two named sub-questions are decided**: an ungranted module is **omitted**, not listed as
+denied (026 §1a's existing "we omit, we do not lie" precedent, and pull-side `dir()`/`help()`
+already covers the wasted-attempt case cheaply); **no separate persistent artifact** — pull-side
+introspection already covers "detail on demand" at zero additional prompt cost. **Known limitation,
+not solved here**: today's placeholder `Capability{kind}` (trust/capability.hpp) can't yet
+distinguish a `/memory`-mount grant from any other mount, so `agent.memory`/`agent.notes` are gated
+by plain `fs_read`/`fs_write` rather than mount-scoped grants — sharpens automatically once 007's
+parameterized capability representation exists (007 §9, still open), not this resolution's job to
+build.
 
 Naming caution carried through unchanged: this is engine-generated and per-session, never mounted
 or called a "skill" (009 §8's vocabulary is reserved for authored, distributable content). New gate:
-026 G7. Full text: 026 §5b, §7, §8 G7.
+026 G7. Full text: 026 §5a/§5b, §7, §8 G7.
 
-### OQ-5 — Span-level taint
+### OQ-7 — Wasmtime version pinning
 
-003 Q3 / 007 Q2 / 017 Q2. Per-part taint is what 003 specifies and it is coarse: a message that
-mixes user text with a quoted tool result taints wholesale. Span-level taint would make
-declassification and structural separation far more precise, at a real cost in the content model's
-complexity and in every mapping layer.
+009 Q4 / 021 Q3. WASI 0.3 ships enabled by default from Wasmtime 46; earlier versions need the
+0.3 release candidate. The async ABI difference between 0.2 and 0.3 is not a small compatibility
+surface, and the plugin ABI is supposed to be stable. Pin, or support a range?
 
-**Resolved, No (2026-08-04):** the framing undersold the real cost — it isn't just implementation
-effort, it's a downgrade of I3's enforcement from a compile-time to a runtime guarantee. Per-item
-taint's `TaintedText`/`Tainted<T>` is proven by a **compile-fail test** today (003 G3, 007 G2)
-because it's a whole-value type tag; span-level taint needs a runtime interval structure, which can
-only be checked at runtime, weakening the static half of I3 across every text-touching path for a
-UX-precision gain, not a security fix — coarse taint never under-taints, only over-taints. Kept
-per-item. The motivating "which part of this came from where" use case is better served by
-`Citation` (003 §1 Q1), a display/attribution annotation independent of the security-enforcement
-taint bit. Full reasoning: 003 §8 Q3, 007 §10 Q2, 017 §9 Q2.
+**Resolved 2026-08-03 by a small, concrete build-and-check** (not a design debate, per the project
+owner's direction): **pin to a single version, currently 47.0.3** (the latest release as of this
+date — v46 has already been superseded), no 0.2/0.3-RC range. Evidence: downloaded the real,
+official `wasmtime-v47.0.3-x86_64-windows-c-api.zip` release directly from GitHub; confirmed the
+shipped headers contain full Component Model support (`include/wasmtime/component/*`) and WASI
+0.3's async primitives (`stream`/`future` types referenced in `component/func.h`,
+`component/linker.h`, `component/types/val.h`) — grounded in the actual downloaded artifact, not
+documentation; compiled and linked a minimal C++ smoke test against `wasmtime.dll.lib` with MSVC
+19.51.36252 (the same toolset the rest of this project builds with) and ran a real
+engine→store→module→instance→function-call round trip, which returned the correct result. A range
+was rejected because there is no existing deployment depending on an older pin (design phase, no
+external users) and because testing both 0.2 and 0.3 async ABI paths for zero present benefit is
+exactly the "not a small compatibility surface" cost the question itself flagged — a straight
+`GIT_TAG`/version pin (matching the existing `FetchContent` pattern already used for `nlohmann_json`
+in `tests/CMakeLists.txt`) is simpler and sufficient. **Not attempted:** actually instantiating a
+real `.wasm` component (as opposed to a core module) through the `wasmtime_component_*` APIs — that
+needs `wasm-tools`/`cargo-component` to produce a component binary, out of this small prove's scope;
+the Component Model support claim rests on header inspection plus the module-level round trip, not
+a component-level execution.
 
 ### OQ-3 — Do capabilities cross process boundaries as tokens?
 
@@ -265,45 +298,49 @@ capability with caveats is the known answer; it adds a crypto dependency, a revo
 a new forgery surface. Without it, each remote path invents its own bespoke authority protocol —
 which is worse.
 
-**Resolved, No — not as bearer capabilities, and the question turned out to bundle two different
-problems (2026-08-04):**
-
-1. **`remote` sandbox callbacks / any future remote-plugin-hosting mode** — the actual gap was
-   authenticating which live `Exec` a callback belongs to, not delegating authority across the
-   wire. 008 §4a's `RemoteExecToken` is an HMAC'd lookup key into a host-side exec registry; the
-   host enforces from its own server-side record of the capability set, exactly as it already does
-   locally. Macaroon-style caveats were considered and rejected: their value is offline
-   verifiability without contacting the issuer, and 008 §4's "egress is always host-mediated" rule
-   means every callback reaches the issuing host anyway, so that property buys nothing here.
-2. **Delegated A2A calls** — needed no new mechanism at all. 018 §1's existing "no token
-   passthrough" + `on_behalf_of` delegation already carries a **principal** across the boundary, not
-   a capability set; each side derives its own attenuated capabilities locally from policy (007 §5)
-   keyed to that principal. Capabilities were never the right thing to put on that wire.
-
-`Capability` (007 §3) is unchanged: host-process-only, unforgeable by private construction, never
-serialized, in every case. **Not yet proven** — no implementation exists to test `RemoteExecToken`
-against a forged/replayed/expired-token corpus or measure registry-lookup latency; that is explicit
-implementation-phase ADR work, not claimed as done here (008 §10 Q4).
+**Resolved 2026-08-03 by `decisions/ADR-005-capability-bearer-tokens-cross-process.md`**, a small
+prove (per the project owner's direction: real C++23, red-teamed, not a full-scale build) rather
+than a design→prove loop measuring overhead first: **yes, narrowly.** A self-verifying HMAC-chained
+bearer token (`trust/capability_token.hpp`) is accepted for the `ExpiresAt`/`PathPrefix` caveat
+classes proven there — attenuation-only and forge-resistant under red-team (bit-flip, field tamper,
+caveat-strip, caveat-reorder, fabricated-parent derivation all rejected; clean under MSVC ASan, zero
+findings). The anticipated revocation problem is real and was not solved inside the token: a minted
+token is valid until its own caveats lapse, with no way to unmint it early, so any capability needing
+immediate revocation should use the ADR's other proven design (a host-side `CapabilityRegistry`)
+instead, or a short-lived token re-minted frequently. The anticipated performance win was **not**
+established — measured **INCONCLUSIVE**, favoring the registry in this pass's specific (unoptimized,
+same-process) measurement — see the ADR §6-§9 before assuming either design is faster. Windows-only
+for now (021 §2); a Linux HMAC backend is unbuilt and named as a residual risk, not urgent given the
+Windows-now/Linux-next sequencing (OQ-1).
 
 ### OQ-2 — Is the single-agent turn loop a workflow?
 
-001 Q1 / 014 Q1. Making the turn loop a special case of the workflow graph buys one execution
-model, one checkpointing story, one visualization, and one replay mechanism. It risks paying graph
-overhead on the overwhelmingly common single-agent path.
+001 Q1 / 014 Q1. Making the turn loop a special case of the workflow graph would buy one execution
+model, one checkpointing story, one visualization, and one replay mechanism, at the risk of paying
+graph overhead on the overwhelmingly common single-agent path.
 
-**Resolved, No (2026-08-04):** kept as two distinct execution models. The decisive argument turned
-out to be structural rather than about overhead — 014 §1 already defines
-`Executor = an agent | a function | a sub-workflow | a request port`, i.e. workflows are built
-*from* agents. Making the turn loop itself a workflow graph would invert or merge that dependency
-(001 needing 014's graph machinery to define a run, while 014 still needs 001 to know what an agent
-is), forcing a "graph-of-one is special" carve-out that defeats the uniformity this question wanted
-in the first place. The overhead concern therefore becomes moot rather than needing to be measured:
-no implementation exists yet to benchmark a graph-of-one against the direct loop, and the layering
-argument doesn't depend on that measurement anyway. What *is* unified, at the layer that actually
-should own it: turn boundaries and workflow superstep boundaries are peer checkpoint-boundary kinds
-sharing one `Store` and replay mechanism (019 §1), and both project onto one internal event stream
-(013 §1) — the shared checkpointing/observability story the candidate resolution wanted, without
-collapsing the two execution models that produce it. Full reasoning: 001 §10 Q1, 014 §9 Q1.
+**Resolved 2026-08-03, by grounding in MAF's own source rather than a design→prove overhead
+measurement** (candidate resolution originally proposed): **no, keep them separate.**
+`docs/research/2026-08-03-maf-workflow-and-hitl-model.md` §1 shows MAF's `agent.run()` never touches
+`Workflow`/`Executor` machinery, and the dependency direction is the opposite of "agent is a
+special-cased workflow" — `AgentExecutor` wraps `agent.run()` to let an agent opt into being one node
+of a graph, not the reverse. Since AgentEngine's developer model is deliberately MAF-shaped
+(CLAUDE.md), this settles the question by precedent rather than by re-deriving it from an overhead
+benchmark: 001 §3's turn loop stays its own lightweight coroutine; 014 §1's `Executor = an agent | a
+function | a sub-workflow | a request port` already has the right shape for the opt-in case.
+
+A second, structural argument reaches the same conclusion independently: 014 §1's `Executor` already
+defines workflows as built *from* agents, so making the turn loop itself a workflow graph would
+invert or merge that dependency (001 needing 014's graph machinery to define a run, while 014 still
+needs 001 to know what an agent is), forcing a "graph-of-one is special" carve-out that defeats the
+uniformity the question wanted in the first place — the overhead concern becomes moot rather than
+needing to be measured, since no implementation exists yet to benchmark a graph-of-one against the
+direct loop and the layering argument doesn't depend on that measurement anyway. What *is* unified,
+at the layer that actually should own it: turn boundaries and workflow superstep boundaries are peer
+checkpoint-boundary kinds sharing one `Store` and replay mechanism (019 §1), and both project onto
+one internal event stream (013 §1) — the shared checkpointing/observability story the candidate
+resolution wanted, without collapsing the two execution models that produce it. Full reasoning:
+001 §10 Q1, 014 §9 Q1.
 
 ### OQ-4 — Unifying human-in-the-loop and long-running work
 
@@ -331,7 +368,11 @@ tool/task work (`Suspended`, MCP's `tasks` extension, A2A's task lifecycle).
    - **MCP** carries `interaction_id` inside `requestState`, integrity-protected per 011 §8a — the
      new JSON-RPC id MCP mints on every retry carries no correlation meaning for us.
    - **A2A** needed no new mapping: `Task ← Run` (012 §1) is already a direct identity, so `taskId`
-     already disambiguates a task's one outstanding `INPUT_REQUIRED`.
+     maps to the run/session identity and outlives any single `INPUT_REQUIRED`. Where a task has
+     multiple concurrent open `INPUT_REQUIRED` requests, each is its own `Interaction` (structured
+     per `run_id`, `reason: input`), and the per-interaction `interaction_id` rides alongside
+     `taskId` as task metadata (012 §5a) — the one-`taskId`-many-`interaction_id`s case a flat A2A
+     identity alone couldn't disambiguate.
    - The pre-pause "emit pending state first" rule AG-UI's spec states explicitly is generalized to
      every adapter (001 §2), not treated as an AG-UI-only obligation.
 2. **Long-running work** — recognizing the three shapes were never peers at the same granularity
@@ -348,16 +389,35 @@ Quark has `linux_x86_64` and `windows_x86_64` PAL backends; there was no macOS b
 claimed macOS as a Supported tier anyway — the largest single portability risk in the project,
 carried with no owner and no CI evidence.
 
-**Resolved by candidate (b), sharpened to a full drop (2026-08-04):** macOS is dropped as a target
-platform entirely, project-wide — not contributed upstream, not merely downgraded to a lower tier.
-021 §2's target matrix now lists macOS as **Unsupported — no claim**; every "Windows, Linux, and
-macOS" claim across CONVENTIONS.md, the Specification, README, and RFCs 008/009/010/025 was edited
-to "Windows and Linux." 008 §1's `no microvm profile` decision, whose original rationale cited the
-macOS PAL gap, was re-grounded instead in a Windows-hosting finding
-(`docs/research/2026-microvm-windows-portability.md`, 2026-08-04: Firecracker is architecturally
-Linux+KVM-only, no production-grade Windows-hosted path exists either) so the decision doesn't lose
-its footing now that macOS is moot rather than missing. Re-adding macOS later, if a PAL backend is
-ever contributed to Quark, is a fresh decision starting at Best-effort — not a reinstatement.
+**Resolved 2026-08-03 (project-owner decision), sharpened to a full drop: macOS is not a target,
+full stop** — dropped as a target platform entirely, project-wide, not contributed upstream and not
+merely downgraded to a lower tier. No PAL backend will be contributed upstream for it, and no RFC may
+claim macOS support. 021 §2's target matrix now lists macOS as **Unsupported — no claim**; every
+"Windows, Linux, and macOS" claim across CONVENTIONS.md, the Specification, README, and RFCs
+008/009/010/025 was edited to match. Delivery of the two remaining platforms is explicitly sequenced
+rather than simultaneous: **Windows x86-64 is the v1 target and the only platform under active
+implementation now; Linux x86-64 is the next target, taken up once the Windows implementation reaches
+a stable state** (021 §2). This replaces the "contribute upstream vs. downgrade the tier" framing the
+question was originally posed with — neither candidate resolution was taken; macOS is dropped
+outright rather than downgraded to a lower tier.
+
+008 §1's `no microvm profile` decision, whose original rationale cited the macOS PAL gap, was
+re-grounded instead in a Windows-hosting finding (`docs/research/2026-microvm-windows-portability.md`,
+2026-08-04: Firecracker is architecturally Linux+KVM-only, no production-grade Windows-hosted path
+exists either) so the decision doesn't lose its footing now that macOS is moot rather than missing.
+Re-adding macOS later, if a PAL backend is ever contributed to Quark, is a fresh decision starting at
+Best-effort — not a reinstatement.
+
+Updated to match: `021-Platform-Support-and-Portability.md` §2 (target matrix), §3 (per-subsystem
+table), §5 (CI matrix), §6 (G1), §7 (this question); `CONVENTIONS.md` Target & scope;
+`AgentEngineSpecification.md` (portability property, WASM-artifact claim); `008-Sandbox-and-
+Isolation.md` (goal statement, locked-decision bullet, `wasm`/`native-jail` profile table, G1 gate);
+`009-Plugin-and-Extension-System.md` (goal statement, G1 gate); `010-Python-Code-Interpreter.md`
+(shell-portability discussion, G1 and G6 gates); `024-Versioning-Compatibility-and-Governance.md`
+Q2; `025-Worktree-and-Virtual-Filesystem.md` G2; `README.md` (plugin-portability line);
+`src/backends/native_jail/README.md` and `src/backends/wasm/README.md`. `decisions/ADR-001/002/004`
+and the dated `docs/research/*.md` notes are left as-is — they are historical records of what was
+actually run/researched, not live claims.
 
 **Owner:** n/a — scope removed rather than resourced. **Unblocks:** 021 promotion (§6 G1/G3/G4 now
 read against two platforms, not three); no macOS claim remains anywhere in the project.

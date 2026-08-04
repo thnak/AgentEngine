@@ -8,6 +8,20 @@ target_link_libraries(smoke_vocabulary PRIVATE agentengine::core agentengine_war
 
 add_test(NAME smoke_vocabulary COMMAND smoke_vocabulary)
 
+# ---- agent.spawn depth/budget bound (decisions/ADR-006-agent-spawn-depth-budget-bound.md) -------
+# Header-only (trust/spawn_budget.hpp), core-tier (std only, no crypto -- in-process, never crosses
+# a process boundary the way trust/capability_token.hpp's ADR-005 token does) -- links only
+# agentengine::core.
+add_executable(test_spawn_budget test_spawn_budget.cpp)
+target_link_libraries(test_spawn_budget PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_spawn_budget COMMAND test_spawn_budget)
+
+# ---- CodeAct discoverability manifest (resolves OQ-16, OpenQuestions.md) -----------------------
+# Header-only (trust/agent_library_manifest.hpp), core-tier -- links only agentengine::core.
+add_executable(test_agent_library_manifest test_agent_library_manifest.cpp)
+target_link_libraries(test_agent_library_manifest PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_agent_library_manifest COMMAND test_agent_library_manifest)
+
 # ---- RecordedChatClient fixture player (test-only) ---------------------------------------------
 # Proves the ChatClient concept and ChatRequest/ChatResponse vocabulary are usable end-to-end
 # against hand-authored JSON fixtures, without a real network call or API key (CLAUDE.md task
@@ -110,6 +124,26 @@ if(WIN32)
   # CLAUDE.md Machine Safety requires a backstop even though every individual wait inside the test
   # already has its own bounded deadline.
   set_tests_properties(test_job_object_limits PROPERTIES TIMEOUT 90)
+endif()
+
+# ---- Capability bearer-token prove phase (decisions/ADR-005-capability-bearer-tokens-cross-process.md)
+# Resolves OQ-3. Design A (capability_token.hpp) correctness + red-team, Design B
+# (capability_registry.hpp) red-team, and the verify()-vs-check() cost comparison §5 rests on.
+if(WIN32)
+  add_executable(test_capability_token_proof test_capability_token_proof.cpp)
+  target_link_libraries(test_capability_token_proof PRIVATE
+    agentengine::core agentengine::capability_token agentengine_warnings)
+  add_test(NAME test_capability_token_proof COMMAND test_capability_token_proof)
+
+  add_executable(test_capability_token_redteam test_capability_token_redteam.cpp)
+  target_link_libraries(test_capability_token_redteam PRIVATE
+    agentengine::core agentengine::capability_token agentengine_warnings)
+  add_test(NAME test_capability_token_redteam COMMAND test_capability_token_redteam)
+
+  add_executable(test_capability_token_benchmark test_capability_token_benchmark.cpp)
+  target_link_libraries(test_capability_token_benchmark PRIVATE
+    agentengine::core agentengine::capability_token agentengine_warnings)
+  add_test(NAME test_capability_token_benchmark COMMAND test_capability_token_benchmark)
 endif()
 
 # ---- PythonRunner prove-phase gates (decisions/ADR-002-pythonrunner-embedding-and-mediation.md)

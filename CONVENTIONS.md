@@ -8,18 +8,18 @@ negotiable here either.
 
 ## Target & scope
 
-- **Cross-platform is a v1 requirement, not a later port.** Windows 11 / x86-64 and Linux / x86-64
-  are both first-class. The engine is developed on Windows and Linux simultaneously; a change that
-  builds on only one is not done. **macOS is not a target platform** (021 §7 OQ-1, resolved
-  2026-08-04): Quark has no macOS PAL backend, nobody has claimed the work of building one, and
-  every macOS claim in this project was aspirational rather than CI-backed. Dropped rather than
-  carried as permanent debt.
-- **All OS specifics go through a seam.** Quark's PAL (spec 019) for scheduler/IO/clock/net; the
-  Sandbox backend interface (008) for isolation; the plugin host (009) for WASM. AgentEngine core
-  contains **no** `#ifdef _WIN32` outside those seams.
+- **Windows 11 / x86-64 is the v1 target.** Linux / x86-64 is the next target, taken up once the
+  Windows implementation reaches a stable state — not built simultaneously from day one.
+  **macOS is not a target**: Quark has no macOS PAL backend, none is planned, and no AgentEngine
+  RFC may claim macOS support (021 §2/§7 OQ-1 resolved).
+- **All OS specifics go through a seam, even for a single-platform build.** Quark's PAL (spec 019)
+  for scheduler/IO/clock/net; the Sandbox backend interface (008) for isolation; the plugin host
+  (009) for WASM. AgentEngine core contains **no** `#ifdef _WIN32` outside those seams — this holds
+  from the first Windows-only line of code, so adding Linux later is a backend, not a rewrite.
 - **Isolation parity is a gate, not a goal.** Any capability the sandbox seam exposes must be
-  enforceable on all three OSes or it does not enter the seam. Backends may differ in *strength*
-  (documented per profile in 008); they may not differ in *contract*.
+  enforceable on every OS in the *current* target set (021 §2) or it does not enter the seam.
+  Backends may differ in *strength* (documented per profile in 008); they may not differ in
+  *contract*.
 
 ## Language & dependencies
 

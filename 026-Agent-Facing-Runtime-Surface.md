@@ -171,7 +171,7 @@ reads to the model as "not available here" rather than as a policy essay.
 | `agent.notes` | Durable notes across turns and sessions — ordinary writes into `/memory`, landing as `AgentAuthored` `MemoryItem`s (029 §4) | `FsWrite<mount>` on `/memory` |
 | `agent.output` | Emit structured output conforming to the run's schema (003 §4) | — |
 | `agent.progress` | Report progress on long work → run event stream (013 §1) | — |
-| `agent.ask` | Ask the caller/user a question → `InputRequired` (001 §2) | — |
+| `agent.ask` | Ask the caller/user a question → `InputRequired` (001 §2) | `Elicit` |
 | `agent.spawn` | Run a sub-agent, returning its result | `AgentCall<agent>` |
 
 **Design constraints:**
@@ -190,75 +190,68 @@ reads to the model as "not available here" rather than as a policy essay.
 is therefore justified individually, capability-gated individually, and testable individually —
 rather than shipping one `agent.engine` god-object that grows without review.
 
-## 5a. What earns a place in `agent.*` (resolves OQ-14)
+**The curation rubric (resolves OQ-14).** "Justified individually" was correct but not falsifiable
+— it let any module in as long as *someone* argued for it. A candidate module must instead pass all
+four:
 
-"Justified individually" above was, until now, a case-by-case judgment call with no stated test. A
-candidate module earns a place only if it passes **both**:
+1. **Maps to exactly one thing crossing the trust boundary** — either a single named 007 capability
+   class (an effect that needs a grant), or a zero-capability reporting channel back into the run's
+   own event stream/output schema (`output`, `progress` — nothing to gate because nothing leaves the
+   run). A candidate that doesn't cleanly fit either shape is scope creep, not a missing module.
+2. **Removing it forces a strictly worse channel for a task class this project already commits to
+   supporting** — not "would be convenient somewhere," a concrete regression: more model round
+   trips, a large result forced through the context window (§5's own "data stays out of the context
+   window" argument), or a capability the 006 tool pipeline already exists to gate, reinvented.
+3. **Not expressible as an ordinary combination of the other granted modules.** If it would just be
+   a two-line wrapper over another module's existing calls, it isn't a module. (`agent.notes` passes
+   this one narrowly: it isn't `agent.files.write` under a different mount, because notes must land
+   as `AgentAuthored` `MemoryItem`s (029 §4) — a structural tag `agent.files` has no way to apply.)
+4. **Every symbol still passes §5's "guessable from its name" bar on its own** — a module that only
+   earns its place via 1–3 but whose functions need a paragraph of explanation fails here and must
+   be redesigned, not shipped with worse docs to compensate.
 
-1. **Capability fidelity** — it maps to one or more capabilities, each already in 007 §3's table
-   (`agent.files` is the one module that needs two at once, `FsRead` and `FsWrite` together, still
-   each individually already named there), or to none because it is a control primitive over the
-   *run's own state* rather than an effect on anything outside it (`output`, `progress`, `ask` —
-   ending the run's structured output, reporting progress, pausing for input are transitions in
-   001's state machine, not authority over the world). A module is never the place a new,
-   library-local authority class gets invented; if an operation needs authority 007 doesn't already
-   name, the fix is a new capability in 007 §3, not a bespoke check inside a library function.
-2. **In-process necessity** — the operation could not be served equally well as an ordinary Tool
-   (006), reached generically through `agent.tools`, without defeating something CodeAct exists to
-   provide. Two ways to clear this bar, and only two:
-   - **(a) Run-intrinsic** — it touches the run's own control state, which no Tool has the standing
-     to reach (minting a new run, ending the current one's structured output, pausing the current
-     one for input, streaming a status update into the run's own event stream). `output`, `progress`,
-     `ask`, `spawn` clear it this way.
-   - **(b) Bulk/streaming necessity** — it operates over already-granted content in a loop, where
-     routing each access through the tool-call JSON round-trip would defeat §5's stated point: "data
-     stays out of the context window." `files`, `data`, `memory`, `notes` clear it this way; `memory`
-     and `notes` are the same justification specialized to the `/memory` mount, not a second one.
+**Applied to the current nine** (§5's table): all pass, each for a different reason worth stating
+rather than assuming — `tools`/`files`/`data`/`memory`/`notes`/`ask`/`spawn` each map to exactly one
+named capability class (rule 1's first branch); `output`/`progress` are the zero-capability
+reporting case (rule 1's second branch); `notes` clears rule 3 as shown above; none needed rule 4 to
+fail and be cut.
 
-A discrete, single-shot external effect that needs neither clears the bar for a **Tool** (arbitrary
-capability, vetted through 006's pipeline like any other) but not for a **new top-level module** —
-that is what keeps the library from growing by "this would be convenient" alone, which is the
-concern Q1 raises about `agent.spawn` specifically and this principle raises about the library in
-general. **This resolves what earns a place; it does not re-decide whether an admitted module's
-bounds are sufficient** — `agent.spawn` passes this test cleanly (run-intrinsic, maps to
-`AgentCall<agent>`) while whether its depth/budget bounds are *enough*, given the module belongs,
-stays open as Q1.
+**Applied to a plausible rejected candidate**, so the rubric is shown to discriminate rather than
+rubber-stamp: a hypothetical `agent.email` module wrapping SMTP/IMAP directly fails rule 3 — email
+is already reachable via stdlib `smtplib`/`imaplib` (010 §10; a granted `NetOut` capability is all
+either needs) or, for a richer provider API, via an ordinary registered `Tool` through `agent.tools`
+— a dedicated module would just be a two-line wrapper over calls already available through an
+existing module, exactly the case rule 3 exists to reject
+(`docs/planning/v1-office-user-toolkit.md` §2 already reaches this conclusion independently, for the
+same reason).
 
-**Correction found by applying the test:** §5's table listed `agent.ask` against a capability named
-`Elicit`, which 007 §3's table has never defined — an ungoverned exception to rule 1 above. Brought
-in line with `output`/`progress`: pausing for input is a run-intrinsic control transition (001 §2),
-not an effect requiring its own capability grant, so the table now reads `—` for `agent.ask` like
-its two siblings.
+### 5a. Discovering what's granted (resolves OQ-16)
 
-## 5b. Discovering the granted surface (resolves OQ-16)
+§4 gives `agent.tools` a real introspection story — docstrings, a `.pyi` stub, `dir()`/`help()`.
+Nothing before this section said what happens for the other seven modules, or told the model which
+top-level modules are even present before it tries one. Two parts, both sourced from the same
+run-start-resolved `CapabilitySet` (007 §6) so pull side and push side cannot drift from each other —
+prototyped and proven in `include/agentengine/trust/agent_library_manifest.hpp`:
 
-§4 already gives `agent.tools` a real introspection story — generated docstrings, a `.pyi` stub,
-`dir(tools)`/`help()` sourced from each tool's declared metadata. That treatment stopped at
-`agent.tools`; the other modules in §5's table had no equivalent, and nothing told the model *which*
-top-level modules were even present before it tried one — the only way to find out was
-`import agent.spawn` and catch the failure. Two changes close the gap, both sourced from the same
-run-start-resolved capability set (007) §5's table already keys module presence to, so there is one
-source of truth rather than two that can drift:
+- **Pull side** — §4's `dir()`/`help()` pattern generalizes from `agent.tools` to the whole `agent`
+  namespace: `dir(agent)` shows only modules granted this session; every present module gets the
+  same docstring treatment `tools` already has.
+- **Push side** — a short capability summary assembled into `instructions` at session start (002
+  §1/§2), extending §7's existing "Tool surface (names + one-line descriptions) ≤ 30 tokens/tool"
+  line from tools-only to the full action space, so the model doesn't burn a turn probing before it
+  can act correctly at all.
 
-- **Pull side.** §4's `agent.tools` pattern generalizes to the whole `agent` namespace: `dir(agent)`
-  lists only modules granted this session, `help(agent)` gives a one-line-per-module overview, and
-  every present module gets the same docstring/`.pyi` treatment `tools` already has. This is not new
-  machinery — it is applying a pattern this RFC already committed to, uniformly, instead of stopping
-  at one module.
-- **Push side.** A short one-line-per-granted-module summary is folded into `instructions` at
-  session start, extending §7's existing "Tool surface (names + one-line descriptions)" budget line
-  from tools-only to the full action space — so the model does not have to spend a turn probing
-  before it can act correctly. No new persistent artifact: `dir()`/`help()` already cover "give me
-  detail on demand," and a third mechanism duplicating what pull-side already answers would cost
-  tokens for information the model can already get, which §5's "small and boring" constraint rules
-  out.
+**The two sub-questions OQ-16 named, decided:**
 
-**An ungranted module is omitted, not listed as denied.** This follows §5's existing rule for the
-same case ("an ungranted module is simply absent, which reads to the model as 'not available here'
-rather than as a policy essay") rather than introducing a new policy — an explicit
-`agent.spawn: not granted` line would itself be exactly the kind of capability enumeration §1
-already rules out for the sandbox generally, spent on a module the agent cannot use regardless of
-whether it knows the name.
+- **An ungranted module is omitted, not listed as denied.** §1a's "we omit architecture, we do not
+  lie" already sets this precedent elsewhere in this RFC; explicit denial-listing costs tokens per
+  §7's budget discipline for a benefit pull-side `dir()`/`help()` already covers cheaply — a model
+  that tries `import agent.spawn` anyway gets an ordinary, instant `ImportError`, not a wasted turn.
+- **No third, persistent artifact.** The push-side summary is injected once at session start, the
+  same way §7 already injects the tool surface; pull-side `dir()`/`help()` is queryable at any point
+  during the run at zero additional prompt cost (it is Python introspection, not a prompt insertion),
+  which already covers "give me detail on demand" without a separate mechanism to keep in sync with
+  the other two.
 
 **Naming:** this mechanism is engine-generated and per-session, not a mounted, authored, versioned
 bundle — it must not be called or mounted as a "skill" (009 §8's vocabulary is reserved for
@@ -284,7 +277,7 @@ The environment description is a **measured budget, not a style preference**:
 |---|---|
 | Environment description (paths, what persists) | ≤ 60 tokens |
 | Tool surface (names + one-line descriptions) | ≤ 30 tokens per tool |
-| `agent.*` module surface (names + one-line purpose, §5b) | ≤ 20 tokens per granted module |
+| `agent.*` module surface (names + one-line purpose, §5a) | ≤ 20 tokens per granted module |
 | Per-skill advertisement (name + description) | ≤ 100 tokens |
 | Sandbox/capability/safety architecture | **0 tokens** |
 
@@ -307,7 +300,7 @@ when it grows. Prompt bloat is a regression like any other; without a gate it on
   closed, proven per module with a positive control.
 - **G6 (errors)** — each §3 cause produces the mapped exception with an actionable message and no
   architecture terms.
-- **G7 (discoverability, §5b)** — `dir(agent)` and `help(agent)` reflect exactly the run's granted
+- **G7 (discoverability, §5a)** — `dir(agent)` and `help(agent)` reflect exactly the run's granted
   module set with no drift from the capability set that produced it; an ungranted module is absent
   from both, never listed as denied.
 
@@ -315,9 +308,11 @@ when it grows. Prompt bloat is a regression like any other; without a gate it on
 
 - **Q1** — Whether `agent.spawn` belongs in the sandbox at all: it lets model-written code create
   runs, which is powerful and is also a recursion/cost hazard. Depth and budget bounds are
-  necessary; whether they are sufficient is unproven. (§5a settles that `spawn` *earns a place* by
-  the library-admission test; this question is about whether its bounds are enough, a narrower and
-  still-open claim.)
+  necessary; whether they are sufficient is unproven. **Partially resolved by
+  `decisions/ADR-006-agent-spawn-depth-budget-bound.md`**: the depth half is proven sufficient
+  against unbounded recursion, conditional on the effect-mediation boundary (006 §9 G4) holding —
+  see that ADR for the exact scope. The cost half (wall-clock/token spend per spawned run) remains
+  open, tracked against 023's budgets, not this ADR.
 - ~~**Q2** — Non-actionable failure phrasing (§3) is the hardest part to get right: too vague and the
   agent retries forever, too specific and it becomes an architecture description.~~ **Resolved: don't
   hand-tune wording — source it from real occurrences of the same exception class (2026-08-04):**
