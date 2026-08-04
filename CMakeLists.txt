@@ -1,7 +1,7 @@
 # AgentEngine — root build. See CONVENTIONS.md for the binding coding contract (layout, dependency
 # tiers, machine-safety build rules) and AgentEngineSpecification.md for the design this implements.
 
-cmake_minimum_required(VERSION 3.24)
+cmake_minimum_required(VERSION 3.28) # 021 §5
 project(AgentEngine LANGUAGES CXX)
 
 # ---- Standard ---------------------------------------------------------------

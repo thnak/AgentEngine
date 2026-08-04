@@ -72,11 +72,15 @@ now that there's something to author).
 
 This is the cluster with the real cycle (006↔007↔008↔009). Build order within it: `Capability`
 enforcement plumbing (007 §3's empty-by-default, attenuation-only rules) → the tool pipeline (006 §3)
-with a trivial native tool → `native-jail` sandbox (008, reusing the ADR-004 spike's AppContainer +
-Job Object design and measurements — **Status: Spiked, not Judged** — a red-team pass is still owed
-before this backend can be cited as settling 008 §3, and the already-**Judged** caller-aware import
-story, `decisions/ADR-003`, rather than re-deriving them) → the WASM plugin host (009) once a sandbox
+with a trivial native tool → `native-jail` sandbox (008) → the WASM plugin host (009) once a sandbox
 exists to run it in.
+
+`src/backends/native_jail/` already holds prove-phase spike code for exactly this backend
+(AppContainer + Job Object, `decisions/ADR-004` — **Status: Spiked, not Judged**; caller-aware import
+gating, `decisions/ADR-003` — **Judged**). Per project-owner direction (2026-08-05): that code proved
+what it needed to prove and stays in place as the historical evidence those ADRs cite, but M2's real
+implementation is written fresh against 008 as currently Reviewed, not layered on top of the spike.
+The ADRs' *conclusions* carry forward into M2; the spike *code* does not.
 
 **ADR-track items surfacing here, per CLAUDE.md's design→red-team→prove→judge discipline** (these
 were resolved by reasoning in this session's spec pass, not proven against real code — flagged
@@ -96,6 +100,10 @@ loads and executes (009 §10 G1).
 
 Worktree first (it's what makes the interpreter's state feel persistent, 010 §4), then the
 interpreter/shell sharing one `ExecState` (010 §3a), then the `agent.*` library on top.
+
+Same relationship to prior work as M2 above: `src/backends/native_jail/python_lockdown.*` is
+ADR-002's (**Judged**) prove-phase spike for the embedded-CPython mediation mechanism. It stays in
+place as that ADR's evidence; M3 implements 010 fresh rather than extending it.
 
 **ADR-track item:** `ShellRunner`'s grammar-parser fuzzing gate (010 §9 G8) — new fuzzing
 infrastructure, build it here rather than deferring hostile-input hardening.
