@@ -94,10 +94,11 @@ int main() {
     ctx.trace_id = "trace-1";
     ctx.span_id = "span-1";
 
-    // -- AgentSession (core/agent_session.hpp) --
-    ae::AgentSession session{};
-    session.session_id = "s-1";
-    session.principal = ctx.principal;
+    // -- AgentSession (core/agent_session.hpp) — a real Quark actor as of Milestone 1; the actual
+    // turn-loop/dispatch behavior is exercised end-to-end in test_m1_walking_skeleton.cpp via
+    // quark::TestKit, not here (this file only proves the headers compile together). --
+    ae::AgentSession<DummyChatClient> session{};
+    assert(session.history().empty());
 
     // -- Message containing a Text ContentItem (core/content.hpp) --
     ae::ContentItem item{};
@@ -108,10 +109,9 @@ int main() {
     message.role = ae::role::user;
     message.message_id = "m-1";
     message.content.push_back(item);
-    session.history.push_back(message);
 
-    assert(session.history.size() == 1);
-    assert(std::holds_alternative<ae::Text>(session.history.front().content.front().value));
+    assert(message.content.size() == 1);
+    assert(std::holds_alternative<ae::Text>(message.content.front().value));
 
     // -- error / result (core/error.hpp) --
     ae::result<int> ok = 42;

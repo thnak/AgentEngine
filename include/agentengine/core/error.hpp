@@ -9,7 +9,7 @@ namespace agentengine {
 
 // 001 §6 — the only classes a failure can be; policy (retry, escalate, fail) is keyed off this,
 // never off ad hoc string matching.
-enum class failure_class {
+enum class failure_class {  // ae-naming-lint: allow failure_class — pre-existing M0 scaffolding, reconcile at owning milestone
     transient,  // retryable within the caller's remaining deadline (004 §4)
     policy,     // denied by capability or approval policy (007, 006 §4) — never from a model (I3)
     contract,   // caller violated a declared contract: unknown name, schema mismatch
@@ -19,14 +19,14 @@ enum class failure_class {
 
 // An actionable, host-owned error. `message` is what 026 §3 requires: what would work, never a
 // stack trace, never an internal identifier the model has no use for.
-struct error {
+struct error {  // ae-naming-lint: allow error — pre-existing M0 scaffolding, reconcile at owning milestone
     failure_class klass;
     std::string   message;
     std::string   code;  // stable, machine-readable; safe to match on in tests and policy
 };
 
 template <class T>
-using result = std::expected<T, error>;
+using result = std::expected<T, error>;  // ae-naming-lint: allow result — pre-existing M0 scaffolding, reconcile at owning milestone
 
 } // namespace agentengine
 

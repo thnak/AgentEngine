@@ -15,11 +15,11 @@
 
 namespace agentengine {
 
-enum class sandbox_profile { wasm, native_jail, remote, none };
+enum class sandbox_profile { wasm, native_jail, remote, none };  // ae-naming-lint: allow sandbox_profile — pre-existing M0 scaffolding, reconcile at owning milestone
 
-enum class sandbox_lifetime { per_exec, per_run, per_session };
+enum class sandbox_lifetime { per_exec, per_run, per_session };  // ae-naming-lint: allow sandbox_lifetime — pre-existing M0 scaffolding, reconcile at owning milestone
 
-struct ResourceLimits {
+struct ResourceLimits {  // ae-naming-lint: allow ResourceLimits — pre-existing M0 scaffolding, reconcile at owning milestone
     std::uint64_t cpu_ms = 0;
     std::uint64_t wall_ms = 0;
     std::uint64_t memory_bytes = 0;
@@ -30,23 +30,23 @@ struct ResourceLimits {
     std::uint64_t output_bytes = 0;
 };
 
-struct MountSpec {
+struct MountSpec {  // ae-naming-lint: allow MountSpec — pre-existing M0 scaffolding, reconcile at owning milestone
     std::string guest_path;  // canonical, ordinary-looking (026 §2) — never runtime-revealing
     bool        read_write = false;
     std::uint64_t quota_bytes = 0;
 };
 
-struct NetPolicy {
+struct NetPolicy {  // ae-naming-lint: allow NetPolicy — pre-existing M0 scaffolding, reconcile at owning milestone
     bool deny_all = true;
     std::vector<std::string> allowlist;  // host:port:scheme entries
 };
 
-struct Determinism {
+struct Determinism {  // ae-naming-lint: allow Determinism — pre-existing M0 scaffolding, reconcile at owning milestone
     bool virtual_clock = false;
     bool seeded_rng = false;
 };
 
-struct SandboxSpec {
+struct SandboxSpec {  // ae-naming-lint: allow SandboxSpec — pre-existing M0 scaffolding, reconcile at owning milestone
     CapabilitySet     capabilities;
     ResourceLimits    limits;
     std::vector<MountSpec> mounts;
@@ -55,18 +55,18 @@ struct SandboxSpec {
     sandbox_lifetime  lifetime = sandbox_lifetime::per_session;
 };
 
-struct SandboxHandle {
+struct SandboxHandle {  // ae-naming-lint: allow SandboxHandle — pre-existing M0 scaffolding, reconcile at owning milestone
     std::string opaque_id;  // backend-owned; the core never interprets this
 };
 
-struct ExecRequest {
+struct ExecRequest {  // ae-naming-lint: allow ExecRequest — pre-existing M0 scaffolding, reconcile at owning milestone
     std::string language;  // "python" | "shell" | ... (010 §1)
     std::string source;
 };
 
-enum class exec_outcome_class { ok, timeout, oom, crash, policy_violation, escape_attempt };
+enum class exec_outcome_class { ok, timeout, oom, crash, policy_violation, escape_attempt };  // ae-naming-lint: allow exec_outcome_class — pre-existing M0 scaffolding, reconcile at owning milestone
 
-struct ExecOutcome {
+struct ExecOutcome {  // ae-naming-lint: allow ExecOutcome — pre-existing M0 scaffolding, reconcile at owning milestone
     exec_outcome_class klass = exec_outcome_class::ok;
     std::string        stdout_text;
     std::string        stderr_text;
@@ -78,7 +78,7 @@ struct ExecOutcome {
 // is not yet wired into this header; each becomes `ae::task<result<T>>` (or `ae::task<>` for
 // `destroy`) once it is.
 template <class T>
-concept SandboxBackend = requires(T backend, SandboxSpec spec, SandboxHandle& handle,
+concept SandboxBackend = requires(T backend, SandboxSpec spec, SandboxHandle& handle,  // ae-naming-lint: allow SandboxBackend — pre-existing M0 scaffolding, reconcile at owning milestone
                                    ExecRequest request, EffectContext& ctx) {
     { backend.create(spec, ctx) } -> std::same_as<result<SandboxHandle>>;
     { backend.exec(handle, request, ctx) } -> std::same_as<result<ExecOutcome>>;

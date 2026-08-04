@@ -7,7 +7,7 @@
 
 namespace agentengine {
 
-enum class capability_kind {
+enum class capability_kind {  // ae-naming-lint: allow capability_kind — pre-existing M0 scaffolding, reconcile at owning milestone
     fs_read,
     fs_write,
     net_out,
@@ -46,7 +46,7 @@ struct Capability {
 // delegated A2A call -- is a different mechanism (unforgeable by cryptography, not by the type
 // system) and is resolved: see trust/capability_token.hpp and
 // decisions/ADR-005-capability-bearer-tokens-cross-process.md.
-struct CapabilitySet {
+struct CapabilitySet {  // ae-naming-lint: allow CapabilitySet — pre-existing M0 scaffolding, reconcile at owning milestone
     std::vector<Capability> granted;  // placeholder representation; not the final storage
 };
 

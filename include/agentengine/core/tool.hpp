@@ -10,9 +10,9 @@
 
 namespace agentengine {
 
-enum class approval_mode { never_require, always_require, policy_driven };
+enum class approval_mode { never_require, always_require, policy_driven };  // ae-naming-lint: allow approval_mode — pre-existing M0 scaffolding, reconcile at owning milestone
 
-enum class tool_source { native, wasm_plugin, mcp_server, remote_agent, sandboxed_script, composite };
+enum class tool_source { native, wasm_plugin, mcp_server, remote_agent, sandboxed_script, composite };  // ae-naming-lint: allow tool_source — pre-existing M0 scaffolding, reconcile at owning milestone
 
 // The ten-step invocation pipeline (006 §3) is host machinery, not part of a tool's own shape, and
 // is not modeled here. `Tool` fixes the declaration surface only: a schema-typed name plus an

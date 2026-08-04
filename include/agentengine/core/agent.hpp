@@ -26,7 +26,7 @@ namespace agentengine {
 // idiom: CTAD deduces `N` from the literal, so `ChatClientId<"...">` deduces
 // `fixed_string<N>` and the type is usable directly as written in every RFC example.
 template <std::size_t N>
-struct fixed_string {
+struct fixed_string {  // ae-naming-lint: allow fixed_string — pre-existing M0 scaffolding, reconcile at owning milestone
     char value[N]{};
 
     constexpr fixed_string(char const (&str)[N]) noexcept {
@@ -41,34 +41,34 @@ struct fixed_string {
 // -- Policy tags (002 §3) — compile-time configuration, never runtime objects on the hot path --
 
 template <fixed_string Id>
-struct ChatClientId {  // "vendor:model", overridable per run and by config (002 §3, 004)
+struct ChatClientId {  // "vendor:model", overridable per run and by config (002 §3, 004)  // ae-naming-lint: allow ChatClientId — pre-existing M0 scaffolding, reconcile at owning milestone
     static constexpr std::string_view id = std::string_view{Id};
 };
 
 template <class... Ts>
-struct Tools {};
+struct Tools {};  // ae-naming-lint: allow Tools — pre-existing M0 scaffolding, reconcile at owning milestone
 
 template <sandbox_profile P>
-struct SandboxProfile {};
+struct SandboxProfile {};  // ae-naming-lint: allow SandboxProfile — pre-existing M0 scaffolding, reconcile at owning milestone
 
 template <capability_kind... Ks>
-struct Capabilities {};
+struct Capabilities {};  // ae-naming-lint: allow Capabilities — pre-existing M0 scaffolding, reconcile at owning milestone
 
 template <std::uint32_t N>
-struct MaxTurns {};
+struct MaxTurns {};  // ae-naming-lint: allow MaxTurns — pre-existing M0 scaffolding, reconcile at owning milestone
 
 template <std::uint64_t N>
-struct TokenBudget {};
+struct TokenBudget {};  // ae-naming-lint: allow TokenBudget — pre-existing M0 scaffolding, reconcile at owning milestone
 
-enum class approval_policy_mode { never_require, always_require, policy_driven };
+enum class approval_policy_mode { never_require, always_require, policy_driven };  // ae-naming-lint: allow approval_policy_mode — pre-existing M0 scaffolding, reconcile at owning milestone
 
 template <approval_policy_mode M>
-struct Approval {};
+struct Approval {};  // ae-naming-lint: allow Approval — pre-existing M0 scaffolding, reconcile at owning milestone
 
-enum class telemetry_capture { none, metadata_only, full };
+enum class telemetry_capture { none, metadata_only, full };  // ae-naming-lint: allow telemetry_capture — pre-existing M0 scaffolding, reconcile at owning milestone
 
 template <telemetry_capture C>
-struct Telemetry {};
+struct Telemetry {};  // ae-naming-lint: allow Telemetry — pre-existing M0 scaffolding, reconcile at owning milestone
 
 // -- The base (002 §1) --
 

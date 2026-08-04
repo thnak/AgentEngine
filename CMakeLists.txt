@@ -12,6 +12,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(AgentEngineWarnings)
+include(AgentEngineCompilerGuard) # 021 §5 compiler-version floor
 
 # ---- Windows toolchain wiring -------------------------------------------------
 # Mirrors third_party/quark/CMakeLists.txt's pattern: NOMINMAX/WIN32_LEAN_AND_MEAN project-wide so

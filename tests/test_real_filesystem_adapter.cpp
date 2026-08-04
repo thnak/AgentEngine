@@ -16,6 +16,8 @@
 #if defined(_WIN32)
 #include <process.h>
 #include <crtdbg.h>
+#else
+#include <unistd.h>
 #endif
 
 #include "backends/native_jail/real_filesystem_adapter.hpp"
@@ -39,9 +41,19 @@ void disable_crt_assert_dialog() {
 #endif
 }
 
+// `_getpid` (process.h) is the MSVC CRT spelling; POSIX has no leading underscore and lives in
+// unistd.h. Only used to make each test run's temp-root name unique, not a portability seam.
+[[nodiscard]] int current_pid() noexcept {
+#if defined(_WIN32)
+    return ::_getpid();
+#else
+    return ::getpid();
+#endif
+}
+
 fs::path make_temp_root() {
     fs::path root = fs::temp_directory_path() /
-                    ("ae_fs_adapter_test_" + std::to_string(::_getpid()));
+                    ("ae_fs_adapter_test_" + std::to_string(current_pid()));
     fs::create_directories(root);
     return root;
 }
@@ -125,7 +137,7 @@ int main() {
     // ---- best-effort: a real junction escaping the root is rejected ----------------------------
     {
         fs::path outside = fs::temp_directory_path() /
-                            ("ae_fs_adapter_outside_" + std::to_string(::_getpid()));
+                            ("ae_fs_adapter_outside_" + std::to_string(current_pid()));
         fs::create_directories(outside);
         fs::path link = root / "escape_link";
         std::string cmd = "cmd /c mklink /J \"" + link.string() + "\" \"" + outside.string() +

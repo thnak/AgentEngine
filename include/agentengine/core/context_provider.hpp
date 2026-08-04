@@ -16,7 +16,7 @@ namespace agentengine {
 // Mirrors MAF's `AIContext` shape deliberately (docs/research/2026-maf-provider-concepts.md §1):
 // a provider is not limited to injecting text. `tools` here is the same declaration shape 006 §1
 // tools use; a provider-contributed tool still traverses the full invocation pipeline (006 §3).
-struct ContextContribution {
+struct ContextContribution {  // ae-naming-lint: allow ContextContribution — pre-existing M0 scaffolding, reconcile at owning milestone
     std::optional<std::string> instructions;
     std::vector<Message>       messages;
     // std::vector<ToolDecl> tools; — ToolDecl is 006's schema-derived declaration type, elided

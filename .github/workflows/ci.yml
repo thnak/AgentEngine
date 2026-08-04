@@ -1,0 +1,132 @@
+# Milestone 0 CI skeleton (docs/planning/milestone-0-bootstrap-breakdown.md task 2).
+#
+# Windows is the current Supported target (021-Platform-Support-and-Portability.md §2/§5): the
+# {MSVC, clang-cl} x {Release, sanitizer} matrix below is that RFC's CI-matrix intent. MSVC has no
+# UBSan, so its sanitizer leg is ASan-only; clang-cl's covers both, matching what 021 §5 actually
+# asks for. The conformance suites and the budget gate 021 §5 also names aren't wired in here —
+# nothing to run them against exists yet; they land with the RFCs that build that surface.
+#
+# Linux is "Next", not yet gated (021 §2) — its job here is intentionally narrower than the Windows
+# matrix: a default (non-Python-runner), non-sanitized build-and-test pass, proving the M0 exit
+# criterion ("builds clean on both platforms") without pretending Linux is Supported-tier yet. The
+# full {gcc, clang} x {Release, ASan+UBSan+TSan} matrix (021 §5) is added when Linux implementation
+# begins (roadmap Milestone 1+).
+#
+# Machine safety (CLAUDE.md, CONVENTIONS.md "Build & test — machine safety"): -j4 max everywhere,
+# applies to CI configuration too (roadmap's own framing) — GitHub-hosted runners are 2-4 cores, so
+# this caps at, not below, what's already available.
+
+name: CI
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-msvc:
+    name: Windows / MSVC / ${{ matrix.build_type }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        build_type: [Release, ASan]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          $flags = ""
+          if ("${{ matrix.build_type }}" -eq "ASan") { $flags = "/fsanitize=address" }
+          cmake -S . -B build -DCMAKE_CXX_FLAGS="$flags"
+
+      - name: Build
+        run: cmake --build build --config Release -j 4
+
+      - name: Test
+        run: ctest --test-dir build -C Release -j 4 --output-on-failure
+
+  windows-clang-cl:
+    name: Windows / clang-cl / ${{ matrix.build_type }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        build_type: [Release, ASanUBSan]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # Not relying on VS2022's bundled ClangCL component — its version lags the 021 §5 floor
+      # (clang 20+) often enough that pinning our own install is more predictable than hoping the
+      # runner image caught up. AgentEngineCompilerGuard.cmake fails configure with a clear message
+      # if this ever regresses below the floor, instead of a confusing mid-build error.
+      - name: Install LLVM + Ninja
+        run: |
+          choco install llvm -y
+          choco install ninja -y
+
+      - name: Enter MSVC dev shell
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          $env:CC = "clang-cl"
+          $env:CXX = "clang-cl"
+          $flags = ""
+          if ("${{ matrix.build_type }}" -eq "ASanUBSan") { $flags = "-fsanitize=address,undefined" }
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="$flags"
+
+      - name: Build
+        run: cmake --build build -j 4
+
+      - name: Test
+        run: ctest --test-dir build -j 4 --output-on-failure
+
+  linux:
+    name: Linux / gcc-14 / Release (build-only — see file header)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # llvm-nm: test_shell_runner_no_process_creation degrades to CTest SKIP without it (see
+      # tests/CMakeLists.txt), but installing it gives that test's actual signal on this platform
+      # instead of a shrug.
+      - name: Install gcc-14, llvm-nm
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-14 g++-14 llvm
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=gcc-14 -DCMAKE_CXX_COMPILER=g++-14
+
+      - name: Build
+        run: cmake --build build -j 4
+
+      - name: Test
+        run: ctest --test-dir build -j 4 --output-on-failure
+
+  naming-lint:
+    name: 027 naming lint (stub)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Run naming lint
+        run: python tools/naming_lint.py

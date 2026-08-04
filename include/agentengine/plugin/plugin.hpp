@@ -11,9 +11,9 @@
 
 namespace agentengine {
 
-enum class plugin_world { tool, skill, provider, memory, filter, codec };
+enum class plugin_world { tool, skill, provider, memory, filter, codec };  // ae-naming-lint: allow plugin_world — pre-existing M0 scaffolding, reconcile at owning milestone
 
-struct PluginManifest {
+struct PluginManifest {  // ae-naming-lint: allow PluginManifest — pre-existing M0 scaffolding, reconcile at owning milestone
     std::string              id;
     std::string              version;   // semver
     plugin_world              world;

@@ -3,10 +3,55 @@
 # compile together and that the declared concepts (ChatClient, Runner, SandboxBackend) are
 # satisfiable by a conforming type.
 
+# ---- 007 §9 G2 compile-fail proof (docs/planning/milestone-1-core-substrate-breakdown.md task 2) --
+# I3's static half: Tainted<T> must have NO implicit conversion to the untainted capability-API
+# surface. A configure-time try_compile() gate, not a CTest entry — try_compile() runs during
+# `cmake -S . -B build` itself, and a FATAL_ERROR here stops configure exactly as reliably as a
+# failing test stops `ctest` (CI always runs configure before ctest); this is CMake's own standard
+# idiom for a compile-fail proof, chosen over inventing a custom ctest-time try_compile wrapper for
+# the same effect. Two files, not one: a fail-only suite can't distinguish "correctly rejected" from
+# "nothing here compiles at all," so tainted_declassify_positive_control.cpp proves the explicit
+# unsafe_view() declassifier still compiles.
+try_compile(AE_TAINTED_REJECTS_IMPLICIT_CONVERSION
+  "${CMAKE_CURRENT_BINARY_DIR}/compile_fail_checks/no_implicit_conversion"
+  "${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/tainted_no_implicit_conversion.cpp"
+  CXX_STANDARD 23
+  CMAKE_FLAGS "-DINCLUDE_DIRECTORIES=${PROJECT_SOURCE_DIR}/include"
+  OUTPUT_VARIABLE AE_TAINTED_REJECTS_IMPLICIT_CONVERSION_LOG)
+if(AE_TAINTED_REJECTS_IMPLICIT_CONVERSION)
+  message(FATAL_ERROR
+    "007 §9 G2 VIOLATED: tests/compile_fail/tainted_no_implicit_conversion.cpp compiled, but "
+    "Tainted<T> must have NO implicit conversion to an untainted capability-API parameter type "
+    "(I3's static half). Build log:\n${AE_TAINTED_REJECTS_IMPLICIT_CONVERSION_LOG}")
+endif()
+
+try_compile(AE_TAINTED_DECLASSIFY_POSITIVE_CONTROL
+  "${CMAKE_CURRENT_BINARY_DIR}/compile_fail_checks/declassify_positive_control"
+  "${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/tainted_declassify_positive_control.cpp"
+  CXX_STANDARD 23
+  CMAKE_FLAGS "-DINCLUDE_DIRECTORIES=${PROJECT_SOURCE_DIR}/include"
+  OUTPUT_VARIABLE AE_TAINTED_DECLASSIFY_POSITIVE_CONTROL_LOG)
+if(NOT AE_TAINTED_DECLASSIFY_POSITIVE_CONTROL)
+  message(FATAL_ERROR
+    "007 §9 G2 positive control FAILED: tests/compile_fail/tainted_declassify_positive_control.cpp "
+    "must compile (the explicit unsafe_view() declassifier is a legitimate, intended path) but did "
+    "not. Build log:\n${AE_TAINTED_DECLASSIFY_POSITIVE_CONTROL_LOG}")
+endif()
+message(STATUS
+  "007 §9 G2 compile-fail proof: OK (Tainted<T> rejects implicit conversion; explicit "
+  "declassification compiles)")
+
 add_executable(smoke_vocabulary smoke_vocabulary.cpp)
 target_link_libraries(smoke_vocabulary PRIVATE agentengine::core agentengine_warnings)
 
 add_test(NAME smoke_vocabulary COMMAND smoke_vocabulary)
+
+# ---- Milestone 1 exit criterion (docs/planning/milestone-1-core-substrate-breakdown.md task 4) --
+# One hard-coded agent, one turn, against a mock ChatClient, on a real Quark AgentSession actor via
+# quark::TestKit (single-actor harness, no cluster/engine bring-up needed).
+add_executable(test_m1_walking_skeleton test_m1_walking_skeleton.cpp)
+target_link_libraries(test_m1_walking_skeleton PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_m1_walking_skeleton COMMAND test_m1_walking_skeleton)
 
 # ---- agent.spawn depth/budget bound (decisions/ADR-006-agent-spawn-depth-budget-bound.md) -------
 # Header-only (trust/spawn_budget.hpp), core-tier (std only, no crypto -- in-process, never crosses

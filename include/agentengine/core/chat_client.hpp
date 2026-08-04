@@ -13,7 +13,7 @@
 namespace agentengine {
 
 // Declared, not probed (004 §2). One bit per capability the degradation rule can act on.
-struct ChatClientCapabilities {
+struct ChatClientCapabilities {  // ae-naming-lint: allow ChatClientCapabilities — pre-existing M0 scaffolding, reconcile at owning milestone
     bool streaming = false;
     bool tool_calling = false;
     bool parallel_tool_calls = false;
@@ -32,7 +32,7 @@ struct ChatClientCapabilities {
     std::uint64_t max_output_tokens = 0;
 };
 
-struct ChatRequest {
+struct ChatRequest {  // ae-naming-lint: allow ChatRequest — pre-existing M0 scaffolding, reconcile at owning milestone
     std::vector<Message> messages;
     // tool declarations, structured-output schema, sampling parameters: 006/003 §4, elided here —
     // vocabulary only.
@@ -43,7 +43,7 @@ struct ChatResponse {
     Usage   usage;
 };
 
-struct ChatResponseUpdate {
+struct ChatResponseUpdate {  // ae-naming-lint: allow ChatResponseUpdate — pre-existing M0 scaffolding, reconcile at owning milestone
     ContentItem delta;
     bool        is_final = false;
 };

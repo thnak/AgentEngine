@@ -9,90 +9,83 @@
 #include <variant>
 #include <vector>
 
+#include "agentengine/core/tainted.hpp"
+
 namespace agentengine {
 
-enum class content_origin { user, assistant, tool, system, external };
+enum class content_origin { user, assistant, tool, system, external };  // ae-naming-lint: allow content_origin — pre-existing M0 scaffolding, reconcile at owning milestone
 
-// Taint is a type-level marker (003 §2), not a bit someone remembers to check. `TaintedText` is
-// the accessor that does not implicitly convert to the plain `std::string_view` capability APIs
-// take; the conversion itself is the security-critical primitive and is not sketched here (same
-// deferral as CapabilitySet — this is vocabulary, the mechanism needs its own review).
-class TaintedText {
-public:
-    explicit TaintedText(std::string value) : value_(std::move(value)) {}
-    [[nodiscard]] std::string const& unsafe_view() const noexcept { return value_; }
+// `TaintedText` is `Tainted<std::string>` specialized for the text/bytes case (003 §2: "not a
+// separate mechanism") — the mechanism itself lives in tainted.hpp, not reimplemented here.
+using TaintedText = Tainted<std::string>;  // ae-naming-lint: allow TaintedText — pre-existing M0 scaffolding, reconcile at owning milestone
 
-private:
-    std::string value_;
-};
-
-struct Text {
+struct Text {  // ae-naming-lint: allow Text — pre-existing M0 scaffolding, reconcile at owning milestone
     std::string text;  // tainted iff `origin` on the enclosing Content says so
 };
 
-struct Reasoning {
+struct Reasoning {  // ae-naming-lint: allow Reasoning — pre-existing M0 scaffolding, reconcile at owning milestone
     std::string text;
     bool        encrypted = false;  // opaque pass-through only when true (003 §1)
 };
 
 // Bytes above a threshold move out-of-line; see BlobRef below (003 §3).
-struct BlobRef {
+struct BlobRef {  // ae-naming-lint: allow BlobRef — pre-existing M0 scaffolding, reconcile at owning milestone
     std::string digest;
     std::string media_type;
     std::size_t size = 0;
     std::string store;  // which blob store seam (019) resolves this digest
 };
 
-struct Media {
+struct Media {  // ae-naming-lint: allow Media — pre-existing M0 scaffolding, reconcile at owning milestone
     std::variant<std::vector<std::byte>, std::string /*uri*/, BlobRef> payload;
     std::string                                                        media_type;
 };
 
-struct Data {
+struct Data {  // ae-naming-lint: allow Data — pre-existing M0 scaffolding, reconcile at owning milestone
     std::string json;  // structured value, serialized; schema id optional
     std::optional<std::string> schema_id;
 };
 
-struct ToolCall {
+struct ToolCall {  // ae-naming-lint: allow ToolCall — pre-existing M0 scaffolding, reconcile at owning milestone
     std::string call_id;
     std::string tool_name;
     std::string arguments_json;
     content_origin origin = content_origin::assistant;
 };
 
-struct ContentItem;  // fwd — ToolResult carries content items recursively
+struct ContentItem;  // fwd — ToolResult carries content items recursively  // ae-naming-lint: allow ContentItem — pre-existing M0 scaffolding, reconcile at owning milestone
 
-struct ToolResult {
+struct ToolResult {  // ae-naming-lint: allow ToolResult — pre-existing M0 scaffolding, reconcile at owning milestone
     std::string                    call_id;
     std::vector<ContentItem>       content;
     bool                            is_error = false;
 };
 
-struct Citation {
+struct Citation {  // ae-naming-lint: allow Citation — pre-existing M0 scaffolding, reconcile at owning milestone
     std::string source;
     std::size_t span_start = 0;
     std::size_t span_end   = 0;
 };
 
-struct Error {
+struct Error {  // ae-naming-lint: allow Error — pre-existing M0 scaffolding, reconcile at owning milestone
     std::string message;
 };
 
-struct Custom {
+struct Custom {  // ae-naming-lint: allow Custom — pre-existing M0 scaffolding, reconcile at owning milestone
     std::string type_id;  // namespaced, uri-shaped (003 §1)
     std::string payload_json;
 };
 
 // One element of a message (003 §1). Order is meaningful; unknown kinds round-trip via Custom.
-struct ContentItem {
+struct ContentItem {  // ae-naming-lint: allow ContentItem — pre-existing M0 scaffolding, reconcile at owning milestone
     std::variant<Text, Reasoning, Media, Data, ToolCall, ToolResult, Citation, Error, Custom> value;
     content_origin origin = content_origin::assistant;
     bool           tainted = false;
 };
 
-enum class role { system, user, assistant, tool };
+enum class role { system, user, assistant, tool };  // ae-naming-lint: allow role — pre-existing M0 scaffolding, reconcile at owning milestone
 
-struct Usage {
+struct Usage {  // ae-naming-lint: allow Usage — pre-existing M0 scaffolding, reconcile at owning milestone
     std::uint64_t input_tokens = 0;
     std::uint64_t output_tokens = 0;
     std::uint64_t cached_input_tokens = 0;

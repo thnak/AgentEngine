@@ -18,6 +18,8 @@
 
 #if defined(_WIN32)
 #include <process.h>
+#else
+#include <unistd.h>
 #endif
 
 #include "agentengine/core/effect_context.hpp"
@@ -53,9 +55,19 @@ CapabilitySet make_capabilities(std::initializer_list<capability_kind> kinds) {
     return set;
 }
 
+// `_getpid` (process.h) is the MSVC CRT spelling; POSIX has no leading underscore and lives in
+// unistd.h. Only used to make each test run's temp-root name unique, not a portability seam.
+[[nodiscard]] int current_pid() noexcept {
+#if defined(_WIN32)
+    return ::_getpid();
+#else
+    return ::getpid();
+#endif
+}
+
 fs::path make_temp_root(char const* tag) {
     fs::path root = fs::temp_directory_path() /
-                    (std::string("ae_shell_runner_") + tag + "_" + std::to_string(::_getpid()));
+                    (std::string("ae_shell_runner_") + tag + "_" + std::to_string(current_pid()));
     fs::create_directories(root);
     fs::create_directories(root / "work");
     return root;

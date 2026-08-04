@@ -16,7 +16,7 @@
 
 namespace agentengine {
 
-struct DirEntry {
+struct DirEntry {  // ae-naming-lint: allow DirEntry — pre-existing M0 scaffolding, reconcile at owning milestone
     std::string   name;
     bool          is_directory = false;
     std::uint64_t size_bytes   = 0;
@@ -25,7 +25,7 @@ struct DirEntry {
 // Seam interface (CONVENTIONS.md tier-2 style: virtual dispatch permitted here because this is a
 // declared backend/store seam, not a per-token hot-path policy — 023's hot-path rule targets
 // per-token streaming, not per-shell-invocation setup, exactly as ADR-001 §2.1 states).
-class FileSystemAdapter {
+class FileSystemAdapter {  // ae-naming-lint: allow FileSystemAdapter — pre-existing M0 scaffolding, reconcile at owning milestone
 public:
     virtual ~FileSystemAdapter() = default;
 
