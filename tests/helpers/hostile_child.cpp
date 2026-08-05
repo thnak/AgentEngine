@@ -13,6 +13,12 @@
 //                             a resource-limit kill, not a crash -- so a caller distinguishing
 //                             "this exec merely returned nonzero" from "a limit killed it" has a
 //                             positive-control shape for the FIRST case too, not only the second).
+//   escape <path>          -- attempt to open and read <path> for GENERIC_READ; report
+//                             "ESCAPE_OK <path> bytes=<n>" or "ESCAPE_DENIED <path> err=<code>".
+//                             M2 Phase C task C3's fs-escape-attempt probe (008 SS7) -- never
+//                             modifies or deletes anything, read-only.
+//   flood                  -- write output continuously (never exits on its own) -- C3's
+//                             unbounded-output probe (008 SS2 item 2 / SS7).
 #include <windows.h>
 
 #include <cstdio>
@@ -87,11 +93,37 @@ int mode_fail(int code) {
     return code;
 }
 
+int mode_escape(std::string const& path) {
+    HANDLE h = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                            FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) {
+        printf("ESCAPE_DENIED %s err=%lu\n", path.c_str(), GetLastError());
+        fflush(stdout);
+        return 0;
+    }
+    char buf[256];
+    DWORD read = 0;
+    ReadFile(h, buf, sizeof(buf), &read, nullptr);
+    CloseHandle(h);
+    printf("ESCAPE_OK %s bytes=%lu\n", path.c_str(), read);
+    fflush(stdout);
+    return 0;
+}
+
+int mode_flood() {
+    std::string chunk(256, 'A');
+    for (;;) {
+        fwrite(chunk.data(), 1, chunk.size(), stdout);
+        fflush(stdout);
+    }
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        fprintf(stderr, "usage: hostile_child <alloc|spin|sleep|spawn|fail> ...\n");
+        fprintf(stderr, "usage: hostile_child <alloc|spin|sleep|spawn|fail|escape|flood> ...\n");
         return 2;
     }
     std::string mode = argv[1];
@@ -100,6 +132,8 @@ int main(int argc, char** argv) {
     if (mode == "sleep" && argc >= 3) return mode_sleep(std::atoi(argv[2]));
     if (mode == "spawn" && argc >= 4) return mode_spawn(std::atoi(argv[2]), argv[3]);
     if (mode == "fail" && argc >= 3) return mode_fail(std::atoi(argv[2]));
+    if (mode == "escape" && argc >= 3) return mode_escape(argv[2]);
+    if (mode == "flood") return mode_flood();
     fprintf(stderr, "unrecognized mode/args\n");
     return 2;
 }

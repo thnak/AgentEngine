@@ -187,11 +187,17 @@ result<ExecOutcome> NativeJailBackend::exec(SandboxHandle& handle, ExecRequest c
     }
 
     // Separate pipes for stdout/stderr (not merged) so ExecOutcome's two fields are faithful, not
-    // interleaved.
+    // interleaved. Explicit 1 MiB buffer (not the 0-means-"system default" size, historically a
+    // few KB) -- exec()'s own architecture drains AFTER wait_or_kill returns, not concurrently, so
+    // a hostile child that writes far more than the kernel pipe buffer holds simply blocks in
+    // write() until wall_ms kills it; a too-small buffer would make output_bytes containment
+    // (C3's unbounded-output abuse case, 008 §2 item 2) look artificially tight regardless of the
+    // configured cap, since only the OS's own small default would ever accumulate to drain.
+    constexpr DWORD kPipeBufferBytes = 1024 * 1024;
     SECURITY_ATTRIBUTES pipe_sa{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
     HandleGuard stdout_read, stdout_write, stderr_read, stderr_write;
-    if (!CreatePipe(&stdout_read.h, &stdout_write.h, &pipe_sa, 0) ||
-        !CreatePipe(&stderr_read.h, &stderr_write.h, &pipe_sa, 0)) {
+    if (!CreatePipe(&stdout_read.h, &stdout_write.h, &pipe_sa, kPipeBufferBytes) ||
+        !CreatePipe(&stderr_read.h, &stderr_write.h, &pipe_sa, kPipeBufferBytes)) {
         return win32_error("CreatePipe", failure_class::fatal, "native_jail.pipe_create_failed");
     }
     SetHandleInformation(stdout_read.h, HANDLE_FLAG_INHERIT, 0);

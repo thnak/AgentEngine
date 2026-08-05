@@ -264,6 +264,18 @@ if(WIN32)
   # Same Machine Safety backstop as test_job_object_limits -- real child processes, real wall_ms
   # kills under test.
   set_tests_properties(test_native_jail_backend_windows PROPERTIES TIMEOUT 90)
+
+  # ---- 008 §7 abuse-case corpus + §9 G2 positive controls (M2 Phase C task C3) -------------------
+  add_executable(test_native_jail_abuse_corpus_windows test_native_jail_abuse_corpus_windows.cpp)
+  target_link_libraries(test_native_jail_abuse_corpus_windows PRIVATE
+    agentengine::core agentengine::native_jail_backend agentengine_warnings)
+  target_compile_definitions(test_native_jail_abuse_corpus_windows PRIVATE
+    AE_HOSTILE_CHILD_EXE="$<TARGET_FILE:job_object_hostile_child>")
+  add_dependencies(test_native_jail_abuse_corpus_windows job_object_hostile_child)
+  add_test(NAME test_native_jail_abuse_corpus_windows COMMAND test_native_jail_abuse_corpus_windows)
+  # Five abuse cases, each with a contained run and at least one positive control -- more real
+  # child processes than C2's own test, same Machine Safety discipline.
+  set_tests_properties(test_native_jail_abuse_corpus_windows PROPERTIES TIMEOUT 120)
 endif()
 
 # ---- LinuxNativeJailBackend end-to-end (M2 Phase C task C2's Linux follow-up, 008 §1b/§2/§3) ---
@@ -289,6 +301,21 @@ if(NOT WIN32)
     # Same Machine Safety backstop as the Windows test -- real child processes under real
     # namespace/cgroup isolation, real wall_ms kills under test.
     set_tests_properties(test_native_jail_backend_linux PROPERTIES TIMEOUT 120)
+
+    # ---- 008 §7 abuse-case corpus + §9 G2 positive controls (M2 Phase C task C3, Linux half) -----
+    # fs-escape attempt is deliberately NOT included here -- see the test file's own header for the
+    # tracked containment gap this surfaced.
+    add_executable(test_native_jail_abuse_corpus_linux test_native_jail_abuse_corpus_linux.cpp)
+    target_link_libraries(test_native_jail_abuse_corpus_linux PRIVATE
+      agentengine::core agentengine::linux_native_jail_backend agentengine_warnings)
+    target_compile_definitions(test_native_jail_abuse_corpus_linux PRIVATE
+      AE_HOSTILE_CHILD_POSIX_EXE="$<TARGET_FILE:hostile_child_posix>")
+    add_dependencies(test_native_jail_abuse_corpus_linux hostile_child_posix)
+    add_test(NAME test_native_jail_abuse_corpus_linux
+      COMMAND bash -c "source ${CMAKE_CURRENT_SOURCE_DIR}/helpers/cgroup_v2_test_setup.sh && $<TARGET_FILE:test_native_jail_abuse_corpus_linux>")
+    # The OOM case alone budgets wall_ms=25000 (C2-Linux's own measured worst case) -- 150s total
+    # leaves headroom for the other four cases' shorter budgets plus real process/cgroup overhead.
+    set_tests_properties(test_native_jail_abuse_corpus_linux PROPERTIES TIMEOUT 150)
   endif()
 endif()
 

@@ -419,7 +419,14 @@ files (e.g. `win.ini`, `drivers\etc\hosts`) carry `ALL APPLICATION PACKAGES`/`AL
 APPLICATION PACKAGES` read grants by Windows' own default, independent of any capability this
 profile grants or withholds (`decisions/ADR-004-appcontainer-native-jail-windows-backend.md` §6.1) —
 this is exactly why §1b makes interpreter-level `open()` mediation primary rather than relying on the
-kernel jail's ACL model for reads.
+kernel jail's ACL model for reads · **no filesystem containment yet on `native-jail`/Linux** — the
+M2 Phase C build gives the guest a private mount namespace (`CLONE_NEWNS`) but nothing populates it
+with a restricted view (no `pivot_root`/`chroot`/bind-mount jail), so the guest can read/write
+anything the invoking user can, anywhere on the host; namespaces/cgroups/seccomp contain process
+count, memory, and syscalls, but not paths. Tracked gap, not silently dropped
+(`docs/planning/milestone-2-tools-capabilities-sandbox-breakdown.md` C3's writeup, GitHub issue
+tracking the follow-up); the fs-escape-attempt abuse case below is proven on Windows only until this
+closes.
 
 Each has a test in the hostile suite. Per CONVENTIONS, hostile tests are themselves resource-capped
 so they cannot take the dev box down.

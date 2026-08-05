@@ -355,9 +355,83 @@ remains a spike, cited as such everywhere C2's writeups reference it.
   delegated cgroup v2 root, not assumed available on an ordinary CI runner. 6/6 repeated clean runs
   after the swap-cap fix; full suite 18/19 on Linux (the one failure being C4's already-tracked
   `test_real_filesystem_adapter` gap); Windows full suite reconfirmed unaffected, 23/23.
-- **C3.** Minimal probe binaries proving the §7 abuse-case subset that needs no interpreter (fork
-  bomb, OOM, infinite loop → `wall_ms` kill, fs-escape attempt, unbounded output) — 008 §9 G2 scoped
-  to what's buildable without 010 (decision 3). **L**
+- **C3 (done, Windows fs-escape / Linux deferred).** The systematic 008 §7 abuse-case corpus, scoped
+  to what's buildable without 010 (decision 3) — fork bomb, OOM, infinite loop → `wall_ms` kill,
+  fs-escape attempt, unbounded output — as the §9 G2 gate itself: every case contained, with a
+  measured kill/detection time, and a positive control (limits deliberately disabled) that
+  demonstrably succeeds, so the contained result isn't vacuous. C2's own tests already proved
+  create/exec/destroy works; this is the abuse-case gate layered on top, in two new files
+  (`tests/test_native_jail_abuse_corpus_{windows,linux}.cpp`) plus two new hostile-child probe
+  modes (`escape <path>`, `flood`) added to `tests/helpers/hostile_child{,_posix}.cpp`.
+
+  **Fork bomb (`spawn N self`, pids-limited).** Windows measured finding, not anticipated going in:
+  the contained case returns `succeeded=0` *regardless* of `ResourceLimits::pids` — confirmed
+  directly by first writing the positive control as "same probe, pids disabled" and watching it
+  still return 0. Root cause: `native_jail_backend.cpp`'s `exec()` unconditionally sets
+  `PROC_THREAD_ATTRIBUTE_CHILD_PROCESS_POLICY = PROCESS_CREATION_CHILD_PROCESS_RESTRICTED` (008 §4
+  "Exec (nested): denied"), which fails `CreateProcess` for any child the guest tries to launch
+  before the Job Object's `ActiveProcessLimit` is ever consulted. So on Windows, fork-bomb
+  containment is the nested-exec-denial policy, not the `pids` axis — `pids` is defense-in-depth for
+  a path this backend doesn't currently expose. The real positive control ended up being: launch the
+  identical probe fully unsandboxed (`sandbox_profile::none`, via a small `run_raw_unsandboxed()`
+  helper added to the test — plain `CreateProcessA`, no AppContainer, no Job Object), which succeeds
+  10/10. Linux has no equivalent global nested-exec denial (the seccomp filter deliberately does NOT
+  deny `clone`/`fork`/`execve` — it has to survive its own later `execve`), so Linux fork-bomb
+  containment genuinely is the `pids.max` cgroup limit: contained case measured `succeeded=1` of 40
+  requested (pids=3), positive control (pids disabled) `succeeded=15` of 15 requested — the two
+  backends contain the identical abuse case through two different mechanisms, both real, both now
+  measured.
+
+  **OOM, infinite loop.** Same shape as C2's own tests but now with an explicit positive control
+  each: `memory_bytes`/`wall_ms` disabled (or, for `wall_ms`, substituted with a materially longer
+  budget — see below) makes the identical workload succeed/run longer, proving the contained result
+  isn't incidental. Measured Windows kill times: OOM ~17-21 ms, infinite-loop timeout 505-510 ms
+  against a 500 ms budget. Linux: OOM ~106 ms (well under the 25 s budget C2-Linux's own measured
+  worst case required), infinite-loop 527 ms against 500 ms.
+
+  A literal "wall_ms disabled" positive control is unsafe to run (`spin` never exits on its own, and
+  `wall_ms==0` means wait indefinitely — CLAUDE.md Machine Safety forbids a test that can hang
+  forever) — the safe stand-in used on both platforms: run the identical `spin` workload under a
+  materially longer wall_ms (1800 ms vs. 500 ms) and confirm it runs the full extra distance rather
+  than finishing early on its own, which is what would happen if the short kill above were
+  incidental rather than real enforcement. Documented in both test files as an explicit, reasoned
+  substitution, not a silently weaker check.
+
+  **fs-escape attempt (Windows only this pass).** Building the Linux side of this case surfaced a
+  real, previously-undocumented gap: `LinuxNativeJailBackend`'s `CLONE_NEWNS` gives the guest a
+  private mount namespace but nothing populates it with a restricted view (no
+  `pivot_root`/`chroot`/bind-mount jail) — the guest can read/write anything the invoking user can,
+  anywhere on the host. Raised to the project owner before writing a test that would either fail
+  honestly or require building real containment first; the decision (2026-08-05) was to defer real
+  Linux fs containment and scope C3's Linux half to the four cases that are genuinely contained
+  today, leaving fs-escape-attempt Windows-only. Documented in 008 §7 (a new gap bullet alongside
+  the existing Windows ACE-leak one) and tracked as
+  [GitHub issue #5](https://github.com/thnak/AgentEngine/issues/5). On Windows: a file outside the
+  granted mount reports `ESCAPE_DENIED` (measured ~9-10 ms); the positive control — the same backend
+  mechanism, deliberately granting the secret directory too (AppContainer's equivalent of "disable
+  the limit") — reports `ESCAPE_OK`. The known ADR-004 §6.1 gap (`win.ini` readable via the
+  OS-default `ALL APPLICATION PACKAGES` ACE regardless of any grant) is asserted explicitly too, not
+  silently skipped, so a future ACL-mediation fix shows up as a diff here.
+
+  **Unbounded output.** A `flood` probe (writes continuously, never exits) proves
+  `ResourceLimits::output_bytes` truncates captured stdout to exactly the configured cap (4096
+  bytes, both platforms) regardless of how much the flood actually wrote before being killed by
+  `wall_ms`. Positive control: the same probe under a materially looser cap (2 MiB — never literally
+  "unbounded"; `drain_pipe_bounded`'s own 16 MiB safety floor deliberately forbids that even when
+  `output_bytes==0`, since unbounded stdout is itself a host-safety hazard, 008 §2 item 2) captures
+  far more (~1 MiB in the time available) — proving the tight cap above is real containment, not the
+  flood incidentally producing little output. This surfaced a genuine architecture question in both
+  backends: `exec()` drains pipes only AFTER `wait_or_kill`/the wait loop returns, not concurrently,
+  so a flood child blocks in `write()` once the kernel pipe buffer fills, and the buffered amount at
+  kill time depends on that buffer's size, not on the flood's true output rate. Fixed by explicitly
+  sizing both platforms' pipe buffers to 1 MiB (`CreatePipe`'s `nSize` on Windows, `fcntl(...,
+  F_SETPIPE_SZ, ...)` on Linux, best-effort there) rather than relying on the OS default (historically
+  a few KB on Windows, ~64 KiB on Linux) — otherwise the positive control's "materially more" claim
+  would be bounded by an incidental kernel default, not a meaningful signal.
+
+  Full regression check after all of the above: Windows 24/24 (was 23/23 before C3 added its own
+  test); Linux 19/20 (still only the pre-existing, already-tracked `test_real_filesystem_adapter`
+  case-fold gap — C3 added a 20th test and it passed clean).
 - **C4.** Cross-platform parity proof (008 §9 G1) — the same probe corpus on Windows and Linux
   (Docker, the established M0/M1 verification pattern), same outcome classification. Named directly
   in the roadmap's exit criterion, not optional. **L**

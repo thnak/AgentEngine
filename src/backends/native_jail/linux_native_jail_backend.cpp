@@ -205,6 +205,16 @@ result<ExecOutcome> LinuxNativeJailBackend::exec(SandboxHandle& handle, ExecRequ
     }
     FdGuard stdout_read{stdout_fds[0]}, stdout_write{stdout_fds[1]};
     FdGuard stderr_read{stderr_fds[0]}, stderr_write{stderr_fds[1]};
+    // Best-effort: enlarge the kernel pipe buffer past the Linux default (typically 64 KiB) so a
+    // hostile child that writes far more than output_bytes still has somewhere to land before
+    // blocking in write() -- exec()'s wait loop drains AFTER the child exits/is killed, not
+    // concurrently, so a too-small buffer would make output_bytes containment look artificially
+    // tight regardless of the configured cap (mirrors the Windows side's explicit CreatePipe
+    // buffer size). Failure here (e.g. exceeding /proc/sys/fs/pipe-max-size without
+    // CAP_SYS_RESOURCE) just leaves the OS default in place -- not fatal to containment, since
+    // drain_pipe_bounded enforces the real cap regardless of how much the kernel could buffer.
+    ::fcntl(stdout_write.fd, F_SETPIPE_SZ, 1024 * 1024);
+    ::fcntl(stderr_write.fd, F_SETPIPE_SZ, 1024 * 1024);
 
     // The child's copies of stdout_write/stderr_write must be inheritable across clone() despite
     // O_CLOEXEC (which would otherwise close them across the child's own later execve) -- dup2 in

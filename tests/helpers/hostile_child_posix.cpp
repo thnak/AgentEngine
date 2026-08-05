@@ -11,6 +11,8 @@
 //                             creations actually succeeded, then idle.
 //   fail <code>            -- exit immediately with <code> (a clean, ordinary nonzero exit -- not
 //                             a resource-limit kill, not a crash).
+//   flood                  -- write output continuously (never exits on its own) -- M2 Phase C
+//                             task C3's unbounded-output probe (008 SS2 item 2 / SS7).
 
 #include <unistd.h>
 #include <sys/wait.h>
@@ -80,11 +82,20 @@ int mode_fail(int code) {
     return code;
 }
 
+int mode_flood() {
+    std::string chunk(256, 'A');
+    for (;;) {
+        fwrite(chunk.data(), 1, chunk.size(), stdout);
+        fflush(stdout);
+    }
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        fprintf(stderr, "usage: hostile_child_posix <alloc|spin|sleep|spawn|fail> ...\n");
+        fprintf(stderr, "usage: hostile_child_posix <alloc|spin|sleep|spawn|fail|flood> ...\n");
         return 2;
     }
     std::string mode = argv[1];
@@ -93,6 +104,7 @@ int main(int argc, char** argv) {
     if (mode == "sleep" && argc >= 3) return mode_sleep(std::atoi(argv[2]));
     if (mode == "spawn" && argc >= 4) return mode_spawn(std::atoi(argv[2]), argv[3]);
     if (mode == "fail" && argc >= 3) return mode_fail(std::atoi(argv[2]));
+    if (mode == "flood") return mode_flood();
     fprintf(stderr, "unrecognized mode/args\n");
     return 2;
 }
