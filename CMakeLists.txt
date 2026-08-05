@@ -38,6 +38,19 @@ target_link_libraries(agentengine_core INTERFACE quark::quark)
 target_compile_features(agentengine_core INTERFACE cxx_std_23)
 add_library(agentengine::core ALIAS agentengine_core)
 
+# ---- Egress proxy (src/sandbox/) -- Windows + Linux ---------------------------------------------
+# Implements decisions/ADR-011-first-party-egress-proxy.md (008 §10 Q3, M2 Phase F task F1): the
+# host-mediated mechanism NetOut (007 §3) is enforced through. Ordinary OS socket/DNS APIs
+# (getaddrinfo/inet_pton/select) plus third_party/quark's already-vendored, cross-platform PAL socket
+# primitives (quark::quark, pulled in transitively via agentengine::core) -- no new third-party
+# dependency, so this needs no CMake option gate beyond the platform-independent build itself (ws2_32
+# is already a PUBLIC link of the quark target on Windows).
+add_library(agentengine_net_egress_proxy STATIC
+  src/sandbox/net_egress_proxy.cpp)
+target_link_libraries(agentengine_net_egress_proxy PUBLIC agentengine::core)
+target_link_libraries(agentengine_net_egress_proxy PRIVATE agentengine_warnings)
+add_library(agentengine::net_egress_proxy ALIAS agentengine_net_egress_proxy)
+
 # ---- native_jail ShellRunner backend (src/backends/native_jail/) --------------
 # Implements decisions/ADR-001-shellrunner-grammar-and-dispatch.md — Design A: the
 # recursive-descent parser, the pmr-backed AST, the tree-walking evaluator, the fixed builtin
@@ -223,7 +236,7 @@ if(AGENTENGINE_WITH_WASM)
   target_include_directories(agentengine_wasm_backend PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/src")
   target_link_libraries(agentengine_wasm_backend PUBLIC
-    agentengine::core agentengine::wasmtime_vendor)
+    agentengine::core agentengine::wasmtime_vendor agentengine::net_egress_proxy)
   target_link_libraries(agentengine_wasm_backend PRIVATE agentengine_warnings)
   add_library(agentengine::wasm_backend ALIAS agentengine_wasm_backend)
 endif()

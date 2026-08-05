@@ -22,9 +22,13 @@
 //   5. Capability-kind confusion, the other four gated callbacks (D5 closes claim 4's remaining gap
 //      -- D3's ADR explicitly left this proven for only one of five callbacks): for each of
 //      fs-read/fs-write/http-request/resolve-secret, one probe places the matching capability first
-//      (right kind -- reaches the callback's "not implemented" stub, proving the kind check passed)
-//      and one places a mismatched capability first (wrong kind -- rejected before reaching the
-//      stub), against the real fixture's read-file/write-file/fetch/get-secret tools.
+//      (right kind -- reaches the callback's real behavior, proving the kind check passed) and one
+//      places a mismatched capability first (wrong kind -- rejected before reaching it), against the
+//      real fixture's read-file/write-file/fetch/get-secret tools. fs-read/fs-write/resolve-secret are
+//      still stubs (reaching them traps with "not implemented in M2's minimal host"); http-request is
+//      no longer one (decisions/ADR-011-first-party-egress-proxy.md, M2 Phase F task F1) -- its
+//      right-kind probe is a dedicated block below, not `probe_gated_callback`, since a real result
+//      no longer traps.
 //   6. wall_ms is a real, measured kill (claim 5): the "spin" tool loops forever; a low wall_ms
 //      limit must actually interrupt it within a bounded, measured time.
 //
@@ -340,9 +344,46 @@ int main() {
                               {cap::FsRead{}, cap::FsWrite{}, cap::NetOut{}, cap::Secret{}, cap::Clock{}},
                               "wrong kind");
 
-        probe_gated_callback(bytes, "http-request/right-kind", "fetch",
-                              {cap::NetOut{}, cap::FsRead{}, cap::FsWrite{}, cap::Secret{}, cap::Clock{}},
-                              "not implemented in M2's minimal host");
+        // http-request/right-kind is no longer a stub-trap probe (decisions/ADR-011-first-party-
+        // egress-proxy.md, M2 Phase F task F1): cb_http_request now returns a REAL, structured
+        // result<http-response-data, http-error> instead of trapping once the capability-kind check
+        // passes, so probe_gated_callback's "the wasmtime call itself fails" assumption (still
+        // correct for fs-read/fs-write/resolve-secret, which remain literal stubs) no longer applies
+        // here. The fixture's own "fetch" arm already handles both outcomes without panicking
+        // (src/lib.rs: `Ok(_) => ... Err(_) => text_result("fetch: http-error returned")`), so this
+        // proves the kind check passed AND the real gate ran: an empty/default `cap::NetOut{}` (no
+        // allowlist entry at all) is exactly ADR-011 claim C1's "ambiguous grant" case, which
+        // `HostEgressProxy::fetch` rejects as a normal `Err`, not a trap.
+        {
+            WasmBackend backend;
+            SandboxSpec spec;
+            std::vector<Capability> const order = {cap::NetOut{}, cap::FsRead{}, cap::FsWrite{}, cap::Secret{}, cap::Clock{}};
+            spec.capabilities = CapabilitySet::grant_root(order);
+            EffectContext ctx = make_ctx();
+            auto handle = backend.create(spec, ctx);
+            AE_CHECK(handle.has_value(), "http-request/right-kind: create() succeeds");
+            if (handle) {
+                PluginManifest manifest;
+                manifest.id = "test.gated.fetch.http-request-right-kind";
+                manifest.version = "0.1.0";
+                manifest.world = plugin_world::tool;
+                manifest.requested_capabilities = order;
+                auto loaded = backend.load_component(*handle, manifest, bytes, ctx);
+                AE_CHECK(loaded.has_value(), "http-request/right-kind: load_component() succeeds");
+                if (loaded) {
+                    auto result = backend.invoke_tool(*handle, ToolInvokeRequest{"fetch", ""}, ctx);
+                    if (!result) std::cerr << "  (http-request/right-kind error: " << result.error().code << ": " << result.error().message << ")\n";
+                    AE_CHECK(result.has_value() && !result->is_error && result->content.size() == 1,
+                              "http-request/right-kind: fetch call succeeds structurally (no trap -- a real Err value, not a stub)");
+                    if (result && !result->content.empty()) {
+                        auto const* text = std::get_if<Text>(&result->content[0].value);
+                        AE_CHECK(text != nullptr && text->text == "fetch: http-error returned",
+                                  "http-request/right-kind: the real gate rejected the ambiguous (allowlist-empty) NetOut grant");
+                    }
+                }
+                backend.destroy(*handle);
+            }
+        }
         probe_gated_callback(bytes, "http-request/wrong-kind", "fetch",
                               {cap::FsRead{}, cap::NetOut{}, cap::FsWrite{}, cap::Secret{}, cap::Clock{}},
                               "wrong kind");

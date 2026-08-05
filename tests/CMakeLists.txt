@@ -110,6 +110,13 @@ add_executable(test_agent_library_manifest test_agent_library_manifest.cpp)
 target_link_libraries(test_agent_library_manifest PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_agent_library_manifest COMMAND test_agent_library_manifest)
 
+# ---- Egress proxy (M2 Phase F task F1, decisions/ADR-011-first-party-egress-proxy.md) ----------
+# Header-only claims (is_blocked_address, reject_crlf) plus real loopback-socket claims via a
+# TestHttpServer double, agentengine::net_egress_proxy (src/sandbox/net_egress_proxy.cpp).
+add_executable(test_net_egress_proxy test_net_egress_proxy.cpp)
+target_link_libraries(test_net_egress_proxy PRIVATE agentengine::net_egress_proxy agentengine_warnings)
+add_test(NAME test_net_egress_proxy COMMAND test_net_egress_proxy)
+
 # ---- RecordedChatClient fixture player (test-only) ---------------------------------------------
 # Proves the ChatClient concept and ChatRequest/ChatResponse vocabulary are usable end-to-end
 # against hand-authored JSON fixtures, without a real network call or API key (CLAUDE.md task

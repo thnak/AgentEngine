@@ -1,0 +1,375 @@
+// Implements net_egress_proxy.hpp. See decisions/ADR-011-first-party-egress-proxy.md and
+// docs/research/2026-08-05-ssrf-dns-rebinding-defense.md for the design/citations this satisfies.
+
+#include "agentengine/sandbox/net_egress_proxy.hpp"
+
+#include "pal/net.hpp"
+
+#if defined(_WIN32)
+// winsock2.h/ws2tcpip.h already pulled in transitively by pal/windows_x86_64/net.hpp (getaddrinfo,
+// freeaddrinfo, inet_pton, select, FD_SET/FD_ZERO all live there on this platform).
+#else
+#include <netdb.h>     // getaddrinfo/freeaddrinfo/addrinfo -- not in pal/linux_x86_64/net.hpp
+#include <sys/select.h>
+#endif
+
+#include <algorithm>
+#include <array>
+#include <cctype>
+#include <charconv>
+#include <cstddef>
+
+namespace agentengine::sandbox {
+
+namespace {
+
+// -- blocked-range table (ADR-011 claim C4) -------------------------------------------------------
+
+struct Cidr4 {
+    std::uint32_t base;
+    std::uint32_t mask;
+};
+
+constexpr std::uint32_t make_mask(int prefix) noexcept {
+    return prefix <= 0 ? 0u : (prefix >= 32 ? 0xFFFF'FFFFu : static_cast<std::uint32_t>(~0u << (32 - prefix)));
+}
+constexpr std::uint32_t make_ipv4(std::uint8_t a, std::uint8_t b, std::uint8_t c, std::uint8_t d) noexcept {
+    return (static_cast<std::uint32_t>(a) << 24) | (static_cast<std::uint32_t>(b) << 16) |
+           (static_cast<std::uint32_t>(c) << 8) | static_cast<std::uint32_t>(d);
+}
+
+constexpr Cidr4 kBlockedRanges[] = {
+    {make_ipv4(127, 0, 0, 0), make_mask(8)},     // loopback
+    {make_ipv4(169, 254, 0, 0), make_mask(16)},  // link-local -- contains 169.254.169.254 (metadata)
+    {make_ipv4(10, 0, 0, 0), make_mask(8)},      // RFC 1918
+    {make_ipv4(172, 16, 0, 0), make_mask(12)},   // RFC 1918
+    {make_ipv4(192, 168, 0, 0), make_mask(16)},  // RFC 1918
+    {make_ipv4(100, 64, 0, 0), make_mask(10)},   // CGNAT (RFC 6598)
+    {make_ipv4(224, 0, 0, 0), make_mask(4)},     // multicast
+    {make_ipv4(240, 0, 0, 0), make_mask(4)},     // reserved
+    {make_ipv4(0, 0, 0, 0), make_mask(8)},       // "this network" / unspecified
+};
+
+bool equals_ci(std::string_view a, std::string_view b) noexcept {
+    return a.size() == b.size() &&
+           std::equal(a.begin(), a.end(), b.begin(), [](char x, char y) {
+               return std::tolower(static_cast<unsigned char>(x)) == std::tolower(static_cast<unsigned char>(y));
+           });
+}
+
+constexpr int kIoTimeoutMs = 10'000;
+
+bool wait_ready(quark::pal::fd_t fd, bool for_write, int timeout_ms) {
+    ::fd_set set;
+    FD_ZERO(&set);
+    FD_SET(fd, &set);
+    ::timeval tv{};
+    tv.tv_sec = timeout_ms / 1000;
+    tv.tv_usec = (timeout_ms % 1000) * 1000;
+    int const nfds = static_cast<int>(fd) + 1;
+    int const rc = for_write ? ::select(nfds, nullptr, &set, nullptr, &tv)
+                              : ::select(nfds, &set, nullptr, nullptr, &tv);
+    return rc > 0;
+}
+
+struct FdGuard {
+    quark::pal::fd_t fd;
+    ~FdGuard() { quark::pal::close_fd(static_cast<int>(fd)); }
+};
+
+result<std::monostate> send_all(quark::pal::fd_t fd, std::string const& data) {
+    std::size_t sent = 0;
+    while (sent < data.size()) {
+        if (!wait_ready(fd, /*for_write=*/true, kIoTimeoutMs)) {
+            return std::unexpected(error{failure_class::transient, "timed out sending request", "net.connect_failed"});
+        }
+        auto r = quark::pal::send_some(fd, reinterpret_cast<std::byte const*>(data.data() + sent),
+                                        data.size() - sent);
+        if (!r) {
+            if (r.error() == quark::pal::would_block()) continue;
+            return std::unexpected(error{failure_class::transient, "send failed", "net.connect_failed"});
+        }
+        sent += *r;
+    }
+    return std::monostate{};
+}
+
+std::optional<std::size_t> parse_content_length(std::string_view head) {
+    std::size_t pos = 0;
+    while (pos < head.size()) {
+        auto const next = head.find("\r\n", pos);
+        std::string_view const line = next == std::string_view::npos ? head.substr(pos) : head.substr(pos, next - pos);
+        auto const colon = line.find(':');
+        if (colon != std::string_view::npos && equals_ci(line.substr(0, colon), "content-length")) {
+            std::string_view value = line.substr(colon + 1);
+            while (!value.empty() && value.front() == ' ') value.remove_prefix(1);
+            std::size_t n = 0;
+            auto const [ptr, ec] = std::from_chars(value.data(), value.data() + value.size(), n);
+            if (ec == std::errc{}) return n;
+        }
+        if (next == std::string_view::npos) break;
+        pos = next + 2;
+    }
+    return std::nullopt;
+}
+
+result<NetEgressResponse> parse_http_response(std::string const& buf) {
+    auto const header_end = buf.find("\r\n\r\n");
+    if (header_end == std::string::npos) {
+        return std::unexpected(error{failure_class::transient, "malformed HTTP response (no header terminator)", "net.protocol_error"});
+    }
+    std::string_view const head(buf.data(), header_end);
+    auto const line_end = head.find("\r\n");
+    std::string_view const status_line = line_end == std::string_view::npos ? head : head.substr(0, line_end);
+
+    auto const sp1 = status_line.find(' ');
+    if (sp1 == std::string_view::npos) {
+        return std::unexpected(error{failure_class::transient, "malformed HTTP status line", "net.protocol_error"});
+    }
+    std::string_view rest = status_line.substr(sp1 + 1);
+    auto const sp2 = rest.find(' ');
+    std::string_view const code_sv = sp2 == std::string_view::npos ? rest : rest.substr(0, sp2);
+    std::uint16_t status = 0;
+    auto const [ptr, ec] = std::from_chars(code_sv.data(), code_sv.data() + code_sv.size(), status);
+    if (ec != std::errc{}) {
+        return std::unexpected(error{failure_class::transient, "malformed HTTP status code", "net.protocol_error"});
+    }
+
+    NetEgressResponse resp;
+    resp.status = status;
+
+    std::size_t pos = line_end == std::string_view::npos ? head.size() : line_end + 2;
+    while (pos < head.size()) {
+        auto const next = head.find("\r\n", pos);
+        std::string_view const line = next == std::string_view::npos ? head.substr(pos) : head.substr(pos, next - pos);
+        auto const colon = line.find(':');
+        if (colon != std::string_view::npos) {
+            std::string_view name = line.substr(0, colon);
+            std::string_view value = line.substr(colon + 1);
+            while (!value.empty() && value.front() == ' ') value.remove_prefix(1);
+            resp.headers.emplace_back(std::string(name), std::string(value));
+        }
+        if (next == std::string_view::npos) break;
+        pos = next + 2;
+    }
+    resp.body = buf.substr(header_end + 4);
+    return resp;
+}
+
+struct AllowlistTarget {
+    std::string host;
+    std::uint16_t port;
+    std::string scheme;
+};
+
+result<AllowlistTarget> parse_allowlist_entry(std::string_view entry) {
+    auto const malformed = [] {
+        return std::unexpected(error{failure_class::contract, "malformed NetOut allowlist entry (expected host:port:scheme)", "net.malformed_allowlist_entry"});
+    };
+    auto const scheme_sep = entry.rfind(':');
+    if (scheme_sep == std::string_view::npos) return malformed();
+    std::string_view const scheme = entry.substr(scheme_sep + 1);
+    std::string_view const rest = entry.substr(0, scheme_sep);
+    auto const port_sep = rest.rfind(':');
+    if (port_sep == std::string_view::npos) return malformed();
+    std::string_view const port_sv = rest.substr(port_sep + 1);
+    std::string_view const host = rest.substr(0, port_sep);
+    if (host.empty() || port_sv.empty() || scheme.empty()) return malformed();
+    std::uint16_t port = 0;
+    auto const [ptr, ec] = std::from_chars(port_sv.data(), port_sv.data() + port_sv.size(), port);
+    if (ec != std::errc{} || ptr != port_sv.data() + port_sv.size()) return malformed();
+    return AllowlistTarget{std::string(host), port, std::string(scheme)};
+}
+
+}  // namespace
+
+bool is_blocked_address(std::uint32_t ipv4_host_order) noexcept {
+    for (auto const& r : kBlockedRanges) {
+        if ((ipv4_host_order & r.mask) == (r.base & r.mask)) return true;
+    }
+    return false;
+}
+
+result<std::monostate> reject_crlf(std::string_view field_name, std::string_view value) {
+    if (value.find('\r') != std::string_view::npos || value.find('\n') != std::string_view::npos) {
+        return std::unexpected(error{failure_class::contract,
+                                      "value for '" + std::string(field_name) + "' contains a CR or LF byte",
+                                      "net.header_injection_rejected"});
+    }
+    return std::monostate{};
+}
+
+result<VerifiedEndpoint> resolve_and_validate(std::string_view host, std::uint16_t port) {
+#if defined(_WIN32)
+    quark::pal::ensure_winsock();
+#endif
+    std::string const host_str(host);
+
+    // Fast path: a numeric IPv4 literal never touches the resolver. inet_pton's strict, dotted-quad-
+    // only grammar (unlike the legacy, lenient inet_addr/gethostbyname) is what makes a decimal/
+    // octal/hex-encoded address fail to parse here rather than needing to be filtered downstream
+    // (ADR-011 claim C5; docs/research/2026-08-05-ssrf-dns-rebinding-defense.md §4).
+    ::in_addr direct{};
+    if (::inet_pton(AF_INET, host_str.c_str(), &direct) == 1) {
+        std::uint32_t const addr = ::ntohl(direct.s_addr);
+        if (is_blocked_address(addr)) {
+            return std::unexpected(error{failure_class::policy, "address is in a blocked range", "net.address_blocked"});
+        }
+        return VerifiedEndpoint{addr, port};
+    }
+
+    ::addrinfo hints{};
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    ::addrinfo* results = nullptr;
+    int const rc = ::getaddrinfo(host_str.c_str(), nullptr, &hints, &results);
+    if (rc != 0 || results == nullptr) {
+        return std::unexpected(error{failure_class::transient, "could not resolve an IPv4 address for this host", "net.host_unresolvable"});
+    }
+    std::optional<std::uint32_t> chosen;
+    for (::addrinfo* p = results; p != nullptr; p = p->ai_next) {
+        auto const* sin = reinterpret_cast<::sockaddr_in const*>(p->ai_addr);
+        std::uint32_t const addr = ::ntohl(sin->sin_addr.s_addr);
+        if (!is_blocked_address(addr)) {
+            chosen = addr;
+            break;
+        }
+    }
+    ::freeaddrinfo(results);
+    if (!chosen) {
+        return std::unexpected(error{failure_class::policy, "every resolved address is in a blocked range", "net.address_blocked"});
+    }
+    return VerifiedEndpoint{*chosen, port};
+}
+
+result<NetEgressResponse> perform_http_exchange(VerifiedEndpoint endpoint, std::string_view host_header,
+                                                 NetEgressRequest const& req,
+                                                 std::optional<std::uint64_t> byte_cap) {
+    std::uint64_t const effective_cap = std::min<std::uint64_t>(byte_cap.value_or(kHardResponseCeilingBytes),
+                                                                  kHardResponseCeilingBytes);
+#if defined(_WIN32)
+    quark::pal::ensure_winsock();
+#endif
+
+    auto connect_r = quark::pal::tcp_connect(endpoint.ipv4_host_order, endpoint.port);
+    if (!connect_r) {
+        return std::unexpected(error{failure_class::transient, "connect failed", "net.connect_failed"});
+    }
+    FdGuard const guard{*connect_r};
+
+    if (!wait_ready(guard.fd, /*for_write=*/true, kIoTimeoutMs)) {
+        return std::unexpected(error{failure_class::transient, "connect timed out", "net.connect_failed"});
+    }
+    if (auto const cr = quark::pal::connect_result(guard.fd); !cr) {
+        return std::unexpected(error{failure_class::transient, "connect refused or failed", "net.connect_failed"});
+    }
+
+    // CRLF in method/path/headers is rejected by the caller's gate (HostEgressProxy::fetch) before
+    // this function is ever reached (ADR-011 claim C9) -- this is the only place those bytes reach
+    // the wire, so that gate running first is load-bearing, not a formality.
+    std::string request;
+    request += req.method;
+    request += ' ';
+    request += req.path;
+    request += " HTTP/1.1\r\n";
+    request += "Host: ";
+    request += host_header;
+    request += "\r\n";
+    bool has_content_length = false;
+    for (auto const& [k, v] : req.headers) {
+        request += k;
+        request += ": ";
+        request += v;
+        request += "\r\n";
+        if (equals_ci(k, "content-length")) has_content_length = true;
+    }
+    if (!req.body.empty() && !has_content_length) {
+        request += "Content-Length: " + std::to_string(req.body.size()) + "\r\n";
+    }
+    request += "Connection: close\r\n\r\n";
+    request += req.body;
+
+    if (auto const s = send_all(guard.fd, request); !s) return std::unexpected(s.error());
+
+    // Read the response, enforcing effective_cap DURING the loop -- never buffer past it and check
+    // afterward (ADR-011 claim C8; a "buffer everything then truncate" implementation would still
+    // transiently over-allocate, which is exactly the host-memory-DoS property this guards against).
+    std::string buf;
+    std::array<std::byte, 4096> chunk{};
+    for (;;) {
+        auto const header_end = buf.find("\r\n\r\n");
+        if (header_end != std::string::npos) {
+            auto const cl = parse_content_length(std::string_view(buf).substr(0, header_end));
+            if (cl.has_value()) {
+                std::size_t const body_have = buf.size() - (header_end + 4);
+                if (body_have >= *cl) break;
+            }
+            // No Content-Length: keep reading until the peer closes (Connection: close was sent).
+        }
+        if (buf.size() >= effective_cap) {
+            return std::unexpected(error{failure_class::resource, "response exceeded the byte cap", "net.byte_cap_exceeded"});
+        }
+        if (!wait_ready(guard.fd, /*for_write=*/false, kIoTimeoutMs)) {
+            return std::unexpected(error{failure_class::transient, "timed out reading response", "net.connect_failed"});
+        }
+        auto const r = quark::pal::recv_some(guard.fd, chunk.data(), chunk.size());
+        if (!r) {
+            if (r.error() == quark::pal::would_block()) continue;
+            return std::unexpected(error{failure_class::transient, "recv failed", "net.connect_failed"});
+        }
+        if (*r == 0) break;  // peer closed -- normal end of a Connection:-close response
+        std::size_t const room = effective_cap > buf.size() ? effective_cap - buf.size() : 0;
+        std::size_t const take = std::min(room, *r);
+        buf.append(reinterpret_cast<char const*>(chunk.data()), take);
+        if (take < *r) {
+            return std::unexpected(error{failure_class::resource, "response exceeded the byte cap", "net.byte_cap_exceeded"});
+        }
+    }
+
+    return parse_http_response(buf);
+}
+
+result<NetEgressResponse> HostEgressProxy::fetch(NetEgressRequest const& req, cap::NetOut const& granted) const {
+    // C1: the WIT `http-request` call gives the guest no way to name a host at all -- host/port/
+    // scheme come entirely from the grant (see this header's own file-top comment) -- so a grant
+    // with anything other than exactly one allowlist entry is genuinely ambiguous, not resolvable by
+    // picking [0] silently.
+    if (granted.host_allowlist.size() != 1) {
+        return std::unexpected(error{failure_class::policy,
+                                      "http-request needs a NetOut grant with exactly one allowlist entry",
+                                      "net.ambiguous_grant"});
+    }
+    auto const target = parse_allowlist_entry(granted.host_allowlist.front());
+    if (!target) return std::unexpected(target.error());
+
+    // C3: only plain http this milestone -- see ADR-011 §3 Design C for why https is out of scope.
+    if (!equals_ci(target->scheme, "http")) {
+        return std::unexpected(error{failure_class::policy,
+                                      "only plain http is supported this milestone (see ADR-011 section 3, Design C)",
+                                      "net.scheme_unsupported"});
+    }
+
+    // C9: reject before any network activity -- this proxy builds the raw request itself.
+    if (auto const c = reject_crlf("method", req.method); !c) return std::unexpected(c.error());
+    if (auto const c = reject_crlf("path", req.path); !c) return std::unexpected(c.error());
+    for (auto const& [k, v] : req.headers) {
+        if (auto const c = reject_crlf("header name", k); !c) return std::unexpected(c.error());
+        if (auto const c = reject_crlf("header value", v); !c) return std::unexpected(c.error());
+    }
+
+    // C7: method_restrictions empty == unrestricted (cap::NetOut's own documented default).
+    if (!granted.method_restrictions.empty()) {
+        bool const allowed = std::any_of(granted.method_restrictions.begin(), granted.method_restrictions.end(),
+                                          [&](std::string const& m) { return equals_ci(m, req.method); });
+        if (!allowed) {
+            return std::unexpected(error{failure_class::policy, "method not permitted by this grant", "net.method_not_allowed"});
+        }
+    }
+
+    auto const endpoint = resolver(target->host, target->port);
+    if (!endpoint) return std::unexpected(endpoint.error());
+
+    return perform_http_exchange(*endpoint, target->host, req, granted.byte_cap);
+}
+
+}  // namespace agentengine::sandbox

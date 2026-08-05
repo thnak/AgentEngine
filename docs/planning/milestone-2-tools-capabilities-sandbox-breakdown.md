@@ -982,8 +982,44 @@ remains a spike, cited as such everywhere C2's writeups reference it.
 
 ### Phase F — Cross-cutting ADR-track tasks (flagged explicitly by the roadmap for M2)
 
-- **F1.** First-party egress proxy design (008 §10 Q3) — full design→red-team→prove→judge, produces
-  an ADR. Security-critical: host-mediated egress for every profile depends on it being right. **XL**
+- **F1.** (done) First-party egress proxy design (008 §10 Q3) — full design→red-team→prove→judge,
+  produces an ADR. Security-critical: host-mediated egress for every profile depends on it being
+  right. **XL**
+
+  `decisions/ADR-011-first-party-egress-proxy.md`: `NetEgressBackend` (a structural concept mirroring
+  `SandboxBackend`, 008 §2a) + `HostEgressProxy`, its first-party default
+  (`include/agentengine/sandbox/net_egress_proxy.hpp`, `src/sandbox/net_egress_proxy.cpp`). Resolves
+  DNS exactly once, validates the resolved address against a real blocked-range table (loopback,
+  link-local incl. the exact `169.254.169.254` metadata address, all three RFC 1918 ranges, CGNAT,
+  multicast, reserved, unspecified) on the *binary* address rather than a string — immune to the
+  decimal/octal/hex encoding-bypass class by construction, per
+  `docs/research/2026-08-05-ssrf-dns-rebinding-defense.md` — then connects to that literal validated
+  IPv4 address, never the hostname again, closing DNS-rebinding by construction rather than a
+  narrower time-window mitigation. CRLF/header-injection is rejected before any network activity (this
+  proxy builds the raw HTTP/1.1 request itself — no vetted HTTP library exists to lean on). A response
+  is never buffered past `min(declared byte_cap, a 16 MiB hard host-side ceiling)`, enforced mid-stream.
+  Redirects are returned to the caller as-is, never auto-followed (removes an SSRF sub-class by not
+  implementing it, rather than needing a harder-to-verify per-hop re-validation loop). Scope cuts made
+  explicit, not silently assumed: plain HTTP only this milestone (no vendored TLS/HTTP client exists
+  anywhere in this repo, and Quark's `SecureTransport` is built for node-identity mTLS, not ordinary
+  outbound HTTPS — a follow-up ADR is the right place for that); IPv4 only (matches the vendored PAL's
+  own current locator).
+
+  Wired end-to-end into `wasm`'s `http-request` host import (`src/backends/wasm/wasm_backend.cpp`'s
+  `cb_http_request`) — the first of that file's five gated I/O callbacks (fs-read/fs-write/http-
+  request/resolve-secret still trap as stubs) to go from stub to a real backing effect, proven against
+  the real compiled fixture (`tests/test_wasm_backend.cpp`'s `http-request/right-kind` rewritten for
+  the new, non-trapping behavior) as well as a dedicated hostile test corpus with G2-style positive
+  controls (`tests/test_net_egress_proxy.cpp`). A real bug was found and fixed during this pass in the
+  test double, not the product code: closing a test HTTP server's socket without draining the client's
+  request first sent a TCP RST instead of a FIN, surfacing as a spurious `ECONNRESET` on the client
+  side (ADR-011 §6 has the full account).
+
+  Verified on Windows (`ctest -C Debug -j4`, 31/32 — the one failure the pre-existing, unrelated
+  `test_native_jail_backend_windows` Job-Object memory-timing flake) and a fresh Linux container
+  (`gcc:14`, 23/23, 1 expected skip), with `test_net_egress_proxy` additionally reconfirmed clean over
+  8 (Windows) and 10 (Linux) consecutive standalone runs.
+
 - **F2.** Policy-reachability tool (007 §9 G6) — new CI tooling enumerating `{capability kind, tool,
   taint level}` against whatever mechanical enforcement A3 actually implements (decision 4's scope,
   not the full declarative language). **L**

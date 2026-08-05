@@ -1,7 +1,11 @@
 // Implements wasm_backend.hpp. See that header and decisions/ADR-010-wasm-component-host-manifest-
-// capability-binding.md for the spec/ADR citations this satisfies.
+// capability-binding.md for the spec/ADR citations this satisfies. `cb_http_request` additionally
+// implements decisions/ADR-011-first-party-egress-proxy.md (M2 Phase F task F1): the first of this
+// file's gated I/O callbacks to go from stub to a real backing effect.
 
 #include "backends/wasm/wasm_backend.hpp"
+
+#include "agentengine/sandbox/net_egress_proxy.hpp"
 
 #include <wasm.h>
 #include <wasmtime.h>
@@ -177,6 +181,36 @@ wasmtime_component_val_t make_resource_val(wasmtime_component_resource_any_t* re
     wasmtime_component_val_t v{};
     v.kind = WASMTIME_COMPONENT_RESOURCE;
     v.of.resource = resource;
+    return v;
+}
+
+// -- val construction/inspection this file's other gated callbacks never needed (they are all still
+// stubs) -- added for cb_http_request (ADR-011): tuple<string,string> (WIT `headers`), enum (WIT
+// `http-error`), option (WIT `body`), and result<T,E> (WIT `http-request`'s own return type). ------
+
+wasmtime_component_val_t make_tuple_val(std::vector<wasmtime_component_val_t> elements) {
+    wasmtime_component_val_t v{};
+    v.kind = WASMTIME_COMPONENT_TUPLE;
+    wasmtime_component_valtuple_new(&v.of.tuple, elements.size(), elements.data());
+    return v;
+}
+
+wasmtime_component_val_t make_enum_val(std::string_view case_name) {
+    wasmtime_component_val_t v{};
+    v.kind = WASMTIME_COMPONENT_ENUM;
+    v.of.enumeration = make_name(case_name);
+    return v;
+}
+
+// `wasmtime_component_val_new` heap-allocates and takes ownership of `*inner`'s contents (moved, not
+// cloned) -- matches this file's existing ownership convention of never explicitly freeing a value
+// handed to `results[0]`, since the runtime takes ownership of whatever the callback returns (the
+// same trust `cb_random_bytes`'s `make_list_val` already relies on).
+wasmtime_component_val_t make_result_val(bool is_ok, wasmtime_component_val_t payload) {
+    wasmtime_component_val_t v{};
+    v.kind = WASMTIME_COMPONENT_RESULT;
+    v.of.result.is_ok = is_ok;
+    v.of.result.val = wasmtime_component_val_new(&payload);
     return v;
 }
 
@@ -469,14 +503,96 @@ wasmtime_error_t* cb_fs_write(void* env, wasmtime_context_t* ctx, wasmtime_compo
     return trap_error("fs-write: not implemented in M2's minimal host");
 }
 
+// decisions/ADR-011-first-party-egress-proxy.md: the first of this file's gated I/O callbacks to go
+// from stub to a real backing effect. Host/port/scheme come entirely from the recovered `cap::NetOut`
+// (never from the guest -- see net_egress_proxy.hpp's own file-top comment and the WIT `http`
+// interface's banner); the guest's `http-request-data` record supplies only method/path/headers/body.
 wasmtime_error_t* cb_http_request(void* env, wasmtime_context_t* ctx,
                                    wasmtime_component_func_type_t const*, wasmtime_component_val_t* args,
-                                   std::size_t nargs, wasmtime_component_val_t*, std::size_t nresults) {
+                                   std::size_t nargs, wasmtime_component_val_t* results, std::size_t nresults) {
     if (nargs != 2 || nresults != 1) return trap_error("http-request: bad arity");
     auto* call = static_cast<CallCapabilities*>(env);
     auto cap = recover_capability<cap::NetOut>(ctx, &args[0], *call);
     if (!cap) return trap_error(cap.error().message.c_str());
-    return trap_error("http-request: not implemented in M2's minimal host");
+
+    wasmtime_component_val_t const& req_val = args[1];
+    sandbox::NetEgressRequest req;
+    req.method = string_field(req_val, "method");
+    req.path = string_field(req_val, "path");
+    if (auto const* headers = find_field(req_val, "headers");
+        headers != nullptr && headers->kind == WASMTIME_COMPONENT_LIST) {
+        for (std::size_t i = 0; i < headers->of.list.size; ++i) {
+            auto const& tup = headers->of.list.data[i];
+            if (tup.kind != WASMTIME_COMPONENT_TUPLE || tup.of.tuple.size != 2) continue;
+            auto const& k = tup.of.tuple.data[0];
+            auto const& v = tup.of.tuple.data[1];
+            if (k.kind == WASMTIME_COMPONENT_STRING && v.kind == WASMTIME_COMPONENT_STRING) {
+                req.headers.emplace_back(name_to_string(k.of.string), name_to_string(v.of.string));
+            }
+        }
+    }
+    if (auto const* body = find_field(req_val, "body");
+        body != nullptr && body->kind == WASMTIME_COMPONENT_OPTION && body->of.option != nullptr) {
+        wasmtime_component_val_t const& byte_list = *body->of.option;
+        if (byte_list.kind == WASMTIME_COMPONENT_LIST) {
+            req.body.reserve(byte_list.of.list.size);
+            for (std::size_t i = 0; i < byte_list.of.list.size; ++i) {
+                auto const& b = byte_list.of.list.data[i];
+                if (b.kind == WASMTIME_COMPONENT_U8) req.body.push_back(static_cast<char>(b.of.u8));
+            }
+        }
+    }
+
+    sandbox::HostEgressProxy const proxy;
+    auto response = proxy.fetch(req, *cap);
+    if (!response) {
+        // The WIT `http-error` enum has exactly four cases -- a deliberately small, guest-facing
+        // vocabulary (wit/ae-tool.wit's own comment: the guest only needs to know "not allowlisted",
+        // "too big", "network trouble", or "timed out"). This collapses net_egress_proxy's finer
+        // `error.code` (net.ambiguous_grant, net.malformed_allowlist_entry, net.scheme_unsupported,
+        // net.method_not_allowed, net.header_injection_rejected, net.address_blocked,
+        // net.host_unresolvable -- all "this request/target was never within what was granted") onto
+        // `host-not-allowlisted`; `net.byte_cap_exceeded` maps exactly; everything else (genuine
+        // socket-level failure) maps to `network-error`. Nothing currently distinguishes a real
+        // connect timeout from any other socket failure (both share `net.connect_failed`), so
+        // `timeout` is never emitted here rather than guessed at.
+        std::string_view wit_case = "network-error";
+        std::string const& code = response.error().code;
+        if (code == "net.byte_cap_exceeded") {
+            wit_case = "byte-cap-exceeded";
+        } else if (code == "net.ambiguous_grant" || code == "net.malformed_allowlist_entry" ||
+                   code == "net.scheme_unsupported" || code == "net.method_not_allowed" ||
+                   code == "net.header_injection_rejected" || code == "net.address_blocked" ||
+                   code == "net.host_unresolvable") {
+            wit_case = "host-not-allowlisted";
+        }
+        results[0] = make_result_val(false, make_enum_val(wit_case));
+        return nullptr;
+    }
+
+    std::vector<wasmtime_component_val_t> header_tuples;
+    header_tuples.reserve(response->headers.size());
+    for (auto const& [k, v] : response->headers) {
+        header_tuples.push_back(make_tuple_val({make_string_val(k), make_string_val(v)}));
+    }
+    std::vector<wasmtime_component_val_t> body_bytes;
+    body_bytes.reserve(response->body.size());
+    for (unsigned char c : response->body) {
+        wasmtime_component_val_t b{};
+        b.kind = WASMTIME_COMPONENT_U8;
+        b.of.u8 = c;
+        body_bytes.push_back(b);
+    }
+    wasmtime_component_val_t status_val{};
+    status_val.kind = WASMTIME_COMPONENT_U16;
+    status_val.of.u16 = response->status;
+
+    results[0] = make_result_val(true, make_record_val({
+                                            {"status", status_val},
+                                            {"headers", make_list_val(std::move(header_tuples))},
+                                            {"body", make_list_val(std::move(body_bytes))},
+                                        }));
+    return nullptr;
 }
 
 wasmtime_error_t* cb_resolve_secret(void* env, wasmtime_context_t* ctx,
