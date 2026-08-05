@@ -141,6 +141,23 @@ add_executable(test_json_value test_json_value.cpp)
 target_link_libraries(test_json_value PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_json_value COMMAND test_json_value)
 
+# ---- wasmtime C API smoke proof (M2 Phase D task D1, decision 5) -------------------------------
+# Only built when AGENTENGINE_WITH_WASM is explicitly turned ON (root CMakeLists.txt) -- proves the
+# vendored dependency itself links and runs a real WebAssembly module; no SandboxBackend exists yet
+# (see src/backends/wasm/README.md and this test file's own header).
+if(AGENTENGINE_WITH_WASM)
+  add_executable(test_wasmtime_smoke test_wasmtime_smoke.cpp)
+  target_link_libraries(test_wasmtime_smoke PRIVATE agentengine::wasmtime_vendor)
+  add_test(NAME test_wasmtime_smoke COMMAND test_wasmtime_smoke)
+  if(WIN32)
+    # Windows has no rpath; wasmtime.dll must be reachable via PATH at run time.
+    set_tests_properties(test_wasmtime_smoke PROPERTIES
+      ENVIRONMENT "PATH=${AGENTENGINE_WASMTIME_DLL_DIR};$ENV{PATH}")
+  endif()
+  # Linux links libwasmtime.a (static) -- see root CMakeLists.txt's AGENTENGINE_WITH_WASM block for
+  # why -- so no run-time library path wiring is needed there.
+endif()
+
 # ---- Tool JSON-Schema derivation (M2 Phase B task B1, 006 §1) ----------------------------------
 # Header-only (core/json_schema.hpp, core/tool.hpp); nlohmann_json is test-only here too (parses
 # the emitted schema string to assert real JSON structure, not substring-match it).

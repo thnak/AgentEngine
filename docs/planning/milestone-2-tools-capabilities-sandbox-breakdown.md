@@ -599,7 +599,51 @@ remains a spike, cited as such everywhere C2's writeups reference it.
 
 ### Phase D — WASM plugin host (009), once C exists to run it in
 
-- **D1.** Wasmtime 47.0.3 wired in as `AGENTENGINE_WITH_WASM`, Windows + Linux (decision 5). **M**
+- **D1.** (done) Wasmtime 47.0.3 wired in as `AGENTENGINE_WITH_WASM`, Windows + Linux (decision 5). **M**
+
+  Root `CMakeLists.txt`: `AGENTENGINE_WITH_WASM` (off by default, matching
+  `AGENTENGINE_BUILD_PYTHON_RUNNER`'s posture for the project's other tier-2 heavy dependency).
+  `AGENTENGINE_VENDOR_WASMTIME=ON` (the default) fetches wasmtime 47.0.3's official C API release
+  archives directly from `bytecodealliance/wasmtime`'s GitHub releases via `FetchContent` — both
+  archives' SHA256 verified by hand against a fresh download during this task (Windows:
+  `952dfbc8...bb77c5`, Linux: `aaa3621f...aefd732`; full hashes in `CMakeLists.txt`) before pinning,
+  not copied from anywhere unverified. Override: `-DAGENTENGINE_VENDOR_WASMTIME=OFF
+  -DAGENTENGINE_WASMTIME_ROOT=<path>` for a local install. New target `agentengine::wasmtime_vendor`
+  (an `IMPORTED` library wrapping the vendored include/lib) — the full-featured `lib/` build, not
+  `min/lib/`'s reduced Pulley-only build, confirmed via the release's own `include/wasmtime/conf.h`
+  to be the only variant with `WASMTIME_FEATURE_COMPONENT_MODEL`, which 009's plugin ABI needs.
+
+  Deliberately narrow scope, matching `src/backends/wasm/README.md`'s own "no real logic yet" note:
+  this task imports and proves the dependency, nothing under `src/backends/wasm/` was written — no
+  `SandboxBackend` implementation exists yet (that's D3, security-critical, goes through
+  design→red-team→prove→judge per CLAUDE.md before it's real code). New test:
+  `tests/test_wasmtime_smoke.cpp`, gated behind `AGENTENGINE_WITH_WASM`, linking directly against
+  `agentengine::wasmtime_vendor` — compiles a trivial WAT module at run time, instantiates it with
+  zero imports, calls its one export, and asserts the *actual returned value* (2 + 3 = 5), not just
+  that the binary linked and ran.
+
+  One real finding, Linux only: the released `libwasmtime.so` has no embedded `SONAME`. Per glibc
+  `ld.so`'s documented behavior, a `DT_NEEDED` entry containing a slash is treated as a literal
+  (CWD-relative, if not absolute) pathname and bypasses `RPATH`/`RUNPATH`/`LD_LIBRARY_PATH` search
+  entirely — measured directly: a first attempt (dynamic-linking both platforms, `BUILD_RPATH` on
+  Linux) produced a test binary whose `DT_NEEDED` was the literal build-relative path
+  `_deps/ae_vendored_wasmtime-src/lib/libwasmtime.so`, which only ran when launched from the exact
+  directory that path resolves against (an accident, not a fix) and failed under `ctest` (whose test
+  CWD is the test's own binary directory, not the top-level build directory) with "cannot open
+  shared object file". Fixed by linking Linux against the static archive (`libwasmtime.a`) instead
+  — self-contained, nothing to locate at run time — needing `pthread`/`dl`/`m` on the final link
+  (measured directly, Rust's usual static-lib convention), declared as the imported target's own
+  `INTERFACE_LINK_LIBRARIES` so no test file needs its own link-library wiring. Windows keeps
+  dynamic linking (`wasmtime.dll` + import lib, `PATH`-wired at test-run time via each test's
+  `ENVIRONMENT` property, same posture as `AGENTENGINE_PYTHON_DLL_DIR`) — its DLL link worked
+  correctly from the start, no equivalent problem measured there.
+
+  Verified: default build (`AGENTENGINE_WITH_WASM` left OFF) configures and builds unaffected — the
+  option genuinely gates the dependency out, not just skips using it. With the option ON: Windows
+  full `ctest -j4` run 2/2 clean, 28/28 passing (up from 27). Linux: fresh Docker container, full
+  build, `ctest` 24/24 (23 pass + 1 intentional skip, up from 22), including the smoke test verified
+  both directly from an unrelated working directory and via `ctest` itself (the exact scenario the
+  `SONAME` finding above broke before the static-link fix).
 - **D2.** `wit/ae-tool.wit` authored — the `ae:tool` world (009 §2), closing the "contract of record
   is currently empty" gap this survey found. **M**
 - **D3.** Minimal WASM component host: load, verify manifest-vs-imports (009 §4/§10 G2), instantiate

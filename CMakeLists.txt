@@ -107,6 +107,113 @@ if(NOT WIN32)
   add_library(agentengine::linux_native_jail_backend ALIAS agentengine_linux_native_jail_backend)
 endif()
 
+# ---- wasmtime C API import (src/backends/wasm/) -- Windows + Linux -----------------------------
+# Milestone 2 Phase D task D1 (docs/planning/milestone-2-tools-capabilities-sandbox-breakdown.md,
+# decision 5): wasmtime 47.0.3 as the `wasm` SandboxBackend's one CONVENTIONS.md tier-2 seam-backend
+# heavy dependency (009's plugin ABI). This block ONLY imports the dependency and proves it links
+# and runs (tests/test_wasmtime_smoke.cpp, gated the same way below) -- no SandboxBackend
+# implementation exists under src/backends/wasm/ yet (still README-only by design: that's D3,
+# security-critical, goes through design->red-team->prove->judge per CLAUDE.md before it is real
+# code, same posture as job_object_limits.hpp/cgroup_limits.hpp before ADR-004's build-and-measure
+# pass). Off by default, matching AGENTENGINE_BUILD_PYTHON_RUNNER's own posture for the other
+# tier-2 heavy dependency this project has.
+option(AGENTENGINE_WITH_WASM
+  "Import the wasmtime C API (009's plugin ABI dependency) -- no SandboxBackend implementation yet, see D3"
+  OFF)
+
+if(AGENTENGINE_WITH_WASM)
+  # Default (AGENTENGINE_VENDOR_WASMTIME=ON): a pinned, checksummed wasmtime C API release is
+  # fetched directly from the project's official GitHub releases (both archives' SHA256 verified by
+  # hand against a fresh download during this task, matching AGENTENGINE_VENDOR_PYTHON's own
+  # provenance posture above) -- never whatever wasmtime happens to be on the host, for the same
+  # reason the vendored-CPython comment above gives.
+  #
+  # Override: pass -DAGENTENGINE_VENDOR_WASMTIME=OFF and -DAGENTENGINE_WASMTIME_ROOT=<path to an
+  # already-extracted wasmtime C API release> to point at any other install instead.
+  option(AGENTENGINE_VENDOR_WASMTIME
+    "Fetch a pinned, checksummed wasmtime C API release instead of using a local install"
+    ON)
+
+  set(AE_VENDORED_WASMTIME_VERSION "47.0.3")  # OQ-7, decision 5
+
+  if(AGENTENGINE_VENDOR_WASMTIME)
+    include(FetchContent)
+    if(WIN32)
+      FetchContent_Declare(ae_vendored_wasmtime
+        URL "https://github.com/bytecodealliance/wasmtime/releases/download/v${AE_VENDORED_WASMTIME_VERSION}/wasmtime-v${AE_VENDORED_WASMTIME_VERSION}-x86_64-windows-c-api.zip"
+        URL_HASH SHA256=952dfbc864295eccc89caa92bc303686017ca4ea205a1f21878809f374bb77c5
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+      FetchContent_MakeAvailable(ae_vendored_wasmtime)
+      set(AGENTENGINE_WASMTIME_ROOT "${ae_vendored_wasmtime_SOURCE_DIR}" CACHE PATH
+        "Root of the vendored wasmtime C API install" FORCE)
+    elseif(UNIX)
+      FetchContent_Declare(ae_vendored_wasmtime
+        URL "https://github.com/bytecodealliance/wasmtime/releases/download/v${AE_VENDORED_WASMTIME_VERSION}/wasmtime-v${AE_VENDORED_WASMTIME_VERSION}-x86_64-linux-c-api.tar.xz"
+        URL_HASH SHA256=aaa3621f2a3d8393696702897f8f78a1cc504437d500701496d560125aefd732
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+      FetchContent_MakeAvailable(ae_vendored_wasmtime)
+      set(AGENTENGINE_WASMTIME_ROOT "${ae_vendored_wasmtime_SOURCE_DIR}" CACHE PATH
+        "Root of the vendored wasmtime C API install" FORCE)
+    else()
+      message(FATAL_ERROR
+        "AGENTENGINE_VENDOR_WASMTIME=ON has no fetch wired up on this platform (decision 5: Windows "
+        "+ Linux only, matching 021 SS2's target set). Pass -DAGENTENGINE_VENDOR_WASMTIME=OFF and "
+        "-DAGENTENGINE_WASMTIME_ROOT=<path to an extracted wasmtime C API release> instead.")
+    endif()
+  endif()
+
+  set(AGENTENGINE_WASMTIME_ROOT "${AGENTENGINE_WASMTIME_ROOT}" CACHE PATH
+    "Root of the wasmtime C API install (must contain include/wasm.h and lib/)")
+
+  if(NOT AGENTENGINE_WASMTIME_ROOT OR NOT EXISTS "${AGENTENGINE_WASMTIME_ROOT}/include/wasm.h")
+    message(FATAL_ERROR
+      "AGENTENGINE_WITH_WASM is ON but AGENTENGINE_WASMTIME_ROOT "
+      "('${AGENTENGINE_WASMTIME_ROOT}') does not contain include/wasm.h. Either leave "
+      "AGENTENGINE_VENDOR_WASMTIME=ON (the default) or pass -DAGENTENGINE_WASMTIME_ROOT=<path to an "
+      "extracted wasmtime C API release> with -DAGENTENGINE_VENDOR_WASMTIME=OFF.")
+  endif()
+
+  # The full-featured build under lib/ (not min/lib/'s reduced-feature Pulley-only build) --
+  # include/wasmtime/conf.h in the fetched release confirms WASMTIME_FEATURE_COMPONENT_MODEL is
+  # only compiled into this one, and 009's plugin ABI is Component-Model-shaped (CLAUDE.md's locked
+  # decision), so lib/ is the only variant this project can use.
+  #
+  # Windows links the DLL (+ import lib); Linux links the static archive instead of the .so --
+  # MEASURED FINDING (M2 Phase D task D1): the released libwasmtime.so has no embedded SONAME. Per
+  # glibc ld.so's documented behavior, a DT_NEEDED entry containing a slash is treated as a literal
+  # (relative-to-CWD, if not absolute) pathname and bypasses RPATH/RUNPATH/LD_LIBRARY_PATH search
+  # entirely -- confirmed directly: a test executable linked against the .so recorded DT_NEEDED as
+  # the literal build-relative path "_deps/ae_vendored_wasmtime-src/lib/libwasmtime.so", so it only
+  # ran when launched with that exact relative path resolvable from the current CWD (an accident of
+  # directory choice, not a fix), and failed under `ctest` (whose test CWD is the test's own binary
+  # directory, not the top-level build directory) with "cannot open shared object file". The static
+  # archive has no such problem -- it becomes part of the final binary, nothing to locate at run
+  # time. Needs `pthread`/`dl`/`m` on the final link (measured directly against this release, Rust's
+  # usual static-lib convention) -- declared as this imported target's own INTERFACE_LINK_LIBRARIES
+  # so `target_link_libraries(... agentengine::wasmtime_vendor)` alone is enough for a consumer.
+  if(WIN32)
+    add_library(agentengine_wasmtime_vendor SHARED IMPORTED GLOBAL)
+    target_include_directories(agentengine_wasmtime_vendor INTERFACE
+      "${AGENTENGINE_WASMTIME_ROOT}/include")
+    set_target_properties(agentengine_wasmtime_vendor PROPERTIES
+      IMPORTED_LOCATION "${AGENTENGINE_WASMTIME_ROOT}/lib/wasmtime.dll"
+      IMPORTED_IMPLIB "${AGENTENGINE_WASMTIME_ROOT}/lib/wasmtime.dll.lib")
+    # Windows has no rpath; wasmtime.dll must be reachable via PATH at test-run time, wired via
+    # each test's ENVIRONMENT property in tests/CMakeLists.txt (same posture as
+    # AGENTENGINE_PYTHON_DLL_DIR above).
+    set(AGENTENGINE_WASMTIME_DLL_DIR "${AGENTENGINE_WASMTIME_ROOT}/lib" CACHE PATH
+      "Directory containing wasmtime.dll, prepended to PATH for tests" FORCE)
+  else()
+    add_library(agentengine_wasmtime_vendor STATIC IMPORTED GLOBAL)
+    target_include_directories(agentengine_wasmtime_vendor INTERFACE
+      "${AGENTENGINE_WASMTIME_ROOT}/include")
+    set_target_properties(agentengine_wasmtime_vendor PROPERTIES
+      IMPORTED_LOCATION "${AGENTENGINE_WASMTIME_ROOT}/lib/libwasmtime.a"
+      INTERFACE_LINK_LIBRARIES "pthread;dl;m")
+  endif()
+  add_library(agentengine::wasmtime_vendor ALIAS agentengine_wasmtime_vendor)
+endif()
+
 # ---- Cross-process capability tokens (src/trust/) -- Windows only ------------------------------
 # Implements decisions/ADR-005-capability-bearer-tokens-cross-process.md (resolves OQ-3): both
 # competing designs it prove-phases -- Design A (trust/capability_token.hpp, a self-verifying
