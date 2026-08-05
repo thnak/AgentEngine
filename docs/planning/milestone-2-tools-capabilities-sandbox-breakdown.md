@@ -835,10 +835,35 @@ remains a spike, cited as such everywhere C2's writeups reference it.
 
 ### Phase E — Agent CRTP surface (002), now that there's something to author
 
-- **E1.** Remaining policy tags (`Concurrency`, `Retry`, `Memory`, `Middleware`, `Stateless`,
+- **E1.** (done) Remaining policy tags (`Concurrency`, `Retry`, `Memory`, `Middleware`, `Stateless`,
   `OutputSchema`) added as empty/near-empty stub types for API completeness, matching 002 §3's table
   — real behavior for most is out of scope until the milestone that owns it (documented per tag).
   **M**
+
+  Added to `include/agentengine/core/agent.hpp`, matching the file's existing tag-stub pattern
+  exactly (one `// ae-naming-lint: allow <Name> — ...` trailing comment per tag, a short prose comment
+  above naming which RFC section/milestone owns real behavior). `Concurrency<Mode>` uses a new
+  `concurrency_mode { sequential, parallel }` enum mirroring 001 §4's own prose (`Parallelizable`'s
+  established M2-deferred-effect pattern, not new behavior). `Retry<Policy>` and `OutputSchema<T>` take
+  an unconstrained type parameter — 004 §4/003 §4 haven't named a fixed policy/schema shape yet, so
+  inventing one here would be scope this task doesn't own. `Memory<Ms...>` matches `Tools<Ts...>`'s
+  variadic shape; documented (not enforced) as expected to hold `core::ContextProvider`-satisfying
+  types once 005's real logic lands (027 §3: `MemoryProvider` is superseded by `ContextProvider`).
+  `Middleware<Ms...>` needed no `ae-naming-lint` suppression — unlike its five siblings, it already has
+  a canonical-name row in `027-Vocabulary-and-Naming.md` §3. `Stateless<N>` mirrors `MaxTurns<N>`'s
+  shape (`N` = pool size); confirmed via 002 §9 Q3 that "off by default" means the tag's *absence*, not
+  a template default, since a default the metadata compiler (E2) inferred would silently apply
+  Stateless authority-adjacent semantics to an agent that never asked for it.
+
+  Extended `tests/smoke_vocabulary.cpp`'s existing `DemoAgent` (the file's own "prove every vocabulary
+  header compiles together" agent) to declare all six new tags at once, reusing the file's own
+  `DummyContextProvider` (already `static_assert`-checked against the real `ContextProvider` concept)
+  for `Memory<...>` and three new minimal dummy types for `Retry`/`Middleware`/`OutputSchema`'s
+  otherwise-unconstrained slots. `tools/naming_lint.py` re-run clean against the new names (8
+  pre-existing, unrelated findings in `tool_pipeline.hpp`/`capability.hpp` observed, not touched — out
+  of E1's scope). Verified on Windows native and a fresh Linux container (`gcc:14` + `cmake`/`ninja`);
+  full Windows suite green except the same pre-existing, unrelated
+  `test_native_jail_backend_windows` OOM-detection failure.
 - **E2.** `register_agent<A>()` — the real metadata compiler: builds the agent metadata table, runs
   002 §6's 8 named validation checks. Checks needing machinery this milestone doesn't build
   (credentials/004, handoff-cycle/014) are stubbed to always-pass with a tracked comment, not

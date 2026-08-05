@@ -17,10 +17,12 @@ missing entirely). `Agent` itself does nothing yet — no metadata compiler, no 
 
 ## Tasks
 
-- **E1.** Remaining policy tags (`Concurrency`, `Retry`, `Memory`, `Middleware`, `Stateless`,
+- **E1.** (done) Remaining policy tags (`Concurrency`, `Retry`, `Memory`, `Middleware`, `Stateless`,
   `OutputSchema`) added as empty/near-empty stub types for API completeness, matching 002 §3's
   table — real behavior for most is out of scope until the milestone that owns it (document per
-  tag which milestone that is). **Size: M**
+  tag which milestone that is). **Size: M** — see the breakdown doc's own E1 entry (Phase E
+  section) for the full writeup; `include/agentengine/core/agent.hpp` and
+  `tests/smoke_vocabulary.cpp`.
 - **E2.** `register_agent<A>()` — the real metadata compiler: builds the agent metadata table, runs
   002 §6's 8 named validation checks. Checks needing machinery this milestone doesn't build
   (credentials/004, handoff-cycle/014) are stubbed to always-pass with a tracked comment, not

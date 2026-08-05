@@ -79,7 +79,17 @@ static_assert(ae::ContextProvider<DummyContextProvider>,
 // ---- Agent CRTP authoring surface (core/agent.hpp) — matches 002 / README's example shape --------
 // Naming note (CLAUDE.md task brief): the policy tag is ChatClientId<"...">, never ChatClient<"...">.
 
-struct DemoAgent : ae::Agent<DemoAgent, ae::ChatClientId<"anthropic:claude-opus-5">, ae::MaxTurns<12>> {
+// M2 Phase E task E1's six new tags are empty/near-empty stubs -- their type-parameter slots take
+// arbitrary types with no constraint (that's real behavior for a later milestone), so these dummies
+// exist only to prove the slots accept a real, non-trivial type, not `void` or an incomplete type.
+struct DemoRetryPolicy {};    // stands in for 004 §4's eventual real retry-shape type
+struct DemoMiddleware {};     // stands in for §5's before_model/after_model hook type
+struct DemoOutputSchema {};   // stands in for 003 §4's eventual real schema type
+
+struct DemoAgent : ae::Agent<DemoAgent, ae::ChatClientId<"anthropic:claude-opus-5">, ae::MaxTurns<12>,
+                              ae::Concurrency<ae::concurrency_mode::sequential>, ae::Retry<DemoRetryPolicy>,
+                              ae::Memory<DummyContextProvider>, ae::Middleware<DemoMiddleware>,
+                              ae::Stateless<4>, ae::OutputSchema<DemoOutputSchema>> {
     static constexpr std::string_view name = "demo";
     static constexpr std::string_view instructions = "Smoke-test agent; never actually run.";
 };
