@@ -481,7 +481,57 @@ remains a spike, cited as such everywhere C2's writeups reference it.
   serial run and every other parallel run was clean). Linux 20→21 tests (added
   `test_native_jail_parity_linux`), **all passing including `test_real_filesystem_adapter` for the
   first time** — the only Linux gap tracked since C2 is now closed. **L**
-- **C5.** No-ambient-authority probe (008 §9 G3) specifically against `native-jail`. **M**
+- **C5.** No-ambient-authority probe (008 §9 G3) specifically against `native-jail`. **M** **(done)**
+
+  Three axes probed against both platforms (env, network, process enumeration); filesystem is NOT
+  retested here -- C3's fs-escape-attempt case already is that axis's G3 proof for Windows, and
+  Linux's fs containment is the already-tracked GitHub issue #5 gap, not duplicated. New probe modes
+  (`probe_env`/`probe_net <port>`/`probe_proc <pid>`) added to both `hostile_child`(`_posix`)
+  binaries; each axis follows C3's shape -- a contained probe, then a positive control proving the
+  containment is real (a canary env var / loopback listener / host PID that an ordinary unsandboxed
+  probe DOES see).
+
+  **Real bug found and fixed, not just measured:** `NativeJailBackend::exec()`
+  (`native_jail_backend.cpp`) called `CreateProcessW` with `lpEnvironment=nullptr`, which Win32
+  defines as "inherit the calling process's environment" -- the guest was getting the FULL host
+  process environment, including anything the launching process set for its own use (API keys,
+  tokens, ...). Fixed with an explicit, fixed, minimal `CREATE_UNICODE_ENVIRONMENT` block, mirroring
+  `LinuxNativeJailBackend`'s own fixed `envp[] = {"PATH=/usr/bin:/bin", nullptr}` (which already made
+  the Linux side of this axis correct, no fix needed there). Non-obvious wrinkle hit while building
+  the fix: a block containing only `SystemRoot`/`Path` made `CreateProcessW` itself fail with
+  `ERROR_ENVVAR_NOT_FOUND` (203) specifically when combined with
+  `PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES` (i.e. only under a real AppContainer launch) --
+  AppContainer process setup apparently resolves the per-package data folder under
+  `%LOCALAPPDATA%\Packages\...` from the caller-supplied block rather than deriving it from the
+  token. Fixed by including `LOCALAPPDATA`/`USERPROFILE` (host system-path facts, not secrets) in the
+  minimal block alongside `SystemRoot`/`Path`. Confirmed via a standalone repro
+  (`CreateProcessW` + `SECURITY_CAPABILITIES` isolated from the rest of the backend) before touching
+  the real code, and reproduced/fixed on the real backend after.
+
+  **Measured, both platforms:**
+  - **env** -- contained on both. A host secret canary env var is invisible to the guest on Windows
+    (after the fix above) and Linux (already true); an unsandboxed positive control DOES see it on
+    both, proving the canary/probe mechanism itself is real.
+  - **network** -- contained on both, for different real reasons. Windows: zero AppContainer
+    capabilities are granted (no `internetClient`), so Windows Firewall denies even a host loopback
+    listener the guest tries to reach. Linux: `CLONE_NEWNET`'s fresh network namespace has no
+    interface configured (not even loopback brought up), so there is no route at all. Unsandboxed
+    positive controls reach the same listener on both.
+  - **process enumeration** -- **contained on Windows, a real gap on Linux.** Originally assumed
+    Windows would leak (AppContainer's ACL model governs object access, not
+    `CreateToolhelp32Snapshot` enumeration) -- measured the opposite: a Windows guest enumerates only
+    a handful of its own processes (measured: 2-3) and a host canary process is genuinely invisible,
+    positive-controlled by an unsandboxed prober that DOES see it (measured: ~400+ processes visible,
+    canary found). Linux is the mirror image: the guest's `/proc` is never remounted inside its own
+    `CLONE_NEWPID` namespace, so it reads the HOST's procfs instance and DOES see the host canary --
+    the same root cause as the already-tracked fs-containment gap (`CLONE_NEWNS` alone populates
+    nothing), not a new one. GitHub issue #5 updated (title and scope) to cover both the fs-escape
+    gap it was filed for and this `/proc` finding -- one fix (populate the mount namespace via
+    `pivot_root`/`chroot`, remount `/proc` inside it) closes both.
+
+  Full regression check: Windows 27→28 tests (added `test_native_jail_ambient_authority_windows`),
+  Linux 21→22 tests (added `test_native_jail_ambient_authority_linux`), all passing on both
+  platforms (2 full `-j4` Windows runs clean, one fresh-container Linux run clean).
 - **C6.** Teardown-cycle proof (008 §9 G4) — scoped down from the RFC's full 10⁵ cycles to a
   machine-safe bounded count (CLAUDE.md's build/test resource caps apply), rationale documented, same
   pattern as M1 deferring 001's 10⁴-session gate. **M**

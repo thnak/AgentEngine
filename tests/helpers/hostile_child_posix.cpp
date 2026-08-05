@@ -13,15 +13,33 @@
 //                             a resource-limit kill, not a crash).
 //   flood                  -- write output continuously (never exits on its own) -- M2 Phase C
 //                             task C3's unbounded-output probe (008 SS2 item 2 / SS7).
+//   probe_env               -- dump every visible environment variable as "ENV name=value" lines,
+//                             then "ENV_DONE count=<n>". M2 Phase C task C5's env axis probe
+//                             (008 SS9 G3, no ambient authority).
+//   probe_net <port>        -- attempt a TCP connect to 127.0.0.1:<port> (a listener the launching
+//                             test owns); report "NET_OK" or "NET_DENIED err=<errno>". C5's
+//                             network axis probe.
+//   probe_proc <pid>        -- enumerate all PIDs visible under /proc; report
+//                             "PROC_VISIBLE total=<n> target=yes|no" for whether <pid> (a host-side
+//                             process the launching test owns) shows up. C5's process axis probe.
 
-#include <unistd.h>
+#include <dirent.h>
+#include <fcntl.h>
+#include <netinet/in.h>
+#include <sys/select.h>
+#include <sys/socket.h>
 #include <sys/wait.h>
+#include <unistd.h>
 
+#include <cctype>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
+
+extern char** environ;
 
 namespace {
 
@@ -91,11 +109,99 @@ int mode_flood() {
     return 0;
 }
 
+int mode_probe_env() {
+    int count = 0;
+    for (char** e = environ; e != nullptr && *e != nullptr; ++e) {
+        printf("ENV %s\n", *e);
+        count++;
+    }
+    printf("ENV_DONE count=%d\n", count);
+    fflush(stdout);
+    return 0;
+}
+
+int mode_probe_net(int port) {
+    int s = socket(AF_INET, SOCK_STREAM, 0);
+    if (s < 0) {
+        printf("NET_DENIED err=socket_create_%d\n", errno);
+        fflush(stdout);
+        return 0;
+    }
+    int flags = fcntl(s, F_GETFL, 0);
+    fcntl(s, F_SETFL, flags | O_NONBLOCK);
+
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(static_cast<uint16_t>(port));
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+
+    int rc = connect(s, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+    bool ok = false;
+    int last_errno = errno;
+    if (rc == 0) {
+        ok = true;
+    } else if (errno == EINPROGRESS) {
+        fd_set write_set;
+        FD_ZERO(&write_set);
+        FD_SET(s, &write_set);
+        timeval tv{2, 0};  // 2s bound -- CLAUDE.md Machine Safety, never an unbounded wait
+        int sel = select(s + 1, nullptr, &write_set, nullptr, &tv);
+        if (sel > 0) {
+            int err = 0;
+            socklen_t err_len = sizeof(err);
+            getsockopt(s, SOL_SOCKET, SO_ERROR, &err, &err_len);
+            ok = (err == 0);
+            last_errno = err;
+        } else {
+            last_errno = ETIMEDOUT;
+        }
+    }
+    if (ok) {
+        printf("NET_OK\n");
+    } else {
+        printf("NET_DENIED err=%d\n", last_errno);
+    }
+    fflush(stdout);
+    close(s);
+    return 0;
+}
+
+int mode_probe_proc(pid_t target_pid) {
+    DIR* d = opendir("/proc");
+    if (d == nullptr) {
+        printf("PROC_VISIBLE total=0 target=unknown err=%d\n", errno);
+        fflush(stdout);
+        return 0;
+    }
+    int total = 0;
+    bool found_target = false;
+    struct dirent* entry;
+    while ((entry = readdir(d)) != nullptr) {
+        char const* name = entry->d_name;
+        bool all_digits = name[0] != '\0';
+        for (char const* c = name; *c != '\0'; ++c) {
+            if (!std::isdigit(static_cast<unsigned char>(*c))) {
+                all_digits = false;
+                break;
+            }
+        }
+        if (!all_digits) continue;
+        total++;
+        if (static_cast<pid_t>(std::atoi(name)) == target_pid) found_target = true;
+    }
+    closedir(d);
+    printf("PROC_VISIBLE total=%d target=%s\n", total, found_target ? "yes" : "no");
+    fflush(stdout);
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        fprintf(stderr, "usage: hostile_child_posix <alloc|spin|sleep|spawn|fail|flood> ...\n");
+        fprintf(stderr,
+                "usage: hostile_child_posix <alloc|spin|sleep|spawn|fail|flood|probe_env|"
+                "probe_net|probe_proc> ...\n");
         return 2;
     }
     std::string mode = argv[1];
@@ -105,6 +211,10 @@ int main(int argc, char** argv) {
     if (mode == "spawn" && argc >= 4) return mode_spawn(std::atoi(argv[2]), argv[3]);
     if (mode == "fail" && argc >= 3) return mode_fail(std::atoi(argv[2]));
     if (mode == "flood") return mode_flood();
+    if (mode == "probe_env") return mode_probe_env();
+    if (mode == "probe_net" && argc >= 3) return mode_probe_net(std::atoi(argv[2]));
+    if (mode == "probe_proc" && argc >= 3)
+        return mode_probe_proc(static_cast<pid_t>(std::atoi(argv[2])));
     fprintf(stderr, "unrecognized mode/args\n");
     return 2;
 }

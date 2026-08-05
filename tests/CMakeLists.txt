@@ -238,7 +238,9 @@ set_tests_properties(test_shell_runner_no_process_creation PROPERTIES SKIP_RETUR
 if(WIN32)
   # Deliberately hostile test-only helper process (tests/helpers/hostile_child.cpp) the Job Object
   # tests launch and try to contain -- never a product target, never linked into anything else.
+  # ws2_32: C5's probe_net mode uses raw Winsock.
   add_executable(job_object_hostile_child helpers/hostile_child.cpp)
+  target_link_libraries(job_object_hostile_child PRIVATE ws2_32)
 
   add_executable(test_job_object_limits test_job_object_limits.cpp)
   target_link_libraries(test_job_object_limits PRIVATE
@@ -286,6 +288,16 @@ if(WIN32)
   add_dependencies(test_native_jail_parity_windows job_object_hostile_child)
   add_test(NAME test_native_jail_parity_windows COMMAND test_native_jail_parity_windows)
   set_tests_properties(test_native_jail_parity_windows PROPERTIES TIMEOUT 60)
+
+  # ---- 008 §9 G3 no-ambient-authority probe (M2 Phase C task C5) ---------------------------------
+  add_executable(test_native_jail_ambient_authority_windows test_native_jail_ambient_authority_windows.cpp)
+  target_link_libraries(test_native_jail_ambient_authority_windows PRIVATE
+    agentengine::core agentengine::native_jail_backend agentengine_warnings ws2_32)
+  target_compile_definitions(test_native_jail_ambient_authority_windows PRIVATE
+    AE_HOSTILE_CHILD_EXE="$<TARGET_FILE:job_object_hostile_child>")
+  add_dependencies(test_native_jail_ambient_authority_windows job_object_hostile_child)
+  add_test(NAME test_native_jail_ambient_authority_windows COMMAND test_native_jail_ambient_authority_windows)
+  set_tests_properties(test_native_jail_ambient_authority_windows PROPERTIES TIMEOUT 60)
 endif()
 
 # ---- LinuxNativeJailBackend end-to-end (M2 Phase C task C2's Linux follow-up, 008 §1b/§2/§3) ---
@@ -339,6 +351,19 @@ if(NOT WIN32)
     # The oom case alone budgets wall_ms=25000 -- same rationale as the abuse-corpus test above;
     # 90s leaves headroom for the other four cases plus real process/cgroup overhead.
     set_tests_properties(test_native_jail_parity_linux PROPERTIES TIMEOUT 90)
+
+    # ---- 008 §9 G3 no-ambient-authority probe (M2 Phase C task C5, Linux half) -------------------
+    # fs axis is deliberately NOT included here -- see the test file's own header for why (same
+    # tracked gap as C3's Linux fs-escape omission, GitHub issue #5).
+    add_executable(test_native_jail_ambient_authority_linux test_native_jail_ambient_authority_linux.cpp)
+    target_link_libraries(test_native_jail_ambient_authority_linux PRIVATE
+      agentengine::core agentengine::linux_native_jail_backend agentengine_warnings)
+    target_compile_definitions(test_native_jail_ambient_authority_linux PRIVATE
+      AE_HOSTILE_CHILD_POSIX_EXE="$<TARGET_FILE:hostile_child_posix>")
+    add_dependencies(test_native_jail_ambient_authority_linux hostile_child_posix)
+    add_test(NAME test_native_jail_ambient_authority_linux
+      COMMAND bash -c "source ${CMAKE_CURRENT_SOURCE_DIR}/helpers/cgroup_v2_test_setup.sh && $<TARGET_FILE:test_native_jail_ambient_authority_linux>")
+    set_tests_properties(test_native_jail_ambient_authority_linux PROPERTIES TIMEOUT 60)
   endif()
 endif()
 

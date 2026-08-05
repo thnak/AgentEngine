@@ -46,6 +46,53 @@ struct HandleGuard {
     }
 };
 
+// 008 SS9 G3 ("no ambient authority"): a guest must see exactly what it was granted, nothing more.
+// SandboxSpec has no explicit env field yet, so lpEnvironment=nullptr (Win32's "inherit the calling
+// process's environment") would hand the guest the FULL host environment -- including anything the
+// launching process set for its own use (API keys, tokens, ...), a real ambient-authority leak
+// caught by M2 Phase C task C5's probe. LinuxNativeJailBackend already avoids the POSIX equivalent
+// with a fixed `envp[] = {"PATH=/usr/bin:/bin", nullptr}`; this is that same fixed-minimal-block
+// idea on Windows -- just enough for the OS loader/CRT and, empirically, AppContainer process
+// creation itself to function, never whatever the launching process happened to have set.
+//
+// MEASURED FINDING (M2 Phase C task C5): a block containing only SystemRoot/Path is not enough --
+// CreateProcessW(..., CREATE_UNICODE_ENVIRONMENT, ...) together with
+// PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES (i.e. specifically an AppContainer launch) fails
+// with ERROR_ENVVAR_NOT_FOUND (203) unless LOCALAPPDATA is present -- AppContainer's own process
+// setup resolves the per-package data folder under %LOCALAPPDATA%\Packages\... and apparently reads
+// it from the caller-supplied block rather than deriving it from the token. USERPROFILE is included
+// alongside it for the same reason (LOCALAPPDATA is ordinarily derived from it). Neither is a
+// secret -- both are ordinary system path facts about the host machine, not anything the launching
+// process set for its own use -- so including them does not reopen the leak this function exists
+// to close.
+std::wstring build_minimal_environment_block() {
+    wchar_t system_root_buf[MAX_PATH]{};
+    DWORD len = GetEnvironmentVariableW(L"SystemRoot", system_root_buf, MAX_PATH);
+    std::wstring root =
+        (len > 0 && len < MAX_PATH) ? std::wstring(system_root_buf, len) : std::wstring(L"C:\\Windows");
+
+    wchar_t local_app_data_buf[MAX_PATH]{};
+    DWORD lad_len = GetEnvironmentVariableW(L"LOCALAPPDATA", local_app_data_buf, MAX_PATH);
+    wchar_t user_profile_buf[MAX_PATH]{};
+    DWORD up_len = GetEnvironmentVariableW(L"USERPROFILE", user_profile_buf, MAX_PATH);
+
+    std::wstring block;
+    block += L"SystemRoot=" + root;
+    block.push_back(L'\0');
+    block += L"Path=" + root + L"\\System32;" + root;
+    block.push_back(L'\0');
+    if (lad_len > 0 && lad_len < MAX_PATH) {
+        block += L"LOCALAPPDATA=" + std::wstring(local_app_data_buf, lad_len);
+        block.push_back(L'\0');
+    }
+    if (up_len > 0 && up_len < MAX_PATH) {
+        block += L"USERPROFILE=" + std::wstring(user_profile_buf, up_len);
+        block.push_back(L'\0');
+    }
+    block.push_back(L'\0');  // double-null terminator required by CREATE_UNICODE_ENVIRONMENT
+    return block;
+}
+
 // One AppContainer profile for the whole process (ADR-004 §3: reused across sessions, the SID is
 // stable identity). Magic-static init is thread-safe and runs exactly once; the fallible part
 // (CreateAppContainerProfile/DeriveAppContainerSidFromAppContainerName) is captured into
@@ -212,13 +259,16 @@ result<ExecOutcome> NativeJailBackend::exec(SandboxHandle& handle, ExecRequest c
     si.lpAttributeList = attr_list;
 
     PROCESS_INFORMATION pi{};
+    // Fixed minimal block, never nullptr -- see build_minimal_environment_block()'s own comment
+    // (008 SS9 G3, C5): nullptr would inherit this HOST process's full environment.
+    std::wstring env_block = build_minimal_environment_block();
     // CREATE_SUSPENDED: assign to the Job Object before the entry point runs (job_object_limits.hpp's
     // own documented usage), so every ResourceLimits axis applies from the guest's very first
     // instruction, not after some head start.
     BOOL created = CreateProcessW(
         nullptr, mutable_cmdline.data(), nullptr, nullptr, /*bInheritHandles=*/TRUE,
-        EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED, nullptr,
-        inst.cwd.empty() ? nullptr : inst.cwd.c_str(),
+        EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
+        env_block.data(), inst.cwd.empty() ? nullptr : inst.cwd.c_str(),
         reinterpret_cast<LPSTARTUPINFOW>(&si), &pi);
     // Our copies of the write ends must close regardless of outcome -- the child's own inherited
     // duplicates are what keep the pipes alive for it to write into; ours would otherwise wedge
