@@ -124,14 +124,44 @@ int main() {
     expect_error_code(adapter.validate_and_resolve("/greeting.txt:hidden"), "shell.fs.escape_ads",
                        "ADS marker");
 
-    // ---- case-fold consistency: the same logical file, different case, is the SAME file --------
+    // ---- case-fold consistency (ADR-001 §2.5.5 finding 9) ---------------------------------------
+    // The requirement is that the capability-scope/escape-boundary check and the actual I/O call
+    // agree on case-folding -- computed once, on the SAME representation (real_filesystem_adapter.cpp's
+    // is_within_root/generic_lower, used only for the containment check). It is NOT a claim that
+    // the underlying OS/filesystem itself is case-insensitive -- that is an NTFS default, not a
+    // portable guarantee; ext4 (Linux's default) is case-sensitive. What must hold on every
+    // platform is that this adapter never invents its own case-folding for the actual file lookup,
+    // silently diverging from whatever the real OS does. Previously asserted the Windows-only
+    // behavior unconditionally, which is why this failed on Linux (the adapter was correct; the
+    // test's expectation was not portable) -- 021 §2, Windows now / Linux next.
     {
         auto lower = adapter.validate_and_resolve("/Greeting.TXT");
-        assert(lower.has_value() && "differently-cased in-bounds path must still resolve");
+        assert(lower.has_value() &&
+               "differently-cased in-bounds path must still resolve (the escape-boundary check "
+               "itself is always case-fold-consistent, independent of the host OS's file-lookup "
+               "case sensitivity)");
         auto exists_diff_case = adapter.exists("/GREETING.txt");
-        assert(exists_diff_case.has_value() && *exists_diff_case &&
-               "case-insensitive filesystem: differently-cased path must see the same file");
-        std::cout << "  ok: case-fold-consistent comparison\n";
+        assert(exists_diff_case.has_value());
+#if defined(_WIN32)
+        // NTFS (this project's Windows-first target): OS file lookup is case-insensitive by
+        // default, so a differently-cased path IS the same file.
+        assert(*exists_diff_case &&
+               "Windows/NTFS: case-insensitive OS file lookup means a differently-cased path sees "
+               "the same file");
+        std::cout << "  ok: case-fold-consistent comparison (Windows/NTFS case-insensitive lookup)\n";
+#else
+        // ext4 (Linux's default, 021 §2's next target): OS file lookup is case-SENSITIVE -- a
+        // differently-cased path is a genuinely different (here, nonexistent) file. Asserting
+        // otherwise would mean the adapter silently overrides real OS semantics with its own
+        // invented case-folding -- exactly the divergence finding 9 warns against; the fix for
+        // finding 9 was internal consistency between the boundary check and the actual I/O call,
+        // never a claim that Linux behaves like Windows here.
+        assert(!*exists_diff_case &&
+               "Linux/ext4: case-sensitive OS file lookup means a differently-cased path is a "
+               "different file -- the adapter must not silently override real OS semantics");
+        std::cout << "  ok: case-fold-consistent comparison (Linux/ext4 case-sensitive lookup, "
+                     "adapter does not override real OS semantics)\n";
+#endif
     }
 
     // ---- best-effort: a real junction escaping the root is rejected ----------------------------

@@ -276,6 +276,16 @@ if(WIN32)
   # Five abuse cases, each with a contained run and at least one positive control -- more real
   # child processes than C2's own test, same Machine Safety discipline.
   set_tests_properties(test_native_jail_abuse_corpus_windows PROPERTIES TIMEOUT 120)
+
+  # ---- 008 §9 G1 cross-platform outcome-classification parity (M2 Phase C task C4) ---------------
+  add_executable(test_native_jail_parity_windows test_native_jail_parity_windows.cpp)
+  target_link_libraries(test_native_jail_parity_windows PRIVATE
+    agentengine::core agentengine::native_jail_backend agentengine_warnings)
+  target_compile_definitions(test_native_jail_parity_windows PRIVATE
+    AE_HOSTILE_CHILD_EXE="$<TARGET_FILE:job_object_hostile_child>")
+  add_dependencies(test_native_jail_parity_windows job_object_hostile_child)
+  add_test(NAME test_native_jail_parity_windows COMMAND test_native_jail_parity_windows)
+  set_tests_properties(test_native_jail_parity_windows PROPERTIES TIMEOUT 60)
 endif()
 
 # ---- LinuxNativeJailBackend end-to-end (M2 Phase C task C2's Linux follow-up, 008 §1b/§2/§3) ---
@@ -316,6 +326,19 @@ if(NOT WIN32)
     # The OOM case alone budgets wall_ms=25000 (C2-Linux's own measured worst case) -- 150s total
     # leaves headroom for the other four cases' shorter budgets plus real process/cgroup overhead.
     set_tests_properties(test_native_jail_abuse_corpus_linux PROPERTIES TIMEOUT 150)
+
+    # ---- 008 §9 G1 cross-platform outcome-classification parity (M2 Phase C task C4, Linux half) --
+    add_executable(test_native_jail_parity_linux test_native_jail_parity_linux.cpp)
+    target_link_libraries(test_native_jail_parity_linux PRIVATE
+      agentengine::core agentengine::linux_native_jail_backend agentengine_warnings)
+    target_compile_definitions(test_native_jail_parity_linux PRIVATE
+      AE_HOSTILE_CHILD_POSIX_EXE="$<TARGET_FILE:hostile_child_posix>")
+    add_dependencies(test_native_jail_parity_linux hostile_child_posix)
+    add_test(NAME test_native_jail_parity_linux
+      COMMAND bash -c "source ${CMAKE_CURRENT_SOURCE_DIR}/helpers/cgroup_v2_test_setup.sh && $<TARGET_FILE:test_native_jail_parity_linux>")
+    # The oom case alone budgets wall_ms=25000 -- same rationale as the abuse-corpus test above;
+    # 90s leaves headroom for the other four cases plus real process/cgroup overhead.
+    set_tests_properties(test_native_jail_parity_linux PROPERTIES TIMEOUT 90)
   endif()
 endif()
 

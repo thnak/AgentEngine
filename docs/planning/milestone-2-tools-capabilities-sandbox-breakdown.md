@@ -432,9 +432,55 @@ remains a spike, cited as such everywhere C2's writeups reference it.
   Full regression check after all of the above: Windows 24/24 (was 23/23 before C3 added its own
   test); Linux 19/20 (still only the pre-existing, already-tracked `test_real_filesystem_adapter`
   case-fold gap — C3 added a 20th test and it passed clean).
-- **C4.** Cross-platform parity proof (008 §9 G1) — the same probe corpus on Windows and Linux
-  (Docker, the established M0/M1 verification pattern), same outcome classification. Named directly
-  in the roadmap's exit criterion, not optional. **L**
+- **C4 (done).** Cross-platform parity proof (008 §9 G1) — the same probe corpus on Windows and
+  Linux (Docker, the established M0/M1 verification pattern), same outcome classification. Named
+  directly in the roadmap's exit criterion, not optional.
+
+  G1's own text is specific: "**one** hostile test corpus runs against every available backend on
+  every platform... and produces the same outcome classification for every case." Made that a
+  structural fact, not an assertion that happens to hold because two independently-written test
+  files were kept in sync by hand: `tests/helpers/abuse_case_corpus.hpp` is ONE array (case name,
+  probe args, `ResourceLimits`, expected `exec_outcome_class`) included verbatim by both
+  `tests/test_native_jail_parity_windows.cpp` and `tests/test_native_jail_parity_linux.cpp`, each
+  compiled against its own platform's `SandboxBackend`. Five cases — well-behaved, ordinary
+  failure, infinite loop, OOM, unbounded output — chosen because they're exactly the ones that
+  reduce to a single `exec_outcome_class` comparison; C3's fork-bomb (a succeeded-count, not a
+  classification) and fs-escape (an ESCAPE_OK/DENIED string, Windows-only per the tracked Linux gap)
+  stay in C3's own corpus, where "semantics identical, strength documented" (G1's own qualifier) is
+  the more honest frame for two backends that contain the same abuse through different mechanisms.
+  Result, both platforms, all five cases: `well_behaved→ok`, `ordinary_failure→crash`,
+  `infinite_loop→timeout`, `oom→oom`, `unbounded_output→timeout` — identical classification, zero
+  mismatches. `wall_ms` is deliberately NOT part of the shared table (ADR-004 §10.5 and C2/C3's own
+  measurements already established this axis has large, real, platform-specific latency — Windows
+  Job Object memory limit ~14-22ms vs. Linux cgroups v2 OOM-kill ~2-8s for the identical workload);
+  each platform's consuming test supplies its own `wall_ms`, with Linux's OOM case getting the same
+  25s budget C2-Linux's own measurements required. Baking one number into the "shared" part would
+  either be needlessly tight for Windows or flaky on Linux — the actual G1 claim (same probe, same
+  classification) doesn't need it to be shared.
+
+  **The long-tracked `test_real_filesystem_adapter` case-fold gap, closed.** Root cause: the test's
+  own assertion, not the adapter. ADR-001 §2.5.5 finding 9 requires "the capability-scope comparison
+  and the actual I/O call must operate on the same canonicalized, case-folded representation" —
+  internal consistency between `RealFileSystemAdapter`'s escape-boundary check and its own real I/O
+  call, which `real_filesystem_adapter.cpp`'s `is_within_root`/`generic_lower` already provide
+  correctly on both platforms. The test instead asserted that the *OS's file lookup itself* is
+  case-insensitive — true on Windows/NTFS (this project's own near-term target), false on Linux's
+  default ext4, which is case-sensitive. Fixed by making the assertion platform-conditional: Windows
+  still expects a differently-cased path to resolve to the same file (real NTFS behavior); Linux now
+  expects the opposite (a differently-cased path is a genuinely different, nonexistent file) — proving
+  the adapter doesn't invent its own case-folding for actual file lookups and silently diverge from
+  whatever the real OS does, which is the divergence finding 9 actually warns against. `decisions/
+  ADR-001-shellrunner-grammar-and-dispatch.md`'s own recorded prove-phase transcript (§8.9) is Windows-
+  only historical evidence and was left untouched — this is a live-test fix, not a retroactive edit
+  to a frozen record.
+
+  Full regression check: Windows 24→27 tests (added `test_native_jail_parity_windows`; one flaky
+  `-j4` failure across the three concurrent native-jail test binaries, not reproduced in 5
+  subsequent `-j4` runs — consistent with real but rare resource contention among multiple
+  concurrent AppContainer/Job Object test processes under parallel load, not a regression; every
+  serial run and every other parallel run was clean). Linux 20→21 tests (added
+  `test_native_jail_parity_linux`), **all passing including `test_real_filesystem_adapter` for the
+  first time** — the only Linux gap tracked since C2 is now closed. **L**
 - **C5.** No-ambient-authority probe (008 §9 G3) specifically against `native-jail`. **M**
 - **C6.** Teardown-cycle proof (008 §9 G4) — scoped down from the RFC's full 10⁵ cycles to a
   machine-safe bounded count (CLAUDE.md's build/test resource caps apply), rationale documented, same
