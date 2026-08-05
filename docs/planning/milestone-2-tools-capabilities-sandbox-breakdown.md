@@ -786,7 +786,52 @@ remains a spike, cited as such everywhere C2's writeups reference it.
   reusing D3's existing mechanism and fixture. Container and its bind-mounted `build_d4_linux/`
   build directory were removed after verification (same leak-then-clean pattern as D3's
   `build_linux/`).
-- **D5.** Manifest-capability-mismatch negative proof (miniature G2). **S**
+- **D5.** (done) Manifest-capability-mismatch negative proof (miniature G2). **S**
+
+  Closed the two gaps ADR-010 (D3) explicitly left open (§9's residual risks, §8's claim 4): claim 2
+  (009 §10 G2) was only proven for the manifest-side rejection branch
+  (`wasm.manifest_capability_not_requested`); the operator-side branch
+  (`wasm.operator_grant_missing` — manifest requests an interface the operator's own `CapabilitySet`
+  never granted) was untested. Claim 4 (wrong-kind capability rejection) was proven for
+  `now-unix-millis` only; the other four gated callbacks (`fs-read`/`fs-write`/`http-request`/
+  `resolve-secret`) share the identical `recover_capability<CapT>` guard but had never been exercised
+  individually.
+
+  Extended `tests/fixtures/wasm_ae_tool_fixture/src/lib.rs` with four tools --
+  `read-file`/`write-file`/`fetch`/`get-secret`, each calling `fs-read`/`fs-write`/`http-request`/
+  `resolve-secret` respectively with `capabilities.first()` -- so the real fixture's compiled import
+  set grew to `ae:tool/{capability,fs,http,secrets,clock,types}@1.0.0` (confirmed via
+  `wasm-tools component wit`, still no `base`/`random`). No production code changed: `WasmBackend`
+  already implemented every one of these code paths (D3's own scope explicitly covered fs/http/
+  secrets' capability-kind checks, just left them unexercised by a real component).
+
+  A real test-design mistake surfaced while proving the operator-side G2 branch, caught by running
+  the test rather than by inspection: the first attempt omitted only `FsRead` from the operator's
+  grant while still granting `FsWrite`, expecting `wasm.operator_grant_missing` -- but
+  `interface_covered()` (ADR-010 §3.3) checks at *interface* granularity (`fs-read` and `fs-write`
+  share `ae:tool/fs`), so the sibling `FsWrite` grant alone satisfied the whole `fs` import and the
+  probe passed `load_component()` instead of failing it. Fixed by omitting `Clock` instead, which has
+  no sibling capability kind within its interface class and so unambiguously exercises the
+  operator-side rejection.
+
+  `tests/test_wasm_backend.cpp` grew from 4 to 6 top-level cases: the new operator-grant-missing
+  negative case (§3 above), and a new gated-callback section running 8 probes (right-kind and
+  wrong-kind, for each of the four remaining callbacks) via a small shared `probe_gated_callback()`
+  helper -- warranted here (not a premature abstraction) because the 8 blocks are genuinely
+  near-identical and the correctness of each one's capability *ordering* is exactly what's under
+  test, where duplicated setup risks a silent, hard-to-notice inconsistency. Every existing case's
+  capability grants were widened to cover the fixture's larger real import set (the same
+  component-wide-imports imprecision D3 already documented, now touching four more tests, not a new
+  finding). `positive: list_tools()` updated from asserting 3 tools to 7.
+
+  Verified on both platforms via the same fresh-container methodology as D3/D4: Windows native
+  (`ctest -j4`, full suite -- only the same pre-existing, unrelated
+  `test_native_jail_backend_windows` OOM-detection failure observed, unchanged) and a from-scratch
+  Linux container (`gcc:14` + `cmake`/`ninja` only, no Rust -- reusing the already-built `.wasm` via
+  the bind mount exactly as D4 established, since D5 needed no new fixture rebuild capability, only a
+  re-verification of the existing mechanism against a larger real component). `ALL PASS` on both.
+  ADR-010 §8's verdict table and §9's residual risks updated in place (not reopened as a new ADR --
+  no new design decision, purely closing gaps the ADR itself had already named and scoped to D5).
 
 ### Phase E — Agent CRTP surface (002), now that there's something to author
 

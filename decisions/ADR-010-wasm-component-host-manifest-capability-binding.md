@@ -480,9 +480,9 @@ exists to catch.
 | Claim (§4) | Verdict |
 |---|---|
 | 1. Unknown-interface import → `load_component()` fails, never instantiates | **Proven** (§7.3 negative case's own mechanism; §3.3's unknown-interface branch is the same code path — not separately exercised by name since the real fixture never imports an unrecognized interface, but the branch is identical to the exercised "recognized-but-ungranted" one) |
-| 2. Recognized-but-ungranted interface → `load_component()` fails closed with a named diagnosis | **Proven** (§7.3 negative case, exact error code checked) |
+| 2. Recognized-but-ungranted interface → `load_component()` fails closed with a named diagnosis | **Proven** (§7.3 negative case, exact error code checked) for the manifest-side branch (`wasm.manifest_capability_not_requested`). The operator-side branch (`wasm.operator_grant_missing` — manifest requests an interface the operator's own `CapabilitySet` does not grant) was untested by this ADR; **closed 2026-08-05 by M2 task D5** (`docs/planning/milestone-2-tools-capabilities-sandbox-breakdown.md`), which also caught a real test-design mistake while proving it: omitting only one of `fs`'s two sibling capabilities (`FsRead` without `FsWrite`) does not trigger this branch, because `interface_covered()` (§3.3) checks at interface granularity, not per-function — the probe has to omit a capability with no covered sibling (`Clock`) to actually exercise operator-side rejection. |
 | 3. Fully-covered component instantiates and computes a real result | **Proven** (§7.2/§7.3 positive case, `echo` and `now` both) |
-| 4. Wrong-kind capability handle rejected per callback | **Proven for `now-unix-millis`** (§7.3's Entropy/Clock-ordering case) via the real fixture; the other four gated callbacks (`fs-read`/`fs-write`/`http-request`/`resolve-secret`) share the identical `recover_capability<CapT>` guard (§3.2) but are not individually exercised by a fixture tool that calls them under a kind-confused handle — D5's fuller suite is the natural place to extend this per function, not a gap silently left uncovered by this ADR's own claim |
+| 4. Wrong-kind capability handle rejected per callback | **Proven for `now-unix-millis`** (§7.3's Entropy/Clock-ordering case) via the real fixture. **Closed for the remaining four 2026-08-05 by M2 task D5**, which extended the fixture with `read-file`/`write-file`/`fetch`/`get-secret` tools (each calling `fs-read`/`fs-write`/`http-request`/`resolve-secret` respectively) and, for each, one probe with the matching capability first (right kind — reaches the callback's own "not implemented in M2's minimal host" stub, proving the kind check passed) and one with a mismatched capability first (wrong kind — rejected with "capability handle is the wrong kind for this function" before reaching the stub) — all five gated callbacks now individually exercised, not just designed identically. |
 | 5. `wall_ms` is a real, measured kill | **Proven** (§7.3 `spin` case, real measured interrupt) |
 
 ## 9. The decision
@@ -506,7 +506,7 @@ real compiled component. This binds:
   clean, WASI-free import list, which is exactly D4's own precondition.
 - D5 (the full G2 negative-proof suite) extends §7.3's negative case rather than inventing a second
   mechanism to test against, and is the natural place to close claim 4's remaining four-callback gap
-  (§8).
+  (§8). **Done, 2026-08-05** — see the updated §8 verdicts for claims 2 and 4.
 
 **Residual risks carried forward, not resolved here:** F2's ergonomic cost (a plugin SDK/README must
 actively steer authors toward a freestanding target — not yet written); F6's manifest-provenance gap
@@ -514,6 +514,8 @@ actively steer authors toward a freestanding target — not yet written); F6's m
 snapshot-reset problem remains fully deferred (this design's per-call fresh-instantiate choice avoids
 needing it in M2, not a solution to it); no bounded-cycle teardown census (C6-style) was run for the
 `wasm` profile — 008 G4 is already deferred project-wide, and this ADR does not add a `wasm`-specific
-proof of it; claim 4 is proven for one of five gated callbacks, not all five individually (§8).
+proof of it. ~~claim 4 is proven for one of five gated callbacks, not all five individually (§8).~~
+**Closed 2026-08-05 by M2 task D5** — see §8.
 `test_native_jail_backend_windows`'s pre-existing, unrelated "exceeding memory_bytes reports oom"
-failure (§7.4) is flagged, not fixed — outside this ADR's design→red-team→prove→judge lineage.
+failure (§7.4) is flagged, not fixed — outside this ADR's design→red-team→prove→judge lineage. (Still
+observed, unchanged, during D4 and D5's own re-verification runs.)
