@@ -48,7 +48,18 @@ struct SharedEngine {
     std::jthread   ticker;
 
     SharedEngine() : engine(make_engine()), ticker(make_ticker(engine)) {}
-    ~SharedEngine() { wasm_engine_delete(engine); }
+    // A destructor's own body always runs before its members are implicitly destroyed, regardless
+    // of declaration order -- so without this explicit stop+join, `ticker` (still running,
+    // sleeping up to kEpochTickMs at a time) was only guaranteed to stop *after* `engine` was
+    // already deleted below, leaving a real use-after-free race window if the ticker thread woke
+    // and called wasmtime_engine_increment_epoch(eng) on the freed engine before jthread's own
+    // (implicit, later) destructor could request-stop and join it. Reproduced as an intermittent
+    // (~30%) Linux-only segfault at process exit -- see docs/issues/m2-phase-d-wasm-plugin-host.md.
+    ~SharedEngine() {
+        ticker.request_stop();
+        if (ticker.joinable()) ticker.join();
+        wasm_engine_delete(engine);
+    }
     SharedEngine(SharedEngine const&) = delete;
     SharedEngine& operator=(SharedEngine const&) = delete;
 

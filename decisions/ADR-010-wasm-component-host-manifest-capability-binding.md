@@ -466,14 +466,35 @@ a first-of-its-kind host implementation, not the honest default:
    call, not a missing one. Fixed by removing the separate loop entirely; `host_handles` (the
    pre-conversion objects, a genuinely distinct allocation) are the only thing this function still
    frees explicitly.
+9. **Found 2026-08-05 during M2 Phase E verification (a different task, not this ADR's own prove
+   phase), fixed the same day:** `SharedEngine` (the process-wide `wasm_engine_t*` + epoch-ticker
+   `std::jthread`, §3.4, held in a function-local `static` so destroyed at process-exit time) had its
+   destructor's *body* — `wasm_engine_delete(engine)` — run before `ticker`'s *implicit* member
+   destruction, which is what actually requests-stop and joins the thread. (A destructor body always
+   runs before its members are destroyed, regardless of declaration order — reordering the two data
+   members would not have fixed this.) That left a real race window at process exit: if the still-
+   running ticker thread woke from its 10ms `sleep_for` between "engine deleted" and "thread joined,"
+   it called `wasmtime_engine_increment_epoch` on an already-freed engine — a genuine use-after-free,
+   reproducing as an intermittent (~30%) Linux-only segfault, 0/20 on Windows (different wasmtime
+   linkage per D1 — DLL vs. static archive — plausibly why the race window's odds differ by platform).
+   Every captured Linux failure showed every test assertion already passed, consistent with a
+   teardown-only bug outside any test's own control flow. Fixed by having `~SharedEngine()` explicitly
+   `ticker.request_stop()` and `ticker.join()` *before* `wasm_engine_delete(engine)`, removing the
+   ordering gap entirely rather than narrowing the race window. Verified: 40/40 standalone
+   `test_wasm_backend` runs clean on a fresh Linux container (previously ~30% failure) plus full
+   `ctest -j4` (21/21 pass); Windows unchanged at 20/20 standalone plus full `ctest -j4` (29/30 pass,
+   the one failure being the pre-existing unrelated `test_native_jail_backend_windows` OOM flake).
+   Full writeup: `docs/issues/m2-phase-d-wasm-plugin-host.md`'s "Known issue... FIXED" section.
 
 None of these are corrections to §3's *design* — the capability-handle-as-resource mechanism, the
 per-interface import split, the fail-closed check sequencing, and the no-pooling per-call
 instantiation all held exactly as designed. Every finding above is either an API-contract detail no
-amount of documentation-reading fully resolved without executing real code against it (5, 6, 7, 8), or
-a consequence of implementing against the *actual* `SandboxSpec`/`Instance` types this codebase
+amount of documentation-reading fully resolved without executing real code against it (5, 6, 7, 8, 9),
+or a consequence of implementing against the *actual* `SandboxSpec`/`Instance` types this codebase
 already has rather than idealized ones (1, 2, 3, 4) — precisely the category of gap a prove phase
-exists to catch.
+exists to catch. Finding 9 differs from 1-8 only in *when* it surfaced (a later, unrelated task's
+verification pass, not this ADR's own original prove phase) — the same fail-closed design held; only
+an implementation-level lifecycle-ordering detail needed correcting.
 
 ## 8. Per-claim verdicts
 
