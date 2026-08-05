@@ -266,6 +266,32 @@ if(WIN32)
   set_tests_properties(test_native_jail_backend_windows PROPERTIES TIMEOUT 90)
 endif()
 
+# ---- LinuxNativeJailBackend end-to-end (M2 Phase C task C2's Linux follow-up, 008 §1b/§2/§3) ---
+# Needs CAP_SYS_ADMIN (namespaces) and a delegated cgroup v2 root -- run via
+# helpers/cgroup_v2_test_setup.sh inside a --privileged container, never assumed available on an
+# ordinary CI runner without that setup, so this is opt-in (AGENTENGINE_LINUX_SANDBOX_TESTS), not
+# built/run unconditionally the way test_job_object_limits is on Windows.
+if(NOT WIN32)
+  option(AGENTENGINE_LINUX_SANDBOX_TESTS
+    "Build/run the LinuxNativeJailBackend end-to-end test (needs CAP_SYS_ADMIN + delegated cgroup v2)"
+    OFF)
+  if(AGENTENGINE_LINUX_SANDBOX_TESTS)
+    add_executable(hostile_child_posix helpers/hostile_child_posix.cpp)
+
+    add_executable(test_native_jail_backend_linux test_native_jail_backend_linux.cpp)
+    target_link_libraries(test_native_jail_backend_linux PRIVATE
+      agentengine::core agentengine::linux_native_jail_backend agentengine_warnings)
+    target_compile_definitions(test_native_jail_backend_linux PRIVATE
+      AE_HOSTILE_CHILD_POSIX_EXE="$<TARGET_FILE:hostile_child_posix>")
+    add_dependencies(test_native_jail_backend_linux hostile_child_posix)
+    add_test(NAME test_native_jail_backend_linux
+      COMMAND bash -c "source ${CMAKE_CURRENT_SOURCE_DIR}/helpers/cgroup_v2_test_setup.sh && $<TARGET_FILE:test_native_jail_backend_linux>")
+    # Same Machine Safety backstop as the Windows test -- real child processes under real
+    # namespace/cgroup isolation, real wall_ms kills under test.
+    set_tests_properties(test_native_jail_backend_linux PROPERTIES TIMEOUT 120)
+  endif()
+endif()
+
 # ---- Capability bearer-token prove phase (decisions/ADR-005-capability-bearer-tokens-cross-process.md)
 # Resolves OQ-3. Design A (capability_token.hpp) correctness + red-team, Design B
 # (capability_registry.hpp) red-team, and the verify()-vs-check() cost comparison §5 rests on.

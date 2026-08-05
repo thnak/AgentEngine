@@ -91,6 +91,22 @@ if(WIN32)
   add_library(agentengine::native_jail_backend ALIAS agentengine_native_jail_backend)
 endif()
 
+# ---- native_jail SandboxBackend, Linux half (src/backends/native_jail/) -- Linux only -----------
+# Implements agentengine::SandboxBackend (008 SS1b, SS2, SS3) via namespaces (clone()) + cgroups v2
+# (cgroup_limits.*) + seccomp-BPF (seccomp_filter.*) -- Milestone 2 Phase C task C2's own follow-up
+# (021 SS2 sequencing). Pure Linux syscall API -- no third-party dependency (no libseccomp).
+if(NOT WIN32)
+  add_library(agentengine_linux_native_jail_backend STATIC
+    src/backends/native_jail/cgroup_limits.cpp
+    src/backends/native_jail/seccomp_filter.cpp
+    src/backends/native_jail/linux_native_jail_backend.cpp)
+  target_include_directories(agentengine_linux_native_jail_backend PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  target_link_libraries(agentengine_linux_native_jail_backend PUBLIC agentengine::core)
+  target_link_libraries(agentengine_linux_native_jail_backend PRIVATE agentengine_warnings)
+  add_library(agentengine::linux_native_jail_backend ALIAS agentengine_linux_native_jail_backend)
+endif()
+
 # ---- Cross-process capability tokens (src/trust/) -- Windows only ------------------------------
 # Implements decisions/ADR-005-capability-bearer-tokens-cross-process.md (resolves OQ-3): both
 # competing designs it prove-phases -- Design A (trust/capability_token.hpp, a self-verifying

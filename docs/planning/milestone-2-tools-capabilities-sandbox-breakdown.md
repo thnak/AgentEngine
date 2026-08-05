@@ -260,7 +260,7 @@ remains a spike, cited as such everywhere C2's writeups reference it.
   already-tracked case-fold-consistency gap (Phase B's B1 writeup; explicitly assigned to C4, not a
   regression from this task). Ordinary task, not ADR-track: contract-shape plumbing, no isolation
   logic. **S**
-- **C2 (Windows half done; Linux is C2's own follow-up, 021 §2 sequencing).**
+- **C2 (done, both platforms).**
   `NativeJailBackend` (`src/backends/native_jail/native_jail_backend.{hpp,cpp}`,
   `app_container_profile.{hpp,cpp}`) — written fresh (not extending the ADR-004 spike code, which
   does not survive in the repo), carrying forward that ADR's *findings*: AppContainer (zero granted
@@ -296,7 +296,65 @@ remains a spike, cited as such everywhere C2's writeups reference it.
   `test_real_filesystem_adapter` gap as C1, no new failures. Per-owner direction (see this doc's
   process note above): proceeds as an ordinary implementation task carrying forward ADR-004's
   findings, not a fresh ADR cycle — ADR-004 itself remains a self-described spike, not Judged.
-  **Linux namespaces + seccomp-BPF + cgroups v2: not started, tracked as C2's own remaining half.**
+
+  **Linux half.** `LinuxNativeJailBackend` (`linux_native_jail_backend.{hpp,cpp}`) — namespaces
+  (`clone()` with `CLONE_NEWPID|CLONE_NEWNET|CLONE_NEWNS|CLONE_NEWUTS|CLONE_NEWIPC`, atomically, not
+  `unshare()` from the host thread, which would leak namespace changes across this backend's other
+  calls) + cgroups v2 (`cgroup_limits.{hpp,cpp}`) + a real hand-built seccomp-BPF denylist
+  (`seccomp_filter.{hpp,cpp}`, no libseccomp dependency — ptrace/mount/unshare/setns/kernel-module/
+  reboot-class syscalls denied, `execve` deliberately NOT denied since the filter must survive its
+  own installing thread's later `execve` into the guest, with an `AUDIT_ARCH_X86_64` check first to
+  close the classic 32-bit-compat-syscall-table bypass) + `PR_SET_NO_NEW_PRIVS`. Same scope parity
+  with the Windows half: `ExecRequest::source` is `/bin/sh -c <source>` (the Linux analogue of "a
+  fully-resolved command line the caller already resolved from a name"); `MountSpec::source` as a
+  `BlobRef` fails closed; full filesystem isolation (pivot_root/bind-mount jail) is explicitly NOT
+  attempted (`CLONE_NEWNS` gives a private mount-table copy, not a restricted view) — deferred to
+  010's interpreter-level mediation on both platforms alike, M3.
+
+  Process launch: `clone()` into the new namespaces with the child immediately blocked on a
+  sync-pipe read; parent adds the child to its cgroup (or kills it, fail-closed, if that fails)
+  *then* closes the pipe to release it — same "before the guest's first instruction runs" ordering
+  as the Windows side's `CREATE_SUSPENDED`. `ExecOutcome` classification needed real,
+  environment-measured iteration, not assumption: cgroups v2's `memory.max` is NOT uniformly a hard
+  kill — measured directly running the identical 512 MB-request-against-32 MB-cap workload
+  repeatedly, three real, distinct outcomes surfaced across runs before the mechanism was fully
+  understood: (a) a genuine OOM-kill (SIGKILL, kernel-forced because a page fault cannot fail back
+  to userspace the way a syscall can); (b) a clean `ENOMEM` from the allocator's own `mmap()` call,
+  surfacing as an unhandled `std::bad_alloc` → `SIGABRT`; (c) **the run silently succeeding via swap
+  overflow** — `memory.max` alone caps resident usage only, and this backend was not also capping
+  `memory.swap.max`, so the kernel would spill into swap rather than deny the guest, a real
+  correctness gap now fixed (`memory.swap.max=0` written alongside `memory.max`, best-effort since
+  some kernels don't expose the file). A fourth wrinkle, also measured: the guest is PID 1 of its
+  own `CLONE_NEWPID` namespace, and the kernel reports a namespace-init process's signal death to
+  its parent as an *ordinary exit* with code 128+signal (`WEXITSTATUS==137`), not `WIFSIGNALED`/
+  `WTERMSIG==SIGKILL` — a documented Linux behavior, not a bug in the wait loop. Final
+  classification checks four corroborating signals (the `memory.events` `oom_kill` counter — can
+  read stale immediately after `waitpid()`, so never trusted alone; `WIFSIGNALED`+`SIGKILL`; the
+  namespace-init 128+signal exit-code form; a peak-usage-vs-cap fallback for the clean-`ENOMEM` case,
+  same shape as the Windows heuristic) rather than any single one. This produced a genuine, useful
+  measurement 021 Q2 and ADR-004 §10.5 both named as missing (“no cgroups v2 counterpart to compare
+  against yet”): once `memory.swap.max=0` closes the swap escape hatch, cgroups v2's OOM-kill fires
+  reliably (6/6 clean repeated runs after the fix) but with real, variable latency in this
+  environment (~2-8s observed, kernel reclaim-before-OOM-kill dance) — categorically slower than
+  Windows' Job Object memory limit (14-22ms, ADR-004 §10.2), a real cross-platform latency
+  asymmetry, not a flaw in either backend.
+
+  `tests/helpers/hostile_child_posix.cpp` (POSIX port of `hostile_child.cpp`, same modes including
+  `fail`) and `tests/helpers/cgroup_v2_test_setup.sh` (test-only bootstrap of the cgroup v2
+  delegation `linux_native_jail_backend.hpp` states as a deployment precondition — must be
+  `source`d, not executed as a subprocess, or the invoking shell's own new child process becomes an
+  additional un-movable root-cgroup resident; a plain `gcc:14` container with no init also
+  accumulates unreaped zombies from prior build steps that permanently block root's
+  `cgroup.subtree_control` write, fixed by `docker run --init`, not by more script logic — both
+  measured directly, not theorized). `tests/test_native_jail_backend_linux.cpp`: same shape as the
+  Windows test (create/exec/destroy, `ok`/`timeout`/`crash`/`oom`, fail-closed on a destroyed
+  handle) plus a bulk-read fix in the setup script itself (bash's `read` builtin does small/
+  byte-at-a-time reads against `cgroup.procs`, a kernel seq_file, and was observed to silently stop
+  after the first entry — `cat`/command-substitution's bulk read is what actually works). Gated
+  behind `AGENTENGINE_LINUX_SANDBOX_TESTS` (default OFF) since it needs `CAP_SYS_ADMIN` and a
+  delegated cgroup v2 root, not assumed available on an ordinary CI runner. 6/6 repeated clean runs
+  after the swap-cap fix; full suite 18/19 on Linux (the one failure being C4's already-tracked
+  `test_real_filesystem_adapter` gap); Windows full suite reconfirmed unaffected, 23/23.
 - **C3.** Minimal probe binaries proving the §7 abuse-case subset that needs no interpreter (fork
   bomb, OOM, infinite loop → `wall_ms` kill, fs-escape attempt, unbounded output) — 008 §9 G2 scoped
   to what's buildable without 010 (decision 3). **L**
