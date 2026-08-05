@@ -746,9 +746,46 @@ remains a spike, cited as such everywhere C2's writeups reference it.
   pooling; the four other gated callbacks' (`fs-read`/`fs-write`/`http-request`/`resolve-secret`)
   own wrong-kind rejection individually exercised (one of five proven directly, the mechanism is
   identical for all five) — left for D5's fuller suite rather than claimed covered here.
-- **D4.** One real `ae:tool` component (a trivial echo/add tool from a Component-Model-capable
+- **D4.** (done) One real `ae:tool` component (a trivial echo/add tool from a Component-Model-capable
   toolchain) loads and executes identically across platforms — 009 §10 G1, the milestone's other
   named exit-criterion item. **L**
+
+  009 §10 G1's exact bar: "the same `ae:tool` component binary loads and produces identical results
+  on every platform in the current target set — byte-identical outputs for a deterministic fixture."
+  D3's own cross-platform verification did not establish this: Windows and Linux each independently
+  compiled their own copy of `wasm_ae_tool_fixture` via `cargo component build`, so passing tests on
+  both proved the *toolchain* is portable, not that one *artifact* is. D4 closes that specific gap
+  using the existing D3 fixture and host — no new production code, since `WasmBackend` already had
+  no platform-conditional logic to prove; the missing piece was purely evidentiary.
+
+  Method: built `ae_tool_fixture.wasm` once, natively on Windows
+  (`cargo component build --release --target wasm32-unknown-unknown`) — SHA256
+  `63b6b9562c8e40714ff212407dcd9faafab927e413b3f249dc88e3c516b83432`, 33193 bytes. Ran
+  `test_wasm_backend` natively on Windows against it: `ALL PASS`, including the literal-string
+  assertion `echo returns the exact input text`. Started a *fresh* Linux container (`gcc:14`, only
+  `cmake`/`ninja` installed — deliberately no `cargo`/`cargo-component`, confirmed absent via
+  `which`) bind-mounting the same repo path, so `tests/CMakeLists.txt`'s
+  `find_program(cargo-component)` guard finds nothing and never creates the `ae_wasm_fixture` build
+  target — the only thing standing between "reuse this file" and "silently recompile it with
+  whatever Rust the container happens to have" is that one `find_program` returning NOTFOUND, so
+  proving it's actually absent (not just skipped) was the load-bearing check. Configured
+  (`-DAGENTENGINE_WITH_WASM=ON`) and built `test_wasm_backend` there — confirmed via `sha256sum`
+  both before and after the Linux build that the `.wasm` file's hash never changed, i.e. Linux's
+  CMake genuinely treated the file as already-satisfied rather than regenerating it. Ran the
+  Linux-built `test_wasm_backend` against that identical file: `ALL PASS`, including the same literal
+  echo-roundtrip assertion.
+
+  Result: one `.wasm` binary, byte-verified identical on both filesystems (SHA256 match across the
+  bind mount, both before and after each platform's own build step), loaded by two independently
+  linked wasmtime hosts (MSVC-linked Windows binary, GCC-linked Linux binary), producing
+  byte-identical output for the deterministic fixture (`echo`'s literal input/output equality,
+  asserted verbatim in both runs) — G1 satisfied as stated. `now` (wall-clock) and `spin`'s measured
+  interruption latency (311ms Windows, 203ms limit 200ms Linux) differ across runs as expected and
+  are not part of the determinism claim — only `echo` is the deterministic fixture G1 is measured
+  against. No ADR: not security-critical, no new design decision, purely a promotion-gate proof
+  reusing D3's existing mechanism and fixture. Container and its bind-mounted `build_d4_linux/`
+  build directory were removed after verification (same leak-then-clean pattern as D3's
+  `build_linux/`).
 - **D5.** Manifest-capability-mismatch negative proof (miniature G2). **S**
 
 ### Phase E — Agent CRTP surface (002), now that there's something to author
