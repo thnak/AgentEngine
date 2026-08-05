@@ -230,6 +230,12 @@ add_executable(test_agent_registry test_agent_registry.cpp)
 target_link_libraries(test_agent_registry PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_agent_registry COMMAND test_agent_registry)
 
+# ---- Agent tool invocation end-to-end (M2 Phase E task E3, the milestone's headline sentence) ---
+# Header-only (core\agent_registry.hpp's invoke_agent_tool(), core\tool_pipeline.hpp), core-tier.
+add_executable(test_agent_tool_invocation test_agent_tool_invocation.cpp)
+target_link_libraries(test_agent_tool_invocation PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_agent_tool_invocation COMMAND test_agent_tool_invocation)
+
 # ---- SandboxBackend contract completion (M2 Phase C task C1, 008 §2-3) -------------------------
 # ProfileTraits / resolve_strict (Profile::Strict resolution) and MountSpec's host-path/blob-store
 # source field. Header-only, core-tier -- links only agentengine::core.

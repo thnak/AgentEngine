@@ -934,10 +934,34 @@ remains a spike, cited as such everywhere C2's writeups reference it.
   critical, ADR-010-governed code that needs its own red-team pass for any real change) -- written
   up in `docs/issues/m2-phase-d-wasm-plugin-host.md`'s new "known issue" section instead, exactly
   D5's own "measure, don't assume" precedent for a defect this pass's own verification surfaced
-  rather than one it went looking for.
-- **E3.** An agent declaring `Tools<TrivialNativeTool>` and a matching `Capabilities<...>` ceiling
-  actually runs one tool call end-to-end through B's pipeline — the headline exit-criterion sentence,
-  made real. Mostly wiring; A and B do the real work. **M**
+  rather than one it went looking for. **Found and fixed the same day, before E3 started** (commit
+  `306cf70`, after explicit user confirmation of the diagnosis and fix before touching
+  `wasm_backend.cpp`): `SharedEngine`'s destructor deleted the shared wasm engine before its
+  epoch-ticker thread was guaranteed stopped, a real use-after-free race at process-exit teardown.
+  Fixed by explicitly stopping and joining the ticker before deleting the engine. Verified 40/40
+  clean on a fresh Linux container (previously ~30% failure). Full writeup: ADR-010 §7.5 finding 9
+  and the issue doc's own "FIXED" update.
+- **E3.** (done) An agent declaring `Tools<TrivialNativeTool>` and a matching `Capabilities<...>`
+  ceiling actually runs one tool call end-to-end through B's pipeline — the headline exit-criterion
+  sentence, made real. Pure wiring, exactly as scoped: `invoke_agent_tool()` (new, bottom of
+  `core/agent_registry.hpp`) takes an already-compiled `AgentMetadata` (E2's `register_agent<A>()`)
+  and forwards straight into `core/tool_pipeline.hpp`'s real `invoke_tool()` (Phase B's ten-step
+  pipeline, ADR-009's `CapabilitySet`) — `CapabilitySet::grant_root(meta.capability_ceiling)` built
+  fresh per call since `AgentMetadata` is 002 §1's read-only compiled table, not request-scoped
+  state. No new enforcement logic; A and B do all the real work, exactly as the task predicted.
+
+  `tests/test_agent_tool_invocation.cpp` (new): an `EchoAgent` declaring `Tools<EchoTool>` +
+  a covering `Capabilities<cap::decl::Entropy>` ceiling round-trips a real tool call through
+  `register_agent<EchoAgent>()` + `invoke_agent_tool()` end-to-end -- the reply content is the
+  tool's own actually-computed value (`"echo: hi"`), not a stub, and is provenance-marked
+  `tainted` (006 §7). A second case confirms an unknown tool name still surfaces the pipeline's own
+  `tool.unknown_name` contract error through this new entry point, proving the wiring forwards
+  failures too, not just the success path.
+
+  Verified on Windows native (`ctest -j4`, 30/31 -- clean except the same pre-existing, unrelated
+  `test_native_jail_backend_windows` OOM flake) and a fresh Linux container (`gcc:14`, 22/22, 1
+  expected skip) -- including `test_wasm_backend`, confirming this pass's own earlier segfault fix
+  (above) holds under a second independent container run.
 - **E4.** 002 §8 G3 miniature — validation rejects at least the capability-ceiling-mismatch and
   tool-name-collision defect classes with a specific diagnostic, negative test per class (full
   8-class suite deferred alongside E2's scoping). **M**

@@ -30,9 +30,13 @@ missing entirely). `Agent` itself does nothing yet — no metadata compiler, no 
   008 §2a disagree about) are stubbed to always-pass with a tracked comment, not silently skipped.
   **Size: L** — see the breakdown doc's own E2 entry for the full writeup;
   `include/agentengine/core/agent_registry.hpp`, `tests/test_agent_registry.cpp`.
-- **E3.** An agent declaring `Tools<TrivialNativeTool>` and a matching `Capabilities<...>` ceiling
-  actually runs one tool call end-to-end through Phase B's pipeline — the headline exit-criterion
-  sentence, made real. Mostly wiring; Phases A and B do the real work. **Size: M**
+- **E3.** (done) An agent declaring `Tools<TrivialNativeTool>` and a matching `Capabilities<...>`
+  ceiling actually runs one tool call end-to-end through Phase B's pipeline — the headline
+  exit-criterion sentence, made real. Pure wiring, as scoped: `invoke_agent_tool()`
+  (`core/agent_registry.hpp`) is the one glue function connecting `register_agent<A>()`'s compiled
+  `AgentMetadata` (E2) to `core/tool_pipeline.hpp`'s real `invoke_tool()` (Phase B) via a fresh
+  `CapabilitySet::grant_root(meta.capability_ceiling)` per call — no new enforcement logic.
+  **Size: M** — `include/agentengine/core/agent_registry.hpp`, `tests/test_agent_tool_invocation.cpp`.
 - **E4.** 002 §8 G3 miniature — validation rejects at least the capability-ceiling-mismatch and
   tool-name-collision defect classes with a specific diagnostic, negative test per class (full
   8-class suite deferred alongside E2's scoping). **Size: M**

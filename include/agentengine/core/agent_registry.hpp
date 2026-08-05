@@ -1,6 +1,8 @@
 #pragma once
 // Implements 002-Agent-Model-and-Authoring.md §6 — register_agent<A>(), the real metadata compiler.
-// M2 Phase E task E2 (docs/planning/milestone-2-tools-capabilities-sandbox-breakdown.md).
+// M2 Phase E tasks E2 and E3 (docs/planning/milestone-2-tools-capabilities-sandbox-breakdown.md):
+// E2 is register_agent<A>() itself; E3 is invoke_agent_tool() at the bottom of this file, the
+// milestone's headline exit-criterion sentence wired to real code (see that function's own comment).
 //
 // Of §6's 8 named validation checks, three run for real against machinery this milestone actually
 // built (tool name collision, capability-ceiling coverage, Stateless<N>-vs-session-state via
@@ -347,6 +349,25 @@ struct compiler<A, Agent<A, Policies...>> {
 template <class A>
 [[nodiscard]] result<AgentMetadata> register_agent() {
     return agent_detail::compiler<A, agent_detail::agent_base_t<A>>::run();
+}
+
+// M2 Phase E task E3: the milestone's own headline exit-criterion sentence, made real -- "an agent
+// declares Tools<...>, a capability-gated native tool call is enforced end to end." Pure wiring, no
+// new enforcement logic: register_agent<A>() (E2, above) already compiled `meta.tools` and
+// `meta.capability_ceiling` from A's declared policies (already validated as mutually consistent --
+// E2's own capability-ceiling-mismatch check rejects registration otherwise, so a valid `meta` here
+// can never fail this call's own `contains()` check for a tool it declares); core/tool_pipeline.hpp's
+// `invoke_tool()` (Phase B, 006 §3's real ten-step pipeline, ADR-009's CapabilitySet::bind/revoke) is
+// the actual mechanism -- this is the one glue function connecting an agent's compiled metadata to
+// it. `CapabilitySet::grant_root` is called fresh per invocation rather than cached on `AgentMetadata`
+// itself: `AgentMetadata` is 002 §1's read-only compiled table (no request-scoped state), and a
+// `CapabilitySet` is cheap to construct from the same `capability_ceiling` vector already sitting
+// there (ADR-009's own type, not reinvented).
+[[nodiscard]] inline ToolResult invoke_agent_tool(AgentMetadata const& meta, ToolCallRequest const& request,
+                                                   EffectContext& ctx, ApprovalDecider const& approve = {},
+                                                   ToolInvocationAudit* audit_out = nullptr) {
+    CapabilitySet const ceiling = CapabilitySet::grant_root(meta.capability_ceiling);
+    return invoke_tool(meta.tools, ceiling, request, ctx, approve, audit_out);
 }
 
 }  // namespace agentengine
