@@ -962,9 +962,23 @@ remains a spike, cited as such everywhere C2's writeups reference it.
   `test_native_jail_backend_windows` OOM flake) and a fresh Linux container (`gcc:14`, 22/22, 1
   expected skip) -- including `test_wasm_backend`, confirming this pass's own earlier segfault fix
   (above) holds under a second independent container run.
-- **E4.** 002 §8 G3 miniature — validation rejects at least the capability-ceiling-mismatch and
-  tool-name-collision defect classes with a specific diagnostic, negative test per class (full
+- **E4.** (done) 002 §8 G3 miniature — validation rejects at least the capability-ceiling-mismatch
+  and tool-name-collision defect classes with a specific diagnostic, negative test per class (full
   8-class suite deferred alongside E2's scoping). **M**
+
+  Already satisfied by E2's own `tests/test_agent_registry.cpp`: `NameCollisionAgent` asserts
+  `error.code == "agent.tool_name_collision"` and `CapabilityGapAgent` asserts `error.code ==
+  "agent.capability_ceiling_exceeded"` — both a specific diagnostic, not merely `!has_value()`,
+  which is exactly what G3 asks for. This task's own contribution was recognizing that and making
+  it traceable rather than writing a redundant second test file: added explicit `002 §8 G3`
+  cross-references at the file's top comment and at each of the two negative-case blocks. No new
+  test file, no new validation logic — a G3 gate is about the proof existing, not about which
+  task's commit happened to add it. Rebuilt and reran `test_agent_registry` after the comment-only
+  change (still `ALL PASS`) rather than assuming a documentation edit couldn't have broken anything.
+
+  **Phase E is now complete** — E1 through E4 all done, every exit criterion in
+  `docs/issues/m2-phase-e-agent-crtp-surface.md` met. Next: Phase F (F1 egress proxy ADR, F2
+  policy-reachability CI tool).
 
 ### Phase F — Cross-cutting ADR-track tasks (flagged explicitly by the roadmap for M2)
 

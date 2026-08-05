@@ -4,6 +4,15 @@
 // ceiling-mismatch and tool-name-collision) plus the two cheap-to-prove extras this task added
 // (ChatClientId presence, Stateless<N> vs. session-state via std::is_empty_v) -- one positive case
 // establishing the compiled metadata's default values, and one negative case per real check.
+//
+// The tool-name-collision and capability-ceiling-mismatch cases below (search "E4's headline
+// class") are also the whole of task E4 -- 002 §8 G3's miniature: "validation rejects each of the
+// §6 defect classes with a specific diagnostic, proven by a negative test per class," narrowed (per
+// E4's own scope note) to the two classes this milestone's real machinery can actually prove; the
+// other six need infrastructure this milestone doesn't build (see this file's second comment block,
+// or agent_registry.hpp's own top comment, for exactly which and why). E4 added no new test file:
+// these two checks and their negative tests already existed as E2's own real-check proof, and a G3
+// gate is about the *proof existing*, not about which task's commit happened to add it.
 
 #include <cstdio>
 #include <string>
@@ -135,14 +144,14 @@ int main() {
         if (!meta) check(meta.error().code == "agent.chat_client_id_missing", "specific diagnostic code");
     }
 
-    // -- negative: tool-name collision (E4's headline class) ------------------------------------------
+    // -- negative: tool-name collision -- 002 §8 G3 miniature, defect class 1 of 2 (E4) -------------
     {
         auto meta = register_agent<NameCollisionAgent>();
         check(!meta.has_value(), "two tools sharing a name are rejected");
         if (!meta) check(meta.error().code == "agent.tool_name_collision", "specific diagnostic code");
     }
 
-    // -- negative: capability-ceiling-mismatch (E4's other headline class) ---------------------------
+    // -- negative: capability-ceiling-mismatch -- 002 §8 G3 miniature, defect class 2 of 2 (E4) -----
     {
         auto meta = register_agent<CapabilityGapAgent>();
         check(!meta.has_value(), "a tool needing an uncovered capability is rejected");
