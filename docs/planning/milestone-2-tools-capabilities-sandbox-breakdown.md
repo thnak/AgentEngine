@@ -864,10 +864,77 @@ remains a spike, cited as such everywhere C2's writeups reference it.
   of E1's scope). Verified on Windows native and a fresh Linux container (`gcc:14` + `cmake`/`ninja`);
   full Windows suite green except the same pre-existing, unrelated
   `test_native_jail_backend_windows` OOM-detection failure.
-- **E2.** `register_agent<A>()` — the real metadata compiler: builds the agent metadata table, runs
-  002 §6's 8 named validation checks. Checks needing machinery this milestone doesn't build
-  (credentials/004, handoff-cycle/014) are stubbed to always-pass with a tracked comment, not
+- **E2.** (done) `register_agent<A>()` — the real metadata compiler: builds the agent metadata
+  table, runs 002 §6's 8 named validation checks. Checks needing machinery this milestone doesn't
+  build (credentials/004, handoff-cycle/014) are stubbed to always-pass with a tracked comment, not
   silently skipped. **L**
+
+  New header `include/agentengine/core/agent_registry.hpp`: `AgentMetadata` (the compiled table --
+  name, instructions, `ChatClientId`, `ToolTable`, capability ceiling, and every scalar policy with
+  002 §3's own table default) and `register_agent<A>()`, which recovers `A`'s `Policies...` pack from
+  its unique `Agent<A, Policies...>` base via the standard decltype-overload-resolution idiom (`A`
+  converts to that base by public inheritance; there is no other way to get the pack back from `A`
+  alone), then builds and validates. Per-tag extraction mirrors `core/tool.hpp`'s own
+  `tool_detail::policy_capabilities`/`policy_approval` pattern (primary-template default + one
+  specialization per tag, folded over the pack) for every scalar tag; `Agent`'s own `Capabilities`
+  ceiling and `Approval` default *reuse* `tool_detail`'s existing fold functions directly (same tag,
+  same mechanism, only the owning context's default differs -- `policy_driven` for Agent vs.
+  `never_require` for Tool, `core/tool.hpp`'s existing comment already says why they differ).
+  `Tools<Ts...>` needed its own pack-finder (`tools_of<Policies...>`, the standard recursive-pack-
+  search idiom) since `ToolTable::from_tools<Ts...>()` needs the pack itself, not just a runtime-
+  readable value the fold pattern produces for everything else.
+
+  Of §6's 8 checks, four run for real: **ChatClientId presence** (split out of the RFC's single
+  "no configured credentials" wording -- "declares no binding at all" is mechanically checkable now,
+  "no credentials configured for that binding" genuinely needs a ChatClient registry/config store
+  this milestone doesn't build, so only the second half is stubbed); **tool-name collision** and
+  **capability-ceiling-mismatch** (E4's own two headline classes, both real: the former walks
+  `ToolTable`'s descriptors pairwise by name, the latter binds every declared tool's `capability_
+  ceiling` against a `CapabilitySet::grant_root()` of the agent's own `Capabilities<...>`, exactly
+  ADR-009's real `contains()`, not a parallel check); and **`Stateless<N>` vs. session-state**, made
+  real via `std::is_empty_v<Derived>` -- a conforming Derived is a pure CRTP tag type (only static
+  `name`/`instructions` and hook member functions), so "carries no session state" is exactly "no
+  non-static data members, no virtual functions," the real shape of the claim, not an approximation
+  invented for this task.
+
+  A real, previously-unscoped finding surfaced while trying to make the SandboxProfile checks real
+  too (002 §6's "unavailable on this platform with no fallback" and "tool backend incompatible with
+  the agent's profile"): 002 §2's own worked example instantiates `SandboxProfile<Profile::Strict>`
+  as if `P` were an enum-like value (matching `core/agent.hpp`'s existing `SandboxProfile<sandbox_
+  profile P>`, an enum NTTP), but 008 §2a states plainly that `P` is "any type satisfying the
+  SandboxBackend concept" -- open extensibility for custom backends, which an enum NTTP structurally
+  cannot represent. These two RFC passages don't reconcile without a real design call (which reading
+  wins, or how a sentinel type like `Profile::Strict` coexists with a real backend type in the same
+  slot), and CLAUDE.md is explicit that a wrong spec gets fixed with an ADR before the code does --
+  not a call this task makes unilaterally by quietly picking a side. Both SandboxProfile checks are
+  stubbed with a comment naming this exact conflict, alongside the two the task's own scope note
+  already anticipated (ChatClientId credentials, handoff-cycle) and OutputSchema enforceability
+  (needs a real bound ChatClient instance to query capabilities() against, same 004 gap as the
+  credentials check).
+
+  `ToolTable` (`core/tool_pipeline.hpp`, Phase B) gained one small real addition: a `descriptors()`
+  accessor: `find()` alone can't answer "are there duplicates" or "what does each tool need,"
+  which E2's own two headline checks are built on.
+
+  `tests/test_agent_registry.cpp`: one positive case asserting every 002 §3 table default lands
+  correctly in the compiled `AgentMetadata` (`MaxTurns`=16, `TokenBudget`=unbounded, `Approval`=
+  policy_driven, `Concurrency`=sequential, `Telemetry`=metadata_only, `Stateless`=off) plus a
+  negative case per real check (missing `ChatClientId`, tool-name collision, capability-ceiling-
+  mismatch, `Stateless<N>` on a type carrying an instance field), each asserting the specific
+  diagnostic code 002 §6/G3 requires, not just pass/fail.
+
+  Verified on Windows native (`ctest -j4`, full suite -- clean except the same pre-existing,
+  unrelated `test_native_jail_backend_windows` OOM-detection flake) and a fresh Linux container
+  (`gcc:14`, no cargo/cargo-component, reusing the already-built fixture `.wasm` from D4/D5's
+  bind-mount trick). **A new, real, previously-unobserved finding surfaced during this pass's own
+  Linux verification, unrelated to E2's own changes**: `test_wasm_backend` segfaults intermittently
+  on Linux (~30% of standalone runs, 0/20 on Windows) -- every crash happens after every assertion
+  has already printed `ok:`, pointing at a teardown-path use-after-free/double-free rather than a
+  logic defect. Not fixed here (out of scope for this task, and `wasm_backend.cpp` is security-
+  critical, ADR-010-governed code that needs its own red-team pass for any real change) -- written
+  up in `docs/issues/m2-phase-d-wasm-plugin-host.md`'s new "known issue" section instead, exactly
+  D5's own "measure, don't assume" precedent for a defect this pass's own verification surfaced
+  rather than one it went looking for.
 - **E3.** An agent declaring `Tools<TrivialNativeTool>` and a matching `Capabilities<...>` ceiling
   actually runs one tool call end-to-end through B's pipeline — the headline exit-criterion sentence,
   made real. Mostly wiring; A and B do the real work. **M**

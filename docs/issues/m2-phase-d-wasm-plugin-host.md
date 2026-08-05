@@ -46,3 +46,15 @@ Wasmtime 47.0.3 (resolving OQ-7) enters the build as a new CMake-optional seam-b
 - A manifest/imports mismatch is rejected with a structured, correctly classified error, proven by
   a negative test.
 - Full test suite green on Windows and Linux/gcc-14.
+
+## Known issue found during Phase E verification (2026-08-05) — Linux-only intermittent segfault
+
+Phase D itself is done (D1-D5) and this is not a regression from anything in Phase E (`test_wasm_backend`/`wasm_backend.cpp`/the Rust fixture are byte-for-byte what D5 committed as `6e56a28`) — flagged here, not fixed here, because fixing it means editing `src/backends/wasm/wasm_backend.cpp`, a security-critical component that went through Phase D's own design→red-team→prove→judge cycle (ADR-010) and should get the same rigor for a change, not a drive-by patch from an unrelated task.
+
+**Finding**: `test_wasm_backend`, run standalone and repeatedly on a fresh Linux container (the same `gcc:14` + no-cargo methodology D3-D5/E2 all use), segfaults on roughly **6 of 20 runs (~30%)**. Every observed failure's captured stdout shows *every* assertion already printed `ok:` — including the very last of D5's 8 gated-callback probes (`resolve-secret/wrong-kind`) — with the crash landing immediately after, before the test's own final summary line prints. This points at a use-after-free/double-free during per-probe teardown (`SandboxHandle`/`Instance` destruction, or the wasmtime resource-handle cleanup path) rather than anything in the assertions themselves — consistent with ADR-010 §7.5's own documented bug class from D3 ("`wasmtime_component_val_delete` already frees embedded resource pointers recursively"), now possibly recurring given D5 grew the test from 1 to 9 handle-creating probes per run, which would raise the odds of hitting an intermittent teardown race that a smaller D3/D4 run mostly didn't trigger.
+
+**Not reproduced on Windows**: 20/20 standalone runs of `test_wasm_backend.exe` on Windows native passed clean. Windows and Linux link wasmtime differently (DLL vs. static archive, D1's own finding) — consistent with a platform-specific memory-safety bug in the teardown path, not a logic error the assertions themselves would catch on either platform.
+
+**Not a duplicate of the already-known native_jail flake** (this doc's own C-phase sibling, `docs/issues/m2-phase-c-native-jail-sandbox.md`, and every Phase C/D/E verification pass's own writeup): that one is an OOM-detection assertion mismatch under `ctest -j4` resource contention on `test_native_jail_backend_windows`, Windows-only, no crash. This is a Linux-only process crash after all assertions already passed — a different defect class entirely.
+
+**Scope decision**: tracked here, not investigated further as part of M2 Phase E (task E2, `register_agent<A>()`) — unrelated surface, and `wasm_backend.cpp` changes need their own red-team pass per CLAUDE.md. Should be picked up before Phase D is treated as fully closed for production use, or whenever Phase F's cross-cutting security work next touches the WASM backend.

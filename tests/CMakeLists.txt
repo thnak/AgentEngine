@@ -224,6 +224,12 @@ add_executable(test_tool_pipeline_capability_reuse test_tool_pipeline_capability
 target_link_libraries(test_tool_pipeline_capability_reuse PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_tool_pipeline_capability_reuse COMMAND test_tool_pipeline_capability_reuse)
 
+# ---- Agent metadata compiler: register_agent<A>() (M2 Phase E task E2, 002 §6) -----------------
+# Header-only (core/agent_registry.hpp), core-tier -- links only agentengine::core.
+add_executable(test_agent_registry test_agent_registry.cpp)
+target_link_libraries(test_agent_registry PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_agent_registry COMMAND test_agent_registry)
+
 # ---- SandboxBackend contract completion (M2 Phase C task C1, 008 §2-3) -------------------------
 # ProfileTraits / resolve_strict (Profile::Strict resolution) and MountSpec's host-path/blob-store
 # source field. Header-only, core-tier -- links only agentengine::core.

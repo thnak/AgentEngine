@@ -97,6 +97,11 @@ public:
         return nullptr;
     }
 
+    // M2 Phase E task E2 (core/agent_registry.hpp): register_agent<A>()'s validation needs to walk
+    // every declared tool (name-collision, capability-ceiling coverage) -- `find()` alone can't
+    // answer "are there duplicates" or "for each tool, what capabilities does it need".
+    [[nodiscard]] std::vector<ToolDescriptor> const& descriptors() const { return descriptors_; }
+
 private:
     std::vector<ToolDescriptor> descriptors_;
 };

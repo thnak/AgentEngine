@@ -23,10 +23,13 @@ missing entirely). `Agent` itself does nothing yet — no metadata compiler, no 
   tag which milestone that is). **Size: M** — see the breakdown doc's own E1 entry (Phase E
   section) for the full writeup; `include/agentengine/core/agent.hpp` and
   `tests/smoke_vocabulary.cpp`.
-- **E2.** `register_agent<A>()` — the real metadata compiler: builds the agent metadata table, runs
-  002 §6's 8 named validation checks. Checks needing machinery this milestone doesn't build
-  (credentials/004, handoff-cycle/014) are stubbed to always-pass with a tracked comment, not
-  silently skipped. **Size: L**
+- **E2.** (done) `register_agent<A>()` — the real metadata compiler: builds the agent metadata
+  table, runs 002 §6's 8 named validation checks. Checks needing machinery this milestone doesn't
+  build (credentials/004, handoff-cycle/014, and — a real finding, not anticipated by this task's
+  original scope note — `SandboxProfile<P>`'s two checks, whose template-parameter kind 002 §2 and
+  008 §2a disagree about) are stubbed to always-pass with a tracked comment, not silently skipped.
+  **Size: L** — see the breakdown doc's own E2 entry for the full writeup;
+  `include/agentengine/core/agent_registry.hpp`, `tests/test_agent_registry.cpp`.
 - **E3.** An agent declaring `Tools<TrivialNativeTool>` and a matching `Capabilities<...>` ceiling
   actually runs one tool call end-to-end through Phase B's pipeline — the headline exit-criterion
   sentence, made real. Mostly wiring; Phases A and B do the real work. **Size: M**
