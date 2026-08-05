@@ -1,0 +1,234 @@
+// wit/ae-tool.wit
+//
+// The `ae:tool` world (009-Plugin-and-Extension-System.md §2/§3/§5, 006-Tool-and-Function-Plane.md
+// §1/§3/§7) -- the contract of record for a WASM component exposing one or more tools (schema +
+// invoke) to the engine.
+//
+// Scope (Milestone 2 task D2): the world shape only. No host implementation exists yet -- that is
+// D3, security-critical, gated through design->red-team->prove->judge before it is real code
+// (CLAUDE.md). Narrowed to what an M2 native tool call actually is: synchronous and immediate.
+// Progress reporting (006 §6a), scheduling/watch/background tools (§6b), and parallel-batch history
+// ordering (§5's G4) all need 019's durability machinery and are explicitly deferred past M2
+// (docs/planning/milestone-2-tools-capabilities-sandbox-breakdown.md, "What's explicitly deferred
+// past M2"). A later world revision adds those once 019 exists to back them, under 009 §2's declared
+// N-1 deprecation-window policy -- this file does not speculate their shape now.
+//
+// Three design choices below are NOT settled by either RFC; each is made here and flagged, rather
+// than cited as if the spec already said it:
+//
+//   1. Host imports (009 §5's `log` / `metrics` / `fs` / `http` / `tool-call` / `secrets` / `clock` /
+//      `random` / `blob` list) are bespoke `ae:tool/host` functions, not raw `wasi:filesystem` /
+//      `wasi:http` / `wasi:clocks` / `wasi:random`. Neither 008 nor 009 states this either way; the
+//      choice follows 009 §5's own framing of the list as *named and capability-intersected per
+//      invocation*, a shape standard WASI interfaces have no vocabulary for (no manifest-declared
+//      request, no per-call attenuation to a bound grant).
+//   2. Capability handles are WIT `resource` values, not opaque strings or bare integers. This is
+//      what makes 007 §3.4's "unforgeable" property real at the ABI boundary instead of a promise
+//      kept only by host-side discipline: a `resource` can only be constructed host-side and is
+//      transferred into a call, never fabricated by the guest from a bare value -- the literal
+//      ABI-level shape of I2 (no ambient authority), not merely consistent with it.
+//   3. `blob-ref` and the `tainted` flag mirror 003's native `BlobRef{digest, media_type, size,
+//      store}` and `ContentItem.tainted: bool` shapes field-for-field, so the host's normalize step
+//      (006 §3 step 9) is a direct mapping, never a lossy re-encoding. WIT has no equivalent to the
+//      native `Tainted<T>` compile-time wrapper (007 §4's G3 compile-fail property) -- only the flag
+//      crosses the boundary; the host re-applies the real type-level guarantee on its own side.
+
+package ae:tool@1.0.0;
+
+/// Shared content and error vocabulary, reused by both the `host` and `guest` interfaces below.
+interface types {
+    /// 003's BlobRef: a pointer to content-addressed storage, never inline bytes above 006 §7's
+    /// token-budget threshold.
+    record blob-ref {
+        digest: string,
+        media-type: string,
+        size: u64,
+        store: string,
+    }
+
+    /// 006 §7's "Data content item with a schema" -- schema-id is a reference to a schema the tool
+    /// already declared (guest.tool-descriptor's result-schema-json), never an embedded schema body.
+    record data-content {
+        json: string,
+        schema-id: option<string>,
+    }
+
+    /// One unit of text output. `tainted` mirrors 003's `ContentItem.tainted` flag -- see design
+    /// choice 3 above for why this crosses as a flag, not the native wrapper type.
+    record text-item {
+        text: string,
+        tainted: bool,
+    }
+
+    /// A single unit of tool output, normalized host-side (006 §3 step 9) from whichever of these a
+    /// component produced.
+    variant content-item {
+        text(text-item),
+        data(data-content),
+        blob(blob-ref),
+    }
+
+    /// 006 §3 step 9's `ToolResult{is_error}` shape.
+    record tool-result {
+        content: list<content-item>,
+        is-error: bool,
+    }
+
+    /// The error classes a component's own `invoke` can report about itself. Deliberately small:
+    /// 006 §8 G2's full negative-suite classes (unknown name, schema violation, capability not held,
+    /// approval mismatch, deadline exceeded, oversized result) are resolved *before* a component is
+    /// ever called -- see 006 §3's step split, host steps 1-7 wrap every invoke. A component only
+    /// ever raises what only it can detect: a call for a tool name it does not implement, or its own
+    /// logic failing.
+    enum invoke-error {
+        unknown-tool,
+        internal,
+    }
+}
+
+/// Host-mediated effects (009 §5). Every function here consumes a `capability-handle` the host
+/// pre-materialized at 006 §3 step 7 (bind), scoped to exactly one `invoke` call -- 006 §3's "a
+/// handle outliving its call is a defect class with a dedicated test" holds at the ABI level here,
+/// not just by convention: `own<capability-handle>` ownership is transferred in with the call and
+/// there is no guest-side operation that produces a new one or extends its lifetime.
+interface host {
+    use types.{blob-ref, tool-result, invoke-error};
+
+    /// One pre-materialized grant, opaque to the guest. 007 §3's capability kinds (`FsRead<mount>`,
+    /// `FsWrite<mount>`, `NetOut<host>`, `Secret<name>`, `Clock`, `Entropy`, `ToolCall<name>`) are
+    /// resolved host-side, with their parameters (mount, allowlisted host, secret name, ...) bound
+    /// before the guest ever sees a handle; the guest supplies only the part of a call the host must
+    /// still validate per-call (a path within the granted mount, the target tool's name), never the
+    /// grant's own parameters.
+    resource capability-handle;
+
+    enum log-level {
+        debug,
+        info,
+        warn,
+        error,
+    }
+
+    /// `log` (009 §5).
+    log: func(level: log-level, message: string);
+
+    /// `metrics` (009 §5).
+    record-metric: func(name: string, value: f64);
+
+    enum fs-error {
+        not-found,
+        permission-denied,
+        quota-exceeded,
+        invalid-path,
+    }
+
+    /// `fs` (009 §5): read/write within a `FsRead`/`FsWrite`-granted, preopened mount only -- never
+    /// an arbitrary host path (009 §5's "not available in any world" list).
+    fs-read: func(cap: borrow<capability-handle>, path: string) -> result<list<u8>, fs-error>;
+    fs-write: func(cap: borrow<capability-handle>, path: string, data: list<u8>) -> result<_, fs-error>;
+
+    record http-request-data {
+        method: string,
+        path: string,
+        headers: list<tuple<string, string>>,
+        body: option<list<u8>>,
+    }
+
+    record http-response-data {
+        status: u16,
+        headers: list<tuple<string, string>>,
+        body: list<u8>,
+    }
+
+    enum http-error {
+        host-not-allowlisted,
+        byte-cap-exceeded,
+        network-error,
+        timeout,
+    }
+
+    /// `http` (009 §5): host-mediated egress, allowlisted per the bound `NetOut<host>` grant. No raw
+    /// socket ever reaches the guest.
+    http-request: func(cap: borrow<capability-handle>, req: http-request-data) -> result<http-response-data, http-error>;
+
+    enum secret-error {
+        not-found,
+        denied,
+    }
+
+    /// `secrets` (009 §5): resolves one granted name at point of use -- never handed to the guest
+    /// ahead of the call that needs it, never cached guest-side.
+    resolve-secret: func(cap: borrow<capability-handle>) -> result<string, secret-error>;
+
+    /// `clock` / `random` (009 §5): virtualizable, so a replayed run (I5) sees the recorded values
+    /// instead of the host's real clock/RNG.
+    now-unix-millis: func(cap: borrow<capability-handle>) -> u64;
+    random-bytes: func(cap: borrow<capability-handle>, count: u32) -> list<u8>;
+
+    enum blob-error {
+        not-found,
+        store-unavailable,
+    }
+
+    /// `blob` (009 §5): content-addressed read/write (003 §3), the same handle type §7's oversized
+    /// tool results and this world's own `content-item.blob` variant carry.
+    blob-read: func(cap: borrow<capability-handle>, blob: blob-ref) -> result<list<u8>, blob-error>;
+    blob-write: func(cap: borrow<capability-handle>, media-type: string, data: list<u8>) -> result<blob-ref, blob-error>;
+
+    /// `tool-call` (009 §5): invoke another tool, executing at *this plugin's* trust tier, never the
+    /// calling agent's -- 009 §5 is explicit this is not a privilege-escalation path.
+    call-tool: func(cap: borrow<capability-handle>, tool-name: string, args-json: string) -> result<tool-result, invoke-error>;
+}
+
+/// What a component exports. Named `guest` (not `tool`) so the world below -- itself named `tool`,
+/// matching manifest.toml's `world = "ae:tool@1.0.0"` (009 §3) under the single-world-package
+/// shorthand, since this package declares exactly one world -- reads as "the `tool` world exports
+/// the `guest` interface" rather than colliding the same name at both levels.
+interface guest {
+    use types.{tool-result};
+    use host.{capability-handle};
+
+    /// One tool's shape, schema-first per 006 §1 ("schemas... derived... emitted as JSON Schema
+    /// 2020-12"). `args-schema-json` / `result-schema-json` are that JSON Schema 2020-12 text, not a
+    /// second WIT-typed schema language -- a component's binary export is the source of truth 009
+    /// §4's load-time check validates the package's bundled `schema/` files against, catching drift
+    /// between what a manifest claims and what the binary actually implements.
+    record tool-descriptor {
+        name: string,
+        description: string,
+        args-schema-json: string,
+        result-schema-json: string,
+        /// 009 §9 Q3 (resolved): true exactly when this tool's manifest-declared capability request
+        /// is empty -- a zero-capability tool has no way to observe or affect anything outside its
+        /// own call arguments, so concurrent invocations are provably order-independent, not merely
+        /// asserted safe by the plugin author.
+        parallelizable: bool,
+    }
+
+    /// 009 §4's load-time step: the host calls this once per instantiation to discover what the
+    /// component actually implements, before ever routing a call to it.
+    list-tools: func() -> list<tool-descriptor>;
+
+    record invoke-request {
+        tool-name: string,
+        /// Pre-validated against `tool-descriptor.args-schema-json` by the host (006 §3 step 2) --
+        /// a component's `invoke` never re-validates what the pipeline already rejected or accepted.
+        args-json: string,
+        /// Bound at 006 §3 step 7, exactly the capabilities this one call needs -- never the plugin's
+        /// full manifest-granted set (007 §3's attenuation-only rule applies per call, not per
+        /// component instance).
+        capabilities: list<capability-handle>,
+        run-id: string,
+        span-id: string,
+    }
+
+    /// 006 §3 step 8, exactly: resolve, validate, taint, authorize, approve, and admit (steps 1-6)
+    /// already happened; normalize and account (steps 9-10) happen after this returns, host-side. A
+    /// component's `invoke` never sees, and cannot affect, its own accounting or approval history.
+    invoke: func(request: invoke-request) -> tool-result;
+}
+
+world tool {
+    import host;
+    export guest;
+}

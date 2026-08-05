@@ -644,8 +644,41 @@ remains a spike, cited as such everywhere C2's writeups reference it.
   build, `ctest` 24/24 (23 pass + 1 intentional skip, up from 22), including the smoke test verified
   both directly from an unrelated working directory and via `ctest` itself (the exact scenario the
   `SONAME` finding above broke before the static-link fix).
-- **D2.** `wit/ae-tool.wit` authored — the `ae:tool` world (009 §2), closing the "contract of record
-  is currently empty" gap this survey found. **M**
+- **D2.** (done) `wit/ae-tool.wit` authored — the `ae:tool` world (009 §2), closing the "contract of
+  record is currently empty" gap this survey found. **M**
+
+  Package `ae:tool@1.0.0`, three interfaces (`types`, `host`, `guest`) and one world (`tool`,
+  matching manifest.toml's `world = "ae:tool@1.0.0"` string, 009 §3, under the single-world-package
+  shorthand). `types` mirrors 003's native content model field-for-field (`blob-ref` ==
+  `BlobRef{digest, media_type, size, store}`; `content-item`'s `tainted` flag == `ContentItem.tainted`
+  — confirmed against `include/agentengine/core/content.hpp`, not just the RFC text) so the host's
+  006 §3 step-9 normalize is a direct mapping. `host` exposes 009 §5's import list (`log`, `metrics`,
+  `fs`, `http`, `secrets`, `clock`, `random`, `blob`, `tool-call`) as functions taking a
+  `capability-handle` — a WIT `resource`, not an opaque string or integer, specifically because a
+  `resource` can only be constructed host-side and transferred in, never fabricated guest-side: this
+  is I2 made an ABI-level fact for this world, not merely a convention documented alongside it.
+  `guest` exports `list-tools` (schema discovery — JSON Schema 2020-12 text per tool, per 006 §1) and
+  `invoke` (006 §3 step 8 exactly — the host has already resolved/validated/tainted/authorized/
+  approved/admitted/bound before calling it; normalize/account happen after it returns).
+
+  Deliberately narrow scope, same posture as D1: **no host implementation** (that's D3,
+  security-critical, goes through design→red-team→prove→judge per CLAUDE.md before it is real code)
+  and **no progress reporting / scheduling / background tools** (006 §6a/§6b) — this milestone's own
+  "explicitly deferred past M2" list already excludes those (they need 019's durability machinery,
+  and "an M2 native tool call is synchronous and immediate"), so the world does not speculate a shape
+  for them now. Three design choices the RFCs leave unstated are called out explicitly in the file's
+  own header comment rather than silently assumed: bespoke `ae:tool/host` imports vs. raw
+  `wasi:filesystem`/`wasi:http`/etc. (neither 008 nor 009 says either way — chosen because 009 §5's
+  imports are named and capability-intersected per invocation, a shape standard WASI interfaces can't
+  express); capability handles as WIT `resource`s; and the taint flag's necessarily lossy crossing
+  (WIT has no equivalent to the native `Tainted<T>` compile-time wrapper, 007 §4's G3 property).
+
+  Verified with a real WIT toolchain, not by eye: a local `wasm-tools 1.248.0` install (not vendored
+  into the build — this is a one-off authoring check, the same ad hoc-verification posture as D1's
+  Docker passes) parses the file cleanly (`wasm-tools component wit`) and — the stronger check —
+  resolves the `tool` world into valid Component Model metadata against a real (empty) core module
+  (`wasm-tools component embed --world tool`, exit 0), proving the world's imports/exports/resources
+  form a semantically valid Component Model contract, not merely syntactically parseable text.
 - **D3.** Minimal WASM component host: load, verify manifest-vs-imports (009 §4/§10 G2), instantiate
   under the `wasm` `SandboxBackend` profile, invoke, destroy. **XL**
 - **D4.** One real `ae:tool` component (a trivial echo/add tool from a Component-Model-capable
