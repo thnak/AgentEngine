@@ -226,8 +226,30 @@ deferred, not silently dropped. See "What's explicitly deferred past M2" at the 
 
 ### Phase C — `native-jail` sandbox (008), Windows + Linux
 
-- **C1.** `SandboxBackend` contract completed — `ProfileTraits`, `MountSpec`'s source field — still
-  synchronous per decision 2. **S**
+- **C1 (done).** `SandboxBackend` contract completed (`sandbox/sandbox.hpp`) — still synchronous per
+  decision 2. `ProfileTraits{strength, platform_mask, cold_start}` added as 008 §2's "static
+  constexpr ProfileTraits traits" line, plus the concept requirement that every conforming backend
+  actually declare one (`{ T::traits } -> std::convertible_to<ProfileTraits const&>`), not just the
+  three methods. `platform_id` (a two-flag bitmask, `windows_x86_64`/`linux_x86_64` — 021 §2, macOS
+  excluded by construction) and `cold_start_class` (008 §3's Cold-start column as a closed set, not
+  a number — 023 stays `TBD-baselined`) back it. `resolve_strict()` implements 008 §3's
+  `Profile::Strict` rule literally over a `std::span<ProfileTraits const>`: highest `strength`
+  among candidates supporting the current platform, ties broken toward the wider `platform_mask`
+  (more platforms = "broader, more-proven"); returns `std::nullopt` when nothing supports the
+  current platform, leaving "no fallback -> startup fails" to its caller rather than enforcing it
+  itself — no concrete backend exists yet to resolve for real (that's C2/D1's job), so this is
+  proven against synthetic traits. `MountSpec::source` is now `std::variant<std::string /*host
+  path*/, BlobRef>` (008 §2's "host path or blob store"), reusing `core/content.hpp`'s `BlobRef`
+  (003 §3) rather than inventing a second digest+store vocabulary — no existing caller constructed
+  `MountSpec` yet, so this was a pure addition, not a breaking change. `smoke_vocabulary.cpp`'s
+  `DummySandboxBackend` updated to declare `traits` (the concept now requires it).
+  `tests/test_sandbox_backend_contract.cpp` (8 checks: `resolve_strict`'s strength/platform/tie-break
+  cases including the "nothing supports this platform" case, `MountSpec::source` holding each
+  alternative) on Windows (MSVC) and Linux (Docker, gcc-14) — both green. Full suite also run both
+  platforms: 22/22 on Windows; 17/18 on Linux, the one failure being `test_real_filesystem_adapter`'s
+  already-tracked case-fold-consistency gap (Phase B's B1 writeup; explicitly assigned to C4, not a
+  regression from this task). Ordinary task, not ADR-track: contract-shape plumbing, no isolation
+  logic. **S**
 - **C2.** `native-jail` backend written fresh (not extending the spike): `create`/`exec`/`destroy`,
   `ResourceLimits` enforcement, carrying forward ADR-004's *findings* (wall_ms as the dependable
   bound, `cpu_ms` best-effort only, documented as such — not the code) on Windows; namespaces +

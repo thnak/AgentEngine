@@ -50,6 +50,10 @@ static_assert(ae::Runner<DummyRunner>, "DummyRunner must satisfy the Runner conc
 // ---- SandboxBackend concept (sandbox/sandbox.hpp) — trivial conforming type ----------------------
 
 struct DummySandboxBackend {
+    static constexpr ae::ProfileTraits traits{
+        1, ae::platform_id::windows_x86_64 | ae::platform_id::linux_x86_64,
+        ae::cold_start_class::milliseconds};
+
     ae::result<ae::SandboxHandle> create(ae::SandboxSpec const&, ae::EffectContext&) {
         return ae::SandboxHandle{};
     }

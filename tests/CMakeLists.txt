@@ -167,6 +167,13 @@ add_executable(test_tool_pipeline_capability_reuse test_tool_pipeline_capability
 target_link_libraries(test_tool_pipeline_capability_reuse PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_tool_pipeline_capability_reuse COMMAND test_tool_pipeline_capability_reuse)
 
+# ---- SandboxBackend contract completion (M2 Phase C task C1, 008 §2-3) -------------------------
+# ProfileTraits / resolve_strict (Profile::Strict resolution) and MountSpec's host-path/blob-store
+# source field. Header-only, core-tier -- links only agentengine::core.
+add_executable(test_sandbox_backend_contract test_sandbox_backend_contract.cpp)
+target_link_libraries(test_sandbox_backend_contract PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_sandbox_backend_contract COMMAND test_sandbox_backend_contract)
+
 # ---- native_jail Runner stub contract ---------------------------------------------------------
 # Proves PythonRunner (still a stub) satisfies Runner and fails closed, and that ShellRunner (now
 # real, see below) satisfies Runner — see the file's own top comment for exactly what is and is
