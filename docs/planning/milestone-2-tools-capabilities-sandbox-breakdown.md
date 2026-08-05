@@ -679,8 +679,73 @@ remains a spike, cited as such everywhere C2's writeups reference it.
   resolves the `tool` world into valid Component Model metadata against a real (empty) core module
   (`wasm-tools component embed --world tool`, exit 0), proving the world's imports/exports/resources
   form a semantically valid Component Model contract, not merely syntactically parseable text.
-- **D3.** Minimal WASM component host: load, verify manifest-vs-imports (009 §4/§10 G2), instantiate
-  under the `wasm` `SandboxBackend` profile, invoke, destroy. **XL**
+- **D3.** (done) Minimal WASM component host: load, verify manifest-vs-imports (009 §4/§10 G2),
+  instantiate under the `wasm` `SandboxBackend` profile, invoke, destroy. **XL**
+
+  Security-critical — full design→red-team→prove→judge per CLAUDE.md, landed as
+  `decisions/ADR-010-wasm-component-host-manifest-capability-binding.md` (Judged). Real design
+  finding: `wit/ae-tool.wit`'s original single `host` interface (D2) made manifest-vs-import
+  verification unstatable at anything finer than all-or-nothing, since the Component Model's import
+  granularity is per-*interface*; revised into `base`/`fs`/`http`/`secrets`/`clock`/`random`/
+  `capability` interfaces (one per 007 capability kind, plus the shared resource-type carrier) so
+  "this component imports `ae:tool/fs`" and "the manifest requests `FsRead`" are the same fact.
+  `blob`/`tool-call` stay declared but never linked — 007 has no `Blob` capability kind yet and
+  tool-call needs dispatch machinery M2 doesn't build — so a component referencing either always
+  fails to load, mechanically (fails Wasmtime's own component-type check, not just a runtime host
+  check).
+
+  `src/backends/wasm/wasm_backend.{hpp,cpp}`: `WasmBackend` satisfies `SandboxBackend`
+  (`create`/`exec`/`destroy`/`traits`) plus a richer `load_component`/`list_tools`/`invoke_tool`
+  surface matching D2's WIT shapes directly. Capability handles are WIT `resource` values backed by
+  `wasmtime_component_resource_host_t`, `rep` indexing a per-call `BoundCapability` table (reusing
+  ADR-009's real mechanism, not a parallel one) — every gated host callback recovers its capability
+  and confirms it's the exact `cap::` kind that function needs, rejecting a wrong-kind or revoked
+  handle. `load_component()` (not `create()` — `SandboxSpec` has no "which component" field, a real
+  gap found while implementing) enumerates the component's actual declared imports via
+  `wasmtime_component_type_import_*` and fails closed, before ever instantiating, if anything falls
+  outside what the manifest requests and the operator granted. No pooling: every call gets a fresh
+  store/linker/instance, sidestepping 008 §6a's deferred snapshot-reset problem rather than
+  half-solving it. `ResourceLimits.memory_bytes`/`wall_ms` map onto `wasmtime_store_limiter`/epoch
+  interruption (one process-wide ticker thread, matching CLAUDE.md's machine-safety rule).
+
+  Proven against a real, freshly-built `ae:tool` component (`tests/fixtures/wasm_ae_tool_fixture/`,
+  Rust + `cargo component build --target wasm32-unknown-unknown`, three tools: zero-capability
+  `echo`, clock-gated `now`, infinite-looping `spin`) — not a hand-crafted stub. The compiled
+  fixture's real import list is `ae:tool/{capability,clock,types}@1.0.0`, notably *without*
+  `ae:tool/base` (never called, correctly elided by the toolchain) — a real correction to this ADR's
+  own design-phase assumption. `.wasm` output is not committed (`.gitignore`'s project-wide "WASM
+  plugin build output" rule); CMake builds it opportunistically when `cargo`/`cargo-component` are
+  found (`find_program`), and `tests/test_wasm_backend.cpp` SKIPs (`SKIP_RETURN_CODE 77`) rather than
+  failing when the toolchain is absent, mirroring the existing `test_shell_runner_no_process_creation`
+  pattern.
+
+  Eight real bugs found and fixed during the actual compile-and-run cycle (full list, with root
+  causes: ADR-010 §7.5) — none required revisiting the design itself: a private-nested-type access
+  error; the Pimpl idiom needing both special members (not just the destructor) out-of-line; the
+  `SandboxSpec` gap above; `always_ok` interfaces (`capability`/`types`) being wrongly required to
+  satisfy a capability-kind check that doesn't apply to them; every store needing an *explicit* epoch
+  deadline (wasmtime's own default is "already expired," not "unbounded"); exported functions nesting
+  inside the `guest` interface's own instance, mirroring imports; the linker's resource-type argument
+  needing to be host-defined (`wasmtime_component_resource_type_new_host`), not the component's own
+  introspected type, which otherwise traps with "mismatched resource types"; and a real double-free
+  (`wasmtime_component_val_delete` already recursively frees embedded resource pointers — a second,
+  explicit `resource_any_delete` loop crashed with `STATUS_HEAP_CORRUPTION` on every call).
+
+  Tests (`tests/test_wasm_backend.cpp`): positive load+list+invoke against the real fixture; negative
+  fail-closed load when the manifest omits a capability the component structurally needs, checked
+  against the exact error code; a capability-kind-confusion probe via the real fixture itself (grant
+  `{Entropy, Clock}` in that order so the guest's first capability slot is the wrong kind for what it
+  calls) rather than a test-only backdoor; a measured wall-clock kill of the `spin` tool. Verified:
+  Windows native (`ctest -j4`, all D3-relevant tests pass) and Linux (fresh Docker container with a
+  freshly installed Rust/`cargo-component` toolchain). One pre-existing, unrelated failure observed
+  and flagged, not fixed: `test_native_jail_backend_windows`'s "exceeding memory_bytes reports oom"
+  case, confirmed via `git diff --stat` to be outside anything touched this session.
+
+  Explicitly not claimed: signature/publisher verification (`PluginManifest` has no signature field
+  yet, matching 009 §3a's undecided OCI/signing infrastructure); AOT-cache-by-digest; instance
+  pooling; the four other gated callbacks' (`fs-read`/`fs-write`/`http-request`/`resolve-secret`)
+  own wrong-kind rejection individually exercised (one of five proven directly, the mechanism is
+  identical for all five) — left for D5's fuller suite rather than claimed covered here.
 - **D4.** One real `ae:tool` component (a trivial echo/add tool from a Component-Model-capable
   toolchain) loads and executes identically across platforms — 009 §10 G1, the milestone's other
   named exit-criterion item. **L**

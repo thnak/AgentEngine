@@ -212,6 +212,20 @@ if(AGENTENGINE_WITH_WASM)
       INTERFACE_LINK_LIBRARIES "pthread;dl;m")
   endif()
   add_library(agentengine::wasmtime_vendor ALIAS agentengine_wasmtime_vendor)
+
+  # ---- wasm SandboxBackend (src/backends/wasm/) -- Windows + Linux -----------------------------
+  # Milestone 2 Phase D task D3 (docs/planning/milestone-2-tools-capabilities-sandbox-breakdown.md):
+  # the first real implementation under src/backends/wasm/ -- security-critical, built through
+  # design->red-team->prove->judge per CLAUDE.md and landed as
+  # decisions/ADR-010-wasm-component-host-manifest-capability-binding.md before this target existed.
+  add_library(agentengine_wasm_backend STATIC
+    src/backends/wasm/wasm_backend.cpp)
+  target_include_directories(agentengine_wasm_backend PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  target_link_libraries(agentengine_wasm_backend PUBLIC
+    agentengine::core agentengine::wasmtime_vendor)
+  target_link_libraries(agentengine_wasm_backend PRIVATE agentengine_warnings)
+  add_library(agentengine::wasm_backend ALIAS agentengine_wasm_backend)
 endif()
 
 # ---- Cross-process capability tokens (src/trust/) -- Windows only ------------------------------

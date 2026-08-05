@@ -284,11 +284,15 @@ was rejected because there is no existing deployment depending on an older pin (
 external users) and because testing both 0.2 and 0.3 async ABI paths for zero present benefit is
 exactly the "not a small compatibility surface" cost the question itself flagged — a straight
 `GIT_TAG`/version pin (matching the existing `FetchContent` pattern already used for `nlohmann_json`
-in `tests/CMakeLists.txt`) is simpler and sufficient. **Not attempted:** actually instantiating a
+in `tests/CMakeLists.txt`) is simpler and sufficient. ~~**Not attempted:** actually instantiating a
 real `.wasm` component (as opposed to a core module) through the `wasmtime_component_*` APIs — that
 needs `wasm-tools`/`cargo-component` to produce a component binary, out of this small prove's scope;
 the Component Model support claim rests on header inspection plus the module-level round trip, not
-a component-level execution.
+a component-level execution.~~ **Closed 2026-08-05 by M2 task D3**
+(`decisions/ADR-010-wasm-component-host-manifest-capability-binding.md`): a real component, compiled
+via `cargo component build --target wasm32-unknown-unknown`, loads, instantiates, and executes
+through these same headers — engine/store/linker/instance/func-call all exercised for real, on
+Windows and Linux, not merely the module-level round trip this entry originally stopped at.
 
 ### OQ-3 — Do capabilities cross process boundaries as tokens?
 

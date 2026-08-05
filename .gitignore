@@ -24,6 +24,9 @@ compile_commands.json
 *.wasm
 *.aepkg
 wit-bindgen-out/
+target/
+# cargo-component regenerates this from wit/ on every build -- never hand-edited, never committed.
+tests/fixtures/**/src/bindings.rs
 
 # Python (interpreter fixtures, tooling venvs)
 __pycache__/
