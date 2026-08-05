@@ -9,6 +9,10 @@
 //   sleep <ms>             -- sleep, then exit 0 (well-behaved baseline / positive-control child).
 //   spawn <n> <self_path>  -- CreateProcess itself <n> times running "sleep 500" each, report how
 //                             many creations actually succeeded, then idle.
+//   fail <code>            -- exit immediately with <code> (a clean, ordinary nonzero exit -- not
+//                             a resource-limit kill, not a crash -- so a caller distinguishing
+//                             "this exec merely returned nonzero" from "a limit killed it" has a
+//                             positive-control shape for the FIRST case too, not only the second).
 #include <windows.h>
 
 #include <cstdio>
@@ -77,11 +81,17 @@ int mode_spawn(int n, std::string const& self_path) {
     return 0;
 }
 
+int mode_fail(int code) {
+    printf("FAIL_MODE exiting %d\n", code);
+    fflush(stdout);
+    return code;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        fprintf(stderr, "usage: hostile_child <alloc|spin|sleep|spawn> ...\n");
+        fprintf(stderr, "usage: hostile_child <alloc|spin|sleep|spawn|fail> ...\n");
         return 2;
     }
     std::string mode = argv[1];
@@ -89,6 +99,7 @@ int main(int argc, char** argv) {
     if (mode == "spin") return mode_spin();
     if (mode == "sleep" && argc >= 3) return mode_sleep(std::atoi(argv[2]));
     if (mode == "spawn" && argc >= 4) return mode_spawn(std::atoi(argv[2]), argv[3]);
+    if (mode == "fail" && argc >= 3) return mode_fail(std::atoi(argv[2]));
     fprintf(stderr, "unrecognized mode/args\n");
     return 2;
 }

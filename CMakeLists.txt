@@ -74,6 +74,23 @@ if(WIN32)
   add_library(agentengine::job_object_limits ALIAS agentengine_job_object_limits)
 endif()
 
+# ---- native_jail SandboxBackend, Windows half (src/backends/native_jail/) -- Windows only -------
+# Implements agentengine::SandboxBackend (008 SS1b, SS2, SS3) via AppContainer (app_container_profile.*)
+# + the Job Object layer above -- Milestone 2 Phase C task C2. Pure Win32 API (userenv.dll's
+# AppContainer profile functions, advapi32.dll's ACL functions) -- no third-party dependency.
+if(WIN32)
+  add_library(agentengine_native_jail_backend STATIC
+    src/backends/native_jail/app_container_profile.cpp
+    src/backends/native_jail/native_jail_backend.cpp)
+  target_include_directories(agentengine_native_jail_backend PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  target_link_libraries(agentengine_native_jail_backend PUBLIC
+    agentengine::core agentengine::job_object_limits)
+  target_link_libraries(agentengine_native_jail_backend PRIVATE
+    agentengine_warnings userenv advapi32)
+  add_library(agentengine::native_jail_backend ALIAS agentengine_native_jail_backend)
+endif()
+
 # ---- Cross-process capability tokens (src/trust/) -- Windows only ------------------------------
 # Implements decisions/ADR-005-capability-bearer-tokens-cross-process.md (resolves OQ-3): both
 # competing designs it prove-phases -- Design A (trust/capability_token.hpp, a self-verifying

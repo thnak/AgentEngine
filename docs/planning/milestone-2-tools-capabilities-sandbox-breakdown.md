@@ -226,6 +226,16 @@ deferred, not silently dropped. See "What's explicitly deferred past M2" at the 
 
 ### Phase C — `native-jail` sandbox (008), Windows + Linux
 
+**Process note (2026-08-05, before C2 started).** `decisions/README.md`'s rule requires a full
+`design → red-team → prove → judge` ADR cycle for any "isolation boundary" choice, and ADR-004 (the
+Windows AppContainer + Job Object design C2 builds on) is explicitly self-described as "Spiked, not
+Judged" — its own §11 lists "a real, adversarial red-team pass on this design... before any claim
+here is treated as more than a spike" as still outstanding. Raised explicitly with the project owner
+before C2's implementation started; **decision: proceed as this doc already scoped it** — C2 is an
+ordinary implementation task carrying forward ADR-004's findings, verified by this phase's own
+build+test+gate work (C3–C6), not a separate ADR cycle. ADR-004 itself is not thereby Judged; it
+remains a spike, cited as such everywhere C2's writeups reference it.
+
 - **C1 (done).** `SandboxBackend` contract completed (`sandbox/sandbox.hpp`) — still synchronous per
   decision 2. `ProfileTraits{strength, platform_mask, cold_start}` added as 008 §2's "static
   constexpr ProfileTraits traits" line, plus the concept requirement that every conforming backend
@@ -250,10 +260,43 @@ deferred, not silently dropped. See "What's explicitly deferred past M2" at the 
   already-tracked case-fold-consistency gap (Phase B's B1 writeup; explicitly assigned to C4, not a
   regression from this task). Ordinary task, not ADR-track: contract-shape plumbing, no isolation
   logic. **S**
-- **C2.** `native-jail` backend written fresh (not extending the spike): `create`/`exec`/`destroy`,
-  `ResourceLimits` enforcement, carrying forward ADR-004's *findings* (wall_ms as the dependable
-  bound, `cpu_ms` best-effort only, documented as such — not the code) on Windows; namespaces +
-  seccomp-BPF + cgroups v2 on Linux. **XL**
+- **C2 (Windows half done; Linux is C2's own follow-up, 021 §2 sequencing).**
+  `NativeJailBackend` (`src/backends/native_jail/native_jail_backend.{hpp,cpp}`,
+  `app_container_profile.{hpp,cpp}`) — written fresh (not extending the ADR-004 spike code, which
+  does not survive in the repo), carrying forward that ADR's *findings*: AppContainer (zero granted
+  capabilities, `PROCESS_CREATION_CHILD_PROCESS_RESTRICTED`) for process identity/authority, one
+  profile reused across sessions (`ensure()` is idempotent — `ERROR_ALREADY_EXISTS` treated as
+  success); `JobObjectLimits` (already built) for `memory_bytes`/`pids` (reliable) and `cpu_ms`
+  (best-effort, documented as such in this file's own header, not silently trusted); the wall-clock
+  watch as the actual trusted timeout mechanism (ADR-004 §10.5). Process launch: `CREATE_SUSPENDED`
+  → `AssignProcessToJobObject` → `ResumeThread`, so every `ResourceLimits` axis applies before the
+  guest's first instruction runs; separate stdout/stderr pipes (not merged, unlike the test-only
+  `hostile_child` pattern) drained with a bounded read (`output_bytes`, or a 16 MiB safety floor if
+  unset) so unbounded guest output cannot itself DoS the host (008 §2 item 2). `ExecOutcome`
+  classification: `wall_clock_timeout` → `timeout`; exit 0 → `ok`; nonzero exit is split `oom` vs.
+  `crash` by a peak-job-memory-vs-cap heuristic (Job Objects give no completion-port-free way to
+  distinguish the two — documented as an honest approximation, not a precise signal, citing
+  ADR-004 §9.3/§10.4's still-open "why" gap). `policy_violation`/`escape_attempt` are not produced
+  by this layer yet — no mechanism here generates them; that is 010's interpreter-level mediation,
+  M3.
+  Decision made explicit in the file's own header: `ExecRequest::source` is, for M2 only, a
+  fully-resolved Win32 command line (per decision 3 — the exec target is a compiled probe, not
+  Python/shell) that the *caller* is trusted to have already resolved from a name; this backend
+  does not itself mediate `language`/`source`, matching 008 §1b layer 2's framing that name
+  resolution is a Runner/Tool registry's job, not the sandbox backend's. `MountSpec::source` as a
+  `BlobRef` fails closed with a named policy error (unscoped — materializing a blob-store mount
+  into a live filesystem grant is new work this task does not attempt), not silently ignored.
+  `tests/helpers/hostile_child.cpp` gained a `fail <code>` mode (a clean nonzero exit unrelated to
+  any resource limit) to give the crash/oom split a positive control.
+  `tests/test_native_jail_backend_windows.cpp`: create() against a real mount + limits; exec()
+  reporting `ok`/`timeout`/`crash`/`oom` against real child processes under real AppContainer +
+  Job Object isolation; exec() on a destroyed handle fails closed. All pass on Windows (MSVC).
+  Full suite: 23/23 on Windows; Linux build/test confirmed the new code is cleanly `WIN32`-gated
+  (no native_jail_backend/app_container symbols built at all) with the same pre-existing C4-tracked
+  `test_real_filesystem_adapter` gap as C1, no new failures. Per-owner direction (see this doc's
+  process note above): proceeds as an ordinary implementation task carrying forward ADR-004's
+  findings, not a fresh ADR cycle — ADR-004 itself remains a self-described spike, not Judged.
+  **Linux namespaces + seccomp-BPF + cgroups v2: not started, tracked as C2's own remaining half.**
 - **C3.** Minimal probe binaries proving the §7 abuse-case subset that needs no interpreter (fork
   bomb, OOM, infinite loop → `wall_ms` kill, fs-escape attempt, unbounded output) — 008 §9 G2 scoped
   to what's buildable without 010 (decision 3). **L**

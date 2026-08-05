@@ -252,6 +252,18 @@ if(WIN32)
   # CLAUDE.md Machine Safety requires a backstop even though every individual wait inside the test
   # already has its own bounded deadline.
   set_tests_properties(test_job_object_limits PROPERTIES TIMEOUT 90)
+
+  # ---- NativeJailBackend end-to-end (M2 Phase C task C2, 008 §1b/§2/§3) -------------------------
+  add_executable(test_native_jail_backend_windows test_native_jail_backend_windows.cpp)
+  target_link_libraries(test_native_jail_backend_windows PRIVATE
+    agentengine::core agentengine::native_jail_backend agentengine_warnings)
+  target_compile_definitions(test_native_jail_backend_windows PRIVATE
+    AE_HOSTILE_CHILD_EXE="$<TARGET_FILE:job_object_hostile_child>")
+  add_dependencies(test_native_jail_backend_windows job_object_hostile_child)
+  add_test(NAME test_native_jail_backend_windows COMMAND test_native_jail_backend_windows)
+  # Same Machine Safety backstop as test_job_object_limits -- real child processes, real wall_ms
+  # kills under test.
+  set_tests_properties(test_native_jail_backend_windows PROPERTIES TIMEOUT 90)
 endif()
 
 # ---- Capability bearer-token prove phase (decisions/ADR-005-capability-bearer-tokens-cross-process.md)
