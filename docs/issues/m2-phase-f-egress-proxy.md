@@ -19,10 +19,24 @@ the sequential A–E phases because both are cross-cutting rather than owned by 
   activity, byte cap enforced mid-stream (declared cap or a 16 MiB hard ceiling), no redirect-
   following. Plain HTTP only and IPv4 only this milestone — both named, not silently assumed; HTTPS
   needs a follow-up ADR once a general-purpose TLS client exists. **Size: XL.**
-- **F2.** (not started) Policy-reachability tool (007 §9 G6) — new CI tooling enumerating `{capability
+- **F2.** (done) Policy-reachability tool (007 §9 G6) — new CI tooling enumerating `{capability
   kind, tool, taint level}` against whatever mechanical enforcement A3 (`CapabilitySet::subsumes`,
   ADR-009) actually implements. ADR-009 §9 already flagged this ADR's own `subsumes()` as exactly what
   such an enumerator would need to walk. **Size: L.**
+
+  `include/agentengine/trust/policy_reachability.hpp`'s `enumerate_policy_reachability()` walks the
+  real `CapabilitySet::contains()` per `{agent, tool, capability kind, taint}` cell;
+  `tools/policy_reachability.cpp` is the CI-runnable tool, run against
+  `tools/policy_reachability_fixture.hpp`'s reference set (exits 0 clean). Two RFC-vs-code gaps named
+  explicitly rather than assumed: no 007 §5 declarative rule set exists yet (decision 4), so this
+  enumerates the mechanical ceiling-vs-requirement shape instead; "taint level" has no graded
+  vocabulary in code (a single bool, ADR-007), so taint is enumerated as that boolean, and the walk
+  itself proves admission is taint-invariant today. The exit criterion's own demanded positive control
+  (an over-broad grant a manual per-tool review would miss) is proven by
+  `tests/test_policy_reachability.cpp`, not exercised by the CLI's own default run (see the breakdown
+  doc's F2 entry for why). Verified on Windows and a fresh Linux container; see
+  `docs/planning/milestone-2-tools-capabilities-sandbox-breakdown.md`'s F2 entry for the full
+  design/evidence writeup.
 
 ## Exit criteria
 
@@ -32,6 +46,7 @@ the sequential A–E phases because both are cross-cutting rather than owned by 
 - The proxy is wired into at least one real consumer end-to-end, not proven in isolation only.
   **Met (F1 — `wasm`'s `http-request`.)**
 - A CI tool enumerates the declared capability/tool/taint surface against the real enforcement
-  mechanism. **Not yet met — F2 pending.**
+  mechanism. **Met (F2).**
 
-Phase F is **not yet complete** — F1 done, F2 remaining.
+**Phase F is complete** — F1 and F2 both done. With F2 done, Milestone 2 itself is complete (see the
+breakdown doc's F2 entry).

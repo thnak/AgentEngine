@@ -243,6 +243,16 @@ add_executable(test_agent_tool_invocation test_agent_tool_invocation.cpp)
 target_link_libraries(test_agent_tool_invocation PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_agent_tool_invocation COMMAND test_agent_tool_invocation)
 
+# ---- Policy-reachability enumerator (M2 Phase F task F2, 007 §9 gate G6) -----------------------
+# Proves include/agentengine/trust/policy_reachability.hpp's enumerator against
+# ../tools/policy_reachability_fixture.hpp's reference set -- the same fixture
+# tools/policy_reachability.cpp (the CI tool itself) runs, so the two can never drift apart.
+# Header-only, core-tier.
+add_executable(test_policy_reachability test_policy_reachability.cpp)
+target_include_directories(test_policy_reachability PRIVATE "${CMAKE_SOURCE_DIR}/tools")
+target_link_libraries(test_policy_reachability PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_policy_reachability COMMAND test_policy_reachability)
+
 # ---- SandboxBackend contract completion (M2 Phase C task C1, 008 §2-3) -------------------------
 # ProfileTraits / resolve_strict (Profile::Strict resolution) and MountSpec's host-path/blob-store
 # source field. Header-only, core-tier -- links only agentengine::core.

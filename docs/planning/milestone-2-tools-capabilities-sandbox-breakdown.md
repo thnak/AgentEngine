@@ -1020,9 +1020,52 @@ remains a spike, cited as such everywhere C2's writeups reference it.
   (`gcc:14`, 23/23, 1 expected skip), with `test_net_egress_proxy` additionally reconfirmed clean over
   8 (Windows) and 10 (Linux) consecutive standalone runs.
 
-- **F2.** Policy-reachability tool (007 §9 G6) — new CI tooling enumerating `{capability kind, tool,
-  taint level}` against whatever mechanical enforcement A3 actually implements (decision 4's scope,
-  not the full declarative language). **L**
+- **F2.** (done) Policy-reachability tool (007 §9 G6) — new CI tooling enumerating `{capability kind,
+  tool, taint level}` against whatever mechanical enforcement A3 actually implements (decision 4's
+  scope, not the full declarative language). **L**
+
+  `include/agentengine/trust/policy_reachability.hpp`: `enumerate_policy_reachability()` walks every
+  declared `{agent, tool, capability kind, taint}` cell through the real `CapabilitySet::contains()`
+  (`trust/capability.hpp`, ADR-009) — the same check `register_agent<A>()`'s own
+  `check_capability_ceiling()` performs, just at per-cell granularity instead of whole-ceiling
+  pass/fail. Two RFC-vs-code gaps named explicitly, not silently assumed (matching ADR-011's own scope-
+  cut discipline): 007 §5's declarative rule language doesn't exist yet (decision 4), so this enumerates
+  against the mechanical ceiling-vs-requirement shape instead of a rule set; "taint level" has no graded
+  vocabulary in code (`ContentItem::tainted`/`ToolCallRequest::arguments_tainted` are a single bool,
+  ADR-007) so taint is enumerated as that boolean — and the walk itself proves admission is
+  taint-invariant today (`contains()`/`subsumes()` takes no taint parameter at all), asserting that
+  explicitly (`finding_kind::taint_variant`) rather than assuming it holds forever.
+
+  G6's own "dead-rule detection" (no rule set exists to leave a rule unexercised) is reinterpreted as
+  two structural findings a whole-ceiling pass/fail check cannot produce: `over_broad_grant` (an
+  agent's ceiling grants a capability kind none of its declared tools ever requires — the exit
+  criterion's own demanded positive control, since a reviewer checking each tool individually against
+  the ceiling would see every check pass and never notice the unused grant) and `uncovered_by_oracle`
+  (a real cell with no matching hand-computed oracle entry, keeping the oracle honest as tools are
+  added).
+
+  `tools/policy_reachability.cpp` is the CI-runnable tool itself (builds as part of the ordinary
+  `cmake --build`, no new CMake option), run against `tools/policy_reachability_fixture.hpp`'s clean
+  reference set (4 agents spanning 5 of the 16 capability kinds, one — `echo-agent-registered` — built
+  through the real `register_agent<A>()` path for round-trip parity, not just synthetic structs); exits
+  0 clean today. The positive control (`add_over_broad_positive_control()`) is deliberately NOT part of
+  the CLI's own default run — a gate that's permanently red over a known, accepted fixture entry isn't
+  a useful gate (007 §10 Q3: findings are "for an operator to review") — so it's exercised only by
+  `tests/test_policy_reachability.cpp` (ctest), which proves the CLI's clean pass, the over-broad-grant
+  detector catching its positive control, and two further detector positive controls (a deliberately
+  wrong oracle entry caught as `oracle_mismatch`; a deliberately dropped oracle entry caught as
+  `uncovered_by_oracle`) — the detectors are proven to actually detect, not just assumed clean because
+  today's fixture happens to be.
+
+  Verified on Windows (`ctest -C Debug -j4`, 30/33 — the 3 failures are the pre-existing, unrelated
+  `test_native_jail_backend_windows`-family Job-Object OOM-vs-timeout classification flake, reconfirmed
+  independent of this change by a serial retry) and a fresh Linux container (`gcc:14`, 22/22, 1 expected
+  skip), with `test_policy_reachability` additionally reconfirmed clean over 3 consecutive standalone
+  Linux runs. `tools/naming_lint.py` reports no new violations from this task's own header.
+
+  **With F2 done, Phase F and Milestone 2 itself are complete** — M2's own named exit criterion (this
+  doc's top) was already met by Phase E (E3) plus Phases C/D; F2 was the last outstanding cross-cutting
+  gate item (007 §9 G6) the roadmap flagged separately for M2.
 
 ## What's explicitly deferred past M2
 

@@ -51,6 +51,16 @@ target_link_libraries(agentengine_net_egress_proxy PUBLIC agentengine::core)
 target_link_libraries(agentengine_net_egress_proxy PRIVATE agentengine_warnings)
 add_library(agentengine::net_egress_proxy ALIAS agentengine_net_egress_proxy)
 
+# ---- Policy-reachability CI tool (tools/) -- 007 §9 gate G6, M2 Phase F task F2 ------------------
+# Enumerates {capability kind, tool, taint} against the real mechanical enforcement
+# decisions/ADR-009-capability-set-enforcement-mechanism.md built (CapabilitySet::contains(),
+# trust/capability.hpp) via include/agentengine/trust/policy_reachability.hpp's enumerator -- see
+# that header's own top comment for the RFC-vs-code scope note (no declarative rule set exists yet,
+# decision 4; taint is enumerated as the boolean the mechanism actually has, not 007 §5's
+# aspirational graded levels). Header-only logic (agentengine::core is enough); no new dependency.
+add_executable(agentengine_policy_reachability tools/policy_reachability.cpp)
+target_link_libraries(agentengine_policy_reachability PRIVATE agentengine::core agentengine_warnings)
+
 # ---- native_jail ShellRunner backend (src/backends/native_jail/) --------------
 # Implements decisions/ADR-001-shellrunner-grammar-and-dispatch.md — Design A: the
 # recursive-descent parser, the pmr-backed AST, the tree-walking evaluator, the fixed builtin
