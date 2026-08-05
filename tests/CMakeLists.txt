@@ -298,6 +298,20 @@ if(WIN32)
   add_dependencies(test_native_jail_ambient_authority_windows job_object_hostile_child)
   add_test(NAME test_native_jail_ambient_authority_windows COMMAND test_native_jail_ambient_authority_windows)
   set_tests_properties(test_native_jail_ambient_authority_windows PROPERTIES TIMEOUT 60)
+
+  # ---- 008 §9 G4 teardown-cycle census (M2 Phase C task C6) --------------------------------------
+  add_executable(test_native_jail_teardown_cycles_windows test_native_jail_teardown_cycles_windows.cpp)
+  target_link_libraries(test_native_jail_teardown_cycles_windows PRIVATE
+    agentengine::core agentengine::native_jail_backend agentengine_warnings psapi)
+  target_compile_definitions(test_native_jail_teardown_cycles_windows PRIVATE
+    AE_HOSTILE_CHILD_EXE="$<TARGET_FILE:job_object_hostile_child>")
+  add_dependencies(test_native_jail_teardown_cycles_windows job_object_hostile_child)
+  add_test(NAME test_native_jail_teardown_cycles_windows COMMAND test_native_jail_teardown_cycles_windows)
+  # 300 real AppContainer + Job Object launches, plus 5 warm-up -- generous but finite headroom over
+  # the measured per-cycle cost, same Machine Safety backstop as the other native_jail tests.
+  # RUN_SERIAL: minimizes overlap with sibling tests that share job_object_hostile_child.exe (a
+  # real -j4 run surfaced this -- see the test file's own comment on hostile_child_name_lower).
+  set_tests_properties(test_native_jail_teardown_cycles_windows PROPERTIES TIMEOUT 150 RUN_SERIAL TRUE)
 endif()
 
 # ---- LinuxNativeJailBackend end-to-end (M2 Phase C task C2's Linux follow-up, 008 §1b/§2/§3) ---
@@ -364,6 +378,17 @@ if(NOT WIN32)
     add_test(NAME test_native_jail_ambient_authority_linux
       COMMAND bash -c "source ${CMAKE_CURRENT_SOURCE_DIR}/helpers/cgroup_v2_test_setup.sh && $<TARGET_FILE:test_native_jail_ambient_authority_linux>")
     set_tests_properties(test_native_jail_ambient_authority_linux PROPERTIES TIMEOUT 60)
+
+    # ---- 008 §9 G4 teardown-cycle census (M2 Phase C task C6, Linux half) --------------------------
+    add_executable(test_native_jail_teardown_cycles_linux test_native_jail_teardown_cycles_linux.cpp)
+    target_link_libraries(test_native_jail_teardown_cycles_linux PRIVATE
+      agentengine::core agentengine::linux_native_jail_backend agentengine_warnings)
+    target_compile_definitions(test_native_jail_teardown_cycles_linux PRIVATE
+      AE_HOSTILE_CHILD_POSIX_EXE="$<TARGET_FILE:hostile_child_posix>")
+    add_dependencies(test_native_jail_teardown_cycles_linux hostile_child_posix)
+    add_test(NAME test_native_jail_teardown_cycles_linux
+      COMMAND bash -c "source ${CMAKE_CURRENT_SOURCE_DIR}/helpers/cgroup_v2_test_setup.sh && $<TARGET_FILE:test_native_jail_teardown_cycles_linux>")
+    set_tests_properties(test_native_jail_teardown_cycles_linux PROPERTIES TIMEOUT 150)
   endif()
 endif()
 

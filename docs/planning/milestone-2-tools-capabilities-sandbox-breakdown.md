@@ -532,9 +532,70 @@ remains a spike, cited as such everywhere C2's writeups reference it.
   Full regression check: Windows 27→28 tests (added `test_native_jail_ambient_authority_windows`),
   Linux 21→22 tests (added `test_native_jail_ambient_authority_linux`), all passing on both
   platforms (2 full `-j4` Windows runs clean, one fresh-container Linux run clean).
-- **C6.** Teardown-cycle proof (008 §9 G4) — scoped down from the RFC's full 10⁵ cycles to a
+- **C6.** (done) Teardown-cycle proof (008 §9 G4) — scoped down from the RFC's full 10⁵ cycles to a
   machine-safe bounded count (CLAUDE.md's build/test resource caps apply), rationale documented, same
   pattern as M1 deferring 001's 10⁴-session gate. **M**
+
+  New tests: `tests/test_native_jail_teardown_cycles_windows.cpp`,
+  `tests/test_native_jail_teardown_cycles_linux.cpp`. 300 create/exec/destroy cycles (not 10⁵) against
+  each `native-jail` half, after a 5-cycle warm-up (absorbs one-time setup cost — first AppContainer
+  profile creation, first DACL grant, first delegated-cgroup-root controller enable — so the
+  before/after delta measures steady-state per-cycle behavior, not first-call cost misclassified as a
+  leak).
+
+  This project has no ASan build configured (checked: no sanitizer flag anywhere in
+  CMakeLists.txt/tests/CMakeLists.txt) — the census half of G4's parenthetical is what these tests
+  perform; an ASan-instrumented build remains open follow-up work, not silently assumed covered (now
+  noted in 008 §9's G4 bullet directly).
+
+  Censused resources, chosen as the real per-cycle-allocated thing each backend's own code opens or
+  mutates, not a generic proxy:
+  - Windows: process handle count (`GetProcessHandleCount`) — catches a leaked Job Object/process/
+    thread/pipe HANDLE; process private-bytes usage (`GetProcessMemoryInfo`) — most sensitive to
+    exec()'s own two 1 MiB `CreatePipe` buffers per call, the highest-risk single resource;
+    AppContainer DACL entry count on the reused mount — catches ACE accumulation from calling
+    `grant_path` once per cycle on the same mount; `job_object_hostile_child.exe` process count
+    (delta-based, not absolute-zero — see finding below).
+  - Linux: open file descriptor count (`/proc/self/fd`) — catches a leaked pipe fd (six per `exec()`
+    call: sync + stdout + stderr pipe ends); RSS (`/proc/self/status` `VmRSS`) — most sensitive to
+    exec()'s own 1 MiB child-stack `mmap()` per call; delegated cgroup root directory-entry count —
+    catches a leaked `CgroupLimits` directory.
+
+  Non-vacuousness: each platform runs two small positive controls BEFORE the real loop, through the
+  exact same measurement functions the real assertions use, deliberately producing a known-sized leak
+  (50 leaked handles/fds; on Windows, `grant_path` called with two DIFFERING `read_write` values on a
+  throwaway path — the case `app_container_profile.hpp`'s own header already documents as
+  non-idempotent — to prove ACE accumulation really is detectable; on Linux, a raw `mkdir`/`rmdir`
+  under the delegated root to prove the directory-entry count really does move). Both platforms'
+  positive controls passed before the real loop ran.
+
+  Measured results, both platforms, zero growth on every axis after 300 cycles: Windows — handles
+  114→114, private bytes unchanged (a few KB of allocator noise across repeated runs, always far under
+  the 50 MiB slack), DACL entries 7→7 (confirms `grant_path`'s documented merge behavior for repeated
+  SAME-value calls, now measured rather than assumed). Linux — fds 4→4, RSS 3584→3712 KB (well under
+  the 50 MiB slack), cgroup delegated-root entry count 38→38 (see finding below for why 38, not 0).
+
+  Two real findings this task surfaced, both about the TEST's own methodology, not the backends:
+  1. An early version of the Windows test asserted `job_object_hostile_child.exe` count was exactly
+     zero both before and after the loop. Under a parallel `ctest -j4` run this failed —
+     `test_job_object_limits` and `test_native_jail_parity_windows` share the same hostile-child
+     binary and can legitimately have their own instances alive at that moment. Fixed by making this
+     check delta-based (before vs. after THIS test's own loop, like the other three axes) and marking
+     the test `RUN_SERIAL` in `tests/CMakeLists.txt` to minimize the overlap in the first place. Not a
+     backend leak — confirmed by re-running clean 3/3 times after the fix.
+  2. The Linux cgroup-directory census baseline is 38, not ~0: `/sys/fs/cgroup/agentengine` (the
+     delegated root) is itself a cgroup, and any cgroup directory always contains dozens of standard
+     interface files (`cgroup.procs`, `memory.max`, `pids.max`, ...) alongside whatever child-cgroup
+     subdirectories exist. Those files don't come or go, so the count stays exactly as sensitive to a
+     leaked child subdirectory as a from-zero count would be — confirmed directly by the positive
+     control (38→39→38 across a real mkdir/rmdir). Documented in the test file's own header so a
+     future reader isn't confused by a non-zero baseline.
+
+  Verified: Windows full `ctest -j4` run 3/3 clean (one unrelated pre-existing flake in
+  `test_native_jail_backend_windows`, confirmed to pass standalone and on a subsequent full run — the
+  already-known `-j4` timing-sensitivity noted in prior C-phase sessions, not introduced by this task)
+  — 27/27 passing, up from 26. Linux: fresh Docker container, full build, `ctest` 23/23 (22 pass + 1
+  intentional skip), up from 22.
 
 ### Phase D — WASM plugin host (009), once C exists to run it in
 

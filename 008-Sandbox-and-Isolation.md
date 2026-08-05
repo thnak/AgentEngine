@@ -452,7 +452,13 @@ downgrade shows up as a graph change, not as a surprise in an incident review.
 - **G3 (no ambient authority)** — a probe guest enumerating filesystem, network, env, and processes
   finds exactly the granted set and nothing else, on each backend.
 - **G4 (teardown)** — 10⁵ create/exec/destroy cycles leak no memory, no handles, no processes, no
-  temp files (ASan + handle/pid census).
+  temp files (ASan + handle/pid census). M2 Phase C task C6 proves this at a machine-safe scoped-down
+  count (300 cycles, not 10⁵ — CLAUDE.md Machine Safety) against both `native-jail` halves, via a
+  handle/fd, memory/RSS, and platform-specific-resource (AppContainer DACL entries on Windows,
+  cgroup-directory count on Linux) census, each validated non-vacuous by a positive control that
+  deliberately produces a known leak through the same measurement path. No ASan build is configured
+  in this project yet (tracked as open follow-up, not silently assumed covered) — the census
+  substitutes for that half of the gate today.
 - **G5 (cold start)** — measured p50/p99 create+exec per profile against the 023 budgets.
 - **G6 (downgrade visibility)** — an unavailable profile with no fallback fails startup; with a
   fallback, the downgrade appears in diagnostics, trace, and metrics. Proven by a negative test.
