@@ -266,6 +266,13 @@ add_executable(test_agent_session_delete test_agent_session_delete.cpp)
 target_link_libraries(test_agent_session_delete PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_agent_session_delete COMMAND test_agent_session_delete)
 
+# ---- Milestone 4 Phase D1/D2 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) --
+# Checkpoint content (run position survives restart without reminting a used run_id) and cadence
+# (CheckpointCadence<N>/checkpoint_if_due() actually skip writes between checks).
+add_executable(test_agent_session_checkpoint test_agent_session_checkpoint.cpp)
+target_link_libraries(test_agent_session_checkpoint PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_agent_session_checkpoint COMMAND test_agent_session_checkpoint)
+
 # ---- CapabilitySet enforcement mechanism (decisions/ADR-009-capability-set-enforcement-mechanism.md) --
 # Header-only (trust/capability.hpp), core-tier -- links only agentengine::core.
 add_executable(test_capability_enforcement test_capability_enforcement.cpp)

@@ -127,10 +127,48 @@ struct AgentSessionRecord {  // ae-naming-lint: allow AgentSessionRecord — 005
     // own" rule).
     bool          deleted = false;
 
+    // Milestone 4 Phase D1 (019 §1: checkpoint content is "the run's position, session delta,
+    // ... and the capability set (recorded as references, never live handles)"). 019 §1 also says
+    // storage is "the Quark 012 Store seam, shared with sessions (005 §2). No second persistence
+    // engine" — taken literally: a checkpoint at this milestone's scope IS this same record, taken
+    // at a turn boundary, extended with the run's position. `run_counter`/`turn_index` are plain
+    // integers (Phase A3's real identity), trivially `Described` — no serialization gap to name
+    // for THESE two fields, unlike the ones below.
+    //
+    // `run_counter` (not the derived `run_id` string) is what's persisted: `run_id` is always
+    // `session_id + ":run:" + run_counter` (agent_session.hpp's `handle()`), so persisting the
+    // counter is sufficient and avoids parsing a string back apart on restore — and, more
+    // importantly, restoring it is what keeps a POST-RESTORE session's next `StartRun` from
+    // reminting a `run_id` that collides with a run that already happened before the crash this
+    // checkpoint survived (001 §1: every `Run` gets a fresh id).
+    std::uint64_t run_counter = 0;
+    std::uint64_t turn_index  = 0;
+
+    // NOT yet real (named, not silently defaulted to a value that looks meaningful): 019 §1's
+    // other two checkpoint-content items.
+    //   - "session delta" (the history/state change since the last checkpoint) needs
+    //     Message/ContentItem serialization, the same gap A4 already named above — there is
+    //     nothing here to hold it once that lands, this record just doesn't carry it yet.
+    //   - "capability set... as references" needs two things this milestone doesn't build: (a) a
+    //     `Capability`/`cap::*` `QUARK_SERIALIZE` (16-way variant, no smaller than
+    //     `ContentItem::value`'s own gap), and (b) 007 itself doesn't yet specify how a SESSION
+    //     (as opposed to a single tool call's per-invocation bind, `trust/capability.hpp`'s own
+    //     real, built mechanism) acquires or holds a capability grant across its OWN lifetime —
+    //     that is a real gap in 007's own design, not an implementation shortcut this task can
+    //     close on its own authority.
+    // `pending_interaction_id` is the one piece of 019 §1's content list this record CAN
+    // represent cheaply today, as a forward reference: empty means "no pending interaction,"
+    // matching 001 §2's `Interaction`/`interaction_id` naming even though nothing mints a real one
+    // yet (`Interaction` itself is Phase E1's job, immediately after this phase) — `to_record()`
+    // always writes empty this milestone; the field exists so E1 has somewhere to put a real id
+    // without a second schema migration.
+    std::string   pending_interaction_id;
+
     friend bool operator==(AgentSessionRecord const&, AgentSessionRecord const&) = default;
 };
 QUARK_SERIALIZE(AgentSessionRecord, (1, session_id), (2, principal_id), (3, principal_tenant_id),
-                 (4, created_at_ns), (5, updated_at_ns), (6, deleted))
+                 (4, created_at_ns), (5, updated_at_ns), (6, deleted), (7, run_counter),
+                 (8, turn_index), (9, pending_interaction_id))
 
 template <class ChatClientT, class StateT = NoSessionState,
           class HistoryProviderT = HistoryProvider<Window<0>>>
@@ -302,18 +340,25 @@ public:
     // checkpoint records, which need to name the run a checkpoint was taken during.
     [[nodiscard]] std::string const& last_run_id() const noexcept { return last_run_id_; }
 
-    // Phase A4's narrowed durable record (see `AgentSessionRecord`'s own comment for exactly what
-    // is and isn't covered) — `to_record()`/`restore_from_record()` are the only two places that
-    // cross between the in-process type and its durable shape, so the field list can't drift
-    // between them silently.
+    // The `turn_index` of the most recently executed turn (Phase A3/D1) — `effect_context_` isn't
+    // reset between `handle()` calls, so right after a turn completes this still holds that turn's
+    // own position, exactly what Phase D1's checkpoint content needs to name.
+    [[nodiscard]] std::uint64_t last_turn_index() const noexcept { return effect_context_.turn_index; }
+
+    // Phase A4's narrowed durable record, extended in Phase D1 with run position (see
+    // `AgentSessionRecord`'s own comment for exactly what is and isn't covered) —
+    // `to_record()`/`restore_from_record()` are the only two places that cross between the
+    // in-process type and its durable shape, so the field list can't drift between them silently.
     [[nodiscard]] AgentSessionRecord to_record() const {
-        return AgentSessionRecord{
-            session_id_,
-            principal_.id,
-            principal_.tenant_id,
-            static_cast<std::int64_t>(created_at_.time_since_epoch().count()),
-            static_cast<std::int64_t>(updated_at_.time_since_epoch().count()),
-        };
+        AgentSessionRecord rec;
+        rec.session_id           = session_id_;
+        rec.principal_id         = principal_.id;
+        rec.principal_tenant_id  = principal_.tenant_id;
+        rec.created_at_ns        = static_cast<std::int64_t>(created_at_.time_since_epoch().count());
+        rec.updated_at_ns        = static_cast<std::int64_t>(updated_at_.time_since_epoch().count());
+        rec.run_counter          = run_counter_;
+        rec.turn_index           = effect_context_.turn_index;
+        return rec;
     }
 
     void restore_from_record(AgentSessionRecord const& rec) {
@@ -323,6 +368,14 @@ public:
             std::chrono::system_clock::duration{rec.created_at_ns}};
         updated_at_ = std::chrono::system_clock::time_point{
             std::chrono::system_clock::duration{rec.updated_at_ns}};
+
+        // Phase D1: restoring run position is what keeps a post-restore session's NEXT StartRun
+        // from reminting a run_id that collides with one that already happened before whatever
+        // this checkpoint survived (001 §1's "every Run gets a fresh id").
+        run_counter_ = rec.run_counter;
+        last_run_id_ = run_counter_ > 0 ? session_id_ + ":run:" + std::to_string(run_counter_)
+                                          : std::string{};
+        effect_context_.turn_index = rec.turn_index;
     }
 
     // Milestone 4 Phase C3 (005 §6: "Delete — hard removal, including derived artifacts... with a
@@ -359,13 +412,22 @@ private:
     std::chrono::system_clock::time_point              updated_at_{};
 };
 
-// Save `session`'s narrowed durable record (Phase A4) under its own `session_actor_id()`, at the
-// consistent point `quiesce(Drain)` reaches on a Sequential actor — mirrors Quark's own
-// `persistence_snapshot_roundtrip_test.cpp` calling convention exactly: `through_seq` is fixed at
-// 0 because this is the pure Snapshot model with no event log to subsume (matching that test's own
-// comment, "through_seq=0 (Snapshot model, no log)"). `act` is the caller's `Activation` — a
-// `TestKit<AgentSession<...>>` or a real `Engine` owns it, `AgentSession` itself does not, the same
-// division of ownership `snapshot_sequential` already assumes for every Sequential actor.
+// Save `session`'s narrowed durable record (Phase A4, extended with run position in Phase D1)
+// under its own `session_actor_id()`, at the consistent point `quiesce(Drain)` reaches on a
+// Sequential actor — mirrors Quark's own `persistence_snapshot_roundtrip_test.cpp` calling
+// convention exactly: `through_seq` is fixed at 0 because this is the pure Snapshot model with no
+// event log to subsume (matching that test's own comment, "through_seq=0 (Snapshot model, no
+// log)"). `act` is the caller's `Activation` — a `TestKit<AgentSession<...>>` or a real `Engine`
+// owns it, `AgentSession` itself does not, the same division of ownership `snapshot_sequential`
+// already assumes for every Sequential actor.
+//
+// Milestone 4 Phase D1 (019 §1): calling this right after a turn completes IS "taking a
+// checkpoint" at this milestone's scope — 019 §1's own text says checkpoint storage is "the Quark
+// 012 Store seam, shared with sessions (005 §2). No second persistence engine," which this project
+// takes literally rather than adding a parallel `TurnCheckpoint` schema: one record, one save
+// path, now carrying the run's position alongside session identity. `checkpoint_if_due()` (below,
+// Phase D2) is the cadence-gated way a host would normally call this at a turn boundary; nothing
+// stops calling it directly, unconditionally, the way A4's own tests already do.
 template <class ChatClientT, class StateT, class HistoryProviderT, quark::Store S>
 [[nodiscard]] quark::result<void> save_agent_session_snapshot(
     quark::Activation& act, S& store, AgentSession<ChatClientT, StateT, HistoryProviderT> const& session,
@@ -389,6 +451,42 @@ template <quark::Store S>
     if (!rec->has_value()) return std::optional<AgentSessionRecord>{};
     if ((*rec)->state.deleted) return std::optional<AgentSessionRecord>{};
     return std::optional<AgentSessionRecord>{std::move((*rec)->state)};
+}
+
+// Milestone 4 Phase D2 (019 §1: "Cost is bounded: incremental deltas plus periodic full
+// checkpoints, with the cadence a policy"). This milestone's checkpoint content
+// (`AgentSessionRecord`, Phase D1) has no meaningful incremental-vs-full distinction to draw yet —
+// it is already a small, flat record with nothing larger to diff against (the same
+// Message/ContentItem serialization gap `AgentSessionRecord`'s own comment names). What IS real
+// and provable now is the OTHER half of "cost is bounded": not writing to the `Store` on every
+// single turn. `CheckpointCadence<N>` (this project's CRTP-policy idiom, matching
+// `MaxTurns<N>`/`TokenBudget<N>`) answers "is a checkpoint due" as a pure function of how many
+// turns have completed since the last one actually written — `N == 1` checkpoints every turn (A4's
+// own until-now-implicit default); `N > 1` skips `N - 1` writes between checks, the cheaper
+// "incremental" side of 019 §1's own cadence language, even though what's skipped isn't a
+// content-shaped delta yet, just the write itself.
+template <std::uint32_t EveryNTurns>
+    requires(EveryNTurns >= 1)
+struct CheckpointCadence {  // ae-naming-lint: allow CheckpointCadence — 019 §1 names "cadence" normatively; 027 has not been updated to list this policy type
+    [[nodiscard]] static constexpr bool due(std::uint64_t turns_since_last_checkpoint) noexcept {
+        return turns_since_last_checkpoint >= EveryNTurns;
+    }
+};
+
+// The cadence-gated way a host calls `save_agent_session_snapshot()` at a turn boundary:
+// `turns_since_last_checkpoint` is the CALLER's own count (this function does no bookkeeping of
+// its own — `AgentSession` has no ambient `Store` access, I2, so nothing here can track "since
+// when" on its behalf) — the caller increments it after every completed turn and resets it to 0
+// whenever this returns `true`. Returns `false` (not an error) when the cadence skips a write;
+// `result<bool>` still surfaces a real `Store` failure on the turns that DO attempt one.
+template <class CadenceT, class ChatClientT, class StateT, class HistoryProviderT, quark::Store S>
+[[nodiscard]] quark::result<bool> checkpoint_if_due(
+    quark::Activation& act, S& store, AgentSession<ChatClientT, StateT, HistoryProviderT> const& session,
+    quark::FenceToken fence, std::uint64_t turns_since_last_checkpoint) {
+    if (!CadenceT::due(turns_since_last_checkpoint)) return false;
+    auto saved = save_agent_session_snapshot(act, store, session, fence);
+    if (!saved) return std::unexpected(saved.error());
+    return true;
 }
 
 // Milestone 4 Phase C3 (005 §6: "Delete — hard removal... with a completion receipt"). Not a
