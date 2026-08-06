@@ -40,6 +40,7 @@
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/history_provider.hpp"
+#include "agentengine/core/interaction.hpp"
 #include "agentengine/core/json_value.hpp"
 #include "agentengine/trust/principal.hpp"
 
@@ -81,6 +82,22 @@ inline constexpr quark::TypeKey kAgentSessionTypeKey{0x4147'454E'5453'4E31ULL}; 
 // same"). One concept, one name.
 struct StartRun {  // ae-naming-lint: allow StartRun — 001 §1 names this message type normatively; 027 has not been updated to list it (same tracked-gap category as the M0 backlog)
     Message input;  // the new turn to append to history and process (001 §3 step 1)
+};
+
+// Milestone 4 Phase E3 (019 §2's "Timer/schedule" suspension wake row: "Quark durable reminders
+// (027) — at-least-once, wall-clock, mass-due-safe"). Decision 4: pure reuse, not new design — a
+// fired `quark::ReminderService` invokes a caller-supplied callback (`FireEvent`), and wiring that
+// into an actual `tell()` on the target actor's lane is the documented "engine-integration seam"
+// (reminder_service.hpp's own top comment) every caller, not just AgentEngine, has to supply for
+// itself. `TimerWake` is that one small, real addition: a tell-only message a fired reminder
+// delivers, proving a Quark reminder CAN target a session's real `session_actor_id()` (A1, reused
+// unmodified) end to end through a live `quark::Engine`. Deliberately NOT wired to any business
+// logic beyond acknowledging the wake (`timer_wakes_`) — what a real "resume the paused run this
+// timer was arming" would DO needs 006 §6b's `schedule_wakeup`/`Backgroundable`, confirmed absent
+// from this codebase (the M4 kickoff's own inventory table), which is a different, un-built
+// vertical this task does not invent standing in for.
+struct TimerWake {  // ae-naming-lint: allow TimerWake — 019 §2 names the wake condition normatively; 027 has not been updated to list a message type for it
+    std::string reminder_name;
 };
 
 // 027 §2's canonical name; already listed there, no suppression needed.
@@ -156,19 +173,20 @@ struct AgentSessionRecord {  // ae-naming-lint: allow AgentSessionRecord — 005
     //     real, built mechanism) acquires or holds a capability grant across its OWN lifetime —
     //     that is a real gap in 007's own design, not an implementation shortcut this task can
     //     close on its own authority.
-    // `pending_interaction_id` is the one piece of 019 §1's content list this record CAN
-    // represent cheaply today, as a forward reference: empty means "no pending interaction,"
-    // matching 001 §2's `Interaction`/`interaction_id` naming even though nothing mints a real one
-    // yet (`Interaction` itself is Phase E1's job, immediately after this phase) — `to_record()`
-    // always writes empty this milestone; the field exists so E1 has somewhere to put a real id
-    // without a second schema migration.
-    std::string   pending_interaction_id;
+    // Milestone 4 Phase E1: `Interaction` (001 §2) is all scalars/strings — no variant, no
+    // serialization gap — so unlike "session delta" and "capability set as references" above,
+    // 019 §1's "pending approvals/input requests" checkpoint-content item CAN be represented for
+    // real, not as a placeholder. `Interaction` is `Described` (interaction.hpp), and
+    // `std::vector<NestedDescribedType>` is an already-proven shape in this project's own
+    // dependency (Quark's `serialize_roundtrip_test.cpp`: `Order.lines` is `std::vector<Line>`
+    // where `Line` is itself `QUARK_SERIALIZE`'d) — not an untested first use.
+    std::vector<Interaction> open_interactions;
 
     friend bool operator==(AgentSessionRecord const&, AgentSessionRecord const&) = default;
 };
 QUARK_SERIALIZE(AgentSessionRecord, (1, session_id), (2, principal_id), (3, principal_tenant_id),
                  (4, created_at_ns), (5, updated_at_ns), (6, deleted), (7, run_counter),
-                 (8, turn_index), (9, pending_interaction_id))
+                 (8, turn_index), (9, open_interactions))
 
 template <class ChatClientT, class StateT = NoSessionState,
           class HistoryProviderT = HistoryProvider<Window<0>>>
@@ -176,7 +194,7 @@ template <class ChatClientT, class StateT = NoSessionState,
 class AgentSession
     : public quark::Actor<AgentSession<ChatClientT, StateT, HistoryProviderT>, quark::Sequential> {
 public:
-    using protocol = quark::Protocol<quark::Ask<StartRun, AgentResponse>>;
+    using protocol = quark::Protocol<quark::Ask<StartRun, AgentResponse>, TimerWake>;
 
     // 001 §3's turn loop, in miniature. Synchronous: `ChatClientT::chat()` is itself synchronous at
     // this milestone (chat_client.hpp: `ae::task<T>` not wired in yet), so no coroutine is needed to
@@ -230,6 +248,14 @@ public:
         m.respond(AgentResponse{response->message, response->usage});
     }
 
+    // Milestone 4 Phase E3: the tell a fired Quark reminder delivers (see `TimerWake`'s own
+    // comment). No coroutine/suspend semantics attach to this — it is a plain, synchronous
+    // acknowledgement, matching the fact that nothing in this handler ever left this actor mid-run
+    // to begin with.
+    void handle(TimerWake const&) noexcept { ++timer_wakes_; }
+
+    [[nodiscard]] std::uint64_t timer_wakes() const noexcept { return timer_wakes_; }
+
     [[nodiscard]] std::vector<Message> const& history() const noexcept { return history_; }
 
     // `quark::TestKit<A>`/a real `Engine` both default-construct the actor and hand out a mutable
@@ -255,9 +281,12 @@ public:
     //
     // Deliberately NOT copied: `run_counter_`/`last_run_id_` (001 §1 — a fork has had no `Run`s of
     // its own yet; inheriting the source's counter would make its own first run_id look like a
-    // continuation of the source's run sequence, which it isn't) and `created_at_`/`updated_at_`
+    // continuation of the source's run sequence, which it isn't), `created_at_`/`updated_at_`
     // (both are still unwired placeholders project-wide, 001 §7 — copying them would imply this
-    // fork has real provenance timestamps neither session actually has yet).
+    // fork has real provenance timestamps neither session actually has yet), and (Phase E1)
+    // `open_interactions_` — every open `Interaction` names a `run_id` (001 §2), and since the
+    // fork inherits none of the source's run identity, an interaction referencing a run that never
+    // happened on the fork would be incoherent, not merely stale.
     void fork_from(AgentSession const& source, std::string new_session_id,
                     std::optional<std::size_t> history_prefix_len = std::nullopt) {
         session_id_ = std::move(new_session_id);
@@ -275,6 +304,9 @@ public:
         effect_context_ = EffectContext{};
         created_at_      = std::chrono::system_clock::time_point{};
         updated_at_      = std::chrono::system_clock::time_point{};
+        open_interactions_.clear();
+        interaction_counter_ = 0;
+        timer_wakes_ = 0;
     }
 
     // Milestone 4 Phase C2 (005 §6: "Redact — replace content in place with a tombstone carrying
@@ -345,6 +377,46 @@ public:
     // own position, exactly what Phase D1's checkpoint content needs to name.
     [[nodiscard]] std::uint64_t last_turn_index() const noexcept { return effect_context_.turn_index; }
 
+    // Milestone 4 Phase E1 (001 §2: "Entering InputRequired or AuthRequired mints one or more
+    // durable Interaction records"). Host-callable, like fork/redact/delete — NOT wired into the
+    // synchronous turn loop: 001 §3's step 3b ("request approval if policy demands it — may →
+    // InputRequired") would be the real trigger, but that needs `ae::task<T>` coroutines to
+    // actually suspend a run mid-turn, which stays unwired project-wide (chat_client.hpp/
+    // tool_pipeline.hpp/sandbox's own runner.hpp all say the same thing: deferred past this
+    // milestone). What IS real here: minting, tracking, and resolving `Interaction` records with
+    // the exact correlation identity 001 §2 specifies — the vocabulary and lifecycle, proven
+    // standalone, the same relationship Phase A1's `session_actor_id()` had to real addressing
+    // before anything called it from a live turn loop.
+    [[nodiscard]] Interaction const& open_interaction(std::string run_id, interaction_reason reason) {
+        interaction_counter_ += 1;
+        Interaction interaction{};
+        interaction.interaction_id = session_id_ + ":interaction:" + std::to_string(interaction_counter_);
+        interaction.run_id         = std::move(run_id);
+        interaction.reason         = reason;
+        open_interactions_.push_back(std::move(interaction));
+        return open_interactions_.back();
+    }
+
+    // 001 §2: "A run does not leave InputRequired/Suspended for its 'waiting' reason until every
+    // Interaction a given resolution call names is resolved." Fails closed on an unknown id rather
+    // than silently no-op'ing, matching `redact()`'s own precedent for "the id you named isn't
+    // here."
+    [[nodiscard]] result<void> resolve_interaction(std::string const& interaction_id) {
+        auto it = std::find_if(open_interactions_.begin(), open_interactions_.end(),
+                                [&](Interaction const& i) { return i.interaction_id == interaction_id; });
+        if (it == open_interactions_.end()) {
+            return std::unexpected(error{failure_class::contract, "no open interaction with that id",
+                                          "session.resolve_interaction.unknown_id"});
+        }
+        open_interactions_.erase(it);
+        return {};
+    }
+
+    [[nodiscard]] std::vector<Interaction> const& open_interactions() const noexcept {
+        return open_interactions_;
+    }
+    [[nodiscard]] bool has_open_interactions() const noexcept { return !open_interactions_.empty(); }
+
     // Phase A4's narrowed durable record, extended in Phase D1 with run position (see
     // `AgentSessionRecord`'s own comment for exactly what is and isn't covered) —
     // `to_record()`/`restore_from_record()` are the only two places that cross between the
@@ -358,6 +430,7 @@ public:
         rec.updated_at_ns        = static_cast<std::int64_t>(updated_at_.time_since_epoch().count());
         rec.run_counter          = run_counter_;
         rec.turn_index           = effect_context_.turn_index;
+        rec.open_interactions    = open_interactions_;
         return rec;
     }
 
@@ -376,6 +449,7 @@ public:
         last_run_id_ = run_counter_ > 0 ? session_id_ + ":run:" + std::to_string(run_counter_)
                                           : std::string{};
         effect_context_.turn_index = rec.turn_index;
+        open_interactions_ = rec.open_interactions;
     }
 
     // Milestone 4 Phase C3 (005 §6: "Delete — hard removal, including derived artifacts... with a
@@ -395,6 +469,9 @@ public:
         effect_context_  = EffectContext{};
         created_at_      = std::chrono::system_clock::time_point{};
         updated_at_      = std::chrono::system_clock::time_point{};
+        open_interactions_.clear();
+        interaction_counter_ = 0;
+        timer_wakes_     = 0;
     }
 
 private:
@@ -405,6 +482,9 @@ private:
     std::unordered_map<std::string, std::string>       metadata_;
     std::uint64_t                                      run_counter_ = 0;
     std::string                                        last_run_id_;
+    std::vector<Interaction>                           open_interactions_;
+    std::uint64_t                                      interaction_counter_ = 0;
+    std::uint64_t                                      timer_wakes_ = 0;
     ChatClientT                                        chat_client_;
     HistoryProviderT                                    history_provider_;
     EffectContext                                      effect_context_;

@@ -273,6 +273,19 @@ add_executable(test_agent_session_checkpoint test_agent_session_checkpoint.cpp)
 target_link_libraries(test_agent_session_checkpoint PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_agent_session_checkpoint COMMAND test_agent_session_checkpoint)
 
+# ---- Milestone 4 Phase E1 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
+# Interaction (001 §2): mint/resolve lifecycle + checkpoint round-trip (closes D1's placeholder gap).
+add_executable(test_agent_session_interaction test_agent_session_interaction.cpp)
+target_link_libraries(test_agent_session_interaction PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_agent_session_interaction COMMAND test_agent_session_interaction)
+
+# ---- Milestone 4 Phase E2 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
+# Suspended holds zero resources -- the first AgentEngine test anywhere to stand up a real
+# quark::Engine (every prior test uses quark::TestKit, which has no passivation to census).
+add_executable(test_agent_session_suspend_resume test_agent_session_suspend_resume.cpp)
+target_link_libraries(test_agent_session_suspend_resume PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_agent_session_suspend_resume COMMAND test_agent_session_suspend_resume)
+
 # ---- CapabilitySet enforcement mechanism (decisions/ADR-009-capability-set-enforcement-mechanism.md) --
 # Header-only (trust/capability.hpp), core-tier -- links only agentengine::core.
 add_executable(test_capability_enforcement test_capability_enforcement.cpp)
