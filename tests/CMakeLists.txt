@@ -215,6 +215,13 @@ add_executable(test_agent_session_run_identity test_agent_session_run_identity.c
 target_link_libraries(test_agent_session_run_identity PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_agent_session_run_identity COMMAND test_agent_session_run_identity)
 
+# ---- Milestone 4 Phase A4, narrowed (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) --
+# session_id/principal/created_at/updated_at through Quark's real Store via the Snapshot model.
+# history[]/state/metadata explicitly NOT covered (Message/ContentItem have no QUARK_SERIALIZE yet).
+add_executable(test_agent_session_snapshot test_agent_session_snapshot.cpp)
+target_link_libraries(test_agent_session_snapshot PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_agent_session_snapshot COMMAND test_agent_session_snapshot)
+
 # ---- CapabilitySet enforcement mechanism (decisions/ADR-009-capability-set-enforcement-mechanism.md) --
 # Header-only (trust/capability.hpp), core-tier -- links only agentengine::core.
 add_executable(test_capability_enforcement test_capability_enforcement.cpp)

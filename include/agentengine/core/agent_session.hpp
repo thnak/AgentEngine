@@ -20,6 +20,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -27,7 +28,10 @@
 
 #include "quark/core/actor.hpp"
 #include "quark/core/actor_ref.hpp"
+#include "quark/core/describe.hpp"
 #include "quark/core/ids.hpp"
+#include "quark/core/persistence.hpp"
+#include "quark/core/snapshot.hpp"
 
 #include "agentengine/core/chat_client.hpp"
 #include "agentengine/core/content.hpp"
@@ -79,6 +83,38 @@ struct AgentResponse {
     Message message;
     Usage   usage;
 };
+
+// Milestone 4 Phase A4 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md),
+// narrowed per the project owner's own scoping decision at kick-off: a session's real, durable
+// identity fields — `session_id`, `principal`, `created_at`/`updated_at` — go through Quark's
+// `Store` seam (005 §2) via the Snapshot model (`quark::snapshot_sequential`/`recover_snapshot`),
+// mirroring `persistence_snapshot_roundtrip_test.cpp`'s own precedent exactly (the first real use
+// of Quark's Snapshot API anywhere in this codebase — `core/worktree.hpp`'s `Ref` uses the
+// EventSourced model instead, decision 1 there). **`history[]`/`state`/`metadata` are explicitly
+// NOT persisted by this record** — `Message`/`ContentItem` (003) have no `QUARK_SERIALIZE` at all
+// yet (`ContentItem::value` is a 9-way `std::variant`, a real, un-designed serialization question
+// this task does not improvise an answer to), and `StateT` is caller-declared and not guaranteed
+// `Described`. A real full-session snapshot is a follow-up task once Message/ContentItem
+// serialization exists — named here, not silently assumed covered by this narrower record.
+//
+// Fields are flattened (`principal_id`/`principal_tenant_id`, not a nested `Principal`), matching
+// the only pattern this codebase has actually exercised so far (`RefMoved`/`RefState` are likewise
+// single flat string fields) rather than assuming untested nested-`Described`-type recursion works
+// on the first real multi-field record. `created_at`/`updated_at` are stored as raw nanosecond
+// counts (`Described` has no `std::chrono::time_point` support) — an exact, lossless round-trip of
+// whatever `AgentSession` currently holds, not a claim that these fields carry real wall-clock
+// values yet (001 §7: they still don't, unchanged from M1's own scope note above).
+struct AgentSessionRecord {  // ae-naming-lint: allow AgentSessionRecord — 005 §2 names the concept ("session persistence") normatively; 027 has not been updated to list a durable-record type
+    std::string   session_id;
+    std::string   principal_id;
+    std::string   principal_tenant_id;
+    std::int64_t  created_at_ns = 0;
+    std::int64_t  updated_at_ns = 0;
+
+    friend bool operator==(AgentSessionRecord const&, AgentSessionRecord const&) = default;
+};
+QUARK_SERIALIZE(AgentSessionRecord, (1, session_id), (2, principal_id), (3, principal_tenant_id),
+                 (4, created_at_ns), (5, updated_at_ns))
 
 template <class ChatClientT, class StateT = NoSessionState>
     requires ChatClient<ChatClientT>
@@ -158,6 +194,29 @@ public:
     // checkpoint records, which need to name the run a checkpoint was taken during.
     [[nodiscard]] std::string const& last_run_id() const noexcept { return last_run_id_; }
 
+    // Phase A4's narrowed durable record (see `AgentSessionRecord`'s own comment for exactly what
+    // is and isn't covered) — `to_record()`/`restore_from_record()` are the only two places that
+    // cross between the in-process type and its durable shape, so the field list can't drift
+    // between them silently.
+    [[nodiscard]] AgentSessionRecord to_record() const {
+        return AgentSessionRecord{
+            session_id_,
+            principal_.id,
+            principal_.tenant_id,
+            static_cast<std::int64_t>(created_at_.time_since_epoch().count()),
+            static_cast<std::int64_t>(updated_at_.time_since_epoch().count()),
+        };
+    }
+
+    void restore_from_record(AgentSessionRecord const& rec) {
+        session_id_ = rec.session_id;
+        principal_  = Principal{rec.principal_id, rec.principal_tenant_id};
+        created_at_ = std::chrono::system_clock::time_point{
+            std::chrono::system_clock::duration{rec.created_at_ns}};
+        updated_at_ = std::chrono::system_clock::time_point{
+            std::chrono::system_clock::duration{rec.updated_at_ns}};
+    }
+
 private:
     std::string                                       session_id_;
     Principal                                          principal_;
@@ -171,5 +230,32 @@ private:
     std::chrono::system_clock::time_point              created_at_{};
     std::chrono::system_clock::time_point              updated_at_{};
 };
+
+// Save `session`'s narrowed durable record (Phase A4) under its own `session_actor_id()`, at the
+// consistent point `quiesce(Drain)` reaches on a Sequential actor — mirrors Quark's own
+// `persistence_snapshot_roundtrip_test.cpp` calling convention exactly: `through_seq` is fixed at
+// 0 because this is the pure Snapshot model with no event log to subsume (matching that test's own
+// comment, "through_seq=0 (Snapshot model, no log)"). `act` is the caller's `Activation` — a
+// `TestKit<AgentSession<...>>` or a real `Engine` owns it, `AgentSession` itself does not, the same
+// division of ownership `snapshot_sequential` already assumes for every Sequential actor.
+template <class ChatClientT, class StateT, quark::Store S>
+[[nodiscard]] quark::result<void> save_agent_session_snapshot(
+    quark::Activation& act, S& store, AgentSession<ChatClientT, StateT> const& session,
+    quark::FenceToken fence) {
+    return quark::snapshot_sequential<AgentSessionRecord>(
+        act, store, session_actor_id(session.session_id()), fence, /*through_seq=*/0,
+        session.to_record());
+}
+
+// Load the latest durable record for `session_id`, or `std::nullopt` if it was never snapshotted
+// (012 §Recovery's "a fresh actor reconstructs from its factory instead" — never an error).
+template <quark::Store S>
+[[nodiscard]] quark::result<std::optional<AgentSessionRecord>> load_agent_session_snapshot(
+    S& store, std::string_view session_id) {
+    auto rec = quark::load_snapshot<AgentSessionRecord>(store, session_actor_id(session_id));
+    if (!rec) return std::unexpected(rec.error());
+    if (!rec->has_value()) return std::optional<AgentSessionRecord>{};
+    return std::optional<AgentSessionRecord>{std::move((*rec)->state)};
+}
 
 } // namespace agentengine
