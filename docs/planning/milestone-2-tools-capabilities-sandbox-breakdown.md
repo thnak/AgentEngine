@@ -912,6 +912,14 @@ remains a spike, cited as such everywhere C2's writeups reference it.
   (needs a real bound ChatClient instance to query capabilities() against, same 004 gap as the
   credentials check).
 
+  **Resolved:** `decisions/ADR-012-sandbox-profile-template-parameter-kind.md` (M2 residual work,
+  post-Phase-F). `P` is any type satisfying `SandboxBackend`, or the resolution selector `Strict`
+  (replacing the undefined `Profile::Strict`) -- 008 §2a's reading, not the enum NTTP.
+  `SandboxProfile<P>`'s *availability* check is now real (a non-conforming `P` fails to compile at
+  the declaration site); the *tool/profile compatibility* check stays stubbed, for a narrower, now-
+  correct reason (no per-tool backend-declaration policy tag exists yet -- a separate, larger surface
+  ADR-012 didn't invent as a drive-by).
+
   `ToolTable` (`core/tool_pipeline.hpp`, Phase B) gained one small real addition: a `descriptors()`
   accessor: `find()` alone can't answer "are there duplicates" or "what does each tool need,"
   which E2's own two headline checks are built on.

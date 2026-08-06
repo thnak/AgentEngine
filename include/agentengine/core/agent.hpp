@@ -32,8 +32,12 @@ struct ChatClientId {  // "vendor:model", overridable per run and by config (002
 template <class... Ts>
 struct Tools {};  // ae-naming-lint: allow Tools — pre-existing M0 scaffolding, reconcile at owning milestone
 
-template <sandbox_profile P>
-struct SandboxProfile {};  // ae-naming-lint: allow SandboxProfile — pre-existing M0 scaffolding, reconcile at owning milestone
+// `P` is any type satisfying `SandboxProfileArg` (sandbox/sandbox.hpp) — a real `SandboxBackend`, or
+// the `Strict` resolution selector (002 §3's table default). ADR-012 resolved this template
+// parameter's kind (previously an enum NTTP, in conflict with 008 §2a's "any type" extensibility
+// promise); a non-conforming `P` fails to compile here, not silently at some later use site.
+template <SandboxProfileArg P>
+struct SandboxProfile {};  // ae-naming-lint: allow SandboxProfile — 008 §2a/002 §3 name this normatively; 027 not yet updated
 
 // `Capabilities<Cs...>` (matching the host/mount-parameterized form 002 §2 and 006 §1's own
 // examples show, `Capabilities<NetOut<"api.search.example">>`) now lives in core/policy_tags.hpp,

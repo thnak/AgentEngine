@@ -24,7 +24,7 @@ struct Researcher : Agent<Researcher,
         ChatClientId<"anthropic:claude-opus-5">,
         Tools<WebSearch, CodeInterpreter, Handoff<Writer>>,
         Capabilities<NetOut<"api.search.example">>,
-        SandboxProfile<Profile::Strict>,
+        SandboxProfile<Strict>,
         MaxTurns<12>> {
     static constexpr std::string_view name = "researcher";
     static constexpr std::string_view instructions =

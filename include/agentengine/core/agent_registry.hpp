@@ -4,25 +4,30 @@
 // E2 is register_agent<A>() itself; E3 is invoke_agent_tool() at the bottom of this file, the
 // milestone's headline exit-criterion sentence wired to real code (see that function's own comment).
 //
-// Of §6's 8 named validation checks, three run for real against machinery this milestone actually
+// Of §6's 8 named validation checks, four run for real against machinery this milestone actually
 // built (tool name collision, capability-ceiling coverage, Stateless<N>-vs-session-state via
-// std::is_empty_v) plus a fourth basic shape check (ChatClientId presence). The remaining four are
-// stubbed to always-pass with a comment naming exactly what machinery is missing, per this task's
-// own scope note — not silently skipped:
+// std::is_empty_v, and — since decisions/ADR-012-sandbox-profile-template-parameter-kind.md —
+// SandboxProfile's compile-time shape) plus a fifth basic shape check (ChatClientId presence). The
+// remaining three are stubbed to always-pass with a comment naming exactly what machinery is
+// missing, per this task's own scope note — not silently skipped:
 //   - ChatClientId *credentials/endpoint* (needs a real ChatClient registry, 004) — Milestone 2
 //     builds no such registry; there is no `Engine` type yet to hold one.
-//   - SandboxProfile *platform availability* and *tool/profile backend mismatch* — both need a
-//     settled answer to what `SandboxProfile<P>`'s template parameter actually IS. 002 §2's own
-//     worked example instantiates it with an enum-like value (`Profile::Strict`); 008 §2a says P is
-//     "any type satisfying the SandboxBackend concept" (open extensibility, custom backends). These
-//     two RFC passages don't obviously agree, and `include/agentengine/core/agent.hpp`'s existing
-//     `SandboxProfile<sandbox_profile P>` (an enum NTTP) already picked a reading that can't
-//     represent 008 §2a's custom-backend case at all. Reconciling this is a real design decision
-//     (CLAUDE.md: fix the spec first, with an ADR, before the code) discovered while implementing
-//     E2, not a call this task makes unilaterally by picking a side inline.
+//   - SandboxProfile *tool/profile backend mismatch* (002 §6's second SandboxProfile bullet) — needs
+//     a per-tool backend-declaration policy tag that does not exist yet (`Tool<Derived, Policies...>`
+//     has no analog of `SandboxProfile<P>`); ADR-012 resolved the *template-parameter-kind* conflict
+//     (below) but deliberately did not invent a second, larger policy-tag surface as a drive-by.
 //   - OutputSchema enforceability — needs a real ChatClient instance bound to the agent's
 //     ChatClientId to query ChatClientCapabilities::structured_output_native against (004).
 //   - Handoff cycle detection — needs 014's workflow/handoff graph, explicitly out of scope for M2.
+//
+// SandboxProfile's own history: 002 §2's worked example instantiated it with an enum-like value
+// (`Profile::Strict`, itself an undefined symbol — no `Profile` type existed anywhere); 008 §2a said
+// P is "any type satisfying the SandboxBackend concept" (open extensibility, custom backends); this
+// file's existing `SandboxProfile<sandbox_profile P>` (an enum NTTP) picked a reading that couldn't
+// represent 008 §2a's custom-backend case at all — a real spec-vs-spec conflict discovered while
+// implementing E2, resolved by ADR-012 (`SandboxProfile<P>` now takes any type satisfying the new
+// `SandboxProfileArg` concept — a real `SandboxBackend`, or `Strict`, sandbox/sandbox.hpp's renamed,
+// now-real resolution selector) rather than picked unilaterally inline, per CLAUDE.md.
 
 #include <cstdint>
 #include <optional>
@@ -54,6 +59,7 @@ struct AgentMetadata {  // ae-naming-lint: allow AgentMetadata — pre-existing 
     concurrency_mode concurrency = concurrency_mode::sequential; // 002 §3 table default
     telemetry_capture telemetry = telemetry_capture::metadata_only; // 002 §3 table default
     std::optional<std::uint32_t> stateless_pool_size;  // nullopt = off (002 §3 table default)
+    SandboxProfileDescriptor sandbox_profile;          // is_strict=true default (002 §3 table default)
 };
 
 namespace agent_detail {
@@ -113,6 +119,24 @@ struct policy_stateless {
 template <std::uint32_t N>
 struct policy_stateless<Stateless<N>> {
     static std::optional<std::uint32_t> get() { return N; }
+};
+
+// ADR-012: `SandboxProfile<P>` compiles `P` (a real `SandboxBackend`, or `Strict`) into a runtime-
+// readable `SandboxProfileDescriptor` -- `P` itself cannot survive past compile time (it is a type,
+// not a value), so this is where that information gets turned into data.
+template <class Policy>
+struct policy_sandbox_profile {
+    static std::optional<SandboxProfileDescriptor> get() { return std::nullopt; }
+};
+template <SandboxProfileArg P>
+struct policy_sandbox_profile<SandboxProfile<P>> {
+    static std::optional<SandboxProfileDescriptor> get() {
+        if constexpr (std::same_as<P, Strict>) {
+            return SandboxProfileDescriptor{.is_strict = true, .traits = {}};
+        } else {
+            return SandboxProfileDescriptor{.is_strict = false, .traits = P::traits};
+        }
+    }
 };
 
 // `Tools<Ts...>` needs the pack itself, not just a runtime-readable value -- ToolTable::from_tools
@@ -216,6 +240,19 @@ template <class... Policies>
     return value;
 }
 
+// 002 §3 table default (`Strict`) when no `SandboxProfile<P>` tag is declared at all -- absence is a
+// real, meaningful default here (unlike `Stateless<N>`'s absence-off, 002 §9 Q3), so this returns a
+// value directly rather than an `std::optional` a caller might mistake for "unspecified."
+template <class... Policies>
+[[nodiscard]] SandboxProfileDescriptor sandbox_profile_of() {
+    std::optional<SandboxProfileDescriptor> value;
+    auto consider = [&value]<class P>() {
+        if (auto v = policy_sandbox_profile<P>::get(); v.has_value()) value = v;
+    };
+    (consider.template operator()<Policies>(), ...);
+    return value.value_or(SandboxProfileDescriptor{});
+}
+
 // -- 002 §6 validation checks ---------------------------------------------------------------------
 
 [[nodiscard]] inline result<void> check_chat_client_id(std::string_view id) {
@@ -260,8 +297,25 @@ template <class... Policies>
     return {};
 }
 
-// Stubbed: needs SandboxProfile<P>'s template-parameter kind reconciled first -- see file top.
-[[nodiscard]] inline result<void> check_sandbox_profile_availability() { return {}; }
+// ADR-012: real for the case it CAN be real about. When `P` named a concrete backend type directly,
+// `SandboxProfileArg<P>` already required `SandboxBackend<P>` at `SandboxProfile<P>`'s own
+// declaration site (compile time) -- a type that doesn't satisfy the concept, or isn't even
+// includable in this build (e.g. a wasm backend type without AGENTENGINE_WITH_WASM), fails to compile
+// before `register_agent<A>()` is ever instantiated, so there is no runtime "unavailable" case left
+// to check for that branch; `profile.is_strict == false` here is proof enough by construction.
+// `Strict` is the branch genuinely deferred: resolving it to a concrete backend needs the real set of
+// backends *this deployment* has available, which needs an Engine-level backend registry M2 does not
+// build (same shape of gap as `check_chat_client_credentials` above) --
+// `resolve_strict()`/`ProfileTraits` (sandbox/sandbox.hpp) are the tested, real ranking logic already
+// waiting for that registry (tests/test_sandbox_backend_contract.cpp).
+[[nodiscard]] inline result<void> check_sandbox_profile_availability(SandboxProfileDescriptor const&) {
+    return {};
+}
+
+// Stubbed: needs a per-tool backend-declaration policy tag that does not exist yet
+// (`Tool<Derived, Policies...>` has no analog of `SandboxProfile<P>`) -- ADR-012 resolved the
+// template-parameter-*kind* conflict this check was originally blocked on, but deliberately did not
+// invent a second, larger policy-tag surface as a drive-by (see file top).
 [[nodiscard]] inline result<void> check_tool_sandbox_profile_compatibility() { return {}; }
 
 // Stubbed: needs a real ChatClient instance to query capabilities() against (004).
@@ -320,7 +374,10 @@ struct compiler<A, Agent<A, Policies...>> {
             return std::unexpected(r.error());
         }
 
-        if (auto r = check_sandbox_profile_availability(); !r) return std::unexpected(r.error());
+        meta.sandbox_profile = sandbox_profile_of<Policies...>();
+        if (auto r = check_sandbox_profile_availability(meta.sandbox_profile); !r) {
+            return std::unexpected(r.error());
+        }
         if (auto r = check_tool_sandbox_profile_compatibility(); !r) return std::unexpected(r.error());
 
         meta.max_turns = max_turns_of<Policies...>();

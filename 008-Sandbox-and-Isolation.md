@@ -253,17 +253,24 @@ The four the engine ships and backs with a promotion gate (§9) — not the exha
 - with no fallback, **startup fails**. Silently running unisolated because the preferred isolation
   was unavailable is the single worst failure mode in this design, and it is prohibited.
 
-**`Profile::Strict`** is the named alias meaning "the strongest profile available on this platform,
-never `none`" and is the default for every agent (002 §3).
+**`Strict`** (`decisions/ADR-012-sandbox-profile-template-parameter-kind.md` corrected this section's
+naming from the earlier, undefined `Profile::Strict`) is the named alias meaning "the strongest
+profile available on this platform, never `none`" and is the default for every agent (002 §3). It is
+a resolution *selector*, not a backend itself — it has no `create`/`exec`/`destroy` and is never
+instantiated; `SandboxProfile<Strict>` is resolved at `register_agent<A>()` time (002 §6) into a
+concrete backend's `ProfileTraits`.
 
-**Resolving `Profile::Strict`.** The table above sits on incomparable axes (software
-capability-based, kernel-enforced, cluster-delegated) — its boundary column alone gives no order, so
-"strongest" needs an explicit rule rather than an eyeballed reading. Each backend's `ProfileTraits`
-(§2) declares a `strength` rank; `Profile::Strict` resolves to the highest-`strength` profile whose
-platform list includes the current platform (`none` excluded by definition regardless of rank), with
-ties — two available profiles at the same declared strength — broken toward whichever has the
-broader, more-proven platform support, since a rank that doesn't discriminate should not be allowed
-to make the choice arbitrary.
+**Resolving `Strict`.** The table above sits on incomparable axes (software capability-based,
+kernel-enforced, cluster-delegated) — its boundary column alone gives no order, so "strongest" needs
+an explicit rule rather than an eyeballed reading. Each backend's `ProfileTraits` (§2) declares a
+`strength` rank; `Strict` resolves to the highest-`strength` profile whose platform list includes the
+current platform (`none` excluded by definition regardless of rank), with ties — two available
+profiles at the same declared strength — broken toward whichever has the broader, more-proven
+platform support, since a rank that doesn't discriminate should not be allowed to make the choice
+arbitrary. `resolve_strict()` (`sandbox/sandbox.hpp`) implements this rule exactly, against a caller-
+supplied candidate set — ADR-012 built `Strict` as a real, structurally-distinct type and wired its
+extraction into `register_agent<A>()`, but resolving it against the real set of backends *this
+deployment* has available still needs an Engine-level backend registry M2 does not build (ADR-012 §9).
 
 **What `SandboxProfile<P>` does and does not govern.** This table is what an agent's
 `SandboxProfile<P>` selects among for its own script-executing tools — it does **not** redirect

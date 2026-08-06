@@ -35,7 +35,7 @@ struct Researcher : Agent<Researcher,
         ChatClientId<"anthropic:claude-opus-5">,
         Tools<WebSearch, CodeInterpreter, Handoff<Writer>>,
         Capabilities<NetOut<"api.search.example">>,
-        SandboxProfile<Profile::Strict>,
+        SandboxProfile<Strict>,
         MaxTurns<12>,
         TokenBudget<200'000>,
         Approval<Mode::PolicyDriven>,
@@ -92,7 +92,7 @@ class template cannot share one identifier in the same namespace. `ChatClientId`
 |---|---|---|
 | `ChatClientId<"vendor:model">` | Model backend binding (004); overridable per run and by config | required |
 | `Tools<Ts...>` | Declared tool set | empty |
-| `SandboxProfile<P>` | Isolation profile for this agent's sandboxed effects (008) | `Profile::Strict` |
+| `SandboxProfile<P>` | Isolation profile for this agent's sandboxed effects (008) | `Strict` |
 | `Capabilities<Cs...>` | Capability ceiling (007) | empty |
 | `MaxTurns<N>` | Turn-loop bound | 16 |
 | `TokenBudget<N>` | Cumulative token ceiling per run | unbounded |
@@ -113,6 +113,11 @@ script-executing tools: a custom `Tool` that needs sandboxed execution but is ne
 nor the built-in interpreter (010) runs under the profile declared here, or is rejected at
 `register_agent()` (§6) if its own backend requirement is incompatible with it. See 008 §3 for the
 profile table this selects among.
+
+`P` is any type satisfying `SandboxBackend` (008 §2), or the resolution selector `Strict` (008 §3's
+"the strongest profile available on this platform, never `none`") — never an enum-like value; a
+deployer's own custom backend type works exactly the same way an engine-shipped one does (008 §2a).
+`decisions/ADR-012-sandbox-profile-template-parameter-kind.md` is the record of this decision.
 
 **The rule for adding a policy:** a knob belongs here only if it changes *what the agent is*.
 Knobs that change *how the deployment runs* (worker counts, endpoints, timeouts, credentials) are

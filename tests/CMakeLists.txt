@@ -73,6 +73,40 @@ endif()
 message(STATUS
   "007 §9 G1 compile-fail proof: OK (CapabilitySet rejects direct construction; grant_root() compiles)")
 
+# ---- ADR-012 compile-fail proof (SandboxProfile<P>'s template-parameter kind) -------------------
+# Same try_compile() idiom as the two gates above: `SandboxProfile<P>` (core/agent.hpp) constrains
+# `P` via `SandboxProfileArg` (sandbox/sandbox.hpp) -- a real `SandboxBackend`, or the `Strict`
+# resolution selector. A non-conforming `P` (e.g. `int`) must fail to compile at the declaration
+# site, not silently accept a nonsense type.
+try_compile(AE_SANDBOX_PROFILE_REJECTS_NON_CONFORMING_TYPE
+  "${CMAKE_CURRENT_BINARY_DIR}/compile_fail_checks/sandbox_profile_rejects_non_conforming_type"
+  "${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/sandbox_profile_rejects_non_conforming_type.cpp"
+  CXX_STANDARD 23
+  CMAKE_FLAGS "-DINCLUDE_DIRECTORIES=${PROJECT_SOURCE_DIR}/include;${PROJECT_SOURCE_DIR}/third_party/quark/include"
+  OUTPUT_VARIABLE AE_SANDBOX_PROFILE_REJECTS_NON_CONFORMING_TYPE_LOG)
+if(AE_SANDBOX_PROFILE_REJECTS_NON_CONFORMING_TYPE)
+  message(FATAL_ERROR
+    "ADR-012 VIOLATED: tests/compile_fail/sandbox_profile_rejects_non_conforming_type.cpp compiled, "
+    "but SandboxProfile<P> must reject a P that satisfies neither SandboxBackend nor Strict. "
+    "Build log:\n${AE_SANDBOX_PROFILE_REJECTS_NON_CONFORMING_TYPE_LOG}")
+endif()
+
+try_compile(AE_SANDBOX_PROFILE_POSITIVE_CONTROL
+  "${CMAKE_CURRENT_BINARY_DIR}/compile_fail_checks/sandbox_profile_positive_control"
+  "${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/sandbox_profile_positive_control.cpp"
+  CXX_STANDARD 23
+  CMAKE_FLAGS "-DINCLUDE_DIRECTORIES=${PROJECT_SOURCE_DIR}/include;${PROJECT_SOURCE_DIR}/third_party/quark/include"
+  OUTPUT_VARIABLE AE_SANDBOX_PROFILE_POSITIVE_CONTROL_LOG)
+if(NOT AE_SANDBOX_PROFILE_POSITIVE_CONTROL)
+  message(FATAL_ERROR
+    "ADR-012 positive control FAILED: tests/compile_fail/sandbox_profile_positive_control.cpp must "
+    "compile (Strict and a real conforming SandboxBackend are both legitimate SandboxProfile<P> "
+    "arguments) but did not. Build log:\n${AE_SANDBOX_PROFILE_POSITIVE_CONTROL_LOG}")
+endif()
+message(STATUS
+  "ADR-012 compile-fail proof: OK (SandboxProfile<P> rejects a non-conforming type; Strict and a "
+  "real SandboxBackend both compile)")
+
 add_executable(smoke_vocabulary smoke_vocabulary.cpp)
 target_link_libraries(smoke_vocabulary PRIVATE agentengine::core agentengine_warnings)
 
@@ -236,6 +270,12 @@ add_test(NAME test_tool_pipeline_capability_reuse COMMAND test_tool_pipeline_cap
 add_executable(test_agent_registry test_agent_registry.cpp)
 target_link_libraries(test_agent_registry PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_agent_registry COMMAND test_agent_registry)
+
+# ---- SandboxProfile<P>'s template-parameter kind (decisions/ADR-012-sandbox-profile-template-parameter-kind.md) --
+# Header-only (core/agent_registry.hpp, sandbox/sandbox.hpp), core-tier.
+add_executable(test_sandbox_profile_kind test_sandbox_profile_kind.cpp)
+target_link_libraries(test_sandbox_profile_kind PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_sandbox_profile_kind COMMAND test_sandbox_profile_kind)
 
 # ---- Agent tool invocation end-to-end (M2 Phase E task E3, the milestone's headline sentence) ---
 # Header-only (core\agent_registry.hpp's invoke_agent_tool(), core\tool_pipeline.hpp), core-tier.

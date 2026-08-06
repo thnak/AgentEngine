@@ -20,8 +20,6 @@
 
 namespace agentengine {
 
-enum class sandbox_profile { wasm, native_jail, remote, none };  // ae-naming-lint: allow sandbox_profile — pre-existing M0 scaffolding, reconcile at owning milestone
-
 enum class sandbox_lifetime { per_exec, per_run, per_session };  // ae-naming-lint: allow sandbox_lifetime — pre-existing M0 scaffolding, reconcile at owning milestone
 
 // 021 §2's target platform set (Windows now, Linux next; macOS dropped entirely, §7 OQ-1) — a
@@ -164,6 +162,39 @@ concept SandboxBackend = requires(T backend, SandboxSpec spec, SandboxHandle& ha
     { backend.create(spec, ctx) } -> std::same_as<result<SandboxHandle>>;
     { backend.exec(handle, request, ctx) } -> std::same_as<result<ExecOutcome>>;
     { backend.destroy(handle) } -> std::same_as<void>;
+};
+
+// 008 §3's "Strict" (RFC prose previously spelled it `Profile::Strict`; decisions/ADR-012-sandbox-
+// profile-template-parameter-kind.md corrects both the RFC text and this symbol together) — "the
+// named alias meaning 'the strongest profile available on this platform, never `none`'", the default
+// for every agent (002 §3). A resolution SELECTOR, not a backend itself: it has no `create`/`exec`/
+// `destroy` and nothing ever instantiates one — `SandboxProfile<Strict>` (core/agent.hpp) is resolved
+// at `register_agent<A>()` time (core/agent_registry.hpp) into a concrete backend's `ProfileTraits`,
+// never executed directly. Spelled `Strict`, not `Profile::Strict`: no `Profile` namespace/struct
+// exists anywhere in this codebase or RFC text beyond this one member, so wrapping it in one would be
+// ceremony for a set of exactly one.
+struct Strict {};  // ae-naming-lint: allow Strict — ADR-012, 008 §3's own resolution-selector name
+
+// `SandboxProfile<P>` (core/agent.hpp) accepts exactly two shapes for `P`: a real backend type
+// (008 §2a's "any type satisfying SandboxBackend... works exactly the same way native-jail or remote
+// does") or the `Strict` resolution selector above — nothing else is a meaningful slot filler, so the
+// constraint is enforced at `SandboxProfile<P>`'s own declaration site (ADR-012) rather than left for
+// a runtime check to catch later: `SandboxProfile<int>` (or any other non-conforming type) is a
+// compile error, not a silently-accepted no-op.
+template <class P>
+concept SandboxProfileArg = SandboxBackend<P> || std::same_as<P, Strict>;  // ae-naming-lint: allow SandboxProfileArg — ADR-012
+
+// `register_agent<A>()`'s (core/agent_registry.hpp) compiled record of what `SandboxProfile<P>`
+// resolved to for one agent (ADR-012). `is_strict` true means `P` was `Strict` (explicitly, or by
+// omission — 002 §3's table default) and `traits` is unset: resolving `Strict` to a concrete backend
+// needs the real set of backends *this deployment* has available, which needs an Engine-level backend
+// registry M2 does not build (same shape of gap as `AgentMetadata::chat_client_id`'s credentials
+// check, core/agent_registry.hpp's own file-top comment). `is_strict` false means `P` named a real
+// backend type directly, already proven to satisfy `SandboxBackend` at compile time (`traits` is
+// exactly `P::traits`, copied once here rather than re-read through the type each time it's needed).
+struct SandboxProfileDescriptor {  // ae-naming-lint: allow SandboxProfileDescriptor — ADR-012
+    bool          is_strict = true;
+    ProfileTraits traits{};  // meaningful only when !is_strict
 };
 
 } // namespace agentengine
