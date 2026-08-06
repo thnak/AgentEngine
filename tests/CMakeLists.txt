@@ -247,6 +247,12 @@ add_executable(test_history_provider_summarize test_history_provider_summarize.c
 target_link_libraries(test_history_provider_summarize PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_history_provider_summarize COMMAND test_history_provider_summarize)
 
+# ---- Milestone 4 Phase C1 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
+# fork_from(): copy-on-write new session from a history prefix, reusing A1/A4 directly.
+add_executable(test_agent_session_fork test_agent_session_fork.cpp)
+target_link_libraries(test_agent_session_fork PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_agent_session_fork COMMAND test_agent_session_fork)
+
 # ---- CapabilitySet enforcement mechanism (decisions/ADR-009-capability-set-enforcement-mechanism.md) --
 # Header-only (trust/capability.hpp), core-tier -- links only agentengine::core.
 add_executable(test_capability_enforcement test_capability_enforcement.cpp)

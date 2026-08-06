@@ -18,6 +18,7 @@
 // checkpointing (019), and real timestamps (which would be an unrecorded wall-clock read, 001 §7 —
 // premature before Clock is a wired capability) are deliberately not touched here.
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <optional>
@@ -190,6 +191,39 @@ public:
     void initialize(std::string session_id, Principal principal) {
         session_id_ = std::move(session_id);
         principal_  = std::move(principal);
+    }
+
+    // Milestone 4 Phase C1 (005 §6: "Fork — copy-on-write new session id from a history prefix;
+    // the sanctioned answer to concurrent runs (001 §4) and to 'what if' exploration"). Copies
+    // `source`'s `principal`/`history` (up to `history_prefix_len`, or the whole history if
+    // absent)/`state`/`metadata` into `*this` under a NEW `session_id` — reusing A1's real
+    // `session_actor_id()` isolation directly (the fork is just another session_id, indistinguishable
+    // in kind from any other), and A4's persistence directly (the fork snapshots/loads through the
+    // exact same `save_agent_session_snapshot`/`load_agent_session_snapshot` free functions, no
+    // special-cased "forked session" storage path).
+    //
+    // Deliberately NOT copied: `run_counter_`/`last_run_id_` (001 §1 — a fork has had no `Run`s of
+    // its own yet; inheriting the source's counter would make its own first run_id look like a
+    // continuation of the source's run sequence, which it isn't) and `created_at_`/`updated_at_`
+    // (both are still unwired placeholders project-wide, 001 §7 — copying them would imply this
+    // fork has real provenance timestamps neither session actually has yet).
+    void fork_from(AgentSession const& source, std::string new_session_id,
+                    std::optional<std::size_t> history_prefix_len = std::nullopt) {
+        session_id_ = std::move(new_session_id);
+        principal_  = source.principal_;
+
+        std::size_t const n = std::min(history_prefix_len.value_or(source.history_.size()),
+                                        source.history_.size());
+        history_.assign(source.history_.begin(), source.history_.begin() + static_cast<std::ptrdiff_t>(n));
+
+        state_    = source.state_;
+        metadata_ = source.metadata_;
+
+        run_counter_ = 0;
+        last_run_id_.clear();
+        effect_context_ = EffectContext{};
+        created_at_      = std::chrono::system_clock::time_point{};
+        updated_at_      = std::chrono::system_clock::time_point{};
     }
 
     [[nodiscard]] std::string const& session_id() const noexcept { return session_id_; }
