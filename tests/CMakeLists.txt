@@ -313,6 +313,13 @@ add_executable(test_idempotency_key test_idempotency_key.cpp)
 target_link_libraries(test_idempotency_key PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_idempotency_key COMMAND test_idempotency_key)
 
+# ---- Milestone 4 Phase F2 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
+# Effect journaling (intent before execution, outcome after) atop Quark's Store/EventLog, reusing
+# a session's own ActorId (session_actor_id, A1) -- no second persistence engine.
+add_executable(test_effect_journal test_effect_journal.cpp)
+target_link_libraries(test_effect_journal PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_effect_journal COMMAND test_effect_journal)
+
 # ---- CapabilitySet enforcement mechanism (decisions/ADR-009-capability-set-enforcement-mechanism.md) --
 # Header-only (trust/capability.hpp), core-tier -- links only agentengine::core.
 add_executable(test_capability_enforcement test_capability_enforcement.cpp)
