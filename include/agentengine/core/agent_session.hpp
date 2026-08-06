@@ -115,11 +115,22 @@ struct AgentSessionRecord {  // ae-naming-lint: allow AgentSessionRecord — 005
     std::string   principal_tenant_id;
     std::int64_t  created_at_ns = 0;
     std::int64_t  updated_at_ns = 0;
+    // Milestone 4 Phase C3 (005 §6: "Delete — hard removal... with a completion receipt"). A
+    // tombstone flag, not a physical erasure of prior bytes: Quark's `Store` seam is append-only
+    // (`FileStore`'s WAL) with an overwrite-latest-state Snapshot model (005 §2's own table) — this
+    // project adds no storage engine of its own, so "hard removal" at this seam means the latest
+    // snapshot for a `session_id` becomes an explicit tombstone, and `load_agent_session_snapshot`
+    // (below) treats a tombstoned record exactly like "never snapshotted" to its own caller: no
+    // residue is OBSERVABLE through this project's own read path, which is the real capability this
+    // milestone can prove. Physical byte-level erasure of earlier log/snapshot entries is a Quark
+    // storage-engine capability this project doesn't build (005 §2's own "no storage engine of our
+    // own" rule).
+    bool          deleted = false;
 
     friend bool operator==(AgentSessionRecord const&, AgentSessionRecord const&) = default;
 };
 QUARK_SERIALIZE(AgentSessionRecord, (1, session_id), (2, principal_id), (3, principal_tenant_id),
-                 (4, created_at_ns), (5, updated_at_ns))
+                 (4, created_at_ns), (5, updated_at_ns), (6, deleted))
 
 template <class ChatClientT, class StateT = NoSessionState,
           class HistoryProviderT = HistoryProvider<Window<0>>>
@@ -314,6 +325,25 @@ public:
             std::chrono::system_clock::duration{rec.updated_at_ns}};
     }
 
+    // Milestone 4 Phase C3 (005 §6: "Delete — hard removal, including derived artifacts... with a
+    // completion receipt"). The in-process half of delete: every field this session holds is reset
+    // to its own fresh-construction default, including `session_id_`/`principal_` — a deleted
+    // session has no residue left to read back through ANY of this class's own accessors, not just
+    // history/state/metadata. Called by `delete_session()` (below), which captures `session_id()`
+    // for the receipt BEFORE calling this.
+    void clear_in_process_state() {
+        session_id_.clear();
+        principal_       = Principal{};
+        history_.clear();
+        state_           = StateT{};
+        metadata_.clear();
+        run_counter_     = 0;
+        last_run_id_.clear();
+        effect_context_  = EffectContext{};
+        created_at_      = std::chrono::system_clock::time_point{};
+        updated_at_      = std::chrono::system_clock::time_point{};
+    }
+
 private:
     std::string                                       session_id_;
     Principal                                          principal_;
@@ -346,14 +376,53 @@ template <class ChatClientT, class StateT, class HistoryProviderT, quark::Store 
 }
 
 // Load the latest durable record for `session_id`, or `std::nullopt` if it was never snapshotted
-// (012 §Recovery's "a fresh actor reconstructs from its factory instead" — never an error).
+// (012 §Recovery's "a fresh actor reconstructs from its factory instead" — never an error), OR if
+// it was deleted (Phase C3's tombstone, 005 §6): a caller of THIS function sees no distinction
+// between "never existed" and "deleted" — which is exactly the "no residue" property 005 §6 asks
+// for at this project's own read path. `delete_session()` (below) is where the distinction is
+// still observable, via its receipt, at the moment of deletion itself.
 template <quark::Store S>
 [[nodiscard]] quark::result<std::optional<AgentSessionRecord>> load_agent_session_snapshot(
     S& store, std::string_view session_id) {
     auto rec = quark::load_snapshot<AgentSessionRecord>(store, session_actor_id(session_id));
     if (!rec) return std::unexpected(rec.error());
     if (!rec->has_value()) return std::optional<AgentSessionRecord>{};
+    if ((*rec)->state.deleted) return std::optional<AgentSessionRecord>{};
     return std::optional<AgentSessionRecord>{std::move((*rec)->state)};
+}
+
+// Milestone 4 Phase C3 (005 §6: "Delete — hard removal... with a completion receipt"). Not a
+// gate-numbered claim in 005 §7 (only redaction's G4 is) — §6's own prose is the whole
+// specification for this operation, and this is exactly what it asks for at this project's own
+// seams: the durable snapshot becomes an explicit tombstone (so `load_agent_session_snapshot`
+// reports nothing, "no residue" through this project's own read path) and the in-process actor's
+// own state is cleared to fresh-construction defaults (`clear_in_process_state()`) — a receipt
+// naming which of the two actually happened, since either can independently fail.
+struct SessionDeletionReceipt {
+    std::string session_id;
+    bool        durable_record_removed = false;
+    bool        in_process_state_cleared = false;
+};
+
+template <class ChatClientT, class StateT, class HistoryProviderT, quark::Store S>
+[[nodiscard]] quark::result<SessionDeletionReceipt> delete_session(
+    quark::Activation& act, S& store, AgentSession<ChatClientT, StateT, HistoryProviderT>& session,
+    quark::FenceToken fence) {
+    SessionDeletionReceipt receipt{};
+    receipt.session_id = session.session_id();
+
+    AgentSessionRecord tombstone{};
+    tombstone.session_id = receipt.session_id;
+    tombstone.deleted    = true;
+    auto saved = quark::snapshot_sequential<AgentSessionRecord>(
+        act, store, session_actor_id(receipt.session_id), fence, /*through_seq=*/0, tombstone);
+    if (!saved) return std::unexpected(saved.error());
+    receipt.durable_record_removed = true;
+
+    session.clear_in_process_state();
+    receipt.in_process_state_cleared = true;
+
+    return receipt;
 }
 
 } // namespace agentengine

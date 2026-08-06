@@ -260,6 +260,12 @@ add_executable(test_agent_session_redact test_agent_session_redact.cpp)
 target_link_libraries(test_agent_session_redact PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_agent_session_redact COMMAND test_agent_session_redact)
 
+# ---- Milestone 4 Phase C3 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
+# delete_session(): durable tombstone + in-process state clear, with a completion receipt.
+add_executable(test_agent_session_delete test_agent_session_delete.cpp)
+target_link_libraries(test_agent_session_delete PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_agent_session_delete COMMAND test_agent_session_delete)
+
 # ---- CapabilitySet enforcement mechanism (decisions/ADR-009-capability-set-enforcement-mechanism.md) --
 # Header-only (trust/capability.hpp), core-tier -- links only agentengine::core.
 add_executable(test_capability_enforcement test_capability_enforcement.cpp)
