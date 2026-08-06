@@ -203,6 +203,12 @@ add_executable(test_agent_session_isolation test_agent_session_isolation.cpp)
 target_link_libraries(test_agent_session_isolation PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_agent_session_isolation COMMAND test_agent_session_isolation)
 
+# ---- Milestone 4 Phase A2 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
+# Typed `state` (005 §8 Q1) + `metadata` fields on AgentSession, neither of which existed before.
+add_executable(test_agent_session_state test_agent_session_state.cpp)
+target_link_libraries(test_agent_session_state PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_agent_session_state COMMAND test_agent_session_state)
+
 # ---- CapabilitySet enforcement mechanism (decisions/ADR-009-capability-set-enforcement-mechanism.md) --
 # Header-only (trust/capability.hpp), core-tier -- links only agentengine::core.
 add_executable(test_capability_enforcement test_capability_enforcement.cpp)

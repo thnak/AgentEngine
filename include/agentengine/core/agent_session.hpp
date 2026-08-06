@@ -5,7 +5,8 @@
 //
 // 001 §1: "One Quark actor instance, key = session_id" — `AgentSession` IS the actor, not a plain
 // data struct with a separate actor wrapper; 027 gives no second name for a wrapper type. It is a
-// template over its `ChatClient` backend (`AgentSession<ChatClientT>`), following this project's
+// template over its `ChatClient` backend and its declared scratch-state type
+// (`AgentSession<ChatClientT, StateT = NoSessionState>`, 005 §8 Q1), following this project's
 // CRTP-policy idiom (CONVENTIONS' `Sandbox<Strict>`/`MaxTurns<12>` examples) rather than
 // type-erasing the seam this early — 004's real `ChatClient` seam (and any type-erasure decision
 // for it) isn't due until Milestone 5.
@@ -20,6 +21,7 @@
 #include <chrono>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 #include "quark/core/actor.hpp"
@@ -32,6 +34,15 @@
 #include "agentengine/trust/principal.hpp"
 
 namespace agentengine {
+
+// 005 §8 Q1's resolution: `state` is a declared C++ type per agent/workflow, not an untyped bag —
+// the same "declared, schema-typed" discipline 002 already applies to tools and output schemas
+// (catches an author's own shape-drift at compile time, not at a runtime read). `NoSessionState`
+// is the default for an agent that declares no scratch state — an empty tag, not `void`, so
+// `AgentSession` can hold a `StateT state_` member uniformly with no special-casing at the storage
+// layer for "no state" vs. "some state." Not separately versioned (005 §8 Q1): 024 §2's generic
+// persistence-migration contract already covers every persisted format, `state` included.
+struct NoSessionState {};  // ae-naming-lint: allow NoSessionState — 005 §8 Q1 names the concept normatively; 027 has not been updated to list a default-state type
 
 // A stable, hand-picked ActorId tag for AgentSession — the same "arbitrary fixed constant, not a
 // serialization fingerprint" precedent Quark's own `voice_channel.hpp` uses for `kRoomTypeKey`
@@ -68,9 +79,9 @@ struct AgentResponse {
     Usage   usage;
 };
 
-template <class ChatClientT>
+template <class ChatClientT, class StateT = NoSessionState>
     requires ChatClient<ChatClientT>
-class AgentSession : public quark::Actor<AgentSession<ChatClientT>, quark::Sequential> {
+class AgentSession : public quark::Actor<AgentSession<ChatClientT, StateT>, quark::Sequential> {
 public:
     using protocol = quark::Protocol<quark::Ask<StartRun, AgentResponse>>;
 
@@ -112,14 +123,29 @@ public:
     [[nodiscard]] std::string const& session_id() const noexcept { return session_id_; }
     [[nodiscard]] Principal const&   principal() const noexcept { return principal_; }
 
+    // Workflow/agent scratch state (005 §1), checkpointed with the session (019, this milestone's
+    // own Phase D/A4) — mutable in place, the same shape a real turn handler needs to accumulate
+    // into across turns without replacing the whole object each time.
+    [[nodiscard]] StateT&       state() noexcept { return state_; }
+    [[nodiscard]] StateT const& state() const noexcept { return state_; }
+
+    // 005 §1's `metadata` — free-form session bookkeeping (e.g. client-supplied tags), distinct
+    // from `state` (005 §8 Q1's typed scratch state) precisely because it is NOT schema-typed per
+    // agent; a string bag is the right shape for "whatever the caller wants to attach," the same
+    // role `Message::metadata` names in 003 §1 for a single message.
+    [[nodiscard]] std::unordered_map<std::string, std::string>&       metadata() noexcept { return metadata_; }
+    [[nodiscard]] std::unordered_map<std::string, std::string> const& metadata() const noexcept { return metadata_; }
+
 private:
-    std::string                           session_id_;
-    Principal                             principal_;
-    std::vector<Message>                  history_;
-    ChatClientT                           chat_client_;
-    EffectContext                         effect_context_;
-    std::chrono::system_clock::time_point created_at_{};
-    std::chrono::system_clock::time_point updated_at_{};
+    std::string                                       session_id_;
+    Principal                                          principal_;
+    std::vector<Message>                               history_;
+    StateT                                             state_{};
+    std::unordered_map<std::string, std::string>       metadata_;
+    ChatClientT                                        chat_client_;
+    EffectContext                                      effect_context_;
+    std::chrono::system_clock::time_point              created_at_{};
+    std::chrono::system_clock::time_point              updated_at_{};
 };
 
 } // namespace agentengine
