@@ -306,6 +306,13 @@ add_executable(test_agent_session_poison_run test_agent_session_poison_run.cpp)
 target_link_libraries(test_agent_session_poison_run PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_agent_session_poison_run COMMAND test_agent_session_poison_run)
 
+# ---- Milestone 4 Phase F1 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
+# Idempotency key derivation {run_id, turn_index, call_index, argument_digest}, wired into the
+# real (M2) tool_pipeline.hpp invocation pipeline.
+add_executable(test_idempotency_key test_idempotency_key.cpp)
+target_link_libraries(test_idempotency_key PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_idempotency_key COMMAND test_idempotency_key)
+
 # ---- CapabilitySet enforcement mechanism (decisions/ADR-009-capability-set-enforcement-mechanism.md) --
 # Header-only (trust/capability.hpp), core-tier -- links only agentengine::core.
 add_executable(test_capability_enforcement test_capability_enforcement.cpp)

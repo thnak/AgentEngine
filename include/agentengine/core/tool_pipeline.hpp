@@ -113,7 +113,51 @@ struct ToolCallRequest {
     // 003 §2 / 006 §3 step 3: true if these arguments carry model-originated content. Stamped onto
     // the result's ContentItem (see the file-top comment for why this is item-level, not per-field).
     bool arguments_tainted = false;
+    // Milestone 4 Phase F1 (019 §3: idempotency key = {run_id, turn_index, call_index,
+    // argument_digest}). `call_index` is the CALLER's own ordinal for this call within its current
+    // turn (the pipeline does not track a per-turn call counter itself -- that bookkeeping belongs
+    // to whatever drives the turn's own tool-call loop, the same "no ambient state" shape
+    // `EffectContext::run_id`/`turn_index` already have). Defaults to 0 for every M2-era caller
+    // that predates this field (aggregate init with fewer braces than members is unaffected).
+    std::uint64_t call_index = 0;
 };
+
+// Milestone 4 Phase F1 (019 §3): "Every effect carries an idempotency key derived
+// deterministically from {run_id, turn_index, call_index, argument_digest}. Deterministic
+// derivation is what makes the key survive a restart." `argument_digest` is an FNV-1a hash of the
+// call's own canonical JSON arguments -- the same deterministic-hash idiom Quark's own
+// `reminder_name_hash()` (reminder_service.hpp) already uses, not a cryptographic commitment (019
+// names no collision-resistance requirement, only determinism).
+[[nodiscard]] inline std::uint64_t argument_digest(std::string_view canonical_args_json) noexcept {
+    std::uint64_t h = 0xCBF2'9CE4'8422'2325ULL;
+    for (unsigned char c : canonical_args_json) {
+        h ^= c;
+        h *= 0x0000'0100'0000'01B3ULL;
+    }
+    return h;
+}
+
+struct IdempotencyKey {
+    std::string   run_id;
+    std::uint64_t turn_index = 0;
+    std::uint64_t call_index = 0;
+    std::uint64_t argument_digest = 0;
+
+    friend bool operator==(IdempotencyKey const&, IdempotencyKey const&) = default;
+
+    // A single string form for use as a journal/outbox dedup key (F2's `EffectJournalEntry`).
+    [[nodiscard]] std::string to_string() const {
+        return run_id + ":" + std::to_string(turn_index) + ":" + std::to_string(call_index) + ":" +
+               std::to_string(argument_digest);
+    }
+};
+
+[[nodiscard]] inline IdempotencyKey derive_idempotency_key(EffectContext const& ctx,
+                                                            std::uint64_t call_index,
+                                                            json::Value const& arguments) {
+    return IdempotencyKey{ctx.run_id, ctx.turn_index, call_index,
+                          argument_digest(json::dump(arguments))};
+}
 
 // Step 5's decision point. Approvals never come from a model (I3) -- this is an explicit,
 // host/human-supplied callable, never invented ambiently inside the pipeline. Receives the
@@ -122,7 +166,9 @@ struct ToolCallRequest {
 using ApprovalDecider = std::function<bool(std::string_view tool_name, std::string const& canonical_args_json)>;
 
 // Step 10's minimal audit record (016/013's full span shape is out of scope for M2, see file-top
-// comment).
+// comment). Phase F1 adds the call's own idempotency key -- computed unconditionally (it costs one
+// digest of bytes already being canonicalized for step 5's approval check) so ANY caller journaling
+// effects (F2) has it without re-deriving it from the request a second time.
 struct ToolInvocationAudit {
     std::string call_id;
     std::string tool_name;
@@ -130,6 +176,7 @@ struct ToolInvocationAudit {
     std::string error_code;  // empty iff ok
     std::size_t result_bytes = 0;
     std::chrono::steady_clock::duration duration{};
+    IdempotencyKey idempotency_key;
 };
 
 namespace tool_pipeline_detail {
@@ -160,6 +207,10 @@ namespace tool_pipeline_detail {
                                              ToolInvocationAudit* audit_out = nullptr) {
     using namespace tool_pipeline_detail;
     auto const started = std::chrono::steady_clock::now();
+    // Phase F1: derived once, unconditionally, from exactly the four inputs 019 §3 names -- never
+    // wall-clock, never randomness, so the SAME {run_id, turn_index, call_index, arguments} always
+    // yields the SAME key, restart or not.
+    IdempotencyKey const idempotency_key = derive_idempotency_key(ctx, request.call_index, request.arguments);
 
     auto finish = [&](ToolResult result, error const* failure, std::size_t bytes = 0) -> ToolResult {
         if (audit_out) {
@@ -169,6 +220,7 @@ namespace tool_pipeline_detail {
             audit_out->error_code = failure ? failure->code : std::string{};
             audit_out->result_bytes = bytes;
             audit_out->duration = std::chrono::steady_clock::now() - started;
+            audit_out->idempotency_key = idempotency_key;
         }
         return result;
     };
