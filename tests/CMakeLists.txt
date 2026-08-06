@@ -358,6 +358,33 @@ if(WIN32)
   add_test(NAME test_memory_no_authority_laundering COMMAND test_memory_no_authority_laundering)
 endif()
 
+# ---- Milestone 4 Phase H1 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
+# Roadmap exit criterion (001 §9 G2 / 019 §7 G1): a session survives process restart with an
+# identical resumed run -- simulated kill -9 at a checkpoint boundary vs. an uninterrupted control.
+add_executable(test_session_restart_identical_resume test_session_restart_identical_resume.cpp)
+target_link_libraries(test_session_restart_identical_resume PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_session_restart_identical_resume COMMAND test_session_restart_identical_resume)
+
+# ---- Milestone 4 Phase H2 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
+# Roadmap exit criterion (019 §7 G3): Suspended holds zero resources -- E2's census proof, now
+# exercised end-to-end through a real checkpoint -> Dormant -> destroy -> restore-and-reactivate
+# cycle on a real quark::Engine, rather than in isolation.
+add_executable(test_suspended_zero_resources_e2e test_suspended_zero_resources_e2e.cpp)
+target_link_libraries(test_suspended_zero_resources_e2e PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_suspended_zero_resources_e2e COMMAND test_suspended_zero_resources_e2e)
+
+# ---- Milestone 4 Phase H3 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
+# Roadmap exit criterion (029 §9 G1): the default (non-vector) memory retrieval path is
+# deterministic and replayable -- byte-identical ContextContribution across repeated on_context()
+# calls against a fixed memory-worktree tree digest and a fixed turn, with no summarizer/network
+# call ever occurring during retrieval.
+if(WIN32)
+  add_executable(test_memory_retrieval_determinism test_memory_retrieval_determinism.cpp)
+  target_link_libraries(test_memory_retrieval_determinism PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_memory_retrieval_determinism COMMAND test_memory_retrieval_determinism)
+endif()
+
 # ---- CapabilitySet enforcement mechanism (decisions/ADR-009-capability-set-enforcement-mechanism.md) --
 # Header-only (trust/capability.hpp), core-tier -- links only agentengine::core.
 add_executable(test_capability_enforcement test_capability_enforcement.cpp)
