@@ -320,6 +320,13 @@ add_executable(test_effect_journal test_effect_journal.cpp)
 target_link_libraries(test_effect_journal PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_effect_journal COMMAND test_effect_journal)
 
+# ---- Milestone 4 Phase F4 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
+# 019 §6's rewind-then-reexecute rule: effect_class/EffectClass<C>, authorize_reexecution(), proven
+# against a real manually-triggered invoke_tool() re-execution under the same idempotency key.
+add_executable(test_effect_reexecution test_effect_reexecution.cpp)
+target_link_libraries(test_effect_reexecution PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_effect_reexecution COMMAND test_effect_reexecution)
+
 # ---- CapabilitySet enforcement mechanism (decisions/ADR-009-capability-set-enforcement-mechanism.md) --
 # Header-only (trust/capability.hpp), core-tier -- links only agentengine::core.
 add_executable(test_capability_enforcement test_capability_enforcement.cpp)

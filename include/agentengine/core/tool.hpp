@@ -38,6 +38,17 @@ struct Timeout {};  // ae-naming-lint: allow Timeout — pre-existing M0 scaffol
 
 enum class tool_source { native, wasm_plugin, mcp_server, remote_agent, sandboxed_script, composite };  // ae-naming-lint: allow tool_source — pre-existing M0 scaffolding, reconcile at owning milestone
 
+// Milestone 4 Phase F4 (019 §3: "Effects are classified by the tool declaration: pure (safe to
+// repeat), idempotent (safe with a key), at-most-once (must not be repeated)"). §6's rewind rule
+// reads exactly this classification ("pure effects re-run freely; idempotent effects re-run under
+// their original keys; at-most-once effects require explicit operator acknowledgement before
+// re-execution") — this enum/tag is that declaration surface, the same shape `Approval<M>` already
+// has above.
+enum class effect_class { pure, idempotent, at_most_once };  // ae-naming-lint: allow effect_class — 019 §3 names this concept normatively; 027 has not been updated to list it
+
+template <effect_class C>
+struct EffectClass {};  // ae-naming-lint: allow EffectClass — 019 §3 names "effect classification" normatively; 027 has not been updated to list this policy tag
+
 namespace tool_detail {
 
 template <class Policy>
@@ -56,6 +67,15 @@ struct policy_approval {
 template <approval_mode M>
 struct policy_approval<Approval<M>> {
     static std::optional<approval_mode> get() { return M; }
+};
+
+template <class Policy>
+struct policy_effect_class {
+    static std::optional<effect_class> get() { return std::nullopt; }
+};
+template <effect_class C>
+struct policy_effect_class<EffectClass<C>> {
+    static std::optional<effect_class> get() { return C; }
 };
 
 }  // namespace tool_detail
@@ -103,6 +123,21 @@ struct Tool {
         };
         (consider.template operator()<Policies>(), ...);
         return mode;
+    }
+
+    // Milestone 4 Phase F4: `at_most_once` if the tool declared no `EffectClass<...>` -- the
+    // conservative default, deliberately the OPPOSITE direction from `declared_approval()`'s own
+    // least-restrictive default. 019 §3's whole point is "never guess" about repeatability; an
+    // author who forgot to classify a tool must not have it silently treated as safe to re-run
+    // (`pure`) -- undeclared defaults to the assumption that re-running it COULD do real-world
+    // damage, until the author explicitly says otherwise.
+    [[nodiscard]] static effect_class declared_effect_class() {
+        effect_class cls = effect_class::at_most_once;
+        auto consider = [&cls]<class P>() {
+            if (auto c = tool_detail::policy_effect_class<P>::get(); c.has_value()) cls = *c;
+        };
+        (consider.template operator()<Policies>(), ...);
+        return cls;
     }
 };
 

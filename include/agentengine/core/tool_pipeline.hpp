@@ -159,6 +159,32 @@ struct IdempotencyKey {
                           argument_digest(json::dump(arguments))};
 }
 
+// Milestone 4 Phase F4 (019 §6's rewind-then-reexecute rule): "On re-execution: pure effects
+// re-run freely; idempotent effects re-run under their original keys; at-most-once effects
+// require explicit operator acknowledgement before re-execution." Provable now against a
+// manually-triggered re-execution (a caller deliberately re-invoking a tool call it already ran
+// once) -- full integration with workflow rewind (014 §5) waits for M6, since 014 doesn't exist
+// yet (the same "narrower than the RFC's own gate, not silently dropped" discipline this
+// milestone's decision 3 already applies to checkpoint boundaries). `operator_acknowledged` is an
+// explicit, host/human-supplied bool, never invented ambiently or derived from model output (I3)
+// -- the same shape `ApprovalDecider` above already has for exactly this reason.
+[[nodiscard]] inline result<void> authorize_reexecution(effect_class cls, bool operator_acknowledged) {
+    switch (cls) {
+        case effect_class::pure:
+        case effect_class::idempotent:
+            return {};  // re-run freely / under the original key (F1 already derives that key)
+        case effect_class::at_most_once:
+            if (!operator_acknowledged) {
+                return std::unexpected(error{
+                    failure_class::policy,
+                    "at-most-once effect requires explicit operator acknowledgement before re-execution",
+                    "effect.reexecution_requires_ack"});
+            }
+            return {};
+    }
+    return std::unexpected(error{failure_class::fatal, "unreachable effect_class", "effect.unreachable_class"});
+}
+
 // Step 5's decision point. Approvals never come from a model (I3) -- this is an explicit,
 // host/human-supplied callable, never invented ambiently inside the pipeline. Receives the
 // canonical JSON of the exact arguments about to execute (006 §4: "approval is bound to the exact
