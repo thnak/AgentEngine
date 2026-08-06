@@ -569,6 +569,23 @@ template <class CadenceT, class ChatClientT, class StateT, class HistoryProvider
     return true;
 }
 
+// Milestone 4 Phase E4 (019 §4: "Poison runs: a run that fails repeatedly on resume is
+// quarantined after a bounded number of attempts, with its state preserved for inspection — not
+// retried forever, and not discarded"). Host-side bookkeeping, the same "pure function of a
+// counter the CALLER maintains" shape `CheckpointCadence<N>` already uses above — `AgentSession`
+// itself has no notion of "this run keeps failing on resume" (that is a property of repeated
+// EXTERNAL retry attempts a host makes, not something the actor tracks about its own single
+// `handle()` call). "State preserved" is true by simple absence: nothing in this policy, or in
+// anything that would call it, ever touches `clear_in_process_state()`/`delete_session()` —
+// quarantining is a HOST-side decision to stop retrying, never an AgentSession-side deletion.
+template <std::uint32_t MaxAttempts>
+    requires(MaxAttempts >= 1)
+struct PoisonRunPolicy {  // ae-naming-lint: allow PoisonRunPolicy — 019 §4 names "poison run" normatively; 027 has not been updated to list this policy type
+    [[nodiscard]] static constexpr bool is_quarantined(std::uint32_t consecutive_failures) noexcept {
+        return consecutive_failures >= MaxAttempts;
+    }
+};
+
 // Milestone 4 Phase C3 (005 §6: "Delete — hard removal... with a completion receipt"). Not a
 // gate-numbered claim in 005 §7 (only redaction's G4 is) — §6's own prose is the whole
 // specification for this operation, and this is exactly what it asks for at this project's own

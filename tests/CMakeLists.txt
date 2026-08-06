@@ -293,6 +293,19 @@ add_executable(test_agent_session_timer_wake test_agent_session_timer_wake.cpp)
 target_link_libraries(test_agent_session_timer_wake PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_agent_session_timer_wake COMMAND test_agent_session_timer_wake)
 
+# ---- Milestone 4 Phase E4 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
+# Node-loss fencing (reuse) -- a zombie activation's checkpoint write is rejected through
+# AgentEngine's own save_agent_session_snapshot path.
+add_executable(test_agent_session_node_loss_fencing test_agent_session_node_loss_fencing.cpp)
+target_link_libraries(test_agent_session_node_loss_fencing PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_agent_session_node_loss_fencing COMMAND test_agent_session_node_loss_fencing)
+
+# ---- Milestone 4 Phase E4 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
+# Poison-run quarantine: PoisonRunPolicy<N> fires at exactly the bound; state preserved, not discarded.
+add_executable(test_agent_session_poison_run test_agent_session_poison_run.cpp)
+target_link_libraries(test_agent_session_poison_run PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_agent_session_poison_run COMMAND test_agent_session_poison_run)
+
 # ---- CapabilitySet enforcement mechanism (decisions/ADR-009-capability-set-enforcement-mechanism.md) --
 # Header-only (trust/capability.hpp), core-tier -- links only agentengine::core.
 add_executable(test_capability_enforcement test_capability_enforcement.cpp)
