@@ -49,7 +49,7 @@ struct NetEgressResponse {
 
 struct NetEgressTraits {
     std::string_view name;
-    bool supports_https = false;  // M2: always false. Flips once a follow-up ADR adds a TLS client.
+    bool supports_https = false;
 };
 
 // The hard, host-side response-size ceiling that applies REGARDLESS of `cap::NetOut::byte_cap` --
@@ -90,6 +90,19 @@ inline constexpr std::uint64_t kHardResponseCeilingBytes = 16u * 1024u * 1024u;
     VerifiedEndpoint endpoint, std::string_view host_header, NetEgressRequest const& req,
     std::optional<std::uint64_t> byte_cap);
 
+#ifdef AGENTENGINE_WITH_HTTPS
+// decisions/ADR-013-https-egress-tls-client.md: identical to `perform_http_exchange` in every
+// respect (same request-building, same byte-cap-enforced read loop, same no-redirect-following
+// posture) except the transport -- a `TlsClientSession` (tls_client.hpp) wraps the connected socket,
+// verifying the peer certificate against the vendored CA bundle and `host_header` (doubling as both
+// the HTTP Host: header and the TLS hostname-verification target, exactly how a real HTTPS client
+// uses the same name for both). Only declared when AGENTENGINE_WITH_HTTPS is ON -- the scheme gate
+// in `HostEgressProxy::fetch` only reaches this call under the same build configuration.
+[[nodiscard]] result<NetEgressResponse> perform_https_exchange(
+    VerifiedEndpoint endpoint, std::string_view host_header, NetEgressRequest const& req,
+    std::optional<std::uint64_t> byte_cap);
+#endif
+
 // concept, not a base class (mirrors `SandboxBackend`, 008 §2a) -- a first-party default ships
 // (`HostEgressProxy` below); a deployer's own conforming type (a corporate proxy client, an existing
 // SSRF appliance, an mTLS-terminating gateway) is usable with no engine change, per 008 §10 Q3's
@@ -105,7 +118,11 @@ concept NetEgressBackend = requires(T backend, cap::NetOut const& granted, NetEg
 // (C4/C5/C6) -> `perform_http_exchange` (C2/C8/C10). See ADR-011 §3 for why each gate runs before any
 // network activity.
 struct HostEgressProxy {
+#ifdef AGENTENGINE_WITH_HTTPS
+    static constexpr NetEgressTraits traits{"host-egress-proxy", true};
+#else
     static constexpr NetEgressTraits traits{"host-egress-proxy", false};
+#endif
 
     // Real by default. A test may inject a fake to prove `fetch()`'s POST-RESOLUTION composition
     // (does it correctly hand `resolve_and_validate`'s answer to `perform_http_exchange` and return

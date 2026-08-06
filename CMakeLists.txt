@@ -251,6 +251,110 @@ if(AGENTENGINE_WITH_WASM)
   add_library(agentengine::wasm_backend ALIAS agentengine_wasm_backend)
 endif()
 
+# ---- HTTPS/TLS client for the egress proxy (src/sandbox/) -- Windows + Linux -------------------
+# decisions/ADR-013-https-egress-tls-client.md (M2 residual, ADR-011 section 9's named follow-up):
+# mbedTLS as the egress proxy's one CONVENTIONS.md tier-2 heavy dependency for ordinary outbound
+# HTTPS (system-CA-style validation + real hostname verification -- NOT Quark's SecureTransport,
+# built for node-identity cluster mTLS, ADR-011 section 3 Design C's own rejection reasoning). Off
+# by default, matching AGENTENGINE_WITH_WASM/AGENTENGINE_BUILD_PYTHON_RUNNER's posture for this
+# project's other two tier-2 dependencies.
+option(AGENTENGINE_WITH_HTTPS
+  "Vendor mbedTLS + a pinned CA bundle for the egress proxy's https:// support (ADR-013)"
+  OFF)
+
+if(AGENTENGINE_WITH_HTTPS)
+  # Default (AGENTENGINE_VENDOR_MBEDTLS=ON): a pinned, checksummed mbedTLS source release built as
+  # an ordinary CMake subproject -- NOT Quark's own QUARK_WITH_MBEDTLS (a vcpkg-resolved
+  # "version>=3.6.2" floor with no archive checksum, a materially weaker pinning discipline than
+  # this project's own wasmtime/CPython precedent above, ADR-013 section 3/6). The LTS 3.6.x line,
+  # matching Quark's own floor, not the newer 4.x major (avoids an unfamiliar API surface for a
+  # security-critical dependency).
+  #
+  # Override: pass -DAGENTENGINE_VENDOR_MBEDTLS=OFF and -DAGENTENGINE_MBEDTLS_ROOT=<path to an
+  # already-extracted mbedTLS source release, containing its own top-level CMakeLists.txt> instead.
+  option(AGENTENGINE_VENDOR_MBEDTLS
+    "Fetch a pinned, checksummed mbedTLS source release instead of using a local copy"
+    ON)
+
+  set(AE_VENDORED_MBEDTLS_VERSION "3.6.7")
+
+  # mbedTLS's own CMakeLists.txt auto-detects MBEDTLS_AS_SUBPROJECT and defaults ENABLE_TESTING to
+  # OFF under add_subdirectory() -- ENABLE_PROGRAMS defaults ON regardless, and
+  # MBEDTLS_FATAL_WARNINGS (also ON by default) is a third-party library's own warning posture
+  # under whatever compiler flags it happens to be built with here, not something this project's
+  # own AgentEngineWarnings module should be answerable for -- both forced off, matching
+  # QUARK_BUILD_TESTS/QUARK_BUILD_BENCH's own precedent for Quark above.
+  set(ENABLE_PROGRAMS OFF CACHE BOOL "" FORCE)
+  set(ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+  set(MBEDTLS_FATAL_WARNINGS OFF CACHE BOOL "" FORCE)
+
+  if(AGENTENGINE_VENDOR_MBEDTLS)
+    include(FetchContent)
+    FetchContent_Declare(ae_vendored_mbedtls
+      URL "https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-${AE_VENDORED_MBEDTLS_VERSION}/mbedtls-${AE_VENDORED_MBEDTLS_VERSION}.tar.bz2"
+      URL_HASH SHA256=a7e8bcbec0e6f761b4af24f25677626b35f762f68eef79c08677a363212d11f6
+      DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+    FetchContent_MakeAvailable(ae_vendored_mbedtls)
+  else()
+    set(AGENTENGINE_MBEDTLS_ROOT "${AGENTENGINE_MBEDTLS_ROOT}" CACHE PATH
+      "Root of a local mbedTLS source copy (must contain its own top-level CMakeLists.txt)")
+    if(NOT AGENTENGINE_MBEDTLS_ROOT OR NOT EXISTS "${AGENTENGINE_MBEDTLS_ROOT}/CMakeLists.txt")
+      message(FATAL_ERROR
+        "AGENTENGINE_WITH_HTTPS is ON, AGENTENGINE_VENDOR_MBEDTLS is OFF, but AGENTENGINE_MBEDTLS_ROOT "
+        "('${AGENTENGINE_MBEDTLS_ROOT}') does not contain a CMakeLists.txt. Either leave "
+        "AGENTENGINE_VENDOR_MBEDTLS=ON (the default) or pass a real path.")
+    endif()
+    add_subdirectory("${AGENTENGINE_MBEDTLS_ROOT}" "${CMAKE_CURRENT_BINARY_DIR}/mbedtls_local" EXCLUDE_FROM_ALL)
+  endif()
+
+  # A pinned, checksummed CA root bundle (curl.se's well-known, regularly-refreshed distribution of
+  # Mozilla's own root program) -- mbedTLS has no OS-trust-store integration of its own (unlike
+  # OpenSSL/Schannel); vendoring one keeps this project's own "no host-machine-dependent build
+  # state" posture (matching AGENTENGINE_VENDOR_PYTHON's own comment above) rather than trusting
+  # whatever the build machine happens to have installed. AgentEngine now owns this file's rotation
+  # over time (ADR-013 section 9's named residual) -- bundle snapshot dated 2026-07-16 (curl.se's
+  # own header line), fetched and hand-verified during this task.
+  option(AGENTENGINE_VENDOR_CA_BUNDLE
+    "Fetch a pinned, checksummed CA root bundle instead of using a local PEM file"
+    ON)
+  if(AGENTENGINE_VENDOR_CA_BUNDLE)
+    set(AE_CA_BUNDLE_PATH "${CMAKE_CURRENT_BINARY_DIR}/vendored_ca_bundle/cacert.pem")
+    file(DOWNLOAD "https://curl.se/ca/cacert.pem" "${AE_CA_BUNDLE_PATH}"
+      EXPECTED_HASH SHA256=3ff344e30b9b1ed2971044eabb438a08f2e2245ddb5f8ab1a3ad8b63ab4eaf91)
+  else()
+    set(AE_CA_BUNDLE_PATH "${AGENTENGINE_CA_BUNDLE_PATH}" CACHE FILEPATH
+      "Path to a local PEM CA bundle to embed instead of the vendored one")
+    if(NOT AE_CA_BUNDLE_PATH OR NOT EXISTS "${AE_CA_BUNDLE_PATH}")
+      message(FATAL_ERROR
+        "AGENTENGINE_VENDOR_CA_BUNDLE is OFF but AGENTENGINE_CA_BUNDLE_PATH ('${AE_CA_BUNDLE_PATH}') "
+        "does not exist.")
+    endif()
+  endif()
+
+  # Embedded into the binary at compile time (a generated .cpp, see cmake/ca_bundle_embed.cpp.in),
+  # not loaded from a file path at run time -- ADR-013's own choice: a run-time path would need to
+  # keep resolving correctly wherever the build tree or installed binary ends up, which a compiled-
+  # in constant sidesteps entirely.
+  file(READ "${AE_CA_BUNDLE_PATH}" AE_CA_BUNDLE_CONTENT)
+  configure_file("${CMAKE_CURRENT_SOURCE_DIR}/cmake/ca_bundle_embed.cpp.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/ca_bundle_embed.cpp" @ONLY)
+
+  # ---- TLS client (src/sandbox/) -- Windows + Linux ---------------------------------------------
+  add_library(agentengine_tls_client STATIC
+    src/sandbox/tls_client.cpp
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/ca_bundle_embed.cpp")
+  target_link_libraries(agentengine_tls_client PUBLIC agentengine::core)
+  target_link_libraries(agentengine_tls_client PRIVATE
+    agentengine_warnings MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+  add_library(agentengine::tls_client ALIAS agentengine_tls_client)
+
+  # Extends the already-defined agentengine::net_egress_proxy target (above) rather than moving its
+  # definition down here -- AGENTENGINE_WITH_HTTPS is resolved after that target already exists,
+  # and CMake target_link_libraries()/target_compile_definitions() calls accumulate across a file.
+  target_link_libraries(agentengine_net_egress_proxy PRIVATE agentengine::tls_client)
+  target_compile_definitions(agentengine_net_egress_proxy PUBLIC AGENTENGINE_WITH_HTTPS)
+endif()
+
 # ---- Cross-process capability tokens (src/trust/) -- Windows only ------------------------------
 # Implements decisions/ADR-005-capability-bearer-tokens-cross-process.md (resolves OQ-3): both
 # competing designs it prove-phases -- Design A (trust/capability_token.hpp, a self-verifying

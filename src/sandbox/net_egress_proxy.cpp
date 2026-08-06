@@ -3,6 +3,10 @@
 
 #include "agentengine/sandbox/net_egress_proxy.hpp"
 
+#ifdef AGENTENGINE_WITH_HTTPS
+#include "agentengine/sandbox/tls_client.hpp"
+#endif
+
 #include "pal/net.hpp"
 
 #if defined(_WIN32)
@@ -242,6 +246,36 @@ result<VerifiedEndpoint> resolve_and_validate(std::string_view host, std::uint16
     return VerifiedEndpoint{*chosen, port};
 }
 
+// Shared between perform_http_exchange and perform_https_exchange (ADR-013) -- the raw HTTP/1.1
+// request text is identical either way; only the transport it travels over differs. CRLF in
+// method/path/headers is rejected by the caller's gate (HostEgressProxy::fetch) before either
+// exchange function is ever reached (ADR-011 claim C9) -- this is the only place those bytes reach
+// the wire, so that gate running first is load-bearing, not a formality.
+std::string build_raw_request(std::string_view host_header, NetEgressRequest const& req) {
+    std::string request;
+    request += req.method;
+    request += ' ';
+    request += req.path;
+    request += " HTTP/1.1\r\n";
+    request += "Host: ";
+    request += host_header;
+    request += "\r\n";
+    bool has_content_length = false;
+    for (auto const& [k, v] : req.headers) {
+        request += k;
+        request += ": ";
+        request += v;
+        request += "\r\n";
+        if (equals_ci(k, "content-length")) has_content_length = true;
+    }
+    if (!req.body.empty() && !has_content_length) {
+        request += "Content-Length: " + std::to_string(req.body.size()) + "\r\n";
+    }
+    request += "Connection: close\r\n\r\n";
+    request += req.body;
+    return request;
+}
+
 result<NetEgressResponse> perform_http_exchange(VerifiedEndpoint endpoint, std::string_view host_header,
                                                  NetEgressRequest const& req,
                                                  std::optional<std::uint64_t> byte_cap) {
@@ -264,31 +298,7 @@ result<NetEgressResponse> perform_http_exchange(VerifiedEndpoint endpoint, std::
         return std::unexpected(error{failure_class::transient, "connect refused or failed", "net.connect_failed"});
     }
 
-    // CRLF in method/path/headers is rejected by the caller's gate (HostEgressProxy::fetch) before
-    // this function is ever reached (ADR-011 claim C9) -- this is the only place those bytes reach
-    // the wire, so that gate running first is load-bearing, not a formality.
-    std::string request;
-    request += req.method;
-    request += ' ';
-    request += req.path;
-    request += " HTTP/1.1\r\n";
-    request += "Host: ";
-    request += host_header;
-    request += "\r\n";
-    bool has_content_length = false;
-    for (auto const& [k, v] : req.headers) {
-        request += k;
-        request += ": ";
-        request += v;
-        request += "\r\n";
-        if (equals_ci(k, "content-length")) has_content_length = true;
-    }
-    if (!req.body.empty() && !has_content_length) {
-        request += "Content-Length: " + std::to_string(req.body.size()) + "\r\n";
-    }
-    request += "Connection: close\r\n\r\n";
-    request += req.body;
-
+    std::string const request = build_raw_request(host_header, req);
     if (auto const s = send_all(guard.fd, request); !s) return std::unexpected(s.error());
 
     // Read the response, enforcing effective_cap DURING the loop -- never buffer past it and check
@@ -329,6 +339,71 @@ result<NetEgressResponse> perform_http_exchange(VerifiedEndpoint endpoint, std::
     return parse_http_response(buf);
 }
 
+#ifdef AGENTENGINE_WITH_HTTPS
+// decisions/ADR-013-https-egress-tls-client.md. Identical structure to perform_http_exchange above
+// (connect -> build the same raw request -> byte-cap-enforced read loop -> parse) except the
+// transport: a TlsClientSession wraps the socket immediately after connect, and the read loop calls
+// its `recv()` instead of raw `wait_ready`+`recv_some` -- the session already blocks/retries
+// internally on its own BIO (tls_client.cpp), so there is no `would_block` case to handle here the
+// way the plain-HTTP loop above has to.
+result<NetEgressResponse> perform_https_exchange(VerifiedEndpoint endpoint, std::string_view host_header,
+                                                  NetEgressRequest const& req,
+                                                  std::optional<std::uint64_t> byte_cap) {
+    std::uint64_t const effective_cap = std::min<std::uint64_t>(byte_cap.value_or(kHardResponseCeilingBytes),
+                                                                  kHardResponseCeilingBytes);
+#if defined(_WIN32)
+    quark::pal::ensure_winsock();
+#endif
+
+    auto connect_r = quark::pal::tcp_connect(endpoint.ipv4_host_order, endpoint.port);
+    if (!connect_r) {
+        return std::unexpected(error{failure_class::transient, "connect failed", "net.connect_failed"});
+    }
+    FdGuard const guard{*connect_r};
+
+    if (!wait_ready(guard.fd, /*for_write=*/true, kIoTimeoutMs)) {
+        return std::unexpected(error{failure_class::transient, "connect timed out", "net.connect_failed"});
+    }
+    if (auto const cr = quark::pal::connect_result(guard.fd); !cr) {
+        return std::unexpected(error{failure_class::transient, "connect refused or failed", "net.connect_failed"});
+    }
+
+    auto session_r = TlsClientSession::handshake(guard.fd, host_header);
+    if (!session_r) return std::unexpected(session_r.error());
+    TlsClientSession session = std::move(*session_r);
+
+    std::string const request = build_raw_request(host_header, req);
+    if (auto const s = session.send(request); !s) return std::unexpected(s.error());
+
+    std::string buf;
+    std::array<char, 4096> chunk{};
+    for (;;) {
+        auto const header_end = buf.find("\r\n\r\n");
+        if (header_end != std::string::npos) {
+            auto const cl = parse_content_length(std::string_view(buf).substr(0, header_end));
+            if (cl.has_value()) {
+                std::size_t const body_have = buf.size() - (header_end + 4);
+                if (body_have >= *cl) break;
+            }
+        }
+        if (buf.size() >= effective_cap) {
+            return std::unexpected(error{failure_class::resource, "response exceeded the byte cap", "net.byte_cap_exceeded"});
+        }
+        auto const r = session.recv(chunk.data(), chunk.size());
+        if (!r) return std::unexpected(r.error());
+        if (*r == 0) break;  // clean TLS close -- normal end of a Connection:-close response
+        std::size_t const room = effective_cap > buf.size() ? effective_cap - buf.size() : 0;
+        std::size_t const take = std::min(room, *r);
+        buf.append(chunk.data(), take);
+        if (take < *r) {
+            return std::unexpected(error{failure_class::resource, "response exceeded the byte cap", "net.byte_cap_exceeded"});
+        }
+    }
+
+    return parse_http_response(buf);
+}
+#endif
+
 result<NetEgressResponse> HostEgressProxy::fetch(NetEgressRequest const& req, cap::NetOut const& granted) const {
     // C1: the WIT `http-request` call gives the guest no way to name a host at all -- host/port/
     // scheme come entirely from the grant (see this header's own file-top comment) -- so a grant
@@ -342,12 +417,24 @@ result<NetEgressResponse> HostEgressProxy::fetch(NetEgressRequest const& req, ca
     auto const target = parse_allowlist_entry(granted.host_allowlist.front());
     if (!target) return std::unexpected(target.error());
 
-    // C3: only plain http this milestone -- see ADR-011 §3 Design C for why https is out of scope.
-    if (!equals_ci(target->scheme, "http")) {
+    // C3: http always; https only when AGENTENGINE_WITH_HTTPS vendors a TLS client (ADR-013). Off by
+    // default (CONVENTIONS.md tier 2: never linked into a build that does not select this backend)
+    // -- ADR-011 section 3 Design C's original "no TLS client exists" reasoning for rejecting https
+    // no longer holds once this option is on, but the option itself still defaults off.
+    bool const is_https = equals_ci(target->scheme, "https");
+    if (!equals_ci(target->scheme, "http") && !is_https) {
         return std::unexpected(error{failure_class::policy,
-                                      "only plain http is supported this milestone (see ADR-011 section 3, Design C)",
+                                      "only http/https schemes are supported (see ADR-011 section 3, ADR-013)",
                                       "net.scheme_unsupported"});
     }
+#ifndef AGENTENGINE_WITH_HTTPS
+    if (is_https) {
+        return std::unexpected(error{failure_class::policy,
+                                      "https requested but this build has no TLS client vendored (ADR-013, "
+                                      "AGENTENGINE_WITH_HTTPS is off)",
+                                      "net.scheme_unsupported"});
+    }
+#endif
 
     // C9: reject before any network activity -- this proxy builds the raw request itself.
     if (auto const c = reject_crlf("method", req.method); !c) return std::unexpected(c.error());
@@ -369,6 +456,9 @@ result<NetEgressResponse> HostEgressProxy::fetch(NetEgressRequest const& req, ca
     auto const endpoint = resolver(target->host, target->port);
     if (!endpoint) return std::unexpected(endpoint.error());
 
+#ifdef AGENTENGINE_WITH_HTTPS
+    if (is_https) return perform_https_exchange(*endpoint, target->host, req, granted.byte_cap);
+#endif
     return perform_http_exchange(*endpoint, target->host, req, granted.byte_cap);
 }
 

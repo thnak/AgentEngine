@@ -151,6 +151,17 @@ add_executable(test_net_egress_proxy test_net_egress_proxy.cpp)
 target_link_libraries(test_net_egress_proxy PRIVATE agentengine::net_egress_proxy agentengine_warnings)
 add_test(NAME test_net_egress_proxy COMMAND test_net_egress_proxy)
 
+# ---- HTTPS egress TLS client proof (decisions/ADR-013-https-egress-tls-client.md) --------------
+# Only built when AGENTENGINE_WITH_HTTPS is explicitly turned ON (root CMakeLists.txt) -- links
+# directly against mbedTLS (test-only in-memory certificate generation, a loopback TLS test server)
+# in addition to agentengine::tls_client itself.
+if(AGENTENGINE_WITH_HTTPS)
+  add_executable(test_https_egress test_https_egress.cpp)
+  target_link_libraries(test_https_egress PRIVATE
+    agentengine::tls_client agentengine_warnings MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+  add_test(NAME test_https_egress COMMAND test_https_egress)
+endif()
+
 # ---- RecordedChatClient fixture player (test-only) ---------------------------------------------
 # Proves the ChatClient concept and ChatRequest/ChatResponse vocabulary are usable end-to-end
 # against hand-authored JSON fixtures, without a real network call or API key (CLAUDE.md task

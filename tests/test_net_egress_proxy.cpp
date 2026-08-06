@@ -250,17 +250,34 @@ int main() {
         check(cr.calls.load() == 0, "resolver was never called for a two-entry grant either");
     }
 
-    // -- C3: https rejected -- before any network activity -----------------------------------------
+    // -- C3: https rejected before any network activity -- UNLESS a TLS client is vendored
+    // (ADR-013, AGENTENGINE_WITH_HTTPS) -----------------------------------------------------------
+#ifndef AGENTENGINE_WITH_HTTPS
     {
         CountingResolver cr;
         HostEgressProxy proxy;
         proxy.resolver = std::ref(cr);
         auto grant = make_grant("api.example:443:https");
         auto r = proxy.fetch(NetEgressRequest{"GET", "/", {}, ""}, grant);
-        check(!r.has_value(), "an https allowlist entry is rejected");
+        check(!r.has_value(), "an https allowlist entry is rejected when no TLS client is vendored");
         if (!r) check(r.error().code == "net.scheme_unsupported", "specific diagnostic code");
         check(cr.calls.load() == 0, "resolver was never called for an https grant");
     }
+#else
+    // ADR-013's own hostile test corpus (tests/test_https_egress.cpp) exercises the full TLS
+    // handshake/certificate-validation surface against a real local TLS test server; this file only
+    // needs to prove the scheme gate itself no longer blocks https pre-resolution once a TLS client
+    // is vendored.
+    {
+        CountingResolver cr;
+        HostEgressProxy proxy;
+        proxy.resolver = std::ref(cr);
+        auto grant = make_grant("api.example:443:https");
+        auto const r = proxy.fetch(NetEgressRequest{"GET", "/", {}, ""}, grant);
+        (void)r;  // outcome depends on live connect() behavior for port 0 -- only the gate matters here
+        check(cr.calls.load() == 1, "the resolver IS called for an https grant once a TLS client is vendored");
+    }
+#endif
 
     // -- malformed allowlist entries -- before any network activity ---------------------------------
     {

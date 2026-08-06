@@ -1028,6 +1028,15 @@ remains a spike, cited as such everywhere C2's writeups reference it.
   (`gcc:14`, 23/23, 1 expected skip), with `test_net_egress_proxy` additionally reconfirmed clean over
   8 (Windows) and 10 (Linux) consecutive standalone runs.
 
+  **HTTPS follow-up resolved:** `decisions/ADR-013-https-egress-tls-client.md` (M2 residual work,
+  post-Phase-F). mbedTLS vendored directly behind `AGENTENGINE_WITH_HTTPS` (default off, this
+  project's own exact-pinned+checksummed `FetchContent` discipline, not Quark's laxer vcpkg-floor
+  path); `TlsClientSession` (`sandbox/tls_client.hpp`/`.cpp`) provides real system-CA-style
+  validation and real hostname verification. Proven with in-memory-generated test certificates
+  against a real loopback TLS server (valid-cert acceptance; untrusted-root/hostname-mismatch/
+  expired-cert rejection) on both platforms; a real Quark header bug (missing `<atomic>` include,
+  Linux-only) found and fixed on this project's own side.
+
 - **F2.** (done) Policy-reachability tool (007 §9 G6) — new CI tooling enumerating `{capability kind,
   tool, taint level}` against whatever mechanical enforcement A3 actually implements (decision 4's
   scope, not the full declarative language). **L**

@@ -263,11 +263,11 @@ effect, proven against the real compiled fixture, not a hand-crafted test double
 
 ## 9. Residual risks and deferred gates
 
-- **HTTPS/TLS is not implemented.** `https` allowlist entries are rejected with `net.scheme_unsupported`
-  (WIT: `host-not-allowlisted`) — never silently served over plain HTTP. A follow-up ADR is needed
-  once a general-purpose TLS client (ordinary CA validation, not Quark's node-identity mTLS
-  `SecureTransport`) is vendored or built. Until then, `wasm`'s `http-request` import can only reach
-  `http://` targets in practice.
+- **HTTPS/TLS — resolved.** `decisions/ADR-013-https-egress-tls-client.md` (M2 residual, post-Phase-F):
+  mbedTLS vendored directly (exact-pinned, checksummed), `TlsClientSession` providing real system-CA-
+  style validation and hostname verification. `https` allowlist entries are still rejected with
+  `net.scheme_unsupported` in the default build (`AGENTENGINE_WITH_HTTPS` off) — never silently served
+  over plain HTTP — and accepted for real once that option is on.
 - **IPv6 is not implemented.** Matches the vendored PAL's own IPv4-only locator. An IPv6-only host
   fails closed with `net.host_unresolvable`, not a silently narrower blocklist.
 - **`native-jail`'s interpreter-level `socket` mediation is out of scope.** 008 §1b's "socket proxies

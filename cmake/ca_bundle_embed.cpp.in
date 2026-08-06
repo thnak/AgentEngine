@@ -1,0 +1,12 @@
+// Generated at CMake configure time from the vendored CA bundle (root CMakeLists.txt,
+// AGENTENGINE_WITH_HTTPS block) -- do not edit by hand; edit the CA bundle URL/hash there instead.
+// Implements decisions/ADR-013-https-egress-tls-client.md's "embedded, not runtime-loaded" choice:
+// the PEM bundle becomes part of the compiled binary, not a file path that must still exist wherever
+// the build tree ends up at run time.
+
+namespace agentengine::sandbox {
+
+extern char const* const kVendoredCaBundlePem;
+char const* const kVendoredCaBundlePem = R"AeCaBundlePemV1(@AE_CA_BUNDLE_CONTENT@)AeCaBundlePemV1";
+
+}  // namespace agentengine::sandbox
