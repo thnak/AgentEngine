@@ -353,6 +353,14 @@ add_executable(test_tool_pipeline_capability_reuse test_tool_pipeline_capability
 target_link_libraries(test_tool_pipeline_capability_reuse PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_tool_pipeline_capability_reuse COMMAND test_tool_pipeline_capability_reuse)
 
+# ---- call_tool bridge: sandbox-scoped invoke_tool(), bundled approval, tainted results (Milestone 3
+# Phase F2, 010 §6 / 006 §3). Header-only (src/backends/native_jail/tool_bridge.hpp), core-tier --
+# links only agentengine::core, no native_jail runner target needed for this proof.
+add_executable(test_tool_bridge test_tool_bridge.cpp)
+target_include_directories(test_tool_bridge PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../src")
+target_link_libraries(test_tool_bridge PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_tool_bridge COMMAND test_tool_bridge)
+
 # ---- Agent metadata compiler: register_agent<A>() (M2 Phase E task E2, 002 §6) -----------------
 # Header-only (core/agent_registry.hpp), core-tier -- links only agentengine::core.
 add_executable(test_agent_registry test_agent_registry.cpp)

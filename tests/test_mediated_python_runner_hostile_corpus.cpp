@@ -254,17 +254,17 @@ int main() {
         // ---- object-graph introspection: can guest code recover a PRE-mediation reference to the
         // real socket.connect without ever calling sys.settrace, just by walking __globals__? -----
         {
-            // '_ae_open'/'_ae_connect'/'_ae_denied' are the mediation WRAPPERS themselves -- exec()
-            // binds a def'd function's own name into the globals dict it executes in, so they are
-            // always present and finding them recovers nothing (they're exactly what
-            // socket.socket.connect already publicly is). The property under test is narrower and
-            // more precise: no OTHER callable -- in particular nothing that still holds a
-            // reference to the real, pre-mediation connect -- is present.
+            // '_ae_open'/'_ae_connect'/'_ae_denied'/'call_tool' are the mediation WRAPPERS
+            // themselves -- exec() binds a def'd function's own name into the globals dict it
+            // executes in, so they are always present and finding them recovers nothing (they're
+            // exactly what socket.socket.connect/builtins.call_tool already publicly are). The
+            // property under test is narrower and more precise: no OTHER callable -- in particular
+            // nothing that still holds a reference to the real, pre-mediation connect -- is present.
             ExecRequest req{
                 "python",
                 "import socket\n"
                 "g = socket.socket.connect.__globals__\n"
-                "wrappers = {'_ae_open', '_ae_connect', '_ae_denied'}\n"
+                "wrappers = {'_ae_open', '_ae_connect', '_ae_denied', 'call_tool'}\n"
                 "leaked = [k for k in g if k not in ('__builtins__', '_ae_internal') and "
                 "k not in wrappers and not k.startswith('__') and callable(g.get(k))]\n"
                 "print('LEAKED_NAMES:', leaked)"};

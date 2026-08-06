@@ -35,6 +35,7 @@
 // fail-closed, never a silent widening, so leaving it unbuilt cannot make this MORE permissive than
 // intended, only more restrictive than ADR-003's eventual mechanism would allow.
 
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -43,6 +44,7 @@
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/error.hpp"
 #include "agentengine/sandbox/runner.hpp"
+#include "backends/native_jail/tool_bridge.hpp"
 
 namespace agentengine::native_jail {
 
@@ -67,6 +69,14 @@ struct MediatedPythonConfig {
     // its own header as "the primitive a future FileSystemAdapter implementation is expected to
     // call" -- reusing it is the documented intent, not a decision-4 violation).
     std::unordered_map<std::string, std::wstring> mount_roots;
+
+    // Milestone 3 Phase F2 (010 §6): the pre-registered `call_tool` bridge for this session --
+    // which tools are reachable from inside the interpreter, at what capability set (the SANDBOX's
+    // own, never any agent-level ceiling), and whether the host bundled-approved the whole set at
+    // `execute_code` time. `nullopt` (the default) means no tools are bridged this session --
+    // `call_tool(...)` fails closed with a PermissionError, matching this project's fail-closed
+    // default for every other host-configured surface here (`mount_roots` empty means no mounts).
+    std::optional<ToolBridgeConfig> tool_bridge;
 };
 
 // Owns exactly one embedded CPython interpreter for the process's lifetime (ADR-002 §5.5.6's scope,

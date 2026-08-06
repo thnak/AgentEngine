@@ -27,6 +27,7 @@
                                                      // intent, not spike-code reuse (that rule is
                                                      // about python_lockdown.cpp/python_runner.hpp).
 #include "agentengine/trust/capability.hpp"
+#include "backends/native_jail/tool_bridge.hpp"  // Milestone 3 Phase F2, 010 §6's call_tool bridge
 
 namespace agentengine::native_jail {
 
@@ -91,10 +92,17 @@ std::unordered_set<std::string> const* g_package_policy_allowlist = nullptr;  //
                                                                                  // (session-wide host
                                                                                  // policy -- 010 §5,
                                                                                  // not per-call).
-EffectContext const* g_current_ctx = nullptr;      // set at run() entry, cleared at run() exit --
-                                                     // the open/socket/subprocess wrapper callbacks
-                                                     // consult THIS for real, per-call capability
-                                                     // freshness (010 §9 G7's own claim, closed here).
+EffectContext* g_current_ctx = nullptr;      // set at run() entry, cleared at run() exit -- the
+                                               // open/socket/subprocess wrapper callbacks consult
+                                               // THIS for real, per-call capability freshness (010 §9
+                                               // G7's own claim, closed here). Non-const (Milestone 3
+                                               // Phase F2): `call_tool`'s bridge needs a genuinely
+                                               // mutable EffectContext&, since invoke_tool's own step
+                                               // 7 writes ctx.bound_capabilities for the duration of
+                                               // the call -- the FS/socket wrappers above only ever
+                                               // READ through this pointer, so widening it from const
+                                               // grants call_tool exactly the access it needs without
+                                               // narrowing anything already relying on it.
 MediatedPythonConfig const* g_current_config = nullptr;  // for mount_roots lookup inside the open()
                                                            // callback; stable for the object's whole
                                                            // life, set once at construction.
@@ -445,9 +453,77 @@ PyObject* Internal_do_connect(PyObject* /*self*/, PyObject* args) {
     return PyObject_CallFunctionObjArgs(g_real_socket_connect, sock_obj, address, nullptr);
 }
 
+// Maps a tool_pipeline error CODE (core/tool_pipeline.hpp's own vocabulary) to the closed set of
+// ordinary Python exceptions an agent already knows how to reason about (026 §3's table), never a
+// policy identifier or a host diagnostic. `tool.capability_not_held`/`tool.approval_denied` are
+// exactly "Tool denied by policy" (026 §3's own row); `tool.unknown_name` has no matching row --
+// treated as an ordinary Python lookup failure (ValueError), the closest "ordinary knowledge"
+// analogue for calling something under a name that does not exist; `tool.deadline_exceeded` matches
+// "Wall-clock exceeded" -> TimeoutError; anything else falls back to RuntimeError carrying only the
+// tool's own message, never a code or a host stack trace.
+void raise_mapped_tool_error(std::string const& error_code, std::string const& message) {
+    PyObject* exc_type = PyExc_RuntimeError;
+    if (error_code == "tool.capability_not_held" || error_code == "tool.approval_denied") {
+        exc_type = PyExc_PermissionError;
+    } else if (error_code == "tool.unknown_name") {
+        exc_type = PyExc_ValueError;
+    } else if (error_code == "tool.deadline_exceeded") {
+        exc_type = PyExc_TimeoutError;
+    }
+    PyErr_SetString(exc_type, message.c_str());
+}
+
+int g_call_tool_counter = 0;
+
+// `_ae_internal.call_tool(name, args_json) -> reply_json` -- the ONLY way the bootstrap-installed
+// `call_tool` builtin (below) reaches the real 006 §3 pipeline
+// (src/backends/native_jail/tool_bridge.hpp's `bridge_tool_call`), at THIS session's own
+// `MediatedPythonConfig::tool_bridge` capability set -- never anything derived from guest code,
+// never the agent's own ceiling (that type is not even reachable from this function). The SAME
+// `EffectContext&` the open()/socket() wrappers already consult (`g_current_ctx`) is passed through
+// unchanged, so a bridged tool call can never exceed what this run() call was itself granted (010 §9
+// G4's own "cannot exceed the capability set it was itself granted" property, restated here for
+// tools the way `Internal_do_connect`'s neighbor already restates it for sockets).
+PyObject* Internal_call_tool(PyObject* /*self*/, PyObject* args) {
+    char const* name_c = nullptr;
+    char const* args_json_c = nullptr;
+    if (!PyArg_ParseTuple(args, "ss", &name_c, &args_json_c)) return nullptr;
+
+    if (!g_current_config || !g_current_config->tool_bridge.has_value()) {
+        raise_permission_error("no tools are available for this session");
+        return nullptr;
+    }
+    if (!g_current_ctx) {
+        raise_permission_error("no capability context available for a tool call");
+        return nullptr;
+    }
+
+    auto parsed_args = json::parse(args_json_c);
+    if (!parsed_args) {
+        PyErr_SetString(PyExc_ValueError,
+                         ("call_tool: malformed JSON arguments: " + parsed_args.error().message).c_str());
+        return nullptr;
+    }
+
+    ToolCallRequest request{"pycall-" + std::to_string(++g_call_tool_counter), name_c, *parsed_args, false};
+    ToolInvocationAudit audit;
+    ToolResult result = bridge_tool_call(*g_current_config->tool_bridge, request, *g_current_ctx, &audit);
+
+    if (result.is_error) {
+        std::string message =
+            result.content.empty() ? "tool call failed" : std::get<Error>(result.content[0].value).message;
+        raise_mapped_tool_error(audit.error_code, message);
+        return nullptr;
+    }
+
+    std::string reply_json = result.content.empty() ? "null" : std::get<Data>(result.content[0].value).json;
+    return PyUnicode_FromString(reply_json.c_str());
+}
+
 PyMethodDef g_internal_methods[] = {
     {"open", Internal_open, METH_VARARGS, nullptr},
     {"do_connect", Internal_do_connect, METH_VARARGS, nullptr},
+    {"call_tool", Internal_call_tool, METH_VARARGS, nullptr},
     {nullptr, nullptr, 0, nullptr},
 };
 
@@ -472,6 +548,18 @@ io.open = _ae_open
 def _ae_connect(self, address):
     return _ae_internal.do_connect(self, address)
 socket.socket.connect = _ae_connect
+
+# Raw JSON text in, raw JSON text out -- deliberately NOT `json.dumps`/`json.loads` at this layer:
+# `import json` here would pull `json` into sys.modules at bootstrap time, permanently widening
+# every session's ALWAYS-importable set regardless of `package_policy_allowlist` (sys.modules is a
+# cache CPython's own `import` statement checks before ever consulting the meta-path finder, so
+# once resident there for ANY reason it stays guest-importable for the rest of the session) --
+# exactly the fail-closed default (E2-C5/E2-C8) this bridge must not silently widen. Ergonomic
+# per-tool callables that DO decode into real Python values are Phase G1's job, generated from each
+# tool's own schema, not this raw bridge's.
+def call_tool(name, args_json='{}'):
+    return _ae_internal.call_tool(name, args_json)
+builtins.call_tool = call_tool
 
 def _ae_denied(*a, **kw):
     raise PermissionError(

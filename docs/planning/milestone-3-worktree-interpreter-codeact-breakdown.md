@@ -853,11 +853,48 @@ for M3 regardless.
   the not-yet-built session/turn-loop layer, same gap `core/worktree.hpp`'s own `TurnCommit` section
   already names); `materialize_mount`'s documented precondition (`granted.path_prefix` must cover the
   whole subtree or the walk fails closed) is not itself relaxed to a partial-materialize mode. **M**
-- **F2.** `call_tool` bridge (010 §6) — bridged tool calls traverse the full 006 §3 pipeline (real
-  since M2) at the sandbox's own trust tier and capability set, never the agent's; bundled approval
-  at `execute_code` time over the pre-registered bridged set (010 §6, not per-call — 010 §10 Q2's
-  resolution); results re-enter as tainted data (003 §2). Proven with the same capability-
-  handle-reuse-denial discipline M2's B4 used. **L**
+- **F2 (done).** `call_tool` bridge (010 §6) — `ToolBridgeConfig{bridged_tools, capabilities,
+  approved}`/`bridge_tool_call()` (`src/backends/native_jail/tool_bridge.hpp`) call the full,
+  real-since-M2 `invoke_tool()` 006 §3 pipeline at a `CapabilitySet` built fresh from the bridge
+  config alone — structurally, not just conventionally, never the agent's ceiling: there is no
+  parameter through which an agent-level `CapabilitySet` could reach `bridge_tool_call`, unlike
+  `core/agent_registry.hpp`'s `invoke_agent_tool`, which does thread the agent's own
+  `capability_ceiling` through and was deliberately not reused as a template here. Bundled approval
+  (010 §10 Q2) is one `ApprovalDecider` closure capturing `config.approved`, gating the whole
+  pre-registered set at `execute_code` time, never per-call. Results re-enter tainted unconditionally
+  (pipeline step 9, 003 §2). Proven in `tests/test_tool_bridge.cpp` (13 checks): capability scoping
+  and bundled approval each with a positive control (022 §5), result tainting, and the SAME
+  capability-handle-reuse-denial discipline `test_tool_pipeline_capability_reuse.cpp` (M2 B4) proved
+  for `invoke_tool()` directly, reproduced end to end through the bridge.
+  Wired into `MediatedPythonRunner` (Stage D idiom, alongside `_ae_open`/`_ae_connect`): a new
+  `_ae_internal.call_tool(name, args_json) -> reply_json` C function and a bootstrap-installed
+  `call_tool(name, args_json='{}')` builtin, mapping `invoke_tool`'s error codes to Python exceptions
+  per 026 §3's table (`tool.capability_not_held`/`tool.approval_denied` → `PermissionError`,
+  `tool.unknown_name` → `ValueError`, `tool.deadline_exceeded` → `TimeoutError`). `nullopt`
+  (`MediatedPythonConfig::tool_bridge`'s default) means no tools are bridged this session —
+  `call_tool(...)` fails closed with a `PermissionError`, matching every other host-configured
+  surface in this file (`mount_roots` empty means no mounts).
+  **Deliberate scope narrowing, found only by testing, not by design review**: the first version
+  passed arguments as a Python dict via `json.dumps`/`json.loads`, requiring `import json` in the
+  bootstrap script. Full regression caught two real problems this created, not just broke a test
+  assertion: (1) `import json` at bootstrap time permanently added `json` to the Layer-0 keep-set
+  the pre/post-bootstrap `sys.modules` diff computes, making `json` importable by every guest
+  session regardless of `package_policy_allowlist` — an actual, unintended widening of the
+  fail-closed import default (`test_mediated_python_runner_smoke.cpp` E2-C5 caught this); (2) the
+  new `call_tool` function, defined in the bootstrap's shared globals dict alongside `_ae_connect`
+  et al., became reachable via `socket.socket.connect.__globals__` walk
+  (`test_mediated_python_runner_hostile_corpus.cpp` E4-PY9's leak check). Fix: `call_tool` takes and
+  returns raw JSON text (`call_tool(name, args_json='{}')`), `import json` removed from the
+  bootstrap entirely, and `call_tool` added to E4-PY9's `wrappers` allowlist alongside `_ae_open`/
+  `_ae_connect`/`_ae_denied` — it's exactly as legitimate an intentional, capability-checked wrapper
+  as those three. Ergonomic dict-based `agent.tools.<name>(...)` callables built from real tool
+  schemas are Phase G1's job, not this raw bridge's — named as a residual the same way ADR-001 §11
+  item 3 already names ShellRunner's own argv-to-typed-Args mapping as undesigned. That ShellRunner
+  wiring (`mediated_command_registry.hpp`'s `RegisteredTool`) is likewise not connected to the
+  bridge this pass, for the identical reason: the argv-mapping design question ADR-001 already named
+  is a prerequisite this task doesn't relitigate. Full regression after both fixes: default `build`
+  50/51, `build-py` 58/59, both with only the same pre-existing `test_native_jail_backend_windows`
+  OOM-reporting flake F1's own regression run hit — not a new failure. **L**
 - **F3.** Output discipline (010 §3 item 4/5) — `stdout`/`stderr`/`result_repr` size-capped with
   explicit truncation markers, `result_repr` specifically covering "a value never `print()`-ed"
   (010 §3's own named gap). **S**
