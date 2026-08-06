@@ -12,6 +12,7 @@
 // traverses the full invocation pipeline, 006 §3"), so it must be the exact same type.
 
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -48,12 +49,27 @@ struct SessionContext {
     std::vector<Message> const&  history;
 };
 
+// Milestone 4 Phase G3 (029 §4: "ContextProvider.on_turn_end (005 §5) is where memory is written
+// ... may call a declared ChatClient to extract candidate MemoryItems from the turn"). 005 §5's
+// own text elided this as "TurnView elided" because nothing needed it before this phase — a
+// memory-writing provider's `on_turn_end` is the first REAL conformer that needs to see what
+// happened in the turn it's reacting to, so this is filling in an already-named gap, not
+// reopening 005's own design. A non-owning view (this project's own "attribution, not
+// accumulation" shape, matching `SessionContext`/`EffectContext`): exactly the messages THIS turn
+// added to history (in this milestone's own one-model-call-per-turn scope, the input plus the
+// response — never the whole history, which `SessionContext.history` already exposes to
+// `on_context` for providers that need the full record).
+struct TurnView {
+    std::span<Message const> turn_messages;
+};
+
 // Return types constrained to their synchronous equivalents, same reason and same caveat as
 // `Runner`/`ChatClient`/`SandboxBackend`: `ae::task<T>` is not yet wired in here.
 template <class T>
-concept ContextProvider = requires(T provider, SessionContext& session_ctx, EffectContext& ctx) {
+concept ContextProvider = requires(T provider, SessionContext& session_ctx, EffectContext& ctx,
+                                    TurnView turn) {
     { provider.on_context(session_ctx, ctx) } -> std::same_as<result<ContextContribution>>;
-    { provider.on_turn_end(ctx) } -> std::same_as<void>;  // TurnView elided, see 005 §5
+    { provider.on_turn_end(turn, ctx) } -> std::same_as<void>;
 };
 
 } // namespace agentengine

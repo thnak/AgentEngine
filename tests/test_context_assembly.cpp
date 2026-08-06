@@ -53,7 +53,7 @@ struct FixedMessagesProvider {
         c.messages = to_return;
         return c;
     }
-    void on_turn_end(ae::EffectContext&) {}
+    void on_turn_end(ae::TurnView, ae::EffectContext&) {}
 };
 static_assert(ae::ContextProvider<FixedMessagesProvider>,
               "FixedMessagesProvider must satisfy ContextProvider (005 §5)");

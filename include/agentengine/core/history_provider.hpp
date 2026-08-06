@@ -62,10 +62,9 @@ public:
         return contribution;
     }
 
-    // 005 §5's `TurnView`-typed hook is elided (context_provider.hpp's own concept comment) — a
-    // window over history has nothing to record at turn end; a future stateful provider (029's
-    // memory extraction, Phase G) is where this becomes real logic, not here.
-    void on_turn_end(EffectContext&) {}
+    // `TurnView` (Phase G3) is real now, but a window over history has nothing to record at turn
+    // end -- memory extraction (029, `core/memory_provider.hpp`) is the real conformer for this hook.
+    void on_turn_end(TurnView, EffectContext&) {}
 };
 
 static_assert(ContextProvider<HistoryProvider<Window<0>>>,
@@ -115,7 +114,7 @@ public:
         return contribution;
     }
 
-    void on_turn_end(EffectContext&) {}
+    void on_turn_end(TurnView, EffectContext&) {}
 
 private:
     SummarizerT summarizer_;

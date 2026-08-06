@@ -63,7 +63,7 @@ struct ContextDrop {
 // applied to `ContextProvider` instead of `Tool`.
 struct ContextProviderDescriptor {
     using OnContextFn = std::function<result<ContextContribution>(SessionContext&, EffectContext&)>;
-    using OnTurnEndFn = std::function<void(EffectContext&)>;
+    using OnTurnEndFn = std::function<void(TurnView, EffectContext&)>;
 
     ContextBudget budget;
     OnContextFn   on_context;
@@ -71,9 +71,8 @@ struct ContextProviderDescriptor {
 };
 
 // `provider` is moved into a `shared_ptr` so the SAME instance backs both closures — a stateful
-// provider's `on_turn_end` (e.g. a future memory-extraction hook, Phase G) must see what its own
-// `on_context` produced this turn, and must persist that state across turns, not be reconstructed
-// per call.
+// provider's `on_turn_end` (Phase G3's memory-extraction hook) must see what its own `on_context`
+// produced this turn, and must persist that state across turns, not be reconstructed per call.
 template <class ProviderT>
     requires ContextProvider<ProviderT>
 [[nodiscard]] ContextProviderDescriptor make_context_provider_descriptor(ProviderT provider,
@@ -82,7 +81,7 @@ template <class ProviderT>
     ContextProviderDescriptor d;
     d.budget      = budget;
     d.on_context  = [shared](SessionContext& sc, EffectContext& ec) { return shared->on_context(sc, ec); };
-    d.on_turn_end = [shared](EffectContext& ec) { shared->on_turn_end(ec); };
+    d.on_turn_end = [shared](TurnView tv, EffectContext& ec) { shared->on_turn_end(tv, ec); };
     return d;
 }
 

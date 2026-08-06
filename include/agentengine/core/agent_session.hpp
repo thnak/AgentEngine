@@ -22,6 +22,7 @@
 #include <chrono>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -244,7 +245,12 @@ public:
         }
 
         history_.push_back(response->message);
-        history_provider_.on_turn_end(effect_context_);
+        // Milestone 4 Phase G3: `TurnView` names exactly the messages THIS turn added -- the input
+        // plus the response, both just pushed and therefore contiguous at the tail of `history_`
+        // right now (a span taken AFTER both pushes complete, over the vector's current, single
+        // allocation -- never dangling across a push that could reallocate).
+        std::span<Message const> const turn_messages{history_.data() + history_.size() - 2, 2};
+        history_provider_.on_turn_end(TurnView{turn_messages}, effect_context_);
         m.respond(AgentResponse{response->message, response->usage});
     }
 

@@ -337,6 +337,16 @@ if(WIN32)
   add_test(NAME test_memory_worktree COMMAND test_memory_worktree)
 endif()
 
+# ---- Milestone 4 Phase G3/G4 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) --
+# MemoryProvider: default ranked retrieval + recall(query) tool (G4), extraction via a mock
+# ChatClient (G3), composed with HistoryProvider through Phase B3's own deferred assemble_context().
+if(WIN32)
+  add_executable(test_memory_provider test_memory_provider.cpp)
+  target_link_libraries(test_memory_provider PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_memory_provider COMMAND test_memory_provider)
+endif()
+
 # ---- CapabilitySet enforcement mechanism (decisions/ADR-009-capability-set-enforcement-mechanism.md) --
 # Header-only (trust/capability.hpp), core-tier -- links only agentengine::core.
 add_executable(test_capability_enforcement test_capability_enforcement.cpp)

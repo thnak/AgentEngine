@@ -71,7 +71,7 @@ struct DummyContextProvider {
     ae::result<ae::ContextContribution> on_context(ae::SessionContext&, ae::EffectContext&) {
         return ae::ContextContribution{};
     }
-    void on_turn_end(ae::EffectContext&) {}
+    void on_turn_end(ae::TurnView, ae::EffectContext&) {}
 };
 static_assert(ae::ContextProvider<DummyContextProvider>,
               "DummyContextProvider must satisfy the ContextProvider concept (005 §5)");
