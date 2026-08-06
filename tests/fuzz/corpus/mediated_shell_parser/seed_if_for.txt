@@ -1,0 +1,7 @@
+if cat sub/f.txt then
+  for x in a b c; do
+    echo $x
+  done
+else
+  echo nope
+fi

@@ -1,0 +1,3 @@
+a=1 b="two words" echo "$a and ${b} and $c" > out.txt
+export PATH=/work/x
+mkdir -p sub/dir; rm -r sub/dir

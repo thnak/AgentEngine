@@ -1,0 +1,3 @@
+if echo x then echo y
+echo 'unterminated
+$(cat evil.txt)

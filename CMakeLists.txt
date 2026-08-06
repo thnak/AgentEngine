@@ -101,6 +101,38 @@ if(WIN32)
   add_library(agentengine::mediated_shell_runner ALIAS agentengine_mediated_shell_runner)
 endif()
 
+# ---- Milestone 3 Phase E5 / decisions/ADR-015: libFuzzer harness for MediatedShellRunner's grammar
+# parser (010 SS9 G8). Off by default (matches AGENTENGINE_WITH_WASM/AGENTENGINE_BUILD_PYTHON_
+# RUNNER's own posture for an opt-in, toolchain-specific target) -- only buildable with a real Clang
+# front end (covers both upstream clang++ and clang-cl): libFuzzer's runtime (-fsanitize=fuzzer) has
+# no MSVC-native equivalent, the same documented gap this repo already carries for UBSan
+# (ADR-001/005/006/007/009's own "no clang toolchain" notes). The whole tree must ALSO be configured
+# with -fsanitize=address,undefined in CMAKE_CXX_FLAGS for the target under test
+# (agentengine_mediated_shell_runner) to be instrumented -- this option only adds libFuzzer's own
+# `-fsanitize=fuzzer` on top, scoped to the fuzz executable alone, never the whole build (a build
+# that happens to link the fuzz target's translation unit into anything else would pull in
+# libFuzzer's own main(), which must never coexist with an ordinary test binary's).
+option(AGENTENGINE_BUILD_SHELL_FUZZER
+  "Build the libFuzzer harness against MediatedShellRunner's grammar parser (010 SS9 G8) -- Clang only"
+  OFF)
+
+if(AGENTENGINE_BUILD_SHELL_FUZZER)
+  if(NOT WIN32)
+    message(FATAL_ERROR "AGENTENGINE_BUILD_SHELL_FUZZER requires Windows (matches agentengine_mediated_shell_runner's own scope)")
+  endif()
+  if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    message(FATAL_ERROR "AGENTENGINE_BUILD_SHELL_FUZZER requires Clang (libFuzzer has no MSVC-native equivalent) -- got ${CMAKE_CXX_COMPILER_ID}")
+  endif()
+  add_executable(agentengine_mediated_shell_parser_fuzz
+    tests/fuzz/mediated_shell_parser_fuzz.cpp)
+  target_include_directories(agentengine_mediated_shell_parser_fuzz PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  target_link_libraries(agentengine_mediated_shell_parser_fuzz PRIVATE
+    agentengine::mediated_shell_runner)
+  target_compile_options(agentengine_mediated_shell_parser_fuzz PRIVATE -fsanitize=fuzzer)
+  target_link_options(agentengine_mediated_shell_parser_fuzz PRIVATE -fsanitize=fuzzer)
+endif()
+
 # ---- native_jail Job Object resource-limit layer (src/backends/native_jail/) -- Windows only -----
 # Implements decisions/ADR-004-appcontainer-native-jail-windows-backend.md §3 steps 2-3 (build-and-
 # measure follow-up named in that ADR's §9): the Windows Job Object half of 008 §2's ResourceLimits

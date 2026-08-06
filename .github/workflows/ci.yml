@@ -91,6 +91,53 @@ jobs:
       - name: Test
         run: ctest --test-dir build -j 4 --output-on-failure
 
+  windows-shell-fuzz:
+    # 010 SS9 G8 / decisions/ADR-015-shellrunner-grammar-parser-fuzzing.md: continuous, corpus-driven
+    # libFuzzer run against MediatedShellRunner's grammar parser under ASan+UBSan, gated in CI. A
+    # separate job (not folded into windows-clang-cl above) because it needs a different CRT
+    # (static, to match libFuzzer's own runtime lib -- see the ADR SS6) and builds only the one fuzz
+    # target, not the whole test suite (AGENTENGINE_BUILD_TESTS=OFF).
+    name: Windows / ShellRunner grammar-parser fuzz (G8, ADR-015)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install LLVM + Ninja
+        run: |
+          choco install llvm -y
+          choco install ninja -y
+
+      - name: Enter MSVC dev shell
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Configure (ASan+UBSan, static CRT to match libFuzzer's runtime lib)
+        shell: pwsh
+        run: |
+          cmake -S . -B build-fuzz -G Ninja `
+            -DCMAKE_CXX_COMPILER=clang++ `
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo `
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded `
+            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=undefined -D_DISABLE_STRING_ANNOTATION -D_DISABLE_VECTOR_ANNOTATION -g -O1" `
+            -DAGENTENGINE_BUILD_SHELL_FUZZER=ON `
+            -DAGENTENGINE_BUILD_TESTS=OFF
+
+      - name: Build fuzz target
+        run: cmake --build build-fuzz --target agentengine_mediated_shell_parser_fuzz -j 4
+
+      - name: Run declared-minimum corpus-driven fuzz pass (120s, single-process -- CLAUDE.md machine safety)
+        shell: pwsh
+        run: |
+          $rt = $(clang++ -print-resource-dir)
+          $env:PATH = "$rt\lib\windows;$env:PATH"
+          $env:ASAN_OPTIONS = "detect_leaks=0:halt_on_error=1"
+          $env:UBSAN_OPTIONS = "halt_on_error=1:print_stacktrace=1"
+          New-Item -ItemType Directory -Force -Path build-fuzz\ci_corpus | Out-Null
+          Copy-Item tests\fuzz\corpus\mediated_shell_parser\* build-fuzz\ci_corpus\
+          & build-fuzz\agentengine_mediated_shell_parser_fuzz.exe -max_total_time=120 -print_final_stats=1 build-fuzz\ci_corpus
+          if ($LASTEXITCODE -ne 0) { throw "libFuzzer found a crash/hang/OOB read -- see the log above" }
+
   linux:
     name: Linux / gcc-14 / Release (build-only — see file header)
     runs-on: ubuntu-latest

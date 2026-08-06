@@ -779,10 +779,41 @@ for M3 regardless.
   class for the process-boundary case). Full regression: `build-py`'s worktree+python+shell test set
   56/57 (same pre-existing `test_native_jail_backend_windows` `-j4` timing flake tracked all
   session); default-config `build` 48/49, identical flake. **XL**
-- **E5. ADR-track (decision 5).** `ShellRunner` grammar-parser fuzzing (010 §9 G8) —
-  libFuzzer-class, corpus-driven, under ASan/UBSan, gated in CI, with a deliberately reintroduced
-  known-bug class as the positive control. Goes through design→red-team→prove→judge and produces its
-  own ADR before landing, per CLAUDE.md and decision 5's reasoning. **L**
+- **E5 (done — ADR-track, decision 5).** `ShellRunner` grammar-parser fuzzing (010 §9 G8):
+  `decisions/ADR-015-shellrunner-grammar-parser-fuzzing.md` (Judged). A real libFuzzer harness
+  (`tests/fuzz/mediated_shell_parser_fuzz.cpp`) against `mediated_shell_parser::parse()`'s pure
+  `bytes -> result<ScriptNode>` entry point — no fakes needed, matching that function's own
+  by-construction isolation from `FileSystemAdapter`/`CommandRegistry`/`ExecState`/`EffectContext`.
+  Clang-only (`AGENTENGINE_BUILD_SHELL_FUZZER`, default off, matching `AGENTENGINE_WITH_WASM`/
+  `AGENTENGINE_BUILD_PYTHON_RUNNER`'s own opt-in posture — libFuzzer has no MSVC-native equivalent),
+  seeded from a checked-in corpus (`tests/fuzz/corpus/mediated_shell_parser/`), gated in a new
+  `windows-shell-fuzz` CI job (`.github/workflows/ci.yml`) running a declared 120-second corpus-
+  driven pass on every push/PR. Two real Windows-specific libFuzzer ABI mismatches found and fixed
+  during setup (neither a design flaw): the vendored `clang_rt.fuzzer-x86_64.lib` needs the static
+  CRT (`CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded`) against this project's default dynamic-CRT
+  posture; and MSVC STL's ASan container-annotation feature needed explicitly disabling
+  (`-D_DISABLE_STRING_ANNOTATION -D_DISABLE_VECTOR_ANNOTATION`) to match the runtime lib's own build.
+  **The harness's teeth were proven directly, not assumed**: ADR-001 finding 12's nesting-depth
+  guard (`kMaxNestingDepth` check in `parse_if`) was deliberately disabled, rebuilt, and both a
+  direct single-input replay and a real corpus-driven fuzzing run reproduced a genuine native
+  stack-overflow crash (`STATUS_ACCESS_VIOLATION`, and separately libFuzzer's own `ERROR: libFuzzer:
+  deadly signal` classification) — then the guard was restored (confirmed via `git diff` showing
+  zero net change) and a clean 120-second run reconfirmed (23,517 executions, 0 crashes/findings).
+  **Named residuals, not silently closed**: the CI job was written and reviewed line-by-line against
+  the working local sequence but never executed on an actual GitHub Actions runner (this local repo
+  has no configured remote to push to); the harness has no semantic oracle, so it can only ever catch
+  crashes/hangs/UB, never a silent wrong-output bug (the exact shape of both of E3's own real
+  historical bugs); no corpus-growth persistence across CI runs (each run restarts from the same
+  checked-in seed corpus); Linux and the full `dispatch`/`evaluate` execution path are both out of
+  this ADR's scope (matching `agentengine_mediated_shell_runner`'s own Windows-only, parser-only
+  framing). **L**
+
+  **Milestone 3 Phase E is now complete** (E1-E5, tasks #48-52). Phase E's own remaining known
+  residuals, carried forward rather than re-litigated here: ADR-003's caller-aware import-gating
+  tier (E2's Stage C, scoped out); G7's literal syscall-level (ETW) trace proof for denied
+  `open`/`socket`/`subprocess` calls (E4, needs an elevated relaunch this session never got); and
+  the several narrower TOCTOU/argv-mapping/redirect-scope residuals named in E2/E3/E4's own entries
+  above.
 
 ### Phase F — Worktree integration, artifacts, tool bridge (025 §7, 010 §4, §6)
 
