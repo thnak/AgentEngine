@@ -298,4 +298,41 @@ A found guest-reachable path operation in Phase E that does not route through
 symlink test run that produces a different verdict than the reasoned expectation in §6 findings
 3/4. A Linux implementation whose closest available primitive turns out not to offer an equivalent
 handle-based verify-after-open guarantee, which would mean Phase C4 needs its own design pass
-rather than a straightforward port.
+rather than a straightforward port (**resolved 2026-08-06 — it did not; see §9**).
+
+## 9. Addendum (2026-08-06) — Phase C4, Linux parity closed
+
+§8.3's own anticipated Linux analogue ("`/proc/self/fd`-based re-verification" where
+`openat2(RESOLVE_BENEATH)` kernel support can't be assumed) is what was built, in
+`core/worktree_mount_fs_posix.hpp`/`.cpp`: `open()` resolves symlinks transparently the same way
+`CreateFileW` does, and `readlink("/proc/self/fd/N")` reads the kernel's own record of what the
+resulting descriptor actually, currently refers to — the exact "verify from the object opened, not a
+re-parsed string" structural property Design B's acceptance turned on, ported rather than
+re-designed. `openat2(RESOLVE_BENEATH)` was considered and set aside for this pass: it would
+additionally *prevent* an escaping resolution at the syscall level rather than open-then-verify, a
+strictly stronger primitive where available, but it needs a newer kernel (5.6+) than this project
+commits to as a floor; open-then-verify via `/proc/self/fd` needs nothing newer than a mounted procfs,
+true on any real Linux install. Ordinary follow-on task, not a second ADR, per decision 6's own
+framing (this ADR already settled the design question; nothing here is a first design pass).
+
+Proven in `tests/test_worktree_mount_fs_escape_corpus_linux.cpp` (21 checks, real unprivileged Linux
+filesystem I/O — `symlink()`, unlike Windows junctions, needs no special privilege at all, so the
+Linux corpus is if anything less environment-dependent than the Windows one): the identical TOCTOU
+interleaving reproduced deterministically (a real directory checked, then swapped for a symlink
+pointing outside; the naive design's reopen reads the swapped-in outside content; a descriptor opened
+before the swap is unaffected — on Linux this holds even more directly than on Windows, since an
+unlinked file's already-open fd keeps referencing its original inode with no `FILE_SHARE_DELETE`-
+equivalent flag needed at open time — and a fresh post-swap request is correctly rejected); a crossing
+symlink rejected with an in-mount symlink followed as the paired positive control; an embedded-NUL
+segment rejected structurally.
+
+**Named platform divergences, not silently assumed to generalize either direction**: ADS and `\\?\`
+prefixes have no Linux analog (not tested — N/A, not a gap); 8.3 short-name aliasing is Windows-only
+(N/A); case handling is the *opposite* direction (ext4 is case-sensitive by default, NTFS is not) —
+C4-8 tests this explicitly as a documented behavioral difference, not a security property. The two
+residuals §8.3 named as Windows-only (8.3 aliasing, real-symlink-vs-junction parity) are unaffected by
+this addendum — they remain open on Windows specifically. Full regression on Linux (WSL2 Ubuntu,
+kernel 6.6.87.2, gcc 15.2.0): all worktree-store targets and this corpus build and pass clean; the
+broader Linux `ctest` suite (native-jail's own privileged-only tests excluded by
+`AGENTENGINE_LINUX_SANDBOX_TESTS` staying at its default OFF, unrelated to this primitive) shows no
+regression.

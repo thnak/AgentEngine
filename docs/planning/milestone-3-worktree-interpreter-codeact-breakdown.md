@@ -481,9 +481,41 @@ for M3 regardless.
   succeeding once the old content shrinks — proving recomputation from final tree state, not a stale
   running delta (C3-C7). Full regression: Windows `ctest -j4` 43/44, same pre-existing
   `test_native_jail_backend_windows` flake, unchanged. **S**
-- **C4.** Linux path-escape parity pass, once C2's Windows corpus and its ADR are settled — same
-  sequencing precedent M2 used for `native-jail` (Windows first, Linux parity as its own dated task,
-  C4 in that milestone's own numbering). Named here rather than silently assumed bundled into C2. **L**
+- **C4 (done).** Linux path-escape parity pass over C2/ADR-014's Windows corpus — an ordinary
+  follow-on task, no second ADR (decision 6: ADR-014 already settled the design question; nothing
+  here is a first design pass), same sequencing precedent M2 used for `native-jail` (Windows first,
+  Linux parity as its own dated task). New `core/worktree_mount_fs_posix.hpp`/`.cpp`
+  (`SafeFileHandlePosix`, `open_within_mount_root`, `redteam::naive_check_within_root`/
+  `naive_open_checked_path`) ports Design B's structural property exactly: `open()` resolves
+  symlinks transparently the same way `CreateFileW` does, and `readlink("/proc/self/fd/N")` reads
+  the kernel's own record of what the resulting descriptor actually refers to — the same "verify
+  from the object opened, not a re-parsed string" property, using the mechanism ADR-014 §8.3 itself
+  anticipated ("`/proc/self/fd`-based re-verification" where `openat2(RESOLVE_BENEATH)` kernel
+  support can't be assumed as a floor) rather than a fresh design pass. Deliberate signature
+  divergence from the Windows header, not an oversight: POSIX `open()` folds Win32's split
+  `desired_access`/`creation_disposition` into one `flags` bitmask — matching each OS's own
+  idiomatic shape is what "isolation parity is a gate, not identical shape" (CONVENTIONS.md) asks
+  for. `agentengine::worktree_store`'s CMake target gained a `NOT WIN32` branch (root
+  `CMakeLists.txt`) linking only `worktree_mount_fs_posix.cpp` — no digest provider, since nothing
+  here needs `compute_digest`/the content-addressed store, so this is not blocked on decision 2's
+  still-open Linux SHA-256 gap. Proven in
+  `tests/test_worktree_mount_fs_escape_corpus_linux.cpp` (21 checks, real unprivileged Linux
+  filesystem I/O — `symlink()` needs no special privilege at all, unlike Windows junctions, so this
+  corpus is if anything less environment-dependent than the Windows one): the identical TOCTOU
+  interleaving reproduced deterministically, with an even more direct proof-of-immunity than Windows
+  needed (a Linux fd keeps referencing its original inode after the directory entry pointing to it
+  is removed and replaced, with no `FILE_SHARE_DELETE`-equivalent flag required at open time); a
+  crossing symlink rejected with an in-mount symlink followed as the paired positive control; an
+  embedded-NUL segment rejected structurally. **Named platform divergences, not silently assumed to
+  generalize**: ADS and `\\?\` have no Linux analog (N/A, not a gap); 8.3 aliasing is Windows-only
+  (N/A); case handling runs the *opposite* direction (ext4 case-sensitive by default vs. NTFS
+  case-insensitive) — tested explicitly (C4-8) as a documented behavioral difference, not a security
+  property. ADR-014 amended with a dated addendum (§9) closing its own Linux-parity reopening
+  trigger; `decisions/README.md`'s ADR-014 entry updated to match. Windows regression unaffected (the
+  `NOT WIN32` CMake branch is inert there): `ctest -j4` 44/45, same pre-existing
+  `test_native_jail_backend_windows` flake, unchanged. Linux regression (WSL2 Ubuntu, kernel
+  6.6.87.2, gcc 15.2.0): full `ctest -j4` 25/25 (one unrelated, by-design skip —
+  `test_shell_runner_no_process_creation`). **L**
 
 ### Phase D — Persistence, checkpoints, lifecycle (025 §6) — partial, real gaps deferred to M4
 

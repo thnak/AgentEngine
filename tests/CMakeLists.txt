@@ -716,6 +716,21 @@ if(WIN32)
   set_tests_properties(test_worktree_mount_fs_escape_corpus PROPERTIES TIMEOUT 60)
 endif()
 
+# ---- Worktree mount OS-level path-escape corpus, Linux half (025 §5, 021 §6 G3, Milestone 3
+# Phase C4, ADR-014's parity follow-on) ------------------------------------------------------------
+# Real Linux filesystem I/O against a scratch directory under $TMPDIR: real symlinks (no special
+# privilege needed, unlike Windows junctions), a real TOCTOU interleaving proven deterministically
+# the same way the Windows corpus does. No CAP_SYS_ADMIN/cgroup delegation needed (unlike the Linux
+# native-jail sandbox tests below) -- this is ordinary unprivileged file I/O, so it runs
+# unconditionally under `if(NOT WIN32)`, not gated behind AGENTENGINE_LINUX_SANDBOX_TESTS.
+if(NOT WIN32)
+  add_executable(test_worktree_mount_fs_escape_corpus_linux test_worktree_mount_fs_escape_corpus_linux.cpp)
+  target_link_libraries(test_worktree_mount_fs_escape_corpus_linux PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_worktree_mount_fs_escape_corpus_linux COMMAND test_worktree_mount_fs_escape_corpus_linux)
+  set_tests_properties(test_worktree_mount_fs_escape_corpus_linux PROPERTIES TIMEOUT 60)
+endif()
+
 # ---- Worktree turn-boundary commit and rewind (025 §6, §9 G5, Milestone 3 Phase D1/D2) ----------
 # Builds real Blob/Tree fixtures via put_blob/put_tree and one mount_read integration check, same
 # real-crypto dependency as A1/B1/B2/B3/B4/C1.

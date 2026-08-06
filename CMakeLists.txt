@@ -387,6 +387,21 @@ if(WIN32)
   add_library(agentengine::worktree_store ALIAS agentengine_worktree_store)
 endif()
 
+# ---- Worktree mount path-escape primitive (src/core/) -- Linux half, Milestone 3 Phase C4 --------
+# Implements 025 §5's OS-level path-escape corpus, Linux parity for `worktree_mount_fs.hpp`'s
+# Windows-only `open_within_mount_root` (Phase C2, ADR-014, Judged) -- an ordinary follow-on task
+# per the breakdown doc's decision 6, not a second ADR. No digest provider is linked here (unlike
+# the WIN32 branch above): nothing in worktree_mount_fs_posix.cpp needs compute_digest/the
+# content-addressed store, and a Linux SHA-256 provider stays the separate, still-open decision-2
+# gap this task does not need to close.
+if(NOT WIN32)
+  add_library(agentengine_worktree_store STATIC
+    src/core/worktree_mount_fs_posix.cpp)
+  target_link_libraries(agentengine_worktree_store PUBLIC agentengine::core)
+  target_link_libraries(agentengine_worktree_store PRIVATE agentengine_warnings)
+  add_library(agentengine::worktree_store ALIAS agentengine_worktree_store)
+endif()
+
 # ---- native_jail PythonRunner backend (src/backends/native_jail/) -- OPTIONAL, OFF by default ---
 # Implements decisions/ADR-002-pythonrunner-embedding-and-mediation.md (prove phase): the embedded
 # CPython interpreter, Layer 0's sys.modules sweep, and the sys.meta_path allowlist finder
