@@ -453,9 +453,34 @@ for M3 regardless.
   `ctest -j4` 42/43, same pre-existing `test_native_jail_backend_windows` flake, reconfirmed via a
   standalone single-threaded re-run to fail identically alone (not a side effect of this work).
   **XL**
-- **C3.** Write quotas enforced at write time (025 §5, byte + file-count caps), surfacing as an
-  ordinary `No space left on device`-class error inside the guest (026 §3) rather than a policy
-  message — proven against C1's mount layer directly. **S**
+- **C3 (done).** `mount_write` (core/worktree.hpp) now enforces `granted.quota_bytes`/
+  `file_count_cap` for real — the gap C1's own header comment named and deferred. Two new `detail`
+  helpers: `resolve_subtree_digest` (finds the Digest of `mount.subtree_path` within a candidate new
+  root — quota is scoped to THIS mount's subtree, never the whole ref, since one ref can host several
+  independently-quota'd mounts at different `subtree_path`s) and `subtree_usage` (recursively sums
+  every reachable Blob's size and counts every reachable Blob leaf under a subtree). The candidate
+  tree is built first, usage is recomputed against IT, and `commit_ref` only runs if both caps still
+  hold — a rejected write leaves the Ref completely unchanged, never committed-then-flagged. Usage is
+  recomputed from the tree on every write rather than tracked as running state (the content-addressed
+  store has no side state to keep in sync by construction), a named O(subtree size) cost accepted
+  under 025 §9 G4's project-wide deferral of real p99 measurement past M3. Error framing matches
+  026 §3's mapping table verbatim: `failure_class::resource`, message `"No space left on device"` —
+  an ordinary OS-shaped message a future guest-facing translator (Phase E) can raise as-is, not a
+  policy identifier to reword. Proven in `tests/test_worktree_mount_quota.cpp` (26 checks, same
+  in-memory content-addressed store as C1 — no real filesystem needed at this layer): a write under
+  both caps succeeds (C3-C1); byte-quota and file-count rejections each confirmed
+  `failure_class::resource` with the exact 026 §3 message, and the Ref proven byte-for-byte unchanged
+  by re-reading its tree digest before/after (C3-C2/C3-C3); the file-count cap's boundary proven
+  inclusive (exactly AT the cap succeeds) (C3-C3); quota proven cumulative across separate writes,
+  with the first write's content surviving the second write's rejection — only the offending write is
+  rejected, not a rollback of history (C3-C4); the identical oversized write from C3-C2 proven to
+  succeed under an uncapped `FsWrite` — `std::nullopt` means uncapped, never "0" (C3-C5); two sibling
+  mounts on the SAME ref at different `subtree_path`s proven to have fully independent budgets, one
+  mount's usage never inflating the other's (C3-C6); overwriting a file with smaller content proven
+  to reduce recomputed usage, with a write C3-C7 rejects against the old (larger) size later
+  succeeding once the old content shrinks — proving recomputation from final tree state, not a stale
+  running delta (C3-C7). Full regression: Windows `ctest -j4` 43/44, same pre-existing
+  `test_native_jail_backend_windows` flake, unchanged. **S**
 - **C4.** Linux path-escape parity pass, once C2's Windows corpus and its ADR are settled — same
   sequencing precedent M2 used for `native-jail` (Windows first, Linux parity as its own dated task,
   C4 in that milestone's own numbering). Named here rather than silently assumed bundled into C2. **L**

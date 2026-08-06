@@ -692,6 +692,16 @@ if(WIN32)
   add_test(NAME test_worktree_mount COMMAND test_worktree_mount)
 endif()
 
+# ---- Worktree mount write quotas (025 §5, Milestone 3 Phase C3) ---------------------------------
+# Proves the byte/file-count quota enforcement mount_write (core/worktree.hpp) now performs, against
+# the same in-memory content-addressed store as C1 -- no real filesystem needed for this layer.
+if(WIN32)
+  add_executable(test_worktree_mount_quota test_worktree_mount_quota.cpp)
+  target_link_libraries(test_worktree_mount_quota PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_worktree_mount_quota COMMAND test_worktree_mount_quota)
+endif()
+
 # ---- Worktree mount OS-level path-escape corpus (025 §5, 021 §6 G3, Milestone 3 Phase C2,
 # decisions/ADR-014-worktree-mount-path-canonicalization.md) --------------------------------------
 # Real Win32 filesystem I/O against a scratch directory under the system temp path: junctions,

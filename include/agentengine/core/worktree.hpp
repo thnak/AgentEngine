@@ -977,6 +977,58 @@ template <WorktreeObjectStore S>
     return store.put_tree(Tree{std::move(entries)});
 }
 
+// Resolves `subtree_path` (a Mount's fixed, host-configured root within its ref) down from
+// `root_digest` to the Digest of the Tree living there -- `""` means the mount is rooted at the
+// ref's own root, returned as-is. Used by write-quota enforcement (025 §5, Milestone 3 Phase C3) to
+// find exactly the subtree a quota is scoped to, never the whole ref (a ref may host several mounts
+// with independent quotas via different `subtree_path`s -- 025 §5's own example, `/work` and
+// `/input` on the same ref).
+template <WorktreeObjectStore S>
+[[nodiscard]] result<Digest> resolve_subtree_digest(S& store, Digest const& root_digest,
+                                                      std::string const& subtree_path) {
+    if (subtree_path.empty()) return root_digest;
+    auto segments = split_mount_path(subtree_path);
+    if (!segments) return std::unexpected(segments.error());
+    if (segments->empty()) return root_digest;
+    auto entry = resolve_entry_at_path(store, root_digest, *segments);
+    if (!entry) return std::unexpected(entry.error());
+    if (!entry->is_tree) {
+        return std::unexpected(error{failure_class::fatal, "mount subtree path does not name a directory",
+                                      "worktree.mount_subtree_not_a_directory"});
+    }
+    return entry->digest;
+}
+
+// Total bytes (sum of every reachable Blob's size) and total file count (every reachable Blob leaf,
+// recursively) under `tree_digest` -- what a write-quota check (025 §5) means by "this mount's
+// current usage". Recomputed from the tree on every write rather than tracked as separate running
+// state: the content-addressed store has no side state to keep in sync by construction, and this
+// keeps the quota check correct-by-construction against whatever the tree actually contains (e.g. a
+// write that REPLACES a large file with a small one must show reduced usage, not accumulate a
+// stale delta) at the cost of walking the subtree on every write -- a named, accepted cost for a
+// milestone whose own gates (025 §9 G4) defer real p99 cost measurement past M3 project-wide.
+template <WorktreeObjectStore S>
+[[nodiscard]] result<std::pair<std::uint64_t, std::uint32_t>> subtree_usage(S& store, Digest const& tree_digest) {
+    auto tree = store.get_tree(tree_digest);
+    if (!tree) return std::unexpected(tree.error());
+    std::uint64_t bytes = 0;
+    std::uint32_t files = 0;
+    for (auto const& entry : tree->entries) {
+        if (entry.is_tree) {
+            auto sub = subtree_usage(store, entry.digest);
+            if (!sub) return std::unexpected(sub.error());
+            bytes += sub->first;
+            files += sub->second;
+        } else {
+            auto blob = store.get_blob(entry.digest);
+            if (!blob) return std::unexpected(blob.error());
+            bytes += blob->size();
+            ++files;
+        }
+    }
+    return std::make_pair(bytes, files);
+}
+
 // `mount.subtree_path` (host-configured, fixed) followed by `guest_path` (per-call), as one combined
 // segment list resolved in a single walk from the Ref's own root -- rather than descending
 // `subtree_path` and `guest_path` as two separate phases, which would need to reconcile two
@@ -1055,10 +1107,21 @@ template <WorktreeObjectStore OS, quark::Store RS>
 
 // Writes `content` to `guest_path` (relative to `mount`) through `granted`, the caller's already-
 // bound `cap::FsWrite`, returning the mount's Ref after the commit. Same two capability checks as
-// `mount_read` before any store access. **`granted.quota_bytes`/`granted.file_count_cap` are NOT
-// enforced here** -- 025 §5's write-quota numeric enforcement is Phase C3's own task, proven against
-// this mount layer directly (milestone-3 breakdown), not duplicated ahead of it; this is a named,
-// tracked gap, not a silent omission.
+// `mount_read` before any store access. **`granted.quota_bytes`/`granted.file_count_cap` ARE
+// enforced here** (025 §5, Milestone 3 Phase C3): the candidate new tree is built first, then this
+// mount's subtree usage is recomputed against it (`detail::subtree_usage`, scoped to
+// `mount.subtree_path` via `detail::resolve_subtree_digest` -- never the whole ref, since a ref may
+// host several independently-quota'd mounts) -- and the Ref is committed ONLY if usage stays within
+// both caps. A write that would exceed either cap is rejected before `commit_ref` ever runs, same
+// fail-closed shape 025 §5's other checks already use: the guest never observes a state where the
+// Ref moved and THEN the quota was found to be exceeded. `std::nullopt` on either cap field means
+// uncapped (the same convention `trust/capability.hpp`'s own header comment already documents for
+// every `cap::*` limit field) -- an omitted cap is never treated as "0" or silently skipped.
+//
+// Error framing matches 026 §3's mapping table exactly ("Quota exhausted -> OSError (No space left
+// on device)"): a `failure_class::resource` error with that literal message, so a future guest-
+// facing translator (Phase E's `PythonRunner`/`ShellRunner`) has an ordinary OS-shaped message ready
+// to raise, not a policy identifier to reword.
 template <WorktreeObjectStore OS, quark::Store RS>
 [[nodiscard]] result<Ref> mount_write(OS& object_store, RS& ref_store, Mount const& mount,
                                        cap::FsWrite const& granted, std::string const& guest_path,
@@ -1090,6 +1153,21 @@ template <WorktreeObjectStore OS, quark::Store RS>
     auto new_root = detail::set_entry_at_path(object_store, (*ref)->tree_digest, *full_segments,
                                                *blob_digest, /*leaf_is_tree=*/false);
     if (!new_root) return std::unexpected(new_root.error());
+
+    if (granted.quota_bytes.has_value() || granted.file_count_cap.has_value()) {
+        auto subtree_digest = detail::resolve_subtree_digest(object_store, *new_root, mount.subtree_path);
+        if (!subtree_digest) return std::unexpected(subtree_digest.error());
+        auto usage = detail::subtree_usage(object_store, *subtree_digest);
+        if (!usage) return std::unexpected(usage.error());
+        if (granted.quota_bytes.has_value() && usage->first > *granted.quota_bytes) {
+            return std::unexpected(
+                error{failure_class::resource, "No space left on device", "worktree.mount_write_quota_exceeded"});
+        }
+        if (granted.file_count_cap.has_value() && usage->second > *granted.file_count_cap) {
+            return std::unexpected(error{failure_class::resource, "No space left on device",
+                                          "worktree.mount_write_file_count_exceeded"});
+        }
+    }
 
     return commit_ref(ref_store, mount.ref_name, *new_root);
 }
