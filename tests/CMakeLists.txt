@@ -286,6 +286,13 @@ add_executable(test_agent_session_suspend_resume test_agent_session_suspend_resu
 target_link_libraries(test_agent_session_suspend_resume PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_agent_session_suspend_resume COMMAND test_agent_session_suspend_resume)
 
+# ---- Milestone 4 Phase E3 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
+# Timer/schedule wake -- a real Quark durable reminder targets a session's real session_actor_id()
+# and reaches it through a live Engine via TimerWake (pure reuse, decision 4).
+add_executable(test_agent_session_timer_wake test_agent_session_timer_wake.cpp)
+target_link_libraries(test_agent_session_timer_wake PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_agent_session_timer_wake COMMAND test_agent_session_timer_wake)
+
 # ---- CapabilitySet enforcement mechanism (decisions/ADR-009-capability-set-enforcement-mechanism.md) --
 # Header-only (trust/capability.hpp), core-tier -- links only agentengine::core.
 add_executable(test_capability_enforcement test_capability_enforcement.cpp)
