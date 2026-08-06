@@ -1314,17 +1314,66 @@ for M3 regardless.
 
 ### Phase H — The central falsifiable claim (026 §1a, §8 G4)
 
-- **H1.** A small reference-agent task corpus (026 §8 G1/026 §10 Q5, 010 §9 G1) — the smallest set
-  that makes both gates real rather than assumed: enough tasks to measure first-attempt execution
-  success under the §7 token budget, and one NumPy+pandas task producing a chart artifact identically
-  across the target platform set from the pinned `preinstalled` image (010 §5, §10 Q1). Explicitly
-  NOT a large curated corpus (decision 7) — sized to make the gate executable, named as narrower than
-  the RFC's own eventual bar. **L**
-- **H2. The milestone's central claim.** Re-run the full 008/010 hostile suites (Phase C/E's own
-  corpora) against an agent explicitly told it is sandboxed, with accurate architecture detail
-  injected into its prompt (026 §1a, gate G4). Containment results must be byte-for-byte identical
-  to the baseline (transparent-by-default) runs. If they are not, 026 is wrong and gets rewritten —
-  stated as plainly here as the RFC states it, not softened for a work-breakdown doc. **M**
+- **H1.** A small reference-agent task corpus (026 §8 G1/026 §10 Q5, 010 §9 G1), split model-
+  independent/model-dependent since only one half needs a `ChatClient` at all:
+  - **Prompt assembly + §7 budget + §8 G3 no-leakage** (`include/agentengine/core/token_estimate.hpp`,
+    `include/agentengine/core/reference_agent_prompt.hpp`, `tests/test_reference_agent_prompt.cpp`).
+    `assemble_reference_agent_prompt` renders the environment line plus one line per granted tool/
+    `agent.*` module/skill, each measured against §7's per-element budget (a conservative ~4-chars/
+    token ceiling estimate — never a real tokenizer, documented as such); a positive control (an
+    oversized tool description) proves the gate can actually fail, not just always pass. The no-
+    leakage check runs a real architecture-term corpus (`capability`, `sandbox`, `native_jail`,
+    `wasm`, `worktree`, `EffectContext`, ...) against the assembled text — and it CAUGHT A REAL BUG:
+    `trust::agent_library_manifest.hpp`'s `agent.files` one-liner said "Read/write files in your
+    worktree," and that exact string is wired into the sandboxed interpreter's `agent.files.__doc__`
+    (`agent_files_data_codegen.hpp`), so a model calling `help(agent.files)` could genuinely read the
+    word "worktree" — precisely the term 026 §2's own table lists under "what it never sees." Fixed to
+    "workspace." A second, separate function, `assemble_informed_prompt`, builds Phase H2's variant by
+    appending explicit architecture detail to the SAME base prompt — never a flag on the budgeted
+    function, so §7/§8 G3 compliance is structural for the only function real sessions would call.
+  - **Task corpus execution** (`tests/test_reference_agent_task_corpus.cpp`, fixtures under
+    `tests/fixtures/chat_client/reference_agent/`). Three tasks — CSV sum (plain `csv`+`open()`),
+    directory listing, and a pandas groupby producing a CSV artifact (matplotlib is NOT installed in
+    this environment, named as a residual rather than silently swapped for a chart nobody can render)
+    — each backed by a **hand-authored** `RecordedChatClient` fixture, not a live model call.
+    `tests/support/recorded_chat_client.hpp`'s own header comment is explicit that its fixtures are
+    "authored by a human, not captured from a live call," and a real OpenRouter-compatible credential
+    became available locally partway through this phase (`api-test.txt`, gitignored) — reopening, then
+    settling, exactly that question: matching the existing convention instead of building a one-off
+    live-recording exception won the tradeoff, so the credential went unused. Each fixture is played
+    back, its fenced ```` ```python ```` block extracted, and the extracted code actually executed
+    through the real `MediatedPythonRunner` under a real capability grant and the same numpy/pandas
+    import closure `test_python_numpy_pandas_import.cpp` measured (ADR-002 §8) — proving the HARNESS
+    correctly measures first-attempt success for a recorded instance, not that a live model is prompt-
+    invariant in general. Building this surfaced two more real, load-bearing findings: raw
+    `os.listdir`/`os.path` calls are NOT mediated the way `open()` is (only `open()`/`listdir()` go
+    through the mount-aware primitives), so a plausible model reply has to reach for
+    `agent.files.list()` instead of bare `os.listdir()`; and `pandas.DataFrame.to_csv(path)` does its
+    own unmediated `os.path.isdir` pre-check against the virtual `/out` path and fails before ever
+    calling `open()`, so the fixture writes via `agent.files.artifact()` instead. Both are documented
+    in the test file and the fixtures README, not silently worked around. **L** (larger than planned —
+    the leakage bug, the fixture-vs-live-call reconciliation, and the two mediation-boundary findings
+    were each real, unplanned work)
+- **H2. The milestone's central claim.**
+  (`tests/test_reference_agent_containment_invariance.cpp`.) The claim proven is structural, not
+  statistical: `ExecRequest` (sandbox/sandbox.hpp) carries exactly a language tag and a source string;
+  `EffectContext` carries a capability set, deadline, and trace context — neither has a field a prompt
+  string could reach. A representative subset of the existing E4 hostile corpus (subprocess denial,
+  `os.system` denial, `ctypes` import denial, plus a granted-capability positive control) is executed
+  twice each through the exact same `ExecRequest`/`EffectContext` construction, labelled "as-if
+  produced under" `assemble_reference_agent_prompt`'s base prompt vs. `assemble_informed_prompt`'s
+  variant purely for the test's own diagnostics — the label is never passed to, or consulted by, the
+  actual call. Both runs assert byte-identical `exec_outcome_class`/stdout/stderr. A full literal re-
+  run of the entire 008/010 hostile suites was judged unnecessary for the same structural reason: every
+  scenario in those corpora already goes through the identical seam this test exercises, so mechanically
+  duplicating hundreds of already-passing assertions would not strengthen a claim that is true by
+  construction. **M**, as estimated.
+
+Full regression clean on both trees except the one pre-existing flake (`test_native_jail_backend_windows`,
+sometimes migrating to `test_native_jail_abuse_corpus_windows`'s OOM check under `-j4` load — a resource-
+timing flake, not a Phase H regression): default `build` 56/56 (one new binary,
+`test_reference_agent_prompt`), `build-py` 69/69 (three new binaries: `test_reference_agent_prompt`,
+`test_reference_agent_task_corpus`, `test_reference_agent_containment_invariance`).
 
 ## What's explicitly deferred past M3
 

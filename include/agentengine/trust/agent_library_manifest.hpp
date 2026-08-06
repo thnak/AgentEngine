@@ -45,7 +45,7 @@ struct ModuleDescriptor {
 inline std::vector<ModuleDescriptor> const& agent_library_registry() {
     static std::vector<ModuleDescriptor> const registry = {
         {"tools",    "Call your granted tools as ordinary functions.",        {capability_kind::tool_call}},
-        {"files",    "Read/write files in your worktree.",                   {capability_kind::fs_read, capability_kind::fs_write}},
+        {"files",    "Read/write files in your workspace.",                  {capability_kind::fs_read, capability_kind::fs_write}},
         {"data",     "Work with tabular/JSON inputs without loading them wholly.", {capability_kind::fs_read}},
         {"memory",   "Read your ranked view of prior memory.",               {capability_kind::fs_read}},
         {"notes",    "Write durable notes that persist across turns.",       {capability_kind::fs_write}},

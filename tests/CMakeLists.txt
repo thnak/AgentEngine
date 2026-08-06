@@ -221,6 +221,12 @@ add_executable(test_agent_library_manifest test_agent_library_manifest.cpp)
 target_link_libraries(test_agent_library_manifest PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_agent_library_manifest COMMAND test_agent_library_manifest)
 
+# ---- Reference-agent prompt assembly (M3 Phase H1, 026-Agent-Facing-Runtime-Surface.md §7/§8) --
+# Header-only (core/reference_agent_prompt.hpp, core/token_estimate.hpp), core-tier, model-independent.
+add_executable(test_reference_agent_prompt test_reference_agent_prompt.cpp)
+target_link_libraries(test_reference_agent_prompt PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_reference_agent_prompt COMMAND test_reference_agent_prompt)
+
 # ---- Egress proxy (M2 Phase F task F1, decisions/ADR-011-first-party-egress-proxy.md) ----------
 # Header-only claims (is_blocked_address, reject_crlf) plus real loopback-socket claims via a
 # TestHttpServer double, agentengine::net_egress_proxy (src/sandbox/net_egress_proxy.cpp).
@@ -913,6 +919,33 @@ if(AGENTENGINE_BUILD_PYTHON_RUNNER)
     AE_PYTHON_HOME="${AGENTENGINE_PYTHON_HOME}")
   add_test(NAME test_mediated_python_runner_error_mapping COMMAND test_mediated_python_runner_error_mapping)
   set_tests_properties(test_mediated_python_runner_error_mapping PROPERTIES
+    ENVIRONMENT "${AE_PYTHON_TEST_ENV}" TIMEOUT 60)
+
+  # ---- Milestone 3 Phase H1: reference-agent task corpus (026 §8 G1) ------------------------------
+  # Hand-authored RecordedChatClient fixtures (tests/fixtures/chat_client/reference_agent/) played
+  # back and actually executed through the real MediatedPythonRunner -- needs nlohmann_json (the
+  # fixture loader) on top of the usual mediated_python_runner link. Longer timeout: shares the
+  # numpy/pandas closure, so pays the same import-time cost as test_python_numpy_pandas_import.
+  add_executable(test_reference_agent_task_corpus test_reference_agent_task_corpus.cpp)
+  target_link_libraries(test_reference_agent_task_corpus PRIVATE
+    agentengine::core agentengine::mediated_python_runner agentengine_warnings
+    nlohmann_json::nlohmann_json)
+  target_compile_definitions(test_reference_agent_task_corpus PRIVATE
+    AE_PYTHON_HOME="${AGENTENGINE_PYTHON_HOME}"
+    AE_PYTHON_SITE_PACKAGES="${AGENTENGINE_PYTHON_SITE_PACKAGES}"
+    AE_TEST_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/chat_client/reference_agent")
+  add_test(NAME test_reference_agent_task_corpus COMMAND test_reference_agent_task_corpus)
+  set_tests_properties(test_reference_agent_task_corpus PROPERTIES
+    ENVIRONMENT "${AE_PYTHON_TEST_ENV}" TIMEOUT 120)
+
+  # ---- Milestone 3 Phase H2: transparency-is-not-security containment invariance (026 §1a/§8 G4) --
+  add_executable(test_reference_agent_containment_invariance test_reference_agent_containment_invariance.cpp)
+  target_link_libraries(test_reference_agent_containment_invariance PRIVATE
+    agentengine::core agentengine::mediated_python_runner agentengine_warnings)
+  target_compile_definitions(test_reference_agent_containment_invariance PRIVATE
+    AE_PYTHON_HOME="${AGENTENGINE_PYTHON_HOME}")
+  add_test(NAME test_reference_agent_containment_invariance COMMAND test_reference_agent_containment_invariance)
+  set_tests_properties(test_reference_agent_containment_invariance PROPERTIES
     ENVIRONMENT "${AE_PYTHON_TEST_ENV}" TIMEOUT 60)
 
   # ---- Milestone 3 Phase E4: hostile-corpus/mediation proof (010 §9 G2/G7) -----------------------

@@ -1,0 +1,13 @@
+{
+  "message": {
+    "role": "assistant",
+    "message_id": "ref-agent-list-dir-1",
+    "content": [
+      {
+        "kind": "text",
+        "text": "I'll list the files under /input/listing_demo, sorted.\n\n```python\nfrom agent import files\nentries = files.list('/input/listing_demo')\nnames = sorted(e['name'] for e in entries)\nfor n in names:\n    print(n)\n```"
+      }
+    ]
+  },
+  "usage": { "input_tokens": 95, "output_tokens": 32 }
+}

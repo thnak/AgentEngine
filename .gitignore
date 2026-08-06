@@ -56,3 +56,6 @@ secrets.toml
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Local-only API credentials for Milestone 3 Phase H reference-agent fixture recording -- never commit
+api-test.txt

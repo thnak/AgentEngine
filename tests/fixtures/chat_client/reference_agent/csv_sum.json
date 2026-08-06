@@ -1,0 +1,13 @@
+{
+  "message": {
+    "role": "assistant",
+    "message_id": "ref-agent-csv-sum-1",
+    "content": [
+      {
+        "kind": "text",
+        "text": "I'll read the CSV and sum the amount column.\n\n```python\nimport csv\ntotal = 0.0\nwith open('/input/sales.csv') as f:\n    reader = csv.DictReader(f)\n    for row in reader:\n        total += float(row['amount'])\nprint(f'TOTAL: {total:.2f}')\n```"
+      }
+    ]
+  },
+  "usage": { "input_tokens": 120, "output_tokens": 48 }
+}

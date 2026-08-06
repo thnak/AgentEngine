@@ -57,3 +57,19 @@ speculatively designed against a type that doesn't exist yet.
 - `tool_call.json` — a response whose only content item is a `ToolCall`.
 - `reasoning_and_text.json` — multi-part response mixing `Reasoning` and `Text`, with a
   reasoning-token-focused `Usage`.
+
+## `reference_agent/` (Milestone 3 Phase H1, 026 §8 G1)
+
+Three hand-authored fixtures, one per task in the reference-agent task corpus
+(`tests/test_reference_agent_task_corpus.cpp`). Each `message.content[0]` is a `text` item shaped
+like a real CodeAct-style reply: narration, then a fenced ```` ```python ```` block the test extracts
+and actually executes through `MediatedPythonRunner`.
+
+- `csv_sum.json` — reads `/input/sales.csv`, sums the `amount` column with the plain `csv` module.
+- `list_dir.json` — lists `/input/listing_demo` via `agent.files.list` (raw `os.listdir` on a virtual
+  mount path is NOT mediated — only `open()`/`listdir()` are — so this plausibly reaches for the
+  documented `agent.files` convenience instead).
+- `pandas_groupby.json` — reads `/input/orders.csv`, groups by category with pandas, and writes the
+  summary via `agent.files.artifact` rather than `DataFrame.to_csv(path)` directly: `to_csv` does its
+  own unmediated `os.path.isdir` pre-check against the virtual `/out` path and fails before ever
+  calling `open()` — a real finding from building this fixture, not a hypothetical.

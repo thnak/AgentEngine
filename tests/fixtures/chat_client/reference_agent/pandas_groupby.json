@@ -1,0 +1,13 @@
+{
+  "message": {
+    "role": "assistant",
+    "message_id": "ref-agent-pandas-groupby-1",
+    "content": [
+      {
+        "kind": "text",
+        "text": "I'll group the orders by category and write the per-category totals as a CSV artifact. (No plotting library is available in this environment, so this produces a table, not a chart.)\n\n```python\nimport pandas as pd\nfrom agent import files\ndf = pd.read_csv('/input/orders.csv')\nsummary = df.groupby('category')['amount'].sum().reset_index()\nfiles.artifact('summary.csv', summary.to_csv(index=False))\nprint('WROTE:', len(summary), 'rows')\n```"
+      }
+    ]
+  },
+  "usage": { "input_tokens": 140, "output_tokens": 61 }
+}
