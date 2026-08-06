@@ -222,6 +222,17 @@ add_executable(test_agent_session_snapshot test_agent_session_snapshot.cpp)
 target_link_libraries(test_agent_session_snapshot PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_agent_session_snapshot COMMAND test_agent_session_snapshot)
 
+# ---- Milestone 4 Phase B2 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
+# HistoryProvider<Window<N>>, the first real ContextProvider conformer -- standalone (unit) and
+# wired end to end through AgentSession's real turn loop.
+add_executable(test_history_provider test_history_provider.cpp)
+target_link_libraries(test_history_provider PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_history_provider COMMAND test_history_provider)
+
+add_executable(test_agent_session_history_window test_agent_session_history_window.cpp)
+target_link_libraries(test_agent_session_history_window PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_agent_session_history_window COMMAND test_agent_session_history_window)
+
 # ---- CapabilitySet enforcement mechanism (decisions/ADR-009-capability-set-enforcement-mechanism.md) --
 # Header-only (trust/capability.hpp), core-tier -- links only agentengine::core.
 add_executable(test_capability_enforcement test_capability_enforcement.cpp)

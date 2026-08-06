@@ -35,7 +35,9 @@
 
 #include "agentengine/core/chat_client.hpp"
 #include "agentengine/core/content.hpp"
+#include "agentengine/core/context_provider.hpp"
 #include "agentengine/core/effect_context.hpp"
+#include "agentengine/core/history_provider.hpp"
 #include "agentengine/trust/principal.hpp"
 
 namespace agentengine {
@@ -116,9 +118,11 @@ struct AgentSessionRecord {  // ae-naming-lint: allow AgentSessionRecord — 005
 QUARK_SERIALIZE(AgentSessionRecord, (1, session_id), (2, principal_id), (3, principal_tenant_id),
                  (4, created_at_ns), (5, updated_at_ns))
 
-template <class ChatClientT, class StateT = NoSessionState>
-    requires ChatClient<ChatClientT>
-class AgentSession : public quark::Actor<AgentSession<ChatClientT, StateT>, quark::Sequential> {
+template <class ChatClientT, class StateT = NoSessionState,
+          class HistoryProviderT = HistoryProvider<Window<0>>>
+    requires ChatClient<ChatClientT> && ContextProvider<HistoryProviderT>
+class AgentSession
+    : public quark::Actor<AgentSession<ChatClientT, StateT, HistoryProviderT>, quark::Sequential> {
 public:
     using protocol = quark::Protocol<quark::Ask<StartRun, AgentResponse>>;
 
@@ -145,7 +149,20 @@ public:
 
         history_.push_back(m.query.input);
 
-        ChatRequest request{history_};
+        // Milestone 4 Phase B2: what the model sees is now derived through a real
+        // `ContextProvider` (005 §3/§5) instead of `ChatRequest{history_}` directly — still exactly
+        // one contributor (`HistoryProviderT`) for now, not yet the fully general N-contributor
+        // assembly (budgets/drop-order, Phase B3's own standalone `assemble_context()`); that
+        // generalization is deferred to Phase G, when a second real provider (memory) actually
+        // needs to be composed alongside this one (decision 7's build ordering).
+        SessionContext session_ctx{session_id_, principal_, history_};
+        result<ContextContribution> contribution = history_provider_.on_context(session_ctx, effect_context_);
+        if (!contribution) {
+            // Same fail-closed shape as the chat-failure branch below — never fabricate a context.
+            return;
+        }
+
+        ChatRequest request{contribution->messages};
         result<ChatResponse> response = chat_client_.chat(request, effect_context_);
         if (!response) {
             // 001 §6's failure classification isn't wired up at this milestone — fail closed by
@@ -157,6 +174,7 @@ public:
         }
 
         history_.push_back(response->message);
+        history_provider_.on_turn_end(effect_context_);
         m.respond(AgentResponse{response->message, response->usage});
     }
 
@@ -226,6 +244,7 @@ private:
     std::uint64_t                                      run_counter_ = 0;
     std::string                                        last_run_id_;
     ChatClientT                                        chat_client_;
+    HistoryProviderT                                    history_provider_;
     EffectContext                                      effect_context_;
     std::chrono::system_clock::time_point              created_at_{};
     std::chrono::system_clock::time_point              updated_at_{};
@@ -238,9 +257,9 @@ private:
 // comment, "through_seq=0 (Snapshot model, no log)"). `act` is the caller's `Activation` — a
 // `TestKit<AgentSession<...>>` or a real `Engine` owns it, `AgentSession` itself does not, the same
 // division of ownership `snapshot_sequential` already assumes for every Sequential actor.
-template <class ChatClientT, class StateT, quark::Store S>
+template <class ChatClientT, class StateT, class HistoryProviderT, quark::Store S>
 [[nodiscard]] quark::result<void> save_agent_session_snapshot(
-    quark::Activation& act, S& store, AgentSession<ChatClientT, StateT> const& session,
+    quark::Activation& act, S& store, AgentSession<ChatClientT, StateT, HistoryProviderT> const& session,
     quark::FenceToken fence) {
     return quark::snapshot_sequential<AgentSessionRecord>(
         act, store, session_actor_id(session.session_id()), fence, /*through_seq=*/0,
