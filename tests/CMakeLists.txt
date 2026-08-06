@@ -196,6 +196,13 @@ add_executable(test_m1_walking_skeleton test_m1_walking_skeleton.cpp)
 target_link_libraries(test_m1_walking_skeleton PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_m1_walking_skeleton COMMAND test_m1_walking_skeleton)
 
+# ---- Milestone 4 Phase A1 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
+# session_actor_id() + real two-session isolation, closing 001 §1's session_id-keying gap M1 left
+# unwired.
+add_executable(test_agent_session_isolation test_agent_session_isolation.cpp)
+target_link_libraries(test_agent_session_isolation PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_agent_session_isolation COMMAND test_agent_session_isolation)
+
 # ---- CapabilitySet enforcement mechanism (decisions/ADR-009-capability-set-enforcement-mechanism.md) --
 # Header-only (trust/capability.hpp), core-tier -- links only agentengine::core.
 add_executable(test_capability_enforcement test_capability_enforcement.cpp)

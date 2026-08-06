@@ -19,10 +19,12 @@
 
 #include <chrono>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "quark/core/actor.hpp"
 #include "quark/core/actor_ref.hpp"
+#include "quark/core/ids.hpp"
 
 #include "agentengine/core/chat_client.hpp"
 #include "agentengine/core/content.hpp"
@@ -30,6 +32,26 @@
 #include "agentengine/trust/principal.hpp"
 
 namespace agentengine {
+
+// A stable, hand-picked ActorId tag for AgentSession — the same "arbitrary fixed constant, not a
+// serialization fingerprint" precedent Quark's own `voice_channel.hpp` uses for `kRoomTypeKey`
+// ("AGENTSN1", ASCII). Deliberately NOT `quark::durable_type_key<T>()` (016's `Described`
+// fingerprint mechanism): that key names a wire/durable record SHAPE, and Milestone 4 Phase A4
+// (session persistence, 005 §2) hasn't decided what AgentSession's own durable record type looks
+// like yet — this tag is for in-process actor ADDRESSING only (session_id -> ActorId, needed for
+// per-session isolation, 001 §1's "one Quark actor instance, key = session_id"), a narrower and
+// earlier-needed property than durability. A4 may reuse this tag for its own record header or
+// mint a different one once that record type exists; that is A4's decision, not this one's.
+inline constexpr quark::TypeKey kAgentSessionTypeKey{0x4147'454E'5453'4E31ULL};  // "AGENTSN1"
+
+// The stable ActorId a session's human-readable `session_id` maps to — mirrors
+// `core/worktree.hpp`'s `ref_actor_id()` exactly (same bridge: Quark's `ActorId` key is a
+// `std::uint64_t`, not a string). Same session_id -> same ActorId, always; different session_ids
+// collide only as likely as an ordinary 64-bit hash collision (untested at scale here — that is
+// 001 §9 G1's job, deferred to this milestone's own Phase H, not this task's).
+[[nodiscard]] inline quark::ActorId session_actor_id(std::string_view session_id) noexcept {
+    return quark::ActorId{kAgentSessionTypeKey, std::hash<std::string_view>{}(session_id)};
+}
 
 // 001 §1: "An Ask<StartRun, RunResponse> to the session actor." `StartRun` is the literal message
 // name 001 gives; the reply type is `AgentResponse` (027 §2's canonical name for "a run's result"),
@@ -74,6 +96,21 @@ public:
     }
 
     [[nodiscard]] std::vector<Message> const& history() const noexcept { return history_; }
+
+    // `quark::TestKit<A>`/a real `Engine` both default-construct the actor and hand out a mutable
+    // `A&` for post-construction wiring (testkit.hpp:83, "state access for wiring + assertions") —
+    // there is no constructor-argument-forwarding path through either, so `session_id`/`principal`
+    // are set this way, matching how the mock `ChatClient`'s own canned behavior is already baked
+    // in by construction rather than passed through TestKit. Named `initialize`, the same verb this
+    // project already uses for "make an object ready to run, before capabilities/effects flow"
+    // (`MediatedPythonRunner::initialize()`).
+    void initialize(std::string session_id, Principal principal) {
+        session_id_ = std::move(session_id);
+        principal_  = std::move(principal);
+    }
+
+    [[nodiscard]] std::string const& session_id() const noexcept { return session_id_; }
+    [[nodiscard]] Principal const&   principal() const noexcept { return principal_; }
 
 private:
     std::string                           session_id_;
