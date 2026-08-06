@@ -454,6 +454,36 @@ target_compile_definitions(test_shell_runner_no_process_creation PRIVATE
 add_test(NAME test_shell_runner_no_process_creation COMMAND test_shell_runner_no_process_creation)
 set_tests_properties(test_shell_runner_no_process_creation PROPERTIES SKIP_RETURN_CODE 77)
 
+# ---- Milestone 3 Phase E3's real ShellRunner (mediated_shell_*.{hpp,cpp}) -----------------------
+# Windows only (matches agentengine_mediated_shell_runner's own scope, CMakeLists.txt).
+if(WIN32)
+  add_executable(test_mediated_shell_runner_smoke test_mediated_shell_runner_smoke.cpp)
+  target_link_libraries(test_mediated_shell_runner_smoke PRIVATE
+    agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_mediated_shell_runner_smoke COMMAND test_mediated_shell_runner_smoke)
+  set_tests_properties(test_mediated_shell_runner_smoke PROPERTIES TIMEOUT 60)
+
+  # RunnerCall<python> composition against the REAL MediatedPythonRunner (E2) -- only built when
+  # AGENTENGINE_BUILD_PYTHON_RUNNER is also ON (needs a real CPython install).
+  if(AGENTENGINE_BUILD_PYTHON_RUNNER)
+    add_executable(test_mediated_shell_runner_python_composition
+      test_mediated_shell_runner_python_composition.cpp)
+    target_link_libraries(test_mediated_shell_runner_python_composition PRIVATE
+      agentengine::core agentengine::mediated_shell_runner agentengine::mediated_python_runner
+      agentengine::worktree_store agentengine_warnings)
+    target_compile_definitions(test_mediated_shell_runner_python_composition PRIVATE
+      AE_PYTHON_HOME="${AGENTENGINE_PYTHON_HOME}")
+    add_test(NAME test_mediated_shell_runner_python_composition
+      COMMAND test_mediated_shell_runner_python_composition)
+    # AE_PYTHON_TEST_ENV isn't defined yet at this point in the script (set later, alongside the
+    # ADR-002/003 prove-phase test block) -- built directly here from AGENTENGINE_PYTHON_DLL_DIR
+    # (set by the root CMakeLists.txt before add_subdirectory(tests) runs) for the identical
+    # Windows-has-no-rpath reason those tests need it.
+    set_tests_properties(test_mediated_shell_runner_python_composition PROPERTIES
+      ENVIRONMENT "PATH=${AGENTENGINE_PYTHON_DLL_DIR};$ENV{PATH}" TIMEOUT 60)
+  endif()
+endif()
+
 # ---- Job Object resource-limit layer (decisions/ADR-004-appcontainer-native-jail-windows-backend.md) --
 # Windows only -- see CMakeLists.txt's agentengine_job_object_limits target comment.
 if(WIN32)

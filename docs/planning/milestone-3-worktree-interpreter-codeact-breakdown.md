@@ -653,12 +653,78 @@ for M3 regardless.
   stays in place" held); default-config `build` (AGENTENGINE_BUILD_PYTHON_RUNNER off, everything
   this milestone has built so far) unaffected — the new CMake wiring lives entirely inside the
   already-existing `if(AGENTENGINE_BUILD_PYTHON_RUNNER)` guard. **XL**
-- **E3.** `ShellRunner` satisfying `Runner` — recursive-descent parser → pmr AST → tree-walking
-  evaluator against `CommandRegistry`'s closed three-way lookup (builtin / registered `Runner` /
-  registered `Tool`, 010 §2), per ADR-001's Judged Design A, written fresh per decision 4.
-  `RunnerCall<python>` composition (010 §1a — `ShellRunner` invoking `PythonRunner` under an explicit
-  capability, never exec'ing a real shell) proven directly, including the negative control (denied
-  without the capability). **L**
+- **E3 (done, one residual named).** `MediatedShellRunner` (`src/backends/native_jail/
+  mediated_shell_{grammar,parser,dispatch}.{hpp,cpp}`, `mediated_command_registry.hpp`,
+  `mediated_filesystem_adapter.{hpp,cpp}`, `mediated_shell_runner.hpp`) — a genuinely new set of
+  translation units per decision 4's literal reading (same as E2). `shell_grammar.hpp`/
+  `shell_parser.{hpp,cpp}`/`shell_dispatch.{hpp,cpp}`/`command_registry.hpp`/
+  `real_filesystem_adapter.{hpp,cpp}`/`shell_runner.hpp` stay completely untouched (verified: their
+  own tests — `test_shell_runner_proof`, `test_shell_parser_adversarial`,
+  `test_shell_runner_no_process_creation` — still pass unmodified, alongside all of E2's own tests
+  and the worktree suite, 24/24). Named `MediatedShellRunner`, not `ShellRunner`, to avoid colliding
+  with the untouched spike's own class name in the same namespace (matching `MediatedPythonRunner`'s
+  precedent). Carries forward ADR-001's exact Judged grammar (the EBNF verbatim: `command_line`,
+  `and_or`, `pipeline`, `simple_command`, `assignment`, `redirect`, `word`, `if_stmt`, `for_stmt`,
+  `script`), the pmr-arena/shared-recursion-depth-counter safety knobs, and the closed three-way
+  `CommandRegistry` lookup (builtin / registered `Runner` / registered `Tool`, reserved-name
+  rejection at registration time) as design, not code. Two real upgrades over the untouched spike,
+  both because `trust/capability.hpp` gained real scope fields (`mount_id`/`path_prefix` on
+  `FsRead`/`FsWrite`) after ADR-001 was written: (1) every builtin does a REAL, path-scoped
+  `CapabilitySet::contains()` check (a genuine `cap::FsRead{mount_id, path_prefix, ...}`/
+  `cap::FsWrite{...}` request per call), not the kind-only `contains_kind` shortcut ADR-001 §2.5.4's
+  now-superseded downgrade used; (2) `MediatedFileSystemAdapter` is built directly on
+  `core/worktree_mount_fs.hpp`'s `open_within_mount_root` (ADR-014) rather than reimplementing its
+  own canonicalize-then-check — that primitive's own header names itself as exactly what a future
+  `FileSystemAdapter` is expected to call, so reusing it is the documented intent (only
+  `real_filesystem_adapter.{hpp,cpp}` was off-limits). `remove`/`list_directory` use handle-anchored
+  Win32 APIs (`SetFileInformationByHandle`/`FileDispositionInfo`, `GetFileInformationByHandleEx`/
+  `FileFullDirectoryInfo`) so the already-verified handle, not a re-resolved path, is what acts.
+  **Two real bugs found and fixed during this pass, not among any prior red-team's findings**: (a)
+  `CreateFileW` cannot actually create a directory (`FILE_FLAG_BACKUP_SEMANTICS` only OPENS an
+  existing one) — an initial `make_directory` silently created a zero-byte FILE named after the
+  requested directory instead, caught only because a later `write_file` into it failed with
+  `ERROR_PATH_NOT_FOUND`, not by the (bug-blind) `std::filesystem::exists` check the test itself
+  originally used; fixed by using the real `CreateDirectoryW` API against a handle-verified parent
+  path (a narrower TOCTOU guarantee than `open_within_mount_root`'s own open-then-verify pattern,
+  named as a residual below, not silently assumed equivalent). (b) the parser's word-collection loop
+  had no notion of a reserved keyword, so `if echo x then ...` silently swallowed `then` as an
+  ordinary argument to `echo` instead of ending the command there — breaking essentially all `if`/
+  `for` parsing; fixed by making an unquoted word matching `then`/`else`/`fi`/`do`/`done` always end
+  word-collection (a quoted `"then"` still round-trips as a literal argument, since the check
+  inspects the atom's KIND, not just its text). `rename` is implemented as copy-then-delete rather
+  than `SetFileInformationByHandle(FileRenameInfo)` (which did not behave as documented against this
+  handle-relative usage) — this reuses, not contradicts, ADR-001's own finding 8 ("mv/cp cross-device
+  fallback... non-atomic, no rollback... still open"), just as the primary path rather than a
+  fallback. `evaluate_pipeline` distinguishes hard, script-stopping errors (capability denial,
+  command-not-found, malformed dispatch) from ordinary command-level failures (a real filesystem
+  operation that simply didn't succeed) — only the latter become an inspectable, non-`ok`
+  `ExecOutcome` `&&`/`||` can branch on; a design clarification the researched ADR-001 text didn't
+  make explicit, needed to make `&&`/`||` mean anything at all.
+  `RunnerCall<python>` composition (010 §1a/§9 G4) proven directly against the REAL
+  `MediatedPythonRunner` from E2 (not a fake), including the negative control the breakdown doc's
+  own task text asked for, and the "cannot exceed" half (PythonRunner's own `FsWrite` denial still
+  fires when invoked through ShellRunner with only `RunnerCall{"python"}` granted — the identical
+  `EffectContext&` is passed through, never attenuated-then-silently-widened). A real, load-bearing
+  test-design finding surfaced while proving this: passing nontrivial Python source (spaces, string
+  quotes, multi-line control flow) through this shell grammar's own word-splitting/quote-stripping
+  mangles it unless the WHOLE source is wrapped in one shell-level double-quoted word — a genuine,
+  named limitation of composing through a grammar with no heredoc support (ADR-001 §3's own v1
+  scope), not a `ShellRunner` bug, and worth remembering for Phase F/G's own `agent.*` library design.
+  Proven in `tests/test_mediated_shell_runner_smoke.cpp` (37 checks: parser bounds, registration-time
+  shadowing rejection, all 10 builtins with denied/granted capability pairs — `mv`/`cp` proving BOTH
+  a granted `FsRead` source and `FsWrite` destination are independently required — pipelines,
+  `&&`/`||`, `if`/`for`, command-not-found fail-closed across a hostile-name corpus, the fake-Runner
+  gate + negative control) and `tests/test_mediated_shell_runner_python_composition.cpp` (6 checks,
+  only built when `AGENTENGINE_BUILD_PYTHON_RUNNER` is ON). **Named residual, not silently closed**:
+  `make_directory`'s `CreateDirectoryW`-against-a-verified-parent-path pattern is a narrower TOCTOU
+  guarantee than `open_within_mount_root`'s own primitive (a real, if smaller, race window remains
+  between verifying the parent and the path-string-based `CreateDirectoryW` call) — a candidate for
+  E4 or a follow-up to close via a stronger primitive, not attempted this pass. `argv`->registered-
+  `Tool`-typed-`Args` mapping stays undesigned (ADR-001 §11 item 3, unchanged); command substitution
+  and background processes stay out of scope (unchanged). Windows only this pass (matching ADR-001's
+  own scope). Full regression: `build-py`'s worktree+python+shell test set 24/24 (existing spike
+  tests unmodified and still passing); default-config `build` 46/47, same pre-existing
+  `test_native_jail_backend_windows` flake. **L**
 - **E4.** Containment/mediation proof (010 §9 G2, G7) — the hostile corpus (`os.system`, `ctypes`,
   `/proc`/registry probing, symlink escape, egress to `169.254.169.254`, fork bomb, memory bomb,
   output flood, `sys.settrace`) plus the `ShellRunner`-specific classes (`PATH` hijacking, command

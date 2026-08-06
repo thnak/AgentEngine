@@ -81,6 +81,26 @@ target_link_libraries(agentengine_shell_runner PUBLIC agentengine::core)
 target_link_libraries(agentengine_shell_runner PRIVATE agentengine_warnings)
 add_library(agentengine::shell_runner ALIAS agentengine_shell_runner)
 
+# ---- Milestone 3 Phase E3's real ShellRunner (mediated_shell_*.{hpp,cpp}) -- Windows only this
+# pass (matches ADR-001's own Windows-only scope) -- a genuinely new set of translation units per
+# decision 4, sharing NO source with agentengine_shell_runner above (that target's sources stay in
+# place, untouched, as ADR-001's cited prove-phase evidence). Built directly on
+# core/worktree_mount_fs.hpp's open_within_mount_root (agentengine::worktree_store) -- that
+# primitive's own header names itself as exactly what a future FileSystemAdapter is expected to
+# call, so reusing it here is the documented intent, not a decision-4 violation (only
+# real_filesystem_adapter.{hpp,cpp} is off-limits to reuse).
+if(WIN32)
+  add_library(agentengine_mediated_shell_runner STATIC
+    src/backends/native_jail/mediated_shell_parser.cpp
+    src/backends/native_jail/mediated_shell_dispatch.cpp
+    src/backends/native_jail/mediated_filesystem_adapter.cpp)
+  target_include_directories(agentengine_mediated_shell_runner PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  target_link_libraries(agentengine_mediated_shell_runner PUBLIC agentengine::core agentengine::worktree_store)
+  target_link_libraries(agentengine_mediated_shell_runner PRIVATE agentengine_warnings)
+  add_library(agentengine::mediated_shell_runner ALIAS agentengine_mediated_shell_runner)
+endif()
+
 # ---- native_jail Job Object resource-limit layer (src/backends/native_jail/) -- Windows only -----
 # Implements decisions/ADR-004-appcontainer-native-jail-windows-backend.md §3 steps 2-3 (build-and-
 # measure follow-up named in that ADR's §9): the Windows Job Object half of 008 §2's ResourceLimits
