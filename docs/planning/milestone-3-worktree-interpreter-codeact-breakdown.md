@@ -175,9 +175,30 @@ for M3 regardless.
   stale-fenced writer's commit is rejected with a positive control proving the current fence's
   commit succeeds the same way. Full regression: Windows `ctest -j4` 36/37 (same pre-existing
   `test_native_jail_backend_windows` flake as A1, not a regression; +1 net test vs. A1's 35/36). **S**
-- **A3.** Compile-fail/positive-control proof that `Blob`/`Tree` objects are immutable once written —
-  no public mutator exists on a fetched object, matching the M1/M2 `try_compile()` gate pattern
-  (`tests/compile_fail/`). **S**
+- **A3 (done).** Compile-fail/positive-control proof, matching the M1/M2 `try_compile()` gate
+  pattern. Sharpened from the original framing during execution: the actual property that makes
+  `Blob`/`Tree` immutable is that `put_blob`/`put_tree` accept ONLY content, never a caller-supplied
+  digest — the digest is always derived, so there is no entry point through which a caller could
+  rebind an existing digest to different content (a local mutation of a fetched `Tree`/`vector<byte>`
+  value is ordinary C++ and neither preventable nor meaningful to gate). Two negative controls
+  (`tests/compile_fail/worktree_object_store_rejects_{blob,tree}_digest_override.cpp`, each proven
+  independently rather than assumed to follow from the other) plus one positive control
+  (`worktree_object_store_positive_control.cpp`, the real one-argument signatures). WIN32-gated,
+  matching A1's own platform scope. Two real CMake mechanics surfaced and fixed while building this:
+  `try_compile()`'s isolated mini-project cannot see the outer build's `agentengine::worktree_store`
+  ALIAS target, so all three checks instead compile+link `src/core/worktree_digest.cpp` directly
+  against the real `bcrypt` system library (a plain linker name, not a CMake target); and `try_compile`
+  results are cached (`INTERNAL` cache variables), so the standard "temporarily break it, confirm the
+  gate fires, revert" verification this project uses for its most rigorous checks needed the specific
+  cache variables cleared (`cmake -U...`) between runs, not just a plain reconfigure — a plain
+  reconfigure silently reused the prior (stale) result and would have given a false "still passing"
+  read. Verified load-bearing this way: temporarily added the forbidden `put_blob(Digest const&,
+  span)` overload, confirmed `FATAL_ERROR` correctly fired, reverted, reconfirmed all three checks
+  pass clean again. Deliberately linked EVEN the negative controls against the real digest
+  implementation (not left unlinked) — otherwise a negative control failing to build for the wrong
+  reason (a permanently missing link dependency) could stay "green" forever regardless of whether the
+  forbidden overload actually existed, exactly the vacuous-test risk this verification step exists to
+  rule out. Full regression: Windows `ctest -j4` 36/37, same pre-existing flake, unchanged. **S**
 
 ### Phase B — Sub-worktrees, sharing modes, concurrency and merge (025 §3-4)
 

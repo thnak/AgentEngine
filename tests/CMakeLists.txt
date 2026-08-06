@@ -107,6 +107,83 @@ message(STATUS
   "ADR-012 compile-fail proof: OK (SandboxProfile<P> rejects a non-conforming type; Strict and a "
   "real SandboxBackend both compile)")
 
+# ---- Milestone 3 Phase A3 compile-fail proof (025 §2's Blob/Tree immutability) ------------------
+# `InMemoryWorktreeObjectStore::put_blob`/`put_tree` (core/worktree.hpp) take ONLY the content --
+# the digest is always DERIVED from it, never accepted as a caller-supplied parameter -- which is
+# what makes "immutable bytes, addressed by digest" true by construction. A two-argument
+# put_blob(digest, bytes)/put_tree(digest, tree) overload would reopen exactly that hole, so
+# calling either shape must fail to compile. WIN32-gated: all three checks link the real
+# compute_digest implementation (src/core/worktree_digest.cpp + bcrypt) alongside themselves --
+# deliberately, even the two that are EXPECTED to fail. Without that, a negative control could stay
+# "green" (fail to build) forever for the wrong reason -- a permanently missing link dependency --
+# and never actually re-test whether the forbidden overload exists once it did compile; this way,
+# the only thing standing between "fails" and "builds clean" is the overload itself, matching the
+# positive control's own build shape exactly (confirmed load-bearing below, not asserted).
+if(WIN32)
+  try_compile(AE_WORKTREE_STORE_REJECTS_BLOB_DIGEST_OVERRIDE
+    "${CMAKE_CURRENT_BINARY_DIR}/compile_fail_checks/worktree_store_rejects_blob_digest_override"
+    SOURCES
+      "${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/worktree_object_store_rejects_blob_digest_override.cpp"
+      "${PROJECT_SOURCE_DIR}/src/core/worktree_digest.cpp"
+    CMAKE_FLAGS
+      "-DINCLUDE_DIRECTORIES=${PROJECT_SOURCE_DIR}/include;${PROJECT_SOURCE_DIR}/third_party/quark/include;${PROJECT_SOURCE_DIR}/third_party/quark"
+      "-DCMAKE_CXX_STANDARD=23" "-DCMAKE_CXX_STANDARD_REQUIRED=ON"
+    LINK_LIBRARIES bcrypt
+    OUTPUT_VARIABLE AE_WORKTREE_STORE_REJECTS_BLOB_DIGEST_OVERRIDE_LOG)
+  if(AE_WORKTREE_STORE_REJECTS_BLOB_DIGEST_OVERRIDE)
+    message(FATAL_ERROR
+      "Milestone 3 A3 VIOLATED: tests/compile_fail/worktree_object_store_rejects_blob_digest_override.cpp "
+      "compiled, but put_blob must have NO two-argument (digest, bytes) overload -- a Blob's digest "
+      "must always be derived from its content, never caller-supplied. "
+      "Build log:\n${AE_WORKTREE_STORE_REJECTS_BLOB_DIGEST_OVERRIDE_LOG}")
+  endif()
+
+  try_compile(AE_WORKTREE_STORE_REJECTS_TREE_DIGEST_OVERRIDE
+    "${CMAKE_CURRENT_BINARY_DIR}/compile_fail_checks/worktree_store_rejects_tree_digest_override"
+    SOURCES
+      "${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/worktree_object_store_rejects_tree_digest_override.cpp"
+      "${PROJECT_SOURCE_DIR}/src/core/worktree_digest.cpp"
+    CMAKE_FLAGS
+      "-DINCLUDE_DIRECTORIES=${PROJECT_SOURCE_DIR}/include;${PROJECT_SOURCE_DIR}/third_party/quark/include;${PROJECT_SOURCE_DIR}/third_party/quark"
+      "-DCMAKE_CXX_STANDARD=23" "-DCMAKE_CXX_STANDARD_REQUIRED=ON"
+    LINK_LIBRARIES bcrypt
+    OUTPUT_VARIABLE AE_WORKTREE_STORE_REJECTS_TREE_DIGEST_OVERRIDE_LOG)
+  if(AE_WORKTREE_STORE_REJECTS_TREE_DIGEST_OVERRIDE)
+    message(FATAL_ERROR
+      "Milestone 3 A3 VIOLATED: tests/compile_fail/worktree_object_store_rejects_tree_digest_override.cpp "
+      "compiled, but put_tree must have NO two-argument (digest, tree) overload -- a Tree's digest "
+      "must always be derived from its own canonical serialization, never caller-supplied. "
+      "Build log:\n${AE_WORKTREE_STORE_REJECTS_TREE_DIGEST_OVERRIDE_LOG}")
+  endif()
+
+  # try_compile() runs in an isolated mini-project that cannot see this build's own targets (no
+  # ALIAS/IMPORTED target named agentengine::worktree_store exists there) -- so the positive
+  # control compiles worktree_digest.cpp's compute_digest implementation alongside itself and links
+  # the real system library (bcrypt, a plain linker name, not a CMake target) directly, rather than
+  # depending on a target that only exists in the outer project.
+  # Multi-source try_compile() ("srcfile..." with more than one entry) doesn't accept CXX_STANDARD
+  # (CMake: "CXX_STANDARD allowed only in source file signature") -- set it via CMAKE_FLAGS instead.
+  try_compile(AE_WORKTREE_STORE_POSITIVE_CONTROL
+    "${CMAKE_CURRENT_BINARY_DIR}/compile_fail_checks/worktree_store_positive_control"
+    SOURCES
+      "${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/worktree_object_store_positive_control.cpp"
+      "${PROJECT_SOURCE_DIR}/src/core/worktree_digest.cpp"
+    CMAKE_FLAGS
+      "-DINCLUDE_DIRECTORIES=${PROJECT_SOURCE_DIR}/include;${PROJECT_SOURCE_DIR}/third_party/quark/include;${PROJECT_SOURCE_DIR}/third_party/quark"
+      "-DCMAKE_CXX_STANDARD=23" "-DCMAKE_CXX_STANDARD_REQUIRED=ON"
+    LINK_LIBRARIES bcrypt
+    OUTPUT_VARIABLE AE_WORKTREE_STORE_POSITIVE_CONTROL_LOG)
+  if(NOT AE_WORKTREE_STORE_POSITIVE_CONTROL)
+    message(FATAL_ERROR
+      "Milestone 3 A3 positive control FAILED: tests/compile_fail/worktree_object_store_positive_control.cpp "
+      "must compile and link (the real, one-argument put_blob/put_tree signatures are the intended, "
+      "legitimate path) but did not. Build log:\n${AE_WORKTREE_STORE_POSITIVE_CONTROL_LOG}")
+  endif()
+  message(STATUS
+    "Milestone 3 A3 compile-fail proof: OK (put_blob/put_tree reject a caller-supplied digest; the "
+    "real one-argument signatures compile)")
+endif()
+
 add_executable(smoke_vocabulary smoke_vocabulary.cpp)
 target_link_libraries(smoke_vocabulary PRIVATE agentengine::core agentengine_warnings)
 
