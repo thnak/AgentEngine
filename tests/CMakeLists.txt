@@ -549,6 +549,14 @@ if(WIN32)
   add_test(NAME test_capability_token_benchmark COMMAND test_capability_token_benchmark)
 endif()
 
+# ---- Worktree content-addressed object store (025 §2, Milestone 3 Phase A1) --------------------
+if(WIN32)
+  add_executable(test_worktree_object_store test_worktree_object_store.cpp)
+  target_link_libraries(test_worktree_object_store PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_worktree_object_store COMMAND test_worktree_object_store)
+endif()
+
 # ---- PythonRunner prove-phase gates (decisions/ADR-002-pythonrunner-embedding-and-mediation.md)
 # Only built when AGENTENGINE_BUILD_PYTHON_RUNNER is ON (CMakeLists.txt) -- these link a real
 # CPython import lib and need python3<minor>.dll reachable via PATH at run time (Windows has no

@@ -140,10 +140,15 @@ int main() {
     assert(set.size() == 1);
     assert(set.contains_kind(ae::capability_kind::fs_read));
 
-    // -- Worktree vocabulary (core/worktree.hpp) --
-    ae::Blob blob{"digest-1"};
-    ae::Ref ref{"session:s-1", blob.digest};
+    // -- Worktree vocabulary (core/worktree.hpp) -- vocabulary construction only; real digest
+    // computation requires linking agentengine::worktree_store (Windows-only for now), proven
+    // separately in test_worktree_object_store.cpp.
+    ae::TreeEntry entry{"file.txt", "digest-1", false};
+    ae::Tree tree{{entry}};
+    ae::Ref ref{"session:s-1", "digest-1"};
     assert(ref.tree_digest == "digest-1");
+    assert(tree.entries.size() == 1 && tree.entries[0].name == "file.txt");
+    assert(ae::sharing_mode::branch != ae::sharing_mode::shared);
 
     // -- Memory vocabulary (core/memory.hpp) --
     ae::MemoryItem memory_item{};

@@ -372,6 +372,20 @@ if(WIN32)
   add_library(agentengine::capability_token ALIAS agentengine_capability_token)
 endif()
 
+# ---- Worktree content-addressed object store (src/core/) -- Windows only ----------------------
+# Implements 025-Worktree-and-Virtual-Filesystem.md §2, Milestone 3 Phase A1
+# (docs/planning/milestone-3-worktree-interpreter-codeact-breakdown.md): SHA-256 content digests
+# for Blob/Tree objects via Windows CNG/BCrypt, a system API -- not a third-party dependency, same
+# posture as ADR-005's capability_token.cpp. A Linux SHA-256 provider is a named, tracked gap (the
+# breakdown doc's own decision 2), not silently assumed available.
+if(WIN32)
+  add_library(agentengine_worktree_store STATIC
+    src/core/worktree_digest.cpp)
+  target_link_libraries(agentengine_worktree_store PUBLIC agentengine::core)
+  target_link_libraries(agentengine_worktree_store PRIVATE agentengine_warnings bcrypt)
+  add_library(agentengine::worktree_store ALIAS agentengine_worktree_store)
+endif()
+
 # ---- native_jail PythonRunner backend (src/backends/native_jail/) -- OPTIONAL, OFF by default ---
 # Implements decisions/ADR-002-pythonrunner-embedding-and-mediation.md (prove phase): the embedded
 # CPython interpreter, Layer 0's sys.modules sweep, and the sys.meta_path allowlist finder
