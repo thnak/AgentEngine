@@ -750,6 +750,18 @@ if(WIN32)
   add_test(NAME test_worktree_mount COMMAND test_worktree_mount)
 endif()
 
+# ---- Worktree mount<->real-directory sync (025 §5/§7, Milestone 3 Phase F1) ---------------------
+# Proves materialize_mount/harvest_mount (src/backends/native_jail/worktree_mount_sync.hpp) against
+# the REAL MediatedFileSystemAdapter (ADR-014), not a test double -- needs
+# agentengine::mediated_shell_runner for that adapter, same as test_mediated_shell_runner_smoke.
+if(WIN32)
+  add_executable(test_worktree_mount_sync test_worktree_mount_sync.cpp)
+  target_link_libraries(test_worktree_mount_sync PRIVATE
+    agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_worktree_mount_sync COMMAND test_worktree_mount_sync)
+  set_tests_properties(test_worktree_mount_sync PROPERTIES TIMEOUT 60)
+endif()
+
 # ---- Worktree mount write quotas (025 §5, Milestone 3 Phase C3) ---------------------------------
 # Proves the byte/file-count quota enforcement mount_write (core/worktree.hpp) now performs, against
 # the same in-memory content-addressed store as C1 -- no real filesystem needed for this layer.

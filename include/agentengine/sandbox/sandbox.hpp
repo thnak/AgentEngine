@@ -146,7 +146,13 @@ struct ExecOutcome {  // ae-naming-lint: allow ExecOutcome — pre-existing M0 s
     exec_outcome_class klass = exec_outcome_class::ok;
     std::string        stdout_text;
     std::string        stderr_text;
-    // artifacts, usage: 010 §3, elided pending BlobRef-backed artifact vocabulary.
+    // Files a run saved under an output mount, surfaced as Content (010 §3, 025 §7) -- populated
+    // by a caller that harvests an output mount after `run()`/`exec()` returns
+    // (src/backends/native_jail/worktree_mount_sync.hpp's `harvest_mount`, Milestone 3 Phase F1),
+    // never by a backend/runner itself: neither `SandboxBackend::exec` nor `Runner::run` know about
+    // worktree mounts (008 §2/010 §3a keep them mount-agnostic), so this field starts empty and is
+    // filled in by whichever layer just did the harvesting.
+    std::vector<ContentItem> artifacts;
 };
 
 // concept, not a base class (008 §2). Return types are constrained to their synchronous

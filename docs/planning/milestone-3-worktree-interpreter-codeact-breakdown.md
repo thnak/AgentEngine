@@ -817,10 +817,42 @@ for M3 regardless.
 
 ### Phase F — Worktree integration, artifacts, tool bridge (025 §7, 010 §4, §6)
 
-- **F1.** `/work`, `/input`, `/out` wired as real `FsRead`/`FsWrite`-gated mounts (Phase C) into
-  `PythonRunner`/`ShellRunner`'s sandbox spec — files created under `/out` are collected, digested
-  (A1), and surfaced as `Content` items (003), closing 025 §7's "the agent saves a file, the user
-  receives an artifact" claim end to end. **M**
+- **F1 (done).** `materialize_mount`/`harvest_mount`
+  (`src/backends/native_jail/worktree_mount_sync.hpp`) bridge a worktree `Mount`'s content-addressed
+  Tree with the real host directory `MediatedPythonConfig::mount_roots`/`MediatedShellRunner` already
+  point at (Phase C/E) — `materialize_mount` primes a real directory from the mount's current tree
+  through `mount_read` per file (the same `cap::FsRead` check a guest `open()` gets); `harvest_mount`
+  walks a real directory back into the tree through `mount_write` per file (same `cap::FsWrite` +
+  quota check a guest `open(..., "w")` gets) and returns one `ContentItem` per file harvested
+  (digested via A1's `compute_digest`, `BlobRef{digest, media_type, size, store="worktree"}") —
+  closing 025 §7's "the agent saves a file, the user receives an artifact" claim end to end, proven
+  in `tests/test_worktree_mount_sync.cpp` against the REAL `MediatedFileSystemAdapter` (ADR-014), not
+  a test double: real files on disk, real nested directories, real Tree round-trips via `mount_read`
+  after harvest, and positive-control-paired capability denials (022 §5) for both directions. Reuses
+  `mount_read`/`mount_write` entirely rather than touching the object/ref store directly, so the
+  SAME capability/quota enforcement guest code gets applies to host-orchestrated priming/harvesting
+  too — no second authority path invented. `ExecOutcome` (`sandbox/sandbox.hpp`) gained a real
+  `artifacts: vector<ContentItem>` field (previously "elided pending BlobRef-backed artifact
+  vocabulary" — that vocabulary is now real), populated by whichever caller does the harvesting, not
+  by a backend/runner itself (008 §2/010 §3a keep `SandboxBackend::exec`/`Runner::run` mount-agnostic).
+  **A real, previously-undiscovered bug found and fixed along the way**: `MediatedFileSystemAdapter::
+  list_directory("")` (listing a mount's own root — e.g. `ls` with no argument at the freshly-
+  constructed `ExecState.cwd`, which starts `""`) unconditionally failed with
+  `worktree.mount_path_is_root`, because `open_within_mount_root` structurally rejects an empty guest
+  path (correct for `read_file`/`write_file`, where the root is never a valid FILE target, but wrong
+  for a directory listing, where the root is an ordinary target) — a pre-existing gap in
+  `MediatedShellRunner`'s own `ls` builtin, never caught because no existing test exercised a bare
+  `ls` before any `cd`. Fixed by special-casing an empty path in `list_directory` to open `root_`
+  directly (`CreateFileW`), mirroring the identical root special-case `create_one_directory` already
+  had for the same reason. Full regression after the fix: default `build` 49/50, `build-py` 57/58,
+  both with the same pre-existing `-j4` `test_native_jail_backend_windows` OOM-reporting flake (E4's
+  note called this a timing flake; this run's manifestation was the OOM-class assertion specifically
+  — consistent with resource contention under parallel test execution, not a new regression). Not
+  built this pass, named as residuals rather than silently assumed: no caller yet actually invokes
+  `materialize_mount`/`harvest_mount` around a real `PythonRunner`/`ShellRunner` turn (that caller is
+  the not-yet-built session/turn-loop layer, same gap `core/worktree.hpp`'s own `TurnCommit` section
+  already names); `materialize_mount`'s documented precondition (`granted.path_prefix` must cover the
+  whole subtree or the walk fails closed) is not itself relaxed to a partial-materialize mode. **M**
 - **F2.** `call_tool` bridge (010 §6) — bridged tool calls traverse the full 006 §3 pipeline (real
   since M2) at the sandbox's own trust tier and capability set, never the agent's; bundled approval
   at `execute_code` time over the pre-registered bridged set (010 §6, not per-call — 010 §10 Q2's

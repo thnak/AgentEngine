@@ -224,13 +224,28 @@ result<void> MediatedFileSystemAdapter::make_directory(std::string_view path, bo
 }
 
 result<std::vector<DirEntry>> MediatedFileSystemAdapter::list_directory(std::string_view path) {
-    auto h = open_within_mount_root(root_, std::string(path), FILE_LIST_DIRECTORY | GENERIC_READ, OPEN_EXISTING);
-    if (!h) return std::unexpected(h.error());
+    // `open_within_mount_root` structurally rejects an empty guest path (`worktree.mount_path_is_root`)
+    // -- correct for `read_file`/`write_file`, where "the root" is never a valid FILE target, but
+    // wrong here: listing the mount's own root ("" / ExecState.cwd before any `cd`) is an ordinary,
+    // expected directory-listing target. Opened directly against `root_`, the same root-special-case
+    // `create_one_directory` above already needs for the identical reason.
+    SafeFileHandle h;
+    if (path.empty()) {
+        HANDLE rh = CreateFileW(root_.c_str(), FILE_LIST_DIRECTORY | GENERIC_READ,
+                                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                                 FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+        if (rh == INVALID_HANDLE_VALUE) return win_error<std::vector<DirEntry>>("CreateFileW(root)", GetLastError());
+        h = SafeFileHandle(rh);
+    } else {
+        auto opened = open_within_mount_root(root_, std::string(path), FILE_LIST_DIRECTORY | GENERIC_READ, OPEN_EXISTING);
+        if (!opened) return std::unexpected(opened.error());
+        h = std::move(*opened);
+    }
 
     std::vector<DirEntry> out;
     std::vector<std::byte> buf(64 * 1024);
     for (;;) {
-        BOOL ok = GetFileInformationByHandleEx(h->get(), FileFullDirectoryInfo, buf.data(),
+        BOOL ok = GetFileInformationByHandleEx(h.get(), FileFullDirectoryInfo, buf.data(),
                                                 static_cast<DWORD>(buf.size()));
         if (!ok) {
             DWORD err = GetLastError();
