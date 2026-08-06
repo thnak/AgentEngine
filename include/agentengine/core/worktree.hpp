@@ -23,13 +23,21 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
+#include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
 #include "agentengine/core/error.hpp"
+#include "quark/core/describe.hpp"
+#include "quark/core/event_log.hpp"
+#include "quark/core/ids.hpp"
+#include "quark/core/persistence.hpp"
+#include "quark/core/snapshot.hpp"
 
 namespace agentengine {
 
@@ -169,5 +177,106 @@ private:
 };
 
 static_assert(WorktreeObjectStore<InMemoryWorktreeObjectStore>);
+
+// ============================================================================================
+// Ref persistence (025 §2's "a mutable name -> Tree digest") -- ordinary Quark-actor state, going
+// through Quark's `Store` seam directly rather than this header's own object store (see the
+// file-top comment and docs/planning/milestone-3-worktree-interpreter-codeact-breakdown.md
+// decision 1). Modeled as EventSourced (012), not snapshot-only: an append-only log of `RefMoved`
+// events gives a Ref its own history for free -- each committed digest is a retained, replayable
+// log entry -- which Phase D's turn-boundary commit / rewind tasks (D1/D2) build on directly
+// rather than needing a separate per-turn digest ledger invented from scratch.
+// ============================================================================================
+
+// One committed Ref update: the tree it now points at. `QUARK_SERIALIZE` must sit in the same
+// namespace as the type so the generated `quark_describe` is found by ADL (the same rule Quark's
+// own persistence tests document).
+struct RefMoved {
+    Digest tree_digest;
+};
+QUARK_SERIALIZE(RefMoved, (1, tree_digest))
+
+// The folded state: just the latest digest. The number of moves is deliberately not duplicated
+// here -- `EventLog::commit()`'s own return value, and a recovered `RecoveredState::last_seq`,
+// already answer "how many," so there is nothing this struct needs to track redundantly.
+struct RefState {
+    Digest tree_digest;
+};
+QUARK_SERIALIZE(RefState, (1, tree_digest))
+
+inline void apply_ref_moved(RefState& state, RefMoved const& event) {
+    state.tree_digest = event.tree_digest;
+}
+
+namespace detail {
+// `quark::error` (`errc` + a borrowed `string_view`) and `agentengine::error` (`failure_class` +
+// owned `std::string` + a stable code) are two different error vocabularies -- Quark's `Store`
+// returns the former, every seam header in this codebase returns the latter (core/error.hpp). This
+// is the one place that boundary is crossed for the Ref persistence functions below. `errc::
+// unavailable` specifically means 012's fencing rejection (a superseded writer) -- mapped to
+// `contract`, not `transient`: retrying with the SAME stale fence can never succeed, only
+// acquiring a fresh one can, which is a caller-contract fact, not a "try again later" one.
+[[nodiscard]] inline error from_quark_error(quark::error const& e, std::string_view code) {
+    failure_class klass = failure_class::fatal;
+    switch (e.code) {
+        case quark::errc::unavailable:
+        case quark::errc::validation:
+        case quark::errc::serialization:
+        case quark::errc::not_found:
+            klass = failure_class::contract;
+            break;
+        case quark::errc::timeout:
+        case quark::errc::overloaded:
+        case quark::errc::circuit_open:
+            klass = failure_class::resource;
+            break;
+        case quark::errc::cancelled:
+            klass = failure_class::transient;
+            break;
+        default:
+            klass = failure_class::fatal;
+            break;
+    }
+    return error{klass, std::string(e.detail), std::string(code)};
+}
+} // namespace detail
+
+// The stable ActorId a Ref's human-readable `name` (e.g. "session:s-42") maps to: `RefState`'s own
+// 016 fingerprint as the type tag, plus a hash of `name` as the instance key -- Quark's `ActorId`
+// key is a `std::uint64_t`, not a string (ids.hpp), so this is the one place that gap is bridged.
+[[nodiscard]] inline quark::ActorId ref_actor_id(std::string_view name) noexcept {
+    return quark::ActorId{quark::durable_type_key<RefState>(), std::hash<std::string_view>{}(name)};
+}
+
+// Mint or move a Ref: acquires a fresh fence for `name`'s ActorId, appends one `RefMoved` event
+// under it, and returns the resulting `Ref`. There is no separate "mint" vs "update" entry point --
+// EventSourced append doesn't need one, since the fence and the store's own strict-seq-
+// monotonicity (012) already make a first commit and a later commit the same call.
+template <quark::Store S>
+[[nodiscard]] result<Ref> commit_ref(S& store, std::string name, Digest tree_digest) {
+    auto const id = ref_actor_id(name);
+    auto const fence = store.acquire_fence(id);
+    quark::EventLog<RefMoved, S> log(store, id, fence, store.last_seq(id) + 1);
+    log.stage(RefMoved{tree_digest});
+    auto committed = log.commit();
+    if (!committed) {
+        return std::unexpected(detail::from_quark_error(committed.error(), "worktree.ref_commit_failed"));
+    }
+    return Ref{std::move(name), std::move(tree_digest)};
+}
+
+// Read a Ref's current state by replaying its durable log -- a fresh process, a restart, or a node
+// migration all reach the identical state this way, which is 025 §9 G1's mechanism in miniature.
+// `nullopt` when `name` has never been committed (no snapshot, no log entries).
+template <quark::Store S>
+[[nodiscard]] result<std::optional<Ref>> read_ref(S& store, std::string name) {
+    auto const id = ref_actor_id(name);
+    auto rec = quark::recover_event_sourced<RefState, RefMoved>(store, id, RefState{}, apply_ref_moved);
+    if (!rec) {
+        return std::unexpected(detail::from_quark_error(rec.error(), "worktree.ref_read_failed"));
+    }
+    if (rec->last_seq == 0) return std::optional<Ref>{};  // never committed
+    return std::optional<Ref>{Ref{std::move(name), rec->state.tree_digest}};
+}
 
 } // namespace agentengine

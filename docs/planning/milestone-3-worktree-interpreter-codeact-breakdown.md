@@ -158,10 +158,23 @@ for M3 regardless.
   **A1b** (open): a durable `WorktreeObjectStore` adapter over `pal::file_io`'s durable-write
   primitives, needed before Phase D's persistence work can be more than in-process. **M** (executed
   scope), **A1b unsized, not started**.
-- **A2.** `Ref` as real, `Store`-backed mutable state (decision 1) — `acquire_fence`/`append`/
-  `save_snapshot` over a small `RefState{tree_digest}`, reusing `InMemoryStore`/`FileStore` directly,
-  no new persistence mechanism. Proves a ref update is durable and fenced the same way any other
-  Quark-actor state is. **S**
+- **A2 (done).** `Ref` as real, `Store`-backed mutable state (decision 1), built on Quark's
+  **EventSourced** model rather than snapshot-only: `RefMoved{tree_digest}` is the durable event,
+  `RefState{tree_digest}` the folded state, `ref_actor_id(name)` bridges a human-readable Ref name
+  to Quark's `uint64`-keyed `ActorId` (a hash of the name, tagged with `RefState`'s own 016
+  fingerprint). `commit_ref`/`read_ref` (`core/worktree.hpp`) wrap `EventLog::stage`/`commit` and
+  `recover_event_sourced` directly — no new persistence mechanism, matching decision 1's own framing.
+  Chose EventSourced over plain snapshot-only specifically because it gives a Ref its own history for
+  free (each committed digest is a retained, replayable log entry), which Phase D's rewind task (D2)
+  needs and a snapshot-only Ref would not have provided without revisiting this task later. A small
+  `quark::error` → `agentengine::error` conversion (`detail::from_quark_error`) was needed — the two
+  error vocabularies don't share a type, a boundary this is the first worktree.hpp task to cross.
+  Proven in `tests/test_worktree_ref_store.cpp` (14 checks): fresh commit, uncommitted-name read
+  returns `nullopt`, round-trip, a Ref moved across three commits reflects the latest (not the
+  first), and — the fencing claim specifically, not just a happy-path round trip (022 §5) — a
+  stale-fenced writer's commit is rejected with a positive control proving the current fence's
+  commit succeeds the same way. Full regression: Windows `ctest -j4` 36/37 (same pre-existing
+  `test_native_jail_backend_windows` flake as A1, not a regression; +1 net test vs. A1's 35/36). **S**
 - **A3.** Compile-fail/positive-control proof that `Blob`/`Tree` objects are immutable once written —
   no public mutator exists on a fetched object, matching the M1/M2 `try_compile()` gate pattern
   (`tests/compile_fail/`). **S**

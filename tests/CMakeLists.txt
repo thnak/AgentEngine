@@ -557,6 +557,13 @@ if(WIN32)
   add_test(NAME test_worktree_object_store COMMAND test_worktree_object_store)
 endif()
 
+# ---- Worktree Ref persistence over Quark's Store seam (025 §2, Milestone 3 Phase A2) -----------
+# Header-only (core/worktree.hpp's commit_ref/read_ref) -- links only agentengine::core, no
+# platform-specific crypto dependency (unlike A1's digest computation).
+add_executable(test_worktree_ref_store test_worktree_ref_store.cpp)
+target_link_libraries(test_worktree_ref_store PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_worktree_ref_store COMMAND test_worktree_ref_store)
+
 # ---- PythonRunner prove-phase gates (decisions/ADR-002-pythonrunner-embedding-and-mediation.md)
 # Only built when AGENTENGINE_BUILD_PYTHON_RUNNER is ON (CMakeLists.txt) -- these link a real
 # CPython import lib and need python3<minor>.dll reachable via PATH at run time (Windows has no
