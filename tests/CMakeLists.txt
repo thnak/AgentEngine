@@ -240,6 +240,13 @@ add_executable(test_context_assembly test_context_assembly.cpp)
 target_link_libraries(test_context_assembly PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_context_assembly COMMAND test_context_assembly)
 
+# ---- Milestone 4 Phase B4 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
+# HistoryProvider<Summarize<N, SummarizerT>> -- the second named compaction strategy (005 §4),
+# proven against a mock summarizer ChatClient (decision 8's established precedent).
+add_executable(test_history_provider_summarize test_history_provider_summarize.cpp)
+target_link_libraries(test_history_provider_summarize PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_history_provider_summarize COMMAND test_history_provider_summarize)
+
 # ---- CapabilitySet enforcement mechanism (decisions/ADR-009-capability-set-enforcement-mechanism.md) --
 # Header-only (trust/capability.hpp), core-tier -- links only agentengine::core.
 add_executable(test_capability_enforcement test_capability_enforcement.cpp)
