@@ -946,10 +946,80 @@ for M3 regardless.
 
 ### Phase G — The `agent.*` library / CodeAct (026 §4, §5, §5a)
 
-- **G1.** `agent.tools` as ordinary Python callables with real signatures/docstrings/`.pyi` stub,
-  generated from the same tool metadata B1's JSON-schema derivation (006 §1, real since M2) already
-  produces — 026 §4's "generated from the same tool metadata as everything else" claim, made literal
-  rather than re-derived. **L**
+- **G1 (done).** `agent.tools` as ordinary Python callables (`from agent import tools;
+  tools.web_search(query=..., max_results=5)`), generated from the SAME `ToolDescriptor` metadata
+  (`name`/`description`/`args_schema_json`) `006 §1`'s JSON-Schema derivation already produces for
+  every other tool-pipeline caller — 026 §4's "generated from the same tool metadata as everything
+  else... so they cannot drift" claim, made literal rather than re-derived. All schema-to-Python-
+  source generation lives in a new, pure-C++, Python-free header,
+  `src/backends/native_jail/agent_tools_codegen.hpp` (parses `args_schema_json` via the existing
+  `core/json_value.hpp` parser, not by having the GENERATED Python re-introspect its own schema at
+  runtime), specifically so the generation logic is unit-testable without an embedded interpreter
+  (`tests/test_agent_tools_codegen.cpp`) — the actual `PyRun_String` execution wiring
+  (`run_agent_tools_bootstrap`) stays in `mediated_python_runner.cpp` alongside the rest of that
+  file's CPython-C-API code.
+
+  **Real signatures**: every generated function is keyword-only (`def web_search(*, query: str,
+  max_results: int = None):`) — sidesteps Python's "no default parameter before a non-default one"
+  ordering rule entirely (a struct's field declaration order has no reason to already be
+  required-first) and matches 026 §4's own calling example verbatim, which already passes every
+  argument by keyword. A zero-argument tool correctly gets a bare `def name():`, not a syntactically
+  invalid trailing `*` with nothing after it (json_schema.hpp's own "required" bit derived
+  structurally, `std::optional<T>` vs not, is what drives which fields get a `= None` default).
+  **Docstrings**: the tool's real `description`, quote/backslash-escaped so an embedded `"` can never
+  prematurely close the generated `"""..."""` literal. **Typed results**: replies decode into a
+  shared, attribute-accessible `_AeReply` wrapper (`self.__dict__.update(data)`), not a raw dict —
+  named as a deliberately narrower claim than 026 §4's literal "dataclass-shaped" language: one
+  per-tool NOMINAL class would need `exec()`-generated class bodies for no behavioral gain over the
+  shared wrapper, since neither approach can validate a reply's shape any more precisely without
+  re-deriving `reply_schema_json` a second time at the attribute level. **A `.pyi` stub**
+  (`generate_agent_tools_pyi_stub`) mirrors the real signatures exactly, generated as text only — no
+  established consumer (LSP/static-analysis integration) exists in this codebase yet to write it to,
+  named as a residual rather than an invented delivery mechanism nothing asked for;
+  `dir()`/`help()`-at-runtime (026 §4's OTHER introspection claim) is already fully satisfied by the
+  real function/module objects themselves, needing the stub for neither.
+
+  **A Python-keyword-named argument field (`from`, `in`, `is`, ...) — a perfectly ordinary C++
+  identifier and a reserved Python keyword at the same time — disqualifies the WHOLE tool's
+  generation, loudly** (a `result` error naming the exact field), never a silently broken or silently
+  dropped parameter; same treatment for a tool name that isn't a usable Python identifier.
+
+  **Wiring** (`mediated_python_runner.cpp`): `run_agent_tools_bootstrap` runs the generated module
+  source in its own private, throwaway globals dict — the identical shape `run_mediation_bootstrap`
+  already uses for `_ae_open`/`_ae_connect`/`call_tool` (never `__main__`'s dict) — creating REAL
+  `agent`/`agent.tools` module objects from `type(sys)` (no `import types` needed, `sys` is already
+  Layer-0-permanent) and registering both directly into `sys.modules`, so ordinary `import agent`/
+  `from agent import tools` resolve straight from that cache, never touching the meta-path finder at
+  all (the same "never re-resolved fresh" property `os`/`socket`/`subprocess` already rely on). Runs
+  ONLY when `config_.tool_bridge.has_value()`, and runs BEFORE `compute_effective_keep_set`'s
+  pre/post-bootstrap `sys.modules` diff — so `json`, `agent`, and `agent.tools` are all captured by
+  the SAME diff mechanism that already covers os/socket/subprocess's own transitive closure, and
+  therefore survive `sweep_to_keep_set()` instead of being deleted right after creation.
+
+  **Deliberately DOES `import json`, unlike F2's raw bridge** — and this is safe, not a repeat of
+  F2's own already-documented regression: F2 avoided `import json` because `kMediationBootstrapSource`
+  runs UNCONDITIONALLY for every session regardless of whether any tool is ever bridged, so importing
+  it there would have widened every session's keep-set even when `agent.tools` never exists at all.
+  This generator's output only ever runs for a session that is ALREADY getting a real `agent.tools`
+  module built from real, host-configured tools, and each session is its own process (ADR-002
+  §5.5.6) — `json` becoming importable exactly when `agent.tools` exists is the intended shape, not a
+  leak into a session that never asked for it.
+
+  Proven in `tests/test_agent_tools_codegen.cpp` (portable, no CPython dependency — 9 checks: real
+  signature shape, docstring escaping, the zero-argument boundary, the two loud-failure cases, full
+  module source shape, `.pyi` stub parity with the real signature) and
+  `tests/test_mediated_python_runner_agent_tools.cpp` (Python-gated, 10 checks against a real
+  embedded interpreter): an ordinary `from agent import tools; tools.echo_tool(message=...)` round
+  trip; `dir()`/`help()` discoverability; special characters (embedded quote, backslash, newline)
+  surviving the real `json.dumps`/`json.loads` wire encoding exactly, proving real JSON handling
+  rather than a hand-rolled approximation; a negative control pairing (022 §5) proving a call without
+  the bridge's own required capability still raises `PermissionError` through the REAL 006 §3
+  pipeline, never a shortcut that bypasses enforcement; and a second negative control proving that
+  with no `tool_bridge` configured at all, `import agent` fails `ModuleNotFoundError` — an ungranted
+  module is simply absent (026 §5a), not present-but-empty. Full regression: default `build` 52/53
+  (`test_agent_tools_codegen` is portable, runs in both trees), `build-py` 61/62, both with only the
+  same pre-existing `test_native_jail_backend_windows` OOM-reporting flake every prior Phase F task's
+  own regression run already hit. **L**
 - **G2.** The remaining eight `agent.*` modules (026 §5's table) over F1/F2/A1: `files`, `data`,
   `output`, `progress`, `ask`, `spawn` at minimum (`memory`/`notes` land with 029, out of scope for
   M3, named not silently dropped — 026's own table already ties them to 029 §4/§5). Each individually

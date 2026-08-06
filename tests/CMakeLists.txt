@@ -370,6 +370,15 @@ target_include_directories(test_output_discipline PRIVATE "${CMAKE_CURRENT_SOURC
 target_link_libraries(test_output_discipline PRIVATE agentengine_warnings)
 add_test(NAME test_output_discipline COMMAND test_output_discipline)
 
+# ---- agent.tools codegen: schema -> Python-source generation (Milestone 3 Phase G1, 026 §4/§5).
+# Header-only (src/backends/native_jail/agent_tools_codegen.hpp), core-tier -- links only
+# agentengine::core for ToolDescriptor/json::Value, no Python.h dependency at all. The generated
+# source actually RUNNING is proven separately, Python-gated, below.
+add_executable(test_agent_tools_codegen test_agent_tools_codegen.cpp)
+target_include_directories(test_agent_tools_codegen PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../src")
+target_link_libraries(test_agent_tools_codegen PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_agent_tools_codegen COMMAND test_agent_tools_codegen)
+
 # ---- Agent metadata compiler: register_agent<A>() (M2 Phase E task E2, 002 §6) -----------------
 # Header-only (core/agent_registry.hpp), core-tier -- links only agentengine::core.
 add_executable(test_agent_registry test_agent_registry.cpp)
@@ -857,6 +866,17 @@ if(AGENTENGINE_BUILD_PYTHON_RUNNER)
     AE_PYTHON_HOME="${AGENTENGINE_PYTHON_HOME}")
   add_test(NAME test_mediated_python_runner_smoke COMMAND test_mediated_python_runner_smoke)
   set_tests_properties(test_mediated_python_runner_smoke PROPERTIES
+    ENVIRONMENT "${AE_PYTHON_TEST_ENV}" TIMEOUT 60)
+
+  # ---- Milestone 3 Phase G1: agent.tools generated-code execution proof (026 §4/§5) --------------
+  # Generation-only correctness (no CPython dependency) is test_agent_tools_codegen.cpp, above.
+  add_executable(test_mediated_python_runner_agent_tools test_mediated_python_runner_agent_tools.cpp)
+  target_link_libraries(test_mediated_python_runner_agent_tools PRIVATE
+    agentengine::core agentengine::mediated_python_runner agentengine_warnings)
+  target_compile_definitions(test_mediated_python_runner_agent_tools PRIVATE
+    AE_PYTHON_HOME="${AGENTENGINE_PYTHON_HOME}")
+  add_test(NAME test_mediated_python_runner_agent_tools COMMAND test_mediated_python_runner_agent_tools)
+  set_tests_properties(test_mediated_python_runner_agent_tools PROPERTIES
     ENVIRONMENT "${AE_PYTHON_TEST_ENV}" TIMEOUT 60)
 
   # ---- Milestone 3 Phase E4: hostile-corpus/mediation proof (010 §9 G2/G7) -----------------------

@@ -29,6 +29,7 @@
                                                      // intent, not spike-code reuse (that rule is
                                                      // about python_lockdown.cpp/python_runner.hpp).
 #include "agentengine/trust/capability.hpp"
+#include "backends/native_jail/agent_tools_codegen.hpp"  // Milestone 3 Phase G1, 026 §4/§5
 #include "backends/native_jail/output_discipline.hpp"  // Milestone 3 Phase F3, 010 §3 items 4/5
 #include "backends/native_jail/tool_bridge.hpp"  // Milestone 3 Phase F2, 010 §6's call_tool bridge
 
@@ -627,6 +628,55 @@ result<void> run_mediation_bootstrap() {
     return {};
 }
 
+// Milestone 3 Phase G1 (026 §4/§5): executes `agent_tools_codegen.hpp`'s generated module source in
+// its own private, throwaway globals dict -- the identical shape `run_mediation_bootstrap()` already
+// uses for `_ae_open`/`_ae_connect`/`call_tool` (never `__main__`'s dict, so guest code cannot
+// re-disable or reach past the generated wrappers by mutating a reachable name). Needs its OWN fresh
+// `_ae_internal` module object: the ONE `run_mediation_bootstrap()` created above lived only in
+// THAT function's own throwaway dict, which was destroyed when that function returned, so its
+// `_ae_internal` reference is gone by the time this runs -- `PyModule_Create(&g_internal_moddef)` is
+// cheap (a thin wrapper over the same static method table) and creating a second instance is exactly
+// what a second private namespace needs.
+result<void> run_agent_tools_bootstrap(ToolTable const& bridged_tools) {
+    auto module_source = generate_agent_tools_module_source(bridged_tools.descriptors());
+    if (!module_source) return std::unexpected(module_source.error());
+
+    PyObject* internal_module = PyModule_Create(&g_internal_moddef);
+    if (!internal_module) {
+        return std::unexpected(error{failure_class::fatal, "could not create _ae_internal module for "
+                                      "the agent.tools bootstrap", "python.agent_tools_bootstrap_failed"});
+    }
+
+    PyObject* globals = PyDict_New();
+    PyDict_SetItemString(globals, "__builtins__", PyEval_GetBuiltins());
+    PyDict_SetItemString(globals, "_ae_internal", internal_module);
+    Py_DECREF(internal_module);
+
+    PyObject* run_result = PyRun_String(module_source->c_str(), Py_file_input, globals, globals);
+    bool ok = run_result != nullptr;
+    std::string err;
+    if (!run_result) {
+        PyObject *type = nullptr, *value = nullptr, *tb = nullptr;
+        PyErr_Fetch(&type, &value, &tb);
+        PyErr_NormalizeException(&type, &value, &tb);
+        if (value) {
+            PyObject* s = PyObject_Str(value);
+            if (s) { err = PyUnicode_AsUTF8(s); Py_DECREF(s); }
+        }
+        Py_XDECREF(type);
+        Py_XDECREF(value);
+        Py_XDECREF(tb);
+    } else {
+        Py_DECREF(run_result);
+    }
+    Py_DECREF(globals);
+    if (!ok) {
+        return std::unexpected(error{failure_class::fatal, "agent.tools bootstrap raised: " + err,
+                                      "python.agent_tools_bootstrap_failed"});
+    }
+    return {};
+}
+
 std::unordered_set<std::string> snapshot_current_module_names() {
     std::unordered_set<std::string> names;
     PyObject* modules = PyImport_GetModuleDict();  // borrowed
@@ -740,6 +790,18 @@ result<void> MediatedPythonRunner::initialize() {
     auto pre_bootstrap_modules = snapshot_current_module_names();
     auto bootstrap = run_mediation_bootstrap();
     if (!bootstrap) return std::unexpected(bootstrap.error());
+
+    // Milestone 3 Phase G1 (026 §4/§5): runs BEFORE the keep-set snapshot below, using the SAME
+    // pre_bootstrap_modules baseline -- so `json` and `agent`/`agent.tools` (newly created here) are
+    // captured by the same diff mechanism that already covers os/socket/subprocess's own transitive
+    // closure, and therefore survive `sweep_to_keep_set()` instead of being deleted right after
+    // creation. Conditional on `tool_bridge` being configured at all: see agent_tools_codegen.hpp's
+    // own header comment for why importing `json` only for a session that already has bridged tools
+    // is safe in a way F2's unconditional bootstrap deliberately was not.
+    if (config_.tool_bridge.has_value()) {
+        auto agent_tools = run_agent_tools_bootstrap(config_.tool_bridge->bridged_tools);
+        if (!agent_tools) return std::unexpected(agent_tools.error());
+    }
 
     compute_effective_keep_set(pre_bootstrap_modules);
     sweep_to_keep_set();
