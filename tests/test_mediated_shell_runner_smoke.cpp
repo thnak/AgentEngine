@@ -264,6 +264,28 @@ int main() {
                  "RunnerCall capability");
     }
 
+    // ---- Milestone 3 Phase F3 (010 §3 items 4/5): stdout exceeding a small explicit output_cap_bytes
+    // is truncated with an explicit marker -- the SAME cap_output() mechanism MediatedPythonRunner
+    // applies (test_mediated_python_runner_smoke.cpp's F3-T1), now proven through
+    // MediatedShellRunner's own run() boundary too, 010 §1's "not Python-only by design" made
+    // concrete for this one cross-cutting concern.
+    {
+        MediatedShellRunner capped_shell(*adapter, registry, "work", /*output_cap_bytes=*/64);
+        ExecState state{};
+        CapabilitySet caps = full_caps();
+        EffectContext ctx{};
+        ctx.capabilities = &caps;
+
+        std::string big_word(1000, 'a');
+        auto out = capped_shell.run(ExecRequest{"shell", "echo " + big_word}, state, ctx);
+        AE_CHECK(out.has_value(), "F3-S1: setup -- a large-output echo runs");
+        AE_CHECK(out.has_value() && out->stdout_text.size() < 1000,
+                 "F3-S1: stdout exceeding a small explicit output_cap_bytes is shorter than the raw "
+                 "1000-byte word");
+        AE_CHECK(out.has_value() && out->stdout_text.find("truncated") != std::string::npos,
+                 "F3-S1: the truncated stdout carries an explicit marker naming what happened");
+    }
+
     std::filesystem::remove_all(scratch);
 
     if (g_failures != 0) {

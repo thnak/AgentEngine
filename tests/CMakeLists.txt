@@ -361,6 +361,15 @@ target_include_directories(test_tool_bridge PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}
 target_link_libraries(test_tool_bridge PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_tool_bridge COMMAND test_tool_bridge)
 
+# ---- Output discipline: cap_output()'s truncation/marker/UTF-8-boundary math (Milestone 3 Phase F3,
+# 010 §3 items 4/5). Header-only (src/backends/native_jail/output_discipline.hpp), no Python/sandbox
+# dependency -- Runner-level result_repr capture and integration is covered in the Python-gated
+# MediatedPythonRunner smoke test instead.
+add_executable(test_output_discipline test_output_discipline.cpp)
+target_include_directories(test_output_discipline PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../src")
+target_link_libraries(test_output_discipline PRIVATE agentengine_warnings)
+add_test(NAME test_output_discipline COMMAND test_output_discipline)
+
 # ---- Agent metadata compiler: register_agent<A>() (M2 Phase E task E2, 002 §6) -----------------
 # Header-only (core/agent_registry.hpp), core-tier -- links only agentengine::core.
 add_executable(test_agent_registry test_agent_registry.cpp)

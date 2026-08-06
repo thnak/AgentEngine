@@ -146,6 +146,14 @@ struct ExecOutcome {  // ae-naming-lint: allow ExecOutcome — pre-existing M0 s
     exec_outcome_class klass = exec_outcome_class::ok;
     std::string        stdout_text;
     std::string        stderr_text;
+    // 010 §3's own named gap, closed by Milestone 3 Phase F3: a value never `print()`-ed --
+    // `data = open(huge_file).read(); data` as the last expression, say -- is captured HERE, not
+    // silently discarded the way running a script's trailing expression statement as an ordinary
+    // exec'd statement always does (its value is computed then thrown away, same as ordinary .py
+    // file execution). Empty means "no trailing expression value was produced this call," not
+    // "unpopulated" -- a `Runner` that never has REPL-style last-expression semantics (Shell) simply
+    // never sets this field, and that is a legitimate empty, not a gap.
+    std::string        result_repr;
     // Files a run saved under an output mount, surfaced as Content (010 §3, 025 §7) -- populated
     // by a caller that harvests an output mount after `run()`/`exec()` returns
     // (src/backends/native_jail/worktree_mount_sync.hpp's `harvest_mount`, Milestone 3 Phase F1),

@@ -895,9 +895,54 @@ for M3 regardless.
   is a prerequisite this task doesn't relitigate. Full regression after both fixes: default `build`
   50/51, `build-py` 58/59, both with only the same pre-existing `test_native_jail_backend_windows`
   OOM-reporting flake F1's own regression run hit — not a new failure. **L**
-- **F3.** Output discipline (010 §3 item 4/5) — `stdout`/`stderr`/`result_repr` size-capped with
-  explicit truncation markers, `result_repr` specifically covering "a value never `print()`-ed"
-  (010 §3's own named gap). **S**
+- **F3 (done).** Output discipline (010 §3 items 4/5). Two genuinely separate mechanisms, not one:
+  `ExecOutcome::result_repr` (new field, `sandbox.hpp`) closes 010 §3's own named gap — a value never
+  `print()`-ed, `data = open(huge_file).read(); data` as the last expression, say — which running the
+  whole script as an ordinary module (`Py_file_input`, values computed then discarded, the same as any
+  `.py` file) always threw away. `MediatedPythonRunner`'s `split_trailing_expression()`
+  (`mediated_python_runner.cpp`) finds a plausible EXEC/EVAL split point using only the C compiler's
+  own success/failure as ground truth (`Py_CompileStringExFlags`, trial-compiled and discarded) —
+  never Python's `ast` module, for the identical reason F2 already avoided a new stdlib import:
+  `compute_effective_keep_set`'s sys.modules diff has no per-call granularity, so any new import here
+  would permanently widen what every guest session can import regardless of `package_policy_
+  allowlist`. Every candidate split (whole-last-line-as-eval first, then each top-level-looking `;`
+  split from rightmost to leftmost — 010 §3's own example is exactly a `;`-separated last line) is
+  re-validated by compiling both halves before being accepted, so a wrong guess (a `;` that turns out
+  to be inside a string literal) simply fails to compile and falls back to running the whole source as
+  an ordinary exec, identical to pre-F3 behavior — never a new failure mode, since `result_repr` is
+  display formatting of an already-executed, already-captured value, not an authority boundary (no
+  I2/I3 property rides on this). Proven in `test_mediated_python_runner_smoke.cpp`'s new Scenario 3
+  (F3-R1..R4): a multi-line trailing bare name, the RFC's own literal `;`-separated example, a trailing
+  `print()` (returns `None` — stays unrepr'd, and runs exactly once via the eval branch, not
+  re-executed), and a script with no trailing expression at all (unaffected, matching pre-F3 behavior
+  exactly). Named residual, not silently unhandled: a multi-line trailing expression (e.g. a
+  parenthesized expression spanning several lines) isn't split out — a physical-line-based split can't
+  express it without a real parser, which the "no new stdlib import" constraint forecloses this pass.
+
+  The size-cap-with-truncation-marker half is `src/backends/native_jail/output_discipline.hpp`'s
+  `cap_output()` — a small, shared, pure-C++ utility applied uniformly to `stdout_text`/`stderr_text`/
+  `result_repr` at both `MediatedPythonRunner::run()`'s and `MediatedShellRunner::run()`'s return
+  boundary (010 §1's "not Python-only by design" made concrete for this one cross-cutting concern;
+  Shell has no last-expression semantics, so its `result_repr` is simply never set — a legitimate
+  empty per that field's own comment, not a gap). Explicitly a DIFFERENT layer than
+  `ResourceLimits::output_bytes` (008 §2, already real via `drain_pipe_bounded()` in
+  `native_jail_backend.cpp`/`linux_native_jail_backend.cpp`): that's a host-safety ceiling on raw bytes
+  a spawned child can make the backend buffer, enforced before this file ever sees the data; this
+  cap is the separate, always-applied MODEL-VISIBLE discipline 010 §3 names, so a value stays legible
+  even when it comfortably fits under the host-safety ceiling. **Named, not silently assumed**: 006 §7
+  says this threshold should be "derived from the run's effective per-turn token budget... scaled to a
+  declared fraction, never a global byte constant" — that plumbing doesn't exist anywhere in this
+  codebase (023 stays TBD-baselined project-wide until M8, the same status quo every other
+  budget-derived gate here already shares). `kDefaultOutputCapBytes` (64 KiB) is a provisional stand-in
+  a caller can override per session via `MediatedPythonConfig::output_cap_bytes`/
+  `MediatedShellRunner`'s new (defaulted, so no existing call site breaks) constructor parameter —
+  exactly the override point a real per-turn value would need once 023 lands. Proven directly in
+  `tests/test_output_discipline.cpp` (`cap_output()`'s own byte accounting, marker presence, and a
+  UTF-8-codepoint-boundary case: a cut that would land mid-multi-byte-sequence backs off rather than
+  emitting a truncated codepoint) and through both Runners with a small explicit cap (F3-T1 in the
+  Python smoke test, F3-S1 in the Shell smoke test). Full regression: default `build` 51/52,
+  `build-py` 59/60, both with only the same pre-existing `test_native_jail_backend_windows`
+  OOM-reporting flake F1/F2's own regression runs already hit. **S**
 
 ### Phase G — The `agent.*` library / CodeAct (026 §4, §5, §5a)
 

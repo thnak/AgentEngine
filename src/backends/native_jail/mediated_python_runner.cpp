@@ -16,8 +16,10 @@
 
 #include <fcntl.h>
 
+#include <optional>
 #include <string>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "agentengine/core/worktree_mount_fs.hpp"  // open_within_mount_root -- explicitly named in
@@ -27,6 +29,7 @@
                                                      // intent, not spike-code reuse (that rule is
                                                      // about python_lockdown.cpp/python_runner.hpp).
 #include "agentengine/trust/capability.hpp"
+#include "backends/native_jail/output_discipline.hpp"  // Milestone 3 Phase F3, 010 §3 items 4/5
 #include "backends/native_jail/tool_bridge.hpp"  // Milestone 3 Phase F2, 010 §6's call_tool bridge
 
 namespace agentengine::native_jail {
@@ -784,7 +787,103 @@ void sync_process_into_state(ExecState& state) {
 struct CapturedOutput {
     std::string out_text;
     std::string err_text;
+    // Milestone 3 Phase F3 (010 §3's "value never print()-ed" gap) -- empty means no trailing
+    // expression value was found/produced this call, not "unpopulated."
+    std::string result_repr;
 };
+
+// ============================================================================================
+// Milestone 3 Phase F3's result_repr split (010 §3 items 4/5). Finds a plausible EXEC/EVAL split
+// point in `source` -- everything but the final expression runs as an ordinary module (Py_file_input,
+// values discarded, side effects kept), the final expression is evaluated separately (Py_eval_input)
+// so its VALUE survives instead of being silently thrown away, exactly the gap 010 §3 names
+// ("data = open(huge_file).read(); data" as the last expression). Ground truth is the C compiler
+// itself, never Python's `ast` module: F2's own already-documented lesson is that a new stdlib import
+// here permanently widens the Layer-0 keep-set regardless of package policy (compute_effective_keep_
+// set's pre/post-bootstrap sys.modules diff has no per-call granularity), so this file adds none.
+// Every candidate split is independently re-validated by compiling both halves before being accepted
+// -- a WRONG guess (a ';' that turns out to be inside a string literal, say) simply fails to compile
+// and is skipped, so this can MISS a valid split (falls back to running the whole source as an
+// ordinary exec, IDENTICAL to this file's pre-F3 behavior, never a new failure mode) but cannot apply
+// an INCORRECT one; there is no security property riding on this (result_repr is display formatting
+// of an already-executed, already-captured value, not an authority boundary), so "best-effort, fails
+// safe" is the right bar, not tokenizer-grade precision. Only the script's FINAL physical line is
+// considered as a candidate (optionally with a leading ';'-separated prefix folded back into the exec
+// part) -- a multi-line trailing expression (e.g. a parenthesized expression spanning several lines)
+// is not split out; named as a residual, not silently unhandled, since a physical-line-based split
+// cannot express it without a real parser.
+// ============================================================================================
+
+bool compiles_as(std::string const& src, int start_symbol) {
+    if (src.empty()) return false;
+    PyObject* code = Py_CompileStringExFlags(src.c_str(), "<ae-trial>", start_symbol, nullptr, -1);
+    bool const ok = code != nullptr;
+    Py_XDECREF(code);
+    if (!ok) PyErr_Clear();
+    return ok;
+}
+
+std::string rstrip(std::string s) {
+    while (!s.empty() && (s.back() == ' ' || s.back() == '\t' || s.back() == '\n' || s.back() == '\r')) {
+        s.pop_back();
+    }
+    return s;
+}
+
+std::string lstrip(std::string s) {
+    std::size_t i = 0;
+    while (i < s.size() && (s[i] == ' ' || s[i] == '\t')) ++i;
+    return s.substr(i);
+}
+
+struct SourceSplit {
+    std::string exec_part;  // may be empty -- "nothing to exec, the whole source is the expression"
+    std::string eval_part;
+};
+
+std::optional<SourceSplit> split_trailing_expression(std::string const& source) {
+    std::string const stripped = rstrip(source);
+    if (stripped.empty()) return std::nullopt;
+
+    std::size_t const last_nl = stripped.rfind('\n');
+    std::string const last_line = (last_nl == std::string::npos) ? stripped : stripped.substr(last_nl + 1);
+    std::string const prefix_before_last_line =
+        (last_nl == std::string::npos) ? std::string{} : stripped.substr(0, last_nl);
+
+    if (!last_line.empty() && (last_line.front() == ' ' || last_line.front() == '\t')) {
+        return std::nullopt;  // an indented last line reads as part of a preceding block, not a
+                               // standalone trailing statement -- never guess here.
+    }
+
+    // Candidates, whole-line-as-eval first (the common case), then each top-level-looking `;` split
+    // from rightmost to leftmost (rightmost first keeps as much of the line in eval_part as possible,
+    // matching "the LAST expression" the most literally -- 010 §3's own example is exactly this
+    // shape: "data = open(huge_file).read(); data").
+    std::vector<std::pair<std::string, std::string>> candidates;
+    candidates.emplace_back(last_line, std::string{});
+    std::vector<std::size_t> semicolons;
+    for (std::size_t i = 0; i < last_line.size(); ++i) {
+        if (last_line[i] == ';') semicolons.push_back(i);
+    }
+    for (auto it = semicolons.rbegin(); it != semicolons.rend(); ++it) {
+        std::string left = last_line.substr(0, *it);
+        std::string right = lstrip(last_line.substr(*it + 1));
+        if (!right.empty()) candidates.emplace_back(std::move(right), std::move(left));
+    }
+
+    for (auto const& [eval_text, intra_exec] : candidates) {
+        if (!compiles_as(eval_text, Py_eval_input)) continue;
+        std::string exec_part = prefix_before_last_line;
+        if (!intra_exec.empty()) {
+            if (!exec_part.empty()) exec_part += "\n";
+            exec_part += intra_exec;
+        }
+        if (exec_part.empty() || compiles_as(exec_part, Py_file_input)) {
+            return SourceSplit{std::move(exec_part), eval_text};
+        }
+    }
+    return std::nullopt;
+}
 
 result<CapturedOutput> run_capturing(std::string const& source) {
     PyObject* io_mod = PyImport_ImportModule("io");
@@ -811,11 +910,46 @@ result<CapturedOutput> run_capturing(std::string const& source) {
 
     PyObject* main_module = PyImport_AddModule("__main__");  // borrowed
     PyObject* main_dict = main_module ? PyModule_GetDict(main_module) : nullptr;  // borrowed
-    PyObject* run_result = main_dict ? PyRun_String(source.c_str(), Py_file_input, main_dict, main_dict) : nullptr;
-    if (!run_result) {
-        PyErr_Print();  // writes the traceback to sys.stderr -- currently our StringIO capture.
-    } else {
-        Py_DECREF(run_result);
+
+    std::string result_repr;
+    if (main_dict) {
+        auto split = split_trailing_expression(source);
+        if (split) {
+            bool exec_ok = true;
+            if (!split->exec_part.empty()) {
+                PyObject* exec_result =
+                    PyRun_String(split->exec_part.c_str(), Py_file_input, main_dict, main_dict);
+                exec_ok = exec_result != nullptr;
+                Py_XDECREF(exec_result);
+            }
+            if (exec_ok) {
+                PyObject* value = PyRun_String(split->eval_part.c_str(), Py_eval_input, main_dict, main_dict);
+                if (value) {
+                    if (value != Py_None) {
+                        PyObject* repr_obj = PyObject_Repr(value);
+                        if (repr_obj) {
+                            char const* s = PyUnicode_AsUTF8(repr_obj);
+                            if (s) result_repr = s;
+                            Py_DECREF(repr_obj);
+                        } else {
+                            PyErr_Clear();  // repr() itself raised -- leave result_repr empty, not fatal.
+                        }
+                    }
+                    Py_DECREF(value);
+                } else {
+                    PyErr_Print();  // the eval part raised -- goes to stderr capture, like any exception.
+                }
+            } else {
+                PyErr_Print();
+            }
+        } else {
+            PyObject* run_result = PyRun_String(source.c_str(), Py_file_input, main_dict, main_dict);
+            if (!run_result) {
+                PyErr_Print();  // writes the traceback to sys.stderr -- currently our StringIO capture.
+            } else {
+                Py_DECREF(run_result);
+            }
+        }
     }
 
     if (sysmod) {
@@ -827,6 +961,7 @@ result<CapturedOutput> run_capturing(std::string const& source) {
     Py_XDECREF(sysmod);
 
     CapturedOutput co;
+    co.result_repr = std::move(result_repr);
     PyObject* out_text = PyObject_CallMethod(out_capture, "getvalue", nullptr);
     PyObject* err_text = PyObject_CallMethod(err_capture, "getvalue", nullptr);
     if (out_text) { char const* s = PyUnicode_AsUTF8(out_text); if (s) co.out_text = s; Py_DECREF(out_text); }
@@ -861,10 +996,19 @@ result<ExecOutcome> MediatedPythonRunner::run(ExecRequest request, ExecState& st
 
     if (!captured) return std::unexpected(captured.error());
 
+    // Milestone 3 Phase F3 (010 §3 items 4/5): cap stdout/stderr/result_repr against this session's
+    // configured budget, with an explicit marker, BEFORE any of it reaches the model-visible outcome
+    // -- never after (output_discipline.hpp's own header explains why this is a fixed byte constant
+    // rather than the token-budget-derived fraction 006 §7 asks for).
+    auto stdout_capped = cap_output(std::move(captured->out_text), config_.output_cap_bytes);
+    auto stderr_capped = cap_output(std::move(captured->err_text), config_.output_cap_bytes);
+    auto repr_capped = cap_output(std::move(captured->result_repr), config_.output_cap_bytes);
+
     ExecOutcome outcome{};
     outcome.klass = exec_outcome_class::ok;
-    outcome.stdout_text = captured->out_text;
-    outcome.stderr_text = captured->err_text;
+    outcome.stdout_text = std::move(stdout_capped.text);
+    outcome.stderr_text = std::move(stderr_capped.text);
+    outcome.result_repr = std::move(repr_capped.text);
     return outcome;
 }
 

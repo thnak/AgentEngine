@@ -35,6 +35,7 @@
 // fail-closed, never a silent widening, so leaving it unbuilt cannot make this MORE permissive than
 // intended, only more restrictive than ADR-003's eventual mechanism would allow.
 
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -44,6 +45,7 @@
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/error.hpp"
 #include "agentengine/sandbox/runner.hpp"
+#include "backends/native_jail/output_discipline.hpp"
 #include "backends/native_jail/tool_bridge.hpp"
 
 namespace agentengine::native_jail {
@@ -77,6 +79,13 @@ struct MediatedPythonConfig {
     // `call_tool(...)` fails closed with a PermissionError, matching this project's fail-closed
     // default for every other host-configured surface here (`mount_roots` empty means no mounts).
     std::optional<ToolBridgeConfig> tool_bridge;
+
+    // Milestone 3 Phase F3 (010 §3 items 4/5): the per-session output-discipline cap applied to
+    // `stdout_text`/`stderr_text`/`result_repr` before `run()` returns -- see
+    // `output_discipline.hpp`'s own header for why this is a fixed byte constant rather than the
+    // token-budget-derived fraction 006 §7 actually asks for (that plumbing isn't wired anywhere in
+    // this codebase yet).
+    std::uint64_t output_cap_bytes = kDefaultOutputCapBytes;
 };
 
 // Owns exactly one embedded CPython interpreter for the process's lifetime (ADR-002 §5.5.6's scope,

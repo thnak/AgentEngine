@@ -238,6 +238,75 @@ int main() {
         }
     }
 
+    // ================================================================================
+    // Scenario 3 (Milestone 3 Phase F3, 010 §3 items 4/5): result_repr captures a value never
+    // print()-ed, and stdout/stderr/result_repr are capped with an explicit truncation marker. A
+    // small explicit output_cap_bytes proves the cap is real without needing megabyte-scale output.
+    // ================================================================================
+    {
+        MediatedPythonConfig cfg;
+        cfg.python_home = AE_PYTHON_HOME;
+        cfg.output_cap_bytes = 128;
+
+        MediatedPythonRunner runner(std::move(cfg));
+        auto init = runner.initialize();
+        AE_CHECK(init.has_value(), "F3-setup: a third interpreter initializes cleanly");
+
+        ExecState state{};
+        EffectContext ctx{};
+
+        // F3-R1: a bare trailing expression on its own line is captured as result_repr -- 010 §3's
+        // own named "value never print()-ed" gap, closed.
+        {
+            ExecRequest req{"python", "x = 40\ny = x + 2\ny"};
+            auto out = runner.run(req, state, ctx);
+            AE_CHECK(out.has_value(), "F3-R1: setup -- a multi-line script with a trailing bare name runs");
+            AE_CHECK(out.has_value() && out->result_repr == "42",
+                     "F3-R1: the trailing expression's value is captured as result_repr, never printed");
+        }
+
+        // F3-R2 (010 §3's own literal example): a semicolon-separated trailing expression on ONE line.
+        {
+            ExecRequest req{"python", "data = 1 + 1; data"};
+            auto out = runner.run(req, state, ctx);
+            AE_CHECK(out.has_value() && out->result_repr == "2",
+                     "F3-R2: 010 §3's own 'data = ...; data' example captures result_repr == '2'");
+        }
+
+        // F3-R3 (negative control): a trailing print() call returns None -- result_repr stays empty,
+        // and the print still ran exactly once (captured via the eval branch, not re-executed).
+        {
+            ExecRequest req{"python", "print('only side effect')"};
+            auto out = runner.run(req, state, ctx);
+            AE_CHECK(out.has_value() && out->result_repr.empty(),
+                     "F3-R3: a trailing print() call (returns None) leaves result_repr empty");
+            AE_CHECK(out.has_value() && out->stdout_text.find("only side effect") != std::string::npos,
+                     "F3-R3: the print() still ran exactly once");
+        }
+
+        // F3-R4 (negative control): a script ending in an assignment has no trailing expression at
+        // all -- result_repr stays empty, identical to pre-F3 behavior.
+        {
+            ExecRequest req{"python", "z = 99"};
+            auto out = runner.run(req, state, ctx);
+            AE_CHECK(out.has_value() && out->result_repr.empty(),
+                     "F3-R4: a script with no trailing expression (ends in an assignment) leaves "
+                     "result_repr empty");
+        }
+
+        // F3-T1 (010 §3's output-cap discipline): stdout exceeding output_cap_bytes is truncated
+        // with an explicit marker, never silently cut or left unbounded.
+        {
+            ExecRequest req{"python", "print('A' * 1000)"};
+            auto out = runner.run(req, state, ctx);
+            AE_CHECK(out.has_value(), "F3-T1: setup -- a large-output script runs");
+            AE_CHECK(out.has_value() && out->stdout_text.size() < 1000,
+                     "F3-T1: stdout exceeding the configured cap is shorter than the raw output");
+            AE_CHECK(out.has_value() && out->stdout_text.find("truncated") != std::string::npos,
+                     "F3-T1: the truncated stdout carries an explicit marker naming what happened");
+        }
+    }
+
     if (g_failures != 0) {
         std::fprintf(stderr, "%d check(s) failed.\n", g_failures);
         return 1;

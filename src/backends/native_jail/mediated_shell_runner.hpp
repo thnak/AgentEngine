@@ -7,6 +7,7 @@
 // avoid colliding with the untouched spike's own class name in the same `agentengine` namespace
 // (the same naming discipline `MediatedPythonRunner`, E2, already established).
 
+#include <cstdint>
 #include <string>
 #include <utility>
 
@@ -16,6 +17,7 @@
 #include "backends/native_jail/mediated_command_registry.hpp"
 #include "backends/native_jail/mediated_shell_dispatch.hpp"
 #include "backends/native_jail/mediated_shell_parser.hpp"
+#include "backends/native_jail/output_discipline.hpp"  // Milestone 3 Phase F3, 010 §3 items 4/5
 
 namespace agentengine::native_jail::mediated_shell {
 
@@ -28,8 +30,16 @@ namespace agentengine::native_jail::mediated_shell {
 // spike's kind-only `contains_kind` shortcut (ADR-001 §2.5.4's now-superseded downgrade).
 class MediatedShellRunner {
 public:
-    MediatedShellRunner(FileSystemAdapter& fs, CommandRegistry const& registry, std::string mount_id)
-        : fs_(fs), registry_(registry), mount_id_(std::move(mount_id)) {}
+    // `output_cap_bytes` (default `output_discipline.hpp`'s `kDefaultOutputCapBytes`, Milestone 3
+    // Phase F3, 010 §3 items 4/5): the same host-configured, per-session output-discipline cap
+    // `MediatedPythonConfig::output_cap_bytes` applies to `MediatedPythonRunner`, so `stdout`/`stderr`
+    // are capped identically regardless of which Runner produced them -- 010 §1's own "the interpreter
+    // is not Python-only by design" posture, made concrete for this one cross-cutting concern. Shell
+    // has no REPL-style last-expression semantics, so `ExecOutcome::result_repr` is simply never set
+    // here -- a legitimate empty, not a gap (see that field's own comment in sandbox.hpp).
+    MediatedShellRunner(FileSystemAdapter& fs, CommandRegistry const& registry, std::string mount_id,
+                         std::uint64_t output_cap_bytes = kDefaultOutputCapBytes)
+        : fs_(fs), registry_(registry), mount_id_(std::move(mount_id)), output_cap_bytes_(output_cap_bytes) {}
 
     [[nodiscard]] result<ExecOutcome> run(ExecRequest request, ExecState& state, EffectContext& ctx) {
         if (!request.language.empty() && request.language != "shell") {
@@ -43,13 +53,21 @@ public:
             return std::unexpected(error{failure_class::fatal, "parse succeeded with no script",
                                           "shell.internal_error"});
         }
-        return evaluate(*parsed->script, registry_, fs_, mount_id_, state, ctx);
+        auto outcome = evaluate(*parsed->script, registry_, fs_, mount_id_, state, ctx);
+        if (!outcome) return outcome;
+
+        auto stdout_capped = cap_output(std::move(outcome->stdout_text), output_cap_bytes_);
+        auto stderr_capped = cap_output(std::move(outcome->stderr_text), output_cap_bytes_);
+        outcome->stdout_text = std::move(stdout_capped.text);
+        outcome->stderr_text = std::move(stderr_capped.text);
+        return outcome;
     }
 
 private:
     FileSystemAdapter& fs_;
     CommandRegistry const& registry_;
     std::string mount_id_;
+    std::uint64_t output_cap_bytes_;
 };
 
 }  // namespace agentengine::native_jail::mediated_shell
