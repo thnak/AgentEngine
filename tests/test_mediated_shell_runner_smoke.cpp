@@ -188,7 +188,11 @@ int main() {
         AE_CHECK(!state.env.contains("OTHER_VAR"), "E3-D3: the denied export never touched ExecState.env");
     }
 
-    // ---- command not found (fail-closed, 010 §9 G2) -------------------------------------------
+    // ---- command not found: an ORDINARY command-level failure, not a hard stop -----------------
+    // Milestone 3 Phase G4 (026 §3's own row: "nonzero exit + stderr line ('command not found')").
+    // Before G4 this was a hard-stop script failure (`!out.has_value()`); 026 §3 treats an unknown
+    // command the way a real shell does -- the script keeps running, `&&`/`||` see a non-ok outcome,
+    // and stderr carries the real bash-shaped phrasing, never a host diagnostic.
     {
         ExecState state{};
         CapabilitySet caps = full_caps();
@@ -196,8 +200,10 @@ int main() {
         ctx.capabilities = &caps;
         for (char const* hostile : {"cmd.exe", "/bin/sh", "totally_bogus_xyz123", "powershell"}) {
             auto out = shell.run(ExecRequest{"shell", hostile}, state, ctx);
-            AE_CHECK(!out.has_value() && out.error().code == "shell.command_not_found",
-                     (std::string("E3-N1: '") + hostile + "' fails closed as command_not_found").c_str());
+            AE_CHECK(out.has_value() && out->klass == exec_outcome_class::policy_violation,
+                     (std::string("E3-N1: '") + hostile + "' is an inspectable non-ok outcome, not a hard stop").c_str());
+            AE_CHECK(out.has_value() && out->stderr_text == (std::string(hostile) + ": command not found"),
+                     (std::string("E3-N1: '") + hostile + "' stderr matches real shell phrasing exactly").c_str());
         }
     }
 

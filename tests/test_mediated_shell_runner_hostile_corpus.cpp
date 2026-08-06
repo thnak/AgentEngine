@@ -110,17 +110,23 @@ int main() {
     }
 
     // ---- function/alias shadowing: no such grammar production exists ------------------------------
+    // Milestone 3 Phase G4 (026 §3): command-not-found is an ORDINARY command-level failure, not a
+    // hard stop, since that phase -- the security-relevant claim these checks protect ("never
+    // dispatched") is unchanged, only the shape of "this didn't run" is (an inspectable non-ok
+    // outcome instead of `!has_value()`).
     {
         auto out = shell.run(ExecRequest{"shell", "alias cat=evil"}, state, ctx);
-        AE_CHECK(!out.has_value() && out.error().code == "shell.command_not_found",
+        AE_CHECK(out.has_value() && out->klass == exec_outcome_class::policy_violation &&
+                     out->stderr_text == "alias: command not found",
                  "E4-SH3: 'alias cat=evil' is not a recognized construct -- 'alias' itself resolves "
                  "as an ordinary, unregistered command name (command-not-found), never as a "
                  "builtin-redefinition mechanism");
 
         auto out2 = shell.run(ExecRequest{"shell", "function cat() { echo evil; }"}, state, ctx);
-        AE_CHECK(!out2.has_value(),
-                 "E4-SH4: a 'function cat() {...}' definition attempt fails to execute as written "
-                 "(no function-definition grammar exists to give it meaning)");
+        AE_CHECK(out2.has_value() && out2->klass == exec_outcome_class::policy_violation,
+                 "E4-SH4: a 'function cat() {...}' definition attempt does not execute as written "
+                 "(no function-definition grammar exists to give it meaning -- 'function' itself "
+                 "resolves as command-not-found)");
 
         // Positive control: after BOTH shadowing attempts, 'cat' still reads the real file --
         // proves the attempts genuinely had zero effect, not that this Runner happened to reject
@@ -162,7 +168,8 @@ int main() {
         };
         for (char const* name : hostile_names) {
             auto out = shell.run(ExecRequest{"shell", std::string(name)}, state, ctx);
-            AE_CHECK(!out.has_value() && out.error().code == "shell.command_not_found",
+            AE_CHECK(out.has_value() && out->klass == exec_outcome_class::policy_violation &&
+                         out->stderr_text == (std::string(name) + ": command not found"),
                      (std::string("E4-SH6: '") + name + "' is command-not-found, never dispatched")
                          .c_str());
         }

@@ -33,6 +33,7 @@
 
 #include <windows.h>
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -113,6 +114,21 @@ private:
 // the object used" for the enumeration step too, not just the containment check.
 [[nodiscard]] result<std::vector<DirEntry>> list_within_mount_root(std::wstring const& mount_root,
                                                                      std::string const& guest_path);
+
+// Milestone 3 Phase G4 (026 §3's "Quota exhausted" row) -- live, on-disk usage of everything under a
+// real, host-owned mount root, recursively. Deliberately NOT a guest-path-taking function like the
+// two above: `mount_root` here is the whole materialized mount directory, always host-config, never
+// guest input, so there is no containment property to prove -- what this walks is exactly what a
+// future `harvest_mount` pass would also walk. Reparse points are never followed while recursing
+// (their nominal directory entry is skipped, not counted or descended into) purely to keep this scan
+// non-cyclic and bounded against a junction a prior write could have planted somewhere inside the
+// mount -- an availability/correctness precaution for a usage COUNTER, not a second ADR-014-grade
+// security boundary.
+struct MountUsage {
+    std::uint64_t total_bytes = 0;
+    std::uint32_t file_count  = 0;
+};
+[[nodiscard]] result<MountUsage> mount_root_usage(std::wstring const& mount_root);
 
 // TEST-ONLY, deliberately vulnerable control -- this project's established pattern for proving a
 // containment check is a real gate rather than one that cannot fail (022 §5; the precedent is

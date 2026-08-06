@@ -512,6 +512,33 @@ public:
                             [kind](Capability const& c) { return capability_kind_of(c) == kind; });
     }
 
+    // Milestone 3 Phase G4 (026 §3's quota row) -- a pure LOOKUP, deliberately NOT `subsumes()`-based:
+    // that function's optional-field semantics exist for ATTENUATION (deriving a new, independently
+    // reusable narrower capability from a parent, where an uncapped *request* is rightly treated as
+    // asking for more than a capped parent can give -- see this file's own header comment on that
+    // rule). This answers a different question a caller about to perform ONE call under whatever
+    // ceiling the grant itself already carries needs answered: "is there a granted FsWrite covering
+    // this mount_id/path at all, and if so what are ITS OWN quota_bytes/file_count_cap values" --
+    // there is no meaningful "requested ceiling" to construct for that question, so `contains()`'s
+    // object-shaped API cannot answer it (a synthetic nullopt-ceiling `requested` reads as "asking
+    // for unlimited" and is REJECTED by `cap_covers` against any capped grant). Confirmed the hard
+    // way: before Phase G4, mediated_python_runner.cpp's `Internal_open` built exactly that kind of
+    // nullopt-ceiling `requested` for its write-mode gate, meaning a granted FsWrite with a real
+    // quota_bytes cap was UNUSABLE for the embedded Python runner -- denied on every call regardless
+    // of actual usage. Fixed there by switching to this lookup for the write-mode gate instead of
+    // `contains()`; this method is additive and changes no other caller's behavior.
+    [[nodiscard]] std::optional<cap::FsWrite> find_fs_write(std::string const& mount_id,
+                                                              std::string const& path) const {
+        for (Capability const& c : granted_) {
+            if (auto const* fw = std::get_if<cap::FsWrite>(&c)) {
+                if (fw->mount_id == mount_id && capability_detail::path_prefix_covers(fw->path_prefix, path)) {
+                    return *fw;
+                }
+            }
+        }
+        return std::nullopt;
+    }
+
     // A strictly-narrower derived set (007 §3 property 2 — attenuation only). Fails closed the
     // moment ANY requested entry isn't subsumed by something in this set: an all-or-nothing
     // derivation, never a partial grant a caller might mistake for "the rest was silently dropped".

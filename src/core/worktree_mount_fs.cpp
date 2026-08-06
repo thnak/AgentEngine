@@ -14,9 +14,14 @@ namespace agentengine {
 namespace {
 
 result<void> win_error(char const* what, DWORD code) {
+    // `native_code = code` (Milestone 3 Phase G4, 026 §3/§9 Q2): `message` here stays a HOST-side
+    // diagnostic ("CreateFileW(target) failed: GetLastError=2") -- never shown to a guest -- while
+    // `native_code` lets a guest-facing boundary (mediated_python_runner.cpp's `raise_os_error`) raise
+    // the real, correctly-typed, correctly-worded CPython exception via `PyErr_SetFromWindowsErr`
+    // instead of surfacing this string.
     return std::unexpected(error{failure_class::fatal,
                                   std::string(what) + " failed: GetLastError=" + std::to_string(code),
-                                  "worktree.mount_fs_win32_failure"});
+                                  "worktree.mount_fs_win32_failure", static_cast<int>(code)});
 }
 
 template <class T>
@@ -180,8 +185,13 @@ result<SafeFileHandle> open_within_mount_root(std::wstring const& mount_root, st
     auto target_canonical = final_path_name(target.get());
     if (!target_canonical) return std::unexpected(target_canonical.error());
     if (!is_within_root(*root_canonical, *target_canonical)) {
-        return std::unexpected(
-            error{failure_class::policy, "resolved path escapes the mount root", "worktree.mount_path_escapes_root"});
+        // native_code = ERROR_ACCESS_DENIED (Milestone 3 Phase G4): a mount escape is a policy denial,
+        // not an OS-level lookup failure, so there is no real win32 code behind it the way a genuine
+        // not-found/access-denied CreateFileW failure has one -- ERROR_ACCESS_DENIED is the closest
+        // real occurrence of "you may not reach this," letting `raise_os_error` produce a real,
+        // CPython-sourced PermissionError here too, same as an ordinary access-denied open would.
+        return std::unexpected(error{failure_class::policy, "resolved path escapes the mount root",
+                                      "worktree.mount_path_escapes_root", ERROR_ACCESS_DENIED});
     }
     return target;
 }
@@ -229,8 +239,13 @@ result<std::vector<DirEntry>> list_within_mount_root(std::wstring const& mount_r
     auto target_canonical = final_path_name(target_raw);
     if (!target_canonical) return std::unexpected(target_canonical.error());
     if (!is_within_root(*root_canonical, *target_canonical)) {
-        return std::unexpected(
-            error{failure_class::policy, "resolved path escapes the mount root", "worktree.mount_path_escapes_root"});
+        // native_code = ERROR_ACCESS_DENIED (Milestone 3 Phase G4): a mount escape is a policy denial,
+        // not an OS-level lookup failure, so there is no real win32 code behind it the way a genuine
+        // not-found/access-denied CreateFileW failure has one -- ERROR_ACCESS_DENIED is the closest
+        // real occurrence of "you may not reach this," letting `raise_os_error` produce a real,
+        // CPython-sourced PermissionError here too, same as an ordinary access-denied open would.
+        return std::unexpected(error{failure_class::policy, "resolved path escapes the mount root",
+                                      "worktree.mount_path_escapes_root", ERROR_ACCESS_DENIED});
     }
 
     // Enumeration runs against `target_canonical` -- the HANDLE-resolved, already-verified path --
@@ -263,6 +278,45 @@ result<std::vector<DirEntry>> list_within_mount_root(std::wstring const& mount_r
     FindClose(find);
     if (final_err != ERROR_NO_MORE_FILES) return win_error_t<std::vector<DirEntry>>("FindNextFileW", final_err);
     return out;
+}
+
+result<MountUsage> mount_root_usage(std::wstring const& mount_root) {
+    MountUsage usage;
+    // An explicit stack, not recursion -- `mount_root` is a real, host-owned directory that a guest
+    // may have been writing into across many calls, so its depth is not bounded by anything this
+    // function controls; an explicit stack keeps the walk from growing the C++ call stack with it.
+    std::vector<std::wstring> stack{mount_root};
+    while (!stack.empty()) {
+        std::wstring dir = std::move(stack.back());
+        stack.pop_back();
+        std::wstring search = strip_trailing_sep(dir) + L"\\*";
+        WIN32_FIND_DATAW find_data;
+        HANDLE find = FindFirstFileW(search.c_str(), &find_data);
+        if (find == INVALID_HANDLE_VALUE) {
+            DWORD err = GetLastError();
+            if (err == ERROR_FILE_NOT_FOUND) continue;  // an empty directory -- not an error.
+            return win_error_t<MountUsage>("FindFirstFileW", err);
+        }
+        do {
+            std::wstring name = find_data.cFileName;
+            if (name == L"." || name == L"..") continue;
+            bool const is_dir = (find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+            bool const is_reparse = (find_data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+            if (is_dir) {
+                // Never descend into a reparse point -- see this function's header comment: a
+                // junction/symlink a prior write planted inside the mount must not turn a usage scan
+                // into an unbounded or cyclic walk.
+                if (!is_reparse) stack.push_back(strip_trailing_sep(dir) + L"\\" + name);
+                continue;
+            }
+            usage.total_bytes += (static_cast<std::uint64_t>(find_data.nFileSizeHigh) << 32) | find_data.nFileSizeLow;
+            usage.file_count += 1;
+        } while (FindNextFileW(find, &find_data));
+        DWORD final_err = GetLastError();
+        FindClose(find);
+        if (final_err != ERROR_NO_MORE_FILES) return win_error_t<MountUsage>("FindNextFileW", final_err);
+    }
+    return usage;
 }
 
 namespace redteam {

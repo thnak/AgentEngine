@@ -1186,8 +1186,131 @@ for M3 regardless.
   was the estimate's larger assumption)
 - **G4.** Error mapping (026 §3) — the closed table (`PermissionError`, `OSError`, `ConnectionError`,
   `TimeoutError`, `MemoryError`, "command not found") sourced from real occurrences of each exception
-  class (026 §10 Q2's resolution — not hand-authored per site), never a host stack trace or
-  architecture term (026 §8 G3/G6). **M**
+  class (026 §9 Q2's resolution — not hand-authored per site), never a host stack trace or
+  architecture term (026 §8 G3/G6). **(done, narrowed from its original M scope)**
+
+  **Scope finding, surfaced before any code was written**: a survey of the current codebase against
+  026 §3's table row by row found that most rows had a REAL GAP, not just a wiring job — several were
+  raising the wrong exception type, one row's spec-exact message existed but was on a dead code path,
+  and two rows had zero in-process infrastructure at all:
+  - *Path outside a mount* — wired, but leaking a HOST DIAGNOSTIC
+    (`"CreateFileW(target) failed: GetLastError=2"`, `worktree_mount_fs.cpp`'s `win_error`) instead
+    of real CPython-sourced `OSError`/`FileNotFoundError` text — a direct violation of both this row
+    and 026 §9 Q2's "never hand-authored" rule.
+  - *Quota exhausted* — the exact spec-sourced message already existed
+    (`core/worktree.hpp`'s `mount_write`, "No space left on device"), but on the CAS/Ref-based
+    store's batched-write path, which `Internal_open`'s LIVE filesystem write path never calls — no
+    real-time enforcement existed at all.
+  - *Host not permitted* — raised `PermissionError` on both the raw-socket
+    (`Internal_do_connect`) and bridged-tool (`net_egress_proxy`/ADR-011) denial paths, not
+    `gaierror`/`ConnectionError` as the table specifies.
+  - *Wall-clock exceeded* / *Memory exceeded* — the only enforcement mechanism that exists
+    (`job_object_limits.hpp`'s Windows Job Objects) is architecturally OUT-OF-PROCESS
+    (`TerminateJobObject`-style kill) and isn't even wired to the embedded-interpreter runner this
+    phase targets (it applies to `native_jail_backend.cpp`'s separate spawned-child-process exec
+    model). Raising `TimeoutError`/`MemoryError` *inside* a live interpreter needs a genuinely new
+    subsystem — a watchdog thread with `PyErr_SetInterrupt`/`Py_AddPendingCall`, and a custom
+    `PyMemAllocatorEx` hook, respectively — not a wiring pass.
+  - *Tool denied by policy* — already correctly wired and tested
+    (`test_mediated_python_runner_agent_tools.cpp`'s G1-N1: a real 006 §3 pipeline denial, not a
+    shortcut). Best-covered row; untouched this phase.
+  - *Command not found* — the WRONG SHAPE entirely: a hard-stop script failure
+    (`"shell.command_not_found"` in `mediated_shell_dispatch.cpp`'s `kHardStopCodes`), not "nonzero
+    exit + stderr line" as the table specifies.
+
+  Presented to the project owner as a scoping choice (matching G2's own precedent): build the rows
+  with a real fix reachable this pass, or also take on live quota enforcement, while naming wall-
+  clock/memory as blocked. **Chosen: fix path/mount, host-not-permitted, and command-not-found; also
+  build live quota enforcement; leave wall-clock and memory named, explicitly, as residuals** — both
+  are exactly the kind of hot-path, security-adjacent new subsystem CLAUDE.md's own process
+  ("contested, hot-path, or security-critical designs go through design → red-team → prove → judge,"
+  producing an ADR) exists for, not a same-pass wiring job a work-breakdown phase should absorb
+  silently.
+
+  **What was built:**
+  - **Path outside a mount / quota / listdir failures** now raise the REAL, correctly-typed,
+    correctly-worded CPython exception. `core/error.hpp`'s `error` struct grew one field,
+    `native_code` (a win32/errno passthrough, 0 = none); `worktree_mount_fs.cpp`'s `win_error` sets
+    it from the real `GetLastError()`, and the one mount-escape policy error sets it to
+    `ERROR_ACCESS_DENIED` (there is no real OS code behind a policy denial, so this is the closest
+    real occurrence of "you may not reach this"). `mediated_python_runner.cpp`'s new `raise_os_error`
+    helper calls `PyErr_SetFromWindowsErr` when a code is present — CPython's OWN errno-mapping table
+    picks the right subclass (`FileNotFoundError`, `PermissionError`, ...) with CPython's own wording,
+    never this file's approximation. Falls back to the pre-G4 policy/generic-`OSError` split,
+    unchanged, for the contract-class errors that have no OS code behind them at all (invalid path
+    encoding, forbidden character). Replaces `Internal_open` and `Internal_listdir`'s previous
+    `PyErr_SetString(policy ? PermissionError : OSError, hand_authored_message)`.
+  - **Live quota enforcement** — `core/worktree_mount_fs.hpp`'s new `mount_root_usage(mount_root)`
+    walks a real, host-owned mount directory recursively (an explicit stack, not recursion, since
+    guest-driven depth isn't bounded; reparse points are never followed, so a junction a prior write
+    planted inside the mount can't turn a usage scan into an unbounded/cyclic walk — an availability
+    precaution for a usage counter, not a second ADR-014). `Internal_open`'s write-mode branch checks
+    live usage against the granted `cap::FsWrite`'s `quota_bytes`/`file_count_cap` BEFORE granting a
+    new write-mode `open()`, raising `OSError("No space left on device")` — the exact literal
+    `mount_write` already uses, not re-authored — when either axis is already exceeded. Named,
+    narrower scope, stated plainly in both the header comment and the test: checked at the open()
+    boundary, not intercepted per-byte on an already-open handle, so a single `open()`+`.write()`
+    call's own volume can still push usage past the cap between checks — the same boundary
+    granularity `mount_write`'s own batched CAS-based check already has.
+  - **A real bug found and fixed while building the quota check, before it could even be tested**:
+    `Internal_open`'s existing write-mode capability gate built a "requested" `cap::FsWrite` with
+    `quota_bytes`/`file_count_cap` left `std::nullopt`, then called `CapabilitySet::contains()`. Per
+    `capability.hpp`'s own documented `cap_covers` rule ("a capped parent and an uncapped request is a
+    WIDENING attempt, never an implicitly-fine omission" — correct for `attenuate()`/`bind()`, where a
+    request really is asking to mint a new, independently-reusable capability), this meant a granted
+    `FsWrite` with any real `quota_bytes` cap was UNUSABLE for the embedded Python runner at all —
+    every write denied as "no capability grants write access," regardless of actual usage, before this
+    phase's quota logic could ever run. No existing test caught it because none had configured a
+    quota-capped grant. Fixed with a new, narrowly-scoped, ADDITIVE `CapabilitySet::find_fs_write`
+    (structural mount_id/path_prefix lookup, deliberately NOT `subsumes()`-based) used in place of
+    `contains()` for exactly this one call site — `subsumes()`/`contains()`/`attenuate()`/`bind()`
+    themselves are untouched, so no other caller's behavior changes.
+  - **Host not permitted** — `Internal_do_connect`'s capability-denial branch and
+    `raise_mapped_tool_error`'s new `"net.address_blocked"`/`"net.host_unresolvable"` cases both raise
+    `ConnectionRefusedError` (a real `ConnectionError` subclass, one of the table's two sanctioned
+    choices) via a new `raise_connection_error` helper — `PyErr_SetExcFromWindowsErr` against
+    `WSAECONNREFUSED`, the same real, win32-code-sourced text a genuinely refused connection would
+    produce, so a policy-blocked host stays indistinguishable from an unreachable one (026 §1a). The
+    tool-call path works because `tool_pipeline.hpp` step 9 passes a tool's own `error` through
+    verbatim, `.code` included — a bridged tool whose `invoke()` propagates a `net_egress_proxy`
+    failure unchanged reaches `raise_mapped_tool_error` with `"net.address_blocked"` intact, proven
+    with a purpose-built `BlockedNetTool` test double, not assumed.
+  - **Command not found** — moved out of `mediated_shell_dispatch.cpp`'s `kHardStopCodes` into the
+    same "ordinary command-level failure" path a failed `cat` on a missing file already uses
+    (`ExecOutcome{klass: policy_violation, stderr_text: ...}`) — no new field needed on `ExecOutcome`;
+    reusing `klass != ok` as the "nonzero exit" signal an already-established pattern in this same
+    function already provides. The message itself changed from `"command not found: " + name` to
+    `name + ": command not found"` — real bash phrasing for exactly this condition, not a bespoke
+    wording.
+  - **Left untouched, on purpose**: the analogous `cap::FsRead::size_cap_bytes`/`cap::NetOut::byte_cap`
+    instances of the SAME `contains()`-vs-capped-grant bug (Internal_open's read branch,
+    Internal_listdir, `Internal_do_connect`'s own allowlist check) are not exercised by anything this
+    phase built or tests, and fixing them isn't this row's job — named, not silently carried forward
+    as if they'd been checked.
+
+  **Residuals, named explicitly**: **wall-clock enforcement** and **memory-cap enforcement** *inside*
+  the embedded interpreter remain unbuilt. Both need a genuinely new subsystem (a watchdog thread
+  interrupting the interpreter mid-execution; a custom Python allocator hook translating a budget hit
+  into `PyErr_NoMemory()`) that CLAUDE.md's own process reserves for `design → red-team → prove →
+  judge` and an ADR, not a work-breakdown phase. `tool.deadline_exceeded`'s existing `TimeoutError`
+  mapping (a single TOOL CALL's own deadline, already correct, G1-era) is unaffected and unchanged.
+
+  Proven in a new, portable-to-build test (`tests/test_mediated_python_runner_error_mapping.cpp`,
+  10 checks: G4-R1 for path/mount, G4-R2-Q1 through Q3 and C1 through C3 for both quota axes, G4-R3-1
+  and R3-2 for host-not-permitted on both the raw-socket and tool-call paths) plus fixes to two
+  PRE-EXISTING tests whose assertions encoded the old, now-superseded behavior:
+  `test_mediated_shell_runner_smoke.cpp`'s E3-N1 and `test_mediated_shell_runner_hostile_corpus.cpp`'s
+  E4-SH3/SH4/SH6 (hard-stop → inspectable non-ok outcome), and
+  `test_mediated_python_runner_hostile_corpus.cpp`'s E4-PY7 (`PermissionError` →
+  `ConnectionRefusedError`) — the underlying security property each of these hostile-corpus checks
+  exists for (never dispatched; the real `connect()` never reached) is unchanged, only the shape of
+  "denied" is, and each fix says so in its own comment. Full regression clean on both trees except the
+  one pre-existing, previously-established flake (`test_native_jail_backend_windows`): default `build`
+  55/55 (55 total: G4 added no new default-tree binary, only fixed two existing shell test files), and
+  `build-py` 66/66 (one new binary, `test_mediated_python_runner_error_mapping`, plus the two hostile-
+  corpus fixes). **L** (larger than the **M** estimate — the row-by-row survey revealed several
+  independent real gaps rather than one wiring pass, and fixing the `find_fs_write` capability bug was
+  a precondition for the quota row to be testable at all)
 
 ### Phase H — The central falsifiable claim (026 §1a, §8 G4)
 

@@ -299,6 +299,34 @@ void raise_permission_error(std::string const& message) {
     Py_XDECREF(exc_mod);
 }
 
+// Milestone 3 Phase G4 (026 §3's "Path outside a mount"/"Quota exhausted" rows, §9 Q2's "sourced
+// from real occurrences, never hand-authored" resolution). `e.native_code` (core/error.hpp, set by
+// worktree_mount_fs.cpp's `win_error`) is a real win32 code -- `PyErr_SetFromWindowsErr` raises the
+// SAME exception type and text real CPython itself would produce for that code (FileNotFoundError,
+// PermissionError, etc., via CPython's own errno-mapping table), never an approximation this file
+// authored. Falls back to the pre-G4 policy/generic-OSError split, unchanged, for errors with no
+// native code behind them (contract violations like invalid path encoding -- there is no OS error to
+// source real text from for those).
+void raise_os_error(error const& e) {
+    if (e.native_code != 0) {
+        PyErr_SetFromWindowsErr(e.native_code);
+        return;
+    }
+    PyErr_SetString(e.klass == failure_class::policy ? PyExc_PermissionError : PyExc_OSError, e.message.c_str());
+}
+
+// WSAECONNREFUSED -- hardcoded rather than pulling in <winsock2.h> here (this file only ever touches
+// Python-level socket objects, never a raw SOCKET, and <winsock2.h>/<windows.h> ordering is a real
+// footgun this file has no other reason to take on). A stable, documented Winsock constant.
+constexpr int kWsaeConnRefused = 10061;
+
+// Milestone 3 Phase G4 (026 §3's "Host not permitted" row): raises `ConnectionRefusedError` (a real
+// `ConnectionError` subclass, one of the table's two sanctioned choices) with text CPython's own
+// `PyErr_SetExcFromWindowsErr` derives from WSAECONNREFUSED -- the same shape a genuinely refused TCP
+// connection would produce, so a policy-blocked host is indistinguishable, from inside the script,
+// from an ordinary unreachable one (026 §1a: the model is never told there is a policy layer).
+void raise_connection_error() { PyErr_SetExcFromWindowsErr(PyExc_ConnectionRefusedError, kWsaeConnRefused); }
+
 // `_ae_internal.open(path, mode)` -- the ONLY way the bootstrap-installed `builtins.open`/`io.open`
 // wrapper reaches real file I/O. Capability-checked BEFORE any syscall (010 §9 G7's own bar: "raises
 // ... before any syscall is attempted"), then delegates to `open_within_mount_root` (ADR-014) for
@@ -335,23 +363,59 @@ PyObject* Internal_open(PyObject* /*self*/, PyObject* args) {
         raise_permission_error("no capability context available for file access");
         return nullptr;
     }
-    Capability requested = mode->for_write
-                                ? Capability{cap::FsWrite{mount_id, mount_relative, std::nullopt, std::nullopt}}
-                                : Capability{cap::FsRead{mount_id, mount_relative, std::nullopt}};
-    if (!g_current_ctx->capabilities->contains(requested)) {
-        raise_permission_error("no capability grants " + std::string(mode->for_write ? "write" : "read") +
-                                " access to '" + path_c + "'");
-        return nullptr;
+
+    // Milestone 3 Phase G4: the write branch no longer builds a `contains()`-shaped `requested`
+    // object -- see `CapabilitySet::find_fs_write`'s own comment for the real bug that pattern had
+    // against a quota-capped grant. `find_fs_write` is both the structural gate AND, when it
+    // succeeds, the source of the grant's own quota_bytes/file_count_cap for the live check below.
+    std::optional<cap::FsWrite> granted_write;
+    if (mode->for_write) {
+        granted_write = g_current_ctx->capabilities->find_fs_write(mount_id, mount_relative);
+        if (!granted_write) {
+            raise_permission_error("no capability grants write access to '" + std::string(path_c) + "'");
+            return nullptr;
+        }
+    } else {
+        Capability requested = cap::FsRead{mount_id, mount_relative, std::nullopt};
+        if (!g_current_ctx->capabilities->contains(requested)) {
+            raise_permission_error("no capability grants read access to '" + std::string(path_c) + "'");
+            return nullptr;
+        }
+    }
+
+    // Milestone 3 Phase G4 (026 §3's "Quota exhausted" row): checked against LIVE, on-disk usage of
+    // the whole mount, before granting a new write-mode open -- not per byte written within an
+    // already-open handle (this pass's own named, narrower scope: once a `write()`-mode file object
+    // is handed back below, further `.write()` calls on it are ordinary `io` object calls this file
+    // never intercepts, so a single open() call's write volume can still push usage past the cap
+    // between checks, the same "checked at the boundary, not synchronously mid-syscall" granularity
+    // `mount_write`'s own CAS-based quota check already has for a batched write).
+    if (granted_write && (granted_write->quota_bytes.has_value() || granted_write->file_count_cap.has_value())) {
+        auto usage = mount_root_usage(mount_it->second);
+        if (!usage) {
+            PyErr_SetString(PyExc_OSError, usage.error().message.c_str());
+            return nullptr;
+        }
+        bool const over_quota = granted_write->quota_bytes.has_value() && usage->total_bytes > *granted_write->quota_bytes;
+        bool const over_count =
+            granted_write->file_count_cap.has_value() && usage->file_count > *granted_write->file_count_cap;
+        if (over_quota || over_count) {
+            // The exact message 026 §3's own table names for this row -- sourced from
+            // core/worktree.hpp's `mount_write`, the one other place this project raises it, not
+            // re-authored here.
+            PyErr_SetString(PyExc_OSError, "No space left on device");
+            return nullptr;
+        }
     }
 
     auto handle = open_within_mount_root(mount_it->second, mount_relative, mode->desired_access,
                                           mode->creation_disposition);
     if (!handle) {
-        // A real OS-level failure (not found, escapes the mount, etc.) -- surface as an ordinary
-        // OSError-family exception, matching 026 §3's "ordinary Python experience" framing, not a
-        // policy identifier.
-        PyErr_SetString(handle.error().klass == failure_class::policy ? PyExc_PermissionError : PyExc_OSError,
-                         handle.error().message.c_str());
+        // A real OS-level failure (not found, escapes the mount, etc.) -- surface as the REAL,
+        // correctly-typed, correctly-worded CPython exception `raise_os_error` (Phase G4) derives
+        // from the win32 code, matching 026 §3's "ordinary Python experience" framing, not a policy
+        // identifier or a hand-authored approximation.
+        raise_os_error(handle.error());
         return nullptr;
     }
 
@@ -438,8 +502,9 @@ PyObject* Internal_listdir(PyObject* /*self*/, PyObject* args) {
 
     auto entries = list_within_mount_root(mount_it->second, mount_relative);
     if (!entries) {
-        PyErr_SetString(entries.error().klass == failure_class::policy ? PyExc_PermissionError : PyExc_OSError,
-                         entries.error().message.c_str());
+        // Milestone 3 Phase G4 -- same real, win32-code-sourced exception `Internal_open` now raises,
+        // not a hand-authored approximation.
+        raise_os_error(entries.error());
         return nullptr;
     }
 
@@ -507,7 +572,9 @@ PyObject* Internal_do_connect(PyObject* /*self*/, PyObject* args) {
     std::string entry = host + ":" + std::to_string(port) + ":tcp";
     Capability requested = cap::NetOut{{entry}, std::nullopt, {}};
     if (!g_current_ctx->capabilities->contains(requested)) {
-        raise_permission_error("no capability grants network access to '" + entry + "'");
+        // Milestone 3 Phase G4 (026 §3's "Host not permitted" row): raised as an ordinary connection
+        // failure, not PermissionError -- see `raise_connection_error`'s own comment for why.
+        raise_connection_error();
         return nullptr;
     }
 
@@ -526,7 +593,17 @@ PyObject* Internal_do_connect(PyObject* /*self*/, PyObject* args) {
 // analogue for calling something under a name that does not exist; `tool.deadline_exceeded` matches
 // "Wall-clock exceeded" -> TimeoutError; anything else falls back to RuntimeError carrying only the
 // tool's own message, never a code or a host stack trace.
+//
+// Milestone 3 Phase G4: `net.address_blocked`/`net.host_unresolvable` (src/sandbox/net_egress_proxy.cpp,
+// ADR-011) reach here verbatim whenever a bridged tool's own `invoke()` propagates the egress proxy's
+// `result<T>` failure unchanged (tool_pipeline.hpp step 9 passes the tool's own `error` through,
+// `.code` included) -- exactly "Host not permitted", so it gets the SAME ConnectionRefusedError shape
+// `Internal_do_connect`'s raw-socket denial raises, not a generic RuntimeError.
 void raise_mapped_tool_error(std::string const& error_code, std::string const& message) {
+    if (error_code == "net.address_blocked" || error_code == "net.host_unresolvable") {
+        raise_connection_error();
+        return;
+    }
     PyObject* exc_type = PyExc_RuntimeError;
     if (error_code == "tool.capability_not_held" || error_code == "tool.approval_denied") {
         exc_type = PyExc_PermissionError;

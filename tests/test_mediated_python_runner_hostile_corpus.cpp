@@ -208,11 +208,15 @@ int main() {
         }
 
         // ---- egress to a cloud-metadata-shaped address: denied without a matching NetOut grant --
+        // Milestone 3 Phase G4 (026 §3's "Host not permitted" row): the denial now raises
+        // ConnectionRefusedError, not PermissionError -- an ordinary connection failure, not a
+        // policy identifier (026 §1a). The security property this check exists for is unchanged:
+        // the real connect() is never reached either way.
         {
             ExecRequest req{"python", "import socket\ns = socket.socket(socket.AF_INET, "
                                        "socket.SOCK_STREAM)\ns.settimeout(0.2)\ntry:\n"
                                        "    s.connect(('169.254.169.254', 80))\n"
-                                       "    print('CONNECT_RAN')\nexcept PermissionError as e:\n"
+                                       "    print('CONNECT_RAN')\nexcept ConnectionRefusedError as e:\n"
                                        "    print('DENIED:', e)"};
             auto out = runner.run(req, state, ctx);
             AE_CHECK(out.has_value() && out->stdout_text.find("DENIED") != std::string::npos &&

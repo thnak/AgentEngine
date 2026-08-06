@@ -23,6 +23,13 @@ struct error {  // ae-naming-lint: allow error — pre-existing M0 scaffolding, 
     failure_class klass;
     std::string   message;
     std::string   code;  // stable, machine-readable; safe to match on in tests and policy
+    // Milestone 3 Phase G4 (026-Agent-Facing-Runtime-Surface.md §3, §9 Q2's "sourced from real
+    // occurrences, never hand-authored" resolution): an optional platform error code (win32
+    // GetLastError()/errno) a guest-facing boundary can use to raise a REAL, correctly-typed,
+    // correctly-worded exception (e.g. PyErr_SetFromWindowsErr) instead of re-wording `message`
+    // itself. 0 means none -- most `error`s are host-authored contract/policy violations with no OS
+    // code behind them, and `message` remains their only text.
+    int native_code = 0;
 };
 
 template <class T>

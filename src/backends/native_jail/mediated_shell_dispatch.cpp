@@ -183,8 +183,14 @@ result<ExecOutcome> dispatch_command(std::string const& name, std::vector<std::s
             return resolved.tool->invoke(argv, ctx);
         }
         case command_kind::not_found:
+            // Milestone 3 Phase G4 (026 §3's own row, "nonzero exit + stderr line ('command not
+            // found')"): `name + ": command not found"` is the real, ordinary shell phrasing (bash's
+            // own message shape for exactly this condition), not a bespoke wording. This is no longer
+            // a hard-stop (see `kHardStopCodes` below, which used to include this code) -- an unknown
+            // command is an ORDINARY command-level failure a real shell would report with a nonzero
+            // exit and keep going, not a reason to abort the whole script.
             return std::unexpected(
-                error{failure_class::contract, "command not found: " + name, "shell.command_not_found"});
+                error{failure_class::contract, name + ": command not found", "shell.command_not_found"});
     }
     return std::unexpected(error{failure_class::fatal, "unreachable", "shell.internal_error"});
 }
@@ -226,9 +232,15 @@ result<ExecOutcome> evaluate_pipeline(PipelineNode const& pipeline, CommandRegis
             // (matching the researched fail-fast design for genuinely unrecoverable errors); the
             // latter becomes an inspectable, non-ok ExecOutcome so `&&`/`||` have something real to
             // branch on, matching what a real shell's own exit-status semantics need to mean anything.
+            // Milestone 3 Phase G4: `shell.command_not_found` moved OUT of this set -- 026 §3's own
+            // table treats it as an ordinary command-level failure ("nonzero exit + stderr line"),
+            // not a script-stopping condition, so it now falls through to the ordinary path below
+            // exactly like a failed `cat` on a missing file already does.
             static std::unordered_set<std::string> const kHardStopCodes = {
-                "shell.capability_denied", "shell.command_not_found", "shell.unsupported_language",
-                "shell.empty_command",     "shell.internal_error",
+                "shell.capability_denied",
+                "shell.unsupported_language",
+                "shell.empty_command",
+                "shell.internal_error",
             };
             if (kHardStopCodes.contains(outcome.error().code)) return std::unexpected(outcome.error());
             last = ExecOutcome{};

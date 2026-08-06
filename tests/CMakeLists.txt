@@ -905,6 +905,16 @@ if(AGENTENGINE_BUILD_PYTHON_RUNNER)
   set_tests_properties(test_mediated_python_runner_agent_files_data PROPERTIES
     ENVIRONMENT "${AE_PYTHON_TEST_ENV}" TIMEOUT 60)
 
+  # ---- Milestone 3 Phase G4: error mapping (026 §3, §9 Q2) execution proof -----------------------
+  add_executable(test_mediated_python_runner_error_mapping test_mediated_python_runner_error_mapping.cpp)
+  target_link_libraries(test_mediated_python_runner_error_mapping PRIVATE
+    agentengine::core agentengine::mediated_python_runner agentengine_warnings)
+  target_compile_definitions(test_mediated_python_runner_error_mapping PRIVATE
+    AE_PYTHON_HOME="${AGENTENGINE_PYTHON_HOME}")
+  add_test(NAME test_mediated_python_runner_error_mapping COMMAND test_mediated_python_runner_error_mapping)
+  set_tests_properties(test_mediated_python_runner_error_mapping PROPERTIES
+    ENVIRONMENT "${AE_PYTHON_TEST_ENV}" TIMEOUT 60)
+
   # ---- Milestone 3 Phase E4: hostile-corpus/mediation proof (010 §9 G2/G7) -----------------------
   add_executable(test_mediated_python_runner_hostile_corpus test_mediated_python_runner_hostile_corpus.cpp)
   target_link_libraries(test_mediated_python_runner_hostile_corpus PRIVATE
