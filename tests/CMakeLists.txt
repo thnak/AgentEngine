@@ -209,6 +209,12 @@ add_executable(test_agent_session_state test_agent_session_state.cpp)
 target_link_libraries(test_agent_session_state PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_agent_session_state COMMAND test_agent_session_state)
 
+# ---- Milestone 4 Phase A3 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
+# Real 001 §1/§2 Run/Turn identity (run_id/turn_index on EffectContext), minted per StartRun.
+add_executable(test_agent_session_run_identity test_agent_session_run_identity.cpp)
+target_link_libraries(test_agent_session_run_identity PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_agent_session_run_identity COMMAND test_agent_session_run_identity)
+
 # ---- CapabilitySet enforcement mechanism (decisions/ADR-009-capability-set-enforcement-mechanism.md) --
 # Header-only (trust/capability.hpp), core-tier -- links only agentengine::core.
 add_executable(test_capability_enforcement test_capability_enforcement.cpp)

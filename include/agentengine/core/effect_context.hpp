@@ -3,6 +3,7 @@
 // carried into every effect. Never an ambient thread-local (CONVENTIONS.md "Security rules").
 
 #include <chrono>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -25,6 +26,16 @@ struct EffectContext {
     std::chrono::steady_clock::time_point deadline{};
     std::string                           trace_id;
     std::string                           span_id;
+    // Milestone 4 Phase A3 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md):
+    // real 001 §1/§2 Run/Turn identity, threaded through here because 019 §3's per-effect
+    // idempotency key is derived from exactly `{run_id, turn_index, call_index, argument_digest}`
+    // -- the first two live on the EffectContext every effect already carries, rather than a
+    // parallel identity parameter. Minted once per `Ask<StartRun, AgentResponse>`
+    // (`core/agent_session.hpp`), deterministically from the session's own monotonic run counter
+    // -- never wall-clock-derived (001 §7: an unrecorded wall-clock read here would be exactly the
+    // kind of untracked nondeterminism I5 forbids).
+    std::string  run_id;
+    std::uint64_t turn_index = 0;
 };
 
 } // namespace agentengine

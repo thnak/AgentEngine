@@ -19,6 +19,7 @@
 // premature before Clock is a wired capability) are deliberately not touched here.
 
 #include <chrono>
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -89,6 +90,23 @@ public:
     // this milestone (chat_client.hpp: `ae::task<T>` not wired in yet), so no coroutine is needed to
     // run a real one-turn run end to end.
     void handle(quark::Ask<StartRun, AgentResponse> const& m) {
+        // 001 §1: "Run: An Ask<StartRun, RunResponse> to the session actor" — literally, one run
+        // per StartRun ask. `run_id` is minted here, deterministically, from the session's own
+        // monotonic counter (never wall-clock — 001 §7/I5), the identity 019 §3's idempotency-key
+        // derivation and this milestone's own Phase D checkpoint records both need.
+        run_counter_ += 1;
+        effect_context_.run_id     = session_id_ + ":run:" + std::to_string(run_counter_);
+        // 001 §2: "Turn: A segment of a run's coroutine between model calls." This milestone's
+        // turn loop (still M1's own scope: no tool-call loop, one model call per run) makes exactly
+        // one model call per run, so `turn_index` is always 0 here — real identity, not a fake
+        // placeholder, for the one turn that actually executes; a future multi-turn tool-calling
+        // loop would increment it once per additional model call within the SAME run, which is
+        // exactly what this field exists for. That loop itself is a separate, un-named gap (001 §3
+        // steps 3a-3c / 006's real tool pipeline are not wired into this handler at all) — not
+        // built here, named rather than silently assumed done.
+        effect_context_.turn_index = 0;
+        last_run_id_ = effect_context_.run_id;
+
         history_.push_back(m.query.input);
 
         ChatRequest request{history_};
@@ -136,12 +154,18 @@ public:
     [[nodiscard]] std::unordered_map<std::string, std::string>&       metadata() noexcept { return metadata_; }
     [[nodiscard]] std::unordered_map<std::string, std::string> const& metadata() const noexcept { return metadata_; }
 
+    // The most recently minted `run_id` (001 §1/§2, Phase A3) — exposed for tests and for Phase D's
+    // checkpoint records, which need to name the run a checkpoint was taken during.
+    [[nodiscard]] std::string const& last_run_id() const noexcept { return last_run_id_; }
+
 private:
     std::string                                       session_id_;
     Principal                                          principal_;
     std::vector<Message>                               history_;
     StateT                                             state_{};
     std::unordered_map<std::string, std::string>       metadata_;
+    std::uint64_t                                      run_counter_ = 0;
+    std::string                                        last_run_id_;
     ChatClientT                                        chat_client_;
     EffectContext                                      effect_context_;
     std::chrono::system_clock::time_point              created_at_{};
