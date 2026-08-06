@@ -577,12 +577,82 @@ for M3 regardless.
   platform dependency — full regression clean on both platforms: Windows `ctest -j4` 45/46 (same
   pre-existing `test_native_jail_backend_windows` flake), Linux (WSL2 Ubuntu, gcc 15.2.0) `ctest -j4`
   26/26 (one unrelated, by-design skip). **S**
-- **E2.** `PythonRunner` satisfying `Runner`, under `native-jail`, embedding CPython per
-  `AGENTENGINE_BUILD_PYTHON_RUNNER` — real per-call capability-freshness derivation from
-  `EffectContext`/`CapabilitySet` (closing python_runner.hpp's own stated gap), `sys.meta_path`
-  import allowlist per ADR-002/003's Judged findings, `open`/`socket`/`subprocess` mediation
-  wrappers per 010 §9 G7's two claims (import allowlist, mediated calls) — written fresh per
-  decision 4. **XL**
+- **E2 (done, one residual named — Stage C).** `MediatedPythonRunner`
+  (`src/backends/native_jail/mediated_python_runner.{hpp,cpp}`) — a genuinely new translation unit
+  per decision 4's literal reading (confirmed with the project owner mid-task once direct code
+  inspection showed `python_runner.hpp`/`python_lockdown.{hpp,cpp}` are already real, tested, non-
+  stub code, not the "prove-phase spike" this doc's own "Current state" table had assumed —
+  decision 4 was re-confirmed as still the intended path regardless). `python_runner.hpp`/
+  `python_lockdown.{hpp,cpp}` stay completely untouched (verified: all their own existing tests
+  still pass, unmodified — `test_python_embed_smoke`, `_layer0_sweep`, `_meta_path_finder`,
+  `_numpy_pandas_import`, `_audit_hook`, `_caller_gated_import`, `_caller_gated_benchmark`,
+  `_trusted_loader_proxy_heap_type_negative_control`, 19/19 alongside the worktree suite). The new
+  class lives in `agentengine::native_jail::MediatedPythonRunner` (not `agentengine::PythonRunner`)
+  specifically to avoid colliding with the untouched spike's own class name in the same namespace.
+  Built, as new code, citing which ADR finding each piece carries forward:
+  - **Stage A (embedding + `ExecState`)**: `Py_InitializeFromConfig` with `isolated=1`/
+    `site_import=0` (ADR-002's embedding finding), a Layer-0 `sys.modules` keep-set (ADR-002 §3.0's
+    measured baseline, reused as DATA not code) — extended with a NEW finding this design needed
+    that ADR-002 never did: `os`/`socket`/`subprocess` are pinned into the keep-set (plus whatever
+    they transitively pull in, captured by snapshotting `sys.modules` right after the mediation
+    bootstrap rather than hand-enumerating a closure — avoiding ADR-002 §10.1's own cautionary
+    ~130-name-guess history) so a guest re-`import`-ing one always gets the SAME, already-mediated
+    module object, never a freshly re-executed, unpatched one. `ExecState.cwd`/`.env` sync happens
+    at call boundaries (real `SetCurrentDirectoryW`/environment-block sync in before `run()`, read
+    back out after) rather than continuous interception — correct because this process hosts exactly
+    one session (ADR-002 §5.5.6's scope, unchanged), proven bidirectionally in
+    `tests/test_mediated_python_runner_smoke.cpp` (E2-C3/C4: a variable AND a script's own
+    `os.chdir()` both survive into the next call on the same Runner, matching 010 §9 G3 literally).
+  - **Stage B (import allowlist)**: a fresh custom `PyTypeObject` meta-path finder (ADR-002 §3.1's
+    "gate by module name before any loader runs" finding, reimplemented) delegating allowed names to
+    the captured original finders. The effective allow-set is session-config-derived
+    (`package_policy_allowlist`, 010 §5's not-yet-wired package policy) rather than literally
+    re-read from `EffectContext` per call — a scope clarification, not a shortfall: there is no
+    `cap::*` kind for "which packages may be imported" (`capability_kind`'s table has no
+    import/package entry), so "per-call capability freshness" is real where a capability genuinely
+    exists (Stage D below), not forced through a nonexistent one for imports specifically.
+  - **Stage C (ADR-003's caller-aware gating tier) — NOT built this pass, a named residual, not
+    silently dropped.** `caller_gated_modules` is accepted in `MediatedPythonConfig` but inert: a
+    name placed there is denied to everyone (fail-closed, never a silent widening relative to not
+    having the field at all). Scoped out because (a) it only matters once a package policy grants a
+    heavy transitive-dependency package like numpy/pandas — no caller in this codebase populates
+    that pipeline yet — and (b) it is ADR-003's single riskiest mechanism by its own account: that
+    ADR's text documents THREE independent rounds (design, red-team, an initially-clean prove pass)
+    each missing a real skip-anchor gap before a fourth, careful re-read found it. Reproducing it
+    faithfully deserves its own dedicated pass, tracked here for Phase E4 or a follow-up task, not
+    appended to an already-large one.
+  - **Stage D (`open`/`socket`/`subprocess` mediation, 010 §9 G7's second claim — entirely unbuilt
+    in the spike)**: a small, private (never `sys.modules`-registered) `_ae_internal` C module
+    exposes `open(path, mode)`/`check_net(host, port)`; a bootstrap Python script (run once, in a
+    throwaway namespace guest code can never reach) rebinds `builtins.open`/`io.open`,
+    `socket.socket.connect`, and denies `subprocess.Popen.__init__`/`os.system`/`os.popen`/the
+    `os.exec*`/`os.spawn*` family outright (composition via `RunnerCall<shell>` is E3's job, not yet
+    wired — named, not silently gapped). `open()`'s mediation reuses `core/worktree_mount_fs.hpp`'s
+    `open_within_mount_root` directly — that primitive's own header names itself as exactly what a
+    future `FileSystemAdapter`/caller should call, so reusing it is the documented intent, not a
+    decision-4 violation (only `python_lockdown.cpp`/`python_runner.hpp` are off-limits to reuse).
+    The verified `HANDLE` is bridged into a real Python file object via `_open_osfhandle` + `io.
+    FileIO`/`BufferedReader`/`BufferedWriter`/`TextIOWrapper` — never a re-derived path, preserving
+    ADR-014's TOCTOU-safe guarantee end to end. Capability checks go through
+    `CapabilitySet::contains()` with a freshly-constructed `cap::FsRead`/`cap::FsWrite`/`cap::NetOut`
+    request per call — real per-call freshness from `EffectContext`, closing the old code's
+    "fixed at construction" gap for exactly the surface that has a real capability to check. Covers
+    r/rb/w/wb/a/ab modes only this pass (a named, narrower scope, not a silent wrong guess for other
+    mode strings).
+  Proven in `tests/test_mediated_python_runner_smoke.cpp` (21 checks, two sequential interpreter
+  lifetimes in one process — `Py_Finalize` then a fresh `Py_InitializeFromConfig`, proving that
+  cycle itself works): real execution + stdout capture; variable AND `cwd` persistence across calls;
+  import denial (fail-closed default) paired with its positive control (a second runner with the
+  identical module granted via `package_policy_allowlist`); `subprocess.Popen`/`os.system` denied
+  with `PermissionError`; `open()` for write denied without a capability (with the denied write
+  proven to never reach disk) paired with its positive control (granted `FsWrite`, real content
+  written and read back byte-for-byte through `open_within_mount_root`) and a read-side positive
+  control (`FsRead`). Windows only this pass (`AGENTENGINE_BUILD_PYTHON_RUNNER`, matching ADR-002's
+  own POSIX gap — unchanged, not attempted here). Full regression: `build-py`'s worktree+python
+  test set 19/19 (existing spike tests unmodified and still passing, confirming decision 4's "spike
+  stays in place" held); default-config `build` (AGENTENGINE_BUILD_PYTHON_RUNNER off, everything
+  this milestone has built so far) unaffected — the new CMake wiring lives entirely inside the
+  already-existing `if(AGENTENGINE_BUILD_PYTHON_RUNNER)` guard. **XL**
 - **E3.** `ShellRunner` satisfying `Runner` — recursive-descent parser → pmr AST → tree-walking
   evaluator against `CommandRegistry`'s closed three-way lookup (builtin / registered `Runner` /
   registered `Tool`, 010 §2), per ADR-001's Judged Design A, written fresh per decision 4.

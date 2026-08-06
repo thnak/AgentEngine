@@ -538,6 +538,19 @@ if(AGENTENGINE_BUILD_PYTHON_RUNNER)
   target_link_libraries(agentengine_python_runner PRIVATE "${AE_PYTHON_IMPORT_LIB}" agentengine_warnings)
   add_library(agentengine::python_runner ALIAS agentengine_python_runner)
 
+  # ---- Milestone 3 Phase E2's real PythonRunner (mediated_python_runner.{hpp,cpp}) -- a genuinely
+  # new translation unit per decision 4, sharing CPython include/link wiring with the spike above
+  # but NO source code -- see that file's own header comment for exactly what is and isn't reused.
+  add_library(agentengine_mediated_python_runner STATIC
+    src/backends/native_jail/mediated_python_runner.cpp)
+  target_include_directories(agentengine_mediated_python_runner PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  target_include_directories(agentengine_mediated_python_runner PRIVATE
+    "${AGENTENGINE_PYTHON_ROOT}/include")
+  target_link_libraries(agentengine_mediated_python_runner PUBLIC agentengine::core agentengine::worktree_store)
+  target_link_libraries(agentengine_mediated_python_runner PRIVATE "${AE_PYTHON_IMPORT_LIB}" agentengine_warnings)
+  add_library(agentengine::mediated_python_runner ALIAS agentengine_mediated_python_runner)
+
   # Runtime inputs the tests need: the CPython "home" (PyConfig.home -> stdlib search path), the
   # curated site-packages directory (numpy/pandas live there, added to sys.path by the lockdown
   # config rather than by running site.py -- see python_lockdown.cpp's file header), and the DLL

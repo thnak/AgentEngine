@@ -769,6 +769,16 @@ if(AGENTENGINE_BUILD_PYTHON_RUNNER)
   set_tests_properties(test_python_embed_smoke PROPERTIES
     ENVIRONMENT "${AE_PYTHON_TEST_ENV}" TIMEOUT 60)
 
+  # ---- Milestone 3 Phase E2's real PythonRunner (mediated_python_runner.{hpp,cpp}) ---------------
+  add_executable(test_mediated_python_runner_smoke test_mediated_python_runner_smoke.cpp)
+  target_link_libraries(test_mediated_python_runner_smoke PRIVATE
+    agentengine::core agentengine::mediated_python_runner agentengine_warnings)
+  target_compile_definitions(test_mediated_python_runner_smoke PRIVATE
+    AE_PYTHON_HOME="${AGENTENGINE_PYTHON_HOME}")
+  add_test(NAME test_mediated_python_runner_smoke COMMAND test_mediated_python_runner_smoke)
+  set_tests_properties(test_mediated_python_runner_smoke PROPERTIES
+    ENVIRONMENT "${AE_PYTHON_TEST_ENV}" TIMEOUT 60)
+
   # Priority item 2: Layer 0's sys.modules sweep, its measured scope on this target, and the
   # _imp-removal/reimport findings (ADR-002 §6 items 4/7). Talks to CPython directly (no
   # PythonLockdownInterpreter, no meta-path finder) -- see the file's own header comment for why.
