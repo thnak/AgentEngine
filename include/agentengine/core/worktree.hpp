@@ -39,6 +39,7 @@
 #include "quark/core/event_log.hpp"
 #include "quark/core/ids.hpp"
 #include "quark/core/persistence.hpp"
+#include "quark/core/serialize.hpp"
 #include "quark/core/snapshot.hpp"
 
 namespace agentengine {
@@ -250,12 +251,16 @@ namespace detail {
     return quark::ActorId{quark::durable_type_key<RefState>(), std::hash<std::string_view>{}(name)};
 }
 
-// Mint or move a Ref: acquires a fresh fence for `name`'s ActorId, appends one `RefMoved` event
-// under it, and returns the resulting `Ref`. There is no separate "mint" vs "update" entry point --
-// EventSourced append doesn't need one, since the fence and the store's own strict-seq-
-// monotonicity (012) already make a first commit and a later commit the same call.
+namespace detail {
+// Shared body of `commit_ref`/`commit_turn` below: acquires a fresh fence for `name`'s ActorId,
+// appends one `RefMoved` event under it, and returns both the resulting `Ref` AND the `SeqNo` this
+// commit landed at in the ref's own log -- `commit_ref` discards the latter (ordinary callers don't
+// need it), `commit_turn` (Phase D1) surfaces it as a turn's identity. There is no separate "mint"
+// vs "update" entry point -- EventSourced append doesn't need one, since the fence and the store's
+// own strict-seq-monotonicity (012) already make a first commit and a later commit the same call.
 template <quark::Store S>
-[[nodiscard]] result<Ref> commit_ref(S& store, std::string name, Digest tree_digest) {
+[[nodiscard]] result<std::pair<Ref, quark::SeqNo>> commit_ref_impl(S& store, std::string name,
+                                                                     Digest tree_digest) {
     auto const id = ref_actor_id(name);
     auto const fence = store.acquire_fence(id);
     quark::EventLog<RefMoved, S> log(store, id, fence, store.last_seq(id) + 1);
@@ -264,7 +269,19 @@ template <quark::Store S>
     if (!committed) {
         return std::unexpected(detail::from_quark_error(committed.error(), "worktree.ref_commit_failed"));
     }
-    return Ref{std::move(name), std::move(tree_digest)};
+    return std::make_pair(Ref{std::move(name), tree_digest}, *committed);
+}
+} // namespace detail
+
+// Mint or move a Ref: acquires a fresh fence for `name`'s ActorId, appends one `RefMoved` event
+// under it, and returns the resulting `Ref`. There is no separate "mint" vs "update" entry point --
+// EventSourced append doesn't need one, since the fence and the store's own strict-seq-
+// monotonicity (012) already make a first commit and a later commit the same call.
+template <quark::Store S>
+[[nodiscard]] result<Ref> commit_ref(S& store, std::string name, Digest tree_digest) {
+    auto r = detail::commit_ref_impl(store, std::move(name), std::move(tree_digest));
+    if (!r) return std::unexpected(r.error());
+    return std::move(r->first);
 }
 
 // Read a Ref's current state by replaying its durable log -- a fresh process, a restart, or a node
@@ -279,6 +296,75 @@ template <quark::Store S>
     }
     if (rec->last_seq == 0) return std::optional<Ref>{};  // never committed
     return std::optional<Ref>{Ref{std::move(name), rec->state.tree_digest}};
+}
+
+// ============================================================================================
+// Turn-boundary commit and rewind (025 §6, §9 G5) -- Milestone 3 Phase D1/D2. 025 §6: "at each turn
+// boundary the current tree is committed and its digest recorded" -- an ordinary `commit_ref` call
+// at heart, since committing a tree digest against a Ref is exactly what A2 already does. The one
+// thing D1 adds is a *turn identity* to hand back, and per the comment on `commit_ref`/`RefMoved`
+// above ("each committed digest is a retained, replayable log entry"), that identity does not need
+// inventing: the commit's own position in the ref's log (its `SeqNo`) already is one -- stable,
+// strictly increasing, assigned once, never reused. `turn_digest_at`/`rewind_to_turn` (D2) work
+// against ANY retained SeqNo, not only ones minted by `commit_turn` -- 025 §9 G5 says "an arbitrary
+// retained turn digest," and every commit this header makes (a turn-boundary commit, a mount write,
+// a merge, a sub-worktree creation) is equally retained, so restricting rewind to only
+// `commit_turn`-originated points would be narrower than the gate actually asks for.
+// ============================================================================================
+
+// The result of a turn-boundary commit: the moved `Ref` plus `turn`, this commit's own position in
+// the ref's log -- what a caller (the not-yet-built session/turn-loop layer, 019/session-shaped)
+// hands back to a later `rewind_to_turn` call to name this exact point again.
+struct TurnCommit {
+    Ref          ref;
+    quark::SeqNo turn;
+};
+
+// D1: commits `tree_digest` as the current tree at a turn boundary, returning which turn this was
+// (025 §6: "a turn's committed tree digest is recorded with the turn"). Built on the same
+// fence+append machinery as `commit_ref` (`detail::commit_ref_impl`) -- committing IS what a turn
+// boundary does; this function's only addition over a plain `commit_ref` call is not discarding the
+// SeqNo the commit landed at.
+template <quark::Store S>
+[[nodiscard]] result<TurnCommit> commit_turn(S& store, std::string name, Digest tree_digest) {
+    auto r = detail::commit_ref_impl(store, std::move(name), std::move(tree_digest));
+    if (!r) return std::unexpected(r.error());
+    return TurnCommit{std::move(r->first), r->second};
+}
+
+// D2 (part 1): the tree digest retained at `turn` in `name`'s own log -- fetched by reading the log
+// tail from exactly `turn` and taking the first entry, which `quark::Store::read_log`'s own contract
+// (`seq >= from`, strictly increasing) guarantees is either the entry AT `turn` or the next one
+// actually retained after it; this only returns success when that first entry's seq is an EXACT
+// match, so a caller asking for a turn that was compacted away or never existed fails closed rather
+// than silently being handed a neighboring commit under the requested turn's name.
+template <quark::Store S>
+[[nodiscard]] result<Digest> turn_digest_at(S& store, std::string const& name, quark::SeqNo turn) {
+    auto const id = ref_actor_id(name);
+    auto cur = store.read_log(id, turn);
+    if (!cur) return std::unexpected(detail::from_quark_error(cur.error(), "worktree.turn_read_failed"));
+    if (!cur->empty() && cur->begin()->seq == turn) {
+        auto ev = quark::read_migrated<RefMoved, RefMoved>(cur->begin()->record.data(),
+                                                             cur->begin()->record.size());
+        if (!ev) return std::unexpected(detail::from_quark_error(ev.error(), "worktree.turn_decode_failed"));
+        return ev->tree_digest;
+    }
+    return std::unexpected(error{failure_class::contract, "no commit is retained at the requested turn",
+                                  "worktree.turn_not_found"});
+}
+
+// D2 (part 2): rewind as ref reassignment (025's own framing, restated by §9 G5) -- fetches the
+// digest retained at `turn` and re-commits it as the CURRENT head via `commit_turn`, so
+// `read_ref`/`mount_read` see the restored tree immediately. This is assignment, never a history
+// edit: the rewind becomes a new, ordinary retained entry at the NEXT turn, so nothing before or
+// after it is destroyed -- a second `rewind_to_turn` can always recover the exact state that existed
+// just before the first one, proving G5's "reproduces that turn's tree exactly" is not merely true
+// for the one turn rewound to, but stays true of the whole history around it.
+template <quark::Store S>
+[[nodiscard]] result<TurnCommit> rewind_to_turn(S& store, std::string name, quark::SeqNo turn) {
+    auto digest = turn_digest_at(store, name, turn);
+    if (!digest) return std::unexpected(digest.error());
+    return commit_turn(store, std::move(name), std::move(*digest));
 }
 
 // ============================================================================================

@@ -716,6 +716,16 @@ if(WIN32)
   set_tests_properties(test_worktree_mount_fs_escape_corpus PROPERTIES TIMEOUT 60)
 endif()
 
+# ---- Worktree turn-boundary commit and rewind (025 §6, §9 G5, Milestone 3 Phase D1/D2) ----------
+# Builds real Blob/Tree fixtures via put_blob/put_tree and one mount_read integration check, same
+# real-crypto dependency as A1/B1/B2/B3/B4/C1.
+if(WIN32)
+  add_executable(test_worktree_turn_commit test_worktree_turn_commit.cpp)
+  target_link_libraries(test_worktree_turn_commit PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_worktree_turn_commit COMMAND test_worktree_turn_commit)
+endif()
+
 # ---- PythonRunner prove-phase gates (decisions/ADR-002-pythonrunner-embedding-and-mediation.md)
 # Only built when AGENTENGINE_BUILD_PYTHON_RUNNER is ON (CMakeLists.txt) -- these link a real
 # CPython import lib and need python3<minor>.dll reachable via PATH at run time (Windows has no

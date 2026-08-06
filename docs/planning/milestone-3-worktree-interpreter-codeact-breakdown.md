@@ -487,12 +487,37 @@ for M3 regardless.
 
 ### Phase D — Persistence, checkpoints, lifecycle (025 §6) — partial, real gaps deferred to M4
 
-- **D1.** Turn-boundary commit — at each turn boundary, the current tree is committed (A1) and its
-  digest recorded against the session's `Ref` (A2). Provable now without needing 019's full
-  checkpoint/durability machinery, since it only needs A1/A2 to exist. **M**
-- **D2.** Rewind as ref reassignment (025 §9 G5) — restoring an arbitrary retained turn digest points
-  the `Ref` back at it and reproduces that tree exactly, proven via A1's content-addressing (fetching
-  by digest is deterministic by construction). **S**
+- **D1 (done).** Turn-boundary commit (`core/worktree.hpp`) — `commit_turn` wraps the same fence+
+  append machinery `commit_ref` already uses (factored into a shared `detail::commit_ref_impl`, so
+  `commit_ref`'s own behavior and every existing caller — `mount_write`, `merge_branch_into_parent`,
+  `create_sub_worktree` — are untouched) and additionally surfaces the commit's own `SeqNo` as
+  `TurnCommit::turn`: 025 §6's "a turn's committed tree digest is recorded with the turn," made real
+  by reusing A2's own retained, replayable log entry as the turn's identity rather than inventing a
+  parallel ledger — exactly what A2's own header comment already earmarked this task to do. **S**
+  (narrower than the original **M** estimate: the whole task turned out to be "stop discarding a
+  value `EventLog::commit()` already returns," not new machinery).
+- **D2 (done).** Rewind as ref reassignment (025 §9 G5, `core/worktree.hpp`) — `turn_digest_at` reads
+  a ref's own log tail from exactly the requested `SeqNo` and returns that turn's digest only on an
+  EXACT seq match (fails closed on a compacted-away or never-committed turn, never silently hands
+  back a neighboring commit); `rewind_to_turn` fetches that digest and re-commits it via
+  `commit_turn`, so `read_ref`/`mount_read` see the restored tree immediately. Deliberately generalized
+  beyond `commit_turn`-originated points: `turn_digest_at` resolves ANY retained `SeqNo` on a ref
+  (a mount write, a merge, a sub-worktree branch commit), matching G5's own "an *arbitrary* retained
+  turn digest" wording rather than a narrower "only turns `commit_turn` itself minted." Rewind is
+  proven non-destructive, not merely asserted: a SECOND `rewind_to_turn` recovers the exact state
+  that existed just before the first one, since a rewind is itself a new, ordinary retained log entry
+  rather than a history edit. Proven in `tests/test_worktree_turn_commit.cpp` (30 checks, real
+  Blob/Tree fixtures, same real-crypto dependency as A1/B1-B4/C1): strictly increasing turn numbers
+  on repeated commits with per-name isolation (D1-C1/C2, D1-R1); a 3-turn history rewound to turn 2
+  with the fetched tree's content verified directly, not just digest equality (D2-C1); the live
+  `read_ref` head proven to move backward, not merely the return value (D2-C2); the rewind's own
+  non-destructiveness proven via a second rewind recovering the pre-rewind turn exactly (D2-C3); a
+  turn-0/past-the-end/never-committed-name negative trio each failing closed with the identical
+  `worktree.turn_not_found` code, paired with a positive control at the adjacent valid turn (D2-C4);
+  and an integration check through `mount_read` itself — a guest-facing read sees old content after a
+  rewind through the ordinary read path, not just via direct `Digest`/`Tree` inspection (D2-C5). Full
+  regression: Windows `ctest -j4` 44/45, same pre-existing `test_native_jail_backend_windows` flake,
+  unchanged. **S**
 - **D3. Deferred to M4 (019, Durability and Long-Running Agents), named not silently dropped:** full
   session-checkpoint integration (025 §9 G1's "survives sandbox destruction, process restart, and
   simulated node migration"), retention/GC policy (025 §6), and redaction reaching the object store
