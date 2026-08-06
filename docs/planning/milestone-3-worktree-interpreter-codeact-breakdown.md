@@ -1387,9 +1387,15 @@ timing flake, not a Phase H regression): default `build` 56/56 (one new binary,
 - **023-baselined budgets** for every gate that names one (025 §9 G4, 010 §9 G5) — 023 stays
   `TBD-baselined` project-wide until M8, the same status quo M1/M2 already established.
 - **Linux path-escape parity's own full corpus** beyond C4's initial pass, and Linux `ShellRunner`/
-  `PythonRunner` mediation parity generally, if C2/E2-E4's Windows-first sequencing (matching 021 §2's
-  and M2's own precedent) leaves a documented gap the way M2's fs-escape/`/proc` gaps were tracked as
-  GitHub issue #5 rather than silently closed.
+  `PythonRunner` mediation parity generally — **confirmed a real gap, not a conditional one, at
+  close-out (2026-08-06)**: `AGENTENGINE_BUILD_PYTHON_RUNNER`'s Windows-only layout is a hard
+  `FATAL_ERROR` on non-`WIN32` (root `CMakeLists.txt`, ADR-002 §9's own named scope), and
+  `MediatedShellRunner`'s functional scope is Windows/MSVC+clang per ADR-001's own acceptance —
+  neither was extended to Linux this milestone (only the worktree mount fs layer got a C4 parity
+  pass). Per this doc's own stated intention, this belongs in the same tracking mechanism M2's
+  fs-escape/`/proc` gaps used, **GitHub issue #5** — not yet updated as of this close-out (no `gh`
+  CLI available in the close-out session); flagged for the project owner to update issue #5's
+  title/scope directly, same as M2 Phase C5 did for its own related finding.
 - **A large, curated reference-agent task corpus** for 026 §8 G1's real statistical claim (decision 7,
   H1) — H1 builds the smallest corpus that makes the gate executable, not the eventual production
   corpus.
@@ -1406,3 +1412,40 @@ recommended option in each case. One live caveat remains open, not a decision bu
 re-check: 025 has uncommitted edits from a concurrent session, noted above; re-check before Phase A
 begins in earnest, since this whole doc is written against the working-tree text as it stood when
 this breakdown was authored.
+
+## Close-out (2026-08-06)
+
+Phases A-H are all committed; H2 (026 §8 G4, the milestone's own central falsifiable claim) is
+proven, so M3's roadmap exit criterion is met. Before treating the milestone as closed, this pass
+re-verified rather than assumed:
+
+- **Submodule hygiene.** `third_party/quark`'s working-tree checkout was found 4 commits behind
+  what this repo's HEAD records (`d1aa2f5` checked out vs. `9ecbf1c` committed) — confirmed
+  `d1aa2f5` is a genuine ancestor of `9ecbf1c` (both on `origin/master`, no divergence, no
+  uncommitted submodule changes), so this was ordinary local staleness, not another session's
+  in-progress work. Fast-forwarded via `git submodule update`; superproject working tree is clean.
+- **Windows regression, Release config** (the config the vendored CPython NuGet package actually
+  supports — it ships only `python313.lib`, no `python313_d.lib`, so a Debug-config build of the
+  Python-runner targets fails at link time with `LNK1104`; this is a pre-existing property of
+  `AGENTENGINE_VENDOR_PYTHON`, not a Phase H regression, and every ctest number this doc has ever
+  recorded was implicitly a Release-config run). Full rebuild + `ctest -j4 -C Release`: 68/69, the
+  sole failure being `test_native_jail_backend_windows`'s already-documented OOM-vs-timeout
+  assertion (reconfirmed to fail even standalone/single-threaded, matching this doc's own Phase B3
+  precedent exactly — not a new regression).
+- **Linux regression: not re-run this pass.** The WSL2 Ubuntu environment this doc's own Linux
+  regression numbers came from (kernel 6.6.87.2, gcc 15.2.0) is not present on the machine this
+  close-out ran on — only a stopped `docker-desktop` WSL instance is registered, no general-purpose
+  dev distro. Named as a residual rather than silently assumed clean, per the project owner's own
+  choice when asked. Risk is judged low: every M3 task touching Linux at all (C4) already ran and
+  passed there before this close-out, and nothing in Phases E-H added new Linux-targeted code (010's
+  Python/Shell runners are Windows-only this milestone, per the residual below).
+- **Residuals cross-checked against 010/025/026's own `§Open questions` sections and
+  `OpenQuestions.md`**: no RFC-level open question contradicts or is contradicted by this doc's own
+  "What's explicitly deferred past M3" list; nothing here needed an RFC edit. One finding sharpened
+  rather than newly discovered: the Linux `ShellRunner`/`PythonRunner` parity gap (bullet above) is
+  confirmed real by direct inspection (a hard `FATAL_ERROR` for Python, ADR-001's own stated Windows
+  scope for Shell), not merely a hypothetical this doc's original phrasing left conditional.
+
+**Verdict: M3 is closed.** No blocking finding. Next per the review-signoff workflow's stage 4:
+write M4's just-in-time work breakdown (005 Sessions/State/Memory, 019 Durability, 029 Memory
+System) when that work starts.
