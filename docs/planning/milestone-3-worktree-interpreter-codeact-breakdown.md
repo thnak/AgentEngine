@@ -223,11 +223,60 @@ for M3 regardless.
   same parent). WIN32-gated (like A1) since `scratch` calls `empty_tree_digest()` ->
   `compute_digest()`. Full regression: Windows `ctest -j4` 37/38, same pre-existing flake, unchanged.
   **M**
-- **B2.** Three-way merge on `branch` join (025 §4) — disjoint changes merge automatically, identical
-  content merges trivially, a genuine conflict fails closed and retains both versions at
-  `/conflicts/<path>.<agent>` (never last-writer-wins, matching 025 §4's explicit rule and I3's "model
-  output is data" — a model-drafted resolution is a proposal, never auto-applied, 025 §10 Q1's
-  resolution). **L**
+- **B2 (done).** Three-way merge on `branch` join (025 §4) — disjoint changes merge automatically,
+  identical content merges trivially, a genuine conflict fails closed and retains both versions
+  (never last-writer-wins, matching 025 §4's explicit rule). Two layers over A1/B1:
+  - `merge_trees`/`detail::merge_subtrees` — a pure algorithm over `WorktreeObjectStore` only (no
+    `Ref`, no commit). At each tree level: `ours == theirs` → trivial; `ours == base` → theirs wins
+    wholesale (only theirs changed); `theirs == base` → ours wins wholesale; otherwise recurse per
+    entry name over the union of base/ours/theirs names. Per name: identical on both sides (including
+    both absent — delete/delete) → trivial; unchanged from base on one side → the other side's value
+    wins (covers adds, edits, and deletes each propagating automatically when only one side touched
+    them); otherwise a genuine two-sided divergence — recurse one level if both sides still agree it's
+    a subtree (so a change two levels deep in one branch and an unrelated change two levels deep in
+    the parent never conflict at a shared ancestor directory, matching §4's "disjoint changes merge
+    automatically" literally, not just at the top level), else record a `MergeConflict{path, base,
+    ours, theirs}` (covers content forks, add/add divergence, edit/delete forks, and blob-vs-tree type
+    forks) and keep scanning the rest of the tree rather than stopping at the first collision, so every
+    conflict is reported in one pass. A tree with any conflict commits nothing — `MergeResult::
+    merged_tree_digest` is only valid when `conflicts.empty()`.
+  - `merge_branch_into_parent` — the orchestration layer over `merge_trees` plus `Ref`: reads the
+    branch's own current tree, merges it against `SubWorktree::base_digest` (the parent's digest at
+    the moment the branch was created — a field B1 didn't need but B2 does, added to `SubWorktree` and
+    populated in `create_sub_worktree`'s `branch` case) and the caller-supplied `expected_parent`. On
+    a clean merge, re-reads the parent's `Ref` live and refuses to commit if it no longer matches
+    `expected_parent` (`worktree.merge_stale_parent`) — a caller who observed the parent, then lost a
+    race to someone else's commit, is told to re-read and retry rather than silently overwriting that
+    other commit. This narrows, but by the code's own admission does not eliminate, the TOCTOU window
+    between that recheck and `commit_ref`'s own append — full elimination needs the read-merge-commit
+    sequence inside one Quark-actor turn (025 §4's "one writer per tree"), which a seam-level function
+    called directly (not yet wrapped in an actor) can't itself guarantee; **B4 is where this gets
+    stress-tested under real concurrent load**, and if the residual window proves reachable there, it
+    drives a real fix (e.g. a compare-and-set primitive on `Store`) rather than living with the
+    best-effort recheck indefinitely.
+  - `/conflicts/<path>.<agent>` materialization (surfacing conflicts as actual guest-visible files) is
+    NOT part of B2 — that needs the mount/filesystem layer (Phase C/F), which doesn't exist yet. B2
+    produces the conflict *data* (`MergeConflict`, in memory); where it gets written for a human or
+    supervising agent to see is a later integration concern, not invented here ahead of its own
+    dependency.
+  - Model-drafted conflict resolution (025 §10 Q1: a proposal, never auto-applied, I3's "model output
+    is data") has no code here either — B2 is the deterministic algorithmic merge only; a drafting
+    workflow needs the tool-invocation and approval-gate machinery (007, 006 §4) this header doesn't
+    own.
+  Proven in `tests/test_worktree_merge.cpp` (37 checks): disjoint top-level additions (B2-C1), identical
+  edits merging trivially (B2-C2), a genuine divergent edit surfacing as a conflict with all three
+  versions retained (B2-C3), recursion actually happening — disjoint changes inside a commonly-touched
+  subdirectory merge clean (B2-C4) while a real conflict nested inside that same subdirectory is still
+  caught at its full path rather than masked by the sibling change (B2-C5), delete/delete merging
+  trivially vs. an edit/delete fork surfacing correctly with the deleted side shown as absent (B2-C6/
+  C6b), add/add identical vs. divergent (B2-C7), a blob-vs-tree type fork (B2-C8); `merge_branch_into_
+  parent`'s happy path actually committing and being independently re-readable (B2-R1), a failed merge
+  leaving the parent `Ref` provably UNCHANGED — not just returning an error value (B2-R2), and the
+  stale-parent race check catching a real interleaving (another writer's commit lands between the
+  caller's observation and the merge call) with the other writer's commit surviving untouched (B2-R3).
+  WIN32-gated (builds real Blob/Tree fixtures via `put_blob`/`put_tree`, same real-crypto dependency as
+  A1/B1). Full regression: Windows `ctest -j4` 38/39, same pre-existing `test_native_jail_backend_
+  windows` flake, unchanged. **L**
 - **B3.** `shared`-mode staleness note (025 §3/§10 Q2's resolution) — a short diff-summary computed
   when a `shared` sub-worktree has moved since an agent's last read, reusing B2's own diff mechanism
   proactively rather than only at merge time. **S**

@@ -651,6 +651,16 @@ if(WIN32)
   add_test(NAME test_worktree_sub_worktree COMMAND test_worktree_sub_worktree)
 endif()
 
+# ---- Worktree three-way merge on branch join (025 §4, Milestone 3 Phase B2) ---------------------
+# Builds real Blob/Tree fixtures via put_blob/put_tree, which need compute_digest() -- same
+# Windows-only real-crypto dependency as A1/B1's own tests.
+if(WIN32)
+  add_executable(test_worktree_merge test_worktree_merge.cpp)
+  target_link_libraries(test_worktree_merge PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_worktree_merge COMMAND test_worktree_merge)
+endif()
+
 # ---- PythonRunner prove-phase gates (decisions/ADR-002-pythonrunner-embedding-and-mediation.md)
 # Only built when AGENTENGINE_BUILD_PYTHON_RUNNER is ON (CMakeLists.txt) -- these link a real
 # CPython import lib and need python3<minor>.dll reachable via PATH at run time (Windows has no
