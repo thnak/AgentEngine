@@ -17,6 +17,7 @@
 
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
+#include "agentengine/trust/agent_library_manifest.hpp"
 #include "agentengine/trust/capability.hpp"
 #include "backends/native_jail/mediated_python_runner.hpp"
 #include "backends/native_jail/tool_bridge.hpp"
@@ -107,6 +108,27 @@ int main() {
             AE_CHECK(out.has_value() &&
                          out->stdout_text.find("DOC: Echoes its message argument back.") != std::string::npos,
                      "G1-I2: the tool's real description is a real Python docstring -- help() works");
+        }
+
+        // G3 (026 §5a/§9 G7): the `agent.tools` MODULE itself, and the top-level `agent` namespace,
+        // both get real `__doc__` text sourced from trust/agent_library_manifest.hpp's registry --
+        // the SAME data 026 §5's own table lists -- so `help(agent)`/`help(agent.tools)` show
+        // something real rather than nothing, and the text can never drift from the canonical
+        // one-liner since it is read from that single registry, never hand-duplicated here.
+        {
+            ExecRequest req{"python",
+                             "import agent\n"
+                             "print('TOOLS_DOC:', agent.tools.__doc__)\n"
+                             "print('AGENT_DOC:', repr(agent.__doc__))"};
+            auto out = runner.run(req, state, ctx);
+            std::string expected_one_line(agentengine::trust::module_one_line("tools"));
+            AE_CHECK(out.has_value() && out->stdout_text.find("TOOLS_DOC: " + expected_one_line) !=
+                                             std::string::npos,
+                     "G3: agent.tools.__doc__ matches trust/agent_library_manifest.hpp's own "
+                     "'tools' one-liner exactly -- one source of truth, no drift");
+            AE_CHECK(out.has_value() &&
+                         out->stdout_text.find("agent.tools: " + expected_one_line) != std::string::npos,
+                     "G3: the top-level agent.__doc__ mentions agent.tools with the same one-liner text");
         }
 
         // G1-I3: an omitted optional-style keyword still round-trips correctly through JSON (proves

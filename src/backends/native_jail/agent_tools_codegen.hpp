@@ -39,6 +39,7 @@
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/json_value.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
+#include "agentengine/trust/agent_library_manifest.hpp"  // Milestone 3 Phase G3, 026 §5a/§9 G7
 
 namespace agentengine::native_jail {
 
@@ -104,6 +105,29 @@ namespace agentengine::native_jail {
         if (c == '\\' || c == '"') out += '\\';
         out += c;
     }
+    return out;
+}
+
+// A full, single-quoted Python string LITERAL (unlike `escape_for_docstring`, which only escapes for
+// embedding inside an already-open `"""..."""`) -- Milestone 3 Phase G3's own `__doc__` assignments
+// need a complete, self-contained expression, not text destined for a pre-opened literal. Handles the
+// two characters that matter for the short, plain-English one-liners `agent_library_manifest.hpp`'s
+// registry actually contains (backslash, single quote) plus embedded newlines, escaped rather than
+// left raw since (unlike a triple-quoted docstring) a single-quoted literal cannot contain one
+// literally.
+[[nodiscard]] inline std::string python_string_literal(std::string const& s) {
+    std::string out = "'";
+    for (char c : s) {
+        if (c == '\\' || c == '\'') {
+            out += '\\';
+            out += c;
+        } else if (c == '\n') {
+            out += "\\n";
+        } else {
+            out += c;
+        }
+    }
+    out += "'";
     return out;
 }
 
@@ -242,6 +266,19 @@ struct ParsedToolParams {
     }
     src += "_agent_module.tools = _tools_module\n";
     src += "_sys.modules['agent.tools'] = _tools_module\n";
+
+    // Milestone 3 Phase G3 (026 §5a: "every present module gets the same docstring treatment `tools`
+    // already has"; §9 G7: "dir(agent) and help(agent) reflect exactly... module set"). The one-liner
+    // text is sourced from trust/agent_library_manifest.hpp's registry -- the SAME data 026 §5's own
+    // table and this codegen's sibling (agent_files_data_codegen.hpp) both read -- so there is exactly
+    // one place this text is written, never a second hand-copied string that could drift. The
+    // top-level `agent.__doc__` is APPENDED to (never overwritten) since agent.files/agent.data's own
+    // bootstrap may have already run first and set its own line -- mirrors this generator's own
+    // `_agent_module` reuse-not-recreate fix immediately above, extended to __doc__.
+    src += "_tools_module.__doc__ = " + python_string_literal(std::string(trust::module_one_line("tools"))) +
+           "\n";
+    src += "_agent_module.__doc__ = (getattr(_agent_module, '__doc__', None) or '') + 'agent.tools: ' + " +
+           python_string_literal(std::string(trust::module_one_line("tools"))) + " + '\\n'\n";
     return src;
 }
 

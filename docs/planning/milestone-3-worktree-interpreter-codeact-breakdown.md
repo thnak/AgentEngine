@@ -1135,9 +1135,55 @@ for M3 regardless.
   reused for this — see the scope finding above). None of these four should be implemented as a
   Python-level shim without the underlying host mechanism landing first — 026 §1a's own "we do not
   lie" principle rules that out.
-- **G3.** `dir(agent)`/`help(agent)` wired to `trust/agent_library_manifest.hpp`'s already-real
-  `granted_modules()` (026 §5a, §9 G7) — this is the one task in Phase G that is mostly integration,
-  not new design, since the registry and its tests already exist. **M**
+- **G3 (done).** `dir(agent)`/`help(agent)` wired to `trust/agent_library_manifest.hpp`'s already-real
+  registry (026 §5a, §9 G7).
+
+  **Scope, made precise against what actually exists this milestone.** `dir(agent)`/`dir(agent.tools)`/
+  `dir(agent.files)`/`dir(agent.data)` already reflect exactly what's granted — real Python module/
+  function objects, established since G1/G2, cannot lie about their own membership by construction.
+  What was genuinely missing: `__doc__` text. `agent.tools`'s own individual FUNCTIONS already had
+  real docstrings (G1); `agent.files`/`agent.data`'s functions already had them too (G2, written
+  alongside each function) — but no `agent.*` MODULE object, nor the top-level `agent` namespace
+  itself, had one, so `help(agent)`/`help(agent.files)` showed nothing. `granted_modules()`/
+  `push_side_summary()` (the CapabilitySet-driven pull/push functions `agent_library_manifest.hpp`
+  already had) are NOT wired in directly this pass: `MediatedPythonConfig` has no `CapabilitySet` field
+  at `initialize()` time (capabilities are a strictly per-`run()`-call concept here, via
+  `EffectContext`/`g_current_ctx`) — which module OBJECTS exist is, and remains, a session-scoped host-
+  config decision (`tool_bridge.has_value()`, `expose_agent_files_data`), matching every other module
+  gate in this file, not a literal `CapabilitySet` argument. Threading one through for this alone would
+  be new architecture, not integration — exactly the kind of scope creep G2's own scope finding just
+  turned down for other modules. What's genuinely reused, making this "mostly integration" true: the
+  registry's one-liner TEXT itself. Added `trust::module_one_line(name)` (`agent_library_manifest.hpp`)
+  as the one lookup both `agent_tools_codegen.hpp` and `agent_files_data_codegen.hpp` now call to set
+  `agent.tools.__doc__`/`agent.files.__doc__`/`agent.data.__doc__`, and append their own
+  `"agent.<name>: <one-liner>\n"` line into the top-level `agent.__doc__` — the SAME text 026 §5's
+  table and the registry already state, with exactly one place it's written, never a second
+  hand-duplicated string that could drift.
+
+  **A new shared helper**: `python_string_literal` (`agent_tools_codegen.hpp`) — a full, escaped,
+  single-quoted Python string literal (unlike the pre-existing `escape_for_docstring`, which only
+  escapes for embedding inside an already-open `"""..."""`) — needed since `__doc__` assignments are
+  complete expressions, not text destined for a literal some other line already opened.
+  `agent_files_data_codegen.hpp` includes `agent_tools_codegen.hpp` to reuse it rather than
+  duplicating the escaping logic.
+
+  **Composability**: since either bootstrap may run first (or alone), `agent.__doc__` is APPENDED to
+  (`(getattr(_agent_module, '__doc__', None) or '') + ...`), never overwritten — mirroring this
+  phase's own G2 fix for `_agent_module` reuse. Proven under a real interpreter with all three
+  bootstraps active at once (`test_mediated_python_runner_agent_files_data.cpp`'s G3-coexist check):
+  `agent.__doc__` carries all three lines regardless of ordering.
+
+  Proven in `tests/test_mediated_python_runner_agent_tools.cpp` (+2 checks: `agent.tools.__doc__`
+  matches the registry exactly; `agent.__doc__` mentions it) and
+  `tests/test_mediated_python_runner_agent_files_data.cpp` (+4 checks: `agent.files.__doc__`/
+  `agent.data.__doc__` each match the registry; `agent.__doc__` mentions both; the three-way coexist
+  check above) — every check compares against `trust::module_one_line(...)` directly rather than a
+  second hand-typed copy of the expected string, so a future edit to the registry's wording cannot
+  silently desync the test's own expectation. Full regression unchanged from G2 (no new test binaries,
+  only existing ones extended): default `build` 54/55, `build-py` 64/65, same pre-existing flake. **S**
+  (smaller than the **M** estimate — the registry/lookup/escaping machinery already existed or was a
+  small, targeted addition; wiring the actual CapabilitySet through, deliberately not done this pass,
+  was the estimate's larger assumption)
 - **G4.** Error mapping (026 §3) — the closed table (`PermissionError`, `OSError`, `ConnectionError`,
   `TimeoutError`, `MemoryError`, "command not found") sourced from real occurrences of each exception
   class (026 §10 Q2's resolution — not hand-authored per site), never a host stack trace or

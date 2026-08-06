@@ -21,6 +21,7 @@
 
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
+#include "agentengine/trust/agent_library_manifest.hpp"
 #include "agentengine/trust/capability.hpp"
 #include "backends/native_jail/mediated_python_runner.hpp"
 #include "backends/native_jail/tool_bridge.hpp"
@@ -158,6 +159,33 @@ int main() {
                      "G2-I3b: agent.files.list reports is_dir correctly for plain files");
         }
 
+        // G3 (026 §5a/§9 G7): agent.files/agent.data get real __doc__ text sourced from
+        // trust/agent_library_manifest.hpp's own registry -- the same one-liners 026 §5's table
+        // lists -- so help(agent.files)/help(agent.data) show something real, and the top-level
+        // agent.__doc__ mentions both (mirroring test_mediated_python_runner_agent_tools.cpp's own
+        // matching G3 check for agent.tools).
+        {
+            ExecRequest req{"python",
+                             "from agent import files, data\n"
+                             "print('FILES_DOC:', files.__doc__)\n"
+                             "print('DATA_DOC:', data.__doc__)\n"
+                             "import agent\n"
+                             "print('AGENT_DOC:', repr(agent.__doc__))"};
+            auto out = runner.run(req, state, ctx);
+            std::string files_one_line(agentengine::trust::module_one_line("files"));
+            std::string data_one_line(agentengine::trust::module_one_line("data"));
+            AE_CHECK(out.has_value() && out->stdout_text.find("FILES_DOC: " + files_one_line) != std::string::npos,
+                     "G3: agent.files.__doc__ matches trust/agent_library_manifest.hpp's own "
+                     "'files' one-liner exactly");
+            AE_CHECK(out.has_value() && out->stdout_text.find("DATA_DOC: " + data_one_line) != std::string::npos,
+                     "G3: agent.data.__doc__ matches trust/agent_library_manifest.hpp's own "
+                     "'data' one-liner exactly");
+            AE_CHECK(out.has_value() && out->stdout_text.find("agent.files: " + files_one_line) != std::string::npos &&
+                         out->stdout_text.find("agent.data: " + data_one_line) != std::string::npos,
+                     "G3: the top-level agent.__doc__ mentions both agent.files and agent.data with "
+                     "the same one-liner text");
+        }
+
         // G2-I4: agent.data.read_json_lines streams NDJSON, one parsed value per non-empty line,
         // skipping the blank line -- proving it's a real per-line generator, not json.load on the
         // whole file (which would raise on this file's multiple top-level values).
@@ -270,7 +298,8 @@ int main() {
                          "print('HAS_FILES:', hasattr(agent, 'files'))\n"
                          "print('HAS_DATA:', hasattr(agent, 'data'))\n"
                          "b = agent.files.input('greeting.txt')\n"
-                         "print('FILES_OK:', b == b'hello from /input')"};
+                         "print('FILES_OK:', b == b'hello from /input')\n"
+                         "print('AGENT_DOC:', repr(agent.__doc__))"};
         auto out = runner.run(req, state, ctx);
         AE_CHECK(out.has_value() && out->stdout_text.find("HAS_TOOLS: True") != std::string::npos,
                  "G2-coexist: agent.tools is present when a tool_bridge is configured");
@@ -278,6 +307,21 @@ int main() {
                  "G2-coexist: agent.files is ALSO present on the SAME agent object, not a second one");
         AE_CHECK(out.has_value() && out->stdout_text.find("HAS_DATA: True") != std::string::npos,
                  "G2-coexist: agent.data is ALSO present on the SAME agent object");
+        // G3: since BOTH bootstraps ran this session, agent.__doc__ must carry all three lines --
+        // proves the append-not-overwrite composition (agent_tools_codegen.hpp's and this phase's
+        // own generator both write to it) actually holds end to end, not just in isolation.
+        AE_CHECK(out.has_value() &&
+                     out->stdout_text.find("agent.tools: " +
+                                            std::string(agentengine::trust::module_one_line("tools"))) !=
+                         std::string::npos &&
+                     out->stdout_text.find("agent.files: " +
+                                            std::string(agentengine::trust::module_one_line("files"))) !=
+                         std::string::npos &&
+                     out->stdout_text.find("agent.data: " +
+                                            std::string(agentengine::trust::module_one_line("data"))) !=
+                         std::string::npos,
+                 "G3-coexist: agent.__doc__ carries all three lines (tools/files/data) when all "
+                 "three bootstraps ran this session -- append, never overwrite");
         AE_CHECK(out.has_value() && out->stdout_text.find("FILES_OK: True") != std::string::npos,
                  "G2-coexist: agent.files still works correctly when agent.tools coexists with it");
     }

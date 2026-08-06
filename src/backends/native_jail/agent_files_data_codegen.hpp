@@ -53,6 +53,10 @@
 
 #include <string>
 
+#include "agentengine/trust/agent_library_manifest.hpp"  // Milestone 3 Phase G3, 026 §5a/§9 G7
+#include "backends/native_jail/agent_tools_codegen.hpp"  // python_string_literal -- shared escaping
+                                                           // helper, not duplicated here.
+
 namespace agentengine::native_jail {
 
 // `_agent_module = _sys.modules.get('agent') or a fresh one` -- MUST reuse an existing `agent` module
@@ -65,7 +69,7 @@ namespace agentengine::native_jail {
 // dedicated small fix to agent_tools_codegen.hpp's own generated source (`generate_agent_tools_module_
 // source`) makes G1's side of this reuse-safe too -- see that header's own updated comment.
 [[nodiscard]] inline std::string generate_agent_files_data_module_source() {
-    return
+    std::string src =
         "import sys as _sys\n"
         // Idempotent with G1's own `import json as _json` (agent_tools_codegen.hpp) if that ALSO
         // ran this session -- CPython caches an already-imported module in sys.modules, so a second
@@ -134,6 +138,20 @@ namespace agentengine::native_jail {
         "\n"
         "_agent_module.data = _data_module\n"
         "_sys.modules['agent.data'] = _data_module\n";
+
+    // Milestone 3 Phase G3 (026 §5a/§9 G7) -- see agent_tools_codegen.hpp's own matching comment on
+    // its `_tools_module.__doc__` assignment for the full rationale (single source of truth in
+    // trust/agent_library_manifest.hpp, append-not-overwrite on `agent.__doc__` since the OTHER
+    // bootstrap may already have set it first).
+    src += "_files_module.__doc__ = " + python_string_literal(std::string(trust::module_one_line("files"))) +
+           "\n";
+    src += "_data_module.__doc__ = " + python_string_literal(std::string(trust::module_one_line("data"))) + "\n";
+    src += "_agent_module.__doc__ = (getattr(_agent_module, '__doc__', None) or '') + 'agent.files: ' + " +
+           python_string_literal(std::string(trust::module_one_line("files"))) + " + '\\n'\n";
+    src += "_agent_module.__doc__ += 'agent.data: ' + " +
+           python_string_literal(std::string(trust::module_one_line("data"))) + " + '\\n'\n";
+
+    return src;
 }
 
 }  // namespace agentengine::native_jail

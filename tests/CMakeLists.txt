@@ -384,7 +384,7 @@ add_test(NAME test_agent_tools_codegen COMMAND test_agent_tools_codegen)
 # dependency. The generated source actually RUNNING is proven separately, Python-gated, below.
 add_executable(test_agent_files_data_codegen test_agent_files_data_codegen.cpp)
 target_include_directories(test_agent_files_data_codegen PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../src")
-target_link_libraries(test_agent_files_data_codegen PRIVATE agentengine_warnings)
+target_link_libraries(test_agent_files_data_codegen PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_agent_files_data_codegen COMMAND test_agent_files_data_codegen)
 
 # ---- Agent metadata compiler: register_agent<A>() (M2 Phase E task E2, 002 §6) -----------------

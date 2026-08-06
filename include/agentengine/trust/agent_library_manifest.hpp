@@ -88,6 +88,18 @@ inline std::size_t approx_token_count(std::string_view text) {
 
 } // namespace detail
 
+// Milestone 3 Phase G3 (026 §5a, §9 G7): the lookup a real CPython binding uses to source a
+// submodule's own `__doc__` from this SAME registry, rather than a hand-duplicated string living a
+// second place in the generated Python source -- the one-liner text has exactly one home. Returns ""
+// (never a sentinel/optional the caller must unwrap) for a name not in the registry, matching this
+// header's own "absent, not an error" posture for anything ungranted/unknown.
+[[nodiscard]] inline std::string_view module_one_line(std::string_view name) {
+    for (auto const& module : agent_library_registry()) {
+        if (module.name == name) return module.one_line;
+    }
+    return {};
+}
+
 struct GrantedModule {
     std::string_view name;
     std::string_view one_line;
