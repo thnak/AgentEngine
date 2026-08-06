@@ -661,6 +661,15 @@ if(WIN32)
   add_test(NAME test_worktree_merge COMMAND test_worktree_merge)
 endif()
 
+# ---- shared-mode staleness note (025 §3/§10 Q2, Milestone 3 Phase B3) ---------------------------
+# Builds real Blob/Tree fixtures via put_blob/put_tree, same real-crypto dependency as A1/B1/B2.
+if(WIN32)
+  add_executable(test_worktree_staleness test_worktree_staleness.cpp)
+  target_link_libraries(test_worktree_staleness PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_worktree_staleness COMMAND test_worktree_staleness)
+endif()
+
 # ---- PythonRunner prove-phase gates (decisions/ADR-002-pythonrunner-embedding-and-mediation.md)
 # Only built when AGENTENGINE_BUILD_PYTHON_RUNNER is ON (CMakeLists.txt) -- these link a real
 # CPython import lib and need python3<minor>.dll reachable via PATH at run time (Windows has no

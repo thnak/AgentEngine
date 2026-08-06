@@ -277,9 +277,51 @@ for M3 regardless.
   WIN32-gated (builds real Blob/Tree fixtures via `put_blob`/`put_tree`, same real-crypto dependency as
   A1/B1). Full regression: Windows `ctest -j4` 38/39, same pre-existing `test_native_jail_backend_
   windows` flake, unchanged. **L**
-- **B3.** `shared`-mode staleness note (025 §3/§10 Q2's resolution) — a short diff-summary computed
-  when a `shared` sub-worktree has moved since an agent's last read, reusing B2's own diff mechanism
-  proactively rather than only at merge time. **S**
+- **B3 (done).** `shared`-mode staleness note (025 §3/§10 Q2's resolution) — a short diff-summary
+  computed when a `shared` sub-worktree has moved since an agent's last read, surfaced proactively at
+  the start of a turn rather than only at merge time. Two pieces, standalone rather than layered on
+  B2's three-way `merge_trees` (a two-way old-vs-new diff has nothing to *decide*, so it's the smaller
+  primitive B2's algorithm could in principle be built from, not the reverse — written that way rather
+  than forced through the three-way shape for reuse's sake):
+  - `diff_trees`/`detail::diff_subtrees` — recursive two-way file-level diff between an old and a new
+    tree digest. Per name: unchanged (same digest+kind) → silent; present on only one side → every
+    leaf under it walked and recorded (`detail::collect_leaves_as`) as wholly added/removed, so a
+    whole added/removed subdirectory reports one entry per actual file, not one entry for the
+    directory name; both present but changed → recurse if both sides still agree it's a directory
+    (an unrelated addition next to an unrelated addition inside a commonly-touched directory doesn't
+    collapse into one misleading "dir changed" line), a single `modified` entry if both are blobs, or
+    a full removed+added split if one side is a blob and the other a tree (a file becoming a directory
+    reported per-file, not as one confusing "modified").
+  - `summarize_diff` — a short, **count-only** line ("3 files changed (1 modified, 1 added, 1
+    removed)") matching 025 §4's own phrasing exactly: what changed, not what it changed to or which
+    paths — `TreeDiff::changes` still carries full paths for a caller that wants them (an audit log),
+    only the model-facing summary stays path- and content-free. **Named gap, not silently assumed**:
+    the RFC's own example text also names the writer ("changed by `writer`"); `Ref`/`RefMoved` (Phase
+    A2) record only a tree digest, no committer identity, so attribution isn't in this summary — a
+    candidate for whichever later phase threads an agent/run identity through a commit (Phase D's
+    turn-boundary work is the likely home), not invented here ahead of that seam existing.
+  - `check_shared_staleness`/`SharedStalenessNote` — the orchestration: compares a `shared` sub-
+    worktree's live digest against a caller-supplied `last_read_digest`, returning the diff only when
+    they differ (an unchanged tree never touches `diff_trees` at all). Fails closed with a distinct
+    code on any non-`shared` mode — `branch`/`scratch` are private until an explicit merge and
+    `readonly` is pinned at creation, so none of the three can ever be "stale" in this sense, and
+    silently returning "not stale" for them would be worse than refusing to answer the question at
+    all.
+  Proven in `tests/test_worktree_staleness.cpp` (27 checks): identical trees diff to nothing (B3-C1);
+  single added/modified/removed top-level files reported with the right kind (B3-C2/C3/C4); a whole
+  added subdirectory correctly counted per-file rather than per-directory (B3-C5); a disjoint addition
+  inside a commonly-touched directory doesn't drag in its unchanged sibling (B3-C6); a blob↔tree type
+  change reported as a legible removed+added split (B3-C7); `summarize_diff`'s breakdown text checked
+  exactly for a mixed one-of-each-kind diff (B3-C8); `check_shared_staleness` proven not stale
+  immediately after a read (B3-R1, no false positive), genuinely stale end-to-end when a SIBLING's
+  shared sub-worktree (same backing `Ref`, different `SubWorktree` value) writes between the agent's
+  reads — with a positive control that re-reading clears the staleness rather than it staying sticky
+  (B3-R2) — and rejecting a `branch`-mode sub-worktree with a stable error code (B3-R3). WIN32-gated
+  (same real-crypto dependency as A1/B1/B2). Full regression: Windows `ctest -j4` 38/40 (the known
+  `test_native_jail_backend_windows` flake plus, this run, `test_native_jail_parity_windows` failing
+  the identical OOM-vs-timeout assertion under `-j4` contention — confirmed NOT a regression by
+  re-running both single-threaded: parity passes clean alone, backend fails on the same assertion even
+  alone, matching the already-documented flake exactly; neither test touches worktree code). **S**
 - **B4.** Concurrency proof (025 §9 G3, scoped per decision 7) — N concurrent `branch` agents produce
   a deterministic merge result over a machine-safe bounded randomized-interleaving count; every
   genuine conflict is surfaced, never silently resolved; a positive control (a deliberately miswired
