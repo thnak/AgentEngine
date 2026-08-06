@@ -1020,11 +1020,121 @@ for M3 regardless.
   (`test_agent_tools_codegen` is portable, runs in both trees), `build-py` 61/62, both with only the
   same pre-existing `test_native_jail_backend_windows` OOM-reporting flake every prior Phase F task's
   own regression run already hit. **L**
-- **G2.** The remaining eight `agent.*` modules (026 §5's table) over F1/F2/A1: `files`, `data`,
-  `output`, `progress`, `ask`, `spawn` at minimum (`memory`/`notes` land with 029, out of scope for
-  M3, named not silently dropped — 026's own table already ties them to 029 §4/§5). Each individually
-  capability-gated, each passing 026 §5a's four-part curation rubric already applied in the RFC text
-  itself (no new admission work needed, just building what already passed the test on paper). **XL**
+- **G2 (done, narrowed from its original XL scope — see below).** `agent.files`/`agent.data`, built
+  for real over F1/Stage D's existing worktree/filesystem mediation. **`output`/`progress`/`ask`/
+  `spawn` are NOT built this pass** — a research finding, not an oversight (see "Scope finding"
+  below). `memory`/`notes` remain 029's job as this doc's original text already said.
+
+  **Scope finding, surfaced before any code was written.** This task's original one-liner assumed all
+  eight remaining modules had "already passed the [curation] test on paper" and needed only wiring.
+  A research pass (citing `EffectContext` at `include/agentengine/core/effect_context.hpp:15-28`,
+  `OutputSchema` at `core/agent.hpp:112`, `agent_registry.hpp:423-428`'s `invoke_agent_tool`) found
+  this true only for `files`/`data`: both have real, existing host machinery to be a convenience layer
+  OVER (F1's `materialize_mount`/`harvest_mount`, Stage D's `open()` mediation). The other four do
+  not — `output` needs 003 §4's structured-output-schema enforcement (an empty placeholder struct
+  today, not implemented); `progress` needs 013's run event stream (RFC-only, zero C++ hits for
+  `EventStream`/`StateChanged`/`report_progress` anywhere in `include/`/`src/`, and `EffectContext`
+  has no reverse channel to push events through even if one existed); `ask` needs 001 §2's
+  `InputRequired`/`Interaction` suspend-resume mechanism (the `cap::Elicit` capability tag is real and
+  gateable, but nothing in this codebase can actually pause a run and later deliver an answer back);
+  `spawn` needs a real nested-agent-run invocation path (`cap::AgentCall`/`SpawnBudget` are real, but
+  the only existing "invoke another agent" function, `invoke_agent_tool`, is tool-dispatch-only — ONE
+  call through the target's tool table, never a recursive run — and uses the target agent's own FULL,
+  unattenuated capability ceiling, directly contradicting 026 §5's own explicit "`agent.spawn`
+  inherits an attenuated capability set" design constraint). Building working versions of these four
+  would mean inventing new cross-cutting host infrastructure that several OTHER RFCs (013, 001, 003)
+  own, not writing a Python wrapper over something that already exists — a materially different, much
+  larger task than "wire up `agent.*` over existing metadata," and one this project's own CLAUDE.md
+  names as needing `design → red-team → prove → judge` treatment before an ad-hoc implementation,
+  given how directly `spawn` in particular touches I2 (no ambient authority: the wrong-ceiling bug
+  above is exactly an ambient-authority shape). Presented to the project owner as an explicit
+  three-way choice (build files/data only and name the rest blocked / build the missing host
+  machinery first / ship files+data plus `NotImplementedError` stubs for the other four); the first
+  was chosen, matching this project's own established residual-naming discipline (008/025's own
+  "named gap, not silently worked around" precedent) over either silently shipping fake modules that
+  would violate 026 §1a's "we do not lie" principle (a `progress.report()` that silently no-ops, an
+  `ask()` that cannot really suspend) or silently absorbing four other RFCs' own unbuilt design work
+  into this task.
+
+  **What was built.** `src/backends/native_jail/agent_files_data_codegen.hpp` (new, pure C++,
+  Python-free, mirroring `agent_tools_codegen.hpp`'s own separation) — unlike G1, there is no
+  per-session-variable schema to derive source from (the function set is fixed by 026 §5's table), so
+  this header is a single static Python source string covering both modules:
+  `agent.files.input(name)`/`.artifact(name, data)`/`.list(path)` (reading/writing the RFC's own
+  canonical `/input`/`/out` mount framing, 026 §2), `agent.data.read_json(path)` (a small-file
+  convenience) and `.read_json_lines(path)`/`.read_csv_rows(path, delimiter=',')` — both real Python
+  GENERATORS (`yield`, not `return [...]`), which is what makes 026 §5's own "without loading them
+  wholly into memory" claim concretely true: iterating a real file object already streams line-by-line
+  without materializing the whole file. `read_csv_rows` is deliberately a plain `str.split`, NOT
+  RFC4180-compliant (no quoted-field/embedded-delimiter support) — named as a narrower scope than a
+  real CSV parser, the same "fails safe over silently wrong" tradeoff F3's own trailing-expression
+  split already makes for an analogous reason.
+
+  **A new low-level primitive**: `agent.files.list` needed directory listing, which nothing in this
+  codebase provided — `core/worktree_mount_fs.hpp`'s existing `open_within_mount_root` only opens
+  files. Added `list_within_mount_root` (same file) reusing the IDENTICAL containment mechanism
+  (one `CreateFileW` with `FILE_FLAG_BACKUP_SEMANTICS`, then `GetFinalPathNameByHandleW`-verified
+  against the root) applied to a directory HANDLE for the first time, then enumerates via
+  `FindFirstFileW`/`FindNextFileW` against the ALREADY-VERIFIED canonical path, never the raw guest
+  string — "the object verified is the object used" preserved for listing, not just for opening.
+  Proven in `tests/test_worktree_mount_fs_listdir.cpp` (6 checks: empty-root listing, real
+  file/subdir entries with correct name/is_dir/size, a `..`-escape negative control, and a junction-
+  escape negative control paired with a junction-stays-inside positive control, 022 §5).
+
+  **Wiring** (`mediated_python_runner.cpp`): a new `_ae_internal.listdir(path) -> str` (JSON array of
+  `{"name","is_dir","size"}`), capability-checked against `cap::FsRead` BEFORE any Win32 call — the
+  same shape `Internal_open` already uses for `cap::FsRead`/`cap::FsWrite` — encoded via the existing
+  `json::Value`/`json::dump` serializer (never hand-concatenated strings around a guest-influenced
+  file name). `run_agent_files_data_bootstrap()` mirrors G1's own `run_agent_tools_bootstrap` shape
+  exactly (private throwaway globals dict, its own fresh `_ae_internal`), gated on a NEW, DEDICATED
+  `MediatedPythonConfig::expose_agent_files_data` opt-in — deliberately NOT derived from
+  `!mount_roots.empty()`, a real bug this phase found via its own regression suite: `mount_roots`
+  predates G2 (Stage D) and several pre-existing tests configure a mount purely for `open()`/`os`
+  mediation while still asserting plain `import json` is denied by default
+  (`test_mediated_python_runner_smoke.cpp`'s own E2-C5). Gating on `!mount_roots.empty()` alone
+  silently widened every one of those sessions' importable set the moment this bootstrap's `import
+  json` ran. Fixed by adding the dedicated flag (defaulting `false`, changing nothing for any caller
+  that predates G2) and adding a permanent regression control for the exact shape of this bug
+  (`tests/test_mediated_python_runner_agent_files_data.cpp`'s G2-N3, independent of relying on the
+  older test file alone to keep catching it).
+
+  **`agent.tools`/`agent.files`/`agent.data` coexistence**: G1's own `generate_agent_tools_module_
+  source` unconditionally created a FRESH `agent` module object
+  (`_agent_module = _ModuleType('agent')`), which would have silently detached whichever submodule the
+  OTHER bootstrap (G1's or this phase's) already attached, if both ran in the same session — a latent
+  ordering bug G1 could not have hit alone (it was the only bootstrap that existed) but G2's own
+  arrival triggers. Fixed in `agent_tools_codegen.hpp` (`_agent_module = _sys.modules.get('agent') or
+  a fresh one`) and mirrored in this phase's own generator, making the two bootstraps
+  order-independent. Proven under a real interpreter with BOTH a tool bridge and mount_roots
+  configured at once (`test_mediated_python_runner_agent_files_data.cpp`'s Scenario 2): `agent.tools`,
+  `agent.files`, and `agent.data` all resolve off the SAME `agent` object regardless of which
+  bootstrap ran first.
+
+  Proven in `tests/test_agent_files_data_codegen.cpp` (portable, no CPython dependency — 15 checks:
+  every function defined/attached, the canonical `/input`/`/out` mount framing, the `agent`-reuse
+  fix, both generators actually using `yield`) and
+  `tests/test_mediated_python_runner_agent_files_data.cpp` (Python-gated, 22 checks across three
+  scenarios): a real `input`/`artifact`/`list` round trip including a real file landing on disk at
+  `/out`; `read_json_lines` proven to be a real generator streaming NDJSON (skipping a blank line,
+  and correctly NOT raising on a file `json.load` would reject outright); `read_csv_rows`; a
+  capability-denial negative control through the real per-call pipeline (never a bypass); the
+  `agent.tools`/`agent.files`/`agent.data` coexistence proof above; and the `expose_agent_files_data`
+  regression control (G2-N3) for the gating bug this phase found and fixed. Full regression: default
+  `build` 54/55 (`test_agent_files_data_codegen` and `test_worktree_mount_fs_listdir` both portable/
+  Windows-only-but-no-Python, running in both trees), `build-py` 64/65, both with only the same
+  pre-existing `test_native_jail_backend_windows` OOM-reporting flake every prior Phase task's own
+  regression run already hits. **L** (narrowed from **XL** — the four residual modules below account
+  for the rest of the original estimate)
+
+  **Residuals, named explicitly rather than silently dropped** (blocked on infrastructure this task
+  does not own): `agent.output` blocked on 003 §4's real structured-output-schema enforcement;
+  `agent.progress` blocked on 013's run event stream, including giving `EffectContext` a reverse
+  channel to report through; `agent.ask` blocked on 001 §2's `InputRequired`/`Interaction`
+  suspend-resume mechanism; `agent.spawn` blocked on a real nested-agent-run invocation path with a
+  genuinely attenuated capability set (`invoke_agent_tool`'s current full-ceiling behavior must not be
+  reused for this — see the scope finding above). None of these four should be implemented as a
+  Python-level shim without the underlying host mechanism landing first — 026 §1a's own "we do not
+  lie" principle rules that out.
 - **G3.** `dir(agent)`/`help(agent)` wired to `trust/agent_library_manifest.hpp`'s already-real
   `granted_modules()` (026 §5a, §9 G7) — this is the one task in Phase G that is mostly integration,
   not new design, since the registry and its tests already exist. **M**

@@ -29,6 +29,7 @@
                                                      // intent, not spike-code reuse (that rule is
                                                      // about python_lockdown.cpp/python_runner.hpp).
 #include "agentengine/trust/capability.hpp"
+#include "backends/native_jail/agent_files_data_codegen.hpp"  // Milestone 3 Phase G2, 026 §5
 #include "backends/native_jail/agent_tools_codegen.hpp"  // Milestone 3 Phase G1, 026 §4/§5
 #include "backends/native_jail/output_discipline.hpp"  // Milestone 3 Phase F3, 010 §3 items 4/5
 #include "backends/native_jail/tool_bridge.hpp"  // Milestone 3 Phase F2, 010 §6's call_tool bridge
@@ -395,6 +396,66 @@ PyObject* Internal_open(PyObject* /*self*/, PyObject* args) {
     return text;
 }
 
+// `_ae_internal.listdir(path) -> str` (a JSON array of `{"name","is_dir","size"}` objects) --
+// Milestone 3 Phase G2's `agent.files.list` primitive. Same shape as `Internal_open`: capability-
+// checked (`cap::FsRead`, the SAME class `open(..., "r")` already checks, since listing is a read of
+// directory metadata, not a write) BEFORE any Win32 call, then delegates to
+// `list_within_mount_root` (core/worktree_mount_fs.hpp, this phase's own new primitive) for the
+// TOCTOU-safe enumeration. Returns JSON text (never native Python objects built by hand here) so the
+// existing `json::Value`/`json::dump` serializer -- already proven correct for `Internal_call_tool`'s
+// own wire boundary -- owns the escaping, rather than this function hand-concatenating strings around
+// a guest-influenced file name.
+PyObject* Internal_listdir(PyObject* /*self*/, PyObject* args) {
+    char const* path_c = nullptr;
+    if (!PyArg_ParseTuple(args, "s", &path_c)) return nullptr;
+
+    auto split = split_guest_path(path_c);
+    if (!split) {
+        raise_permission_error(split.error().message);
+        return nullptr;
+    }
+    auto const& [mount_id, mount_relative] = *split;
+
+    if (!g_current_config) {
+        raise_permission_error("no active session context for file access");
+        return nullptr;
+    }
+    auto mount_it = g_current_config->mount_roots.find(mount_id);
+    if (mount_it == g_current_config->mount_roots.end()) {
+        raise_permission_error("no mount named '" + mount_id + "' is available in this session");
+        return nullptr;
+    }
+
+    if (!g_current_ctx || !g_current_ctx->capabilities) {
+        raise_permission_error("no capability context available for file access");
+        return nullptr;
+    }
+    Capability requested = cap::FsRead{mount_id, mount_relative, std::nullopt};
+    if (!g_current_ctx->capabilities->contains(requested)) {
+        raise_permission_error("no capability grants read access to '" + std::string(path_c) + "'");
+        return nullptr;
+    }
+
+    auto entries = list_within_mount_root(mount_it->second, mount_relative);
+    if (!entries) {
+        PyErr_SetString(entries.error().klass == failure_class::policy ? PyExc_PermissionError : PyExc_OSError,
+                         entries.error().message.c_str());
+        return nullptr;
+    }
+
+    std::vector<json::Value> items;
+    items.reserve(entries->size());
+    for (auto const& entry : *entries) {
+        items.push_back(json::Value::make_object({
+            {"name", json::Value::make_string(entry.name)},
+            {"is_dir", json::Value::make_bool(entry.is_directory)},
+            {"size", json::Value::make_number(static_cast<double>(entry.size_bytes))},
+        }));
+    }
+    std::string wire = json::dump(json::Value::make_array(std::move(items)));
+    return PyUnicode_FromString(wire.c_str());
+}
+
 // The REAL, pre-mediation `socket.socket.connect` -- captured ONCE, in C++, into a TU-static
 // PyObject* (mirroring g_real_meta_path's own precedent for the import finder's delegate list),
 // and NEVER placed into any Python-reachable namespace (no module global, no closure cell, no
@@ -526,6 +587,7 @@ PyObject* Internal_call_tool(PyObject* /*self*/, PyObject* args) {
 
 PyMethodDef g_internal_methods[] = {
     {"open", Internal_open, METH_VARARGS, nullptr},
+    {"listdir", Internal_listdir, METH_VARARGS, nullptr},
     {"do_connect", Internal_do_connect, METH_VARARGS, nullptr},
     {"call_tool", Internal_call_tool, METH_VARARGS, nullptr},
     {nullptr, nullptr, 0, nullptr},
@@ -677,6 +739,50 @@ result<void> run_agent_tools_bootstrap(ToolTable const& bridged_tools) {
     return {};
 }
 
+// Milestone 3 Phase G2 (026 §5): executes `agent_files_data_codegen.hpp`'s static module source in
+// its own private, throwaway globals dict -- the identical shape `run_agent_tools_bootstrap` already
+// uses. Needs its OWN fresh `_ae_internal` module object for the same reason that function's own
+// comment gives: the ONE created during `run_mediation_bootstrap` lived only in that function's own
+// throwaway dict, already destroyed by the time this runs.
+result<void> run_agent_files_data_bootstrap() {
+    PyObject* internal_module = PyModule_Create(&g_internal_moddef);
+    if (!internal_module) {
+        return std::unexpected(error{failure_class::fatal, "could not create _ae_internal module for "
+                                      "the agent.files/agent.data bootstrap",
+                                      "python.agent_files_data_bootstrap_failed"});
+    }
+
+    PyObject* globals = PyDict_New();
+    PyDict_SetItemString(globals, "__builtins__", PyEval_GetBuiltins());
+    PyDict_SetItemString(globals, "_ae_internal", internal_module);
+    Py_DECREF(internal_module);
+
+    std::string module_source = generate_agent_files_data_module_source();
+    PyObject* run_result = PyRun_String(module_source.c_str(), Py_file_input, globals, globals);
+    bool ok = run_result != nullptr;
+    std::string err;
+    if (!run_result) {
+        PyObject *type = nullptr, *value = nullptr, *tb = nullptr;
+        PyErr_Fetch(&type, &value, &tb);
+        PyErr_NormalizeException(&type, &value, &tb);
+        if (value) {
+            PyObject* s = PyObject_Str(value);
+            if (s) { err = PyUnicode_AsUTF8(s); Py_DECREF(s); }
+        }
+        Py_XDECREF(type);
+        Py_XDECREF(value);
+        Py_XDECREF(tb);
+    } else {
+        Py_DECREF(run_result);
+    }
+    Py_DECREF(globals);
+    if (!ok) {
+        return std::unexpected(error{failure_class::fatal, "agent.files/agent.data bootstrap raised: " + err,
+                                      "python.agent_files_data_bootstrap_failed"});
+    }
+    return {};
+}
+
 std::unordered_set<std::string> snapshot_current_module_names() {
     std::unordered_set<std::string> names;
     PyObject* modules = PyImport_GetModuleDict();  // borrowed
@@ -801,6 +907,19 @@ result<void> MediatedPythonRunner::initialize() {
     if (config_.tool_bridge.has_value()) {
         auto agent_tools = run_agent_tools_bootstrap(config_.tool_bridge->bridged_tools);
         if (!agent_tools) return std::unexpected(agent_tools.error());
+    }
+
+    // Milestone 3 Phase G2 (026 §5): agent.files/agent.data, gated on the DEDICATED
+    // `expose_agent_files_data` opt-in (see that field's own comment for why this is not derived from
+    // `!mount_roots.empty()`) -- with it unset, both stay simply absent (026 §5a's "ungranted is
+    // absent" rule), matching G1's own tool_bridge.has_value() gate one line above. Runs BEFORE
+    // compute_effective_keep_set for the identical reason G1's own bootstrap does: json/agent/
+    // agent.files/agent.data must be captured by the SAME pre/post-bootstrap sys.modules diff that
+    // already covers os/socket/subprocess's own transitive closure, or sweep_to_keep_set() below
+    // deletes them right after creation.
+    if (config_.expose_agent_files_data) {
+        auto agent_files_data = run_agent_files_data_bootstrap();
+        if (!agent_files_data) return std::unexpected(agent_files_data.error());
     }
 
     compute_effective_keep_set(pre_bootstrap_modules);

@@ -26,10 +26,15 @@
 // do without.
 
 #include "agentengine/core/error.hpp"
+#include "agentengine/sandbox/filesystem_adapter.hpp"  // DirEntry -- list_within_mount_root (Milestone
+                                                          // 3 Phase G2) reports in the SAME shape
+                                                          // FileSystemAdapter::list_directory already
+                                                          // uses, rather than inventing a second one.
 
 #include <windows.h>
 
 #include <string>
+#include <vector>
 
 namespace agentengine {
 
@@ -94,6 +99,20 @@ private:
                                                               DWORD desired_access,
                                                               DWORD creation_disposition,
                                                               DWORD flags_and_attributes = FILE_ATTRIBUTE_NORMAL);
+
+// Milestone 3 Phase G2 (026 §5's `agent.files` "listing" claim). Lists the immediate children of
+// `guest_path` (mount-relative, same grammar as `open_within_mount_root` -- OR the empty string,
+// meaning the mount root itself, which `open_within_mount_root` deliberately refuses since a root is
+// never "a file"; listing the root is an ordinary, legitimate request this function must not reject
+// the same way). Uses the IDENTICAL containment mechanism as `open_within_mount_root` -- one
+// `CreateFileW` with `FILE_FLAG_BACKUP_SEMANTICS` (the documented way to open a directory HANDLE),
+// then `GetFinalPathNameByHandleW`-verified against the root -- so a reparse point/junction/8.3-alias
+// escape is caught here exactly the way it already is for a file open, not by a second, independently
+// -reasoned check. Enumeration itself (`FindFirstFileW`/`FindNextFileW`) then runs against that
+// ALREADY-VERIFIED canonical path, never the raw guest-derived one, preserving "the object verified is
+// the object used" for the enumeration step too, not just the containment check.
+[[nodiscard]] result<std::vector<DirEntry>> list_within_mount_root(std::wstring const& mount_root,
+                                                                     std::string const& guest_path);
 
 // TEST-ONLY, deliberately vulnerable control -- this project's established pattern for proving a
 // containment check is a real gate rather than one that cannot fail (022 §5; the precedent is

@@ -80,6 +80,17 @@ struct MediatedPythonConfig {
     // default for every other host-configured surface here (`mount_roots` empty means no mounts).
     std::optional<ToolBridgeConfig> tool_bridge;
 
+    // Milestone 3 Phase G2 (026 §5): whether `agent.files`/`agent.data` should be exposed this
+    // session. Deliberately a SEPARATE opt-in from `mount_roots` itself, not derived from
+    // `!mount_roots.empty()` -- `mount_roots` predates G2 (Stage D) and exists purely to configure
+    // `open()`/`os.*` mediation; several pre-existing tests configure a mount but still assert plain
+    // stdlib imports (`import json`) are denied by default (E2-C5's own fail-closed baseline). Tying
+    // agent.files'/agent.data's presence, and their `import json` side effect, to "any mount is
+    // configured" would have silently widened every one of those sessions' importable set. A host
+    // that wants the library sets this explicitly, matching `agent.tools`' own
+    // `tool_bridge.has_value()` gate -- default `false` changes nothing for a caller that predates G2.
+    bool expose_agent_files_data = false;
+
     // Milestone 3 Phase F3 (010 §3 items 4/5): the per-session output-discipline cap applied to
     // `stdout_text`/`stderr_text`/`result_repr` before `run()` returns -- see
     // `output_discipline.hpp`'s own header for why this is a fixed byte constant rather than the

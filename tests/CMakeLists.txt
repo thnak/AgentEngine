@@ -379,6 +379,14 @@ target_include_directories(test_agent_tools_codegen PRIVATE "${CMAKE_CURRENT_SOU
 target_link_libraries(test_agent_tools_codegen PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_agent_tools_codegen COMMAND test_agent_tools_codegen)
 
+# ---- agent.files/agent.data codegen: fixed static Python source (Milestone 3 Phase G2, 026 §5).
+# Header-only (src/backends/native_jail/agent_files_data_codegen.hpp), core-tier -- no Python.h
+# dependency. The generated source actually RUNNING is proven separately, Python-gated, below.
+add_executable(test_agent_files_data_codegen test_agent_files_data_codegen.cpp)
+target_include_directories(test_agent_files_data_codegen PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../src")
+target_link_libraries(test_agent_files_data_codegen PRIVATE agentengine_warnings)
+add_test(NAME test_agent_files_data_codegen COMMAND test_agent_files_data_codegen)
+
 # ---- Agent metadata compiler: register_agent<A>() (M2 Phase E task E2, 002 §6) -----------------
 # Header-only (core/agent_registry.hpp), core-tier -- links only agentengine::core.
 add_executable(test_agent_registry test_agent_registry.cpp)
@@ -810,6 +818,13 @@ if(WIN32)
     agentengine::core agentengine::worktree_store agentengine_warnings)
   add_test(NAME test_worktree_mount_fs_escape_corpus COMMAND test_worktree_mount_fs_escape_corpus)
   set_tests_properties(test_worktree_mount_fs_escape_corpus PROPERTIES TIMEOUT 60)
+
+  # ---- list_within_mount_root (Milestone 3 Phase G2, 026 §5's agent.files "listing" claim) -------
+  add_executable(test_worktree_mount_fs_listdir test_worktree_mount_fs_listdir.cpp)
+  target_link_libraries(test_worktree_mount_fs_listdir PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_worktree_mount_fs_listdir COMMAND test_worktree_mount_fs_listdir)
+  set_tests_properties(test_worktree_mount_fs_listdir PROPERTIES TIMEOUT 60)
 endif()
 
 # ---- Worktree mount OS-level path-escape corpus, Linux half (025 §5, 021 §6 G3, Milestone 3
@@ -877,6 +892,17 @@ if(AGENTENGINE_BUILD_PYTHON_RUNNER)
     AE_PYTHON_HOME="${AGENTENGINE_PYTHON_HOME}")
   add_test(NAME test_mediated_python_runner_agent_tools COMMAND test_mediated_python_runner_agent_tools)
   set_tests_properties(test_mediated_python_runner_agent_tools PROPERTIES
+    ENVIRONMENT "${AE_PYTHON_TEST_ENV}" TIMEOUT 60)
+
+  # ---- Milestone 3 Phase G2: agent.files/agent.data generated-code execution proof (026 §5) -------
+  # Generation-only correctness (no CPython dependency) is test_agent_files_data_codegen.cpp, above.
+  add_executable(test_mediated_python_runner_agent_files_data test_mediated_python_runner_agent_files_data.cpp)
+  target_link_libraries(test_mediated_python_runner_agent_files_data PRIVATE
+    agentengine::core agentengine::mediated_python_runner agentengine_warnings)
+  target_compile_definitions(test_mediated_python_runner_agent_files_data PRIVATE
+    AE_PYTHON_HOME="${AGENTENGINE_PYTHON_HOME}")
+  add_test(NAME test_mediated_python_runner_agent_files_data COMMAND test_mediated_python_runner_agent_files_data)
+  set_tests_properties(test_mediated_python_runner_agent_files_data PROPERTIES
     ENVIRONMENT "${AE_PYTHON_TEST_ENV}" TIMEOUT 60)
 
   # ---- Milestone 3 Phase E4: hostile-corpus/mediation proof (010 §9 G2/G7) -----------------------

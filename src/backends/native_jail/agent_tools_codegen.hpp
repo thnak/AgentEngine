@@ -204,6 +204,15 @@ struct ParsedToolParams {
 // ordinary `import agent`/`from agent import tools` resolve them straight from that cache, never
 // touching the meta-path finder at all (the same "never re-resolved fresh" property `os`/`socket`/
 // `subprocess` already rely on -- mediated_python_runner.cpp's `kPinnedMediatedModules` comment).
+//
+// `_agent_module` REUSES `sys.modules['agent']` if one already exists, rather than unconditionally
+// creating a fresh object (Milestone 3 Phase G2 fix): `run_agent_tools_bootstrap` and
+// `run_agent_files_data_bootstrap` are two independent `PyRun_String` calls that may run in either
+// order, and a session can have BOTH tools and files/data bridged at once. A naive
+// `_agent_module = _ModuleType('agent')` here would silently detach whichever submodule the OTHER
+// bootstrap already attached to the PREVIOUS `agent` object -- `sys.modules['agent.tools']` would
+// still resolve, but `import agent; agent.tools` would not, since the new `agent` object never had
+// `.tools` set on it. Reusing the existing object (if any) makes the two bootstraps commutative.
 [[nodiscard]] inline result<std::string> generate_agent_tools_module_source(
     std::vector<ToolDescriptor> const& bridged_tools) {
     std::string src =
@@ -223,13 +232,15 @@ struct ParsedToolParams {
         src += "\n";
     }
     src += "_ModuleType = type(_sys)\n";
-    src += "_agent_module = _ModuleType('agent')\n";
+    src += "_agent_module = _sys.modules.get('agent')\n";
+    src += "if _agent_module is None:\n";
+    src += "    _agent_module = _ModuleType('agent')\n";
+    src += "    _sys.modules['agent'] = _agent_module\n";
     src += "_tools_module = _ModuleType('agent.tools')\n";
     for (auto const& descriptor : bridged_tools) {
         src += "_tools_module." + descriptor.name + " = " + descriptor.name + "\n";
     }
     src += "_agent_module.tools = _tools_module\n";
-    src += "_sys.modules['agent'] = _agent_module\n";
     src += "_sys.modules['agent.tools'] = _tools_module\n";
     return src;
 }

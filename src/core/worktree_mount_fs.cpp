@@ -36,6 +36,23 @@ result<std::wstring> utf8_to_wide(std::string const& s) {
     return out;
 }
 
+// The inverse of `utf8_to_wide` -- needed only by `list_within_mount_root` (Milestone 3 Phase G2) to
+// report a `WIN32_FIND_DATAW::cFileName` back as UTF-8, matching `DirEntry::name`'s own type. A
+// `FindFirstFileW` result is whatever the filesystem actually stored; this project has no evidence
+// any NTFS filename cannot round-trip through `WideCharToMultiByte`, so this only fails closed on
+// something Win32 itself could not have produced.
+result<std::string> wide_to_utf8(std::wstring const& s) {
+    if (s.empty()) return std::string{};
+    int needed = WideCharToMultiByte(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0, nullptr, nullptr);
+    if (needed <= 0) {
+        return std::unexpected(error{failure_class::fatal, "directory entry name could not be re-encoded as UTF-8",
+                                      "worktree.mount_fs_entry_name_encoding_failure"});
+    }
+    std::string out(static_cast<std::size_t>(needed), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), out.data(), needed, nullptr, nullptr);
+    return out;
+}
+
 // The extra, real-filesystem-specific hardening layer on top of `split_mount_path`'s existing
 // "no leading/trailing/double slash, no `.`/`..`" contract: a segment that contains a backslash
 // can smuggle a whole absolute Windows path (or a `\\?\` prefix, or a `..\..\` climb) through what
@@ -167,6 +184,85 @@ result<SafeFileHandle> open_within_mount_root(std::wstring const& mount_root, st
             error{failure_class::policy, "resolved path escapes the mount root", "worktree.mount_path_escapes_root"});
     }
     return target;
+}
+
+result<std::vector<DirEntry>> list_within_mount_root(std::wstring const& mount_root, std::string const& guest_path) {
+    // Open the root once and ask the filesystem what it really is -- the trusted baseline every
+    // candidate below is compared against (identical to `open_within_mount_root`'s own first step).
+    SafeFileHandle root_handle(CreateFileW(mount_root.c_str(), GENERIC_READ,
+                                            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                                            OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr));
+    if (!root_handle.valid()) return win_error_t<std::vector<DirEntry>>("CreateFileW(mount_root)", GetLastError());
+    auto root_canonical = final_path_name(root_handle.get());
+    if (!root_canonical) return std::unexpected(root_canonical.error());
+
+    // "" means the mount root itself -- a legitimate listing target, unlike `open_within_mount_root`
+    // (which refuses a root path because a root is never "a file"). Non-empty goes through the SAME
+    // segment validation/widening `open_within_mount_root` uses, so a `..`/absolute/forbidden-
+    // character segment is rejected before any Win32 call, exactly as it already is for a file open.
+    std::wstring joined;
+    HANDLE target_raw;
+    if (guest_path.empty()) {
+        joined = mount_root;
+        target_raw = root_handle.get();
+    } else {
+        auto wsegments = validate_and_widen(guest_path);
+        if (!wsegments) return std::unexpected(wsegments.error());
+        joined = join_segments(mount_root, *wsegments);
+        target_raw = nullptr;  // opened fresh below
+    }
+
+    // `FILE_LIST_DIRECTORY` (numerically `FILE_READ_DATA`, Win32's directory-open convention) +
+    // `FILE_FLAG_BACKUP_SEMANTICS` (required to open a directory HANDLE at all via `CreateFileW`) --
+    // the same ONE-open-call resolution `open_within_mount_root` relies on: whatever `joined` really
+    // names (reparse points included) is resolved by Windows itself, and the HANDLE that comes back
+    // is the object verified next, never a path string re-parsed afterward.
+    SafeFileHandle target_owned;
+    if (!target_raw) {
+        target_owned = SafeFileHandle(CreateFileW(joined.c_str(), FILE_LIST_DIRECTORY | GENERIC_READ,
+                                                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                                                    OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr));
+        if (!target_owned.valid()) return win_error_t<std::vector<DirEntry>>("CreateFileW(target dir)", GetLastError());
+        target_raw = target_owned.get();
+    }
+
+    auto target_canonical = final_path_name(target_raw);
+    if (!target_canonical) return std::unexpected(target_canonical.error());
+    if (!is_within_root(*root_canonical, *target_canonical)) {
+        return std::unexpected(
+            error{failure_class::policy, "resolved path escapes the mount root", "worktree.mount_path_escapes_root"});
+    }
+
+    // Enumeration runs against `target_canonical` -- the HANDLE-resolved, already-verified path --
+    // never `joined` (the guest-derived string), so nothing about the escape check above can be
+    // bypassed by whatever `FindFirstFileW` itself does with the string it's given.
+    std::wstring search = strip_trailing_sep(*target_canonical) + L"\\*";
+    WIN32_FIND_DATAW find_data;
+    HANDLE find = FindFirstFileW(search.c_str(), &find_data);
+    std::vector<DirEntry> out;
+    if (find == INVALID_HANDLE_VALUE) {
+        DWORD err = GetLastError();
+        if (err == ERROR_FILE_NOT_FOUND) return out;  // an empty directory -- not an error.
+        return win_error_t<std::vector<DirEntry>>("FindFirstFileW", err);
+    }
+    do {
+        std::wstring name = find_data.cFileName;
+        if (name == L"." || name == L"..") continue;
+        auto narrow_name = wide_to_utf8(name);
+        if (!narrow_name) {
+            FindClose(find);
+            return std::unexpected(narrow_name.error());
+        }
+        DirEntry entry;
+        entry.name = std::move(*narrow_name);
+        entry.is_directory = (find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+        entry.size_bytes = (static_cast<std::uint64_t>(find_data.nFileSizeHigh) << 32) | find_data.nFileSizeLow;
+        out.push_back(std::move(entry));
+    } while (FindNextFileW(find, &find_data));
+    DWORD final_err = GetLastError();
+    FindClose(find);
+    if (final_err != ERROR_NO_MORE_FILES) return win_error_t<std::vector<DirEntry>>("FindNextFileW", final_err);
+    return out;
 }
 
 namespace redteam {
