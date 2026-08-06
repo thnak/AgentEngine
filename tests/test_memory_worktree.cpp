@@ -53,9 +53,9 @@ int main() {
              "worktree, never re-creating it");
 
     // --- G2: a MemoryItem round-trips through write/read, with a real content-derived id -------
-    ae::Mount const alice_memory = ae::memory_mount(alice, "/memory");
-    ae::cap::FsWrite const write_all{"/memory", "", std::nullopt, std::nullopt};
-    ae::cap::FsRead const read_all{"/memory", "", std::nullopt};
+    ae::Mount const alice_memory = ae::memory_mount(alice);
+    ae::cap::FsWrite const write_all{ae::memory_mount_id(alice), "", std::nullopt, std::nullopt};
+    ae::cap::FsRead const read_all{ae::memory_mount_id(alice), "", std::nullopt};
 
     ae::MemoryItem item{};
     item.kind = ae::memory_kind::episodic;
@@ -102,13 +102,26 @@ int main() {
              "G2-R6: list_memory_items() finds exactly the 2 distinct items written (the duplicate "
              "write didn't create a third entry, matching content-addressed dedup)");
 
-    // --- Cross-principal isolation: Bob's (never-touched) memory worktree is genuinely empty ----
+    // --- Cross-principal isolation: Bob's (never-touched) memory worktree is genuinely empty,
+    // and Alice's own capability can't even be USED against Bob's mount (029 §9 G5, closed by
+    // memory_mount_id()'s own per-principal derivation -- see its comment) --------------------------
     auto bob_ref = ae::ensure_memory_worktree(object_store, ref_store, bob);
     AE_CHECK(bob_ref.has_value(), "setup: Bob's own memory worktree bootstraps independently");
-    ae::Mount const bob_memory = ae::memory_mount(bob, "/memory");
-    auto bob_listed = ae::list_memory_items(object_store, ref_store, bob_memory, read_all);
+    ae::Mount const bob_memory = ae::memory_mount(bob);
+    ae::cap::FsRead const bob_read_all{ae::memory_mount_id(bob), "", std::nullopt};
+
+    AE_CHECK(ae::memory_mount_id(alice) != ae::memory_mount_id(bob),
+             "G2-R7: two principals' memory mount_ids are guaranteed distinct by construction");
+
+    auto crossed = ae::list_memory_items(object_store, ref_store, bob_memory, read_all);
+    AE_CHECK(!crossed.has_value() && crossed.error().code == "worktree.mount_capability_mismatch",
+             "G2-R8: Alice's OWN capability is rejected outright against Bob's mount -- never "
+             "reaches the store at all, closing the exact 'shared mount_id' leakage hazard an "
+             "earlier caller-supplied-mount_id design would have allowed");
+
+    auto bob_listed = ae::list_memory_items(object_store, ref_store, bob_memory, bob_read_all);
     AE_CHECK(bob_listed.has_value() && bob_listed->empty(),
-             "G2-R7: Bob's memory worktree has none of Alice's items -- distinct Refs, distinct "
+             "G2-R9: Bob's memory worktree has none of Alice's items -- distinct Refs, distinct "
              "storage, never shared by accident");
 
     std::cout << (g_failures == 0 ? "test_memory_worktree: OK\n" : "test_memory_worktree: FAIL\n");

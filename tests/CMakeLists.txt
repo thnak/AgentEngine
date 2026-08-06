@@ -347,6 +347,17 @@ if(WIN32)
   add_test(NAME test_memory_provider COMMAND test_memory_provider)
 endif()
 
+# ---- Milestone 4 Phase G5 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
+# 029 §9 G3 "no authority laundering": hostile ModelInferred memory content smuggled into a tool
+# call's own arguments cannot auto-approve anything -- reuses ADR-009's capability/approval
+# pipeline and 003 §2's taint model directly, no new predicate engine.
+if(WIN32)
+  add_executable(test_memory_no_authority_laundering test_memory_no_authority_laundering.cpp)
+  target_link_libraries(test_memory_no_authority_laundering PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_memory_no_authority_laundering COMMAND test_memory_no_authority_laundering)
+endif()
+
 # ---- CapabilitySet enforcement mechanism (decisions/ADR-009-capability-set-enforcement-mechanism.md) --
 # Header-only (trust/capability.hpp), core-tier -- links only agentengine::core.
 add_executable(test_capability_enforcement test_capability_enforcement.cpp)

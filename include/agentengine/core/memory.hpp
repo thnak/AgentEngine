@@ -75,13 +75,29 @@ template <WorktreeObjectStore OS, quark::Store RS>
     return commit_ref(ref_store, name, *empty);
 }
 
-// The standard mount for a principal's memory worktree at "/memory" (026 §5's table: `agent.memory`/
-// `agent.notes` are both `FsRead<mount>`/`FsWrite<mount>` on this exact mount). `mount_id` is
-// caller-supplied (not hardcoded to a literal "/memory") because a capability's own `mount_id` is
-// whatever the grant names it (007 §3) — this just builds the `Mount` a caller already holding
-// such a capability needs to pass to `mount_read`/`mount_write`.
-[[nodiscard]] inline Mount memory_mount(Principal const& principal, std::string mount_id) {
-    return Mount{std::move(mount_id), memory_ref_name(principal), ""};
+// Milestone 4 Phase G5 (029 §8/§9 G5: "cross-principal memory leakage through a shared index
+// remains the release-blocking defect class"). `mount_id` is deliberately DERIVED from the
+// principal, never caller-supplied: an earlier draft of this function took an arbitrary
+// caller-chosen `mount_id` string, which is a real cross-principal leakage hazard, not a
+// hypothetical one — `mount_read`/`mount_write`'s own capability check is `granted.mount_id ==
+// mount.mount_id`, comparing bare STRINGS with no knowledge of which principal either side
+// actually belongs to. If every principal's memory happened to be mounted under the SAME literal
+// id (e.g. a guest-facing "/memory" reused verbatim as the internal `mount_id` too), a capability
+// originally granted for principal A's own memory would ALSO satisfy that same check against a
+// `Mount` object someone builds for principal B — the exact "shared index" leakage class 029 §8/§9
+// name, arrived at by an API footgun rather than a deliberately adversarial plugin config. Making
+// `mount_id` a pure function of the principal closes that hole structurally: two different
+// principals can never end up with the same internal `mount_id`, so a capability minted for one
+// is REJECTED outright against the other's `Mount`, before any store access at all — proven in
+// `test_memory_cross_principal_isolation.cpp`. The guest-visible mount PATH (what an agent sees
+// under, e.g., "/memory") is a separate, host-chosen presentation detail this function does not
+// touch; `mount_id` here is purely the internal capability-matching key.
+[[nodiscard]] inline std::string memory_mount_id(Principal const& principal) {
+    return "memory:" + principal.id;
+}
+
+[[nodiscard]] inline Mount memory_mount(Principal const& principal) {
+    return Mount{memory_mount_id(principal), memory_ref_name(principal), ""};
 }
 
 // ================================================================================================

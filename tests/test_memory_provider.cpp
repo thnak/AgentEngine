@@ -80,9 +80,9 @@ int main() {
     auto bootstrapped = ae::ensure_memory_worktree(object_store, ref_store, principal);
     AE_CHECK(bootstrapped.has_value(), "setup: the memory worktree bootstraps");
 
-    ae::Mount const mount = ae::memory_mount(principal, "/memory");
-    ae::cap::FsRead const read_cap{"/memory", "", std::nullopt};
-    ae::cap::FsWrite const write_cap{"/memory", "", std::nullopt, std::nullopt};
+    ae::Mount const mount = ae::memory_mount(principal);
+    ae::cap::FsRead const read_cap{ae::memory_mount_id(principal), "", std::nullopt};
+    ae::cap::FsWrite const write_cap{ae::memory_mount_id(principal), "", std::nullopt, std::nullopt};
 
     // Pre-populate two memory items -- one relevant to the upcoming query, one not.
     ae::MemoryItem dark_mode{};
