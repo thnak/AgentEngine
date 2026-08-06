@@ -641,6 +641,16 @@ add_executable(test_worktree_ref_store test_worktree_ref_store.cpp)
 target_link_libraries(test_worktree_ref_store PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_worktree_ref_store COMMAND test_worktree_ref_store)
 
+# ---- Worktree sub-worktree sharing modes (025 §3, Milestone 3 Phase B1) ------------------------
+# `scratch` mode calls empty_tree_digest() -> compute_digest(), so this needs the same real,
+# Windows-only digest implementation A1's own test does (unlike A2's, which never computes a digest).
+if(WIN32)
+  add_executable(test_worktree_sub_worktree test_worktree_sub_worktree.cpp)
+  target_link_libraries(test_worktree_sub_worktree PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_worktree_sub_worktree COMMAND test_worktree_sub_worktree)
+endif()
+
 # ---- PythonRunner prove-phase gates (decisions/ADR-002-pythonrunner-embedding-and-mediation.md)
 # Only built when AGENTENGINE_BUILD_PYTHON_RUNNER is ON (CMakeLists.txt) -- these link a real
 # CPython import lib and need python3<minor>.dll reachable via PATH at run time (Windows has no

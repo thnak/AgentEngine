@@ -202,13 +202,27 @@ for M3 regardless.
 
 ### Phase B — Sub-worktrees, sharing modes, concurrency and merge (025 §3-4)
 
-- **B1.** Sub-worktree creation with a declared `sharing_mode` (`shared`/`branch`/`readonly`/
-  `scratch`, 025 §3) over A1/A2 — `branch` as copy-on-write (a new `Ref` pointing at the parent's
-  current tree digest, diverging on write), `readonly` as a pinned digest rejecting writes,
-  `scratch` as a fresh empty tree discarded on completion. Default-by-concurrency (025 §3: sequential
-  siblings default `shared`, concurrent siblings default `branch`) is a caller-supplied flag at this
-  layer, not inferred here — inferring "concurrent" needs 001's run/turn scheduling context this
-  header doesn't have. **M**
+- **B1 (done).** Sub-worktree creation with a declared `sharing_mode` (`shared`/`branch`/`readonly`/
+  `scratch`, 025 §3) over A1/A2. Modeled as a `SubWorktree{name, backing_ref_name, mode,
+  pinned_digest}` value naming which `Ref` (if any) reads/writes actually go through, rather than a
+  separate name→name alias registry: `shared`'s `backing_ref_name` IS the parent's own `Ref` name (no
+  new `Ref` created at all), so immediate cross-visibility falls out of `commit_ref`/`read_ref`
+  unchanged rather than needing special-case logic; `branch` is copy-on-write (a new, independent
+  `Ref` seeded at the parent's current digest); `scratch` seeds at a universal, deterministic
+  `empty_tree_digest()` instead of the parent's; `readonly` has no `Ref` at all (`backing_ref_name`
+  empty), so `write_sub_worktree` fails closed on the mode itself, before the store is ever
+  consulted. Default-by-concurrency (025 §3) is, as scoped, a caller-supplied flag — not inferred
+  here, since that needs 001's run/turn scheduling context this header doesn't have. Proven in
+  `tests/test_worktree_sub_worktree.cpp` (22 checks): `shared`'s claim proven as TRUE immediate
+  cross-visibility (a write through the sub-worktree is read back through the parent's own name
+  directly), not merely an identical starting value; `branch`/`scratch` proven to diverge
+  independently in BOTH directions (a write to the child doesn't move the parent, AND a later move
+  of the parent doesn't move the already-created child — ruling out an accidental live alias);
+  `readonly` proven to stay pinned even after the parent later moves, and its write-rejection proven
+  specifically (a positive control shows the identical write succeeding against a `branch` of the
+  same parent). WIN32-gated (like A1) since `scratch` calls `empty_tree_digest()` ->
+  `compute_digest()`. Full regression: Windows `ctest -j4` 37/38, same pre-existing flake, unchanged.
+  **M**
 - **B2.** Three-way merge on `branch` join (025 §4) — disjoint changes merge automatically, identical
   content merges trivially, a genuine conflict fails closed and retains both versions at
   `/conflicts/<path>.<agent>` (never last-writer-wins, matching 025 §4's explicit rule and I3's "model
