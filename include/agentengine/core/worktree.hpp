@@ -34,6 +34,7 @@
 #include <vector>
 
 #include "agentengine/core/error.hpp"
+#include "agentengine/trust/capability.hpp"
 #include "quark/core/describe.hpp"
 #include "quark/core/event_log.hpp"
 #include "quark/core/ids.hpp"
@@ -822,6 +823,275 @@ template <WorktreeObjectStore OS, quark::Store RS>
     auto diff = diff_trees(object_store, last_read_digest, current_digest);
     if (!diff) return std::unexpected(diff.error());
     return SharedStalenessNote{last_read_digest, current_digest, std::move(*diff)};
+}
+
+// ============================================================================================
+// Mounts (025 §5) -- Phase C1. "A worktree subtree becomes visible to a sandbox only through a
+// capability": `Mount` is the host-side declaration of WHICH worktree location a guest-visible
+// mount_id names (never guest-supplied, I2 -- a host policy value, the same posture every other
+// `cap::*` payload in trust/capability.hpp already has), and `mount_read`/`mount_write` are the only
+// way a guest-relative path is ever turned into an actual `Blob`/`Tree` lookup, gated by an already-
+// bound `cap::FsRead`/`cap::FsWrite` (trust/capability.hpp, existing since ADR-009 -- this phase
+// consumes that machinery, it does not invent a second capability shape).
+//
+// **This is NOT yet 025 §5's OS-level path-escape corpus** (Phase C2, ADR-track per the milestone-3
+// breakdown's decision 6, `decisions/ADR-0NN-worktree-mount-path-canonicalization.md`). There is no
+// real filesystem here: a `Tree` is a plain `name -> digest` map with no parent pointers, no
+// symlinks, no junctions, no ADS, nothing an OS resolves -- so `..` has no "walk up" to perform, and
+// `split_mount_path` below rejects it outright as malformed input rather than defending against it
+// as an attack via canonicalize-then-check (the fragile pattern C2's whole corpus exists BECAUSE
+// canonicalize-then-check is where real path-escape bugs hide). C2 hardens the DIFFERENT, later
+// mechanism that materializes a mount onto a real OS filesystem for a sandboxed process to see --
+// that mechanism doesn't exist yet, and this header does not get ahead of it.
+// ============================================================================================
+
+// Host-side binding from a guest-visible `mount_id` (matched against `cap::FsRead::mount_id` /
+// `cap::FsWrite::mount_id` exactly) to a concrete worktree location: `ref_name` names the Ref this
+// mount reads/writes through, `subtree_path` (slash-joined, "" = the ref's own root) is where within
+// that ref's tree this specific mount is rooted -- e.g. a "/work" mount and an "/input" mount might
+// point at the SAME ref with different `subtree_path`s, or at entirely different refs. Never derived
+// from a guest-supplied path (I2); constructed only by host policy, the same way a `Capability` is
+// only ever minted by `CapabilitySet::grant_root`.
+struct Mount {
+    std::string mount_id;
+    std::string ref_name;
+    std::string subtree_path;
+};
+
+// Splits a slash-joined relative path into segments, rejecting `""`-as-a-segment (a leading `/`, a
+// trailing `/`, or `//`), and `.`/`..` (meaningless in a content-addressed tree -- see the section
+// comment above). `path == ""` is a legal INPUT meaning "the mount's own root" and returns an empty
+// segment list; callers that cannot accept "the root itself" (both `mount_read` and `mount_write`
+// below, since neither reads/writes raw tree-of-trees content) reject an empty combined segment list
+// themselves, one level up, where the more specific `worktree.mount_path_is_root` code applies.
+[[nodiscard]] inline result<std::vector<std::string>> split_mount_path(std::string const& path) {
+    if (path.empty()) return std::vector<std::string>{};
+    if (path.front() == '/') {
+        return std::unexpected(error{failure_class::contract, "mount path must be relative, not start with '/'",
+                                      "worktree.mount_path_absolute"});
+    }
+    std::vector<std::string> segments;
+    std::string              current;
+    for (char c : path) {
+        if (c != '/') {
+            current.push_back(c);
+            continue;
+        }
+        if (current.empty()) {
+            return std::unexpected(error{failure_class::contract,
+                                          "mount path contains an empty segment (e.g. a double slash)",
+                                          "worktree.mount_path_malformed"});
+        }
+        segments.push_back(std::exchange(current, std::string{}));
+    }
+    if (current.empty()) {
+        return std::unexpected(error{failure_class::contract, "mount path must not end with '/'",
+                                      "worktree.mount_path_malformed"});
+    }
+    segments.push_back(current);
+    for (auto const& seg : segments) {
+        if (seg == "." || seg == "..") {
+            return std::unexpected(error{failure_class::contract,
+                                          "'.'/'..' are not meaningful in a content-addressed tree path",
+                                          "worktree.mount_path_malformed"});
+        }
+    }
+    return segments;
+}
+
+namespace detail {
+
+// A Tree with zero entries, guaranteed to actually EXIST in `store` (unlike bare
+// `empty_tree_digest()`, which only computes what the digest would be) -- needed here because
+// `set_entry_at_path` below may need to recurse INTO a freshly-created intermediate directory that
+// nothing has ever `put_tree`'d before. Idempotent: `put_tree` already dedups, so calling this
+// repeatedly across many writes never grows the store past one empty-tree entry.
+template <WorktreeObjectStore S>
+[[nodiscard]] result<Digest> ensure_empty_tree(S& store) {
+    return store.put_tree(Tree{});
+}
+
+// Walks `segments` down from `tree_digest`, returning the `TreeEntry` found at the end. Every
+// intermediate segment must resolve to a Tree (a file "in the middle" of a path is a contract
+// violation, not a valid deeper lookup).
+template <WorktreeObjectStore S>
+[[nodiscard]] result<TreeEntry> resolve_entry_at_path(S& store, Digest const& tree_digest,
+                                                       std::span<std::string const> segments) {
+    auto tree = store.get_tree(tree_digest);
+    if (!tree) return std::unexpected(tree.error());
+
+    std::string const& head = segments.front();
+    auto it = std::ranges::find_if(tree->entries, [&](TreeEntry const& e) { return e.name == head; });
+    if (it == tree->entries.end()) {
+        return std::unexpected(error{failure_class::contract, "no entry named '" + head + "' at this path",
+                                      "worktree.mount_path_not_found"});
+    }
+    if (segments.size() == 1) return *it;
+    if (!it->is_tree) {
+        return std::unexpected(error{failure_class::contract, "'" + head + "' is a file, not a directory",
+                                      "worktree.mount_path_not_a_directory"});
+    }
+    return resolve_entry_at_path(store, it->digest, segments.subspan(1));
+}
+
+// Sets (inserts or replaces) the entry named by the LAST segment of `segments` to
+// `{leaf_digest, leaf_is_tree}`, creating any missing intermediate directories along the way, and
+// returns the digest of the (necessarily new) tree at `tree_digest`'s own level -- the caller
+// commits that returned digest as the new Ref, propagating the change all the way to the root in
+// one recursive unwind rather than needing a separate "patch the ancestors" pass.
+template <WorktreeObjectStore S>
+[[nodiscard]] result<Digest> set_entry_at_path(S& store, Digest const& tree_digest,
+                                                std::span<std::string const> segments,
+                                                Digest const& leaf_digest, bool leaf_is_tree) {
+    auto tree = store.get_tree(tree_digest);
+    if (!tree) return std::unexpected(tree.error());
+    std::vector<TreeEntry> entries = tree->entries;
+
+    std::string const& head = segments.front();
+    auto it = std::ranges::find_if(entries, [&](TreeEntry const& e) { return e.name == head; });
+
+    TreeEntry new_entry;
+    if (segments.size() == 1) {
+        new_entry = TreeEntry{head, leaf_digest, leaf_is_tree};
+    } else {
+        Digest child_digest;
+        if (it != entries.end()) {
+            if (!it->is_tree) {
+                return std::unexpected(error{failure_class::contract,
+                                              "cannot write through '" + head +
+                                                  "': it already names a file, not a directory",
+                                              "worktree.mount_write_type_conflict"});
+            }
+            child_digest = it->digest;
+        } else {
+            auto empty = ensure_empty_tree(store);
+            if (!empty) return std::unexpected(empty.error());
+            child_digest = *empty;
+        }
+        auto new_child = set_entry_at_path(store, child_digest, segments.subspan(1), leaf_digest, leaf_is_tree);
+        if (!new_child) return std::unexpected(new_child.error());
+        new_entry = TreeEntry{head, *new_child, true};
+    }
+
+    if (it != entries.end()) *it = new_entry; else entries.push_back(new_entry);
+    return store.put_tree(Tree{std::move(entries)});
+}
+
+// `mount.subtree_path` (host-configured, fixed) followed by `guest_path` (per-call), as one combined
+// segment list resolved in a single walk from the Ref's own root -- rather than descending
+// `subtree_path` and `guest_path` as two separate phases, which would need to reconcile two
+// intermediate digests instead of one.
+[[nodiscard]] inline result<std::vector<std::string>> combined_mount_segments(Mount const& mount,
+                                                                               std::string const& guest_path) {
+    std::vector<std::string> full_segments;
+    if (!mount.subtree_path.empty()) {
+        auto sub = split_mount_path(mount.subtree_path);
+        if (!sub) return std::unexpected(sub.error());
+        full_segments = std::move(*sub);
+    }
+    auto guest = split_mount_path(guest_path);
+    if (!guest) return std::unexpected(guest.error());
+    full_segments.insert(full_segments.end(), guest->begin(), guest->end());
+    if (full_segments.empty()) {
+        return std::unexpected(error{failure_class::contract,
+                                      "path names the mount root itself, not a file",
+                                      "worktree.mount_path_is_root"});
+    }
+    return full_segments;
+}
+
+} // namespace detail
+
+// Reads the file at `guest_path` (relative to `mount`) through `granted`, the caller's already-bound
+// `cap::FsRead`. Two independent checks come before any store access at all (007 §3 -- capability
+// grants ARE the authority, checked before the effect, not after): `granted.mount_id` must name
+// exactly this `mount` (a capability for one mount can never reach another, even by accident), and
+// `granted.path_prefix` -- reusing `capability_detail::path_prefix_covers`, the SAME subsumption
+// primitive `CapabilitySet::attenuate`/`contains` already use, not a second path-matching routine
+// invented here -- must cover `guest_path` (a capability scoped to `/work/output` can't read
+// `/work/private`). `granted.size_cap_bytes`, if set, is enforced after the read (the size is only
+// known once the blob is fetched).
+template <WorktreeObjectStore OS, quark::Store RS>
+[[nodiscard]] result<std::vector<std::byte>> mount_read(OS& object_store, RS& ref_store, Mount const& mount,
+                                                          cap::FsRead const& granted,
+                                                          std::string const& guest_path) {
+    if (granted.mount_id != mount.mount_id) {
+        return std::unexpected(error{failure_class::policy,
+                                      "this capability does not authorize the requested mount",
+                                      "worktree.mount_capability_mismatch"});
+    }
+    if (!capability_detail::path_prefix_covers(granted.path_prefix, guest_path)) {
+        return std::unexpected(error{failure_class::policy,
+                                      "this capability's path scope does not cover the requested path",
+                                      "worktree.mount_path_outside_capability"});
+    }
+
+    auto full_segments = detail::combined_mount_segments(mount, guest_path);
+    if (!full_segments) return std::unexpected(full_segments.error());
+
+    auto ref = read_ref(ref_store, mount.ref_name);
+    if (!ref) return std::unexpected(ref.error());
+    if (!ref->has_value()) {
+        return std::unexpected(error{failure_class::contract, "this mount's ref has never been committed",
+                                      "worktree.mount_ref_missing"});
+    }
+
+    auto entry = detail::resolve_entry_at_path(object_store, (*ref)->tree_digest, *full_segments);
+    if (!entry) return std::unexpected(entry.error());
+    if (entry->is_tree) {
+        return std::unexpected(error{failure_class::contract, "the requested path names a directory, not a file",
+                                      "worktree.mount_read_is_directory"});
+    }
+
+    auto bytes = object_store.get_blob(entry->digest);
+    if (!bytes) return std::unexpected(bytes.error());
+    if (granted.size_cap_bytes.has_value() && bytes->size() > *granted.size_cap_bytes) {
+        return std::unexpected(error{failure_class::policy,
+                                      "the requested file exceeds this capability's size cap",
+                                      "worktree.mount_read_exceeds_size_cap"});
+    }
+    return bytes;
+}
+
+// Writes `content` to `guest_path` (relative to `mount`) through `granted`, the caller's already-
+// bound `cap::FsWrite`, returning the mount's Ref after the commit. Same two capability checks as
+// `mount_read` before any store access. **`granted.quota_bytes`/`granted.file_count_cap` are NOT
+// enforced here** -- 025 §5's write-quota numeric enforcement is Phase C3's own task, proven against
+// this mount layer directly (milestone-3 breakdown), not duplicated ahead of it; this is a named,
+// tracked gap, not a silent omission.
+template <WorktreeObjectStore OS, quark::Store RS>
+[[nodiscard]] result<Ref> mount_write(OS& object_store, RS& ref_store, Mount const& mount,
+                                       cap::FsWrite const& granted, std::string const& guest_path,
+                                       std::span<std::byte const> content) {
+    if (granted.mount_id != mount.mount_id) {
+        return std::unexpected(error{failure_class::policy,
+                                      "this capability does not authorize the requested mount",
+                                      "worktree.mount_capability_mismatch"});
+    }
+    if (!capability_detail::path_prefix_covers(granted.path_prefix, guest_path)) {
+        return std::unexpected(error{failure_class::policy,
+                                      "this capability's path scope does not cover the requested path",
+                                      "worktree.mount_path_outside_capability"});
+    }
+
+    auto full_segments = detail::combined_mount_segments(mount, guest_path);
+    if (!full_segments) return std::unexpected(full_segments.error());
+
+    auto ref = read_ref(ref_store, mount.ref_name);
+    if (!ref) return std::unexpected(ref.error());
+    if (!ref->has_value()) {
+        return std::unexpected(error{failure_class::contract, "this mount's ref has never been committed",
+                                      "worktree.mount_ref_missing"});
+    }
+
+    auto blob_digest = object_store.put_blob(content);
+    if (!blob_digest) return std::unexpected(blob_digest.error());
+
+    auto new_root = detail::set_entry_at_path(object_store, (*ref)->tree_digest, *full_segments,
+                                               *blob_digest, /*leaf_is_tree=*/false);
+    if (!new_root) return std::unexpected(new_root.error());
+
+    return commit_ref(ref_store, mount.ref_name, *new_root);
 }
 
 } // namespace agentengine

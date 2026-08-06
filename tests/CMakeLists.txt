@@ -683,6 +683,15 @@ if(WIN32)
   set_tests_properties(test_worktree_branch_concurrency PROPERTIES TIMEOUT 60)
 endif()
 
+# ---- Worktree mounts, capability-gated (025 §5, Milestone 3 Phase C1) ---------------------------
+# Builds real Blob/Tree fixtures via put_blob/put_tree, same real-crypto dependency as A1/B1/B2/B3/B4.
+if(WIN32)
+  add_executable(test_worktree_mount test_worktree_mount.cpp)
+  target_link_libraries(test_worktree_mount PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_worktree_mount COMMAND test_worktree_mount)
+endif()
+
 # ---- PythonRunner prove-phase gates (decisions/ADR-002-pythonrunner-embedding-and-mediation.md)
 # Only built when AGENTENGINE_BUILD_PYTHON_RUNNER is ON (CMakeLists.txt) -- these link a real
 # CPython import lib and need python3<minor>.dll reachable via PATH at run time (Windows has no

@@ -366,9 +366,52 @@ for M3 regardless.
 
 ### Phase C — Mounts, capabilities, path-escape hardening (025 §5) — ADR-track, see decision 6
 
-- **C1.** `FsRead<mount>`/`FsWrite<mount>` capability-gated mount resolution over A1/B1 — a worktree
-  subtree becomes a guest-visible filesystem view only through a granted capability (007 §3), mount
-  points are canonical/ordinary-looking paths (026 §2), never a runtime-revealing path. **M**
+- **C1 (done).** `FsRead<mount>`/`FsWrite<mount>` capability-gated mount resolution over A1/B1 — a
+  worktree subtree becomes a guest-visible filesystem view only through a granted capability (007
+  §3), mount points are canonical/ordinary-looking paths (026 §2), never a runtime-revealing path.
+  Consumes `trust/capability.hpp`'s EXISTING `cap::FsRead`/`cap::FsWrite` (ADR-009) directly — this
+  phase does not invent a second capability shape, and reuses that header's own
+  `capability_detail::path_prefix_covers` for scope checks rather than a second path-matching
+  routine. **Explicitly NOT 025 §5's OS-level path-escape corpus** (that's C2, ADR-track per decision
+  6): a `Tree` is a plain `name -> digest` map with no parent pointers, no symlinks, no ADS — `..` has
+  no "walk up" to perform, so `split_mount_path` rejects it outright as malformed input rather than
+  defending against it via canonicalize-then-check (the fragile pattern C2's whole corpus exists
+  because that pattern is where real path-escape bugs hide). C2 hardens the DIFFERENT, later
+  mechanism that materializes a mount onto a real OS filesystem for a sandboxed process to see, which
+  doesn't exist yet — this phase does not get ahead of it.
+  - `Mount{mount_id, ref_name, subtree_path}` — a host-side binding from a guest-visible `mount_id`
+    to a concrete worktree location, never derived from guest input (I2), the same posture every
+    `cap::*` payload already has.
+  - `mount_read`/`mount_write` — both check `granted.mount_id == mount.mount_id` and
+    `path_prefix_covers(granted.path_prefix, guest_path)` BEFORE any store access at all (007 §3 —
+    the grant is the authority, checked before the effect, not after). `mount_write` walks
+    `detail::set_entry_at_path` down `mount.subtree_path` + the guest path as one combined segment
+    list (not two separate descend-then-reascend phases), creating missing intermediate directories
+    via `detail::ensure_empty_tree` (a REAL, `put_tree`'d empty tree — unlike bare
+    `empty_tree_digest()`, which only computes what the digest would be) and propagating the change
+    to a new ROOT digest in one recursive unwind, so a write through a nested mount correctly leaves
+    sibling subtrees at the ref's actual root untouched. `granted.size_cap_bytes` (read) is enforced
+    after the fetch (only knowable once the blob is in hand); **`granted.quota_bytes`/
+    `file_count_cap` (write) are deliberately NOT enforced here** — that numeric check is C3's own
+    task, proven against this mount layer directly, not duplicated ahead of it (a named gap, not a
+    silent omission).
+  Proven in `tests/test_worktree_mount.cpp` (34 checks): `split_mount_path`'s own contract in
+  isolation (a leading `/`, a trailing `/`, `//`, `.`/`..` all rejected, an ordinary path splits
+  correctly) (C1-C1); `mount_read` happy path, a capability for a different `mount_id` rejected, a
+  path-prefix-scoped capability rejected outside its scope with a positive control proving the SAME
+  capability reads fine inside it, a `size_cap_bytes` rejection with a positive control under a larger
+  cap, reading a directory as a file rejected, reading a nonexistent path rejected (C1-C2);
+  `mount_write` creating a new file, creating missing intermediate directories, overwriting an
+  existing file WITHOUT disturbing an unrelated sibling file (C1-C3); the same capability-mismatch/
+  out-of-scope/positive-control pattern for `mount_write`, plus writing through an existing FILE as
+  if it were a directory rejected, and writing to the mount root itself (empty path) rejected (C1-C4);
+  a `subtree_path`-rooted mount (`/work` → ref's `work/` subtree) writing correctly AND leaving
+  sibling `/input`/`/skills` mounts of the SAME underlying ref completely untouched — the real test
+  that root-propagation targets only the written branch (C1-C5); both `mount_read`/`mount_write`
+  failing closed (not silently treating it as an empty tree) against a mount whose ref was never
+  committed (C1-C6). WIN32-gated (same real-crypto dependency as A1/B1/B2/B3/B4). Full regression:
+  Windows `ctest -j4` 41/42, same pre-existing `test_native_jail_backend_windows` flake, unchanged.
+  **M**
 - **C2. ADR-track (decision 6).** Path-escape corpus: `..`, absolute redirects, symlink/junction/
   reparse-point boundary crossing, ADS, `\\?\` prefixes, unicode-normalization tricks, TOCTOU
   re-resolution — contained on Windows first (matching 021 §2's own platform-priority ordering and
