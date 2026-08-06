@@ -463,6 +463,27 @@ if(WIN32)
   add_test(NAME test_mediated_shell_runner_smoke COMMAND test_mediated_shell_runner_smoke)
   set_tests_properties(test_mediated_shell_runner_smoke PROPERTIES TIMEOUT 60)
 
+  # ---- Milestone 3 Phase E4: hostile-corpus/mediation proof (010 §9 G2/G7) ---------------------
+  add_executable(test_mediated_shell_runner_hostile_corpus test_mediated_shell_runner_hostile_corpus.cpp)
+  target_link_libraries(test_mediated_shell_runner_hostile_corpus PRIVATE
+    agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_mediated_shell_runner_hostile_corpus COMMAND test_mediated_shell_runner_hostile_corpus)
+  set_tests_properties(test_mediated_shell_runner_hostile_corpus PROPERTIES TIMEOUT 60)
+
+  # G2's ShellRunner-specific "must not exist as a reachable code path" bar, structural half,
+  # against the REAL agentengine_mediated_shell_runner artifact (test_shell_runner_no_process_
+  # creation.cpp already covers the untouched spike). Reuses the same llvm-nm discovered above.
+  add_executable(test_mediated_shell_runner_no_process_creation
+    test_mediated_shell_runner_no_process_creation.cpp)
+  target_link_libraries(test_mediated_shell_runner_no_process_creation PRIVATE
+    agentengine::core agentengine_warnings)
+  target_compile_definitions(test_mediated_shell_runner_no_process_creation PRIVATE
+    AE_MEDIATED_SHELL_RUNNER_LIB_PATH="$<TARGET_FILE:agentengine_mediated_shell_runner>"
+    AE_LLVM_NM_PATH="${AE_LLVM_NM_EXECUTABLE}")
+  add_test(NAME test_mediated_shell_runner_no_process_creation
+    COMMAND test_mediated_shell_runner_no_process_creation)
+  set_tests_properties(test_mediated_shell_runner_no_process_creation PROPERTIES SKIP_RETURN_CODE 77)
+
   # RunnerCall<python> composition against the REAL MediatedPythonRunner (E2) -- only built when
   # AGENTENGINE_BUILD_PYTHON_RUNNER is also ON (needs a real CPython install).
   if(AGENTENGINE_BUILD_PYTHON_RUNNER)
@@ -807,6 +828,16 @@ if(AGENTENGINE_BUILD_PYTHON_RUNNER)
     AE_PYTHON_HOME="${AGENTENGINE_PYTHON_HOME}")
   add_test(NAME test_mediated_python_runner_smoke COMMAND test_mediated_python_runner_smoke)
   set_tests_properties(test_mediated_python_runner_smoke PROPERTIES
+    ENVIRONMENT "${AE_PYTHON_TEST_ENV}" TIMEOUT 60)
+
+  # ---- Milestone 3 Phase E4: hostile-corpus/mediation proof (010 §9 G2/G7) -----------------------
+  add_executable(test_mediated_python_runner_hostile_corpus test_mediated_python_runner_hostile_corpus.cpp)
+  target_link_libraries(test_mediated_python_runner_hostile_corpus PRIVATE
+    agentengine::core agentengine::mediated_python_runner agentengine_warnings)
+  target_compile_definitions(test_mediated_python_runner_hostile_corpus PRIVATE
+    AE_PYTHON_HOME="${AGENTENGINE_PYTHON_HOME}")
+  add_test(NAME test_mediated_python_runner_hostile_corpus COMMAND test_mediated_python_runner_hostile_corpus)
+  set_tests_properties(test_mediated_python_runner_hostile_corpus PROPERTIES
     ENVIRONMENT "${AE_PYTHON_TEST_ENV}" TIMEOUT 60)
 
   # Priority item 2: Layer 0's sys.modules sweep, its measured scope on this target, and the

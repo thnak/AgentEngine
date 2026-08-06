@@ -725,13 +725,60 @@ for M3 regardless.
   own scope). Full regression: `build-py`'s worktree+python+shell test set 24/24 (existing spike
   tests unmodified and still passing); default-config `build` 46/47, same pre-existing
   `test_native_jail_backend_windows` flake. **L**
-- **E4.** Containment/mediation proof (010 §9 G2, G7) — the hostile corpus (`os.system`, `ctypes`,
-  `/proc`/registry probing, symlink escape, egress to `169.254.169.254`, fork bomb, memory bomb,
-  output flood, `sys.settrace`) plus the `ShellRunner`-specific classes (`PATH` hijacking, command
-  substitution reaching an unregistered binary, builtin shadowing) — each proven to **never reach a
-  reachable code path**, not merely be contained, per G2's stronger bar for the shell specifically.
-  Reuses 008 §7's abuse-case corpus pattern (`tests/helpers/abuse_case_corpus.hpp`) where the same
-  probe shape already applies. **XL**
+- **E4 (done, G7's literal syscall-trace claim named as an open residual).** Containment/mediation
+  proof (010 §9 G2, G7) against the REAL `MediatedPythonRunner` (E2) and `MediatedShellRunner` (E3).
+  `tests/test_mediated_python_runner_hostile_corpus.cpp` (21 checks): `ctypes`/`winreg` (Windows'
+  `/proc` analogue)/`array` (a real stdlib native extension, not a hypothetical one) denied by the
+  import allowlist; `os.popen`/the exec/spawn family denied or genuinely absent (measured, not
+  assumed); `os.fork()` absent on Windows CPython entirely; egress to `169.254.169.254` denied
+  without a matching `NetOut` grant, paired with a same-mount positive control; a real Windows
+  junction (`mklink /J`) crossing the mount boundary denied through the identical
+  `open_within_mount_root` (ADR-014) path `open()` mediation always uses, paired with an inside-the-
+  mount positive control; an object-graph-introspection probe generalizing "sys.settrace
+  shenanigans" to the real underlying risk (recovering a pre-mediation reference via ordinary
+  attribute access, no trace hooks needed). `tests/test_mediated_shell_runner_hostile_corpus.cpp`
+  (20 checks) + `tests/test_mediated_shell_runner_no_process_creation.cpp` (the STATIC half, same
+  llvm-nm-against-the-built-artifact methodology as the untouched spike's own
+  `test_shell_runner_no_process_creation.cpp`, applied to `agentengine_mediated_shell_runner`):
+  PATH hijacking has no code path to hijack (`resolve()` never reads `ExecState.env` at all, proven
+  behaviorally with a decoy binary at the hijacked path); command substitution `$(...)` is not in
+  the grammar, so it lexes as inert literal text, never a nested dispatch; `alias`/`function`
+  shadowing attempts resolve as ordinary command-not-found (no such grammar production exists);
+  registration-time reserved-name rejection against all 5 file-touching builtins; a hostile-name
+  corpus (absolute paths, `\\?\` prefixes, traversal, well-known binaries) all command-not-found.
+  **Two real bugs found and fixed by this corpus, neither hypothetical:** (a) the Layer-0 keep-set
+  computation unioned in the ENTIRE post-bootstrap `sys.modules` snapshot rather than just the names
+  `os`/`socket`/`subprocess` themselves newly pulled in — measured finding: a bare, isolated,
+  no-site CPython startup on this target already has `winreg` (security-relevant — one of G2's own
+  named hostile classes) resident in `sys.modules` before any of this design's code runs at all, so
+  the wholesale snapshot silently granted guest code `import winreg` despite it never being on
+  ADR-002's own hand-curated baseline; fixed by diffing `sys.modules` immediately before vs. after
+  the bootstrap's own `import os, socket, subprocess`, keeping only the genuinely new names. (b) the
+  bootstrap captured the real `socket.socket.connect` as a Python-level global
+  (`_ae_real_connect = socket.socket.connect`) inside its own throwaway namespace — but CPython sets
+  a function's `__globals__` to its DEFINING dict, not a copy, and that dict stays alive for as long
+  as the wrapper function (now bound as `socket.socket.connect`) exists; guest code could recover it
+  with nothing more than `socket.socket.connect.__globals__['_ae_real_connect']` and call it
+  directly, bypassing `NetOut` capability mediation entirely (undetected SSRF-class egress). Fixed
+  by moving the real reference into a C++ TU-static (`g_real_socket_connect`, mirroring
+  `g_real_meta_path`'s existing precedent for the import finder) that no Python-reachable name ever
+  points to, exposed only through a C-implemented `_ae_internal.do_connect(sock, address)` that
+  performs the capability check and the real connect in one call whose RESULT is observable but
+  whose underlying callable is not. **Named, not silently closed, residual**: G7's own text asks for
+  the mediated-call denial to be "proven by a syscall-level trace (strace/ETW) showing zero
+  attempts, not merely a caught exception at the Python level" — this pass proves the behavioral
+  half (exception raised before any Python-level side effect, positive/negative controls) but NOT
+  the literal kernel-trace half; a real Windows ETW kernel-logger session needs an elevated process,
+  and this dev environment was not running elevated. ADR-002's own prove phase hit this identical
+  wall twice (A1's canary/ETW half, all of C2/C3) and named it "NOT ATTEMPTED" rather than
+  approximate it — this pass does the same, honestly, pending an elevated relaunch to pick up the
+  ETW instrumentation. Memory-bomb/output-flood containment for `MediatedPythonRunner` standalone is
+  also named out of scope here (it executes in-process, not as a native_jail-sandboxed child; that
+  containment is Job Object-based and applies once Phase F composes this Runner's process under
+  `NativeJailBackend`, not before — `test_native_jail_abuse_corpus_windows.cpp` already proves that
+  class for the process-boundary case). Full regression: `build-py`'s worktree+python+shell test set
+  56/57 (same pre-existing `test_native_jail_backend_windows` `-j4` timing flake tracked all
+  session); default-config `build` 48/49, identical flake. **XL**
 - **E5. ADR-track (decision 5).** `ShellRunner` grammar-parser fuzzing (010 §9 G8) —
   libFuzzer-class, corpus-driven, under ASan/UBSan, gated in CI, with a deliberately reintroduced
   known-bug class as the positive control. Goes through design→red-team→prove→judge and produces its

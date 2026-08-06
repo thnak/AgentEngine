@@ -383,33 +383,71 @@ PyObject* Internal_open(PyObject* /*self*/, PyObject* args) {
     return text;
 }
 
-// `_ae_internal.check_net(host, port)` -- called by the bootstrap-installed `socket.socket.connect`
-// wrapper BEFORE the real connect() runs. Raises (never returns a value guest code inspects) on
-// denial; returns None on grant.
-PyObject* Internal_check_net(PyObject* /*self*/, PyObject* args) {
-    char const* host_c = nullptr;
-    int port = 0;
-    if (!PyArg_ParseTuple(args, "si", &host_c, &port)) return nullptr;
+// The REAL, pre-mediation `socket.socket.connect` -- captured ONCE, in C++, into a TU-static
+// PyObject* (mirroring g_real_meta_path's own precedent for the import finder's delegate list),
+// and NEVER placed into any Python-reachable namespace (no module global, no closure cell, no
+// function default argument -- CPython makes all three introspectable via ordinary attribute
+// access, so the only safe place for "the real one" is somewhere Python's object graph never
+// reaches at all).
+//
+// FOUND THIS PASS (E4-PY9, a real bug, not a hypothetical): the original design captured this as
+// a Python-level name (`_ae_real_connect = socket.socket.connect`) inside the bootstrap's own
+// throwaway globals dict -- but that dict stays alive for as long as `_ae_connect` (the function
+// object bound to `socket.socket.connect`) exists, because CPython sets a function's `__globals__`
+// to its DEFINING dict, not a copy. Guest code could recover the pre-mediation connect with
+// nothing more exotic than `socket.socket.connect.__globals__['_ae_real_connect']` -- no
+// sys.settrace, no ctypes, just ordinary attribute access -- and call it directly, bypassing
+// NetOut capability mediation entirely (undetected egress to any host, including
+// 169.254.169.254). Closed by moving the real reference here and exposing only a C-implemented
+// `_ae_internal.do_connect(sock, address)` that performs the capability check AND the real connect
+// in one call guest code can observe the RESULT of but never introspect the callable itself.
+PyObject* g_real_socket_connect = nullptr;
+
+// `_ae_internal.do_connect(sock, address)` -- capability-checked (the same cap::NetOut{host:port:
+// tcp} shape the rest of this file uses), then delegates to the real, never-Python-exposed
+// `g_real_socket_connect`.
+PyObject* Internal_do_connect(PyObject* /*self*/, PyObject* args) {
+    PyObject* sock_obj = nullptr;
+    PyObject* address = nullptr;
+    if (!PyArg_ParseTuple(args, "OO", &sock_obj, &address)) return nullptr;
 
     if (!g_current_ctx || !g_current_ctx->capabilities) {
         raise_permission_error("no capability context available for network access");
         return nullptr;
     }
-    // "tcp" is this pass's own canonical scheme label for a raw socket-level connect (there is no
-    // higher-level protocol to name at this layer) -- a modeling choice, not a claim that every
-    // NetOut grant elsewhere in the system is phrased identically; named here rather than assumed.
-    std::string entry = std::string(host_c) + ":" + std::to_string(port) + ":tcp";
+
+    std::string host;
+    long port = 0;
+    if (PyTuple_Check(address) && PyTuple_Size(address) >= 2) {
+        PyObject* host_obj = PyTuple_GetItem(address, 0);   // borrowed
+        PyObject* port_obj = PyTuple_GetItem(address, 1);   // borrowed
+        PyObject* host_str = PyObject_Str(host_obj);
+        if (host_str) {
+            char const* h = PyUnicode_AsUTF8(host_str);
+            if (h) host = h;
+            Py_DECREF(host_str);
+        }
+        port = PyLong_AsLong(port_obj);
+        if (port == -1 && PyErr_Occurred()) { PyErr_Clear(); port = 0; }
+    }
+
+    std::string entry = host + ":" + std::to_string(port) + ":tcp";
     Capability requested = cap::NetOut{{entry}, std::nullopt, {}};
     if (!g_current_ctx->capabilities->contains(requested)) {
         raise_permission_error("no capability grants network access to '" + entry + "'");
         return nullptr;
     }
-    Py_RETURN_NONE;
+
+    if (!g_real_socket_connect) {
+        raise_permission_error("internal error: the real socket.connect was never captured");
+        return nullptr;
+    }
+    return PyObject_CallFunctionObjArgs(g_real_socket_connect, sock_obj, address, nullptr);
 }
 
 PyMethodDef g_internal_methods[] = {
     {"open", Internal_open, METH_VARARGS, nullptr},
-    {"check_net", Internal_check_net, METH_VARARGS, nullptr},
+    {"do_connect", Internal_do_connect, METH_VARARGS, nullptr},
     {nullptr, nullptr, 0, nullptr},
 };
 
@@ -431,12 +469,8 @@ def _ae_open(file, mode='r', *args, **kwargs):
 builtins.open = _ae_open
 io.open = _ae_open
 
-_ae_real_connect = socket.socket.connect
 def _ae_connect(self, address):
-    host = address[0] if isinstance(address, tuple) else address
-    port = address[1] if isinstance(address, tuple) else 0
-    _ae_internal.check_net(str(host), int(port))
-    return _ae_real_connect(self, address)
+    return _ae_internal.do_connect(self, address)
 socket.socket.connect = _ae_connect
 
 def _ae_denied(*a, **kw):
@@ -453,6 +487,19 @@ for _name in ("execv", "execve", "execvp", "execvpe",
 )PY";
 
 result<void> run_mediation_bootstrap() {
+    // Capture the REAL socket.socket.connect BEFORE the bootstrap script overwrites it -- into a
+    // C++ TU-static (g_real_socket_connect), never a Python-reachable name (see that variable's
+    // own comment for why: this is E4-PY9's fix, not the original design).
+    PyObject* socket_mod = PyImport_ImportModule("socket");
+    PyObject* socket_cls = socket_mod ? PyObject_GetAttrString(socket_mod, "socket") : nullptr;
+    g_real_socket_connect = socket_cls ? PyObject_GetAttrString(socket_cls, "connect") : nullptr;
+    Py_XDECREF(socket_cls);
+    Py_XDECREF(socket_mod);
+    if (!g_real_socket_connect) {
+        return std::unexpected(error{failure_class::fatal, "could not capture the real socket.connect",
+                                      "python.mediation_bootstrap_failed"});
+    }
+
     PyObject* internal_module = PyModule_Create(&g_internal_moddef);
     if (!internal_module) {
         return std::unexpected(error{failure_class::fatal, "could not create _ae_internal module",
@@ -489,21 +536,44 @@ result<void> run_mediation_bootstrap() {
     return {};
 }
 
-void compute_effective_keep_set() {
-    g_effective_keep_set = kLayer0BaselineKeepSet;
-    for (auto const& n : kPinnedMediatedModules) g_effective_keep_set.insert(n);
-
+std::unordered_set<std::string> snapshot_current_module_names() {
+    std::unordered_set<std::string> names;
     PyObject* modules = PyImport_GetModuleDict();  // borrowed
     PyObject* keys = PyDict_Keys(modules);
-    if (!keys) { PyErr_Clear(); return; }
+    if (!keys) { PyErr_Clear(); return names; }
     Py_ssize_t n = PyList_Size(keys);
     for (Py_ssize_t i = 0; i < n; ++i) {
         PyObject* key = PyList_GetItem(keys, i);  // borrowed
         char const* name = PyUnicode_AsUTF8(key);
         if (!name) { PyErr_Clear(); continue; }
-        g_effective_keep_set.insert(std::string(name));
+        names.insert(std::string(name));
     }
     Py_DECREF(keys);
+    return names;
+}
+
+// `pre_bootstrap_modules` is a snapshot taken BEFORE run_mediation_bootstrap() runs (i.e. before
+// `import os, socket, subprocess` executes). Only names that are NEW as of that import -- os/
+// socket/subprocess's own real transitive closure -- are added to the keep-set here, never the
+// wholesale post-bootstrap sys.modules snapshot this function used to take.
+//
+// MEASURED FINDING (E4-PY2, this pass): a bare, isolated, no-site CPython startup on this target
+// already has `nt`, `time`, `linecache`, `_imp`, and -- security-relevant -- `winreg` resident in
+// sys.modules before ANY of this file's code runs at all (verified via `python -I -S -c "import
+// sys; print(sys.modules.keys())"`). The wholesale-snapshot approach this function previously used
+// swept none of these OUT because they were always "present at snapshot time" regardless of
+// whether os/socket/subprocess actually needed them -- silently granting guest code `import
+// winreg` (010 §9 G2's own named "registry probing" hostile class) despite it never being on
+// kLayer0BaselineKeepSet (ADR-002's own hand-curated list) or kPinnedMediatedModules. The pre/post
+// diff closes this: a module resident before the bootstrap ran is swept unless ADR-002's baseline
+// or this design's pinned set names it explicitly, exactly as originally intended.
+void compute_effective_keep_set(std::unordered_set<std::string> const& pre_bootstrap_modules) {
+    g_effective_keep_set = kLayer0BaselineKeepSet;
+    for (auto const& n : kPinnedMediatedModules) g_effective_keep_set.insert(n);
+
+    for (auto const& name : snapshot_current_module_names()) {
+        if (!pre_bootstrap_modules.contains(name)) g_effective_keep_set.insert(name);
+    }
 }
 
 void sweep_to_keep_set() {
@@ -576,10 +646,11 @@ result<void> MediatedPythonRunner::initialize() {
         Py_XDECREF(sysmod);
     }
 
+    auto pre_bootstrap_modules = snapshot_current_module_names();
     auto bootstrap = run_mediation_bootstrap();
     if (!bootstrap) return std::unexpected(bootstrap.error());
 
-    compute_effective_keep_set();
+    compute_effective_keep_set(pre_bootstrap_modules);
     sweep_to_keep_set();
 
     auto finder = install_finder();
