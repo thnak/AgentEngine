@@ -559,9 +559,24 @@ for M3 regardless.
 
 ### Phase E — `ExecState`, `PythonRunner`, `ShellRunner` (010 §1a, §2, §3a) — see decisions 3-5
 
-- **E1.** `ExecState{cwd, env}` made real and shared by reference across every `Runner` call for a
-  session (010 §3a) — the concrete carrier `sandbox/runner.hpp`'s comment already names but doesn't
-  yet build. **S**
+- **E1 (done).** `SessionExecStateRegistry` (`sandbox/runner.hpp`) — the "held by the sandbox" half
+  of 010 §3a that `ExecState{cwd, env}` alone didn't provide: `get_or_create(session_id)` hands back
+  the SAME `ExecState&` for a given session on every call (an `unordered_map` keyed by session id —
+  reference/pointer stability across further insertions is a guaranteed container property, which is
+  exactly what lets this keep handing out the identical object), and `destroy(session_id)` is a real
+  teardown (a later `get_or_create` for the same id constructs a genuinely fresh object, never
+  resurrects the old one). `PythonRunner`/`ShellRunner` (E2/E3) don't exist yet, so §3a's own two
+  worked examples ("a `cd` in a shell command mutates the same ExecState a subsequent `execute_code`
+  call reads", and the reverse direction via `os.chdir()`) are reproduced using two minimal,
+  `static_assert`-proven `Runner`-concept-conforming mock runners (test-only) rather than waiting on
+  the real ones. Proven in `tests/test_exec_state.cpp` (15 checks): default-constructed on first
+  access; a second `get_or_create` for the same id observes an earlier mutation through a genuinely
+  identical object (`&first == &second`, not just equal content); both §3a directions reproduced
+  literally via the mock runners; two sessions proven never to observe each other's mutation;
+  destroy-then-recreate proven to yield a fresh object, not a resurrected one. Header-only, no
+  platform dependency — full regression clean on both platforms: Windows `ctest -j4` 45/46 (same
+  pre-existing `test_native_jail_backend_windows` flake), Linux (WSL2 Ubuntu, gcc 15.2.0) `ctest -j4`
+  26/26 (one unrelated, by-design skip). **S**
 - **E2.** `PythonRunner` satisfying `Runner`, under `native-jail`, embedding CPython per
   `AGENTENGINE_BUILD_PYTHON_RUNNER` — real per-call capability-freshness derivation from
   `EffectContext`/`CapabilitySet` (closing python_runner.hpp's own stated gap), `sys.meta_path`

@@ -19,6 +19,43 @@ struct ExecState {
     std::unordered_map<std::string, std::string> env;
 };
 
+// The "held by the sandbox" half of 010 §3a that `ExecState` alone doesn't provide: a concrete
+// carrier that hands back the SAME `ExecState&` for a given session on every call (never a fresh
+// copy), so "shared by reference" is something a caller can actually rely on rather than trust by
+// convention. `PythonRunner`/`ShellRunner` (Phase E2/E3) do not exist yet -- this is the part of
+// §3a provable now, ahead of them, matching §3a's own two claims directly:
+//   - "the same object, not a synchronized pair": `get_or_create` returns a reference into this
+//     registry's own storage, not a copy -- proven by mutating through one reference and observing
+//     the mutation through a second `get_or_create` call for the identical session id.
+//   - "two sessions never share an ExecState any more than they share a heap": distinct session ids
+//     get independent, unrelated `ExecState` instances by construction (`unordered_map` keyed by id).
+// `std::unordered_map` is the right storage for this specifically because reference/pointer
+// stability across further insertions is a guaranteed property of the container (only iterators may
+// be invalidated by growth, never references to an existing element) -- a `vector`-backed store
+// would not give `get_or_create` the right to keep handing out the same `ExecState&` forever.
+class SessionExecStateRegistry {
+public:
+    // Default-constructs a fresh `ExecState` on the FIRST call for `session_id`; every later call
+    // for the same id returns a reference to that identical object.
+    [[nodiscard]] ExecState& get_or_create(std::string const& session_id) {
+        return state_by_session_[session_id];
+    }
+
+    // Tears a session's `ExecState` down (010 §3a: "the same per-session lifetime... as everything
+    // else in [the sandbox]" -- when a session ends, its ExecState does not linger). A subsequent
+    // `get_or_create` for the SAME id constructs a genuinely fresh object, never resurrects the
+    // torn-down one -- this is what makes `destroy` a real teardown rather than merely hiding the
+    // entry from `has()`.
+    void destroy(std::string const& session_id) { state_by_session_.erase(session_id); }
+
+    [[nodiscard]] bool has(std::string const& session_id) const {
+        return state_by_session_.contains(session_id);
+    }
+
+private:
+    std::unordered_map<std::string, ExecState> state_by_session_;
+};
+
 // concept, not a base class (010 §1a). PythonRunner and ShellRunner are the concrete kinds;
 // neither is declared here — each is a seam backend (CONVENTIONS tier 2) with its own
 // implementation, not core vocabulary.

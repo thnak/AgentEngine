@@ -388,6 +388,13 @@ add_executable(test_sandbox_backend_contract test_sandbox_backend_contract.cpp)
 target_link_libraries(test_sandbox_backend_contract PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_sandbox_backend_contract COMMAND test_sandbox_backend_contract)
 
+# ---- ExecState / SessionExecStateRegistry (010 §3a, Milestone 3 Phase E1) -----------------------
+# Header-only (sandbox/runner.hpp) -- no platform-specific dependency, proven with mock Runners
+# since PythonRunner/ShellRunner (Phase E2/E3) don't exist yet.
+add_executable(test_exec_state test_exec_state.cpp)
+target_link_libraries(test_exec_state PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_exec_state COMMAND test_exec_state)
+
 # ---- native_jail Runner stub contract ---------------------------------------------------------
 # Proves PythonRunner (still a stub) satisfies Runner and fails closed, and that ShellRunner (now
 # real, see below) satisfies Runner — see the file's own top comment for exactly what is and is
