@@ -1,7 +1,9 @@
 // Implements wasm_backend.hpp. See that header and decisions/ADR-010-wasm-component-host-manifest-
 // capability-binding.md for the spec/ADR citations this satisfies. `cb_http_request` additionally
 // implements decisions/ADR-011-first-party-egress-proxy.md (M2 Phase F task F1): the first of this
-// file's gated I/O callbacks to go from stub to a real backing effect.
+// file's gated I/O callbacks to go from stub to a real backing effect -- and, in `invoke_tool()` and
+// `cb_http_request` together, that ADR's own §9 residual (SandboxSpec's ResourceLimits::net_bytes
+// reconciled with the grant's own cap::NetOut::byte_cap, the tighter of the two winning).
 
 #include "backends/wasm/wasm_backend.hpp"
 
@@ -376,8 +378,12 @@ namespace {
 
 // The per-call capability table every gated host callback closes over, alive only for the duration
 // of a single call (ADR-010 §3.5 -- no pooling). `bound[i]` is what `rep == i` (§3.2) resolves to.
+// `limits` is the owning Instance's own `SandboxSpec::limits` (ADR-011 §9's named residual: reconciles
+// `ResourceLimits::net_bytes` -- a SandboxSpec-level budget -- with cb_http_request's own, narrower
+// per-grant `cap::NetOut::byte_cap`; see that callback for how the two are combined).
 struct CallCapabilities {
     std::vector<BoundCapability> const* bound;
+    ResourceLimits const* limits;
 };
 
 // Every capability-gated function's callback recovers its bound capability the same way: pull the
@@ -543,8 +549,20 @@ wasmtime_error_t* cb_http_request(void* env, wasmtime_context_t* ctx,
         }
     }
 
+    // ADR-011 §9's named residual, reconciled via net_egress_proxy.hpp's narrow_by_resource_limit()
+    // (a pure, independently-tested function, tests/test_net_egress_proxy.cpp): the SandboxSpec-level
+    // ResourceLimits::net_bytes budget narrows this grant's own cap::NetOut::byte_cap when tighter,
+    // matching 020 §1's "configuration may never widen" rule. `call->limits` is null only on the
+    // tool-listing path (above, "no capability calls happen while merely listing tools"), which never
+    // reaches a gated callback -- checked defensively anyway rather than assumed unreachable.
+    std::optional<std::uint64_t> const resource_net_bytes =
+        call->limits != nullptr && call->limits->net_bytes > 0
+            ? std::optional<std::uint64_t>{call->limits->net_bytes}
+            : std::nullopt;
+    cap::NetOut const effective_grant = sandbox::narrow_by_resource_limit(*cap, resource_net_bytes);
+
     sandbox::HostEgressProxy const proxy;
-    auto response = proxy.fetch(req, *cap);
+    auto response = proxy.fetch(req, effective_grant);
     if (!response) {
         // The WIT `http-error` enum has exactly four cases -- a deliberately small, guest-facing
         // vocabulary (wit/ae-tool.wit's own comment: the guest only needs to know "not allowlisted",
@@ -823,6 +841,7 @@ result<ToolResult> WasmBackend::invoke_tool(SandboxHandle const& handle, ToolInv
 
     CallCapabilities call{};
     call.bound = &bound;
+    call.limits = &inst.limits;
 
     wasmtime_store_t* store = wasmtime_store_new(shared_engine(), &call, nullptr);
     wasmtime_context_t* wctx = wasmtime_store_context(store);

@@ -289,8 +289,14 @@ effect, proven against the real compiled fixture, not a hand-crafted test double
   allowlist (007/002's `to_capability` for `cap::decl::NetOut<Host>`), so the "ambiguous grant"
   rejection path (2+ entries) has no real caller yet — a real finding for whoever adds a
   multi-entry-capable declaration surface later, not a defect in this ADR's own scope.
-- **`ResourceLimits::net_bytes`** (008 §2, `sandbox.hpp`) still has no wiring to this proxy's own
-  `byte_cap`/hard-ceiling accounting — the two are parallel, currently-disconnected byte budgets
-  (one on `SandboxSpec`, one on the `cap::NetOut` grant itself). Reconciling them is a `SandboxSpec`-
-  level integration question outside a single capability's own enforcement mechanism, left for
-  whichever future task wires `ResourceLimits` into `wasm`'s `SandboxBackend::exec` generally.
+- **`ResourceLimits::net_bytes`** (008 §2, `sandbox.hpp`) — **resolved**, M2 residual work post-Phase-F:
+  `net_egress_proxy.hpp`'s `narrow_by_resource_limit()` reconciles it with this proxy's own `byte_cap`
+  (the tighter of the two wins), wired into `wasm_backend.cpp`'s `cb_http_request` via
+  `Instance::limits` (already captured at `create()` time, now also read here). Proven directly as a
+  pure function (`tests/test_net_egress_proxy.cpp`'s C12: both-directions narrowing, no-grant-cap and
+  no-resource-limit edge cases, `net_bytes == 0` treated as "no limit" not "zero bytes"), composed with
+  the byte-cap enforcement C8 already proves rather than re-testing that through a live WASM
+  round-trip. `ResourceLimits`' other six fields (`cpu_ms`, `pids`, `fds`, `disk_bytes`,
+  `output_bytes`; `wall_ms`/`memory_bytes` were already wired via wasmtime's own store limiter/epoch
+  deadline before this task) remain outside `wasm`'s `SandboxBackend::exec` — this task closed the one
+  named gap ADR-011 itself flagged, not the general `ResourceLimits` integration.

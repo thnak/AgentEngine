@@ -5,6 +5,7 @@
 // plain HTTP only this milestone) and docs/research/2026-08-05-ssrf-dns-rebinding-defense.md for the
 // external claims this design rests on.
 
+#include <algorithm>
 #include <cstdint>
 #include <functional>
 #include <optional>
@@ -120,5 +121,20 @@ struct HostEgressProxy {
 };
 
 static_assert(NetEgressBackend<HostEgressProxy>);
+
+// ADR-011 §9's named residual: reconciles a SandboxSpec-level `ResourceLimits::net_bytes` budget
+// (008 §2, `sandbox/sandbox.hpp`) with a grant's own, narrower `cap::NetOut::byte_cap` -- the tighter
+// of the two wins, matching 020 §1's "configuration may never widen" rule. A pure, testable function
+// rather than logic inlined at each call site (`wasm_backend.cpp`'s `cb_http_request` is the first
+// caller): `resource_net_bytes` is `std::nullopt`/0 when no SandboxSpec-level limit applies (the
+// grant's own `byte_cap` governs alone, unchanged).
+[[nodiscard]] inline cap::NetOut narrow_by_resource_limit(cap::NetOut grant,
+                                                           std::optional<std::uint64_t> resource_net_bytes) {
+    if (resource_net_bytes.has_value() && *resource_net_bytes > 0) {
+        grant.byte_cap = grant.byte_cap.has_value() ? std::min(*grant.byte_cap, *resource_net_bytes)
+                                                      : *resource_net_bytes;
+    }
+    return grant;
+}
 
 }  // namespace agentengine::sandbox

@@ -34,6 +34,7 @@ void check(bool cond, char const* what) {
 using agentengine::cap::NetOut;
 using agentengine::sandbox::HostEgressProxy;
 using agentengine::sandbox::is_blocked_address;
+using agentengine::sandbox::narrow_by_resource_limit;
 using agentengine::sandbox::NetEgressRequest;
 using agentengine::sandbox::perform_http_exchange;
 using agentengine::sandbox::reject_crlf;
@@ -422,6 +423,39 @@ int main() {
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(50));  // let any stray connect land
             check(target.accept_count() == 0, "the redirect target received ZERO connections -- no auto-follow");
+        }
+    }
+
+    // -- C12 (ADR-011 §9 residual, closed): narrow_by_resource_limit() -- the tighter of a grant's
+    // own byte_cap and a SandboxSpec-level ResourceLimits::net_bytes always wins ---------------------
+    {
+        auto const with_grant_cap = make_grant("test.invalid:1:http", std::uint64_t{4096});
+        {
+            auto narrowed = narrow_by_resource_limit(with_grant_cap, std::nullopt);
+            check(narrowed.byte_cap.has_value() && *narrowed.byte_cap == *with_grant_cap.byte_cap,
+                  "no ResourceLimits::net_bytes declared -- the grant's own byte_cap is unchanged");
+        }
+        {
+            auto narrowed = narrow_by_resource_limit(with_grant_cap, std::uint64_t{100});
+            check(narrowed.byte_cap.has_value() && *narrowed.byte_cap == 100,
+                  "ResourceLimits::net_bytes tighter than the grant's byte_cap -- the tighter one wins");
+        }
+        {
+            auto narrowed = narrow_by_resource_limit(with_grant_cap, std::uint64_t{1'000'000});
+            check(narrowed.byte_cap.has_value() && *narrowed.byte_cap == *with_grant_cap.byte_cap,
+                  "ResourceLimits::net_bytes looser than the grant's byte_cap -- the grant's own cap still wins");
+        }
+        {
+            NetOut no_grant_cap = with_grant_cap;
+            no_grant_cap.byte_cap = std::nullopt;
+            auto narrowed = narrow_by_resource_limit(no_grant_cap, std::uint64_t{100});
+            check(narrowed.byte_cap.has_value() && *narrowed.byte_cap == 100,
+                  "grant declares no byte_cap at all -- ResourceLimits::net_bytes alone becomes the cap");
+        }
+        {
+            auto narrowed = narrow_by_resource_limit(with_grant_cap, std::uint64_t{0});
+            check(narrowed.byte_cap.has_value() && *narrowed.byte_cap == *with_grant_cap.byte_cap,
+                  "ResourceLimits::net_bytes == 0 means \"no SandboxSpec-level limit\", not \"zero bytes allowed\"");
         }
     }
 
