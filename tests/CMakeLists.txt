@@ -327,6 +327,16 @@ add_executable(test_effect_reexecution test_effect_reexecution.cpp)
 target_link_libraries(test_effect_reexecution PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_effect_reexecution COMMAND test_effect_reexecution)
 
+# ---- Milestone 4 Phase G1/G2 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) --
+# Memory worktree per principal (reusing A1's isolation one level up) + MemoryItem storage as blobs
+# under {kind, id}. Real SHA-256 dependency, same as every other worktree-object-store test.
+if(WIN32)
+  add_executable(test_memory_worktree test_memory_worktree.cpp)
+  target_link_libraries(test_memory_worktree PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_memory_worktree COMMAND test_memory_worktree)
+endif()
+
 # ---- CapabilitySet enforcement mechanism (decisions/ADR-009-capability-set-enforcement-mechanism.md) --
 # Header-only (trust/capability.hpp), core-tier -- links only agentengine::core.
 add_executable(test_capability_enforcement test_capability_enforcement.cpp)
