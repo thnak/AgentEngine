@@ -38,7 +38,9 @@
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/context_provider.hpp"
 #include "agentengine/core/effect_context.hpp"
+#include "agentengine/core/error.hpp"
 #include "agentengine/core/history_provider.hpp"
+#include "agentengine/core/json_value.hpp"
 #include "agentengine/trust/principal.hpp"
 
 namespace agentengine {
@@ -224,6 +226,49 @@ public:
         effect_context_ = EffectContext{};
         created_at_      = std::chrono::system_clock::time_point{};
         updated_at_      = std::chrono::system_clock::time_point{};
+    }
+
+    // Milestone 4 Phase C2 (005 §6: "Redact — replace content in place with a tombstone carrying
+    // reason and actor"). Reuses `Custom` (003 §1's own designed escape hatch: "unknown kinds
+    // round-trip via Custom", content.hpp) rather than adding a tenth `ContentItem::value`
+    // alternative — a redaction tombstone is exactly a namespaced, non-core content kind, the case
+    // `Custom` exists for; adding a new variant member would mean touching every exhaustive
+    // `ContentItem::value` match in the codebase for a need `Custom` already covers.
+    //
+    // `reason`/`actor` are recorded on the tombstone (I4: every effect is attributable — a
+    // redaction is one). ALL of the message's original content items are replaced by the single
+    // tombstone; nothing about the original text/media survives in `history_` afterward, which is
+    // what makes "propagates to derived summaries" (005 §6) true by construction for anything
+    // computed from `history_` AFTER this call — `HistoryProvider<Summarize<N,...>>` (Phase B4)
+    // folding this message into a summary sees only the tombstone, never the original text
+    // (proven in test_agent_session_redact.cpp).
+    //
+    // NOT yet covered (named, not silently assumed complete): propagation into a durable
+    // checkpoint. Phase A4's own narrowed `AgentSessionRecord` does not persist `history_` at all
+    // (Message/ContentItem have no `QUARK_SERIALIZE` yet, the same gap A4 named), so there is no
+    // checkpoint containing this history for the redaction to reach — that half of 005 §6's rule
+    // becomes provable only once both that serialization gap closes AND Phase D's real checkpoint
+    // mechanism exists. "Recordings" (016 telemetry) are likewise not built anywhere yet.
+    [[nodiscard]] result<void> redact(std::string const& message_id, std::string reason,
+                                        std::string actor) {
+        for (Message& msg : history_) {
+            if (msg.message_id != message_id) continue;
+
+            json::Value tombstone = json::Value::make_object({
+                {"reason", json::Value::make_string(std::move(reason))},
+                {"actor", json::Value::make_string(std::move(actor))},
+            });
+
+            ContentItem item{};
+            item.value   = Custom{"ae:redacted", json::dump(tombstone)};
+            item.origin  = content_origin::system;
+            item.tainted = false;  // host-authored tombstone, not model/tool-originated data
+
+            msg.content.assign(1, item);
+            return {};
+        }
+        return std::unexpected(
+            error{failure_class::contract, "no message with that id in history", "session.redact.unknown_message_id"});
     }
 
     [[nodiscard]] std::string const& session_id() const noexcept { return session_id_; }

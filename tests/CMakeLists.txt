@@ -253,6 +253,13 @@ add_executable(test_agent_session_fork test_agent_session_fork.cpp)
 target_link_libraries(test_agent_session_fork PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_agent_session_fork COMMAND test_agent_session_fork)
 
+# ---- Milestone 4 Phase C2 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
+# redact(): in-place tombstone (Custom content kind) carrying reason/actor; proves propagation
+# into a subsequently-computed Summarize<N> derived summary (005 §6).
+add_executable(test_agent_session_redact test_agent_session_redact.cpp)
+target_link_libraries(test_agent_session_redact PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_agent_session_redact COMMAND test_agent_session_redact)
+
 # ---- CapabilitySet enforcement mechanism (decisions/ADR-009-capability-set-enforcement-mechanism.md) --
 # Header-only (trust/capability.hpp), core-tier -- links only agentengine::core.
 add_executable(test_capability_enforcement test_capability_enforcement.cpp)
