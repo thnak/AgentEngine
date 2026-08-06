@@ -322,10 +322,47 @@ for M3 regardless.
   the identical OOM-vs-timeout assertion under `-j4` contention — confirmed NOT a regression by
   re-running both single-threaded: parity passes clean alone, backend fails on the same assertion even
   alone, matching the already-documented flake exactly; neither test touches worktree code). **S**
-- **B4.** Concurrency proof (025 §9 G3, scoped per decision 7) — N concurrent `branch` agents produce
-  a deterministic merge result over a machine-safe bounded randomized-interleaving count; every
-  genuine conflict is surfaced, never silently resolved; a positive control (a deliberately miswired
-  auto-apply path) is caught, proving B2's "never last-writer-wins" claim isn't vacuous. **L**
+- **B4 (done).** Concurrency proof (025 §9 G3, scoped per decision 7) — N concurrent `branch` agents
+  produce a deterministic merge result over a machine-safe bounded randomized-interleaving count;
+  every genuine conflict is surfaced, never silently resolved; a positive control (a deliberately
+  miswired auto-apply path) is caught, proving B2's "never last-writer-wins" claim isn't vacuous.
+  **Concurrency here is a single-threaded, discrete-event simulation, not real OS threads** — an
+  explicit design choice, not an implicit shortcut: real threads calling into
+  `InMemoryStore`/`InMemoryWorktreeObjectStore` (plain `unordered_map`s, no internal locking) would be
+  a data race in the *test harness itself*, unrelated to what this is trying to prove, and CLAUDE.md's
+  Machine Safety section rules out spawning `hardware_concurrency()` threads regardless. Instead: N
+  agents all "observe" the identical parent snapshot (the worst-case, maximally contentious starting
+  point — everyone began before anyone committed), then their merge attempts are dispatched one at a
+  time in a randomized order across many trials, with the actual TOCTOU race B2 built defenses for
+  genuinely exercised (not merely simulated by assertion) every time a non-first agent's stale
+  snapshot is rejected.
+  - **`retry_merge_branch_into_parent`** (new production code, not test-only) — the response B2's own
+    `worktree.merge_stale_parent` error message implies but B2 didn't build: tries the caller's
+    already-observed parent first (the ordinary case, no extra read), and only re-reads live on a
+    subsequent attempt, specifically because the prior one was rejected as stale. A genuine conflict
+    is never retried — it's a real, terminal result returned immediately, exactly like a clean merge.
+  - `tests/test_worktree_branch_concurrency.cpp` (5 checks, but each an aggregate over hundreds of
+    trials — 025 §9 G3's claim is a property of the whole run, not any one trial in isolation; a
+    per-trial failure is still reported immediately by number, not averaged away): **B4-C1** — 500
+    trials, 5 agents each making a disjoint edit, dispatched in a random order every trial; every
+    trial ends with the parent containing all 5 additions (no lost update), and the stale-parent path
+    is proven to fire *exactly* `trials × (agents − 1)` times — not zero (which would mean the test
+    never actually raced anyone) and not more (which would mean something is retrying when it
+    shouldn't need to). **B4-C2** — 500 trials, two agents editing the SAME file differently; whichever
+    wins the race merges cleanly, the other's retry surfaces a real conflict every single trial,
+    regardless of dispatch order — never silently resolved, never last-writer-wins. **B4-C3** (positive
+    control) — the identical B4-C1 scenario run through a deliberately miswired
+    `naive_last_writer_wins_merge` (blind overwrite, no merge check at all) instead of the real path:
+    it loses updates on all 50 control trials, proving B4-C1's "no lost update" assertion is a real
+    gate, not one that would pass regardless of what the merge logic did (022 §5). Runtime measured at
+    ~120ms for the full 1 050-scenario run (well inside the 60s CTest timeout set on this test per
+    CLAUDE.md's Machine Safety section) — cheap enough that 500 was chosen as a meaningfully large,
+    still-bounded count (decision 7), not the smallest number that would pass; unlike `native-jail`'s
+    300-cycle reduction from 008 §9 G4's 10⁵ (bounded by real per-cycle AppContainer/Job-object cost),
+    this is pure in-memory CPU work, so the reduction from the RFC's own 10⁴ is a deliberate scope
+    decision, not a cost-forced one. WIN32-gated (same real-crypto dependency as A1/B1/B2/B3). Full
+    regression: Windows `ctest -j4` 40/41, same pre-existing `test_native_jail_backend_windows` flake,
+    unchanged. **L**
 
 ### Phase C — Mounts, capabilities, path-escape hardening (025 §5) — ADR-track, see decision 6
 

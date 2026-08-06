@@ -670,6 +670,19 @@ if(WIN32)
   add_test(NAME test_worktree_staleness COMMAND test_worktree_staleness)
 endif()
 
+# ---- Branch-merge concurrency proof (025 §9 G3, Milestone 3 Phase B4) ---------------------------
+# Builds real Blob/Tree fixtures via put_blob/put_tree, same real-crypto dependency as A1/B1/B2/B3.
+# Hundreds of simulated-interleaving trials, each doing real SHA-256 work -- bounded (decision 7),
+# but still real CPU cost, so this is registered with an explicit timeout rather than CTest's default
+# unbounded wait (CLAUDE.md Machine Safety: a runaway proof must not be able to hang the box).
+if(WIN32)
+  add_executable(test_worktree_branch_concurrency test_worktree_branch_concurrency.cpp)
+  target_link_libraries(test_worktree_branch_concurrency PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_worktree_branch_concurrency COMMAND test_worktree_branch_concurrency)
+  set_tests_properties(test_worktree_branch_concurrency PROPERTIES TIMEOUT 60)
+endif()
+
 # ---- PythonRunner prove-phase gates (decisions/ADR-002-pythonrunner-embedding-and-mediation.md)
 # Only built when AGENTENGINE_BUILD_PYTHON_RUNNER is ON (CMakeLists.txt) -- these link a real
 # CPython import lib and need python3<minor>.dll reachable via PATH at run time (Windows has no

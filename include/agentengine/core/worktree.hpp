@@ -576,6 +576,48 @@ template <WorktreeObjectStore OS, quark::Store RS>
     return BranchMergeOutcome{*committed, {}};
 }
 
+// The production-usable response to `merge_branch_into_parent`'s own error message ("re-read and
+// retry"): tries the caller's already-observed `initial_expected_parent` first (the ordinary case --
+// what a caller would already have from its last `read_sub_worktree`/turn-start read, at no extra
+// cost), and only re-reads the parent live on a SUBSEQUENT attempt, specifically because the prior
+// one was rejected as stale. A genuine merge conflict (`BranchMergeOutcome` with `conflicts` set) is
+// NOT retried -- it is a real, terminal result, returned immediately like any other successful call;
+// only `worktree.merge_stale_parent` drives another attempt. Phase B4's own concurrency proof is what
+// exercises this under many simulated interleavings; this function is the mechanism, not the proof.
+template <WorktreeObjectStore OS, quark::Store RS>
+[[nodiscard]] result<BranchMergeOutcome> retry_merge_branch_into_parent(OS& object_store, RS& ref_store,
+                                                                         SubWorktree const& branch,
+                                                                         Ref initial_expected_parent,
+                                                                         int max_attempts) {
+    if (max_attempts < 1) {
+        return std::unexpected(error{failure_class::contract, "max_attempts must be at least 1",
+                                      "worktree.merge_retry_bad_max_attempts"});
+    }
+    std::string const parent_name = initial_expected_parent.name;
+    std::optional<Ref> expected = std::move(initial_expected_parent);
+
+    for (int attempt = 0; attempt < max_attempts; ++attempt) {
+        if (!expected.has_value()) {
+            auto fresh = read_ref(ref_store, parent_name);
+            if (!fresh) return std::unexpected(fresh.error());
+            if (!fresh->has_value()) {
+                return std::unexpected(error{failure_class::contract,
+                                              "retry_merge_branch_into_parent's parent ref has never "
+                                              "been committed",
+                                              "worktree.merge_parent_missing"});
+            }
+            expected = std::move(**fresh);
+        }
+        auto outcome = merge_branch_into_parent(object_store, ref_store, branch, *expected);
+        if (outcome.has_value()) return outcome;
+        if (outcome.error().code != "worktree.merge_stale_parent") return std::unexpected(outcome.error());
+        expected.reset();  // rejected as stale -- force a fresh read on the next attempt
+    }
+    return std::unexpected(error{failure_class::resource,
+                                  "exceeded max retry attempts merging under sustained contention",
+                                  "worktree.merge_retries_exhausted"});
+}
+
 // ============================================================================================
 // `shared`-mode staleness note (025 §3/§10 Q2) -- Phase B3. `shared` gives immediate cross-
 // visibility (B1) with no merge step, which is exactly what makes it *safe* under 025 §4's single-
