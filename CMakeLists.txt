@@ -380,7 +380,8 @@ endif()
 # breakdown doc's own decision 2), not silently assumed available.
 if(WIN32)
   add_library(agentengine_worktree_store STATIC
-    src/core/worktree_digest.cpp)
+    src/core/worktree_digest.cpp
+    src/core/worktree_mount_fs.cpp)
   target_link_libraries(agentengine_worktree_store PUBLIC agentengine::core)
   target_link_libraries(agentengine_worktree_store PRIVATE agentengine_warnings bcrypt)
   add_library(agentengine::worktree_store ALIAS agentengine_worktree_store)

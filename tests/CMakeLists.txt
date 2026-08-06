@@ -692,6 +692,20 @@ if(WIN32)
   add_test(NAME test_worktree_mount COMMAND test_worktree_mount)
 endif()
 
+# ---- Worktree mount OS-level path-escape corpus (025 §5, 021 §6 G3, Milestone 3 Phase C2,
+# decisions/ADR-014-worktree-mount-path-canonicalization.md) --------------------------------------
+# Real Win32 filesystem I/O against a scratch directory under the system temp path: junctions,
+# real reparse-point crossing, a real TOCTOU interleaving proven deterministically. Shells out to
+# `cmd.exe /c mklink /J` for junction setup (test-only infrastructure), so this needs cmd.exe on
+# PATH -- always true on a real Windows install.
+if(WIN32)
+  add_executable(test_worktree_mount_fs_escape_corpus test_worktree_mount_fs_escape_corpus.cpp)
+  target_link_libraries(test_worktree_mount_fs_escape_corpus PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_worktree_mount_fs_escape_corpus COMMAND test_worktree_mount_fs_escape_corpus)
+  set_tests_properties(test_worktree_mount_fs_escape_corpus PROPERTIES TIMEOUT 60)
+endif()
+
 # ---- PythonRunner prove-phase gates (decisions/ADR-002-pythonrunner-embedding-and-mediation.md)
 # Only built when AGENTENGINE_BUILD_PYTHON_RUNNER is ON (CMakeLists.txt) -- these link a real
 # CPython import lib and need python3<minor>.dll reachable via PATH at run time (Windows has no

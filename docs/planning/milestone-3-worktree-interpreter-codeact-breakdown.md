@@ -412,13 +412,47 @@ for M3 regardless.
   committed (C1-C6). WIN32-gated (same real-crypto dependency as A1/B1/B2/B3/B4). Full regression:
   Windows `ctest -j4` 41/42, same pre-existing `test_native_jail_backend_windows` flake, unchanged.
   **M**
-- **C2. ADR-track (decision 6).** Path-escape corpus: `..`, absolute redirects, symlink/junction/
-  reparse-point boundary crossing, ADS, `\\?\` prefixes, unicode-normalization tricks, TOCTOU
-  re-resolution — contained on Windows first (matching 021 §2's own platform-priority ordering and
-  M2's own Windows-first sequencing for `native-jail`), with positive controls per attack class
-  proving containment isn't incidental. Goes through design→red-team→prove→judge and produces
-  `decisions/ADR-0NN-worktree-mount-path-canonicalization.md` before landing, per decision 6 — not
-  an ordinary task, sized and process-gated as such. **XL**
+- **C2 (done). ADR-track (decision 6) — `decisions/ADR-014-worktree-mount-path-canonicalization.md`,
+  Judged.** New `core/worktree_mount_fs.hpp`/`.cpp` (linked into the existing
+  `agentengine::worktree_store` target): `open_within_mount_root` opens a guest-relative path
+  against a REAL OS directory (the not-yet-built materialization Phase C1's own header comment
+  deferred) with a single handle-based `CreateFileW`, then verifies containment from the resolved
+  HANDLE (`GetFinalPathNameByHandleW`) rather than from a re-parsed string — the design decision
+  this ADR's whole prove phase turns on. The competing, rejected design (lexical canonicalize →
+  string-prefix-check → reopen the checked string later) was built too, kept as a permanent
+  `redteam::naive_check_within_root`/`naive_open_checked_path` regression control (same precedent as
+  B4's `naive_last_writer_wins_merge`), and proven vulnerable to TOCTOU **deterministically**: a
+  real scratch directory is checked, then swapped by hand for a junction pointing outside the mount
+  (the exact state a real racing attacker needs, made reproducible instead of timing-dependent —
+  B4's discrete-event-simulation precedent applied to a different property), then the naive design's
+  reopen reads the swapped-in OUTSIDE content despite the check having validated an INSIDE path. The
+  accepted design proven immune to the identical interleaving two ways: a handle opened BEFORE the
+  swap keeps reading its original content afterward (Windows handles reference the file object, not
+  the path), and a FRESH request made AFTER the swap re-resolves current reality and is correctly
+  rejected — no cached, staleable "validated" answer either way. A real production bug was found and
+  fixed during this proof: the target handle initially lacked `FILE_SHARE_DELETE`, which would let a
+  guest's still-open handle block a host-side delete/replace; caught by the TOCTOU test's own setup,
+  not a separate review pass. Full corpus (`tests/test_worktree_mount_fs_escape_corpus.cpp`, 22
+  checks, real Win32 I/O against a scratch temp directory, junctions created via `cmd.exe /c mklink
+  /J` matching ADR-004's own shell-out-for-setup precedent): lexical `..`/absolute-redirect rejected
+  pre-syscall; a junction crossing the mount boundary rejected with a positive control proving an
+  identical in-mount junction is followed, not blanket-denied; ADS and `\\?\` rejected structurally
+  by a small forbidden-character check (backslash/colon/NUL) layered on top of `split_mount_path`'s
+  existing segment grammar, before any syscall; a real on-disk fullwidth-dot (`U+FF0E` x2) directory
+  name proven treated as an ordinary opaque name, never conflated with literal `..` in either
+  direction; case-insensitive resolution confirmed still contained. **Named, untested residuals**
+  (not silently assumed complete): 8.3 short-filename aliasing (reasoned-covered by the same
+  `GetFinalPathNameByHandleW` mechanism, not executed — 8.3 name generation is commonly disabled by
+  default and this machine's volume config wasn't controlled for); real symbolic links as distinct
+  from junctions (junctions need no special privilege and were used throughout; symlinks share the
+  identical OS resolution mechanism, expected but not tested to generalize, matching ADR-004 §6.4's
+  own honesty about its untested LPAC case); and, named as the largest residual by the ADR itself —
+  nothing yet forces Phase E's `PythonRunner`/`ShellRunner` to actually route every guest-reachable
+  filesystem operation through this primitive once built (ADR-003's own missed-entry-point history is
+  the cited precedent for why this is flagged rather than assumed). Full regression: Windows
+  `ctest -j4` 42/43, same pre-existing `test_native_jail_backend_windows` flake, reconfirmed via a
+  standalone single-threaded re-run to fail identically alone (not a side effect of this work).
+  **XL**
 - **C3.** Write quotas enforced at write time (025 §5, byte + file-count caps), surfacing as an
   ordinary `No space left on device`-class error inside the guest (026 §3) rather than a policy
   message — proven against C1's mount layer directly. **S**
