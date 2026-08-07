@@ -388,6 +388,21 @@ namespace detail {
     return false;
 }
 
+// Real-server finding, not a hypothetical: `perform_https_exchange` (Phase C) has no chunked-transfer
+// awareness in its read loop at all -- for a `Transfer-Encoding: chunked` response it simply reads
+// until the peer closes the connection (the only exit condition available when there is no
+// Content-Length header) and returns the RAW, still chunk-framed bytes as `NetEgressResponse::body`.
+// A real OpenAI-compatible endpoint (confirmed live against OpenRouter, `api.openrouter.ai`) sends
+// `Transfer-Encoding: chunked` on the ORDINARY non-streaming `chat()` response too, not only on SSE --
+// chat_stream()'s own decode-if-chunked step already handled this correctly; chat() originally did
+// not (json::parse was called directly on the raw chunk-framed body and failed with a confusing
+// "expected a digit" parse error on the literal hex chunk-size lines). Every response body this
+// backend reads must be decoded through this helper before `json::parse`, streaming or not.
+[[nodiscard]] inline result<std::string> decoded_response_body(sandbox::NetEgressResponse const& resp) {
+    if (!response_is_chunked(resp)) return resp.body;
+    return decode_chunked_body(resp.body);
+}
+
 // SSE framing (only `data:` lines matter for an OpenAI-compatible stream -- `event:`/`id:`/`:comment`
 // lines, if any, are ignored). Every OpenAI event fits on one line (compact single-line JSON), so no
 // multi-line data accumulation is needed.
@@ -589,10 +604,12 @@ public:
         auto resp = sandbox::perform_provider_https_exchange(host_, port_, req, {}, std::nullopt,
                                                                 resolver_, ca_bundle_pem_override_);
         if (!resp) co_return std::unexpected(resp.error());
+        auto decoded_body = detail::decoded_response_body(*resp);
+        if (!decoded_body) co_return std::unexpected(decoded_body.error());
         if (resp->status < 200 || resp->status >= 300) {
-            co_return std::unexpected(detail::map_http_status_error(resp->status, resp->body));
+            co_return std::unexpected(detail::map_http_status_error(resp->status, *decoded_body));
         }
-        auto parsed = json::parse(resp->body);
+        auto parsed = json::parse(*decoded_body);
         if (!parsed) co_return std::unexpected(parsed.error());
         co_return detail::parse_chat_completion_response(*parsed);
     }

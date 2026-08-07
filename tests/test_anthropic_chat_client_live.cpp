@@ -355,6 +355,30 @@ int main() {
         }
     }
 
+    // ---- chat(): a CHUNKED non-streaming response decodes correctly ---------------------------------
+    // Same real-server finding Phase D's OpenAI backend hit live against OpenRouter, fixed identically
+    // here: a genuine OpenAI-compatible endpoint sends Transfer-Encoding: chunked on the ordinary
+    // non-streaming response too, not only on SSE. Regression-proven so it cannot silently return.
+    {
+        std::string const body =
+            R"({"type":"message","role":"assistant","content":[{"type":"text","text":"chunked reply"}]})";
+        TlsCannedServer server(leaf, http_response(body, /*chunked=*/true));
+        check(server.ok(), "chat()+chunked: test server started");
+        if (server.ok()) {
+            anthropic::AnthropicChatClient client("localhost", server.port(), "claude-sonnet-5",
+                                                   SecretRef{"anthropic-api-key"}, ChatClientCapabilities{},
+                                                   store, "/v1", "2023-06-01", fake_resolver, leaf.cert_pem);
+            auto resp = run_task_sync<result<ChatResponse>>(client.chat(request_asking("hi"), ctx));
+            check(resp.has_value(),
+                  "chat()+chunked: a Transfer-Encoding: chunked non-streaming response is decoded and "
+                  "parsed correctly, not treated as already-plain JSON");
+            if (resp && !resp->message.content.empty()) {
+                auto const* text = std::get_if<Text>(&resp->message.content.front().value);
+                check(text && text->text == "chunked reply", "chat()+chunked: content round-trips exactly");
+            }
+        }
+    }
+
     // ---- chat(): a rotated secret is resolved fresh, not cached --------------------------------------
     {
         std::string const body =

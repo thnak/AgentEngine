@@ -509,6 +509,16 @@ inline void accumulate_message_delta_usage(AnthropicUsageSnapshot& snapshot, jso
     return false;
 }
 
+// Real-server finding from Phase D's own live verification (a genuine OpenAI-compatible endpoint
+// sends `Transfer-Encoding: chunked` on ordinary, non-streaming responses too, not only on SSE), fixed
+// identically here rather than rediscovered: every response body this backend reads must be decoded
+// through this helper before `json::parse`, streaming or not -- `perform_https_exchange` (Phase C)
+// returns the raw, still chunk-framed bytes verbatim when there is no Content-Length header.
+[[nodiscard]] inline result<std::string> decoded_response_body(sandbox::NetEgressResponse const& resp) {
+    if (!response_is_chunked(resp)) return resp.body;
+    return decode_chunked_body(resp.body);
+}
+
 // Anthropic's SSE uses NAMED events (an `event: <type>` line paired with the following `data: {...}`
 // line) -- structurally different from OpenAI's single always-"data:"-only shape (Phase D's own
 // split_sse_data_events), confirmed against the SDK's Sse.cs event-type switch. Every Anthropic event
@@ -744,10 +754,12 @@ public:
         auto resp = sandbox::perform_provider_https_exchange(host_, port_, req, {}, std::nullopt,
                                                                 resolver_, ca_bundle_pem_override_);
         if (!resp) co_return std::unexpected(resp.error());
+        auto decoded_body = detail::decoded_response_body(*resp);
+        if (!decoded_body) co_return std::unexpected(decoded_body.error());
         if (resp->status < 200 || resp->status >= 300) {
-            co_return std::unexpected(detail::map_http_status_error(resp->status, resp->body));
+            co_return std::unexpected(detail::map_http_status_error(resp->status, *decoded_body));
         }
-        auto parsed = json::parse(resp->body);
+        auto parsed = json::parse(*decoded_body);
         if (!parsed) co_return std::unexpected(parsed.error());
         co_return detail::parse_message_response(*parsed);
     }

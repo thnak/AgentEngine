@@ -369,6 +369,32 @@ int main() {
         }
     }
 
+    // ---- chat(): a CHUNKED non-streaming response decodes correctly ---------------------------------
+    // Real-server finding: a live probe against OpenRouter (a genuine OpenAI-compatible endpoint)
+    // showed it sends `Transfer-Encoding: chunked` on the ordinary, NON-streaming chat() response --
+    // not only on SSE. chat() originally called json::parse directly on the raw, still chunk-framed
+    // bytes and failed with a confusing "expected a digit" parse error on the literal hex chunk-size
+    // lines. Regression-proven here so it cannot silently return.
+    {
+        std::string const body = R"({"choices":[{"index":0,"finish_reason":"stop",)"
+                                  R"("message":{"role":"assistant","content":"chunked reply"}}],)"
+                                  R"("usage":{"prompt_tokens":3,"completion_tokens":2}})";
+        TlsCannedServer server(leaf, http_response(body, /*chunked=*/true));
+        check(server.ok(), "chat()+chunked: test server started");
+        if (server.ok()) {
+            openai::OpenAIChatClient client("localhost", server.port(), "gpt-5", SecretRef{"openai-api-key"},
+                                             ChatClientCapabilities{}, store, "/v1", fake_resolver, leaf.cert_pem);
+            auto resp = run_task_sync<result<ChatResponse>>(client.chat(request_asking("hi"), ctx));
+            check(resp.has_value(),
+                  "chat()+chunked: a Transfer-Encoding: chunked non-streaming response is decoded and "
+                  "parsed correctly, not treated as already-plain JSON");
+            if (resp && !resp->message.content.empty()) {
+                auto const* text = std::get_if<Text>(&resp->message.content.front().value);
+                check(text && text->text == "chunked reply", "chat()+chunked: content round-trips exactly");
+            }
+        }
+    }
+
     // ---- chat(): a rotated secret is resolved fresh, not cached (018 §3, same rule Phase B3 proves) -
     {
         std::string const body =
