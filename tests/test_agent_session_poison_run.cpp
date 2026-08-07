@@ -41,7 +41,7 @@ public:
             ae::error{ae::failure_class::transient, "simulated provider outage", "chat.always_fails"});
     }
 
-    int chat_stream(ae::ChatRequest const&, ae::EffectContext&) { return 0; }  // unconstrained, unused
+    ae::stream<ae::ChatResponseUpdate> chat_stream(ae::ChatRequest const&, ae::EffectContext&) { return {}; }  // unused; empty/invalid stream
 };
 static_assert(ae::ChatClient<AlwaysFailingChatClient>,
               "AlwaysFailingChatClient must satisfy the ChatClient concept (004 §1)");

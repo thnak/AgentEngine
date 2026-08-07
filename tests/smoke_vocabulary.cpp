@@ -33,7 +33,7 @@ struct DummyChatClient {
     ae::task<ae::result<ae::ChatResponse>> chat(ae::ChatRequest const&, ae::EffectContext&) {
         co_return ae::ChatResponse{};
     }
-    int chat_stream(ae::ChatRequest const&, ae::EffectContext&) { return 0; }  // unconstrained (see chat_client.hpp)
+    ae::stream<ae::ChatResponseUpdate> chat_stream(ae::ChatRequest const&, ae::EffectContext&) { return {}; }  // unused; empty/invalid stream
 };
 static_assert(ae::ChatClient<DummyChatClient>,
               "DummyChatClient must satisfy the ChatClient concept (004 §1)");

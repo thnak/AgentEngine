@@ -57,7 +57,10 @@ public:
         co_return resp;
     }
 
-    int chat_stream(agentengine::ChatRequest const&, agentengine::EffectContext&) { return 0; }
+    agentengine::stream<agentengine::ChatResponseUpdate> chat_stream(agentengine::ChatRequest const&,
+                                                                       agentengine::EffectContext&) {
+        return {};
+    }
 
 private:
     Store const&           store_;

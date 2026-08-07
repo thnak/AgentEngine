@@ -82,7 +82,7 @@ try_compile(AE_SANDBOX_PROFILE_REJECTS_NON_CONFORMING_TYPE
   "${CMAKE_CURRENT_BINARY_DIR}/compile_fail_checks/sandbox_profile_rejects_non_conforming_type"
   "${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/sandbox_profile_rejects_non_conforming_type.cpp"
   CXX_STANDARD 23
-  CMAKE_FLAGS "-DINCLUDE_DIRECTORIES=${PROJECT_SOURCE_DIR}/include;${PROJECT_SOURCE_DIR}/third_party/quark/include"
+  CMAKE_FLAGS "-DINCLUDE_DIRECTORIES=${PROJECT_SOURCE_DIR}/include;${PROJECT_SOURCE_DIR}/third_party/quark/include;${PROJECT_SOURCE_DIR}/third_party/quark"
   OUTPUT_VARIABLE AE_SANDBOX_PROFILE_REJECTS_NON_CONFORMING_TYPE_LOG)
 if(AE_SANDBOX_PROFILE_REJECTS_NON_CONFORMING_TYPE)
   message(FATAL_ERROR
@@ -95,7 +95,7 @@ try_compile(AE_SANDBOX_PROFILE_POSITIVE_CONTROL
   "${CMAKE_CURRENT_BINARY_DIR}/compile_fail_checks/sandbox_profile_positive_control"
   "${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/sandbox_profile_positive_control.cpp"
   CXX_STANDARD 23
-  CMAKE_FLAGS "-DINCLUDE_DIRECTORIES=${PROJECT_SOURCE_DIR}/include;${PROJECT_SOURCE_DIR}/third_party/quark/include"
+  CMAKE_FLAGS "-DINCLUDE_DIRECTORIES=${PROJECT_SOURCE_DIR}/include;${PROJECT_SOURCE_DIR}/third_party/quark/include;${PROJECT_SOURCE_DIR}/third_party/quark"
   OUTPUT_VARIABLE AE_SANDBOX_PROFILE_POSITIVE_CONTROL_LOG)
 if(NOT AE_SANDBOX_PROFILE_POSITIVE_CONTROL)
   message(FATAL_ERROR
@@ -488,6 +488,13 @@ add_test(NAME test_agent_registry_chat_client_registry COMMAND test_agent_regist
 add_executable(test_chat_client_credential_resolution test_chat_client_credential_resolution.cpp)
 target_link_libraries(test_chat_client_credential_resolution PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_chat_client_credential_resolution COMMAND test_chat_client_credential_resolution)
+
+# ---- Milestone 5 Phase B4b -- ae::stream<T> (core/stream.hpp), the AgentEngine-side adapter over
+# Quark's ReplyStream/StreamChannel credit-controlled ring (RFC 024/ADR-018) -- against a real
+# ChatClient conformer that streams for real across a background producer thread.
+add_executable(test_chat_client_stream test_chat_client_stream.cpp)
+target_link_libraries(test_chat_client_stream PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_chat_client_stream COMMAND test_chat_client_stream)
 
 # ---- Dependency-free JSON value/parser/serializer (M2 Phase B task B2, core/json_value.hpp) ----
 # Header-only, core-tier -- links only agentengine::core (no nlohmann::json; this IS the seam that

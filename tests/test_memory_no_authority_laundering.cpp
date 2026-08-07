@@ -97,7 +97,7 @@ int main() {
             ae::task<ae::result<ae::ChatResponse>> chat(ae::ChatRequest const&, ae::EffectContext&) {
                 co_return ae::ChatResponse{};
             }
-            int chat_stream(ae::ChatRequest const&, ae::EffectContext&) { return 0; }
+            ae::stream<ae::ChatResponseUpdate> chat_stream(ae::ChatRequest const&, ae::EffectContext&) { return {}; }
         };
         ae::MemoryProvider<NoopSummarizer, ae::InMemoryWorktreeObjectStore, quark::InMemoryStore> provider{
             object_store, ref_store, mount, read_cap, write_cap, NoopSummarizer{}, /*max_injected=*/10};

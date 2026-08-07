@@ -14,11 +14,10 @@
 // only) and lives under tests/, never under include/agentengine/ (CONVENTIONS.md dependency tiers —
 // core takes no third-party dependency, ever).
 //
-// Streaming fixture playback (a sequence of ChatResponseUpdate) is NOT implemented here —
-// `chat_stream` is a stub matching the DummyChatClient pattern in tests/smoke_vocabulary.cpp,
-// because `chat_stream` is unconstrained in chat_client.hpp until real streaming vocabulary
-// (`ae::stream<T>`) lands. See tests/fixtures/chat_client/README.md for what a streaming fixture
-// schema would need once that lands.
+// Streaming fixture playback (a sequence of ChatResponseUpdate) is NOT implemented here — `chat_stream`
+// returns an empty, already-cancelled stream<ChatResponseUpdate> (Milestone 5 Phase B4b's real
+// vocabulary, core/stream.hpp) rather than a real fixture-driven sequence. See
+// tests/fixtures/chat_client/README.md for what a streaming fixture schema would need.
 
 #include <cstdint>
 #include <filesystem>
@@ -148,10 +147,9 @@ public:
         }
     }
 
-    // Streaming fixture playback not implemented (see top comment). Sentinel stub, matching the
-    // DummyChatClient pattern in tests/smoke_vocabulary.cpp — chat_stream is unconstrained beyond
-    // "callable" until real streaming vocabulary exists (chat_client.hpp).
-    int chat_stream(ChatRequest const&, EffectContext&) const { return 0; }
+    // Streaming fixture playback not implemented (see top comment) — an empty, invalid stream (never
+    // produces, done() is true immediately) rather than a real fixture-driven sequence.
+    stream<ChatResponseUpdate> chat_stream(ChatRequest const&, EffectContext&) const { return {}; }
 
 private:
     std::filesystem::path fixture_path_;

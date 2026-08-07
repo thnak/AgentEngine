@@ -56,7 +56,7 @@ public:
         co_return ae::ChatResponse{reply, ae::Usage{1, 1, 0, 0, 0.0}};
     }
 
-    int chat_stream(ae::ChatRequest const&, ae::EffectContext&) { return 0; }  // unconstrained, unused
+    ae::stream<ae::ChatResponseUpdate> chat_stream(ae::ChatRequest const&, ae::EffectContext&) { return {}; }  // unused; empty/invalid stream
 };
 static_assert(ae::ChatClient<CannedChatClient>,
               "CannedChatClient must satisfy the ChatClient concept (004 §1)");

@@ -22,6 +22,7 @@
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/error.hpp"
+#include "agentengine/core/stream.hpp"
 #include "agentengine/core/task.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
 
@@ -80,22 +81,28 @@ struct ChatResponseUpdate {  // ae-naming-lint: allow ChatResponseUpdate — pre
 // concept, not a base class (004 §1) — a backend satisfies this shape; it is never inherited from
 // on the hot path (CONVENTIONS.md: "no virtual for policy on the hot path").
 //
-// Milestone 5 Phase B4: `chat`'s return type is `ae::task<result<ChatResponse>>` — 004 §1's literal
+// Milestone 5 Phase B4a: `chat`'s return type is `ae::task<result<ChatResponse>>` — 004 §1's literal
 // signature, real now that Quark's `task<T>` for non-void `T` landed (ADR-047, submodule bumped to
 // `dcb191f`). A conformer's `chat()` is therefore a coroutine (`co_return`s its `result<ChatResponse>`
 // rather than `return`ing it); every caller `co_await`s it from inside its own coroutine (an async
 // actor handler, or another nested `ae::task<T>`) — `quark::task<T>` has no synchronous "drive to
 // completion" API by design (see `quark/core/task.hpp`'s banner comment and
 // `task_value_return_test.cpp`'s own precedent), so there is no way to call `chat()` from ordinary,
-// non-coroutine code and get a value back inline. `chat_stream` stays unconstrained beyond "callable"
-// because no streaming vocabulary (`ae::stream<T>`, Quark credit-controlled streams per 004 §1)
-// exists yet — tracked here, not silently glossed over; becomes a real `std::same_as<...>` constraint
-// once that type lands.
+// non-coroutine code and get a value back inline.
+//
+// Milestone 5 Phase B4b: `chat_stream`'s return type is `ae::stream<ChatResponseUpdate>` — 004 §1's
+// literal signature, real now that `agentengine/core/stream.hpp` wraps Quark's already-Accepted
+// `ReplyStream`/`StreamChannel` credit-controlled ring (RFC 024/ADR-018). Unlike `chat()`, this is NOT
+// `ae::task<...>`-wrapped — the return itself is synchronous; a conformer that streams for real (an
+// HTTP/SSE backend, Phase D/E) hands the `stream_producer<ChatResponseUpdate>` half off to whatever
+// background execution context performs the read loop, and returns the `stream<ChatResponseUpdate>`
+// drain handle to the caller immediately (`stream.hpp`'s own file banner has the full design rationale,
+// including why `ChatResponseUpdate` — not trivially copyable — is boxed per item on the ring).
 template <class T>
 concept ChatClient = requires(T client, ChatRequest request, EffectContext& ctx) {
     { client.capabilities() } -> std::same_as<ChatClientCapabilities>;
     { client.chat(request, ctx) } -> std::same_as<task<result<ChatResponse>>>;
-    { client.chat_stream(request, ctx) }; // ae::stream<ChatResponseUpdate> — not yet a real type
+    { client.chat_stream(request, ctx) } -> std::same_as<stream<ChatResponseUpdate>>;
 };
 
 // 003 §4's three enforcement strategies, in the order the degradation rule (004 §2) prefers them.

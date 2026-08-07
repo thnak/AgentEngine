@@ -42,7 +42,7 @@ public:
         co_return ae::ChatResponse{};
     }
 
-    int chat_stream(ae::ChatRequest const&, ae::EffectContext&) { return 0; }  // unconstrained, unused
+    ae::stream<ae::ChatResponseUpdate> chat_stream(ae::ChatRequest const&, ae::EffectContext&) { return {}; }  // unused; empty/invalid stream
 
     int calls = 0;
 };

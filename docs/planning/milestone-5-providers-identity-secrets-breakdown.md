@@ -37,7 +37,7 @@ exit-criterion proof.
 | Admission check at the `AgentSession` actor boundary (018 §2) | Does not exist. Consistent with M4's own finding that `session_id_` wasn't even actor-keyed until Phase A1 — no principal-ownership check runs before a turn starts |
 | ADR-013 (HTTPS egress, mbedTLS) | **Accepted.** `TlsClientSession` (`include/agentengine/sandbox/tls_client.hpp`) wraps mbedTLS 3.6.7, real hostname verification, real HTTPS exchange — but **scoped to one consumer**: ADR-013 §9 states "only the WASM `http-request` import consumes this," gated through a guest-held `cap::NetOut` grant, called only from `wasm_backend.cpp`/`net_egress_proxy.cpp`. **No general-purpose host-side HTTP/SSE client exists** for a native `ChatClient` backend to call `api.openai.com`/`api.anthropic.com` directly — reusing `TlsClientSession`'s TLS primitive is plausible, but the call path (capability-grant/single-verified-endpoint model built for sandboxed guest egress) is new wiring for a host-initiated call with SSE streaming, retries, and vendor JSON bodies |
 | Quark `task<T>` (submodule bumped `9ecbf1c` → `dcb191f`, commit `634a2cc`) | **Real for non-void `T` (ADR-047).** A nested, awaitable coroutine a `task<>` handler (or another `task<T>`) `co_await`s to get a value back — NOT a synchronous "drive to completion" API (no such thing exists; see Phase B4a's own note on `tests/support/run_task_sync.hpp`). `include/agentengine/core/task.hpp` adds the `agentengine::task<T>` alias (`ae::task<T>`, matching `027-Vocabulary-and-Naming.md:112,126`); 004 §1's literal `ChatClient::chat()` signature is real, Phase B4a |
-| Quark streaming (RFC 024, ADR-018) | **Accepted (x86-64), real code**: `include/quark/core/stream_channel.hpp` (inbound credit-ring), `include/quark/core/reply_stream.hpp` (`ReplyStream`/`AskStream`, outbound, Accepted 2026-08-04). This is actor-mailbox streaming, not an HTTP/SSE-facing type — no `ae::stream<T>` wrapper exists on the AgentEngine side; `chat_client.hpp:60-64`'s own comment confirms this |
+| Quark streaming (RFC 024, ADR-018) | **Accepted (x86-64), real code**: `include/quark/core/stream_channel.hpp` (inbound credit-ring), `include/quark/core/reply_stream.hpp` (`ReplyStream`/`AskStream`, outbound, Accepted 2026-08-04). **Wrapped, Phase B4b**: `include/agentengine/core/stream.hpp` adapts the raw ring (bypassing actor addressing; boxing non-trivially-copyable `T`) into `ae::stream<T>`/`ae::stream_producer<T>`/`ae::make_stream<T>`, `ChatClient::chat_stream()`'s real 004 §1 return type |
 | Quark 022 (governance: `TokenBucket`, `CircuitBreaker`, `FairShare`) | **Accepted, real, tested** (`include/quark/core/governance.hpp:47,104,179`; `tests/governance_circuit_breaker_test.cpp`, `governance_rate_limit_test.cpp`). Scoped today to Quark's actor-mailbox admission boundary (`GovernanceKey`-keyed) — wiring it to an HTTP provider call path is greenfield integration, not reuse of an existing call site |
 | 011 (MCP Conformance) / 012 (A2A Conformance) | Both Reviewed, not built. `include/agentengine/protocol/{mcp,a2a}/` are README-only. Roadmap schedules both for **Milestone 7** |
 | 016 (Observability) / 020 (Configuration and Hosting) | Both scheduled **Milestone 8 / Milestone 9** respectively — not built. 004 §5 needs 020 for per-tenant/session/principal budget ceilings and 016 for the cost-metric surface; 004 §6 needs 016 for recording-privacy content-capture modes; 018 §6 needs 020 for per-tenant Quark-022 resource limits |
@@ -136,7 +136,7 @@ exit-criterion proof.
   scoping (018 §3's fuller text) is deferred to Phase C/D, where it has a real caller (a `ChatClient`
   backend constructed with a specific provider's `SecretRef`) to prove against.
 
-### Phase B — `ChatClient` made real (004 §1-2) — **B1/B2/B3/B5/B6 done (commit `28c88cc`); B4a done, B4b (stream adapter) still open**
+### Phase B — `ChatClient` made real (004 §1-2) — **DONE (B1/B2/B3/B5/B6, commit `28c88cc`; B4a, commit `61ed421`; B4b below)**
 
 - **B1. Done.** `ChatRequest` gains real tool declarations — `ToolDescriptor` (`core/tool_pipeline.hpp`),
   the exact type `ContextContribution.tools` already reuses, not a second "`ToolDecl`" (that name was
@@ -184,11 +184,46 @@ exit-criterion proof.
   synchronously... resolved by the time drive() returns") continues to hold because nothing in the
   `co_await` chain a `TestKit`-driven turn now runs through ever genuinely suspends either — the same
   "no co_await ⇒ no real parking" property `task<void>` already relied on, extended transitively.
-- **B4b. Open — carried forward.** `ae::stream<T>` adapter over Quark's `ReplyStream`/`StreamChannel`
-  (decision 3) — `chat_stream()` stays an unconstrained callable until this lands. Not required by
-  either of this milestone's own two exit-criterion gates (004 §7 G1, 018 §7 G2), so it did not block
-  Phase B's other tasks; still owed before Phase D/E's real backends can support `streaming` for real
-  (their `chat()`-only path doesn't need it).
+- **B4b. Done.** `ae::stream<T>` (`core/stream.hpp`) — an AgentEngine-side wrapper over Quark's already-
+  Accepted `ReplyStream`/`StreamChannel` credit-controlled ring (decision 3), exactly as scoped: no new
+  Quark-side ask, only the adapter. `ChatClient::chat_stream()`'s concept constraint is now the literal
+  004 §1 signature, `-> std::same_as<stream<ChatResponseUpdate>>` (was: unconstrained beyond "callable").
+  Two adaptations over the raw Quark primitive, both named in `stream.hpp`'s own file banner rather than
+  silently done: (1) **boxing** — Quark's ring is inline-slot-only (`StreamChannel<F>` requires `F`
+  trivially copyable; the by-reference `ZeroCopyRetained` regime is a declared 019/003 seam, "stubbed,
+  never wired"), and `ChatResponseUpdate` carries a `std::string`-backed `ContentItem`, so it is NOT
+  trivially copyable — `stream<T>`/`stream_producer<T>` box each item on the heap behind a raw owning
+  pointer (itself trivially copyable) so arbitrary movable `T` can ride the ring, trading away ADR-018's
+  own measured "0 per-item heap" property for non-trivial `T` only; (2) **no actor addressing** —
+  `chat_stream()` is a plain synchronous call (unlike `chat()`, NOT `ae::task<...>`-wrapped), so
+  `make_stream<T>` reuses Quark's proven `make_ask_stream`/`StreamResponder::accept`/`block_on_open`
+  sequence but never crosses an actor boundary, which also means it never triggers the OPEN-resolve
+  reentrancy hazard ADR-018's own residual risks name (that hazard is specific to draining a stream
+  opened via a real cross-actor `ask_stream<F>`; research directly into `reply_stream.hpp`/
+  `ask_stream_coawait_real_scheduler_test.cpp` confirmed this before writing the adapter). Proven end to
+  end against a real, non-mock `ChatClient` conformer (`tests/test_chat_client_stream.cpp`,
+  `StreamingWordChatClient`) whose `chat_stream()` streams for real across a background producer
+  thread — the same shape a live HTTP/SSE backend (Phase D/E) will use: FIFO/lossless delivery under
+  real cross-thread backpressure (ring capacity deliberately smaller than the item count, so the
+  producer genuinely stalls on credit at least once), an empty stream still closes cleanly, and dropping
+  the consumer mid-stream wakes a stalled producer and lets its thread join within bounded time (004 §7
+  G2's cancellation text, proven at the `ae::stream<T>` layer — the socket-level proof is Phase D/E's).
+  15/15 repeat runs clean (no flakiness from the real cross-thread timing involved). The ~20 pre-existing
+  `ChatClient` conformers across `tests/` that previously stubbed `chat_stream` as `int ... { return 0; }`
+  (accepted because the constraint was unconstrained) all needed updating to return a real, empty/unused
+  `stream<ChatResponseUpdate>{}` — the same "concept tightened, every conformer follows" blast-radius
+  shape Phase B4a hit, just narrower here (mechanical stub-signature updates, no coroutine cascade).
+  **Incidental fix, needed to even build**: `tests/CMakeLists.txt`'s ADR-012 `try_compile` checks
+  (`sandbox_profile_rejects_non_conforming_type`/`sandbox_profile_positive_control`) were missing
+  `third_party/quark` (the PAL include root, "for pal/pal.hpp" per `third_party/quark/CMakeLists.txt`)
+  from their manual `INCLUDE_DIRECTORIES` list — a pre-existing gap already fixed on three later checks
+  in the same file but never on these two; surfaced only once a fresh configure actually re-ran them
+  (their `try_compile` result is cached in `CMakeCache.txt` otherwise). Fixed alongside this task since
+  it blocked configuring at all; unrelated to the stream adapter itself.
+  `ae::stream<T>` is real for both directions 004 §1 and 013 need it for (`ChatClient`-level chunks and
+  the higher-level run-event stream) — SSE chunk-boundary parsing to actually feed a live network
+  producer is explicitly Phase D's job, not built here (`sandbox/provider_http_client.hpp`'s read loop
+  still only knows Content-Length framing, confirmed unchanged).
 - **B5. Done.** `select_output_schema_strategy` (`core/chat_client.hpp`): 004 §2's degradation rule /
   003 §4's three enforcement strategies, in preference order (native > tool_shaped > parse_and_repair).
   `register_agent<A>()`'s `check_output_schema_enforceable` calls it when a registry is supplied.
@@ -338,9 +373,10 @@ exit-criterion proof.
 - **The tenant-in-breaker-key / tenant-in-cost-metric-key ADR-track item** (004 §5's own
   invariant-touching flag) — a recommendation for the project owner pending the full
   design→red-team→prove→judge cycle, not yet actioned (decision 6).
-- ~~`ae::task<T>` for non-void `T`~~ — landed upstream (ADR-047) and wired in, Phase B4a. Still owed:
-  `ae::stream<T>` (Phase B4b) and threading `task<T>` into `sandbox/provider_http_client.hpp`/a real
-  Phase D/E backend's own `chat()` body (deliberately deferred there, not a gap in B4a).
+- ~~`ae::task<T>` for non-void `T`~~ — landed upstream (ADR-047) and wired in, Phase B4a.
+  ~~`ae::stream<T>`~~ — built, Phase B4b (`core/stream.hpp`). Still owed: threading `task<T>`/a live
+  producer into `sandbox/provider_http_client.hpp`'s SSE read loop and a real Phase D/E backend's own
+  `chat()`/`chat_stream()` bodies (deliberately deferred there, not a gap in B4a/B4b).
 - **10⁴-scale gates and full 023 baselining** — stay `TBD-baselined` project-wide until M8, same
   status quo every earlier milestone established.
 
@@ -351,7 +387,9 @@ Phase A (secret seam), Phase B (`ChatClient` made real, including B4a's `task<T>
 C (host-side HTTP/SSE client) are done. **Update, same day:** the project owner pursued the
 `ae::task<T>` upstream Quark change directly (`QuarkCpp`, ADR-047) rather than accepting the
 synchronous fallback; Phase B4a landed the moment the submodule bump reached this repo (commit
-`634a2cc`), closing that decision point in the "pursue it now" direction. Remaining before Phase D/E
-can start: B4b (`ae::stream<T>`, not required by either exit-criterion gate). Still open, carried from
-the original kick-off: confirmation of decision 6's ADR-track recommendation (tenant in the
-breaker/cost-metric key).
+`634a2cc`), closing that decision point in the "pursue it now" direction. **Update, same day:** B4b
+(`ae::stream<T>`, `core/stream.hpp`) is also done — the project owner asked for it directly rather than
+leaving it carried forward, even though it gates neither exit-criterion gate. Phase B is now fully
+closed. Phase D/E (the two live backends) can start whenever the project owner wants; nothing in Phase
+B/C blocks them. Still open, carried from the original kick-off: confirmation of decision 6's ADR-track
+recommendation (tenant in the breaker/cost-metric key).
