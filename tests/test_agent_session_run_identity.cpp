@@ -37,7 +37,7 @@ class RecordingChatClient {
 public:
     [[nodiscard]] ae::ChatClientCapabilities capabilities() const { return {}; }
 
-    ae::result<ae::ChatResponse> chat(ae::ChatRequest const&, ae::EffectContext& ctx) {
+    ae::task<ae::result<ae::ChatResponse>> chat(ae::ChatRequest const&, ae::EffectContext& ctx) {
         ae::ContentItem item{};
         item.value = ae::Text{"run=" + ctx.run_id + " turn=" + std::to_string(ctx.turn_index)};
         item.origin = ae::content_origin::assistant;
@@ -46,7 +46,7 @@ public:
         reply.role       = ae::role::assistant;
         reply.message_id = "m-reply";
         reply.content.push_back(item);
-        return ae::ChatResponse{reply, ae::Usage{1, 1, 0, 0, 0.0}};
+        co_return ae::ChatResponse{reply, ae::Usage{1, 1, 0, 0, 0.0}};
     }
 
     int chat_stream(ae::ChatRequest const&, ae::EffectContext&) { return 0; }  // unconstrained, unused

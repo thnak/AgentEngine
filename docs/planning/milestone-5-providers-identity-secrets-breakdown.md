@@ -36,7 +36,7 @@ exit-criterion proof.
 | `EffectContext` (`core/effect_context.hpp:16-39`) | Real, carries `principal`, `capabilities`, `bound_capabilities`, `deadline`, `trace_id`/`span_id`, `run_id`/`turn_index` (since M4). This is exactly the parameter 018 §4's `SecretStore::resolve(SecretRef, EffectContext&)` should hang off of — nothing does yet |
 | Admission check at the `AgentSession` actor boundary (018 §2) | Does not exist. Consistent with M4's own finding that `session_id_` wasn't even actor-keyed until Phase A1 — no principal-ownership check runs before a turn starts |
 | ADR-013 (HTTPS egress, mbedTLS) | **Accepted.** `TlsClientSession` (`include/agentengine/sandbox/tls_client.hpp`) wraps mbedTLS 3.6.7, real hostname verification, real HTTPS exchange — but **scoped to one consumer**: ADR-013 §9 states "only the WASM `http-request` import consumes this," gated through a guest-held `cap::NetOut` grant, called only from `wasm_backend.cpp`/`net_egress_proxy.cpp`. **No general-purpose host-side HTTP/SSE client exists** for a native `ChatClient` backend to call `api.openai.com`/`api.anthropic.com` directly — reusing `TlsClientSession`'s TLS primitive is plausible, but the call path (capability-grant/single-verified-endpoint model built for sandboxed guest egress) is new wiring for a host-initiated call with SSE streaming, retries, and vendor JSON bodies |
-| Quark `task<T>` (submodule pinned `9ecbf1c`, `third_party/quark/include/quark/core/task.hpp:17-22`) | **Only the `void` specialization is implemented.** Quark's own file comment: "a value-returning `ask` task<T> is 006/ADR-007" — forward-declared, not real. 004 §1's literal signature (`ae::task<result<ChatResponse>>`) cannot be built as written until Quark adds this. `027-Vocabulary-and-Naming.md:112,126` already names `ae::task<T>` as the intended alias; M2's own breakdown doc already deferred wiring it (decision 2 below) |
+| Quark `task<T>` (submodule bumped `9ecbf1c` → `dcb191f`, commit `634a2cc`) | **Real for non-void `T` (ADR-047).** A nested, awaitable coroutine a `task<>` handler (or another `task<T>`) `co_await`s to get a value back — NOT a synchronous "drive to completion" API (no such thing exists; see Phase B4a's own note on `tests/support/run_task_sync.hpp`). `include/agentengine/core/task.hpp` adds the `agentengine::task<T>` alias (`ae::task<T>`, matching `027-Vocabulary-and-Naming.md:112,126`); 004 §1's literal `ChatClient::chat()` signature is real, Phase B4a |
 | Quark streaming (RFC 024, ADR-018) | **Accepted (x86-64), real code**: `include/quark/core/stream_channel.hpp` (inbound credit-ring), `include/quark/core/reply_stream.hpp` (`ReplyStream`/`AskStream`, outbound, Accepted 2026-08-04). This is actor-mailbox streaming, not an HTTP/SSE-facing type — no `ae::stream<T>` wrapper exists on the AgentEngine side; `chat_client.hpp:60-64`'s own comment confirms this |
 | Quark 022 (governance: `TokenBucket`, `CircuitBreaker`, `FairShare`) | **Accepted, real, tested** (`include/quark/core/governance.hpp:47,104,179`; `tests/governance_circuit_breaker_test.cpp`, `governance_rate_limit_test.cpp`). Scoped today to Quark's actor-mailbox admission boundary (`GovernanceKey`-keyed) — wiring it to an HTTP provider call path is greenfield integration, not reuse of an existing call site |
 | 011 (MCP Conformance) / 012 (A2A Conformance) | Both Reviewed, not built. `include/agentengine/protocol/{mcp,a2a}/` are README-only. Roadmap schedules both for **Milestone 7** |
@@ -118,8 +118,12 @@ exit-criterion proof.
   documentation promise), wrapping Quark's already-zeroizing `quark::Secret` rather than owning a
   second buffer (corrected finding, current-state table above).
 - **A2. Done.** `SecretStore` concept: `resolve(SecretRef, EffectContext&) -> result<SecretLease>`.
-  Kept synchronous (`result<T>`, not `ae::task<T>`) per decision 2 until Quark's `task<T>` lands;
-  upgraded in lockstep with Phase B once it does.
+  Kept synchronous (`result<T>`, not `ae::task<T>`), and **stays that way even now that Phase B4a made
+  `task<T>` real** — corrected from this task's own original "upgraded in lockstep with Phase B" plan,
+  written before the real call site (`trust/secret.hpp`'s own `resolve_via`) existed:
+  `quark::SecretSource::get()` (env/file) is itself a synchronous call with nothing to suspend on, and
+  a sync function is freely callable from inside an async `ChatClient::chat()` coroutine body with no
+  `co_await` needed — coroutine-ifying it would add frame overhead for zero real benefit.
 - **A3. Done.** Backends: `AgentEngineSecretStore` adapts any `quark::SecretSource` — wired against
   `quark::EnvSecretSource` (`QUARK_SECRET_<name>`) and `quark::FileSecretSource`
   (`<root>/<name>`, both real in Quark already). OS keychain/DPAPI/Keychain and external managers
@@ -132,7 +136,7 @@ exit-criterion proof.
   scoping (018 §3's fuller text) is deferred to Phase C/D, where it has a real caller (a `ChatClient`
   backend constructed with a specific provider's `SecretRef`) to prove against.
 
-### Phase B — `ChatClient` made real (004 §1-2) — **B1/B2/B3/B5/B6 done (commit `28c88cc`); B4 open**
+### Phase B — `ChatClient` made real (004 §1-2) — **B1/B2/B3/B5/B6 done (commit `28c88cc`); B4a done, B4b (stream adapter) still open**
 
 - **B1. Done.** `ChatRequest` gains real tool declarations — `ToolDescriptor` (`core/tool_pipeline.hpp`),
   the exact type `ContextContribution.tools` already reuses, not a second "`ToolDecl`" (that name was
@@ -144,11 +148,47 @@ exit-criterion proof.
   a reference `ChatClient` conformer holds only a `SecretRef` as a member (never a `SecretLease`), and
   two `chat()` calls straddling a rotation of the backing secret return different resolved values —
   only possible if resolution happens fresh inside `chat()`, never cached from construction.
-- **B4. Open — carried forward.** `ae::stream<T>` adapter over Quark's `ReplyStream`/`StreamChannel`
+- **B4a. Done.** `chat()`'s literal 004 §1 signature, `ae::task<result<ChatResponse>>` — real the
+  moment Quark's `task<T>` for non-void `T` landed (ADR-047, submodule bumped `9ecbf1c` → `dcb191f`,
+  commit `634a2cc`), exactly as decision 2 said it would be, no redesign needed. `AgentSession::handle`
+  became Quark's async `task<>` handler form (ADR-007) to `co_await` it — the first `Ask<Q,R>` handler
+  in either tree to combine async dispatch with `m.respond(...)`; both `m`'s descriptor and
+  `effect_context_` (an `AgentSession` data member) stay valid across every suspend point by
+  construction, confirmed against `activation.hpp`'s `complete_parked()`/`finish_frame`, not asserted.
+  **Blast radius turned out wider than this task's own name suggested**, forced rather than chosen:
+  `HistoryProvider<Summarize<N,SummarizerT>>::on_context` and `MemoryProvider::on_turn_end` (both real
+  Milestone-4 conformers) call a declared `SummarizerT`/`ChatClient::chat()` internally, so the
+  `ContextProvider` concept itself (`core/context_provider.hpp`) had to become task-returning too —
+  `on_context -> task<result<ContextContribution>>`, `on_turn_end -> task<std::monostate>` (never bare
+  `task<>`: `quark::task<void>` is deliberately NOT awaitable — reserved as the one exact type
+  ADR-007's dispatch selects async handler mode by — so a helper meant to be `co_await`ed needs
+  `task<T>` for real `T`; `std::monostate` reuses this codebase's existing "no value" convention from
+  `trust/secret.hpp`'s `require_secret_capability`). That cascaded into every conformer
+  (`HistoryProvider<Window<N>>`, `MemoryProvider::on_context`, `DummyContextProvider`,
+  `FixedMessagesProvider`) becoming a (mostly trivial, non-suspending) coroutine, and into
+  `core/context_assembly.hpp`'s type-erased `ContextProviderDescriptor`/`assemble_context()` (Phase
+  B3's own standalone, not-yet-`AgentSession`-wired seam) doing the same. `SecretStore::resolve()` and
+  `sandbox/provider_http_client.hpp` were evaluated and deliberately left synchronous — the underlying
+  primitive in both (`quark::SecretSource::get`, the blocking-socket HTTPS exchange) has no I/O to
+  suspend on today, and a sync function is freely callable from inside an async coroutine body with no
+  `co_await` needed, so coroutine-ifying either would add frame overhead for zero behavioral benefit;
+  named here rather than mechanically "upgraded in lockstep" as Phase A2's own forward-looking text
+  guessed before the real call sites existed.
+- **New seam: `quark::task<T>` (T≠void) is unusable outside a coroutine context** — no synchronous
+  "drive to completion, give me the value" API exists (`quark/core/task.hpp`'s own design), so any test
+  that called a `ChatClient`/`ContextProvider` conformer directly from a plain, non-actor `main()`
+  needed a driver. `tests/support/run_task_sync.hpp` is that driver: a minimal lazy coroutine, resumed
+  once, valid ONLY for an awaited task whose body never genuinely parks (every test conformer in this
+  tree qualifies — none does real cross-actor I/O). Every pre-existing `AgentSession`/`TestKit`-driven
+  test needed no such change: `TestKit::ask<R>()`'s own documented assumption ("the handler runs
+  synchronously... resolved by the time drive() returns") continues to hold because nothing in the
+  `co_await` chain a `TestKit`-driven turn now runs through ever genuinely suspends either — the same
+  "no co_await ⇒ no real parking" property `task<void>` already relied on, extended transitively.
+- **B4b. Open — carried forward.** `ae::stream<T>` adapter over Quark's `ReplyStream`/`StreamChannel`
   (decision 3) — `chat_stream()` stays an unconstrained callable until this lands. Not required by
   either of this milestone's own two exit-criterion gates (004 §7 G1, 018 §7 G2), so it did not block
-  Phase B's other five tasks; still owed before Phase D/E's real backends can support `streaming`
-  for real (their `chat()`-only path doesn't need it).
+  Phase B's other tasks; still owed before Phase D/E's real backends can support `streaming` for real
+  (their `chat()`-only path doesn't need it).
 - **B5. Done.** `select_output_schema_strategy` (`core/chat_client.hpp`): 004 §2's degradation rule /
   003 §4's three enforcement strategies, in preference order (native > tool_shaped > parse_and_repair).
   `register_agent<A>()`'s `check_output_schema_enforceable` calls it when a registry is supplied.
@@ -176,13 +216,16 @@ exit-criterion proof.
   `resolve_and_validate`/`perform_https_exchange` (which itself already wraps `TlsClientSession`)
   rather than a fresh implementation on `TlsClientSession` directly — smaller diff, same defense-in-
   depth address-blocking, same byte-cap-enforced read loop, no new parsing code to independently get
-  wrong. **Not yet "async"** (still synchronous `result<T>`, same posture as `ChatClient` itself,
-  decision 2) and **SSE chunk-boundary parsing is not yet built** — `perform_https_exchange`'s read
-  loop currently only knows Content-Length-framed responses (a pre-existing cut named in its own
-  header comment, unchanged by this phase); real SSE parsing is needed once `chat_stream()` is real
-  (Phase B4, still open) and is deferred there rather than half-built ahead of the type that would
-  consume it. HTTP only real-provider-scoped: HTTPS only, no plain-HTTP path (no target this project
-  speaks to needs one).
+  wrong. **Still synchronous `result<T>`, by deliberate choice, not because it's blocked** — Phase
+  B4a made `ChatClient::chat()` real `ae::task<T>`, but no Phase D/E backend exists yet to call this
+  function from inside a coroutine, and the underlying blocking-socket exchange has no I/O to suspend
+  on today; a future backend's async `chat()` can call this synchronous function directly and
+  `co_return` its result, same as any other sync helper called from a coroutine body. **SSE
+  chunk-boundary parsing is not yet built** — `perform_https_exchange`'s read loop currently only
+  knows Content-Length-framed responses (a pre-existing cut named in its own header comment, unchanged
+  by this phase); real SSE parsing is needed once `chat_stream()` is real (Phase B4b, still open) and
+  is deferred there rather than half-built ahead of the type that would consume it. HTTP only
+  real-provider-scoped: HTTPS only, no plain-HTTP path (no target this project speaks to needs one).
 - **C2. Done.** `stop_token` threaded through `perform_http_exchange`/`perform_https_exchange`'s read
   loops (additive, default-unstoppable, `HostEgressProxy::fetch`'s ADR-011 call site unaffected).
   Proven bound: cancellation is checked once per read-loop iteration, not mid-syscall — against a
@@ -295,19 +338,20 @@ exit-criterion proof.
 - **The tenant-in-breaker-key / tenant-in-cost-metric-key ADR-track item** (004 §5's own
   invariant-touching flag) — a recommendation for the project owner pending the full
   design→red-team→prove→judge cycle, not yet actioned (decision 6).
-- **`ae::task<T>` for non-void `T`** — genuinely gates Phase B's literal async signature. If it hasn't
-  landed upstream in `QuarkCpp` by the time Phase B starts, `ChatClient::chat()` ships synchronous
-  (today's shape) and is upgraded in a follow-up once the Quark-side primitive is real (decision 2)
-  — named as a real schedule risk for this milestone, not a hidden one.
+- ~~`ae::task<T>` for non-void `T`~~ — landed upstream (ADR-047) and wired in, Phase B4a. Still owed:
+  `ae::stream<T>` (Phase B4b) and threading `task<T>` into `sandbox/provider_http_client.hpp`/a real
+  Phase D/E backend's own `chat()` body (deliberately deferred there, not a gap in B4a).
 - **10⁴-scale gates and full 023 baselining** — stay `TBD-baselined` project-wide until M8, same
   status quo every earlier milestone established.
 
 ## Handover & kick-off
 
 Written 2026-08-07, immediately following M4's close (`Milestone 4 Phase H`, commit `09933fd`).
-Phase A (secret seam) has no upstream dependency and is the concrete next step. Two items need a
-decision before Phase B can proceed on schedule: whether to pursue the `ae::task<T>` upstream Quark
-change now (in the `QuarkCpp` working directory available this session) or accept the synchronous
-`chat()` fallback named in decision 2/deferred-list — and confirmation of decision 6's ADR-track
-recommendation (tenant in the breaker/cost-metric key), carried forward the same way M4 carried
-Phase F3's exactly-once recommendation into its own kick-off.
+Phase A (secret seam), Phase B (`ChatClient` made real, including B4a's `task<T>` upgrade), and Phase
+C (host-side HTTP/SSE client) are done. **Update, same day:** the project owner pursued the
+`ae::task<T>` upstream Quark change directly (`QuarkCpp`, ADR-047) rather than accepting the
+synchronous fallback; Phase B4a landed the moment the submodule bump reached this repo (commit
+`634a2cc`), closing that decision point in the "pursue it now" direction. Remaining before Phase D/E
+can start: B4b (`ae::stream<T>`, not required by either exit-criterion gate). Still open, carried from
+the original kick-off: confirmation of decision 6's ADR-track recommendation (tenant in the
+breaker/cost-metric key).

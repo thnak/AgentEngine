@@ -10,11 +10,13 @@
 #include <algorithm>
 #include <iostream>
 #include <string>
+#include <variant>
 
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/context_assembly.hpp"
 #include "agentengine/core/history_provider.hpp"
 #include "agentengine/trust/principal.hpp"
+#include "support/run_task_sync.hpp"
 
 namespace {
 
@@ -48,12 +50,12 @@ ae::Message make_msg(std::string text, std::string message_id) {
 struct FixedMessagesProvider {
     std::vector<ae::Message> to_return;
 
-    [[nodiscard]] ae::result<ae::ContextContribution> on_context(ae::SessionContext&, ae::EffectContext&) {
+    [[nodiscard]] ae::task<ae::result<ae::ContextContribution>> on_context(ae::SessionContext&, ae::EffectContext&) {
         ae::ContextContribution c;
         c.messages = to_return;
-        return c;
+        co_return c;
     }
-    void on_turn_end(ae::TurnView, ae::EffectContext&) {}
+    ae::task<std::monostate> on_turn_end(ae::TurnView, ae::EffectContext&) { co_return std::monostate{}; }
 };
 static_assert(ae::ContextProvider<FixedMessagesProvider>,
               "FixedMessagesProvider must satisfy ContextProvider (005 §5)");
@@ -85,7 +87,8 @@ int main() {
     {
         auto contributors = build_contributors();
         ae::SessionContext session_ctx{"s-assembly", principal, history};
-        result1 = ae::assemble_context(contributors, session_ctx, ctx);
+        result1 = ae::test_support::run_task_sync<ae::ContextAssemblyResult>(
+            ae::assemble_context(contributors, session_ctx, ctx));
     }
 
     AE_CHECK(result1.drops.size() == 3, "B3-R1: exactly 3 messages dropped from the over-budget contributor");
@@ -112,7 +115,8 @@ int main() {
     {
         auto contributors = build_contributors();
         ae::SessionContext session_ctx{"s-assembly", principal, history};
-        result2 = ae::assemble_context(contributors, session_ctx, ctx);
+        result2 = ae::test_support::run_task_sync<ae::ContextAssemblyResult>(
+            ae::assemble_context(contributors, session_ctx, ctx));
     }
     AE_CHECK(result2.drops.size() == result1.drops.size() &&
                  result2.combined.messages.size() == result1.combined.messages.size(),
@@ -130,7 +134,8 @@ int main() {
         contributors.push_back(ae::make_context_provider_descriptor(
             ae::HistoryProvider<ae::Window<0>>{}, ae::ContextBudget{1000}));
         ae::SessionContext session_ctx{"s-small", principal, small_history};
-        auto result3 = ae::assemble_context(contributors, session_ctx, ctx);
+        auto result3 = ae::test_support::run_task_sync<ae::ContextAssemblyResult>(
+            ae::assemble_context(contributors, session_ctx, ctx));
         AE_CHECK(result3.drops.empty() && result3.combined.messages.size() == 1,
                  "B3-R8: a contribution well under its declared budget drops nothing");
     }

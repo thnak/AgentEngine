@@ -22,6 +22,7 @@
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/error.hpp"
+#include "agentengine/core/task.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
 
 namespace agentengine {
@@ -79,16 +80,21 @@ struct ChatResponseUpdate {  // ae-naming-lint: allow ChatResponseUpdate — pre
 // concept, not a base class (004 §1) — a backend satisfies this shape; it is never inherited from
 // on the hot path (CONVENTIONS.md: "no virtual for policy on the hot path").
 //
-// `chat`'s return type is constrained to `result<ChatResponse>` (synchronous) for the same reason
-// `Runner::run` is (sandbox/runner.hpp): `ae::task<T>`, the Quark coroutine type CONVENTIONS.md/027
-// name as the eventual real signature, is not yet wired into this header. `chat_stream` is left
-// unconstrained beyond "callable" because no streaming vocabulary (`ae::stream<T>`, Quark
-// credit-controlled streams per 004 §1) exists yet either — tracked here, not silently glossed
-// over. Both become real `std::same_as<...>` constraints once those types land.
+// Milestone 5 Phase B4: `chat`'s return type is `ae::task<result<ChatResponse>>` — 004 §1's literal
+// signature, real now that Quark's `task<T>` for non-void `T` landed (ADR-047, submodule bumped to
+// `dcb191f`). A conformer's `chat()` is therefore a coroutine (`co_return`s its `result<ChatResponse>`
+// rather than `return`ing it); every caller `co_await`s it from inside its own coroutine (an async
+// actor handler, or another nested `ae::task<T>`) — `quark::task<T>` has no synchronous "drive to
+// completion" API by design (see `quark/core/task.hpp`'s banner comment and
+// `task_value_return_test.cpp`'s own precedent), so there is no way to call `chat()` from ordinary,
+// non-coroutine code and get a value back inline. `chat_stream` stays unconstrained beyond "callable"
+// because no streaming vocabulary (`ae::stream<T>`, Quark credit-controlled streams per 004 §1)
+// exists yet — tracked here, not silently glossed over; becomes a real `std::same_as<...>` constraint
+// once that type lands.
 template <class T>
 concept ChatClient = requires(T client, ChatRequest request, EffectContext& ctx) {
     { client.capabilities() } -> std::same_as<ChatClientCapabilities>;
-    { client.chat(request, ctx) } -> std::same_as<result<ChatResponse>>;
+    { client.chat(request, ctx) } -> std::same_as<task<result<ChatResponse>>>;
     { client.chat_stream(request, ctx) }; // ae::stream<ChatResponseUpdate> — not yet a real type
 };
 

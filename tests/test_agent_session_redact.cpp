@@ -16,6 +16,7 @@
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/history_provider.hpp"
 #include "agentengine/core/json_value.hpp"
+#include "support/run_task_sync.hpp"
 
 namespace {
 
@@ -35,7 +36,7 @@ class CannedChatClient {
 public:
     [[nodiscard]] ae::ChatClientCapabilities capabilities() const { return {}; }
 
-    ae::result<ae::ChatResponse> chat(ae::ChatRequest const&, ae::EffectContext&) {
+    ae::task<ae::result<ae::ChatResponse>> chat(ae::ChatRequest const&, ae::EffectContext&) {
         ae::ContentItem item{};
         item.value  = ae::Text{"ok"};
         item.origin = ae::content_origin::assistant;
@@ -44,7 +45,7 @@ public:
         reply.role       = ae::role::assistant;
         reply.message_id = "m-reply";
         reply.content.push_back(item);
-        return ae::ChatResponse{reply, ae::Usage{1, 1, 0, 0, 0.0}};
+        co_return ae::ChatResponse{reply, ae::Usage{1, 1, 0, 0, 0.0}};
     }
 
     int chat_stream(ae::ChatRequest const&, ae::EffectContext&) { return 0; }  // unconstrained, unused
@@ -59,7 +60,7 @@ class RecordingSummarizerClient {
 public:
     [[nodiscard]] ae::ChatClientCapabilities capabilities() const { return {}; }
 
-    ae::result<ae::ChatResponse> chat(ae::ChatRequest const& request, ae::EffectContext&) {
+    ae::task<ae::result<ae::ChatResponse>> chat(ae::ChatRequest const& request, ae::EffectContext&) {
         std::string joined;
         for (auto const& m : request.messages) {
             if (m.content.empty()) continue;
@@ -77,7 +78,7 @@ public:
         reply.role       = ae::role::assistant;
         reply.message_id = "m-summary";
         reply.content.push_back(item);
-        return ae::ChatResponse{reply, ae::Usage{1, 1, 0, 0, 0.0}};
+        co_return ae::ChatResponse{reply, ae::Usage{1, 1, 0, 0, 0.0}};
     }
 
     int chat_stream(ae::ChatRequest const&, ae::EffectContext&) { return 0; }  // unconstrained, unused
@@ -160,7 +161,8 @@ int main() {
         ae::SessionContext session_ctx{kit.actor().session_id(), kit.actor().principal(),
                                         kit.actor().history()};
         ae::EffectContext ctx{};
-        auto out = provider.on_context(session_ctx, ctx);
+        auto out = ae::test_support::run_task_sync<ae::result<ae::ContextContribution>>(
+            provider.on_context(session_ctx, ctx));
         AE_CHECK(out.has_value() && out->messages.size() == 2,
                  "setup: Summarize<1> over 2 history messages produces 1 summary + 1 verbatim");
         if (out.has_value() && !out->messages.empty()) {

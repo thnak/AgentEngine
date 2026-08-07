@@ -36,8 +36,8 @@ class AlwaysFailingChatClient {
 public:
     [[nodiscard]] ae::ChatClientCapabilities capabilities() const { return {}; }
 
-    ae::result<ae::ChatResponse> chat(ae::ChatRequest const&, ae::EffectContext&) {
-        return std::unexpected(
+    ae::task<ae::result<ae::ChatResponse>> chat(ae::ChatRequest const&, ae::EffectContext&) {
+        co_return std::unexpected(
             ae::error{ae::failure_class::transient, "simulated provider outage", "chat.always_fails"});
     }
 

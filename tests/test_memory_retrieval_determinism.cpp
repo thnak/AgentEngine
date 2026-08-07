@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "agentengine/core/memory_provider.hpp"
+#include "support/run_task_sync.hpp"
 
 namespace {
 
@@ -36,9 +37,9 @@ class TripwireSummarizer {
 public:
     [[nodiscard]] ae::ChatClientCapabilities capabilities() const { return {}; }
 
-    ae::result<ae::ChatResponse> chat(ae::ChatRequest const&, ae::EffectContext&) {
+    ae::task<ae::result<ae::ChatResponse>> chat(ae::ChatRequest const&, ae::EffectContext&) {
         ++calls;
-        return ae::ChatResponse{};
+        co_return ae::ChatResponse{};
     }
 
     int chat_stream(ae::ChatRequest const&, ae::EffectContext&) { return 0; }  // unconstrained, unused
@@ -144,7 +145,8 @@ int main() {
     constexpr int kRepeats = 5;
     std::vector<ae::ContextContribution> runs;
     for (int i = 0; i < kRepeats; ++i) {
-        auto out = provider.on_context(session_ctx, ctx);
+        auto out = ae::test_support::run_task_sync<ae::result<ae::ContextContribution>>(
+            provider.on_context(session_ctx, ctx));
         AE_CHECK(out.has_value(), "H3 setup: on_context() succeeds on repeat " + std::to_string(i));
         if (out.has_value()) runs.push_back(*out);
     }

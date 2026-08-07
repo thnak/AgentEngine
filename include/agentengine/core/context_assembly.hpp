@@ -16,6 +16,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 #include "agentengine/core/context_provider.hpp"
@@ -62,8 +63,15 @@ struct ContextDrop {
 // answer to "N compile-time-declared conformers, one runtime table"; this is that same shape
 // applied to `ContextProvider` instead of `Tool`.
 struct ContextProviderDescriptor {
-    using OnContextFn = std::function<result<ContextContribution>(SessionContext&, EffectContext&)>;
-    using OnTurnEndFn = std::function<void(TurnView, EffectContext&)>;
+    // Milestone 5 Phase B4: task<T>-returning, matching the ContextProvider concept's own now-real
+    // signature (context_provider.hpp) -- forced by the same cascade that made HistoryProvider and
+    // MemoryProvider real coroutines, not an independent design choice here.
+    using OnContextFn = std::function<task<result<ContextContribution>>(SessionContext&, EffectContext&)>;
+    // `task<std::monostate>`, not `task<>` -- `quark::task<void>` isn't awaitable at all (see
+    // context_provider.hpp's own comment on `ContextProvider::on_turn_end`); nothing here calls
+    // `co_await` on the stored closure's result today (`assemble_context` never invokes
+    // `on_turn_end`), but the type must still match what every real conformer's method returns.
+    using OnTurnEndFn = std::function<task<std::monostate>(TurnView, EffectContext&)>;
 
     ContextBudget budget;
     OnContextFn   on_context;
@@ -73,6 +81,9 @@ struct ContextProviderDescriptor {
 // `provider` is moved into a `shared_ptr` so the SAME instance backs both closures — a stateful
 // provider's `on_turn_end` (Phase G3's memory-extraction hook) must see what its own `on_context`
 // produced this turn, and must persist that state across turns, not be reconstructed per call.
+// Neither closure is itself a coroutine -- calling `shared->on_context(...)` just creates and
+// returns the (lazy, not-yet-run) task<T> object, which the closure forwards by value; the actual
+// body only runs once something later `co_await`s it (quark/core/task.hpp's own lazy-start idiom).
 template <class ProviderT>
     requires ContextProvider<ProviderT>
 [[nodiscard]] ContextProviderDescriptor make_context_provider_descriptor(ProviderT provider,
@@ -81,7 +92,7 @@ template <class ProviderT>
     ContextProviderDescriptor d;
     d.budget      = budget;
     d.on_context  = [shared](SessionContext& sc, EffectContext& ec) { return shared->on_context(sc, ec); };
-    d.on_turn_end = [shared](TurnView tv, EffectContext& ec) { shared->on_turn_end(tv, ec); };
+    d.on_turn_end = [shared](TurnView tv, EffectContext& ec) { return shared->on_turn_end(tv, ec); };
     return d;
 }
 
@@ -98,15 +109,20 @@ struct ContextAssemblyResult {
 // contributor iteration order AND every other contributor's own size in a way that isn't
 // predictable from the declared budgets alone, breaking "drop order is declared, not incidental."
 // Deterministic and replayable given `{contributors, session_ctx, ctx}` (005 §3's own purity
-// rule) — no wall-clock read, no randomness anywhere in this function.
-[[nodiscard]] inline ContextAssemblyResult assemble_context(
+// rule) — no wall-clock read, no randomness anywhere in this function. Milestone 5 Phase B4: a
+// coroutine, `co_await`ing each contributor's `on_context` IN DECLARED ORDER, one at a time (never
+// concurrently) -- 005 §3's own ordering rule ("contributors[0] first") is about drop-order
+// determinism, not about serializing unrelated I/O, but running them one at a time is what "declared
+// order" naturally means here and what every contributor's own `co_await` chain already assumes
+// (no contributor's `chat()` call is written to tolerate running concurrently with another's).
+[[nodiscard]] inline task<ContextAssemblyResult> assemble_context(
     std::vector<ContextProviderDescriptor>& contributors, SessionContext& session_ctx,
     EffectContext& ctx) {
     ContextAssemblyResult out;
 
     for (std::size_t i = 0; i < contributors.size(); ++i) {
         ContextProviderDescriptor& contributor = contributors[i];
-        result<ContextContribution> contribution = contributor.on_context(session_ctx, ctx);
+        result<ContextContribution> contribution = co_await contributor.on_context(session_ctx, ctx);
         if (!contribution) {
             // 005 has no "one bad contributor aborts the whole run" rule — a failed contributor
             // simply contributes nothing this turn, the same fail-open-for-THIS-source shape
@@ -140,7 +156,7 @@ struct ContextAssemblyResult {
                                    contribution->tools.end());
     }
 
-    return out;
+    co_return out;
 }
 
 } // namespace agentengine

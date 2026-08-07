@@ -15,11 +15,13 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/error.hpp"
+#include "agentengine/core/task.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/trust/principal.hpp"
 
@@ -63,13 +65,29 @@ struct TurnView {
     std::span<Message const> turn_messages;
 };
 
-// Return types constrained to their synchronous equivalents, same reason and same caveat as
-// `Runner`/`ChatClient`/`SandboxBackend`: `ae::task<T>` is not yet wired in here.
+// Milestone 5 Phase B4: both methods are real `ae::task<T>` coroutines now (chat_client.hpp's own
+// note applies here too) -- forced, not optional, the moment `ChatClient::chat()` itself became a
+// coroutine: `HistoryProvider<Summarize<N,SummarizerT>>::on_context` and `MemoryProvider::on_turn_end`
+// (both real conformers) call a declared `SummarizerT::chat()` internally, so their own signatures
+// could no longer stay synchronous -- and since every conformer of ONE concept shares one required
+// shape, `HistoryProvider<Window<N>>`/`MemoryProvider::on_context` (neither of which calls a
+// ChatClient) become trivial non-suspending coroutines too, not because they need to suspend but
+// because the concept they satisfy is now uniformly async.
+//
+// `on_turn_end` returns `task<std::monostate>`, never `task<>` (bare `quark::task<void>`):
+// `quark::task<void>` is deliberately NOT awaitable (no `await_ready`/`await_suspend`/`await_resume`
+// -- see `quark/core/task.hpp`'s own banner comment) because it is reserved as the ONE exact type
+// ADR-007's dispatch jump table matches to select an actor handler's async mode; it is never
+// `co_await`ed by anything, only `detach()`ed by the executor. A helper coroutine meant to be
+// `co_await`ed from INSIDE a handler must be `task<T>` for `T != void` (ADR-047), so `on_turn_end` —
+// which `AgentSession::handle()` needs to `co_await` — uses this codebase's existing "no value"
+// convention (`trust/secret.hpp`'s `require_secret_capability` already returns `result<std::monostate>`
+// for the same reason).
 template <class T>
 concept ContextProvider = requires(T provider, SessionContext& session_ctx, EffectContext& ctx,
                                     TurnView turn) {
-    { provider.on_context(session_ctx, ctx) } -> std::same_as<result<ContextContribution>>;
-    { provider.on_turn_end(turn, ctx) } -> std::same_as<void>;
+    { provider.on_context(session_ctx, ctx) } -> std::same_as<task<result<ContextContribution>>>;
+    { provider.on_turn_end(turn, ctx) } -> std::same_as<task<std::monostate>>;
 };
 
 } // namespace agentengine

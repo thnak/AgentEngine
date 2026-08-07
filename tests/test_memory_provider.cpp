@@ -13,11 +13,13 @@
 #include <iostream>
 #include <span>
 #include <string>
+#include <variant>
 #include <vector>
 
 #include "agentengine/core/context_assembly.hpp"
 #include "agentengine/core/history_provider.hpp"
 #include "agentengine/core/memory_provider.hpp"
+#include "support/run_task_sync.hpp"
 
 namespace {
 
@@ -39,7 +41,7 @@ class MockSummarizerClient {
 public:
     [[nodiscard]] ae::ChatClientCapabilities capabilities() const { return {}; }
 
-    ae::result<ae::ChatResponse> chat(ae::ChatRequest const&, ae::EffectContext&) {
+    ae::task<ae::result<ae::ChatResponse>> chat(ae::ChatRequest const&, ae::EffectContext&) {
         ae::ContentItem item{};
         item.value  = ae::Text{"the user prefers concise answers"};
         item.origin = ae::content_origin::assistant;
@@ -48,7 +50,7 @@ public:
         reply.role       = ae::role::assistant;
         reply.message_id = "m-extracted";
         reply.content.push_back(item);
-        return ae::ChatResponse{reply, ae::Usage{1, 1, 0, 0, 0.0}};
+        co_return ae::ChatResponse{reply, ae::Usage{1, 1, 0, 0, 0.0}};
     }
 
     int chat_stream(ae::ChatRequest const&, ae::EffectContext&) { return 0; }  // unconstrained, unused
@@ -111,7 +113,8 @@ int main() {
     ctx.principal = principal;
 
     ae::SessionContext session_ctx{"s-memory", principal, history};
-    auto out1 = provider.on_context(session_ctx, ctx);
+    auto out1 = ae::test_support::run_task_sync<ae::result<ae::ContextContribution>>(
+        provider.on_context(session_ctx, ctx));
     AE_CHECK(out1.has_value(), "G4-R1: on_context() succeeds");
     AE_CHECK(out1.has_value() && !out1->messages.empty() &&
                  out1->messages.front().message_id == "memory:" + dark_mode.id,
@@ -139,7 +142,8 @@ int main() {
     }
 
     // --- 029 §9 G1: determinism -- the SAME store state, re-run, is byte-identical --------------
-    auto out2 = provider.on_context(session_ctx, ctx);
+    auto out2 = ae::test_support::run_task_sync<ae::result<ae::ContextContribution>>(
+        provider.on_context(session_ctx, ctx));
     AE_CHECK(out2.has_value() && out1.has_value() && out2->messages.size() == out1->messages.size() &&
                  out2->messages.front().message_id == out1->messages.front().message_id,
              "G4-R7: retrieval is deterministic -- re-running on_context() against the identical "
@@ -156,7 +160,8 @@ int main() {
     turn_ctx.principal   = principal;
     turn_ctx.run_id      = "s-memory:run:1";
     turn_ctx.turn_index  = 0;
-    provider.on_turn_end(ae::TurnView{std::span<ae::Message const>(turn_arr, 2)}, turn_ctx);
+    ae::test_support::run_task_sync<std::monostate>(
+        provider.on_turn_end(ae::TurnView{std::span<ae::Message const>(turn_arr, 2)}, turn_ctx));
 
     auto after = ae::list_memory_items(object_store, ref_store, mount, read_cap);
     AE_CHECK(after.has_value() && after->size() == 3,
@@ -189,7 +194,8 @@ int main() {
         ae::EffectContext combined_effect_ctx{};
         combined_effect_ctx.principal = principal;
 
-        auto assembled = ae::assemble_context(contributors, combined_ctx, combined_effect_ctx);
+        auto assembled = ae::test_support::run_task_sync<ae::ContextAssemblyResult>(
+            ae::assemble_context(contributors, combined_ctx, combined_effect_ctx));
         AE_CHECK(assembled.combined.messages.size() == 1 + 2,
                  "B3xG-R1: the assembled context contains HistoryProvider's contribution (the 1 "
                  "history message) followed by MemoryProvider's own (2 injected memory items) -- "

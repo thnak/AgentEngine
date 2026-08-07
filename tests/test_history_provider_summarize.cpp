@@ -14,6 +14,7 @@
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/history_provider.hpp"
 #include "agentengine/trust/principal.hpp"
+#include "support/run_task_sync.hpp"
 
 namespace {
 
@@ -36,7 +37,7 @@ class MockSummarizerClient {
 public:
     [[nodiscard]] ae::ChatClientCapabilities capabilities() const { return {}; }
 
-    ae::result<ae::ChatResponse> chat(ae::ChatRequest const& request, ae::EffectContext&) {
+    ae::task<ae::result<ae::ChatResponse>> chat(ae::ChatRequest const& request, ae::EffectContext&) {
         std::string joined;
         for (auto const& m : request.messages) {
             if (!m.content.empty()) joined += std::get<ae::Text>(m.content.front().value).text + ";";
@@ -50,7 +51,7 @@ public:
         reply.role       = ae::role::assistant;  // deliberately NOT system -- proves HistoryProvider re-labels it
         reply.message_id = "m-summary";
         reply.content.push_back(item);
-        return ae::ChatResponse{reply, ae::Usage{1, 1, 0, 0, 0.0}};
+        co_return ae::ChatResponse{reply, ae::Usage{1, 1, 0, 0, 0.0}};
     }
 
     int chat_stream(ae::ChatRequest const&, ae::EffectContext&) { return 0; }  // unconstrained, unused
@@ -93,7 +94,8 @@ int main() {
         Provider provider;
         std::vector<ae::Message> short_history{make_msg("only", "s-1")};
         ae::SessionContext session_ctx{"s-short", principal, short_history};
-        auto out = provider.on_context(session_ctx, ctx);
+        auto out = ae::test_support::run_task_sync<ae::result<ae::ContextContribution>>(
+            provider.on_context(session_ctx, ctx));
         AE_CHECK(out.has_value() && out->messages.size() == 1 && text_of(out->messages[0]) == "only",
                  "B4-C1: history at or under the window keeps everything verbatim, no summary "
                  "message fabricated (matches Window<N>'s own rule for the same case)");
@@ -104,7 +106,8 @@ int main() {
     {
         Provider provider;
         ae::SessionContext session_ctx{"s-long", principal, history};
-        out1 = provider.on_context(session_ctx, ctx);
+        out1 = ae::test_support::run_task_sync<ae::result<ae::ContextContribution>>(
+            provider.on_context(session_ctx, ctx));
     }
     AE_CHECK(out1.has_value() && out1->messages.size() == 3,
              "B4-R1: 5 messages, Summarize<2> -> 1 summary + 2 verbatim = 3 total");
@@ -127,7 +130,8 @@ int main() {
     {
         Provider provider;
         ae::SessionContext session_ctx{"s-long", principal, history};
-        out2 = provider.on_context(session_ctx, ctx);
+        out2 = ae::test_support::run_task_sync<ae::result<ae::ContextContribution>>(
+            provider.on_context(session_ctx, ctx));
     }
     AE_CHECK(out2.has_value() && out1.has_value() && out2->messages.size() == out1->messages.size() &&
                  text_of(out2->messages[0]) == text_of(out1->messages[0]) &&

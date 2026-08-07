@@ -39,7 +39,7 @@ class EchoingCountChatClient {
 public:
     [[nodiscard]] ae::ChatClientCapabilities capabilities() const { return {}; }
 
-    ae::result<ae::ChatResponse> chat(ae::ChatRequest const& request, ae::EffectContext&) {
+    ae::task<ae::result<ae::ChatResponse>> chat(ae::ChatRequest const& request, ae::EffectContext&) {
         std::ostringstream joined;
         for (auto const& m : request.messages) {
             if (!m.content.empty()) {
@@ -56,7 +56,7 @@ public:
         reply.role       = ae::role::assistant;
         reply.message_id = "m-reply";
         reply.content.push_back(item);
-        return ae::ChatResponse{reply, ae::Usage{1, 1, 0, 0, 0.0}};
+        co_return ae::ChatResponse{reply, ae::Usage{1, 1, 0, 0, 0.0}};
     }
 
     int chat_stream(ae::ChatRequest const&, ae::EffectContext&) { return 0; }  // unconstrained, unused

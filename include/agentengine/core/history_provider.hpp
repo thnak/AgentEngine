@@ -49,8 +49,10 @@ class HistoryProvider;
 template <std::size_t N>
 class HistoryProvider<Window<N>> {
 public:
-    [[nodiscard]] result<ContextContribution> on_context(SessionContext& session_ctx,
-                                                           EffectContext&) {
+    // Milestone 5 Phase B4: a coroutine because the ContextProvider concept now requires one
+    // uniformly (context_provider.hpp) -- this conformer itself never suspends (no ChatClient call).
+    [[nodiscard]] task<result<ContextContribution>> on_context(SessionContext& session_ctx,
+                                                                 EffectContext&) {
         ContextContribution contribution;
         auto const& h = session_ctx.history;
         if constexpr (N == 0) {
@@ -59,12 +61,12 @@ public:
             std::size_t const start = h.size() > N ? h.size() - N : 0;
             contribution.messages.assign(h.begin() + static_cast<std::ptrdiff_t>(start), h.end());
         }
-        return contribution;
+        co_return contribution;
     }
 
     // `TurnView` (Phase G3) is real now, but a window over history has nothing to record at turn
     // end -- memory extraction (029, `core/memory_provider.hpp`) is the real conformer for this hook.
-    void on_turn_end(TurnView, EffectContext&) {}
+    task<std::monostate> on_turn_end(TurnView, EffectContext&) { co_return std::monostate{}; }
 };
 
 static_assert(ContextProvider<HistoryProvider<Window<0>>>,
@@ -84,8 +86,10 @@ template <std::size_t N, class SummarizerT>
     requires ChatClient<SummarizerT>
 class HistoryProvider<Summarize<N, SummarizerT>> {
 public:
-    [[nodiscard]] result<ContextContribution> on_context(SessionContext& session_ctx,
-                                                           EffectContext& ctx) {
+    // Milestone 5 Phase B4: a real coroutine, not a cosmetic one -- this conformer `co_await`s a
+    // declared `SummarizerT::chat()` (004 §1) to produce the summary.
+    [[nodiscard]] task<result<ContextContribution>> on_context(SessionContext& session_ctx,
+                                                                 EffectContext& ctx) {
         auto const& h = session_ctx.history;
         ContextContribution contribution;
         if (h.size() <= N) {
@@ -93,7 +97,7 @@ public:
             // `Window<N>`'s own "a window wider than the history keeps all of it, fabricates
             // nothing" rule exactly (a summary of zero messages is not a message).
             contribution.messages.assign(h.begin(), h.end());
-            return contribution;
+            co_return contribution;
         }
 
         std::size_t const split = h.size() - N;
@@ -101,8 +105,8 @@ public:
         std::vector<Message> recent(h.begin() + static_cast<std::ptrdiff_t>(split), h.end());
 
         ChatRequest summarize_request{std::move(older)};
-        result<ChatResponse> summary_response = summarizer_.chat(summarize_request, ctx);
-        if (!summary_response) return std::unexpected(summary_response.error());
+        result<ChatResponse> summary_response = co_await summarizer_.chat(summarize_request, ctx);
+        if (!summary_response) co_return std::unexpected(summary_response.error());
 
         // 005 §4: "a `system` summary message" — the summarizer's own reply, re-labeled `system`
         // regardless of what role it came back as, since a summary is never attributable to the
@@ -111,10 +115,10 @@ public:
         summary_message.role         = role::system;
         contribution.messages.push_back(std::move(summary_message));
         contribution.messages.insert(contribution.messages.end(), recent.begin(), recent.end());
-        return contribution;
+        co_return contribution;
     }
 
-    void on_turn_end(TurnView, EffectContext&) {}
+    task<std::monostate> on_turn_end(TurnView, EffectContext&) { co_return std::monostate{}; }
 
 private:
     SummarizerT summarizer_;

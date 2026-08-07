@@ -16,6 +16,7 @@
 #include "agentengine/core/error.hpp"
 #include "agentengine/trust/principal.hpp"
 #include "support/recorded_chat_client.hpp"
+#include "support/run_task_sync.hpp"
 
 #ifndef AE_TEST_FIXTURE_DIR
 #error "AE_TEST_FIXTURE_DIR must be defined by CMake to tests/fixtures/chat_client"
@@ -43,7 +44,7 @@ void test_simple_reply() {
     ae::EffectContext ctx = make_ctx();
     ae::ChatRequest request{};
 
-    auto result = client.chat(request, ctx);
+    auto result = ae::test_support::run_task_sync<ae::result<ae::ChatResponse>>(client.chat(request, ctx));
     assert(result.has_value());
 
     ae::ChatResponse const& response = *result;
@@ -67,7 +68,7 @@ void test_tool_call() {
     ae::EffectContext ctx = make_ctx();
     ae::ChatRequest request{};
 
-    auto result = client.chat(request, ctx);
+    auto result = ae::test_support::run_task_sync<ae::result<ae::ChatResponse>>(client.chat(request, ctx));
     assert(result.has_value());
 
     ae::ChatResponse const& response = *result;
@@ -89,7 +90,7 @@ void test_reasoning_and_text() {
     ae::EffectContext ctx = make_ctx();
     ae::ChatRequest request{};
 
-    auto result = client.chat(request, ctx);
+    auto result = ae::test_support::run_task_sync<ae::result<ae::ChatResponse>>(client.chat(request, ctx));
     assert(result.has_value());
 
     ae::ChatResponse const& response = *result;
@@ -114,7 +115,7 @@ void test_missing_fixture_returns_error() {
     ae::EffectContext ctx = make_ctx();
     ae::ChatRequest request{};
 
-    auto result = client.chat(request, ctx);
+    auto result = ae::test_support::run_task_sync<ae::result<ae::ChatResponse>>(client.chat(request, ctx));
     assert(!result.has_value());
     assert(result.error().klass == ae::failure_class::fatal);
     assert(result.error().code == "E_FIXTURE_NOT_FOUND");

@@ -12,6 +12,7 @@
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/history_provider.hpp"
 #include "agentengine/trust/principal.hpp"
+#include "support/run_task_sync.hpp"
 
 namespace {
 
@@ -57,7 +58,8 @@ int main() {
     {
         ae::HistoryProvider<ae::Window<0>> provider;
         ae::SessionContext session_ctx{"s-1", principal, history};
-        auto out = provider.on_context(session_ctx, ctx);
+        auto out = ae::test_support::run_task_sync<ae::result<ae::ContextContribution>>(
+            provider.on_context(session_ctx, ctx));
         AE_CHECK(out.has_value() && out->messages.size() == 5,
                  "B2-C1: Window<0> keeps the full history (unbounded default)");
         AE_CHECK(out.has_value() && !out->messages.empty() && text_of(out->messages.front()) == "one" &&
@@ -69,7 +71,8 @@ int main() {
     {
         ae::HistoryProvider<ae::Window<2>> provider;
         ae::SessionContext session_ctx{"s-1", principal, history};
-        auto out = provider.on_context(session_ctx, ctx);
+        auto out = ae::test_support::run_task_sync<ae::result<ae::ContextContribution>>(
+            provider.on_context(session_ctx, ctx));
         AE_CHECK(out.has_value() && out->messages.size() == 2,
                  "B2-R1: Window<2> keeps exactly 2 messages out of 5");
         AE_CHECK(out.has_value() && out->messages.size() == 2 &&
@@ -81,7 +84,8 @@ int main() {
     {
         ae::HistoryProvider<ae::Window<50>> provider;
         ae::SessionContext session_ctx{"s-1", principal, history};
-        auto out = provider.on_context(session_ctx, ctx);
+        auto out = ae::test_support::run_task_sync<ae::result<ae::ContextContribution>>(
+            provider.on_context(session_ctx, ctx));
         AE_CHECK(out.has_value() && out->messages.size() == 5,
                  "B2-R3: a window wider than the history keeps all of it, fabricates nothing");
     }
@@ -91,7 +95,8 @@ int main() {
         std::vector<ae::Message> empty_history;
         ae::HistoryProvider<ae::Window<3>> provider;
         ae::SessionContext session_ctx{"s-empty", principal, empty_history};
-        auto out = provider.on_context(session_ctx, ctx);
+        auto out = ae::test_support::run_task_sync<ae::result<ae::ContextContribution>>(
+            provider.on_context(session_ctx, ctx));
         AE_CHECK(out.has_value() && out->messages.empty(),
                  "B2-R4: an empty history windows to an empty (not erroring) contribution");
     }

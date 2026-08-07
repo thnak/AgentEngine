@@ -16,6 +16,7 @@
 
 #include "agentengine/core/chat_client.hpp"
 #include "agentengine/trust/secret.hpp"
+#include "support/run_task_sync.hpp"
 
 namespace {
 
@@ -38,11 +39,13 @@ public:
 
     [[nodiscard]] agentengine::ChatClientCapabilities capabilities() const { return {}; }
 
-    [[nodiscard]] agentengine::result<agentengine::ChatResponse> chat(
+    [[nodiscard]] agentengine::task<agentengine::result<agentengine::ChatResponse>> chat(
         agentengine::ChatRequest const&, agentengine::EffectContext& ctx) {
         // Resolution happens HERE, inside chat(), against EffectContext -- never at construction.
+        // store_.resolve(...) stays synchronous (trust/secret.hpp's own decision -- the underlying
+        // quark::SecretSource::get() has no I/O to suspend on) so no co_await is needed for it.
         auto lease = store_.resolve(api_key_ref_, ctx);
-        if (!lease) return std::unexpected(lease.error());
+        if (!lease) co_return std::unexpected(lease.error());
 
         agentengine::ChatResponse resp;
         agentengine::ContentItem item;
@@ -51,7 +54,7 @@ public:
         // response content -- this is the test's own observation point, not a pattern to copy.
         item.value = agentengine::Text{lease->reveal_text()};
         resp.message.content.push_back(std::move(item));
-        return resp;
+        co_return resp;
     }
 
     int chat_stream(agentengine::ChatRequest const&, agentengine::EffectContext&) { return 0; }
@@ -78,8 +81,10 @@ int main() {
     ctx.principal = Principal{"test-principal", ""};
     ctx.capabilities = &held;
 
+    using agentengine::test_support::run_task_sync;
+
     // ---- first call resolves the current (v1) value -----------------------------------------------
-    auto first = client.chat(ChatRequest{}, ctx);
+    auto first = run_task_sync<result<ChatResponse>>(client.chat(ChatRequest{}, ctx));
     check(first.has_value(), "chat() succeeds when the Secret capability is held");
     if (first.has_value()) {
         auto const* text = std::get_if<Text>(&first->message.content.at(0).value);
@@ -89,7 +94,7 @@ int main() {
     // ---- rotate the backing value; NO restart, NO reconstruction of the client --------------------
     store.set("provider-api-key", "key-v2");
 
-    auto second = client.chat(ChatRequest{}, ctx);
+    auto second = run_task_sync<result<ChatResponse>>(client.chat(ChatRequest{}, ctx));
     check(second.has_value(), "chat() still succeeds after rotation");
     if (second.has_value()) {
         auto const* text = std::get_if<Text>(&second->message.content.at(0).value);
@@ -102,7 +107,7 @@ int main() {
     // ---- revoking the capability mid-lifetime denies the very next call ---------------------------
     CapabilitySet empty;
     ctx.capabilities = &empty;
-    auto denied = client.chat(ChatRequest{}, ctx);
+    auto denied = run_task_sync<result<ChatResponse>>(client.chat(ChatRequest{}, ctx));
     check(!denied.has_value(),
           "with the Secret capability no longer held, the next chat() call is denied -- the gate is "
           "checked per call, not cached from an earlier successful resolution");

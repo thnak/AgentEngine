@@ -197,10 +197,20 @@ class AgentSession
 public:
     using protocol = quark::Protocol<quark::Ask<StartRun, AgentResponse>, TimerWake>;
 
-    // 001 §3's turn loop, in miniature. Synchronous: `ChatClientT::chat()` is itself synchronous at
-    // this milestone (chat_client.hpp: `ae::task<T>` not wired in yet), so no coroutine is needed to
-    // run a real one-turn run end to end.
-    void handle(quark::Ask<StartRun, AgentResponse> const& m) {
+    // 001 §3's turn loop, in miniature. Milestone 5 Phase B4: `ChatClientT::chat()` is now a real
+    // `ae::task<result<ChatResponse>>` coroutine (chat_client.hpp), so this handler is Quark's async
+    // form (`quark::task<>`, ADR-007's hybrid dispatch) and `co_await`s it directly — the first
+    // `Ask<Q,R>` handler in either tree to combine async dispatch with `m.respond(...)`, per this
+    // milestone's own research: `m`'s underlying descriptor and `effect_context_` (an `AgentSession`
+    // data member, not a call-scoped value) both stay valid across every suspend point, so `m.respond`
+    // after a `co_await` is exactly as safe as it is in a sync handler. Every `ChatClientT` conformer
+    // used under `quark::TestKit` today never genuinely parks (no cross-actor `co_await` inside its
+    // own `chat()` body), so this `co_await` completes inline within one `drive()` pass — the same
+    // "no co_await ⇒ no real parking" property `task<void>` already relies on — and every existing
+    // `TestKit`-driven test keeps working unchanged; only a `ChatClientT` that itself awaits a genuine
+    // cross-actor primitive would need a real `Engine`, not `TestKit` (which has no async carrier —
+    // `quark/core/testkit.hpp`'s own `Suspended` seam note).
+    quark::task<> handle(quark::Ask<StartRun, AgentResponse> const& m) {
         // 001 §1: "Run: An Ask<StartRun, RunResponse> to the session actor" — literally, one run
         // per StartRun ask. `run_id` is minted here, deterministically, from the session's own
         // monotonic counter (never wall-clock — 001 §7/I5), the identity 019 §3's idempotency-key
@@ -227,21 +237,22 @@ public:
         // generalization is deferred to Phase G, when a second real provider (memory) actually
         // needs to be composed alongside this one (decision 7's build ordering).
         SessionContext session_ctx{session_id_, principal_, history_};
-        result<ContextContribution> contribution = history_provider_.on_context(session_ctx, effect_context_);
+        result<ContextContribution> contribution =
+            co_await history_provider_.on_context(session_ctx, effect_context_);
         if (!contribution) {
             // Same fail-closed shape as the chat-failure branch below — never fabricate a context.
-            return;
+            co_return;
         }
 
         ChatRequest request{contribution->messages};
-        result<ChatResponse> response = chat_client_.chat(request, effect_context_);
+        result<ChatResponse> response = co_await chat_client_.chat(request, effect_context_);
         if (!response) {
             // 001 §6's failure classification isn't wired up at this milestone — fail closed by
             // never responding, rather than fabricating a placeholder AgentResponse. The caller's
             // ask then resolves however the reply-cell's own "never replied" path surfaces it
             // (quark/core/testkit.hpp: "failed by reply-before-teardown if the handler never
             // replied — never a hang").
-            return;
+            co_return;
         }
 
         history_.push_back(response->message);
@@ -250,7 +261,7 @@ public:
         // right now (a span taken AFTER both pushes complete, over the vector's current, single
         // allocation -- never dangling across a push that could reallocate).
         std::span<Message const> const turn_messages{history_.data() + history_.size() - 2, 2};
-        history_provider_.on_turn_end(TurnView{turn_messages}, effect_context_);
+        co_await history_provider_.on_turn_end(TurnView{turn_messages}, effect_context_);
         m.respond(AgentResponse{response->message, response->usage});
     }
 

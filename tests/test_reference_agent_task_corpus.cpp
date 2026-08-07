@@ -46,6 +46,7 @@
 #include "agentengine/trust/capability.hpp"
 #include "backends/native_jail/mediated_python_runner.hpp"
 #include "support/recorded_chat_client.hpp"
+#include "support/run_task_sync.hpp"
 
 #ifndef AE_TEST_FIXTURE_DIR
 #error "AE_TEST_FIXTURE_DIR must be defined by CMake to tests/fixtures/chat_client/reference_agent"
@@ -55,6 +56,7 @@ using namespace agentengine;
 using agentengine::native_jail::MediatedPythonConfig;
 using agentengine::native_jail::MediatedPythonRunner;
 using agentengine::test_support::RecordedChatClient;
+using agentengine::test_support::run_task_sync;
 
 namespace {
 
@@ -171,7 +173,7 @@ int main() {
     {
         RecordedChatClient client(std::filesystem::path(AE_TEST_FIXTURE_DIR) / "csv_sum.json");
         EffectContext dummy_ctx{};
-        auto resp = client.chat(ChatRequest{}, dummy_ctx);
+        auto resp = run_task_sync<result<ChatResponse>>(client.chat(ChatRequest{}, dummy_ctx));
         AE_CHECK(resp.has_value(), "H1-T1: fixture loads and plays back a response");
 
         std::string code;
@@ -197,7 +199,7 @@ int main() {
     {
         RecordedChatClient client(std::filesystem::path(AE_TEST_FIXTURE_DIR) / "list_dir.json");
         EffectContext dummy_ctx{};
-        auto resp = client.chat(ChatRequest{}, dummy_ctx);
+        auto resp = run_task_sync<result<ChatResponse>>(client.chat(ChatRequest{}, dummy_ctx));
         AE_CHECK(resp.has_value(), "H1-T2: fixture loads and plays back a response");
 
         std::string code;
@@ -224,7 +226,7 @@ int main() {
     {
         RecordedChatClient client(std::filesystem::path(AE_TEST_FIXTURE_DIR) / "pandas_groupby.json");
         EffectContext dummy_ctx{};
-        auto resp = client.chat(ChatRequest{}, dummy_ctx);
+        auto resp = run_task_sync<result<ChatResponse>>(client.chat(ChatRequest{}, dummy_ctx));
         AE_CHECK(resp.has_value(), "H1-T3: fixture loads and plays back a response");
 
         std::string code;

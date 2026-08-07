@@ -20,6 +20,7 @@
 #include <string>
 
 #include "agentengine/core/memory_provider.hpp"
+#include "support/run_task_sync.hpp"
 
 namespace {
 
@@ -93,8 +94,8 @@ int main() {
 
         struct NoopSummarizer {
             [[nodiscard]] ae::ChatClientCapabilities capabilities() const { return {}; }
-            ae::result<ae::ChatResponse> chat(ae::ChatRequest const&, ae::EffectContext&) {
-                return ae::ChatResponse{};
+            ae::task<ae::result<ae::ChatResponse>> chat(ae::ChatRequest const&, ae::EffectContext&) {
+                co_return ae::ChatResponse{};
             }
             int chat_stream(ae::ChatRequest const&, ae::EffectContext&) { return 0; }
         };
@@ -105,7 +106,8 @@ int main() {
         ae::EffectContext ctx{};
         ctx.principal = principal;
         ae::SessionContext session_ctx{"s-victim", principal, history};
-        auto out = provider.on_context(session_ctx, ctx);
+        auto out = ae::test_support::run_task_sync<ae::result<ae::ContextContribution>>(
+            provider.on_context(session_ctx, ctx));
         check(out.has_value(), "setup: on_context() succeeds");
         check(out.has_value() && out->messages.size() == 2,
               "setup: both the hostile and genuine items are retrieved");

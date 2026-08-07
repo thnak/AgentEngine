@@ -119,12 +119,15 @@ public:
 
     [[nodiscard]] ChatClientCapabilities capabilities() const { return capabilities_; }
 
-    // Satisfies ChatClient::chat's `result<ChatResponse>` return-type constraint (chat_client.hpp).
-    // A missing or malformed fixture is `failure_class::fatal` — never a fabricated empty success.
-    [[nodiscard]] result<ChatResponse> chat(ChatRequest const&, EffectContext&) const {
+    // Satisfies ChatClient::chat's `task<result<ChatResponse>>` return-type constraint
+    // (chat_client.hpp, Milestone 5 Phase B4). A missing or malformed fixture is
+    // `failure_class::fatal` — never a fabricated empty success. Pure synchronous file I/O inside
+    // the coroutine body -- never genuinely parks, so this is safe to drive from
+    // `test_support::run_task_sync` outside any actor, or `co_await`ed from a real one.
+    [[nodiscard]] task<result<ChatResponse>> chat(ChatRequest const&, EffectContext&) const {
         std::ifstream in(fixture_path_, std::ios::binary);
         if (!in) {
-            return std::unexpected(error{failure_class::fatal,
+            co_return std::unexpected(error{failure_class::fatal,
                                           "fixture not found: " + fixture_path_.string(),
                                           "E_FIXTURE_NOT_FOUND"});
         }
@@ -136,9 +139,9 @@ public:
             if (auto it = doc.find("usage"); it != doc.end()) {
                 response.usage = detail::parse_usage(*it);
             }
-            return response;
+            co_return response;
         } catch (std::exception const& ex) {
-            return std::unexpected(
+            co_return std::unexpected(
                 error{failure_class::fatal,
                       "malformed fixture " + fixture_path_.string() + ": " + ex.what(),
                       "E_FIXTURE_MALFORMED"});

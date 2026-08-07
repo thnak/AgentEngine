@@ -30,8 +30,8 @@ namespace {
 
 struct DummyChatClient {
     [[nodiscard]] ae::ChatClientCapabilities capabilities() const { return {}; }
-    ae::result<ae::ChatResponse> chat(ae::ChatRequest const&, ae::EffectContext&) {
-        return ae::ChatResponse{};
+    ae::task<ae::result<ae::ChatResponse>> chat(ae::ChatRequest const&, ae::EffectContext&) {
+        co_return ae::ChatResponse{};
     }
     int chat_stream(ae::ChatRequest const&, ae::EffectContext&) { return 0; }  // unconstrained (see chat_client.hpp)
 };
@@ -68,10 +68,10 @@ static_assert(ae::SandboxBackend<DummySandboxBackend>,
 // ---- ContextProvider concept (core/context_provider.hpp) — trivial conforming type ---------------
 
 struct DummyContextProvider {
-    ae::result<ae::ContextContribution> on_context(ae::SessionContext&, ae::EffectContext&) {
-        return ae::ContextContribution{};
+    ae::task<ae::result<ae::ContextContribution>> on_context(ae::SessionContext&, ae::EffectContext&) {
+        co_return ae::ContextContribution{};
     }
-    void on_turn_end(ae::TurnView, ae::EffectContext&) {}
+    ae::task<std::monostate> on_turn_end(ae::TurnView, ae::EffectContext&) { co_return std::monostate{}; }
 };
 static_assert(ae::ContextProvider<DummyContextProvider>,
               "DummyContextProvider must satisfy the ContextProvider concept (005 §5)");

@@ -120,20 +120,23 @@ public:
           max_injected_(max_injected) {}
 
     // Phase G4: default injection (a short, budgeted set of high-ranked items, 029 §5) plus a
-    // contributed `recall(query)` tool for on-demand lookups beyond what was pre-injected.
-    [[nodiscard]] result<ContextContribution> on_context(SessionContext& session_ctx, EffectContext&) {
+    // contributed `recall(query)` tool for on-demand lookups beyond what was pre-injected. Milestone
+    // 5 Phase B4: a coroutine because the ContextProvider concept now requires one uniformly
+    // (context_provider.hpp) -- retrieval itself makes no ChatClient call (029 §5's own point), so
+    // this conformer never suspends.
+    [[nodiscard]] task<result<ContextContribution>> on_context(SessionContext& session_ctx, EffectContext&) {
         std::string query_text = last_user_text(session_ctx.history);
 
         auto ranked =
             rank_memory_items(*object_store_, *ref_store_, mount_, read_cap_, query_text, max_injected_);
-        if (!ranked) return std::unexpected(ranked.error());
+        if (!ranked) co_return std::unexpected(ranked.error());
 
         ContextContribution contribution;
         for (MemoryItem const& item : *ranked) {
             contribution.messages.push_back(memory_item_to_message(item));
         }
         contribution.tools.push_back(make_recall_tool_descriptor());
-        return contribution;
+        co_return contribution;
     }
 
     // Phase G3: "ContextProvider.on_turn_end is where memory is written... may call a declared
@@ -141,16 +144,17 @@ public:
     // EffectContext-carrying model call" (029 §4). Best-effort: an extraction failure (the
     // summarizer erroring, or the write itself failing) never fails the TURN this hook runs after
     // — extraction is opt-in background enrichment, not a load-bearing step of the turn loop
-    // (029 §4's own "opt-in policy, not implicit behaviour").
-    void on_turn_end(TurnView turn, EffectContext& ctx) {
-        if (turn.turn_messages.empty()) return;
+    // (029 §4's own "opt-in policy, not implicit behaviour"). Milestone 5 Phase B4: a real coroutine
+    // now -- `co_await`s the declared `SummarizerT::chat()` (004 §1).
+    task<std::monostate> on_turn_end(TurnView turn, EffectContext& ctx) {
+        if (turn.turn_messages.empty()) co_return std::monostate{};
 
         ChatRequest request{std::vector<Message>(turn.turn_messages.begin(), turn.turn_messages.end())};
-        result<ChatResponse> extracted = summarizer_.chat(request, ctx);
-        if (!extracted) return;
-        if (extracted->message.content.empty()) return;
+        result<ChatResponse> extracted = co_await summarizer_.chat(request, ctx);
+        if (!extracted) co_return std::monostate{};
+        if (extracted->message.content.empty()) co_return std::monostate{};
         auto const* text = std::get_if<Text>(&extracted->message.content.front().value);
-        if (text == nullptr || text->text.empty()) return;
+        if (text == nullptr || text->text.empty()) co_return std::monostate{};
 
         MemoryItem item{};
         item.kind = memory_kind::episodic;
@@ -158,6 +162,7 @@ public:
         item.origin = MemoryOrigin{memory_source::model_inferred, ctx.run_id,
                                     std::to_string(ctx.turn_index), ctx.principal};
         (void)write_memory_item(*object_store_, *ref_store_, mount_, write_cap_, item);
+        co_return std::monostate{};
     }
 
 private:
