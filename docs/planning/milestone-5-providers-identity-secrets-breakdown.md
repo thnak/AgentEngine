@@ -503,6 +503,13 @@ into the schema, since nothing in the research confirms Anthropic requires or ev
   `chat()`/`chat_stream()` bodies (deliberately deferred there, not a gap in B4a/B4b).
 - **10⁴-scale gates and full 023 baselining** — stay `TBD-baselined` project-wide until M8, same
   status quo every earlier milestone established.
+- **App-attribution headers, `seed`/abuse-tracking-id/generic-metadata constructor fields, and a
+  portable `reasoning_effort` design** for Phase D/E's two backends — surveyed, not built; see
+  `docs/research/2026-08-07-provider-metadata-and-sampling-params-survey.md` for the full per-vendor
+  comparison (OpenAI/Anthropic/OpenRouter/llama.cpp/vLLM/Ollama) and a concrete, prioritized proposed
+  design. Also flags an untested llama.cpp structured-output wire-shape compatibility risk (Phase D4's
+  `translate_output_schema` may not match llama.cpp's simpler `response_format` shape). Deliberately
+  parked until the in-flight QA test work (tool calls / streaming / structured output) lands.
 
 ## Handover & kick-off
 

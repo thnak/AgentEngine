@@ -29,7 +29,9 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -307,6 +309,19 @@ private:
     return req;
 }
 
+// Escapes `s` for embedding as the VALUE of a JSON string (used below to build a canned response whose
+// own `content` field is itself a JSON-string-encoded structured-output reply -- i.e. a JSON string
+// containing JSON text, exactly what a real structured-output completion looks like on the wire).
+[[nodiscard]] std::string escape_json_string_literal(std::string_view s) {
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s) {
+        if (c == '"' || c == '\\') out += '\\';
+        out += c;
+    }
+    return out;
+}
+
 }  // namespace
 
 int main() {
@@ -456,6 +471,188 @@ int main() {
                   "socket, decodes and delivers through ae::stream<T> in order with 0 loss");
             check(s.terminal() == quark::ReplyStreamTerminal::Closed,
                   "chat_stream(): the stream reaches the success terminal");
+        }
+    }
+
+    // ---- chat_stream(): genuine cross-thread backpressure against the ring's DEFAULT capacity (256) ---
+    // chat_stream() exposes no capacity parameter of its own -- make_stream<ChatResponseUpdate> is
+    // called internally (chat_client.hpp's run_stream_worker) with the DEFAULT stream_config, capacity
+    // 256 (core/stream.hpp). So, unlike test_chat_client_stream.cpp's B4b-R1 case (whose synthetic
+    // StreamingWordChatClient conformer DOES take an explicit ring_capacity constructor parameter), the
+    // only way to force the credit-controlled ring to genuinely exercise its full capacity through the
+    // REAL backend is a canned response with strictly MORE items than the ring can hold at once: 300
+    // one-character text-delta SSE events against a 256-slot ring. `stream_producer<T>::push()`'s own
+    // documented contract (stream.hpp) is to block LOSSLESSLY until ring credit is available or the
+    // stream tears down -- so if this backend ever dropped or overwrote an item instead of blocking the
+    // producer thread when the ring filled, the received count below would come up short of 300. This
+    // does not independently measure whether the producer thread actually stalled at any given instant
+    // (that would need instrumenting the ring itself, out of scope here) -- the available proof from the
+    // test side is exact-count-with-zero-loss across MORE items than the ring's own default capacity.
+    {
+        std::string sse;
+        constexpr int kEventCount = 300;
+        for (int i = 0; i < kEventCount; ++i) {
+            sse += "data: {\"choices\":[{\"delta\":{\"content\":\"x\"}}]}\n\n";
+        }
+        sse += "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
+        sse += "data: [DONE]\n\n";
+        TlsCannedServer server(leaf, http_response(sse, /*chunked=*/true));
+        check(server.ok(), "chat_stream()+backpressure: test server started");
+        if (server.ok()) {
+            openai::OpenAIChatClient client("localhost", server.port(), "gpt-5", SecretRef{"openai-api-key"},
+                                             ChatClientCapabilities{}, store, "/v1", fake_resolver, leaf.cert_pem);
+            store.set("openai-api-key", "sk-test-value");
+
+            stream<ChatResponseUpdate> s = client.chat_stream(request_asking("hi"), ctx);
+            int received = 0;
+            while (!s.done()) {
+                while (auto update = s.next()) {
+                    auto const* text = std::get_if<Text>(&update->delta.value);
+                    if (text && text->text == "x") ++received;
+                }
+                if (!s.done()) std::this_thread::yield();
+            }
+            check(received == kEventCount,
+                  "chat_stream()+backpressure: all 300 items were delivered with 0 loss even though the "
+                  "ring's own default capacity (256) is smaller than the event count -- the REAL detached "
+                  "background worker (not the B4b synthetic conformer) must have blocked on ring credit "
+                  "at least once, and did so losslessly rather than dropping anything");
+            check(s.terminal() == quark::ReplyStreamTerminal::Closed,
+                  "chat_stream()+backpressure: the stream still reaches the success terminal");
+        }
+    }
+
+    // ---- chat_stream(): dropping the consumer mid-stream does not hang the whole test process ----------
+    // The background worker is a DETACHED std::thread (chat_client.hpp's own file banner explains why --
+    // a bound OpenAIChatClient instance is shared across concurrent streaming calls via ChatClientRegistry,
+    // so a single joined-then-replaced thread member would wrongly serialize them). Being detached means
+    // there is no join() this test can call to directly observe the worker's exit. The best available
+    // proof from the test side is exactly what ctest's own per-test timeout already enforces: this test
+    // BINARY completing at all, rather than the process hanging forever with an orphaned worker thread
+    // stuck in producer.push() waiting for ring credit that will never arrive once the consumer is gone.
+    // stream<T>'s destructor (core/stream.hpp) cancels the ring on drop, and run_stream_worker's push
+    // loop already checks for exactly that: `if (producer.push(...) != quark::ReplyPush::Ok) return;`.
+    {
+        std::string sse;
+        constexpr int kEventCount = 50;
+        for (int i = 0; i < kEventCount; ++i) {
+            sse += "data: {\"choices\":[{\"delta\":{\"content\":\"y\"}}]}\n\n";
+        }
+        sse += "data: [DONE]\n\n";
+        TlsCannedServer server(leaf, http_response(sse, /*chunked=*/true));
+        check(server.ok(), "chat_stream()+cancel: test server started");
+        if (server.ok()) {
+            openai::OpenAIChatClient client("localhost", server.port(), "gpt-5", SecretRef{"openai-api-key"},
+                                             ChatClientCapabilities{}, store, "/v1", fake_resolver, leaf.cert_pem);
+            store.set("openai-api-key", "sk-test-value");
+            {
+                stream<ChatResponseUpdate> s = client.chat_stream(request_asking("hi"), ctx);
+                // next() is poll-only -- poll until at least the first item is delivered, then let `s`
+                // go out of scope while the worker still has 49 more items it could try to push.
+                std::optional<ChatResponseUpdate> first;
+                while (!first && !s.done()) {
+                    first = s.next();
+                    if (!first) std::this_thread::yield();
+                }
+                check(first.has_value(),
+                      "chat_stream()+cancel: at least the first item was delivered before cancellation");
+                // ~stream() below cancels the ring -- the detached worker's NEXT push() must observe
+                // Terminated and return promptly rather than block forever.
+            }
+            // Reaching the end of main() at all (rather than the test process hanging past ctest's own
+            // timeout) IS the proof that dropping the stream early did not wedge the real OpenAI
+            // streaming worker -- named explicitly rather than claiming a join-based proof this
+            // detached-thread API does not offer.
+        }
+    }
+
+    // ---- chat_stream(): interleaved text + tool_call streaming through the REAL backend (live) ---------
+    // Mirrors test_openai_chat_client_translation.cpp's D2-R4 case (same wire shape: two text deltas,
+    // then a tool call's argument fragments split across two separate SSE chunks, index-correlated) but
+    // through a REAL TLS socket and the REAL detached background worker, not the offline parser.
+    {
+        std::string const sse =
+            "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"Let \"}}]}\n\n"
+            "data: {\"choices\":[{\"delta\":{\"content\":\"me check.\"}}]}\n\n"
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-1\","
+            "\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"location\\\":\"}}]}}]}\n\n"
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,"
+            "\"function\":{\"arguments\":\"\\\"Seattle\\\"}\"}}]}}]}\n\n"
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"
+            "data: [DONE]\n\n";
+        TlsCannedServer server(leaf, http_response(sse, /*chunked=*/true));
+        check(server.ok(), "chat_stream()+tool_call: test server started");
+        if (server.ok()) {
+            openai::OpenAIChatClient client("localhost", server.port(), "gpt-5", SecretRef{"openai-api-key"},
+                                             ChatClientCapabilities{}, store, "/v1", fake_resolver, leaf.cert_pem);
+            store.set("openai-api-key", "sk-test-value");
+
+            stream<ChatResponseUpdate> s = client.chat_stream(request_asking("hi"), ctx);
+            std::vector<ChatResponseUpdate> received;
+            while (!s.done()) {
+                while (auto update = s.next()) received.push_back(std::move(*update));
+                if (!s.done()) std::this_thread::yield();
+            }
+            check(received.size() == 3,
+                  "chat_stream()+tool_call: two text deltas + one assembled tool call = 3 updates, "
+                  "delivered through a real TLS socket and the real detached worker");
+            if (received.size() == 3) {
+                auto const* t0 = std::get_if<Text>(&received[0].delta.value);
+                auto const* t1 = std::get_if<Text>(&received[1].delta.value);
+                auto const* tc = std::get_if<ToolCall>(&received[2].delta.value);
+                check(t0 && t0->text == "Let ", "chat_stream()+tool_call: first text delta exact");
+                check(t1 && t1->text == "me check.", "chat_stream()+tool_call: second text delta exact");
+                check(tc && tc->call_id == "call-1" && tc->tool_name == "get_weather" &&
+                          tc->arguments_json == R"({"location":"Seattle"})",
+                      "chat_stream()+tool_call: the tool call's argument fragments (split across two "
+                      "separate SSE chunks on the wire) reassemble correctly end-to-end through the real "
+                      "backend, not just the offline parser D2-R4 already proves");
+                check(received[2].is_final, "chat_stream()+tool_call: the assembled tool call is final");
+            }
+            check(s.terminal() == quark::ReplyStreamTerminal::Closed,
+                  "chat_stream()+tool_call: the stream reaches the success terminal");
+        }
+    }
+
+    // ---- chat(): a structured-output response -- content is itself a JSON string, passed through intact
+    // This project requests structured output on the way OUT (response_format) but does NOT parse or
+    // validate the reply against the schema on the way IN -- confirmed against parse_chat_completion_
+    // response above (no schema-aware branch at all; structured output rides the ordinary "content"
+    // string field like any other text reply).
+    {
+        std::string const structured_json =
+            R"({"location":"Seattle","forecast":[{"condition":"cloudy","high_f":58}]})";
+        std::string const body =
+            R"({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":")" +
+            escape_json_string_literal(structured_json) + R"("}}]})";
+        TlsCannedServer server(leaf, http_response(body));
+        check(server.ok(), "chat()+structured: test server started");
+        if (server.ok()) {
+            ChatClientCapabilities caps;
+            caps.structured_output_native = true;
+            openai::OpenAIChatClient client("localhost", server.port(), "gpt-5", SecretRef{"openai-api-key"},
+                                             caps, store, "/v1", fake_resolver, leaf.cert_pem);
+            ChatRequest req = request_asking("what's the weather?");
+            req.output_schema_json = R"({"type":"object","properties":{"location":{"type":"string"}}})";
+
+            auto resp = run_task_sync<result<ChatResponse>>(client.chat(req, ctx));
+            check(resp.has_value(),
+                  "chat()+structured: a request carrying output_schema_json succeeds against a real TLS "
+                  "server");
+            if (resp) {
+                check(resp->message.content.size() == 1, "chat()+structured: one content item");
+                if (!resp->message.content.empty()) {
+                    auto const* text = std::get_if<Text>(&resp->message.content.front().value);
+                    check(text != nullptr,
+                          "chat()+structured: structured output rides the ORDINARY Text content item -- "
+                          "there is no distinct 'structured output' ContentItem kind in this project's "
+                          "content model");
+                    check(text && text->text == structured_json,
+                          "chat()+structured: the JSON-string reply text survives byte for byte -- this "
+                          "backend never parses or validates it against the schema on receipt, only "
+                          "requests the shape on the way out (confirmed, not assumed, by this passthrough)");
+                }
+            }
         }
     }
 

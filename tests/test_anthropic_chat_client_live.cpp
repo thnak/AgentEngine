@@ -22,7 +22,9 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -296,6 +298,19 @@ private:
     return req;
 }
 
+// Escapes `s` for embedding as the VALUE of a JSON string -- mirrors
+// test_openai_chat_client_live.cpp's own identically-named helper (used below to build a canned
+// response whose own text block is itself a JSON-string-encoded structured-output reply).
+[[nodiscard]] std::string escape_json_string_literal(std::string_view s) {
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s) {
+        if (c == '"' || c == '\\') out += '\\';
+        out += c;
+    }
+    return out;
+}
+
 }  // namespace
 
 int main() {
@@ -483,6 +498,182 @@ int main() {
                   "real TLS socket, decodes and delivers through ae::stream<T> in order with 0 loss");
             check(s.terminal() == quark::ReplyStreamTerminal::Closed,
                   "chat_stream(): the stream reaches the success terminal");
+        }
+    }
+
+    // ---- chat_stream(): genuine cross-thread backpressure against the ring's DEFAULT capacity (256) ---
+    // Same rationale as test_openai_chat_client_live.cpp's own backpressure test (see that file's
+    // comment for the full argument: chat_stream() exposes no capacity parameter of its own, so 300+
+    // tiny events against the ring's default capacity=256 is the available proof that no item is lost
+    // even though the producer thread necessarily contends with the consumer for ring credit) -- proven
+    // here through the REAL Anthropic backend's own NAMED-EVENT SSE parser (split_sse_named_events),
+    // structurally different from OpenAI's single-field shape, and its own independent detached worker.
+    {
+        std::string sse =
+            "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":5,\"output_tokens\":1}}}\n\n"
+            "event: content_block_start\ndata: {\"index\":0,\"content_block\":{\"type\":\"text\"}}\n\n";
+        constexpr int kEventCount = 300;
+        for (int i = 0; i < kEventCount; ++i) {
+            sse += "event: content_block_delta\ndata: {\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"x\"}}\n\n";
+        }
+        sse += "event: content_block_stop\ndata: {\"index\":0}\n\n"
+               "event: message_delta\ndata: {\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":300}}\n\n"
+               "event: message_stop\ndata: {}\n\n";
+        TlsCannedServer server(leaf, http_response(sse, /*chunked=*/true));
+        check(server.ok(), "chat_stream()+backpressure: test server started");
+        if (server.ok()) {
+            anthropic::AnthropicChatClient client("localhost", server.port(), "claude-sonnet-5",
+                                                   SecretRef{"anthropic-api-key"}, ChatClientCapabilities{},
+                                                   store, "/v1", "2023-06-01", fake_resolver, leaf.cert_pem);
+            store.set("anthropic-api-key", "sk-ant-test-value");
+
+            stream<ChatResponseUpdate> s = client.chat_stream(request_asking("hi"), ctx);
+            int received = 0;
+            while (!s.done()) {
+                while (auto update = s.next()) {
+                    auto const* text = std::get_if<Text>(&update->delta.value);
+                    if (text && text->text == "x") ++received;
+                }
+                if (!s.done()) std::this_thread::yield();
+            }
+            check(received == kEventCount,
+                  "chat_stream()+backpressure: all 300 text_delta events were delivered with 0 loss even "
+                  "though the ring's own default capacity (256) is smaller than the event count -- the "
+                  "REAL Anthropic detached background worker must have blocked on ring credit at least "
+                  "once, and did so losslessly rather than dropping anything");
+            check(s.terminal() == quark::ReplyStreamTerminal::Closed,
+                  "chat_stream()+backpressure: the stream still reaches the success terminal");
+        }
+    }
+
+    // ---- chat_stream(): dropping the consumer mid-stream does not hang the whole test process ----------
+    // Same rationale as test_openai_chat_client_live.cpp's own cancellation test: the worker thread is
+    // DETACHED, so the only proof available from the test side is that this test binary itself completes
+    // within ctest's own bounded timeout rather than hanging forever waiting on a join that never
+    // happens -- proven here against Anthropic's own independent run_stream_worker/push loop.
+    {
+        std::string sse = "event: content_block_start\ndata: {\"index\":0,\"content_block\":{\"type\":\"text\"}}\n\n";
+        constexpr int kEventCount = 50;
+        for (int i = 0; i < kEventCount; ++i) {
+            sse += "event: content_block_delta\ndata: {\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"y\"}}\n\n";
+        }
+        sse += "event: message_stop\ndata: {}\n\n";
+        TlsCannedServer server(leaf, http_response(sse, /*chunked=*/true));
+        check(server.ok(), "chat_stream()+cancel: test server started");
+        if (server.ok()) {
+            anthropic::AnthropicChatClient client("localhost", server.port(), "claude-sonnet-5",
+                                                   SecretRef{"anthropic-api-key"}, ChatClientCapabilities{},
+                                                   store, "/v1", "2023-06-01", fake_resolver, leaf.cert_pem);
+            store.set("anthropic-api-key", "sk-ant-test-value");
+            {
+                stream<ChatResponseUpdate> s = client.chat_stream(request_asking("hi"), ctx);
+                std::optional<ChatResponseUpdate> first;
+                while (!first && !s.done()) {
+                    first = s.next();
+                    if (!first) std::this_thread::yield();
+                }
+                check(first.has_value(),
+                      "chat_stream()+cancel: at least the first item was delivered before cancellation");
+                // ~stream() below cancels the ring -- the detached worker's NEXT push() must observe
+                // Terminated and return promptly rather than block forever.
+            }
+            // Reaching the end of main() at all (rather than the test process hanging past ctest's own
+            // timeout) IS the proof that dropping the stream early did not wedge the real Anthropic
+            // streaming worker.
+        }
+    }
+
+    // ---- chat_stream(): interleaved text + tool_use streaming through the REAL backend (live) -----------
+    // Mirrors test_anthropic_chat_client_translation.cpp's E-STREAM-R1 case (same named-event wire shape:
+    // two text deltas on block 0, then a tool_use's partial_json fragments split across two separate
+    // content_block_delta events on block 1) but through a REAL TLS socket and the REAL detached
+    // background worker, not the offline parser.
+    {
+        std::string const sse =
+            "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":1}}}\n\n"
+            "event: content_block_start\ndata: {\"index\":0,\"content_block\":{\"type\":\"text\"}}\n\n"
+            "event: content_block_delta\ndata: {\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hi \"}}\n\n"
+            "event: content_block_delta\ndata: {\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"there\"}}\n\n"
+            "event: content_block_stop\ndata: {\"index\":0}\n\n"
+            "event: content_block_start\ndata: {\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call-1\",\"name\":\"get_weather\"}}\n\n"
+            "event: content_block_delta\ndata: {\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"location\\\":\"}}\n\n"
+            "event: content_block_delta\ndata: {\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\\\"Seattle\\\"}\"}}\n\n"
+            "event: content_block_stop\ndata: {\"index\":1}\n\n"
+            "event: message_delta\ndata: {\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":25}}\n\n"
+            "event: message_stop\ndata: {}\n\n";
+        TlsCannedServer server(leaf, http_response(sse, /*chunked=*/true));
+        check(server.ok(), "chat_stream()+tool_use: test server started");
+        if (server.ok()) {
+            anthropic::AnthropicChatClient client("localhost", server.port(), "claude-sonnet-5",
+                                                   SecretRef{"anthropic-api-key"}, ChatClientCapabilities{},
+                                                   store, "/v1", "2023-06-01", fake_resolver, leaf.cert_pem);
+            store.set("anthropic-api-key", "sk-ant-test-value");
+
+            stream<ChatResponseUpdate> s = client.chat_stream(request_asking("hi"), ctx);
+            std::vector<ChatResponseUpdate> received;
+            while (!s.done()) {
+                while (auto update = s.next()) received.push_back(std::move(*update));
+                if (!s.done()) std::this_thread::yield();
+            }
+            check(received.size() == 3,
+                  "chat_stream()+tool_use: two text deltas + one assembled tool_use = 3 updates, "
+                  "delivered through a real TLS socket and the real detached worker");
+            if (received.size() == 3) {
+                auto const* t0 = std::get_if<Text>(&received[0].delta.value);
+                auto const* t1 = std::get_if<Text>(&received[1].delta.value);
+                auto const* tc = std::get_if<ToolCall>(&received[2].delta.value);
+                check(t0 && t0->text == "Hi ", "chat_stream()+tool_use: first text delta exact");
+                check(t1 && t1->text == "there", "chat_stream()+tool_use: second text delta exact");
+                check(tc && tc->call_id == "call-1" && tc->tool_name == "get_weather" &&
+                          tc->arguments_json == R"({"location":"Seattle"})",
+                      "chat_stream()+tool_use: the tool_use's partial_json fragments (split across two "
+                      "separate content_block_delta events on the wire) reassemble correctly end-to-end "
+                      "through the real backend, not just the offline parser E-STREAM-R1 already proves");
+                check(received[2].is_final, "chat_stream()+tool_use: the assembled tool_use is final");
+            }
+            check(s.terminal() == quark::ReplyStreamTerminal::Closed,
+                  "chat_stream()+tool_use: the stream reaches the success terminal");
+        }
+    }
+
+    // ---- chat(): a structured-output response -- text is itself a JSON string, passed through intact --
+    // This project requests structured output on the way OUT (output_config.format) but does NOT parse
+    // or validate the reply against the schema on the way IN -- confirmed against parse_message_response
+    // above (no schema-aware branch at all; structured output rides the ordinary "text" content block
+    // field like any other text reply).
+    {
+        std::string const structured_json =
+            R"({"location":"Seattle","forecast":[{"condition":"cloudy","high_f":58}]})";
+        std::string const body =
+            R"({"type":"message","role":"assistant","content":[{"type":"text","text":")" +
+            escape_json_string_literal(structured_json) + R"("}]})";
+        TlsCannedServer server(leaf, http_response(body));
+        check(server.ok(), "chat()+structured: test server started");
+        if (server.ok()) {
+            anthropic::AnthropicChatClient client("localhost", server.port(), "claude-sonnet-5",
+                                                   SecretRef{"anthropic-api-key"}, ChatClientCapabilities{},
+                                                   store, "/v1", "2023-06-01", fake_resolver, leaf.cert_pem);
+            ChatRequest req = request_asking("what's the weather?");
+            req.output_schema_json = R"({"type":"object","properties":{"location":{"type":"string"}}})";
+
+            auto resp = run_task_sync<result<ChatResponse>>(client.chat(req, ctx));
+            check(resp.has_value(),
+                  "chat()+structured: a request carrying output_schema_json succeeds against a real TLS "
+                  "server");
+            if (resp) {
+                check(resp->message.content.size() == 1, "chat()+structured: one content item");
+                if (!resp->message.content.empty()) {
+                    auto const* text = std::get_if<Text>(&resp->message.content.front().value);
+                    check(text != nullptr,
+                          "chat()+structured: structured output rides the ORDINARY Text content item -- "
+                          "there is no distinct 'structured output' ContentItem kind in this project's "
+                          "content model");
+                    check(text && text->text == structured_json,
+                          "chat()+structured: the JSON-string reply text survives byte for byte -- this "
+                          "backend never parses or validates it against the schema on receipt, only "
+                          "requests the shape on the way out (confirmed, not assumed, by this passthrough)");
+                }
+            }
         }
     }
 

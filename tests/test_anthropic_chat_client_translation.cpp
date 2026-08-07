@@ -5,8 +5,11 @@
 // test_openai_chat_client_translation.cpp in structure and coverage intent.
 
 #include <cstdio>
+#include <optional>
 #include <string>
+#include <vector>
 
+#include "agentengine/core/json_schema.hpp"
 #include "agentengine/protocol/anthropic/chat_client.hpp"
 
 using namespace agentengine;
@@ -33,6 +36,56 @@ void check(bool cond, char const* what) {
     m.content.push_back(std::move(item));
     return m;
 }
+
+// New helpers (deeper tool-call coverage, below): a lone assistant turn carrying a ToolCall, and a
+// lone tool-role turn carrying a ToolResult reply -- mirrors test_openai_chat_client_translation.cpp's
+// own identically-named helpers, adapted to this project's uniform ToolCall::arguments_json string
+// (Anthropic-specific reshaping into a real JSON object happens inside translate_message itself).
+[[nodiscard]] Message tool_call_message(std::string call_id, std::string tool_name, std::string args_json) {
+    Message m;
+    m.role = role::assistant;
+    ContentItem item;
+    item.origin = content_origin::assistant;
+    item.value = ToolCall{std::move(call_id), std::move(tool_name), std::move(args_json)};
+    m.content.push_back(std::move(item));
+    return m;
+}
+
+[[nodiscard]] Message tool_result_message(std::string call_id, std::string reply_text) {
+    Message m;
+    m.role = role::tool;
+    ContentItem item;
+    item.origin = content_origin::tool;
+    ToolResult tr;
+    tr.call_id = std::move(call_id);
+    ContentItem inner;
+    inner.value = Text{std::move(reply_text)};
+    tr.content.push_back(std::move(inner));
+    item.value = std::move(tr);
+    m.content.push_back(std::move(item));
+    return m;
+}
+
+// A nested/complex OutputSchema<T> type for the E5-R2 full-pipeline test below -- a REAL
+// AE_JSON_SCHEMA(...)-compiled schema (a nested array-of-objects field plus a std::optional field),
+// mirroring test_json_schema_codec.cpp's own Hit/SearchReply nesting pattern and
+// test_openai_chat_client_translation.cpp's own identically-shaped ForecastDay/WeatherReport pair
+// (each TU keeps its own independent copy -- this project's own established "independent copy rather
+// than a shared header" discipline for test code, named in test_provider_http_client.cpp's own top
+// comment) -- reused here via schema::json_schema_of<T>() rather than a hand-typed literal.
+struct ForecastDay {
+    std::string condition;
+    double high_f;
+    double low_f;
+};
+AE_JSON_SCHEMA(ForecastDay, condition, high_f, low_f)
+
+struct WeatherReport {
+    std::string location;
+    std::vector<ForecastDay> forecast;
+    std::optional<std::string> alert;
+};
+AE_JSON_SCHEMA(WeatherReport, location, forecast, alert)
 
 }  // namespace
 
@@ -403,6 +456,201 @@ int main() {
                       "E-STREAM-R1: partial_json fragments from separate content_block_delta events "
                       "concatenate into valid JSON");
                 check((*updates)[2].is_final, "E-STREAM-R1: the last update is marked is_final");
+            }
+        }
+    }
+
+    // ---- E1: multi-turn conversation round trip (system + user -> assistant tool_use -> tool reply ->
+    // user) -- proves the tool-reply message correctly becomes wire role "user" with a tool_result
+    // block, sitting correctly IN SEQUENCE alongside the other turns, not merely in isolation ----------
+    {
+        ChatRequest req;
+        req.messages.push_back(text_message(role::system, "You are a weather assistant."));
+        req.messages.push_back(text_message(role::user, "what's the weather in Seattle?"));
+        req.messages.push_back(tool_call_message("call-1", "get_weather", R"({"location":"Seattle"})"));
+        req.messages.push_back(tool_result_message("call-1", "58F and cloudy"));
+        req.messages.push_back(text_message(role::user, "should I bring an umbrella?"));
+        ChatClientCapabilities caps;  // prompt_caching = false -- plain system string, not the focus here
+
+        auto body = build_request_body(req, "claude-sonnet-5", caps, /*stream=*/false);
+        check(body.has_value(), "E1-R9: a 5-message conversation with a tool round-trip assembles without error");
+        if (body) {
+            auto const* system = body->find("system");
+            check(system && system->is_string() && system->as_string() == "You are a weather assistant.",
+                  "E1-R9: the system message is extracted out of messages[] entirely, as E1-R1 already "
+                  "proves in isolation -- here proven alongside a full multi-turn tool exchange");
+            auto const* messages = body->find("messages");
+            check(messages && messages->is_array() && messages->as_array().size() == 4,
+                  "E1-R9: the remaining FOUR non-system turns (question, tool_use, tool_result, "
+                  "follow-up) all appear in messages[], in order");
+            if (messages && messages->as_array().size() == 4) {
+                auto const& arr = messages->as_array();
+                check(arr[0].find("role")->as_string() == "user", "E1-R9: turn 1 (the question) is role 'user'");
+                check(arr[1].find("role")->as_string() == "assistant",
+                      "E1-R9: turn 2 (the tool call) is role 'assistant'");
+                auto const* t2content = arr[1].find("content");
+                check(t2content && t2content->is_array() && t2content->as_array().size() == 1 &&
+                          t2content->as_array().front().find("type")->as_string() == "tool_use",
+                      "E1-R9: turn 2's content is a single tool_use block");
+                check(arr[2].find("role")->as_string() == "user",
+                      "E1-R9: turn 3 (the tool reply) becomes wire role 'user' -- Anthropic's own "
+                      "tool_result-as-user-message shape -- sitting correctly BETWEEN the tool_use turn "
+                      "and the follow-up user turn, not appended out of order at the end");
+                auto const* t3content = arr[2].find("content");
+                check(t3content && t3content->is_array() && t3content->as_array().size() == 1 &&
+                          t3content->as_array().front().find("type")->as_string() == "tool_result" &&
+                          t3content->as_array().front().find("tool_use_id")->as_string() == "call-1",
+                      "E1-R9: turn 3's tool_result block correlates back to turn 2's tool_use id");
+                auto const* t3text = t3content->as_array().front().find("content");
+                check(t3text && t3text->as_string() == "58F and cloudy",
+                      "E1-R9: the tool reply's own text content is preserved exactly inside the "
+                      "tool_result block");
+                check(arr[3].find("role")->as_string() == "user",
+                      "E1-R9: turn 4 (the follow-up) is an ordinary trailing user message, correctly "
+                      "AFTER the tool exchange, not interleaved incorrectly with it");
+            }
+        }
+    }
+
+    // ---- E1: a complex/nested args_schema_json passes through translate_tool completely unchanged -----
+    {
+        ToolDescriptor t;
+        t.name = "book_flight";
+        t.description = "Book a flight with multiple passengers and stops";
+        t.args_schema_json = R"({"type":"object","properties":{)"
+            R"("passengers":{"type":"array","items":{"type":"object","properties":{)"
+            R"("name":{"type":"string"},"age":{"type":"integer"},)"
+            R"("seat_pref":{"type":"object","properties":{"aisle":{"type":"boolean"},)"
+            R"("window":{"type":"boolean"}}}},"required":["name"]}},)"
+            R"("legs":{"type":"array","items":{"type":"object","properties":{)"
+            R"("from":{"type":"string"},"to":{"type":"string"}},"required":["from","to"]}}},)"
+            R"("required":["passengers","legs"]})";
+
+        auto wire = translate_tool(t, /*cache_this_one=*/false);
+        check(wire.has_value(), "E1-R10: a deeply nested args schema (the SAME nested shape "
+                                 "test_openai_chat_client_translation.cpp's D3-R3 case proves for that "
+                                 "backend) translates without error here too");
+        if (wire) {
+            auto const* schema_v = wire->find("input_schema");
+            check(schema_v != nullptr, "E1-R10: input_schema present (flat, no 'function' wrapper, as "
+                                        "E1-R4 already establishes)");
+            if (schema_v) {
+                auto original_parsed = json::parse(t.args_schema_json);
+                check(original_parsed.has_value(), "E1-R10: the original nested schema itself parses");
+                if (original_parsed) {
+                    check(json::dump(*schema_v) == json::dump(*original_parsed),
+                          "E1-R10: the nested schema survives translate_tool byte-for-byte, unchanged -- "
+                          "no client-side reshaping of a caller's declared JSON Schema");
+                }
+            }
+        }
+    }
+
+    // ---- E4: with 3+ tools and prompt_caching=true, cache_control appears ONLY on the LAST tool --------
+    // E4-R1 already proves the single-tool case; this proves the placement RULE (last, not first/middle)
+    // actually holds once there is more than one tool to place it wrong on.
+    {
+        ChatRequest req;
+        req.messages.push_back(text_message(role::user, "hi"));
+        ToolDescriptor t1;
+        t1.name = "tool_one";
+        t1.description = "first";
+        t1.args_schema_json = R"({"type":"object","properties":{}})";
+        ToolDescriptor t2;
+        t2.name = "tool_two";
+        t2.description = "second";
+        t2.args_schema_json = R"({"type":"object","properties":{}})";
+        ToolDescriptor t3;
+        t3.name = "tool_three";
+        t3.description = "third";
+        t3.args_schema_json = R"({"type":"object","properties":{}})";
+        req.tools = {t1, t2, t3};
+        ChatClientCapabilities caps;
+        caps.prompt_caching = true;
+
+        auto body = build_request_body(req, "claude-sonnet-5", caps, /*stream=*/false);
+        check(body.has_value(), "E4-R2: a 3-tool request with prompt_caching declared assembles without error");
+        if (body) {
+            auto const* tools = body->find("tools");
+            check(tools && tools->is_array() && tools->as_array().size() == 3, "E4-R2: all three tools present");
+            if (tools && tools->as_array().size() == 3) {
+                auto const& arr = tools->as_array();
+                check(arr[0].find("cache_control") == nullptr,
+                      "E4-R2: the FIRST tool carries no cache_control breakpoint");
+                check(arr[1].find("cache_control") == nullptr,
+                      "E4-R2: the MIDDLE tool carries no cache_control breakpoint either");
+                check(arr[2].find("cache_control") != nullptr,
+                      "E4-R2: only the LAST tool carries the cache_control breakpoint -- the stable-"
+                      "prefix placement 004 §8 Q2 names, never repeated on every tool in the list");
+            }
+        }
+    }
+
+    // ---- E1: a response with text AND multiple tool_use blocks, ARBITRARILY interleaved -- order proof --
+    // Unlike OpenAI's fixed "text field, then a separate tool_calls array" shape (proven in
+    // test_openai_chat_client_translation.cpp's D1-R9), Anthropic's content[] is a single ordered array
+    // that can genuinely interleave text and tool_use blocks in any order the model chooses -- this
+    // proves translate_response_block's per-block dispatch preserves that exact wire order.
+    {
+        auto parsed = json::parse(R"({
+            "type":"message","role":"assistant",
+            "content":[
+                {"type":"tool_use","id":"call-1","name":"get_weather","input":{"city":"Seattle"}},
+                {"type":"text","text":"and also,"},
+                {"type":"tool_use","id":"call-2","name":"get_forecast","input":{"days":3}},
+                {"type":"text","text":"here's the forecast."}
+            ]
+        })");
+        check(parsed.has_value(), "E1-R11: literal interleaved text+tool_use wire JSON parses");
+        if (parsed) {
+            auto resp = parse_message_response(*parsed);
+            check(resp.has_value(), "E1-R11: an interleaved text+tool_use response parses");
+            if (resp) {
+                check(resp->message.content.size() == 4, "E1-R11: all four blocks translate to content items");
+                if (resp->message.content.size() == 4) {
+                    auto const* i0 = std::get_if<ToolCall>(&resp->message.content[0].value);
+                    auto const* i1 = std::get_if<Text>(&resp->message.content[1].value);
+                    auto const* i2 = std::get_if<ToolCall>(&resp->message.content[2].value);
+                    auto const* i3 = std::get_if<Text>(&resp->message.content[3].value);
+                    check(i0 && i0->call_id == "call-1",
+                          "E1-R11: item 0 is the FIRST tool_use, matching wire position 0");
+                    check(i1 && i1->text == "and also,", "E1-R11: item 1 is text, matching wire position 1");
+                    check(i2 && i2->call_id == "call-2",
+                          "E1-R11: item 2 is the SECOND tool_use, matching wire position 2");
+                    check(i3 && i3->text == "here's the forecast.",
+                          "E1-R11: item 3 is text, matching wire position 3 -- the exact wire ordering is "
+                          "preserved end to end, including two tool_use blocks separated by text");
+                }
+            }
+        }
+    }
+
+    // ---- E5: full OutputSchema<T> pipeline -- a REAL compiled schema, NO additionalProperties forced ---
+    {
+        ChatRequest req;
+        req.messages.push_back(text_message(role::user, "what's the forecast?"));
+        req.output_schema_json = schema::json_schema_of<WeatherReport>();
+        ChatClientCapabilities caps;
+        caps.max_output_tokens = 2048;
+
+        auto body = build_request_body(req, "claude-sonnet-5", caps, /*stream=*/false);
+        check(body.has_value(), "E5-R2: a request carrying a REAL compiled OutputSchema<T> assembles without error");
+        if (body) {
+            auto const* oc = body->find("output_config");
+            auto const* format = oc ? oc->find("format") : nullptr;
+            auto const* schema_v = format ? format->find("schema") : nullptr;
+            check(schema_v && schema_v->is_object(), "E5-R2: output_config.format.schema present");
+            if (schema_v) {
+                check(schema_v->find("additionalProperties") == nullptr,
+                      "E5-R2: unlike Phase D's OpenAI backend (D4-R3), a REAL compiled schema is NOT "
+                      "forced to carry additionalProperties:false here -- the same documented per-backend "
+                      "decision E5-R1 already proves against a hand-typed schema, now proven against the "
+                      "actual compiled-schema pipeline instead");
+                auto const* props = schema_v->find("properties");
+                auto const* forecast_prop = props ? props->find("forecast") : nullptr;
+                check(forecast_prop && forecast_prop->find("items") != nullptr,
+                      "E5-R2: the compiled schema's nested array-of-objects field ('forecast': "
+                      "ForecastDay[]) survives translation unchanged");
             }
         }
     }
