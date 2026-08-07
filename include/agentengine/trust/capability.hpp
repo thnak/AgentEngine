@@ -369,6 +369,17 @@ template <class T>
            cap_covers(parent.file_count_cap, requested.file_count_cap);
 }
 [[nodiscard]] inline bool subsumes_payload(cap::NetOut const& parent, cap::NetOut const& requested) {
+    // Code-review fix (2026-08-07): an empty `host_allowlist` means "unrestricted" ONLY as the
+    // widest/kind-only shape `capability_from_kind` produces for `contains_kind`-only callers (that
+    // function's own comment: "Appropriate ONLY for kind-only-checking callers... real subsumption
+    // needs a fully-parameterized Capability"). Through THIS function -- the one `attenuate()`/
+    // `contains()` actually use -- an empty REQUESTED allowlist must mean "asking for unrestricted
+    // access" and be rejected against any parent that isn't itself unrestricted, mirroring
+    // `method_restrictions`' already-correct rule three lines below. Previously the loop below was a
+    // no-op on an empty request and fell through to `return true`, so `attenuate()` could derive an
+    // unrestricted-host NetOut from a parent scoped to exactly one host -- a real I2 capability-
+    // widening bug, not merely a missing edge case.
+    if (!parent.host_allowlist.empty() && requested.host_allowlist.empty()) return false;
     for (auto const& host : requested.host_allowlist) {
         if (std::find(parent.host_allowlist.begin(), parent.host_allowlist.end(), host) ==
             parent.host_allowlist.end()) {
@@ -388,6 +399,10 @@ template <class T>
     return true;
 }
 [[nodiscard]] inline bool subsumes_payload(cap::NetListen const& parent, cap::NetListen const& requested) {
+    // Code-review fix (2026-08-07): identical widening hole and identical fix as NetOut above -- an
+    // empty (unrestricted) requested port_allowlist was trivially subsumed by any parent, including
+    // one scoped to a single port.
+    if (!parent.port_allowlist.empty() && requested.port_allowlist.empty()) return false;
     for (auto port : requested.port_allowlist) {
         if (std::find(parent.port_allowlist.begin(), parent.port_allowlist.end(), port) ==
             parent.port_allowlist.end()) {

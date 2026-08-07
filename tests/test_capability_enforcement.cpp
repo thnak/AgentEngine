@@ -109,6 +109,33 @@ int main() {
                   "C4: NetOut request for exactly the granted host is allowed");
         AE_CHECK(!net_root.contains(cap::NetOut{{"evil.example:443:https"}, std::nullopt, {}}),
                   "C4: NetOut request for a host NOT in the allowlist is denied");
+
+        // Code-review fix (2026-08-07): an EMPTY (unrestricted) request must NOT be trivially
+        // subsumed by a parent scoped to one specific host -- this was a real I2 capability-widening
+        // bug (subsumes_payload's loop was a no-op on an empty requested.host_allowlist, so it fell
+        // through to `return true`). Positive control below proves attenuate() to a real, narrower
+        // NetOut still works (the fix didn't just make everything fail closed).
+        AE_CHECK(!net_root.contains(cap::NetOut{{}, std::nullopt, {}}),
+                  "R-C4a: an unrestricted (empty-allowlist) NetOut request is DENIED against a "
+                  "single-host parent -- attenuate() must not be able to derive unrestricted "
+                  "network access from a narrowly-scoped grant");
+        auto net_attenuated = net_root.attenuate({Capability{cap::NetOut{{}, std::nullopt, {}}}});
+        AE_CHECK(!net_attenuated.has_value(),
+                  "R-C4a: attenuate() to an unrestricted NetOut is rejected outright, not silently "
+                  "narrowed");
+        auto net_attenuated_ok =
+            net_root.attenuate({Capability{cap::NetOut{{"api.search.example:443:https"}, std::nullopt, {}}}});
+        AE_CHECK(net_attenuated_ok.has_value(),
+                  "R-C4a positive control: attenuate() to the SAME single host still succeeds -- "
+                  "the fix denies unrestricted requests, not all requests");
+
+        // Identical widening hole and identical fix for NetListen's port_allowlist.
+        auto listen_root = CapabilitySet::grant_root({Capability{cap::NetListen{{8080}}}});
+        AE_CHECK(listen_root.contains(cap::NetListen{{8080}}),
+                  "R-C4b positive control: NetListen request for exactly the granted port is allowed");
+        AE_CHECK(!listen_root.contains(cap::NetListen{{}}),
+                  "R-C4b: an unrestricted (empty-allowlist) NetListen request is DENIED against a "
+                  "single-port parent");
     }
 
     // ---- C5 / R-C5: per-invocation bind + revoke, including a stashed copy ---------------------
