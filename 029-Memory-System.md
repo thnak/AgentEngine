@@ -122,6 +122,143 @@ standing of a `UserStated` one — see §6.
   is keyword arithmetic or vector similarity — swapping the plugin never changes the agent-facing
   shape, only the ranking quality and the determinism guarantee (§9 G6).
 
+## 5a. Knowledge corpora — shared and read-only, a different object from memory
+
+Everything above is about **memory**: a principal's own facts, private, writable, sourced from
+extraction or the agent's own notes. A **knowledge corpus** — product docs, a wiki, a codebase, a
+support KB — is a structurally different object and does not fit `/memory`'s model:
+
+- **Operator-populated, not extracted.** No `ContextProvider.on_turn_end` writes it; it is loaded
+  the same way a skill is (009 §4's discover/verify/approve pipeline, or a plain operator sync job),
+  never a byproduct of a conversation.
+- **Shared by design, not per-principal.** It is mounted read-only at `/knowledge/<corpus>` (025
+  §3) — the identical pattern `/skills/<name>` already uses for a read-only, operator-loaded,
+  multi-principal-visible mount — rather than scoped one-per-principal like `/memory` (§2).
+  Cross-principal visibility here is the intended default, not the adversarial misconfiguration §9
+  G5 tests against for memory specifically.
+- **Retrieval reuses §5's exact mechanism, pointed at a different mount.** Default keyword/tag
+  ranking or an `ae:memory`-shaped vector upgrade, served the same way (`ContextContribution`
+  message injection or an on-demand `recall`/`search` tool) — no new provider kind, no new plugin
+  world. The only things that differ from §5 are the mount and the sharing default.
+- **No `MemoryOrigin` (§3).** A knowledge-corpus item has no principal, no run, no turn to attribute
+  to — it is provenanced as `origin: knowledge-corpus, corpus: <id>` instead, and is tainted external
+  content exactly like retrieved memory (§6) since it still arrived from outside the current turn.
+
+This closes the gap between 009 §8's read-only shared mount pattern (skills) and §2's private
+per-principal pattern (memory): a knowledge corpus is the shared-read-only case applied to
+retrieval instead of instructions, using primitives both sections already define.
+
+## 5b. Ingestion — chunking is a pluggable choice, not a fixed answer
+
+Populating `/knowledge/<corpus>` (§5a) from a source document is a pipeline — **discover → extract
+→ chunk → (optional) contextualize → (optional) embed → write** — and every stage reuses a
+mechanism this spec already has; none is new plumbing.
+
+- **Extract**: 009 §7's document-extraction plugin family turns a source file into text or structured
+  fields. Which tier and which downstream path depends on the document's *shape*, not just its file
+  format — detailed in §5d.
+- **Chunk**: a new `ae:codec` plugin candidate (009 §2's world already covers "content
+  transformation: parse, extract, transcode, tokenize" — chunking is exactly this; added to 009 §7's
+  table). **No single strategy is fixed by this spec.** The evidence doesn't converge on one winner:
+  chunking-strategy choice swings recall by up to 9 points on identical data, and two independently
+  run benchmarks *disagree* on whether recursive or semantic chunking wins
+  (`docs/research/2026-08-05-rag-chunking-and-ingestion.md` §2). The engine ships one default —
+  recursive/structure-aware, token-bounded, ~400-512 tokens at 10-20% overlap, the one configuration
+  corroborated as a reasonable *starting point* across every source checked — and treats fixed-size,
+  sliding-window, semantic/embedding-boundary, and contextual (below) chunking as **swappable
+  plugins implementing the same shape**, exactly the discipline §5 already applies to retrieval
+  ranking (keyword-arithmetic default, vector as an upgrade, identical agent-facing shape either
+  way). This is deliberate: a developer picks the strategy that fits their corpus rather than the
+  engine forcing one answer the cited benchmarks show can lose by a double-digit recall margin on
+  the wrong corpus.
+- **Determinism split, mirroring §5's rule.** Structural chunking (recursive/fixed/sliding-window/
+  structure-aware) is a pure function of `{document content, chunking config}` — no network or model
+  call, replayable, satisfies §9 G1 unmodified. **Contextual or semantic chunking calls a
+  `ChatClient` or embedding model** (to generate chunk-context text or find semantic breakpoints) and
+  must be attributed, budgeted, and recorded exactly like §5's embedding call; like vector retrieval,
+  its determinism guarantee is explicitly **waived**, not silently dropped, per §9 G6's pattern.
+- **Contextualize (optional)**: Anthropic's Contextual Retrieval method — prepending 50-100 tokens of
+  document-situating context to each chunk before embedding/indexing, measured at up to 49% fewer
+  retrieval failures combined with a lexical (BM25-class) index, 67% with reranking added
+  (`docs/research/2026-08-05-rag-chunking-and-ingestion.md` §2). This is a corpus-ingestion-time
+  model call, same attribution rule as above — not free (Anthropic's own figure: roughly $1 per
+  million document tokens, even with prompt caching) — and is explicitly **not recommended below the
+  corpus size where retrieval is needed at all**: under roughly 200k tokens, §5a's whole retrieval
+  mechanism is unnecessary overhead and the corpus belongs directly in context, the same threshold
+  Anthropic states for its own method.
+- **Embed (optional)**: §5's existing `ae:memory` vector upgrade, unchanged.
+- **Write**: each chunk becomes a corpus item carrying `{source document id, char offset span, chunk
+  index}`. The span is what lets a retrieved chunk attach a `Citation` annotation (003 §1) pointing
+  back to its exact location in the source document — closing a real gap MAF's own design exposes:
+  checked directly against MAF source, only one vendor-specific mode (Azure AI Search's agentic
+  Knowledge Base retrieval) produces structured, machine-checkable citations; everywhere else in MAF
+  (`TextSearchProvider`, Mem0, Foundry memory) citation is an optional `SourceName`/`SourceLink`
+  string folded into prose with a plain-text "please cite" instruction to the model — not
+  machine-checkable. §5/§5a's retrieval path attaches the `Citation` annotation by construction
+  whenever span metadata exists, using a mechanism 003 already defines rather than inventing one.
+
+## 5c. Graph-structured retrieval — a different corpus shape, the same pipeline
+
+A knowledge graph over a corpus (GraphRAG-style: entities, relationships, community summaries,
+grounded in `docs/research/2026-08-05-rag-chunking-and-ingestion.md` §4) is not a new mechanism once
+checked against what §5b already specifies — its indexing pipeline maps onto §5b's stage split
+exactly, one stage at a time:
+
+- **Extract** entities/relationships/claims per chunk — an LLM call, attributed exactly like §5b's
+  contextualize stage.
+- **Cluster** into communities (Leiden or equivalent) — a pure deterministic algorithm over the
+  extracted graph, no model call, satisfying §9 G1/G7's default-path guarantee, the same as
+  structural chunking.
+- **Summarize** each community — an LLM call, attributed, waiving determinism exactly as §5b's
+  contextualize stage does.
+- **Store**: entities, relationships, claims, and community reports as structured `Data` content
+  items (003 §1) in the corpus worktree — no graph database is needed at GraphRAG's own stated
+  working scale (roughly 1k-1M corpus tokens, per the cited source); a heavier graph-store-backed
+  `ae:memory` plugin is the same opt-in-for-scale upgrade §5 already allows for a vector index at
+  larger scale, never a default.
+- **Retrieve**: local search (entity-centric traversal, naturally an on-demand `recall`/`graph_search`
+  tool), global search (community-summary rollup for holistic corpus-wide questions, naturally
+  pre-injected), and DRIFT search (a hybrid) are three more instances of §5's existing "inject vs.
+  on-demand tool" choice — not a new seam.
+
+**No new promotion gate is needed.** G7's split (deterministic default path; attributed,
+budgeted, waived-determinism model-call path) already covers "extraction and summarization are
+model calls, clustering is not" — this is an instance of that gate, not a new one.
+
+**Cost is a real, spec-relevant axis here, not just accuracy.** The cited source measured roughly
+$20-40 per million document tokens to index with full community summarization, against roughly
+$0.50 per million tokens for a variant that skips precomputed summaries and does dual-level
+retrieval over the graph directly, at comparable accuracy on the same query class. This is §5b's
+"no default answer picks a winner" principle again, on a cost axis instead of only a recall axis:
+whether to run the summarization stage at all is exactly the kind of per-corpus, developer-made
+choice the swappable-plugin discipline exists for, not something this spec should fix.
+
+## 5d. Extraction forks on document shape, not file format
+
+`docs/research/2026-08-05-rag-chunking-and-ingestion.md` §5 establishes **three extraction tiers**
+(text-layer, OCR, VLM/neural layout-aware) and five recurring **document shapes**, each of which
+routes to a different downstream path — the file format (`.pdf`, `.docx`, `.xlsx`) picks the parser;
+the *shape* picks what happens to the output:
+
+| Shape | Examples | Tier | Downstream path |
+|---|---|---|---|
+| Prose | Papers, DOCX, wiki pages | 1 (text-layer), preserving reading order/headings | §5b's chunk→embed pipeline; extracted headings become natural chunk boundaries |
+| Slides | PPT | 1, per-slide | One slide (title + body + speaker notes) is a natural chunk unit on its own — no further splitting needed; embedded charts/images need tier 2 or 3 to become retrievable text at all |
+| Grid | Excel, CSV-shaped sheets | 1, structure-preserving | Forks on intent: content meant for semantic search still goes through §5b as Markdown/CSV-shaped chunks; content meant to be *queried* (sums, filters, lookups) belongs in 009 §7's existing SQLite/DuckDB candidate instead — a query tool, not a `recall` call, because it isn't a retrieval problem |
+| Form | Invoices, receipts | 3 (VLM-based field extraction, no per-vendor template) | Output is structured `Data` content (003 §1) matching a declared schema, via 003 §5's structured-output shaping — not a chunk. Bypasses embedding retrieval entirely: a single invoice isn't searched semantically, its fields are looked up, landing in the same structured store as query-intent grid data above |
+| Image | Drawings, blueprints, scanned pages with no text layer | 2 for embedded text, 3 for genuinely visual content (symbols, dimensions, diagram structure) | Whatever tier 2/3 recovers feeds §5b like any other extracted text; tier 3 output here is the least deterministic of the group and always the attributed path |
+
+**Tier 3 carries a real risk beyond accuracy, worth stating as a rule, not just a caveat**: a VLM
+extractor can hallucinate content that never appeared in the source document — that content is model
+output, not document content, the moment it's invented rather than read. It must be provenanced
+distinctly from tier 1/2 output (§3's `MemoryOrigin`/§5a's knowledge-corpus provenance extended with
+a tier marker), never silently merged as if all three tiers were equally literal transcriptions —
+the same authority-laundering hazard §6 already names for `ModelInferred` memory, one stage earlier
+in the pipeline.
+
+No new promotion gate: tier 1/2 extraction satisfies G1/G7's deterministic default path; tier 3
+satisfies G7's attributed/waived path exactly as chunking and graph extraction already do.
+
 ## 6. Serving memory to the model — provenance stays visible
 
 - Retrieved memory is **tainted external content** (003 §2, already 005 §5's rule): it was written
@@ -168,7 +305,9 @@ Items decayed below a threshold are consolidation candidates, never silently gon
   `UserStated` provenance. Positive control included.
 - **G4 (redaction)** — deleting a principal's data removes it from the memory worktree, its
   checkpoints, and unreferenced objects, matching 025 §6 / 005 §6.
-- **G5 (cross-principal isolation)** — N principals with concurrent sessions; no memory item is
+- **G5 (cross-principal isolation)** — scoped to `MemoryItem`s (§2's principal-owned worktree), not
+  §5a's knowledge corpora, whose cross-principal visibility is the intended design, not a
+  misconfiguration this gate tests against. N principals with concurrent sessions; no memory item is
   retrievable outside its owning principal, proven against a deliberately adversarial shared-index
   configuration — an `ae:memory` plugin instance deliberately configured to share one embedding
   index across principals (§5) — not merely asserted.
@@ -176,6 +315,11 @@ Items decayed below a threshold are consolidation candidates, never silently gon
   and against a vector-based `ae:memory` plugin; both satisfy G2–G5 unchanged. G1's determinism is
   explicitly **waived**, not silently dropped, for the vector case, and the waiver itself is recorded
   in the run trace — the same "declared fallback, never a silent one" discipline as 004 §2.
+- **G7 (ingestion determinism and chunking swap)** — structural chunking (§5b's default) given a
+  fixed source document and a fixed chunking config produces byte-identical corpus items across
+  repeated runs, no network call. Swapping to a contextual/semantic chunking plugin changes only
+  chunk boundaries/content and requires G6's identical declared-waiver discipline; the corpus item
+  schema, `Citation` wiring, and downstream retrieval path (§5/§5a) are unchanged by the swap.
 
 ## 10. Open questions
 

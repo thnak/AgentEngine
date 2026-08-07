@@ -250,3 +250,13 @@ a blanket replacement for host-side state everywhere:
 - **No distributed revocation infrastructure** — explicitly out of scope per this ADR's declared
   scope (§0) and the project owner's direction; B3/§8 name the interim answer (use Design B, or
   short-lived Design A tokens) rather than deferring the question silently.
+- **No standing leak-lifecycle instrumentation for cross-process capability handles.** Design B's
+  host-side registry (§3) can accumulate entries for handles a remote peer never releases, and
+  nothing in this ADR specifies a way to see that happening short of an ad hoc investigation.
+  Cloudflare Computer's capnweb RPC boundary — a comparable cross-process capability-stub problem —
+  answers this with a concrete, cheap pattern: an opt-in live counter per capability class
+  (`CAPNWEB_TRACK_STUBS=1`), a debug endpoint exposing it, and a dedicated soak test asserting no
+  unbounded growth under sustained load (`docs/research/2026-08-06-cloudflare-computer-vfs-sandbox-comparison.md`
+  §3). Worth adopting the same shape for `CapabilityRegistry` before the `remote` profile (008 §3)
+  ships — a live entry-count counter plus a soak harness — rather than inventing a different
+  mechanism; not solved here.

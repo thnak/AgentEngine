@@ -51,6 +51,7 @@ session:s-42                     ← root worktree, the session's disk
   /agents/researcher             sub-worktree (branch or share)
   /agents/writer                 sub-worktree
   /skills/<name>                 loaded skill packages, read-only (009 §8)
+  /knowledge/<corpus>            operator-populated document corpus, read-only, shared (029 §5a)
 ```
 
 **Sub-worktrees** exist because a session may run several agents (001 §4). Each is created with a
