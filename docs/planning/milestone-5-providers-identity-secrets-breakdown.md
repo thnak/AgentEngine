@@ -685,19 +685,100 @@ Verification: full build (all targets) and `ctest -j4` (102 tests, including the
 `native_jail_backend_windows` OOM-classification flake (unrelated — none of this phase's files touch
 the native_jail backend).
 
-### Phase J — The milestone's central falsifiable claims (roadmap exit criterion)
+### Phase J — The milestone's central falsifiable claims (roadmap exit criterion) — **DONE**
 
-- **J1 (004 §7 G1).** The same agent, unchanged, runs on all three conformers built in Phases D/E/G
-  (OpenAI-compatible, Anthropic, recorded-replay) — behavioral differences limited to those the
-  capability table predicts, every applied fallback (Phase B5) appears in the trace.
-- **J2 (018 §7 G2, secret hygiene).** A canary secret is planted and every persisted artifact this
-  milestone's mechanisms actually produce is scanned — checkpoints (real, M4), recordings (Phase G),
-  error strings/logs from Phases D/E/F — zero occurrences. Audit payloads/crash dumps/plugin memory
-  dumps named narrower than the full gate text (no audit sink or crash-dump pipeline exists yet),
-  matching decision 9's I1 scoping.
-- **J3 (004 §7 G2, secondary but load-bearing for J1's own backends).** Cancellation mid-stream
-  (Phase C2) releases the connection within a bounded time, no orphaned socket or partial state, under
-  ASan + the existing leak gate.
+- **J1 (004 §7 G1).** Done, scoped at the layer 004 itself owns. "Agent" is proven at the
+  `ChatClient`-plane call site, not by instantiating a real `ae::AgentSession<...>` actor — found and
+  named honestly while building this: `AgentSession<ChatClientT>::chat_client_` has no public setter
+  and no non-default constructor (`initialize()`'s own comment: "the mock ChatClient's own canned
+  behavior is already baked in by construction rather than passed through TestKit"), and
+  `quark::TestKit<A>` only ever default-constructs its actor (`testkit.hpp:313`) — Quark is a submodule
+  this project never patches in-tree, so there is no way to forward a runtime-configured
+  `OpenAIChatClient<Store>`/`AnthropicChatClient<Store>` (neither default-constructible) through
+  `TestKit` today. Wiring that is real, invariant-adjacent follow-up work (CLAUDE.md: hot-path/actor
+  surfaces go through design → red-team → prove → judge, not an ad-hoc change under a proof phase's
+  own budget), named as a residual below rather than built ad hoc. `tests/test_chat_client_cross_
+  backend_parity.cpp` (10 checks, J1-R1..R10) instead proves the claim at 004's own scope: ONE
+  unchanged call site (`run_it`), executed verbatim against Phase D's `OpenAIChatClient` and Phase E's
+  `AnthropicChatClient` (both over real local TLS servers) and Phase G's `ReplayChatClient` — identical
+  caller-visible reply text from all three, `ChatResponse::model`/`Usage` differing EXACTLY as each
+  backend's own canned response was independently configured (predicted metadata, not protocol
+  drift), and `select_output_schema_strategy` picking a DIFFERENT, correctly-predicted strategy per
+  backend (native / tool_shaped / parse_and_repair) from each one's own declared capabilities — the
+  concrete, testable form of "capability-table-predicted differences." A fourth leg composes
+  `FailoverChatClient<OpenAIChatClient<Store>, AnthropicChatClient<Store>>` with a primary pointed at a
+  real closed loopback port (a genuine connection failure, not a synthetic double) and a genuinely
+  succeeding fallback: `ChatResponse::fallback_tier == 1` end to end through two REAL backend
+  conformers — the trace's response-metadata half (Phase F3) proven beyond `test_failover_chat_
+  client.cpp`'s synthetic doubles.
+- **J2 (018 §7 G2, secret hygiene).** Done, scoped per decision 9 (same discipline as I1's sandbox-
+  workspace leg): only the artifacts this milestone's own mechanisms actually produce are scanned —
+  logs/audit/crash dumps/plugin memory dumps have no real sink anywhere in this tree yet (016/020,
+  M8/M9), named out of scope rather than silently assumed covered. `tests/test_secret_hygiene_
+  canary_scan.cpp` (6 checks, J2-R1..R6) plants a canary secret and, per CLAUDE.md's "a test that
+  cannot fail proves nothing," pairs every negative scan with a positive control: J2-R1/R2 capture the
+  raw bytes a real local TLS server received and confirm the canary genuinely rode over the wire as a
+  live credential (Authorization/x-api-key), so the scans that follow are not vacuous. J2-R3: the
+  canary never appears in a serialized `ChatCallRecording` (Phase G) — `ChatRequest` carries only a
+  `SecretRef` name, never a resolved `SecretLease` value. J2-R4: a capability-denial error's
+  message/code never carries the secret (denial happens before `SecretStore::resolve()` is ever
+  reached, Phase D3). J2-R5: `SecretLease::to_redacted_string()` is unconditionally `"***"` — even a
+  future bug that mistakenly serialized a lease directly could not leak the value through the type's
+  own string form. J2-R6 (checkpoints, M4): scans the REAL encoded snapshot bytes of an
+  `AgentSessionRecord` (via a genuine `save_agent_session_snapshot`/`InMemoryStore` round trip) for the
+  canary — zero occurrences, verified against the record's own field list
+  (session_id/principal_id/principal_tenant_id/timestamps/run_counter/turn_index/open_interactions,
+  agent_session.hpp; `Interaction`, interaction.hpp) rather than merely inferred from reading the
+  struct: no field anywhere in that schema is capable of carrying request/response/secret content.
+- **J3 (004 §7 G2).** Done, and narrower than the gate's full text — a real, previously-unnoted gap
+  found while building this proof, named rather than silently claimed covered.
+  `tests/test_chat_client_stream_cancellation_bounded.cpp` (traced finding, quantified in J3-R3..R5)
+  found that `run_stream_worker` calls `perform_provider_https_exchange(..., /*stop_token=*/
+  std::nullopt, ...)` at BOTH the OpenAI and Anthropic `chat_stream()` call sites — dropping the
+  consumer's `stream<T>` cancels the RING (`core/stream.hpp`) but has no wiring back into the
+  underlying HTTP fetch's own cancellation at all. Proven quantitatively against a server that drips
+  its SSE body out over ~900ms: cancelling the stream ~20ms after creating it does NOT shorten the
+  connection's real lifetime by any measurable amount — the server's entire slow send completes
+  successfully regardless (J3-R3), and the connection's actual teardown lands hundreds of ms after the
+  cancellation moment, tracking the SERVER's own unrelated pacing rather than the client's cancel call
+  (J3-R4/R5). The COMMON case is unaffected in practice: `chat_stream()` performs one complete blocking
+  fetch before any item is ever pushed onto the ring (Phase D2/C's own named gap — no incremental read
+  loop yet), so against an ordinary fast-responding provider the connection is already fully read and
+  closed before the consumer could possibly cancel anything — measured directly at ~130ms end-to-end
+  on loopback (J3-R1/R2), not just inferred. Phase C2's own mid-flight cancellation IS real and bounded
+  (`test_provider_http_client.cpp`'s P2 case, ~440ms, `std::stop_token`-driven) — cited, not
+  reproduced — but that bound is reachable only by a caller that threads a live stop_token through
+  (`HostEgressProxy::fetch`, ADR-011's own call site); `chat_stream()` simply isn't such a caller
+  today. Wiring the ring's cancellation into a stop_token passed down to the fetch is real, concrete
+  follow-up work, named as a residual below (an invariant-adjacent, hot-path concurrency change that
+  belongs behind CLAUDE.md's design → red-team → prove → judge cycle, not an ad-hoc patch under this
+  proof phase's own budget). "Checked under ASan": this file's own behavioral claims hold under the
+  project's ordinary build; the ASan half of the gate is satisfied by CI's existing ASan job running
+  the full suite (this file included), not a separate sanitizer-specific invocation here.
+
+Verification: full build (all targets) and `ctest -j4` (108 tests, including the three new files
+above) both clean except the same pre-existing `native_jail_backend_windows` OOM-classification flake
+(unrelated — none of this phase's files touch the native_jail backend).
+
+**Residuals surfaced by this phase, not actioned here (real, scoped follow-up work, not silently
+dropped):**
+
+- **`AgentSession<ChatClientT>` cannot host a non-default-constructible `ChatClient` conformer.**
+  `chat_client_` has no setter and `quark::TestKit<A>` only default-constructs its actor — a real
+  backend built for Phase D/E has never actually been driven through a live `AgentSession` turn loop.
+  Closing this needs either an additive `AgentSession` constructor plus a Quark-side (upstream)
+  `TestKit` enhancement to forward constructor args, or a different wiring shape entirely — a real
+  design question, not a mechanical gap, and belongs behind the full review cycle given `AgentSession`
+  is this project's actor-boundary invariant surface (I1-I8).
+- **`chat_stream()`'s underlying fetch has no cancellation wiring from the consumer.** J3's own
+  finding — dropping the stream does not release a genuinely in-flight connection within any bounded
+  time today, only the coarse per-iteration `kIoTimeoutMs` (10s) stall detector eventually would. Real
+  fix: thread a `stop_token` from `stream_producer<T>`/the ring's own cancellation signal down into
+  `perform_provider_https_exchange`'s read loop, mirroring Phase C2's already-proven mechanism at the
+  raw HTTP-exchange layer. Matters more once Phase C's other named gap (no incremental read loop) is
+  closed — today's non-incremental fetch means most real responses finish before cancellation would
+  even matter in practice, which is exactly why this was findable only by deliberately testing a slow
+  response, not by any complaint against ordinary use.
 
 ## What's explicitly deferred past M5
 
@@ -736,6 +817,15 @@ the native_jail backend).
   by two parallel subagents against that same doc. Also still flags an untested llama.cpp
   structured-output wire-shape compatibility risk (Phase D4's `translate_output_schema` may not match
   llama.cpp's simpler `response_format` shape) — not built, no live llama.cpp instance available.
+- **`AgentSession<ChatClientT>` wiring a real, non-default-constructible `ChatClient` conformer**
+  (found in Phase J1) — needs either an additive `AgentSession` constructor plus an upstream Quark
+  `TestKit` change to forward actor constructor args, or a different wiring shape; a real design
+  question belonging behind the full review cycle, not built ad hoc under J1's own proof budget.
+- **`chat_stream()`'s underlying HTTP fetch has no cancellation wired from the consumer** (found in
+  Phase J3, quantified) — `stop_token=std::nullopt` at both the OpenAI and Anthropic call sites;
+  dropping the stream does not bound release time for a genuinely in-flight connection today. Real fix
+  named, not built: thread the ring's cancellation into a stop_token passed down to `perform_provider_
+  https_exchange`, mirroring Phase C2's already-proven mechanism.
 
 ## Handover & kick-off
 

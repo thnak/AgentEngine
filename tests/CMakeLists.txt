@@ -476,6 +476,34 @@ if(AGENTENGINE_WITH_HTTPS)
     agentengine::core agentengine::provider_http_client agentengine_warnings
     MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
   add_test(NAME test_anthropic_chat_client_live COMMAND test_anthropic_chat_client_live)
+
+  # ---- Milestone 5 Phase J1 (roadmap exit criterion, 004 §7 G1): the same unchanged call site, run
+  # against real OpenAI/Anthropic backends over local TLS servers, a ReplayChatClient, and a
+  # FailoverChatClient<real, real> composition with a genuinely failing primary.
+  add_executable(test_chat_client_cross_backend_parity test_chat_client_cross_backend_parity.cpp)
+  target_link_libraries(test_chat_client_cross_backend_parity PRIVATE
+    agentengine::core agentengine::provider_http_client agentengine_warnings
+    MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+  add_test(NAME test_chat_client_cross_backend_parity COMMAND test_chat_client_cross_backend_parity)
+
+  # ---- Milestone 5 Phase J2 (roadmap exit criterion, 018 §7 G2): plant a canary secret, scan every
+  # persisted artifact this milestone's mechanisms actually produce (recordings, checkpoints,
+  # error-path text) for zero occurrences, paired with a positive control proving the secret really
+  # was exercised as a live credential.
+  add_executable(test_secret_hygiene_canary_scan test_secret_hygiene_canary_scan.cpp)
+  target_link_libraries(test_secret_hygiene_canary_scan PRIVATE
+    agentengine::core agentengine::provider_http_client agentengine_warnings
+    MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+  add_test(NAME test_secret_hygiene_canary_scan COMMAND test_secret_hygiene_canary_scan)
+
+  # ---- Milestone 5 Phase J3 (roadmap exit criterion, 004 §7 G2): the common-case (fast provider)
+  # bounded-release proof, plus a real, quantified finding that chat_stream()'s own fetch has no
+  # stop_token wired to the consumer's cancellation -- named honestly, not silently claimed complete.
+  add_executable(test_chat_client_stream_cancellation_bounded test_chat_client_stream_cancellation_bounded.cpp)
+  target_link_libraries(test_chat_client_stream_cancellation_bounded PRIVATE
+    agentengine::core agentengine::provider_http_client agentengine_warnings
+    MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+  add_test(NAME test_chat_client_stream_cancellation_bounded COMMAND test_chat_client_stream_cancellation_bounded)
 endif()
 
 # ---- RecordedChatClient fixture player (test-only) ---------------------------------------------
