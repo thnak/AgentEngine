@@ -216,6 +216,10 @@ public:
         // monotonic counter (never wall-clock — 001 §7/I5), the identity 019 §3's idempotency-key
         // derivation and this milestone's own Phase D checkpoint records both need.
         run_counter_ += 1;
+        // Milestone 5 Phase F4 (004 §5: "per-run TokenBudget<N>"). A fresh accumulator for THIS run
+        // -- the budget is per-run, not per-session-lifetime, so a prior run's consumption must not
+        // carry over and silently tighten this one's ceiling.
+        run_tokens_consumed_ = 0;
         effect_context_.run_id     = session_id_ + ":run:" + std::to_string(run_counter_);
         // 001 §2: "Turn: A segment of a run's coroutine between model calls." This milestone's
         // turn loop (still M1's own scope: no tool-call loop, one model call per run) makes exactly
@@ -255,6 +259,29 @@ public:
             co_return;
         }
 
+        // Milestone 5 Phase F4 (004 §5: "per-run TokenBudget<N> -- exceeded -> Resource failure at
+        // the turn boundary"). Counts input_tokens + output_tokens: those two are what every
+        // backend's own wire usage report actually bills for. `cached_input_tokens` is a discount
+        // on part of the input total already counted (a cache HIT, not additional consumption);
+        // `reasoning_tokens`/`cache_write_tokens` are provider-specific sub-costs folded into what
+        // a provider already bills as output/input (docs/research/2026-08-07-provider-metadata-and-
+        // sampling-params-survey.md) -- adding either again here would double-count against the same
+        // ceiling. Enforced AFTER the call, never before: this milestone's turn loop makes exactly
+        // one model call per run (turn_index is always 0, no tool-call loop exists yet, see the
+        // comment above), so a pre-call check against an accumulator that is always 0 at call time
+        // would be validating a scenario that can't happen yet (CLAUDE.md).
+        run_tokens_consumed_ += response->usage.input_tokens + response->usage.output_tokens;
+        if (token_budget_.has_value() && run_tokens_consumed_ > *token_budget_) {
+            // Same fail-closed shape as the two branches above (context-contribution failure,
+            // chat-call failure): never fabricate a successful AgentResponse over budget, and don't
+            // append this turn to history either. `AgentResponse` has no error slot to carry a typed
+            // `Resource` failure through `Ask<StartRun, AgentResponse>`, so "closed" here means what
+            // it already means elsewhere in this handler: never respond. The caller's ask then
+            // resolves via the reply-cell's own "never replied" path (quark/core/testkit.hpp: "failed
+            // by reply-before-teardown if the handler never replied -- never a hang").
+            co_return;
+        }
+
         history_.push_back(response->message);
         // Milestone 4 Phase G3: `TurnView` names exactly the messages THIS turn added -- the input
         // plus the response, both just pushed and therefore contiguous at the tail of `history_`
@@ -282,9 +309,22 @@ public:
     // in by construction rather than passed through TestKit. Named `initialize`, the same verb this
     // project already uses for "make an object ready to run, before capabilities/effects flow"
     // (`MediatedPythonRunner::initialize()`).
-    void initialize(std::string session_id, Principal principal) {
-        session_id_ = std::move(session_id);
-        principal_  = std::move(principal);
+    //
+    // Milestone 5 Phase F4: `token_budget` is ADDITIVE, appended last with a default of
+    // `std::nullopt` (= unbounded, matching `AgentMetadata::token_budget`'s own "nullopt = unbounded"
+    // convention, agent_registry.hpp:60) -- the same "old call sites keep compiling with their old
+    // behavior unchanged" precedent `register_agent<A>()`'s own additive `ChatClientRegistry const*`
+    // parameter set (agent_registry.hpp:489), so every pre-M5 two-argument `.initialize(id,
+    // principal)` call site across `tests/` keeps compiling and stays unbounded, unchanged. The
+    // natural source of this value is a registered agent's compiled `AgentMetadata::token_budget`
+    // (agent_registry.hpp:60, itself compiled from an agent's declared `TokenBudget<N>` policy tag) --
+    // wiring that end-to-end through however a session gets constructed from a registered agent is
+    // left as a named follow-up; this parameter is the `AgentSession`-side mechanism that consumes it.
+    void initialize(std::string session_id, Principal principal,
+                     std::optional<std::uint64_t> token_budget = std::nullopt) {
+        session_id_   = std::move(session_id);
+        principal_    = std::move(principal);
+        token_budget_ = token_budget;
     }
 
     // Milestone 4 Phase C1 (005 §6: "Fork — copy-on-write new session id from a history prefix;
@@ -324,6 +364,11 @@ public:
         open_interactions_.clear();
         interaction_counter_ = 0;
         timer_wakes_ = 0;
+        // Phase F4: per-run, same category as run_counter_ above -- a fork has had no runs of its
+        // own yet, so it starts with no accumulated consumption either. `token_budget_` (the
+        // configured ceiling) is NOT reset here, same reasoning as `chat_client_`/`history_provider_`
+        // above it staying untouched: it is session configuration, not per-run counter state.
+        run_tokens_consumed_ = 0;
     }
 
     // Milestone 4 Phase C2 (005 §6: "Redact — replace content in place with a tombstone carrying
@@ -393,6 +438,13 @@ public:
     // reset between `handle()` calls, so right after a turn completes this still holds that turn's
     // own position, exactly what Phase D1's checkpoint content needs to name.
     [[nodiscard]] std::uint64_t last_turn_index() const noexcept { return effect_context_.turn_index; }
+
+    // Milestone 5 Phase F4 (004 §5) -- the current run's accumulated token count, exposed so a test
+    // can assert the accumulator's own state directly rather than only through the fail-closed
+    // behavior it gates. Reset to 0 at the top of every `handle(Ask<StartRun,...>)` (per-run, not
+    // per-session-lifetime); right after a turn completes this still holds that turn's own total,
+    // the same "not reset until the next handler runs" property `last_turn_index()` above documents.
+    [[nodiscard]] std::uint64_t run_tokens_consumed() const noexcept { return run_tokens_consumed_; }
 
     // Milestone 4 Phase E1 (001 §2: "Entering InputRequired or AuthRequired mints one or more
     // durable Interaction records"). Host-callable, like fork/redact/delete — NOT wired into the
@@ -489,6 +541,11 @@ public:
         open_interactions_.clear();
         interaction_counter_ = 0;
         timer_wakes_     = 0;
+        // Phase F4: this function's own contract above is "every field... reset to its own
+        // fresh-construction default" -- taken literally for both the configured ceiling and its
+        // accumulator, matching every other field in this list.
+        token_budget_         = std::nullopt;
+        run_tokens_consumed_  = 0;
     }
 
 private:
@@ -507,6 +564,10 @@ private:
     EffectContext                                      effect_context_;
     std::chrono::system_clock::time_point              created_at_{};
     std::chrono::system_clock::time_point              updated_at_{};
+    // Milestone 5 Phase F4 (004 §5) -- the configured per-run ceiling (nullopt = unbounded, set via
+    // `initialize()`) and this run's running total (reset at the top of every `handle()`).
+    std::optional<std::uint64_t>                       token_budget_;
+    std::uint64_t                                      run_tokens_consumed_ = 0;
 };
 
 // Save `session`'s narrowed durable record (Phase A4, extended with run position in Phase D1)

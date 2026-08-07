@@ -429,6 +429,68 @@ into the schema, since nothing in the research confirms Anthropic requires or ev
 - **F4.** Per-run `TokenBudget<N>` enforced at the turn boundary → `Resource` failure (decision 7's
   buildable slice of §5).
 
+**Design decisions (2026-08-07, before implementation, IN PROGRESS):**
+
+- `ChatClient` is a concept, never a base class (004 §1, chat_client.hpp's own top comment: "never
+  inherited from on the hot path") — so F1/F2/F3 are template wrappers that themselves conform to
+  `ChatClient`, composing over an `Inner` template parameter, exactly the shape every existing
+  conformer already uses (`OpenAIChatClient<Store>`/`AnthropicChatClient<Store>`), never a
+  virtual/type-erased decorator.
+- **F1+F2 combined into one wrapper**, `ResilientChatClient<Inner>` (new file,
+  `core/resilient_chat_client.hpp`): retry and circuit-breaking are one call-path concern (the breaker
+  must see the outcome of every attempt the retry loop makes; a breaker check gates each attempt before
+  it retries) — two separate wrapper layers would either duplicate the attempt loop or need to leak
+  breaker state between layers. `RetryPolicy`/`BreakerConfig` are plain runtime constructor fields, not
+  compile-time template params: retry timing and breaker thresholds are operational knobs in the same
+  spirit as 004 §5's "pricing tables are configuration, not code," and every existing backend already
+  takes its own operational config (host/port/model) as runtime constructor args, not template
+  parameters. Breaker key is `{provider, model, SecretRef}` per decision 6 — but since one
+  `OpenAIChatClient`/`AnthropicChatClient` instance is already constructed bound to exactly one
+  provider+model+SecretRef triple, wrapping it needs no runtime key/map at all: the wrapper's own
+  single `quark::CircuitBreaker` member IS that key, by construction. Quark's `governance.hpp` is
+  clock-free (`now_ns: std::int64_t`, no hidden syscall) — the wrapper calls `quark::monotonic_now_ns()`
+  at each check site; no `agentengine`-side clock seam existed to reuse (checked: `EffectContext::deadline`
+  is a `std::chrono::steady_clock::time_point` sentinel, converted at the boundary, not threaded through
+  as `now_ns`).
+- **Idempotency key**: `ChatRequest::idempotency_key` (new optional field, appended last) is set once
+  by `ResilientChatClient` from `IdempotencyKey{ctx.run_id, ctx.turn_index, 0, 0}.to_string()`
+  (tool_pipeline.hpp's existing type, reused rather than inventing a second shape) before the first
+  attempt, and never regenerated across retries — that reuse-not-regeneration is what "stable" means
+  here. **Not wired into either backend's HTTP layer**: verified directly against the locally vendored
+  SDK source (openai-dotnet, anthropic-sdk-csharp) that neither documents a client-supplied idempotency
+  header for Chat Completions/Messages — the field exists so a backend can adopt a verified mechanism
+  later without another field-ordering migration, not a claim that one exists today.
+- **F3 as a separate wrapper**, `FailoverChatClient<Primary, Fallback...>` (new file,
+  `core/failover_chat_client.hpp`): tries `Primary`, then each `Fallback` in order, on any error result
+  (matching "explicit policy... never silent" — every attempt is a deliberate configured step, not a
+  retry-shaped implicit fallback). `ChatResponse::fallback_tier` (new field, appended last: 0 = primary
+  answered, N>0 = the Nth fallback did) is the "response metadata" half of 004 §4's gate. Full run-trace
+  recording is explicitly out of scope — no trace sink exists yet (needs 016, M8), the identical scoping
+  Phase B5 already applied to its own output-schema-strategy decision.
+- **F4 lives in `AgentSession`, not a `ChatClient` wrapper**: "per-run" budget enforcement needs to
+  accumulate `Usage` across every turn of ONE run, but a `ChatClient` instance is shared/reused across
+  many sessions and runs (Phase B3: credentials resolve fresh per `chat()` call, nothing is cached
+  per-run) — there is no `run_id`-keyed state a stateless wrapper could hold without a map. `AgentSession`
+  already carries exactly one run at a time (I1: one session, one executor) and already receives
+  `ChatResponse::usage` back from its own `chat_client_.chat()` call in `handle(Ask<StartRun,...>)`
+  (agent_session.hpp:248), so accumulation is a same-actor member (`run_tokens_consumed_`, reset at
+  each new `StartRun`), no new concurrency concern. `AgentMetadata::token_budget`
+  (agent_registry.hpp:60, already compiled by `register_agent<A>()` from the agent's declared
+  `TokenBudget<N>` policy, but never consumed anywhere until now) is threaded in via an ADDITIVE
+  `initialize()` parameter (default `std::nullopt`, matching B6's own "old call sites keep compiling"
+  precedent) rather than a constructor change. **Enforcement point: after the response returns**, not
+  before the call — a pre-call short-circuit is dead code under this milestone's own still-single-turn-
+  per-run scope (turn_index is always 0, no tool-call loop exists yet, named at agent_session.hpp:220-227),
+  so a total that could exceed budget before any call is made cannot yet occur; adding that check now
+  would be validating a scenario that can't happen (CLAUDE.md). On exceeding, `AgentSession` fails
+  closed — never responds (`co_return` without `m.respond(...)`) — the exact same shape the context- and
+  chat-failure branches immediately above it already use; `AgentResponse` has no error slot to carry a
+  typed `Resource` failure through the `Ask<StartRun, AgentResponse>` protocol, so "closed" here means
+  what it already means elsewhere in this handler.
+- Neither F1/F2/F3's mechanisms nor F4 touch the tenant-in-key ADR-track item (004 §5's own flagged
+  residual, decision 6) — that stays explicitly deferred, unactioned by this phase, per the milestone
+  doc's own scoping above.
+
 ### Phase G — Recording and replay (004 §6, decision 8)
 
 - **G1.** Promote the recording mechanism from `RecordedChatClient`'s test-scoped fixture player to

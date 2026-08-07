@@ -66,6 +66,16 @@ struct ChatRequest {  // ae-naming-lint: allow ChatRequest — pre-existing M0 s
     // (agent_registry.hpp's select_output_schema_strategy, Phase B5), not carried here.
     std::optional<std::string> output_schema_json;
     // sampling parameters: elided (see file-top comment).
+    // Milestone 5 Phase F1 (004 §4: "a retried call carries a stable idempotency key so a provider
+    // that supports it does not double-charge or double-execute"). Set once by a retrying wrapper
+    // (`ResilientChatClient`, core/resilient_chat_client.hpp) before its first attempt and reused
+    // verbatim across every retry of the SAME logical call -- never regenerated per attempt, which is
+    // what makes it stable. A plain, backend-agnostic field rather than an HTTP header baked in here:
+    // neither locally vendored SDK (openai-dotnet, anthropic-sdk-csharp) documents a client-supplied
+    // idempotency header for Chat Completions/Messages as of this research (checked directly in
+    // source, not assumed), so no backend wires this into a request header yet -- it exists so one
+    // can, without another field-ordering migration, the moment a verified provider mechanism exists.
+    std::optional<std::string> idempotency_key;
 };
 
 struct ChatResponse {
@@ -80,6 +90,13 @@ struct ChatResponse {
     // served a call. Empty string when a backend doesn't report one (never fabricated from the request's
     // own `model` field -- that's what was ASKED for, not what answered).
     std::string model;
+    // Milestone 5 Phase F3 (004 §4: "Failover... must appear in the trace and in the response
+    // metadata"). 0 = the primary backend answered; N>0 = the Nth fallback in a `FailoverChatClient`'s
+    // configured order answered instead, after the primary (and any earlier fallback) failed. Full
+    // run-trace recording is out of scope here -- no trace sink exists yet (needs 016, M8), the same
+    // scoping Phase B5 already applied to its own output-schema-strategy trace note -- this field is
+    // the "response metadata" half of the gate, real and tested now.
+    std::uint32_t fallback_tier = 0;
 };
 
 struct ChatResponseUpdate {  // ae-naming-lint: allow ChatResponseUpdate — pre-existing M0 scaffolding, reconcile at owning milestone
