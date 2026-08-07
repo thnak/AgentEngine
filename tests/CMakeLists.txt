@@ -438,6 +438,23 @@ if(AGENTENGINE_WITH_HTTPS)
   target_link_libraries(test_provider_http_client PRIVATE
     agentengine::provider_http_client agentengine_warnings MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
   add_test(NAME test_provider_http_client COMMAND test_provider_http_client)
+
+  # ---- Milestone 5 Phase D: OpenAI-compatible ChatClient backend (protocol/openai/chat_client.hpp) --
+  # Translation logic (D1 request/response, D3 tool-schema shaping, D4 structured-output shaping, D2
+  # SSE/chunked-transfer parsing) proven offline against literal wire-format JSON -- no TLS/mbedTLS
+  # dependency needed for this target, only the header + core.
+  add_executable(test_openai_chat_client_translation test_openai_chat_client_translation.cpp)
+  target_link_libraries(test_openai_chat_client_translation PRIVATE
+    agentengine::core agentengine::provider_http_client agentengine_warnings)
+  add_test(NAME test_openai_chat_client_translation COMMAND test_openai_chat_client_translation)
+
+  # End-to-end proof against a real local TLS server: secret resolution -> request build -> real
+  # HTTPS exchange -> response/stream parse, for both chat() and chat_stream().
+  add_executable(test_openai_chat_client_live test_openai_chat_client_live.cpp)
+  target_link_libraries(test_openai_chat_client_live PRIVATE
+    agentengine::core agentengine::provider_http_client agentengine_warnings
+    MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+  add_test(NAME test_openai_chat_client_live COMMAND test_openai_chat_client_live)
 endif()
 
 # ---- RecordedChatClient fixture player (test-only) ---------------------------------------------

@@ -274,15 +274,70 @@ exit-criterion proof.
   own address is itself in `resolve_and_validate`'s blocked-range table and its self-signed cert isn't
   in the real vendored trust store. Production code never passes non-default values for either.
 
-### Phase D — OpenAI-compatible backend (004 §3, default)
+### Phase D — OpenAI-compatible backend (004 §3, default) — **DONE**
 
-- **D1.** Request/response translation for Chat Completions + Responses shapes; capability set
-  discovered from config per endpoint, never assumed uniform (§3's own rule).
-- **D2.** Streaming chunk parsing into `ChatResponseUpdate` via Phase B4's stream adapter.
-- **D3.** Tool-schema shaping per vendor wire format; MCP-tool-vs-native-tool routing split (§3's
-  porting-note checklist item — translation logic, not a design question).
-- **D4.** Structured-output shaping: force `additionalProperties: false` into the JSON Schema before
-  it reaches the provider (§3's other named checklist item).
+`include/agentengine/protocol/openai/chat_client.hpp` — `OpenAIChatClient<Store>`, a real, product-code
+`ChatClient` conformer, gated by `AGENTENGINE_WITH_HTTPS` (the same gate `provider_http_client.hpp`
+itself is behind). Wire-format field names were sourced directly from the official OpenAI .NET SDK's
+generated serialization code (`D:\GitSrc\openai-dotnet`'s `Utf8JsonWriter`/`WritePropertyName` calls
+are ground truth for the real wire shape — the project owner pointed at this repo specifically so the
+translation logic wouldn't be guessed from memory), not paraphrased from documentation.
+
+- **D1. Done.** Request/response translation for Chat Completions (the Responses API shape is 004
+  §3's OTHER named table entry — not built here, narrower than the full text, see the deferred list).
+  `build_request_body`/`translate_message` build the real `{model, messages, tools, response_format,
+  stream}` wire body; `parse_chat_completion_response` parses `choices[0].message.{content,
+  tool_calls[]}` and `usage.{prompt_tokens, completion_tokens, prompt_tokens_details.cached_tokens,
+  completion_tokens_details.reasoning_tokens}`. `ChatClientCapabilities` is a CONSTRUCTOR PARAMETER
+  (§3's own rule: "discovered from config per endpoint, never assumed uniform") — nothing here probes
+  a response to infer a capability. Outbound-credential resolution reuses Phase B3's exact pattern:
+  `OpenAIChatClient` holds only a `SecretRef` member, resolved fresh inside `chat()`/`chat_stream()`
+  against the caller's `SecretStore` — proven behaviorally in `test_openai_chat_client_live.cpp`
+  (a rotated secret is picked up on the very next call, no client reconstruction).
+- **D2. Done, honestly narrower than full incremental streaming — named, not silently claimed
+  complete.** `perform_provider_https_exchange` (Phase C) has no incremental/chunked-transfer read
+  loop yet — it blocks until the whole HTTP response is buffered. `chat_stream()` therefore performs
+  one complete blocking HTTPS exchange on a DETACHED background thread (not a tracked member — a real
+  `OpenAIChatClient` instance is shared across many concurrent streaming calls via
+  `ChatClientRegistry`, so a single joined-then-replaced thread member would wrongly serialize them),
+  decodes `Transfer-Encoding: chunked` framing if present (`decode_chunked_body`, a real OpenAI
+  streaming response's actual wire shape — proven both as a pure parser against a literal chunked
+  body and end-to-end against a real TLS socket in `test_openai_chat_client_live.cpp`), splits the
+  decoded body into SSE `data: ...` events (the literal `data: [DONE]` terminal sentinel confirmed
+  against the SDK's own `SseUpdateCollection`), and pushes ONE `ChatResponseUpdate` per event/
+  assembled-tool-call through `core/stream.hpp`'s credit-controlled ring (Phase B4b) — so the
+  vendor's own chunk BOUNDARIES are preserved faithfully in delivery order (004 §7 G3's gate: proven
+  in `test_openai_chat_client_translation.cpp`'s D2-R4 case, two text deltas keep their own chunk
+  boundaries; a tool call's argument fragments, which arrive incrementally keyed by a per-choice
+  `index` per the SDK's `StreamingChatToolCallUpdate`, are accumulated across chunks and emitted as
+  ONE complete update once assembled — unavoidable, a partial JSON-string fragment is not a valid
+  `ToolCall::arguments_json` on its own). **What is honestly NOT built**: low-latency incremental
+  delivery — the network fetch itself is not incremental (Phase C's own named gap), so the first
+  `ChatResponseUpdate` is not available to the consumer until the ENTIRE vendor response has already
+  arrived; a real incremental read loop on `provider_http_client.hpp` is future work, not scoped here.
+  Streaming responses carry no per-chunk `Usage` today either — `ChatResponseUpdate` has no field for
+  it (a pre-existing gap this phase didn't introduce or need to close).
+- **D3. Done.** Tool-schema shaping: `translate_tool` builds `{"type":"function","function":{"name",
+  "description","parameters"}}` (field names/nesting confirmed against the SDK's
+  `InternalChatFunctionDefinition` serializer) from `ToolDescriptor.args_schema_json`, passed through
+  as raw JSON (no client-side schema validation, matching the SDK's own `WriteRawValue` passthrough
+  posture). **MCP-tool-vs-native-tool routing split named as explicitly deferred**, not silently
+  dropped: 011 (MCP Conformance) isn't built until Milestone 7 (decision 1's own scoping), so there is
+  only one tool shape to route today — every declared `ToolDescriptor` is a native tool; the split
+  this checklist item names has nothing to route between yet.
+- **D4. Done.** Structured-output shaping: `translate_output_schema` injects `"additionalProperties":
+  false` into 003 §4's `OutputSchema<T>` JSON Schema text ONLY when the schema doesn't already declare
+  the key (an explicit author choice, e.g. `additionalProperties:true`, is never silently overridden
+  — `test_openai_chat_client_translation.cpp`'s D4-R2 case), and wraps the result as OpenAI's
+  Structured Outputs `response_format` (`{"type":"json_schema","json_schema":{"name","schema",
+  "strict":true}}`, field names/order confirmed against the SDK's
+  `InternalResponseFormatJsonSchemaJsonSchema` serializer).
+
+**Incidental finding, not a defect in this phase's own code**: `ChatResponseUpdate`'s `delta` field is
+a single `ContentItem`, so a streamed tool call's `arguments_json` is only ever exposed as a COMPLETE
+string once assembled — matches 003's existing content model exactly, named here only because it is
+the reason D2's tool-call handling could not be "true per-token streaming" for tool calls even in
+principle, independent of Phase C's own incremental-fetch gap.
 
 ### Phase E — Anthropic backend (004 §3, first-class)
 

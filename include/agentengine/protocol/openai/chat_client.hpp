@@ -1,0 +1,628 @@
+#pragma once
+// Implements 004-Model-Provider-Plane.md §3 -- Milestone 5 Phase D: the OpenAI-compatible ChatClient
+// backend (Chat Completions), 004 §3's default/widest-reach backend (OpenAI, gateways, vLLM/
+// llama.cpp/Ollama-style local servers, most vendor compat endpoints). Wire-format field names below
+// were sourced directly from the official OpenAI .NET SDK's generated serialization code (the
+// `Utf8JsonWriter`/`WritePropertyName` calls are ground truth for the real wire shape, not paraphrased
+// from documentation), not guessed.
+//
+// Reuses Phase C's sandbox::perform_provider_https_exchange (the host-initiated HTTPS client) for the
+// actual network exchange and Phase A's SecretStore seam for outbound-credential resolution AT THE
+// POINT OF USE (004 §1's rule) -- `OpenAIChatClient` holds only a `SecretRef` member, the same
+// behavioral shape `test_chat_client_credential_resolution.cpp`'s reference conformer already proves;
+// this is that reference conformer's real, product-code analogue, not a second design.
+//
+// Capabilities are DECLARED, not probed (004 §3's own rule: "Capability set is per endpoint,
+// discovered from config, not assumed") -- the caller constructs this type with whatever
+// ChatClientCapabilities its own deployment's config says the target endpoint actually has; nothing
+// here inspects a response to infer a capability.
+//
+// `perform_provider_https_exchange` is a synchronous, blocking call with nothing to suspend on (Phase
+// B4a's own decision, milestone doc: "a sync function is freely callable from inside an async
+// coroutine body with no co_await needed") -- `chat()`'s coroutine body calls it directly, matching
+// that already-established project position rather than introducing a new one. It genuinely blocks
+// the calling thread for the full round-trip; a real async I/O integration is future work on
+// provider_http_client.hpp itself, not scoped here.
+//
+// D2 (streaming) scope, named honestly rather than silently claimed complete: `perform_provider_
+// https_exchange` has no incremental/chunked-transfer read loop yet -- it blocks until the full HTTP
+// response is buffered, then returns. `chat_stream()` below therefore performs one complete
+// (blocking) HTTPS exchange on a detached background thread, decodes `Transfer-Encoding: chunked`
+// framing if present (a real OpenAI-compatible streaming response's actual wire shape --
+// `net_egress_proxy.cpp`'s raw-request builder always sends `Connection: close`, so the server
+// closing the connection at the end is the reliable read-loop exit condition either way), splits the
+// decoded body into SSE `data: ...` events, and pushes ONE ChatResponseUpdate per event/assembled-
+// tool-call as it walks the already-fully-received event list -- so the vendor's own chunk
+// BOUNDARIES are preserved faithfully in delivery order (004 §7 G3's own gate: "identical chunk
+// boundaries"), and the credit-controlled ring (core/stream.hpp, Phase B4b) still provides genuine
+// backpressure between this parsing thread and the consumer -- but the underlying network fetch
+// itself is not low-latency incremental. A real incremental read loop is future work on
+// provider_http_client.hpp, not scoped here. The background thread is DETACHED, not tracked as a
+// member: `OpenAIChatClient` may be shared across many concurrent `chat_stream()` calls (a real
+// `ChatClientRegistry` binds one instance per `ChatClientId`, reused across turns), so a single
+// thread member that joins-then-replaces would wrongly serialize concurrent streams. The detached
+// thread captures every value it needs (host/port/path/model/api-key text, the moved request, the
+// moved `stream_producer`) and touches no state owned by `*this`, so its lifetime is fully decoupled
+// from the client object's.
+
+#ifdef AGENTENGINE_WITH_HTTPS
+
+#include <cctype>
+#include <charconv>
+#include <cstdint>
+#include <functional>
+#include <memory_resource>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <thread>
+#include <utility>
+#include <vector>
+
+#include "agentengine/core/chat_client.hpp"
+#include "agentengine/core/json_value.hpp"
+#include "agentengine/core/stream.hpp"
+#include "agentengine/sandbox/provider_http_client.hpp"
+#include "agentengine/trust/secret.hpp"
+#include "quark/core/error.hpp"
+
+namespace agentengine::openai {
+
+namespace detail {
+
+[[nodiscard]] inline std::string_view role_to_wire(role r) noexcept {
+    switch (r) {
+        case role::system: return "system";
+        case role::user: return "user";
+        case role::assistant: return "assistant";
+        case role::tool: return "tool";
+    }
+    return "user";
+}
+
+// One AE `Message` -> one OpenAI wire message object. Handles the three content shapes this project's
+// own content model can express today (Text, ToolCall, ToolResult) -- Reasoning/Media/Citation/Custom
+// are not translated outbound yet (Chat Completions itself has no reasoning-trace field on inbound
+// messages either, confirmed against the SDK's request-message serializers: only `content`/
+// `tool_calls`/`tool_call_id`/`name`/`refusal`/`audio` exist). A tool-role AE Message's `call_id`
+// comes from its `ToolResult` content item -- the only place a call id lives in the content model, and
+// the shape `core/tool_pipeline.hpp`'s own step-9 "normalize" produces (a `Data` item wrapping the
+// tool's JSON reply, tagged `content_origin::tool`).
+[[nodiscard]] inline json::Value translate_message(Message const& m) {
+    std::string text;
+    std::vector<json::Value> tool_calls;
+    std::optional<std::string> tool_call_id;
+
+    for (ContentItem const& item : m.content) {
+        if (auto const* t = std::get_if<Text>(&item.value)) {
+            text += t->text;
+        } else if (auto const* tc = std::get_if<ToolCall>(&item.value)) {
+            std::vector<std::pair<std::string, json::Value>> fn{
+                {"name", json::Value::make_string(tc->tool_name)},
+                {"arguments", json::Value::make_string(tc->arguments_json)},
+            };
+            std::vector<std::pair<std::string, json::Value>> call{
+                {"id", json::Value::make_string(tc->call_id)},
+                {"type", json::Value::make_string("function")},
+                {"function", json::Value::make_object(std::move(fn))},
+            };
+            tool_calls.push_back(json::Value::make_object(std::move(call)));
+        } else if (auto const* tr = std::get_if<ToolResult>(&item.value)) {
+            tool_call_id = tr->call_id;
+            for (ContentItem const& inner : tr->content) {
+                if (auto const* it = std::get_if<Text>(&inner.value)) {
+                    text += it->text;
+                } else if (auto const* d = std::get_if<Data>(&inner.value)) {
+                    text += d->json;
+                } else if (auto const* e = std::get_if<Error>(&inner.value)) {
+                    text += e->message;
+                }
+            }
+        }
+    }
+
+    std::vector<std::pair<std::string, json::Value>> obj;
+    obj.emplace_back("role", json::Value::make_string(std::string(role_to_wire(m.role))));
+    if (tool_call_id) {
+        obj.emplace_back("tool_call_id", json::Value::make_string(*tool_call_id));
+        obj.emplace_back("content", json::Value::make_string(text));
+    } else if (!tool_calls.empty()) {
+        // A message with tool_calls carries `content: null` when there is no accompanying text --
+        // never a fabricated empty string (the SDK's own collapsing rule: absent text -> JSON null).
+        obj.emplace_back("content", text.empty() ? json::Value::make_null() : json::Value::make_string(text));
+        obj.emplace_back("tool_calls", json::Value::make_array(std::move(tool_calls)));
+    } else {
+        obj.emplace_back("content", json::Value::make_string(text));
+    }
+    return json::Value::make_object(std::move(obj));
+}
+
+// D3: one `ToolDescriptor` -> `{"type":"function","function":{"name","description","parameters"}}`
+// (confirmed field names/nesting against the SDK's `InternalChatFunctionDefinition` serializer).
+// `args_schema_json` already IS the tool's JSON Schema text (006's own real per-run tool table, no
+// second provider-facing declaration shape) -- passed through as raw JSON, matching the SDK's own
+// `WriteRawValue` passthrough for `parameters`/`schema` (it does no client-side schema validation
+// either).
+[[nodiscard]] inline result<json::Value> translate_tool(ToolDescriptor const& t) {
+    auto parsed_params = json::parse(t.args_schema_json);
+    if (!parsed_params) return std::unexpected(parsed_params.error());
+    std::vector<std::pair<std::string, json::Value>> fn{
+        {"name", json::Value::make_string(t.name)},
+        {"description", json::Value::make_string(t.description)},
+        {"parameters", std::move(*parsed_params)},
+    };
+    std::vector<std::pair<std::string, json::Value>> tool{
+        {"type", json::Value::make_string("function")},
+        {"function", json::Value::make_object(std::move(fn))},
+    };
+    return json::Value::make_object(std::move(tool));
+}
+
+// D4: 004 §3's other named checklist item -- "structured-output shaping that forces
+// `additionalProperties: false` into the JSON Schema before it reaches the provider." `schema_json`
+// is 003 §4's `OutputSchema<T>` text (`schema::json_schema_of<T>()`, an object schema with no
+// `additionalProperties` key of its own -- confirmed against `json_schema.hpp`'s `ObjectBuilder`).
+// Wraps as OpenAI's Structured Outputs `response_format` (`{"type":"json_schema","json_schema":
+// {"name","schema","strict"}}`, confirmed field names/order against the SDK's
+// `InternalResponseFormatJsonSchemaJsonSchema` serializer). `name` is required on the wire but 003 §4
+// carries none -- "response" is a fixed, non-semantic placeholder (the schema body, not its name, is
+// what OpenAI actually validates against).
+[[nodiscard]] inline result<json::Value> translate_output_schema(std::string const& schema_json) {
+    auto parsed = json::parse(schema_json);
+    if (!parsed) return std::unexpected(parsed.error());
+    json::Value schema = std::move(*parsed);
+    if (schema.is_object() && schema.find("additionalProperties") == nullptr) {
+        std::vector<std::pair<std::string, json::Value>> members(schema.as_object());
+        members.emplace_back("additionalProperties", json::Value::make_bool(false));
+        schema = json::Value::make_object(std::move(members));
+    }
+    std::vector<std::pair<std::string, json::Value>> json_schema_obj{
+        {"name", json::Value::make_string("response")},
+        {"schema", std::move(schema)},
+        {"strict", json::Value::make_bool(true)},
+    };
+    std::vector<std::pair<std::string, json::Value>> response_format{
+        {"type", json::Value::make_string("json_schema")},
+        {"json_schema", json::Value::make_object(std::move(json_schema_obj))},
+    };
+    return json::Value::make_object(std::move(response_format));
+}
+
+// D1: the full `POST /v1/chat/completions` request body. `stream` is a caller-supplied flag (never
+// probed from `ChatRequest`) because `chat()` and `chat_stream()` are the two distinct callers, each
+// wanting a different value.
+[[nodiscard]] inline result<json::Value> build_request_body(ChatRequest const& request,
+                                                              std::string const& model, bool stream) {
+    std::vector<std::pair<std::string, json::Value>> obj;
+    obj.emplace_back("model", json::Value::make_string(model));
+
+    std::vector<json::Value> messages;
+    messages.reserve(request.messages.size());
+    for (auto const& m : request.messages) messages.push_back(translate_message(m));
+    obj.emplace_back("messages", json::Value::make_array(std::move(messages)));
+
+    if (!request.tools.empty()) {
+        std::vector<json::Value> tools;
+        tools.reserve(request.tools.size());
+        for (auto const& t : request.tools) {
+            auto tool_json = translate_tool(t);
+            if (!tool_json) return std::unexpected(tool_json.error());
+            tools.push_back(std::move(*tool_json));
+        }
+        obj.emplace_back("tools", json::Value::make_array(std::move(tools)));
+    }
+
+    if (request.output_schema_json) {
+        auto response_format = translate_output_schema(*request.output_schema_json);
+        if (!response_format) return std::unexpected(response_format.error());
+        obj.emplace_back("response_format", std::move(*response_format));
+    }
+
+    if (stream) obj.emplace_back("stream", json::Value::make_bool(true));
+
+    return json::Value::make_object(std::move(obj));
+}
+
+[[nodiscard]] inline sandbox::NetEgressRequest build_http_request(std::string const& path,
+                                                                    std::string const& api_key,
+                                                                    std::string body) {
+    sandbox::NetEgressRequest req;
+    req.method = "POST";
+    req.path = path;
+    req.headers.emplace_back("Content-Type", "application/json");
+    req.headers.emplace_back("Authorization", "Bearer " + api_key);
+    req.body = std::move(body);
+    return req;
+}
+
+[[nodiscard]] inline error map_http_status_error(std::uint16_t status, std::string const& body) {
+    failure_class klass = failure_class::fatal;
+    if (status == 429 || status >= 500) {
+        klass = failure_class::transient;  // 004 §4: retry applies to Transient only
+    } else if (status == 401 || status == 403) {
+        klass = failure_class::policy;
+    } else if (status >= 400) {
+        klass = failure_class::contract;
+    }
+    std::string message = "openai http status " + std::to_string(status);
+    if (auto parsed = json::parse(body); parsed) {
+        if (auto const* err = parsed->find("error")) {
+            if (auto const* m = err->find("message"); m && m->is_string()) message = m->as_string();
+        }
+    }
+    return error{klass, message, "openai.http_" + std::to_string(status)};
+}
+
+// D1: the non-streaming response. Field names confirmed against the SDK's `ChatCompletion`/
+// `ChatTokenUsage` serializers -- `choices[0].message.content`/`.tool_calls[]`, `usage.prompt_tokens`/
+// `.completion_tokens`/`.prompt_tokens_details.cached_tokens`/`.completion_tokens_details.
+// reasoning_tokens`. No `reasoning`/`reasoning_content` field exists on a Chat Completions response
+// message (confirmed: the SDK's response-message deserializer has no such branch) -- reasoning is
+// Anthropic's "first-class" surface (Phase E, 004 §3), not this backend's.
+[[nodiscard]] inline result<ChatResponse> parse_chat_completion_response(json::Value const& body) {
+    if (auto const* err = body.find("error")) {
+        std::string msg = "unknown error";
+        if (auto const* m = err->find("message"); m && m->is_string()) msg = m->as_string();
+        return std::unexpected(error{failure_class::contract, "openai error: " + msg, "openai.error"});
+    }
+    json::Value const* choices = body.find("choices");
+    if (!choices || !choices->is_array() || choices->as_array().empty()) {
+        return std::unexpected(
+            error{failure_class::contract, "response has no choices", "openai.no_choices"});
+    }
+    json::Value const& choice0 = choices->as_array().front();
+    json::Value const* message = choice0.find("message");
+    if (!message) {
+        return std::unexpected(error{failure_class::contract, "choice has no message", "openai.no_message"});
+    }
+
+    ChatResponse resp;
+    resp.message.role = role::assistant;
+
+    if (auto const* content = message->find("content");
+        content && content->is_string() && !content->as_string().empty()) {
+        ContentItem item;
+        item.value = Text{content->as_string()};
+        item.origin = content_origin::assistant;
+        resp.message.content.push_back(std::move(item));
+    }
+
+    if (auto const* tool_calls = message->find("tool_calls"); tool_calls && tool_calls->is_array()) {
+        for (auto const& tc : tool_calls->as_array()) {
+            auto const* id = tc.find("id");
+            auto const* fn = tc.find("function");
+            if (!fn) continue;
+            auto const* name = fn->find("name");
+            auto const* args = fn->find("arguments");
+            ToolCall call;
+            call.call_id = (id && id->is_string()) ? id->as_string() : std::string{};
+            call.tool_name = (name && name->is_string()) ? name->as_string() : std::string{};
+            call.arguments_json = (args && args->is_string()) ? args->as_string() : std::string{"{}"};
+            ContentItem item;
+            item.value = std::move(call);
+            item.origin = content_origin::assistant;
+            resp.message.content.push_back(std::move(item));
+        }
+    }
+
+    if (auto const* usage = body.find("usage")) {
+        if (auto const* pt = usage->find("prompt_tokens"); pt && pt->is_number()) {
+            resp.usage.input_tokens = static_cast<std::uint64_t>(pt->as_number());
+        }
+        if (auto const* ct = usage->find("completion_tokens"); ct && ct->is_number()) {
+            resp.usage.output_tokens = static_cast<std::uint64_t>(ct->as_number());
+        }
+        if (auto const* ptd = usage->find("prompt_tokens_details")) {
+            if (auto const* cached = ptd->find("cached_tokens"); cached && cached->is_number()) {
+                resp.usage.cached_input_tokens = static_cast<std::uint64_t>(cached->as_number());
+            }
+        }
+        if (auto const* ctd = usage->find("completion_tokens_details")) {
+            if (auto const* rt = ctd->find("reasoning_tokens"); rt && rt->is_number()) {
+                resp.usage.reasoning_tokens = static_cast<std::uint64_t>(rt->as_number());
+            }
+        }
+    }
+
+    return resp;
+}
+
+// D2: `Transfer-Encoding: chunked` framing (RFC 9112 §7.1) -- decoded independently of the network
+// read loop (pure string parsing over an already-fully-received body), so this is testable without a
+// live server. Trailers after the terminal 0-size chunk are ignored (this project has no use for
+// them).
+[[nodiscard]] inline result<std::string> decode_chunked_body(std::string_view body) {
+    std::string out;
+    std::size_t pos = 0;
+    while (pos < body.size()) {
+        auto const line_end = body.find("\r\n", pos);
+        if (line_end == std::string_view::npos) {
+            return std::unexpected(
+                error{failure_class::contract, "truncated chunked body: no chunk-size line terminator",
+                      "openai.chunked_malformed"});
+        }
+        std::string_view size_line = body.substr(pos, line_end - pos);
+        if (auto const semi = size_line.find(';'); semi != std::string_view::npos) {
+            size_line = size_line.substr(0, semi);  // chunk extensions, ignored
+        }
+        std::size_t chunk_size = 0;
+        auto const conv =
+            std::from_chars(size_line.data(), size_line.data() + size_line.size(), chunk_size, 16);
+        if (conv.ec != std::errc{}) {
+            return std::unexpected(
+                error{failure_class::contract, "malformed chunk size", "openai.chunked_malformed"});
+        }
+        pos = line_end + 2;
+        if (chunk_size == 0) break;  // terminal chunk
+        if (pos + chunk_size > body.size()) {
+            return std::unexpected(
+                error{failure_class::contract, "truncated chunk body", "openai.chunked_malformed"});
+        }
+        out.append(body.substr(pos, chunk_size));
+        pos += chunk_size;
+        if (body.substr(pos, 2) != "\r\n") {
+            return std::unexpected(error{failure_class::contract, "missing CRLF after chunk data",
+                                          "openai.chunked_malformed"});
+        }
+        pos += 2;
+    }
+    return out;
+}
+
+[[nodiscard]] inline bool header_name_equals_ci(std::string const& a, std::string_view b) noexcept {
+    if (a.size() != b.size()) return false;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        if (std::tolower(static_cast<unsigned char>(a[i])) != std::tolower(static_cast<unsigned char>(b[i]))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+[[nodiscard]] inline bool response_is_chunked(sandbox::NetEgressResponse const& resp) {
+    for (auto const& [k, v] : resp.headers) {
+        if (header_name_equals_ci(k, "transfer-encoding") && v.find("chunked") != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// SSE framing (only `data:` lines matter for an OpenAI-compatible stream -- `event:`/`id:`/`:comment`
+// lines, if any, are ignored). Every OpenAI event fits on one line (compact single-line JSON), so no
+// multi-line data accumulation is needed.
+[[nodiscard]] inline std::vector<std::string_view> split_sse_data_events(std::string_view body) {
+    std::vector<std::string_view> out;
+    std::size_t pos = 0;
+    while (pos <= body.size()) {
+        auto const nl = body.find('\n', pos);
+        std::string_view line = (nl == std::string_view::npos) ? body.substr(pos) : body.substr(pos, nl - pos);
+        if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
+        if (line.starts_with("data:")) {
+            std::string_view payload = line.substr(5);
+            while (!payload.empty() && payload.front() == ' ') payload.remove_prefix(1);
+            out.push_back(payload);
+        }
+        if (nl == std::string_view::npos) break;
+        pos = nl + 1;
+    }
+    return out;
+}
+
+// D2: the actual chunk-to-ChatResponseUpdate translation, factored out of the network call so it is
+// testable against a literal canned SSE/chunked body with no live server involved. `raw_body` is
+// exactly `NetEgressResponse::body` (still `Transfer-Encoding: chunked`-framed if `is_chunked`).
+//
+// Streaming tool-call ARGUMENT FRAGMENTS arrive incrementally across chunks, keyed by a per-choice
+// `index` (confirmed against the SDK's `StreamingChatToolCallUpdate` -- `index` is required precisely
+// so a consumer can correlate parallel tool-call fragments). Since this function already has every
+// event in hand (Phase C's HTTP layer buffers the whole response, see file banner), fragments are
+// accumulated in one pass and each tool call is emitted as ONE complete `ChatResponseUpdate` once
+// fully assembled, appended after every text delta -- text deltas map 1:1 to the vendor's own SSE
+// chunks (real per-chunk fidelity preserved), tool calls do not (unavoidable: a partial JSON-string
+// fragment is not a valid `ToolCall::arguments_json` on its own).
+[[nodiscard]] inline result<std::vector<ChatResponseUpdate>> parse_streaming_response_into_updates(
+    std::string_view raw_body, bool is_chunked) {
+    std::string owned;
+    std::string_view decoded = raw_body;
+    if (is_chunked) {
+        auto d = decode_chunked_body(raw_body);
+        if (!d) return std::unexpected(d.error());
+        owned = std::move(*d);
+        decoded = owned;
+    }
+
+    std::vector<ContentItem> items;
+
+    struct PendingToolCall {
+        std::string id;
+        std::string name;
+        std::string arguments;
+        bool seen = false;
+    };
+    std::vector<PendingToolCall> pending_by_index;
+
+    for (std::string_view payload : split_sse_data_events(decoded)) {
+        if (payload == "[DONE]") break;
+        auto parsed = json::parse(payload);
+        if (!parsed) continue;  // one malformed chunk is skipped, not fatal to the whole stream
+        json::Value const* choices = parsed->find("choices");
+        if (!choices || !choices->is_array() || choices->as_array().empty()) continue;
+        json::Value const& choice0 = choices->as_array().front();
+        json::Value const* delta = choice0.find("delta");
+        if (!delta) continue;
+
+        if (auto const* content = delta->find("content");
+            content && content->is_string() && !content->as_string().empty()) {
+            ContentItem item;
+            item.value = Text{content->as_string()};
+            item.origin = content_origin::assistant;
+            items.push_back(std::move(item));
+        }
+
+        if (auto const* tool_calls = delta->find("tool_calls"); tool_calls && tool_calls->is_array()) {
+            for (auto const& tc : tool_calls->as_array()) {
+                auto const* idx = tc.find("index");
+                std::size_t const index =
+                    (idx && idx->is_number()) ? static_cast<std::size_t>(idx->as_number()) : 0;
+                if (index >= pending_by_index.size()) pending_by_index.resize(index + 1);
+                PendingToolCall& acc = pending_by_index[index];
+                acc.seen = true;
+                if (auto const* id = tc.find("id"); id && id->is_string()) acc.id = id->as_string();
+                if (auto const* fn = tc.find("function")) {
+                    if (auto const* name = fn->find("name"); name && name->is_string()) {
+                        acc.name += name->as_string();
+                    }
+                    if (auto const* args = fn->find("arguments"); args && args->is_string()) {
+                        acc.arguments += args->as_string();
+                    }
+                }
+            }
+        }
+    }
+
+    for (auto const& acc : pending_by_index) {
+        if (!acc.seen) continue;
+        ToolCall call;
+        call.call_id = acc.id;
+        call.tool_name = acc.name;
+        call.arguments_json = acc.arguments.empty() ? "{}" : acc.arguments;
+        ContentItem item;
+        item.value = std::move(call);
+        item.origin = content_origin::assistant;
+        items.push_back(std::move(item));
+    }
+
+    std::vector<ChatResponseUpdate> updates;
+    updates.reserve(items.size());
+    for (std::size_t i = 0; i < items.size(); ++i) {
+        ChatResponseUpdate update;
+        update.delta = std::move(items[i]);
+        update.is_final = (i + 1 == items.size());
+        updates.push_back(std::move(update));
+    }
+    return updates;
+}
+
+// A testability seam, not a security bypass -- mirrors `provider_http_client.hpp`'s own injectable
+// `resolver` parameter exactly (its own comment: "a loopback test server's own address is itself in
+// resolve_and_validate's blocked-range table," so a test proving THIS type's own orchestration logic,
+// not re-proving address-blocking, needs a fake answering exactly the question DNS answers). Defaults
+// to the real `resolve_and_validate`; production code never constructs `OpenAIChatClient` with a
+// non-default resolver.
+using Resolver = std::function<result<sandbox::VerifiedEndpoint>(std::string_view, std::uint16_t)>;
+
+// The detached background worker (see file banner for why detached, not a tracked member). Every
+// parameter is owned by value -- no reference back to the `OpenAIChatClient` instance that spawned it.
+// `ca_bundle_pem_override` mirrors `perform_provider_https_exchange`'s own testability seam verbatim
+// (empty in production -- the vendored CA bundle applies; a test's self-signed leaf isn't in it).
+inline void run_stream_worker(std::string host, std::uint16_t port, std::string path, std::string api_key,
+                               std::string model, ChatRequest request,
+                               stream_producer<ChatResponseUpdate> producer, Resolver resolver,
+                               std::string ca_bundle_pem_override) {
+    auto body = build_request_body(request, model, /*stream=*/true);
+    if (!body) {
+        producer.fail(quark::error{quark::errc::validation, "openai.request_build_failed"});
+        return;
+    }
+    auto req = build_http_request(path, api_key, json::dump(*body));
+    auto resp = sandbox::perform_provider_https_exchange(host, port, req, {}, std::nullopt, resolver,
+                                                            ca_bundle_pem_override);
+    if (!resp) {
+        producer.fail(quark::error{quark::errc::unavailable, "openai.exchange_failed"});
+        return;
+    }
+    if (resp->status < 200 || resp->status >= 300) {
+        producer.fail(quark::error{quark::errc::validation, "openai.http_error_status"});
+        return;
+    }
+
+    auto updates = parse_streaming_response_into_updates(resp->body, response_is_chunked(*resp));
+    if (!updates) {
+        producer.fail(quark::error{quark::errc::serialization, "openai.stream_parse_failed"});
+        return;
+    }
+
+    for (auto& update : *updates) {
+        if (producer.push(std::move(update)) != quark::ReplyPush::Ok) {
+            return;  // consumer cancelled/deadlined -- stop producing, the ring already latched why
+        }
+    }
+    producer.close();
+}
+
+}  // namespace detail
+
+// The real, product-code `ChatClient` conformer for 004 §3's default OpenAI-compatible backend.
+// `Store` is any real `SecretStore` (`AgentEngineSecretStore` in production; `InMemorySecretStore` in
+// tests, matching `test_chat_client_credential_resolution.cpp`'s own pattern).
+template <SecretStore Store>
+class OpenAIChatClient {
+public:
+    OpenAIChatClient(std::string host, std::uint16_t port, std::string model, SecretRef api_key_ref,
+                      ChatClientCapabilities caps, Store const& store, std::string path_prefix = "/v1",
+                      detail::Resolver resolver = sandbox::resolve_and_validate,
+                      std::string ca_bundle_pem_override = {})
+        : host_(std::move(host)),
+          port_(port),
+          model_(std::move(model)),
+          api_key_ref_(std::move(api_key_ref)),
+          capabilities_(caps),
+          store_(store),
+          path_prefix_(std::move(path_prefix)),
+          resolver_(std::move(resolver)),
+          ca_bundle_pem_override_(std::move(ca_bundle_pem_override)) {}
+
+    [[nodiscard]] ChatClientCapabilities capabilities() const { return capabilities_; }
+
+    [[nodiscard]] task<result<ChatResponse>> chat(ChatRequest const& request, EffectContext& ctx) const {
+        // Resolution happens HERE, inside chat(), against EffectContext -- never at construction
+        // (004 §1 / 018 §4, the same rule test_chat_client_credential_resolution.cpp proves).
+        auto lease = store_.resolve(api_key_ref_, ctx);
+        if (!lease) co_return std::unexpected(lease.error());
+
+        auto body = detail::build_request_body(request, model_, /*stream=*/false);
+        if (!body) co_return std::unexpected(body.error());
+
+        auto req = detail::build_http_request(path_prefix_ + "/chat/completions", lease->reveal_text(),
+                                                json::dump(*body));
+        auto resp = sandbox::perform_provider_https_exchange(host_, port_, req, {}, std::nullopt,
+                                                                resolver_, ca_bundle_pem_override_);
+        if (!resp) co_return std::unexpected(resp.error());
+        if (resp->status < 200 || resp->status >= 300) {
+            co_return std::unexpected(detail::map_http_status_error(resp->status, resp->body));
+        }
+        auto parsed = json::parse(resp->body);
+        if (!parsed) co_return std::unexpected(parsed.error());
+        co_return detail::parse_chat_completion_response(*parsed);
+    }
+
+    [[nodiscard]] stream<ChatResponseUpdate> chat_stream(ChatRequest request, EffectContext& ctx) const {
+        auto pair = make_stream<ChatResponseUpdate>(std::pmr::get_default_resource());
+        auto lease = store_.resolve(api_key_ref_, ctx);
+        if (!lease) {
+            pair.producer.fail(quark::error{quark::errc::validation, "secret.not_granted"});
+            return std::move(pair.consumer);
+        }
+        std::thread(&detail::run_stream_worker, host_, port_, path_prefix_ + "/chat/completions",
+                    lease->reveal_text(), model_, std::move(request), std::move(pair.producer), resolver_,
+                    ca_bundle_pem_override_)
+            .detach();
+        return std::move(pair.consumer);
+    }
+
+private:
+    std::string host_;
+    std::uint16_t port_;
+    std::string model_;
+    SecretRef api_key_ref_;
+    ChatClientCapabilities capabilities_;
+    Store const& store_;
+    std::string path_prefix_;
+    detail::Resolver resolver_;
+    std::string ca_bundle_pem_override_;
+};
+
+}  // namespace agentengine::openai
+
+#endif  // AGENTENGINE_WITH_HTTPS
