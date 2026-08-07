@@ -1,5 +1,6 @@
 import { Architecture } from "./components/Architecture";
 import { Footer } from "./components/Footer";
+import { GettingStarted } from "./components/GettingStarted";
 import { Hero } from "./components/Hero";
 import { Invariants } from "./components/Invariants";
 import { Nav } from "./components/Nav";
@@ -16,6 +17,7 @@ function App() {
         <Invariants />
         <Architecture />
         <SpecDriven />
+        <GettingStarted />
       </main>
       <Footer />
     </>

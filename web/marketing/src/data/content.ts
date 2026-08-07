@@ -8,6 +8,9 @@ export const SPEC_URL = `${REPO_URL}/blob/main/AgentEngineSpecification.md`;
 export const README_URL = `${REPO_URL}/blob/main/README.md`;
 export const CONVENTIONS_URL = `${REPO_URL}/blob/main/CONVENTIONS.md`;
 export const DECISIONS_URL = `${REPO_URL}/tree/main/decisions`;
+export const ROADMAP_URL = `${REPO_URL}/blob/main/docs/planning/v1-implementation-roadmap.md`;
+export const OPEN_QUESTIONS_URL = `${REPO_URL}/blob/main/OpenQuestions.md`;
+export const TESTS_URL = `${REPO_URL}/tree/main/tests`;
 
 export interface Pillar {
   id: string;
@@ -161,3 +164,107 @@ export const heroCodeSnippet = `struct Researcher : Agent<Researcher,
 auto session = engine.create_session("user-42");
 auto stream  = session.run_stream<Researcher>(
     "Compare WASI 0.2 and 0.3.");`;
+
+// ---------------------------------------------------------------------------
+// Getting Started — grounded in the actual repo, not the pitch above. Sourced
+// from CONVENTIONS.md, the real CMakeLists.txt / .github/workflows/ci.yml, and
+// tests/test_agent_registry.cpp + tests/test_m1_walking_skeleton.cpp — not the
+// aspirational `engine.create_session()` snippet used in the hero section.
+// ---------------------------------------------------------------------------
+
+export interface BuildStep {
+  id: string;
+  index: string;
+  title: string;
+  command: string;
+  detail: string;
+}
+
+export const buildSteps: BuildStep[] = [
+  {
+    id: "clone",
+    index: "01",
+    title: "Clone with submodules",
+    command: "git clone --recursive https://github.com/thnak/AgentEngine.git\ncd AgentEngine",
+    detail:
+      "Quark is pinned as a submodule at third_party/quark — consumed unmodified, never forked or patched in tree. Runtime changes go upstream as Quark RFCs.",
+  },
+  {
+    id: "configure",
+    index: "02",
+    title: "Configure",
+    command: "cmake -S . -B build",
+    detail:
+      "CMake ≥ 3.28, C++23 throughout. Windows 11 / x86-64 (MSVC 19.4x, clang-cl) is the CI-proven target today; Linux is next, taken up once Windows reaches a stable state.",
+  },
+  {
+    id: "build",
+    index: "03",
+    title: "Build — capped at -j4",
+    command: "cmake --build build --config Release -j 4",
+    detail:
+      "The dev-box machine-safety rule, enforced in CI too: never -j$(nproc) or hardware_concurrency() threads. A saturated build can hang or power off the box.",
+  },
+  {
+    id: "test",
+    index: "04",
+    title: "Run the correctness gate",
+    command: "ctest --test-dir build -C Release -j 4 --output-on-failure",
+    detail:
+      "One CTest target per load-bearing invariant, pinned to ≤4 cores. Sandbox and hostile tests are resource-capped too — a test proving a fork bomb is contained must not take the box with it.",
+  },
+];
+
+export const agentCppSnippet = `namespace ae = agentengine;  // CONVENTIONS.md's sanctioned alias
+
+// A tool: capability-gated, JSON-Schema-typed args/reply (006, real since M2).
+struct EchoArgs { std::string message; };
+AE_JSON_SCHEMA(EchoArgs, message)
+
+struct EchoReply { std::string echoed; };
+AE_JSON_SCHEMA(EchoReply, echoed)
+
+struct EchoTool : ae::Tool<EchoTool, ae::Capabilities<ae::cap::decl::Entropy>> {
+    static constexpr std::string_view name = "echo";
+    static constexpr std::string_view description = "Echo the input message back.";
+    using Args = EchoArgs;
+    using Reply = EchoReply;
+
+    static ae::result<Reply> invoke(Args args, ae::EffectContext&) {
+        return Reply{"echo: " + args.message};
+    }
+};
+
+// An agent: policies as compile-time CRTP template parameters, resolved to
+// metadata at startup — no runtime config object, no virtual dispatch (002 §1).
+struct Researcher
+    : ae::Agent<Researcher,
+          ae::ChatClientId<"anthropic:claude-opus-5">,
+          ae::Tools<EchoTool>,
+          ae::Capabilities<ae::cap::decl::Entropy>> {
+    static constexpr std::string_view name = "researcher";
+    static constexpr std::string_view instructions = "Echo what the user says.";
+};
+
+// register_agent<A>() compiles + validates the whole policy set -- tool-name
+// collisions, capability-ceiling coverage, ChatClientId presence -- into a
+// read-only AgentMetadata table. Real, tested logic, not a stub:
+// tests/test_agent_registry.cpp
+auto meta = ae::register_agent<Researcher>();
+assert(meta.has_value());
+assert(meta->tools.find("echo") != nullptr);`;
+
+export interface NextLink {
+  label: string;
+  href: string;
+}
+
+export const nextLinks: NextLink[] = [
+  { label: "RFC index (README)", href: README_URL },
+  { label: "Specification", href: SPEC_URL },
+  { label: "CONVENTIONS.md", href: CONVENTIONS_URL },
+  { label: "Implementation roadmap", href: ROADMAP_URL },
+  { label: "Decisions (ADRs)", href: DECISIONS_URL },
+  { label: "Open questions", href: OPEN_QUESTIONS_URL },
+  { label: "Browse the tests", href: TESTS_URL },
+];

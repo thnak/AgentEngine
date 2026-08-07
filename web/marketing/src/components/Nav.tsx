@@ -21,6 +21,7 @@ export function Nav() {
           <a href="#pillars">Pillars</a>
           <a href="#architecture">Architecture</a>
           <a href="#spec-driven">Spec-driven</a>
+          <a href="#getting-started">Getting started</a>
         </nav>
 
         <div className="nav-cta">
