@@ -15,6 +15,7 @@ struct WebSearch : Tool<WebSearch,
         Capabilities<NetOut<"api.search.example">>,
         Approval<Mode::NeverRequire>,
         Parallelizable,
+        EffectClass<effect_class::pure>,
         Timeout<30s>> {
     static constexpr std::string_view name = "web_search";
     static constexpr std::string_view description = "Search the web for a query.";
@@ -29,10 +30,33 @@ struct WebSearch : Tool<WebSearch,
 - **Schemas are derived from the argument/result types** at compile time (Quark 016's one-`describe`
   discipline), emitted as JSON Schema 2020-12 — the same dialect MCP requires (011), so a tool is
   MCP-publishable without a second schema.
+- **A field may carry a per-parameter description**, `Described<T, "text">` (`core/json_schema.hpp`),
+  wrapping the field's declared type — `Described<std::string, "The search query text"> query;` —
+  rather than a second macro syntax or a change to `AE_JSON_SCHEMA`'s own call sites. Both OpenAI's
+  and Anthropic's real `tools` wire formats carry a `description` on every parameter, not only on the
+  tool itself; an undescribed (plain-typed) field emits none, byte-for-byte unaffected. Composes with
+  `std::optional<T>` in either order the wrapper is applied — `Described<std::optional<T>, "...">` is
+  still detected as not required. Proven in `tests/test_json_schema_described.cpp`, including the
+  description surviving both backends' real `translate_tool()` end to end.
 - **`EffectContext` is mandatory** in the signature. There is no ambient-context accessor, because
   I4 requires attribution at the point of effect and I2 forbids ambient authority.
 - **Capabilities are declared on the tool**, and the agent's ceiling must cover them (002 §6), so an
   unauthorized tool fails at startup rather than at 3 a.m.
+- **`EffectClass<effect_class::{pure, idempotent, at_most_once}>` declares repeat-safety** — the
+  vocabulary 019 §3 defines for exactly-once effects, read by 019 §6 to gate re-execution on rewind:
+  `pure` re-runs freely, `idempotent` re-runs under its derived idempotency key
+  (`{run_id, turn_index, call_index, argument_digest}`, 019 §3), `at_most_once` requires explicit
+  operator acknowledgement before any re-run. **Omitting `EffectClass<...>` defaults to
+  `at_most_once`** — the same empty-by-default posture 007 §3.1 already takes for capabilities: a
+  tool author must actively claim looser replay semantics, never receive them by omission, so a tool
+  its author forgot to classify is never silently treated as safe to repeat. A read-only,
+  no-side-effect tool — including a UI-rendering/report/visual tool that only draws an artifact from
+  already-known state — is the canonical `pure` case; a payment or any other external mutation that
+  must not double-apply is the canonical `at_most_once` case. Implemented and proven:
+  `EffectClass<C>`/`effect_class` and `declared_effect_class()`'s conservative default in
+  `include/agentengine/core/tool.hpp` and `tool_pipeline.hpp`; `authorize_reexecution()`'s three-way
+  gate in `tool_pipeline.hpp`; all three cases covered end-to-end, including the undeclared-default
+  case, by `tests/test_effect_reexecution.cpp`.
 
 ## 2. Tool sources
 

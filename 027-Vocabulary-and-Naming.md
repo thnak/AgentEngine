@@ -101,6 +101,7 @@ word is free, and we take it. §5 records the collision so nobody re-imports the
 | **`Capability`** | An unforgeable handle authorizing one class of effect (007) | **ours** |
 | **`Principal`** | The authenticated identity a run executes on behalf of (007) | **ours** |
 | **`EffectContext`** | The mandatory attribution parameter carried into every effect (007, I4) | **ours** |
+| **`EffectClass<C>`** / `effect_class` | A tool's declared repeat-safety for exactly-once effects — `pure` / `idempotent` / `at_most_once` (006 §1, 019 §3, §6) | **ours** |
 | **`Handoff`** | `Handoff<Writer>` exposes another agent as a tool that transfers control of the run to it (002 §4) | MAF (`HandoffBuilder`, verified: `agent_framework_orchestrations/_handoff.py`) |
 | **`Sandbox`** / **`Profile`** | An isolation boundary instance / a named backend + limits configuration (008) | **ours** |
 | **`Worktree`** | The session's content-addressed virtual disk (025) | **ours** |
@@ -113,7 +114,9 @@ word is free, and we take it. §5 records the collision so nobody re-imports the
 
 The trust and isolation names are ours because **MAF has no capability model, no sandbox seam, and
 no worktree**. That is the substantive difference between the two systems, and it deserves its own
-vocabulary rather than being smuggled into MAF words.
+vocabulary rather than being smuggled into MAF words. `EffectClass` is ours for the same reason one
+level down: MAF has no exactly-once effect model at all — a method call either ran or it didn't, and
+nothing in MAF asks whether re-running it is safe — so there is no existing name to adopt.
 
 ## 5. The collision register
 
@@ -159,6 +162,7 @@ Names settled here that existing RFCs had not yet adopted, applied in a follow-u
 | 005 | `MemoryProvider` → `ContextProvider`, memory as a kind (§3) | Applied |
 | 005, 001 | `Session` → `AgentSession` for the type; "session" stays fine in prose | Applied |
 | 026 | `agent.memory` reviewed against `ContextProvider` naming | No rename needed — it is a Python-facing module name describing a task, not a competing type; 029 §4–5 grounds what it actually reads |
+| 006 | `EffectClass<C>` / `effect_class` (019 §3's `pure`/`idempotent`/`at_most_once`) — implemented (Milestone 4 Phase F4, `tool.hpp`/`tool_pipeline.hpp`) before 006 §1's declaration example or this RFC's tables named it | Applied |
 
 **G3 is satisfied**: the table is empty of unresolved rows.
 

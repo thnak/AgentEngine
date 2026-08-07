@@ -57,6 +57,11 @@ speculatively designed against a type that doesn't exist yet.
 - `tool_call.json` — a response whose only content item is a `ToolCall`.
 - `reasoning_and_text.json` — multi-part response mixing `Reasoning` and `Text`, with a
   reasoning-token-focused `Usage`.
+- `parallel_tool_calls.json` — a response with two `ToolCall` content items in one message (same
+  tool, two independent argument sets), exercising multi-call parsing in a single turn. Not yet
+  exercised by a test in `test_recorded_chat_client.cpp` — see
+  `docs/research/2026-08-07-llm-call-fixture-corpus-survey.md` for scenario ideas and source
+  material to add more fixtures (and their matching test cases) in a follow-up session.
 
 ## `reference_agent/` (Milestone 3 Phase H1, 026 §8 G1)
 
