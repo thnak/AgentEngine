@@ -4,20 +4,21 @@
 // E2 is register_agent<A>() itself; E3 is invoke_agent_tool() at the bottom of this file, the
 // milestone's headline exit-criterion sentence wired to real code (see that function's own comment).
 //
-// Of §6's 8 named validation checks, four run for real against machinery this milestone actually
-// built (tool name collision, capability-ceiling coverage, Stateless<N>-vs-session-state via
-// std::is_empty_v, and — since decisions/ADR-012-sandbox-profile-template-parameter-kind.md —
-// SandboxProfile's compile-time shape) plus a fifth basic shape check (ChatClientId presence). The
-// remaining three are stubbed to always-pass with a comment naming exactly what machinery is
-// missing, per this task's own scope note — not silently skipped:
-//   - ChatClientId *credentials/endpoint* (needs a real ChatClient registry, 004) — Milestone 2
-//     builds no such registry; there is no `Engine` type yet to hold one.
+// Of §6's 8 named validation checks, six now run for real: tool name collision, capability-ceiling
+// coverage, Stateless<N>-vs-session-state via std::is_empty_v, SandboxProfile's compile-time shape
+// (decisions/ADR-012-sandbox-profile-template-parameter-kind.md), a basic shape check (ChatClientId
+// presence), and — Milestone 5 Phase B6 (docs/planning/milestone-5-providers-identity-secrets-
+// breakdown.md) — ChatClientId credentials/OutputSchema enforceability, ADDITIVELY: an optional
+// `ChatClientRegistry const*` parameter on `register_agent<A>()` (default `nullptr`, so every
+// existing zero-arg call site is unaffected). With no registry supplied, both checks stay the
+// pre-M5 always-pass stub (still an honest "not evaluated," not a silent pass dressed up as
+// enforcement); with one supplied, they run for real against the registry's declared capabilities.
+// Two remain stubbed to always-pass, comment naming exactly what machinery is missing — not
+// silently skipped:
 //   - SandboxProfile *tool/profile backend mismatch* (002 §6's second SandboxProfile bullet) — needs
 //     a per-tool backend-declaration policy tag that does not exist yet (`Tool<Derived, Policies...>`
 //     has no analog of `SandboxProfile<P>`); ADR-012 resolved the *template-parameter-kind* conflict
 //     (below) but deliberately did not invent a second, larger policy-tag surface as a drive-by.
-//   - OutputSchema enforceability — needs a real ChatClient instance bound to the agent's
-//     ChatClientId to query ChatClientCapabilities::structured_output_native against (004).
 //   - Handoff cycle detection — needs 014's workflow/handoff graph, explicitly out of scope for M2.
 //
 // SandboxProfile's own history: 002 §2's worked example instantiated it with an enum-like value
@@ -37,8 +38,10 @@
 #include <vector>
 
 #include "agentengine/core/agent.hpp"
+#include "agentengine/core/chat_client.hpp"
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/fixed_string.hpp"
+#include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/tool.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/trust/capability.hpp"
@@ -60,6 +63,13 @@ struct AgentMetadata {  // ae-naming-lint: allow AgentMetadata — pre-existing 
     telemetry_capture telemetry = telemetry_capture::metadata_only; // 002 §3 table default
     std::optional<std::uint32_t> stateless_pool_size;  // nullopt = off (002 §3 table default)
     SandboxProfileDescriptor sandbox_profile;          // is_strict=true default (002 §3 table default)
+    // Milestone 5 Phase B5: 003 §4's OutputSchema<T> contract, compiled to JSON Schema text; nullopt
+    // when the agent declared no OutputSchema<T>. `output_schema_strategy` is nullopt whenever
+    // `output_schema_json` is nullopt (nothing to enforce) OR no `ChatClientRegistry` was supplied
+    // to `register_agent<A>()` (nothing to enforce it against yet) — an honest "not evaluated," not
+    // a silent default.
+    std::optional<std::string> output_schema_json;
+    std::optional<output_schema_strategy> output_schema_strategy_chosen;
 };
 
 namespace agent_detail {
@@ -119,6 +129,20 @@ struct policy_stateless {
 template <std::uint32_t N>
 struct policy_stateless<Stateless<N>> {
     static std::optional<std::uint32_t> get() { return N; }
+};
+
+// Milestone 5 Phase B5: OutputSchema<T> (core/agent.hpp) compiled to its JSON Schema text, the same
+// mechanism ToolDescriptor::args_schema_json already uses (core/tool_pipeline.hpp) — only
+// instantiated when an agent actually declares OutputSchema<T>, so a T missing its own
+// AE_JSON_SCHEMA(...) description fails to compile exactly there, the same enforcement 006's own
+// tool-argument types already get.
+template <class Policy>
+struct policy_output_schema {
+    static std::optional<std::string> get() { return std::nullopt; }
+};
+template <class T>
+struct policy_output_schema<OutputSchema<T>> {
+    static std::optional<std::string> get() { return schema::json_schema_of<T>(); }
 };
 
 // ADR-012: `SandboxProfile<P>` compiles `P` (a real `SandboxBackend`, or `Strict`) into a runtime-
@@ -240,6 +264,16 @@ template <class... Policies>
     return value;
 }
 
+template <class... Policies>
+[[nodiscard]] std::optional<std::string> output_schema_of() {
+    std::optional<std::string> value;
+    auto consider = [&value]<class P>() {
+        if (auto v = policy_output_schema<P>::get(); v.has_value()) value = v;
+    };
+    (consider.template operator()<Policies>(), ...);
+    return value;
+}
+
 // 002 §3 table default (`Strict`) when no `SandboxProfile<P>` tag is declared at all -- absence is a
 // real, meaningful default here (unlike `Stateless<N>`'s absence-off, 002 §9 Q3), so this returns a
 // value directly rather than an `std::optional` a caller might mistake for "unspecified."
@@ -265,8 +299,20 @@ template <class... Policies>
     return {};
 }
 
-// Stubbed: needs a real ChatClient registry/credential store (004) -- see this file's top comment.
-[[nodiscard]] inline result<void> check_chat_client_credentials(std::string_view) { return {}; }
+// Milestone 5 Phase B6: real when `registry` is supplied (an entry must exist for `id`); the pre-M5
+// always-pass stub when it isn't (no registry to check against yet — an honest "not evaluated," see
+// file-top comment).
+[[nodiscard]] inline result<void> check_chat_client_credentials(std::string_view id,
+                                                                  ChatClientRegistry const* registry) {
+    if (registry == nullptr) return {};
+    if (!registry->find(id).has_value()) {
+        return std::unexpected(error{failure_class::contract,
+                                      "ChatClientId '" + std::string(id) +
+                                          "' has no bound backend in the supplied ChatClientRegistry",
+                                      "agent.chat_client_id_unregistered"});
+    }
+    return {};
+}
 
 [[nodiscard]] inline result<void> check_tool_name_collision(std::vector<ToolDescriptor> const& tools) {
     for (std::size_t i = 0; i < tools.size(); ++i) {
@@ -318,8 +364,28 @@ template <class... Policies>
 // invent a second, larger policy-tag surface as a drive-by (see file top).
 [[nodiscard]] inline result<void> check_tool_sandbox_profile_compatibility() { return {}; }
 
-// Stubbed: needs a real ChatClient instance to query capabilities() against (004).
-[[nodiscard]] inline result<void> check_output_schema_enforceable() { return {}; }
+// Milestone 5 Phase B5/B6: real when both an OutputSchema<T> is declared AND a registry is
+// supplied; a no-op (correctly, not by omission) whenever either is absent -- no schema declared
+// means nothing to enforce, no registry means no bound capabilities to check against yet (same
+// "not evaluated" honesty as check_chat_client_credentials above). `select_output_schema_strategy`
+// (core/chat_client.hpp) always produces a strategy under today's three-tier design (parse-and-
+// repair is the universal last resort) -- that function's own comment names why 004 §2's "if no
+// fallback exists, fail at startup" clause is therefore currently unreachable from here rather than
+// faked with an artificial rejection.
+[[nodiscard]] inline result<void> check_output_schema_enforceable(
+    std::optional<std::string> const& output_schema_json, ChatClientRegistry const* registry,
+    std::string_view chat_client_id) {
+    if (!output_schema_json.has_value() || registry == nullptr) return {};
+    if (!registry->find(chat_client_id).has_value()) {
+        // Already caught by check_chat_client_credentials, which the compiler runs first --
+        // defensive redundancy in case call order ever changes, not a second, divergent code path.
+        return std::unexpected(error{failure_class::contract,
+                                      "ChatClientId '" + std::string(chat_client_id) +
+                                          "' has no bound backend to check OutputSchema enforceability against",
+                                      "agent.chat_client_id_unregistered"});
+    }
+    return {};
+}
 
 // Stubbed: needs 014's handoff/workflow graph (explicitly out of scope for M2).
 [[nodiscard]] inline result<void> check_handoff_cycle() { return {}; }
@@ -356,14 +422,16 @@ struct compiler;  // primary intentionally undefined -- Base must be A's own Age
 
 template <class A, class... Policies>
 struct compiler<A, Agent<A, Policies...>> {
-    [[nodiscard]] static result<AgentMetadata> run() {
+    [[nodiscard]] static result<AgentMetadata> run(ChatClientRegistry const* registry) {
         AgentMetadata meta;
         meta.agent_name = std::string(A::name);
         meta.agent_instructions = std::string(A::instructions);
         meta.chat_client_id = std::string(chat_client_id_of<Policies...>());
 
         if (auto r = check_chat_client_id(meta.chat_client_id); !r) return std::unexpected(r.error());
-        if (auto r = check_chat_client_credentials(meta.chat_client_id); !r) return std::unexpected(r.error());
+        if (auto r = check_chat_client_credentials(meta.chat_client_id, registry); !r) {
+            return std::unexpected(r.error());
+        }
 
         meta.tools = tools_of<Policies...>::table();
         if (auto r = check_tool_name_collision(meta.tools.descriptors()); !r) return std::unexpected(r.error());
@@ -386,7 +454,16 @@ struct compiler<A, Agent<A, Policies...>> {
         meta.concurrency = concurrency_of<Policies...>();
         meta.telemetry = telemetry_of<Policies...>();
 
-        if (auto r = check_output_schema_enforceable(); !r) return std::unexpected(r.error());
+        meta.output_schema_json = output_schema_of<Policies...>();
+        if (auto r = check_output_schema_enforceable(meta.output_schema_json, registry, meta.chat_client_id);
+            !r) {
+            return std::unexpected(r.error());
+        }
+        if (meta.output_schema_json.has_value() && registry != nullptr) {
+            if (auto caps = registry->find(meta.chat_client_id); caps.has_value()) {
+                meta.output_schema_strategy_chosen = select_output_schema_strategy(*caps);
+            }
+        }
         if (auto r = check_handoff_cycle(); !r) return std::unexpected(r.error());
 
         meta.stateless_pool_size = stateless_of<Policies...>();
@@ -403,9 +480,14 @@ struct compiler<A, Agent<A, Policies...>> {
 // 002 §6's entry point: "at register_agent<A>() the engine compiles metadata and validates, failing
 // fast" -- `A` must derive from `Agent<A, Policies...>` for some Policies pack (any other type fails
 // to compile here, not at some later use site).
+//
+// Milestone 5 Phase B6: `registry` is additive and defaults to `nullptr`, so every pre-M5 call site
+// (`register_agent<A>()`, no arguments) keeps compiling and keeps its pre-M5 stubbed-check
+// behavior unchanged -- passing a real `ChatClientRegistry` opts a caller into the real
+// credential/OutputSchema-enforceability checks (agent_detail::compiler::run, above).
 template <class A>
-[[nodiscard]] result<AgentMetadata> register_agent() {
-    return agent_detail::compiler<A, agent_detail::agent_base_t<A>>::run();
+[[nodiscard]] result<AgentMetadata> register_agent(ChatClientRegistry const* registry = nullptr) {
+    return agent_detail::compiler<A, agent_detail::agent_base_t<A>>::run(registry);
 }
 
 // M2 Phase E task E3: the milestone's own headline exit-criterion sentence, made real -- "an agent

@@ -466,6 +466,23 @@ add_executable(test_secret_store test_secret_store.cpp)
 target_link_libraries(test_secret_store PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_secret_store COMMAND test_secret_store)
 
+# ---- Milestone 5 Phase B1/B2/B5/B6 -- the ChatClient concept made real -------------------------
+# ChatRequest.tools/output_schema_json, the completed ChatClientCapabilities bitset,
+# select_output_schema_strategy (004 §2's degradation rule), ChatClientRegistry.
+add_executable(test_chat_client_provider_plane test_chat_client_provider_plane.cpp)
+target_link_libraries(test_chat_client_provider_plane PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_chat_client_provider_plane COMMAND test_chat_client_provider_plane)
+
+# ---- Milestone 5 Phase B6 -- register_agent<A>()'s additive ChatClientRegistry parameter --------
+add_executable(test_agent_registry_chat_client_registry test_agent_registry_chat_client_registry.cpp)
+target_link_libraries(test_agent_registry_chat_client_registry PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_agent_registry_chat_client_registry COMMAND test_agent_registry_chat_client_registry)
+
+# ---- Milestone 5 Phase B3 -- outbound-credential resolution at the point of use (004 §1/018 §4) --
+add_executable(test_chat_client_credential_resolution test_chat_client_credential_resolution.cpp)
+target_link_libraries(test_chat_client_credential_resolution PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_chat_client_credential_resolution COMMAND test_chat_client_credential_resolution)
+
 # ---- Dependency-free JSON value/parser/serializer (M2 Phase B task B2, core/json_value.hpp) ----
 # Header-only, core-tier -- links only agentengine::core (no nlohmann::json; this IS the seam that
 # keeps nlohmann out of product code, see CONVENTIONS.md dependency-tier discipline).
