@@ -591,6 +591,17 @@ if(AGENTENGINE_WITH_HTTPS)
   add_test(NAME test_workflow_superstep COMMAND test_workflow_superstep)
   set_tests_properties(test_workflow_superstep PROPERTIES TIMEOUT 120)
 
+  # ---- Milestone 6 Phase C: 014 §3's eight patterns, as graph configurations ---------------------
+  # §3 claims its patterns are "configurations of the graph, not separate subsystems". Every row is
+  # built here from nothing but §1 vocabulary and run on the Phase B engine, so what is ABSENT is
+  # part of the proof. Carries the I3 boundary check for routing: an executor -- in production, one
+  # fed by a model -- can select among declared edges and nothing more; an invented label must reach
+  # nothing AND be reported, never silently end a branch with an empty result.
+  add_executable(test_workflow_patterns test_workflow_patterns.cpp)
+  target_link_libraries(test_workflow_patterns PRIVATE agentengine::core agentengine_warnings)
+  add_test(NAME test_workflow_patterns COMMAND test_workflow_patterns)
+  set_tests_properties(test_workflow_patterns PROPERTIES TIMEOUT 120)
+
   # ---- ADR-020 gates G1-G7: 004 §2's portable reasoning_effort, mapped down by both backends ------
   # Drives BOTH backends from the same enumerator values in one file, on purpose: the amendment's
   # claim is portability across two structurally different native shapes (a flat string vs a computed

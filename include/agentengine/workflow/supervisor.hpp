@@ -54,6 +54,10 @@ enum class workflow_status {
     bound_deadline,     // §2's deadline stopped it
     executor_failed,    // an executor reported failure (§6's policies are Phase D; this is the
                         // honest Phase B behaviour: stop and say so, never continue silently)
+    routing_failed,     // Phase C: a switch/case node selected no declared edge, or selected more
+                        // than one. Distinct from `executor_failed` because the executor SUCCEEDED
+                        // -- what failed is the author's routing contract, and an operator reading
+                        // "executor failed" would go looking in the wrong place
     invalid,            // the graph did not validate, or the supervisor was never initialized
 };
 
@@ -145,7 +149,7 @@ public:
                 quark::result<ExecuteReply> r = co_await future;
                 if (!r.has_value()) {
                     round_failed = true;
-                    replies.push_back(ExecuteReply{Message{}, false, failure_class::transient});
+                    replies.push_back(ExecuteReply{Message{}, {}, false, failure_class::transient});
                     continue;
                 }
                 if (!r->ok) round_failed = true;
@@ -177,12 +181,59 @@ public:
             // "All messages delivered in round n are processed before round n+1 begins" is therefore
             // a structural property of this loop, not a scheduling hope.
             std::vector<Delivery> next;
+            bool routing_broke = false;
             for (std::size_t i = 0; i < pending.size(); ++i) {
                 std::string const& from_id = graph_.executors[pending[i].executor_index].id;
+
+                // Phase C: 014 §1's `switch_case` is "exactly one selected". Counted rather than
+                // assumed, because both failure directions are real authoring mistakes and both
+                // would otherwise be silent -- zero fired ends the branch with no explanation, more
+                // than one turns a switch into a fan-out.
+                std::size_t switch_edges = 0;
+                std::size_t switch_fired = 0;
+
                 for (auto const& edge : graph_.edges) {
                     if (edge.from != from_id) continue;
-                    next.push_back(Delivery{index_of(edge.to), replies[i].payload});
+                    if (edge.kind == edge_kind::switch_case) ++switch_edges;
+                    if (!edge_fires(edge, replies[i])) continue;
+                    if (edge.kind == edge_kind::switch_case) ++switch_fired;
+
+                    std::size_t const target = index_of(edge.to);
+
+                    // ---- fan-in (014 §2: "This makes fan-in well-defined") ---------------------
+                    // A `fan_in` edge MERGES into whatever delivery this round already has for the
+                    // same target, so an aggregator runs ONCE with every input rather than once per
+                    // inbound edge. Merging is by content-item append in source-index order, which
+                    // is deterministic (003's content model is an ordered list, and index order is
+                    // fixed by the graph, not by completion) -- the same property decision 5 relies
+                    // on for the round's own assembly.
+                    //
+                    // Any other edge kind does NOT merge: two `direct` edges into one node are two
+                    // independent messages, and §2's superstep model says a node processes both.
+                    // Silently collapsing them would discard a message the author sent.
+                    if (edge.kind == edge_kind::fan_in) {
+                        bool merged = false;
+                        for (auto& delivery : next) {
+                            if (delivery.executor_index != target) continue;
+                            for (auto const& item : replies[i].payload.content) {
+                                delivery.payload.content.push_back(item);
+                            }
+                            merged = true;
+                            break;
+                        }
+                        if (merged) continue;
+                    }
+                    next.push_back(Delivery{target, replies[i].payload});
                 }
+
+                if (switch_edges > 0 && switch_fired != 1) {
+                    routing_broke = true;
+                }
+            }
+
+            if (routing_broke) {
+                status = workflow_status::routing_failed;
+                break;
             }
             pending = std::move(next);
             // An empty work list means every branch reached an executor with no outgoing edges --
@@ -194,6 +245,32 @@ public:
     }
 
 private:
+    // Phase C. Unlabelled edge kinds always fire; labelled ones fire only when the source executor
+    // named their label.
+    //
+    // The I3 boundary lives in this function's shape. A label is matched AGAINST THE GRAPH's own
+    // declared edges -- an executor that returns a label no edge carries selects nothing, and one
+    // that returns a node id rather than a label selects nothing either. There is no path from an
+    // executor's output to a target the author did not already wire and Phase A did not already
+    // type-check. That is what lets §3's Router row ("switch/case on a CLASSIFIER's typed output")
+    // take model-derived output as a routing input without it becoming authority.
+    [[nodiscard]] static bool edge_fires(Edge const& edge, ExecuteReply const& reply) noexcept {
+        switch (edge.kind) {
+            case edge_kind::direct:
+            case edge_kind::chain:
+            case edge_kind::fan_out:
+            case edge_kind::fan_in:
+                return true;
+            case edge_kind::switch_case:
+            case edge_kind::multi_selection:
+                for (auto const& route : reply.routes) {
+                    if (route == edge.case_label) return true;
+                }
+                return false;
+        }
+        return false;
+    }
+
     [[nodiscard]] std::size_t index_of(std::string_view executor_id) const noexcept {
         for (std::size_t i = 0; i < graph_.executors.size(); ++i) {
             if (graph_.executors[i].id == executor_id) return i;

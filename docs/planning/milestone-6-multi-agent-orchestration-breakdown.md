@@ -153,10 +153,26 @@ H-I are 030; J is the milestone's own exit-criterion proof.
   selection / terminal executor / `MaxRounds` / deadline / budget. Real `Engine` (decision 3).
   *Falsifiable:* messages from round *n+1* observed by a round-*n* executor; a workflow exceeding its
   bound.
-- **Phase C — the §3 patterns.** All seven rows as graph configurations, each a runnable sample:
+- **Phase C — the §3 patterns.** All eight rows as graph configurations, each a runnable sample:
   Sequential, Concurrent, Handoff, Group chat/debate, Planner (Magentic), Map-reduce, Router,
   Reflection/critic. *Falsifiable:* a pattern needing an engine primitive §1-§2 does not provide —
   which would contradict §3's "configurations of the graph, not separate subsystems".
+  **Outcome: §3's claim holds, with two §1 primitives completed rather than added.** Phase B fired
+  every edge unconditionally and produced one delivery per inbound edge, so two of §1's six edge
+  kinds were inert: **switch/case + multi-selection routing** (without which Handoff and Router are
+  unbuildable) and **fan-in aggregation** (§2 states outright that the superstep model "makes fan-in
+  well-defined"; without merging, an aggregator ran once *per inbound edge* instead of once with
+  every input — a different program that still produces a plausible-looking answer, so it is checked
+  on the aggregator's input cardinality, not its output text). Both were already declared in §1 and
+  already validated by Phase A; neither is a subsystem. Group chat and Planner are built from **one
+  graph, twice**, differing only in the moderator's body — §3 says they share a shape, so building
+  them as two shapes would have contradicted the RFC.
+  **I3 boundary, tested:** routing selects among edges *the graph declares*. An executor — in
+  production, one fed by a model — that returns a label no edge carries reaches nothing, and the run
+  fails `routing_failed` rather than completing with an empty output the caller cannot distinguish
+  from success. This is what keeps §3's Router row ("switch/case on a **classifier's** typed
+  output") inside I3 instead of in tension with it: the choice is among pre-authorized,
+  already-type-checked options, never an authority the executor holds.
 - **Phase D — failure (014 §6).** Per-edge declared policy (propagate/retry/fallback-branch/fail),
   Quark `OnFailure` supervision wiring, preserved partial results. *Falsifiable:* a failed workflow
   discarding completed executor outputs; an executor failure taking the workflow down under a policy
@@ -195,6 +211,15 @@ H-I are 030; J is the milestone's own exit-criterion proof.
 - **014 §4's four surfaces** — need 013 (M7); the shape is built, no surface is bound (decision 1).
 - **030 §6's `EmbeddedHost` facade** — needs 020 (M9); the four verbs are built beneath it
   (decision 2).
+- **Data-driven fan-out CARDINALITY for Map-reduce (§3 row 6)** — found in Phase C. §3's Map-reduce
+  is built over a *fixed* mapper set, each mapper taking a slice, which exercises the graph shape
+  fully. What is not built is *K mappers for K items, K known only at runtime*. 014 §9 Q3 already
+  resolved this as separable — "already a runtime instance count, not a change to 'the graph' as §1
+  defines it (executors/edges are typed *kinds*; how many parallel instances a fan-out spawns is
+  orthogonal to which kinds exist)" — so it is per-node instance multiplicity, not a graph feature.
+  It is named rather than faked because the fake is tempting and wrong: K deliveries to one mapper
+  actor would **serialize on that actor** (one actor drains its mailbox sequentially) and quietly
+  stop being a map, the same class of silent degradation decision 5b already caught once.
 - **A cost/latency budget for orchestration** — 023 baselining stays `TBD-baselined` project-wide
   until M8, unchanged from every prior milestone.
 

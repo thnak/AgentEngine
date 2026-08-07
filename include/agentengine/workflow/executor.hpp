@@ -44,6 +44,17 @@ struct ExecuteRequest {
 
 struct ExecuteReply {
     Message payload;
+    // Milestone 6 Phase C: the case labels this executor selected, for 014 §1's `switch_case` and
+    // `multi_selection` edge kinds -- the Handoff and Router patterns (§3).
+    //
+    // I3 BOUNDARY, and the reason this is a list of LABELS rather than a target id. A label can only
+    // ever select among edges THE GRAPH ALREADY DECLARES. An executor -- including one whose output
+    // came from a model -- cannot name a node the author did not wire, cannot create an edge, and
+    // cannot reach a target that is not already type-compatible (Phase A validated every edge before
+    // the run started). A label matching nothing routes nowhere. Routing is therefore a choice among
+    // pre-authorized options, never an authority the executor holds, which is what keeps "switch/case
+    // on a classifier's typed output" (§3's Router row) inside I3 rather than in tension with it.
+    std::vector<std::string> routes;
     // A failed executor still replies -- 014 §6 classifies the failure and lets the EDGE's declared
     // policy decide (propagate/retry/fallback/fail). Dropping the reply instead would strand the
     // supervisor's `co_await` and turn every executor error into a hang.
@@ -51,11 +62,25 @@ struct ExecuteReply {
     failure_class klass = failure_class::fatal;
 };
 
+// What a function-kind executor produces: a payload, plus (for a routing node) the case labels it
+// selected. The converting constructor from `Message` is deliberate -- the overwhelming majority of
+// nodes route nowhere, and forcing every one of them to spell out an empty route list would make the
+// common case pay for the rare one.
+struct ExecutorOutcome {
+    Message                  payload;
+    std::vector<std::string> routes;
+
+    ExecutorOutcome() = default;
+    ExecutorOutcome(Message m) : payload(std::move(m)) {}  // NOLINT(google-explicit-constructor)
+    ExecutorOutcome(Message m, std::vector<std::string> r)
+        : payload(std::move(m)), routes(std::move(r)) {}
+};
+
 // The body of a function-kind executor. Takes an `EffectContext&` from the first version rather than
 // being retrofitted with one later: running a node IS an attributable effect (I4), and this
 // codebase has already paid once for appending a parameter to a widely-called signature after the
 // fact (003 §6's `Usage::cache_write_tokens` amendment).
-using ExecutorBody = std::function<result<Message>(Message const&, EffectContext&)>;
+using ExecutorBody = std::function<result<ExecutorOutcome>(Message const&, EffectContext&)>;
 
 // A function-kind executor node (014 §1). `Sequential` for the same reason the supervisor is (the
 // breakdown's decision 4): a node must be passivatable when its Project pauses (030 §4), and
@@ -84,15 +109,16 @@ public:
         if (!body_) {
             // Fail closed and REPLY. A node with no body is an assembly error, but swallowing the
             // reply would hang the supervisor rather than surface it.
-            m.respond(ExecuteReply{Message{}, false, failure_class::contract});
+            m.respond(ExecuteReply{Message{}, {}, false, failure_class::contract});
             return;
         }
         auto out = body_(m.query.payload, ctx_);
         if (!out) {
-            m.respond(ExecuteReply{Message{}, false, out.error().klass});
+            m.respond(ExecuteReply{Message{}, {}, false, out.error().klass});
             return;
         }
-        m.respond(ExecuteReply{std::move(*out), true, failure_class::fatal});
+        m.respond(ExecuteReply{std::move(out->payload), std::move(out->routes), true,
+                               failure_class::fatal});
     }
 
 private:
