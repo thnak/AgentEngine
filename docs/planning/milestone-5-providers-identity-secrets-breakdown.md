@@ -30,7 +30,7 @@ exit-criterion proof.
 | `check_chat_client_credentials` (`core/agent_registry.hpp:268-269`) | **Explicit permanent stub, always passes.** Top-of-file comment (lines 7-20) names the exact gap: "needs a real ChatClient registry, 004 — Milestone 2 builds no such registry; there is no `Engine` type yet." Confirmed: no `Engine` type exists anywhere in `include/`/`src/` |
 | `check_output_schema_enforceable` (`agent_registry.hpp:321-322`) | Stub, always passes — needs a bound `ChatClient` instance to query `structured_output_native` against |
 | `include/agentengine/protocol/openai/` | Empty except a 4-line README pointing at 004 §3. No headers, nothing compiled. No comparable directory exists for Anthropic at all |
-| Secret seam (`SecretRef`/`SecretStore`/`SecretLease`, 018 §4) | **Does not exist. Greenfield.** Zero implementation hits anywhere in `include/`/`src/` for `SecretRef`, `SecretStore`, `SecretLease`, `api_key`, `credential` — only prose in `.md` files |
+| Secret seam (`SecretRef`/`SecretStore`/`SecretLease`, 018 §4) | **Built, Phase A (commit `2ecc85e`).** Correction to this table's own first-pass finding: "greenfield" was true only for `include/agentengine`/`src` — it missed that Quark itself already ships a real, Accepted, tested `SecretSource`/`Secret` mechanism (`third_party/quark/include/quark/core/secret.hpp`, 020-Security §4: zeroizing buffer, non-copyable, no `std::string` conversion, `Env`/`File` adapters; `security_secret_source_test.cpp`/`security_secret_zeroize_test.cpp`). `include/agentengine/trust/secret.hpp` wraps it rather than reimplementing it (the "no second storage engine" discipline 005/025 already apply to persistence, applied here to secrets), adding only the `cap::Secret` capability gate 018 §4 requires and Quark has no opinion about. `tests/test_secret_store.cpp` (15 checks) proves the gate, per-name scoping, rotation-without-restart, and real env/file resolution |
 | `CapabilityToken`/`SecretKey` (`trust/capability_token.hpp`, ADR-005) | Real, Judged, red-teamed — but **a different concept wearing a confusable name.** This is the HMAC-chain root key for cross-process capability bearer tokens (018 §8 Q2, already resolved and closed). Not 018 §4's outbound-credential seam; do not conflate when scoping this milestone |
 | `agentengine::Principal` (`trust/principal.hpp:9-12`) | Real, bare `{id, tenant_id}` struct, wired into `EffectContext`/`AgentSession`/`MemoryOrigin` (unchanged since M4). No registry, no auth mechanism producing a `Principal` from any inbound request — every test-constructed `Principal` today is hand-built C++ |
 | `EffectContext` (`core/effect_context.hpp:16-39`) | Real, carries `principal`, `capabilities`, `bound_capabilities`, `deadline`, `trace_id`/`span_id`, `run_id`/`turn_index` (since M4). This is exactly the parameter 018 §4's `SecretStore::resolve(SecretRef, EffectContext&)` should hang off of — nothing does yet |
@@ -111,22 +111,26 @@ exit-criterion proof.
 
 ## Tasks, in dependency order
 
-### Phase A — The secret seam (018 §4), no Quark dependency, starts immediately
+### Phase A — The secret seam (018 §4), no Quark dependency, starts immediately — **DONE (commit `2ecc85e`)**
 
-- **A1.** `SecretRef` (a name, not a value) and `SecretLease` (short-lived, non-copyable, redacted by
-  construction — formatter/serializer/debug output all print `***`; the type itself is unprintable,
-  not a documentation promise).
-- **A2.** `SecretStore` concept: `resolve(SecretRef, EffectContext&) -> result<SecretLease>`. Kept
-  synchronous (`result<T>`, not `ae::task<T>`) per decision 2 until Quark's `task<T>` lands; upgraded
-  in lockstep with Phase B once it does.
-- **A3.** Backends: environment (dev) and file-with-restrictive-permissions first — the two that need
-  no new host dependency. OS keychain/DPAPI/Keychain and external managers (Vault, cloud KMS) are
-  named as later seam backends (deferred list), not required for this milestone's own gate.
-- **A4.** Scoping per `{provider|server|peer, principal-or-service}` (018 §3) and rotation-without-
-  restart: a resolved lease is never cached past its own lifetime: the *next* `resolve()` call picks
-  up a rotated backing value, proven by swapping the backend's stored secret between two calls in a
-  test and asserting the second lease differs — no in-flight call is broken because nothing holds a
-  lease across an await boundary by construction (A1's non-copyable rule).
+- **A1. Done.** `SecretRef` (a name, not a value) and `SecretLease` (non-copyable, redacted by
+  construction — `to_redacted_string()` always `"***"`; the type itself is unprintable, not a
+  documentation promise), wrapping Quark's already-zeroizing `quark::Secret` rather than owning a
+  second buffer (corrected finding, current-state table above).
+- **A2. Done.** `SecretStore` concept: `resolve(SecretRef, EffectContext&) -> result<SecretLease>`.
+  Kept synchronous (`result<T>`, not `ae::task<T>`) per decision 2 until Quark's `task<T>` lands;
+  upgraded in lockstep with Phase B once it does.
+- **A3. Done.** Backends: `AgentEngineSecretStore` adapts any `quark::SecretSource` — wired against
+  `quark::EnvSecretSource` (`QUARK_SECRET_<name>`) and `quark::FileSecretSource`
+  (`<root>/<name>`, both real in Quark already). OS keychain/DPAPI/Keychain and external managers
+  (Vault, cloud KMS) stay later seam backends (deferred list) — Quark's own §4 text names them
+  DEFERRED too, so this isn't a narrower cut than upstream's own scope.
+- **A4. Done.** Scoping per name proven (`test_secret_store.cpp`: holding `Secret<"a">` denies
+  resolving `"b"`) and rotation-without-restart proven (the same `InMemorySecretStore` instance
+  returns a changed value on the very next `resolve()` after its backing value changes, with no
+  restart and no cached lease in between). `{provider|server|peer, principal-or-service}`-shaped
+  scoping (018 §3's fuller text) is deferred to Phase C/D, where it has a real caller (a `ChatClient`
+  backend constructed with a specific provider's `SecretRef`) to prove against.
 
 ### Phase B — `ChatClient` made real (004 §1-2)
 
