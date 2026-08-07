@@ -628,6 +628,66 @@ int main() {
         }
     }
 
+    // ---- OR-ANT-8: reasoning_effort has an OBSERVABLE effect on a real provider (ADR-020) -------------
+    // The behavioural half of ADR-020, and the only place it can be had. On the OpenAI surface
+    // `reasoning_effort` is a field a lenient gateway can silently ignore -- ADR-020 §2 measured an
+    // invented field returning HTTP 200 there, so "the request was accepted" proves nothing. Anthropic's
+    // mapping is structural instead: enabling thinking changes the SHAPE of the response, adding a
+    // `thinking` content block that a disabled request does not produce. That is a difference no
+    // silent-ignore can fake, so it is asserted here rather than in the offline suite.
+    {
+        ChatClientCapabilities think_caps = caps;
+        think_caps.reasoning = true;
+        // Raised from this file's cost-bounding 1024: Anthropic's extended-thinking floor IS 1024, and
+        // its budget must be strictly BELOW max_tokens, so at 1024 no level above `off` is expressible
+        // at all. That is not a quirk of this fixture -- the first run of this case failed exactly here,
+        // with `anthropic.thinking_budget_unsatisfiable`, which is the design refusing to send a request
+        // the vendor would reject. Recorded in ADR-020 §4 as a real deployment constraint; the number
+        // below is the smallest that makes the case expressible while still bounding cost.
+        think_caps.max_output_tokens = 4096;
+        anthropic::AnthropicChatClient thinker(host, kHttpsPort, model, SecretRef{kSecretName},
+                                                think_caps, store, kPathPrefix, "2023-06-01",
+                                                sandbox::resolve_and_validate);
+
+        auto count_reasoning = [](Message const& m) {
+            std::size_t n = 0;
+            for (auto const& item : m.content) {
+                if (std::holds_alternative<Reasoning>(item.value)) ++n;
+            }
+            return n;
+        };
+
+        ChatRequest off_req = request_asking("What is 17*23? Think it through.");
+        off_req.reasoning_effort = reasoning_effort::off;
+        auto off_resp = run_task_sync<result<ChatResponse>>(thinker.chat(off_req, ctx));
+        check(off_resp.has_value(),
+              "OR-ANT-8: `off` -> `thinking:{type:\"disabled\"}` is accepted by the real provider");
+
+        ChatRequest high_req = request_asking("What is 17*23? Think it through.");
+        high_req.reasoning_effort = reasoning_effort::high;
+        auto high_resp = run_task_sync<result<ChatResponse>>(thinker.chat(high_req, ctx));
+        check(high_resp.has_value(),
+              "OR-ANT-8: `high` -> a computed `budget_tokens` under this request's own max_tokens is "
+              "accepted by the real provider -- the arithmetic satisfies Anthropic's real constraints");
+        if (!high_resp) {
+            std::fprintf(stderr, "       error: %s (%s)\n", high_resp.error().message.c_str(),
+                         high_resp.error().code.c_str());
+        }
+
+        if (off_resp && high_resp) {
+            std::size_t const off_blocks = count_reasoning(off_resp->message);
+            std::size_t const high_blocks = count_reasoning(high_resp->message);
+            note("reasoning blocks, off", std::to_string(off_blocks));
+            note("reasoning blocks, high", std::to_string(high_blocks));
+            check(off_blocks == 0,
+                  "OR-ANT-8: a disabled request comes back with NO Reasoning content item");
+            check(high_blocks > 0,
+                  "OR-ANT-8: the SAME question with effort=high comes back carrying a Reasoning content "
+                  "item -- the portable level reached the model and changed what it produced, which no "
+                  "silently-ignored field could have done");
+        }
+    }
+
     // ---- OR-PARITY-1: one unchanged call site, two real backends (004 §7 G1, I6) ----------------------
     // test_chat_client_cross_backend_parity.cpp already proves this shape against canned servers. This
     // is the same claim where it is hardest to fake: two genuinely different remote wire contracts,

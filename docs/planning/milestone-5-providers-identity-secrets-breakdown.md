@@ -843,8 +843,29 @@ dropped):**
   **751 ms** stream; Anthropic **263 ms** against **883 ms**.
 - **10⁴-scale gates and full 023 baselining** — stay `TBD-baselined` project-wide until M8, same
   status quo every earlier milestone established.
-- **A portable `reasoning_effort` design and `prompt_cache_key`** for Phase D/E's two backends —
-  surveyed, still not built (both explicitly need a further design decision, see
+- ~~**A portable `reasoning_effort` design and `prompt_cache_key`** for Phase D/E's two backends —
+  surveyed, still not built~~ — **`reasoning_effort` CLOSED 2026-08-07 by
+  `decisions/ADR-020-portable-reasoning-effort.md`** (004 §2 amended: `enum class reasoning_effort
+  {off, low, medium, high}` + `ChatRequest::reasoning_effort`, appended last; OpenAI maps to its flat
+  string, Anthropic to `thinking:{type, budget_tokens}` computed as 25/50/75% of the same request's
+  `max_tokens`; `low`/`medium`/`high` gated on the declared `reasoning` bit, `off` exempt).
+  The survey's own "one vendor's shape leaking" objection is answered by narrowing rather than by
+  declining: `minimal` is excluded (OpenAI-only), and `nullopt` ("emit nothing") stays distinct from
+  `off` ("explicitly disable"). What decided option (c) over (b) was live evidence — the level could
+  not be shown to change anything on the OpenAI surface, but IS structurally observable on Anthropic's
+  (`['thinking','text']` vs `['text']`). `tests/test_reasoning_effort_portability.cpp` drives BOTH
+  backends from the same enumerators (33 assertions, G1-G7); `test_openrouter_live_e2e.cpp` OR-ANT-8 is
+  the live G8: **off -> 0 Reasoning items, high -> 1**, same model, same question.
+  **Notable:** the fail-closed branch fired on the FIRST real configuration it met -- this file's own
+  live suite declares `max_output_tokens = 1024` to bound cost, which is exactly Anthropic's thinking
+  floor, so no level above `off` was expressible. The design correctly refused rather than sending a
+  request a lenient gateway accepts (measured) and `api.anthropic.com` rejects.
+  **`prompt_cache_key` stays deferred**, now on evidence: the survey's blocking live check was RUN and
+  is inconclusive by construction -- OpenRouter and a real `llama-server` return HTTP 200 both for
+  `prompt_cache_key` AND for a deliberately invented field, so acceptance carries no information on
+  either reachable endpoint. The decisive check needs an `api.openai.com` credential this project does
+  not hold; shipping the field without a gate that could fail is what CLAUDE.md's promotion-gate
+  discipline forbids. (See
   `docs/research/2026-08-07-provider-metadata-and-sampling-params-survey.md`'s "Recommended design"
   section for the options). Everything else that survey recommended (app-attribution headers, `seed`/
   abuse-tracking-id constructor fields, `ChatResponse.model`, `Usage.cache_write_tokens`, Anthropic's

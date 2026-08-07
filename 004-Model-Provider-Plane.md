@@ -52,6 +52,41 @@ it in the run trace and metrics. It never silently ignores the request, and it n
 fallback that changes semantics without saying so. If no fallback exists, `register_agent<A>()`
 fails at startup (002 §6) rather than at the first user request.
 
+**Amendment (2026-08-07, ADR-020 — `reasoning_effort` on `ChatRequest`).** §1's sampling-parameter
+elision stands for `temperature`/`top_p`/`top_k`; reasoning effort is carved out of it as the one
+knob with a defensible portable shape, and is added to `ChatRequest` as
+`std::optional<reasoning_effort>` over `enum class reasoning_effort {off, low, medium, high}`.
+
+This is an **abstraction each backend maps down**, never a vendor field passed through. The three
+surveyed native shapes genuinely differ — OpenAI's flat string enum, Anthropic's
+`thinking:{type, budget_tokens}` token *budget*, Ollama's narrower level set
+(`docs/research/2026-08-07-provider-metadata-and-sampling-params-survey.md` Finding 2) — so the
+portable vocabulary is the ordinal intersection they agree on, and nothing wider:
+
+- **`minimal` is deliberately excluded.** It exists only on OpenAI; Ollama has no equivalent.
+  Admitting it would make this OpenAI's enum with a new name, which is precisely the "one vendor's
+  shape leaking onto every other backend" trap §8 Q2's own resolution already avoided for prompt
+  caching. Its absence is what makes this a portable abstraction rather than a pass-through.
+- **`nullopt` and `off` are different requests**, not two spellings of one. `nullopt` is *no
+  opinion* — the backend sends no field at all and the vendor default applies, which is exactly
+  today's behaviour and keeps this amendment additive. `off` is *explicitly disable reasoning*, and
+  every surveyed backend can express it (OpenAI/llama.cpp/Ollama `none`, Anthropic
+  `thinking:{type:"disabled"}`).
+
+**Interaction with the degradation rule.** `low`/`medium`/`high` require the already-declared
+`reasoning` capability bit; against a backend that lacks it the call fails with `failure_class::
+contract` rather than dropping the field, because no *declared* fallback for reasoning effort
+exists and silently omitting it is the "silently ignores the request" this section forbids. `off`
+is exempt: a backend that cannot reason satisfies "do not reason" by construction, so requiring a
+capability bit to ask for less would fail a caller who sets `off` defensively across a fleet of
+mixed backends, for no gain in honesty.
+
+**Backends map, and enforce their own native constraints.** A gateway may not: OpenRouter was
+measured accepting `budget_tokens == max_tokens` and `budget_tokens < 1024` with HTTP 200 (ADR-020
+§2), both of which `api.anthropic.com` itself rejects. A backend that satisfies a level only by
+violating its vendor's documented constraint fails closed rather than sending a request that works
+against the lenient hop and breaks against the strict one.
+
 ## 3. Backends in v1
 
 | Backend | Reach | Notes |

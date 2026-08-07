@@ -190,6 +190,20 @@ namespace detail {
     return json::Value::make_object(std::move(response_format));
 }
 
+// 004 §2's 2026-08-07 amendment (ADR-020): map the portable ordinal level down to OpenAI's own flat
+// string enum. `off` -> `"none"`, OpenAI's own spelling for the same request. This backend's native
+// shape happens to be a near-match, which is exactly why the CAPABILITY GATE below lives in
+// `build_request_body` and not here -- a pure spelling function has nothing to fail against.
+[[nodiscard]] inline std::string_view translate_reasoning_effort(reasoning_effort effort) noexcept {
+    switch (effort) {
+        case reasoning_effort::off:    return "none";
+        case reasoning_effort::low:    return "low";
+        case reasoning_effort::medium: return "medium";
+        case reasoning_effort::high:   return "high";
+    }
+    return "medium";  // unreachable for a valid enumerator; no fabricated level, just a safe default
+}
+
 // D1: the full `POST /v1/chat/completions` request body. `stream` is a caller-supplied flag (never
 // probed from `ChatRequest`) because `chat()` and `chat_stream()` are the two distinct callers, each
 // wanting a different value.
@@ -200,9 +214,15 @@ namespace detail {
 // tracking id and a best-effort determinism hint, not a sampling knob). Both optional; `end_user_id`
 // empty means "omit `user` from the body entirely" (never send an empty-string user id), `seed`
 // unset means "omit `seed` entirely" (never fabricate a value).
+//
+// `caps` (ADR-020): APPENDED LAST, defaulted, for the one thing this function must now refuse --
+// 004 §2's degradation rule applied to `reasoning_effort`. Defaulting it to an all-false capability
+// set is safe rather than surprising: the gate can only fire when a caller ASKS for a reasoning
+// level, so every pre-existing call site (none of which can have set the field) is unaffected.
 [[nodiscard]] inline result<json::Value> build_request_body(
     ChatRequest const& request, std::string const& model, bool stream,
-    std::string const& end_user_id = {}, std::optional<std::int64_t> seed = std::nullopt) {
+    std::string const& end_user_id = {}, std::optional<std::int64_t> seed = std::nullopt,
+    ChatClientCapabilities const& caps = {}) {
     std::vector<std::pair<std::string, json::Value>> obj;
     obj.emplace_back("model", json::Value::make_string(model));
 
@@ -232,6 +252,23 @@ namespace detail {
 
     if (!end_user_id.empty()) obj.emplace_back("user", json::Value::make_string(end_user_id));
     if (seed.has_value()) obj.emplace_back("seed", json::Value::make_number(static_cast<double>(*seed)));
+
+    // ADR-020. `nullopt` emits nothing at all -- the vendor default, and today's exact behaviour.
+    if (request.reasoning_effort.has_value()) {
+        // 004 §2's degradation rule: no DECLARED fallback for reasoning effort exists, so a backend
+        // that cannot reason must refuse the request rather than quietly drop the field -- dropping
+        // it is the "silently ignores the request" the rule forbids. `off` is exempt: a backend
+        // without the bit satisfies "do not reason" by construction.
+        if (*request.reasoning_effort != reasoning_effort::off && !caps.reasoning) {
+            return std::unexpected(error{
+                failure_class::contract,
+                "request asks for a reasoning effort level but this backend does not declare the "
+                "`reasoning` capability (004 §2: no declared fallback exists)",
+                "openai.reasoning_not_supported"});
+        }
+        obj.emplace_back("reasoning_effort", json::Value::make_string(std::string(
+                                                  translate_reasoning_effort(*request.reasoning_effort))));
+    }
 
     return json::Value::make_object(std::move(obj));
 }
@@ -652,8 +689,11 @@ inline void run_stream_worker(std::string host, std::uint16_t port, std::string 
                                std::string ca_bundle_pem_override, std::string http_referer,
                                std::string x_title, std::string end_user_id,
                                std::optional<std::int64_t> seed, sandbox::ProviderTransport transport,
-                               std::stop_token stop) {
-    auto body = build_request_body(request, model, /*stream=*/true, end_user_id, seed);
+                               std::stop_token stop, ChatClientCapabilities caps) {
+    // ADR-020: `caps` reaches here for one reason -- so `chat_stream()` enforces the SAME reasoning-
+    // effort gate `chat()` does. A capability check that held on one of the two entry points would be
+    // no check at all.
+    auto body = build_request_body(request, model, /*stream=*/true, end_user_id, seed, caps);
     if (!body) {
         producer.fail(quark::error{quark::errc::validation, "openai.request_build_failed"});
         return;
@@ -766,7 +806,8 @@ public:
         auto lease = store_.resolve(api_key_ref_, ctx);
         if (!lease) co_return std::unexpected(lease.error());
 
-        auto body = detail::build_request_body(request, model_, /*stream=*/false, end_user_id_, seed_);
+        auto body = detail::build_request_body(request, model_, /*stream=*/false, end_user_id_, seed_,
+                                                 capabilities_);
         if (!body) co_return std::unexpected(body.error());
 
         auto req = detail::build_http_request(path_prefix_ + "/chat/completions", lease->reveal_text(),
@@ -800,7 +841,7 @@ public:
         std::thread(&detail::run_stream_worker, host_, port_, path_prefix_ + "/chat/completions",
                     lease->reveal_text(), model_, std::move(request), std::move(pair.producer), resolver_,
                     ca_bundle_pem_override_, http_referer_, x_title_, end_user_id_, seed_, transport_,
-                    std::move(stop))
+                    std::move(stop), capabilities_)
             .detach();
         return std::move(pair.consumer);
     }

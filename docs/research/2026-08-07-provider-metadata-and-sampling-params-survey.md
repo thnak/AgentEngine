@@ -172,8 +172,22 @@ after the previous last parameter (`ca_bundle_pem_override`), never inserted ear
    (→ `metadata.user_id`) — **no `seed` param exists on `AnthropicChatClient`**, deliberately: Finding 2
    confirmed Anthropic has no native seed field at all, and a fake no-op parameter would be worse than
    its honest absence.
-3. **`reasoning_effort`** — still deferred, unchanged from the original recommendation below. Not
-   implemented.
+3. ~~**`reasoning_effort`**~~ — **BUILT 2026-08-07 by `decisions/ADR-020-portable-reasoning-effort.md`**,
+   taking option **(c)** below (the RFC-touching one): a 004 §2 amendment adding
+   `enum class reasoning_effort {off, low, medium, high}` and `ChatRequest::reasoning_effort`
+   (appended last). Finding 2's "one vendor's shape leaking" objection is about admitting a vendor's
+   whole vocabulary, not about abstraction — so `minimal` is excluded (OpenAI-only; its absence is what
+   makes this an abstraction rather than a pass-through) and `nullopt` ("no opinion, emit nothing" —
+   today's exact behaviour) stays distinct from `off` ("explicitly disable"). OpenAI maps to its flat
+   string; Anthropic maps to `thinking:{type, budget_tokens}` with the budget computed as 25/50/75% of
+   the same request's `max_tokens`, clamped up to Anthropic's 1024 floor and failing closed when no
+   value satisfies both vendor constraints. `low`/`medium`/`high` require the declared `reasoning`
+   capability (004 §2's degradation rule — no declared fallback exists, so dropping the field silently
+   is forbidden); `off` is exempt.
+   **What decided (c) over (b)** was live evidence, not preference: reasoning effort could NOT be shown
+   to change anything on the OpenAI surface (within-condition variance swamped between-condition), but
+   IS structurally observable on Anthropic's — `enabled` returns `['thinking','text']` blocks,
+   `disabled` returns `['text']`. See ADR-020 §2.
 4. ~~**Expose `model` on `ChatResponse`**~~ — **Done.** `ChatResponse` gained a `model` field (appended
    last, after `usage`); both backends' response parsers populate it from the wire's own top-level
    `"model"` field, empty when absent. Landed as a prerequisite core-type change (`003-Message-and-
@@ -198,8 +212,15 @@ after the previous last parameter (`ca_bundle_pem_override`), never inserted ear
    runtime-assert or validated-setter precedent existed elsewhere in this codebase to follow instead),
    applied via a new shared `make_cache_control(cache_ttl)` helper to every `cache_control` object this
    backend builds.
-8. **`prompt_cache_key`** — still deferred, unchanged from the original recommendation below. Not
-   implemented.
+8. **`prompt_cache_key`** — still deferred, but the open verification item below is now SHARPENED
+   rather than merely restated (ADR-020 §2, probe (i), 2026-08-07). Live result: OpenRouter and a real
+   `llama-server` both return **HTTP 200** for `prompt_cache_key` — **and both also return HTTP 200 for
+   an invented `ae_totally_bogus_field_xyz`**. That negative control is the whole finding: on the
+   endpoints this project can reach, acceptance and silent tolerance are indistinguishable, so
+   "it was accepted" carries no information. The decisive check needs `api.openai.com`'s own Chat
+   Completions endpoint, for which this project holds no credential. Building the field anyway would
+   mean shipping it with no gate that could fail, which CLAUDE.md's own promotion-gate discipline
+   forbids. Still not implemented — now on evidence, not on absence of it.
 
 Original recommendation text for the two still-deferred items, preserved for when they're picked back
 up:
@@ -232,10 +253,12 @@ up:
   is preparatory research for that row, not a claim it's been proven.
 - **Ollama `seed` support** — genuinely undocumented as of this survey; needs either a live check or a
   more authoritative source before assuming either way.
-- **`prompt_cache_key` on the raw Chat Completions wire endpoint** — the locally-vendored `openai-dotnet`
-  SDK only types it for the Responses API; whether the underlying Chat Completions HTTP endpoint itself
-  accepts and honors it is unconfirmed (SDK typed-model coverage lags the raw API routinely). Needs a
-  live check before either building against it or ruling it out.
+- ~~**`prompt_cache_key` on the raw Chat Completions wire endpoint**~~ — **live check RUN 2026-08-07
+  (ADR-020 §2 probe (i)), and it came back inconclusive BY CONSTRUCTION**: OpenRouter and a real
+  `llama-server` both accept `prompt_cache_key` with HTTP 200, and both also accept a deliberately
+  invented field with HTTP 200. Acceptance therefore cannot distinguish support from silent tolerance
+  on either reachable endpoint. Remains open, but the open question is now precisely stated: it needs a
+  credential for `api.openai.com` itself, not another probe against a gateway.
 - **Response-side `model` field for llama.cpp/vLLM/Ollama** — Finding 4's `model` recommendation was
   confirmed against OpenAI/Anthropic/OpenRouter responses directly; not independently verified for the
   three self-hosted servers (though all three explicitly target OpenAI Chat Completions response-shape

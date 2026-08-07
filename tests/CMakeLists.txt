@@ -533,6 +533,19 @@ if(AGENTENGINE_WITH_HTTPS)
   add_test(NAME test_chat_client_stream_incremental COMMAND test_chat_client_stream_incremental)
   set_tests_properties(test_chat_client_stream_incremental PROPERTIES TIMEOUT 120)
 
+  # ---- ADR-020 gates G1-G7: 004 §2's portable reasoning_effort, mapped down by both backends ------
+  # Drives BOTH backends from the same enumerator values in one file, on purpose: the amendment's
+  # claim is portability across two structurally different native shapes (a flat string vs a computed
+  # token budget), and a per-backend suite could only ever prove half of it. Carries the two negative
+  # controls the design turns on -- the capability gate refusing a level, and Anthropic's own vendor
+  # constraints being enforced client-side because a gateway was measured NOT enforcing them.
+  # Pure request building, no network, so it is a default-suite test.
+  add_executable(test_reasoning_effort_portability test_reasoning_effort_portability.cpp)
+  target_link_libraries(test_reasoning_effort_portability PRIVATE
+    agentengine::core agentengine::provider_http_client agentengine_warnings
+    MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+  add_test(NAME test_reasoning_effort_portability COMMAND test_reasoning_effort_portability)
+
   # ---- ADR-018: a REAL ChatClient backend driven through a live AgentSession turn loop -------------
   # Closes Milestone 5's Phase J1 residual. Before it, AgentSession<OpenAIChatClient<...>> did not
   # merely lack a way to be configured -- it failed to COMPILE, because quark::TestKit<A> default-

@@ -54,6 +54,18 @@ struct ChatClientCapabilities {  // ae-naming-lint: allow ChatClientCapabilities
     std::uint64_t max_output_tokens = 0;
 };
 
+// 004 §2's 2026-08-07 amendment (ADR-020). The ONE sampling-adjacent knob carved out of §1's
+// elision, because it is the only one with a defensible portable shape: an ORDINAL LEVEL each
+// backend maps down to its own native mechanism, never a vendor field passed through.
+//
+// `minimal` (OpenAI's fifth level) is deliberately absent — Ollama has no equivalent, so admitting
+// it would make this OpenAI's enum with a rename, exactly the "one vendor's shape leaking onto every
+// other backend" trap 004 §8 Q2 already avoided for prompt caching. Its absence is what makes this
+// an abstraction rather than a pass-through. `off` is a real request ("disable reasoning"), distinct
+// from ChatRequest's `nullopt` ("no opinion — send no field, take the vendor default"); every
+// surveyed backend can express both.
+enum class reasoning_effort { off, low, medium, high };  // ae-naming-lint: allow reasoning_effort — 004 §2's amendment names this concept normatively; 027 has not been updated to list it
+
 struct ChatRequest {  // ae-naming-lint: allow ChatRequest — pre-existing M0 scaffolding, reconcile at owning milestone
     std::vector<Message> messages;
     // 006's real per-run tool table entry — the exact type ContextContribution.tools already reuses
@@ -76,6 +88,14 @@ struct ChatRequest {  // ae-naming-lint: allow ChatRequest — pre-existing M0 s
     // source, not assumed), so no backend wires this into a request header yet -- it exists so one
     // can, without another field-ordering migration, the moment a verified provider mechanism exists.
     std::optional<std::string> idempotency_key;
+    // 004 §2's 2026-08-07 amendment (ADR-020). APPENDED LAST, never inserted earlier -- the same
+    // field-ordering discipline `Usage::cache_write_tokens` learned the hard way (003 §6's own dated
+    // amendment): inserting a field mid-struct silently breaks every positional aggregate
+    // initialization of it. `nullopt` (the default) means "send no reasoning field at all", so every
+    // pre-existing caller and both backends behave bit-for-bit as before.
+    // (Qualified: the member name deliberately matches the enum's, so the type must be spelled with
+    // its namespace here -- the member would otherwise hide the type inside the class scope.)
+    std::optional<agentengine::reasoning_effort> reasoning_effort;
 };
 
 struct ChatResponse {

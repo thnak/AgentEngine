@@ -293,6 +293,69 @@ inline constexpr std::uint64_t kDefaultMaxTokens = 4096;
 
 inline constexpr std::size_t kMaxCacheControlBlocks = 4;
 
+// ADR-020: map 004 §2's portable ordinal level down to Anthropic's genuinely different native shape.
+// Not a spelling change like OpenAI's -- Anthropic takes a token BUDGET, so a level has to become a
+// NUMBER, and the only defensible number is a fraction of the very `max_tokens` this same request
+// carries. Absolute budgets can't work: they would silently exceed a small `max_tokens`.
+//
+// Two hard constraints Anthropic itself documents, enforced HERE rather than left to the server:
+//   * `budget_tokens >= 1024`
+//   * `budget_tokens < max_tokens`
+// A gateway may not enforce them -- OpenRouter was measured (ADR-020 §2) returning HTTP 200 for both
+// `budget_tokens == max_tokens` and `budget_tokens == 512`, while `api.anthropic.com` rejects both.
+// Sending a request that works through the lenient hop and breaks against the strict one is exactly
+// the silent-divergence this project's conventions exist to prevent, so the client fails closed.
+inline constexpr std::uint64_t kMinThinkingBudgetTokens = 1024;
+
+// Percent of `max_tokens` per level. Deliberately leaves headroom at `high` (75%, not ~100%): the
+// remainder is what the visible answer is written from, and a budget that consumed the whole
+// allowance would leave a reasoning trace with no room for a reply.
+[[nodiscard]] inline std::uint64_t thinking_budget_for(reasoning_effort effort,
+                                                        std::uint64_t max_tokens) noexcept {
+    std::uint64_t pct = 50;
+    switch (effort) {
+        case reasoning_effort::low:    pct = 25; break;
+        case reasoning_effort::medium: pct = 50; break;
+        case reasoning_effort::high:   pct = 75; break;
+        case reasoning_effort::off:    return 0;  // caller emits `{"type":"disabled"}`, no budget
+    }
+    std::uint64_t const scaled = (max_tokens / 100) * pct;
+    return scaled < kMinThinkingBudgetTokens ? kMinThinkingBudgetTokens : scaled;
+}
+
+// Builds the `thinking` object, or fails closed when the vendor's own floor cannot fit under
+// `max_tokens` at all (i.e. `max_tokens <= 1024`) -- the one case where no budget satisfies both
+// constraints simultaneously, so there is no honest request to send.
+[[nodiscard]] inline result<json::Value> translate_reasoning_effort(reasoning_effort effort,
+                                                                      std::uint64_t max_tokens) {
+    if (effort == reasoning_effort::off) {
+        std::vector<std::pair<std::string, json::Value>> disabled{
+            {"type", json::Value::make_string("disabled")},
+        };
+        return json::Value::make_object(std::move(disabled));
+    }
+    std::uint64_t const budget = thinking_budget_for(effort, max_tokens);
+    if (budget >= max_tokens) {
+        // Names the actual numbers and the remedy. This branch is NOT a contrived boundary -- it fired
+        // on the first real configuration it met (the live suite declares `max_output_tokens = 1024` to
+        // bound cost, and Anthropic's thinking floor is exactly 1024), so an operator reading this needs
+        // to know it is a vendor floor they must raise past, not a bug to report.
+        return std::unexpected(error{
+            failure_class::contract,
+            "reasoning effort is unsatisfiable: Anthropic requires budget_tokens >= " +
+                std::to_string(kMinThinkingBudgetTokens) + " and budget_tokens < max_tokens, but this "
+                "backend declares max_output_tokens = " + std::to_string(max_tokens) +
+                " -- raise it above " + std::to_string(kMinThinkingBudgetTokens) +
+                " to use any reasoning effort level above `off`",
+            "anthropic.thinking_budget_unsatisfiable"});
+    }
+    std::vector<std::pair<std::string, json::Value>> enabled{
+        {"type", json::Value::make_string("enabled")},
+        {"budget_tokens", json::Value::make_number(static_cast<double>(budget))},
+    };
+    return json::Value::make_object(std::move(enabled));
+}
+
 // `end_user_id`/`cache_ttl` (7): both default-empty, both optional. `end_user_id` non-empty adds
 // `metadata.user_id` (Anthropic's abuse-tracking id -- `Metadata` has ONLY this one field). `cache_ttl`
 // non-empty is applied to every `cache_control` object this function builds (system block + last tool,
@@ -307,9 +370,9 @@ inline constexpr std::size_t kMaxCacheControlBlocks = 4;
                                                               std::string const& cache_ttl = {}) {
     std::vector<std::pair<std::string, json::Value>> obj;
     obj.emplace_back("model", json::Value::make_string(model));
-    obj.emplace_back("max_tokens", json::Value::make_number(static_cast<double>(
-                                        caps.max_output_tokens != 0 ? caps.max_output_tokens
-                                                                     : kDefaultMaxTokens)));
+    std::uint64_t const max_tokens =
+        caps.max_output_tokens != 0 ? caps.max_output_tokens : kDefaultMaxTokens;
+    obj.emplace_back("max_tokens", json::Value::make_number(static_cast<double>(max_tokens)));
 
     SplitMessages split = split_system_messages(request.messages);
     if (!split.system_text.empty()) {
@@ -355,6 +418,23 @@ inline constexpr std::size_t kMaxCacheControlBlocks = 4;
             {"user_id", json::Value::make_string(end_user_id)},
         };
         obj.emplace_back("metadata", json::Value::make_object(std::move(metadata)));
+    }
+
+    // ADR-020. `nullopt` emits nothing at all -- the vendor default, and today's exact behaviour.
+    if (request.reasoning_effort.has_value()) {
+        // 004 §2's degradation rule, identically to the OpenAI backend: no DECLARED fallback for
+        // reasoning effort exists, so a backend that cannot reason refuses rather than dropping the
+        // field. `off` is exempt -- a backend without the bit satisfies "do not reason" already.
+        if (*request.reasoning_effort != reasoning_effort::off && !caps.reasoning) {
+            return std::unexpected(error{
+                failure_class::contract,
+                "request asks for a reasoning effort level but this backend does not declare the "
+                "`reasoning` capability (004 §2: no declared fallback exists)",
+                "anthropic.reasoning_not_supported"});
+        }
+        auto thinking = translate_reasoning_effort(*request.reasoning_effort, max_tokens);
+        if (!thinking) return std::unexpected(thinking.error());
+        obj.emplace_back("thinking", std::move(*thinking));
     }
 
     if (stream) obj.emplace_back("stream", json::Value::make_bool(true));
