@@ -339,14 +339,83 @@ string once assembled — matches 003's existing content model exactly, named he
 the reason D2's tool-call handling could not be "true per-token streaming" for tool calls even in
 principle, independent of Phase C's own incremental-fetch gap.
 
-### Phase E — Anthropic backend (004 §3, first-class)
+### Phase E — Anthropic backend (004 §3, first-class) — **DONE**
 
-- **E1.** Request/response translation for Claude 5 family (Fable 5, Opus 5, Sonnet 5) and Haiku 4.5.
-- **E2.** Cumulative→incremental `Usage` conversion on stream events (§3's specific porting note —
-  Anthropic reports usage cumulatively per event, the engine needs uniform per-chunk `Usage`, 003 §6).
-- **E3.** Reasoning parts and prompt caching as first-class (§3) — caching inserts vendor-specific
-  breakpoints at 005 §3's existing context-assembly segment boundaries, per 004 §8 Q2's resolution
-  (no new portable cache-hint type; backend-internal translation only).
+`include/agentengine/protocol/anthropic/chat_client.hpp` — `AnthropicChatClient<Store>`, structurally
+mirroring Phase D's `OpenAIChatClient` (same detail-namespace-of-pure-functions shape, same detached
+background thread for `chat_stream()`, same injectable resolver/CA-bundle testability seam). Wire
+format was sourced directly from the official Anthropic C# SDK's generated model code
+(`D:\GitSrc\anthropic-sdk-csharp`, the project owner's own pointer, same rigor as Phase D's
+`D:\GitSrc\openai-dotnet` research).
+
+- **E1. Done.** Request/response translation for the Messages API (`POST /v1/messages`). Two real
+  reshaping steps Anthropic's own model forces, not optional stylistic choices: (a) Anthropic has NO
+  `role:"system"` in `messages[]` at all (the SDK's own doc comment says so explicitly) — any
+  `role::system` messages in `ChatRequest.messages` are extracted and concatenated into the top-level
+  `system` field, everything else translates normally; (b) `role::tool` has no Anthropic role either —
+  a tool reply becomes a `role:"user"` message carrying a `tool_result` content block. Also confirmed
+  and handled: `tool_use.input` is a REAL JSON OBJECT on the wire (not OpenAI's stringified
+  `arguments`) — outbound translation parses `ToolCall::arguments_json` into a `json::Value` and emits
+  it directly; inbound parsing `json::dump`s the received object back into `arguments_json`, this
+  project's own uniform string representation, lossless either way. `max_tokens` is REQUIRED by
+  Anthropic (unlike OpenAI's optional/deprecated field) but `ChatRequest` carries no sampling-parameter
+  field at all — falls back to the bound instance's own `ChatClientCapabilities::max_output_tokens`
+  when declared nonzero, else a fixed default (4096), a real named translation-layer decision, not an
+  unstated guess. `usage.input_tokens`/`output_tokens`/`cache_read_input_tokens` map directly (distinct
+  field names from OpenAI's `prompt_tokens`/`completion_tokens`, confirmed exact); `cache_creation_
+  input_tokens` has no AE `Usage` field to land in and is named as an unmapped gap rather than stuffed
+  into an unrelated field.
+- **E2. Done, same "logic real, nowhere to surface it" honesty as Phase D's D2.** Anthropic's
+  `message_delta.usage` fields are documented AND proven (against the SDK's own
+  `MessageContentAggregator.GetResult` reduce) to be the RUNNING TOTAL on every event, not a delta —
+  `accumulate_message_delta_usage` implements the exact reduce (`output_tokens` unconditionally
+  overwritten every event; `input_tokens`/cache-token fields seeded once from `message_start` and only
+  overwritten when a later event actually carries a non-null value), proven against a literal
+  multi-event sequence in `test_anthropic_chat_client_translation.cpp`'s E2-R1 case. **What this has
+  nowhere to surface**: exactly Phase D's own D2 finding — `ChatResponseUpdate{delta, is_final}` has no
+  `Usage` field at all, so the conversion logic is real and tested but not wired into any caller-visible
+  per-chunk value; that gap is `ChatResponseUpdate`'s own, pre-existing, not reopened or claimed closed
+  here.
+- **E3. Done, two parts, both scoped explicitly narrower than the full text — named, not silently
+  claimed complete.**
+  - *Reasoning parts*: response-parsing ONLY, never round-tripped back to the API. A `thinking` block
+    requires BOTH `thinking` text AND an opaque `signature` (tamper-evidence) string; `redacted_
+    thinking` carries only opaque `data`, no visible text. This project's content model
+    (`Reasoning{text, encrypted}`) has no field to carry `signature`/`data` — inbound parsing maps
+    `thinking` → `Reasoning{text, encrypted=false}` and `redacted_thinking` → `Reasoning{text="",
+    encrypted=true}` for the caller to read, but a `Reasoning` content item is silently dropped from
+    OUTBOUND message translation (`test_anthropic_chat_client_translation.cpp`'s E3-R3 case) — re-
+    sending a thinking block without its real signature is either rejected by the API or defeats the
+    tamper-evidence property it exists for, and there is nowhere in this project's content model that
+    signature could have been kept in the first place. Full extended-thinking round-tripping across
+    turns is real future work, not built here.
+  - *Prompt caching*: `cache_control` breakpoints at the two segment boundaries actually reachable from
+    `ChatRequest` as received — the extracted `system` text and the last tool definition — gated on
+    `ChatClientCapabilities::prompt_caching` being declared true for the bound instance. 004 §8 Q2's
+    resolution names "005 §3's existing context-assembly segment boundaries" as the insertion point,
+    but `ChatRequest.messages` is already a FLATTENED list by the time it reaches ANY `ChatClient`
+    (`core/context_assembly.hpp`'s `assemble_context` merges every contributor's messages into one
+    vector with no per-contributor boundary markers surviving) — finer-grained per-contributor
+    breakpoints are not reachable from this seam without threading boundary markers through
+    `ContextAssemblyResult`/`ChatRequest` first, a real, separate, not-yet-built architectural change,
+    not a gap in this phase's own translation logic. system+tools is Anthropic's own documented
+    best-practice breakpoint placement (the stable prefix), so this is a real, meaningful caching win
+    at the one boundary genuinely available today, not a token gesture — proven end to end (a request
+    with `prompt_caching` declared and a system message actually round-trips over a real TLS
+    connection without the server rejecting the shape, `test_anthropic_chat_client_live.cpp`).
+
+Proven in `tests/test_anthropic_chat_client_translation.cpp` (pure translation/parsing logic, offline,
+literal wire-format JSON — including the message-reshaping, real-JSON-object tool input, thinking/
+redacted_thinking parsing, cumulative-usage reduce, and named-event SSE splitting) and
+`tests/test_anthropic_chat_client_live.cpp` (end-to-end against a real local TLS server, both `chat()`
+and `chat_stream()`, including secret rotation, capability denial, and the system+caching request
+shape).
+
+**Structured output**: uses Anthropic's native `output_config.format` (`{"type":"json_schema",
+"schema":...}`), confirmed as the SDK's own primary/newer mechanism — distinct wire shape from OpenAI's
+`response_format`, and (unlike Phase D's OpenAI backend) does NOT force `additionalProperties:false`
+into the schema, since nothing in the research confirms Anthropic requires or even recognizes that key
+— this backend does not assert an unconfirmed requirement onto the schema.
 
 ### Phase F — Reliability and cost (004 §4-5, scoped per decisions 6/7)
 

@@ -455,6 +455,18 @@ if(AGENTENGINE_WITH_HTTPS)
     agentengine::core agentengine::provider_http_client agentengine_warnings
     MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
   add_test(NAME test_openai_chat_client_live COMMAND test_openai_chat_client_live)
+
+  # ---- Milestone 5 Phase E: Anthropic ChatClient backend (protocol/anthropic/chat_client.hpp) ------
+  add_executable(test_anthropic_chat_client_translation test_anthropic_chat_client_translation.cpp)
+  target_link_libraries(test_anthropic_chat_client_translation PRIVATE
+    agentengine::core agentengine::provider_http_client agentengine_warnings)
+  add_test(NAME test_anthropic_chat_client_translation COMMAND test_anthropic_chat_client_translation)
+
+  add_executable(test_anthropic_chat_client_live test_anthropic_chat_client_live.cpp)
+  target_link_libraries(test_anthropic_chat_client_live PRIVATE
+    agentengine::core agentengine::provider_http_client agentengine_warnings
+    MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+  add_test(NAME test_anthropic_chat_client_live COMMAND test_anthropic_chat_client_live)
 endif()
 
 # ---- RecordedChatClient fixture player (test-only) ---------------------------------------------
