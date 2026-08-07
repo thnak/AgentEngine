@@ -50,10 +50,24 @@ struct MemoryItem {  // ae-naming-lint: allow MemoryItem — pre-existing M0 sca
 // `read_ref` directly means principal-scoped isolation is the SAME real isolation A1 already
 // proved for `session_actor_id()`: two different principal ids hash to two different `ActorId`s
 // (`ref_actor_id`), never colliding.
+//
+// Milestone 5 Phase I1 (018 §6: "Tenant is a first-class dimension... not a filter applied at
+// query time"; 029 §9 G4: "cross-tenant access... is a release-blocking defect class"). FIX, found
+// by this phase: through Milestone 4 this derived from `principal.id` ALONE — `tenant_id` played
+// no role at all. Two principals in DIFFERENT tenants sharing the same `id` (a realistic collision:
+// tenant-scoped id spaces are typically allocated independently per tenant, e.g. both tenants have
+// a user literally named "admin") got the IDENTICAL ref name and therefore the IDENTICAL memory
+// worktree — full cross-tenant memory leakage, not a hypothetical. `test_memory_worktree.cpp`'s
+// own pre-existing cross-principal proof never caught this because both its principals shared one
+// tenant ("tenant-1") — same-tenant, different-id collisions were the only case exercised.
+// `tenant_id` is now part of the derivation, so a same-id collision across tenants can no longer
+// collide with itself the way an empty-tenant same-id collision still legitimately would (a
+// single-tenant deployment's own two principals still need distinct `id`s, unchanged and correct).
+// Proven — both the failure this fixes and the fix itself — in `test_memory_cross_tenant_isolation.cpp`.
 // ================================================================================================
 
 [[nodiscard]] inline std::string memory_ref_name(Principal const& principal) {
-    return "principal:" + principal.id;
+    return "principal:" + principal.tenant_id + ":" + principal.id;
 }
 
 // Bootstraps a principal's memory worktree if it doesn't exist yet (an empty tree committed under
@@ -86,14 +100,17 @@ template <WorktreeObjectStore OS, quark::Store RS>
 // originally granted for principal A's own memory would ALSO satisfy that same check against a
 // `Mount` object someone builds for principal B — the exact "shared index" leakage class 029 §8/§9
 // name, arrived at by an API footgun rather than a deliberately adversarial plugin config. Making
-// `mount_id` a pure function of the principal closes that hole structurally: two different
-// principals can never end up with the same internal `mount_id`, so a capability minted for one
-// is REJECTED outright against the other's `Mount`, before any store access at all — proven in
-// `test_memory_cross_principal_isolation.cpp`. The guest-visible mount PATH (what an agent sees
-// under, e.g., "/memory") is a separate, host-chosen presentation detail this function does not
-// touch; `mount_id` here is purely the internal capability-matching key.
+// `mount_id` a pure function of the principal closes that hole for two DIFFERENT ids within the
+// same tenant, proven in `test_memory_worktree.cpp`'s own cross-principal case — but (Milestone 5
+// Phase I1, see `memory_ref_name`'s own comment for the full story) `tenant_id` is now part of the
+// derivation too, since `id` alone left two SAME-id principals in different tenants colliding on
+// this exact function's output — the real cross-TENANT instance of the same "shared index"
+// leakage class 029 §8/§9 names, proven (failure and fix both) in
+// `test_memory_cross_tenant_isolation.cpp`. The guest-visible mount PATH (what an agent sees under,
+// e.g., "/memory") is a separate, host-chosen presentation detail this function does not touch;
+// `mount_id` here is purely the internal capability-matching key.
 [[nodiscard]] inline std::string memory_mount_id(Principal const& principal) {
-    return "memory:" + principal.id;
+    return "memory:" + principal.tenant_id + ":" + principal.id;
 }
 
 [[nodiscard]] inline Mount memory_mount(Principal const& principal) {

@@ -639,13 +639,51 @@ already reconfirmed unrelated in Phase G — this run only 1 of the 3 native_jai
 failed, consistent with it being flaky rather than a regression; none of this phase's files touch the
 native_jail backend).
 
-### Phase I — Multi-tenancy proof (018 §6-7, decisions 6/9/10)
+### Phase I — Multi-tenancy proof (018 §6-7, decisions 6/9/10) — **DONE**
 
-- **I1.** Cross-tenant denial tested across the surfaces that exist today: session (005/M4), memory
-  (029/M4), sandbox workspace (008/M2-M3). Audit-query surface named explicitly out of scope (no audit
-  log/query API exists yet) — G4 proven narrower than its full text.
-- **I2.** Delegation attenuation (G5) proven at 007's existing scope (decision 10) — a derived
-  principal/capability set never gains authority its parent lacked.
+- **I1. Done — session and sandbox-workspace legs by citation, memory leg by a real bug fix.**
+  - **Session (005/M4).** Already proven directly by Phase H2's own admission test
+    (`test_agent_session_admission.cpp`, H2-R7/R8): a caller sharing the session owner's `id` but from
+    a DIFFERENT `tenant_id` is denied at the actor boundary before `ChatClient::chat()` is ever
+    reached — not duplicated here, cited as the same property this leg asks for.
+  - **Memory (029/M4) — a real bug, found and fixed.** Through Milestone 4, `memory_ref_name()`/
+    `memory_mount_id()` (`core/memory.hpp`) derived their output from `principal.id` ALONE —
+    `tenant_id` played no role. Two principals in different tenants sharing an `id` (a realistic
+    collision — tenant-scoped id spaces are typically allocated independently, e.g. both tenants
+    can have a user literally named "admin") got the byte-identical ref name and mount_id: their
+    memory worktrees were the SAME worktree, full cross-tenant leakage.
+    `test_memory_worktree.cpp`'s own Milestone 4 cross-principal proof never caught this because
+    both of its principals share one tenant — only the different-tenant, same-id case was
+    untested. Fixed: both functions now fold `tenant_id` into their derivation (their own comments
+    in `memory.hpp` carry the full story). Proven — failure class closed, same-tenant behavior
+    unaffected — in the new `tests/test_memory_cross_tenant_isolation.cpp`.
+  - **Sandbox workspace (008/M2-M3).** Narrower than the other two legs, named explicitly: unlike
+    memory, no `AgentSession`-level or principal/tenant-keyed mount-naming convention exists
+    anywhere in the tree for sandbox workspaces yet (`AgentSession` wires no workspace `Mount` at
+    all at this milestone's scope — a tool that wants one constructs its own `Mount` ad hoc), so
+    there is no tenant-blind derivation function analogous to `memory_mount_id` to audit for the
+    same bug. What IS real and already proven (M2/M3, unchanged by this phase): the generic
+    `Mount`/capability-mismatch mechanism `mount_read`/`mount_write` enforce — two distinct
+    `mount_id`s are rejected outright against each other, before any store access
+    (`tests/test_worktree_mount.cpp`). Cross-tenant denial at this surface today reduces to that
+    same generic, already-real mechanism; a dedicated tenant-keyed naming convention for sandbox
+    workspaces (the thing that would let this leg's proof mirror memory's exactly) doesn't exist
+    to build against yet, named here rather than silently assumed complete.
+  - Audit-query surface named explicitly out of scope (no audit log/query API exists yet) — G4
+    proven narrower than its full text, matching decision 9.
+- **I2. Done, requiring no new code.** Delegation attenuation (G5) — "a derived principal/capability
+  set never gains authority its parent lacked" — is a composition of two independently real, already-
+  tested mechanisms: capability attenuation (007 G3, real and red-teamed since M2 —
+  `tests/test_capability_enforcement.cpp`'s C2/C3/R-C3 prove every widening axis of
+  `CapabilitySet::attenuate()` is rejected, not just narrowing accepted) and principal attenuation
+  (H1, this milestone — `tests/test_principal_delegation.cpp`'s H1-R9/R10 prove `derive_on_behalf_of()`
+  never elevates tenant or kind). Together they cover the full claim at 007's existing scope; full
+  A2A/MCP delegation chains (018 §7 G5's complete text) still need 012/011 (M7), matching decision 10.
+
+Verification: full build (all targets) and `ctest -j4` (102 tests, including the new
+`test_memory_cross_tenant_isolation.cpp`) both clean except the same pre-existing
+`native_jail_backend_windows` OOM-classification flake (unrelated — none of this phase's files touch
+the native_jail backend).
 
 ### Phase J — The milestone's central falsifiable claims (roadmap exit criterion)
 

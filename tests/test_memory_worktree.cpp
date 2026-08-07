@@ -39,8 +39,9 @@ int main() {
     ae::Principal const bob{"p-bob", "tenant-1"};
 
     // --- G1: memory worktree naming + real isolation, reusing A1's exact mechanism -------------
-    AE_CHECK(ae::memory_ref_name(alice) == "principal:p-alice",
-             "G1-C1: the memory ref name is 'principal:<id>', 029 §2's exact naming");
+    AE_CHECK(ae::memory_ref_name(alice) == "principal:tenant-1:p-alice",
+             "G1-C1: the memory ref name is 'principal:<tenant_id>:<id>', 029 §2's naming extended "
+             "with tenant_id in Milestone 5 Phase I1 (see memory_ref_name's own comment)");
     AE_CHECK(ae::ref_actor_id(ae::memory_ref_name(alice)) != ae::ref_actor_id(ae::memory_ref_name(bob)),
              "G1-R1: two principals' memory worktrees resolve to distinct ActorIds -- the SAME "
              "isolation mechanism A1 proved for sessions, one level up, not a new one");

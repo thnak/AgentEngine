@@ -335,6 +335,15 @@ if(WIN32)
   target_link_libraries(test_memory_worktree PRIVATE
     agentengine::core agentengine::worktree_store agentengine_warnings)
   add_test(NAME test_memory_worktree COMMAND test_memory_worktree)
+
+  # ---- Milestone 5 Phase I1 (018 §6, 029 §9 G4/G5) -- cross-TENANT memory isolation. Proves and
+  # fixes a real bug: memory_ref_name()/memory_mount_id() (core/memory.hpp) derived from
+  # principal.id alone through Milestone 4, so two principals with the same id in different tenants
+  # collided on the identical memory worktree.
+  add_executable(test_memory_cross_tenant_isolation test_memory_cross_tenant_isolation.cpp)
+  target_link_libraries(test_memory_cross_tenant_isolation PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_memory_cross_tenant_isolation COMMAND test_memory_cross_tenant_isolation)
 endif()
 
 # ---- Milestone 4 Phase G3/G4 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) --
