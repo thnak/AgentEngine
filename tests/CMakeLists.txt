@@ -543,6 +543,24 @@ add_executable(test_agent_session_token_budget test_agent_session_token_budget.c
 target_link_libraries(test_agent_session_token_budget PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_agent_session_token_budget COMMAND test_agent_session_token_budget)
 
+# ---- Milestone 5 Phase G1 -- ChatCallRecording JSON codec (core/chat_recording.hpp), the shared
+# foundation RecordingChatClient<Inner> and ReplayChatClient both depend on.
+add_executable(test_chat_recording_codec test_chat_recording_codec.cpp)
+target_link_libraries(test_chat_recording_codec PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_chat_recording_codec COMMAND test_chat_recording_codec)
+
+# ---- Milestone 5 Phase G1 -- RecordingChatClient<Inner> (core/recording_chat_client.hpp), the real
+# recording mechanism promoted from RecordedChatClient's test-scoped stand-in.
+add_executable(test_recording_chat_client test_recording_chat_client.cpp)
+target_link_libraries(test_recording_chat_client PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_recording_chat_client COMMAND test_recording_chat_client)
+
+# ---- Milestone 5 Phase G2 -- ReplayChatClient (core/replay_chat_client.hpp), the real replay
+# mechanism with identical chunk boundaries and inter-chunk timing (004 §7 G3).
+add_executable(test_replay_chat_client test_replay_chat_client.cpp)
+target_link_libraries(test_replay_chat_client PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_replay_chat_client COMMAND test_replay_chat_client)
+
 # ---- Dependency-free JSON value/parser/serializer (M2 Phase B task B2, core/json_value.hpp) ----
 # Header-only, core-tier -- links only agentengine::core (no nlohmann::json; this IS the seam that
 # keeps nlohmann out of product code, see CONVENTIONS.md dependency-tier discipline).

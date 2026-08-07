@@ -510,15 +510,60 @@ into the schema, since nothing in the research confirms Anthropic requires or ev
   residual, decision 6) — that stays explicitly deferred, unactioned by this phase, per the milestone
   doc's own scoping above.
 
-### Phase G — Recording and replay (004 §6, decision 8)
+### Phase G — Recording and replay (004 §6, decision 8) — **DONE**
 
-- **G1.** Promote the recording mechanism from `RecordedChatClient`'s test-scoped fixture player to
-  the real thing: every real backend (D/E) records request, response or full ordered chunk sequence,
-  timing, and usage.
-- **G2.** Replay serves from the recording with identical chunk boundaries — streaming-dependent
-  behavior (early tool dispatch, UI cadence) reproduces exactly (this is 004 §7 G3's own gate).
-- **G3.** Privacy: off by default (decision 8's scoped-down slice); full metadata-only/hashed-content
-  modes deferred to M8 alongside 016.
+Shared foundation, built first and proved standalone (8/8 checks, `tests/test_chat_recording_codec.cpp`):
+`include/agentengine/core/chat_recording.hpp` — a dependency-free JSON codec (built on
+`core/json_value.hpp`, never nlohmann — CONVENTIONS.md's core dependency tier) for the full
+`ChatCallRecording` envelope: every `ContentItem` variant alternative (all 9, including `Media`'s
+bytes/uri/blob_ref payload — a real, self-contained base64 codec for the bytes case), `Message`,
+`Usage`, `ChatResponse`, `ChatResponseUpdate`, `error`, and a scoped-down `ChatRequest` capture
+(`messages`/`output_schema_json`/`idempotency_key` round-trip exactly; `tools` records
+`{name, description, args_schema_json, reply_schema_json}` only — `ToolDescriptor::invoke` is a
+runtime closure, not data, and is named as intentionally lossy rather than silently dropped). File
+I/O (`write_chat_call_recording`/`read_chat_call_recording`) included.
+
+- **G1. Done.** `include/agentengine/core/recording_chat_client.hpp` — `RecordingChatClient<Inner>`,
+  a `ChatClient`-conforming template wrapper (matching Phase F's `ResilientChatClient`/
+  `FailoverChatClient` CRTP-composition pattern) around any conforming `Inner`. `chat()` times the
+  call, records BOTH outcomes (success and failure — a later replay must be able to reproduce an
+  error, not just a success) via an injectable `RecordingSink` (`std::function<void
+  (ChatCallRecording)>`, the same testability-seam shape as `ResilientChatClient`'s jitter source;
+  defaults to a no-op — this class owns capture, never file I/O, a caller's sink decides where
+  recordings go), and returns Inner's own result completely unchanged (transparent, behavior-
+  preserving). `chat_stream()` drains Inner's stream on a detached background thread using this
+  codebase's established poll-loop idiom, recording each chunk's content and elapsed time while
+  re-delivering it unchanged (same order, same boundaries) through a new stream, then mirrors Inner's
+  terminal condition onto that new stream (`Closed`/`Failed` exactly, `Cancelled`/`DeadlineExceeded`
+  translated through `fail()` since `ReplyStreamProducer` exposes no producer-side setter for either —
+  named honestly, not silently approximated). Proved in `tests/test_recording_chat_client.cpp` (5
+  scenarios: success and failure `chat()` calls recorded and passed through unchanged, a multi-chunk
+  stream recorded with order/content preserved on both the recording and the caller-facing delivery,
+  and `stream_terminal` matching the inner stream's real terminal).
+- **G2. Done.** `include/agentengine/core/replay_chat_client.hpp` — `ReplayChatClient`, the real
+  product-code conformer promoted from `RecordedChatClient`'s test-scoped, 3-content-kind, non-
+  streaming stand-in (`tests/support/recorded_chat_client.hpp`, left untouched — still test-only
+  scaffolding one other test depends on). One instance always serves one constructor-supplied
+  `ChatCallRecording` (same "no request-based selection" simplicity `RecordedChatClient` established).
+  `chat()` replays a unary recording's `.response`/`.chat_error` verbatim; called against a
+  streaming-mode recording it fails closed with `failure_class::contract` rather than coercing.
+  `chat_stream()` replays a streaming recording's chunks in exact order, sleeping between pushes for
+  the real recorded inter-chunk delta (004 §7 G3's own gate: "streaming-dependent behavior... UI
+  cadence reproduces exactly") via an injectable `SleepFn` (same seam shape as `ResilientChatClient`'s
+  jitter source — tests inject a non-blocking fake and assert the exact deltas it was asked to wait),
+  then maps the recorded `stream_terminal` back to a real stream terminal; called against a unary-mode
+  recording it fails immediately without pushing an item. Proved in `tests/test_replay_chat_client.cpp`
+  (8 scenarios covering both `chat()` outcomes, both mode-mismatch fail-closed paths, ordered
+  multi-chunk replay, exact inter-chunk timing via the injected fake sleep, and all four
+  `stream_terminal` → real-terminal mappings).
+- **G3. Done, trivially, per its own scoped-down slice.** Recordings capture full content — no
+  redaction toggle exists yet, which IS "off by default" (decision 8's own text): the full
+  metadata-only/hashed-content mode set needs 016 (M8), named deferred, not half-built against a
+  not-yet-real observability surface.
+
+Verification: full build (571/571 targets) and `ctest -j4` (98 tests) both clean except the
+pre-existing `native_jail_*` OOM-classification flake (reproduces even at `-j1`, in files this phase
+never touched — confirmed unrelated before committing, see project memory for its prior history).
 
 ### Phase H — Identity and admission, scoped past 011/012 (018 §1-2, decisions 1/9/10)
 
