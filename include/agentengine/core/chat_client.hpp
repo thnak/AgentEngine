@@ -71,6 +71,15 @@ struct ChatRequest {  // ae-naming-lint: allow ChatRequest — pre-existing M0 s
 struct ChatResponse {
     Message message;
     Usage   usage;
+    // Milestone 5 research follow-up (docs/research/2026-08-07-provider-metadata-and-sampling-params-
+    // survey.md Finding 4): the model that ACTUALLY answered -- both OpenAI's and Anthropic's own wire
+    // responses report this (confirmed directly against a real live call: an `openrouter/auto` request
+    // came back "model":"google/gemini-3.5-flash-lite"), and it's invisible to the caller today. Matters
+    // whenever routing isn't pinned to one model (auto-routing, fallback lists, any gateway that can
+    // silently substitute a backend) and for correlating cache-hit behavior with which concrete backend
+    // served a call. Empty string when a backend doesn't report one (never fabricated from the request's
+    // own `model` field -- that's what was ASKED for, not what answered).
+    std::string model;
 };
 
 struct ChatResponseUpdate {  // ae-naming-lint: allow ChatResponseUpdate — pre-existing M0 scaffolding, reconcile at owning milestone

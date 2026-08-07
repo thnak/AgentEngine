@@ -121,9 +121,18 @@ content degrades to a typed placeholder that still round-trips.
 
 ## 6. Usage accounting
 
-`Usage{input_tokens, output_tokens, cached_input_tokens, reasoning_tokens, cost_estimate}` attaches
-to responses and aggregates per turn, run, session, and agent version. It is a first-class part of
-the model, not a telemetry side-effect, because budgets (002 `TokenBudget<N>`) enforce against it.
+`Usage{input_tokens, output_tokens, cached_input_tokens, cache_write_tokens, reasoning_tokens,
+cost_estimate}` attaches to responses and aggregates per turn, run, session, and agent version. It is
+a first-class part of the model, not a telemetry side-effect, because budgets (002 `TokenBudget<N>`)
+enforce against it.
+
+**Amendment (2026-08-07, Milestone 5 Phase D/E follow-up):** `cache_write_tokens` added —
+`cached_input_tokens` already covers a cache READ (tokens served from a previously cached prefix,
+cheaper); real backends also report the symmetric cache WRITE cost (tokens spent establishing a new
+cache entry, e.g. Anthropic's `cache_creation_input_tokens`, OpenRouter's `usage.prompt_tokens_details.
+cache_write_tokens`) which had no field to land in — see
+`docs/research/2026-08-07-provider-metadata-and-sampling-params-survey.md` Finding 5. Purely additive
+(defaults to 0), not a breaking change to any existing conformer.
 
 ## 7. Promotion gate
 

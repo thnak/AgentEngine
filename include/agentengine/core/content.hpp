@@ -91,6 +91,16 @@ struct Usage {  // ae-naming-lint: allow Usage — pre-existing M0 scaffolding, 
     std::uint64_t cached_input_tokens = 0;
     std::uint64_t reasoning_tokens = 0;
     double        cost_estimate = 0.0;
+    // 003 §6 amendment (2026-08-07): the symmetric counterpart to cached_input_tokens (a cache READ) --
+    // tokens spent establishing a new cache entry (Anthropic's cache_creation_input_tokens, OpenRouter's
+    // usage.prompt_tokens_details.cache_write_tokens). See docs/research/2026-08-07-provider-metadata-
+    // and-sampling-params-survey.md Finding 5. Appended LAST, not inserted among the original five
+    // fields: several existing call sites positionally aggregate-initialize `Usage{a,b,c,d,e}` (5
+    // values) -- inserting a field earlier silently shifts every value after it onto the wrong member
+    // (confirmed the hard way: a positional `Usage{1,1,0,0,0.0}` narrowed a `double` into this field's
+    // `uint64_t` slot and failed to compile once tried mid-struct). Appending preserves every existing
+    // 5-value call site exactly as originally written, with this field defaulting to 0.
+    std::uint64_t cache_write_tokens = 0;
 };
 
 struct Message {
