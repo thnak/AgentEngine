@@ -78,7 +78,28 @@ inline constexpr std::uint64_t kHardResponseCeilingBytes = 16u * 1024u * 1024u;
 // to parse as a dotted-quad at all rather than needing to be filtered downstream), then
 // `getaddrinfo(..., AF_INET, ...)` for a genuine hostname. The first candidate `is_blocked_address`
 // does not reject is returned; if every candidate is blocked, or nothing resolves, this fails closed.
+//
+// This is the GUEST-egress resolver (`HostEgressProxy::fetch`, ADR-011 claims C4-C6): the host there
+// is guest-supplied, so a private/loopback/metadata destination is exactly the SSRF attack the
+// blocked-range table exists to stop.
 [[nodiscard]] result<VerifiedEndpoint> resolve_and_validate(std::string_view host, std::uint16_t port);
+
+// Same single resolution attempt and same resolve-once-connect-to-a-literal discipline as
+// `resolve_and_validate` (they share one implementation so they cannot drift), but with NO
+// blocked-range filtering: the first IPv4 candidate is returned whatever it is.
+//
+// decisions/ADR-016-provider-egress-address-policy.md: this is the HOST-INITIATED provider resolver
+// (`perform_provider_https_exchange`, 004 §3). The threat models are genuinely different. On the
+// guest path the destination is attacker-influenced, so private addresses are an attack. On the
+// provider path the destination is a deployment's own configured inference endpoint -- never derived
+// from model output (I3), never guest-supplied -- and a private address is the ORDINARY case: a
+// llama.cpp/vLLM/Ollama server on loopback, a corporate gateway on RFC 1918, an in-cluster
+// service. Refusing those was not defence, it was a false positive with no attacker on the other
+// side of it.
+//
+// This deliberately does NOT weaken the guest path: `HostEgressProxy::resolver` still defaults to
+// `resolve_and_validate` above, and test_net_egress_proxy.cpp still proves every blocked range.
+[[nodiscard]] result<VerifiedEndpoint> resolve_host(std::string_view host, std::uint16_t port);
 
 // Connects to exactly `endpoint` (never a hostname -- see `VerifiedEndpoint`'s own comment), speaks
 // plain HTTP/1.1 (request line + headers + optional body; reads a status line + headers + body back,

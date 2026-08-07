@@ -477,6 +477,51 @@ if(AGENTENGINE_WITH_HTTPS)
     MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
   add_test(NAME test_anthropic_chat_client_live COMMAND test_anthropic_chat_client_live)
 
+  # ---- Live end-to-end against REAL inference servers (label: live-network) ----------------------
+  # The two *_live tests above are end-to-end over a real TLS socket but against a CANNED loopback
+  # server -- every byte the client receives was written by the test itself, so they prove plumbing
+  # and parsing but cannot prove that what this project SENDS is well-formed enough for a real
+  # provider to accept (a canned server drains and replies unconditionally; a real one returns HTTP
+  # 400). These two close that gap.
+  #
+  # Both are gated on environment variables and SKIP (exit 0) when unset, so a default `ctest` run on
+  # a machine with no credential and no network stays green. They are also LABELLED `live-network`,
+  # so a run that means to exclude them entirely can:
+  #     ctest -LE live-network
+  # and a run that means to exercise only them can:
+  #     ctest -L live-network
+  # tools/run-live-provider-tests.ps1 populates the environment and does the latter.
+  #
+  # They are nondeterministic by nature (a live model), which is why nothing in either asserts on
+  # model CONTENT -- only on structure. Deterministic replay of a real provider's bytes remains
+  # Recording/ReplayChatClient's job (004 §5), not theirs.
+  add_executable(test_openrouter_live_e2e test_openrouter_live_e2e.cpp)
+  target_link_libraries(test_openrouter_live_e2e PRIVATE
+    agentengine::core agentengine::provider_http_client agentengine_warnings
+    MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+  add_test(NAME test_openrouter_live_e2e COMMAND test_openrouter_live_e2e)
+  set_tests_properties(test_openrouter_live_e2e PROPERTIES LABELS "live-network" TIMEOUT 300)
+
+  add_executable(test_llamacpp_live_e2e test_llamacpp_live_e2e.cpp)
+  target_link_libraries(test_llamacpp_live_e2e PRIVATE
+    agentengine::core agentengine::provider_http_client agentengine_warnings
+    MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+  add_test(NAME test_llamacpp_live_e2e COMMAND test_llamacpp_live_e2e)
+  set_tests_properties(test_llamacpp_live_e2e PROPERTIES LABELS "live-network" TIMEOUT 300)
+
+  # ---- ADR-016 gates G1-G4: host-initiated provider egress address policy + transport --------------
+  # The positive control for ADR-016. It relaxes the SSRF blocked-range table on the provider path
+  # while leaving it enforced on the WASM guest path -- only defensible if BOTH halves are shown
+  # against the SAME live loopback address in the SAME run, which is what this does. Deterministic and
+  # offline (a plain-HTTP loopback server, no credential, no egress), so it is a DEFAULT-suite test,
+  # deliberately not labelled live-network. ADR-016's G5 (the motivating case really works) is
+  # test_llamacpp_live_e2e.cpp's.
+  add_executable(test_provider_egress_address_policy test_provider_egress_address_policy.cpp)
+  target_link_libraries(test_provider_egress_address_policy PRIVATE
+    agentengine::core agentengine::provider_http_client agentengine_warnings
+    MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+  add_test(NAME test_provider_egress_address_policy COMMAND test_provider_egress_address_policy)
+
   # ---- Milestone 5 Phase J1 (roadmap exit criterion, 004 §7 G1): the same unchanged call site, run
   # against real OpenAI/Anthropic backends over local TLS servers, a ReplayChatClient, and a
   # FailoverChatClient<real, real> composition with a genuinely failing primary.

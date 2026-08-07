@@ -215,23 +215,31 @@ result<std::monostate> reject_crlf(std::string_view field_name, std::string_view
     return std::monostate{};
 }
 
-result<VerifiedEndpoint> resolve_and_validate(std::string_view host, std::uint16_t port) {
+namespace {
+
+// The resolution half, shared by `resolve_host` and `resolve_and_validate` so the two cannot drift:
+// exactly one resolution attempt, IPv4 only, candidates returned in `getaddrinfo` order. Applies NO
+// address policy of its own -- filtering is the caller's, which is the whole point of splitting it
+// out (ADR-016: the two callers have genuinely different threat models).
+//
+// `literal` reports whether the answer came from the `inet_pton` fast path rather than the resolver.
+// Only the error WORDING depends on it; both callers keep their own pre-existing messages verbatim.
+struct ResolvedCandidates {
+    std::vector<std::uint32_t> addresses;
+    bool literal = false;
+};
+
+result<ResolvedCandidates> resolve_candidates(std::string const& host_str) {
 #if defined(_WIN32)
     quark::pal::ensure_winsock();
 #endif
-    std::string const host_str(host);
-
     // Fast path: a numeric IPv4 literal never touches the resolver. inet_pton's strict, dotted-quad-
     // only grammar (unlike the legacy, lenient inet_addr/gethostbyname) is what makes a decimal/
     // octal/hex-encoded address fail to parse here rather than needing to be filtered downstream
     // (ADR-011 claim C5; docs/research/2026-08-05-ssrf-dns-rebinding-defense.md §4).
     ::in_addr direct{};
     if (::inet_pton(AF_INET, host_str.c_str(), &direct) == 1) {
-        std::uint32_t const addr = ::ntohl(direct.s_addr);
-        if (is_blocked_address(addr)) {
-            return std::unexpected(error{failure_class::policy, "address is in a blocked range", "net.address_blocked"});
-        }
-        return VerifiedEndpoint{addr, port};
+        return ResolvedCandidates{{::ntohl(direct.s_addr)}, /*literal=*/true};
     }
 
     ::addrinfo hints{};
@@ -242,20 +250,36 @@ result<VerifiedEndpoint> resolve_and_validate(std::string_view host, std::uint16
     if (rc != 0 || results == nullptr) {
         return std::unexpected(error{failure_class::transient, "could not resolve an IPv4 address for this host", "net.host_unresolvable"});
     }
-    std::optional<std::uint32_t> chosen;
+    ResolvedCandidates out;
     for (::addrinfo* p = results; p != nullptr; p = p->ai_next) {
         auto const* sin = reinterpret_cast<::sockaddr_in const*>(p->ai_addr);
-        std::uint32_t const addr = ::ntohl(sin->sin_addr.s_addr);
-        if (!is_blocked_address(addr)) {
-            chosen = addr;
-            break;
-        }
+        out.addresses.push_back(::ntohl(sin->sin_addr.s_addr));
     }
     ::freeaddrinfo(results);
-    if (!chosen) {
-        return std::unexpected(error{failure_class::policy, "every resolved address is in a blocked range", "net.address_blocked"});
+    if (out.addresses.empty()) {
+        return std::unexpected(error{failure_class::transient, "could not resolve an IPv4 address for this host", "net.host_unresolvable"});
     }
-    return VerifiedEndpoint{*chosen, port};
+    return out;
+}
+
+}  // namespace
+
+result<VerifiedEndpoint> resolve_host(std::string_view host, std::uint16_t port) {
+    auto candidates = resolve_candidates(std::string(host));
+    if (!candidates) return std::unexpected(candidates.error());
+    return VerifiedEndpoint{candidates->addresses.front(), port};
+}
+
+result<VerifiedEndpoint> resolve_and_validate(std::string_view host, std::uint16_t port) {
+    auto candidates = resolve_candidates(std::string(host));
+    if (!candidates) return std::unexpected(candidates.error());
+    for (std::uint32_t const addr : candidates->addresses) {
+        if (!is_blocked_address(addr)) return VerifiedEndpoint{addr, port};
+    }
+    return std::unexpected(error{failure_class::policy,
+                                  candidates->literal ? "address is in a blocked range"
+                                                       : "every resolved address is in a blocked range",
+                                  "net.address_blocked"});
 }
 
 // Shared between perform_http_exchange and perform_https_exchange (ADR-013) -- the raw HTTP/1.1

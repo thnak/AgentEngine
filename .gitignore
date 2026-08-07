@@ -62,3 +62,7 @@ desktop.ini
 
 # Local-only API credentials for Milestone 3 Phase H reference-agent fixture recording -- never commit
 api-test.txt
+
+# Local-only provider credentials for the `live-network` ctest label
+# (tools/run-live-provider-tests.ps1 reads this) -- never commit
+apt-openrouter.txt

@@ -778,7 +778,7 @@ inline void run_stream_worker(std::string host, std::uint16_t port, std::string 
                                ChatRequest request, stream_producer<ChatResponseUpdate> producer,
                                Resolver resolver, std::string ca_bundle_pem_override,
                                std::string http_referer, std::string x_title, std::string end_user_id,
-                               std::string cache_ttl) {
+                               std::string cache_ttl, sandbox::ProviderTransport transport) {
     auto body = build_request_body(request, model, caps, /*stream=*/true, end_user_id, cache_ttl);
     if (!body) {
         producer.fail(quark::error{quark::errc::validation, "anthropic.request_build_failed"});
@@ -786,7 +786,7 @@ inline void run_stream_worker(std::string host, std::uint16_t port, std::string 
     }
     auto req = build_http_request(path, api_key, api_version, json::dump(*body), http_referer, x_title);
     auto resp = sandbox::perform_provider_https_exchange(host, port, req, {}, std::nullopt, resolver,
-                                                            ca_bundle_pem_override);
+                                                            ca_bundle_pem_override, transport);
     if (!resp) {
         producer.fail(quark::error{quark::errc::unavailable, "anthropic.exchange_failed"});
         return;
@@ -829,9 +829,10 @@ public:
     AnthropicChatClient(std::string host, std::uint16_t port, std::string model, SecretRef api_key_ref,
                          ChatClientCapabilities caps, Store const& store, std::string path_prefix = "/v1",
                          std::string api_version = "2023-06-01",
-                         detail::Resolver resolver = sandbox::resolve_and_validate,
+                         detail::Resolver resolver = sandbox::resolve_host,
                          std::string ca_bundle_pem_override = {}, std::string http_referer = {},
-                         std::string x_title = {}, std::string end_user_id = {}, std::string cache_ttl = {})
+                         std::string x_title = {}, std::string end_user_id = {}, std::string cache_ttl = {},
+                         sandbox::ProviderTransport transport = sandbox::ProviderTransport::tls)
         : host_(std::move(host)),
           port_(port),
           model_(std::move(model)),
@@ -845,7 +846,8 @@ public:
           http_referer_(std::move(http_referer)),
           x_title_(std::move(x_title)),
           end_user_id_(std::move(end_user_id)),
-          cache_ttl_(std::move(cache_ttl)) {
+          cache_ttl_(std::move(cache_ttl)),
+          transport_(transport) {
         if (!detail::is_valid_cache_ttl(cache_ttl_)) {
             throw std::invalid_argument(
                 "AnthropicChatClient: cache_ttl must be \"\" (server default), \"5m\", or \"1h\"");
@@ -867,7 +869,8 @@ public:
         auto req = detail::build_http_request(path_prefix_ + "/messages", lease->reveal_text(),
                                                 api_version_, json::dump(*body), http_referer_, x_title_);
         auto resp = sandbox::perform_provider_https_exchange(host_, port_, req, {}, std::nullopt,
-                                                                resolver_, ca_bundle_pem_override_);
+                                                                resolver_, ca_bundle_pem_override_,
+                                                                transport_);
         if (!resp) co_return std::unexpected(resp.error());
         auto decoded_body = detail::decoded_response_body(*resp);
         if (!decoded_body) co_return std::unexpected(decoded_body.error());
@@ -889,7 +892,7 @@ public:
         std::thread(&detail::run_stream_worker, host_, port_, path_prefix_ + "/messages",
                     lease->reveal_text(), api_version_, model_, capabilities_, std::move(request),
                     std::move(pair.producer), resolver_, ca_bundle_pem_override_, http_referer_, x_title_,
-                    end_user_id_, cache_ttl_)
+                    end_user_id_, cache_ttl_, transport_)
             .detach();
         return std::move(pair.consumer);
     }
@@ -909,6 +912,7 @@ private:
     std::string x_title_;
     std::string end_user_id_;
     std::string cache_ttl_;
+    sandbox::ProviderTransport transport_;
 };
 
 }  // namespace agentengine::anthropic

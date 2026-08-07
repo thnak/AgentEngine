@@ -552,25 +552,27 @@ namespace detail {
 }
 
 // A testability seam, not a security bypass -- mirrors `provider_http_client.hpp`'s own injectable
-// `resolver` parameter exactly (its own comment: "a loopback test server's own address is itself in
-// resolve_and_validate's blocked-range table," so a test proving THIS type's own orchestration logic,
-// not re-proving address-blocking, needs a fake answering exactly the question DNS answers). Defaults
-// to the real `resolve_and_validate`; production code never constructs `OpenAIChatClient` with a
-// non-default resolver.
+// `resolver` parameter exactly, letting a test bind an arbitrary `Host:` name to the ephemeral
+// loopback port its own server just opened without a real DNS lookup. Defaults to the real
+// `sandbox::resolve_host` (ADR-016: the host-initiated provider resolver, which does real DNS and
+// the resolve-once-connect-to-a-literal discipline but applies NO blocked-range filter -- a
+// deployment's own llama.cpp/vLLM/Ollama endpoint on loopback or RFC 1918 is the ordinary case here,
+// not an SSRF attempt; the guest path keeps `resolve_and_validate`). Production code never
+// constructs `OpenAIChatClient` with a non-default resolver.
 using Resolver = std::function<result<sandbox::VerifiedEndpoint>(std::string_view, std::uint16_t)>;
 
 // The detached background worker (see file banner for why detached, not a tracked member). Every
 // parameter is owned by value -- no reference back to the `OpenAIChatClient` instance that spawned it.
 // `ca_bundle_pem_override` mirrors `perform_provider_https_exchange`'s own testability seam verbatim
 // (empty in production -- the vendored CA bundle applies; a test's self-signed leaf isn't in it).
-// `http_referer`/`x_title`/`end_user_id`/`seed` are `OpenAIChatClient`'s own optional constructor
-// fields, threaded through by value exactly like every other captured parameter here.
+// `http_referer`/`x_title`/`end_user_id`/`seed`/`transport` are `OpenAIChatClient`'s own optional
+// constructor fields, threaded through by value exactly like every other captured parameter here.
 inline void run_stream_worker(std::string host, std::uint16_t port, std::string path, std::string api_key,
                                std::string model, ChatRequest request,
                                stream_producer<ChatResponseUpdate> producer, Resolver resolver,
                                std::string ca_bundle_pem_override, std::string http_referer,
                                std::string x_title, std::string end_user_id,
-                               std::optional<std::int64_t> seed) {
+                               std::optional<std::int64_t> seed, sandbox::ProviderTransport transport) {
     auto body = build_request_body(request, model, /*stream=*/true, end_user_id, seed);
     if (!body) {
         producer.fail(quark::error{quark::errc::validation, "openai.request_build_failed"});
@@ -578,7 +580,7 @@ inline void run_stream_worker(std::string host, std::uint16_t port, std::string 
     }
     auto req = build_http_request(path, api_key, json::dump(*body), http_referer, x_title);
     auto resp = sandbox::perform_provider_https_exchange(host, port, req, {}, std::nullopt, resolver,
-                                                            ca_bundle_pem_override);
+                                                            ca_bundle_pem_override, transport);
     if (!resp) {
         producer.fail(quark::error{quark::errc::unavailable, "openai.exchange_failed"});
         return;
@@ -616,13 +618,20 @@ public:
     // existing construction call site in tests/test_openai_chat_client_live.cpp uses positional
     // arguments; inserting a parameter anywhere but the end would silently misalign every one of them
     // (the same class of bug `Usage::cache_write_tokens`'s own placement note in core/content.hpp
-    // documents, deliberately avoided here the same way).
+    // documents, deliberately avoided here the same way). `transport` (ADR-016) is appended after all
+    // of them for exactly the same reason.
+    //
+    // `transport` defaults to TLS and should stay there. `plaintext_http` is for a local llama.cpp/
+    // vLLM/Ollama server that has no certificate to present -- on that transport the `Authorization:
+    // Bearer` header this client sends is readable on the wire, which is fine on loopback and a
+    // credential disclosure anywhere else. See sandbox/provider_http_client.hpp's `ProviderTransport`.
     OpenAIChatClient(std::string host, std::uint16_t port, std::string model, SecretRef api_key_ref,
                       ChatClientCapabilities caps, Store const& store, std::string path_prefix = "/v1",
-                      detail::Resolver resolver = sandbox::resolve_and_validate,
+                      detail::Resolver resolver = sandbox::resolve_host,
                       std::string ca_bundle_pem_override = {}, std::string http_referer = {},
                       std::string x_title = {}, std::string end_user_id = {},
-                      std::optional<std::int64_t> seed = std::nullopt)
+                      std::optional<std::int64_t> seed = std::nullopt,
+                      sandbox::ProviderTransport transport = sandbox::ProviderTransport::tls)
         : host_(std::move(host)),
           port_(port),
           model_(std::move(model)),
@@ -635,7 +644,8 @@ public:
           http_referer_(std::move(http_referer)),
           x_title_(std::move(x_title)),
           end_user_id_(std::move(end_user_id)),
-          seed_(seed) {}
+          seed_(seed),
+          transport_(transport) {}
 
     [[nodiscard]] ChatClientCapabilities capabilities() const { return capabilities_; }
 
@@ -651,7 +661,8 @@ public:
         auto req = detail::build_http_request(path_prefix_ + "/chat/completions", lease->reveal_text(),
                                                 json::dump(*body), http_referer_, x_title_);
         auto resp = sandbox::perform_provider_https_exchange(host_, port_, req, {}, std::nullopt,
-                                                                resolver_, ca_bundle_pem_override_);
+                                                                resolver_, ca_bundle_pem_override_,
+                                                                transport_);
         if (!resp) co_return std::unexpected(resp.error());
         auto decoded_body = detail::decoded_response_body(*resp);
         if (!decoded_body) co_return std::unexpected(decoded_body.error());
@@ -672,7 +683,7 @@ public:
         }
         std::thread(&detail::run_stream_worker, host_, port_, path_prefix_ + "/chat/completions",
                     lease->reveal_text(), model_, std::move(request), std::move(pair.producer), resolver_,
-                    ca_bundle_pem_override_, http_referer_, x_title_, end_user_id_, seed_)
+                    ca_bundle_pem_override_, http_referer_, x_title_, end_user_id_, seed_, transport_)
             .detach();
         return std::move(pair.consumer);
     }
@@ -691,6 +702,7 @@ private:
     std::string x_title_;
     std::string end_user_id_;
     std::optional<std::int64_t> seed_;
+    sandbox::ProviderTransport transport_;
 };
 
 }  // namespace agentengine::openai
