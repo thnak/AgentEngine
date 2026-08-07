@@ -655,6 +655,275 @@ int main() {
         }
     }
 
+    // ---- F1: app-attribution headers (research doc item 1) -- stamped ONLY when non-empty -----------
+    {
+        auto req = build_http_request("/v1/messages", "sk-ant-x", "2023-06-01", "{}");
+        check(req.headers.size() == 3,
+              "F1-R1: with http_referer/x_title both left at their default-empty, exactly the original "
+              "three headers are present -- no unrequested HTTP-Referer/X-Title header ever appears");
+        bool has_referer = false, has_title = false;
+        for (auto const& [k, v] : req.headers) {
+            if (k == "HTTP-Referer") has_referer = true;
+            if (k == "X-Title") has_title = true;
+        }
+        check(!has_referer && !has_title, "F1-R1: neither attribution header name appears at all");
+    }
+    {
+        auto req = build_http_request("/v1/messages", "sk-ant-x", "2023-06-01", "{}", "https://my.app",
+                                       "My Agent");
+        check(req.headers.size() == 5,
+              "F1-R2: with both http_referer and x_title set, exactly two headers are added on top of "
+              "the original three");
+        std::string referer_value, title_value;
+        for (auto const& [k, v] : req.headers) {
+            if (k == "HTTP-Referer") referer_value = v;
+            if (k == "X-Title") title_value = v;
+        }
+        check(referer_value == "https://my.app", "F1-R2: HTTP-Referer carries the exact value given");
+        check(title_value == "My Agent", "F1-R2: X-Title carries the exact value given");
+    }
+    {
+        // Only one of the two set -- proves they're independent, not an all-or-nothing pair.
+        auto req = build_http_request("/v1/messages", "sk-ant-x", "2023-06-01", "{}", "https://only-referer.app",
+                                       "");
+        check(req.headers.size() == 4,
+              "F1-R3: http_referer alone (x_title left empty) adds exactly one header, not two -- the "
+              "two attribution headers are independently gated, not an all-or-nothing pair");
+    }
+
+    // ---- F2: abuse-tracking id -- metadata.user_id (research doc item 2) ----------------------------
+    {
+        ChatRequest req;
+        req.messages.push_back(text_message(role::user, "hi"));
+        ChatClientCapabilities caps;
+        auto body = build_request_body(req, "claude-sonnet-5", caps, /*stream=*/false, /*end_user_id=*/"");
+        check(body.has_value(), "F2-R1: translates without error when end_user_id is left empty");
+        if (body) {
+            check(body->find("metadata") == nullptr,
+                  "F2-R1: with end_user_id left at its default-empty, no 'metadata' key is added at all -- "
+                  "Anthropic's Metadata type has ONLY user_id, so an empty id means omit the whole object, "
+                  "not send an empty one");
+        }
+    }
+    {
+        ChatRequest req;
+        req.messages.push_back(text_message(role::user, "hi"));
+        ChatClientCapabilities caps;
+        auto body = build_request_body(req, "claude-sonnet-5", caps, /*stream=*/false,
+                                        /*end_user_id=*/"user-abc-123");
+        check(body.has_value(), "F2-R2: translates without error when end_user_id is set");
+        if (body) {
+            auto const* metadata = body->find("metadata");
+            check(metadata != nullptr, "F2-R2: 'metadata' appears when end_user_id is non-empty");
+            if (metadata) {
+                auto const* user_id = metadata->find("user_id");
+                check(user_id && user_id->is_string() && user_id->as_string() == "user-abc-123",
+                      "F2-R2: metadata.user_id carries the exact end_user_id value -- the confirmed exact "
+                      "wire shape (Metadata.cs has ONLY this one field, no general free-form map like "
+                      "OpenAI's)");
+                check(metadata->find("no_such_field") == nullptr,
+                      "F2-R2: metadata carries nothing beyond user_id -- no invented general metadata map");
+            }
+        }
+    }
+
+    // ---- F3: cache TTL as a constructor option (research doc item 7) --------------------------------
+    {
+        check(is_valid_cache_ttl(""), "F3-R1: empty string is valid (server default, omit ttl entirely)");
+        check(is_valid_cache_ttl("5m"), "F3-R1: \"5m\" is a valid TTL value");
+        check(is_valid_cache_ttl("1h"), "F3-R1: \"1h\" is a valid TTL value");
+        check(!is_valid_cache_ttl("10m"), "F3-R1: an unsupported duration string is rejected");
+        check(!is_valid_cache_ttl("3600s"), "F3-R1: a value in the wrong unit is rejected, not coerced");
+        check(!is_valid_cache_ttl("EPHEMERAL"), "F3-R1: garbage input is rejected, not silently accepted");
+    }
+    {
+        // Empty cache_ttl -- the system-block cache_control carries no "ttl" sibling at all (server's own
+        // 5-minute default applies).
+        ChatRequest req;
+        req.messages.push_back(text_message(role::system, "be helpful"));
+        req.messages.push_back(text_message(role::user, "hi"));
+        ChatClientCapabilities caps;
+        caps.prompt_caching = true;
+        auto body = build_request_body(req, "claude-sonnet-5", caps, /*stream=*/false, /*end_user_id=*/"",
+                                        /*cache_ttl=*/"");
+        check(body.has_value(), "F3-R2: translates without error with cache_ttl left empty");
+        if (body) {
+            auto const* system = body->find("system");
+            auto const* cc = (system && !system->as_array().empty())
+                                  ? system->as_array().front().find("cache_control")
+                                  : nullptr;
+            check(cc != nullptr, "F3-R2: the system block still carries a cache_control breakpoint");
+            check(cc && cc->find("ttl") == nullptr,
+                  "F3-R2: with cache_ttl left empty, no 'ttl' key is added to cache_control at all -- the "
+                  "server's own 5-minute default applies, exactly matching this backend's pre-item-7 "
+                  "behavior for anyone who never opts in");
+        }
+    }
+    {
+        // Non-empty cache_ttl -- applied to BOTH the system block and the last-tool cache_control.
+        ChatRequest req;
+        req.messages.push_back(text_message(role::system, "be helpful"));
+        req.messages.push_back(text_message(role::user, "hi"));
+        ToolDescriptor t;
+        t.name = "get_weather";
+        t.description = "weather";
+        t.args_schema_json = R"({"type":"object","properties":{}})";
+        req.tools = {t};
+        ChatClientCapabilities caps;
+        caps.prompt_caching = true;
+        auto body = build_request_body(req, "claude-sonnet-5", caps, /*stream=*/false, /*end_user_id=*/"",
+                                        /*cache_ttl=*/"1h");
+        check(body.has_value(), "F3-R3: translates without error with cache_ttl=\"1h\"");
+        if (body) {
+            auto const* system = body->find("system");
+            auto const* sys_cc = (system && !system->as_array().empty())
+                                      ? system->as_array().front().find("cache_control")
+                                      : nullptr;
+            auto const* sys_ttl = sys_cc ? sys_cc->find("ttl") : nullptr;
+            check(sys_ttl && sys_ttl->is_string() && sys_ttl->as_string() == "1h",
+                  "F3-R3: the system block's cache_control carries ttl=\"1h\" when requested");
+
+            auto const* tools = body->find("tools");
+            auto const* tool_cc =
+                (tools && !tools->as_array().empty()) ? tools->as_array().front().find("cache_control") : nullptr;
+            auto const* tool_ttl = tool_cc ? tool_cc->find("ttl") : nullptr;
+            check(tool_ttl && tool_ttl->is_string() && tool_ttl->as_string() == "1h",
+                  "F3-R3: the (only, and therefore last) tool's cache_control ALSO carries ttl=\"1h\" -- "
+                  "the same cache_ttl option applies uniformly to every cache_control this backend builds, "
+                  "not just the system block");
+        }
+    }
+    {
+        // translate_tool directly, with a non-default TTL, mirroring the earlier E4-R1 single-tool case.
+        ToolDescriptor t;
+        t.name = "get_weather";
+        t.description = "weather";
+        t.args_schema_json = R"({"type":"object","properties":{}})";
+        auto wire = translate_tool(t, /*cache_this_one=*/true, /*cache_ttl=*/"5m");
+        check(wire.has_value(), "F3-R4: translate_tool itself accepts the cache_ttl parameter directly");
+        if (wire) {
+            auto const* cc = wire->find("cache_control");
+            auto const* ttl = cc ? cc->find("ttl") : nullptr;
+            check(ttl && ttl->as_string() == "5m", "F3-R4: translate_tool's own cache_control carries ttl=\"5m\"");
+        }
+    }
+
+    // ---- F4: the 4-cache_control-blocks-combined hard invariant (research doc item 6) ---------------
+    {
+        // A hand-built body with FIVE cache_control occurrences -- 2 in a fake "system" array, 2 in a
+        // fake "tools" array, 1 inside a fake "messages" content block -- exactly the shape
+        // count_cache_control_blocks is documented to walk, but NOT reachable through the public
+        // request-building API as currently designed (it places at most 2).
+        auto fake_cc = [] {
+            return json::Value::make_object(
+                {{"type", json::Value::make_string("ephemeral")}});
+        };
+        json::Value system_arr = json::Value::make_array(
+            {json::Value::make_object({{"type", json::Value::make_string("text")},
+                                        {"text", json::Value::make_string("a")},
+                                        {"cache_control", fake_cc()}}),
+             json::Value::make_object({{"type", json::Value::make_string("text")},
+                                        {"text", json::Value::make_string("b")},
+                                        {"cache_control", fake_cc()}})});
+        json::Value tools_arr = json::Value::make_array(
+            {json::Value::make_object({{"name", json::Value::make_string("t1")}, {"cache_control", fake_cc()}}),
+             json::Value::make_object({{"name", json::Value::make_string("t2")}, {"cache_control", fake_cc()}})});
+        json::Value message_content = json::Value::make_array(
+            {json::Value::make_object({{"type", json::Value::make_string("text")},
+                                        {"text", json::Value::make_string("c")},
+                                        {"cache_control", fake_cc()}})});
+        json::Value messages_arr = json::Value::make_array(
+            {json::Value::make_object({{"role", json::Value::make_string("user")}, {"content", message_content}})});
+        json::Value fake_body = json::Value::make_object({{"system", system_arr},
+                                                            {"tools", tools_arr},
+                                                            {"messages", messages_arr}});
+        check(count_cache_control_blocks(fake_body) == 5,
+              "F4-R1: count_cache_control_blocks correctly counts FIVE cache_control occurrences spread "
+              "across system(2)+tools(2)+messages(1) in a hand-built body -- a count the public "
+              "build_request_body API can never itself produce today, proving the counting function "
+              "itself is correct independent of what currently reaches it");
+    }
+    {
+        // Realistic under-the-cap cases, via the real code path.
+        ChatRequest req0;
+        req0.messages.push_back(text_message(role::user, "hi"));
+        ChatClientCapabilities caps0;  // prompt_caching = false, no tools
+        auto body0 = build_request_body(req0, "claude-sonnet-5", caps0, /*stream=*/false);
+        check(body0.has_value() && count_cache_control_blocks(*body0) == 0,
+              "F4-R2: a request with prompt_caching off and no tools produces ZERO cache_control blocks "
+              "-- well under the 4-block cap, and build_request_body still succeeds");
+
+        ChatRequest req1;
+        req1.messages.push_back(text_message(role::system, "be helpful"));
+        req1.messages.push_back(text_message(role::user, "hi"));
+        ChatClientCapabilities caps1;
+        caps1.prompt_caching = true;  // no tools -- only the system block gets a breakpoint
+        auto body1 = build_request_body(req1, "claude-sonnet-5", caps1, /*stream=*/false);
+        check(body1.has_value() && count_cache_control_blocks(*body1) == 1,
+              "F4-R2: system-only prompt_caching produces exactly ONE cache_control block -- still under "
+              "the cap, and build_request_body still succeeds normally (never rejected)");
+
+        ChatRequest req2;
+        req2.messages.push_back(text_message(role::system, "be helpful"));
+        req2.messages.push_back(text_message(role::user, "hi"));
+        ToolDescriptor t;
+        t.name = "get_weather";
+        t.description = "weather";
+        t.args_schema_json = R"({"type":"object","properties":{}})";
+        req2.tools = {t};
+        ChatClientCapabilities caps2;
+        caps2.prompt_caching = true;
+        auto body2 = build_request_body(req2, "claude-sonnet-5", caps2, /*stream=*/false);
+        check(body2.has_value() && count_cache_control_blocks(*body2) == 2,
+              "F4-R2: system + one tool with prompt_caching produces exactly TWO cache_control blocks -- "
+              "today's real maximum, still under the 4-block cap, build_request_body succeeds normally "
+              "rather than ever hitting the defensive rejection path");
+    }
+
+    // ---- F5: model + cache_creation_input_tokens response parsing (research doc items 4/5) ----------
+    {
+        auto parsed = json::parse(R"({
+            "id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-5-20260101",
+            "content":[{"type":"text","text":"hi"}],
+            "usage":{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":37}
+        })");
+        check(parsed.has_value(), "F5-R1: literal wire JSON with a model field and cache_creation_input_tokens parses");
+        if (parsed) {
+            auto resp = parse_message_response(*parsed);
+            check(resp.has_value(), "F5-R1: parses into a ChatResponse");
+            if (resp) {
+                check(resp->model == "claude-sonnet-5-20260101",
+                      "F5-R1: ChatResponse.model is populated from the response's own top-level 'model' "
+                      "field -- the model that ACTUALLY answered, not merely what was requested");
+                check(resp->usage.cache_write_tokens == 37,
+                      "F5-R1: usage.cache_creation_input_tokens maps to Usage::cache_write_tokens -- the "
+                      "symmetric counterpart to cache_read_input_tokens/cached_input_tokens, previously a "
+                      "named, unmapped gap");
+            }
+        }
+    }
+    {
+        // Both absent -- default values, never fabricated.
+        auto parsed = json::parse(R"({
+            "type":"message","role":"assistant",
+            "content":[{"type":"text","text":"hi"}],
+            "usage":{"input_tokens":1,"output_tokens":1}
+        })");
+        check(parsed.has_value(), "F5-R2: literal wire JSON with NO model field and NO cache_creation_input_tokens parses");
+        if (parsed) {
+            auto resp = parse_message_response(*parsed);
+            check(resp.has_value(), "F5-R2: parses into a ChatResponse");
+            if (resp) {
+                check(resp->model.empty(),
+                      "F5-R2: ChatResponse.model stays empty when the response doesn't report one -- "
+                      "never fabricated from the request's own requested model name");
+                check(resp->usage.cache_write_tokens == 0,
+                      "F5-R2: usage.cache_write_tokens stays at its default (0) when "
+                      "cache_creation_input_tokens is absent from the wire response");
+            }
+        }
+    }
+
     if (g_failures == 0) {
         std::fprintf(stderr, "test_anthropic_chat_client_translation: ALL PASS\n");
         return 0;

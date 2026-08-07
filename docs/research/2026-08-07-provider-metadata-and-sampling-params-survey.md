@@ -155,51 +155,68 @@ decision on 004 §8 Q2), each vendor has REAL, documented levers:
   which `agentengine::Usage` has a field for today (only `cached_input_tokens` exists, mapped from
   `cached_tokens`/`cache_read_input_tokens` already in Phase D/E's own response parsing).
 
-## Recommended design (NOT built — this is the punch list to pick back up)
+## Recommended design — **items 1/2/4/5/6/7 DONE (2026-08-07), items 3/8 still deferred**
 
-In priority order, each scoped to avoid re-opening 004 §1's sampling-parameter elision:
+Items 1, 2, 4, 5, 6, 7 below are now implemented, on both `OpenAIChatClient` and `AnthropicChatClient`
+(Anthropic additionally got item 6/7 since they're Anthropic-specific), proven in both backends'
+translation and live test files. Two parallel subagents built the two backends independently against
+this same doc; both, unprompted, hit and correctly avoided the exact "insert a new field/parameter in
+the middle and silently break every existing positional call site" bug named in the `Usage.
+cache_write_tokens` amendment above — every new constructor parameter on both backends is APPENDED
+after the previous last parameter (`ca_bundle_pem_override`), never inserted earlier.
 
-1. **App attribution headers** (`HTTP-Referer`/`X-Title`) — lowest risk. Add as OPTIONAL constructor
-   parameters on `OpenAIChatClient` (and `AnthropicChatClient`, for symmetry, even though no known
-   Anthropic-compatible gateway currently reads them) that `build_http_request` stamps into every
-   call's headers when non-empty. This is backend-constructor-local, not a `ChatRequest`/RFC 004
-   change — mirrors how `path_prefix`/`api_version`/the resolver seam are already constructor
-   parameters, not request fields.
-2. **`seed`/`metadata`/`user`/`safety_identifier`** — same shape of change: optional
-   backend-constructor fields (e.g. an `end_user_id` string, an optional `seed` integer), not portable
-   `ChatRequest` vocabulary. Anthropic's `metadata.user_id` and OpenAI's `user`/`safety_identifier`
-   serve the identical purpose (abuse-tracking id) despite different wire names — safe to unify at the
-   constructor-parameter level (one AgentEngine-side name, two different wire keys per backend) without
-   creating a portable `ChatRequest` field at all.
-3. **`reasoning_effort`** — needs a real design decision FIRST, not a quick add. Options to weigh next
-   time this is picked up: (a) leave elided permanently, matching temperature/top_p's own status quo;
-   (b) add it as a backend-constructor-local field per backend (no portability claim, same shape as #1
-   and #2 above — simplest, but an agent author can't express "I want low reasoning effort" once, has to
-   know which backend is bound); (c) a real RFC 004 amendment defining a portable, coarser tri-state
-   (e.g. `low`/`medium`/`high` only, the subset every surveyed vendor actually agrees on) with each
-   backend mapping down to its own native shape — the RFC-touching option, needs the project's own
-   design→red-team→prove→judge discipline before landing since it's a genuine 004 amendment, not backend-
-   internal translation.
-4. **Expose `model` on `ChatResponse`** (Finding 4) — cheap, additive, both wire formats already carry
-   it, response-parsing-only change (no request-side design question at all). Probably the single
-   highest-value/lowest-risk item in this whole list; worth doing independently of the others.
-5. **Widen `Usage` with a `cache_write_tokens`-equivalent field** — verified NOT mapped today on either
-   side: OpenRouter's `usage.prompt_tokens_details.cache_write_tokens` (Finding 5) and Anthropic's own
-   `cache_creation_input_tokens` are both real wire fields with no `agentengine::Usage` field to land in
-   — `AnthropicChatClient::parse_message_response` explicitly names this as a skipped gap in its own
-   code comment (`chat_client.hpp:389`: *"cache_creation_input_tokens has no corresponding AE Usage
-   field — named gap, not mapped"*). Response-parsing-only change, same shape as #4.
-6. **A hard invariant, not a feature**: if `AnthropicChatClient` ever grows more `cache_control`
-   placements (e.g. per-message breakpoints), enforce the real 4-blocks-combined cap (Finding 5) at
-   `build_request_body` time — fail closed with a clear error rather than letting the provider's own
-   `HTTP 400` be the first time this project discovers it violated the limit.
-7. **Anthropic cache TTL as a constructor option** (`ttl: "5m"` vs `"1h"`, Finding 5) — currently always
-   the bare `{"type":"ephemeral"}` (5-minute default); a real, bounded, low-risk lever once someone
-   wants it.
-8. **`prompt_cache_key`** — explicitly NOT recommended yet. Confirmed wired only into OpenAI's Responses
-   API in the locally-vendored SDK, not Chat Completions (the endpoint this project's `OpenAIChatClient`
-   targets) — whether the raw Chat Completions wire endpoint accepts it anyway is unconfirmed. Needs a
-   live check before treating this as available at all.
+1. ~~**App attribution headers**~~ — **Done.** `http_referer`/`x_title` optional constructor params on
+   both backends, stamped into `HTTP-Referer`/`X-Title` headers only when non-empty.
+2. ~~**`seed`/`metadata`/`user`/`safety_identifier`**~~ — **Done, per-backend as scoped.** OpenAI:
+   `end_user_id` (→ `"user"`) and `seed` (→ `"seed"`) constructor params. Anthropic: `end_user_id` only
+   (→ `metadata.user_id`) — **no `seed` param exists on `AnthropicChatClient`**, deliberately: Finding 2
+   confirmed Anthropic has no native seed field at all, and a fake no-op parameter would be worse than
+   its honest absence.
+3. **`reasoning_effort`** — still deferred, unchanged from the original recommendation below. Not
+   implemented.
+4. ~~**Expose `model` on `ChatResponse`**~~ — **Done.** `ChatResponse` gained a `model` field (appended
+   last, after `usage`); both backends' response parsers populate it from the wire's own top-level
+   `"model"` field, empty when absent. Landed as a prerequisite core-type change (`003-Message-and-
+   Content-Model.md` needed no amendment — `ChatResponse`'s field list isn't literally declared there,
+   unlike `Usage`) ahead of both backend implementations.
+5. ~~**Widen `Usage` with a `cache_write_tokens`-equivalent field**~~ — **Done.** `Usage` gained
+   `cache_write_tokens` (appended LAST, after `cost_estimate` — see the field's own code comment and
+   `003-Message-and-Content-Model.md` §6's dated amendment for why: inserting it earlier broke existing
+   positional `Usage{a,b,c,d,e}` call sites with a real compile error, caught and fixed before either
+   backend agent started). OpenAI maps OpenRouter's `usage.prompt_tokens_details.cache_write_tokens`;
+   Anthropic maps `usage.cache_creation_input_tokens`.
+6. ~~**A hard invariant, not a feature**~~ — **Done.** `AnthropicChatClient::detail::
+   count_cache_control_blocks` does a generic recursive walk of the assembled request body counting
+   every `cache_control` key at any depth (not hardcoded to the two known placement sites, so it stays
+   correct if more are added later) — `build_request_body` fails closed
+   (`anthropic.cache_control_limit_exceeded`) if the count exceeds 4. Directly unit-tested against a
+   hand-built 5-block body (unreachable through the public API as designed, so this is the only way to
+   exercise the failure path) plus the real 0/1/2-block cases proving normal use still succeeds.
+7. ~~**Anthropic cache TTL as a constructor option**~~ — **Done.** `cache_ttl` constructor param
+   (`""`/`"5m"`/`"1h"`), validated at CONSTRUCTION time (`detail::is_valid_cache_ttl`; an invalid value
+   throws `std::invalid_argument` — a cold-setup-path exception per CONVENTIONS.md, since no
+   runtime-assert or validated-setter precedent existed elsewhere in this codebase to follow instead),
+   applied via a new shared `make_cache_control(cache_ttl)` helper to every `cache_control` object this
+   backend builds.
+8. **`prompt_cache_key`** — still deferred, unchanged from the original recommendation below. Not
+   implemented.
+
+Original recommendation text for the two still-deferred items, preserved for when they're picked back
+up:
+
+- **`reasoning_effort`** needs a real design decision FIRST, not a quick add. Options to weigh: (a)
+  leave elided permanently, matching temperature/top_p's own status quo; (b) add it as a
+  backend-constructor-local field per backend (no portability claim, same shape as the now-done items
+  above — simplest, but an agent author can't express "I want low reasoning effort" once, has to know
+  which backend is bound); (c) a real RFC 004 amendment defining a portable, coarser tri-state (e.g.
+  `low`/`medium`/`high` only, the subset every surveyed vendor actually agrees on) with each backend
+  mapping down to its own native shape — the RFC-touching option, needs the project's own
+  design→red-team→prove→judge discipline before landing since it's a genuine 004 amendment, not
+  backend-internal translation.
+- **`prompt_cache_key`** — explicitly NOT recommended yet. Confirmed wired only into OpenAI's Responses
+  API in the locally-vendored SDK, not Chat Completions (the endpoint this project's `OpenAIChatClient`
+  targets) — whether the raw Chat Completions wire endpoint accepts it anyway is unconfirmed. Needs a
+  live check before treating this as available at all.
 
 ## Explicitly deferred / open verification items
 

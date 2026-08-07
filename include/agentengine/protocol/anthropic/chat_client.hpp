@@ -76,6 +76,20 @@
 //     Phase D's own OpenAI backend already named (`ChatResponseUpdate{delta, is_final}`, no usage
 //     slot). The conversion LOGIC is real and tested; wiring it into a caller-visible per-chunk value
 //     needs `ChatResponseUpdate` to grow a field this phase does not add.
+//
+// (7) M5 RESEARCH FOLLOW-UP (docs/research/2026-08-07-provider-metadata-and-sampling-params-survey.md,
+//     "Recommended design" items 1/2/4/5/6/7 -- items 3 (`reasoning_effort`) and 8 (`prompt_cache_key`)
+//     explicitly deferred there, not built here): `http_referer`/`x_title` (item 1, OpenRouter-only
+//     attribution headers, stamped into every request only when non-empty); `end_user_id` (item 2,
+//     Anthropic's `metadata.user_id` abuse-tracking field -- `Metadata` has ONLY that one field per the
+//     locally-vendored SDK's `Metadata.cs`; Anthropic has NO native `seed` field at all per Finding 2,
+//     so no seed parameter exists here -- a fake no-op would be worse than the honest absence);
+//     `ChatResponse.model`/`Usage.cache_write_tokens` (items 4/5, response-parsing-only, see
+//     `parse_message_response`); the 4-`cache_control`-blocks-combined hard cap (item 6,
+//     `count_cache_control_blocks`, enforced defensively at the end of `build_request_body` even though
+//     today's own placements -- at most 2, system + last tool -- can never reach it); and `cache_ttl`
+//     (item 7, `"5m"`/`"1h"`/empty-for-server-default, validated at construction time, applied to every
+//     `cache_control` object this backend builds).
 
 #ifdef AGENTENGINE_WITH_HTTPS
 
@@ -85,6 +99,7 @@
 #include <functional>
 #include <memory_resource>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -195,9 +210,30 @@ struct SplitMessages {
     return json::Value::make_object(std::move(obj));
 }
 
+// (7): `cache_ttl` validity -- the ONLY two non-empty values Anthropic's `CacheControlEphemeral.Ttl`
+// enum accepts (empty means "omit `ttl` entirely, server default of 5 minutes applies"). A pure
+// predicate so both the constructor-time contract check and any direct test of it share one definition.
+[[nodiscard]] inline bool is_valid_cache_ttl(std::string const& ttl) noexcept {
+    return ttl.empty() || ttl == "5m" || ttl == "1h";
+}
+
+// (7): one `cache_control` object, shared by both places this backend emits one (the system block and
+// the last tool) -- `{"type":"ephemeral"}`, plus `"ttl"` as a sibling when a non-default TTL was
+// requested. `cache_ttl` is assumed already validated (is_valid_cache_ttl) by the caller -- this
+// function does not re-validate, it only shapes the wire object.
+[[nodiscard]] inline json::Value make_cache_control(std::string const& cache_ttl) {
+    std::vector<std::pair<std::string, json::Value>> cc{
+        {"type", json::Value::make_string("ephemeral")},
+    };
+    if (!cache_ttl.empty()) cc.emplace_back("ttl", json::Value::make_string(cache_ttl));
+    return json::Value::make_object(std::move(cc));
+}
+
 // One `ToolDescriptor` -> `{"name","description","input_schema"}` -- flat, no "function" wrapper
 // (confirmed against the SDK's `Tool.cs`: `input_schema` is a top-level sibling of `name`, not nested).
-[[nodiscard]] inline result<json::Value> translate_tool(ToolDescriptor const& t, bool cache_this_one) {
+// `cache_ttl` (default empty, (7)) is only consulted when `cache_this_one` is true.
+[[nodiscard]] inline result<json::Value> translate_tool(ToolDescriptor const& t, bool cache_this_one,
+                                                          std::string const& cache_ttl = {}) {
     auto parsed_schema = json::parse(t.args_schema_json);
     if (!parsed_schema) return std::unexpected(parsed_schema.error());
     std::vector<std::pair<std::string, json::Value>> obj{
@@ -206,10 +242,7 @@ struct SplitMessages {
         {"input_schema", std::move(*parsed_schema)},
     };
     if (cache_this_one) {
-        std::vector<std::pair<std::string, json::Value>> cache_control{
-            {"type", json::Value::make_string("ephemeral")},
-        };
-        obj.emplace_back("cache_control", json::Value::make_object(std::move(cache_control)));
+        obj.emplace_back("cache_control", make_cache_control(cache_ttl));
     }
     return json::Value::make_object(std::move(obj));
 }
@@ -237,10 +270,40 @@ struct SplitMessages {
 // unstated guess.
 inline constexpr std::uint64_t kDefaultMaxTokens = 4096;
 
+// (7): the hard invariant Finding 5 confirms via a real reported API bug -- Anthropic rejects a request
+// with `HTTP 400: A maximum of 4 blocks with cache_control may be provided`, counted across system +
+// tools + messages COMBINED. A generic recursive walk (not schema-specific) so it stays correct if this
+// backend ever grows a THIRD or FOURTH placement site without needing a matching update here: it counts
+// every "cache_control" member anywhere in the assembled request body, at any depth. Pure function, no
+// network -- independently testable against a hand-built json::Value the public request-building API
+// can never itself produce (today's own placements top out at 2).
+[[nodiscard]] inline std::size_t count_cache_control_blocks(json::Value const& v) {
+    std::size_t count = 0;
+    if (v.is_object()) {
+        for (auto const& [key, member] : v.as_object()) {
+            if (key == "cache_control") ++count;
+            count += count_cache_control_blocks(member);
+        }
+    } else if (v.is_array()) {
+        for (auto const& item : v.as_array()) count += count_cache_control_blocks(item);
+    }
+    return count;
+}
+
+inline constexpr std::size_t kMaxCacheControlBlocks = 4;
+
+// `end_user_id`/`cache_ttl` (7): both default-empty, both optional. `end_user_id` non-empty adds
+// `metadata.user_id` (Anthropic's abuse-tracking id -- `Metadata` has ONLY this one field). `cache_ttl`
+// non-empty is applied to every `cache_control` object this function builds (system block + last tool,
+// via `make_cache_control`) -- assumed already validated by the caller (AnthropicChatClient's
+// constructor enforces `is_valid_cache_ttl`; this function does not re-check, so it stays directly
+// testable with any string, including deliberately invalid ones, without throwing).
 [[nodiscard]] inline result<json::Value> build_request_body(ChatRequest const& request,
                                                               std::string const& model,
                                                               ChatClientCapabilities const& caps,
-                                                              bool stream) {
+                                                              bool stream,
+                                                              std::string const& end_user_id = {},
+                                                              std::string const& cache_ttl = {}) {
     std::vector<std::pair<std::string, json::Value>> obj;
     obj.emplace_back("model", json::Value::make_string(model));
     obj.emplace_back("max_tokens", json::Value::make_number(static_cast<double>(
@@ -250,13 +313,10 @@ inline constexpr std::uint64_t kDefaultMaxTokens = 4096;
     SplitMessages split = split_system_messages(request.messages);
     if (!split.system_text.empty()) {
         if (caps.prompt_caching) {
-            std::vector<std::pair<std::string, json::Value>> cache_control{
-                {"type", json::Value::make_string("ephemeral")},
-            };
             std::vector<std::pair<std::string, json::Value>> block{
                 {"type", json::Value::make_string("text")},
                 {"text", json::Value::make_string(split.system_text)},
-                {"cache_control", json::Value::make_object(std::move(cache_control))},
+                {"cache_control", make_cache_control(cache_ttl)},
             };
             std::vector<json::Value> system_blocks;
             system_blocks.push_back(json::Value::make_object(std::move(block)));
@@ -276,7 +336,7 @@ inline constexpr std::uint64_t kDefaultMaxTokens = 4096;
         tools.reserve(request.tools.size());
         for (std::size_t i = 0; i < request.tools.size(); ++i) {
             bool const is_last = (i + 1 == request.tools.size());
-            auto tool_json = translate_tool(request.tools[i], caps.prompt_caching && is_last);
+            auto tool_json = translate_tool(request.tools[i], caps.prompt_caching && is_last, cache_ttl);
             if (!tool_json) return std::unexpected(tool_json.error());
             tools.push_back(std::move(*tool_json));
         }
@@ -289,21 +349,42 @@ inline constexpr std::uint64_t kDefaultMaxTokens = 4096;
         obj.emplace_back("output_config", std::move(*output_config));
     }
 
+    if (!end_user_id.empty()) {
+        std::vector<std::pair<std::string, json::Value>> metadata{
+            {"user_id", json::Value::make_string(end_user_id)},
+        };
+        obj.emplace_back("metadata", json::Value::make_object(std::move(metadata)));
+    }
+
     if (stream) obj.emplace_back("stream", json::Value::make_bool(true));
 
-    return json::Value::make_object(std::move(obj));
+    json::Value body = json::Value::make_object(std::move(obj));
+    if (count_cache_control_blocks(body) > kMaxCacheControlBlocks) {
+        return std::unexpected(error{failure_class::contract,
+                                      "request would carry more than 4 cache_control blocks combined "
+                                      "(system+tools+messages) -- Anthropic rejects this with HTTP 400",
+                                      "anthropic.cache_control_limit_exceeded"});
+    }
+    return body;
 }
 
+// `http_referer`/`x_title` (7): OpenRouter's own app-attribution header convention (Finding 1) --
+// stamped in ONLY when non-empty, both default-empty, so a caller who never sets them gets exactly
+// today's three headers and nothing more.
 [[nodiscard]] inline sandbox::NetEgressRequest build_http_request(std::string const& path,
                                                                     std::string const& api_key,
                                                                     std::string const& api_version,
-                                                                    std::string body) {
+                                                                    std::string body,
+                                                                    std::string const& http_referer = {},
+                                                                    std::string const& x_title = {}) {
     sandbox::NetEgressRequest req;
     req.method = "POST";
     req.path = path;
     req.headers.emplace_back("Content-Type", "application/json");
     req.headers.emplace_back("x-api-key", api_key);
     req.headers.emplace_back("anthropic-version", api_version);
+    if (!http_referer.empty()) req.headers.emplace_back("HTTP-Referer", http_referer);
+    if (!x_title.empty()) req.headers.emplace_back("X-Title", x_title);
     req.body = std::move(body);
     return req;
 }
@@ -376,6 +457,13 @@ inline constexpr std::uint64_t kDefaultMaxTokens = 4096;
         }
     }
 
+    // M5 research follow-up item 4 (docs/research/2026-08-07-provider-metadata-and-sampling-params-
+    // survey.md Finding 4): the model that ACTUALLY answered -- a sibling of "content" at the top level,
+    // empty (never fabricated from the request's own model_ field) when the response doesn't report one.
+    if (auto const* model_field = body.find("model"); model_field && model_field->is_string()) {
+        resp.model = model_field->as_string();
+    }
+
     if (auto const* usage = body.find("usage")) {
         if (auto const* it = usage->find("input_tokens"); it && it->is_number()) {
             resp.usage.input_tokens = static_cast<std::uint64_t>(it->as_number());
@@ -386,8 +474,13 @@ inline constexpr std::uint64_t kDefaultMaxTokens = 4096;
         if (auto const* crt = usage->find("cache_read_input_tokens"); crt && crt->is_number()) {
             resp.usage.cached_input_tokens = static_cast<std::uint64_t>(crt->as_number());
         }
-        // cache_creation_input_tokens has no corresponding AE Usage field -- named gap, not mapped
-        // (stuffing it into an unrelated field, e.g. reasoning_tokens, would be semantically wrong).
+        // M5 research follow-up item 5 (Finding 5): cache_creation_input_tokens -- tokens spent
+        // ESTABLISHING a new cache entry, the symmetric counterpart to cache_read_input_tokens above --
+        // now mapped to Usage::cache_write_tokens (previously a named, unmapped gap in this same
+        // comment).
+        if (auto const* cct = usage->find("cache_creation_input_tokens"); cct && cct->is_number()) {
+            resp.usage.cache_write_tokens = static_cast<std::uint64_t>(cct->as_number());
+        }
     }
 
     return resp;
@@ -683,13 +776,15 @@ struct SseEvent {
 inline void run_stream_worker(std::string host, std::uint16_t port, std::string path, std::string api_key,
                                std::string api_version, std::string model, ChatClientCapabilities caps,
                                ChatRequest request, stream_producer<ChatResponseUpdate> producer,
-                               Resolver resolver, std::string ca_bundle_pem_override) {
-    auto body = build_request_body(request, model, caps, /*stream=*/true);
+                               Resolver resolver, std::string ca_bundle_pem_override,
+                               std::string http_referer, std::string x_title, std::string end_user_id,
+                               std::string cache_ttl) {
+    auto body = build_request_body(request, model, caps, /*stream=*/true, end_user_id, cache_ttl);
     if (!body) {
         producer.fail(quark::error{quark::errc::validation, "anthropic.request_build_failed"});
         return;
     }
-    auto req = build_http_request(path, api_key, api_version, json::dump(*body));
+    auto req = build_http_request(path, api_key, api_version, json::dump(*body), http_referer, x_title);
     auto resp = sandbox::perform_provider_https_exchange(host, port, req, {}, std::nullopt, resolver,
                                                             ca_bundle_pem_override);
     if (!resp) {
@@ -722,11 +817,21 @@ inline void run_stream_worker(std::string host, std::uint16_t port, std::string 
 template <SecretStore Store>
 class AnthropicChatClient {
 public:
+    // (7): four OPTIONAL trailing parameters, appended strictly at the END of the existing list, never
+    // inserted -- every existing positional-argument construction call site (tests/test_anthropic_chat_
+    // client_live.cpp has several) keeps compiling unchanged. `http_referer`/`x_title` (research doc
+    // item 1) and `end_user_id` (item 2) have no validity constraint of their own -- any string,
+    // including empty (the "don't send this header/field at all" default), is accepted verbatim.
+    // `cache_ttl` (item 7) DOES have a real constraint (Anthropic's `CacheControlEphemeral.Ttl` enum has
+    // exactly two non-empty values) -- checked here, at construction, a cold setup path where
+    // CONVENTIONS.md permits an exception to surface (this project's error model, `ae::result<T>`, has
+    // no return channel from a constructor to route a rejection through instead).
     AnthropicChatClient(std::string host, std::uint16_t port, std::string model, SecretRef api_key_ref,
                          ChatClientCapabilities caps, Store const& store, std::string path_prefix = "/v1",
                          std::string api_version = "2023-06-01",
                          detail::Resolver resolver = sandbox::resolve_and_validate,
-                         std::string ca_bundle_pem_override = {})
+                         std::string ca_bundle_pem_override = {}, std::string http_referer = {},
+                         std::string x_title = {}, std::string end_user_id = {}, std::string cache_ttl = {})
         : host_(std::move(host)),
           port_(port),
           model_(std::move(model)),
@@ -736,7 +841,16 @@ public:
           path_prefix_(std::move(path_prefix)),
           api_version_(std::move(api_version)),
           resolver_(std::move(resolver)),
-          ca_bundle_pem_override_(std::move(ca_bundle_pem_override)) {}
+          ca_bundle_pem_override_(std::move(ca_bundle_pem_override)),
+          http_referer_(std::move(http_referer)),
+          x_title_(std::move(x_title)),
+          end_user_id_(std::move(end_user_id)),
+          cache_ttl_(std::move(cache_ttl)) {
+        if (!detail::is_valid_cache_ttl(cache_ttl_)) {
+            throw std::invalid_argument(
+                "AnthropicChatClient: cache_ttl must be \"\" (server default), \"5m\", or \"1h\"");
+        }
+    }
 
     [[nodiscard]] ChatClientCapabilities capabilities() const { return capabilities_; }
 
@@ -746,11 +860,12 @@ public:
         auto lease = store_.resolve(api_key_ref_, ctx);
         if (!lease) co_return std::unexpected(lease.error());
 
-        auto body = detail::build_request_body(request, model_, capabilities_, /*stream=*/false);
+        auto body = detail::build_request_body(request, model_, capabilities_, /*stream=*/false,
+                                                end_user_id_, cache_ttl_);
         if (!body) co_return std::unexpected(body.error());
 
         auto req = detail::build_http_request(path_prefix_ + "/messages", lease->reveal_text(),
-                                                api_version_, json::dump(*body));
+                                                api_version_, json::dump(*body), http_referer_, x_title_);
         auto resp = sandbox::perform_provider_https_exchange(host_, port_, req, {}, std::nullopt,
                                                                 resolver_, ca_bundle_pem_override_);
         if (!resp) co_return std::unexpected(resp.error());
@@ -773,7 +888,8 @@ public:
         }
         std::thread(&detail::run_stream_worker, host_, port_, path_prefix_ + "/messages",
                     lease->reveal_text(), api_version_, model_, capabilities_, std::move(request),
-                    std::move(pair.producer), resolver_, ca_bundle_pem_override_)
+                    std::move(pair.producer), resolver_, ca_bundle_pem_override_, http_referer_, x_title_,
+                    end_user_id_, cache_ttl_)
             .detach();
         return std::move(pair.consumer);
     }
@@ -789,6 +905,10 @@ private:
     std::string api_version_;
     detail::Resolver resolver_;
     std::string ca_bundle_pem_override_;
+    std::string http_referer_;
+    std::string x_title_;
+    std::string end_user_id_;
+    std::string cache_ttl_;
 };
 
 }  // namespace agentengine::anthropic

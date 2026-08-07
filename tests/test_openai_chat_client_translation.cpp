@@ -545,6 +545,203 @@ int main() {
         }
     }
 
+    // ---- D5 (2026-08-07 provider-metadata survey, item 2): build_request_body's "user"/"seed" ---------
+    {
+        // Neither end_user_id nor seed supplied: both stay omitted from the body (defaulted call, no
+        // 4th/5th argument) -- matching every pre-existing 3-arg call site above, proving the new
+        // parameters are genuinely optional and don't change old behavior.
+        ChatRequest req;
+        req.messages.push_back(text_message(role::user, "hi"));
+        auto body = build_request_body(req, "gpt-5", /*stream=*/false);
+        check(body.has_value(), "D5-R1: build_request_body still succeeds with end_user_id/seed both "
+                                 "defaulted (unset)");
+        if (body) {
+            check(body->find("user") == nullptr,
+                  "D5-R1: no 'user' field at all when end_user_id is empty -- never an empty-string user");
+            check(body->find("seed") == nullptr, "D5-R1: no 'seed' field at all when seed is nullopt");
+        }
+    }
+    {
+        // Both supplied: both land on the wire, seed as a JSON number (not a string).
+        ChatRequest req;
+        req.messages.push_back(text_message(role::user, "hi"));
+        auto body = build_request_body(req, "gpt-5", /*stream=*/false, "end-user-42",
+                                        std::optional<std::int64_t>{123456789});
+        check(body.has_value(), "D5-R2: build_request_body succeeds with both end_user_id and seed set");
+        if (body) {
+            auto const* user = body->find("user");
+            check(user && user->is_string() && user->as_string() == "end-user-42",
+                  "D5-R2: end_user_id maps to the wire 'user' field verbatim (OpenAI's abuse-tracking id)");
+            auto const* seed = body->find("seed");
+            check(seed && seed->is_number() && seed->as_number() == 123456789.0,
+                  "D5-R2: seed maps to the wire 'seed' field as a JSON number, exact value preserved");
+        }
+    }
+    {
+        // Only end_user_id set, seed left unset: each new field is independently optional, not an
+        // all-or-nothing pair.
+        ChatRequest req;
+        req.messages.push_back(text_message(role::user, "hi"));
+        auto body = build_request_body(req, "gpt-5", /*stream=*/false, "solo-user");
+        check(body.has_value(), "D5-R3: build_request_body succeeds with only end_user_id set");
+        if (body) {
+            check(body->find("user") != nullptr && body->find("user")->as_string() == "solo-user",
+                  "D5-R3: 'user' present when only end_user_id is set");
+            check(body->find("seed") == nullptr,
+                  "D5-R3: 'seed' still absent -- setting end_user_id alone doesn't fabricate a seed");
+        }
+    }
+
+    // ---- D5: build_http_request's HTTP-Referer/X-Title app-attribution headers ----------------------
+    {
+        // Neither header requested (defaulted call): neither header appears at all -- no empty-value
+        // header is ever sent, matching the OpenRouter convention these headers exist for.
+        auto req = build_http_request("/v1/chat/completions", "sk-test", "{}");
+        bool has_referer = false, has_title = false;
+        for (auto const& [k, v] : req.headers) {
+            if (k == "HTTP-Referer") has_referer = true;
+            if (k == "X-Title") has_title = true;
+        }
+        check(!has_referer && !has_title,
+              "D5-R4: build_http_request omits HTTP-Referer/X-Title entirely when both are defaulted "
+              "(empty), never sending an empty header value");
+        check(req.headers.size() == 2,
+              "D5-R4: still exactly the two original headers (Content-Type, Authorization) -- nothing "
+              "extra silently added");
+    }
+    {
+        // Both headers requested: exact values land, alongside the two pre-existing headers.
+        auto req = build_http_request("/v1/chat/completions", "sk-test", "{}",
+                                       "https://myapp.example/", "My Agent App");
+        std::string referer_value, title_value;
+        for (auto const& [k, v] : req.headers) {
+            if (k == "HTTP-Referer") referer_value = v;
+            if (k == "X-Title") title_value = v;
+        }
+        check(referer_value == "https://myapp.example/",
+              "D5-R5: HTTP-Referer carries the exact app URL supplied, this project's own attribution "
+              "identifier for OpenRouter-style leaderboard ranking (Finding 1)");
+        check(title_value == "My Agent App",
+              "D5-R5: X-Title carries the exact display name supplied");
+        check(req.headers.size() == 4,
+              "D5-R5: two original headers plus exactly the two new ones -- 4 total, nothing duplicated");
+    }
+    {
+        // Only HTTP-Referer requested, X-Title left default: independently optional, same as D5-R3
+        // above proves for end_user_id/seed.
+        auto req = build_http_request("/v1/chat/completions", "sk-test", "{}", "https://only-referer.example/");
+        bool has_referer = false, has_title = false;
+        std::string referer_value;
+        for (auto const& [k, v] : req.headers) {
+            if (k == "HTTP-Referer") { has_referer = true; referer_value = v; }
+            if (k == "X-Title") has_title = true;
+        }
+        check(has_referer && referer_value == "https://only-referer.example/",
+              "D5-R6: HTTP-Referer present alone when only it is supplied");
+        check(!has_title, "D5-R6: X-Title still absent -- setting HTTP-Referer alone doesn't fabricate a title");
+    }
+
+    // ---- D5: parse_chat_completion_response maps top-level 'model' (Finding 4) ----------------------
+    {
+        auto parsed = json::parse(R"({
+            "id":"chatcmpl-2","object":"chat.completion","model":"gpt-5-turbo-2026",
+            "choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"hi"}}]
+        })");
+        check(parsed.has_value(), "D5-R7: literal wire JSON carrying a top-level 'model' field parses");
+        if (parsed) {
+            auto resp = parse_chat_completion_response(*parsed);
+            check(resp.has_value(), "D5-R7: response with 'model' present parses successfully");
+            if (resp) {
+                check(resp->model == "gpt-5-turbo-2026",
+                      "D5-R7: ChatResponse::model is populated from the response body's OWN 'model' field "
+                      "(the model that actually answered), not from the request's model -- this backend "
+                      "never sees the request here, so a correct value proves it came from the wire, not "
+                      "an echo");
+            }
+        }
+    }
+    {
+        // No 'model' field at all in the response (a real, valid shape -- not every backend reports it,
+        // e.g. plain OpenAI responses predating this field or minimal local servers): stays empty, not
+        // fabricated from anywhere.
+        auto parsed = json::parse(R"({
+            "choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"hi"}}]
+        })");
+        check(parsed.has_value(), "D5-R8: literal wire JSON with no 'model' field parses");
+        if (parsed) {
+            auto resp = parse_chat_completion_response(*parsed);
+            check(resp.has_value(), "D5-R8: response with no 'model' field still parses successfully");
+            if (resp) {
+                check(resp->model.empty(),
+                      "D5-R8: ChatResponse::model stays the empty-string default when the backend doesn't "
+                      "report one -- never fabricated");
+            }
+        }
+    }
+
+    // ---- D5: parse_chat_completion_response maps usage.prompt_tokens_details.cache_write_tokens ------
+    // (OpenRouter-specific extension, Finding 5 -- plain OpenAI responses simply won't have this field.)
+    {
+        auto parsed = json::parse(R"({
+            "choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"hi"}}],
+            "usage":{"prompt_tokens":100,"completion_tokens":10,
+                "prompt_tokens_details":{"cached_tokens":40,"cache_write_tokens":25}}
+        })");
+        check(parsed.has_value(), "D5-R9: literal wire JSON carrying cache_write_tokens parses");
+        if (parsed) {
+            auto resp = parse_chat_completion_response(*parsed);
+            check(resp.has_value(), "D5-R9: response with cache_write_tokens present parses successfully");
+            if (resp) {
+                check(resp->usage.cache_write_tokens == 25,
+                      "D5-R9: usage.prompt_tokens_details.cache_write_tokens maps to "
+                      "Usage::cache_write_tokens (the OpenRouter cache-creation extension field)");
+                check(resp->usage.cached_input_tokens == 40,
+                      "D5-R9: the pre-existing cached_tokens mapping (a cache READ) still works "
+                      "unaffected alongside the new cache_write_tokens mapping (a cache WRITE)");
+            }
+        }
+    }
+    {
+        // A plain OpenAI-shaped response with prompt_tokens_details present but no cache_write_tokens
+        // key at all inside it: stays at its 0 default, not an error, not a fabricated value.
+        auto parsed = json::parse(R"({
+            "choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"hi"}}],
+            "usage":{"prompt_tokens":100,"completion_tokens":10,
+                "prompt_tokens_details":{"cached_tokens":40}}
+        })");
+        check(parsed.has_value(), "D5-R10: literal plain-OpenAI-shaped usage JSON (no cache_write_tokens) parses");
+        if (parsed) {
+            auto resp = parse_chat_completion_response(*parsed);
+            check(resp.has_value(), "D5-R10: response parses successfully");
+            if (resp) {
+                check(resp->usage.cache_write_tokens == 0,
+                      "D5-R10: cache_write_tokens stays 0 when the OpenRouter-specific extension field is "
+                      "absent (a plain OpenAI response, not an OpenRouter one) -- this is fine, not an error");
+            }
+        }
+    }
+    {
+        // No usage object at all: model is still parsed independently of usage (the two are unrelated
+        // top-level fields), and cache_write_tokens naturally stays 0 alongside every other Usage field.
+        auto parsed = json::parse(R"({
+            "model":"local-llama-70b",
+            "choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"hi"}}]
+        })");
+        check(parsed.has_value(), "D5-R11: literal wire JSON with 'model' but no 'usage' object at all parses");
+        if (parsed) {
+            auto resp = parse_chat_completion_response(*parsed);
+            check(resp.has_value(), "D5-R11: response with no usage object still parses successfully");
+            if (resp) {
+                check(resp->model == "local-llama-70b",
+                      "D5-R11: model parsing is independent of usage parsing -- 'model' populates even "
+                      "when the response carries no 'usage' object at all");
+                check(resp->usage.cache_write_tokens == 0 && resp->usage.input_tokens == 0,
+                      "D5-R11: every Usage field, including the new cache_write_tokens, stays at its "
+                      "default (0) when there is no usage object to read from");
+            }
+        }
+    }
+
     if (g_failures == 0) {
         std::fprintf(stderr, "test_openai_chat_client_translation: ALL PASS\n");
         return 0;

@@ -191,8 +191,16 @@ namespace detail {
 // D1: the full `POST /v1/chat/completions` request body. `stream` is a caller-supplied flag (never
 // probed from `ChatRequest`) because `chat()` and `chat_stream()` are the two distinct callers, each
 // wanting a different value.
-[[nodiscard]] inline result<json::Value> build_request_body(ChatRequest const& request,
-                                                              std::string const& model, bool stream) {
+//
+// `end_user_id`/`seed` (Milestone 5 research follow-up, docs/research/2026-08-07-provider-metadata-and-
+// sampling-params-survey.md, "Recommended design" items 1/2): backend-constructor-local, NOT portable
+// `ChatRequest` vocabulary (004 §1's own sampling-parameter elision stands -- these are an abuse-
+// tracking id and a best-effort determinism hint, not a sampling knob). Both optional; `end_user_id`
+// empty means "omit `user` from the body entirely" (never send an empty-string user id), `seed`
+// unset means "omit `seed` entirely" (never fabricate a value).
+[[nodiscard]] inline result<json::Value> build_request_body(
+    ChatRequest const& request, std::string const& model, bool stream,
+    std::string const& end_user_id = {}, std::optional<std::int64_t> seed = std::nullopt) {
     std::vector<std::pair<std::string, json::Value>> obj;
     obj.emplace_back("model", json::Value::make_string(model));
 
@@ -220,17 +228,28 @@ namespace detail {
 
     if (stream) obj.emplace_back("stream", json::Value::make_bool(true));
 
+    if (!end_user_id.empty()) obj.emplace_back("user", json::Value::make_string(end_user_id));
+    if (seed.has_value()) obj.emplace_back("seed", json::Value::make_number(static_cast<double>(*seed)));
+
     return json::Value::make_object(std::move(obj));
 }
 
+// `http_referer`/`x_title` (same research-doc follow-up, "Recommended design" item 1): an OpenRouter-
+// specific app-attribution convention (`HTTP-Referer`/`X-Title` HTTP headers, NOT a JSON body field --
+// no other surveyed backend has an equivalent, confirmed Finding 1). Stamped in only when non-empty --
+// an empty string means "don't send this header at all," never a fabricated empty header value.
 [[nodiscard]] inline sandbox::NetEgressRequest build_http_request(std::string const& path,
                                                                     std::string const& api_key,
-                                                                    std::string body) {
+                                                                    std::string body,
+                                                                    std::string const& http_referer = {},
+                                                                    std::string const& x_title = {}) {
     sandbox::NetEgressRequest req;
     req.method = "POST";
     req.path = path;
     req.headers.emplace_back("Content-Type", "application/json");
     req.headers.emplace_back("Authorization", "Bearer " + api_key);
+    if (!http_referer.empty()) req.headers.emplace_back("HTTP-Referer", http_referer);
+    if (!x_title.empty()) req.headers.emplace_back("X-Title", x_title);
     req.body = std::move(body);
     return req;
 }
@@ -279,6 +298,13 @@ namespace detail {
     ChatResponse resp;
     resp.message.role = role::assistant;
 
+    // Finding 4: the model that ACTUALLY answered -- a sibling of `choices`/`usage` at the top level,
+    // not a request-echo (never read from `request`/the caller's own `model` field). Left empty, not
+    // fabricated, when the backend doesn't report one.
+    if (auto const* model = body.find("model"); model && model->is_string()) {
+        resp.model = model->as_string();
+    }
+
     if (auto const* content = message->find("content");
         content && content->is_string() && !content->as_string().empty()) {
         ContentItem item;
@@ -315,6 +341,12 @@ namespace detail {
         if (auto const* ptd = usage->find("prompt_tokens_details")) {
             if (auto const* cached = ptd->find("cached_tokens"); cached && cached->is_number()) {
                 resp.usage.cached_input_tokens = static_cast<std::uint64_t>(cached->as_number());
+            }
+            // Finding 5: an OpenRouter-specific extension field, no equivalent in plain OpenAI
+            // responses -- absent there, so this simply stays 0 (`Usage::cache_write_tokens`'s own
+            // default), not an error.
+            if (auto const* cwt = ptd->find("cache_write_tokens"); cwt && cwt->is_number()) {
+                resp.usage.cache_write_tokens = static_cast<std::uint64_t>(cwt->as_number());
             }
         }
         if (auto const* ctd = usage->find("completion_tokens_details")) {
@@ -531,16 +563,20 @@ using Resolver = std::function<result<sandbox::VerifiedEndpoint>(std::string_vie
 // parameter is owned by value -- no reference back to the `OpenAIChatClient` instance that spawned it.
 // `ca_bundle_pem_override` mirrors `perform_provider_https_exchange`'s own testability seam verbatim
 // (empty in production -- the vendored CA bundle applies; a test's self-signed leaf isn't in it).
+// `http_referer`/`x_title`/`end_user_id`/`seed` are `OpenAIChatClient`'s own optional constructor
+// fields, threaded through by value exactly like every other captured parameter here.
 inline void run_stream_worker(std::string host, std::uint16_t port, std::string path, std::string api_key,
                                std::string model, ChatRequest request,
                                stream_producer<ChatResponseUpdate> producer, Resolver resolver,
-                               std::string ca_bundle_pem_override) {
-    auto body = build_request_body(request, model, /*stream=*/true);
+                               std::string ca_bundle_pem_override, std::string http_referer,
+                               std::string x_title, std::string end_user_id,
+                               std::optional<std::int64_t> seed) {
+    auto body = build_request_body(request, model, /*stream=*/true, end_user_id, seed);
     if (!body) {
         producer.fail(quark::error{quark::errc::validation, "openai.request_build_failed"});
         return;
     }
-    auto req = build_http_request(path, api_key, json::dump(*body));
+    auto req = build_http_request(path, api_key, json::dump(*body), http_referer, x_title);
     auto resp = sandbox::perform_provider_https_exchange(host, port, req, {}, std::nullopt, resolver,
                                                             ca_bundle_pem_override);
     if (!resp) {
@@ -574,10 +610,19 @@ inline void run_stream_worker(std::string host, std::uint16_t port, std::string 
 template <SecretStore Store>
 class OpenAIChatClient {
 public:
+    // `http_referer`/`x_title`/`end_user_id`/`seed` (Milestone 5 research follow-up, docs/research/
+    // 2026-08-07-provider-metadata-and-sampling-params-survey.md "Recommended design" items 1/2): ALL
+    // optional, APPENDED after `ca_bundle_pem_override` -- never inserted earlier in this list. Every
+    // existing construction call site in tests/test_openai_chat_client_live.cpp uses positional
+    // arguments; inserting a parameter anywhere but the end would silently misalign every one of them
+    // (the same class of bug `Usage::cache_write_tokens`'s own placement note in core/content.hpp
+    // documents, deliberately avoided here the same way).
     OpenAIChatClient(std::string host, std::uint16_t port, std::string model, SecretRef api_key_ref,
                       ChatClientCapabilities caps, Store const& store, std::string path_prefix = "/v1",
                       detail::Resolver resolver = sandbox::resolve_and_validate,
-                      std::string ca_bundle_pem_override = {})
+                      std::string ca_bundle_pem_override = {}, std::string http_referer = {},
+                      std::string x_title = {}, std::string end_user_id = {},
+                      std::optional<std::int64_t> seed = std::nullopt)
         : host_(std::move(host)),
           port_(port),
           model_(std::move(model)),
@@ -586,7 +631,11 @@ public:
           store_(store),
           path_prefix_(std::move(path_prefix)),
           resolver_(std::move(resolver)),
-          ca_bundle_pem_override_(std::move(ca_bundle_pem_override)) {}
+          ca_bundle_pem_override_(std::move(ca_bundle_pem_override)),
+          http_referer_(std::move(http_referer)),
+          x_title_(std::move(x_title)),
+          end_user_id_(std::move(end_user_id)),
+          seed_(seed) {}
 
     [[nodiscard]] ChatClientCapabilities capabilities() const { return capabilities_; }
 
@@ -596,11 +645,11 @@ public:
         auto lease = store_.resolve(api_key_ref_, ctx);
         if (!lease) co_return std::unexpected(lease.error());
 
-        auto body = detail::build_request_body(request, model_, /*stream=*/false);
+        auto body = detail::build_request_body(request, model_, /*stream=*/false, end_user_id_, seed_);
         if (!body) co_return std::unexpected(body.error());
 
         auto req = detail::build_http_request(path_prefix_ + "/chat/completions", lease->reveal_text(),
-                                                json::dump(*body));
+                                                json::dump(*body), http_referer_, x_title_);
         auto resp = sandbox::perform_provider_https_exchange(host_, port_, req, {}, std::nullopt,
                                                                 resolver_, ca_bundle_pem_override_);
         if (!resp) co_return std::unexpected(resp.error());
@@ -623,7 +672,7 @@ public:
         }
         std::thread(&detail::run_stream_worker, host_, port_, path_prefix_ + "/chat/completions",
                     lease->reveal_text(), model_, std::move(request), std::move(pair.producer), resolver_,
-                    ca_bundle_pem_override_)
+                    ca_bundle_pem_override_, http_referer_, x_title_, end_user_id_, seed_)
             .detach();
         return std::move(pair.consumer);
     }
@@ -638,6 +687,10 @@ private:
     std::string path_prefix_;
     detail::Resolver resolver_;
     std::string ca_bundle_pem_override_;
+    std::string http_referer_;
+    std::string x_title_;
+    std::string end_user_id_;
+    std::optional<std::int64_t> seed_;
 };
 
 }  // namespace agentengine::openai

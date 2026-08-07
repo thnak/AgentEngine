@@ -23,6 +23,7 @@
 #include <cstdio>
 #include <cstring>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -675,6 +676,107 @@ int main() {
                 }
             }
         }
+    }
+
+    // ---- chat(): model + cache_creation_input_tokens come back correctly over a REAL TLS socket -------
+    // Research doc items 4/5 (docs/research/2026-08-07-provider-metadata-and-sampling-params-survey.md):
+    // proves the same mapping test_anthropic_chat_client_translation.cpp's F5-R1 already proves offline,
+    // here through a real response body decoded off a real socket, not a literal in-process json::parse.
+    {
+        std::string const body = R"({"id":"msg_2","type":"message","role":"assistant",)"
+                                  R"("model":"claude-sonnet-5-20260101",)"
+                                  R"("content":[{"type":"text","text":"real socket, real model field"}],)"
+                                  R"("stop_reason":"end_turn",)"
+                                  R"("usage":{"input_tokens":9,"output_tokens":6,)"
+                                  R"("cache_creation_input_tokens":21}})";
+        TlsCannedServer server(leaf, http_response(body));
+        check(server.ok(), "chat()+model/cache_write: test server started");
+        if (server.ok()) {
+            anthropic::AnthropicChatClient client("localhost", server.port(), "claude-sonnet-5",
+                                                   SecretRef{"anthropic-api-key"}, ChatClientCapabilities{},
+                                                   store, "/v1", "2023-06-01", fake_resolver, leaf.cert_pem);
+            auto resp = run_task_sync<result<ChatResponse>>(client.chat(request_asking("hi"), ctx));
+            check(resp.has_value(), "chat()+model/cache_write: the call succeeds against a real TLS server");
+            if (resp) {
+                check(resp->model == "claude-sonnet-5-20260101",
+                      "chat()+model/cache_write: ChatResponse.model round-trips over a REAL socket, not "
+                      "just through the offline parser -- the model that answered, read off a real HTTP "
+                      "response body");
+                check(resp->usage.cache_write_tokens == 21,
+                      "chat()+model/cache_write: usage.cache_creation_input_tokens maps to "
+                      "Usage::cache_write_tokens over a REAL socket too");
+            }
+        }
+    }
+
+    // ---- chat(): app-attribution headers + abuse-tracking id + cache TTL constructor options do NOT --
+    // ---- break a real request/response cycle (research doc items 1/2/7) -------------------------------
+    // Headers/body fields aren't independently observable from the client side of this canned-server
+    // harness (the server here doesn't echo the request back) -- what IS provable end to end is that
+    // setting all four new optional constructor parameters together still produces a well-formed request
+    // a real TLS peer accepts and a real response this backend parses correctly, exactly mirroring the
+    // "system + prompt-caching, real request over the wire" test above but now with every new option
+    // engaged simultaneously.
+    {
+        std::string const body =
+            R"({"type":"message","role":"assistant","content":[{"type":"text","text":"ok"}]})";
+        TlsCannedServer server(leaf, http_response(body));
+        check(server.ok(), "chat()+new-options: test server started");
+        if (server.ok()) {
+            ChatClientCapabilities caps;
+            caps.prompt_caching = true;
+            anthropic::AnthropicChatClient client(
+                "localhost", server.port(), "claude-sonnet-5", SecretRef{"anthropic-api-key"}, caps, store,
+                "/v1", "2023-06-01", fake_resolver, leaf.cert_pem, /*http_referer=*/"https://my.app",
+                /*x_title=*/"My Agent", /*end_user_id=*/"user-abc-123", /*cache_ttl=*/"1h");
+
+            ChatRequest req;
+            Message sys;
+            sys.role = role::system;
+            ContentItem sys_item;
+            sys_item.value = Text{"be concise"};
+            sys.content.push_back(std::move(sys_item));
+            req.messages.push_back(std::move(sys));
+            req.messages.push_back([] {
+                Message m;
+                m.role = role::user;
+                ContentItem item;
+                item.value = Text{"hi"};
+                m.content.push_back(std::move(item));
+                return m;
+            }());
+
+            auto resp = run_task_sync<result<ChatResponse>>(client.chat(req, ctx));
+            check(resp.has_value(),
+                  "chat()+new-options: a request built with http_referer/x_title/end_user_id/cache_ttl "
+                  "ALL set simultaneously still round-trips over a real TLS connection successfully -- "
+                  "the new attribution headers, metadata.user_id, and ttl-bearing cache_control the "
+                  "request now carries are all well-formed enough that neither this project's own request "
+                  "construction nor the real TLS/HTTP exchange path rejects it");
+            if (resp && !resp->message.content.empty()) {
+                auto const* text = std::get_if<Text>(&resp->message.content.front().value);
+                check(text && text->text == "ok",
+                      "chat()+new-options: the response still parses correctly with every new "
+                      "constructor option engaged at once");
+            }
+        }
+    }
+
+    // ---- AnthropicChatClient construction: an invalid cache_ttl is a construction-time contract error --
+    {
+        bool threw = false;
+        try {
+            anthropic::AnthropicChatClient client(
+                "localhost", static_cast<std::uint16_t>(1), "claude-sonnet-5",
+                SecretRef{"anthropic-api-key"}, ChatClientCapabilities{}, store, "/v1", "2023-06-01",
+                fake_resolver, leaf.cert_pem, "", "", "", /*cache_ttl=*/"10m");
+        } catch (std::invalid_argument const&) {
+            threw = true;
+        }
+        check(threw,
+              "construction: an unsupported cache_ttl value (\"10m\", neither \"5m\" nor \"1h\" nor "
+              "empty) is rejected at construction time as a contract error, never silently accepted and "
+              "sent to the wire unvalidated");
     }
 
     mbedtls_pk_free(&leaf_key);

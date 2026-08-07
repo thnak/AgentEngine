@@ -656,6 +656,104 @@ int main() {
         }
     }
 
+    // ---- chat(): model + cache_write_tokens round-trip through a REAL response body over a REAL TLS
+    // socket (2026-08-07 provider-metadata survey, "Recommended design" items 4/5) -- proves the wire
+    // parsing added to parse_chat_completion_response works against actual bytes read off a real
+    // socket, not just literal in-memory JSON (test_openai_chat_client_translation.cpp's D5-R7/D5-R9
+    // already prove the pure-parsing logic offline; this is the plumbing proof for the same fields).
+    {
+        std::string const body =
+            R"({"model":"gpt-5-turbo-2026","choices":[{"index":0,"finish_reason":"stop",)"
+            R"("message":{"role":"assistant","content":"hello with metadata"}}],)"
+            R"("usage":{"prompt_tokens":50,"completion_tokens":6,)"
+            R"("prompt_tokens_details":{"cached_tokens":10,"cache_write_tokens":8}}})";
+        TlsCannedServer server(leaf, http_response(body));
+        check(server.ok(), "chat()+metadata: test server started");
+        if (server.ok()) {
+            openai::OpenAIChatClient client("localhost", server.port(), "gpt-5", SecretRef{"openai-api-key"},
+                                             ChatClientCapabilities{}, store, "/v1", fake_resolver, leaf.cert_pem);
+            auto resp = run_task_sync<result<ChatResponse>>(client.chat(request_asking("hi"), ctx));
+            check(resp.has_value(), "chat()+metadata: the call succeeds against a real TLS server");
+            if (resp) {
+                check(resp->model == "gpt-5-turbo-2026",
+                      "chat()+metadata: ChatResponse::model comes back correctly from a REAL response "
+                      "body read off a REAL TLS socket, not just literal in-memory JSON");
+                check(resp->usage.cache_write_tokens == 8,
+                      "chat()+metadata: Usage::cache_write_tokens comes back correctly from a REAL "
+                      "response body's usage.prompt_tokens_details.cache_write_tokens over the real "
+                      "wire path (secret resolution -> request build -> TLS exchange -> response parse)");
+                check(resp->usage.cached_input_tokens == 10,
+                      "chat()+metadata: the pre-existing cached_input_tokens mapping still round-trips "
+                      "correctly alongside the new cache_write_tokens field");
+            }
+        }
+    }
+
+    // ---- chat(): http_referer/x_title/end_user_id/seed constructor params don't break a REAL request/
+    // response cycle (2026-08-07 survey items 1/2) -- this harness has no byte-capture of what the test
+    // server actually read (TlsCannedServer only drains and replies, see its own comment above), so this
+    // does not directly inspect the outbound HTTP-Referer/X-Title headers or the user/seed JSON fields;
+    // what it DOES prove is that supplying all four new optional constructor parameters together still
+    // produces a request the real HTTPS exchange sends successfully and a real response the client parses
+    // successfully -- i.e. the new fields are wired through build_http_request/build_request_body without
+    // corrupting the request in a way that would break the real round trip (a malformed request would
+    // either fail the exchange or come back with an error status, and it does not).
+    {
+        std::string const body =
+            R"({"model":"gpt-5","choices":[{"index":0,"finish_reason":"stop",)"
+            R"("message":{"role":"assistant","content":"ok with attribution+abuse-tracking"}}]})";
+        TlsCannedServer server(leaf, http_response(body));
+        check(server.ok(), "chat()+attribution: test server started");
+        if (server.ok()) {
+            openai::OpenAIChatClient client("localhost", server.port(), "gpt-5", SecretRef{"openai-api-key"},
+                                             ChatClientCapabilities{}, store, "/v1", fake_resolver, leaf.cert_pem,
+                                             "https://myapp.example/", "My Agent App", "end-user-42",
+                                             std::optional<std::int64_t>{42});
+            auto resp = run_task_sync<result<ChatResponse>>(client.chat(request_asking("hi"), ctx));
+            check(resp.has_value(),
+                  "chat()+attribution: a client constructed with http_referer/x_title/end_user_id/seed "
+                  "all set still completes a real TLS request/response cycle successfully");
+            if (resp) {
+                check(!resp->message.content.empty(),
+                      "chat()+attribution: the response still parses into real content -- the extra "
+                      "constructor fields did not corrupt request construction or response handling");
+            }
+        }
+    }
+
+    // ---- chat_stream(): the same four optional constructor params don't break the REAL streaming path -
+    {
+        std::string const sse = "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"Hi \"}}]}\n\n"
+                                 "data: {\"choices\":[{\"delta\":{\"content\":\"there!\"}}]}\n\n"
+                                 "data: [DONE]\n\n";
+        TlsCannedServer server(leaf, http_response(sse, /*chunked=*/true));
+        check(server.ok(), "chat_stream()+attribution: test server started");
+        if (server.ok()) {
+            openai::OpenAIChatClient client("localhost", server.port(), "gpt-5", SecretRef{"openai-api-key"},
+                                             ChatClientCapabilities{}, store, "/v1", fake_resolver, leaf.cert_pem,
+                                             "https://myapp.example/", "My Agent App", "end-user-42",
+                                             std::optional<std::int64_t>{42});
+            store.set("openai-api-key", "sk-test-value");
+
+            stream<ChatResponseUpdate> s = client.chat_stream(request_asking("hi"), ctx);
+            std::vector<std::string> received;
+            while (!s.done()) {
+                while (auto update = s.next()) {
+                    auto const* text = std::get_if<Text>(&update->delta.value);
+                    if (text) received.push_back(text->text);
+                }
+                if (!s.done()) std::this_thread::yield();
+            }
+            check(received.size() == 2 && received[0] == "Hi " && received[1] == "there!",
+                  "chat_stream()+attribution: a client with all four new optional constructor params set "
+                  "still streams a real SSE response through ae::stream<T> correctly -- the fields reach "
+                  "run_stream_worker's own build_request_body/build_http_request calls without breaking "
+                  "the detached worker's request construction");
+            check(s.terminal() == quark::ReplyStreamTerminal::Closed,
+                  "chat_stream()+attribution: the stream still reaches the success terminal");
+        }
+    }
+
     mbedtls_pk_free(&leaf_key);
 
     if (g_failures == 0) {
