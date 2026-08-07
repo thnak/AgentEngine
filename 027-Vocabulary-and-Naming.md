@@ -98,6 +98,9 @@ word is free, and we take it. §5 records the collision so nobody re-imports the
 | `Workflow` / `WorkflowBuilder` / `WorkflowContext` / `WorkflowEvent` | The typed executor graph and its parts (014) | MAF |
 | `Executor` | A node in a workflow graph: an agent, function, sub-workflow, or request port | MAF |
 | `Edge` | A typed connection between executors | MAF |
+| `edge_kind` / `executor_kind` | 014 §1's two closed enumerations — `direct`/`fan_out`/`fan_in`/`switch_case`/`multi_selection`/`chain`, and `agent`/`function`/`sub_workflow`/`request_port`. Added 2026-08-07 with Milestone 6 Phase A, the milestone that owns 014 | **ours** |
+| `TerminationBound` | 014 §2's required bound — `MaxRounds`, deadline, or budget. Named as a type because §2 makes it mandatory ("an unbounded workflow does not run"), so it is a field a `Workflow` cannot omit, not a policy some workflows carry. Added 2026-08-07 with Milestone 6 Phase A | **ours** |
+| `MessageTypeId` | The surface-independent identity of an executor port's message type — the string the C++ form derives from a declared trait and the declarative form (015) reads verbatim, so **one** validator serves both (I6, 014 §1). Added 2026-08-07 with Milestone 6 Phase A | **ours** |
 | **`Capability`** | An unforgeable handle authorizing one class of effect (007) | **ours** |
 | **`Principal`** | The authenticated identity a run executes on behalf of (007) | **ours** |
 | **`EffectContext`** | The mandatory attribution parameter carried into every effect (007, I4) | **ours** |

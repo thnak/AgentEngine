@@ -107,6 +107,40 @@ message(STATUS
   "ADR-012 compile-fail proof: OK (SandboxProfile<P> rejects a non-conforming type; Strict and a "
   "real SandboxBackend both compile)")
 
+# ---- 014 §1 compile-fail proof (Milestone 6 Phase A) -------------------------------------------
+# "An edge that connects incompatible types fails to build -- at compile time for the C++ form."
+# That claim is about a COMPILE failure, so it cannot be asserted from inside a test that must
+# itself compile; try_compile() is the only honest form it can take. Same two-file idiom as the
+# gates above -- a fail-only check cannot distinguish "correctly rejected" from "this file never
+# compiled for an unrelated reason", so the positive control connects a MATCHING pair.
+try_compile(AE_WORKFLOW_REJECTS_EDGE_TYPE_MISMATCH
+  "${CMAKE_CURRENT_BINARY_DIR}/compile_fail_checks/workflow_edge_type_mismatch"
+  "${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/workflow_edge_type_mismatch.cpp"
+  CXX_STANDARD 23
+  CMAKE_FLAGS "-DINCLUDE_DIRECTORIES=${PROJECT_SOURCE_DIR}/include"
+  OUTPUT_VARIABLE AE_WORKFLOW_REJECTS_EDGE_TYPE_MISMATCH_LOG)
+if(AE_WORKFLOW_REJECTS_EDGE_TYPE_MISMATCH)
+  message(FATAL_ERROR
+    "014 §1 VIOLATED: tests/compile_fail/workflow_edge_type_mismatch.cpp compiled, but an edge "
+    "whose source output message type is not its target input message type must fail to build in "
+    "the C++ form. Build log:\n${AE_WORKFLOW_REJECTS_EDGE_TYPE_MISMATCH_LOG}")
+endif()
+
+try_compile(AE_WORKFLOW_EDGE_TYPE_MATCH_POSITIVE_CONTROL
+  "${CMAKE_CURRENT_BINARY_DIR}/compile_fail_checks/workflow_edge_type_match"
+  "${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/workflow_edge_type_match_positive_control.cpp"
+  CXX_STANDARD 23
+  CMAKE_FLAGS "-DINCLUDE_DIRECTORIES=${PROJECT_SOURCE_DIR}/include"
+  OUTPUT_VARIABLE AE_WORKFLOW_EDGE_TYPE_MATCH_POSITIVE_CONTROL_LOG)
+if(NOT AE_WORKFLOW_EDGE_TYPE_MATCH_POSITIVE_CONTROL)
+  message(FATAL_ERROR
+    "014 §1 positive control FAILED: tests/compile_fail/workflow_edge_type_match_positive_control.cpp "
+    "must compile (a type-compatible edge is the ordinary, intended case) but did not. Build "
+    "log:\n${AE_WORKFLOW_EDGE_TYPE_MATCH_POSITIVE_CONTROL_LOG}")
+endif()
+message(STATUS
+  "014 §1 compile-fail proof: OK (a type-mismatched edge fails to build; a matching edge compiles)")
+
 # ---- Milestone 3 Phase A3 compile-fail proof (025 §2's Blob/Tree immutability) ------------------
 # `InMemoryWorktreeObjectStore::put_blob`/`put_tree` (core/worktree.hpp) take ONLY the content --
 # the digest is always DERIVED from it, never accepted as a caller-supplied parameter -- which is
@@ -532,6 +566,17 @@ if(AGENTENGINE_WITH_HTTPS)
     MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
   add_test(NAME test_chat_client_stream_incremental COMMAND test_chat_client_stream_incremental)
   set_tests_properties(test_chat_client_stream_incremental PROPERTIES TIMEOUT 120)
+
+  # ---- Milestone 6 Phase A: 014 §1/§2, the graph as data and its SHARED validator ----------------
+  # Every validator rule is exercised in both directions. A suite that only built correct graphs and
+  # watched them pass would be satisfied by a validator that returned success unconditionally, so
+  # each rule has a graph that trips it AND the nearest graph that does not. Includes the two cases
+  # most easily got wrong: a cyclic graph must VALIDATE (014 §9 Q2 allows cycles; the reflection and
+  # group-chat patterns need them), and the reachability walk must terminate on a self-loop rather
+  # than hang. Pure data, no actors, no engine -- default suite.
+  add_executable(test_workflow_graph_validation test_workflow_graph_validation.cpp)
+  target_link_libraries(test_workflow_graph_validation PRIVATE agentengine::core agentengine_warnings)
+  add_test(NAME test_workflow_graph_validation COMMAND test_workflow_graph_validation)
 
   # ---- ADR-020 gates G1-G7: 004 §2's portable reasoning_effort, mapped down by both backends ------
   # Drives BOTH backends from the same enumerator values in one file, on purpose: the amendment's
