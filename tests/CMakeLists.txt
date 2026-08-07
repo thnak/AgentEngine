@@ -458,6 +458,14 @@ target_compile_definitions(test_recorded_chat_client PRIVATE
 
 add_test(NAME test_recorded_chat_client COMMAND test_recorded_chat_client)
 
+# ---- Milestone 5 Phase A (docs/planning/milestone-5-providers-identity-secrets-breakdown.md) ---
+# SecretRef/SecretLease/SecretStore (trust/secret.hpp), a capability-gated wrapper over Quark's own
+# SecretSource seam (020-Security §4) -- env/file resolution, scoping per name, rotation without
+# restart, fail-closed without a granted cap::Secret.
+add_executable(test_secret_store test_secret_store.cpp)
+target_link_libraries(test_secret_store PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_secret_store COMMAND test_secret_store)
+
 # ---- Dependency-free JSON value/parser/serializer (M2 Phase B task B2, core/json_value.hpp) ----
 # Header-only, core-tier -- links only agentengine::core (no nlohmann::json; this IS the seam that
 # keeps nlohmann out of product code, see CONVENTIONS.md dependency-tier discipline).
