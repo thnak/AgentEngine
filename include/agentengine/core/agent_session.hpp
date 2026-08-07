@@ -22,6 +22,7 @@
 #include <chrono>
 #include <cstdint>
 #include <optional>
+#include <type_traits>
 #include <span>
 #include <string>
 #include <string_view>
@@ -287,6 +288,14 @@ public:
         // assignment is what threads `on_behalf_of` through, with no separate/parallel path that
         // could instead carry a forwarded caller token.
         effect_context_.principal = principal_;
+        // ADR-018. Before it, this was never assigned anywhere: every session run carried a NULL
+        // capability set, so any effect reached from a turn -- including a real backend's own
+        // outbound-credential resolution (004 §1 / 018 §4) -- was denied by construction. Harmless
+        // while every conformer was a mock that performs no effects; the blocker the moment one is
+        // real. Non-owning, exactly like `EffectContext::capabilities` itself: the host that grants
+        // it owns it and must outlive the session. Stays null unless a host set one, so I2 holds
+        // unchanged -- an unset session still reaches no effect.
+        effect_context_.capabilities = capabilities_;
         effect_context_.run_id     = session_id_ + ":run:" + std::to_string(run_counter_);
         // 001 §2: "Turn: A segment of a run's coroutine between model calls." This milestone's
         // turn loop (still M1's own scope: no tool-call loop, one model call per run) makes exactly
@@ -316,7 +325,13 @@ public:
         }
 
         ChatRequest request{contribution->messages};
-        result<ChatResponse> response = co_await chat_client_.chat(request, effect_context_);
+        if (!chat_client_) {
+            // ADR-018: only reachable for a non-default-constructible `ChatClientT` whose owner never
+            // called `emplace_chat_client()`. Same fail-closed shape as every other branch here --
+            // never fabricate an `AgentResponse` for a run that never reached a model.
+            co_return;
+        }
+        result<ChatResponse> response = co_await chat_client_->chat(request, effect_context_);
         if (!response) {
             // 001 §6's failure classification isn't wired up at this milestone — fail closed by
             // never responding, rather than fabricating a placeholder AgentResponse. The caller's
@@ -393,6 +408,34 @@ public:
         principal_    = std::move(principal);
         token_budget_ = token_budget;
     }
+
+    // ADR-018 (closes the Milestone 5 Phase J1 residual): construct this session's `ChatClientT` IN
+    // PLACE, after the actor itself exists. This is what lets a REAL Phase D/E backend -- which is not
+    // default-constructible, since `OpenAIChatClient<Store>`/`AnthropicChatClient<Store>` hold a
+    // `Store const&` -- be driven through this actor's real turn loop.
+    //
+    // In-place rather than a `set_chat_client(ChatClientT)` setter on purpose: a backend holding a
+    // reference member is not assignable, so a setter would not compile for exactly the types this
+    // exists to serve. Emplacement needs only that the type be constructible from `args`.
+    //
+    // Configuration-time only, like `initialize()`: call it before the first `StartRun`, from the
+    // owner that also owns the `SecretStore` the client references (that store must outlive this
+    // session). Nothing here reads model output, so this is not a taint or authority surface (I3).
+    template <class... Args>
+    ChatClientT& emplace_chat_client(Args&&... args) {
+        return chat_client_.emplace(std::forward<Args>(args)...);
+    }
+
+    [[nodiscard]] bool has_chat_client() const noexcept { return chat_client_.has_value(); }
+
+    // ADR-018: the capability set every run of this session executes under, threaded into
+    // `EffectContext` at the top of each turn. Non-owning -- the granting host owns it and must
+    // outlive the session, the same contract `EffectContext::capabilities` already has.
+    //
+    // Configuration-time, like `initialize()`/`emplace_chat_client()`, and never derived from model
+    // output (I3) or from anything a turn produced: a run cannot widen its own authority.
+    void set_capabilities(CapabilitySet const* capabilities) noexcept { capabilities_ = capabilities; }
+    [[nodiscard]] CapabilitySet const* capabilities() const noexcept { return capabilities_; }
 
     // Milestone 4 Phase C1 (005 §6: "Fork — copy-on-write new session id from a history prefix;
     // the sanctioned answer to concurrent runs (001 §4) and to 'what if' exploration"). Copies
@@ -633,6 +676,17 @@ public:
     }
 
 private:
+    // Engaged when `ChatClientT` is default-constructible (every pre-ADR-018 conformer), empty
+    // otherwise -- which is precisely what keeps `AgentSession` itself default-constructible, and so
+    // usable under `quark::TestKit<A>`, for a backend that is not.
+    [[nodiscard]] static std::optional<ChatClientT> make_default_chat_client() {
+        if constexpr (std::is_default_constructible_v<ChatClientT>) {
+            return std::optional<ChatClientT>(std::in_place);
+        } else {
+            return std::optional<ChatClientT>{};
+        }
+    }
+
     std::string                                       session_id_;
     Principal                                          principal_;
     std::vector<Message>                               history_;
@@ -643,7 +697,23 @@ private:
     std::vector<Interaction>                           open_interactions_;
     std::uint64_t                                      interaction_counter_ = 0;
     std::uint64_t                                      timer_wakes_ = 0;
-    ChatClientT                                        chat_client_;
+    // Milestone 5 Phase J1 residual, closed by ADR-018: held as an `optional` ONLY so that
+    // `AgentSession` stays default-constructible when `ChatClientT` is not.
+    //
+    // `quark::TestKit<A>` declares `A actor_;` and default-constructs it, and a real Phase D/E
+    // backend is not default-constructible -- `OpenAIChatClient<Store>` holds a `Store const&`. So
+    // `AgentSession<OpenAIChatClient<...>>` did not merely fail to be CONFIGURABLE, it failed to
+    // COMPILE under TestKit at all, which is why no real backend had ever been driven through this
+    // turn loop. See `emplace_chat_client()` below.
+    //
+    // Default-ENGAGED whenever `ChatClientT` allows it, so every existing conformer (all of which are
+    // default-constructible mocks) behaves exactly as it did when this was a plain value member: the
+    // engaged check below can only fail for a type that could not have been a value member anyway.
+    std::optional<ChatClientT>                         chat_client_ = make_default_chat_client();
+    // ADR-018. Non-owning; null means "this session may reach no effect", which is both the default
+    // and the pre-ADR-018 behaviour. Configuration, so -- like `chat_client_`/`history_provider_` --
+    // deliberately NOT cleared by `reset()`.
+    CapabilitySet const*                               capabilities_ = nullptr;
     HistoryProviderT                                    history_provider_;
     EffectContext                                      effect_context_;
     std::chrono::system_clock::time_point              created_at_{};

@@ -763,13 +763,25 @@ above) both clean except the same pre-existing `native_jail_backend_windows` OOM
 **Residuals surfaced by this phase, not actioned here (real, scoped follow-up work, not silently
 dropped):**
 
-- **`AgentSession<ChatClientT>` cannot host a non-default-constructible `ChatClient` conformer.**
-  `chat_client_` has no setter and `quark::TestKit<A>` only default-constructs its actor — a real
-  backend built for Phase D/E has never actually been driven through a live `AgentSession` turn loop.
-  Closing this needs either an additive `AgentSession` constructor plus a Quark-side (upstream)
-  `TestKit` enhancement to forward constructor args, or a different wiring shape entirely — a real
-  design question, not a mechanical gap, and belongs behind the full review cycle given `AgentSession`
-  is this project's actor-boundary invariant surface (I1-I8).
+- ~~**`AgentSession<ChatClientT>` cannot host a non-default-constructible `ChatClient` conformer.**~~
+  **CLOSED 2026-08-07 by `decisions/ADR-018-agent-session-real-chat-client-wiring.md`**, and sharper
+  than J1 recorded it in two ways. (a) It did not fail to CONFIGURE, it failed to COMPILE:
+  `quark::TestKit<A>` declares `A actor_;`, `AgentSession` held `ChatClientT` as a value, and a real
+  backend holds a `Store const&` (004 §1's resolve-at-point-of-use rule) — so
+  `AgentSession<OpenAIChatClient<...>>` could not be named at all. (b) A second, unnamed gap sat
+  behind it: `effect_context_.capabilities` was never assigned anywhere, so every session run carried
+  a NULL capability set — harmless for mocks that perform no effects, a hard blocker for a real
+  backend whose credential resolution is itself capability-gated. Fixing (a) alone would have produced
+  a session that compiles, runs, and fails every call.
+  Fix needed NO upstream Quark change (J1 had expected one): `chat_client_` is now
+  `std::optional<ChatClientT>`, default-ENGAGED whenever the type allows it — so every pre-existing
+  conformer is bit-for-bit unaffected and the disengaged branch is reachable only for a type that
+  could never have been a value member — plus `emplace_chat_client(...)` (in-place, since a backend
+  holding a reference member is not assignable) and `set_capabilities(...)`.
+  `tests/test_agent_session_real_backend.cpp` drives a REAL `OpenAIChatClient` through 001 §3's real
+  turn loop against a canned loopback server: real context assembly, real secret resolution against a
+  real grant, real socket, real parse, real history append, across two runs, plus a fail-closed case
+  for a never-emplaced client. Deterministic, so it is a default-suite test.
 - ~~**`chat_stream()`'s underlying fetch has no cancellation wiring from the consumer.**~~ **CLOSED
   2026-08-07 by `decisions/ADR-017-stream-consumer-cancellation-signal.md`.** Root cause was a real
   gap in the ring's shape, not an oversight at the call site: a `stream_producer<T>` learns the
@@ -829,10 +841,9 @@ dropped):**
   `translate_output_schema` output — `response_format` including the forced `additionalProperties:
   false` and `strict:true` — through llama.cpp's own grammar-constrained decoder, which accepts it and
   returns a schema-conforming object. The suspected incompatibility does not exist.
-- **`AgentSession<ChatClientT>` wiring a real, non-default-constructible `ChatClient` conformer**
-  (found in Phase J1) — needs either an additive `AgentSession` constructor plus an upstream Quark
-  `TestKit` change to forward actor constructor args, or a different wiring shape; a real design
-  question belonging behind the full review cycle, not built ad hoc under J1's own proof budget.
+- ~~**`AgentSession<ChatClientT>` wiring a real, non-default-constructible `ChatClient` conformer**~~
+  — CLOSED 2026-08-07 by ADR-018; see the Phase J1 residual entry above. No upstream Quark/`TestKit`
+  change was needed after all.
 - ~~**`chat_stream()`'s underlying HTTP fetch has no cancellation wired from the consumer**~~ —
   CLOSED 2026-08-07 by ADR-017; see the Phase J3 residual entry above for the mechanism and the
   measured result.

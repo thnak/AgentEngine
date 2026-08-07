@@ -522,6 +522,18 @@ if(AGENTENGINE_WITH_HTTPS)
     MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
   add_test(NAME test_provider_egress_address_policy COMMAND test_provider_egress_address_policy)
 
+  # ---- ADR-018: a REAL ChatClient backend driven through a live AgentSession turn loop -------------
+  # Closes Milestone 5's Phase J1 residual. Before it, AgentSession<OpenAIChatClient<...>> did not
+  # merely lack a way to be configured -- it failed to COMPILE, because quark::TestKit<A> default-
+  # constructs its actor and a real backend holds a `Store const&`. So 001 §3's turn loop and a
+  # backend that actually talks to a server had never been demonstrated together. Deterministic
+  # (canned loopback server, no live model), so it belongs in the default suite.
+  add_executable(test_agent_session_real_backend test_agent_session_real_backend.cpp)
+  target_link_libraries(test_agent_session_real_backend PRIVATE
+    agentengine::core agentengine::provider_http_client agentengine_warnings
+    MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+  add_test(NAME test_agent_session_real_backend COMMAND test_agent_session_real_backend)
+
   # ---- Milestone 5 Phase J1 (roadmap exit criterion, 004 §7 G1): the same unchanged call site, run
   # against real OpenAI/Anthropic backends over local TLS servers, a ReplayChatClient, and a
   # FailoverChatClient<real, real> composition with a genuinely failing primary.
