@@ -12,12 +12,21 @@ protocols of 2026 (MCP, A2A, AG-UI, OpenTelemetry GenAI).
 The developer model is **MAF-shaped** (Microsoft Agent Framework's agent/session/tool/workflow
 vocabulary) expressed in **Quark's zero-cost CRTP policy idiom**.
 
-**The project is spec-driven.** 24 RFC documents (`NNN-*.md`) are the authoritative design;
+**The project is spec-driven.** 30 RFC documents (`NNN-*.md`) are the authoritative design;
 `decisions/ADR-*.md` are executed proofs. **When code and a spec disagree, the spec wins**; if the
 spec is wrong, fix the spec first (with an ADR), then the code.
 
-**Status: design phase.** There is no implementation yet. Every RFC is Draft. The current work is
-research, design, and resolving the questions in `OpenQuestions.md`.
+**Status: implementation under way, not design phase.** All 30 RFCs have passed their own review
+gate (each RFC's own `**Status:**` header reads `Reviewed`, dated 2026-08-05 —
+`docs/planning/v1-review-signoff-workflow.md`); several have real ADR evidence behind specific
+gates (see `decisions/`). Real, tested C++23 implementation exists under `include/agentengine/`,
+`src/`, and `tests/`. Per `docs/planning/v1-implementation-roadmap.md`'s milestone sequence,
+Milestones 0-4 are complete and Milestone 5 is in progress (Phases A-I done; Phase J, the
+milestone's own exit-criterion proof, remains). Milestones 6-9 have not started. **Do not hardcode
+a milestone/phase table here** — it goes stale on the next commit. The live, accurately-maintained
+source of truth is `docs/planning/v1-implementation-roadmap.md` (the milestone plan) and the
+per-milestone `docs/planning/milestone-*-breakdown.md` files (phase-by-phase progress with
+verification notes) — check those, not this file, for current status.
 
 ## Read first
 
