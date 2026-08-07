@@ -1,7 +1,11 @@
 import { motion } from "framer-motion";
-import { REPO_URL } from "../data/content";
+import { REPO_URL, SITE_BASE } from "../data/content";
 
-export function Nav() {
+export function Nav({ page = "home" }: { page?: "home" | "api" }) {
+  // Site-root-relative, so this is correct from index.html, api.html, AND the nested
+  // /api/*.html detail pages alike — no "../" bookkeeping per page depth.
+  const homeHref = (hash: string) => (page === "home" ? hash : `${SITE_BASE}/index.html${hash}`);
+
   return (
     <motion.header
       className="nav"
@@ -10,7 +14,11 @@ export function Nav() {
       transition={{ duration: 0.5, ease: "easeOut" }}
     >
       <div className="container nav-inner">
-        <a href="#top" className="brand" aria-label="AgentEngine home">
+        <a
+          href={page === "home" ? "#top" : `${SITE_BASE}/index.html`}
+          className="brand"
+          aria-label="AgentEngine home"
+        >
           <span className="brand-mark" aria-hidden="true">
             AE
           </span>
@@ -18,10 +26,13 @@ export function Nav() {
         </a>
 
         <nav className="nav-links nav-only-desktop" aria-label="Primary">
-          <a href="#pillars">Pillars</a>
-          <a href="#architecture">Architecture</a>
-          <a href="#spec-driven">Spec-driven</a>
-          <a href="#getting-started">Getting started</a>
+          <a href={homeHref("#pillars")}>Pillars</a>
+          <a href={homeHref("#architecture")}>Architecture</a>
+          <a href={homeHref("#spec-driven")}>Spec-driven</a>
+          <a href={homeHref("#getting-started")}>Getting started</a>
+          <a href={`${SITE_BASE}/api.html`} aria-current={page === "api" ? "page" : undefined}>
+            API
+          </a>
         </nav>
 
         <div className="nav-cta">

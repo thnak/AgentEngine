@@ -2,6 +2,12 @@
 // Facts sourced from AgentEngineSpecification.md and README.md — do not
 // invent claims here that those documents don't make.
 
+// Served by GitHub Pages under https://thnak.github.io/AgentEngine/ (a project page). Internal
+// cross-page <a href> links (Nav, ApiSubNav) are written as site-root-relative paths built from
+// this constant, rather than "../"-relative ones, so the same link works unchanged regardless of
+// how deeply nested the current page is (e.g. /api/tool.html linking back to /index.html).
+export const SITE_BASE = "/AgentEngine";
+
 export const REPO_URL = "https://github.com/thnak/AgentEngine";
 export const QUARK_URL = "https://github.com/thnak/QuarkCpp";
 export const SPEC_URL = `${REPO_URL}/blob/main/AgentEngineSpecification.md`;

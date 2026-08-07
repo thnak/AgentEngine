@@ -1,0 +1,419 @@
+// Content for the API reference page (api.html). Same rule as content.ts: every claim here is
+// grounded in a real header, source file, RFC section, or test in this repo, with a citation —
+// don't invent a shape or a claim these sources don't make, and never blur "real and tested"
+// with "a Reviewed RFC describes this but nothing implements it yet."
+
+import { REPO_URL, SITE_BASE } from "./content";
+
+export const gh = (path: string) => `${REPO_URL}/blob/main/${path}`;
+
+export type ApiStatus = "real" | "design";
+
+export interface ApiPage {
+  id: string;
+  label: string;
+  href: string;
+  eyebrow: string;
+  description: string;
+  status: ApiStatus;
+}
+
+// The API section's own page system: one hub (api.html) plus one detail page per part, all
+// sharing ApiSubNav for cross-navigation. Order here is the order they appear in both the hub
+// grid and the sub-nav strip.
+export const apiPages: ApiPage[] = [
+  {
+    id: "agent",
+    label: "Agent & register_agent",
+    href: `${SITE_BASE}/api/agent.html`,
+    eyebrow: "002 — Agent Model and Authoring",
+    description: "The CRTP base every agent derives from, and the compiler that validates its whole policy set.",
+    status: "real",
+  },
+  {
+    id: "tool",
+    label: "Tool",
+    href: `${SITE_BASE}/api/tool.html`,
+    eyebrow: "006 — Tool and Function Plane",
+    description: "Every static member a tool needs, the JSON Schema its Args/Reply types generate, and where that schema goes.",
+    status: "real",
+  },
+  {
+    id: "skill",
+    label: "Skill",
+    href: `${SITE_BASE}/api/skill.html`,
+    eyebrow: "009 §8 — Plugin and Extension System",
+    description: "SKILL.md frontmatter, progressive-disclosure loading, and why it's a filesystem mount, not a tool call.",
+    status: "design",
+  },
+  {
+    id: "trust-sandbox",
+    label: "Capabilities & Sandbox",
+    href: `${SITE_BASE}/api/trust-sandbox.html`,
+    eyebrow: "007/008 — Trust & Isolation (L1)",
+    description: "The declaration tags that gate every effect, and the sandbox backends that actually enforce them.",
+    status: "real",
+  },
+  {
+    id: "runtime",
+    label: "AgentSession & ChatClient",
+    href: `${SITE_BASE}/api/runtime.html`,
+    eyebrow: "Agent core (L2)",
+    description: "The Quark actor a session really runs on, and the live Anthropic/OpenAI/Replay provider backends behind it.",
+    status: "real",
+  },
+  {
+    id: "plugins",
+    label: "WASM Plugin ABI",
+    href: `${SITE_BASE}/api/plugins.html`,
+    eyebrow: "Plugin ABI (D2)",
+    description: "The ae:tool WIT world every plugin compiles to, and what's real versus still stubbed inside the host.",
+    status: "real",
+  },
+  {
+    id: "protocols",
+    label: "Protocol surfaces",
+    href: `${SITE_BASE}/api/protocols.html`,
+    eyebrow: "L4 protocol surfaces — Milestone 7",
+    description: "MCP, A2A, AG-UI, inbound OpenAI-compatible HTTP, and the declarative YAML/JSON format — status of each.",
+    status: "design",
+  },
+];
+
+export interface ApiEntry {
+  id: string;
+  status: ApiStatus;
+  tag: string;
+  title: string;
+  body: string;
+  cite: string;
+  href: string;
+}
+
+export const authoringEntries: ApiEntry[] = [
+  {
+    id: "agent-crtp",
+    status: "real",
+    tag: "Agent<Derived, Policies...>",
+    title: "Agent — the CRTP base every agent derives from",
+    body:
+      "An empty compile-time tag, not a runtime base class — no virtual dispatch. Policies are template parameters: ChatClientId<Id> (required, no default), Tools<Ts...>, Capabilities<Cs...>, SandboxProfile<P>, MaxTurns<N> (default 16), TokenBudget<N>, plus six tags accepted but not yet interpreted by register_agent<A>() (Concurrency, Retry, Memory, Middleware, Stateless, OutputSchema). The derived struct supplies static name and instructions.",
+    cite: "include/agentengine/core/agent.hpp:119",
+    href: gh("include/agentengine/core/agent.hpp"),
+  },
+  {
+    id: "register-agent",
+    status: "real",
+    tag: "register_agent<A>()",
+    title: "register_agent — compiles and validates the whole policy set",
+    body:
+      "Returns result<AgentMetadata>. Real, distinct failure codes: agent.chat_client_id_missing, agent.tool_name_collision, agent.capability_ceiling_exceeded (every tool's declared capabilities must be covered by the agent's ceiling), plus sandbox-profile and output-schema checks. The handoff-cycle check is a stubbed always-pass — it needs 014's workflow graph, out of scope until Milestone 6.",
+    cite: "include/agentengine/core/agent_registry.hpp:489",
+    href: gh("include/agentengine/core/agent_registry.hpp"),
+  },
+];
+
+export interface FieldSpec {
+  name: string;
+  type: string;
+  required: boolean;
+  notes: string;
+}
+
+export const toolStaticMembers: FieldSpec[] = [
+  {
+    name: "name",
+    type: "std::string_view",
+    required: true,
+    notes: "Tool identifier. Checked for collisions across an agent's Tools<...> by register_agent<A>(), and sent to the model as the tool's name.",
+  },
+  {
+    name: "description",
+    type: "std::string_view",
+    required: true,
+    notes: "Sent verbatim to the model — becomes Anthropic's input_schema sibling field and OpenAI's function.description.",
+  },
+  {
+    name: "Args",
+    type: "struct, paired with AE_JSON_SCHEMA(Args, fields...)",
+    required: true,
+    notes: "The argument type. Its generated JSON Schema is exactly what the model sees and what invoke() is validated against — one description, no separate hand-written schema.",
+  },
+  {
+    name: "Reply",
+    type: "struct, paired with AE_JSON_SCHEMA(Reply, fields...)",
+    required: true,
+    notes: "The return type, schema-typed the same way as Args.",
+  },
+  {
+    name: "invoke(Args, EffectContext&)",
+    type: "static result<Reply>",
+    required: true,
+    notes: "Synchronous by design, not a coroutine — ae::task<T> stays deferred until a milestone actually needs concurrent tool calls (tool.hpp:92-94).",
+  },
+  {
+    name: "declared_capabilities()",
+    type: "static std::vector<Capability>",
+    required: false,
+    notes: "Defaults to empty (007 §3's empty-by-default rule). Override via Capabilities<Cs...> — must be covered by the agent's own ceiling or register_agent<A>() rejects the agent.",
+  },
+  {
+    name: "declared_approval()",
+    type: "static approval_mode",
+    required: false,
+    notes: "Defaults to never_require. Opt-in only — a tool author who wants human approval before every call must say so with Approval<M>.",
+  },
+  {
+    name: "declared_effect_class()",
+    type: "static effect_class",
+    required: false,
+    notes: "Defaults to at_most_once — the conservative choice, deliberately the opposite direction from declared_approval()'s default. An unclassified tool is assumed unsafe to blindly re-run, not safe.",
+  },
+];
+
+export interface TypeMapping {
+  cpp: string;
+  json: string;
+  note: string;
+}
+
+export const jsonSchemaTypeMapping: TypeMapping[] = [
+  { cpp: "bool", json: '"boolean"', note: "" },
+  { cpp: "std::string", json: '"string"', note: "" },
+  { cpp: "integral / enum", json: '"integer"', note: "A C++ enum flattens to a plain integer — enumerator names are never emitted." },
+  { cpp: "floating point", json: '"number"', note: "" },
+  { cpp: "std::vector<T>", json: '{"type":"array","items":<T>}', note: "Items recurse through this same table." },
+  { cpp: "std::optional<T>", json: "T's own fragment, unwrapped", note: 'Excluded from "required" — the only way a field becomes optional; a non-optional field with a default member initializer is still required (no reflection to detect the default).' },
+  { cpp: "nested AE_JSON_SCHEMA type", json: "its own generated {\"type\":\"object\",...}", note: "Recurses via ADL — not flattened, not stringified." },
+];
+
+export const toolSchemaSnippet = `struct SearchArgs {
+    std::string query;
+    int max_results;
+    std::optional<std::string> after_cursor;
+};
+AE_JSON_SCHEMA(SearchArgs, query, max_results, after_cursor)
+
+struct Hit {
+    std::string url;
+    double score;
+};
+AE_JSON_SCHEMA(Hit, url, score)
+
+struct SearchReply {
+    std::vector<Hit> hits;
+    bool truncated;
+};
+AE_JSON_SCHEMA(SearchReply, hits, truncated)
+
+struct WebSearchTool : agentengine::Tool<WebSearchTool> {
+    static constexpr std::string_view name = "web_search";
+    using Args = SearchArgs;
+    using Reply = SearchReply;
+};
+// tests/test_tool_json_schema.cpp — parsed and asserted as real JSON, not
+// substring-matched: a schema that's "textually plausible" but invalid JSON
+// would pass a substring check and fail every real consumer.`;
+
+export const toolSchemaOutput = `{
+  "type": "object",
+  "properties": {
+    "hits": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "url": { "type": "string" },
+          "score": { "type": "number" }
+        },
+        "required": ["url", "score"]
+      }
+    },
+    "truncated": { "type": "boolean" }
+  },
+  "required": ["hits", "truncated"]
+}
+// json_schema_of<SearchReply>() — pretty-printed here for reading; the real
+// emission is compact, single-line, no whitespace.`;
+
+export const toolDescriptorSnippet = `// One entry in the immutable per-run tool table (006 §6). Type-erased:
+// invoke closes over ToolT's real Args/Reply types.
+struct ToolDescriptor {
+    std::string name;
+    std::string description;
+    std::vector<Capability> capability_ceiling;  // from Capabilities<...>
+    approval_mode approval = approval_mode::never_require;
+    std::string args_schema_json;
+    std::string reply_schema_json;
+
+    using InvokeFn = std::function<result<json::Value>(json::Value const&, EffectContext&)>;
+    InvokeFn invoke;
+};
+// include/agentengine/core/tool_pipeline.hpp:50-60`;
+
+export const trustEntries: ApiEntry[] = [
+  {
+    id: "capabilities",
+    status: "real",
+    tag: "Capabilities<Cs...> / cap::decl::*",
+    title: "Capability declarations — I2 enforced by the type system",
+    body:
+      "Declaration tags: FsRead<Mount>, FsWrite<Mount>, NetOut<Host>, NetListen, Secret<Name>, ToolCall<Name>, RunnerCall<Name>, Exec<Profile>, Clock<Ms>, Entropy, EnvRead<Key>, EnvWrite<Key>, AgentCall<AgentId,MaxDepth>, Schedule<...>, Background<...>, Elicit. CapabilitySet::attenuate() only narrows — there is no constructor that grants everything.",
+    cite: "include/agentengine/trust/capability.hpp:219",
+    href: gh("include/agentengine/trust/capability.hpp"),
+  },
+  {
+    id: "sandbox-profile",
+    status: "real",
+    tag: "SandboxProfile<P>",
+    title: "SandboxProfile — a concrete backend, or the strongest one available",
+    body:
+      "P is either a concrete SandboxBackend or the Strict selector, resolved by ranking every backend that supports the current platform by strength. Two real backends exist: native_jail (Windows AppContainer + Job Objects; Linux cgroups + seccomp) and wasm (Wasmtime-backed). remote is scaffolding only, deferred to Milestone 9.",
+    cite: "include/agentengine/sandbox/sandbox.hpp:73",
+    href: gh("include/agentengine/sandbox/sandbox.hpp"),
+  },
+];
+
+export const runtimeEntries: ApiEntry[] = [
+  {
+    id: "agent-session",
+    status: "real",
+    tag: "AgentSession<ChatClientT, StateT, HistoryProviderT>",
+    title: "AgentSession — a real Quark actor, not a facade",
+    body:
+      "A quark::Actor<AgentSession<...>, quark::Sequential> proven end-to-end by the M1 walking skeleton: ask<AgentResponse>(StartRun{...}) grows history() by a real user+assistant turn pair with real reply text and token usage. Sixteen further tests cover checkpoint, fork, delegation, redact, isolation, node-loss fencing, poison-run handling, suspend/resume, and token budgets.",
+    cite: "include/agentengine/core/agent_session.hpp:231",
+    href: gh("include/agentengine/core/agent_session.hpp"),
+  },
+  {
+    id: "chat-clients",
+    status: "real",
+    tag: "AnthropicChatClient · OpenAIChatClient · ReplayChatClient",
+    title: "Real, tested provider backends — Milestone 5, done",
+    body:
+      "AnthropicChatClient posts to /v1/messages with real streaming (chat_stream()) and prompt-cache TTL support. OpenAIChatClient posts to /v1/chat/completions, streaming via a detached worker. ReplayChatClient replays a recorded run deterministically offline — the I5 seam. All three conform to the same ChatClient interface tools and agents are written against.",
+    cite: "include/agentengine/protocol/anthropic/chat_client.hpp:818",
+    href: gh("include/agentengine/protocol/anthropic/chat_client.hpp"),
+  },
+];
+
+export const pluginEntries: ApiEntry[] = [
+  {
+    id: "wasm-plugin-abi",
+    status: "real",
+    tag: "ae:tool WIT world",
+    title: "WASM Component Model plugin ABI — real and tested, not just designed",
+    body:
+      "A plugin is a WASI 0.3 component exporting interface guest: list-tools() -> list<tool-descriptor> and invoke(request) -> tool-result. Gated host interfaces (fs, http, secrets, clock, random) each require a capability-handle resource the host grants explicitly. Proven against a genuinely compiled Rust component, including capability-mismatch and wall-clock-kill cases. fs-read/fs-write/resolve-secret still trap as not-implemented inside M2's minimal host; http-request is real (ADR-011).",
+    cite: "src/backends/wasm/wasm_backend.cpp:275",
+    href: gh("src/backends/wasm/wasm_backend.cpp"),
+  },
+];
+
+export const skillFrontmatterFields: FieldSpec[] = [
+  {
+    name: "name",
+    type: "string, 1–64 chars",
+    required: true,
+    notes: "a-z0-9 and hyphens, no leading/trailing hyphen, no --. Must match the skill's own directory name.",
+  },
+  {
+    name: "description",
+    type: "string, 1–1024 chars",
+    required: true,
+    notes: "States what it does AND when to use it — trigger/when-to-use is folded into this one field, not a separate one.",
+  },
+  { name: "license", type: "string", required: false, notes: "" },
+  { name: "compatibility", type: "string", required: false, notes: "" },
+  {
+    name: "metadata",
+    type: "map<string, string>",
+    required: false,
+    notes: "No dedicated version field exists in the format — convention places it in metadata.version; the loader treats the package digest as the real identity and this as a label.",
+  },
+  {
+    name: "allowed-tools",
+    type: "space-separated list",
+    required: false,
+    notes: '"Advisory, never a grant" (009 §8c) — marked experimental upstream. Real tool access is still mediated only by Capabilities<...>.',
+  },
+];
+
+export interface GenericSkill {
+  name: string;
+  teaches: string;
+}
+
+export const genericSkills: GenericSkill[] = [
+  { name: "using-the-code-interpreter", teaches: "Idioms for execute_code (010 §1); when one call suffices vs. when CodeAct's multi-step form pays for itself." },
+  { name: "using-codeact", teaches: "Worked agent.* examples (026 §5) — filtering large results in-process instead of round-tripping every row through the model." },
+  { name: "reading-large-content", teaches: "When to use the preview-then-page pattern instead of asking for a whole file (006 §7's token-budget rule)." },
+  { name: "producing-structured-output", teaches: "Shaping a final response against a declared schema (003 §5) reliably." },
+  { name: "shell-pipelines", teaches: "ShellRunner's grammar (010 §2) — composing pipes/redirects within its documented subset." },
+];
+
+export interface ProtocolEntry {
+  id: string;
+  name: string;
+  rfc: string;
+  rfcHref: string;
+  note: string;
+}
+
+export const protocolEntries: ProtocolEntry[] = [
+  {
+    id: "mcp",
+    name: "MCP server + client",
+    rfc: "011-MCP-Conformance",
+    rfcHref: gh("011-MCP-Conformance.md"),
+    note: "protocol/mcp/ holds a 4-line README naming the RFC and the 2026-07-28 protocol revision. No headers, no source, no tests.",
+  },
+  {
+    id: "a2a",
+    name: "A2A",
+    rfc: "012-A2A-Conformance",
+    rfcHref: gh("012-A2A-Conformance.md"),
+    note: "Same shape as MCP: a README pointing at the RFC, nothing implemented yet.",
+  },
+  {
+    id: "agui",
+    name: "AG-UI streaming surface",
+    rfc: "013-UI-and-Streaming-Surfaces",
+    rfcHref: gh("013-UI-and-Streaming-Surfaces.md"),
+    note: "Same shape again — RFC-only.",
+  },
+  {
+    id: "openai-inbound",
+    name: "OpenAI-compatible HTTP (inbound)",
+    rfc: "013-UI-and-Streaming-Surfaces",
+    rfcHref: gh("013-UI-and-Streaming-Surfaces.md"),
+    note: "Not the same thing as OpenAIChatClient above, which is an outbound provider client. Serving agentengine agents behind an OpenAI-shaped endpoint is unbuilt.",
+  },
+  {
+    id: "declarative",
+    name: "Declarative YAML/JSON agent format",
+    rfc: "015-Declarative-Agent-Format",
+    rfcHref: gh("015-Declarative-Agent-Format.md"),
+    note: "No parser exists. The Milestone 7 exit criterion is a YAML agent producing byte-identical AgentMetadata to its C++ equivalent (I6) — not yet reached.",
+  },
+];
+
+export interface RfcLink {
+  label: string;
+  href: string;
+  status: ApiStatus;
+}
+
+export const apiRfcLinks: RfcLink[] = [
+  { label: "002 — Agent Model and Authoring", href: gh("002-Agent-Model-and-Authoring.md"), status: "real" },
+  { label: "004 — Model Provider Plane", href: gh("004-Model-Provider-Plane.md"), status: "real" },
+  { label: "006 — Tool and Function Plane", href: gh("006-Tool-and-Function-Plane.md"), status: "real" },
+  { label: "007 — Capability and Trust Model", href: gh("007-Capability-and-Trust-Model.md"), status: "real" },
+  { label: "008 — Sandbox and Isolation", href: gh("008-Sandbox-and-Isolation.md"), status: "real" },
+  { label: "009 — Plugin and Extension System", href: gh("009-Plugin-and-Extension-System.md"), status: "real" },
+  { label: "011 — MCP Conformance", href: gh("011-MCP-Conformance.md"), status: "design" },
+  { label: "012 — A2A Conformance", href: gh("012-A2A-Conformance.md"), status: "design" },
+  { label: "013 — UI and Streaming Surfaces", href: gh("013-UI-and-Streaming-Surfaces.md"), status: "design" },
+  { label: "014 — Workflow and Orchestration", href: gh("014-Workflow-and-Orchestration.md"), status: "design" },
+  { label: "015 — Declarative Agent Format", href: gh("015-Declarative-Agent-Format.md"), status: "design" },
+];

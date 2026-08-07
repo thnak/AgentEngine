@@ -1,0 +1,23 @@
+import { ApiDetailLayout } from "../components/ApiDetailLayout";
+import { ApiSection } from "../components/ApiSection";
+import { runtimeEntries } from "../data/apiContent";
+
+function RuntimeDetailApp() {
+  return (
+    <ApiDetailLayout active="runtime">
+      <ApiSection
+        id="runtime"
+        eyebrow="Agent core — L2"
+        heading={
+          <>
+            A real actor, <span className="grad-text">real provider backends</span>
+          </>
+        }
+        description="AgentSession is a Quark actor with sixteen-plus tests behind it, not a facade — and the ChatClient it talks to is a live Anthropic or OpenAI backend, not only a mock."
+        entries={runtimeEntries}
+      />
+    </ApiDetailLayout>
+  );
+}
+
+export default RuntimeDetailApp;

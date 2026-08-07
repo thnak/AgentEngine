@@ -1,9 +1,11 @@
 import { motion } from "framer-motion";
 import { agentCppSnippet, buildSteps, nextLinks } from "../data/content";
+import { highlightCpp } from "../lib/highlightCpp";
 import { RevealGroup, RevealItem } from "./Reveal";
 
-// Small, dependency-free highlighters for the two code blocks below — same
-// approach as Hero.tsx's highlightCpp, not a general syntax highlighter.
+// Shell-command highlighter for the terminal code block below — same
+// dependency-free approach as the shared highlightCpp, not a general
+// syntax highlighter.
 
 function highlightShell(source: string) {
   const lines = source.split("\n");
@@ -24,40 +26,6 @@ function highlightShell(source: string) {
         <span className="tok-prompt">$ </span>
         <span className="tok-kw">{cmd}</span>
         {rest.length ? " " + rest.join(" ") : ""}
-      </div>
-    );
-  });
-}
-
-function highlightCpp(source: string) {
-  const lines = source.split("\n");
-  return lines.map((line, i) => {
-    const parts: Array<{ text: string; cls?: string }> = [];
-    const re =
-      /(\/\/.*$)|("[^"]*")|\b(struct|auto|static|constexpr|std|using|namespace)\b|\b([A-Z][A-Za-z0-9_]*)\b/g;
-    let last = 0;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(line))) {
-      if (m.index > last) parts.push({ text: line.slice(last, m.index) });
-      if (m[1]) parts.push({ text: m[1], cls: "tok-com" });
-      else if (m[2]) parts.push({ text: m[2], cls: "tok-str" });
-      else if (m[3]) parts.push({ text: m[3], cls: "tok-kw" });
-      else if (m[4]) parts.push({ text: m[4], cls: "tok-type" });
-      last = re.lastIndex;
-    }
-    if (last < line.length) parts.push({ text: line.slice(last) });
-    return (
-      <div key={i}>
-        {parts.map((p, j) =>
-          p.cls ? (
-            <span key={j} className={p.cls}>
-              {p.text}
-            </span>
-          ) : (
-            <span key={j}>{p.text}</span>
-          ),
-        )}
-        {line.length === 0 ? " " : null}
       </div>
     );
   });

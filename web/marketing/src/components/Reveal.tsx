@@ -1,5 +1,5 @@
 import { motion, type Variants } from "framer-motion";
-import type { PropsWithChildren } from "react";
+import type { CSSProperties, PropsWithChildren } from "react";
 
 const containerVariants: Variants = {
   hidden: {},
@@ -13,11 +13,13 @@ export function RevealGroup({
   children,
   className,
   id,
-}: PropsWithChildren<{ className?: string; id?: string }>) {
+  style,
+}: PropsWithChildren<{ className?: string; id?: string; style?: CSSProperties }>) {
   return (
     <motion.div
       className={className}
       id={id}
+      style={style}
       variants={containerVariants}
       initial="hidden"
       whileInView="show"

@@ -1,5 +1,6 @@
 import { motion, type Variants } from "framer-motion";
 import { heroCodeSnippet, README_URL, SPEC_URL } from "../data/content";
+import { highlightCpp } from "../lib/highlightCpp";
 
 const container: Variants = {
   hidden: {},
@@ -12,41 +13,6 @@ const item: Variants = {
   hidden: { opacity: 0, y: 22 },
   show: { opacity: 1, y: 0, transition: { duration: 0.55, ease: "easeOut" } },
 };
-
-function highlightCpp(source: string) {
-  // A small, dependency-free token highlighter for the one snippet we show —
-  // not a general syntax highlighter, just enough to read as "real code".
-  const lines = source.split("\n");
-  return lines.map((line, i) => {
-    const parts: Array<{ text: string; cls?: string }> = [];
-    const re = /(\/\/.*$)|("[^"]*")|\b(struct|auto|static|constexpr|std)\b|\b([A-Z][A-Za-z0-9_]*)\b/g;
-    let last = 0;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(line))) {
-      if (m.index > last) parts.push({ text: line.slice(last, m.index) });
-      if (m[1]) parts.push({ text: m[1], cls: "tok-com" });
-      else if (m[2]) parts.push({ text: m[2], cls: "tok-str" });
-      else if (m[3]) parts.push({ text: m[3], cls: "tok-kw" });
-      else if (m[4]) parts.push({ text: m[4], cls: "tok-type" });
-      last = re.lastIndex;
-    }
-    if (last < line.length) parts.push({ text: line.slice(last) });
-    return (
-      <div key={i}>
-        {parts.map((p, j) =>
-          p.cls ? (
-            <span key={j} className={p.cls}>
-              {p.text}
-            </span>
-          ) : (
-            <span key={j}>{p.text}</span>
-          ),
-        )}
-        {line.length === 0 ? " " : null}
-      </div>
-    );
-  });
-}
 
 export function Hero() {
   return (
