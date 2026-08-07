@@ -417,19 +417,38 @@ shape).
 into the schema, since nothing in the research confirms Anthropic requires or even recognizes that key
 — this backend does not assert an unconfirmed requirement onto the schema.
 
-### Phase F — Reliability and cost (004 §4-5, scoped per decisions 6/7)
+### Phase F — Reliability and cost (004 §4-5, scoped per decisions 6/7) — **DONE (commit `24fdfe3`)**
 
-- **F1.** Retry: `Transient` failures only (001 §6), bounded exponential with jitter, respecting the
-  remaining deadline (never the retry's own timeout) — a stable idempotency key on the retried call.
-- **F2.** Rate limiting/circuit breaking: wire Quark 022's real `TokenBucket`/`CircuitBreaker`
-  (`governance.hpp:47,104`) into the HTTP provider call path — new integration, proven primitive.
-  Breaker key stays `{provider, model, SecretRef}` for now; adding `tenant` is decision 6's flagged
-  ADR-track item, not actioned in this phase.
-- **F3.** Failover as explicit policy only — appears in trace and response metadata, never silent.
-- **F4.** Per-run `TokenBudget<N>` enforced at the turn boundary → `Resource` failure (decision 7's
-  buildable slice of §5).
+- **F1. Done.** Retry: `Transient` failures only (001 §6), bounded exponential with jitter, respecting
+  the remaining deadline (never the retry's own timeout) — a stable idempotency key on the retried
+  call. `ResilientChatClient<Inner>` (`core/resilient_chat_client.hpp`), built together with F2 as one
+  wrapper (see the design-decisions block below for why). Idempotency key computed once, reused
+  verbatim across retries; not yet wired into either backend's HTTP layer (verified against the
+  locally vendored SDKs that neither documents a client idempotency header today).
+- **F2. Done.** Rate limiting/circuit breaking: wired Quark 022's real `CircuitBreaker`
+  (`governance.hpp:110`) into `ResilientChatClient<Inner>`'s call path. Breaker key stays
+  `{provider, model, SecretRef}` for now, satisfied by construction (one wrapper instance already
+  wraps exactly one such triple, no runtime map needed) — adding `tenant` is decision 6's flagged
+  ADR-track item, not actioned in this phase. `TokenBucket` itself not separately wired (the breaker
+  is the mechanism actually exercised; a standalone rate limiter beyond breaker admission was not
+  needed to satisfy F2's own text and would have been scope this phase doesn't own).
+- **F3. Done.** Failover as explicit policy only — `FailoverChatClient<Primary, Fallback...>`
+  (`core/failover_chat_client.hpp`), tries backends in declared order on any error.
+  `ChatResponse::fallback_tier` (new field) names which tier answered — the "response metadata" half
+  of the gate, real and tested. Full run-trace recording deferred (no trace sink exists yet, needs
+  016/M8 — the same scoping Phase B5 already applied to its own trace note). `chat_stream()` failover
+  scoped to primary-only (named and reasoned in the header: no synchronous success/failure signal
+  exists to gate a fallback decision on before the stream handle must be returned).
+- **F4. Done.** Per-run `TokenBudget<N>` enforced at the turn boundary → `Resource` failure (decision
+  7's buildable slice of §5). Lives in `AgentSession` itself (not a `ChatClient` wrapper — the
+  accumulation is inherently per-run, and a `ChatClient` instance is shared/stateless across runs);
+  `input_tokens + output_tokens` accumulate into a per-run counter reset at each `StartRun`, checked
+  after the response returns, failing closed (never responds) on the same shape the two pre-existing
+  fail branches in that handler already use. No pre-call check: this milestone's turn loop still makes
+  exactly one model call per run, so a pre-call check against an always-zero prior total is currently
+  dead code, named rather than built early.
 
-**Design decisions (2026-08-07, before implementation, IN PROGRESS):**
+**Design decisions (2026-08-07, before implementation):**
 
 - `ChatClient` is a concept, never a base class (004 §1, chat_client.hpp's own top comment: "never
   inherited from on the hot path") — so F1/F2/F3 are template wrappers that themselves conform to
