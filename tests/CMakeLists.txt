@@ -561,6 +561,27 @@ add_executable(test_replay_chat_client test_replay_chat_client.cpp)
 target_link_libraries(test_replay_chat_client PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_replay_chat_client COMMAND test_replay_chat_client)
 
+# ---- Milestone 5 Phase H1 -- Principal establishment/delegation/admission mechanism
+# (trust/principal.hpp): make_embedded_principal/make_local_cli_principal/make_anonymous_principal,
+# derive_on_behalf_of (007 §2, depth-bounded), principal_admitted_for (018 §2's shared ownership rule).
+add_executable(test_principal_delegation test_principal_delegation.cpp)
+target_link_libraries(test_principal_delegation PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_principal_delegation COMMAND test_principal_delegation)
+
+# ---- Milestone 5 Phase H2 -- admission check at the AgentSession actor boundary (018 §2),
+# StartRun::caller (agent_session.hpp), opt-in and additive over the pre-H2 unconditional-admission
+# behavior every pre-existing StartRun{message} call site across tests/ still relies on.
+add_executable(test_agent_session_admission test_agent_session_admission.cpp)
+target_link_libraries(test_agent_session_admission PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_agent_session_admission COMMAND test_agent_session_admission)
+
+# ---- Milestone 5 Phase H4 -- EffectContext::principal wired through every outbound ChatClient
+# call, including on_behalf_of delegation for a session initialized with a derive_on_behalf_of()'d
+# principal (018 §1's "delegation only via on_behalf_of, never token passthrough").
+add_executable(test_agent_session_delegation test_agent_session_delegation.cpp)
+target_link_libraries(test_agent_session_delegation PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_agent_session_delegation COMMAND test_agent_session_delegation)
+
 # ---- Dependency-free JSON value/parser/serializer (M2 Phase B task B2, core/json_value.hpp) ----
 # Header-only, core-tier -- links only agentengine::core (no nlohmann::json; this IS the seam that
 # keeps nlohmann out of product code, see CONVENTIONS.md dependency-tier discipline).

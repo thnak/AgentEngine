@@ -81,8 +81,44 @@ inline constexpr quark::TypeKey kAgentSessionTypeKey{0x4147'454E'5453'4E31ULL}; 
 // not a separate `RunResponse` type — 001's "RunResponse" is prose describing the concept, and 027
 // is normative for the actual identifier (027 §1: "Adopt MAF's name wherever the concept is the
 // same"). One concept, one name.
+// Milestone 5 Phase H2 (018 §2). A deliberately minimal, wire-sized identity for the admission
+// check at the `StartRun` boundary — NOT the general `Principal` (trust/principal.hpp), which
+// carries `kind`/`on_behalf_of`/`delegation_depth` and would not fit: `StartRun` crosses Quark's
+// fixed-capacity message pool (`quark::detail::MessagePool::kMaxPayload`, 192 bytes — a Quark-side
+// constant this project's "never fork/patch Quark in-tree" rule, CLAUDE.md, does not get to grow),
+// and `quark::Ask<StartRun, AgentResponse>` (used by every `TestKit::ask`/real-Engine call) was
+// measured at 208 bytes with a full `std::optional<Principal>` embedded — already over budget
+// before `Responder<R>`'s own overhead. `id`/`tenant_id` are exactly what ownership needs (018 §2:
+// "may this principal start this run on this session") — `on_behalf_of`-aware delegation admission
+// is deliberately NOT expressible here: a `SessionCaller` cannot assert it is acting on another
+// principal's behalf, so a session's own principal can only be started by an EXACT identity match,
+// never by a caller claiming derivation from it. This is a strictly more conservative rule than
+// the general `principal_admitted_for` predicate it's checked against (that predicate degrades to
+// exact-match automatically here, since `on_behalf_of` is always empty on this narrower type) — the
+// richer, delegation-aware version stays real and tested standalone (`test_principal_delegation.cpp`)
+// for surfaces that aren't message-pool constrained the same way (e.g. Phase I's memory/sandbox
+// checks, which compare `Principal`s in-process, never across this wire).
+struct SessionCaller {  // ae-naming-lint: allow SessionCaller — new Phase H2 vocabulary; 027 has not been updated to list it
+    std::string id;
+    std::string tenant_id;
+};
+
 struct StartRun {  // ae-naming-lint: allow StartRun — 001 §1 names this message type normatively; 027 has not been updated to list it (same tracked-gap category as the M0 backlog)
     Message input;  // the new turn to append to history and process (001 §3 step 1)
+
+    // Milestone 5 Phase H2 (018 §2: "Admission — may this principal start this run on this
+    // session/agent at all? ... checked at the actor boundary, not by a later filter"). The
+    // REQUESTER's identity, established at 018 §1 before any agent code runs — distinct from the
+    // session's own OWNING principal (`AgentSession::principal()`, set once at `initialize()`),
+    // which is what `caller` is checked against. `std::nullopt` (the default) means "no caller
+    // asserted" and skips the check, matching this project's own established "additive, old call
+    // sites keep compiling with their old behavior unchanged" precedent (`token_budget`,
+    // `ChatClientRegistry const*`, both agent_registry.hpp) — the ~44 existing `StartRun{message}`
+    // call sites across `tests/` predate H1's principal-establishment mechanism and are not
+    // retroactively made to supply one. Named explicitly, not silently assumed to be a security
+    // regression: any NEW caller that wants the real admission check need only supply `caller`,
+    // proven for real in `test_agent_session_admission.cpp`.
+    std::optional<SessionCaller> caller = std::nullopt;
 };
 
 // Milestone 4 Phase E3 (019 §2's "Timer/schedule" suspension wake row: "Quark durable reminders
@@ -211,6 +247,25 @@ public:
     // cross-actor primitive would need a real `Engine`, not `TestKit` (which has no async carrier —
     // `quark/core/testkit.hpp`'s own `Suspended` seam note).
     quark::task<> handle(quark::Ask<StartRun, AgentResponse> const& m) {
+        // Milestone 5 Phase H2 (018 §2): admission is checked FIRST, before `run_counter_` even
+        // increments — a denied caller must not consume a run_id or mutate any session state, the
+        // same "cheapest check first, before ChatClient::chat() is ever reached" ordering 018 §2's
+        // own text asks for. `m.query.caller == std::nullopt` skips the check (see `StartRun`'s own
+        // comment for why); when present, it's widened into a `Principal` (on_behalf_of/kind left
+        // at their defaults — `SessionCaller` cannot express them, see its own comment) and checked
+        // against `principal_admitted_for` (trust/principal.hpp), the one shared ownership rule,
+        // reused rather than re-derived here — it degrades to an exact id/tenant match for this
+        // narrower wire type, which is exactly the rule `StartRun::caller`'s own comment documents.
+        if (m.query.caller.has_value() &&
+            !principal_admitted_for(Principal{m.query.caller->id, m.query.caller->tenant_id}, principal_)) {
+            ++admission_denied_count_;
+            // Same fail-closed shape as every other branch in this handler: never respond, rather
+            // than fabricate a denial `AgentResponse` there is no error slot to carry (see the
+            // budget/context/chat-failure branches below for the same reasoning, established
+            // Phase F4).
+            co_return;
+        }
+
         // 001 §1: "Run: An Ask<StartRun, RunResponse> to the session actor" — literally, one run
         // per StartRun ask. `run_id` is minted here, deterministically, from the session's own
         // monotonic counter (never wall-clock — 001 §7/I5), the identity 019 §3's idempotency-key
@@ -220,6 +275,18 @@ public:
         // -- the budget is per-run, not per-session-lifetime, so a prior run's consumption must not
         // carry over and silently tighten this one's ceiling.
         run_tokens_consumed_ = 0;
+        // Milestone 5 Phase H4 (018 §1: "delegation only via on_behalf_of, never token
+        // passthrough"). `effect_context_.principal` was never assigned anywhere before this —
+        // every effect and every outbound `ChatClient::chat()` call (018 §4's "native seam backend
+        // ... held to the identical discipline") saw a default-constructed, empty `Principal{}`
+        // regardless of who actually owned the session. The session's OWN owning principal
+        // (`principal_`, set once at `initialize()`) is exactly what 018 §1 asks an outbound call
+        // to carry: for a root session this IS the caller's real identity; for a session
+        // `initialize()`d with a `derive_on_behalf_of()`-derived principal (H4's delegated-call
+        // case — a sub-agent invocation, see `test_agent_session_delegation.cpp`), the very same
+        // assignment is what threads `on_behalf_of` through, with no separate/parallel path that
+        // could instead carry a forwarded caller token.
+        effect_context_.principal = principal_;
         effect_context_.run_id     = session_id_ + ":run:" + std::to_string(run_counter_);
         // 001 §2: "Turn: A segment of a run's coroutine between model calls." This milestone's
         // turn loop (still M1's own scope: no tool-call loop, one model call per run) makes exactly
@@ -369,6 +436,8 @@ public:
         // configured ceiling) is NOT reset here, same reasoning as `chat_client_`/`history_provider_`
         // above it staying untouched: it is session configuration, not per-run counter state.
         run_tokens_consumed_ = 0;
+        // Phase H2: same reasoning again -- a fork has had no admission denials of its own yet.
+        admission_denied_count_ = 0;
     }
 
     // Milestone 4 Phase C2 (005 §6: "Redact — replace content in place with a tombstone carrying
@@ -416,6 +485,14 @@ public:
 
     [[nodiscard]] std::string const& session_id() const noexcept { return session_id_; }
     [[nodiscard]] Principal const&   principal() const noexcept { return principal_; }
+
+    // Milestone 5 Phase H2 — how many `StartRun` asks this session has denied at admission (a
+    // `caller` was asserted and failed `principal_admitted_for`). Exposed the same way
+    // `run_tokens_consumed()` exposes the token-budget accumulator even on its own fail-closed
+    // path: the ask itself never resolves (never a hang, per `TestKit::ask`'s documented "failed by
+    // reply-before-teardown" path), so a test needs this accessor to observe that denial actually
+    // happened rather than some other, unrelated reason for a never-responded ask.
+    [[nodiscard]] std::uint64_t admission_denied_count() const noexcept { return admission_denied_count_; }
 
     // Workflow/agent scratch state (005 §1), checkpointed with the session (019, this milestone's
     // own Phase D/A4) — mutable in place, the same shape a real turn handler needs to accumulate
@@ -505,6 +582,12 @@ public:
 
     void restore_from_record(AgentSessionRecord const& rec) {
         session_id_ = rec.session_id;
+        // Milestone 5 Phase H1: `AgentSessionRecord` (Phase A4, pre-dating H1) only flattens
+        // `id`/`tenant_id` -- `kind`/`on_behalf_of`/`delegation_depth` are NOT round-tripped through
+        // the durable record, same narrowing category as this record's own already-named gaps
+        // (history/state/capability-set). A restored session's principal is always reconstructed
+        // with the default `kind` (`anonymous`) and no delegation info, regardless of what it
+        // actually was before the checkpoint -- named here, not silently assumed complete.
         principal_  = Principal{rec.principal_id, rec.principal_tenant_id};
         created_at_ = std::chrono::system_clock::time_point{
             std::chrono::system_clock::duration{rec.created_at_ns}};
@@ -546,6 +629,7 @@ public:
         // accumulator, matching every other field in this list.
         token_budget_         = std::nullopt;
         run_tokens_consumed_  = 0;
+        admission_denied_count_ = 0;
     }
 
 private:
@@ -568,6 +652,10 @@ private:
     // `initialize()`) and this run's running total (reset at the top of every `handle()`).
     std::optional<std::uint64_t>                       token_budget_;
     std::uint64_t                                      run_tokens_consumed_ = 0;
+    // Milestone 5 Phase H2 (018 §2) -- how many `StartRun` asks this session has denied at
+    // admission. Same "counter the caller/tests can observe even on the fail-closed path" shape as
+    // `run_tokens_consumed_` immediately above it.
+    std::uint64_t                                      admission_denied_count_ = 0;
 };
 
 // Save `session`'s narrowed durable record (Phase A4, extended with run position in Phase D1)

@@ -565,19 +565,79 @@ Verification: full build (571/571 targets) and `ctest -j4` (98 tests) both clean
 pre-existing `native_jail_*` OOM-classification flake (reproduces even at `-j1`, in files this phase
 never touched — confirmed unrelated before committing, see project memory for its prior history).
 
-### Phase H — Identity and admission, scoped past 011/012 (018 §1-2, decisions 1/9/10)
+### Phase H — Identity and admission, scoped past 011/012 (018 §1-2, decisions 1/9/10) — **DONE**
 
-- **H1.** Principal establishment for the two buildable §1 rows: Embedded/in-process (host-supplied)
-  and Local CLI (local user identity) — formalizing the project's existing hand-construct pattern into
-  a real, if narrow, mechanism rather than leaving it purely ad hoc in every test.
-- **H2.** Admission check at the `AgentSession` actor boundary (018 §2): may this principal start a run
-  on this session at all, checked before Phase B/D/E's `ChatClient::chat()` is ever reached — session
-  ownership, not just effect-level capability checks (007, already real).
-- **H3.** Token audience validation and no-token-passthrough (§1's confused-deputy rules) — proven at
-  the scope H1 covers; the full inbound-surface version (HTTP bearer/OIDC/mTLS) waits for 013 (M7).
-- **H4.** `on_behalf_of` delegation expression (007 §2, already vocabulary-real) wired through outbound
-  `ChatClient` calls made on a principal's behalf, closing §1's "no passthrough, delegation only via
-  `on_behalf_of`" rule for the one surface this milestone actually builds (outbound provider calls).
+Before this phase, `trust/principal.hpp`'s `Principal` was a bare `{id, tenant_id}` every test
+hand-built ad hoc, and — the one genuine bug this phase found — `AgentSession::effect_context_.principal`
+was assigned NOWHERE in the tree: every outbound `ChatClient::chat()` call (018 §4's "a native seam
+backend is held to the identical [secret-seam] discipline [as a plugin]") saw a default-constructed,
+permanently empty `Principal{}`, regardless of who actually owned the session. All four sub-tasks
+close around fixing that and building the real mechanism 018 §1-2 specifies for the two surfaces this
+milestone can build without 011/012/013 (decision 1).
+
+- **H1. Done.** `trust/principal.hpp` extended: `principal_kind` (`human`/`service`/`agent`/`anonymous`,
+  007 §2's full shape minus the token-bearing fields `claims`/`issuer`/`expiry`, which need 013, M7 —
+  named deferred, not silently dropped) plus `on_behalf_of`/`delegation_depth` for delegation.
+  `make_embedded_principal`/`make_local_cli_principal`/`make_anonymous_principal` formalize 018 §1's
+  two buildable inbound-identity rows (Embedded is `service`, Local CLI is `human`, "Anonymous is a
+  principal, not a bypass" gets a real, stable identity). `derive_on_behalf_of(parent, derived_id)`
+  is 007 §2's real delegation expression: `tenant_id` copied unchanged (never crosses a tenant
+  boundary its parent didn't occupy), `kind` always `agent` (never re-labeled as the more-trusted
+  parent kind), depth-bounded (`kMaxDelegationDepth = 8`, fails closed past it with `failure_class::policy`).
+  `principal_admitted_for(caller, owner)` is the one shared ownership predicate — exact match, or a
+  single-hop `on_behalf_of` match, never across tenants — Phase H2 and any future session-adjacent
+  surface (memory, sandbox — Phase I) both reuse it rather than re-deriving the rule. Proved standalone
+  in `tests/test_principal_delegation.cpp` (24 checks: factory kinds, tenant/kind/depth preservation
+  across chained delegation, the depth-bound failing closed, and `principal_admitted_for`'s exact-match/
+  single-hop-delegation/cross-tenant/forged-delegation/two-hop-rejection cases).
+- **H2. Done.** Admission check at the `AgentSession` actor boundary (018 §2), checked FIRST in
+  `handle(Ask<StartRun,...>)` — before `run_counter_` even increments, so a denied caller mutates no
+  session state. `StartRun::caller` is the new field, typed `std::optional<SessionCaller>` — NOT the
+  full `Principal`: Quark's fixed-capacity message pool (`quark::detail::MessagePool::kMaxPayload =
+  192` bytes, a Quark-side constant this project's "never fork Quark in-tree" rule doesn't get to
+  grow) measured `Ask<StartRun, AgentResponse>` at 208 bytes with a full `Principal` embedded, already
+  over budget — `SessionCaller{id, tenant_id}` (mirroring `Principal`'s own pre-H1 two-field shape)
+  brings it to 160. `std::nullopt` (the default) skips the check entirely — additive, matching Phase
+  F4's `token_budget`/`ChatClientRegistry const*` precedent, so the ~44 pre-existing `StartRun{message}`
+  call sites across `tests/` (all predating H1) keep compiling with unchanged behavior, named
+  explicitly rather than silently assumed to be a security regression. When `caller` IS supplied it's
+  widened into a `Principal` (kind/on_behalf_of left at default) and checked against
+  `principal_admitted_for` — which means `SessionCaller`'s inability to express `on_behalf_of` makes
+  this wire-level rule a strictly conservative exact-match-only admission: a principal legitimately
+  derived `on_behalf_of` a session's owner is NOT thereby admitted to start runs on that owner's own
+  session using its own derived identity (proved as an explicit negative case, not just left untested).
+  Denial fails closed (never responds, the same shape the token-budget/context/chat-failure branches
+  already use) and is observable via the new `admission_denied_count()` accessor (same "counter
+  survives the fail-closed path" shape as `run_tokens_consumed()`), reset on fork (`fork_from()`) and
+  full clear (`clear_in_process_state()`). Proved in `tests/test_agent_session_admission.cpp` (13
+  checks: matching caller admitted; id mismatch denied; same-id-different-tenant denied; a validly
+  delegated principal presenting its own derived id denied; `caller == nullopt` unchanged legacy
+  behavior).
+- **H3. Done, narrowly, per its own scoped text.** Neither surface H1 covers (Embedded, Local CLI)
+  carries an externally-issued bearer token at all, so there is structurally nothing to validate the
+  audience of or pass through — the full HTTP bearer/OIDC/mTLS version (018 §1's other rows) waits for
+  013 (M7), named deferred, not silently assumed complete. What IS real and positively proven now: the
+  only path from an inbound identity to an outbound credential is `SecretStore::resolve()` (Phase A,
+  already real and tested) — `EffectContext::principal` (H4) carries structured identity only
+  (id/tenant/kind/on_behalf_of), never token/secret material, proved directly by
+  `test_agent_session_delegation.cpp`'s captured-`EffectContext` assertions.
+- **H4. Done.** The real bug fix: `effect_context_.principal = principal_` now runs unconditionally at
+  the top of every `handle(Ask<StartRun,...>)`, right alongside `run_id`/`turn_index` — closing the
+  "always empty" gap directly for a root session, and (the delegation case) threading through
+  `on_behalf_of` automatically for a session `initialize()`d with an `derive_on_behalf_of()`-derived
+  principal, since it's the exact same assignment either way — no separate/parallel path exists that
+  could instead carry a forwarded caller token, closing 018 §1's "delegation only via `on_behalf_of`,
+  never token passthrough" rule for the one surface this milestone actually builds (outbound provider
+  calls). Proved in `tests/test_agent_session_delegation.cpp` (11 checks via a `CapturingChatClient`
+  that records the `EffectContext` it actually received): a root session's outbound call carries
+  exactly its own owning principal; a delegated session's outbound call carries the derived id,
+  `on_behalf_of` naming the real parent, tenant preserved, `kind=agent`, `delegation_depth=1`.
+
+Verification: full build (all targets) and `ctest -j4` (101 tests, including the 3 new files above)
+both clean except the pre-existing `native_jail_backend_windows` OOM-classification flake (same family
+already reconfirmed unrelated in Phase G — this run only 1 of the 3 native_jail tests in that family
+failed, consistent with it being flaky rather than a regression; none of this phase's files touch the
+native_jail backend).
 
 ### Phase I — Multi-tenancy proof (018 §6-7, decisions 6/9/10)
 
