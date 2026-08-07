@@ -52,8 +52,11 @@ enum class workflow_status {
     completed,          // the graph ran dry -- every branch reached a terminal executor (§2)
     bound_max_rounds,   // §2's MaxRounds stopped it
     bound_deadline,     // §2's deadline stopped it
-    executor_failed,    // an executor reported failure (§6's policies are Phase D; this is the
-                        // honest Phase B behaviour: stop and say so, never continue silently)
+    executor_failed,    // an executor failed and its edges' declared policy (§6) was `fail`, or was
+                        // `retry` with the budget spent. NOT every executor failure reaches here:
+                        // `propagate` and `fallback` are handled ways to fail, and a run that used
+                        // them completes. `WorkflowResult::failed_executor` names the one that ended
+                        // the run
     routing_failed,     // Phase C: a switch/case node selected no declared edge, or selected more
                         // than one. Distinct from `executor_failed` because the executor SUCCEEDED
                         // -- what failed is the author's routing contract, and an operator reading
@@ -65,10 +68,27 @@ struct RunWorkflow {
     Message input;  // the payload delivered to the start executor in round 0
 };
 
+// 014 §6: "Partial results are preserved -- a failed workflow's completed executor outputs are
+// available in its final state, not discarded." One entry per executor that ever completed.
+struct ExecutorOutput {
+    std::string   executor_id;
+    std::uint32_t round = 0;  // the round this output was produced in
+    Message       payload;
+};
+
 struct WorkflowResult {
     workflow_status status = workflow_status::invalid;
     std::uint32_t   rounds = 0;   // rounds actually executed
     Message         output;       // the last output-selected payload, empty when none was produced
+    // §6's third bullet. LAST output per executor, not the full history: keyed by id it is bounded
+    // by the node count, whereas an append-only log would grow with rounds -- and a deadline-bounded
+    // cyclic graph has no bound on those. The full per-round history is 014 §5's checkpoint record
+    // (Phase F), which is the thing designed to be durable; this is the final state a caller reads.
+    std::vector<ExecutorOutput> partial;
+    // Which executor ended the run, for `executor_failed` and `routing_failed`. I4: a status alone
+    // tells an operator what happened but not where, and "somewhere in your graph" is not
+    // attribution.
+    std::string failed_executor;
 };
 
 class WorkflowSupervisor : public quark::Actor<WorkflowSupervisor, quark::Sequential> {
@@ -96,17 +116,13 @@ public:
 
         auto const started_at = std::chrono::steady_clock::now();
 
-        // One round's work list: which executor, and what payload it receives.
-        struct Delivery {
-            std::size_t executor_index;
-            Message     payload;
-        };
-
         std::vector<Delivery> pending;
         pending.push_back(Delivery{index_of(graph_.start), m.query.input});
 
-        workflow_status status = workflow_status::completed;
-        Message         selected_output;
+        workflow_status             status = workflow_status::completed;
+        Message                     selected_output;
+        std::vector<ExecutorOutput> partial;
+        std::string                 failed_executor;
         rounds_ = 0;
 
         while (!pending.empty()) {
@@ -132,28 +148,53 @@ public:
             // overlap. Writing this as `co_await ref.ask(...)` inside the loop instead would
             // serialize the whole round and quietly turn 014 §3's Concurrent pattern into
             // Sequential -- the bug that would still pass a correctness-only test.
-            std::vector<quark::AskFuture<ExecuteReply>> in_flight;
-            in_flight.reserve(pending.size());
-            for (auto const& delivery : pending) {
-                in_flight.push_back(
-                    refs_[delivery.executor_index].template ask<ExecuteReply>(
-                        ExecuteRequest{delivery.payload, rounds_}));
-            }
+            std::vector<ExecuteReply> replies(pending.size());
 
-            // ---- decision 5, second half: COLLECT in fixed index order ------------------------
-            // Completion order is whatever the scheduler produces; assembly order is this loop's.
-            std::vector<ExecuteReply> replies;
-            replies.reserve(in_flight.size());
-            bool round_failed = false;
-            for (auto& future : in_flight) {
-                quark::result<ExecuteReply> r = co_await future;
-                if (!r.has_value()) {
-                    round_failed = true;
-                    replies.push_back(ExecuteReply{Message{}, {}, false, failure_class::transient});
-                    continue;
+            // `todo` is which deliveries still need an invocation. It starts as all of them and
+            // shrinks to the retryable failures (014 §6's `retry`), so the attempt loop keeps the
+            // whole round's concurrency shape: a retried node re-runs ALONGSIDE any other node
+            // being retried, never one after another.
+            std::vector<std::size_t> todo(pending.size());
+            for (std::size_t i = 0; i < pending.size(); ++i) todo[i] = i;
+
+            for (std::uint32_t attempt = 0; !todo.empty(); ++attempt) {
+                std::vector<quark::AskFuture<ExecuteReply>> in_flight;
+                in_flight.reserve(todo.size());
+                for (std::size_t const i : todo) {
+                    in_flight.push_back(
+                        refs_[pending[i].executor_index].template ask<ExecuteReply>(
+                            ExecuteRequest{pending[i].payload, rounds_}));
                 }
-                if (!r->ok) round_failed = true;
-                replies.push_back(std::move(*r));
+
+                // ---- decision 5, second half: COLLECT in fixed index order --------------------
+                // Completion order is whatever the scheduler produces; assembly order is this
+                // loop's.
+                std::vector<std::size_t> retry_next;
+                for (std::size_t k = 0; k < in_flight.size(); ++k) {
+                    std::size_t const           i = todo[k];
+                    quark::result<ExecuteReply> r = co_await in_flight[k];
+                    if (!r.has_value()) {
+                        // ---- 014 §6's SECOND channel: the ACTOR failed ------------------------
+                        // The handler threw, or the actor was stopped. Quark 007 has already run
+                        // the executor's `OnFailure` directive (executor.hpp) and dead-lettered
+                        // this ask rather than leaving it to hang -- so the workflow is still
+                        // running and can still choose. Classified `transient`: the actor was
+                        // restarted, so a further attempt meets a fresh instance rather than the
+                        // one that just faulted, and Quark's own poison-loop detection bounds the
+                        // pathological case.
+                        replies[i] = ExecuteReply{Message{}, {}, false, failure_class::transient};
+                    } else {
+                        replies[i] = std::move(*r);
+                    }
+                    if (replies[i].ok) continue;
+
+                    EdgeFailurePolicy const pol = policy_for(pending[i].executor_index);
+                    if (pol.kind == edge_failure_policy::retry && attempt < pol.attempts &&
+                        is_retryable(replies[i].klass)) {
+                        retry_next.push_back(i);
+                    }
+                }
+                todo = std::move(retry_next);
             }
 
             ++rounds_;
@@ -161,19 +202,16 @@ public:
             // 014 §1's output_selection: an executor named there contributes the workflow's result.
             // Read from THIS round's replies in index order, so a graph selecting two outputs gets
             // the later index, deterministically -- never whichever finished last.
+            //
+            // §6's partial results are recorded in the SAME pass and unconditionally: a completed
+            // output is preserved whether or not the run goes on to fail, because at this point
+            // nobody knows yet whether it will.
             for (std::size_t i = 0; i < pending.size(); ++i) {
                 if (!replies[i].ok) continue;
+                record_partial(partial, pending[i].executor_index, rounds_ - 1, replies[i].payload);
                 if (is_output_selected(pending[i].executor_index)) {
                     selected_output = replies[i].payload;
                 }
-            }
-
-            if (round_failed) {
-                // Phase B stops here and says so. 014 §6's per-edge policies (propagate/retry/
-                // fallback/fail) are Phase D; inventing one now would be choosing a default the RFC
-                // deliberately leaves to the edge.
-                status = workflow_status::executor_failed;
-                break;
             }
 
             // ---- the superstep barrier (014 §2) ------------------------------------------------
@@ -181,9 +219,47 @@ public:
             // "All messages delivered in round n are processed before round n+1 begins" is therefore
             // a structural property of this loop, not a scheduling hope.
             std::vector<Delivery> next;
-            bool routing_broke = false;
+            bool routing_broke  = false;
+            bool workflow_broke = false;
             for (std::size_t i = 0; i < pending.size(); ++i) {
                 std::string const& from_id = graph_.executors[pending[i].executor_index].id;
+
+                // ---- 014 §6: the failed executor's edge policy decides ------------------------
+                if (!replies[i].ok) {
+                    EdgeFailurePolicy const pol = policy_for(pending[i].executor_index);
+                    Message const marker = failure_marker(from_id, replies[i].klass);
+
+                    switch (pol.kind) {
+                        case edge_failure_policy::fail:
+                        case edge_failure_policy::retry:
+                            // A `retry` that reached here has spent its budget, or the failure was
+                            // never retryable. §6 lists four ALTERNATIVES, so an exhausted retry
+                            // resolves to the strict one rather than silently continuing; a graph
+                            // that wants recovery after retries says so with a fallback, once §6
+                            // grows a composed form.
+                            workflow_broke  = true;
+                            failed_executor = from_id;
+                            break;
+
+                        case edge_failure_policy::propagate:
+                            for (auto const& edge : graph_.edges) {
+                                if (edge.from == from_id) deliver_once(next, index_of(edge.to), marker);
+                            }
+                            break;
+
+                        case edge_failure_policy::fallback:
+                            for (auto const& edge : graph_.edges) {
+                                if (edge.from != from_id) continue;
+                                if (edge.on_failure.kind != edge_failure_policy::fallback) continue;
+                                deliver_once(next, index_of(edge.on_failure.fallback), marker);
+                            }
+                            break;
+                    }
+                    // A failed executor's NORMAL edges never fire: it produced no output, so there
+                    // is nothing to carry along them. Under `propagate` the same targets are reached
+                    // above -- but with the marker, so the target can tell the two apart.
+                    continue;
+                }
 
                 // Phase C: 014 §1's `switch_case` is "exactly one selected". Counted rather than
                 // assumed, because both failure directions are real authoring mistakes and both
@@ -231,8 +307,21 @@ public:
                 }
             }
 
+            if (workflow_broke) {
+                status = workflow_status::executor_failed;
+                break;
+            }
             if (routing_broke) {
                 status = workflow_status::routing_failed;
+                if (failed_executor.empty()) {
+                    for (std::size_t i = 0; i < pending.size(); ++i) {
+                        if (!replies[i].ok) continue;
+                        if (routing_broken_at(pending[i].executor_index, replies[i])) {
+                            failed_executor = graph_.executors[pending[i].executor_index].id;
+                            break;
+                        }
+                    }
+                }
                 break;
             }
             pending = std::move(next);
@@ -240,11 +329,87 @@ public:
             // 014 §2's "an explicit terminal executor". `status` is already `completed`.
         }
 
-        m.respond(WorkflowResult{status, rounds_, std::move(selected_output)});
+        m.respond(WorkflowResult{status, rounds_, std::move(selected_output), std::move(partial),
+                                 std::move(failed_executor)});
         co_return;
     }
 
 private:
+    // One round's work list: which executor, and what payload it receives. At class scope so the
+    // cold-path helpers below can take it (a member type is in scope for every member function
+    // regardless of declaration order).
+    struct Delivery {
+        std::size_t executor_index;
+        Message     payload;
+    };
+
+    // 014 §6: "An executor failure is CLASSIFIED (001 §6) and handled by the edge's declared
+    // policy." This function is where the classification does work rather than being decoration.
+    //
+    // A `contract` failure is deterministic by definition -- a malformed request, a schema
+    // violation -- so retrying it re-runs the same computation and gets the same answer, spending
+    // the budget and any effects inside it to learn nothing. A `policy` failure is a DENIAL, and
+    // retrying a denial is asking the same question until a different answer comes back: an I2
+    // concern, not merely a waste. `fatal` is fatal.
+    //
+    // So retry applies to `transient` and `resource` only, and a `retry` policy on a contract- or
+    // policy-failing executor invokes it exactly ONCE.
+    [[nodiscard]] static bool is_retryable(failure_class klass) noexcept {
+        return klass == failure_class::transient || klass == failure_class::resource;
+    }
+
+    // One failure event produces at most one delivery per distinct target, even when several edges
+    // out of the failed node name the same one. The failure is a property of the NODE, not of each
+    // edge -- unlike a successful output, where two `direct` edges to one target are genuinely two
+    // messages the author sent.
+    static void deliver_once(std::vector<Delivery>& next, std::size_t target, Message const& marker) {
+        for (auto const& d : next) {
+            if (d.executor_index == target) return;
+        }
+        next.push_back(Delivery{target, marker});
+    }
+
+    // §6's third bullet, last-write-wins per executor (see `WorkflowResult::partial` for why).
+    void record_partial(std::vector<ExecutorOutput>& partial, std::size_t executor_index,
+                        std::uint32_t round, Message const& payload) const {
+        std::string const& id = graph_.executors[executor_index].id;
+        for (auto& out : partial) {
+            if (out.executor_id != id) continue;
+            out.round   = round;
+            out.payload = payload;
+            return;
+        }
+        partial.push_back(ExecutorOutput{id, round, payload});
+    }
+
+    // The failure policy governing an executor: the one its outgoing edges declare. Reading the
+    // FIRST is safe precisely because `validate_workflow` rejects a graph whose edges disagree --
+    // this function would otherwise be silently picking a winner. An executor with no outgoing edges
+    // is terminal, so it has no edge to declare anything and gets the strict default.
+    [[nodiscard]] EdgeFailurePolicy policy_for(std::size_t executor_index) const {
+        std::string const& id = graph_.executors[executor_index].id;
+        for (auto const& edge : graph_.edges) {
+            if (edge.from == id) return edge.on_failure;
+        }
+        return EdgeFailurePolicy{};
+    }
+
+    // Which executor's routing contract broke, for the `routing_failed` attribution above. Repeats
+    // the counting rule rather than sharing state with the routing loop, because the loop's job is
+    // to build the next round and this one runs only on the cold path.
+    [[nodiscard]] bool routing_broken_at(std::size_t executor_index,
+                                         ExecuteReply const& reply) const noexcept {
+        std::string const& id = graph_.executors[executor_index].id;
+        std::size_t        edges = 0;
+        std::size_t        fired = 0;
+        for (auto const& edge : graph_.edges) {
+            if (edge.from != id || edge.kind != edge_kind::switch_case) continue;
+            ++edges;
+            if (edge_fires(edge, reply)) ++fired;
+        }
+        return edges > 0 && fired != 1;
+    }
+
     // Phase C. Unlabelled edge kinds always fire; labelled ones fire only when the source executor
     // named their label.
     //

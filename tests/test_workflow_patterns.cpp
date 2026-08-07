@@ -122,8 +122,7 @@ struct Harness {
     void add_node(std::string name, ExecutorBody body) {
         auto node = std::make_unique<FunctionExecutor>();
         node->initialize(std::move(name), std::move(body), EffectContext{});
-        auto act = std::make_unique<Activation>(node.get(), FunctionExecutor::dispatch_table(),
-                                                pool.sink());
+        auto act = make_workflow_activation(*node, pool.sink());
         engine.register_activation(actor_id_of<FunctionExecutor>(keys[nodes.size()]), *act);
         nodes.push_back(std::move(node));
         node_acts.push_back(std::move(act));
@@ -132,8 +131,7 @@ struct Harness {
     [[nodiscard]] ActorRef<WorkflowSupervisor> install(Workflow const& wf) {
         for (std::size_t i = 0; i < nodes.size(); ++i) refs.push_back(router.get<FunctionExecutor>(keys[i]));
         supervisor.initialize(wf, refs);
-        sup_act = std::make_unique<Activation>(&supervisor, WorkflowSupervisor::dispatch_table(),
-                                               pool.sink());
+        sup_act = make_workflow_activation(supervisor, pool.sink());
         engine.register_activation(actor_id_of<WorkflowSupervisor>(kSupervisorKey), *sup_act);
         return router.get<WorkflowSupervisor>(kSupervisorKey);
     }

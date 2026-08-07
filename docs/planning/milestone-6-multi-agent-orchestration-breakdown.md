@@ -139,6 +139,27 @@ until 014 is real.
    the audit record would be the footgun §5 explicitly warns against, so the two land in the same
    phase or neither does.
 
+10. **A declared `OnFailure<…>` is INERT on the registration path this milestone uses — found by
+   measurement in Phase D, and it is decision 5b's shape exactly.** `Engine::spawn<A>()` resolves
+   `supervision_of<A>()` and passes it to the `Activation` constructor. `Engine::register_activation()`
+   — the path M4 Phase E2 established and every M6 test uses, because `spawn<A>()` returns only an
+   `ActorId` while these actors need their own `initialize()` called — takes an already-constructed
+   `Activation` and **never touches supervision**. So the obvious host wiring
+   (`Activation(node, A::dispatch_table(), pool.sink())`) silently yields Quark's default policy:
+   Restart, *unbounded*. `FunctionExecutor`'s declared `OnFailure<Restart, MaxRestarts<3,
+   Within<1000>>>` was in force nowhere, every test passed, and 014 §6's "subject to a **bounded**
+   escalation" was simply not implemented. Measured: a throwing executor driven past the declared
+   budget of 3 entered its handler **6** times. `workflow/executor.hpp`'s `make_workflow_activation`
+   is the fix, and it lives beside the policy *declaration* — as with 5b, the naive host choice is
+   the broken one, so the correct construction has to be the one that takes *less* code to write.
+   After the fix the same case measures **4** entries: 3 charged restarts, then `do_escalate` →
+   `do_stop`, after which the stopped actor's asks dead-letter without entering the handler.
+   *Consequence:* the workflow's per-edge retry budget (014 §6) and the actor's restart budget
+   (Quark 007) compose, and the **tighter one wins** — an edge cannot buy itself more executor
+   attempts than the executor's own supervision policy allows. *Consequence for later phases:* any
+   future workflow actor must be built through this helper, and 030's Project-supervising actors
+   (Phases H-I) inherit the same trap.
+
 ## Phases
 
 Each phase names the RFC text it implements and the check that would falsify it. Phases A-G are 014;
@@ -177,6 +198,27 @@ H-I are 030; J is the milestone's own exit-criterion proof.
   Quark `OnFailure` supervision wiring, preserved partial results. *Falsifiable:* a failed workflow
   discarding completed executor outputs; an executor failure taking the workflow down under a policy
   that says otherwise.
+  **Outcome: §6's three bullets are built, and the phase turned on there being TWO failure channels**
+  — a body that *returns* an error (the actor is healthy; the edge's declared policy decides) and a
+  body that *throws* (Quark 007 runs the executor's `OnFailure` and dead-letters the pending ask).
+  Phase B collapsed both into one `round_failed` flag. A suite that only exercised `ok = false` would
+  have proven half of §6 and would never have discovered whether a faulting executor **stalls** the
+  supervisor — so the throw tests assert on a *completed* run, not merely on a non-crash.
+  **Classification does work rather than decorating** (§6's "is classified (001 §6)"): retry applies
+  to `transient`/`resource` only. A `contract` failure is deterministic, so retrying re-runs the same
+  computation to learn nothing; a `policy` failure is a **denial**, and re-asking a denied request
+  until the answer changes is an I2 concern, not a retry. Measured: 1 invocation under a budget of 3
+  and of 5 respectively, with the retried `transient` case as the positive control.
+  **Policy is declared on the edge (§6's word) but must AGREE across a node's outgoing edges** — the
+  thing it decides is a property of the source, and resolving a disagreement by precedence
+  ("most severe wins") would be a rule no reader could predict, on the code path that runs when
+  something has already gone wrong. Only the fallback *target* may differ. A fallback branch is
+  type-checked like any other edge out of its source, so it is not the one edge in a graph exempt
+  from 014 §1 — the one that only ever runs after a failure.
+  **Partial results are last-write-wins per executor**, bounded by node count. An append-only log
+  would grow with rounds, and a deadline-bounded cyclic graph has no bound on those; the full
+  per-round history is 014 §5's checkpoint record (Phase F), which is the thing designed to be
+  durable. See decision 10 for what Phase D measured about the supervision wiring itself.
 - **Phase E — the request port (014 §4), engine half (decision 1).** `InputRequired` emission,
   concurrent `Interaction` records on one run (OQ-4's case, never yet exercised), suspend holding no
   resources, resume on response. *Falsifiable (G5):* a census showing a live activation while

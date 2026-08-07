@@ -602,6 +602,21 @@ if(AGENTENGINE_WITH_HTTPS)
   add_test(NAME test_workflow_patterns COMMAND test_workflow_patterns)
   set_tests_properties(test_workflow_patterns PROPERTIES TIMEOUT 120)
 
+  # ---- Milestone 6 Phase D: 014 §6's failure handling ------------------------------------------
+  # Covers §6's three bullets and the one thing it leaves open. The phase turns on there being TWO
+  # failure channels: a body that RETURNS an error (the actor is healthy; the edge's declared policy
+  # decides) and a body that THROWS (Quark 007 restarts the actor and dead-letters the pending ask).
+  # A suite that only exercised `ok = false` would prove half of §6 and would never discover whether
+  # a faulting executor stalls the supervisor -- so D5 throws, and asserts on a COMPLETED run rather
+  # than merely on a non-crash. The classification checks are the other load-bearing pair: a
+  # `contract` failure is invoked ONCE under a budget of 3 (deterministic, so retrying learns
+  # nothing) and a `policy` failure once under a budget of 5 (a denial re-asked is an I2 concern),
+  # with D2's retried `transient` failure as their positive control.
+  add_executable(test_workflow_failure test_workflow_failure.cpp)
+  target_link_libraries(test_workflow_failure PRIVATE agentengine::core agentengine_warnings)
+  add_test(NAME test_workflow_failure COMMAND test_workflow_failure)
+  set_tests_properties(test_workflow_failure PROPERTIES TIMEOUT 120)
+
   # ---- ADR-020 gates G1-G7: 004 §2's portable reasoning_effort, mapped down by both backends ------
   # Drives BOTH backends from the same enumerator values in one file, on purpose: the amendment's
   # claim is portability across two structurally different native shapes (a flat string vs a computed

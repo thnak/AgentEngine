@@ -96,6 +96,37 @@ struct Executor {
     MessageTypeId output_type;
 };
 
+// -- Failure policy (014 §6) -------------------------------------------------------------------
+//
+// "An executor failure is classified (001 §6) and handled by the edge's declared policy: propagate,
+// retry, route to a fallback branch, or fail the workflow." Four alternatives, so this is an enum
+// and not a set of composable flags. A retry that then falls back would be a fifth option the RFC
+// does not list; if a real graph needs it, that is an amendment to §6, not a quiet extension here.
+enum class edge_failure_policy {
+    fail,       // stop the workflow, preserving partial results (§6's third bullet). The DEFAULT --
+                // see the note on `Edge::on_failure` for why the default is the strict one
+    propagate,  // deliver a failure marker along this edge; the TARGET decides what to do. This is
+                // how an error-handling node is authored -- the workflow keeps running
+    retry,      // re-invoke the failed executor, bounded, within the same round. On exhaustion this
+                // becomes `fail` (see `is_retryable` in supervisor.hpp for which classes retry AT
+                // ALL -- a `contract` or `policy` failure is not retried even once)
+    fallback,   // route a failure marker to a NAMED recovery executor instead of this edge's target
+};
+
+// The policy as declared on one edge. `attempts` and `fallback` are each meaningful for exactly one
+// kind, and the validator rejects them elsewhere rather than ignoring them at runtime -- the same
+// discipline `case_label` already gets.
+struct EdgeFailurePolicy {
+    edge_failure_policy kind = edge_failure_policy::fail;
+    // `retry` only: ADDITIONAL invocations after the first. `retry` with 0 would be a no-op spelled
+    // as a policy, which is a mis-authored graph, so the validator requires >= 1.
+    std::uint32_t attempts = 0;
+    // `fallback` only: the recovery executor's id. Type-checked against the FAILED executor's output
+    // port exactly like any other edge out of it, so a fallback branch is drawable (§7) and cannot
+    // be the one edge in a graph that skips 014 §1's type rule.
+    std::string fallback;
+};
+
 struct Edge {
     std::string from;
     std::string to;
@@ -104,6 +135,17 @@ struct Edge {
     // other kind carrying one is a mis-authored graph, and both are validation failures rather than
     // fields quietly ignored at runtime.
     std::string case_label;
+    // 014 §6. DECLARED ON THE EDGE because §6 says "the edge's declared policy" -- but the thing it
+    // decides (what happens when the SOURCE executor fails) is a property of the source, so the
+    // validator requires every edge out of one executor to declare the SAME kind and the same retry
+    // budget (`workflow.conflicting_failure_policy`). Only the fallback TARGET may differ, which is
+    // a fan-out of recovery and reads as one. Resolving a disagreement by precedence instead --
+    // "most severe wins", "first declared wins" -- would be a rule no reader of the graph could
+    // predict, on the code path that runs when something has already gone wrong.
+    //
+    // The default is `fail`, deliberately the strict one: a graph whose author has not thought about
+    // failure stops and says so rather than continuing with a hole in its data.
+    EdgeFailurePolicy on_failure;
 };
 
 // 014 §2: "Termination is by output selection, by an explicit terminal executor, or by bound
@@ -220,6 +262,71 @@ struct Workflow {
                             "' carries a case label but is not a switch/case or multi-selection edge",
                         "workflow.unexpected_case_label");
         }
+
+        // -- 014 §6, the per-edge failure policy ---------------------------------------------
+        auto const& pol = edge.on_failure;
+        bool const retrying  = pol.kind == edge_failure_policy::retry;
+        bool const recovering = pol.kind == edge_failure_policy::fallback;
+
+        if (retrying && pol.attempts == 0) {
+            return fail("edge '" + edge.from + "' -> '" + edge.to +
+                            "' declares the retry failure policy but no attempt budget; a retry of 0 "
+                            "attempts is a no-op spelled as a policy",
+                        "workflow.retry_attempts_required");
+        }
+        if (!retrying && pol.attempts != 0) {
+            return fail("edge '" + edge.from + "' -> '" + edge.to +
+                            "' carries a retry attempt budget but does not declare the retry failure "
+                            "policy",
+                        "workflow.unexpected_retry_attempts");
+        }
+        if (recovering && pol.fallback.empty()) {
+            return fail("edge '" + edge.from + "' -> '" + edge.to +
+                            "' declares the fallback failure policy but names no fallback executor",
+                        "workflow.fallback_target_required");
+        }
+        if (!recovering && !pol.fallback.empty()) {
+            return fail("edge '" + edge.from + "' -> '" + edge.to +
+                            "' names a fallback executor but does not declare the fallback failure "
+                            "policy",
+                        "workflow.unexpected_fallback_target");
+        }
+        if (recovering) {
+            Executor const* recovery = wf.find(pol.fallback);
+            if (recovery == nullptr) {
+                return fail("edge '" + edge.from + "' -> '" + edge.to +
+                                "' names undeclared fallback executor '" + pol.fallback + "'",
+                            "workflow.unknown_fallback_target");
+            }
+            // A fallback branch is an edge out of `from` in every respect except when it fires, so
+            // it gets 014 §1's type rule too. Exempting it would leave exactly one edge kind in the
+            // graph unchecked -- the one that only ever runs when something has already failed.
+            if (from->output_type != recovery->input_type) {
+                return fail("fallback branch '" + edge.from + "' -> '" + pol.fallback +
+                                "' connects incompatible types: " + from->output_type + " -> " +
+                                recovery->input_type,
+                            "workflow.fallback_type_mismatch");
+            }
+        }
+    }
+
+    // §6's policy decides what happens to the SOURCE executor, so every edge out of one executor
+    // must agree on it. Checked as its own pass (rather than inside the loop above) so the message
+    // can name both conflicting edges.
+    for (std::size_t i = 0; i < wf.edges.size(); ++i) {
+        for (std::size_t j = i + 1; j < wf.edges.size(); ++j) {
+            if (wf.edges[i].from != wf.edges[j].from) continue;
+            auto const& a = wf.edges[i].on_failure;
+            auto const& b = wf.edges[j].on_failure;
+            if (a.kind == b.kind && a.attempts == b.attempts) continue;
+            return fail("executor '" + wf.edges[i].from +
+                            "' declares conflicting failure policies on its outgoing edges ('" +
+                            wf.edges[i].from + "' -> '" + wf.edges[i].to + "' vs '" +
+                            wf.edges[j].from + "' -> '" + wf.edges[j].to +
+                            "'); 014 §6's policy decides what happens to the source executor, so its "
+                            "edges must agree",
+                        "workflow.conflicting_failure_policy");
+        }
     }
 
     // 014 §2's hard requirement. Stated as its own check with its own code because "the workflow ran
@@ -241,13 +348,18 @@ struct Workflow {
     reachable.push_back(wf.start);
     for (std::size_t i = 0; i < reachable.size(); ++i) {
         std::string_view const current = reachable[i];
+        auto visit = [&reachable](std::string_view target) {
+            for (auto const& r : reachable) {
+                if (r == target) return;
+            }
+            reachable.push_back(target);
+        };
         for (auto const& edge : wf.edges) {
             if (edge.from != current) continue;
-            bool seen = false;
-            for (auto const& r : reachable) {
-                if (r == edge.to) { seen = true; break; }
-            }
-            if (!seen) reachable.push_back(edge.to);
+            visit(edge.to);
+            // A fallback branch (§6) is reached only on failure, but it IS reached -- omitting it
+            // here would make every recovery node look like dead weight and reject the graph.
+            if (edge.on_failure.kind == edge_failure_policy::fallback) visit(edge.on_failure.fallback);
         }
     }
     for (auto const& e : wf.executors) {
@@ -298,11 +410,12 @@ public:
     template <class FromIn, class FromOut, class ToIn, class ToOut>
     WorkflowBuilder& connect(TypedExecutor<FromIn, FromOut> const& from,
                              TypedExecutor<ToIn, ToOut> const&     to,
-                             edge_kind kind = edge_kind::direct, std::string case_label = {}) {
+                             edge_kind kind = edge_kind::direct, std::string case_label = {},
+                             EdgeFailurePolicy on_failure = {}) {
         static_assert(std::is_same_v<FromOut, ToIn>,
                       "WorkflowBuilder::connect: incompatible edge -- the source executor's output "
                       "message type is not the target executor's input message type (014 §1)");
-        wf_.edges.push_back(Edge{from.id, to.id, kind, std::move(case_label)});
+        wf_.edges.push_back(Edge{from.id, to.id, kind, std::move(case_label), std::move(on_failure)});
         return *this;
     }
 
