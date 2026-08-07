@@ -169,13 +169,32 @@ exit-criterion proof.
   (a map from `ChatClientId` to a bound instance), the smallest possible slice of an eventual `Engine`
   type, not a full `Engine` build-out (named out of scope, deferred list).
 
-### Phase C — Host-side HTTP/SSE client (new wiring, decision 4)
+### Phase C — Host-side HTTP/SSE client (new wiring, decision 4) — **done (commit `85312be`)**
 
-- **C1.** A general-purpose async HTTP/SSE client built on `TlsClientSession`'s TLS primitive
-  (`sandbox/tls_client.hpp`), for host-initiated calls — request/response and chunked SSE parsing,
-  independent of the WASM guest-egress capability-grant call path.
-- **C2.** `stop_token`-driven cancellation propagated into the socket layer (004 §1's rule) — the basis
-  for G2's "cancellation mid-stream releases the connection within a bounded time, no orphaned socket."
+- **C1. Done, narrowed.** `sandbox/provider_http_client.hpp`'s `perform_provider_https_exchange`: a
+  general-purpose HTTPS client for host-initiated calls, reusing `net_egress_proxy.hpp`'s
+  `resolve_and_validate`/`perform_https_exchange` (which itself already wraps `TlsClientSession`)
+  rather than a fresh implementation on `TlsClientSession` directly — smaller diff, same defense-in-
+  depth address-blocking, same byte-cap-enforced read loop, no new parsing code to independently get
+  wrong. **Not yet "async"** (still synchronous `result<T>`, same posture as `ChatClient` itself,
+  decision 2) and **SSE chunk-boundary parsing is not yet built** — `perform_https_exchange`'s read
+  loop currently only knows Content-Length-framed responses (a pre-existing cut named in its own
+  header comment, unchanged by this phase); real SSE parsing is needed once `chat_stream()` is real
+  (Phase B4, still open) and is deferred there rather than half-built ahead of the type that would
+  consume it. HTTP only real-provider-scoped: HTTPS only, no plain-HTTP path (no target this project
+  speaks to needs one).
+- **C2. Done.** `stop_token` threaded through `perform_http_exchange`/`perform_https_exchange`'s read
+  loops (additive, default-unstoppable, `HostEgressProxy::fetch`'s ADR-011 call site unaffected).
+  Proven bound: cancellation is checked once per read-loop iteration, not mid-syscall — against a
+  server sending periodic small chunks (a realistic SSE-connection shape), a cancellation requested
+  mid-stream aborts in ~440ms in `test_provider_http_client.cpp`; the theoretical worst case (a peer
+  that goes fully silent) is bounded by one `kIoTimeoutMs` tick (10s), not instantaneous, named
+  honestly in the code rather than oversold as sub-second in every case.
+- **New testability seams, not scoped by the original task text:** an injectable resolver and a
+  `ca_bundle_pem_override` on `perform_https_exchange`/`perform_provider_https_exchange`, mirroring
+  `HostEgressProxy::resolver`'s already-established pattern — needed because a loopback test server's
+  own address is itself in `resolve_and_validate`'s blocked-range table and its self-signed cert isn't
+  in the real vendored trust store. Production code never passes non-default values for either.
 
 ### Phase D — OpenAI-compatible backend (004 §3, default)
 
