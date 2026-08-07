@@ -160,6 +160,23 @@ until 014 is real.
    future workflow actor must be built through this helper, and 030's Project-supervising actors
    (Phases H-I) inherit the same trap.
 
+11. **A suspended run RETURNS; it does not park inside a handler — forced by `passivate()`, the same
+   way decision 4 is forced, one layer up.** 014 §4 requires a suspended workflow to hold no
+   resources: "it is checkpointed, its activations passivate", and §8 G5 *measures* it. The obvious
+   implementation of "suspends the workflow until a response arrives" is to `co_await` the response
+   inside the running handler — but `ActorRef::passivate()` drains in-flight work and is explicitly
+   never a mid-handler interrupt (Quark ADR-034), so a run parked mid-handler keeps its activation
+   alive forever and G5 becomes unprovable. Unlike decision 4 this one does **not** announce itself
+   with a compile error: the parked design compiles, runs, and passes every correctness assertion
+   about suspend and resume. Only the census fails. So the run's state lives in the ACTOR
+   (`RunState`), `RunWorkflow` replies `suspended` carrying the open `Interaction`s, and
+   `ResumeWorkflow` continues the same run from exactly where it stopped.
+   *Consequence:* §2's deadline accumulates over **running** time only. Charging human latency to a
+   bound the author set to limit *computation* would kill every human-in-the-loop workflow that
+   declares one, and would make the bound mean something other than what §2 says.
+   *Consequence for Phase F:* the checkpoint boundary and the suspension boundary are now the same
+   boundary — `RunState` is already the thing that has to be durable.
+
 ## Phases
 
 Each phase names the RFC text it implements and the check that would falsify it. Phases A-G are 014;
@@ -223,6 +240,36 @@ H-I are 030; J is the milestone's own exit-criterion proof.
   concurrent `Interaction` records on one run (OQ-4's case, never yet exercised), suspend holding no
   resources, resume on response. *Falsifiable (G5):* a census showing a live activation while
   suspended.
+  **Outcome: built, and its structural decision is forced rather than stylistic** — see decision 11.
+  A suspended run **returns**; it does not `co_await` the human's response inside the running
+  handler. `ActorRef::passivate()` drains in-flight work and is never a mid-handler interrupt, so a
+  parked run would hold its activation and G5 would be false *while every other assertion still
+  passed*. The census is the only thing that distinguishes the two designs, which is why §4's "holds
+  no resources" needed measuring and not asserting.
+  **OQ-4's case is now exercised for the first time anywhere in this codebase:** two ports in
+  different fan-out branches open two concurrent `Interaction` records on one run, and §2's superstep
+  barrier is what makes it reachable — it keeps the branches in step so both reach their ports in the
+  same round. Answering one leaves the run suspended on the other (001 §2's "does not leave
+  Suspended until every Interaction is resolved", which `AgentSession` already implements verbatim).
+  **Interaction ids are derived, not random** — `<run>:port:<executor>:<round>`. §4 wants a
+  checkpoint indexed by the token and I5 wants nondeterminism to cross a recorded seam; a UUID would
+  be an unrecorded nondeterministic input on the one identifier a resume must match. The round is in
+  it because a port inside a cycle opens more than once, and two openings are different requests.
+  **A human's answer can route** (`ResumeWorkflow::routes`), because approve/reject is the canonical
+  HITL shape and would otherwise be unbuildable. It reuses `ExecuteReply::routes` verbatim, so the I3
+  boundary is the *same* one a classifier gets: a label selects among edges the graph declares, and a
+  human can no more name an unwired node than a model can — tested with an `admin_override` label
+  that reaches nothing.
+  **A second predicate was needed:** `check_workflow_executable`, kept separate from
+  `validate_workflow`. The supervisor asks every non-port node through `FunctionExecutor`, so an
+  `agent` or `sub_workflow` node would be *run as a function* — plausible output from a graph whose
+  behaviour differs from what its author declared. That refusal cannot live in the shared validator,
+  whose answer must not depend on how much of 014 is implemented: §7's rendering, §7's diffing, and
+  the 015 loader all run over graphs no build can execute.
+  *G5 is HALF proven and recorded as such:* the activation half is measured by census; "no sandbox,
+  no connection" have nothing to hold yet (both arrive with the agent-kind executor), and "resumes
+  after a **process restart**" needs 014 §5's checkpoint — Phase F. What is proven is resume across a
+  Dormant round-trip in one process, which is strictly less.
 - **Phase F — checkpoint, resume, time-travel (014 §5).** Superstep-boundary checkpoints over the
   existing session `Store` seam; two-phase pending→committed (decision 7); rewind + re-run-forward
   with the audit record and `EffectJournal` interaction (decision 9). *Falsifiable (G2):* a kill at

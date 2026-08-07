@@ -617,6 +617,18 @@ if(AGENTENGINE_WITH_HTTPS)
   add_test(NAME test_workflow_failure COMMAND test_workflow_failure)
   set_tests_properties(test_workflow_failure PROPERTIES TIMEOUT 120)
 
+  # ---- Milestone 6 Phase E: 014 §4's request port, and the activation half of §8 G5 --------------
+  # The load-bearing check is E4's CENSUS. `ActorRef::passivate()` drains in-flight work and is never
+  # a mid-handler interrupt, so the tempting implementation of §4 -- co_await the human's response
+  # inside the running handler -- would keep the activation alive and G5 would be false while every
+  # other assertion here still passed. Only `went_dormant()` distinguishes the two designs. E3 is
+  # OQ-4's own case (several ports open on one run), which no test in this codebase had ever
+  # exercised: every prior use of `Interaction` opens at most one.
+  add_executable(test_workflow_request_port test_workflow_request_port.cpp)
+  target_link_libraries(test_workflow_request_port PRIVATE agentengine::core agentengine_warnings)
+  add_test(NAME test_workflow_request_port COMMAND test_workflow_request_port)
+  set_tests_properties(test_workflow_request_port PROPERTIES TIMEOUT 120)
+
   # ---- ADR-020 gates G1-G7: 004 §2's portable reasoning_effort, mapped down by both backends ------
   # Drives BOTH backends from the same enumerator values in one file, on purpose: the amendment's
   # claim is portability across two structurally different native shapes (a flat string vs a computed

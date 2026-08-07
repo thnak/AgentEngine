@@ -1,6 +1,7 @@
 #pragma once
 // Implements 014-Workflow-and-Orchestration.md §2 (execution semantics: the superstep model,
-// determinism obligations, termination). Milestone 6 Phase B
+// determinism obligations, termination), §6 (failure), and §4 (human-in-the-loop: the request port).
+// Milestone 6 Phases B, D, and E
 // (docs/planning/milestone-6-multi-agent-orchestration-breakdown.md).
 //
 // `WorkflowSupervisor` is 014 §1's "the workflow is a supervising actor owning them" and 001 §1's
@@ -10,7 +11,7 @@
 // workflow/graph.hpp). Two RFCs use the same word for the data and for the actor; 014 owns the type,
 // so the actor takes the qualified name. Recorded in 027 §4 rather than left to collide.
 //
-// TWO PROPERTIES THIS FILE EXISTS TO GUARANTEE, both from the breakdown's own decisions:
+// THREE PROPERTIES THIS FILE EXISTS TO GUARANTEE, all from the breakdown's own decisions:
 //
 // (4) `Sequential`, and NOT by preference. 030 §4/§8 Q4 requires `pause_project` to `.passivate()`
 //     any workflow-supervising actor, and 030 §7 G1 measures its activation count reaching zero.
@@ -28,6 +29,17 @@
 //     BY CONSTRUCTION. §8 G3's shuffle test then becomes a genuine positive control (it must still
 //     catch a deliberately order-dependent executor body) rather than the only thing standing
 //     between this design and a heisenbug.
+//
+// (11) A SUSPENDED RUN RETURNS; it does not park inside a handler. This is Phase E's structural
+//     decision and it is forced, not stylistic. 014 §4 requires a suspended workflow to hold no
+//     resources -- "it is checkpointed, its activations passivate". The obvious implementation of
+//     "suspend until a response arrives" is to `co_await` the response inside the running handler,
+//     but `ActorRef::passivate()` drains in-flight work and is explicitly "never a mid-handler
+//     interrupt" (Quark ADR-034), so a run parked mid-handler would keep its activation alive and
+//     §8 G5 would be unprovable -- the same shape as decision 4's compile error, one layer up.
+//     So the run state lives in the ACTOR (`RunState` below), `RunWorkflow` replies `suspended`
+//     with the open `Interaction`s, and `ResumeWorkflow` continues from exactly where it stopped.
+//     Between the two the activation is idle and passivatable, which is what G5 measures.
 
 #include <chrono>
 #include <cstdint>
@@ -40,6 +52,7 @@
 
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/error.hpp"
+#include "agentengine/core/interaction.hpp"
 #include "agentengine/workflow/executor.hpp"
 #include "agentengine/workflow/graph.hpp"
 
@@ -50,6 +63,9 @@ namespace agentengine::workflow {
 // "finished" from "ran out of rounds" has no way to know whether to trust the output.
 enum class workflow_status {
     completed,          // the graph ran dry -- every branch reached a terminal executor (§2)
+    suspended,          // Phase E: a request port (§4) is waiting on a human. NOT a termination --
+                        // `WorkflowResult::open_interactions` says what it is waiting for, and
+                        // `ResumeWorkflow` continues the same run
     bound_max_rounds,   // §2's MaxRounds stopped it
     bound_deadline,     // §2's deadline stopped it
     executor_failed,    // an executor failed and its edges' declared policy (§6) was `fail`, or was
@@ -66,6 +82,22 @@ enum class workflow_status {
 
 struct RunWorkflow {
     Message input;  // the payload delivered to the start executor in round 0
+};
+
+// 014 §4: a request port "suspends the workflow until a response arrives". This is that response.
+// Addressed by `interaction_id` rather than by executor id because §4's whole point is that several
+// ports can be open at once -- an executor id would be ambiguous the moment a port sits inside a
+// cycle and opens twice.
+struct ResumeWorkflow {
+    std::string interaction_id;
+    Message     response;  // becomes the port executor's output, routed along its outgoing edges
+    // The case labels the answer selects, for a port whose outgoing edges are `switch_case` --
+    // approve/reject, which is the canonical human-in-the-loop shape and would be unbuildable
+    // without this. It reuses `ExecuteReply::routes` verbatim, so the I3 boundary is the SAME one:
+    // a label can only select among edges the graph already declares and Phase A already
+    // type-checked. A human cannot name a node the author did not wire, any more than a classifier
+    // can -- which is the property that lets both feed routing without holding authority.
+    std::vector<std::string> routes;
 };
 
 // 014 §6: "Partial results are preserved -- a failed workflow's completed executor outputs are
@@ -89,11 +121,17 @@ struct WorkflowResult {
     // tells an operator what happened but not where, and "somewhere in your graph" is not
     // attribution.
     std::string failed_executor;
+    // 014 §4 / OQ-4: "Multiple request ports open concurrently in different branches produce
+    // multiple concurrent `Interaction` records on the same run -- the case that makes
+    // `interaction_id` a SET rather than a singleton." A vector, therefore, and not an optional.
+    // Non-empty exactly when `status == suspended`.
+    std::vector<Interaction> open_interactions;
 };
 
 class WorkflowSupervisor : public quark::Actor<WorkflowSupervisor, quark::Sequential> {
 public:
-    using protocol = quark::Protocol<quark::Ask<RunWorkflow, WorkflowResult>>;
+    using protocol = quark::Protocol<quark::Ask<RunWorkflow, WorkflowResult>,
+                                     quark::Ask<ResumeWorkflow, WorkflowResult>>;
 
     // `refs` is parallel to `graph.executors` by INDEX. Index-addressed rather than
     // id-string-addressed because the index is what crosses the wire in `ExecuteRequest` (the
@@ -102,30 +140,160 @@ public:
     void initialize(Workflow graph, std::vector<quark::ActorRef<FunctionExecutor>> refs) {
         graph_ = std::move(graph);
         refs_  = std::move(refs);
-        valid_ = validate_workflow(graph_).has_value() && refs_.size() == graph_.executors.size();
+        // Two questions, both required: is the graph well-formed, and can THIS build execute it
+        // (`check_workflow_executable` -- see graph.hpp for why they are separate).
+        valid_ = validate_workflow(graph_).has_value() &&
+                 check_workflow_executable(graph_).has_value() &&
+                 refs_.size() == graph_.executors.size();
     }
 
     [[nodiscard]] Workflow const& graph() const noexcept { return graph_; }
     [[nodiscard]] std::uint32_t   rounds_executed() const noexcept { return rounds_; }
+    [[nodiscard]] std::string const& run_id() const noexcept { return run_id_; }
+    // The run's open request ports (014 §4). Readable between asks precisely because a suspended run
+    // is not parked inside a handler -- decision 11.
+    // OPEN means still waiting. An answered port is dropped from this list the moment it is
+    // answered, even though the run holds onto its response until the last port is in: a caller
+    // reading "2 open" after answering one of two would have no way to tell which it still owes.
+    [[nodiscard]] std::vector<Interaction> open_interactions() const {
+        std::vector<Interaction> out;
+        for (auto const& p : ports_) {
+            if (!p.resolved) out.push_back(p.interaction);
+        }
+        return out;
+    }
 
     quark::task<> handle(quark::Ask<RunWorkflow, WorkflowResult> const& m) {
         if (!valid_) {
-            m.respond(WorkflowResult{workflow_status::invalid, 0, Message{}});
+            m.respond(WorkflowResult{workflow_status::invalid});
             co_return;
         }
 
-        auto const started_at = std::chrono::steady_clock::now();
-
-        std::vector<Delivery> pending;
-        pending.push_back(Delivery{index_of(graph_.start), m.query.input});
-
-        workflow_status             status = workflow_status::completed;
-        Message                     selected_output;
-        std::vector<ExecutorOutput> partial;
-        std::string                 failed_executor;
+        // A fresh run. `run_counter_` mirrors `AgentSession`'s own `<id>:run:<n>` convention rather
+        // than inventing a second one -- 001 §2's correlation identity is one vocabulary.
+        ++run_counter_;
+        run_id_ = graph_.id + ":run:" + std::to_string(run_counter_);
+        state_  = RunState{};
+        ports_.clear();
         rounds_ = 0;
+        state_.pending.push_back(Delivery{index_of(graph_.start), m.query.input});
 
-        while (!pending.empty()) {
+        m.respond(co_await execute());
+        co_return;
+    }
+
+    quark::task<> handle(quark::Ask<ResumeWorkflow, WorkflowResult> const& m) {
+        if (!valid_) {
+            m.respond(WorkflowResult{workflow_status::invalid});
+            co_return;
+        }
+
+        // Fails closed on an unknown id rather than silently no-op'ing -- the precedent
+        // `AgentSession::resolve_interaction` already set for exactly this call. A resume naming a
+        // port that is not open is a caller mistake, and answering it with "suspended, still waiting"
+        // would look identical to a lost response.
+        OpenPort* port = nullptr;
+        for (auto& p : ports_) {
+            if (p.interaction.interaction_id == m.query.interaction_id) { port = &p; break; }
+        }
+        if (port == nullptr || port->resolved) {
+            WorkflowResult r{workflow_status::invalid};
+            r.rounds            = rounds_;
+            r.open_interactions = open_interactions();
+            m.respond(std::move(r));
+            co_return;
+        }
+
+        port->resolved = true;
+        port->response = m.query.response;
+        port->routes   = m.query.routes;
+
+        // 001 §2, and `AgentSession` implements the same sentence: "A run does not leave
+        // InputRequired/Suspended for its 'waiting' reason until EVERY Interaction a given
+        // resolution call names is resolved." With several ports open (§4/OQ-4's case), answering
+        // one leaves the run suspended on the rest.
+        for (auto const& p : ports_) {
+            if (p.resolved) continue;
+            WorkflowResult r{workflow_status::suspended};
+            r.rounds            = rounds_;
+            r.partial           = state_.partial;
+            r.output            = state_.selected_output;
+            r.open_interactions = open_interactions();
+            m.respond(std::move(r));
+            co_return;
+        }
+
+        m.respond(co_await execute());
+        co_return;
+    }
+
+private:
+    // One round's work list: which executor, and what payload it receives. At class scope so the
+    // helpers below can take it (a member type is in scope for every member function regardless of
+    // declaration order).
+    struct Delivery {
+        std::size_t executor_index;
+        Message     payload;
+    };
+
+    // Everything a run carries ACROSS a suspension (decision 11). A coroutine local would be lost
+    // the moment the handler returns, which is exactly what a suspended run has to do.
+    struct RunState {
+        std::vector<Delivery>       pending;
+        std::vector<ExecutorOutput> partial;
+        Message                     selected_output;
+        std::string                 failed_executor;
+        // §2's deadline, accumulated over RUNNING time only. A workflow waiting on a human is not
+        // spending its execution budget: charging human latency to a deadline the author set to
+        // bound *computation* would kill every human-in-the-loop workflow that declares one, and
+        // would make the bound mean something other than what §2 says it means.
+        std::int64_t elapsed_ns = 0;
+    };
+
+    // An open request port (014 §4). Holds the `Interaction` -- 001 §2's correlation identity, the
+    // one the run knows -- plus which executor it belongs to and, once answered, the response that
+    // becomes that executor's output.
+    struct OpenPort {
+        Interaction              interaction;
+        std::size_t              executor_index = 0;
+        Message                  response;
+        std::vector<std::string> routes;
+        bool                     resolved = false;
+    };
+
+    enum class route_result { ok, routing_failed, workflow_failed };
+
+    // The shared run body. Entered by `RunWorkflow` and re-entered by `ResumeWorkflow`; it cannot
+    // tell which, because a resumed run is the SAME run continuing and any difference between the
+    // two paths would be a difference §4 does not describe.
+    quark::task<WorkflowResult> execute() {
+        auto const entered_at = std::chrono::steady_clock::now();
+
+        workflow_status status = workflow_status::completed;
+
+        // Resuming: every answered port's response is that executor's output, routed by exactly the
+        // rules any other output gets (switch/case, fan-in, the §6 failure policies). Routing a
+        // port's response through a second, simpler path would mean a request port silently could
+        // not be a router -- and nothing would say so.
+        if (!ports_.empty()) {
+            std::vector<Delivery> next = state_.pending;
+            for (auto const& p : ports_) {
+                ExecuteReply const reply{p.response, p.routes, true, failure_class::fatal};
+                record_partial(state_.partial, p.executor_index, rounds_ - 1, p.response);
+                if (is_output_selected(p.executor_index)) state_.selected_output = p.response;
+                route_result const rr = route_from(p.executor_index, reply, next);
+                if (rr == route_result::ok) continue;
+                state_.failed_executor = graph_.executors[p.executor_index].id;
+                status = rr == route_result::routing_failed ? workflow_status::routing_failed
+                                                            : workflow_status::executor_failed;
+                ports_.clear();
+                co_return finish(status, entered_at);
+            }
+            ports_.clear();
+            state_.pending = std::move(next);
+        }
+
+        while (!state_.pending.empty()) {
             // Bounds are checked BEFORE the round runs, so a bound of N means at most N rounds
             // execute -- not N+1 with the last one discarded, which would still have spent the work
             // and any effects inside it.
@@ -134,36 +302,50 @@ public:
                 break;
             }
             if (graph_.bound.deadline_ms.has_value()) {
-                auto const elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                         std::chrono::steady_clock::now() - started_at)
-                                         .count();
-                if (static_cast<std::uint64_t>(elapsed) >= *graph_.bound.deadline_ms) {
+                auto const elapsed = std::chrono::nanoseconds{state_.elapsed_ns} +
+                                     (std::chrono::steady_clock::now() - entered_at);
+                auto const ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
+                if (static_cast<std::uint64_t>(ms) >= *graph_.bound.deadline_ms) {
                     status = workflow_status::bound_deadline;
                     break;
                 }
             }
 
-            // ---- decision 5, first half: ISSUE every ask before awaiting any -------------------
-            // Each executor starts work the moment its ask is posted, so a round's nodes genuinely
-            // overlap. Writing this as `co_await ref.ask(...)` inside the loop instead would
-            // serialize the whole round and quietly turn 014 §3's Concurrent pattern into
-            // Sequential -- the bug that would still pass a correctness-only test.
-            std::vector<ExecuteReply> replies(pending.size());
+            // ---- 014 §4: a request port is NOT asked -----------------------------------------
+            // It has no body to run; reaching it IS the event. Partitioned out before any ask is
+            // issued so a port cannot be handed to `FunctionExecutor` by accident -- a port node's
+            // registered actor must observe zero invocations, which the Phase E test asserts.
+            std::vector<Delivery> exec_deliveries;
+            std::vector<Delivery> port_deliveries;
+            for (auto& d : state_.pending) {
+                if (graph_.executors[d.executor_index].kind == executor_kind::request_port) {
+                    port_deliveries.push_back(std::move(d));
+                } else {
+                    exec_deliveries.push_back(std::move(d));
+                }
+            }
+
+            std::vector<ExecuteReply> replies(exec_deliveries.size());
 
             // `todo` is which deliveries still need an invocation. It starts as all of them and
             // shrinks to the retryable failures (014 §6's `retry`), so the attempt loop keeps the
             // whole round's concurrency shape: a retried node re-runs ALONGSIDE any other node
             // being retried, never one after another.
-            std::vector<std::size_t> todo(pending.size());
-            for (std::size_t i = 0; i < pending.size(); ++i) todo[i] = i;
+            std::vector<std::size_t> todo(exec_deliveries.size());
+            for (std::size_t i = 0; i < exec_deliveries.size(); ++i) todo[i] = i;
 
             for (std::uint32_t attempt = 0; !todo.empty(); ++attempt) {
+                // ---- decision 5, first half: ISSUE every ask before awaiting any ---------------
+                // Each executor starts work the moment its ask is posted, so a round's nodes
+                // genuinely overlap. Writing this as `co_await ref.ask(...)` inside the loop instead
+                // would serialize the whole round and quietly turn 014 §3's Concurrent pattern into
+                // Sequential -- the bug that would still pass a correctness-only test.
                 std::vector<quark::AskFuture<ExecuteReply>> in_flight;
                 in_flight.reserve(todo.size());
                 for (std::size_t const i : todo) {
                     in_flight.push_back(
-                        refs_[pending[i].executor_index].template ask<ExecuteReply>(
-                            ExecuteRequest{pending[i].payload, rounds_}));
+                        refs_[exec_deliveries[i].executor_index].template ask<ExecuteReply>(
+                            ExecuteRequest{exec_deliveries[i].payload, rounds_}));
                 }
 
                 // ---- decision 5, second half: COLLECT in fixed index order --------------------
@@ -188,7 +370,7 @@ public:
                     }
                     if (replies[i].ok) continue;
 
-                    EdgeFailurePolicy const pol = policy_for(pending[i].executor_index);
+                    EdgeFailurePolicy const pol = policy_for(exec_deliveries[i].executor_index);
                     if (pol.kind == edge_failure_policy::retry && attempt < pol.attempts &&
                         is_retryable(replies[i].klass)) {
                         retry_next.push_back(i);
@@ -206,11 +388,12 @@ public:
             // §6's partial results are recorded in the SAME pass and unconditionally: a completed
             // output is preserved whether or not the run goes on to fail, because at this point
             // nobody knows yet whether it will.
-            for (std::size_t i = 0; i < pending.size(); ++i) {
+            for (std::size_t i = 0; i < exec_deliveries.size(); ++i) {
                 if (!replies[i].ok) continue;
-                record_partial(partial, pending[i].executor_index, rounds_ - 1, replies[i].payload);
-                if (is_output_selected(pending[i].executor_index)) {
-                    selected_output = replies[i].payload;
+                record_partial(state_.partial, exec_deliveries[i].executor_index, rounds_ - 1,
+                               replies[i].payload);
+                if (is_output_selected(exec_deliveries[i].executor_index)) {
+                    state_.selected_output = replies[i].payload;
                 }
             }
 
@@ -219,129 +402,166 @@ public:
             // "All messages delivered in round n are processed before round n+1 begins" is therefore
             // a structural property of this loop, not a scheduling hope.
             std::vector<Delivery> next;
-            bool routing_broke  = false;
-            bool workflow_broke = false;
-            for (std::size_t i = 0; i < pending.size(); ++i) {
-                std::string const& from_id = graph_.executors[pending[i].executor_index].id;
-
-                // ---- 014 §6: the failed executor's edge policy decides ------------------------
-                if (!replies[i].ok) {
-                    EdgeFailurePolicy const pol = policy_for(pending[i].executor_index);
-                    Message const marker = failure_marker(from_id, replies[i].klass);
-
-                    switch (pol.kind) {
-                        case edge_failure_policy::fail:
-                        case edge_failure_policy::retry:
-                            // A `retry` that reached here has spent its budget, or the failure was
-                            // never retryable. §6 lists four ALTERNATIVES, so an exhausted retry
-                            // resolves to the strict one rather than silently continuing; a graph
-                            // that wants recovery after retries says so with a fallback, once §6
-                            // grows a composed form.
-                            workflow_broke  = true;
-                            failed_executor = from_id;
-                            break;
-
-                        case edge_failure_policy::propagate:
-                            for (auto const& edge : graph_.edges) {
-                                if (edge.from == from_id) deliver_once(next, index_of(edge.to), marker);
-                            }
-                            break;
-
-                        case edge_failure_policy::fallback:
-                            for (auto const& edge : graph_.edges) {
-                                if (edge.from != from_id) continue;
-                                if (edge.on_failure.kind != edge_failure_policy::fallback) continue;
-                                deliver_once(next, index_of(edge.on_failure.fallback), marker);
-                            }
-                            break;
-                    }
-                    // A failed executor's NORMAL edges never fire: it produced no output, so there
-                    // is nothing to carry along them. Under `propagate` the same targets are reached
-                    // above -- but with the marker, so the target can tell the two apart.
-                    continue;
-                }
-
-                // Phase C: 014 §1's `switch_case` is "exactly one selected". Counted rather than
-                // assumed, because both failure directions are real authoring mistakes and both
-                // would otherwise be silent -- zero fired ends the branch with no explanation, more
-                // than one turns a switch into a fan-out.
-                std::size_t switch_edges = 0;
-                std::size_t switch_fired = 0;
-
-                for (auto const& edge : graph_.edges) {
-                    if (edge.from != from_id) continue;
-                    if (edge.kind == edge_kind::switch_case) ++switch_edges;
-                    if (!edge_fires(edge, replies[i])) continue;
-                    if (edge.kind == edge_kind::switch_case) ++switch_fired;
-
-                    std::size_t const target = index_of(edge.to);
-
-                    // ---- fan-in (014 §2: "This makes fan-in well-defined") ---------------------
-                    // A `fan_in` edge MERGES into whatever delivery this round already has for the
-                    // same target, so an aggregator runs ONCE with every input rather than once per
-                    // inbound edge. Merging is by content-item append in source-index order, which
-                    // is deterministic (003's content model is an ordered list, and index order is
-                    // fixed by the graph, not by completion) -- the same property decision 5 relies
-                    // on for the round's own assembly.
-                    //
-                    // Any other edge kind does NOT merge: two `direct` edges into one node are two
-                    // independent messages, and §2's superstep model says a node processes both.
-                    // Silently collapsing them would discard a message the author sent.
-                    if (edge.kind == edge_kind::fan_in) {
-                        bool merged = false;
-                        for (auto& delivery : next) {
-                            if (delivery.executor_index != target) continue;
-                            for (auto const& item : replies[i].payload.content) {
-                                delivery.payload.content.push_back(item);
-                            }
-                            merged = true;
-                            break;
-                        }
-                        if (merged) continue;
-                    }
-                    next.push_back(Delivery{target, replies[i].payload});
-                }
-
-                if (switch_edges > 0 && switch_fired != 1) {
-                    routing_broke = true;
-                }
-            }
-
-            if (workflow_broke) {
-                status = workflow_status::executor_failed;
+            bool                  broke = false;
+            for (std::size_t i = 0; i < exec_deliveries.size(); ++i) {
+                route_result const rr = route_from(exec_deliveries[i].executor_index, replies[i], next);
+                if (rr == route_result::ok) continue;
+                state_.failed_executor = graph_.executors[exec_deliveries[i].executor_index].id;
+                status = rr == route_result::routing_failed ? workflow_status::routing_failed
+                                                            : workflow_status::executor_failed;
+                broke = true;
                 break;
             }
-            if (routing_broke) {
-                status = workflow_status::routing_failed;
-                if (failed_executor.empty()) {
-                    for (std::size_t i = 0; i < pending.size(); ++i) {
-                        if (!replies[i].ok) continue;
-                        if (routing_broken_at(pending[i].executor_index, replies[i])) {
-                            failed_executor = graph_.executors[pending[i].executor_index].id;
-                            break;
-                        }
-                    }
-                }
+            if (broke) break;
+
+            // ---- 014 §4: open one Interaction per port reached this round ---------------------
+            // Minted AFTER the round's ordinary work, so the superstep completes normally and only
+            // then does the run stop. Several ports reached in the same round open several
+            // Interactions -- OQ-4's case, which is reachable precisely because §2's barrier keeps
+            // fanned-out branches in step.
+            for (auto const& d : port_deliveries) {
+                ports_.push_back(OpenPort{mint_interaction(d.executor_index), d.executor_index,
+                                          d.payload, {}, false});
+            }
+            state_.pending = std::move(next);
+
+            if (!ports_.empty()) {
+                // The OTHER branches' next-round work stays in `state_.pending` untouched: §4 says a
+                // request port "suspends the workflow", not the branch. Running the rest while a
+                // human is being asked would be a different execution model than the one §4
+                // describes, and would let a workflow commit effects that the pending answer was
+                // supposed to gate.
+                status = workflow_status::suspended;
                 break;
             }
-            pending = std::move(next);
             // An empty work list means every branch reached an executor with no outgoing edges --
             // 014 §2's "an explicit terminal executor". `status` is already `completed`.
         }
 
-        m.respond(WorkflowResult{status, rounds_, std::move(selected_output), std::move(partial),
-                                 std::move(failed_executor)});
-        co_return;
+        co_return finish(status, entered_at);
     }
 
-private:
-    // One round's work list: which executor, and what payload it receives. At class scope so the
-    // cold-path helpers below can take it (a member type is in scope for every member function
-    // regardless of declaration order).
-    struct Delivery {
-        std::size_t executor_index;
-        Message     payload;
-    };
+    // Assemble the reply and bank this stretch of RUNNING time against the deadline.
+    [[nodiscard]] WorkflowResult finish(workflow_status status,
+                                        std::chrono::steady_clock::time_point entered_at) {
+        state_.elapsed_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                 std::chrono::steady_clock::now() - entered_at)
+                                 .count();
+        WorkflowResult r{};
+        r.status          = status;
+        r.rounds          = rounds_;
+        r.output          = state_.selected_output;
+        r.partial         = state_.partial;
+        r.failed_executor = state_.failed_executor;
+        if (status == workflow_status::suspended) r.open_interactions = open_interactions();
+        return r;
+    }
+
+    // 014 §4: "The request port's `InputRequired` carries the same `request_id`-shaped correlation
+    // token defined in 001 §2; a checkpoint taken while suspended stores the pending request indexed
+    // by that token."
+    //
+    // DERIVED, not random. §4 wants a checkpoint indexed by this token and I5 wants nondeterminism
+    // to cross a recorded seam -- a UUID here would be an unrecorded nondeterministic input on the
+    // one identifier a resume has to match, so it is composed from run id, port, and round instead.
+    // The round is in it because a port inside a cycle opens more than once, and two openings of the
+    // same port are different requests.
+    [[nodiscard]] Interaction mint_interaction(std::size_t executor_index) const {
+        Interaction i{};
+        // `rounds_ - 1` because the round this port was reached in has already been counted by the
+        // time ports are opened; the token names the round the request belongs to, not the next one.
+        i.interaction_id = run_id_ + ":port:" + graph_.executors[executor_index].id + ":" +
+                           std::to_string(rounds_ == 0 ? 0 : rounds_ - 1);
+        i.run_id = run_id_;
+        i.reason = interaction_reason::input;
+        // `opened_at_ns`/`expires_at_ns` stay 0: no wall-clock source is a wired capability anywhere
+        // in this project yet, and `AgentSession::open_interaction` leaves them 0 for the same
+        // reason. Named rather than filled with a steady_clock reading that would not survive a
+        // process restart meaningfully.
+        return i;
+    }
+
+    // Route one executor's result into the next round's work list. ONE function, used by the
+    // ordinary path and by the resume path, so a request port's response routes by exactly the same
+    // rules -- switch/case, fan-in, and §6's failure policies -- as any other output.
+    [[nodiscard]] route_result route_from(std::size_t from_index, ExecuteReply const& reply,
+                                          std::vector<Delivery>& next) const {
+        std::string const& from_id = graph_.executors[from_index].id;
+
+        // ---- 014 §6: the failed executor's edge policy decides ------------------------------
+        if (!reply.ok) {
+            EdgeFailurePolicy const pol    = policy_for(from_index);
+            Message const           marker = failure_marker(from_id, reply.klass);
+
+            switch (pol.kind) {
+                case edge_failure_policy::fail:
+                case edge_failure_policy::retry:
+                    // A `retry` that reached here has spent its budget, or the failure was never
+                    // retryable. §6 lists four ALTERNATIVES, so an exhausted retry resolves to the
+                    // strict one rather than silently continuing; a graph that wants recovery after
+                    // retries says so with a fallback, once §6 grows a composed form.
+                    return route_result::workflow_failed;
+
+                case edge_failure_policy::propagate:
+                    for (auto const& edge : graph_.edges) {
+                        if (edge.from == from_id) deliver_once(next, index_of(edge.to), marker);
+                    }
+                    return route_result::ok;
+
+                case edge_failure_policy::fallback:
+                    for (auto const& edge : graph_.edges) {
+                        if (edge.from != from_id) continue;
+                        if (edge.on_failure.kind != edge_failure_policy::fallback) continue;
+                        deliver_once(next, index_of(edge.on_failure.fallback), marker);
+                    }
+                    return route_result::ok;
+            }
+            return route_result::workflow_failed;
+        }
+
+        // Phase C: 014 §1's `switch_case` is "exactly one selected". Counted rather than assumed,
+        // because both failure directions are real authoring mistakes and both would otherwise be
+        // silent -- zero fired ends the branch with no explanation, more than one turns a switch
+        // into a fan-out.
+        std::size_t switch_edges = 0;
+        std::size_t switch_fired = 0;
+
+        for (auto const& edge : graph_.edges) {
+            if (edge.from != from_id) continue;
+            if (edge.kind == edge_kind::switch_case) ++switch_edges;
+            if (!edge_fires(edge, reply)) continue;
+            if (edge.kind == edge_kind::switch_case) ++switch_fired;
+
+            std::size_t const target = index_of(edge.to);
+
+            // ---- fan-in (014 §2: "This makes fan-in well-defined") -------------------------
+            // A `fan_in` edge MERGES into whatever delivery this round already has for the same
+            // target, so an aggregator runs ONCE with every input rather than once per inbound edge.
+            // Merging is by content-item append in source-index order, which is deterministic (003's
+            // content model is an ordered list, and index order is fixed by the graph, not by
+            // completion) -- the same property decision 5 relies on for the round's own assembly.
+            //
+            // Any other edge kind does NOT merge: two `direct` edges into one node are two
+            // independent messages, and §2's superstep model says a node processes both. Silently
+            // collapsing them would discard a message the author sent.
+            if (edge.kind == edge_kind::fan_in) {
+                bool merged = false;
+                for (auto& delivery : next) {
+                    if (delivery.executor_index != target) continue;
+                    for (auto const& item : reply.payload.content) {
+                        delivery.payload.content.push_back(item);
+                    }
+                    merged = true;
+                    break;
+                }
+                if (merged) continue;
+            }
+            next.push_back(Delivery{target, reply.payload});
+        }
+
+        if (switch_edges > 0 && switch_fired != 1) return route_result::routing_failed;
+        return route_result::ok;
+    }
 
     // 014 §6: "An executor failure is CLASSIFIED (001 §6) and handled by the edge's declared
     // policy." This function is where the classification does work rather than being decoration.
@@ -394,22 +614,6 @@ private:
         return EdgeFailurePolicy{};
     }
 
-    // Which executor's routing contract broke, for the `routing_failed` attribution above. Repeats
-    // the counting rule rather than sharing state with the routing loop, because the loop's job is
-    // to build the next round and this one runs only on the cold path.
-    [[nodiscard]] bool routing_broken_at(std::size_t executor_index,
-                                         ExecuteReply const& reply) const noexcept {
-        std::string const& id = graph_.executors[executor_index].id;
-        std::size_t        edges = 0;
-        std::size_t        fired = 0;
-        for (auto const& edge : graph_.edges) {
-            if (edge.from != id || edge.kind != edge_kind::switch_case) continue;
-            ++edges;
-            if (edge_fires(edge, reply)) ++fired;
-        }
-        return edges > 0 && fired != 1;
-    }
-
     // Phase C. Unlabelled edge kinds always fire; labelled ones fire only when the source executor
     // named their label.
     //
@@ -450,10 +654,14 @@ private:
         return false;
     }
 
-    Workflow                                      graph_;
+    Workflow                                       graph_;
     std::vector<quark::ActorRef<FunctionExecutor>> refs_;
-    bool                                          valid_  = false;
-    std::uint32_t                                 rounds_ = 0;
+    bool                                           valid_  = false;
+    std::uint32_t                                  rounds_ = 0;
+    std::uint64_t                                  run_counter_ = 0;
+    std::string                                    run_id_;
+    RunState                                       state_;
+    std::vector<OpenPort>                          ports_;
 };
 
 }  // namespace agentengine::workflow

@@ -170,6 +170,18 @@ int main() {
                        "A4: an executor no edge can reach from start is rejected -- 014 §7 makes the "
                        "graph reviewable, and a node nothing reaches is an authoring slip");
 
+        // Milestone 6 Phase E: `validate_workflow` answers "is this a well-formed graph" and its
+        // answer must NOT depend on how much of 014 is implemented -- §7's rendering, diffing, and
+        // review all run over graphs this build cannot execute, and this suite's own `baseline()`
+        // has declared `agent`-kind nodes since Phase A for exactly that reason. "Can this build
+        // execute it" is a separate predicate (`check_workflow_executable`), tested in
+        // test_workflow_request_port.cpp where the executor that would misrun it lives.
+        Workflow unbuilt = baseline();
+        unbuilt.executors.front().kind = executor_kind::agent;
+        check(validate_workflow(unbuilt).has_value(),
+              "A4: an `agent`-kind executor is a well-formed graph node even though this build "
+              "cannot run one -- validity is a property of the graph, not of the implementation");
+
         // The reachability walk must handle cycles without looping forever. This is the case that
         // would hang rather than fail, so it is asserted explicitly.
         Workflow self_loop = baseline();

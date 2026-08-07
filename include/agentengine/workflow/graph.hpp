@@ -376,6 +376,35 @@ struct Workflow {
     return {};
 }
 
+// -- Can THIS BUILD run it? (Milestone 6 Phase E) ----------------------------------------------
+//
+// A SECOND question, deliberately not folded into `validate_workflow` above. That function answers
+// "is this a well-formed graph", and its answer must not depend on how much of 014 happens to be
+// implemented -- 014 §7's rendering, diffing, and review all run over graphs this build cannot
+// execute, and the 015 loader (M7) validates for those purposes too.
+//
+// This one answers "can this build execute it", and the distinction matters because the failure it
+// prevents is silent: `WorkflowSupervisor` asks every non-port node through `FunctionExecutor`, so
+// an `agent` or `sub_workflow` node would be run exactly as if it were a plain function -- producing
+// plausible output from a graph whose behaviour differs from what its author declared. §1 lists four
+// executor kinds; Milestone 6 built `function` (Phase B) and `request_port` (Phase E).
+//
+// Delete a kind's branch when that kind lands. A refused graph is recoverable; a quietly
+// reinterpreted one is not.
+[[nodiscard]] inline result<void> check_workflow_executable(Workflow const& wf) {
+    for (auto const& e : wf.executors) {
+        if (e.kind != executor_kind::agent && e.kind != executor_kind::sub_workflow) continue;
+        return std::unexpected(error{
+            failure_class::contract,
+            "executor '" + e.id +
+                "' declares an executor kind this build does not implement (014 §1's `agent` and "
+                "`sub_workflow` nodes are not built yet); running it would treat it as a plain "
+                "function node, which is not what the graph says",
+            "workflow.executor_kind_unsupported"});
+    }
+    return {};
+}
+
 // -- The C++ authoring form (014 §1's "at compile time for the C++ form") ----------------------
 //
 // `TypedExecutor<In, Out>` carries the real C++ types, so `WorkflowBuilder::connect` can reject a
