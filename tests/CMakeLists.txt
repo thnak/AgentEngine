@@ -578,6 +578,19 @@ if(AGENTENGINE_WITH_HTTPS)
   target_link_libraries(test_workflow_graph_validation PRIVATE agentengine::core agentengine_warnings)
   add_test(NAME test_workflow_graph_validation COMMAND test_workflow_graph_validation)
 
+  # ---- Milestone 6 Phase B: 014 §2's superstep model, on a REAL quark::Engine --------------------
+  # Not TestKit: it has no async carrier, and a supervisor whose whole job is co_await-ing
+  # cross-actor asks cannot run under it (breakdown decision 3). The two claims worth a real Engine
+  # are measured, not inferred from the code's shape: the superstep barrier is checked on entry/exit
+  # TIMESTAMPS (correct output alone would pass against a serialized OR an overlapping
+  # implementation), and fan-out overlap is checked against the serial sum (the check that fails if
+  # someone writes the obvious co_await-per-node dispatch loop, which is correct and silently turns
+  # 014 §3's Concurrent pattern into Sequential). 4 workers / 4 shards per CLAUDE.md.
+  add_executable(test_workflow_superstep test_workflow_superstep.cpp)
+  target_link_libraries(test_workflow_superstep PRIVATE agentengine::core agentengine_warnings)
+  add_test(NAME test_workflow_superstep COMMAND test_workflow_superstep)
+  set_tests_properties(test_workflow_superstep PROPERTIES TIMEOUT 120)
+
   # ---- ADR-020 gates G1-G7: 004 §2's portable reasoning_effort, mapped down by both backends ------
   # Drives BOTH backends from the same enumerator values in one file, on purpose: the amendment's
   # claim is portability across two structurally different native shapes (a flat string vs a computed

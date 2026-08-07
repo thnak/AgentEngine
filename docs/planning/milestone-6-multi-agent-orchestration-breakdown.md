@@ -90,6 +90,23 @@ until 014 is real.
    becomes a genuine positive control (it must still catch a deliberately order-dependent executor),
    not the only thing standing between the design and a heisenbug.
 
+5b. **Executor actor-key choice belongs to the workflow layer, because Quark's placement does not
+   spread consecutive keys — found by measurement in Phase B, not by reading.** Every executor is the
+   same actor type (`FunctionExecutor`, so the graph stays data — Phase A), so placement is decided
+   entirely by instance key: `hash_combine(TypeKey, key) & (shard_count - 1)`. Registering nodes
+   under the obvious `1, 2, 3, …` put **keys 1/2/3/4 on shards 3/1/1/1** of a 4-shard engine. Three
+   executors sharing a shard are drained by one worker in sequence, so **014 §3's Concurrent pattern
+   silently degrades to Sequential while producing byte-identical output** — Phase B's own fan-out
+   case measured 184 ms for three 60 ms nodes, exactly their serial sum. Nothing failed; the
+   execution model was just no longer the one 014 §1 promises ("concurrency … comes from the
+   runtime"). `workflow/placement.hpp`'s `spread_executor_keys` is the fix, and it lives in the
+   workflow layer rather than in host wiring precisely because the naive host choice is the broken
+   one. The search is **bounded** — a degenerate hash costs a worse spread, never a hang. After the
+   fix the same case measures **75 ms** on keys 1/2/5/12 → shards 3/1/0/2.
+   *Consequence for later phases:* 014 §8 G1 (patterns under injected failure and delay) and G3
+   (10³-seed shuffle) are both meaningless if a round is accidentally serialized, so Phase J must
+   assert the spread as a precondition rather than trusting it.
+
 6. **Typed edges are checked at compile time for the C++ form; the declarative form's loader is
    deferred to M7 with 015.** 014 §1 requires an incompatible edge to fail "at compile time for the
    C++ form, at load for the declarative form (015), using the same validator (I6)". 015 is M7. This
