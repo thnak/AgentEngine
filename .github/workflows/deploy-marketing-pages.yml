@@ -1,0 +1,54 @@
+# Deploys the marketing/landing page (web/marketing/, a standalone React+TypeScript+Vite app,
+# unrelated to the C++ engine's own CMake build in ci.yml) to GitHub Pages at
+# https://thnak.github.io/AgentEngine/. Triggers only on changes under web/marketing/ so an
+# ordinary engine commit never redeploys the site, plus manual dispatch for a redeploy with no
+# content change (e.g. after a Pages configuration change).
+
+name: Deploy marketing page
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "web/marketing/**"
+      - ".github/workflows/deploy-marketing-pages.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web/marketing
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/marketing/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web/marketing/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
