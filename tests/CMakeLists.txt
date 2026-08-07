@@ -504,6 +504,13 @@ if(AGENTENGINE_WITH_HTTPS)
     agentengine::core agentengine::provider_http_client agentengine_warnings
     MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
   add_test(NAME test_chat_client_stream_cancellation_bounded COMMAND test_chat_client_stream_cancellation_bounded)
+
+  # ---- Described<T, "..."> (core/json_schema.hpp): per-parameter tool descriptions, proven to
+  # survive both OpenAI's and Anthropic's real translate_tool() end to end.
+  add_executable(test_json_schema_described test_json_schema_described.cpp)
+  target_link_libraries(test_json_schema_described PRIVATE
+    agentengine::core agentengine::provider_http_client agentengine_warnings)
+  add_test(NAME test_json_schema_described COMMAND test_json_schema_described)
 endif()
 
 # ---- RecordedChatClient fixture player (test-only) ---------------------------------------------

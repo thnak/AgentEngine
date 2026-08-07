@@ -38,7 +38,54 @@
 #include "quark/core/describe.hpp"  // reused only for its QUARK_FOR_EACH variadic-expansion macro
 
 #include "agentengine/core/error.hpp"
+#include "agentengine/core/fixed_string.hpp"
 #include "agentengine/core/json_value.hpp"
+
+namespace agentengine {
+
+// Milestone 5 follow-up (006 §1: "Schemas are derived from the argument/result types at compile
+// time... emitted as JSON Schema 2020-12"). Both OpenAI's and Anthropic's own "tools" wire formats
+// carry a `description` on EVERY parameter, not just on the tool itself -- confirmed directly
+// against protocol/openai/chat_client.hpp's/protocol/anthropic/chat_client.hpp's own `translate_tool`
+// (both pass `args_schema_json` through byte-for-byte, proven by test_openai_chat_client_
+// translation.cpp/test_anthropic_chat_client_translation.cpp's own round-trip tests -- so the gap was
+// entirely upstream, at schema GENERATION time). `AE_JSON_SCHEMA(Type, member...)` (below) only ever
+// derived a field's NAME and TYPE from `decltype(member)`, never prose -- there was no channel for
+// per-field description at all.
+//
+// `Described<T, "text">` is the fix, in this project's existing compile-time-tag idiom
+// (`ChatClientId<"...">`, core/agent.hpp; `fixed_string` is the shared structural-NTTP vocabulary
+// both use) rather than a new macro syntax or a breaking change to every existing `AE_JSON_SCHEMA`
+// call site: a tool author opts a field in by wrapping its declared type --
+// `Described<std::string, "The search query text"> query;` -- and everything downstream (schema
+// generation, to_json, from_json, required-detection) sees through the wrapper transparently; fields
+// that don't wrap in `Described<...>` are completely unaffected, byte-for-byte, by this change.
+template <class T, fixed_string Desc>
+struct Described {  // ae-naming-lint: allow Described — 006 §1 vocabulary, no RFC term assigned yet
+    T value{};
+
+    constexpr Described() = default;
+    constexpr Described(T v) : value(std::move(v)) {}  // implicit: `Described<int,"..."> n = 5;`
+
+    constexpr Described& operator=(T v) {
+        value = std::move(v);
+        return *this;
+    }
+
+    // Ordinary member-access ergonomics: `args.query` reads/assigns/compares like a plain `T`
+    // everywhere an implicit reference conversion applies. The one place this project's own
+    // generated (de)serialization below reaches into `.value` directly instead is member-call
+    // syntax (e.g. a `std::optional<T>`'s `.has_value()`), which never considers a user-defined
+    // conversion for the `.` operator's left operand.
+    [[nodiscard]] constexpr operator T&() & noexcept { return value; }
+    [[nodiscard]] constexpr operator T const&() const& noexcept { return value; }
+
+    static constexpr std::string_view description = std::string_view{Desc};
+
+    friend bool operator==(Described const&, Described const&) = default;
+};
+
+}  // namespace agentengine
 
 namespace agentengine::schema {
 
@@ -116,6 +163,35 @@ struct vector_inner<std::vector<U, A>> {
     using type = U;
 };
 
+template <class T>
+struct is_described : std::false_type {};
+template <class T, fixed_string Desc>
+struct is_described<Described<T, Desc>> : std::true_type {};
+template <class T>
+inline constexpr bool is_described_v = is_described<std::remove_cvref_t<T>>::value;
+
+template <class T>
+struct described_inner {
+    using type = T;
+};
+template <class T, fixed_string Desc>
+struct described_inner<Described<T, Desc>> {
+    using type = T;
+};
+
+// Splices an extra "description" key into a well-formed JSON object fragment -- every branch of
+// type_fragment<>() below returns exactly this shape (a single JSON object string ending in '}'),
+// so this is generic across boolean/string/integer/number/array/nested-object fragments alike.
+// Reuses json_value.hpp's own escaper rather than a second hand-rolled one.
+inline std::string inject_description(std::string fragment, std::string_view desc) {
+    if (fragment.empty() || fragment.back() != '}') return fragment;  // defensive; should not happen
+    fragment.pop_back();
+    fragment += ",\"description\":";
+    ::agentengine::json::detail::dump_escaped_string(std::string(desc), fragment);
+    fragment += '}';
+    return fragment;
+}
+
 // A type has its own AE_JSON_SCHEMA description iff ae_json_schema(type_tag<T>{}) resolves by ADL.
 template <class T>
 concept HasJsonSchema = requires(type_tag<T> tag) {
@@ -129,13 +205,21 @@ std::string type_fragment();
 
 template <class T>
 [[nodiscard]] constexpr bool is_required() noexcept {
-    return !detail::is_optional_v<T>;
+    using U = std::remove_cvref_t<T>;
+    if constexpr (detail::is_described_v<U>) {
+        return !detail::is_optional_v<typename detail::described_inner<U>::type>;
+    } else {
+        return !detail::is_optional_v<U>;
+    }
 }
 
 template <class T>
 std::string type_fragment() {
     using U = std::remove_cvref_t<T>;
-    if constexpr (detail::is_optional_v<U>) {
+    if constexpr (detail::is_described_v<U>) {
+        return detail::inject_description(
+            type_fragment<typename detail::described_inner<U>::type>(), U::description);
+    } else if constexpr (detail::is_optional_v<U>) {
         return type_fragment<typename detail::optional_inner<U>::type>();
     } else if constexpr (std::is_same_v<U, bool>) {
         return "{\"type\":\"boolean\"}";
@@ -178,7 +262,11 @@ public:
     template <class T>
     void add_field(std::string_view name, T const& value) {
         using U = std::remove_cvref_t<T>;
-        if constexpr (detail::is_optional_v<U>) {
+        if constexpr (detail::is_described_v<U>) {
+            // Recurse on the unwrapped value/type -- reuses the optional-omission branch below
+            // exactly, rather than duplicating it, for e.g. Described<std::optional<X>, "...">.
+            add_field(name, value.value);
+        } else if constexpr (detail::is_optional_v<U>) {
             if (value.has_value()) members_.emplace_back(std::string(name), to_json_value(*value));
         } else {
             members_.emplace_back(std::string(name), to_json_value(value));
@@ -194,7 +282,9 @@ private:
 template <class T>
 json::Value to_json_value(T const& v) {
     using U = std::remove_cvref_t<T>;
-    if constexpr (std::is_same_v<U, bool>) {
+    if constexpr (detail::is_described_v<U>) {
+        return to_json_value<typename detail::described_inner<U>::type>(v.value);
+    } else if constexpr (std::is_same_v<U, bool>) {
         return json::Value::make_bool(v);
     } else if constexpr (std::is_same_v<U, std::string>) {
         return json::Value::make_string(v);
@@ -242,23 +332,38 @@ inline error type_mismatch(std::string_view field_name, std::string_view expecte
 // error -- this is the "required" half of the same rule ObjectBuilder's schema output states.
 template <class FieldType>
 result<FieldType> from_json_field(json::Value const& object, std::string_view field_name) {
-    json::Value const* found = object.find(field_name);
-    if (!found) {
-        if constexpr (detail::is_optional_v<FieldType>) {
-            return FieldType{};
-        } else {
-            return std::unexpected(error{failure_class::contract,
-                "missing required field '" + std::string(field_name) + "'",
-                "json.missing_required_field"});
+    using U = std::remove_cvref_t<FieldType>;
+    if constexpr (detail::is_described_v<U>) {
+        // Recurse on the unwrapped inner type -- reuses the required/optional-missing-key logic
+        // below exactly, rather than duplicating it, for e.g. Described<std::optional<X>, "...">.
+        using Inner = typename detail::described_inner<U>::type;
+        auto inner = from_json_field<Inner>(object, field_name);
+        if (!inner) return std::unexpected(inner.error());
+        return U{std::move(*inner)};
+    } else {
+        json::Value const* found = object.find(field_name);
+        if (!found) {
+            if constexpr (detail::is_optional_v<FieldType>) {
+                return FieldType{};
+            } else {
+                return std::unexpected(error{failure_class::contract,
+                    "missing required field '" + std::string(field_name) + "'",
+                    "json.missing_required_field"});
+            }
         }
+        return from_json_value<FieldType>(*found, field_name);
     }
-    return from_json_value<FieldType>(*found, field_name);
 }
 
 template <class T>
 result<T> from_json_value(json::Value const& v, std::string_view field_name) {
     using U = std::remove_cvref_t<T>;
-    if constexpr (detail::is_optional_v<U>) {
+    if constexpr (detail::is_described_v<U>) {
+        using Inner = typename detail::described_inner<U>::type;
+        auto inner = from_json_value<Inner>(v, field_name);
+        if (!inner) return std::unexpected(inner.error());
+        return U{std::move(*inner)};
+    } else if constexpr (detail::is_optional_v<U>) {
         using Inner = typename detail::optional_inner<U>::type;
         if (v.is_null()) return U{std::nullopt};
         auto inner = from_json_value<Inner>(v, field_name);
