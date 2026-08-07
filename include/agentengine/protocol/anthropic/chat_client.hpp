@@ -109,6 +109,7 @@
 #include "agentengine/core/chat_client.hpp"
 #include "agentengine/core/json_value.hpp"
 #include "agentengine/core/stream.hpp"
+#include "agentengine/sandbox/incremental_http_body.hpp"
 #include "agentengine/sandbox/provider_http_client.hpp"
 #include "agentengine/trust/secret.hpp"
 #include "quark/core/error.hpp"
@@ -649,17 +650,84 @@ struct SseEvent {
 // one ChatResponseUpdate per SSE event (real per-chunk fidelity); tool_use input and thinking text
 // arrive incrementally across events keyed by `index` and are accumulated per content_block, emitted
 // once as a complete item on that block's `content_block_stop`.
-[[nodiscard]] inline result<std::vector<ChatResponseUpdate>> parse_streaming_response_into_updates(
-    std::string_view raw_body, bool is_chunked) {
-    std::string owned;
-    std::string_view decoded = raw_body;
-    if (is_chunked) {
-        auto d = decode_chunked_body(raw_body);
-        if (!d) return std::unexpected(d.error());
-        owned = std::move(*d);
-        decoded = owned;
+// ADR-019: the incremental streaming decoder, Anthropic's named-event counterpart to the OpenAI
+// backend's. Fed raw response bytes as they arrive, it returns whichever `ChatResponseUpdate`s are
+// complete right now, so a text delta reaches the ring the moment the vendor emitted it.
+//
+// Same one-item hold-back as the OpenAI accumulator, for the same reason: `is_final` marks the LAST
+// update, and "last" is unknowable until the stream ends, so exactly one completed update is held and
+// released when the next arrives (or flushed, marked final, by `finish()`).
+//
+// TOOL_USE AND THINKING BLOCKS STILL EMIT AT THE END, unchanged from the one-shot parser. A
+// `tool_use` block's `input` arrives as `partial_json` FRAGMENTS and a partial fragment is not valid
+// `arguments_json`; a `thinking` block is likewise accumulated across `thinking_delta`s. Text deltas
+// map 1:1 to the vendor's own events and stream immediately. Same ordering, same content -- and
+// `parse_streaming_response_into_updates` below is now implemented in terms of THIS type, so the
+// streaming and one-shot paths are one decoder rather than two that could drift.
+class StreamingUpdateAccumulator {  // ae-naming-lint: allow StreamingUpdateAccumulator — new ADR-019 vocabulary; 027 has not been updated to list it
+public:
+    explicit StreamingUpdateAccumulator(bool chunked) : chunked_(chunked) {}
+
+    [[nodiscard]] result<std::vector<ChatResponseUpdate>> feed(std::string_view bytes) {
+        std::string decoded;
+        if (chunked_) {
+            auto d = chunked_decoder_.feed(bytes);
+            if (!d) return std::unexpected(d.error());
+            decoded = std::move(*d);
+        } else {
+            decoded.assign(bytes);
+        }
+        std::vector<ChatResponseUpdate> out;
+        for (std::string const& block : framer_.feed(decoded)) {
+            for (ContentItem& item : items_from_block(block)) release(&out, std::move(item));
+        }
+        return out;
     }
 
+    [[nodiscard]] std::vector<ChatResponseUpdate> finish() {
+        std::vector<ChatResponseUpdate> out;
+        if (std::string tail = framer_.take_remainder(); !tail.empty()) {
+            for (ContentItem& item : items_from_block(tail)) release(&out, std::move(item));
+        }
+        for (auto const& b : pending_by_index_) {
+            if (!b.seen) continue;
+            if (b.kind == "tool_use") {
+                ToolCall call;
+                call.call_id = b.tool_id;
+                call.tool_name = b.tool_name;
+                call.arguments_json = b.tool_input_json.empty() ? "{}" : b.tool_input_json;
+                ContentItem item;
+                item.origin = content_origin::assistant;
+                item.value = std::move(call);
+                release(&out, std::move(item));
+            } else if (b.kind == "thinking") {
+                Reasoning r;
+                r.text = b.thinking_text;
+                r.encrypted = false;
+                ContentItem item;
+                item.origin = content_origin::assistant;
+                item.value = std::move(r);
+                release(&out, std::move(item));
+            } else if (b.kind == "redacted_thinking") {
+                Reasoning r;
+                r.encrypted = true;
+                ContentItem item;
+                item.origin = content_origin::assistant;
+                item.value = std::move(r);
+                release(&out, std::move(item));
+            }
+        }
+        if (held_) {
+            ChatResponseUpdate last;
+            last.delta = std::move(*held_);
+            last.is_final = true;
+            held_.reset();
+            out.push_back(std::move(last));
+        }
+        return out;
+    }
+
+private:
     struct PendingBlock {
         bool seen = false;
         std::string kind;
@@ -669,104 +737,93 @@ struct SseEvent {
         std::string thinking_text;
         bool redacted = false;
     };
-    std::vector<PendingBlock> pending_by_index;
 
-    std::vector<ContentItem> items;
-
-    auto ensure_index = [&](std::size_t index) -> PendingBlock& {
-        if (index >= pending_by_index.size()) pending_by_index.resize(index + 1);
-        return pending_by_index[index];
-    };
-
-    for (SseEvent const& ev : split_sse_named_events(decoded)) {
-        if (ev.type == "content_block_start") {
-            auto parsed = json::parse(ev.data);
-            if (!parsed) continue;
-            auto const* idx = parsed->find("index");
-            auto const* cb = parsed->find("content_block");
-            if (!idx || !idx->is_number() || !cb) continue;
-            PendingBlock& b = ensure_index(static_cast<std::size_t>(idx->as_number()));
-            b.seen = true;
-            if (auto const* type = cb->find("type"); type && type->is_string()) b.kind = type->as_string();
-            if (b.kind == "tool_use") {
-                if (auto const* id = cb->find("id"); id && id->is_string()) b.tool_id = id->as_string();
-                if (auto const* name = cb->find("name"); name && name->is_string()) b.tool_name = name->as_string();
-            } else if (b.kind == "redacted_thinking") {
-                b.redacted = true;
-            }
-        } else if (ev.type == "content_block_delta") {
-            auto parsed = json::parse(ev.data);
-            if (!parsed) continue;
-            auto const* idx = parsed->find("index");
-            auto const* delta = parsed->find("delta");
-            if (!idx || !idx->is_number() || !delta) continue;
-            PendingBlock& b = ensure_index(static_cast<std::size_t>(idx->as_number()));
-            b.seen = true;
-            auto const* dtype = delta->find("type");
-            std::string const dkind = (dtype && dtype->is_string()) ? dtype->as_string() : std::string{};
-            if (dkind == "text_delta") {
-                auto const* text = delta->find("text");
-                if (text && text->is_string() && !text->as_string().empty()) {
-                    ContentItem item;
-                    item.origin = content_origin::assistant;
-                    item.value = Text{text->as_string()};
-                    items.push_back(std::move(item));
-                }
-            } else if (dkind == "input_json_delta") {
-                if (auto const* pj = delta->find("partial_json"); pj && pj->is_string()) {
-                    b.tool_input_json += pj->as_string();
-                }
-            } else if (dkind == "thinking_delta") {
-                if (auto const* th = delta->find("thinking"); th && th->is_string()) {
-                    b.thinking_text += th->as_string();
-                }
-            }
-            // signature_delta: signature intentionally dropped (file banner (3)).
+    void release(std::vector<ChatResponseUpdate>* out, ContentItem item) {
+        if (held_) {
+            ChatResponseUpdate update;
+            update.delta = std::move(*held_);
+            update.is_final = false;
+            out->push_back(std::move(update));
         }
-        // content_block_stop/message_start/message_delta/message_stop: block completion is inferred
-        // from `pending_by_index` state after the whole event list is walked (this backend's HTTP
-        // fetch is not incremental either -- see Phase D's own note -- so there is nothing gained by
-        // reacting to content_block_stop specifically here).
+        held_ = std::move(item);
     }
 
-    for (auto const& b : pending_by_index) {
-        if (!b.seen) continue;
-        if (b.kind == "tool_use") {
-            ToolCall call;
-            call.call_id = b.tool_id;
-            call.tool_name = b.tool_name;
-            call.arguments_json = b.tool_input_json.empty() ? "{}" : b.tool_input_json;
-            ContentItem item;
-            item.origin = content_origin::assistant;
-            item.value = std::move(call);
-            items.push_back(std::move(item));
-        } else if (b.kind == "thinking") {
-            Reasoning r;
-            r.text = b.thinking_text;
-            r.encrypted = false;
-            ContentItem item;
-            item.origin = content_origin::assistant;
-            item.value = std::move(r);
-            items.push_back(std::move(item));
-        } else if (b.redacted) {
-            Reasoning r;
-            r.encrypted = true;
-            ContentItem item;
-            item.origin = content_origin::assistant;
-            item.value = std::move(r);
-            items.push_back(std::move(item));
+    PendingBlock& ensure_index(std::size_t index) {
+        if (index >= pending_by_index_.size()) pending_by_index_.resize(index + 1);
+        return pending_by_index_[index];
+    }
+
+    [[nodiscard]] std::vector<ContentItem> items_from_block(std::string const& block) {
+        std::vector<ContentItem> out;
+        for (SseEvent const& ev : split_sse_named_events(block)) {
+            if (ev.type == "content_block_start") {
+                auto parsed = json::parse(ev.data);
+                if (!parsed) continue;
+                auto const* idx = parsed->find("index");
+                auto const* cb = parsed->find("content_block");
+                if (!idx || !idx->is_number() || !cb) continue;
+                PendingBlock& b = ensure_index(static_cast<std::size_t>(idx->as_number()));
+                b.seen = true;
+                if (auto const* type = cb->find("type"); type && type->is_string()) b.kind = type->as_string();
+                if (b.kind == "tool_use") {
+                    if (auto const* id = cb->find("id"); id && id->is_string()) b.tool_id = id->as_string();
+                    if (auto const* name = cb->find("name"); name && name->is_string()) {
+                        b.tool_name = name->as_string();
+                    }
+                } else if (b.kind == "redacted_thinking") {
+                    b.redacted = true;
+                }
+            } else if (ev.type == "content_block_delta") {
+                auto parsed = json::parse(ev.data);
+                if (!parsed) continue;
+                auto const* idx = parsed->find("index");
+                auto const* delta = parsed->find("delta");
+                if (!idx || !idx->is_number() || !delta) continue;
+                PendingBlock& b = ensure_index(static_cast<std::size_t>(idx->as_number()));
+                b.seen = true;
+                auto const* dtype = delta->find("type");
+                std::string const dkind = (dtype && dtype->is_string()) ? dtype->as_string() : std::string{};
+                if (dkind == "text_delta") {
+                    auto const* text = delta->find("text");
+                    if (text && text->is_string() && !text->as_string().empty()) {
+                        ContentItem item;
+                        item.origin = content_origin::assistant;
+                        item.value = Text{text->as_string()};
+                        out.push_back(std::move(item));
+                    }
+                } else if (dkind == "input_json_delta") {
+                    if (auto const* pj = delta->find("partial_json"); pj && pj->is_string()) {
+                        b.tool_input_json += pj->as_string();
+                    }
+                } else if (dkind == "thinking_delta") {
+                    if (auto const* th = delta->find("thinking"); th && th->is_string()) {
+                        b.thinking_text += th->as_string();
+                    }
+                }
+                // signature_delta: signature intentionally dropped (file banner (3)).
+            }
+            // content_block_stop/message_start/message_delta/message_stop carry no content item of
+            // their own; block completion is settled from `pending_by_index_` at `finish()`.
         }
-        // "text" blocks: already emitted per-delta above, nothing to append here.
+        return out;
     }
 
-    std::vector<ChatResponseUpdate> updates;
-    updates.reserve(items.size());
-    for (std::size_t i = 0; i < items.size(); ++i) {
-        ChatResponseUpdate update;
-        update.delta = std::move(items[i]);
-        update.is_final = (i + 1 == items.size());
-        updates.push_back(std::move(update));
-    }
+    bool chunked_;
+    sandbox::ChunkedBodyDecoder chunked_decoder_;
+    sandbox::SseEventFramer framer_;
+    std::vector<PendingBlock> pending_by_index_;
+    std::optional<ContentItem> held_;
+};
+
+// The one-shot parse, for a body genuinely fully in hand -- implemented on top of the incremental
+// accumulator (ADR-019) so the two paths are one decoder, not two.
+[[nodiscard]] inline result<std::vector<ChatResponseUpdate>> parse_streaming_response_into_updates(
+    std::string_view raw_body, bool is_chunked) {
+    StreamingUpdateAccumulator acc(is_chunked);
+    auto fed = acc.feed(raw_body);
+    if (!fed) return std::unexpected(fed.error());
+    std::vector<ChatResponseUpdate> updates = std::move(*fed);
+    for (auto& update : acc.finish()) updates.push_back(std::move(update));
     return updates;
 }
 
@@ -786,8 +843,36 @@ inline void run_stream_worker(std::string host, std::uint16_t port, std::string 
         return;
     }
     auto req = build_http_request(path, api_key, api_version, json::dump(*body), http_referer, x_title);
-    auto resp = sandbox::perform_provider_https_exchange(host, port, req, stop, std::nullopt, resolver,
-                                                            ca_bundle_pem_override, transport);
+
+    // ADR-019: decode and push as the bytes arrive -- see the OpenAI backend's identical note for why
+    // `chunked` is inferred from the first fragment (the sink never sees the response head).
+    std::optional<StreamingUpdateAccumulator> acc;
+    bool push_failed = false;
+    std::optional<error> decode_error;
+
+    auto on_body = [&](std::string_view fragment) -> bool {
+        if (!acc) {
+            bool const looks_like_sse = fragment.starts_with("event:") || fragment.starts_with("data:") ||
+                                         fragment.starts_with(":");
+            acc.emplace(!looks_like_sse);
+        }
+        auto updates = acc->feed(fragment);
+        if (!updates) {
+            decode_error = updates.error();
+            return false;
+        }
+        for (auto& update : *updates) {
+            if (producer.push(std::move(update)) != quark::ReplyPush::Ok) {
+                push_failed = true;
+                return false;
+            }
+        }
+        return true;
+    };
+
+    auto resp = sandbox::perform_provider_streaming_exchange(host, port, req, on_body, stop, std::nullopt,
+                                                              resolver, ca_bundle_pem_override, transport);
+    if (push_failed) return;
     if (!resp) {
         producer.fail(quark::error{quark::errc::unavailable, "anthropic.exchange_failed"});
         return;
@@ -796,16 +881,13 @@ inline void run_stream_worker(std::string host, std::uint16_t port, std::string 
         producer.fail(quark::error{quark::errc::validation, "anthropic.http_error_status"});
         return;
     }
-
-    auto updates = parse_streaming_response_into_updates(resp->body, response_is_chunked(*resp));
-    if (!updates) {
+    if (decode_error) {
         producer.fail(quark::error{quark::errc::serialization, "anthropic.stream_parse_failed"});
         return;
     }
-
-    for (auto& update : *updates) {
-        if (producer.push(std::move(update)) != quark::ReplyPush::Ok) {
-            return;  // consumer cancelled/deadlined -- stop producing, the ring already latched why
+    if (acc) {
+        for (auto& update : acc->finish()) {
+            if (producer.push(std::move(update)) != quark::ReplyPush::Ok) return;
         }
     }
     producer.close();

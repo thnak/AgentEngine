@@ -21,4 +21,19 @@ result<NetEgressResponse> perform_provider_https_exchange(
     return perform_https_exchange(*endpoint, host, req, byte_cap, std::move(stop), ca_bundle_pem_override);
 }
 
+result<NetEgressResponse> perform_provider_streaming_exchange(
+    std::string_view host, std::uint16_t port, NetEgressRequest const& req,
+    std::function<bool(std::string_view)> const& on_body, std::stop_token stop,
+    std::optional<std::uint64_t> byte_cap,
+    std::function<result<VerifiedEndpoint>(std::string_view, std::uint16_t)> const& resolver,
+    std::string_view ca_bundle_pem_override, ProviderTransport transport) {
+    auto endpoint = resolver(host, port);
+    if (!endpoint) return std::unexpected(endpoint.error());
+    if (transport == ProviderTransport::plaintext_http) {
+        return perform_http_exchange_streaming(*endpoint, host, req, on_body, byte_cap, std::move(stop));
+    }
+    return perform_https_exchange_streaming(*endpoint, host, req, on_body, byte_cap, std::move(stop),
+                                             ca_bundle_pem_override);
+}
+
 }  // namespace agentengine::sandbox

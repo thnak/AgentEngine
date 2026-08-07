@@ -522,6 +522,17 @@ if(AGENTENGINE_WITH_HTTPS)
     MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
   add_test(NAME test_provider_egress_address_policy COMMAND test_provider_egress_address_policy)
 
+  # ---- ADR-019: genuinely incremental streaming (Phase C/D2's last self-contained residual) -------
+  # Asserts time-to-first-item against a drip server, which is the one currency that distinguishes
+  # incremental delivery from replay-after-buffering, plus a byte-by-byte feed of the framing
+  # decoders (their whole risk is state across call boundaries). Deterministic, default suite.
+  add_executable(test_chat_client_stream_incremental test_chat_client_stream_incremental.cpp)
+  target_link_libraries(test_chat_client_stream_incremental PRIVATE
+    agentengine::core agentengine::provider_http_client agentengine_warnings
+    MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+  add_test(NAME test_chat_client_stream_incremental COMMAND test_chat_client_stream_incremental)
+  set_tests_properties(test_chat_client_stream_incremental PROPERTIES TIMEOUT 120)
+
   # ---- ADR-018: a REAL ChatClient backend driven through a live AgentSession turn loop -------------
   # Closes Milestone 5's Phase J1 residual. Before it, AgentSession<OpenAIChatClient<...>> did not
   # merely lack a way to be configured -- it failed to COMPILE, because quark::TestKit<A> default-

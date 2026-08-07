@@ -98,6 +98,24 @@ enum class ProviderTransport {
     std::string_view ca_bundle_pem_override = {},
     ProviderTransport transport = ProviderTransport::tls);
 
+
+// ADR-019: the streaming provider exchange -- `perform_provider_https_exchange`'s counterpart, with
+// the same resolver/transport/credential contract, delivering body bytes to `on_body` as they arrive
+// instead of buffering the whole response first.
+//
+// This is what makes `ChatClient::chat_stream()` genuinely incremental. Before it, a streaming call
+// performed one COMPLETE blocking fetch and only then replayed the already-received events onto the
+// ring -- so the vendor's chunk boundaries were preserved in delivery ORDER (004 §7 G3) but not in
+// TIME, and a consumer saw nothing until the whole completion had arrived.
+[[nodiscard]] result<NetEgressResponse> perform_provider_streaming_exchange(
+    std::string_view host, std::uint16_t port, NetEgressRequest const& req,
+    std::function<bool(std::string_view)> const& on_body, std::stop_token stop = {},
+    std::optional<std::uint64_t> byte_cap = std::nullopt,
+    std::function<result<VerifiedEndpoint>(std::string_view, std::uint16_t)> const& resolver =
+        resolve_host,
+    std::string_view ca_bundle_pem_override = {},
+    ProviderTransport transport = ProviderTransport::tls);
+
 }  // namespace agentengine::sandbox
 
 #endif  // AGENTENGINE_WITH_HTTPS

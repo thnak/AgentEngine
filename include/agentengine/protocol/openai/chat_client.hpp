@@ -63,6 +63,7 @@
 #include "agentengine/core/chat_client.hpp"
 #include "agentengine/core/json_value.hpp"
 #include "agentengine/core/stream.hpp"
+#include "agentengine/sandbox/incremental_http_body.hpp"
 #include "agentengine/sandbox/provider_http_client.hpp"
 #include "agentengine/trust/secret.hpp"
 #include "quark/core/error.hpp"
@@ -469,86 +470,163 @@ namespace detail {
 // fully assembled, appended after every text delta -- text deltas map 1:1 to the vendor's own SSE
 // chunks (real per-chunk fidelity preserved), tool calls do not (unavoidable: a partial JSON-string
 // fragment is not a valid `ToolCall::arguments_json` on its own).
-[[nodiscard]] inline result<std::vector<ChatResponseUpdate>> parse_streaming_response_into_updates(
-    std::string_view raw_body, bool is_chunked) {
-    std::string owned;
-    std::string_view decoded = raw_body;
-    if (is_chunked) {
-        auto d = decode_chunked_body(raw_body);
-        if (!d) return std::unexpected(d.error());
-        owned = std::move(*d);
-        decoded = owned;
+// ADR-019: the incremental streaming decoder. Fed raw response bytes as they arrive off the socket,
+// it returns whichever `ChatResponseUpdate`s are complete RIGHT NOW, so `chat_stream()` can push each
+// text delta onto the ring the moment the vendor emitted it rather than after the whole completion
+// has been received.
+//
+// ONE-ITEM HOLD-BACK, and why. `ChatResponseUpdate::is_final` marks the LAST update of a stream, and
+// "last" is not knowable until the stream ends. Rather than weaken that contract (or emit a trailing
+// empty update to carry the flag), this holds exactly one completed update back: `feed()` releases
+// update N when N+1 becomes available, and `finish()` flushes the held one with `is_final` set. One
+// item of lag, which is invisible next to a model's own inter-token latency, in exchange for
+// `is_final` meaning exactly what it did before.
+//
+// TOOL CALLS STILL EMIT AT THE END, unchanged: a tool call's `arguments` arrive as JSON-string
+// FRAGMENTS across many chunks (correlated by `index`), and a partial fragment is not a valid
+// `ToolCall::arguments_json`. Text deltas map 1:1 to the vendor's own chunks and stream immediately;
+// tool calls are assembled and appended by `finish()`. That is the same ordering and the same content
+// the one-shot parser always produced -- see `parse_streaming_response_into_updates` below, which is
+// now implemented in terms of THIS type precisely so the streaming and non-streaming paths cannot
+// drift apart.
+class StreamingUpdateAccumulator {  // ae-naming-lint: allow StreamingUpdateAccumulator — new ADR-019 vocabulary; 027 has not been updated to list it
+public:
+    explicit StreamingUpdateAccumulator(bool chunked) : chunked_(chunked) {}
+
+    // Feeds raw (still chunk-framed, if the response was chunked) bytes. Returns updates ready now.
+    [[nodiscard]] result<std::vector<ChatResponseUpdate>> feed(std::string_view bytes) {
+        std::string decoded;
+        if (chunked_) {
+            auto d = chunked_decoder_.feed(bytes);
+            if (!d) return std::unexpected(d.error());
+            decoded = std::move(*d);
+        } else {
+            decoded.assign(bytes);
+        }
+
+        std::vector<ChatResponseUpdate> out;
+        for (std::string const& block : framer_.feed(decoded)) {
+            for (ContentItem& item : items_from_block(block)) {
+                release(&out, std::move(item));
+            }
+        }
+        return out;
     }
 
-    std::vector<ContentItem> items;
+    // End of stream: flushes the held-back update and every assembled tool call, marking the very
+    // last one final. Safe to call on a stream that produced nothing (returns empty).
+    [[nodiscard]] std::vector<ChatResponseUpdate> finish() {
+        std::vector<ChatResponseUpdate> out;
+        // A truncated final event still carries a real item -- do not silently drop it.
+        if (std::string tail = framer_.take_remainder(); !tail.empty()) {
+            for (ContentItem& item : items_from_block(tail)) release(&out, std::move(item));
+        }
+        for (auto const& acc : pending_by_index_) {
+            if (!acc.seen) continue;
+            ToolCall call;
+            call.call_id = acc.id;
+            call.tool_name = acc.name;
+            call.arguments_json = acc.arguments.empty() ? "{}" : acc.arguments;
+            ContentItem item;
+            item.value = std::move(call);
+            item.origin = content_origin::assistant;
+            release(&out, std::move(item));
+        }
+        if (held_) {
+            ChatResponseUpdate last;
+            last.delta = std::move(*held_);
+            last.is_final = true;
+            held_.reset();
+            out.push_back(std::move(last));
+        }
+        return out;
+    }
 
+private:
     struct PendingToolCall {
         std::string id;
         std::string name;
         std::string arguments;
         bool seen = false;
     };
-    std::vector<PendingToolCall> pending_by_index;
 
-    for (std::string_view payload : split_sse_data_events(decoded)) {
-        if (payload == "[DONE]") break;
-        auto parsed = json::parse(payload);
-        if (!parsed) continue;  // one malformed chunk is skipped, not fatal to the whole stream
-        json::Value const* choices = parsed->find("choices");
-        if (!choices || !choices->is_array() || choices->as_array().empty()) continue;
-        json::Value const& choice0 = choices->as_array().front();
-        json::Value const* delta = choice0.find("delta");
-        if (!delta) continue;
-
-        if (auto const* content = delta->find("content");
-            content && content->is_string() && !content->as_string().empty()) {
-            ContentItem item;
-            item.value = Text{content->as_string()};
-            item.origin = content_origin::assistant;
-            items.push_back(std::move(item));
+    // Emits the previously-held item (never final -- something came after it) and holds this one.
+    void release(std::vector<ChatResponseUpdate>* out, ContentItem item) {
+        if (held_) {
+            ChatResponseUpdate update;
+            update.delta = std::move(*held_);
+            update.is_final = false;
+            out->push_back(std::move(update));
         }
+        held_ = std::move(item);
+    }
 
-        if (auto const* tool_calls = delta->find("tool_calls"); tool_calls && tool_calls->is_array()) {
-            for (auto const& tc : tool_calls->as_array()) {
-                auto const* idx = tc.find("index");
-                std::size_t const index =
-                    (idx && idx->is_number()) ? static_cast<std::size_t>(idx->as_number()) : 0;
-                if (index >= pending_by_index.size()) pending_by_index.resize(index + 1);
-                PendingToolCall& acc = pending_by_index[index];
-                acc.seen = true;
-                if (auto const* id = tc.find("id"); id && id->is_string()) acc.id = id->as_string();
-                if (auto const* fn = tc.find("function")) {
-                    if (auto const* name = fn->find("name"); name && name->is_string()) {
-                        acc.name += name->as_string();
-                    }
-                    if (auto const* args = fn->find("arguments"); args && args->is_string()) {
-                        acc.arguments += args->as_string();
+    // One SSE event block -> zero or more content items, updating tool-call accumulation state.
+    [[nodiscard]] std::vector<ContentItem> items_from_block(std::string const& block) {
+        std::vector<ContentItem> out;
+        for (std::string_view payload : split_sse_data_events(block)) {
+            if (payload == "[DONE]") {
+                done_seen_ = true;
+                continue;
+            }
+            auto parsed = json::parse(payload);
+            if (!parsed) continue;  // one malformed chunk is skipped, not fatal to the whole stream
+            json::Value const* choices = parsed->find("choices");
+            if (!choices || !choices->is_array() || choices->as_array().empty()) continue;
+            json::Value const& choice0 = choices->as_array().front();
+            json::Value const* delta = choice0.find("delta");
+            if (!delta) continue;
+
+            if (auto const* content = delta->find("content");
+                content && content->is_string() && !content->as_string().empty()) {
+                ContentItem item;
+                item.value = Text{content->as_string()};
+                item.origin = content_origin::assistant;
+                out.push_back(std::move(item));
+            }
+
+            if (auto const* tool_calls = delta->find("tool_calls"); tool_calls && tool_calls->is_array()) {
+                for (auto const& tc : tool_calls->as_array()) {
+                    auto const* idx = tc.find("index");
+                    std::size_t const index =
+                        (idx && idx->is_number()) ? static_cast<std::size_t>(idx->as_number()) : 0;
+                    if (index >= pending_by_index_.size()) pending_by_index_.resize(index + 1);
+                    PendingToolCall& acc = pending_by_index_[index];
+                    acc.seen = true;
+                    if (auto const* id = tc.find("id"); id && id->is_string()) acc.id = id->as_string();
+                    if (auto const* fn = tc.find("function")) {
+                        if (auto const* name = fn->find("name"); name && name->is_string()) {
+                            acc.name += name->as_string();
+                        }
+                        if (auto const* args = fn->find("arguments"); args && args->is_string()) {
+                            acc.arguments += args->as_string();
+                        }
                     }
                 }
             }
         }
+        return out;
     }
 
-    for (auto const& acc : pending_by_index) {
-        if (!acc.seen) continue;
-        ToolCall call;
-        call.call_id = acc.id;
-        call.tool_name = acc.name;
-        call.arguments_json = acc.arguments.empty() ? "{}" : acc.arguments;
-        ContentItem item;
-        item.value = std::move(call);
-        item.origin = content_origin::assistant;
-        items.push_back(std::move(item));
-    }
+    bool chunked_;
+    bool done_seen_ = false;
+    sandbox::ChunkedBodyDecoder chunked_decoder_;
+    sandbox::SseEventFramer framer_;
+    std::vector<PendingToolCall> pending_by_index_;
+    std::optional<ContentItem> held_;
+};
 
-    std::vector<ChatResponseUpdate> updates;
-    updates.reserve(items.size());
-    for (std::size_t i = 0; i < items.size(); ++i) {
-        ChatResponseUpdate update;
-        update.delta = std::move(items[i]);
-        update.is_final = (i + 1 == items.size());
-        updates.push_back(std::move(update));
-    }
+// D2: the one-shot parse, for a body that genuinely is fully in hand. Implemented ON TOP of the
+// incremental accumulator (ADR-019) rather than beside it: these two used to be one function, and
+// keeping them as two independent implementations of the same wire contract would be exactly the
+// drift this project's own conventions warn about. Same inputs, same outputs, one decoder.
+[[nodiscard]] inline result<std::vector<ChatResponseUpdate>> parse_streaming_response_into_updates(
+    std::string_view raw_body, bool is_chunked) {
+    StreamingUpdateAccumulator acc(is_chunked);
+    auto fed = acc.feed(raw_body);
+    if (!fed) return std::unexpected(fed.error());
+    std::vector<ChatResponseUpdate> updates = std::move(*fed);
+    for (auto& update : acc.finish()) updates.push_back(std::move(update));
     return updates;
 }
 
@@ -581,26 +659,57 @@ inline void run_stream_worker(std::string host, std::uint16_t port, std::string 
         return;
     }
     auto req = build_http_request(path, api_key, json::dump(*body), http_referer, x_title);
-    auto resp = sandbox::perform_provider_https_exchange(host, port, req, stop, std::nullopt, resolver,
-                                                            ca_bundle_pem_override, transport);
+
+    // ADR-019: decode and push AS THE BYTES ARRIVE. `chunked` is not known until the response head is
+    // parsed, which happens before the first `on_body` call -- but the sink cannot see the head, so it
+    // is inferred from the first fragment instead: a chunked body always begins with a hex chunk-size
+    // line, an unchunked SSE body always begins with `data:`/`event:`/a colon comment. Cheap, and only
+    // consulted once.
+    std::optional<StreamingUpdateAccumulator> acc;
+    bool push_failed = false;
+    std::optional<error> decode_error;
+
+    auto on_body = [&](std::string_view fragment) -> bool {
+        if (!acc) {
+            bool const looks_like_sse = fragment.starts_with("data:") || fragment.starts_with("event:") ||
+                                         fragment.starts_with(":");
+            acc.emplace(!looks_like_sse);
+        }
+        auto updates = acc->feed(fragment);
+        if (!updates) {
+            decode_error = updates.error();
+            return false;
+        }
+        for (auto& update : *updates) {
+            if (producer.push(std::move(update)) != quark::ReplyPush::Ok) {
+                push_failed = true;  // consumer cancelled/deadlined -- the ring already latched why
+                return false;
+            }
+        }
+        return true;
+    };
+
+    auto resp = sandbox::perform_provider_streaming_exchange(host, port, req, on_body, stop, std::nullopt,
+                                                              resolver, ca_bundle_pem_override, transport);
+    if (push_failed) return;  // nothing left to say; the consumer is gone
     if (!resp) {
         producer.fail(quark::error{quark::errc::unavailable, "openai.exchange_failed"});
         return;
     }
     if (resp->status < 200 || resp->status >= 300) {
+        // A non-2xx body is an error document, not SSE, so it produced no `data:` events and nothing
+        // bogus was pushed above -- the stream simply fails here instead.
         producer.fail(quark::error{quark::errc::validation, "openai.http_error_status"});
         return;
     }
-
-    auto updates = parse_streaming_response_into_updates(resp->body, response_is_chunked(*resp));
-    if (!updates) {
+    if (decode_error) {
         producer.fail(quark::error{quark::errc::serialization, "openai.stream_parse_failed"});
         return;
     }
 
-    for (auto& update : *updates) {
-        if (producer.push(std::move(update)) != quark::ReplyPush::Ok) {
-            return;  // consumer cancelled/deadlined -- stop producing, the ring already latched why
+    if (acc) {
+        for (auto& update : acc->finish()) {
+            if (producer.push(std::move(update)) != quark::ReplyPush::Ok) return;
         }
     }
     producer.close();

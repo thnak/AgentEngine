@@ -447,6 +447,163 @@ result<NetEgressResponse> perform_https_exchange(VerifiedEndpoint endpoint, std:
 }
 #endif
 
+// ADR-019: the streaming counterparts of the two exchange functions above. Identical in every
+// respect -- same request building, same byte-cap enforcement, same no-redirect posture, same
+// stop_token cancellation -- except that body bytes are handed to `on_body` AS THEY ARRIVE instead
+// of being accumulated into `NetEgressResponse::body`, which comes back empty.
+//
+// Deliberately separate entry points rather than an `on_body`-or-null parameter on the existing
+// ones: the returned `NetEgressResponse` means something different here (status and headers only),
+// and a caller that silently got an empty body because it passed a sink it had forgotten about
+// would be a nasty failure mode. Two names, two contracts.
+//
+// `on_body` returning false stops the read promptly -- the consumer's own "I have everything I
+// need" signal, distinct from cancellation. The response is still returned successfully.
+namespace {
+
+// Shared by both transports: everything after the response head is identical, so only the recv step
+// differs. `recv_more(buf, len)` returns bytes read, 0 for a clean peer close, or an error.
+template <class RecvFn>
+result<NetEgressResponse> stream_response_body(RecvFn&& recv_more, std::uint64_t effective_cap,
+                                                std::stop_token const& stop,
+                                                std::function<bool(std::string_view)> const& on_body) {
+    std::string head;
+    std::uint64_t body_bytes = 0;
+    std::size_t header_end = std::string::npos;
+    std::array<char, 4096> chunk{};
+
+    // Phase 1: read until the response head is complete. Anything past the head in that same read is
+    // already the first body fragment and goes straight to the sink -- never held back waiting for
+    // more, which is the whole point of this function.
+    for (;;) {
+        header_end = head.find("\r\n\r\n");
+        if (header_end != std::string::npos) break;
+        if (head.size() >= effective_cap) {
+            return std::unexpected(error{failure_class::resource, "response exceeded the byte cap",
+                                          "net.byte_cap_exceeded"});
+        }
+        if (auto const c = check_not_cancelled(stop); !c) return std::unexpected(c.error());
+        auto const r = recv_more(chunk.data(), chunk.size());
+        if (!r) return std::unexpected(r.error());
+        if (*r == 0) break;  // peer closed before a complete head
+        head.append(chunk.data(), *r);
+    }
+    if (header_end == std::string::npos) {
+        return std::unexpected(error{failure_class::transient, "response head was truncated",
+                                      "net.protocol_error"});
+    }
+
+    auto parsed = parse_http_response(head.substr(0, header_end + 4));
+    if (!parsed) return std::unexpected(parsed.error());
+
+    auto const declared = parse_content_length(std::string_view(head).substr(0, header_end));
+    if (std::size_t const carried = head.size() - (header_end + 4); carried > 0) {
+        body_bytes += carried;
+        if (!on_body(std::string_view(head).substr(header_end + 4))) return parsed;
+    }
+
+    // Phase 2: relay the rest. Exit on the declared Content-Length when there is one, else on the
+    // peer's close (the raw-request builder always sends `Connection: close`, so that is reliable --
+    // and it is the only available terminator for a `Transfer-Encoding: chunked` SSE response, whose
+    // own terminal 0-chunk is the CALLER's to notice, not this layer's).
+    for (;;) {
+        if (declared.has_value() && body_bytes >= *declared) break;
+        if (body_bytes >= effective_cap) {
+            return std::unexpected(error{failure_class::resource, "response exceeded the byte cap",
+                                          "net.byte_cap_exceeded"});
+        }
+        if (auto const c = check_not_cancelled(stop); !c) return std::unexpected(c.error());
+        auto const r = recv_more(chunk.data(), chunk.size());
+        if (!r) return std::unexpected(r.error());
+        if (*r == 0) break;
+        body_bytes += *r;
+        if (!on_body(std::string_view(chunk.data(), *r))) break;
+    }
+    return parsed;
+}
+
+}  // namespace
+
+result<NetEgressResponse> perform_http_exchange_streaming(
+    VerifiedEndpoint endpoint, std::string_view host_header, NetEgressRequest const& req,
+    std::function<bool(std::string_view)> const& on_body, std::optional<std::uint64_t> byte_cap,
+    std::stop_token stop) {
+    std::uint64_t const effective_cap =
+        std::min<std::uint64_t>(byte_cap.value_or(kHardResponseCeilingBytes), kHardResponseCeilingBytes);
+    if (auto const c = check_not_cancelled(stop); !c) return std::unexpected(c.error());
+#if defined(_WIN32)
+    quark::pal::ensure_winsock();
+#endif
+    auto connect_r = quark::pal::tcp_connect(endpoint.ipv4_host_order, endpoint.port);
+    if (!connect_r) {
+        return std::unexpected(error{failure_class::transient, "connect failed", "net.connect_failed"});
+    }
+    FdGuard const guard{*connect_r};
+    if (!wait_ready(guard.fd, /*for_write=*/true, kIoTimeoutMs)) {
+        return std::unexpected(error{failure_class::transient, "connect timed out", "net.connect_failed"});
+    }
+    if (auto const cr = quark::pal::connect_result(guard.fd); !cr) {
+        return std::unexpected(
+            error{failure_class::transient, "connect refused or failed", "net.connect_failed"});
+    }
+    std::string const request = build_raw_request(host_header, req);
+    if (auto const s = send_all(guard.fd, request); !s) return std::unexpected(s.error());
+
+    auto recv_more = [&](char* buf, std::size_t len) -> result<std::size_t> {
+        for (;;) {
+            if (auto const c = check_not_cancelled(stop); !c) return std::unexpected(c.error());
+            if (!wait_ready(guard.fd, /*for_write=*/false, kIoTimeoutMs)) {
+                return std::unexpected(
+                    error{failure_class::transient, "timed out reading response", "net.connect_failed"});
+            }
+            auto const r = quark::pal::recv_some(guard.fd, reinterpret_cast<std::byte*>(buf), len);
+            if (!r) {
+                if (r.error() == quark::pal::would_block()) continue;
+                return std::unexpected(error{failure_class::transient, "recv failed", "net.connect_failed"});
+            }
+            return *r;
+        }
+    };
+    return stream_response_body(recv_more, effective_cap, stop, on_body);
+}
+
+#ifdef AGENTENGINE_WITH_HTTPS
+result<NetEgressResponse> perform_https_exchange_streaming(
+    VerifiedEndpoint endpoint, std::string_view host_header, NetEgressRequest const& req,
+    std::function<bool(std::string_view)> const& on_body, std::optional<std::uint64_t> byte_cap,
+    std::stop_token stop, std::string_view ca_bundle_pem_override) {
+    std::uint64_t const effective_cap =
+        std::min<std::uint64_t>(byte_cap.value_or(kHardResponseCeilingBytes), kHardResponseCeilingBytes);
+    if (auto const c = check_not_cancelled(stop); !c) return std::unexpected(c.error());
+#if defined(_WIN32)
+    quark::pal::ensure_winsock();
+#endif
+    auto connect_r = quark::pal::tcp_connect(endpoint.ipv4_host_order, endpoint.port);
+    if (!connect_r) {
+        return std::unexpected(error{failure_class::transient, "connect failed", "net.connect_failed"});
+    }
+    FdGuard const guard{*connect_r};
+    if (!wait_ready(guard.fd, /*for_write=*/true, kIoTimeoutMs)) {
+        return std::unexpected(error{failure_class::transient, "connect timed out", "net.connect_failed"});
+    }
+    if (auto const cr = quark::pal::connect_result(guard.fd); !cr) {
+        return std::unexpected(
+            error{failure_class::transient, "connect refused or failed", "net.connect_failed"});
+    }
+    auto session_r = TlsClientSession::handshake(guard.fd, host_header, ca_bundle_pem_override);
+    if (!session_r) return std::unexpected(session_r.error());
+    TlsClientSession session = std::move(*session_r);
+
+    std::string const request = build_raw_request(host_header, req);
+    if (auto const s = session.send(request); !s) return std::unexpected(s.error());
+
+    auto recv_more = [&](char* buf, std::size_t len) -> result<std::size_t> {
+        return session.recv(buf, len);
+    };
+    return stream_response_body(recv_more, effective_cap, stop, on_body);
+}
+#endif
+
 result<NetEgressResponse> HostEgressProxy::fetch(NetEgressRequest const& req, cap::NetOut const& granted) const {
     // C1: the WIT `http-request` call gives the guest no way to name a host at all -- host/port/
     // scheme come entirely from the grant (see this header's own file-top comment) -- so a grant

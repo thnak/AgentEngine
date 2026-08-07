@@ -143,6 +143,30 @@ inline constexpr std::uint64_t kHardResponseCeilingBytes = 16u * 1024u * 1024u;
     std::string_view ca_bundle_pem_override = {});
 #endif
 
+// ADR-019: streaming counterparts of the two exchange functions above -- identical in every respect
+// (same request building, same byte-cap enforcement, same no-redirect posture, same `stop`
+// cancellation) except that body bytes reach `on_body` AS THEY ARRIVE. The returned
+// `NetEgressResponse` therefore carries status and headers only; its `body` is always empty.
+//
+// Separate entry points rather than a nullable sink parameter on the existing ones, because the
+// returned value means something different here and a caller who got a silently-empty body would be
+// badly served by a shared name.
+//
+// `on_body` returns false to stop reading early -- the consumer's "I have what I need" signal,
+// distinct from cancellation; the response is still returned successfully. It is called on the
+// reading thread, so it must not block for long: the read loop is stalled while it runs.
+[[nodiscard]] result<NetEgressResponse> perform_http_exchange_streaming(
+    VerifiedEndpoint endpoint, std::string_view host_header, NetEgressRequest const& req,
+    std::function<bool(std::string_view)> const& on_body, std::optional<std::uint64_t> byte_cap,
+    std::stop_token stop = {});
+
+#ifdef AGENTENGINE_WITH_HTTPS
+[[nodiscard]] result<NetEgressResponse> perform_https_exchange_streaming(
+    VerifiedEndpoint endpoint, std::string_view host_header, NetEgressRequest const& req,
+    std::function<bool(std::string_view)> const& on_body, std::optional<std::uint64_t> byte_cap,
+    std::stop_token stop = {}, std::string_view ca_bundle_pem_override = {});
+#endif
+
 // concept, not a base class (mirrors `SandboxBackend`, 008 §2a) -- a first-party default ships
 // (`HostEgressProxy` below); a deployer's own conforming type (a corporate proxy client, an existing
 // SSRF appliance, an mTLS-terminating gateway) is usable with no engine change, per 008 §10 Q3's

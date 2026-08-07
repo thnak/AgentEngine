@@ -824,9 +824,23 @@ dropped):**
   invariant-touching flag) — a recommendation for the project owner pending the full
   design→red-team→prove→judge cycle, not yet actioned (decision 6).
 - ~~`ae::task<T>` for non-void `T`~~ — landed upstream (ADR-047) and wired in, Phase B4a.
-  ~~`ae::stream<T>`~~ — built, Phase B4b (`core/stream.hpp`). Still owed: threading `task<T>`/a live
-  producer into `sandbox/provider_http_client.hpp`'s SSE read loop and a real Phase D/E backend's own
-  `chat()`/`chat_stream()` bodies (deliberately deferred there, not a gap in B4a/B4b).
+  ~~`ae::stream<T>`~~ — built, Phase B4b (`core/stream.hpp`). ~~Still owed: threading `task<T>`/a live
+  producer into `sandbox/provider_http_client.hpp`'s SSE read loop and a real Phase D/E backend's
+  own `chat()`/`chat_stream()` bodies~~ — **CLOSED 2026-08-07 by
+  `decisions/ADR-019-incremental-streaming-response.md`.** `chat_stream()` was streaming in shape
+  only: one COMPLETE blocking fetch, then a replay of already-received events, so the vendor's
+  chunk boundaries survived in delivery ORDER (004 §7 G3) but not in TIME. Now three layers —
+  `sandbox/incremental_http_body.hpp`'s stateful `ChunkedBodyDecoder`/`SseEventFramer` (pure, no
+  I/O, testable byte-at-a-time), `perform_*_exchange_streaming` /
+  `perform_provider_streaming_exchange` (identical to the buffering pair except body bytes reach
+  an `on_body` sink as they arrive), and a `StreamingUpdateAccumulator` per backend. `is_final`
+  keeps its exact meaning via a one-item hold-back; tool calls still assemble at `finish()`, since
+  a partial `arguments`/`partial_json` fragment is not valid JSON. The one-shot
+  `parse_streaming_response_into_updates` is now a WRAPPER over the incremental accumulator, so
+  the two paths are one decoder — which is also why both large offline translation suites re-prove
+  the new decoder, and passed unchanged. Measured
+  (`tests/test_chat_client_stream_incremental.cpp`): OpenAI first item **131 ms** against a
+  **751 ms** stream; Anthropic **263 ms** against **883 ms**.
 - **10⁴-scale gates and full 023 baselining** — stay `TBD-baselined` project-wide until M8, same
   status quo every earlier milestone established.
 - **A portable `reasoning_effort` design and `prompt_cache_key`** for Phase D/E's two backends —
