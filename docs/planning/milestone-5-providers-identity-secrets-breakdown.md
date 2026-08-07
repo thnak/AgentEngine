@@ -132,25 +132,39 @@ exit-criterion proof.
   scoping (018 §3's fuller text) is deferred to Phase C/D, where it has a real caller (a `ChatClient`
   backend constructed with a specific provider's `SecretRef`) to prove against.
 
-### Phase B — `ChatClient` made real (004 §1-2)
+### Phase B — `ChatClient` made real (004 §1-2) — **B1/B2/B3/B5/B6 done (commit `28c88cc`); B4 open**
 
-- **B1.** `ChatRequest` gains tool declarations (reusing 006's real `ToolDecl`) and a structured-output
-  schema field (003 §4/§5's existing shape) — un-eliding both, the same "stale placeholder, not new
-  design" move M4 decision 6 made for `ContextContribution.tools`.
-- **B2.** Complete `ChatClientCapabilities`: add `stop_sequences`, `seed`, `token_counting`, `batch` to
-  reach 004 §2's full bitset.
-- **B3.** Outbound-credential wiring (decision on the type of a constructor param, not new mechanism):
-  a native `ChatClient` backend is constructed with a `SecretRef`, resolves it through `SecretStore`
-  inside `chat()`/`chat_stream()` at the point of use, per 004 §1 and Phase A. Proven by a test backend
-  that fails the build/a static assertion if it stores a resolved `SecretLease` as a member.
-  `SecretLease`'s non-copyable, scope-bound shape (A1) is what makes holding one across calls a
-  compile error, not a review-time judgment call.
-- **B4.** `ae::stream<T>` adapter over Quark's `ReplyStream`/`StreamChannel` (decision 3) —
-  `chat_stream()` becomes a real, constrained type, not an unconstrained callable.
-- **B5.** The degradation rule (§2): capability-driven fallback (native structured output → tool-shaped
-  per 003 §4) recorded in the run trace; `register_agent<A>()` fails at startup when no fallback exists
-  (002 §6), not at first request — extending `agent_registry.hpp`'s existing startup-check pattern.
-- **B6.** Wire `check_chat_client_credentials`/`check_output_schema_enforceable` (`agent_registry.hpp`)
+- **B1. Done.** `ChatRequest` gains real tool declarations — `ToolDescriptor` (`core/tool_pipeline.hpp`),
+  the exact type `ContextContribution.tools` already reuses, not a second "`ToolDecl`" (that name was
+  never actually minted anywhere in the tree, corrected in the doing) — and an optional
+  `output_schema_json` (003 §4's `OutputSchema<T>`, compiled via `schema::json_schema_of<T>`).
+- **B2. Done.** `ChatClientCapabilities` completed: `stop_sequences`, `seed`, `token_counting`, `batch`
+  added, reaching 004 §2's full 18-field bitset.
+- **B3. Done.** Outbound-credential wiring, proven behaviorally (`test_chat_client_credential_resolution.cpp`):
+  a reference `ChatClient` conformer holds only a `SecretRef` as a member (never a `SecretLease`), and
+  two `chat()` calls straddling a rotation of the backing secret return different resolved values —
+  only possible if resolution happens fresh inside `chat()`, never cached from construction.
+- **B4. Open — carried forward.** `ae::stream<T>` adapter over Quark's `ReplyStream`/`StreamChannel`
+  (decision 3) — `chat_stream()` stays an unconstrained callable until this lands. Not required by
+  either of this milestone's own two exit-criterion gates (004 §7 G1, 018 §7 G2), so it did not block
+  Phase B's other five tasks; still owed before Phase D/E's real backends can support `streaming`
+  for real (their `chat()`-only path doesn't need it).
+- **B5. Done.** `select_output_schema_strategy` (`core/chat_client.hpp`): 004 §2's degradation rule /
+  003 §4's three enforcement strategies, in preference order (native > tool_shaped > parse_and_repair).
+  `register_agent<A>()`'s `check_output_schema_enforceable` calls it when a registry is supplied.
+  **Correction to this task's own original wording:** `parse_and_repair` is a universal last resort
+  under today's three-tier design (needs no special capability bit at all), so 004 §2's "if no
+  fallback exists, `register_agent<A>()` fails at startup" clause is honestly unreachable via this
+  function as specified — named in the code rather than faked with an artificial rejection case.
+  Recording the chosen strategy in the run trace is deferred (needs 016, M8) — the selection
+  *decision* itself is real and tested, the *trace-recording* half is not, named separately rather
+  than conflated.
+- **B6. Done.** `ChatClientRegistry` (`ChatClientId` → `ChatClientCapabilities`) — the smallest useful
+  slice of the Engine-level registry `agent_registry.hpp`'s own comment named missing since M2.
+  `register_agent<A>()` gets an ADDITIVE `ChatClientRegistry const*` parameter (default `nullptr`,
+  corrected from the original wording's implied in-place rewrite) so every pre-M5 zero-arg call site
+  (8 across `tests/`/`tools/`) keeps compiling with its old stubbed-check behavior unchanged; supplying
+  a registry wires `check_chat_client_credentials`/`check_output_schema_enforceable` for real.
   off the real concept instead of their permanent-stub bodies — needs a minimal `ChatClient` registry
   (a map from `ChatClientId` to a bound instance), the smallest possible slice of an eventual `Engine`
   type, not a full `Engine` build-out (named out of scope, deferred list).
