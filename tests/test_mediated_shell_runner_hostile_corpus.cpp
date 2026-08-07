@@ -175,6 +175,61 @@ int main() {
         }
     }
 
+    // ---- Code-review fix (2026-08-07), CRITICAL: mkdir mount escape via an unmediated leaf --------
+    // `create_one_directory` (mediated_filesystem_adapter.cpp) used to split its input on the LAST
+    // '/' only and hand the resulting leaf straight to CreateDirectoryW with no validation --
+    // backslash has no meaning to this shell's grammar (confirmed above: no escape handling in the
+    // lexer), so a payload like "..\\..\\evil" contains no '/' at all and sailed through as one
+    // opaque, unchecked leaf segment. No test in this corpus exercised 'mkdir' before this fix.
+    {
+        std::string const temp_dir =
+            std::string(std::getenv("TEMP") ? std::getenv("TEMP") : "C:/Windows/Temp");
+        std::string const sibling_marker = temp_dir + "/ae_e4_mkdir_escape_marker";
+        std::filesystem::remove_all(sibling_marker);  // clean slate regardless of prior runs
+
+        // Single '..' walks exactly one level up from the mount root (scratch) to its parent
+        // (TEMP itself) -- if create_one_directory's leaf were still unvalidated, this would create
+        // a real, empty directory OUTSIDE the mount at `<TEMP>/ae_e4_mkdir_escape_marker`.
+        // `worktree.mount_path_forbidden_character` is not in dispatch.cpp's own kHardStopCodes set
+        // (evaluate_pipeline), so -- like a failed `cat` on a missing file -- this surfaces as an
+        // ORDINARY, inspectable non-ok ExecOutcome (has_value() == true, klass == policy_violation),
+        // not a hard `!has_value()` result. Matches this corpus's own E3-N1/E4-SH3 precedent.
+        auto escape_out = shell.run(ExecRequest{"shell", "mkdir ..\\ae_e4_mkdir_escape_marker"}, state, ctx);
+        AE_CHECK(escape_out.has_value() && escape_out->klass == exec_outcome_class::policy_violation &&
+                     escape_out->stderr_text.find("not permitted") != std::string::npos,
+                 "E4-SH7: 'mkdir ..\\<name>' (backslash leaf) is rejected with the forbidden-"
+                 "character diagnostic, not silently created outside the mount");
+        AE_CHECK(!std::filesystem::exists(sibling_marker),
+                 "E4-SH7: no directory was actually created outside the mount root");
+
+        // Same escape, via the parents=true ('mkdir -p') code path -- separately vulnerable before
+        // this fix, since the per-segment probe's own rejection was previously ignored and fallen
+        // through to the same unvalidated create_one_directory call.
+        auto escape_p_out =
+            shell.run(ExecRequest{"shell", "mkdir -p ..\\ae_e4_mkdir_escape_marker"}, state, ctx);
+        AE_CHECK(escape_p_out.has_value() && escape_p_out->klass == exec_outcome_class::policy_violation,
+                 "E4-SH8: 'mkdir -p ..\\<name>' is ALSO rejected, not silently created via the "
+                 "parents=true fall-through path");
+        AE_CHECK(!std::filesystem::exists(sibling_marker),
+                 "E4-SH8: no directory was actually created outside the mount root via -p either");
+
+        // A backslash-laden leaf with no '..' at all is rejected purely on the forbidden character,
+        // proving the fix isn't merely pattern-matching on "..".
+        auto backslash_out = shell.run(ExecRequest{"shell", "mkdir sub\\evil_leaf"}, state, ctx);
+        AE_CHECK(backslash_out.has_value() && backslash_out->klass == exec_outcome_class::policy_violation &&
+                     backslash_out->stderr_text.find("not permitted") != std::string::npos,
+                 "E4-SH9: a backslash inside an ordinary (non-'..') leaf is rejected too");
+
+        // Positive control: an ordinary, well-formed mkdir still works after every rejection above --
+        // proves the fix denies the hostile shape specifically, not mkdir as a whole.
+        auto legit_out = shell.run(ExecRequest{"shell", "mkdir legit_after_escape_attempts"}, state, ctx);
+        AE_CHECK(legit_out.has_value(), "E4-SH10 positive control: an ordinary mkdir still succeeds");
+        AE_CHECK(std::filesystem::exists(scratch + "/legit_after_escape_attempts"),
+                 "E4-SH10 positive control: the real directory was created, inside the mount");
+
+        std::filesystem::remove_all(sibling_marker);  // best-effort cleanup, should be a no-op
+    }
+
     std::filesystem::remove_all(scratch);
 
     if (g_failures != 0) {

@@ -162,6 +162,24 @@ result<void> MediatedFileSystemAdapter::copy_file(std::string_view from, std::st
 
 namespace {
 
+// Mirrors core/worktree_mount_fs.cpp's own (internal-linkage) `validate_fs_segment` character class
+// exactly: backslash, colon, and NUL are never valid within a single path SEGMENT, since Windows
+// treats `\` as its own separator regardless of what a `/`-only tokenizer (`split_mount_path`) does.
+// Duplicated rather than exported -- that function lives in a different, ADR-014-governed file with
+// internal linkage; widening its visibility is out of scope for this fix. Code-review fix
+// (2026-08-07): `create_one_directory`'s leaf segment had NO character validation at all before this
+// -- see that function's own comment below for the escape this closes.
+result<void> reject_forbidden_segment_chars(std::string const& seg) {
+    for (char c : seg) {
+        if (c == '\\' || c == ':' || c == '\0') {
+            return std::unexpected(error{failure_class::policy,
+                                          "path segment contains a character not permitted in a mounted path",
+                                          "worktree.mount_path_forbidden_character"});
+        }
+    }
+    return {};
+}
+
 // `CreateFileW` cannot itself CREATE a new directory (only `FILE_FLAG_BACKUP_SEMANTICS` OPENS an
 // existing one) -- real directory creation needs the separate `CreateDirectoryW` API, which has no
 // handle-relative form. This is a narrower TOCTOU guarantee than `open_within_mount_root`'s own
@@ -171,10 +189,29 @@ namespace {
 // than-ADR-014 residual, named here rather than silently assumed equivalent (a candidate for E4 or
 // a follow-up to close via a stronger primitive, e.g. an NT-native relative-create, not attempted
 // this pass).
+//
+// Code-review fix (2026-08-07), CRITICAL: the LEAF segment used to be handed straight to
+// `CreateDirectoryW` with zero validation -- `open_within_mount_root` below validates the PARENT
+// (rejecting `\`/`:`/NUL per segment via its own internal `validate_fs_segment`), but the leaf was
+// computed by a bare `find_last_of('/')` split and never ran through that or any equivalent check.
+// Since this tokenizer only understands `/`, a guest segment like `"..\\..\\..\\Windows\\Temp\\evil"`
+// contains no `/` at all -- it IS the whole leaf, verbatim -- and `CreateDirectoryW` then does its
+// own ordinary Win32 backslash-delimited parsing on `parent_real + "\\" + leaf`, walking the
+// embedded `..` components and creating a real directory OUTSIDE the mount root entirely. No race,
+// no reparse point, no 8.3 alias needed -- a deterministic, guest-reachable mount escape via the
+// shell's ordinary `mkdir` builtin. Now rejected up front with the same character-class rule every
+// other mediated path segment is held to.
 result<void> create_one_directory(std::wstring const& root, std::string const& relative_path) {
     auto slash = relative_path.find_last_of('/');
     std::string parent = slash == std::string::npos ? "" : relative_path.substr(0, slash);
     std::string leaf = slash == std::string::npos ? relative_path : relative_path.substr(slash + 1);
+
+    if (auto ok = reject_forbidden_segment_chars(leaf); !ok) return std::unexpected(ok.error());
+    if (leaf.empty() || leaf == "." || leaf == "..") {
+        return std::unexpected(error{failure_class::contract,
+                                      "'.'/'..' are not a valid directory name to create",
+                                      "worktree.mount_path_malformed"});
+    }
 
     std::wstring parent_real;
     if (parent.empty()) {
@@ -217,6 +254,16 @@ result<void> MediatedFileSystemAdapter::make_directory(std::string_view path, bo
         prefix += (prefix.empty() ? "" : "/") + seg;
         auto probe = open_within_mount_root(root_, prefix, GENERIC_READ, OPEN_EXISTING);
         if (probe) continue;  // already exists
+        // Code-review fix (2026-08-07): a probe failure for any reason OTHER than "this segment
+        // doesn't exist on disk yet" -- a forbidden character, an out-of-mount escape, any other
+        // Win32 error -- must propagate as a real rejection, never be treated as "go ahead and
+        // create it". Falling through unconditionally here (the previous behavior) was a second,
+        // indirect route to the same mount-escape class create_one_directory's own leaf-validation
+        // gap allowed directly: a rejected/malformed prefix would still reach CreateDirectoryW.
+        bool const not_found_yet = probe.error().code == "worktree.mount_fs_win32_failure" &&
+                                    (probe.error().native_code == ERROR_FILE_NOT_FOUND ||
+                                     probe.error().native_code == ERROR_PATH_NOT_FOUND);
+        if (!not_found_yet) return std::unexpected(probe.error());
         auto created = create_one_directory(root_, prefix);
         if (!created) return std::unexpected(created.error());
     }
