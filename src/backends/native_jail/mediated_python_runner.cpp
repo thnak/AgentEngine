@@ -715,6 +715,33 @@ for _name in ("execv", "execve", "execvp", "execvpe",
               "spawnv", "spawnve", "spawnvp", "spawnvpe", "posix_spawn"):
     if hasattr(os, _name):
         setattr(os, _name, _ae_denied)
+
+# Code-review fix (2026-08-07), CRITICAL: everything above patches a hand-picked SUBSET of `os`
+# (system/popen/exec*/spawn*) while leaving the rest of the module fully live -- exactly the
+# blocklist-against-an-otherwise-live-module shape Stage B's import gate deliberately avoids for
+# `import` itself. `os.open`/`os.remove`/`os.rename`/`os.mkdir`/`os.listdir`/`os.startfile` (plus
+# their direct siblings/aliases -- leaving one open right next to a closed one is the same defect
+# class, just one function over) gave a guest arbitrary real-filesystem read/write/delete/enumerate
+# and arbitrary program launch with NO capability check at all -- this runner is not yet composed
+# under NativeJailBackend's Job-Object/AppContainer containment (see this file's own E4 scope note),
+# so today this bootstrap is the ONLY layer, not a backstop behind another one.
+#
+# This denies the named holes and their obvious siblings outright rather than building a second,
+# fully-mediated implementation for each (open()/io.open() and os.listdir() already have real,
+# capability-checked equivalents above and via _ae_internal.listdir -- guest code has no legitimate
+# need for the raw os.* path to the same effect). This is NOT a full os.* allowlist audit -- the
+# module has far more surface than this pass reviewed function-by-function -- named as a scoped fix
+# for the specific instances found, not a claim that no other os.* gap remains.
+def _ae_fs_denied(*a, **kw):
+    raise PermissionError(
+        "direct os.* filesystem access is not available in this session "
+        "(use the mediated open()/io.open(), or agent.files for listing/metadata)")
+for _name in ("open", "listdir", "scandir", "walk",
+              "remove", "unlink", "rename", "renames", "replace",
+              "mkdir", "makedirs", "rmdir", "removedirs",
+              "chmod", "chown", "link", "symlink", "truncate", "startfile"):
+    if hasattr(os, _name):
+        setattr(os, _name, _ae_fs_denied)
 )PY";
 
 result<void> run_mediation_bootstrap() {

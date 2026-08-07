@@ -207,6 +207,104 @@ int main() {
                      "all -- the real, measured platform behavior, not a policy this design adds)");
         }
 
+        // ---- Code-review fix (2026-08-07), CRITICAL: the rest of os.* was fully live, unmediated,
+        // and reachable with zero capability check -- os.open/os.remove/os.rename/os.mkdir/
+        // os.listdir/os.startfile gave arbitrary real-filesystem read/write/delete/enumerate and
+        // arbitrary program launch. Each probe below targets a REAL file/directory the mount
+        // capability grants would normally cover, so a bypass would be directly observable (content
+        // read, file gone, a new directory appearing), not inferred from an exception alone.
+        {
+            std::ofstream victim((std::filesystem::path(scratch) / "inside" / "victim.txt"));
+            victim << "UNTOUCHED_SENTINEL";
+        }
+        {
+            ExecRequest req{"python",
+                             "import os\ntry:\n"
+                             "    fd = os.open(r'" + scratch + "\\inside\\victim.txt', os.O_RDONLY)\n"
+                             "    data = os.read(fd, 64)\n    os.close(fd)\n"
+                             "    print('OPEN_RAN:', data)\nexcept PermissionError as e:\n"
+                             "    print('DENIED:', e)"};
+            auto out = runner.run(req, state, ctx);
+            AE_CHECK(out.has_value() && out->stdout_text.find("DENIED") != std::string::npos &&
+                         out->stdout_text.find("OPEN_RAN") == std::string::npos,
+                     "E4-PY7: os.open() (the raw, unmediated fd-based open -- distinct from the "
+                     "mediated open()/io.open() builtins) raises PermissionError, never reaches a "
+                     "real file");
+        }
+        {
+            ExecRequest req{"python",
+                             "import os\ntry:\n"
+                             "    os.remove(r'" + scratch + "\\inside\\victim.txt')\n"
+                             "    print('REMOVE_RAN')\nexcept PermissionError as e:\n"
+                             "    print('DENIED:', e)"};
+            auto out = runner.run(req, state, ctx);
+            AE_CHECK(out.has_value() && out->stdout_text.find("DENIED") != std::string::npos,
+                     "E4-PY8a: os.remove() raises PermissionError");
+            AE_CHECK(std::filesystem::exists(scratch + "/inside/victim.txt"),
+                     "E4-PY8a: the real file still exists -- os.remove() never actually reached it");
+        }
+        {
+            ExecRequest req{"python",
+                             "import os\ntry:\n"
+                             "    os.rename(r'" + scratch + "\\inside\\victim.txt', r'" + scratch +
+                             "\\inside\\renamed.txt')\n    print('RENAME_RAN')\n"
+                             "except PermissionError as e:\n    print('DENIED:', e)"};
+            auto out = runner.run(req, state, ctx);
+            AE_CHECK(out.has_value() && out->stdout_text.find("DENIED") != std::string::npos,
+                     "E4-PY8b: os.rename() raises PermissionError");
+            AE_CHECK(std::filesystem::exists(scratch + "/inside/victim.txt") &&
+                         !std::filesystem::exists(scratch + "/inside/renamed.txt"),
+                     "E4-PY8b: the real file was never renamed");
+        }
+        {
+            ExecRequest req{"python",
+                             "import os\ntry:\n"
+                             "    os.mkdir(r'" + scratch + "\\inside\\hostile_dir')\n"
+                             "    print('MKDIR_RAN')\nexcept PermissionError as e:\n"
+                             "    print('DENIED:', e)"};
+            auto out = runner.run(req, state, ctx);
+            AE_CHECK(out.has_value() && out->stdout_text.find("DENIED") != std::string::npos,
+                     "E4-PY8c: os.mkdir() raises PermissionError");
+            AE_CHECK(!std::filesystem::exists(scratch + "/inside/hostile_dir"),
+                     "E4-PY8c: no directory was actually created");
+        }
+        {
+            ExecRequest req{"python",
+                             "import os\ntry:\n"
+                             "    print('LISTDIR_RAN:', os.listdir(r'" + scratch + "\\inside'))\n"
+                             "except PermissionError as e:\n    print('DENIED:', e)"};
+            auto out = runner.run(req, state, ctx);
+            AE_CHECK(out.has_value() && out->stdout_text.find("DENIED") != std::string::npos &&
+                         out->stdout_text.find("LISTDIR_RAN") == std::string::npos,
+                     "E4-PY8d: os.listdir() raises PermissionError -- the raw, unmediated "
+                     "enumeration primitive, distinct from the capability-checked "
+                     "_ae_internal.listdir bridge nothing in this bootstrap exposes to os.listdir");
+        }
+        {
+            ExecRequest req{"python",
+                             "import os\ntry:\n"
+                             "    os.startfile(r'C:\\Windows\\System32\\cmd.exe')\n"
+                             "    print('STARTFILE_RAN')\nexcept PermissionError as e:\n"
+                             "    print('DENIED:', e)"};
+            auto out = runner.run(req, state, ctx);
+            AE_CHECK(out.has_value() && out->stdout_text.find("DENIED") != std::string::npos &&
+                         out->stdout_text.find("STARTFILE_RAN") == std::string::npos,
+                     "E4-PY8e: os.startfile() (arbitrary program launch via ShellExecuteW) raises "
+                     "PermissionError, never actually launches anything");
+        }
+        // Positive control: the MEDIATED path (open()/io.open(), already capability-checked) still
+        // works after every os.* denial above -- proves the fix denies the raw unmediated surface
+        // specifically, not file I/O as a whole.
+        {
+            ExecRequest req{"python", "with open(r'" + scratch + "\\inside\\victim.txt') as f:\n"
+                                       "    print('MEDIATED_READ:', f.read())"};
+            auto out = runner.run(req, state, ctx);
+            AE_CHECK(out.has_value() && out->stdout_text.find("MEDIATED_READ: UNTOUCHED_SENTINEL") !=
+                                             std::string::npos,
+                     "E4-PY8f positive control: the mediated open() still reads the real, untouched "
+                     "file after every os.* denial above");
+        }
+
         // ---- egress to a cloud-metadata-shaped address: denied without a matching NetOut grant --
         // Milestone 3 Phase G4 (026 §3's "Host not permitted" row): the denial now raises
         // ConnectionRefusedError, not PermissionError -- an ordinary connection failure, not a
