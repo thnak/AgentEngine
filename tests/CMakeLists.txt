@@ -432,6 +432,12 @@ if(AGENTENGINE_WITH_HTTPS)
   target_link_libraries(test_https_egress PRIVATE
     agentengine::tls_client agentengine_warnings MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
   add_test(NAME test_https_egress COMMAND test_https_egress)
+
+  # ---- Milestone 5 Phase C: host-initiated provider HTTP client -------------------------------
+  add_executable(test_provider_http_client test_provider_http_client.cpp)
+  target_link_libraries(test_provider_http_client PRIVATE
+    agentengine::provider_http_client agentengine_warnings MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+  add_test(NAME test_provider_http_client COMMAND test_provider_http_client)
 endif()
 
 # ---- RecordedChatClient fixture player (test-only) ---------------------------------------------

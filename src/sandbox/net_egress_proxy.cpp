@@ -81,6 +81,18 @@ struct FdGuard {
     ~FdGuard() { quark::pal::close_fd(static_cast<int>(fd)); }
 };
 
+// Milestone 5 Phase C2 (net_egress_proxy.hpp's own comment on `perform_http_exchange`/
+// `perform_https_exchange`'s new `stop` parameter): the one check both read loops share -- a plain
+// error, not an exception (CONVENTIONS.md's no-exceptions-for-control-flow rule).
+// `quark::errc::cancelled`'s own comment ("std::stop_token fired") is the established meaning for
+// this failure_class already; reused here rather than inventing a second cancellation vocabulary.
+result<std::monostate> check_not_cancelled(std::stop_token const& stop) {
+    if (stop.stop_requested()) {
+        return std::unexpected(error{failure_class::transient, "cancelled via stop_token", "net.cancelled"});
+    }
+    return std::monostate{};
+}
+
 result<std::monostate> send_all(quark::pal::fd_t fd, std::string const& data) {
     std::size_t sent = 0;
     while (sent < data.size()) {
@@ -278,9 +290,11 @@ std::string build_raw_request(std::string_view host_header, NetEgressRequest con
 
 result<NetEgressResponse> perform_http_exchange(VerifiedEndpoint endpoint, std::string_view host_header,
                                                  NetEgressRequest const& req,
-                                                 std::optional<std::uint64_t> byte_cap) {
+                                                 std::optional<std::uint64_t> byte_cap,
+                                                 std::stop_token stop) {
     std::uint64_t const effective_cap = std::min<std::uint64_t>(byte_cap.value_or(kHardResponseCeilingBytes),
                                                                   kHardResponseCeilingBytes);
+    if (auto const c = check_not_cancelled(stop); !c) return std::unexpected(c.error());
 #if defined(_WIN32)
     quark::pal::ensure_winsock();
 #endif
@@ -319,6 +333,7 @@ result<NetEgressResponse> perform_http_exchange(VerifiedEndpoint endpoint, std::
         if (buf.size() >= effective_cap) {
             return std::unexpected(error{failure_class::resource, "response exceeded the byte cap", "net.byte_cap_exceeded"});
         }
+        if (auto const c = check_not_cancelled(stop); !c) return std::unexpected(c.error());
         if (!wait_ready(guard.fd, /*for_write=*/false, kIoTimeoutMs)) {
             return std::unexpected(error{failure_class::transient, "timed out reading response", "net.connect_failed"});
         }
@@ -348,9 +363,12 @@ result<NetEgressResponse> perform_http_exchange(VerifiedEndpoint endpoint, std::
 // way the plain-HTTP loop above has to.
 result<NetEgressResponse> perform_https_exchange(VerifiedEndpoint endpoint, std::string_view host_header,
                                                   NetEgressRequest const& req,
-                                                  std::optional<std::uint64_t> byte_cap) {
+                                                  std::optional<std::uint64_t> byte_cap,
+                                                  std::stop_token stop,
+                                                  std::string_view ca_bundle_pem_override) {
     std::uint64_t const effective_cap = std::min<std::uint64_t>(byte_cap.value_or(kHardResponseCeilingBytes),
                                                                   kHardResponseCeilingBytes);
+    if (auto const c = check_not_cancelled(stop); !c) return std::unexpected(c.error());
 #if defined(_WIN32)
     quark::pal::ensure_winsock();
 #endif
@@ -368,7 +386,7 @@ result<NetEgressResponse> perform_https_exchange(VerifiedEndpoint endpoint, std:
         return std::unexpected(error{failure_class::transient, "connect refused or failed", "net.connect_failed"});
     }
 
-    auto session_r = TlsClientSession::handshake(guard.fd, host_header);
+    auto session_r = TlsClientSession::handshake(guard.fd, host_header, ca_bundle_pem_override);
     if (!session_r) return std::unexpected(session_r.error());
     TlsClientSession session = std::move(*session_r);
 
@@ -389,6 +407,7 @@ result<NetEgressResponse> perform_https_exchange(VerifiedEndpoint endpoint, std:
         if (buf.size() >= effective_cap) {
             return std::unexpected(error{failure_class::resource, "response exceeded the byte cap", "net.byte_cap_exceeded"});
         }
+        if (auto const c = check_not_cancelled(stop); !c) return std::unexpected(c.error());
         auto const r = session.recv(chunk.data(), chunk.size());
         if (!r) return std::unexpected(r.error());
         if (*r == 0) break;  // clean TLS close -- normal end of a Connection:-close response

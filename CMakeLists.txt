@@ -405,6 +405,15 @@ if(AGENTENGINE_WITH_HTTPS)
   # and CMake target_link_libraries()/target_compile_definitions() calls accumulate across a file.
   target_link_libraries(agentengine_net_egress_proxy PRIVATE agentengine::tls_client)
   target_compile_definitions(agentengine_net_egress_proxy PUBLIC AGENTENGINE_WITH_HTTPS)
+
+  # ---- Milestone 5 Phase C: host-initiated provider HTTP client (src/sandbox/) -------------------
+  # Reuses agentengine::net_egress_proxy's resolve_and_validate/perform_https_exchange directly
+  # (provider_http_client.hpp's own top comment) -- HTTPS only, so this only exists under the same
+  # AGENTENGINE_WITH_HTTPS gate net_egress_proxy's own HTTPS half is behind.
+  add_library(agentengine_provider_http_client STATIC src/sandbox/provider_http_client.cpp)
+  target_link_libraries(agentengine_provider_http_client PUBLIC agentengine::net_egress_proxy)
+  target_link_libraries(agentengine_provider_http_client PRIVATE agentengine_warnings)
+  add_library(agentengine::provider_http_client ALIAS agentengine_provider_http_client)
 endif()
 
 # ---- Cross-process capability tokens (src/trust/) -- Windows only ------------------------------

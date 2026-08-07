@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -86,21 +87,39 @@ inline constexpr std::uint64_t kHardResponseCeilingBytes = 16u * 1024u * 1024u;
 // kHardResponseCeilingBytes)` DURING the read loop, never after full buffering (ADR-011 claim C8). A
 // 3xx response is returned to the caller exactly as received -- no redirect is ever followed
 // (ADR-011 claim C10, §3 Design B).
+//
+// Milestone 5 Phase C2 (docs/planning/milestone-5-providers-identity-secrets-breakdown.md, 004 §1:
+// "Cancellation is stop_token, propagated into the HTTP/socket layer"): `stop` is checked before
+// connecting and at the top of every read-loop iteration -- a cancellation requested before any I/O
+// starts never touches the network at all, and one requested mid-response aborts within one
+// `kIoTimeoutMs` tick (or the next received chunk, whichever is sooner) rather than running to
+// completion. Additive and backward-compatible: defaults to an unstoppable token, so
+// `HostEgressProxy::fetch`'s existing WASM guest-egress call site (ADR-011) is unaffected until it
+// chooses to pass a real one.
 [[nodiscard]] result<NetEgressResponse> perform_http_exchange(
     VerifiedEndpoint endpoint, std::string_view host_header, NetEgressRequest const& req,
-    std::optional<std::uint64_t> byte_cap);
+    std::optional<std::uint64_t> byte_cap, std::stop_token stop = {});
 
 #ifdef AGENTENGINE_WITH_HTTPS
 // decisions/ADR-013-https-egress-tls-client.md: identical to `perform_http_exchange` in every
 // respect (same request-building, same byte-cap-enforced read loop, same no-redirect-following
-// posture) except the transport -- a `TlsClientSession` (tls_client.hpp) wraps the connected socket,
-// verifying the peer certificate against the vendored CA bundle and `host_header` (doubling as both
-// the HTTP Host: header and the TLS hostname-verification target, exactly how a real HTTPS client
-// uses the same name for both). Only declared when AGENTENGINE_WITH_HTTPS is ON -- the scheme gate
-// in `HostEgressProxy::fetch` only reaches this call under the same build configuration.
+// posture, same additive `stop` cancellation) except the transport -- a `TlsClientSession`
+// (tls_client.hpp) wraps the connected socket, verifying the peer certificate against the vendored
+// CA bundle and `host_header` (doubling as both the HTTP Host: header and the TLS hostname-
+// verification target, exactly how a real HTTPS client uses the same name for both). Only declared
+// when AGENTENGINE_WITH_HTTPS is ON -- the scheme gate in `HostEgressProxy::fetch` only reaches this
+// call under the same build configuration. This is also the transport
+// `sandbox/provider_http_client.hpp` (Milestone 5 Phase C, host-INITIATED ChatClient calls, 004 §3)
+// calls directly -- no guest `cap::NetOut` grant to check there, so it bypasses `HostEgressProxy`
+// entirely and calls this function itself.
+//
+// `ca_bundle_pem_override`: forwarded verbatim to `TlsClientSession::handshake` -- empty (the
+// default) trusts the real vendored bundle. That function's own comment names this a testability
+// seam, never used from production code; the same is true of every caller here.
 [[nodiscard]] result<NetEgressResponse> perform_https_exchange(
     VerifiedEndpoint endpoint, std::string_view host_header, NetEgressRequest const& req,
-    std::optional<std::uint64_t> byte_cap);
+    std::optional<std::uint64_t> byte_cap, std::stop_token stop = {},
+    std::string_view ca_bundle_pem_override = {});
 #endif
 
 // concept, not a base class (mirrors `SandboxBackend`, 008 §2a) -- a first-party default ships
