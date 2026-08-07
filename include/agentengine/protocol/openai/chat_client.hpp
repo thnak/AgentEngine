@@ -53,6 +53,7 @@
 #include <functional>
 #include <memory_resource>
 #include <optional>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -572,14 +573,15 @@ inline void run_stream_worker(std::string host, std::uint16_t port, std::string 
                                stream_producer<ChatResponseUpdate> producer, Resolver resolver,
                                std::string ca_bundle_pem_override, std::string http_referer,
                                std::string x_title, std::string end_user_id,
-                               std::optional<std::int64_t> seed, sandbox::ProviderTransport transport) {
+                               std::optional<std::int64_t> seed, sandbox::ProviderTransport transport,
+                               std::stop_token stop) {
     auto body = build_request_body(request, model, /*stream=*/true, end_user_id, seed);
     if (!body) {
         producer.fail(quark::error{quark::errc::validation, "openai.request_build_failed"});
         return;
     }
     auto req = build_http_request(path, api_key, json::dump(*body), http_referer, x_title);
-    auto resp = sandbox::perform_provider_https_exchange(host, port, req, {}, std::nullopt, resolver,
+    auto resp = sandbox::perform_provider_https_exchange(host, port, req, stop, std::nullopt, resolver,
                                                             ca_bundle_pem_override, transport);
     if (!resp) {
         producer.fail(quark::error{quark::errc::unavailable, "openai.exchange_failed"});
@@ -681,9 +683,15 @@ public:
             pair.producer.fail(quark::error{quark::errc::validation, "secret.not_granted"});
             return std::move(pair.consumer);
         }
+        // ADR-017: read the token BEFORE moving the producer into the thread. Argument evaluation
+        // order is unspecified, so `pair.producer.stop_token()` written inline alongside
+        // `std::move(pair.producer)` could legally run after the move -- on a moved-from producer,
+        // whose stop_source is empty, yielding a token that never fires.
+        std::stop_token stop = pair.producer.stop_token();
         std::thread(&detail::run_stream_worker, host_, port_, path_prefix_ + "/chat/completions",
                     lease->reveal_text(), model_, std::move(request), std::move(pair.producer), resolver_,
-                    ca_bundle_pem_override_, http_referer_, x_title_, end_user_id_, seed_, transport_)
+                    ca_bundle_pem_override_, http_referer_, x_title_, end_user_id_, seed_, transport_,
+                    std::move(stop))
             .detach();
         return std::move(pair.consumer);
     }

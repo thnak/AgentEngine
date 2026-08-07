@@ -38,10 +38,23 @@
 // `ReplyStream<F>::next()` is poll-only, never `co_await`-able per item (Quark supplies no per-item
 // consumer suspension) — `stream<T>::next()` inherits that same poll contract; a caller drains with
 // `while (auto x = s.next()) { ... }` then inspects `done()`/`terminal()`.
+//
+// (3) AN OUT-OF-BAND CANCELLATION SIGNAL, alongside the ring's own (ADR-017). The ring's cancellation
+//     is only OBSERVABLE from the producer side by attempting a `push()` — which is exactly wrong for
+//     a producer that is blocked in a long I/O call and has nothing to push yet. Milestone 5 Phase J3
+//     found and quantified the consequence: dropping a `chat_stream()` consumer cancelled the ring but
+//     left the underlying HTTP fetch running to completion, so release time was bounded only by the
+//     10s idle stall detector. `make_stream<T>` therefore hands BOTH halves a copy of one
+//     `std::stop_source` (copies share one stop-state, so this needs no extra allocation, no watcher
+//     thread, and no polling): the consumer requests stop on `cancel()` and on destruction, and the
+//     producer hands the matching `stop_token()` to whatever blocking work it drives. Nothing about
+//     the ring's own behaviour changes — this is a second, parallel signal for the I/O layer, not a
+//     replacement for `push()`'s `Terminated`, and a producer that ignores it behaves exactly as before.
 
 #include <memory>
 #include <memory_resource>
 #include <optional>
+#include <stop_token>
 #include <utility>
 #include <variant>
 
@@ -57,7 +70,8 @@ template <class T>
 class stream_producer {
 public:
     stream_producer() noexcept = default;
-    explicit stream_producer(quark::ReplyStreamProducer<T*> inner) noexcept : inner_(std::move(inner)) {}
+    explicit stream_producer(quark::ReplyStreamProducer<T*> inner, std::stop_source stop = {}) noexcept
+        : inner_(std::move(inner)), stop_(std::move(stop)) {}
 
     stream_producer(const stream_producer&) = delete;
     stream_producer& operator=(const stream_producer&) = delete;
@@ -81,8 +95,19 @@ public:
     void fail(quark::error e) noexcept { inner_.fail(e); }
     [[nodiscard]] bool valid() const noexcept { return inner_.valid(); }
 
+    // ADR-017. Hand this to any blocking work this producer drives that would otherwise keep running
+    // after the consumer has gone -- an HTTP read loop, a socket wait, a subprocess. It is requested
+    // when the consumer calls `cancel()` or drops its `stream<T>`, WITHOUT the producer having to
+    // attempt a `push()` first (the whole point: a producer stalled in I/O has nothing to push yet).
+    //
+    // The token keeps the shared stop-state alive on its own, so it stays valid after the consumer --
+    // and this producer -- are destroyed. Safe to hold on a detached thread, which is exactly how both
+    // real `chat_stream()` backends use it.
+    [[nodiscard]] std::stop_token stop_token() const noexcept { return stop_.get_token(); }
+
 private:
     quark::ReplyStreamProducer<T*> inner_;
+    std::stop_source stop_;
 };
 
 // The consumer-side drain handle — 004 §1's literal `ae::stream<T>` return type of `chat_stream()`.
@@ -91,12 +116,20 @@ template <class T>
 class stream {
 public:
     stream() noexcept = default;
-    explicit stream(quark::ReplyStream<T*> inner) noexcept : inner_(std::move(inner)) {}
+    explicit stream(quark::ReplyStream<T*> inner, std::stop_source stop = {}) noexcept
+        : inner_(std::move(inner)), stop_(std::move(stop)) {}
 
     stream(const stream&) = delete;
     stream& operator=(const stream&) = delete;
     stream(stream&&) noexcept = default;
     stream& operator=(stream&&) noexcept = default;
+
+    // ADR-017: dropping the consumer already cancelled the RING (via `~ReplyStream`); this also fires
+    // the out-of-band signal, so a producer blocked in I/O stops promptly instead of only when it next
+    // tries to push. A moved-from `stream` holds no stop-state (`std::stop_source`'s move leaves the
+    // source empty), so `request_stop()` there is a no-op -- a moved-from husk cannot cancel the live
+    // stream it was moved into.
+    ~stream() { stop_.request_stop(); }
 
     [[nodiscard]] bool valid() const noexcept { return inner_.valid(); }
 
@@ -114,11 +147,17 @@ public:
     [[nodiscard]] quark::ReplyStreamTerminal terminal() const noexcept { return inner_.terminal(); }
     [[nodiscard]] quark::error fail_error() const noexcept { return inner_.fail_error(); }
     [[nodiscard]] bool gap_detected() const noexcept { return inner_.gap_detected(); }
-    // Caller-initiated teardown; also happens implicitly on destruction.
-    void cancel() noexcept { inner_.cancel(); }
+    // Caller-initiated teardown; also happens implicitly on destruction. Tears down the ring AND fires
+    // the out-of-band stop signal (ADR-017), in that order -- a producer that observes the stop first
+    // and then attempts a final push must still see `Terminated`, never a half-torn-down ring.
+    void cancel() noexcept {
+        inner_.cancel();
+        stop_.request_stop();
+    }
 
 private:
     quark::ReplyStream<T*> inner_;
+    std::stop_source stop_;
 };
 
 template <class T>
@@ -143,7 +182,12 @@ template <class T>
     quark::result<quark::ReplyStream<T*>> opened = quark::block_on_open(std::move(req.future));
     // accept() resolves the OPEN cell synchronously, immediately above, on this same thread -- no actor
     // dispatch, no suspension, nothing that could race or fail in between. Cannot fail.
-    return stream_pair<T>{stream_producer<T>(std::move(producer)), stream<T>(std::move(*opened))};
+    //
+    // ADR-017: ONE stop-state, shared by copy. `std::stop_source`'s copy constructor shares the
+    // associated stop-state rather than duplicating it, so the consumer's `request_stop()` is visible
+    // through the producer's `stop_token()` with no extra allocation and no plumbing between them.
+    std::stop_source stop;
+    return stream_pair<T>{stream_producer<T>(std::move(producer), stop), stream<T>(std::move(*opened), stop)};
 }
 
 }  // namespace agentengine

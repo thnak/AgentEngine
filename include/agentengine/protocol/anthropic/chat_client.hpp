@@ -778,14 +778,15 @@ inline void run_stream_worker(std::string host, std::uint16_t port, std::string 
                                ChatRequest request, stream_producer<ChatResponseUpdate> producer,
                                Resolver resolver, std::string ca_bundle_pem_override,
                                std::string http_referer, std::string x_title, std::string end_user_id,
-                               std::string cache_ttl, sandbox::ProviderTransport transport) {
+                               std::string cache_ttl, sandbox::ProviderTransport transport,
+                               std::stop_token stop) {
     auto body = build_request_body(request, model, caps, /*stream=*/true, end_user_id, cache_ttl);
     if (!body) {
         producer.fail(quark::error{quark::errc::validation, "anthropic.request_build_failed"});
         return;
     }
     auto req = build_http_request(path, api_key, api_version, json::dump(*body), http_referer, x_title);
-    auto resp = sandbox::perform_provider_https_exchange(host, port, req, {}, std::nullopt, resolver,
+    auto resp = sandbox::perform_provider_https_exchange(host, port, req, stop, std::nullopt, resolver,
                                                             ca_bundle_pem_override, transport);
     if (!resp) {
         producer.fail(quark::error{quark::errc::unavailable, "anthropic.exchange_failed"});
@@ -889,10 +890,13 @@ public:
             pair.producer.fail(quark::error{quark::errc::validation, "secret.not_granted"});
             return std::move(pair.consumer);
         }
+        // ADR-017: read the token BEFORE moving the producer (see the OpenAI backend's identical note
+        // -- unspecified argument evaluation order would otherwise let this read a moved-from producer).
+        std::stop_token stop = pair.producer.stop_token();
         std::thread(&detail::run_stream_worker, host_, port_, path_prefix_ + "/messages",
                     lease->reveal_text(), api_version_, model_, capabilities_, std::move(request),
                     std::move(pair.producer), resolver_, ca_bundle_pem_override_, http_referer_, x_title_,
-                    end_user_id_, cache_ttl_, transport_)
+                    end_user_id_, cache_ttl_, transport_, std::move(stop))
             .detach();
         return std::move(pair.consumer);
     }

@@ -770,15 +770,19 @@ dropped):**
   `TestKit` enhancement to forward constructor args, or a different wiring shape entirely — a real
   design question, not a mechanical gap, and belongs behind the full review cycle given `AgentSession`
   is this project's actor-boundary invariant surface (I1-I8).
-- **`chat_stream()`'s underlying fetch has no cancellation wiring from the consumer.** J3's own
-  finding — dropping the stream does not release a genuinely in-flight connection within any bounded
-  time today, only the coarse per-iteration `kIoTimeoutMs` (10s) stall detector eventually would. Real
-  fix: thread a `stop_token` from `stream_producer<T>`/the ring's own cancellation signal down into
-  `perform_provider_https_exchange`'s read loop, mirroring Phase C2's already-proven mechanism at the
-  raw HTTP-exchange layer. Matters more once Phase C's other named gap (no incremental read loop) is
-  closed — today's non-incremental fetch means most real responses finish before cancellation would
-  even matter in practice, which is exactly why this was findable only by deliberately testing a slow
-  response, not by any complaint against ordinary use.
+- ~~**`chat_stream()`'s underlying fetch has no cancellation wiring from the consumer.**~~ **CLOSED
+  2026-08-07 by `decisions/ADR-017-stream-consumer-cancellation-signal.md`.** Root cause was a real
+  gap in the ring's shape, not an oversight at the call site: a `stream_producer<T>` learns the
+  consumer is gone ONLY by attempting a `push()`, which is useless for a producer blocked in I/O with
+  nothing to push yet. `make_stream<T>` now shares one `std::stop_source` between the two halves
+  (copies share stop-state — no watcher thread, no polling, no extra allocation);
+  `stream<T>::cancel()`/`~stream()` request stop; both backends hand
+  `stream_producer<T>::stop_token()` to `perform_provider_https_exchange`, reaching Phase C2's
+  already-proven mid-flight bound. `tests/test_chat_client_stream_cancellation_bounded.cpp`'s
+  J3-R3/R4/R5 are the SAME measurements inverted, deliberately kept in the same currency rather than
+  replaced by a generic "it cancels" check: **1 of 6** drip chunks delivered before teardown, against
+  6 of 6 before. The ring itself is untouched — a parallel signal for the I/O layer, so any producer
+  ignoring it behaves exactly as before.
 
 ## What's explicitly deferred past M5
 
@@ -786,9 +790,14 @@ dropped):**
   rows) — need 013/012/011 respectively, all M7 (decision 1).
 - **The full 018 §7 G4 admission surface** (audit query) — no audit log/query API exists yet.
 - **Full A2A/MCP delegation chains** (018 §7 G5's complete text) — need 012/011, M7 (decision 10).
-- **`Local/embedded via OpenAI-compatible server` and `Remote agent as ChatClient`** (004 §3's other
-  two table rows) — real reach, not required for the exit gate (decision 5); remote-agent-as-
-  `ChatClient` specifically needs 012 (M7).
+- ~~**`Local/embedded via OpenAI-compatible server`**~~ — **REAL 2026-08-07** via
+  `decisions/ADR-016-provider-egress-address-policy.md`: the provider path resolves through
+  `resolve_host` (no blocked-range filter — that table is an SSRF defence and the provider
+  destination is deployment config, never guest-supplied, never model-derived per I3) and gained an
+  opt-in `ProviderTransport::plaintext_http`. `tests/test_llamacpp_live_e2e.cpp` drives the real
+  `OpenAIChatClient` against a real `llama-server` — chat, streaming, tool calling, the tool-result
+  turn, structured output — with no proxy and no injected resolver.
+  **`Remote agent as ChatClient`** (004 §3's other row) still deferred: needs 012 (M7).
 - **Batch API wiring** (004 §8 Q1's resolution: batch-eligible calls classified `Backgroundable`,
   completed via 019 §2's wake table) — needs `Backgroundable`/`StandingEffect` (006 §6b), confirmed
   never built even though 006 has been real since M2 (the same residual M4 decision 4 already named).
@@ -814,18 +823,19 @@ dropped):**
   section for the options). Everything else that survey recommended (app-attribution headers, `seed`/
   abuse-tracking-id constructor fields, `ChatResponse.model`, `Usage.cache_write_tokens`, Anthropic's
   4-cache_control-blocks hard invariant, and its cache-TTL constructor option) landed 2026-08-07, built
-  by two parallel subagents against that same doc. Also still flags an untested llama.cpp
-  structured-output wire-shape compatibility risk (Phase D4's `translate_output_schema` may not match
-  llama.cpp's simpler `response_format` shape) — not built, no live llama.cpp instance available.
+  by two parallel subagents against that same doc. ~~Also still flags an untested llama.cpp
+  structured-output wire-shape compatibility risk~~ — **RESOLVED 2026-08-07 with live evidence.** A
+  real `llama-server` was available and `tests/test_llamacpp_live_e2e.cpp` LC-4 drives Phase D4's
+  `translate_output_schema` output — `response_format` including the forced `additionalProperties:
+  false` and `strict:true` — through llama.cpp's own grammar-constrained decoder, which accepts it and
+  returns a schema-conforming object. The suspected incompatibility does not exist.
 - **`AgentSession<ChatClientT>` wiring a real, non-default-constructible `ChatClient` conformer**
   (found in Phase J1) — needs either an additive `AgentSession` constructor plus an upstream Quark
   `TestKit` change to forward actor constructor args, or a different wiring shape; a real design
   question belonging behind the full review cycle, not built ad hoc under J1's own proof budget.
-- **`chat_stream()`'s underlying HTTP fetch has no cancellation wired from the consumer** (found in
-  Phase J3, quantified) — `stop_token=std::nullopt` at both the OpenAI and Anthropic call sites;
-  dropping the stream does not bound release time for a genuinely in-flight connection today. Real fix
-  named, not built: thread the ring's cancellation into a stop_token passed down to `perform_provider_
-  https_exchange`, mirroring Phase C2's already-proven mechanism.
+- ~~**`chat_stream()`'s underlying HTTP fetch has no cancellation wired from the consumer**~~ —
+  CLOSED 2026-08-07 by ADR-017; see the Phase J3 residual entry above for the mechanism and the
+  measured result.
 
 ## Handover & kick-off
 

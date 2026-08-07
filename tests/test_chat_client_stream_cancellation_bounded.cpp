@@ -14,25 +14,27 @@
 //      can even observe the first item, let alone drop the stream. "No orphaned socket" holds here
 //      by construction, proven with real timing (J3-R1/R2).
 //
-//  (B) THE REAL GAP, found while writing this proof, not silently assumed covered: `run_stream_worker`
-//      calls `perform_provider_https_exchange(..., /*stop_token=*/std::nullopt, ...)` at BOTH the
-//      OpenAI (protocol/openai/chat_client.hpp) and Anthropic (protocol/anthropic/chat_client.hpp)
-//      call sites -- the consumer dropping `stream<T>` (which cancels the RING, core/stream.hpp) has
-//      NO wiring back into the underlying HTTP fetch's cancellation at all. Against a SLOWLY
-//      responding server (a realistic shape for a large or throttled completion), dropping the
-//      stream almost immediately after creating it does NOT shorten the connection's lifetime by any
-//      measurable amount -- the detached worker thread keeps reading until the fetch naturally
-//      finishes (bounded only by Phase C's own coarse per-iteration `kIoTimeoutMs` stall detector,
-//      not by the cancellation moment), proven quantitatively below (J3-R3..R6).
+//  (B) THE GAP THIS FILE ORIGINALLY FOUND, NOW CLOSED BY ADR-017. As first written, J3-R3/R4/R5
+//      asserted a FINDING rather than a property: `run_stream_worker` called
+//      `perform_provider_https_exchange(..., /*stop_token=*/std::nullopt, ...)` at BOTH the OpenAI
+//      (protocol/openai/chat_client.hpp) and Anthropic (protocol/anthropic/chat_client.hpp) call
+//      sites, so a consumer dropping `stream<T>` cancelled the RING (core/stream.hpp) with no wiring
+//      back into the underlying HTTP fetch. Against a slowly-responding server -- a realistic shape
+//      for a large or throttled completion -- cancelling ~20ms in did not shorten the connection's
+//      life at all: the detached worker read on until the fetch finished naturally, bounded only by
+//      the coarse 10s `kIoTimeoutMs` stall detector.
 //
-//      Phase C2's OWN mid-flight cancellation IS real and bounded (`test_provider_http_client.cpp`'s
-//      P2 case: a `std::stop_token`-driven abort at the raw `perform_https_exchange` layer, measured
-//      ~440ms) -- cited here, not reproduced -- but that bound is only reachable by a caller that
-//      threads a live stop_token through (`HostEgressProxy::fetch`, ADR-011's own call site).
-//      `chat_stream()` is simply not such a caller today. Named explicitly as real follow-up work
-//      (wiring the ring's cancellation into a stop_token passed down to the fetch) rather than fixed
-//      here under this proof phase's own budget -- an invariant-adjacent, hot-path concurrency change
-//      that belongs behind CLAUDE.md's design -> red-team -> prove -> judge cycle, not an ad-hoc patch.
+//      ADR-017 wires it: `make_stream<T>` shares one `std::stop_source` between the two halves
+//      (copies share stop-state, so no watcher thread and no polling), `stream<T>::cancel()` and
+//      `~stream()` request stop, and each worker hands `stop_token()` to the fetch -- reaching Phase
+//      C2's already-proven mid-flight bound (`test_provider_http_client.cpp`'s P2 case, ~440ms,
+//      stop_token-driven), which was always real but had no caller threading a token through.
+//
+//      J3-R3/R4/R5 below are the SAME measurements, inverted, deliberately kept in the same currency
+//      rather than replaced by a generic "it cancels" check: the original finding was that a
+//      plausible cancellation story was false in a way only measurement exposed, so the fix has to be
+//      shown the same way. They now assert the server's paced send is cut short. See their own notes
+//      for which timestamps this harness genuinely can and cannot measure.
 //
 //  "Checked under ASan + a leak gate": this test's own behavioral claims (A)/(B) hold under the
 // project's ordinary build; the ASan half of the gate is satisfied by CI's existing ASan job running
@@ -243,6 +245,10 @@ public:
     // True only once the write loop below sent every configured chunk successfully -- i.e. the
     // connection stayed alive and readable-by-the-peer for the WHOLE configured slow duration.
     [[nodiscard]] bool completed_fully() const { return completed_fully_.load(); }
+    // How many of the configured chunks were actually written before the peer went away. The
+    // meaningful teardown measurement in this harness -- see the J3-R4 note in main() for why
+    // `finished_at()` cannot serve as a teardown TIMESTAMP (the server's own BIO timeout dominates it).
+    [[nodiscard]] int chunks_sent() const { return chunks_sent_.load(); }
     [[nodiscard]] std::optional<std::chrono::steady_clock::time_point> finished_at() const {
         std::lock_guard<std::mutex> lock(finished_mu_);
         return finished_at_;
@@ -320,7 +326,10 @@ private:
             char size_buf[32];
             std::snprintf(size_buf, sizeof(size_buf), "%zx\r\n", sse_event.size());
             ok_all = write_all(ssl, size_buf) && write_all(ssl, sse_event) && write_all(ssl, "\r\n");
-            if (ok_all) std::this_thread::sleep_for(inter_chunk_delay_);
+            if (ok_all) {
+                chunks_sent_.fetch_add(1);
+                std::this_thread::sleep_for(inter_chunk_delay_);
+            }
         }
         if (ok_all) ok_all = write_all(ssl, "0\r\n\r\n");
 
@@ -346,6 +355,7 @@ private:
     std::uint16_t port_ = 0;
     std::jthread thread_;
     std::atomic<bool> completed_fully_{false};
+    std::atomic<int> chunks_sent_{0};
     mutable std::mutex finished_mu_;
     std::optional<std::chrono::steady_clock::time_point> finished_at_;
 };
@@ -539,10 +549,24 @@ int main() {
         }
     }
 
-    // ---- (B) the real gap: a slowly-drip-fed response -- dropping the stream almost immediately ----
-    // does NOT shorten the connection's real lifetime, because chat_stream()'s underlying fetch has
-    // no stop_token wired to the ring's cancellation (run_stream_worker calls perform_provider_https_
-    // exchange with stop_token = std::nullopt, both openai/ and anthropic/ chat_client.hpp).
+    // ---- (B) the case J3 found broken and ADR-017 fixed: a slowly-drip-fed response, cancelled -----
+    // almost immediately. Until ADR-017, dropping the consumer cancelled the RING but left the
+    // underlying fetch running (`run_stream_worker` passed `stop_token = std::nullopt` at both the
+    // OpenAI and Anthropic call sites), so the connection lived out the server's full ~900ms pacing
+    // and release time was bounded only by the 10s idle stall detector. `make_stream<T>` now shares
+    // one `std::stop_source` between the two halves; the consumer requests stop on `cancel()`/
+    // destruction and the worker hands the token to `perform_provider_https_exchange`, reaching Phase
+    // C2's already-proven mid-flight bound.
+    //
+    // The assertions below are the ORIGINAL J3-R3/R4/R5 measurements, inverted. They are deliberately
+    // kept as measurements of the same quantities rather than replaced with a generic "it cancels"
+    // check: the point of J3 was that a plausible-sounding cancellation story was false in a way only
+    // timing could expose, so the fix has to be demonstrated in the same currency.
+    //
+    // What is measured is the CLIENT's release, not the server's perception. A server dripping into a
+    // socket whose peer has gone does not learn about it on the next write -- it may buffer several
+    // more chunks before TCP surfaces the reset -- so `finished_at()` tracks the server's own pacing
+    // and is NOT the bound under test. `t_released` (when the consumer's scope actually exits) is.
     {
         constexpr int kChunkCount = 6;
         constexpr auto kInterChunkDelay = std::chrono::milliseconds(150);  // ~900ms total, well past
@@ -553,17 +577,20 @@ int main() {
             openai::OpenAIChatClient client("localhost", server.port(), "gpt-5", SecretRef{"openai-api-key"},
                                              ChatClientCapabilities{}, store, "/v1", fake_resolver, leaf.cert_pem);
             auto const t_create = std::chrono::steady_clock::now();
+            std::chrono::steady_clock::time_point t_cancel_requested;
             {
                 stream<ChatResponseUpdate> s = client.chat_stream(request_asking("hi"), ctx);
                 // A brief grace period to let the TLS handshake actually start before cancelling --
                 // NOT waiting for any item (the whole point is cancelling before the slow send is
                 // anywhere near done).
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                t_cancel_requested = std::chrono::steady_clock::now();
                 s.cancel();
                 // `s` is dropped here too (destructor), matching the realistic "caller just stops
                 // caring" shape as well as the explicit cancel() call.
             }
-            auto const t_cancel = std::chrono::steady_clock::now();
+            auto const t_released = std::chrono::steady_clock::now();
+            auto const t_cancel = t_released;  // kept for the server-side poll budget below
 
             // Poll (bounded, generous) for the server's write loop to finish one way or the other.
             bool observed = false;
@@ -573,32 +600,69 @@ int main() {
             }
             check(observed, "J3: the slow server's write loop finished (one way or another) within "
                              "the test's own generous poll budget");
-            check(server.completed_fully(),
-                  "J3-R3: FINDING -- the server's ENTIRE slow send (all 6 delayed chunks, ~900ms) "
-                  "completed successfully even though the consumer dropped the stream ~20ms after "
-                  "creating it. The underlying TLS connection stayed alive and readable-by-the-peer "
-                  "for the full slow duration -- cancellation did NOT tear the connection down");
-            if (server.finished_at()) {
-                auto const server_done_relative_to_cancel = *server.finished_at() - t_cancel;
-                check(server_done_relative_to_cancel > std::chrono::milliseconds(500),
-                      "J3-R4: the connection's actual teardown happened hundreds of ms AFTER the "
-                      "cancellation moment, bounded only by the slow server's own unrelated pacing -- "
-                      "NOT a bounded release relative to when the consumer cancelled, confirming G2's "
-                      "'bounded time' claim does not hold for chat_stream()'s own genuinely-in-flight "
-                      "case today (Phase C2's stop_token-driven bound is real, but chat_stream() never "
-                      "threads one through -- see this file's own top comment)");
-                auto const total_from_create = server_done_relative_to_cancel + (t_cancel - t_create);
-                check(total_from_create >= kInterChunkDelay * (kChunkCount - 1),
-                      "J3-R5: the total connection lifetime (~900ms) matches the server's own "
-                      "configured slow pacing, not any client-side cancellation bound -- direct "
-                      "confirmation that release time here is a function of the OTHER side's "
-                      "behavior, not of when the consumer stopped listening");
+            check(!server.completed_fully(),
+                  "J3-R3 (ADR-017, was the FINDING, now inverted): the server's slow send did NOT run "
+                  "to completion -- cancelling ~20ms in tears the underlying TLS connection down, so "
+                  "the peer's later writes fail instead of all 6 delayed chunks landing. Before "
+                  "ADR-017 this exact assertion held in the opposite direction.");
+
+            // WHAT THIS HARNESS CAN AND CANNOT MEASURE, stated rather than papered over.
+            //
+            // Two tempting timestamps are both useless here:
+            //   - the consumer's own scope exit. `s.cancel()` and `~stream()` are non-blocking and
+            //     always were, so timing the scope passes identically with and without ADR-017. A
+            //     check that cannot fail proves nothing (CLAUDE.md), so it is printed below as
+            //     context and asserted on nowhere.
+            //   - `finished_at()`, when the server's write loop stopped. Measured at ~2150ms, but that
+            //     is the SERVER's own BIO timeout (kBioTimeoutMs, 2000ms) elapsing on a write to a
+            //     socket whose peer has gone -- it says when the server noticed, not when the client
+            //     released. Asserting a millisecond bound on it would be asserting on mbedTLS's
+            //     timeout constant.
+            //
+            // The quantity that IS both meaningful and precisely measurable is how far the server got
+            // through its own paced send before the connection died. That is a real time bound
+            // expressed in the server's own units: each delivered chunk costs a known 150ms.
+            {
+                int const delivered = server.chunks_sent();
+                check(delivered < kChunkCount,
+                      "J3-R4 (ADR-017): the peer got strictly FEWER than its configured chunks out "
+                      "before the connection died -- the teardown is driven by the consumer's "
+                      "cancellation, not by the server running out of things to send");
+                // <= 2 delivered means the connection was gone within ~2 drip intervals (~300ms) of
+                // the exchange starting, i.e. within ~280ms of the cancel at t+20ms. Compare the
+                // pre-ADR-017 behaviour, where all 6 landed and the bound was the 10s stall detector.
+                check(delivered <= 2,
+                      "J3-R5 (ADR-017): the connection died within roughly one to two 150ms drip "
+                      "intervals of the cancellation -- a real bound in the server's own pacing units. "
+                      "Before ADR-017 all 6 chunks landed and release was bounded only by the coarse "
+                      "10s idle stall detector. This is the precise inversion of the original J3-R5 "
+                      "finding, measured in the same currency.");
+                std::fprintf(stderr,
+                             "  .. chunks delivered before teardown = %d of %d (each costs %lld ms of "
+                             "server pacing)\n",
+                             delivered, kChunkCount, static_cast<long long>(kInterChunkDelay.count()));
             }
+            // Context only -- see above for why neither of these is the assertion.
+            std::fprintf(stderr,
+                         "  .. consumer scope exit after cancel = %lld ms (non-blocking by design, "
+                         "before and after ADR-017)\n",
+                         static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                     t_released - t_cancel_requested)
+                                                     .count()));
+            if (server.finished_at()) {
+                std::fprintf(stderr,
+                             "  .. server write loop gave up %lld ms after cancel (its own %d ms BIO "
+                             "timeout, not the client's release)\n",
+                             static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                         *server.finished_at() - t_cancel_requested)
+                                                         .count()),
+                             kBioTimeoutMs);
+            }
+
             // J3-R6 (not a runtime check -- see this file's own top comment): Phase C2's mid-flight
             // cancellation (test_provider_http_client.cpp's P2 case, ~440ms, stop_token-driven) is the
-            // real, already-proven bounded-cancellation case this gap sits alongside -- it is reachable
-            // by a caller that threads a live stop_token through perform_https_exchange; chat_stream()
-            // simply isn't such a caller today.
+            // mechanism ADR-017 reaches. It was always real and bounded; what was missing was a caller
+            // threading a live stop_token through. `chat_stream()` is now such a caller.
         }
     }
 
