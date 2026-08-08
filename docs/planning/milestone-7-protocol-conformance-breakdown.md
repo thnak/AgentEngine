@@ -309,6 +309,43 @@ enforcement), and 006 §6b's G6-G9 ... all hold — closing 019 §2's wake-condi
 - **Phase D** — 012 A2A: server role (§2: Agent Card, HTTP+JSON/REST + JSON-RPC bindings, task
   management, push notifications) and client role (§3: consuming remote agents), against v1.0;
   closes 019 §2's remaining two wake rows.
+
+  Sub-phases (same "envelope first, roles after" discipline C1-C4 used for MCP):
+  - **D1** — the A2A v1.0 wire object model itself (`protocol/a2a/types.hpp`): `Part`/`Message`/
+    `Artifact`/`TaskStatus`/`Task`, `task_state`/`a2a_role` enums, transport- and role-agnostic on
+    purpose, proving v1.0's own two breaking changes from 0.3.x before any server/client role is built
+    on top: `Part`'s `kind` discriminator is GONE (the JSON member name is the discriminator), and
+    enums serialize as full SCREAMING_SNAKE names.
+  - **D2+** — server role (Agent Card generation, JSON-RPC/REST bindings, `Task ← Run` projection off
+    013 §1's event stream, streaming, push notifications) and client role (remote-agent-as-tool
+    binding, digest-pinned card caching) — scoped in more detail as each is reached, per the user's own
+    2026-08-08 decision to check in before committing to Phase D's full autonomous scope (it is a
+    materially larger surface than Phase C's own MCP conformance work).
+
+  **Outcome, D1 (2026-08-08, commit pending):** `protocol/a2a/types.hpp` (new) — `task_state`/
+  `a2a_role` enums with `to_wire_string()`/`from_wire_string()` proving the full 9-value and 3-value
+  SCREAMING_SNAKE round trip respectively (cited from `docs/research/2026-a2a-and-agui-detail.md`
+  §A.5), `is_terminal()` matching the spec's terminal (`COMPLETED`/`FAILED`/`CANCELED`/`REJECTED`) vs
+  interrupted (`INPUT_REQUIRED`/`AUTH_REQUIRED`) split exactly. `Part`'s oneof (`TextPart`/`RawPart`/
+  `UrlPart`/`DataPart`) is discriminated purely by JSON member name -- no `"kind"` field is ever
+  emitted or expected, proven directly (D1-1). An unrecognized discriminator member is preserved
+  verbatim as `UnknownPart{member_name, raw_value}` rather than dropped or rejected -- the same
+  "unknown kinds round-trip" precedent `core/content.hpp`'s own `Custom` already establishes for our
+  internal content model, applied here to A2A's own wire oneof (proven, D1-5; the fuller "every part
+  kind including unknown ones" corpus is G2's own job at milestone close, not claimed here).
+  `Message`/`Artifact`/`TaskStatus`/`Task` round-trip every field with camelCase wire names, and unset
+  optionals/empty repeated fields are omitted on the wire rather than emitted empty (D1-10).
+  `tests/test_a2a_types.cpp` (new, 30 checks, all passing) proves all of the above, including negative
+  cases (a `Part` with two oneof members, or zero; a `Message` with an empty `parts[]`; an
+  unrecognized `task_state` string) are rejected, never silently coerced. 135/135 full suite (was 134
+  after Phase C4).
+
+  **What is honestly NOT built for D1** (all D2+ scope, not silently claimed here): `Task ← Run`
+  projection off a real `AgentSession`/013 §1 event stream; Agent Card generation; the JSON-RPC/REST
+  bindings themselves (this file has no request/response envelope or method dispatcher, only the
+  objects that would ride inside one); streaming (`SubscribeToTask`), push notifications, extensions,
+  authentication/authorization, digest-pinned card caching; the round-trip fidelity CORPUS G2 asks for
+  (this phase proves the mechanism on hand-picked cases, not an exhaustive corpus run).
 - **Phase E** — 013 §2-§4: AG-UI projection, other-surface table, transport (SSE, binary framing,
   WebSocket), cross-surface equivalence proofs.
 - **Phase F** — 015: declarative agent/workflow YAML, the shared validator, equivalence corpus.

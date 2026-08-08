@@ -953,6 +953,13 @@ add_executable(test_mcp_tasks_extension test_mcp_tasks_extension.cpp)
 target_link_libraries(test_mcp_tasks_extension PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_mcp_tasks_extension COMMAND test_mcp_tasks_extension)
 
+# ---- Milestone 7 Phase D1 -- 012 §0/§A.4's A2A v1.0 wire object model (protocol\a2a\types.hpp):
+# Part/Message/Artifact/TaskStatus/Task round-trip, the removed `kind` discriminator, full
+# SCREAMING_SNAKE enum serialization, and unknown-Part-kind forward compatibility -----------------
+add_executable(test_a2a_types test_a2a_types.cpp)
+target_link_libraries(test_a2a_types PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_a2a_types COMMAND test_a2a_types)
+
 # ---- Milestone 5 Phase H4 -- EffectContext::principal wired through every outbound ChatClient
 # call, including on_behalf_of delegation for a session initialized with a derive_on_behalf_of()'d
 # principal (018 §1's "delegation only via on_behalf_of, never token passthrough").
