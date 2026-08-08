@@ -272,6 +272,40 @@ enforcement), and 006 §6b's G6-G9 ... all hold — closing 019 §2's wake-condi
   cross-*principal* isolation (needs a real multi-principal transport context); a rug-pull-detected
   flag surfacing into an actual re-approval gate (§8's "re-approval" half -- `rug_pull_detected()` is
   observable, but nothing yet BLOCKS a subsequent call on it).
+
+  **Outcome, C4 (2026-08-08, commit pending):** the `io.modelcontextprotocol/tasks` extension (011
+  §3.6/§12; field names and status vocabulary cited from `docs/research/2026-mcp-protocol-detail.md`
+  §12, the exact result-envelope nesting around them is this implementation's own reasonable choice,
+  not asserted as the literal upstream wire schema) for backgrounding a `tools/call` on a
+  `Backgroundable` tool -- real since Phase B's `background_task()` (tool_pipeline.hpp), called
+  DIRECTLY by `McpServer` rather than reinvented. Server side (`protocol/mcp/server.hpp`): a per-request
+  opt-in (`params.extensions` containing `"io.modelcontextprotocol/tasks"` -- §12's "MUST NOT return
+  CreateTaskResult to a client that did not include the extension capability on that request"),
+  `handle_tools_call_as_task()` (mints a `std::random_device`-seeded task id, starts `background_task()`,
+  returns a task handle immediately), `handle_tasks_get()` (polls; a completed task carries the same
+  `content`/`isError`/`resultType` shape `handle_tools_call`'s own synchronous path already produces),
+  `handle_tasks_cancel()` (marks a task `"cancelled"` so a later poll never reports `"completed"` for
+  it, but -- inheriting Phase B's own documented limit -- cannot stop the in-flight `std::thread`; its
+  eventual completion is simply discarded). Faithfully applies §12's own rule that a tool which RAN and
+  FAILED is task status `"completed"` with `isError:true`, never `"failed"` -- proven directly (C4-6).
+  `Background<N>`'s own capacity ceiling (G9, Phase B) is enforced through this path unchanged, counted
+  fresh off the task registry's own `"working"` entries rather than a second counter that could drift
+  (proven, C4-7). Client side (`protocol/mcp/client.hpp`): `call_tool_as_task()`, `get_task()`,
+  `cancel_task()`, symmetric with the server's own method names. `tests/test_mcp_tasks_extension.cpp`
+  (new, 19 checks, all passing) proves all of the above against a REAL `McpServer` backgrounding REAL
+  tools (`SlowBackgroundableTool`, `FailingBackgroundableTool`, `ForegroundOnlyTool`), including that a
+  cancelled task's status survives its own uncancellable worker's eventual completion (C4-9) and that
+  cancelling an already-completed task is rejected (C4-10). 134/134 full suite (was 133 after C3).
+
+  **What is honestly NOT built for C4**: `tasks/update` (client-to-server input mid-task) and
+  `notifications/tasks` (a push channel this request/response-only dispatcher does not have); real task
+  status `"failed"` (every failure this pipeline can detect happens synchronously, before a task is
+  ever created, and is rejected as a JSON-RPC error instead -- the enum value is named, nothing produces
+  it); MRTR's `InputRequiredResult` (011 §3.4) -- `ApprovalDecider` (tool_pipeline.hpp) is still a
+  binary `bool(name, args) -> approved?` decider, not a three-state one that could ever return
+  `"input_required"`, so tool-call approval and MRTR remain unconnected; task-id authorization (§12:
+  "MUST authorize every task request" against the issuing principal) -- transport/principal work this
+  in-process dispatcher does not have, the same gap C2/C3 already name for `tools/call` itself.
 - **Phase D** — 012 A2A: server role (§2: Agent Card, HTTP+JSON/REST + JSON-RPC bindings, task
   management, push notifications) and client role (§3: consuming remote agents), against v1.0;
   closes 019 §2's remaining two wake rows.

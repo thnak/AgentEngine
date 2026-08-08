@@ -946,6 +946,13 @@ add_executable(test_mcp_client test_mcp_client.cpp)
 target_link_libraries(test_mcp_client PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_mcp_client COMMAND test_mcp_client)
 
+# ---- Milestone 7 Phase C4 -- the io.modelcontextprotocol/tasks extension (011 §3.6/§12): a
+# Backgroundable tool call started via a real McpServer, polled to completion via tasks/get, cancelled
+# via tasks/cancel -- reusing background_task() (real since Phase B) end to end -------------------
+add_executable(test_mcp_tasks_extension test_mcp_tasks_extension.cpp)
+target_link_libraries(test_mcp_tasks_extension PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_mcp_tasks_extension COMMAND test_mcp_tasks_extension)
+
 # ---- Milestone 5 Phase H4 -- EffectContext::principal wired through every outbound ChatClient
 # call, including on_behalf_of delegation for a session initialized with a derive_on_behalf_of()'d
 # principal (018 §1's "delegation only via on_behalf_of, never token passthrough").

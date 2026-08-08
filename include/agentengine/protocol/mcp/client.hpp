@@ -23,6 +23,13 @@
 // tool in one page -- this client's own cursor handling is proven at the CACHE-KEY level: a
 // different cursor is a different cache entry, including an empty-string one, never collapsed into
 // "no cursor").
+//
+// Milestone 7 Phase C4 (011 §3.6/§12, docs/research/2026-mcp-protocol-detail.md §12): the client-side
+// half of the `io.modelcontextprotocol/tasks` extension -- `call_tool_as_task()` opts a `tools/call`
+// into the extension (server.hpp's own `kMcpTasksExtension` string, duplicated here rather than a
+// shared header both files would need only for one literal), `get_task()` polls `tasks/get`,
+// `cancel_task()` calls `tasks/cancel`. `tasks/update`/`notifications/tasks` are NOT built, mirroring
+// server.hpp's own C4 scope note exactly (this client has no counterpart for either).
 
 #include <chrono>
 #include <cstdint>
@@ -50,6 +57,21 @@ struct McpToolInfo {
 struct McpToolCallOutcome {
     bool        is_error = false;
     json::Value content;  // the raw "content" array, §3.1's own shape
+};
+
+// Phase C4: mirrors `server.hpp`'s own `kMcpTasksExtension` -- kept as a client-local literal rather
+// than a shared constant, since server.hpp is server-role-only and this file has no dependency on it.
+inline constexpr std::string_view kMcpTasksExtensionClient = "io.modelcontextprotocol/tasks";
+
+struct McpTaskHandle {
+    std::string task_id;
+    std::string status;  // "working" at creation, per §12
+};
+
+struct McpTaskPoll {
+    std::string         status;
+    bool                has_result = false;  // true once the server attached a real outcome
+    McpToolCallOutcome  outcome;              // valid iff has_result
 };
 
 namespace client_detail {
@@ -167,6 +189,79 @@ public:
     }
 
     [[nodiscard]] bool rug_pull_detected() const noexcept { return rug_pull_detected_; }
+
+    // Phase C4: `tools/call` with the `io.modelcontextprotocol/tasks` extension requested (§12: a
+    // server "MUST NOT return CreateTaskResult to a client that did not include the extension
+    // capability on that request" -- this is that per-request opt-in). Returns the task handle a
+    // Backgroundable tool call was started under; the caller then polls `get_task()`.
+    [[nodiscard]] result<McpTaskHandle> call_tool_as_task(std::string const& name, json::Value arguments) {
+        JsonRpcRequest req{
+            RpcId{next_id()}, "tools/call",
+            json::Value::make_object(
+                {{"name", json::Value::make_string(name)},
+                 {"arguments", std::move(arguments)},
+                 {"extensions",
+                  json::Value::make_array({json::Value::make_string(std::string(kMcpTasksExtensionClient))})}})};
+        JsonRpcResponse resp = sender_(req);
+        if (resp.error.has_value()) {
+            return std::unexpected(error{failure_class::contract, resp.error->message, "mcp.rpc_error"});
+        }
+        json::Value const* task = resp.result->find("task");
+        json::Value const* task_id = task ? task->find("taskId") : nullptr;
+        json::Value const* status  = task ? task->find("status") : nullptr;
+        if (!task_id || !task_id->is_string() || !status || !status->is_string()) {
+            return std::unexpected(error{failure_class::contract,
+                                          "tools/call task response missing a well-formed \"task\"",
+                                          "mcp.malformed_result"});
+        }
+        return McpTaskHandle{task_id->as_string(), status->as_string()};
+    }
+
+    // §12: "Status ∈ working | input_required | completed | cancelled | failed." A caller polls until
+    // `poll.status != "working"`; `poll.outcome` is populated only once the server attaches a result
+    // (§12: "The failed status MUST NOT represent a tool result with isError:true -- that is completed
+    // with error details in result" -- so a real execution failure arrives as `status == "completed"`
+    // with `outcome.is_error == true`, exactly `call_tool()`'s own isError contract, never as
+    // `status == "failed"`).
+    [[nodiscard]] result<McpTaskPoll> get_task(std::string const& task_id) {
+        JsonRpcRequest req{RpcId{next_id()}, "tasks/get",
+                            json::Value::make_object({{"taskId", json::Value::make_string(task_id)}})};
+        JsonRpcResponse resp = sender_(req);
+        if (resp.error.has_value()) {
+            return std::unexpected(error{failure_class::contract, resp.error->message, "mcp.rpc_error"});
+        }
+        json::Value const* task   = resp.result->find("task");
+        json::Value const* status = task ? task->find("status") : nullptr;
+        if (!status || !status->is_string()) {
+            return std::unexpected(error{failure_class::contract,
+                                          "tasks/get response missing a well-formed \"task\"",
+                                          "mcp.malformed_result"});
+        }
+        McpTaskPoll poll;
+        poll.status = status->as_string();
+        json::Value const* content  = resp.result->find("content");
+        json::Value const* is_error = resp.result->find("isError");
+        if (content) {
+            poll.has_result         = true;
+            poll.outcome.is_error   = is_error && is_error->as_bool();
+            poll.outcome.content    = *content;
+        }
+        return poll;
+    }
+
+    // §12: no `notifications/cancelled` here (spec-forbidden for tasks); a real `tasks/cancel` call
+    // instead. The underlying worker thread on the server side cannot actually be stopped (server.hpp's
+    // own documented limit) -- cancelling only guarantees a subsequent `get_task()` never reports
+    // `"completed"` for this task again.
+    [[nodiscard]] result<void> cancel_task(std::string const& task_id) {
+        JsonRpcRequest req{RpcId{next_id()}, "tasks/cancel",
+                            json::Value::make_object({{"taskId", json::Value::make_string(task_id)}})};
+        JsonRpcResponse resp = sender_(req);
+        if (resp.error.has_value()) {
+            return std::unexpected(error{failure_class::contract, resp.error->message, "mcp.rpc_error"});
+        }
+        return {};
+    }
 
 private:
     [[nodiscard]] std::string next_id() { return client_name_ + ":" + std::to_string(++next_id_); }
