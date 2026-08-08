@@ -718,6 +718,18 @@ if(AGENTENGINE_WITH_HTTPS)
   add_test(NAME test_project_registry COMMAND test_project_registry)
   set_tests_properties(test_project_registry PROPERTIES TIMEOUT 120)
 
+  # ---- Milestone 6 Phase I: 030 §4's directed lifecycle (lifecycle.hpp) --------------------------
+  # PassivatableHandle's real point, proven with REAL actors: one ProjectSupervisor holds a REAL
+  # AgentSession<CannedChatClient> (a member session) and a REAL WorkflowSupervisor (a
+  # workflow-supervising actor, 030 §8 Q4's own case) -- two different C++ actor types, passivated
+  # uniformly. Pause drops all three activations (session, workflow, the ProjectSupervisor itself,
+  # last) to Dormant by census; restore never reactivates anything; a real Run after restore
+  # continues the session's own run sequence untouched; archive reuses the same pause sequence.
+  add_executable(test_project_lifecycle test_project_lifecycle.cpp)
+  target_link_libraries(test_project_lifecycle PRIVATE agentengine::core agentengine_warnings)
+  add_test(NAME test_project_lifecycle COMMAND test_project_lifecycle)
+  set_tests_properties(test_project_lifecycle PROPERTIES TIMEOUT 120)
+
   # ---- ADR-020 gates G1-G7: 004 §2's portable reasoning_effort, mapped down by both backends ------
   # Drives BOTH backends from the same enumerator values in one file, on purpose: the amendment's
   # claim is portability across two structurally different native shapes (a flat string vs a computed

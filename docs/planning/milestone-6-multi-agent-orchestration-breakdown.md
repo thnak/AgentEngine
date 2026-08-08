@@ -408,6 +408,54 @@ H-I are 030; J is the milestone's own exit-criterion proof.
   supervisors per §8 Q4, then the Project's own actor, last), `restore_project` (manifest only, no
   eager reactivation), resume, archive. *Falsifiable (G3):* `list_projects` returning another
   principal's Project under concurrent multi-principal load.
+  **Outcome: built, and it surfaced a real gap §4's own prose glosses over.** §4 says "call
+  `.passivate()` on every member session's `ActorRef<AgentSession>`" as if that named one type. It
+  does not: `AgentSession<ChatClientT, StateT, HistoryProviderT>` (agent_session.hpp) is a
+  three-parameter template, so `ActorRef<AgentSession<C1,S1,H1>>` and
+  `ActorRef<AgentSession<C2,S2,H2>>` are different C++ types the moment two member sessions use
+  different backends -- which 030 §2's own model allows (members are just session ids, nothing
+  constrains them to one instantiation). `ActorRef<A>::passivate()` needs `A` concretely known at
+  the call site (`static_assert(max_concurrency_of<A>() == 1, ...)`, actor_ref.hpp) and this repo
+  has never had any type-erased or polymorphic way to call it (verified by search: zero hits for
+  any `PassivatableRef`/`std::variant<ActorRef<...>>`/`std::any`-over-actors pattern anywhere in
+  Quark or AgentEngine) -- genuinely greenfield, not an oversight to route around quietly.
+  **`PassivatableHandle` (lifecycle.hpp) closes the gap without weakening the safety the
+  `static_assert` exists for.** The tempting shortcut -- build on `LocalRouter::
+  request_passivate(ActorId)`, the untyped primitive underneath `ActorRef<A>::passivate()` -- was
+  rejected: that call has NO type gate at all, so a wrapper built on it directly could silently
+  passivate a Reentrant/`MaxConcurrency<N>` actor, whose close-out is, per the assert's own
+  wording, "out of scope" / unproven (ADR-028 Phase 2 only proves it for Sequential). Doing that
+  would have reintroduced, by omission, exactly the hazard class the M6 breakdown's own decision 4
+  already flagged for `WorkflowSupervisor` itself. `PassivatableHandle` instead closes over a call
+  to the REAL `ActorRef<A>::passivate()` inside a `std::function<bool()>`, constructed from a
+  template constructor -- the static_assert still fires, at construction, on the concrete `A` the
+  caller already has in hand. Type erasure happens to the closure, never to the type-level check.
+  Proven with REAL actors, not a synthetic pair of dummy types: one `ProjectSupervisor` holds a
+  genuine `AgentSession<CannedChatClient>` (a member session) AND a genuine `WorkflowSupervisor` (a
+  workflow-supervising actor, 030 §8 Q4's own named case) and passivates both uniformly -- the
+  first time this codebase has ever held two different concrete actor types in one caller-side
+  list. Census confirms all three activations (session, workflow, the Project's own actor,
+  passivated LAST per the breakdown's own Phase I ordering) reach Dormant; restore never touches
+  any of them; a real `Run` issued against the member session after restore continues its EXACT
+  run-id sequence untouched (`s-member-1:run:2`, not a reminted one) -- 030 §4's own "the pause/
+  restore cycle is invisible to the run itself," now proven for a session reached through a
+  Project rather than directly.
+  **No per-Project actor existed before this phase.** §6's "the Project's own supervising actor"
+  (the thing `pause_project`/`restore_project` act on directly, not through the registry) had no
+  type in Phase H -- `registry.hpp`'s `ProjectRegistry` is the shared INDEX, one per deployment,
+  never one per Project. `ProjectSupervisor` (lifecycle.hpp) is new this phase: non-templated,
+  matching `WorkflowSupervisor`'s own shape, since `PassivatableHandle` absorbs all the
+  heterogeneity so the supervisor itself doesn't have to.
+  **`archive_project` is deliberately just `pause_project` plus a status flip, nothing else** -- no
+  retention/GC call anywhere, consistent with 030 §8 Q2's already-resolved "archived means hidden,
+  not shrunk," and consistent with no retention/GC mechanism existing in this codebase yet to call
+  even if this phase wanted to.
+  **G3's own "concurrent multi-principal load" stress framing is not built THIS phase** -- Phase
+  H's own H2 already proves the underlying cross-principal/cross-tenant isolation property
+  sequentially (registry.hpp's index is scoped on `principal_id` AND `principal_tenant_id`
+  together, structurally, not by a filter that could be bypassed); a genuinely concurrent
+  multi-principal stress version of the same claim is left to Phase J, which is where 030 §7's
+  gates are proven as a set against N ≥ 100 Projects.
 - **Phase J — exit-criterion proof.** 014 §8 G1 (each §3 pattern correct under *injected executor
   failure and delay*) and 030 §7 G1 (N ≥ 100 Projects; pausing one drops its sessions' and workflow
   supervisors' activations and sandboxes to zero with zero observable effect — latency and event
