@@ -978,6 +978,13 @@ add_executable(test_a2a_server test_a2a_server.cpp)
 target_link_libraries(test_a2a_server PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_a2a_server COMMAND test_a2a_server)
 
+# ---- Milestone 7 Phase D4 -- 012 §3/§4a's A2A client role (protocol\a2a\client.hpp):
+# send/get/cancel passthrough against a REAL A2aServer, plus digest-pinned Agent Card caching and
+# rug-pull detection, mirroring McpClient's own identical discipline for MCP tool listings ----------
+add_executable(test_a2a_client test_a2a_client.cpp)
+target_link_libraries(test_a2a_client PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_a2a_client COMMAND test_a2a_client)
+
 # ---- Milestone 5 Phase H4 -- EffectContext::principal wired through every outbound ChatClient
 # call, including on_behalf_of delegation for a session initialized with a derive_on_behalf_of()'d
 # principal (018 §1's "delegation only via on_behalf_of, never token passthrough").

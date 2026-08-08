@@ -30,6 +30,7 @@
 
 #include "agentengine/core/agent_registry.hpp"
 #include "agentengine/core/json_value.hpp"
+#include "agentengine/protocol/a2a/types.hpp"
 
 namespace agentengine::a2a {
 
@@ -111,16 +112,8 @@ struct AgentCardIdentity {
     return card;
 }
 
-namespace detail {
-
-[[nodiscard]] inline json::Value strings_to_json(std::vector<std::string> const& v) {
-    std::vector<json::Value> items;
-    items.reserve(v.size());
-    for (auto const& s : v) items.push_back(json::Value::make_string(s));
-    return json::Value::make_array(std::move(items));
-}
-
-}  // namespace detail
+// `detail::strings_to_json()` is `types.hpp`'s own -- reused as-is (sibling file, same
+// `agentengine::a2a` namespace, same feature), not redefined here.
 
 [[nodiscard]] inline json::Value to_json(AgentInterface const& i) {
     std::vector<std::pair<std::string, json::Value>> members{

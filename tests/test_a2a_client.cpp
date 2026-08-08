@@ -1,0 +1,213 @@
+// Milestone 7 Phase D4 (012-A2A-Conformance.md §3/§4a, docs/planning/milestone-7-protocol-
+// conformance-breakdown.md). Proves `A2aClient` (protocol/a2a/client.hpp) against a REAL `A2aServer`
+// (server.hpp, D3) wired over a real `quark::Engine`-hosted `AgentSession` for the happy-path
+// send/get/cancel passthrough, and a hand-rolled `CardFetcher` for the digest-pinned Agent Card
+// caching/rug-pull properties that need fine control over what a "peer" returns across multiple
+// fetches -- the identical split `test_mcp_client.cpp` already uses (a real server for the happy
+// path, a mock for multi-call cache control).
+
+#include <cstdio>
+#include <string>
+
+#include "quark/core/actor.hpp"
+#include "quark/core/actor_ref.hpp"
+#include "quark/core/engine.hpp"
+
+#include "agentengine/protocol/a2a/client.hpp"
+#include "agentengine/protocol/a2a/server.hpp"
+
+using namespace quark;
+
+namespace {
+
+int  g_failures = 0;
+void check(bool cond, char const* what) {
+    if (!cond) {
+        ++g_failures;
+        std::fprintf(stderr, "FAIL: %s\n", what);
+    } else {
+        std::fprintf(stderr, "  ok: %s\n", what);
+    }
+}
+
+namespace ae  = agentengine;
+namespace a2a = agentengine::a2a;
+
+class CannedChatClient {
+public:
+    [[nodiscard]] ae::ChatClientCapabilities capabilities() const { return {}; }
+    ae::task<ae::result<ae::ChatResponse>> chat(ae::ChatRequest const&, ae::EffectContext& ctx) {
+        ae::ContentItem item{};
+        item.value  = ae::Text{"reply to run " + ctx.run_id};
+        item.origin = ae::content_origin::assistant;
+        ae::Message reply{};
+        reply.role       = ae::role::assistant;
+        reply.message_id = "m-reply";
+        reply.content.push_back(item);
+        co_return ae::ChatResponse{reply, ae::Usage{1, 1, 0, 0, 0.0}};
+    }
+    ae::stream<ae::ChatResponseUpdate> chat_stream(ae::ChatRequest const&, ae::EffectContext&) { return {}; }
+};
+static_assert(ae::ChatClient<CannedChatClient>);
+
+using Session = ae::AgentSession<CannedChatClient>;
+
+struct Harness {
+    [[nodiscard]] static EngineConfig make_config() {
+        auto built = ConfigBuilder{}.workers(1).shards(1).default_drain_budget(64).build();
+        return *built;
+    }
+
+    Engine<>             eng{make_config()};
+    detail::MessagePool  pool{64};
+    Session               actor;
+    Activation            act;
+    LocalRouter           router;
+    ActorRef<Session>     ref;
+
+    Harness()
+        : act{&actor, Session::dispatch_table(), pool.sink()}, router{eng.post_courier(), pool} {
+        actor.initialize("s-a2a-client", ae::Principal{"p-owner", ""});
+        eng.register_activation(actor_id_of<Session>(1), act);
+        ref = router.get<Session>(1);
+        eng.start();
+    }
+
+    [[nodiscard]] a2a::RunStarter starter() {
+        return [this](ae::StartRun req) -> ae::result<a2a::RunOutcome> {
+            result<ae::AgentResponse> resp = block_on(ref.template ask<ae::AgentResponse>(std::move(req)));
+            if (!resp) {
+                return std::unexpected(ae::error{ae::failure_class::transient,
+                                                  "the run did not complete", "a2a.run_did_not_complete"});
+            }
+            return a2a::RunOutcome{actor.last_run_id(), *resp};
+        };
+    }
+};
+
+a2a::Message text_message(std::string text) {
+    a2a::Message m;
+    m.message_id = "wire-msg-1";
+    m.role        = a2a::a2a_role::user;
+    a2a::Part p;
+    p.value = a2a::TextPart{std::move(text)};
+    m.parts.push_back(std::move(p));
+    return m;
+}
+
+a2a::AgentCard make_card(std::string skill_name) {
+    a2a::AgentCard card;
+    card.name        = "remote-agent";
+    card.description = "A remote peer.";
+    card.version      = "1.0.0";
+    a2a::AgentSkill skill;
+    skill.id          = skill_name;
+    skill.name        = skill_name;
+    skill.description = "A skill.";
+    card.skills.push_back(skill);
+    return card;
+}
+
+}  // namespace
+
+int main() {
+    Harness h;
+    a2a::A2aServer server(h.starter(), "ctx-remote");
+
+    a2a::RemoteAgentTransport transport;
+    transport.send_message = [&server](a2a::Message const& m) { return server.send_message(m); };
+    transport.get_task     = [&server](std::string const& id) { return server.get_task(id); };
+    transport.cancel_task  = [&server](std::string const& id) { return server.cancel_task(id); };
+
+    // --- D4-1/2/3: happy-path client passthrough against a REAL server ------------------------------
+    {
+        a2a::A2aClient client(transport, []() -> ae::result<a2a::AgentCard> { return make_card("s1"); },
+                               "test-client");
+
+        auto sent = client.send_message(text_message("hello"));
+        check(sent.has_value(), "D4-1: send_message() passes through to the real remote server");
+        std::string task_id;
+        if (sent.has_value()) {
+            task_id = sent->id;
+            check(sent->status.state == a2a::task_state::completed,
+                  "D4-1: the real remote run completes successfully");
+        }
+
+        auto fetched = client.get_task(task_id);
+        check(fetched.has_value() && fetched->id == task_id,
+              "D4-2: get_task() passes through and retrieves the same real task");
+
+        auto cancelled = client.cancel_task(task_id);
+        check(!cancelled.has_value(),
+              "D4-3: cancel_task() on an already-terminal task passes through the server's own "
+              "faithful rejection, not silently swallowed into a false success");
+    }
+
+    // --- D4-4: the first fetch_agent_card() caches, and is exactly what the fetcher returned --------
+    {
+        int fetch_count = 0;
+        a2a::A2aClient client(transport,
+                               [&fetch_count]() -> ae::result<a2a::AgentCard> {
+                                   ++fetch_count;
+                                   return make_card("search");
+                               },
+                               "card-client");
+        auto first = client.fetch_agent_card();
+        check(first.has_value() && first->skills.size() == 1 && first->skills.front().id == "search",
+              "D4-4: the first fetch returns the real card content");
+        check(!client.rug_pull_detected(), "D4-4: no rug pull on the very first fetch");
+        check(client.cached_card().has_value() && client.cached_card()->name == "remote-agent",
+              "D4-4: the card is cached after fetching");
+    }
+
+    // --- D4-5: an UNCHANGED card across two fetches never flags a rug pull --------------------------
+    {
+        a2a::A2aClient client(transport, []() -> ae::result<a2a::AgentCard> { return make_card("fixed"); },
+                               "stable-client");
+        (void)client.fetch_agent_card();
+        (void)client.fetch_agent_card();
+        check(!client.rug_pull_detected(),
+              "D4-5: fetching the identical card twice never flags a rug pull");
+    }
+
+    // --- D4-6: a card that CHANGES between fetches (a different skill) IS detected -- §4a's own -----
+    // --- "re-approved rather than silently trusted" rule.                                          ---
+    {
+        int calls = 0;
+        a2a::A2aClient client(
+            transport,
+            [&calls]() -> ae::result<a2a::AgentCard> {
+                ++calls;
+                return calls == 1 ? make_card("original-skill") : make_card("DIFFERENT-skill");
+            },
+            "rugpull-client");
+        (void)client.fetch_agent_card();
+        check(!client.rug_pull_detected(), "D4-6: no rug pull detected on the first fetch");
+        (void)client.fetch_agent_card();
+        check(client.rug_pull_detected(),
+              "D4-6: a card whose skills changed between fetches under the same client is detected "
+              "as a rug pull, per §4a's digest-pinning rule");
+    }
+
+    // --- D4-7: a CardFetcher failure is propagated, never silently swallowed into an empty card -----
+    {
+        a2a::A2aClient client(
+            transport,
+            []() -> ae::result<a2a::AgentCard> {
+                return std::unexpected(
+                    ae::error{ae::failure_class::transient, "card unreachable", "test.card_unreachable"});
+            },
+            "failing-card-client");
+        auto fetched = client.fetch_agent_card();
+        check(!fetched.has_value(), "D4-7: a CardFetcher failure surfaces as a real error");
+        check(!client.cached_card().has_value(),
+              "D4-7: a failed fetch never populates the cache with anything");
+    }
+
+    if (g_failures == 0) {
+        std::printf("test_a2a_client: ALL PASS\n");
+        return 0;
+    }
+    std::fprintf(stderr, "test_a2a_client: %d failure(s)\n", g_failures);
+    return 1;
+}

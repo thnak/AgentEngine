@@ -424,6 +424,44 @@ enforcement), and 006 §6b's G6-G9 ... all hold — closing 019 §2's wake-condi
   before A2A's own envelope exists); `ListTasks`, push-notification config CRUD, streaming
   (`SubscribeToTask`/`SendStreamingMessage`), extensions, authentication/authorization, digest-pinned
   Agent Card caching (client role, not built at all yet).
+
+  **Outcome, D4 (2026-08-08, commit pending):** `protocol/a2a/client.hpp` (new) — `A2aClient`
+  (`send_message`/`get_task`/`cancel_task`, plain passthrough over a `RemoteAgentTransport` seam —
+  three callables mirroring §A.2's own `SendMessage`/`GetTask`/`CancelTask` table, the same "no real
+  transport yet, take what a transport would supply as given" layering `A2aServer`'s own `RunStarter`
+  already established), proven against a REAL `A2aServer` (D3) over a real `quark::Engine`-hosted
+  `AgentSession`, not a stub. `fetch_agent_card()` adds §4a's own digest-pinned caching: an FNV-1a
+  digest over the card's own JSON (the same non-cryptographic change-DETECTION idiom `McpClient`'s
+  own `digest_of()` already establishes for MCP tool listings, §8 there / §4a here) flags a card whose
+  content changed under repeated fetches as a rug pull — "re-approved rather than silently trusted" —
+  never silently overwriting the prior trust decision. `tests/test_a2a_client.cpp` (new, 12 checks,
+  all passing) proves the real send/get/cancel passthrough plus caching/no-rug-pull/rug-pull-detected/
+  fetcher-failure across four independent `A2aClient` instances sharing one real transport. 139/139
+  full suite (was 138 after D3).
+
+  **Bug found and fixed while building this phase**: `agent_card.hpp` (D2) and `types.hpp` (D1) had
+  each independently defined `agentengine::a2a::detail::strings_to_json()` — harmless while no file
+  included both, but `client.hpp` needed `AgentCard` (agent_card.hpp) alongside `Task`/`Message`
+  (types.hpp) and pulled in both, producing a same-translation-unit redefinition error. Fixed by
+  having `agent_card.hpp` include `types.hpp` and reuse its copy instead of duplicating — the two
+  files are the same feature/namespace, unlike the deliberate per-feature base64/FNV-1a duplication
+  this codebase uses elsewhere to avoid coupling UNRELATED features.
+
+  **What is honestly NOT built for D4** (all D5+ scope): binding a remote agent as a local `Tool<T>`
+  (§3's own "same declaration syntax as a local one," 012 §8's G5 gate — touches `core/tool.hpp`'s
+  zero-cost CRTP machinery, a Phase G promotion-gate proof, not built speculatively here); deadline/
+  cancellation PROPAGATION to a remote task (this client relays a caller's `cancel_task()` call, but
+  derives or forwards no deadline); `Suspended`-state mapping for a long-running remote task; JWS
+  card-signature verification (§4a); the JSON-RPC/REST transport itself (still a pure dispatcher on
+  both client and server sides, matching D3's own scope note).
+
+  Phase D's four sub-phases now cover the same conceptual ground Phase C covered for MCP (wire
+  envelope/types, server role, client role) plus the Agent Card piece MCP has no equivalent of. The
+  remaining A2A scope (D5+: the JSON-RPC/REST binding envelope itself, streaming, push notifications,
+  extensions, OAuth 2.1 authorization, remote-agent-as-tool binding for G5, TCK conformance tooling)
+  is transport/security-critical surface, the same category of work the user already chose to defer
+  for MCP (Phase C4+) in favor of moving on to the next phase — see the 2026-08-08 checkpoint after
+  this phase for how that was resolved for Phase D.
 - **Phase E** — 013 §2-§4: AG-UI projection, other-surface table, transport (SSE, binary framing,
   WebSocket), cross-surface equivalence proofs.
 - **Phase F** — 015: declarative agent/workflow YAML, the shared validator, equivalence corpus.
