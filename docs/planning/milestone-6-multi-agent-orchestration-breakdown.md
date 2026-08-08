@@ -367,6 +367,43 @@ H-I are 030; J is the milestone's own exit-criterion proof.
   member split, §8 Q1), always-snapshot-mode over the same `Store` seam, the registry actor,
   `create_project`/`list_projects`. *Falsifiable (G4):* a manifest write proportional to
   active-member count or archived-tail size.
+  **Outcome: built, and §3's own "always snapshot-mode, never event-sourced" sentence had to be
+  read narrowly to make G4 provable at all.** §8 Q1 resolved that the archived tail "can grow
+  unboundedly over a Project's long lifetime," and G4 requires a member moving to that tail to
+  never cost a write proportional to its size. A single Snapshot record holding BOTH
+  `active_members` and `archived_members` cannot satisfy that once the tail grows past trivial
+  size: `Store::save_snapshot` (persistence.hpp) is an overwrite-the-whole-blob write, O(current
+  blob size) on every call, by construction -- not a bug to route around, the actual contract of
+  the model. `project.hpp` therefore splits the two: `ProjectRecord` (project_id/principal/status/
+  `active_members`, kept small because members move OUT once their role completes) stays Snapshot,
+  matching §3's text; the archived tail moved to its own `EventLog<ProjectMember,S>` under a
+  SEPARATE `ActorId`, whose `commit()` cost is a function of the batch just staged, never of prior
+  history (ADR-009 C7) -- the exact property G4 asks for, and the identical lesson Phase F already
+  learned for `WorkflowSupervisor`'s own checkpoint log. G4 is proven by measurement, not asserted:
+  growing the archived tail to 2000 entries leaves a 5-active-member manifest's own
+  `tagged_object_size` byte-for-byte unchanged, and the per-member marginal cost of active-member
+  growth (5 -> 50) stays small and roughly constant.
+  **The registry actor never self-persists**, matching `AgentSession`/`WorkflowSupervisor`'s own
+  consistent I2 discipline across this codebase (found by grepping, not assuming: neither type's
+  own handler ever calls a `Store` function itself -- `journal_effect_intent`/`journal_effect_outcome`
+  aren't called from inside `AgentSession::handle()` either). `ProjectRegistry::handle(CreateProject)`
+  mutates only its own in-memory index; a host separately calls `append_project_registered`
+  (registry.hpp) and `save_project_snapshot` (project.hpp), exactly mirroring
+  `AgentSession::to_record()` + the external `save_agent_session_snapshot()` a host already drives.
+  **`CreateProject`/`CreateProjectResult` measured over Quark's 192-byte inline message-pool cell
+  (`detail::MessagePool::kMaxPayload`) before landing on their final shape.** The first draft
+  carried a full `Principal` (its own `kind`/`on_behalf_of`/`delegation_depth` fields this actor
+  never needs) plus `root_session_id`/`title`/`host_metadata`, and a full `ProjectRecord` echoed
+  back in the reply -- both well over budget, a real compile-time `static_assert` failure caught
+  before it could become a runtime surprise. The shipped shape carries only `project_id`/
+  `principal_id`/`principal_tenant_id` in the request and a bare `{ok, error_code}` in the reply;
+  a caller who wants `root_session_id`/`title`/`host_metadata` on the record already has every
+  input needed to build the rest of `ProjectRecord` itself before calling `save_project_snapshot` --
+  the registry's own job stays exactly what §1 says a Project already is one layer down: "an index,
+  not a new execution unit."
+  **`project_id` is caller-supplied, never minted here** -- matching `session_id`'s own provenance
+  (`AgentSession::initialize`), since this project has no wired random source anywhere and I5
+  forbids inventing one to mint ids with.
 - **Phase I — directed lifecycle (030 §4).** `pause_project` (member sessions, then workflow
   supervisors per §8 Q4, then the Project's own actor, last), `restore_project` (manifest only, no
   eager reactivation), resume, archive. *Falsifiable (G3):* `list_projects` returning another

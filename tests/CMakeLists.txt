@@ -706,6 +706,18 @@ if(AGENTENGINE_WITH_HTTPS)
   add_test(NAME test_workflow_live_view COMMAND test_workflow_live_view)
   set_tests_properties(test_workflow_live_view PROPERTIES TIMEOUT 120)
 
+  # ---- Milestone 6 Phase H: 030's Project manifest and registry (project.hpp, registry.hpp) ------
+  # H1-H3: the registry actor (create/duplicate-reject/principal-scoped list/recovery). H4-H5: the
+  # manifest's Snapshot round-trip and the archived tail's EventLog round-trip. G4 (030 §7's own
+  # gate): a manifest's serialized write cost is measured to be independent of archived-tail size
+  # (growing the tail to 2000 entries leaves the SAME manifest's own tagged_object_size unchanged)
+  # and scales only with current active-member count, never with history -- the forced EventLog/
+  # Snapshot split project.hpp's own header comment explains is what makes this even possible.
+  add_executable(test_project_registry test_project_registry.cpp)
+  target_link_libraries(test_project_registry PRIVATE agentengine::core agentengine_warnings)
+  add_test(NAME test_project_registry COMMAND test_project_registry)
+  set_tests_properties(test_project_registry PROPERTIES TIMEOUT 120)
+
   # ---- ADR-020 gates G1-G7: 004 §2's portable reasoning_effort, mapped down by both backends ------
   # Drives BOTH backends from the same enumerator values in one file, on purpose: the amendment's
   # claim is portability across two structurally different native shapes (a flat string vs a computed
