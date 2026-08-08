@@ -740,6 +740,74 @@ enforcement), and 006 §6b's G6-G9 ... all hold — closing 019 §2's wake-condi
 - **Phase G** — promotion gates: 011 §10 G1-G9, 012 §8 G1-G5, 013 §6 G1-G6, 015 §7 G1-G4, 006 §6b's
   G6-G9 — run for real, published percentages where the gate asks for one, milestone close-out.
 
+  **Gate audit (2026-08-08)** — before attempting to close any individual gate, every gate across all
+  five RFCs was checked against what Phases A-F actually built, with a citation for every verdict.
+  Most gates presuppose infrastructure this milestone deliberately did not build (a real network
+  listener/transport — ADR-021/ADR-022 both explicitly deferred it; official conformance-tool
+  integration; a reference AG-UI client; recording/execution-tracing integration; a document
+  digest/content-addressing scheme) — this audit's job is to say so precisely, per gate, rather than
+  leave the milestone's own exit criterion an open question.
+
+  **MET (real, executed evidence):**
+  - **006 §6b G8** — cross-principal `cancel_standing_effect` denial (Phase B, `test_agent_session_background_task.cpp`).
+  - **006 §6b G9** — `Background<max_concurrent>` cap rejection at authorize (Phase B; reconfirmed through the MCP tasks-extension path, Phase C4-7).
+  - **013 §6 G3** — cross-surface equivalence: one real `AgentSession` run projects consistently to AG-UI and A2A (Phase E4, `test_cross_surface_equivalence.cpp`, 11 checks).
+
+  **PARTIALLY MET (real evidence, narrower than the gate's own full bar):**
+  - **006 §6b G7** — the "does not block the turn" half is proven (Phase B); full survival across a
+    real suspend/resume or process restart is NOT proven — `StandingEffect` is serializable but not
+    yet threaded into `AgentSessionRecord`'s own checkpoint (named in Phase B's own outcome).
+  - **011 §10 G5 (cache correctness)** — `ttlMs`/cache-key correctness proven (Phase C3); cross-
+    principal `cacheScope` isolation is explicitly NOT built (Phase C3's own scope note).
+  - **011 §10 G6 (rug-pull)** — detection is proven (`McpClient::rug_pull_detected()`, Phase C3-8);
+    the flag surfacing into an actual re-approval gate that BLOCKS a subsequent call is explicitly NOT
+    built (Phase C3's own scope note).
+  - **011 §10 G7 (authorization negative suite)** — the underlying bearer-token MECHANISM is fully
+    proven (ADR-021's prove phase: wrong audience, expired, replayed, tampered signature, wrong
+    issuer, 32 checks) but is not integrated into an actual MCP request flow (no listener exists).
+  - **012 §8 G2 (round-trip fidelity)** — every `Part` kind including unknown ones round-trips (Phase
+    D1, 30 checks), but not the full systematic corpus across nested `Message`/`Artifact`/`Task`
+    depths the gate's own "over a corpus" language implies.
+  - **012 §8 G3 (full lifecycle coverage)** — `INPUT_REQUIRED`/`AUTH_REQUIRED` as real, non-terminal
+    task-state transitions are proven (Phase D3, Phase E4); "terminal is terminal" is proven (Phase
+    D3-6); genuine cancel-IN-FLIGHT is NOT provable — every task this codebase's dispatcher can
+    produce is already terminal by the time it is observable (Phase D3's own scope note, an honest
+    limitation of the fully-synchronous dispatch this milestone built, not an oversight).
+  - **015 §7 G1 (equivalence)** — a real, field-for-field cross-check between the YAML and C++ forms
+    is proven for both document types (Phase F2, Phase F3) — but each is ONE hand-picked comparison,
+    not the systematic corpus "covering every policy in 002 §3" the gate's own text requires.
+
+  **BLOCKED (no infrastructure to run against yet, cited to what's missing):**
+  - **011 §10 G1/G2/G3/G4/G8/G9** — no real HTTP transport/listener (ADR-021/ADR-022 both explicitly
+    deferred building it), no official `@modelcontextprotocol/conformance` tool integration, no
+    replica/deployment infrastructure, no fault-injection harness, no `traceparent`/016 telemetry
+    integration, no `server.json` registry publishing.
+  - **012 §8 G1/G4/G5** — no `a2a-tck` integration, no push-notification delivery mechanism at all
+    (named absent since Phase D's own scoping), no remote-agent-as-tool binding (Phase D4's own named
+    residual — touches `core/tool.hpp`'s CRTP machinery, scoped as Phase G's own future work there).
+  - **013 §6 G1/G2/G4/G5/G6** — no AG-UI reference-client integration, no backpressure/memory
+    measurement harness, no recording integration for the `RunEvent` stream, no AG-UI compatibility
+    suite or access to AG-UI's own client-side verifier, binary protobuf framing not built (Phase E3's
+    own named residual — no protobuf library vendored anywhere).
+  - **015 §7 G2/G3/G4** — the specific negative-corpus cases the gate names (secret literal, capability-
+    widening overlay, cyclic `$ref`) are NOT covered by F1-F3's own ad-hoc rejection tests, which check
+    a different, narrower set (malformed YAML, unknown enum values, ambiguous edge forms); no
+    execution/trace-comparison exists (F2 only compiles to `Workflow`, never runs one); no document
+    digest/content-addressing scheme exists for declarative documents.
+  - **006 §6b G6** — not merely unproven but currently UNPROVABLE as stated: `schedule_wakeup` still
+    ships via the pre-existing `TimerWake`/reminder-service path, never through `StandingEffect`
+    (Phase B's own note), and `watch_resource` has no real producer anywhere. The gate's own "a run
+    that calls `schedule_wakeup` or `watch_resource`" premise does not connect to a `StandingEffect`
+    census today regardless of what test is written.
+
+  **Net**: of 28 named gates across the five RFCs, 3 are fully MET, 7 are PARTIALLY met with real,
+  cited evidence, and 18 are BLOCKED on infrastructure this milestone's own earlier phases deliberately
+  scoped out (a real listener chief among them — the single largest unblock, since it gates the
+  majority of 011/012/013's own remaining gates simultaneously). The milestone's own stated exit
+  criterion (this doc's own header quote) is NOT achievable without that infrastructure; this audit is
+  the honest accounting the roadmap needs before deciding what real work closes the gap, rather than a
+  claim that it already has.
+
 Each phase follows the established M6 discipline: implement → build (PowerShell + `vcvarsall`) →
 test → full-suite regression → update this doc's own phase "Outcome:" → one commit, narrative body,
 no co-author trailer.
