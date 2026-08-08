@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <memory_resource>
 #include <optional>
 #include <type_traits>
 #include <span>
@@ -44,6 +45,8 @@
 #include "agentengine/core/history_provider.hpp"
 #include "agentengine/core/interaction.hpp"
 #include "agentengine/core/json_value.hpp"
+#include "agentengine/core/run_event.hpp"
+#include "agentengine/core/stream.hpp"
 #include "agentengine/trust/principal.hpp"
 
 namespace agentengine {
@@ -308,7 +311,16 @@ public:
         effect_context_.turn_index = 0;
         last_run_id_ = effect_context_.run_id;
 
+        // Milestone 7 Phase A (013 §1). Reset the per-run sequence counter FIRST -- everything below
+        // is seq 1, 2, 3, ... for THIS run_id, never carrying a prior run's count forward (013 §1:
+        // "monotonic per run"). No event fires for the admission-denial branch above: 001 §1 mints no
+        // Run at all when admission fails, so there is no run_id to attach an event to.
+        run_event_seq_ = 0;
+        emit_run_event(run_event_kind::run_started);
+
         history_.push_back(m.query.input);
+
+        emit_run_event(run_event_kind::turn_started, run_event_payload::Turn{effect_context_.turn_index});
 
         // Milestone 4 Phase B2: what the model sees is now derived through a real
         // `ContextProvider` (005 §3/§5) instead of `ChatRequest{history_}` directly — still exactly
@@ -321,6 +333,8 @@ public:
             co_await history_provider_.on_context(session_ctx, effect_context_);
         if (!contribution) {
             // Same fail-closed shape as the chat-failure branch below — never fabricate a context.
+            emit_run_event(run_event_kind::run_failed,
+                            run_event_payload::RunFailed{"run.context_unavailable", contribution.error().message});
             co_return;
         }
 
@@ -329,15 +343,21 @@ public:
             // ADR-018: only reachable for a non-default-constructible `ChatClientT` whose owner never
             // called `emplace_chat_client()`. Same fail-closed shape as every other branch here --
             // never fabricate an `AgentResponse` for a run that never reached a model.
+            emit_run_event(run_event_kind::run_failed,
+                            run_event_payload::RunFailed{"run.no_chat_client", "no ChatClientT configured"});
             co_return;
         }
+        emit_run_event(run_event_kind::model_call_started);
         result<ChatResponse> response = co_await chat_client_->chat(request, effect_context_);
+        emit_run_event(run_event_kind::model_call_finished);
         if (!response) {
             // 001 §6's failure classification isn't wired up at this milestone — fail closed by
             // never responding, rather than fabricating a placeholder AgentResponse. The caller's
             // ask then resolves however the reply-cell's own "never replied" path surfaces it
             // (quark/core/testkit.hpp: "failed by reply-before-teardown if the handler never
             // replied — never a hang").
+            emit_run_event(run_event_kind::run_failed,
+                            run_event_payload::RunFailed{"run.chat_failed", response.error().message});
             co_return;
         }
 
@@ -361,6 +381,9 @@ public:
             // it already means elsewhere in this handler: never respond. The caller's ask then
             // resolves via the reply-cell's own "never replied" path (quark/core/testkit.hpp: "failed
             // by reply-before-teardown if the handler never replied -- never a hang").
+            emit_run_event(run_event_kind::run_failed,
+                            run_event_payload::RunFailed{"run.token_budget_exceeded",
+                                                          "per-run token budget exceeded"});
             co_return;
         }
 
@@ -371,6 +394,8 @@ public:
         // allocation -- never dangling across a push that could reallocate).
         std::span<Message const> const turn_messages{history_.data() + history_.size() - 2, 2};
         co_await history_provider_.on_turn_end(TurnView{turn_messages}, effect_context_);
+        emit_run_event(run_event_kind::turn_finished, run_event_payload::Turn{effect_context_.turn_index});
+        emit_run_event(run_event_kind::run_finished);
         m.respond(AgentResponse{response->message, response->usage});
     }
 
@@ -381,6 +406,18 @@ public:
     void handle(TimerWake const&) noexcept { ++timer_wakes_; }
 
     [[nodiscard]] std::uint64_t timer_wakes() const noexcept { return timer_wakes_; }
+
+    // Milestone 7 Phase A (013 §1). Mirrors `WorkflowSupervisor::enable_live_view()` exactly (M6
+    // Phase G): build a fresh producer/consumer pair over `run_event.hpp`'s `RunEvent`, keep the
+    // producer, hand the caller the consumer. Call before the first `StartRun` a caller wants
+    // observed -- an event fired before this is called is simply not pushed (`emit_run_event`'s own
+    // `.valid()` guard), the same "invalid until enabled" default `live_view_producer_` has.
+    [[nodiscard]] stream<RunEvent> enable_event_stream(std::pmr::memory_resource* mr,
+                                                        stream_config<RunEvent> cfg = {}) {
+        auto pair            = make_stream<RunEvent>(mr, cfg);
+        run_event_producer_ = std::move(pair.producer);
+        return std::move(pair.consumer);
+    }
 
     [[nodiscard]] std::vector<Message> const& history() const noexcept { return history_; }
 
@@ -676,6 +713,19 @@ public:
     }
 
 private:
+    // Milestone 7 Phase A (013 §1: "Ordered and monotonic per run, with a sequence number"). A
+    // no-op before `enable_event_stream()` is called -- exactly `WorkflowSupervisor`'s own
+    // `live_view_producer_.valid()` guard (M6 Phase G, supervisor.hpp).
+    void emit_run_event(run_event_kind kind, RunEventPayload payload = run_event_payload::Empty{}) {
+        if (!run_event_producer_.valid()) return;
+        RunEvent ev;
+        ev.run_id  = effect_context_.run_id;
+        ev.seq     = ++run_event_seq_;
+        ev.kind    = kind;
+        ev.payload = std::move(payload);
+        (void)run_event_producer_.push(std::move(ev));
+    }
+
     // Engaged when `ChatClientT` is default-constructible (every pre-ADR-018 conformer), empty
     // otherwise -- which is precisely what keeps `AgentSession` itself default-constructible, and so
     // usable under `quark::TestKit<A>`, for a backend that is not.
@@ -726,6 +776,12 @@ private:
     // admission. Same "counter the caller/tests can observe even on the fail-closed path" shape as
     // `run_tokens_consumed_` immediately above it.
     std::uint64_t                                      admission_denied_count_ = 0;
+    // Milestone 7 Phase A (013 §1) -- invalid until `enable_event_stream()` is called, the same
+    // "invalid until enabled" shape `WorkflowSupervisor::live_view_producer_` already established
+    // (M6 Phase G). `run_event_seq_` resets to 0 at the top of every `handle()` -- 013 §1's sequence
+    // number is monotonic PER RUN, not across this actor's whole lifetime across many runs.
+    stream_producer<RunEvent>                          run_event_producer_;
+    std::uint64_t                                       run_event_seq_ = 0;
 };
 
 // Save `session`'s narrowed durable record (Phase A4, extended with run position in Phase D1)

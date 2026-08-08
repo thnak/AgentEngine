@@ -917,6 +917,12 @@ add_executable(test_agent_session_admission test_agent_session_admission.cpp)
 target_link_libraries(test_agent_session_admission PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_agent_session_admission COMMAND test_agent_session_admission)
 
+# ---- Milestone 7 Phase A -- 013 §1's internal run event stream (run_event.hpp,
+# AgentSession::enable_event_stream()): real emission at the turn loop's actual boundaries -----------
+add_executable(test_agent_session_run_event_stream test_agent_session_run_event_stream.cpp)
+target_link_libraries(test_agent_session_run_event_stream PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_agent_session_run_event_stream COMMAND test_agent_session_run_event_stream)
+
 # ---- Milestone 5 Phase H4 -- EffectContext::principal wired through every outbound ChatClient
 # call, including on_behalf_of delegation for a session initialized with a derive_on_behalf_of()'d
 # principal (018 §1's "delegation only via on_behalf_of, never token passthrough").
