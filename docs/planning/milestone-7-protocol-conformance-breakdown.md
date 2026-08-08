@@ -563,6 +563,45 @@ enforcement), and 006 §6b's G6-G9 ... all hold — closing 019 §2's wake-condi
   What remains in Phase E's own original scope (§3's other-surface projections — A2A streaming, MCP
   progress notifications — touching the already-built A2A/MCP code from Phases C/D rather than new
   AG-UI ground, plus §6 G3's cross-surface equivalence proof) is scoped but not started.
+
+  **Outcome, E4 (2026-08-08, commit pending):** `protocol/a2a/streaming.hpp` (new) —
+  `TaskStatusUpdateEvent`/`TaskArtifactUpdateEvent`/`StreamResponse` (§A.4's wire envelope types D1
+  scoped out — D1 built the `Task`/`Message`/`Part`/`Artifact` object model, not the streaming
+  envelope around it) and `A2aStreamProjector`, mapping `RunEvent` onto A2A's real task-lifecycle
+  states. A2A's task model is coarser-grained than AG-UI's own event stream (012 §1: one
+  task-lifecycle state machine per run, no wire slot for turn/model/tool-call granularity) — most
+  `RunEvent` kinds have no A2A streaming projection at all, honestly returning an empty vector rather
+  than fabricating one (proven directly). The notable, RFC-confirming finding: `input_required`/
+  `auth_required` map onto REAL, NON-terminal A2A task states (`TASK_STATE_INPUT_REQUIRED`/
+  `TASK_STATE_AUTH_REQUIRED`, proven non-terminal via `is_terminal()`) — unlike AG-UI, which has no
+  pause event and must END the run (E2's own `RunFinishedInterrupt`). This is 012 §5a's "three
+  incompatible shapes for one idea" made concrete in code: MCP retries, AG-UI restarts, A2A
+  *continues* — the same internal `input_required` event produces a genuinely different SHAPE of
+  reaction on each surface, not just a different wire encoding of the same reaction.
+  `approval_requested` honestly collapses onto `TASK_STATE_INPUT_REQUIRED` (A2A has no distinct
+  "confirmation" state); `artifact_produced` produces a real `TaskArtifactUpdateEvent` with an
+  HONESTLY EMPTY `parts[]` (`ArtifactProduced`'s own payload carries no content to populate them
+  from). `protocol/mcp/progress.hpp` (new) — `McpProgressProjector`, narrowly scoped to
+  `tool_call_delta` only (013 §3's own table names exactly this one source, not a vocabulary to map
+  exhaustively), with a per-`progressToken` monotonically-increasing counter closing the cited spec
+  MUST ("the progress value MUST increase with each notification",
+  `docs/research/2026-mcp-protocol-detail.md` §10) — proven directly, including that a different token
+  gets its own independent counter. `tests/test_a2a_streaming.cpp` (new, 13 checks),
+  `tests/test_mcp_progress.cpp` (new, 8 checks), and `tests/test_cross_surface_equivalence.cpp` (new,
+  11 checks) — the last one is 013 §6 G3's own real evidence: ONE real `AgentSession` run (both a
+  success path and a failure path), the SAME captured internal event sequence fed through both
+  `RunEventProjector` and `A2aStreamProjector`, proving both surfaces agree on outcome (neither ever
+  shows success while the other shows failure) and relative ordering (both observe "started" strictly
+  before "finished"), judged at the outcome level rather than byte-identical wire content — which is
+  impossible across two structurally different protocols and not what G3 asks for. All passing.
+  146/146 full suite (was 143 after E3).
+
+  **What is honestly NOT built for E4**: `TaskStatusUpdateEvent.status.message` is never populated (no
+  `Message` content is threaded through from the internal event, only the bare state transition);
+  `TaskArtifactUpdateEvent.append`/`last_chunk` (no chunked-artifact-streaming source exists yet);
+  MCP's `total` field for progress notifications (nothing in `ToolCallDelta`'s payload carries one);
+  full G1-G6 promotion-gate EXECUTION (§6) — this phase produces real evidence toward G3 specifically,
+  not a claim that the gate itself has been run; that is Phase G's own job at milestone close.
 - **Phase F** — 015: declarative agent/workflow YAML, the shared validator, equivalence corpus.
 - **Phase G** — promotion gates: 011 §10 G1-G9, 012 §8 G1-G5, 013 §6 G1-G6, 015 §7 G1-G4, 006 §6b's
   G6-G9 — run for real, published percentages where the gate asks for one, milestone close-out.

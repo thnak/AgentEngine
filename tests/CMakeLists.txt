@@ -1005,6 +1005,21 @@ add_executable(test_agui_sse test_agui_sse.cpp)
 target_link_libraries(test_agui_sse PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_agui_sse COMMAND test_agui_sse)
 
+# ---- Milestone 7 Phase E4 -- 012 §2.3/013 §3's A2A streaming projection (protocol\a2a\streaming.hpp)
+# and 013 §3's MCP progress projection (protocol\mcp\progress.hpp), plus 013 §6 G3's cross-surface
+# equivalence proof (a real run's SAME internal event sequence projected to both AG-UI and A2A) -----
+add_executable(test_a2a_streaming test_a2a_streaming.cpp)
+target_link_libraries(test_a2a_streaming PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_a2a_streaming COMMAND test_a2a_streaming)
+
+add_executable(test_mcp_progress test_mcp_progress.cpp)
+target_link_libraries(test_mcp_progress PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_mcp_progress COMMAND test_mcp_progress)
+
+add_executable(test_cross_surface_equivalence test_cross_surface_equivalence.cpp)
+target_link_libraries(test_cross_surface_equivalence PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_cross_surface_equivalence COMMAND test_cross_surface_equivalence)
+
 # ---- Milestone 5 Phase H4 -- EffectContext::principal wired through every outbound ChatClient
 # call, including on_behalf_of delegation for a session initialized with a derive_on_behalf_of()'d
 # principal (018 §1's "delegation only via on_behalf_of, never token passthrough").
