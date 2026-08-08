@@ -16,6 +16,8 @@
 #include <cstring>
 #include <utility>
 
+#include "agentengine/trust/hmac.hpp"
+
 #pragma comment(lib, "bcrypt.lib")
 
 namespace agentengine::trust {
@@ -30,43 +32,11 @@ std::unexpected<ae::error> bcrypt_error(char const* what, NTSTATUS status) {
     });
 }
 
-// HMAC-SHA256(key, data) -> 32-byte MAC. One-shot: opens a fresh HMAC provider/hash object per
-// call rather than caching a handle, trading a little performance for a smaller, easier-to-audit
-// surface -- this is a small-prove-scope choice (ADR-005 §2), not a claim that it is the fastest
-// possible construction.
-result<Mac> hmac_sha256(std::uint8_t const* key, std::size_t key_len,
-                         std::uint8_t const* data, std::size_t data_len) {
-    BCRYPT_ALG_HANDLE alg = nullptr;
-    NTSTATUS status = BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, nullptr,
-                                                   BCRYPT_ALG_HANDLE_HMAC_FLAG);
-    if (!BCRYPT_SUCCESS(status)) {
-        return bcrypt_error("BCryptOpenAlgorithmProvider", status);
-    }
-
-    BCRYPT_HASH_HANDLE hash = nullptr;
-    status = BCryptCreateHash(alg, &hash, nullptr, 0,
-                               const_cast<PUCHAR>(key), static_cast<ULONG>(key_len), 0);
-    if (!BCRYPT_SUCCESS(status)) {
-        BCryptCloseAlgorithmProvider(alg, 0);
-        return bcrypt_error("BCryptCreateHash", status);
-    }
-
-    status = BCryptHashData(hash, const_cast<PUCHAR>(data), static_cast<ULONG>(data_len), 0);
-    if (!BCRYPT_SUCCESS(status)) {
-        BCryptDestroyHash(hash);
-        BCryptCloseAlgorithmProvider(alg, 0);
-        return bcrypt_error("BCryptHashData", status);
-    }
-
-    Mac out{};
-    status = BCryptFinishHash(hash, out.data(), static_cast<ULONG>(out.size()), 0);
-    BCryptDestroyHash(hash);
-    BCryptCloseAlgorithmProvider(alg, 0);
-    if (!BCRYPT_SUCCESS(status)) {
-        return bcrypt_error("BCryptFinishHash", status);
-    }
-    return out;
-}
+// Milestone 7 (ADR-021): `hmac_sha256`/`constant_time_equal` moved to trust/hmac.hpp so a second,
+// unrelated component can reuse the exact same audited implementation. This file keeps its own
+// `bcrypt_error` (used by `generate_secret_key()`'s own direct `BCryptGenRandom` call below, which
+// hmac.hpp has no reason to know about) rather than sharing a five-line formatter across an
+// unrelated concern.
 
 // ---- Canonical encoding (ADR-005 §3.2) --------------------------------------------------------
 // Every variable-length field is length-prefixed (u32, little-endian) so no two distinct
@@ -106,14 +76,6 @@ std::vector<std::uint8_t> encode_caveat(Caveat const& caveat) {
         put_str(out, pfx->prefix);
     }
     return out;
-}
-
-bool constant_time_equal(Mac const& a, Mac const& b) {
-    std::uint8_t diff = 0;
-    for (std::size_t i = 0; i < kMacBytes; ++i) {
-        diff |= static_cast<std::uint8_t>(a[i] ^ b[i]);
-    }
-    return diff == 0;
 }
 
 } // namespace

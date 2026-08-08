@@ -423,11 +423,16 @@ endif()
 # host-side-registry alternative it is measured against). HMAC-SHA256 and randomness come from
 # Windows CNG/BCrypt, a system API (bcrypt.lib) -- not a third-party dependency, same posture as
 # job_object_limits.cpp's direct use of Job Objects, so this needs no CMake option gate beyond the
-# platform check.
+# platform check. trust/hmac.cpp (Milestone 7, ADR-021) extracted the shared HMAC-SHA256/constant-
+# time-compare primitive so bearer_token.cpp (ADR-021's own inbound-auth token, a DIFFERENT concept
+# from this file's cross-process capability token) reuses the identical audited implementation
+# rather than a second one.
 if(WIN32)
   add_library(agentengine_capability_token STATIC
+    src/trust/hmac.cpp
     src/trust/capability_token.cpp
-    src/trust/capability_registry.cpp)
+    src/trust/capability_registry.cpp
+    src/trust/bearer_token.cpp)
   target_link_libraries(agentengine_capability_token PUBLIC agentengine::core)
   target_link_libraries(agentengine_capability_token PRIVATE agentengine_warnings bcrypt)
   add_library(agentengine::capability_token ALIAS agentengine_capability_token)

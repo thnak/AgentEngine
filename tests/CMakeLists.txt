@@ -1445,6 +1445,13 @@ if(WIN32)
   target_link_libraries(test_capability_token_benchmark PRIVATE
     agentengine::core agentengine::capability_token agentengine_warnings)
   add_test(NAME test_capability_token_benchmark COMMAND test_capability_token_benchmark)
+
+  # ---- ADR-021 prove phase -- the inbound bearer-token mechanism (trust/bearer_token.hpp),
+  # closing the specific red-team findings named in that header/decisions/ADR-021 §6 ---------------
+  add_executable(test_bearer_token_proof test_bearer_token_proof.cpp)
+  target_link_libraries(test_bearer_token_proof PRIVATE
+    agentengine::core agentengine::capability_token agentengine_warnings)
+  add_test(NAME test_bearer_token_proof COMMAND test_bearer_token_proof)
 endif()
 
 # ---- Worktree content-addressed object store (025 §2, Milestone 3 Phase A1) --------------------
