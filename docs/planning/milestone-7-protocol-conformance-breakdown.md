@@ -247,6 +247,31 @@ enforcement), and 006 §6b's G6-G9 ... all hold — closing 019 §2's wake-condi
   `prompts/list`, and every deprecated-feature surface (§3.5) are simply unrecognized methods
   (`MethodNotFound`) at this stage, not yet implemented; tool `annotations` (readOnlyHint/
   destructiveHint/etc., §3.1) have no declaration surface in `core/tool.hpp` yet.
+
+  **Outcome, C3 (2026-08-08, commit pending):** `protocol/mcp/client.hpp` (new) — `McpClient`, built
+  against the same `RequestSender` (`JsonRpcRequest -> JsonRpcResponse`) abstraction `McpServer` uses
+  on the other side, so this phase's own test wires it directly into a real `McpServer::dispatch()`
+  for the happy path and a hand-rolled mock sender for the caching/pagination/rug-pull properties that
+  need multi-call control a truthful real server can't provide. Proves §3.1's client-side half of the
+  `isError` split: an execution failure (`isError:true`) is a SUCCESSFUL `result<>`, never thrown or
+  treated as a client-side failure -- only a genuine protocol error (unknown tool/method) is. Caching
+  follows §3.1's own rule literally: cache key is method+params (an empty-string cursor is its OWN
+  cache entry, distinct from any other cursor, never conflated with "no cursor"), and `ttlMs <= 0`
+  means "never serve from cache" (not "cache forever" -- the naive reading a `ttl == 0` check would
+  produce). Digest-pinning (§8) hashes each `tools/list` response (FNV-1a over
+  name+description+schema, the same non-cryptographic deterministic-hash idiom `argument_digest()`
+  already uses) and flags a change under the same cache key as a detected rug pull.
+  `tests/test_mcp_client.cpp` (new, 16 checks, all passing) proves all of the above. 133/133 full suite
+  (was 132 after C2).
+
+  **What is honestly NOT built for C3**: the generic JSON-Schema-2020-12 validator §3.1 asks for
+  (validating arbitrary JSON against a THIRD PARTY server's own claimed schema, with `$ref` hardening
+  and composition-keyword depth/time budgets) -- this client reads a discovered tool's schema but does
+  not validate against it; real multi-page pagination (proven only at the cache-key level against a
+  mock, since `McpServer`, C2, has no actual cursor-based paging to page through); `cacheScope`'s
+  cross-*principal* isolation (needs a real multi-principal transport context); a rug-pull-detected
+  flag surfacing into an actual re-approval gate (§8's "re-approval" half -- `rug_pull_detected()` is
+  observable, but nothing yet BLOCKS a subsequent call on it).
 - **Phase D** — 012 A2A: server role (§2: Agent Card, HTTP+JSON/REST + JSON-RPC bindings, task
   management, push notifications) and client role (§3: consuming remote agents), against v1.0;
   closes 019 §2's remaining two wake rows.
