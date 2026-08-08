@@ -316,11 +316,17 @@ enforcement), and 006 §6b's G6-G9 ... all hold — closing 019 §2's wake-condi
     purpose, proving v1.0's own two breaking changes from 0.3.x before any server/client role is built
     on top: `Part`'s `kind` discriminator is GONE (the JSON member name is the discriminator), and
     enums serialize as full SCREAMING_SNAKE names.
-  - **D2+** — server role (Agent Card generation, JSON-RPC/REST bindings, `Task ← Run` projection off
-    013 §1's event stream, streaming, push notifications) and client role (remote-agent-as-tool
-    binding, digest-pinned card caching) — scoped in more detail as each is reached, per the user's own
-    2026-08-08 decision to check in before committing to Phase D's full autonomous scope (it is a
-    materially larger surface than Phase C's own MCP conformance work).
+  - **D2** — Agent Card generation (`protocol/a2a/agent_card.hpp`) from a real, `register_agent<A>()`-
+    compiled `AgentMetadata`: skills derived one-per-tool from the real `ToolTable`, §2.1's own
+    "advertises only what the conformance suite proves" rule enforced by construction (no binding
+    exists yet, so `supportedInterfaces`/`capabilities.streaming`/`pushNotifications` default empty/
+    false rather than fabricated).
+  - **D3+** — JSON-RPC binding (server role: `SendMessage`/`GetTask`/`CancelTask` wired to a real
+    `AgentSession`, `Task ← Run` projection off 013 §1's event stream and `Interaction`/
+    `open_interactions`), client role (remote-agent-as-tool binding, digest-pinned card caching),
+    streaming (`SubscribeToTask`), push notifications, extensions, authentication — scoped in more
+    detail as each is reached, per the user's own 2026-08-08 "full autonomous push through D2+, same as
+    Phase C" decision superseding the earlier per-sub-phase check-in.
 
   **Outcome, D1 (2026-08-08, commit pending):** `protocol/a2a/types.hpp` (new) — `task_state`/
   `a2a_role` enums with `to_wire_string()`/`from_wire_string()` proving the full 9-value and 3-value
@@ -346,6 +352,33 @@ enforcement), and 006 §6b's G6-G9 ... all hold — closing 019 §2's wake-condi
   objects that would ride inside one); streaming (`SubscribeToTask`), push notifications, extensions,
   authentication/authorization, digest-pinned card caching; the round-trip fidelity CORPUS G2 asks for
   (this phase proves the mechanism on hand-picked cases, not an exhaustive corpus run).
+
+  **Outcome, D2 (2026-08-08, commit pending):** `protocol/a2a/agent_card.hpp` (new) — `AgentCard`/
+  `AgentInterface`/`AgentSkill`/`AgentCapabilities` (§A.3's own field shapes) plus `to_agent_card()`,
+  which reads exactly what `AgentMetadata` (002, agent_registry.hpp) actually carries today —
+  `agent_name` and a real `ToolTable` (one `AgentSkill` per registered tool, name/description straight
+  from `ToolDescriptor`, the same "one schema source" discipline `protocol/mcp/server.hpp`'s own
+  `to_mcp_tool_list_entry()` already established for `tools/list`) — and nothing it does not.
+  `description`/`version`/`defaultInputModes`/`defaultOutputModes` are explicit caller-supplied
+  `AgentCardIdentity` fields rather than fabricated from `agent_instructions`: `AgentMetadata` (002-
+  owned, M2/M5 vintage) has no description/version/modality-declaration fields yet, a real gap named
+  here rather than papered over. §2.1's own "the card advertises only what the conformance suite
+  proves" rule is enforced BY CONSTRUCTION, not just by convention: `supported_interfaces` defaults
+  empty and `capabilities.streaming`/`push_notifications` default `false`, since no JSON-RPC/REST
+  binding or streaming/push machinery exists yet (D3+'s own job) — proven directly (D2-3). `AgentSkill.
+  tags` is always a present-but-empty array (§A.3 requires the field; no tag vocabulary exists
+  anywhere in `core/tool.hpp` to populate it from, so it is never invented from a tool's name/
+  description text, proven D2-7). `tests/test_a2a_agent_card.cpp` (new, 15 checks, all passing)
+  proves all of the above against two REAL `register_agent<A>()`-compiled agents (one with two tools,
+  one with none), including that a caller-supplied `AgentInterface` (the shape a real D3+ binding will
+  actually populate) round-trips untouched. 136/136 full suite (was 135 after D1).
+
+  **What is honestly NOT built for D2**: the optional §A.3 fields (`provider`, `documentationUrl`,
+  `securitySchemes`, `securityRequirements`, `signatures` — §4a's JWS signing, `iconUrl`); the
+  well-known-URI HTTP surface (`GET /.well-known/agent-card.json`) that would actually SERVE this card
+  (transport work, D3+); `AgentSkill.examples`/`inputModes`/`outputModes` population (present in the
+  type, never populated — no source for them exists yet, same honesty as `tags`); skill plugins (009
+  §8) contributing additional skills beyond the declared tool set.
 - **Phase E** — 013 §2-§4: AG-UI projection, other-surface table, transport (SSE, binary framing,
   WebSocket), cross-surface equivalence proofs.
 - **Phase F** — 015: declarative agent/workflow YAML, the shared validator, equivalence corpus.

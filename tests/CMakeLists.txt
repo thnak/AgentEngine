@@ -960,6 +960,13 @@ add_executable(test_a2a_types test_a2a_types.cpp)
 target_link_libraries(test_a2a_types PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_a2a_types COMMAND test_a2a_types)
 
+# ---- Milestone 7 Phase D2 -- 012 §2.1's Agent Card generation (protocol\a2a\agent_card.hpp): skills
+# derived from a REAL register_agent<A>()-compiled AgentMetadata's ToolTable, never hand-maintained,
+# advertising only what this codebase can actually serve (no fabricated bindings/capabilities) -------
+add_executable(test_a2a_agent_card test_a2a_agent_card.cpp)
+target_link_libraries(test_a2a_agent_card PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_a2a_agent_card COMMAND test_a2a_agent_card)
+
 # ---- Milestone 5 Phase H4 -- EffectContext::principal wired through every outbound ChatClient
 # call, including on_behalf_of delegation for a session initialized with a derive_on_behalf_of()'d
 # principal (018 §1's "delegation only via on_behalf_of, never token passthrough").
