@@ -1033,6 +1033,13 @@ add_executable(test_workflow_yaml_compiler test_workflow_yaml_compiler.cpp)
 target_link_libraries(test_workflow_yaml_compiler PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_workflow_yaml_compiler COMMAND test_workflow_yaml_compiler)
 
+# ---- Milestone 7 Phase F3 -- 015 §2's Agent-document compiler (core\agent_yaml_compiler.hpp):
+# compiles a parsed YAML Agent document to a real AgentMetadata, cross-checked against register_
+# agent<A>()'s own C++-form output for the same agent (I6 in action) --------------------------
+add_executable(test_agent_yaml_compiler test_agent_yaml_compiler.cpp)
+target_link_libraries(test_agent_yaml_compiler PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_agent_yaml_compiler COMMAND test_agent_yaml_compiler)
+
 # ---- Milestone 5 Phase H4 -- EffectContext::principal wired through every outbound ChatClient
 # call, including on_behalf_of delegation for a session initialized with a derive_on_behalf_of()'d
 # principal (018 §1's "delegation only via on_behalf_of, never token passthrough").

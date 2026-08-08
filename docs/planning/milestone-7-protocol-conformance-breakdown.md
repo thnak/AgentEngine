@@ -694,6 +694,49 @@ enforcement), and 006 §6b's G6-G9 ... all hold — closing 019 §2's wake-condi
   version fields; the generic JSON-Schema 2020-12 validator, the Agent-document compiler, and the I6
   equivalence CORPUS (a systematic sweep over every 002 §3 policy, §7 G1's own bar) are all still
   unbuilt.
+
+  **Outcome, F3 (2026-08-08, commit pending):** `core/agent_yaml_compiler.hpp` (new) —
+  `compile_agent_document()`, a parsed 015 §2 Agent document → a REAL `AgentMetadata`, the same
+  compiled type `register_agent<A>()` (the C++ authoring form) produces.
+
+  Two real, blocking gaps were confirmed absent before this file was written, both named rather than
+  worked around: **no tool/capability NAME-KEYED REGISTRY exists anywhere in this codebase** (015 §1
+  itself assumes one — "the declarative form references tools by name from the registry"), and, even
+  given one, **`core/tool_pipeline.hpp`'s own `ToolTable` has no runtime construction API at all** —
+  `from_tools<ToolTs...>()` is a compile-time template over real C++ `Tool` types, and `descriptors_`
+  is private with no public append/builder surface. `tools`/`capability_ceiling` therefore stay
+  HONESTLY EMPTY (proven directly, F-1) rather than fabricated — a tool/capability registry is
+  006/009's own scope, not 015's, and a runtime `ToolTable` builder is a `tool_pipeline.hpp` API
+  change, neither a drive-by inside a document compiler. `output_schema_json` stays unset for a
+  separate, third reason: 015 §2's own example supplies only a `{$ref: ...}` pointing at an EXTERNAL
+  FILE, and resolving/loading/compiling one is real file-IO work out of this compiler's own scope.
+
+  `metadata.version`/`metadata.description` have no home in `AgentMetadata`'s current shape — read,
+  then honestly dropped, confirmed now a THIRD independent time (after Phase D2's Agent Card generator
+  and Phase F2's Workflow-document compiler each hit the identical gap on their own compiled targets).
+  Three independent compilers landing on the same missing fields is a real signal `AgentMetadata`
+  (002-owned) genuinely needs them at some point — outside this file's own authority to add.
+
+  The actual I6 property, proven directly rather than merely asserted (F-2): a hand-written C++
+  `Agent` equivalent to 015 §2's own example (`ChatClientId<"anthropic:claude-opus-5">`,
+  `MaxTurns<12>`, `TokenBudget<200000>`, `Approval<policy_driven>`), compiled via the REAL
+  `register_agent<A>()`, agrees FIELD-FOR-FIELD with the YAML-compiled `AgentMetadata` on
+  `agent_name`/`agent_instructions`/`chat_client_id`/`max_turns`/`token_budget`/`approval` — every
+  field this narrow slice covers. `tests/test_agent_yaml_compiler.cpp` (new, 27 checks, all passing,
+  all correct on the first real run). 149/149 full suite (was 148 after F2).
+
+  **What is honestly NOT built for F3**: `tools`/`capability_ceiling` (blocked on the two gaps above),
+  `output_schema_json`/`output_schema_strategy_chosen` (blocked on external-`$ref` file resolution),
+  `provider.options` (no compile-time metadata slot in EITHER form — not a declarative-only gap), the
+  generic JSON-Schema 2020-12 validator, and the I6 equivalence CORPUS (§7 G1's own bar: a systematic
+  sweep over every 002 §3 policy, not the single hand-picked cross-check this phase proves).
+
+  Phase F now has a real YAML parser (F1), a Workflow-document compiler (F2), and an Agent-document
+  compiler (F3) — both compilers cross-checked against their real C++ authoring-form counterparts for
+  I6. What remains (the JSON-Schema validator, the tool/capability registry + runtime `ToolTable`
+  builder that would unblock full tools/capabilities compilation, the systematic equivalence corpus,
+  §7 G2's negative-corpus strictness gate) is now a list of individually-scoped, well-understood gaps
+  rather than an undifferentiated unknown.
 - **Phase G** — promotion gates: 011 §10 G1-G9, 012 §8 G1-G5, 013 §6 G1-G6, 015 §7 G1-G4, 006 §6b's
   G6-G9 — run for real, published percentages where the gate asks for one, milestone close-out.
 
