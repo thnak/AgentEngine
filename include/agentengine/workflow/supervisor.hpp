@@ -54,8 +54,10 @@
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/interaction.hpp"
+#include "agentengine/core/stream.hpp"
 #include "agentengine/workflow/checkpoint.hpp"
 #include "agentengine/workflow/executor.hpp"
+#include "agentengine/workflow/live_view.hpp"
 #include "agentengine/workflow/graph.hpp"
 
 namespace agentengine::workflow {
@@ -166,6 +168,20 @@ public:
     // `save_workflow_checkpoint` (checkpoint.hpp) from inside it.
     using CheckpointHook = std::function<void(std::uint32_t round, RunStateRecord const&)>;
     void set_checkpoint_hook(CheckpointHook hook) { checkpoint_hook_ = std::move(hook); }
+
+    // Milestone 6 Phase G (014 §7's live-view bullet). Constructs a fresh, directly-connected
+    // producer/consumer pair (`ae::make_stream`, core/stream.hpp) over `WorkflowLiveEvent`
+    // (live_view.hpp), keeps the producer, and hands the caller the consumer. Fires from the SAME
+    // superstep-boundary point `checkpoint_hook_` does, in `execute()`'s round loop -- see
+    // `live_view.hpp`'s own header comment for why this is a separate event type rather than
+    // reusing `RunStateRecord`. A second call REPLACES the producer (the previous consumer then
+    // reads `done()`); there is no fan-out to multiple simultaneous live viewers in this build.
+    [[nodiscard]] ae::stream<WorkflowLiveEvent> enable_live_view(
+        std::pmr::memory_resource* mr, ae::stream_config<WorkflowLiveEvent> cfg = {}) {
+        auto pair          = ae::make_stream<WorkflowLiveEvent>(mr, cfg);
+        live_view_producer_ = std::move(pair.producer);
+        return std::move(pair.consumer);
+    }
 
     // `refs` is parallel to `graph.executors` by INDEX. Index-addressed rather than
     // id-string-addressed because the index is what crosses the wire in `ExecuteRequest` (the
@@ -561,6 +577,28 @@ private:
             // rather than an ambient `Store` this actor would have to hold.
             if (checkpoint_hook_) checkpoint_hook_(rounds_, to_record());
 
+            // 014 §7's live-view bullet, same boundary. `exec_deliveries`/`replies`/`port_deliveries`
+            // are still this iteration's locals -- built fresh from THIS round, not reconstructed
+            // from `state_` (which no longer distinguishes "ran ok" from "ran and failed" once
+            // folded into `partial`/`unopened_ports`).
+            if (live_view_producer_.valid()) {
+                WorkflowLiveEvent ev;
+                ev.round = rounds_;
+                ev.executor_states.reserve(exec_deliveries.size() + port_deliveries.size());
+                for (std::size_t i = 0; i < exec_deliveries.size(); ++i) {
+                    auto const st = replies[i].ok ? executor_live_state::ran_ok
+                                                  : executor_live_state::ran_failed;
+                    ev.executor_states.push_back(ExecutorLiveState{
+                        graph_.executors[exec_deliveries[i].executor_index].id, st});
+                }
+                for (auto const& d : port_deliveries) {
+                    ev.executor_states.push_back(ExecutorLiveState{
+                        graph_.executors[d.executor_index].id, executor_live_state::port_open});
+                }
+                ev.in_flight_message_count = state_.pending.size();
+                (void)live_view_producer_.push(std::move(ev));
+            }
+
             if (!ports_.empty()) {
                 // The OTHER branches' next-round work stays in `state_.pending` untouched: §4 says a
                 // request port "suspends the workflow", not the branch. Running the rest while a
@@ -800,6 +838,7 @@ private:
     RunState                                       state_;
     std::vector<OpenPort>                          ports_;
     CheckpointHook                                 checkpoint_hook_;  // Phase F: nullptr by default
+    ae::stream_producer<WorkflowLiveEvent>         live_view_producer_;  // Phase G: invalid until enable_live_view()
 };
 
 }  // namespace agentengine::workflow

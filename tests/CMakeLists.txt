@@ -684,6 +684,28 @@ if(AGENTENGINE_WITH_HTTPS)
   add_test(NAME test_workflow_checkpoint_g2 COMMAND test_workflow_checkpoint_g2)
   set_tests_properties(test_workflow_checkpoint_g2 PROPERTIES TIMEOUT 300)
 
+  # ---- Milestone 6 Phase G: 014 §7's rendering and diffing (introspection.hpp) -------------------
+  # Render is a TOTAL function -- the falsifiable bar is "a valid workflow that cannot be drawn" --
+  # proven against a graph exercising all four executor kinds, all six edge kinds, a fallback
+  # branch, and author ids containing characters (quotes) that would break naive Mermaid/DOT syntax
+  # if node identifiers were sanitized author text instead of index-derived tokens. Diff is a plain
+  # structural comparison: add/remove/change an executor, add/remove an edge, start/output/bound
+  # changes, and an unchanged graph diffing to empty.
+  add_executable(test_workflow_introspection test_workflow_introspection.cpp)
+  target_link_libraries(test_workflow_introspection PRIVATE agentengine::core agentengine_warnings)
+  add_test(NAME test_workflow_introspection COMMAND test_workflow_introspection)
+  set_tests_properties(test_workflow_introspection PROPERTIES TIMEOUT 120)
+
+  # ---- Milestone 6 Phase G: 014 §7's live-view bullet (WorkflowSupervisor::enable_live_view) -----
+  # One WorkflowLiveEvent per superstep boundary, over a real ae::stream<T> -- the same graph
+  # test_workflow_checkpoint.cpp's own F2 block uses, checked from the executor-state angle instead
+  # of the checkpoint angle, plus the negative control (a round that fails the whole run produces
+  # no live event, proven by a real wait, not just an unchecked assumption).
+  add_executable(test_workflow_live_view test_workflow_live_view.cpp)
+  target_link_libraries(test_workflow_live_view PRIVATE agentengine::core agentengine_warnings)
+  add_test(NAME test_workflow_live_view COMMAND test_workflow_live_view)
+  set_tests_properties(test_workflow_live_view PROPERTIES TIMEOUT 120)
+
   # ---- ADR-020 gates G1-G7: 004 §2's portable reasoning_effort, mapped down by both backends ------
   # Drives BOTH backends from the same enumerator values in one file, on purpose: the amendment's
   # claim is portability across two structurally different native shapes (a flat string vs a computed

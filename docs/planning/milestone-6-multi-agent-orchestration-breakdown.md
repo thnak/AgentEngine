@@ -339,6 +339,30 @@ H-I are 030; J is the milestone's own exit-criterion proof.
 - **Phase G — introspection (014 §7).** Mermaid/DOT render, graph diff across versions, live view of
   executor states/in-flight messages/round number over `ae::stream<T>`. *Falsifiable:* a valid
   workflow that cannot be drawn.
+  **Outcome: built, all three bullets.** `render_mermaid`/`render_dot`
+  (`workflow/introspection.hpp`) are TOTAL functions over any `Workflow` -- the only way to
+  actually guarantee "a valid workflow that cannot be drawn" never happens. The one real design
+  decision: node identifiers on the wire are `n<index>`, never a sanitized version of the author's
+  own id. Sanitizing (stripping/replacing special characters) can COLLIDE two distinct ids onto the
+  same token and silently merge two different nodes in the rendered graph -- worse than an ugly
+  label, and a failure mode this project's own I4 discipline (every effect attributable) would call
+  out anywhere else. The author's real id is always the LABEL text instead (quoted, one escape),
+  proven against a graph whose own id AND one executor's id both contain embedded quotes.
+  `diff_workflows` is a plain structural comparison, no version history or three-way merge (025's
+  merge machinery is deliberately not reused -- a workflow graph is authored data, not a
+  worktree) -- `operator==` added to `Executor`/`Edge`/`EdgeFailurePolicy`/`TerminationBound`/
+  `Workflow` (graph.hpp) is what keeps it a few lines rather than a hand-rolled field walk.
+  **`enable_live_view()` fires from the EXACT SAME call site `checkpoint_hook_` (Phase F) already
+  uses** -- that is the one place `execute()`'s round loop actually knows a superstep just
+  finished and what happened in it. `WorkflowLiveEvent` is deliberately its own type, not
+  `RunStateRecord` reused: a checkpoint is a durability record (needs the full state to resume
+  exactly); a live event is a UI-shaped summary (which executors ran/failed/opened a port THIS
+  round, how many messages are in flight) -- carrying `Message` payloads into a live-view event
+  would answer a question nobody watching a dashboard asked. A round that ends the run via a
+  `fail`-policy failure produces no live event, the same `broke` branch the checkpoint hook already
+  skips -- proven with a real wait (not an unchecked absence) that nothing is buffered afterward.
+  Resuming a suspended run continues pushing to the SAME producer, proven across a real
+  suspend/resume boundary, not just a single uninterrupted run.
 - **Phase H — the Project record and registry (030 §2/§3/§6).** Manifest schema (active/archived
   member split, §8 Q1), always-snapshot-mode over the same `Store` seam, the registry actor,
   `create_project`/`list_projects`. *Falsifiable (G4):* a manifest write proportional to

@@ -94,6 +94,8 @@ struct Executor {
     executor_kind kind = executor_kind::function;
     MessageTypeId input_type;
     MessageTypeId output_type;
+
+    friend bool operator==(Executor const&, Executor const&) = default;
 };
 
 // -- Failure policy (014 §6) -------------------------------------------------------------------
@@ -125,6 +127,8 @@ struct EdgeFailurePolicy {
     // port exactly like any other edge out of it, so a fallback branch is drawable (§7) and cannot
     // be the one edge in a graph that skips 014 §1's type rule.
     std::string fallback;
+
+    friend bool operator==(EdgeFailurePolicy const&, EdgeFailurePolicy const&) = default;
 };
 
 struct Edge {
@@ -146,6 +150,8 @@ struct Edge {
     // The default is `fail`, deliberately the strict one: a graph whose author has not thought about
     // failure stops and says so rather than continuing with a hole in its data.
     EdgeFailurePolicy on_failure;
+
+    friend bool operator==(Edge const&, Edge const&) = default;
 };
 
 // 014 §2: "Termination is by output selection, by an explicit terminal executor, or by bound
@@ -161,6 +167,8 @@ struct TerminationBound {
     [[nodiscard]] bool any() const noexcept {
         return max_rounds.has_value() || deadline_ms.has_value() || token_budget.has_value();
     }
+
+    friend bool operator==(TerminationBound const&, TerminationBound const&) = default;
 };
 
 struct Workflow {
@@ -180,6 +188,8 @@ struct Workflow {
         }
         return nullptr;
     }
+
+    friend bool operator==(Workflow const&, Workflow const&) = default;
 };
 
 // -- The shared validator (014 §1, breakdown decision 6) ---------------------------------------
