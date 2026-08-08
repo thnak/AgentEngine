@@ -464,6 +464,40 @@ enforcement), and 006 §6b's G6-G9 ... all hold — closing 019 §2's wake-condi
   this phase for how that was resolved for Phase D.
 - **Phase E** — 013 §2-§4: AG-UI projection, other-surface table, transport (SSE, binary framing,
   WebSocket), cross-surface equivalence proofs.
+
+  Sub-phases (same "vocabulary first, wiring after" discipline C1/D1 used for MCP/A2A's own wire
+  types before any role/projection logic was built on top):
+  - **E1** — the AG-UI event vocabulary itself (`protocol/agui/types.hpp`): every event kind §2.1/§2.2
+    names, with exact wire identifiers/field shapes cited from `docs/research/2026-a2a-and-agui-detail.md`
+    Part B (013 §2.0's own maturity note: AG-UI has no formal spec, so this is pinned to a dated,
+    sourced schema snapshot, never asserted from memory) — no projection from the internal `RunEvent`
+    stream yet.
+  - **E2+** — the projection itself (internal `RunEvent`, real since Phase A, onto `AgUiEvent`),
+    §2.2's interrupt-ends-the-run mapping, other-surface projections (A2A streaming, MCP progress),
+    transport framing (SSE/binary), cross-surface equivalence proofs (§6 G3) — scoped in more detail
+    as each is reached.
+
+  **Outcome, E1 (2026-08-08, commit pending):** `protocol/agui/types.hpp` (new) — `AgUiEvent`, a
+  25-alternative variant covering every §2.1/§2.2 event category (lifecycle: `RunStarted`/
+  `RunFinishedSuccess`/`RunFinishedInterrupt`/`RunError`/`StepStarted`/`StepFinished`; text; tool
+  call; state; activity; reasoning; the `Raw`/`Custom` escape hatches), `event_type_name()` and
+  `to_json()` proving every alternative serializes with its exact cited wire identifier
+  (`RUN_STARTED`, `TEXT_MESSAGE_CONTENT`, ... — 013 §2.1: "Exact identifiers, since they are the
+  contract") and camelCase field names. `RunFinishedSuccess`/`RunFinishedInterrupt` are deliberately
+  TWO structs sharing one wire `"type":"RUN_FINISHED"` (rather than one struct with an optional
+  outcome) so a caller cannot construct the nonsensical "finished, no outcome at all" state — proven
+  directly (both produce `RUN_FINISHED`, with different `outcome` shapes). `tests/test_agui_types.cpp`
+  (new, 22 checks, all passing) proves every alternative. 141/141 full suite (was 140 after ADR-022,
+  which added no product code of its own).
+
+  **What is honestly NOT built for E1**: the `*_CHUNK` "auto-expanding convenience form" events
+  (`TEXT_MESSAGE_CHUNK`/`TOOL_CALL_CHUNK`/`REASONING_MESSAGE_CHUNK`) — client-side ergonomic sugar
+  over the canonical START/CONTENT/END triad this file emits, not a distinct wire concept a projector
+  needs to produce; the deprecated `THINKING_*` family (013 §2.1: "we do not emit it"); the Draft
+  `MetaEvent`; and — the larger gap — no projection from the internal `RunEvent` stream exists yet at
+  all (E2+'s own job). `StateDelta`/`ActivityDelta`'s `patch` fields carry whatever RFC 6902 JSON
+  Patch array a caller supplies; this file has no diff GENERATOR (no state-diffing engine exists
+  anywhere in this codebase yet), only the wire shape for one.
 - **Phase F** — 015: declarative agent/workflow YAML, the shared validator, equivalence corpus.
 - **Phase G** — promotion gates: 011 §10 G1-G9, 012 §8 G1-G5, 013 §6 G1-G6, 015 §7 G1-G4, 006 §6b's
   G6-G9 — run for real, published percentages where the gate asks for one, milestone close-out.

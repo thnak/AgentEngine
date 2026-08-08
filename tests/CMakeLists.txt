@@ -985,6 +985,13 @@ add_executable(test_a2a_client test_a2a_client.cpp)
 target_link_libraries(test_a2a_client PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_a2a_client COMMAND test_a2a_client)
 
+# ---- Milestone 7 Phase E1 -- 013 §2.1/§2.2's AG-UI event vocabulary (protocol\agui\types.hpp):
+# every event kind's exact wire identifier and field shape, cited from docs/research/2026-a2a-and-
+# agui-detail.md Part B -------------------------------------------------------------------------
+add_executable(test_agui_types test_agui_types.cpp)
+target_link_libraries(test_agui_types PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_agui_types COMMAND test_agui_types)
+
 # ---- Milestone 5 Phase H4 -- EffectContext::principal wired through every outbound ChatClient
 # call, including on_behalf_of delegation for a session initialized with a derive_on_behalf_of()'d
 # principal (018 §1's "delegation only via on_behalf_of, never token passthrough").
