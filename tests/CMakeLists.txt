@@ -1020,6 +1020,12 @@ add_executable(test_cross_surface_equivalence test_cross_surface_equivalence.cpp
 target_link_libraries(test_cross_surface_equivalence PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_cross_surface_equivalence COMMAND test_cross_surface_equivalence)
 
+# ---- Milestone 7 Phase F1 -- 015 §2/§3's YAML-subset parser (core\yaml_value.hpp): block/flow
+# style, block literals, quoted/plain scalars -- proven against the RFC's own example documents ----
+add_executable(test_yaml_value test_yaml_value.cpp)
+target_link_libraries(test_yaml_value PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_yaml_value COMMAND test_yaml_value)
+
 # ---- Milestone 5 Phase H4 -- EffectContext::principal wired through every outbound ChatClient
 # call, including on_behalf_of delegation for a session initialized with a derive_on_behalf_of()'d
 # principal (018 §1's "delegation only via on_behalf_of, never token passthrough").

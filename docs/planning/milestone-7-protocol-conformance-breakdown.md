@@ -603,6 +603,61 @@ enforcement), and 006 §6b's G6-G9 ... all hold — closing 019 §2's wake-condi
   full G1-G6 promotion-gate EXECUTION (§6) — this phase produces real evidence toward G3 specifically,
   not a claim that the gate itself has been run; that is Phase G's own job at milestone close.
 - **Phase F** — 015: declarative agent/workflow YAML, the shared validator, equivalence corpus.
+
+  Two hard infrastructure gaps were confirmed absent before any sub-phase was scoped (2026-08-08
+  research pass): no YAML parser anywhere in this codebase, and no GENERIC JSON Schema 2020-12
+  validator (`core/json_schema.hpp`'s `AE_JSON_SCHEMA` macro only ever GENERATES a schema from a known
+  C++ type, one direction only — it cannot validate an arbitrary YAML-sourced document against an
+  arbitrary schema). The workflow side is in materially better shape: `workflow/graph.hpp`'s own
+  `Workflow` struct + `validate_workflow()` (Milestone 6) were deliberately designed so "the
+  declarative loader (015, Milestone 7) calls the SAME validator rather than reimplementing it"
+  (`graph.hpp`'s own comment) — a real, already-built compile target for a future Workflow-document
+  compiler, unlike the Agent-document side which has no equivalent shortcut. Given the combined size
+  of "YAML parser + generic JSON-Schema validator + Agent-document compiler + Workflow-document
+  compiler + I6 byte-identical-metadata equivalence corpus" — one of the largest single asks in this
+  milestone — the user explicitly chose a narrow first slice (2026-08-08) over committing to the full
+  stack up front.
+
+  Sub-phases:
+  - **F1** — a real, tested YAML-SUBSET parser (`core/yaml_value.hpp`), proven against 015's own §2/§3
+    example documents, deferring the JSON-Schema validator and both document compilers.
+  - **F2+** — scoped in more detail as each is reached: the JSON-Schema 2020-12 validator, the
+    Agent-document compiler (YAML → `AgentMetadata`-equivalent), the Workflow-document compiler
+    (YAML → `Workflow` → `validate_workflow()`), the I6 equivalence corpus (§7 G1/G2).
+
+  **Outcome, F1 (2026-08-08, commit pending):** `core/yaml_value.hpp` (new) — a hand-rolled YAML-subset
+  parser matching CONVENTIONS' core-tier discipline ("std + Quark only, no third-party dependency,
+  ever") the same way `json_value.hpp` already does for JSON — no YAML library exists anywhere in this
+  codebase or is vendored here. Parses DIRECTLY into the existing `agentengine::json::Value` tree
+  rather than a second value type, since YAML's data model (mappings/sequences/scalars) maps cleanly
+  onto JSON's for the subset this parser targets — every future consumer (a document compiler) works
+  with the exact same `json::Value` API MCP/A2A/AG-UI already use. Scope, proven directly rather than
+  merely claimed: block-style mappings/sequences, including a sequence item that opens a mapping
+  inline (`- key: value` continued by further same-indent keys — 015 §3's own `executors`/`edges`
+  shape in ONE valid form); flow-style `{ }`/`[ ]` collections, YAML-FLAVORED (unquoted keys/values
+  allowed, unlike strict JSON — 015 §2's own `options: { temperature: 0.2 }` requires this); block
+  literal `|` scalars with default ("clip") chomping (015 §2's own multi-line `instructions:` block);
+  quoted (single/double, with real escape handling) and plain scalars, `#` comments, `null`/`~`. A
+  literal tab in indentation is rejected, not silently accepted (real YAML's own rule).
+
+  Proven primarily against 015's OWN example documents, parsed VERBATIM, not paraphrased or simplified
+  fixtures: §2's full Agent document (Y-9) and §3's full Workflow document (Y-10) — both mix block and
+  flow style throughout (§3's `executors`/`edges` entries are actually `- { ... }` FLOW mappings inside
+  a block sequence, a different valid shape from the block-continuation form Y-4 separately proves),
+  which is why this parser had to support both styles from the start rather than deferring flow style
+  as a later increment. `tests/test_yaml_value.cpp` (new, 45 checks, all passing, all correct on the
+  first real test run against this complexity of parser — worth noting plainly, not oversold: real
+  YAML edge cases and adversarial-input hardening beyond the negative suite built here remain
+  unexercised, a named residual, not a claim that no further scrutiny is warranted). 147/147 full suite
+  (was 146 after E4).
+
+  **What is honestly NOT built for F1**: anchors/aliases (`&name`/`*name`), tags (`!!type`),
+  multi-document streams (`---`/`...`), explicit block-scalar indentation/chomping indicators
+  (`|2`/`|-`/`|+`), merge keys (`<<:`) — all named directly in the header's own file-top comment, a
+  document using any of them is rejected with a real parse error, never silently misparsed. The
+  generic JSON-Schema 2020-12 validator, the Agent-document compiler, the Workflow-document compiler,
+  and the I6 equivalence corpus are ALL still unbuilt — this phase is the parser only, the narrow first
+  slice the user explicitly chose.
 - **Phase G** — promotion gates: 011 §10 G1-G9, 012 §8 G1-G5, 013 §6 G1-G6, 015 §7 G1-G4, 006 §6b's
   G6-G9 — run for real, published percentages where the gate asks for one, milestone close-out.
 
