@@ -43,6 +43,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -53,6 +54,7 @@
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/interaction.hpp"
+#include "agentengine/workflow/checkpoint.hpp"
 #include "agentengine/workflow/executor.hpp"
 #include "agentengine/workflow/graph.hpp"
 
@@ -83,6 +85,17 @@ enum class workflow_status {
 struct RunWorkflow {
     Message input;  // the payload delivered to the start executor in round 0
 };
+
+// Milestone 6 Phase F (014 §5): continue a run whose state was restored via
+// `restore_from_record()` from a durable checkpoint, on a FRESH actor instance -- the "resume
+// restores exactly, on any node in a cluster" half of §5 for a run that was NOT suspended at a
+// request port when checkpointed (that case is `ResumeWorkflow`, already public since Phase E; it
+// works unmodified once `ports_`/`state_`/`run_id_`/`rounds_` are restored, since it does not care
+// how the actor came to hold that state). `RunWorkflow` cannot serve this role -- it always starts
+// a FRESH run (resets `state_`, mints a new `run_id_`), which is the wrong thing to do to a
+// restored actor's already-populated state. No payload: the restored `state_.pending` already
+// names what runs next.
+struct ContinueWorkflow {};
 
 // 014 §4: a request port "suspends the workflow until a response arrives". This is that response.
 // Addressed by `interaction_id` rather than by executor id because §4's whole point is that several
@@ -139,7 +152,20 @@ struct WorkflowResult {
 class WorkflowSupervisor : public quark::Actor<WorkflowSupervisor, quark::Sequential> {
 public:
     using protocol = quark::Protocol<quark::Ask<RunWorkflow, WorkflowResult>,
-                                     quark::Ask<ResumeWorkflow, WorkflowResult>>;
+                                     quark::Ask<ResumeWorkflow, WorkflowResult>,
+                                     quark::Ask<ContinueWorkflow, WorkflowResult>>;
+
+    // Milestone 6 Phase F: called once per superstep boundary (right after a round's results are
+    // folded into `state_`/`ports_`, before the next round -- or a suspension -- begins), if set.
+    // OPTIONAL and nullptr by default so every pre-Phase-F test's behaviour is unchanged. Takes
+    // `to_record()`'s OWN OUTPUT rather than `Store`/`Activation`/`FenceToken` types directly: this
+    // actor stays store-agnostic (I2 -- an explicitly injected hook, never ambient authority) and
+    // does not need to become a template over a `Store` type, which would have forced every
+    // existing Phase B-E test to grow a template parameter it has no use for. A host that wants
+    // real durability closes over its own `Store&`/`Activation&`/`FenceToken` in the hook and calls
+    // `save_workflow_checkpoint` (checkpoint.hpp) from inside it.
+    using CheckpointHook = std::function<void(std::uint32_t round, RunStateRecord const&)>;
+    void set_checkpoint_hook(CheckpointHook hook) { checkpoint_hook_ = std::move(hook); }
 
     // `refs` is parallel to `graph.executors` by INDEX. Index-addressed rather than
     // id-string-addressed because the index is what crosses the wire in `ExecuteRequest` (the
@@ -233,6 +259,86 @@ public:
 
         m.respond(co_await execute());
         co_return;
+    }
+
+    // Milestone 6 Phase F: continue a restored (via `restore_from_record()`), non-suspended run.
+    // `execute()` does not care how `state_.pending` came to be populated -- it is the SAME shared
+    // run body `RunWorkflow`/`ResumeWorkflow` already use, per this file's own header note on why
+    // that sharing matters (a resumed run must route by exactly the same rules as any other).
+    quark::task<> handle(quark::Ask<ContinueWorkflow, WorkflowResult> const& m) {
+        if (!valid_) {
+            m.respond(WorkflowResult{workflow_status::invalid});
+            co_return;
+        }
+        m.respond(co_await execute());
+        co_return;
+    }
+
+    // Milestone 6 Phase F (014 §5): the run's durable projection -- mirrors
+    // `AgentSession::to_record()`/`restore_from_record()` exactly (agent_session.hpp:613-648), the
+    // only two places that cross between this actor's live fields and `RunStateRecord`
+    // (checkpoint.hpp) so the field list can't drift between them silently. Does NOT cover `graph_`/
+    // `refs_` -- 014 §5's "resume restores exactly, on any node in a cluster" presumes the graph
+    // itself is redeployed by the host from the same description, the same relationship
+    // `AgentSessionRecord` has to a session's static configuration.
+    [[nodiscard]] RunStateRecord to_record() const {
+        // Every `content_record.hpp` call below is explicitly qualified (`agentengine::to_record`),
+        // not left unqualified: an unqualified `to_record(msg)` from INSIDE this member function of
+        // the same name would find `WorkflowSupervisor::to_record()` (this function itself) via
+        // ordinary unqualified lookup first -- which, per [basic.lookup.argdep], SUPPRESSES ADL
+        // entirely once a class member of that name is found, regardless of the member's own
+        // signature. Left unqualified this would be a hard compile error (wrong argument count
+        // against the zero-arg member), not a silent recursive call.
+        RunStateRecord rec;
+        rec.run_counter      = run_counter_;
+        rec.run_id           = run_id_;
+        rec.rounds           = rounds_;
+        rec.pending.reserve(state_.pending.size());
+        for (auto const& d : state_.pending) {
+            rec.pending.push_back(DeliveryRecord{static_cast<std::uint64_t>(d.executor_index),
+                                                  agentengine::to_record(d.payload)});
+        }
+        rec.partial.reserve(state_.partial.size());
+        for (auto const& p : state_.partial) {
+            rec.partial.push_back(
+                ExecutorOutputRecord{p.executor_id, p.round, agentengine::to_record(p.payload)});
+        }
+        rec.selected_output = agentengine::to_record(state_.selected_output);
+        rec.failed_executor = state_.failed_executor;
+        rec.unopened_ports  = state_.unopened_ports;
+        rec.elapsed_ns      = state_.elapsed_ns;
+        rec.ports.reserve(ports_.size());
+        for (auto const& p : ports_) {
+            rec.ports.push_back(OpenPortRecord{p.interaction, static_cast<std::uint64_t>(p.executor_index),
+                                               agentengine::to_record(p.response), p.routes, p.resolved});
+        }
+        return rec;
+    }
+
+    void restore_from_record(RunStateRecord const& rec) {
+        run_counter_ = rec.run_counter;
+        run_id_      = rec.run_id;
+        rounds_      = rec.rounds;
+        state_       = RunState{};
+        state_.pending.reserve(rec.pending.size());
+        for (auto const& d : rec.pending) {
+            state_.pending.push_back(Delivery{static_cast<std::size_t>(d.executor_index),
+                                              from_record(d.payload)});
+        }
+        state_.partial.reserve(rec.partial.size());
+        for (auto const& p : rec.partial) {
+            state_.partial.push_back(ExecutorOutput{p.executor_id, p.round, from_record(p.payload)});
+        }
+        state_.selected_output = from_record(rec.selected_output);
+        state_.failed_executor = rec.failed_executor;
+        state_.unopened_ports  = rec.unopened_ports;
+        state_.elapsed_ns      = rec.elapsed_ns;
+        ports_.clear();
+        ports_.reserve(rec.ports.size());
+        for (auto const& p : rec.ports) {
+            ports_.push_back(OpenPort{p.interaction, static_cast<std::size_t>(p.executor_index),
+                                      from_record(p.response), p.routes, p.resolved});
+        }
     }
 
 private:
@@ -446,6 +552,14 @@ private:
                                           d.payload, {}, false});
             }
             state_.pending = std::move(next);
+
+            // 014 §5: "Checkpoint at superstep boundaries." Right here -- round N's results are
+            // fully folded into `state_`/`ports_`, round N+1 (or a suspension) has not started yet.
+            // Fires whether or not this round is about to suspend, so a checkpoint taken here always
+            // has enough to resume from either way (decision 11's RunState already carries both
+            // shapes). See `CheckpointHook`'s own comment for why this is a caller-injected callback
+            // rather than an ambient `Store` this actor would have to hold.
+            if (checkpoint_hook_) checkpoint_hook_(rounds_, to_record());
 
             if (!ports_.empty()) {
                 // The OTHER branches' next-round work stays in `state_.pending` untouched: §4 says a
@@ -685,6 +799,7 @@ private:
     std::string                                    run_id_;
     RunState                                       state_;
     std::vector<OpenPort>                          ports_;
+    CheckpointHook                                 checkpoint_hook_;  // Phase F: nullptr by default
 };
 
 }  // namespace agentengine::workflow

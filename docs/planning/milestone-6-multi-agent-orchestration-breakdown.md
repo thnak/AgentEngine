@@ -275,6 +275,67 @@ H-I are 030; J is the milestone's own exit-criterion proof.
   with the audit record and `EffectJournal` interaction (decision 9). *Falsifiable (G2):* a kill at
   any of a 20-node workflow's superstep boundaries resuming to output differing from the
   uninterrupted control.
+  **Outcome: built, and it turned on a real prerequisite this phase's own scope note hadn't named
+  yet.** §5's "resume restores exactly" is false the moment a checkpoint drops the run's actual
+  `Message` payloads (`pending`/`partial`/`selected_output`) -- and `Message`/`ContentItem` had no
+  `QUARK_SERIALIZE` at all (the gap `AgentSessionRecord`'s own comment names, agent_session.hpp:
+  154-158). Closing it turned out to be a real design fork, not a fill-in-the-tags exercise: a
+  hand-written, branching `quark_describe(Ar&, ContentItem&)` over the 9-way variant was tried
+  first and REJECTED -- `FingerprintFolder` computes a type's fingerprint from ONE
+  default-constructed sample (always arm 0, `Text`), so a conditional describe body would fold the
+  SAME fingerprint for two versions that differ only in how they encode `Media`/`ToolCall`/etc., a
+  new and undetected variant of the non-uniqueness gap `third_party/quark/OpenQuestions.md` item 2
+  already names -- and the write/size passes' `const_cast`-and-trust-it's-read-only convention
+  (wire.hpp) makes a body that reassigns the variant on every pass real undefined behaviour on a
+  genuinely `const` caller object. The design that shipped instead
+  (`include/agentengine/core/content_record.hpp`) is a FLAT record family -- one always-present
+  field per variant arm, materialised from whichever is active, defaulted otherwise -- so every
+  `quark_describe` body is a straight-line `QUARK_SERIALIZE` list with zero branching, the same
+  shape every other durable record in this codebase already uses. `RunStateRecord`
+  (`workflow/checkpoint.hpp`) is `WorkflowSupervisor`'s own durable projection built on top of it,
+  crossed with the live actor at exactly two points (`to_record()`/`restore_from_record()`,
+  mirroring `AgentSession`'s own pair).
+  **The two-phase pending→committed discipline (decision 7) is real, not a restatement of
+  `EventLog::commit()`'s own atomicity.** `Store`'s snapshot slot is latest-only by construction
+  (`InMemoryStore::save_snapshot` overwrites), so "rewind to ANY retained checkpoint" needed the
+  EventSourced model instead -- `effect_journal.hpp`'s own intent/outcome idiom, reused verbatim for
+  a checkpoint's pending/committed pair. A single atomic batch would already make "crash before
+  either phase" safe for free (nothing durable, indistinguishable from "never attempted") -- the
+  two-phase split earns its keep specifically for a crash BETWEEN the two commits, which
+  `stage_pending_checkpoint`/`commit_checkpoint` are exposed as separate calls specifically so a
+  test can inject.
+  **`ContinueWorkflow` is a new ask this phase added, not reused from Phase E.** `RunWorkflow`
+  always starts a fresh run and `ResumeWorkflow` requires an open port matching the response's
+  interaction id -- neither fits "continue a restored, NOT-suspended run", which is the common case
+  (most superstep boundaries are not a request port). `execute()` itself needed no change: it does
+  not care how `state_.pending` came to be populated, the same sharing property Phase E's own
+  header note already relies on for `RunWorkflow`/`ResumeWorkflow`.
+  **The checkpoint hook is an explicitly-injected callback, not a `Store` the actor holds** --
+  `std::function<void(std::uint32_t, RunStateRecord const&)>`, nullptr by default. `Store` is a
+  compile-time concept, not a runtime-typed interface, so holding one directly would have forced
+  `WorkflowSupervisor` to become a template over a `Store` type, and every Phase B-E test to grow a
+  template parameter it has no use for. The hook keeps the actor `Store`-agnostic (I2 -- an
+  explicitly passed capability, never ambient) while still letting `execute()`'s own round loop
+  call out at the ONE place that knows where a superstep boundary actually is.
+  **Time-travel's audit log is a SEPARATE `EventLog`/`ActorId` from the checkpoint log, same run**
+  (`workflow/time_travel.hpp`) -- found before it became a bug, not after: Quark's durable encoding
+  prefixes every event with its OWN type's fingerprint header, and `replay_tail<Event,...>` is
+  templated on exactly one `Event` type, so mixing `WorkflowCheckpointRecord` and
+  `RewindAuditRecord` entries in one per-actor log would make replay fail to decode the first
+  audit entry it hit. **Nothing new was built for "effects are not rewound / idempotency keys keep
+  it from double-charging"** -- `IdempotencyKey`/`EffectJournal` (M4 Phase F1/F2) already derive a
+  key from `{run_id, turn_index, call_index, argument_digest}`, so an executor authored against
+  that machinery re-derives the identical key on an unmodified-state re-run and a different one the
+  moment modified state changes an argument, both correct by construction; decision 9's "the honest
+  implementation is available now" meant USE it, not re-implement it at the workflow layer.
+  **G2 passed 20/20** (`test_workflow_checkpoint_g2.cpp`): a 20-node chain, one checkpoint captured
+  per superstep boundary from an uninterrupted control run, then EVERY one of those 20 checkpoints
+  individually restored onto a genuinely new actor instance and driven to completion via
+  `ContinueWorkflow` -- not just the first or last boundary, which is the failure mode a narrower
+  test would have missed. `test_workflow_checkpoint.cpp`'s own F2b additionally proves the
+  HITL-suspended case (a real `ResumeWorkflow` against a restored instance that never itself ran a
+  single round) -- Phase E's own G5 was only ever "half proven" (activation census; "resumes after a
+  process restart" had nothing to restore FROM before this phase); it is now proven for real.
 - **Phase G — introspection (014 §7).** Mermaid/DOT render, graph diff across versions, live view of
   executor states/in-flight messages/round number over `ae::stream<T>`. *Falsifiable:* a valid
   workflow that cannot be drawn.

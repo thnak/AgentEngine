@@ -21,11 +21,15 @@ using TaintedText = Tainted<std::string>;  // ae-naming-lint: allow TaintedText 
 
 struct Text {  // ae-naming-lint: allow Text — pre-existing M0 scaffolding, reconcile at owning milestone
     std::string text;  // tainted iff `origin` on the enclosing Content says so
+
+    friend bool operator==(Text const&, Text const&) = default;
 };
 
 struct Reasoning {  // ae-naming-lint: allow Reasoning — pre-existing M0 scaffolding, reconcile at owning milestone
     std::string text;
     bool        encrypted = false;  // opaque pass-through only when true (003 §1)
+
+    friend bool operator==(Reasoning const&, Reasoning const&) = default;
 };
 
 // Bytes above a threshold move out-of-line; see BlobRef below (003 §3).
@@ -34,16 +38,22 @@ struct BlobRef {  // ae-naming-lint: allow BlobRef — pre-existing M0 scaffoldi
     std::string media_type;
     std::size_t size = 0;
     std::string store;  // which blob store seam (019) resolves this digest
+
+    friend bool operator==(BlobRef const&, BlobRef const&) = default;
 };
 
 struct Media {  // ae-naming-lint: allow Media — pre-existing M0 scaffolding, reconcile at owning milestone
     std::variant<std::vector<std::byte>, std::string /*uri*/, BlobRef> payload;
     std::string                                                        media_type;
+
+    friend bool operator==(Media const&, Media const&) = default;
 };
 
 struct Data {  // ae-naming-lint: allow Data — pre-existing M0 scaffolding, reconcile at owning milestone
     std::string json;  // structured value, serialized; schema id optional
     std::optional<std::string> schema_id;
+
+    friend bool operator==(Data const&, Data const&) = default;
 };
 
 struct ToolCall {  // ae-naming-lint: allow ToolCall — pre-existing M0 scaffolding, reconcile at owning milestone
@@ -51,6 +61,8 @@ struct ToolCall {  // ae-naming-lint: allow ToolCall — pre-existing M0 scaffol
     std::string tool_name;
     std::string arguments_json;
     content_origin origin = content_origin::assistant;
+
+    friend bool operator==(ToolCall const&, ToolCall const&) = default;
 };
 
 struct ContentItem;  // fwd — ToolResult carries content items recursively  // ae-naming-lint: allow ContentItem — pre-existing M0 scaffolding, reconcile at owning milestone
@@ -59,21 +71,29 @@ struct ToolResult {  // ae-naming-lint: allow ToolResult — pre-existing M0 sca
     std::string                    call_id;
     std::vector<ContentItem>       content;
     bool                            is_error = false;
+
+    friend bool operator==(ToolResult const&, ToolResult const&) = default;
 };
 
 struct Citation {  // ae-naming-lint: allow Citation — pre-existing M0 scaffolding, reconcile at owning milestone
     std::string source;
     std::size_t span_start = 0;
     std::size_t span_end   = 0;
+
+    friend bool operator==(Citation const&, Citation const&) = default;
 };
 
 struct Error {  // ae-naming-lint: allow Error — pre-existing M0 scaffolding, reconcile at owning milestone
     std::string message;
+
+    friend bool operator==(Error const&, Error const&) = default;
 };
 
 struct Custom {  // ae-naming-lint: allow Custom — pre-existing M0 scaffolding, reconcile at owning milestone
     std::string type_id;  // namespaced, uri-shaped (003 §1)
     std::string payload_json;
+
+    friend bool operator==(Custom const&, Custom const&) = default;
 };
 
 // One element of a message (003 §1). Order is meaningful; unknown kinds round-trip via Custom.
@@ -81,6 +101,8 @@ struct ContentItem {  // ae-naming-lint: allow ContentItem — pre-existing M0 s
     std::variant<Text, Reasoning, Media, Data, ToolCall, ToolResult, Citation, Error, Custom> value;
     content_origin origin = content_origin::assistant;
     bool           tainted = false;
+
+    friend bool operator==(ContentItem const&, ContentItem const&) = default;
 };
 
 enum class role { system, user, assistant, tool };  // ae-naming-lint: allow role — pre-existing M0 scaffolding, reconcile at owning milestone
@@ -107,6 +129,8 @@ struct Message {
     agentengine::role        role;
     std::vector<ContentItem> content;
     std::string              message_id;
+
+    friend bool operator==(Message const&, Message const&) = default;
 };
 
 } // namespace agentengine

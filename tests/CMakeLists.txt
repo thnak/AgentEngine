@@ -340,6 +340,16 @@ add_executable(test_agent_session_poison_run test_agent_session_poison_run.cpp)
 target_link_libraries(test_agent_session_poison_run PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_agent_session_poison_run COMMAND test_agent_session_poison_run)
 
+# ---- Milestone 6 Phase F prerequisite (docs/planning/milestone-6-multi-agent-orchestration-breakdown.md) ----
+# Message/ContentItem's durable projection (content_record.hpp) -- closes the "no QUARK_SERIALIZE"
+# gap named at agent_session.hpp:154-158/207-213, needed for real by 014 §5's "resume restores
+# exactly". See content_record.hpp's own header comment for the two rejected designs (a branching
+# quark_describe breaks FingerprintFolder's determinism and the write pass's const-cast convention)
+# this flat-Record-family design avoids.
+add_executable(test_content_record_roundtrip test_content_record_roundtrip.cpp)
+target_link_libraries(test_content_record_roundtrip PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_content_record_roundtrip COMMAND test_content_record_roundtrip)
+
 # ---- Milestone 4 Phase F1 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
 # Idempotency key derivation {run_id, turn_index, call_index, argument_digest}, wired into the
 # real (M2) tool_pipeline.hpp invocation pipeline.
@@ -641,6 +651,38 @@ if(AGENTENGINE_WITH_HTTPS)
   target_link_libraries(test_workflow_request_port_independent_qa PRIVATE agentengine::core agentengine_warnings)
   add_test(NAME test_workflow_request_port_independent_qa COMMAND test_workflow_request_port_independent_qa)
   set_tests_properties(test_workflow_request_port_independent_qa PROPERTIES TIMEOUT 120)
+
+  # ---- Milestone 6 Phase F: 014 §5's checkpoint/resume (checkpoint.hpp + WorkflowSupervisor::to_record) --
+  # F1: checkpoint.hpp's own two-phase pending->committed discipline against a bare InMemoryStore --
+  # decision 7's own claim, that a crash between the two phases falls back to the prior FULLY
+  # committed checkpoint, not the dangling one. F2: to_record()/restore_from_record() against a real
+  # suspended run, reloaded onto a genuinely NEW actor instance and driven to completion two ways
+  # (ContinueWorkflow from a pre-suspension checkpoint, a real ResumeWorkflow from the
+  # post-suspension one -- Phase E's own G5 second half, "resumes after a process restart", which
+  # had nothing to restore FROM before this file).
+  add_executable(test_workflow_checkpoint test_workflow_checkpoint.cpp)
+  target_link_libraries(test_workflow_checkpoint PRIVATE agentengine::core agentengine_warnings)
+  add_test(NAME test_workflow_checkpoint COMMAND test_workflow_checkpoint)
+  set_tests_properties(test_workflow_checkpoint PROPERTIES TIMEOUT 120)
+
+  # ---- Milestone 6 Phase F: 014 §5's time-travel (time_travel.hpp) -------------------------------
+  # rewind_workflow() selects a retained checkpoint and durably audits the request (decision 9: the
+  # audit obligation built WITH the rewind) -- a separate EventLog/ActorId from the checkpoint log
+  # itself (mixing two Event types in one Quark event log would break replay's type-key check).
+  add_executable(test_workflow_time_travel test_workflow_time_travel.cpp)
+  target_link_libraries(test_workflow_time_travel PRIVATE agentengine::core agentengine_warnings)
+  add_test(NAME test_workflow_time_travel COMMAND test_workflow_time_travel)
+  set_tests_properties(test_workflow_time_travel PROPERTIES TIMEOUT 120)
+
+  # ---- Milestone 6 Phase F: 014 §8's own promotion gate G2 ---------------------------------------
+  # A 20-node chain, killed (simulated: a genuinely new instance restored from nothing but the
+  # checkpoint) at EVERY one of its 20 superstep boundaries -- every resume must complete with
+  # output identical to an uninterrupted control. 21 short-lived engines in sequence, never
+  # concurrent -- a longer timeout than this file's siblings to give that room.
+  add_executable(test_workflow_checkpoint_g2 test_workflow_checkpoint_g2.cpp)
+  target_link_libraries(test_workflow_checkpoint_g2 PRIVATE agentengine::core agentengine_warnings)
+  add_test(NAME test_workflow_checkpoint_g2 COMMAND test_workflow_checkpoint_g2)
+  set_tests_properties(test_workflow_checkpoint_g2 PROPERTIES TIMEOUT 300)
 
   # ---- ADR-020 gates G1-G7: 004 §2's portable reasoning_effort, mapped down by both backends ------
   # Drives BOTH backends from the same enumerator values in one file, on purpose: the amendment's
