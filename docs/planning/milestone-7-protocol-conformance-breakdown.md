@@ -658,6 +658,42 @@ enforcement), and 006 §6b's G6-G9 ... all hold — closing 019 §2's wake-condi
   generic JSON-Schema 2020-12 validator, the Agent-document compiler, the Workflow-document compiler,
   and the I6 equivalence corpus are ALL still unbuilt — this phase is the parser only, the narrow first
   slice the user explicitly chose.
+
+  **Outcome, F2 (2026-08-08, commit pending):** `workflow/yaml_compiler.hpp` (new) —
+  `compile_workflow_document()`, a parsed 015 §3 Workflow document → `workflow/graph.hpp`'s own
+  `Workflow` struct, checked by the SAME `validate_workflow()` the C++ `WorkflowBuilder` authoring
+  form already uses — the actual I6 property this compiler exists to serve, not merely asserted.
+
+  A real, honest finding surfaced while building this, not papered over: **015 §3's own illustrative
+  example document has NO `input_type`/`output_type` anywhere**, but 014 §1's port-typing rule
+  (`validate_workflow()`'s own `workflow.untyped_port` check) requires both on every executor. The
+  RFC's own example COMPILES (`compile_workflow_document()` itself has no opinion on port types) but
+  `validate_workflow()` correctly REJECTS it with `workflow.untyped_port` — proven directly (W-1), the
+  same diagnostic a hand-written C++ workflow with an untyped port would also produce, never an
+  invented placeholder type manufactured to make an underspecified example silently "pass." An
+  EXTENDED version of the identical document (adding `input_type`/`output_type` per executor, nothing
+  else changed) compiles AND validates successfully (W-2) — I6 in action: the declarative and C++
+  forms are checked by the literal same function, so an agreement between them is structural, not
+  coincidental.
+
+  Scope, matching what 015 §3's own example edges actually use: `to` (direct), `fan_out_to` (a list —
+  compiling to N SEPARATE `Edge` records sharing one `from`, since `graph.hpp`'s own `Edge` struct is
+  single-target by design, proven with a real multi-target case, W-3), `fan_in_to` (single target); an
+  explicit `kind:` always overrides `agent:`-implied `executor_kind::agent` inference (015 §4's own
+  "strict" posture — an author's explicit statement is never silently overridden); a small real
+  duration parser for `limits.deadline` covering `ms`/`s`/`m`/`h` (proven for all four, plus a rejected
+  unrecognized unit, W-6). `tests/test_workflow_yaml_compiler.cpp` (new, 24 checks, all passing, all
+  correct on the first real run). 148/148 full suite (was 147 after F1).
+
+  **What is honestly NOT built for F2**: `switch_case`/`multi_selection`/`chain` edge kinds and
+  per-edge `on_failure` failure policy (014 §6) — 015 §3's own example never uses any of them, and
+  extending the YAML edge shape to cover them is real, separate follow-up work, not a drive-by here;
+  `metadata.version` has no home in `Workflow`'s own current shape (pure graph data, no
+  document-identity/versioning field) and is read then honestly dropped, the same "the struct doesn't
+  have a slot for this yet" finding D2 already recorded for `AgentMetadata`'s own missing description/
+  version fields; the generic JSON-Schema 2020-12 validator, the Agent-document compiler, and the I6
+  equivalence CORPUS (a systematic sweep over every 002 §3 policy, §7 G1's own bar) are all still
+  unbuilt.
 - **Phase G** — promotion gates: 011 §10 G1-G9, 012 §8 G1-G5, 013 §6 G1-G6, 015 §7 G1-G4, 006 §6b's
   G6-G9 — run for real, published percentages where the gate asks for one, milestone close-out.
 

@@ -1026,6 +1026,13 @@ add_executable(test_yaml_value test_yaml_value.cpp)
 target_link_libraries(test_yaml_value PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_yaml_value COMMAND test_yaml_value)
 
+# ---- Milestone 7 Phase F2 -- 015 §3's Workflow-document compiler (workflow\yaml_compiler.hpp):
+# compiles a parsed YAML Workflow document to graph.hpp's own Workflow, checked by the SAME
+# validate_workflow() the C++ WorkflowBuilder form uses (I6) -----------------------------------
+add_executable(test_workflow_yaml_compiler test_workflow_yaml_compiler.cpp)
+target_link_libraries(test_workflow_yaml_compiler PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_workflow_yaml_compiler COMMAND test_workflow_yaml_compiler)
+
 # ---- Milestone 5 Phase H4 -- EffectContext::principal wired through every outbound ChatClient
 # call, including on_behalf_of delegation for a session initialized with a derive_on_behalf_of()'d
 # principal (018 §1's "delegation only via on_behalf_of, never token passthrough").
