@@ -126,6 +126,14 @@ struct WorkflowResult {
     // `interaction_id` a SET rather than a singleton." A vector, therefore, and not an optional.
     // Non-empty exactly when `status == suspended`.
     std::vector<Interaction> open_interactions;
+    // Neither §4 nor §6 states a priority between a request port and a `fail`-policy sibling
+    // failure reached in the SAME round -- decision: the round's failure wins (consistent with
+    // Phase D's "a round's failure ends the workflow"), so a port reached that round never opens
+    // an Interaction. Named explicitly here (I4) rather than the port silently vanishing with no
+    // trace: the ids of every request-port executor reached this round whose Interaction was never
+    // minted because `executor_failed`/`routing_failed` ended the run first. Empty in every other
+    // case, including a normal `suspended` result.
+    std::vector<std::string> unopened_ports;
 };
 
 class WorkflowSupervisor : public quark::Actor<WorkflowSupervisor, quark::Sequential> {
@@ -243,6 +251,9 @@ private:
         std::vector<ExecutorOutput> partial;
         Message                     selected_output;
         std::string                 failed_executor;
+        // WorkflowResult::unopened_ports' own storage -- populated only when a round's failure
+        // preempts that same round's port-opening (see that field's comment for why).
+        std::vector<std::string> unopened_ports;
         // §2's deadline, accumulated over RUNNING time only. A workflow waiting on a human is not
         // spending its execution budget: charging human latency to a deadline the author set to
         // bound *computation* would kill every human-in-the-loop workflow that declares one, and
@@ -412,7 +423,18 @@ private:
                 broke = true;
                 break;
             }
-            if (broke) break;
+            if (broke) {
+                // A sibling's `fail`-policy failure ends the run THIS round, before any port
+                // reached the SAME round gets to open (see WorkflowResult::unopened_ports' own
+                // comment for why this priority, not the reverse). Name what was lost rather than
+                // let it vanish: the run is ending regardless, so there is no live Interaction to
+                // mint, but an operator reading `executor_failed` should not have to infer that a
+                // pending human question also went unrecorded.
+                for (auto const& d : port_deliveries) {
+                    state_.unopened_ports.push_back(graph_.executors[d.executor_index].id);
+                }
+                break;
+            }
 
             // ---- 014 §4: open one Interaction per port reached this round ---------------------
             // Minted AFTER the round's ordinary work, so the superstep completes normally and only
@@ -454,6 +476,7 @@ private:
         r.partial         = state_.partial;
         r.failed_executor = state_.failed_executor;
         if (status == workflow_status::suspended) r.open_interactions = open_interactions();
+        r.unopened_ports = state_.unopened_ports;
         return r;
     }
 

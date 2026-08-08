@@ -629,6 +629,19 @@ if(AGENTENGINE_WITH_HTTPS)
   add_test(NAME test_workflow_request_port COMMAND test_workflow_request_port)
   set_tests_properties(test_workflow_request_port PROPERTIES TIMEOUT 120)
 
+  # ---- Independent QA pass on Milestone 6 Phase E (014 §4's request port) ------------------------
+  # A SECOND, independent test file over the same request-port surface, derived from the RFC 014 §4
+  # text and the public struct/enum declarations rather than from reading test_workflow_request_port's
+  # own author's implementation-derived assertions. Probes: deadline accounting across a suspension,
+  # a port inside a cycle opening twice with different derived ids, §6 partial-result preservation
+  # against a routing failure discovered at resume time, a port and a failing sibling reached in the
+  # same fan-out round, `routes` on a non-switch_case port edge (I3), and open_interactions() parity
+  # in the OQ-4 two-port case including a rejected double-resolve.
+  add_executable(test_workflow_request_port_independent_qa test_workflow_request_port_independent_qa.cpp)
+  target_link_libraries(test_workflow_request_port_independent_qa PRIVATE agentengine::core agentengine_warnings)
+  add_test(NAME test_workflow_request_port_independent_qa COMMAND test_workflow_request_port_independent_qa)
+  set_tests_properties(test_workflow_request_port_independent_qa PROPERTIES TIMEOUT 120)
+
   # ---- ADR-020 gates G1-G7: 004 §2's portable reasoning_effort, mapped down by both backends ------
   # Drives BOTH backends from the same enumerator values in one file, on purpose: the amendment's
   # claim is portability across two structurally different native shapes (a flat string vs a computed
