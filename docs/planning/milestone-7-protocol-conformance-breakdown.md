@@ -498,6 +498,45 @@ enforcement), and 006 §6b's G6-G9 ... all hold — closing 019 §2's wake-condi
   all (E2+'s own job). `StateDelta`/`ActivityDelta`'s `patch` fields carry whatever RFC 6902 JSON
   Patch array a caller supplies; this file has no diff GENERATOR (no state-diffing engine exists
   anywhere in this codebase yet), only the wire shape for one.
+
+  **Outcome, E2 (2026-08-08, commit pending):** `protocol/agui/projection.hpp` (new) —
+  `RunEventProjector`, the first STATEFUL projection in this milestone (every prior MCP/A2A mapping,
+  Phases C/D, was a pure function of one item): AG-UI's `TEXT_MESSAGE_START/CONTENT/END` triad needs a
+  `messageId` to bracket a model's incremental text output, and `RunEvent`'s own `ModelDelta` payload
+  carries none, so the projector tracks, per `run_id`, which `messageId` is currently open — minted on
+  `model_call_started`, closed on `model_call_finished`, with a defensive lazy-open fallback if
+  `model_delta` ever arrives out of order (proven, E2-4). §2.2's hard rule is implemented directly: a
+  run entering `input_required`/`auth_required`/`approval_requested` does NOT pause (AG-UI has no
+  pause event) — it ENDS the AG-UI-visible run via `RunFinishedInterrupt`, with the internal
+  `interaction_id`/`call_id` becoming the `Interrupt.id` verbatim (013 §2.2: "AG-UI — interruptId IS
+  the interaction_id"), `auth_required` using the `ae:auth_required` extension namespace (no native
+  auth member in AG-UI's own reason enum) and `approval_requested` using the native `confirmation`
+  reason — proven for all three (E2-11/12/13). Two deliberate, named divergences from a naive reading
+  of §2.1's own summary table: `tool_call_delta` (the TOOL's own progress report, distinct from the
+  MODEL's argument-construction streaming this codebase has no separate event kind for yet) projects
+  to `CustomEvent`, not `TOOL_CALL_CHUNK` — the cited research record gives no field shape for any
+  `*_CHUNK` variant, and inventing one would violate "research is dated and cited" worse than using
+  the `CUSTOM` escape hatch 013 §2.1 itself sanctions; `state_changed` projects to `CustomEvent`, never
+  a fabricated RFC 6902 patch, since no state-diffing engine exists anywhere in this codebase. Proven
+  BOTH ways, honestly split (matching Phase A's own test precedent for the identical real/unwired
+  split): end to end against a REAL `AgentSession` turn loop via `enable_event_stream()` (`TestKit`-
+  driven) for the 6 event kinds that loop actually emits today — a full success-path run (E2-1) and a
+  full failure-path run (E2-2), both projected from genuinely-fired internal events, not synthetic
+  ones — and via hand-fed `RunEvent`s for every other vocabulary kind (`model_delta`, `tool_call_*`,
+  `sandbox_exec_*`, `state_changed`, `artifact_produced`, all four interrupt/resolution pairs,
+  `run_canceled`, `warning`, `policy_decision`), honestly labeled as unwired rather than claimed
+  end-to-end. `tests/test_agui_projection.cpp` (new, 32 checks, all passing). 142/142 full suite (was
+  141 after E1).
+
+  **What is honestly NOT built for E2**: `input_resolved`/`auth_resolved`/`approval_resolved` project
+  to nothing (proven, E2-14) — by the time any of these fires the AG-UI-visible run already ended;
+  turning a resolution into a NEW run's `RunAgentInput.resume[]` is a caller-side concern (§2.2's own
+  resumption model) this single-event projector does not own; `ToolCallResult` is never emitted
+  (`ToolCallFinished`'s payload carries only `{call_id, ok}`, no real result content to report yet);
+  `STATE_SNAPSHOT`/`MESSAGES_SNAPSHOT` (no session-history/state-serialization caller wired to this
+  projector yet); the pre-`RUN_FINISHED`-snapshot ordering obligation §2.2 states for a resumable
+  interrupt (needs a caller that actually emits a snapshot before calling this projector, not this
+  file's own job to enforce).
 - **Phase F** — 015: declarative agent/workflow YAML, the shared validator, equivalence corpus.
 - **Phase G** — promotion gates: 011 §10 G1-G9, 012 §8 G1-G5, 013 §6 G1-G6, 015 §7 G1-G4, 006 §6b's
   G6-G9 — run for real, published percentages where the gate asks for one, milestone close-out.

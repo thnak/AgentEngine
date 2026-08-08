@@ -992,6 +992,13 @@ add_executable(test_agui_types test_agui_types.cpp)
 target_link_libraries(test_agui_types PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_agui_types COMMAND test_agui_types)
 
+# ---- Milestone 7 Phase E2 -- 013 §2.1/§2.2's projection from the internal RunEvent stream (real
+# since Phase A) onto AgUiEvent (protocol\agui\projection.hpp): a REAL AgentSession turn loop for
+# the wired event kinds, hand-fed RunEvents for every kind with no real producer yet -------------
+add_executable(test_agui_projection test_agui_projection.cpp)
+target_link_libraries(test_agui_projection PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_agui_projection COMMAND test_agui_projection)
+
 # ---- Milestone 5 Phase H4 -- EffectContext::principal wired through every outbound ChatClient
 # call, including on_behalf_of delegation for a session initialized with a derive_on_behalf_of()'d
 # principal (018 §1's "delegation only via on_behalf_of, never token passthrough").
