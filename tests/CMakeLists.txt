@@ -923,6 +923,12 @@ add_executable(test_agent_session_run_event_stream test_agent_session_run_event_
 target_link_libraries(test_agent_session_run_event_stream PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_agent_session_run_event_stream COMMAND test_agent_session_run_event_stream)
 
+# ---- Milestone 7 Phase B -- 006 §6b's Backgroundable/StandingEffect (standing_effect.hpp,
+# tool_pipeline.hpp::background_task(), AgentSession::start_background_task()) -----------------------
+add_executable(test_agent_session_background_task test_agent_session_background_task.cpp)
+target_link_libraries(test_agent_session_background_task PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_agent_session_background_task COMMAND test_agent_session_background_task)
+
 # ---- Milestone 5 Phase H4 -- EffectContext::principal wired through every outbound ChatClient
 # call, including on_behalf_of delegation for a session initialized with a derive_on_behalf_of()'d
 # principal (018 §1's "delegation only via on_behalf_of, never token passthrough").

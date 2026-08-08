@@ -32,6 +32,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #include "agentengine/core/content.hpp"
@@ -52,6 +53,10 @@ struct ToolDescriptor {
     std::string description;
     std::vector<Capability> capability_ceiling;  // from the tool's declared Capabilities<...>
     approval_mode approval = approval_mode::never_require;
+    // Milestone 7 Phase B (006 §6b): `false` unless the tool declared `Backgroundable` -- read by
+    // `background_task()` (agent_session.hpp) to reject an undeclared tool at authorize, before it
+    // ever reaches step 8.
+    bool backgroundable = false;
     std::string args_schema_json;
     std::string reply_schema_json;
 
@@ -66,6 +71,7 @@ template <class ToolT>
     d.description = std::string(ToolT::description);
     d.capability_ceiling = ToolT::declared_capabilities();
     d.approval = ToolT::declared_approval();
+    d.backgroundable = ToolT::declared_backgroundable();
     d.args_schema_json = ToolT::args_schema();
     d.reply_schema_json = ToolT::reply_schema();
     d.invoke = [](json::Value const& args_value, EffectContext& ctx) -> result<json::Value> {
@@ -330,6 +336,129 @@ namespace tool_pipeline_detail {
     item.tainted = true;
     ok_result.content.push_back(std::move(item));
     return finish(std::move(ok_result), nullptr, reply_bytes);
+}
+
+// Milestone 7 Phase B (006 §6b): "Still runs the full 10-step tool pipeline (§3); only step 8
+// (invoke) stops blocking the turn on completion." Steps 1 (resolve), 4/7 (authorize + bind -- the
+// tool's own capability ceiling, AND the caller's `Background<max_concurrent>` ceiling checked
+// against a LIVE count the caller supplies, G9), and 5 (approve) all run SYNCHRONOUSLY on the calling
+// thread, exactly like `invoke_tool()` above -- this function returns an error immediately, before
+// ever spawning anything, for the same reasons `invoke_tool()` would refuse the call. Step 8 (invoke)
+// alone runs on its own detached `std::thread`: deliberately `std::thread` + `.detach()`, not a
+// `std::jthread` some caller has to keep alive -- a detached thread needs no handle to manage, and
+// 006 §6b names no cancellation mechanism for IN-FLIGHT native `invoke()` work (`invoke_tool()`'s own
+// step 8 comment already notes step 8 is "not preemptible mid-call without real coroutines" on the
+// synchronous foreground path; backgrounding does not change that). Steps 9 (normalize) and 10
+// (account: revoke bound capabilities) also run on that same background thread, immediately before
+// `on_complete` fires.
+//
+// `ctx` is copied into the background thread's own closure -- `ctx.capabilities`/
+// `ctx.bound_capabilities` are non-owning pointers, the SAME "host owns it, must outlive" contract
+// `EffectContext::capabilities` already carries everywhere in this codebase (effect_context.hpp), not
+// a new hazard this function introduces. `bound` (the per-invocation `BoundCapability` handles from
+// step 7) is moved into the same closure so its RAII revoke-at-step-10 semantics are preserved
+// exactly, just on a different thread than the one that minted them.
+//
+// `on_complete` fires from the BACKGROUND thread, exactly once. What "deliver this back to a run"
+// means is entirely the caller's job -- `AgentSession::start_background_task()` (agent_session.hpp)
+// wires this to a self-`tell()`, mirroring `TimerWake`'s own established "host arms the callback"
+// shape (`test_agent_session_timer_wake.cpp`'s own precedent), not a mechanism this function invents.
+using BackgroundTaskCompletion = std::function<void(ToolResult, ToolInvocationAudit)>;
+
+[[nodiscard]] inline result<void> background_task(ToolTable const& table, CapabilitySet const& held,
+                                                    ToolCallRequest const& request, EffectContext ctx,
+                                                    ApprovalDecider const& approve,
+                                                    std::size_t current_background_count,
+                                                    BackgroundTaskCompletion on_complete) {
+    using namespace tool_pipeline_detail;
+
+    // -- step 1: resolve ---------------------------------------------------------------------------
+    ToolDescriptor const* tool = table.find(request.tool_name);
+    if (!tool) {
+        return std::unexpected(
+            error{failure_class::contract, "unknown tool: " + request.tool_name, "tool.unknown_name"});
+    }
+
+    // 006 §6b: an undeclared tool may never be backgrounded -- Tool::declared_backgroundable()'s own
+    // fail-closed default.
+    if (!tool->backgroundable) {
+        return std::unexpected(error{failure_class::policy, "tool is not declared Backgroundable",
+                                      "tool.not_backgroundable"});
+    }
+
+    // -- step 4/7: authorize + bind (the tool's own capability ceiling) -----------------------------
+    std::vector<BoundCapability> bound;
+    bound.reserve(tool->capability_ceiling.size());
+    for (Capability const& requirement : tool->capability_ceiling) {
+        auto handle = held.bind(requirement);
+        if (!handle) {
+            error e{failure_class::policy, "required capability not held", "tool.capability_not_held"};
+            return std::unexpected(e);
+        }
+        bound.push_back(std::move(*handle));
+    }
+
+    // -- step 4/7 (G9): the CALLER's own Background<max_concurrent> ceiling, checked against a LIVE
+    // count -- find_background()'s own comment: no grant at all means no background call is ever
+    // authorized, regardless of what the tool declares.
+    auto background_cap = held.find_background();
+    if (!background_cap.has_value() || current_background_count >= background_cap->max_concurrent) {
+        for (auto const& b : bound) b.revoke();
+        error e{failure_class::resource, "Background<max_concurrent> ceiling reached or not granted",
+                 "tool.background_capacity_exceeded"};
+        return std::unexpected(e);
+    }
+
+    // -- step 5: approve ------------------------------------------------------------------------------
+    if (tool->approval != approval_mode::never_require) {
+        std::string canonical_args = json::dump(request.arguments);
+        bool approved = approve && approve(request.tool_name, canonical_args);
+        if (!approved) {
+            for (auto const& b : bound) b.revoke();
+            error e{failure_class::policy, "approval required and not granted", "tool.approval_denied"};
+            return std::unexpected(e);
+        }
+    }
+
+    // -- step 8 onward: detached. The calling turn is never blocked past this point. -----------------
+    std::thread worker([tool, request, ctx = std::move(ctx), bound = std::move(bound),
+                         on_complete = std::move(on_complete)]() mutable {
+        auto const started = std::chrono::steady_clock::now();
+        ctx.bound_capabilities = &bound;
+        result<json::Value> invoke_result = tool->invoke(request.arguments, ctx);
+        ctx.bound_capabilities = nullptr;
+        for (auto const& b : bound) b.revoke();  // step 10, unconditional -- same as invoke_tool()
+
+        ToolInvocationAudit audit;
+        audit.call_id   = request.call_id;
+        audit.tool_name = request.tool_name;
+        audit.duration  = std::chrono::steady_clock::now() - started;
+
+        if (!invoke_result) {
+            error const& e = invoke_result.error();
+            audit.ok         = false;
+            audit.error_code = e.code;
+            on_complete(make_error_result(request.call_id, e), std::move(audit));
+            return;
+        }
+
+        std::string reply_json  = json::dump(*invoke_result);
+        audit.ok                = true;
+        audit.result_bytes      = reply_json.size();
+
+        ToolResult ok_result;
+        ok_result.call_id  = request.call_id;
+        ok_result.is_error = false;
+        ContentItem item;
+        item.value   = Data{std::move(reply_json), std::nullopt};
+        item.origin  = content_origin::tool;
+        item.tainted = true;
+        ok_result.content.push_back(std::move(item));
+        on_complete(std::move(ok_result), std::move(audit));
+    });
+    worker.detach();
+
+    return {};
 }
 
 }  // namespace agentengine

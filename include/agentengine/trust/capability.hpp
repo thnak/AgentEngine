@@ -570,6 +570,20 @@ public:
     }
 
     // 006 §3 step 7: mint the per-invocation handle. Fails closed if `requirement` isn't covered.
+    // Milestone 7 Phase B (006 §6b G9): the same "pure lookup, not `subsumes()`-based" shape
+    // `find_fs_write()` above already established, for exactly the same reason -- `background_task()`
+    // needs to know THIS grant's own `max_concurrent` ceiling to compare against a live count, which
+    // is a different question than "is a requested ceiling covered by the parent" (`contains()`'s own
+    // job). `std::nullopt` means no `cap::Background` was granted at all -- 006 §6b's own undeclared-
+    // defaults-closed rule (mirrored by `Tool::declared_backgroundable()`) applies here too: no grant
+    // means no background call is authorized, ever, regardless of what the tool itself declares.
+    [[nodiscard]] std::optional<cap::Background> find_background() const {
+        for (Capability const& c : granted_) {
+            if (auto const* bg = std::get_if<cap::Background>(&c)) return *bg;
+        }
+        return std::nullopt;
+    }
+
     [[nodiscard]] result<BoundCapability> bind(Capability const& requirement) const {
         if (!contains(requirement)) {
             return std::unexpected(

@@ -46,7 +46,9 @@
 #include "agentengine/core/interaction.hpp"
 #include "agentengine/core/json_value.hpp"
 #include "agentengine/core/run_event.hpp"
+#include "agentengine/core/standing_effect.hpp"
 #include "agentengine/core/stream.hpp"
+#include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/trust/principal.hpp"
 
 namespace agentengine {
@@ -139,6 +141,21 @@ struct StartRun {  // ae-naming-lint: allow StartRun — 001 §1 names this mess
 // vertical this task does not invent standing in for.
 struct TimerWake {  // ae-naming-lint: allow TimerWake — 019 §2 names the wake condition normatively; 027 has not been updated to list a message type for it
     std::string reminder_name;
+};
+
+// Milestone 7 Phase B (019 §2's "Local background task completion" wake row -- the gap `TimerWake`'s
+// own comment above named as un-built). Same shape as `TimerWake`: a tell-only message, delivered by
+// a `background_task()` completion closure (`start_background_task()` below arms it, mirroring how
+// `test_agent_session_timer_wake.cpp`'s own reminder callback arms `TimerWake` -- the host holds an
+// `ActorRef<AgentSession...>` to itself and `tell()`s back, this actor never self-addresses). Carries
+// only what `handle()` below needs to resolve the `StandingEffect` and emit `ToolCallFinished` for the
+// run that asked for the background work -- not the full `ToolResult` (that would reintroduce
+// `ContentItem`'s variant into a plain tell message for no reason `emit_run_event`'s own
+// `ToolCallFinished` payload -- `{call_id, ok}`, run_event.hpp -- actually needs).
+struct BackgroundTaskDone {  // ae-naming-lint: allow BackgroundTaskDone — 006 §6b/019 §2 name this concept normatively; 027 has not been updated to list a message type for it
+    std::string handle_id;
+    std::string call_id;
+    bool        ok = false;
 };
 
 // 027 §2's canonical name; already listed there, no suppression needed.
@@ -235,7 +252,7 @@ template <class ChatClientT, class StateT = NoSessionState,
 class AgentSession
     : public quark::Actor<AgentSession<ChatClientT, StateT, HistoryProviderT>, quark::Sequential> {
 public:
-    using protocol = quark::Protocol<quark::Ask<StartRun, AgentResponse>, TimerWake>;
+    using protocol = quark::Protocol<quark::Ask<StartRun, AgentResponse>, TimerWake, BackgroundTaskDone>;
 
     // 001 §3's turn loop, in miniature. Milestone 5 Phase B4: `ChatClientT::chat()` is now a real
     // `ae::task<result<ChatResponse>>` coroutine (chat_client.hpp), so this handler is Quark's async
@@ -311,11 +328,12 @@ public:
         effect_context_.turn_index = 0;
         last_run_id_ = effect_context_.run_id;
 
-        // Milestone 7 Phase A (013 §1). Reset the per-run sequence counter FIRST -- everything below
-        // is seq 1, 2, 3, ... for THIS run_id, never carrying a prior run's count forward (013 §1:
-        // "monotonic per run"). No event fires for the admission-denial branch above: 001 §1 mints no
-        // Run at all when admission fails, so there is no run_id to attach an event to.
-        run_event_seq_ = 0;
+        // Milestone 7 Phase A (013 §1). This run_id's own subsequence in `run_event_seq_by_run_`
+        // starts fresh at 1 the first time it's looked up (a map, keyed per run_id since Phase B --
+        // see `emit_run_event_for()`'s own comment) -- everything below is seq 1, 2, 3, ... for THIS
+        // run_id, never carrying a prior run's count forward (013 §1: "monotonic per run"). No event
+        // fires for the admission-denial branch above: 001 §1 mints no Run at all when admission
+        // fails, so there is no run_id to attach an event to.
         emit_run_event(run_event_kind::run_started);
 
         history_.push_back(m.query.input);
@@ -406,6 +424,101 @@ public:
     void handle(TimerWake const&) noexcept { ++timer_wakes_; }
 
     [[nodiscard]] std::uint64_t timer_wakes() const noexcept { return timer_wakes_; }
+
+    // Milestone 7 Phase B (019 §2's "Local background task completion" wake row; 013 §1's
+    // ToolCallFinished). Finds the effect FIRST, to capture the run_id it was registered under, THEN
+    // erases it -- 013 §1's event must be attributed to the run that ASKED for the background work,
+    // never whatever run happens to be current on this actor right now (see
+    // `emit_run_event_for()`'s own comment for why a shared counter would have made this wrong). A
+    // handle_id with no matching entry (already resolved, or `cancel_standing_effect()`d in the
+    // meantime) is a silent, idempotent no-op -- exactly `BoundCapability::revoke()`'s own idempotency
+    // shape one layer down.
+    void handle(BackgroundTaskDone const& m) {
+        auto it = std::find_if(standing_effects_.begin(), standing_effects_.end(),
+                                [&](StandingEffect const& e) { return e.handle_id == m.handle_id; });
+        if (it == standing_effects_.end()) return;
+        std::string const owner_run_id = it->run_id;
+        standing_effects_.erase(it);
+        emit_run_event_for(owner_run_id, run_event_kind::tool_call_finished,
+                            run_event_payload::ToolCallFinished{m.call_id, m.ok});
+    }
+
+    // Milestone 7 Phase B (006 §6b's "one introspection/kill surface"). A plain read -- the caller
+    // decides what "currently outstanding" means to show a human or a protocol surface.
+    [[nodiscard]] std::vector<StandingEffect> const& list_standing_effects() const noexcept {
+        return standing_effects_;
+    }
+
+    // 006 §6b G8: cross-principal `cancel_standing_effect()` denial, proven both same- and
+    // cross-principal. Checks the EFFECT's own recorded `principal_id` (the run that registered it),
+    // not this session's own `principal_` -- today `start_background_task()` below always registers
+    // under the current run's principal so the two coincide, but checking the effect's own record
+    // keeps this correct if a future caller ever registers on behalf of someone else. Cancelling
+    // removes the BOOKKEEPING only -- 006 §6b names no mechanism to interrupt step 8's already-running
+    // native `invoke()` (tool_pipeline.hpp's own `background_task()` comment), so a late
+    // `BackgroundTaskDone` for a canceled handle simply finds nothing to resolve (this handler's own
+    // idempotent no-op above).
+    [[nodiscard]] result<void> cancel_standing_effect(std::string const& handle_id,
+                                                       Principal const& caller_principal) {
+        auto it = std::find_if(standing_effects_.begin(), standing_effects_.end(),
+                                [&](StandingEffect const& e) { return e.handle_id == handle_id; });
+        if (it == standing_effects_.end()) {
+            return std::unexpected(
+                error{failure_class::contract, "no such standing effect", "standing_effect.not_found"});
+        }
+        if (it->principal_id != caller_principal.id) {
+            return std::unexpected(error{failure_class::policy,
+                                          "cannot cancel a standing effect owned by a different principal",
+                                          "standing_effect.cross_principal_denied"});
+        }
+        standing_effects_.erase(it);
+        return {};
+    }
+
+    // Milestone 7 Phase B (006 §6b): the real StandingEffect producer this phase builds.
+    // `self` is the CALLER's own `ActorRef` to THIS session -- the same "host arms the callback, the
+    // actor never self-addresses" shape `test_agent_session_timer_wake.cpp` already established for
+    // `TimerWake` (Quark gives an actor no implicit handle to its own address, and this codebase has
+    // never needed one before this). Runs `tool_pipeline.hpp`'s `background_task()` (steps 1-7
+    // synchronous -- including Backgroundable/Background<max_concurrent> enforcement -- step 8 onward
+    // detached), wired so `on_complete` fires a `self.tell(BackgroundTaskDone{...})`.
+    [[nodiscard]] result<StandingEffect> start_background_task(
+        quark::ActorRef<AgentSession> self, ToolTable const& table, ToolCallRequest const& request,
+        ApprovalDecider const& approve = ApprovalDecider{}) {
+        if (!capabilities_) {
+            return std::unexpected(error{failure_class::policy, "session has no granted capabilities",
+                                          "standing_effect.no_capabilities"});
+        }
+        std::size_t const current_count = static_cast<std::size_t>(std::count_if(
+            standing_effects_.begin(), standing_effects_.end(),
+            [](StandingEffect const& e) { return e.kind == standing_effect_kind::background_task; }));
+
+        std::string const handle_id =
+            session_id_ + ":standing:" + std::to_string(++standing_effect_counter_);
+        std::string const owner_run_id       = effect_context_.run_id;
+        std::string const owner_principal_id = effect_context_.principal.id;
+
+        result<void> submitted = background_task(
+            table, *capabilities_, request, effect_context_, approve, current_count,
+            [self, handle_id, call_id = request.call_id](ToolResult /*result_out*/,
+                                                           ToolInvocationAudit audit) mutable {
+                self.tell(BackgroundTaskDone{handle_id, call_id, audit.ok});
+            });
+        if (!submitted) return std::unexpected(submitted.error());
+
+        StandingEffect effect;
+        effect.handle_id    = handle_id;
+        effect.session_id   = session_id_;
+        effect.principal_id = owner_principal_id;
+        effect.run_id       = owner_run_id;
+        effect.kind         = standing_effect_kind::background_task;
+        effect.label        = request.tool_name;
+        standing_effects_.push_back(effect);
+
+        emit_run_event_for(owner_run_id, run_event_kind::tool_call_started,
+                            run_event_payload::ToolCallStarted{request.call_id, request.tool_name});
+        return effect;
+    }
 
     // Milestone 7 Phase A (013 §1). Mirrors `WorkflowSupervisor::enable_live_view()` exactly (M6
     // Phase G): build a fresh producer/consumer pair over `run_event.hpp`'s `RunEvent`, keep the
@@ -715,12 +828,28 @@ public:
 private:
     // Milestone 7 Phase A (013 §1: "Ordered and monotonic per run, with a sequence number"). A
     // no-op before `enable_event_stream()` is called -- exactly `WorkflowSupervisor`'s own
-    // `live_view_producer_.valid()` guard (M6 Phase G, supervisor.hpp).
+    // `live_view_producer_.valid()` guard (M6 Phase G, supervisor.hpp). Convenience overload for the
+    // common case: emit against THIS handler's own current run.
     void emit_run_event(run_event_kind kind, RunEventPayload payload = run_event_payload::Empty{}) {
+        emit_run_event_for(effect_context_.run_id, kind, std::move(payload));
+    }
+
+    // Milestone 7 Phase B fix to Phase A's own design: the sequence counter is keyed PER run_id
+    // (`run_event_seq_by_run_`), not a single scalar reset at the top of `handle()`. A single scalar
+    // would have been correct for every Phase A call site (all fire synchronously within the SAME
+    // `handle()` invocation that owns the current run), but Phase B's `BackgroundTaskDone` handler
+    // can fire an event for an OLDER run_id after a NEWER `StartRun` has already reset the counter --
+    // with a shared scalar, that stale event would collide with the newer run's own seq numbers
+    // (both incrementing the same counter). A map isolates each run_id's own monotonic-from-1
+    // subsequence regardless of how many other runs started in between -- proven unchanged for the
+    // ordinary case (a fresh run_id's first lookup still starts at 0, so its first emitted event is
+    // still seq 1, exactly Phase A's own A2/A3 assertions).
+    void emit_run_event_for(std::string const& run_id, run_event_kind kind,
+                             RunEventPayload payload = run_event_payload::Empty{}) {
         if (!run_event_producer_.valid()) return;
         RunEvent ev;
-        ev.run_id  = effect_context_.run_id;
-        ev.seq     = ++run_event_seq_;
+        ev.run_id  = run_id;
+        ev.seq     = ++run_event_seq_by_run_[run_id];
         ev.kind    = kind;
         ev.payload = std::move(payload);
         (void)run_event_producer_.push(std::move(ev));
@@ -746,6 +875,11 @@ private:
     std::string                                        last_run_id_;
     std::vector<Interaction>                           open_interactions_;
     std::uint64_t                                      interaction_counter_ = 0;
+    // Milestone 7 Phase B (006 §6b) -- currently outstanding StandingEffects (today: only
+    // `background_task` registrations; `standing_effect_counter_` mints each `handle_id`'s numeric
+    // suffix, the same "session_id + a monotonic counter" shape `interaction_counter_` already has).
+    std::vector<StandingEffect>                        standing_effects_;
+    std::uint64_t                                      standing_effect_counter_ = 0;
     std::uint64_t                                      timer_wakes_ = 0;
     // Milestone 5 Phase J1 residual, closed by ADR-018: held as an `optional` ONLY so that
     // `AgentSession` stays default-constructible when `ChatClientT` is not.
@@ -778,10 +912,12 @@ private:
     std::uint64_t                                      admission_denied_count_ = 0;
     // Milestone 7 Phase A (013 §1) -- invalid until `enable_event_stream()` is called, the same
     // "invalid until enabled" shape `WorkflowSupervisor::live_view_producer_` already established
-    // (M6 Phase G). `run_event_seq_` resets to 0 at the top of every `handle()` -- 013 §1's sequence
-    // number is monotonic PER RUN, not across this actor's whole lifetime across many runs.
-    stream_producer<RunEvent>                          run_event_producer_;
-    std::uint64_t                                       run_event_seq_ = 0;
+    // (M6 Phase G). Milestone 7 Phase B: keyed per run_id (`emit_run_event_for()`'s own comment) --
+    // 013 §1's sequence number is monotonic PER RUN, never across this actor's whole lifetime, and
+    // never colliding with a DIFFERENT run's own numbering even when a background completion for an
+    // older run arrives after a newer run has already started.
+    stream_producer<RunEvent>                           run_event_producer_;
+    std::unordered_map<std::string, std::uint64_t>       run_event_seq_by_run_;
 };
 
 // Save `session`'s narrowed durable record (Phase A4, extended with run position in Phase D1)

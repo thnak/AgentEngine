@@ -129,6 +129,54 @@ enforcement), and 006 §6b's G6-G9 ... all hold — closing 019 §2's wake-condi
 - **Phase B** — 006 §6b: `Backgroundable`, `Background<N>` capability, `background_task()`,
   `StandingEffect` handle, `list_standing_effects()`/`cancel_standing_effect()`; closes 019 §2's
   "Local background task completion" wake row; `StateChanged` visibility from Phase A.
+
+  **Outcome (2026-08-08, commit pending):** `standing_effect.hpp` (new) defines `StandingEffect`
+  (`Described`/`QUARK_SERIALIZE`-able from the start, mirroring `Interaction`'s own M4 precedent) and
+  `standing_effect_kind`. `tool.hpp` gained the `Backgroundable` tag and `Tool::declared_backgroundable()`
+  (undeclared defaults to `false`, the same fail-closed direction every other undeclared tool policy
+  already has); `tool_pipeline.hpp`'s `ToolDescriptor` carries it through. `capability.hpp` gained
+  `CapabilitySet::find_background()`, the same "pure lookup, not `subsumes()`-based" shape
+  `find_fs_write()` already established — `cap::Background`/`cap::decl::Background<N>` themselves
+  turned out to already exist (scaffolded generically alongside the rest of 007 §3's capability table
+  before this milestone), so only the enforcement was missing, not the vocabulary.
+  `tool_pipeline.hpp::background_task()` runs steps 1 (resolve), 4/7 (authorize+bind — the tool's own
+  ceiling AND `Background<max_concurrent>` checked against a caller-supplied LIVE count, G9), and 5
+  (approve) synchronously, then detaches step 8 (invoke) onto its own `std::thread` + `.detach()` —
+  deliberately not a kept-alive `std::jthread`, since 006 §6b names no cancellation mechanism for
+  in-flight native `invoke()` work. `AgentSession` gained `start_background_task()` (the real
+  producer), `list_standing_effects()`, `cancel_standing_effect()` (G8: cross-principal denial,
+  checked against the effect's own recorded `principal_id`), and `handle(BackgroundTaskDone const&)`
+  — a tell-only completion message mirroring `TimerWake`'s own "host arms the callback, the actor
+  never self-addresses" shape (`self.tell(...)` from the background thread's completion closure).
+
+  A real correctness bug in Phase A's own design was caught and fixed while building this: emitting a
+  background completion's `ToolCallFinished` needs the ORIGINATING run's `run_id`, which can differ
+  from whatever run is current on the actor by the time the detached thread finishes — a single
+  scalar `run_event_seq_` (reset per `StartRun`) would have let a stale completion's sequence number
+  collide with a newer run's own numbering. Fixed by keying the counter per run_id
+  (`run_event_seq_by_run_`, a map) via a new `emit_run_event_for(run_id, ...)` primitive; Phase A's
+  own tests re-ran unchanged and still pass, confirming the fix is behavior-preserving for every
+  existing call site.
+
+  `tests/test_agent_session_background_task.cpp` (new, 21 checks, all passing, real `quark::Engine`
+  mirroring `test_agent_session_timer_wake.cpp`'s own construction) proves: an undeclared-Backgroundable
+  tool is rejected before step 8 ever runs; `start_background_task()` returns in under 50ms even
+  though the tool's own `invoke()` sleeps 150ms (G7's "doesn't block the calling turn" half); a second
+  call against an already-saturated `Background<1>` is rejected, never queued (G9); cross-principal
+  cancellation is denied while the owning principal's succeeds (G8); and once the detached thread
+  actually finishes, `ToolCallStarted`/`ToolCallFinished` are both real on the event stream, correctly
+  attributed to the run that asked for the work even after a SECOND, later run has already started on
+  the same session. Full suite: 130/130 passing (was 129 after Phase A).
+
+  **What is honestly NOT built**, per this doc's own decision 1's precedent of naming rather than
+  silently claiming: `schedule_wakeup` (019 §2's "Timer/schedule" row) still ships via `TimerWake`/
+  Quark's reminder service exactly as M4 Phase E3 left it, WITHOUT going through the `StandingEffect`
+  handle shape — retrofitting it is a real, named follow-up, not attempted here since it would touch
+  reminder-arming call sites this phase does not otherwise need to touch. `watch_resource` has no real
+  producer anywhere; its wake condition is 019 §2's "External event" row, which needs 012 (A2A) —
+  Phase D, not this one. Full G6/G7 durability (surviving a real actor suspend/resume or process
+  restart) is not proven: `StandingEffect` is serializable but is not yet threaded into
+  `AgentSessionRecord`'s own checkpoint, so "survives a restart" remains a real, separate gap.
 - **Phase C** — 011 MCP: client role (§3: tools/resources/prompts, MRTR, caching, pagination) and
   server role (§4: exposing AgentEngine), against `2026-07-28`.
 - **Phase D** — 012 A2A: server role (§2: Agent Card, HTTP+JSON/REST + JSON-RPC bindings, task

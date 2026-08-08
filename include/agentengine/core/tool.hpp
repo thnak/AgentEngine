@@ -28,6 +28,13 @@ struct Approval {};  // ae-naming-lint: allow Approval — pre-existing M0 scaff
 // see the M2 breakdown's "what's explicitly deferred" list), so this carries no pipeline logic yet.
 struct Parallelizable {};  // ae-naming-lint: allow Parallelizable — pre-existing M0 scaffolding, reconcile at owning milestone
 
+// §6b's sibling to `Parallelizable` above: "safe to detach from the turn that called it." Unlike
+// `Parallelizable`, this ONE carries real pipeline logic from the phase that declares it (Milestone 7
+// Phase B, 006 §6b) -- `background_task()` (core/standing_effect.hpp / agent_session.hpp) rejects a
+// tool outright at step 4/authorize if it was not declared `Backgroundable`, the same fail-closed
+// default every other undeclared policy in this file already has.
+struct Backgroundable {};  // ae-naming-lint: allow Backgroundable — 006 §6b names this concept normatively; 027 has not been updated to list it
+
 // Milliseconds, not a std::chrono duration NTTP: chrono durations typically keep their `rep` as a
 // private data member, which disqualifies them as C++20 structural types (the same constraint
 // ADR-009 hit for `cap::decl::*`) -- a plain integer avoids that portability question entirely,
@@ -76,6 +83,19 @@ struct policy_effect_class {
 template <effect_class C>
 struct policy_effect_class<EffectClass<C>> {
     static std::optional<effect_class> get() { return C; }
+};
+
+// Milestone 7 Phase B (006 §6b): undeclared defaults to `false` -- the same fail-closed direction
+// `declared_effect_class()`'s own comment names ("never guess... undeclared defaults to the
+// assumption... until the author explicitly says otherwise"), applied here to "may this tool be
+// detached from its calling turn" rather than to re-execution safety.
+template <class Policy>
+struct policy_backgroundable {
+    static bool get() { return false; }
+};
+template <>
+struct policy_backgroundable<Backgroundable> {
+    static bool get() { return true; }
 };
 
 }  // namespace tool_detail
@@ -138,6 +158,18 @@ struct Tool {
         };
         (consider.template operator()<Policies>(), ...);
         return cls;
+    }
+
+    // Milestone 7 Phase B (006 §6b): `false` if the tool declared no `Backgroundable` -- an
+    // undeclared tool may never be run through `background_task()`, the same "author must opt in"
+    // shape `declared_approval()` already has for approval gating.
+    [[nodiscard]] static bool declared_backgroundable() {
+        bool backgroundable = false;
+        auto consider = [&backgroundable]<class P>() {
+            if (tool_detail::policy_backgroundable<P>::get()) backgroundable = true;
+        };
+        (consider.template operator()<Policies>(), ...);
+        return backgroundable;
     }
 };
 
