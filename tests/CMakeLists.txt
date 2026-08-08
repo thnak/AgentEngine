@@ -967,6 +967,17 @@ add_executable(test_a2a_agent_card test_a2a_agent_card.cpp)
 target_link_libraries(test_a2a_agent_card PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_a2a_agent_card COMMAND test_a2a_agent_card)
 
+# ---- Milestone 7 Phase D3 -- 012 §1/§2.3's Task <- Run projection and Task management
+# (protocol\a2a\mapping.hpp, protocol\a2a\server.hpp): ContentItem/Message <-> Part/Message mapping,
+# and SendMessage/GetTask/CancelTask wired to a REAL AgentSession over a real quark::Engine ---------
+add_executable(test_a2a_mapping test_a2a_mapping.cpp)
+target_link_libraries(test_a2a_mapping PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_a2a_mapping COMMAND test_a2a_mapping)
+
+add_executable(test_a2a_server test_a2a_server.cpp)
+target_link_libraries(test_a2a_server PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_a2a_server COMMAND test_a2a_server)
+
 # ---- Milestone 5 Phase H4 -- EffectContext::principal wired through every outbound ChatClient
 # call, including on_behalf_of delegation for a session initialized with a derive_on_behalf_of()'d
 # principal (018 §1's "delegation only via on_behalf_of, never token passthrough").

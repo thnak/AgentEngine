@@ -379,6 +379,51 @@ enforcement), and 006 §6b's G6-G9 ... all hold — closing 019 §2's wake-condi
   (transport work, D3+); `AgentSkill.examples`/`inputModes`/`outputModes` population (present in the
   type, never populated — no source for them exists yet, same honesty as `tags`); skill plugins (009
   §8) contributing additional skills beyond the declared tool set.
+
+  **Outcome, D3 (2026-08-08, commit pending):** `protocol/a2a/mapping.hpp` (new) — the `ContentItem`/
+  `Message` (003, internal) ↔ `Part`/`Message` (012, wire) projection §1 calls "thin by construction."
+  Deliberately narrow on content: `Text`/`Data`/`Error` are the three `ContentItem` kinds this
+  codebase's own pipelines actually produce (the identical set `protocol/mcp/server.hpp` already
+  names for the same reason); every other kind (`Reasoning`/`Media`/`ToolCall`/`ToolResult`/
+  `Citation`/`Custom`) falls back to `UnknownPart` — REUSING D1's own forward-compat shape rather than
+  inventing a second one. Role mapping is lossy in a named direction only: `role::system`/`role::tool`
+  (no A2A equivalent) map to `a2a_role::unspecified`, never silently promoted to user/agent; the
+  reverse direction only ever produces `role::user`/`role::assistant` (an inbound A2A message is
+  always a peer speaking to us, 012 §3). `protocol/a2a/server.hpp` (new) — `A2aServer`
+  (`send_message`/`get_task`/`cancel_task`), transport-agnostic like `McpServer`: handed a
+  `RunStarter` seam rather than actor-messaging plumbing itself, this phase's own test wiring one
+  against a REAL `quark::Engine`-hosted `AgentSession`. `Task.id` really IS the session's own
+  `run_id` (`AgentSession::last_run_id()`, read right after the `Ask<StartRun,AgentResponse>`
+  settles) — §1's "Task ← Run" identity, proven directly (D3-1), not asserted. Every OTHER task-
+  lifecycle claim is scoped to exactly what `AgentSession`'s current (still M1-era, fully synchronous,
+  no tool-call loop) turn loop can really produce: `TASK_STATE_COMPLETED` for a real successful run,
+  `TASK_STATE_FAILED` (with a dispatcher-minted, non-run-id task id, since no run_id exists to borrow
+  when the ask never settles) for every failure shape `AgentSession` collapses to one signal today —
+  proven against a second real session with a genuinely failing `ChatClient` (D3-8), not a mock
+  return value. `cancel_task()` always rejects, faithfully: every task this dispatcher can produce is
+  ALREADY terminal by the time it's observable (fully synchronous dispatch), so §2.3's "terminal is
+  terminal" is proven honestly rather than fabricating a `CANCELED` transition this implementation
+  cannot really perform (D3-6). `tests/test_a2a_mapping.cpp` (new, 14 checks) and
+  `tests/test_a2a_server.cpp` (new, 17 checks), all passing. 138/138 full suite (was 136 after D2).
+
+  **Bug found and fixed while building this phase**: the test harness's `LocalRouter` was initially a
+  constructor-local variable, but Quark's `ActorRef` holds a raw `LocalRouter*` internally — the
+  router was destroyed the instant the constructor returned, leaving `ref` dangling and segfaulting on
+  first use. Fixed by making `router` a class member with the same lifetime as `ref` itself, matching
+  what every prior real-`Engine` test in this codebase does by keeping router/ref/engine as sibling
+  locals in one function scope — this was the first time that pattern got wrapped in a reusable test
+  harness type, which is what surfaced the ordering assumption.
+
+  **What is honestly NOT built for D3**: `TASK_STATE_SUBMITTED`/`WORKING` (never independently
+  observable — `send_message()` itself blocks until the run settles, no `returnImmediately: true`
+  async dispatch exists); `TASK_STATE_INPUT_REQUIRED`/`AUTH_REQUIRED` (the turn loop never opens an
+  `Interaction` on its own — `open_interaction()`/`resolve_interaction()` are host-callable but
+  unwired, agent_session.hpp's own Phase E1 comment); a genuinely cancellable in-flight task (needs
+  async dispatch, D4+); the JSON-RPC/REST envelope itself (this is a pure dispatcher, no wire
+  encoding, matching MCP's own "envelope first" C1-before-C2 split — this is the "roles" layer built
+  before A2A's own envelope exists); `ListTasks`, push-notification config CRUD, streaming
+  (`SubscribeToTask`/`SendStreamingMessage`), extensions, authentication/authorization, digest-pinned
+  Agent Card caching (client role, not built at all yet).
 - **Phase E** — 013 §2-§4: AG-UI projection, other-surface table, transport (SSE, binary framing,
   WebSocket), cross-surface equivalence proofs.
 - **Phase F** — 015: declarative agent/workflow YAML, the shared validator, equivalence corpus.
