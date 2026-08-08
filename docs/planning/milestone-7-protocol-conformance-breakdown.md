@@ -179,6 +179,50 @@ enforcement), and 006 §6b's G6-G9 ... all hold — closing 019 §2's wake-condi
   `AgentSessionRecord`'s own checkpoint, so "survives a restart" remains a real, separate gap.
 - **Phase C** — 011 MCP: client role (§3: tools/resources/prompts, MRTR, caching, pagination) and
   server role (§4: exposing AgentEngine), against `2026-07-28`.
+
+  **Reuse inventory (2026-08-08, Explore agent survey before starting):** HTTP client machinery is
+  real and reusable —`agentengine::sandbox::perform_provider_https_exchange`/
+  `perform_provider_streaming_exchange` (`sandbox/provider_http_client.hpp`, ADR-011/ADR-013,
+  mbedTLS-backed) is the same host-initiated pattern the OpenAI/Anthropic `ChatClient`s already use;
+  an MCP client call is architecturally the same shape (host-initiated, no capability to mediate),
+  so it reuses this path rather than `HostEgressProxy` (`cap::NetOut`, guest-mediated only). `json::Value`
+  (`core/json_value.hpp`) is a real, general-purpose parse/dump type, reusable as-is for MCP bodies.
+  **New work, confirmed absent by direct inspection:** a generic JSON-Schema-2020-12 validator (only
+  a from-our-own-C++-types schema *generator* exists, `json_schema.hpp`'s `AE_JSON_SCHEMA` macro — no
+  `$ref`/composition/depth-budget validator against an arbitrary third-party schema); a JSON-RPC 2.0
+  envelope; a persistent-process (writable stdin pipe, incrementally-readable stdout) spawn primitive
+  for the stdio transport (`native_jail_backend.cpp::exec()` is real but run-to-completion, wrong
+  shape); a `ToolDescriptor` → MCP `tools/list` item mapping.
+
+  Sub-phases (each gets its own build+test+commit, all still under the umbrella "Phase C" task):
+  - **C1** — the JSON-RPC 2.0 envelope itself (`protocol/mcp/json_rpc.hpp`), transport- and
+    MCP-vocabulary-agnostic on purpose: id-presence decides Request vs Notification (§4), a response
+    is result XOR error by construction (§5), both proven by round-trip + negative tests before any
+    MCP semantics are layered on.
+  - **C2** — server role: `server/discover`, `tools/list` (from `ToolTable`), `tools/call` (via
+    `invoke_agent_tool`/`invoke_tool`), `isError` vs JSON-RPC-error split, over the C1 envelope with
+    no real transport yet (direct in-process dispatch) — server role needs no generic schema
+    validator (we generate our own schemas, we don't validate against someone else's).
+  - **C3** — client role: consuming a (mock, in-process) server's `tools/list`/`tools/call`, caching
+    (`ttlMs`/`cacheScope`), pagination (opaque cursor, empty-string-valid), digest-pinning (§8
+    rug-pull defense), `isError` surfaced to the model. The generic JSON-Schema validator §3.1 asks
+    for (`$ref` hardening, composition-keyword bounds) is scoped as its OWN follow-up sub-phase
+    (C3 proves basic type-shape argument construction; full hardening is named, not silently skipped).
+  - **C4+** — MRTR/tasks extension (needs Phase B's `Backgroundable`/`StandingEffect`, real since
+    Phase B), Streamable HTTP transport (client side reuses `perform_provider_https_exchange`; server
+    side needs an HTTP SERVER surface this codebase does not yet have — scoped when reached), stdio
+    transport (the new persistent-process primitive), authorization (018), trust/supply-chain (§8),
+    conformance tooling integration (§10 gate). Scoped in more detail as each is reached, matching
+    this milestone's own "vocabulary total, wiring honest" discipline throughout Phases A/B.
+
+  **Outcome, C1 (2026-08-08, commit pending):** `protocol/mcp/json_rpc.hpp` (new) — `JsonRpcRequest`/
+  `JsonRpcNotification`/`JsonRpcResponse`/`JsonRpcError`, `parse_message()` (id presence → Request vs
+  Notification), `parse_response()` (result XOR error enforced, both-or-neither rejected), `to_json()`
+  overloads, and the 011 §5 error-code constants (including the revision's renumbered
+  `HeaderMismatch`/`MissingRequiredClientCapability`/`UnsupportedProtocolVersion`). 24 checks in
+  `tests/test_mcp_json_rpc.cpp`, all passing, including negative cases (wrong/missing `"jsonrpc"`
+  version, malformed error object, an explicit `"id": null` rejected rather than silently treated as
+  a notification). 131/131 full suite (was 130 after Phase B).
 - **Phase D** — 012 A2A: server role (§2: Agent Card, HTTP+JSON/REST + JSON-RPC bindings, task
   management, push notifications) and client role (§3: consuming remote agents), against v1.0;
   closes 019 §2's remaining two wake rows.

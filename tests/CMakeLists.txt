@@ -929,6 +929,11 @@ add_executable(test_agent_session_background_task test_agent_session_background_
 target_link_libraries(test_agent_session_background_task PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_agent_session_background_task COMMAND test_agent_session_background_task)
 
+# ---- Milestone 7 Phase C1 -- 011 MCP's JSON-RPC 2.0 wire envelope (protocol/mcp/json_rpc.hpp) ------
+add_executable(test_mcp_json_rpc test_mcp_json_rpc.cpp)
+target_link_libraries(test_mcp_json_rpc PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_mcp_json_rpc COMMAND test_mcp_json_rpc)
+
 # ---- Milestone 5 Phase H4 -- EffectContext::principal wired through every outbound ChatClient
 # call, including on_behalf_of delegation for a session initialized with a derive_on_behalf_of()'d
 # principal (018 §1's "delegation only via on_behalf_of, never token passthrough").
