@@ -537,6 +537,32 @@ enforcement), and 006 §6b's G6-G9 ... all hold — closing 019 §2's wake-condi
   projector yet); the pre-`RUN_FINISHED`-snapshot ordering obligation §2.2 states for a resumable
   interrupt (needs a caller that actually emits a snapshot before calling this projector, not this
   file's own job to enforce).
+
+  **Outcome, E3 (2026-08-08, commit pending):** `protocol/agui/sse.hpp` (new) — `to_sse_frame()`/
+  `to_sse_stream()`, §4's exact framing (cited from `docs/research/2026-a2a-and-agui-detail.md` §B.3:
+  "SSE (default): `text/event-stream`, one `data: <JSON BaseEvent>` frame per event") — a single
+  `"data: " + json::dump(...) + "\n\n"` line per event. Proven directly why a single `data:` line is
+  always safe rather than merely assumed: `json::dump()`'s own string escaping means an embedded
+  newline inside event content (e.g. a multi-line `TextMessageContent.delta`) never appears as a
+  literal byte in the framed output — the whole frame carries exactly two newline bytes (the trailing
+  terminator), proven against a delta deliberately containing `\n` (E3-2), not just against
+  newline-free fixtures that would pass vacuously. Proven end to end (E3-3): a real `RunEventProjector`
+  output, framed and concatenated, preserves event order. `tests/test_agui_sse.cpp` (new, 10 checks,
+  all passing). 143/143 full suite (was 142 after E2).
+
+  **What is honestly NOT built for E3**: binary protobuf framing (§4's other named encoding, a 4-byte
+  big-endian length prefix + protobuf-encoded event) — no protobuf library is vendored anywhere in
+  this codebase; adopting one is a real, separate dependency decision under CONVENTIONS' tier
+  discipline (a seam backend may take one heavy dependency behind a CMake option, the mbedTLS/
+  wasmtime/CPython precedent), not a drive-by inside this phase. WebSocket transport (§4's third named
+  option, for bidirectional mid-run input/approvals). No actual network listener anywhere — this is
+  framing logic only, matching ADR-021/ADR-022's own explicit deferral of the listener itself.
+
+  Phase E has now built a complete, real, tested slice of AG-UI's own core wire path end to end: the
+  event vocabulary (E1), the projection from a real running session (E2), and the wire framing (E3).
+  What remains in Phase E's own original scope (§3's other-surface projections — A2A streaming, MCP
+  progress notifications — touching the already-built A2A/MCP code from Phases C/D rather than new
+  AG-UI ground, plus §6 G3's cross-surface equivalence proof) is scoped but not started.
 - **Phase F** — 015: declarative agent/workflow YAML, the shared validator, equivalence corpus.
 - **Phase G** — promotion gates: 011 §10 G1-G9, 012 §8 G1-G5, 013 §6 G1-G6, 015 §7 G1-G4, 006 §6b's
   G6-G9 — run for real, published percentages where the gate asks for one, milestone close-out.

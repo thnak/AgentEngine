@@ -999,6 +999,12 @@ add_executable(test_agui_projection test_agui_projection.cpp)
 target_link_libraries(test_agui_projection PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_agui_projection COMMAND test_agui_projection)
 
+# ---- Milestone 7 Phase E3 -- 013 §4's SSE framing (protocol\agui\sse.hpp): one "data: <json>\n\n"
+# frame per AG-UI event, proven against real RunEventProjector output ------------------------------
+add_executable(test_agui_sse test_agui_sse.cpp)
+target_link_libraries(test_agui_sse PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_agui_sse COMMAND test_agui_sse)
+
 # ---- Milestone 5 Phase H4 -- EffectContext::principal wired through every outbound ChatClient
 # call, including on_behalf_of delegation for a session initialized with a derive_on_behalf_of()'d
 # principal (018 §1's "delegation only via on_behalf_of, never token passthrough").
