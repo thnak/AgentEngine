@@ -82,10 +82,8 @@ model output influence a permission decision, it is wrong regardless of how well
 
 ## Machine safety
 
-The dev box can hang or power off if a build saturates its cores. Build with `-j4` max (TSan `-j1`);
-pin tests and benchmarks to ≤ 4 cores; never spawn `hardware_concurrency()` threads. **Sandbox and
-hostile tests are resource-capped too** — a test proving a fork bomb is contained must not be able
-to take the machine with it.
+**Sandbox and hostile tests are resource-capped** — a test proving a fork bomb is contained must not
+be able to take the machine with it.
 
 ## Git
 
