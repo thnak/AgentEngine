@@ -934,6 +934,12 @@ add_executable(test_mcp_json_rpc test_mcp_json_rpc.cpp)
 target_link_libraries(test_mcp_json_rpc PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_mcp_json_rpc COMMAND test_mcp_json_rpc)
 
+# ---- Milestone 7 Phase C2 -- 011 §4's MCP server role (protocol/mcp/server.hpp): server/discover,
+# tools/list, tools/call over a real ToolTable and the real invoke_tool() pipeline -------------------
+add_executable(test_mcp_server test_mcp_server.cpp)
+target_link_libraries(test_mcp_server PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_mcp_server COMMAND test_mcp_server)
+
 # ---- Milestone 5 Phase H4 -- EffectContext::principal wired through every outbound ChatClient
 # call, including on_behalf_of delegation for a session initialized with a derive_on_behalf_of()'d
 # principal (018 §1's "delegation only via on_behalf_of, never token passthrough").

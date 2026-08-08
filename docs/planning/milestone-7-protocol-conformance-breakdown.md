@@ -223,6 +223,30 @@ enforcement), and 006 §6b's G6-G9 ... all hold — closing 019 §2's wake-condi
   `tests/test_mcp_json_rpc.cpp`, all passing, including negative cases (wrong/missing `"jsonrpc"`
   version, malformed error object, an explicit `"id": null` rejected rather than silently treated as
   a notification). 131/131 full suite (was 130 after Phase B).
+
+  **Outcome, C2 (2026-08-08, commit pending):** `protocol/mcp/server.hpp` (new) — `McpServer`, a
+  transport-agnostic request dispatcher (`dispatch(JsonRpcRequest) -> JsonRpcResponse`) serving
+  `server/discover` (fixed `protocolVersion: "2026-07-28"`, matching §12/§13 Q1's resolved "as a
+  server, 2026-07-28-only"), `tools/list` (from a real `ToolTable`, registration order preserved per
+  §3.1's own rule), and `tools/call` (via the real `invoke_tool()` 10-step pipeline). Proves §3.1's
+  own "isError vs JSON-RPC error is a semantic split we honour on both sides": an unknown tool/method
+  is a JSON-RPC error (`MethodNotFound`/`InvalidParams`), while a tool that RAN and failed is a
+  JSON-RPC *result* with `isError:true` — `ToolResult::is_error` already carries exactly this
+  distinction, so the mapping is direct. `tools/call`'s result always carries `resultType: "complete"`
+  (§3.4's revision-required field; MRTR's `input_required` variant needs Phase B's `StandingEffect`
+  wired to a real long-running tool, deferred to C4). Content mapping is narrower than MCP's full
+  part vocabulary (text/image/audio/resource) — every `ToolResult::content` item this pipeline
+  produces today is `Data`/`Error`/`Text`, and all three map onto one `{"type":"text",...}` part; a
+  richer content kind is a real, named follow-up, not silently claimed. `tests/test_mcp_server.cpp`
+  (new, 20 checks, all passing) proves all of the above against two real tools (one that succeeds,
+  one that always fails) through the real pipeline, not a stub. 132/132 full suite (was 131 after C1).
+
+  **What is honestly NOT built for C2**: no real transport (this is direct in-process dispatch);
+  `EffectContext`/principal establishment is transport work, not this dispatcher's job (`held`/
+  `approve` are supplied as given, mirroring `invoke_tool()`'s own layering); `resources/list`,
+  `prompts/list`, and every deprecated-feature surface (§3.5) are simply unrecognized methods
+  (`MethodNotFound`) at this stage, not yet implemented; tool `annotations` (readOnlyHint/
+  destructiveHint/etc., §3.1) have no declaration surface in `core/tool.hpp` yet.
 - **Phase D** — 012 A2A: server role (§2: Agent Card, HTTP+JSON/REST + JSON-RPC bindings, task
   management, push notifications) and client role (§3: consuming remote agents), against v1.0;
   closes 019 §2's remaining two wake rows.
