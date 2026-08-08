@@ -21,8 +21,8 @@ gate (each RFC's own `**Status:**` header reads `Reviewed`, dated 2026-08-05 —
 `docs/planning/v1-review-signoff-workflow.md`); several have real ADR evidence behind specific
 gates (see `decisions/`). Real, tested C++23 implementation exists under `include/agentengine/`,
 `src/`, and `tests/`. Per `docs/planning/v1-implementation-roadmap.md`'s milestone sequence,
-Milestones 0-5 are complete (Milestone 5 closed with Phase J, its own exit-criterion proof).
-Milestones 6-9 have not started. **Do not hardcode
+Milestones 0-6 are complete (Milestone 6 closed with Phase J, its own exit-criterion proof).
+Milestones 7-9 have not started. **Do not hardcode
 a milestone/phase table here** — it goes stale on the next commit. The live, accurately-maintained
 source of truth is `docs/planning/v1-implementation-roadmap.md` (the milestone plan) and the
 per-milestone `docs/planning/milestone-*-breakdown.md` files (phase-by-phase progress with

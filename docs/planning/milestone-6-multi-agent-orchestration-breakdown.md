@@ -460,6 +460,49 @@ H-I are 030; J is the milestone's own exit-criterion proof.
   failure and delay*) and 030 §7 G1 (N ≥ 100 Projects; pausing one drops its sessions' and workflow
   supervisors' activations and sandboxes to zero with zero observable effect — latency and event
   ordering — on the other N-1).
+  **Outcome: both halves built and passing -- this is the milestone's own exit criterion, and it
+  now holds.**
+  **014 §8 G1** (`test_workflow_patterns_resilience.cpp`) reuses Phase C's own eight §3 graph
+  constructions verbatim -- this file does not re-derive correctness, it re-proves it under
+  fault. Injecting failure into a node's INCOMING edge instead of its OWN outgoing edge was a real
+  bug caught while writing this, not a hypothetical: `policy_for()` (supervisor.hpp) reads a
+  node's OWN outgoing edges to decide what happens when THAT node fails -- an edge INTO the
+  flaky node governs what happens if its SOURCE fails, a different node entirely. Concretely, this
+  meant a terminal node (`billing`/`tech` in Router, no outgoing edges of their own since they are
+  only output-selected) can never retry via edge-declared policy no matter what its incoming edge
+  says -- so Router's own failure injection moved to the CLASSIFIER itself (both its outgoing
+  switch_case edges, consistently), which incidentally makes the more interesting claim anyway: the
+  routing decision-maker recovering from a transient fault still routes correctly, not just a
+  downstream leaf recovering. Both failure (retry-recovered, five patterns) and delay (a real,
+  short, bounded sleep inside an executor body -- Phase B's own B2 precedent for simulating
+  latency, not a new technique, three patterns) are exercised across the eight, not one kind
+  repeated eight times.
+  **030 §7 G1** (`test_project_scale_isolation.cpp`) stands up 100 real `AgentSession` actors and
+  100 real `ProjectSupervisor` actors (200 activations -- decision 8's own reasoning again: an
+  actor count, never a thread count), gives every one a real first `Run`, pauses Project #50 (an
+  interior index, not a boundary one), and then drives the other 99 through a real second `Run`
+  each. All three claims are measured: the paused Project's two activations census to Dormant; all
+  99 others complete with their OWN run-id sequence uninterrupted (`run:2`, or `run:3` for a
+  sampled subset an earlier timing pass already advanced -- tracked per-session, not assumed
+  uniform, a second real bug the test's own first run caught before this became a false green);
+  and a timed sample shows no structural latency regression (a generous 3x bound, sized to catch an
+  accidental shared lock, not machine noise). **Sandboxes are explicitly NOT asserted** -- nothing
+  in this milestone wires a real sandbox allocation into `AgentSession`/`WorkflowSupervisor` (008's
+  backend is a separate M2 subsystem this milestone's own actors never touch), so "sandbox count
+  drops to zero" would be vacuously true rather than a real measurement; named as a scope
+  limitation here rather than silently claimed proven.
+
+## Milestone 6 is complete (Phases A-J)
+
+Every phase this breakdown planned is built and tested: the graph as data (A), the superstep engine
+(B), all eight §3 patterns (C), failure handling (D), the request port (E), checkpoint/resume/
+time-travel (F), rendering/diffing/live-view (G), the Project manifest and registry (H), directed
+lifecycle (I), and this phase's own exit-criterion proof (J). The roadmap's own Milestone 6 exit
+criterion -- "each 014 §3 pattern runs correctly under injected executor failure (014 §8 G1), and
+pausing one Project has zero observable effect on N-1 others (030 §7 G1)" -- is the pair Phase J
+proves. What Milestone 6 deliberately does NOT close is listed below, unchanged by Phase J and
+carried forward to the milestones already named for each: M7 (015's declarative loader, 013's four
+HITL surfaces, the ≥3-node cluster claim), M9 (020's `EmbeddedHost` facade).
 
 ## What this milestone will not close, stated up front
 

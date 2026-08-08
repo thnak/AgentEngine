@@ -730,6 +730,26 @@ if(AGENTENGINE_WITH_HTTPS)
   add_test(NAME test_project_lifecycle COMMAND test_project_lifecycle)
   set_tests_properties(test_project_lifecycle PROPERTIES TIMEOUT 120)
 
+  # ---- Milestone 6 Phase J: 014 §8's own promotion gate G1 (half 1 of the milestone exit criterion) --
+  # Reuses test_workflow_patterns.cpp's own eight §3 graph constructions, injecting a transient
+  # failure (retry-recovered) or a bounded delay (a real, short sleep inside an executor body --
+  # test_workflow_superstep.cpp's own B2 precedent) into one participating executor per pattern.
+  # Every assertion is the SAME correctness check the happy-path test already made.
+  add_executable(test_workflow_patterns_resilience test_workflow_patterns_resilience.cpp)
+  target_link_libraries(test_workflow_patterns_resilience PRIVATE agentengine::core agentengine_warnings)
+  add_test(NAME test_workflow_patterns_resilience COMMAND test_workflow_patterns_resilience)
+  set_tests_properties(test_workflow_patterns_resilience PROPERTIES TIMEOUT 120)
+
+  # ---- Milestone 6 Phase J: 030 §7's own promotion gate G1 (half 2 of the milestone exit criterion) --
+  # 100 real AgentSession actors, each with its own ProjectSupervisor (200 activations, an actor
+  # count per decision 8's own reasoning, never a thread count). Pausing #50 drops its own two
+  # activations to zero by census; the other 99 each complete a real second Run with their own
+  # run-id sequence uninterrupted, and a timed sample shows no structural latency regression.
+  add_executable(test_project_scale_isolation test_project_scale_isolation.cpp)
+  target_link_libraries(test_project_scale_isolation PRIVATE agentengine::core agentengine_warnings)
+  add_test(NAME test_project_scale_isolation COMMAND test_project_scale_isolation)
+  set_tests_properties(test_project_scale_isolation PROPERTIES TIMEOUT 180)
+
   # ---- ADR-020 gates G1-G7: 004 §2's portable reasoning_effort, mapped down by both backends ------
   # Drives BOTH backends from the same enumerator values in one file, on purpose: the amendment's
   # claim is portability across two structurally different native shapes (a flat string vs a computed
