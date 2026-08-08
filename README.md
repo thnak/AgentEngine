@@ -18,9 +18,9 @@ CRTP policy idiom** instead of runtime configuration objects.
 > of headers under `include/agentengine/`, and 15 ADRs in `decisions/` recording gates that were
 > actually executed against real code, not just designed. Per the build order in
 > [`docs/planning/v1-implementation-roadmap.md`](docs/planning/v1-implementation-roadmap.md),
-> Milestones 0-5 (core substrate, tools/capabilities/sandbox, worktree/interpreter/CodeAct,
-> sessions/durability/memory, real providers/identity/secrets) are complete; Milestones 6-9
-> (multi-agent orchestration, protocol conformance, safety/observability/perf, hosting/platform/
+> Milestones 0-6 (core substrate, tools/capabilities/sandbox, worktree/interpreter/CodeAct,
+> sessions/durability/memory, real providers/identity/secrets, multi-agent orchestration) are
+> complete; Milestones 7-9 (protocol conformance, safety/observability/perf, hosting/platform/
 > bulk-data) have not started. Each RFC still names the gate that promotes it
 > further, from Reviewed toward Proven and Accepted — see the
 > [per-milestone breakdown docs](docs/planning/) for live, phase-by-phase status.

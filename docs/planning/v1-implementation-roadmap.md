@@ -148,15 +148,39 @@ one Project has zero observable effect on N-1 others (030 §7 G1).
 ## Milestone 7 — Protocol conformance
 
 **RFCs:** 011 (MCP Conformance), 012 (A2A Conformance), 013 (UI and Streaming Surfaces — AG-UI, SSE,
-OpenAI-compatible), 015 (Declarative Agent and Workflow Format).
+OpenAI-compatible), 015 (Declarative Agent and Workflow Format), plus closing **006 §6b**
+(`Backgroundable`/`StandingEffect`) — a residual named but deferred in M2, M4, and M5
+(`docs/planning/backgroundable-standingeffect-gap.md`), assigned here rather than to a milestone of
+its own.
 
 This is where the project's own conformance-percentage discipline (011 §10) becomes real — the first
 milestone where "we implement protocol X" is a published number, not a claim.
 
+006 §6b lands here, not earlier, because this is the first milestone where it stops being deferrable:
+019 §8 Q2 already resolved that MCP's tasks extension (a single long-running tool call) maps onto
+`Backgroundable`/`StandingEffect` rather than a second tracking structure — `tasks/get` polling is
+meant to be served from the same durable handle `list_standing_effects` exposes — and 012's own A2A
+task lifecycle is the real-world exerciser for 019 §2's remaining "External event" and "Remote task
+completion" wake-condition rows. Building 011/012 against a stub would make their own promotion gates
+(011 §10's conformance percentage, `a2a-tck`) dishonest — a MUST-level A2A task-completion case or an
+MCP `tasks/get` poll can't pass against a `Suspended` state that isn't real. Closing 006 §6b first
+finishes 019 §2's six-row wake-condition table for good (the other two rows shipped in M4); 011/012 are
+then built against a real mechanism instead of one more stub to reconcile later.
+
+M6 also hands M7 two smaller, already-scoped pieces rather than a blank page: 014 §4's request-port
+*shape* (suspend/resume, `Interaction` records) is real as of M6 Phase E/F, so 013 only has to bind
+its four surfaces (AG-UI/A2A/MCP/SSE) to it, not invent the mechanism; and 014 §1's typed-edge
+validator was deliberately built as a shared, non-template-only predicate so 015's declarative
+loader calls the same code instead of a parallel reimplementation that would silently break I6's
+equivalence claim. See `docs/planning/milestone-6-residuals-for-m7-m9.md` for the full accounting of
+what M6 named as deferred, with citations to its own decision log.
+
 **Exit:** `conformance server`/`conformance client` pass at `2026-07-28` (011 §10 G1/G2), `a2a-tck`
 passes with zero MUST-level failures (012 §8 G1), the AG-UI compatibility suite passes against a
-pinned schema (013 §6 G5), and a YAML agent produces byte-identical metadata to its C++ equivalent
-(015 §7 G1, I6's actual enforcement).
+pinned schema (013 §6 G5), a YAML agent produces byte-identical metadata to its C++ equivalent (015 §7
+G1, I6's actual enforcement), and 006 §6b's G6-G9 (`Background<max_concurrent>` gating,
+`StandingEffect` handle lifecycle, cross-principal cancel denial) all hold — closing 019 §2's
+wake-condition table completely.
 
 ## Milestone 8 — Safety, observability, testing infrastructure, performance
 
@@ -180,11 +204,23 @@ against), 028 (Bulk Data Transfer and Zero-Copy — parallelizable with M4 onwar
 called out here as the point it's expected to be complete), plus the `remote` sandbox profile
 (deferred from M2 — this is where `RemoteExecToken`, 008 §4a, actually gets exercised and owes the
 forged/replayed/expired-token corpus and registry-lookup measurement its own resolution flagged as
-outstanding).
+outstanding), plus two residuals M6 named but explicitly left for 020's Cluster hosting shape to
+carry: **030 §6**'s `EmbeddedHost` facade (M6 built its four verbs — `create_project`/`pause_project`/
+`restore_project`/`list_projects` — as engine-level operations already proven against 030 §7 G1; M9
+adds the facade over already-correct behavior, not a redesign) and **014 §8 G6** (cross-node
+checkpoint consistency, ≥3 cluster nodes — M6's two-phase pending→committed discipline is proven
+single-node in Phase F, but a ≥3-node cluster with injected node failure needs 020's Cluster hosting
+shape to exist first, rather than a disposable test harness built ahead of it). See
+`docs/planning/milestone-6-residuals-for-m7-m9.md` for the full rationale on both.
 
 **Exit:** the same agent runs unchanged in all five hosting shapes (020 §7 G2); the `remote` profile's
 callback authentication is proven against a real negative corpus, not merely designed; every 023
-budget is re-baselined on both platforms with divergences explained (023 §7 G4).
+budget is re-baselined on both platforms with divergences explained (023 §7 G4); `EmbeddedHost`'s
+`create_project`/`pause_project`/`restore_project`/`list_projects` facade produces identical
+behavior to M6's underlying engine operations (030 §6); and 014 §8 G6 holds on a real ≥3-node
+cluster — a node failure injected between checkpoint-pending and checkpoint-committed resumes with
+output identical to the uninterrupted control, and a failure injected strictly before
+checkpoint-pending leaves no partial/ambiguous checkpoint.
 
 ## v1 Promotion
 
