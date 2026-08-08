@@ -2,8 +2,6 @@
 
 #include "backends/native_jail/job_object_limits.hpp"
 
-#include <utility>
-
 namespace agentengine::native_jail {
 
 namespace {
@@ -21,15 +19,19 @@ std::unexpected<ae::error> win32_error(char const* what, failure_class klass, ch
 
 JobObjectLimits::~JobObjectLimits() { close_now(); }
 
-JobObjectLimits::JobObjectLimits(JobObjectLimits&& other) noexcept : job_(other.job_) {
+JobObjectLimits::JobObjectLimits(JobObjectLimits&& other) noexcept
+    : job_(other.job_), completion_port_(other.completion_port_) {
     other.job_ = nullptr;
+    other.completion_port_ = nullptr;
 }
 
 JobObjectLimits& JobObjectLimits::operator=(JobObjectLimits&& other) noexcept {
     if (this != &other) {
         close_now();
         job_ = other.job_;
+        completion_port_ = other.completion_port_;
         other.job_ = nullptr;
+        other.completion_port_ = nullptr;
     }
     return *this;
 }
@@ -40,6 +42,31 @@ void JobObjectLimits::close_now() {
                             // process still alive at this point -- 008 §2 clause 4.
         job_ = nullptr;
     }
+    if (completion_port_ != nullptr) {
+        CloseHandle(completion_port_);
+        completion_port_ = nullptr;
+    }
+}
+
+bool JobObjectLimits::drain_memory_limit_notification() {
+    if (completion_port_ == nullptr) return false;  // never associated -- see create()'s best-effort note
+    bool found = false;
+    for (;;) {
+        DWORD         num_bytes = 0;
+        ULONG_PTR     completion_key = 0;
+        LPOVERLAPPED  overlapped = nullptr;
+        // dwMilliseconds=0: a poll, not a wait -- by the time this is called, the process this
+        // Job Object was watching has already exited or been terminated, so any message the kernel
+        // was going to post for that exec() is already queued; there is nothing left to wait for.
+        if (!GetQueuedCompletionStatus(completion_port_, &num_bytes, &completion_key, &overlapped, 0)) {
+            break;  // port empty -- fully drained
+        }
+        // Per MSDN: for job-object completion messages, lpNumberOfBytesTransferred carries the
+        // message identifier itself (JOB_OBJECT_MSG_*), and lpOverlapped carries the process id of
+        // the process that caused it -- NOT a real OVERLAPPED* to dereference.
+        if (num_bytes == JOB_OBJECT_MSG_JOB_MEMORY_LIMIT) found = true;
+    }
+    return found;
 }
 
 result<void> JobObjectLimits::create(ResourceLimits const& limits) {
@@ -86,6 +113,24 @@ result<void> JobObjectLimits::create(ResourceLimits const& limits) {
     }
 
     job_ = job;
+
+    // Best-effort: gives wait_or_kill() a REAL JOB_OBJECT_MSG_JOB_MEMORY_LIMIT signal instead of
+    // the peak-usage-vs-cap heuristic native_jail_backend.cpp falls back to when this setup fails.
+    // Not fatal to create() overall -- every ResourceLimits axis this class enforces is already
+    // applied above regardless of whether this optional signal is wired.
+    HANDLE port = CreateIoCompletionPort(INVALID_HANDLE_VALUE, nullptr, 0, 1);
+    if (port != nullptr) {
+        JOBOBJECT_ASSOCIATE_COMPLETION_PORT assoc{};
+        assoc.CompletionKey  = job_;
+        assoc.CompletionPort = port;
+        if (SetInformationJobObject(job_, JobObjectAssociateCompletionPortInformation, &assoc,
+                                     sizeof(assoc))) {
+            completion_port_ = port;
+        } else {
+            CloseHandle(port);
+        }
+    }
+
     return {};
 }
 
@@ -129,18 +174,19 @@ result<JobWaitOutcome> JobObjectLimits::wait_or_kill(HANDLE process_handle,
         outcome.exit_code = exit_code;
         // Distinguish "exited on its own" from "the job's own PerJobUserTimeLimit killed it before
         // our wall-clock deadline arrived" -- both surface here as WAIT_OBJECT_0 (the process handle
-        // becomes signaled either way), so an exit code we did not expect from a well-behaved exit
-        // is the only signal available without a completion port (§9.3's un-built item). This
-        // class's job-time-limit callers should treat a nonzero/unexpected exit_code alongside a
-        // wall_elapsed far shorter than wall_ms as the job-time-limit having fired; this method does
-        // not itself disambiguate further -- see the header's "un-built" note and the test file's
-        // own comment on how the job-time test distinguishes the two.
+        // becomes signaled either way). The memory-limit case has a REAL signal now (see this file's
+        // header comment): drain the completion port and check for
+        // JOB_OBJECT_MSG_JOB_MEMORY_LIMIT before falling back to "unknown". The job-time-limit case
+        // still has no positive signal of its own (JOB_OBJECT_LIMIT_JOB_TIME posts no distinguishing
+        // completion message this class watches for) -- callers still have to infer it from an
+        // unexpected exit_code alongside a wall_elapsed far shorter than wall_ms, as before.
         // A WAIT_OBJECT_0 with exit_code == STATUS_QUOTA_EXCEEDED (0xC0000044) is the kernel's own
         // JOB_OBJECT_LIMIT_JOB_TIME firing (measured, tests/test_job_object_limits.cpp's
         // test_job_time_limit -- see job_object_limits.hpp's header comment for the finding this
         // confirms and the reliability caveat that goes with it). This method does not special-case
         // that exit code into its own kill_reason value; callers that care distinguish it themselves.
-        outcome.kill_reason = job_kill_reason::none;
+        outcome.kill_reason =
+            drain_memory_limit_notification() ? job_kill_reason::memory_limit : job_kill_reason::none;
         return outcome;
     }
 
@@ -154,6 +200,12 @@ result<JobWaitOutcome> JobObjectLimits::wait_or_kill(HANDLE process_handle,
         GetExitCodeProcess(process_handle, &exit_code);
         outcome.exited_normally = false;
         outcome.exit_code = exit_code;
+        // `wall_ms` is what actually ended this exec() -- that stays the reported reason regardless
+        // of whether a memory-limit message also happened to be queued. Still drain unconditionally:
+        // the SAME JobObjectLimits (and completion port) is reused across every exec() call on one
+        // SandboxHandle (NativeJailBackend::Instance), so an undrained message here would otherwise
+        // leak into and misclassify a LATER, unrelated call.
+        drain_memory_limit_notification();
         outcome.kill_reason = job_kill_reason::wall_clock_timeout;
         return outcome;
     }

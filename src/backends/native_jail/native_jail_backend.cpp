@@ -302,15 +302,19 @@ result<ExecOutcome> NativeJailBackend::exec(SandboxHandle& handle, ExecRequest c
         outcome.klass = exec_outcome_class::timeout;
     } else if (wait_outcome.exit_code == 0) {
         outcome.klass = exec_outcome_class::ok;
+    } else if (wait_outcome.kill_reason == job_kill_reason::memory_limit) {
+        // A REAL kernel signal now (job_object_limits.hpp's completion-port wiring, closing the gap
+        // ADR-004 §9.3/§10.4 left "still unbuilt"): JOB_OBJECT_MSG_JOB_MEMORY_LIMIT was posted for
+        // this exec()'s job, so this classification is direct, not inferred from usage stats.
+        outcome.klass = exec_outcome_class::oom;
     } else {
-        // Job Objects give no completion-port-free way to distinguish "killed for exceeding
-        // memory_bytes" from "any other unhandled-exception abort" (job_object_limits.hpp's own
-        // documented limitation) -- a peak-usage-vs-configured-cap heuristic is the best available
-        // signal without wiring a completion port (ADR-004 §9.3/§10.4, still unbuilt). The 90%
-        // threshold (not an exact >=) accounts for VirtualAlloc commit granularity landing peak
-        // usage just under the configured cap even when the cap is what actually stopped the
-        // allocation. Honest, approximate classification, not silently mislabeled as "ok" or
-        // omitted.
+        // No completion-port signal fired (either the port failed to associate at create() time --
+        // best-effort -- or this nonzero exit is for an unrelated reason). Fall back to the
+        // peak-usage-vs-configured-cap heuristic this classification used exclusively before the
+        // completion port existed. The 90% threshold (not an exact >=) accounts for VirtualAlloc
+        // commit granularity landing peak usage just under the configured cap even when the cap is
+        // what actually stopped the allocation. Honest, approximate classification, not silently
+        // mislabeled as "ok" or omitted.
         auto usage = inst.job.query_usage();
         bool likely_oom = inst.limits.memory_bytes > 0 && usage.has_value() &&
                            usage->peak_job_memory_bytes >= (inst.limits.memory_bytes * 9) / 10;

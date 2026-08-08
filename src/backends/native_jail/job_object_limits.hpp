@@ -35,6 +35,18 @@
 // backstop on top of a trustworthy native limit. This finding feeds
 // decisions/ADR-004-appcontainer-native-jail-windows-backend.md §10 and
 // 021-Platform-Support-and-Portability.md Q2.
+//
+// MEMORY LIMIT SIGNAL (closes the gap this file's earlier revision left as ADR-004 SS9.3/SS10.4
+// "still unbuilt"): `create()` associates an I/O completion port with the Job Object
+// (JobObjectAssociateCompletionPortInformation). The kernel posts JOB_OBJECT_MSG_JOB_MEMORY_LIMIT
+// to that port the moment a commit attempt would exceed `JobMemoryLimit` -- a real, positive signal
+// distinct from "any other unhandled-exception abort", not the peak-usage-vs-cap heuristic
+// `native_jail_backend.cpp::exec()` used before this (that heuristic is now the fallback for when
+// the completion port could not be created/associated, not the primary classifier).
+// `wait_or_kill()` drains the port fully after every wait and sets `kill_reason::memory_limit` when
+// seen -- draining is unconditional so a message can never leak from one `exec()` call's job-object
+// reuse (the same `JobObjectLimits`, hence the same completion port, persists across every `exec()`
+// call on one `SandboxHandle`) into a later, unrelated call's classification.
 
 #include <chrono>
 #include <cstdint>
@@ -46,6 +58,10 @@
 
 namespace agentengine::native_jail {
 
+// `memory_limit` is set from a real kernel signal (the completion-port notification, see this
+// file's header comment) -- not inferred. `job_time_limit` and `process_limit` remain unset by this
+// class today (job_time is confirmed unreliable per the MEASURED FINDING above and is not this
+// class's trusted enforcement point; process_limit has no caller-visible distinction to make yet).
 enum class job_kill_reason { none, memory_limit, job_time_limit, wall_clock_timeout, process_limit };
 
 struct JobWaitOutcome {
@@ -101,8 +117,14 @@ public:
 
 private:
     void close_now();
+    // Drains every pending message off `completion_port_` (dwMilliseconds=0 each call, looped to
+    // empty) and reports whether JOB_OBJECT_MSG_JOB_MEMORY_LIMIT was among them. No-op (returns
+    // false) if the port was never created -- `create()`'s completion-port setup is best-effort, not
+    // a hard requirement for this class to function at all.
+    bool drain_memory_limit_notification();
 
     HANDLE job_ = nullptr;
+    HANDLE completion_port_ = nullptr;
 };
 
 } // namespace agentengine::native_jail

@@ -64,7 +64,15 @@ int main() {
 
     SandboxSpec spec;
     spec.mounts.push_back(MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
-    spec.limits.wall_ms = 2000;
+    // 5000, not 2000: measured this session (test_native_jail_backend_windows flaking right after
+    // test_job_object_limits' own memory-heavy tests) -- under host memory pressure,
+    // JOB_OBJECT_LIMIT_JOB_MEMORY enforcement for a 32 MB cap can take longer than 2000ms to catch a
+    // 512 MB allocation attempt, so the OOM sub-test below was sometimes reaching this handle's own
+    // wall_ms timeout first and (correctly, per the completion-port signal added this session)
+    // reporting `timeout`, not `oom` -- a real race in this test's own budget, not a classification
+    // bug. 5000ms matches test_native_jail_abuse_corpus_windows.cpp's identical 32 MB/512 MB
+    // scenario, which has never been observed to flake.
+    spec.limits.wall_ms = 5000;
     spec.limits.memory_bytes = 32ull * 1024 * 1024;  // 32 MB
     spec.limits.pids = 4;
     spec.limits.output_bytes = 1024 * 1024;
