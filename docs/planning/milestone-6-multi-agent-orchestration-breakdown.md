@@ -502,7 +502,10 @@ criterion -- "each 014 §3 pattern runs correctly under injected executor failur
 pausing one Project has zero observable effect on N-1 others (030 §7 G1)" -- is the pair Phase J
 proves. What Milestone 6 deliberately does NOT close is listed below, unchanged by Phase J and
 carried forward to the milestones already named for each: M7 (015's declarative loader, 013's four
-HITL surfaces, the ≥3-node cluster claim), M9 (020's `EmbeddedHost` facade).
+HITL surfaces), M9 (020's `EmbeddedHost` facade, and the ≥3-node cluster claim -- 020's Cluster
+hosting shape is the only RFC in the roadmap that owns multi-node deployment at all, so that is
+where the test infrastructure this claim needs belongs; see
+`docs/planning/milestone-6-residuals-for-m7-m9.md` for the full reasoning).
 
 ## What this milestone will not close, stated up front
 

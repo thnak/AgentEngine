@@ -89,15 +89,13 @@ infrastructure, not a stub that has to be reconciled later.
 `v1-implementation-roadmap.md`'s M9 section should name this the same way M7's section now names
 006 §6b's rationale.
 
-**Discrepancy on record:** M6's own closing summary (Phase J, commit `9a66e4c`, "Milestone 6 is
-complete") instead groups this residual with M7's — "M7 (015's declarative loader, 013's four HITL
-surfaces, the ≥3-node cluster claim)." That line carries no cited rationale, and M6's own itemized
-bullet for this residual (decision 7, quoted above) never names a milestone either way — only the
-trailing summary sentence does. This note's M9 assignment is the reasoned one: 020 is the only RFC
-in the roadmap that owns a cluster/multi-node hosting shape at all, and none of M7's RFCs
-(011/012/013/015) are about deployment topology. Left both on record rather than silently
-overriding one — worth a two-line reconciliation in M6's breakdown doc whenever it's next touched,
-but not changed here unilaterally.
+**Discrepancy, now resolved:** M6's own closing summary (Phase J, commit `9a66e4c`, "Milestone 6 is
+complete") originally grouped this residual with M7's — "M7 (015's declarative loader, 013's four
+HITL surfaces, the ≥3-node cluster claim)" — with no cited rationale; M6's own itemized bullet for
+this residual (decision 7, quoted above) never named a milestone either way, only that trailing
+summary sentence did. Corrected in that doc to read M9, with a one-line pointer back to this note's
+reasoning: 020 is the only RFC in the roadmap that owns a cluster/multi-node hosting shape at all,
+and none of M7's RFCs (011/012/013/015) are about deployment topology.
 
 ## One item M6 named but did not attempt to place — stays unassigned here too
 
