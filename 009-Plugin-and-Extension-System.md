@@ -247,6 +247,16 @@ the operator grants, capabilities enforce (007 §3).
 **Skill names are labels, not identifiers.** Skills are namespaced per origin so a skill fetched
 from a remote source can never shadow a local one — a shadowing attack is otherwise trivial.
 
+**Amendment (Phase 1 implementation, `core/skill_provider.hpp`).** The mount path itself stays the
+flat `/skills/<name>` §8b already specifies — namespacing every path by origin was considered and
+rejected, since it would both deviate from §8b's own text and make the common single-source case
+needlessly verbose. Anti-shadowing is enforced instead by **reject-on-collision**: if two declared
+sources would produce the same skill name, loading fails closed for the whole set (no partial
+mount — not even the skill that was processed first survives) with a named error
+(`skill.name_collision_across_sources`) identifying both origins. A silent last-source-wins is never
+reachable; the operator sees a real, specific load failure and must resolve the collision (rename,
+drop a source) rather than have it resolved for them.
+
 Skill loading is dynamic but **snapshotted per run** (006 §6): a skill loaded mid-run does not
 retroactively change what earlier turns were permitted to do.
 

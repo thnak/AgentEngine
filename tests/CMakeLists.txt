@@ -274,6 +274,22 @@ add_executable(test_context_assembly test_context_assembly.cpp)
 target_link_libraries(test_context_assembly PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_context_assembly COMMAND test_context_assembly)
 
+# ---- Skills (009 §8), Phase 1: SKILL.md parser (§8a) -- pure text-in/value-out, no VFS dependency --
+add_executable(test_skill_parser test_skill_parser.cpp)
+target_link_libraries(test_skill_parser PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_skill_parser COMMAND test_skill_parser)
+
+# ---- Skills (009 §8): InlineSkillSource + builtin_skills.hpp's one shipped example (§8f) ---------
+add_executable(test_skill_source_inline test_skill_source_inline.cpp)
+target_link_libraries(test_skill_source_inline PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_skill_source_inline COMMAND test_skill_source_inline)
+
+# ---- Skills (009 §8): DiskSkillSource against a real host temp directory -- the "load from disk" --
+# half of the MAF-parity ask (InlineSkillSource is the "inline skill" half, tested above).
+add_executable(test_skill_source_disk test_skill_source_disk.cpp)
+target_link_libraries(test_skill_source_disk PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_skill_source_disk COMMAND test_skill_source_disk)
+
 # ---- Milestone 4 Phase B4 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
 # HistoryProvider<Summarize<N, SummarizerT>> -- the second named compaction strategy (005 §4),
 # proven against a mock summarizer ChatClient (decision 8's established precedent).
@@ -793,6 +809,18 @@ if(AGENTENGINE_WITH_HTTPS)
     agentengine::core agentengine::provider_http_client agentengine_warnings
     MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
   add_test(NAME test_agent_session_real_backend COMMAND test_agent_session_real_backend)
+
+  # ---- Skills (009 §8), composed with ADR-018: HistoryAndSkillsProvider through a REAL AgentSession
+  # turn loop against a real backend -- proves skill advertisement AND ordinary history both reach a
+  # real outbound wire request. Needs agentengine::worktree_store's real compute_digest (SkillsProvider
+  # -> put_blob/put_tree), Windows-only for now (the same WIN32 gate every other worktree test uses).
+  if(WIN32)
+    add_executable(test_agent_session_skills_real_backend test_agent_session_skills_real_backend.cpp)
+    target_link_libraries(test_agent_session_skills_real_backend PRIVATE
+      agentengine::core agentengine::provider_http_client agentengine::worktree_store agentengine_warnings
+      MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+    add_test(NAME test_agent_session_skills_real_backend COMMAND test_agent_session_skills_real_backend)
+  endif()
 
   # ---- Milestone 5 Phase J1 (roadmap exit criterion, 004 §7 G1): the same unchanged call site, run
   # against real OpenAI/Anthropic backends over local TLS servers, a ReplayChatClient, and a
@@ -1592,6 +1620,15 @@ if(WIN32)
   target_link_libraries(test_worktree_mount PRIVATE
     agentengine::core agentengine::worktree_store agentengine_warnings)
   add_test(NAME test_worktree_mount COMMAND test_worktree_mount)
+endif()
+
+# ---- Skills (009 §8b-8c): SkillsProvider mounts real skills through real worktree machinery ------
+# Real Tree/Ref/Mount/mount_read, same real-crypto dependency as every other worktree test above.
+if(WIN32)
+  add_executable(test_skill_provider_mount test_skill_provider_mount.cpp)
+  target_link_libraries(test_skill_provider_mount PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_skill_provider_mount COMMAND test_skill_provider_mount)
 endif()
 
 # ---- Worktree mount<->real-directory sync (025 §5/§7, Milestone 3 Phase F1) ---------------------
