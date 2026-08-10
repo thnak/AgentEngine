@@ -8,13 +8,15 @@ export function ApiProtocolStatus() {
         <div className="section-head">
           <span className="eyebrow">L4 protocol surfaces — Milestone 7</span>
           <h2>
-            Five surfaces named in the spec, <span className="grad-text">zero implemented</span>
+            Five surfaces named in the spec, <span className="grad-text">Milestone 7 in progress</span>
           </h2>
           <p>
             L4's protocol surfaces (MCP, A2A, AG-UI, OpenAI-compatible HTTP) and the declarative
-            YAML/JSON authoring format are Reviewed RFCs, each with a README naming its target
-            revision — not a line of implementation or a test exists for any of them yet.
-            Milestones 6–9, including Milestone 7 (protocol conformance), have not started.
+            YAML/JSON authoring format are Reviewed RFCs. Milestone 6 is complete. Milestone 7
+            (protocol conformance) is in progress — real, tested code exists for MCP, A2A, AG-UI,
+            and the declarative compilers — and a Phase G gate audit found the milestone's own exit
+            criterion not yet met, chiefly blocked on a real network listener. Milestones 8-9 have
+            not started.
           </p>
         </div>
 

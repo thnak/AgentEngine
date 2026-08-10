@@ -15,14 +15,17 @@ CRTP policy idiom** instead of runtime configuration objects.
 > **Status: implementation under way.** All 30 RFCs have passed review (each RFC's own header reads
 > **Reviewed**, dated 2026-08-05) and this repository now contains a real, tested C++23
 > implementation alongside the specification set — hundreds of passing tests under `tests/`, dozens
-> of headers under `include/agentengine/`, and 15 ADRs in `decisions/` recording gates that were
-> actually executed against real code, not just designed. Per the build order in
+> of headers under `include/agentengine/`, and a growing set of ADRs in
+> [`decisions/`](decisions/README.md) recording gates that were actually executed against real code,
+> not just designed. Per the build order in
 > [`docs/planning/v1-implementation-roadmap.md`](docs/planning/v1-implementation-roadmap.md),
 > Milestones 0-6 (core substrate, tools/capabilities/sandbox, worktree/interpreter/CodeAct,
 > sessions/durability/memory, real providers/identity/secrets, multi-agent orchestration) are
-> complete; Milestones 7-9 (protocol conformance, safety/observability/perf, hosting/platform/
-> bulk-data) have not started. Each RFC still names the gate that promotes it
-> further, from Reviewed toward Proven and Accepted — see the
+> complete. Milestone 7 (protocol conformance) is **in progress**: real code exists for its earlier
+> phases (MCP, A2A, AG-UI, the declarative YAML/JSON compilers), and a Phase G gate audit has run
+> against that code — the audit found the milestone's own exit criterion **not yet met**. Milestones
+> 8-9 (safety/observability/perf, hosting/platform/bulk-data) have not started. Each RFC still names
+> the gate that promotes it further, from Reviewed toward Proven and Accepted — see the
 > [per-milestone breakdown docs](docs/planning/) for live, phase-by-phase status.
 
 ## The shape of it

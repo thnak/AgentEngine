@@ -22,11 +22,13 @@ gate (each RFC's own `**Status:**` header reads `Reviewed`, dated 2026-08-05 —
 gates (see `decisions/`). Real, tested C++23 implementation exists under `include/agentengine/`,
 `src/`, and `tests/`. Per `docs/planning/v1-implementation-roadmap.md`'s milestone sequence,
 Milestones 0-6 are complete (Milestone 6 closed with Phase J, its own exit-criterion proof).
-Milestones 7-9 have not started. **Do not hardcode
-a milestone/phase table here** — it goes stale on the next commit. The live, accurately-maintained
-source of truth is `docs/planning/v1-implementation-roadmap.md` (the milestone plan) and the
-per-milestone `docs/planning/milestone-*-breakdown.md` files (phase-by-phase progress with
-verification notes) — check those, not this file, for current status.
+Milestone 7 (protocol conformance) is **in progress**: real code exists for its earlier phases
+(011 MCP, 012 A2A, 013 AG-UI, 015 declarative compilers, 006 §6b Backgroundable/StandingEffect),
+and a Phase G gate audit has run against that code — the audit found the milestone's own exit
+criterion **not yet met**. Milestones 8-9 have not started. **Do not hardcode
+a milestone/phase table** (or specific gate counts) **here** — it goes stale on the next commit, and
+the same rule applies to this paragraph: check `docs/planning/v1-implementation-roadmap.md` and the
+per-milestone breakdown docs for current phase/gate status, not this prose.
 
 ## Read first
 
