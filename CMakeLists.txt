@@ -646,6 +646,7 @@ if(AGENTENGINE_WITH_HTTPS AND AGENTENGINE_BUILD_PYTHON_RUNNER)
   add_executable(agentengine_cli_chat tools/cli_chat.cpp)
   target_link_libraries(agentengine_cli_chat PRIVATE
     agentengine::core agentengine::provider_http_client agentengine::mediated_python_runner
+    agentengine::mediated_shell_runner
     agentengine_warnings MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
   target_compile_definitions(agentengine_cli_chat PRIVATE
     AE_PYTHON_HOME="${AGENTENGINE_PYTHON_HOME}")

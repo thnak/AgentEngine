@@ -44,13 +44,15 @@
 
 #include "agentengine/core/agent_session.hpp"
 #include "agentengine/core/builtin_skills.hpp"
-#include "agentengine/core/history_and_skills_provider.hpp"
 #include "agentengine/core/json_schema.hpp"
+#include "agentengine/core/mounted_skills_state.hpp"
 #include "agentengine/core/skill_provider.hpp"
+#include "agentengine/core/skill_tool_scoping.hpp"
 #include "agentengine/protocol/openai/chat_client.hpp"
 #include "agentengine/trust/principal.hpp"
 #include "agentengine/trust/secret.hpp"
 #include "backends/native_jail/mediated_python_runner.hpp"
+#include "backends/native_jail/skill_mount_materializer.hpp"
 
 using namespace agentengine;
 
@@ -86,6 +88,31 @@ struct ExecuteCodeReply {
 };
 AE_JSON_SCHEMA(ExecuteCodeReply, ok, stdout_text, stderr_text, result_repr)
 
+// Set exactly once, from main(), BEFORE any user turn can trigger the first execute_code call (and
+// therefore shared_python_runner()'s first, lazy construction below) -- main()'s own startup sequence
+// (materialize skills -> grant capabilities -> enter the interactive loop) always completes first, so
+// there is no real ordering hazard despite this being a plain static rather than an injected
+// dependency. `MediatedPythonConfig::mount_roots` has no public mutator after construction (must be
+// set before `.initialize()`), so this side channel is how a lazily-constructed singleton picks up
+// mount roots main() only learns about at runtime (materialization happens after this file's own
+// process starts -- it can never be a compile-time constant).
+[[nodiscard]] std::vector<native_jail::MaterializedSkillMount>& pending_skill_mount_roots() {
+    static std::vector<native_jail::MaterializedSkillMount> roots;
+    return roots;
+}
+
+// Skills Phase 3 (decisions/ADR-024's addendum): real, persistent, per-run state -- not a chat-history
+// message the way MAF's own `load_skill` result is (see mounted_skills_state.hpp's own top comment for
+// why that matters). Same function-local-static, single-process-scoped idiom as
+// `pending_skill_mount_roots()`/`shared_python_runner()` above: one instance, shared by reference
+// between `MountSkillTool::invoke()` (writer) and every later `on_context()`/tool-scoping call
+// (readers) -- `AgentSession` has no generic mechanism for a `Tool<>` to reach its own `StateT`, so this
+// works around that gap the same way this file already does for the Python runner's config.
+[[nodiscard]] MountedSkillsState& shared_mounted_skills_state() {
+    static MountedSkillsState state;
+    return state;
+}
+
 // ADR-002 §5.5.6: exactly one interpreter per process, for the process's whole lifetime -- a
 // function-local static, constructed on first real use, matching this CLI's own single-process scope
 // exactly (there is no multi-session story here to conflict with that rule).
@@ -98,6 +125,10 @@ AE_JSON_SCHEMA(ExecuteCodeReply, ok, stdout_text, stderr_text, result_repr)
         std::error_code ec;
         std::filesystem::create_directories(scratch, ec);
         cfg.mount_roots[kWorkMount] = scratch.wstring();
+        for (auto const& [mount_id, host_dir] : pending_skill_mount_roots()) {
+            cfg.mount_roots[mount_id] = host_dir;
+        }
+        cfg.expose_agent_files_data = true;
         return native_jail::MediatedPythonRunner(std::move(cfg));
     }();
     static bool const initialized = [] {
@@ -151,39 +182,137 @@ struct ExecuteCodeTool : Tool<ExecuteCodeTool, Capabilities<cap::decl::FsRead<"w
     }
 };
 
-// ---- ContextProvider fixture: real conversation history + the one real tool -----------------------
+// ---- The on-demand mount trigger: real state, no new authority ------------------------------------
+// Skills Phase 3 (decisions/ADR-024's addendum): the agent must call this to activate a skill's
+// tools/full body before they're usable -- researched from MAF's AgentSkillsProvider (three fixed
+// meta-tools, load_skill/read_skill_resource/run_skill_script) but deliberately NOT that shape: this
+// tool touches no content and no filesystem at all, it only records intent into
+// MountedSkillsState. It grants no new file-read authority (every resolved skill's files are already
+// readable via the capability the operator granted at startup, per 009 §8b -- unaffected by mount
+// state); it only activates which TOOLS get declared+invocable (skill_tool_scoping.hpp) and whether the
+// skill's full body gets re-injected into context (ToolDeclaringHistoryProvider::on_context below). A
+// model calling this can never reach anything it wasn't already pre-authorized for (I3).
+struct MountSkillArgs {
+    std::string skill_name;
+};
+AE_JSON_SCHEMA(MountSkillArgs, skill_name)
+
+struct MountSkillReply {
+    bool ok = false;
+    std::string message;
+};
+AE_JSON_SCHEMA(MountSkillReply, ok, message)
+
+struct MountSkillTool : Tool<MountSkillTool, EffectClass<effect_class::pure>> {
+    static constexpr std::string_view name = "mount_skill";
+    static constexpr std::string_view description =
+        "Activate a skill you've seen advertised by name and description, so its full instructions "
+        "become part of your context and any tools it names become callable -- starting next turn. "
+        "This does not read or return the skill's content; call it before you need a skill's own "
+        "tools, then wait for your next turn to use them.";
+    using Args = MountSkillArgs;
+    using Reply = MountSkillReply;
+
+    static result<Reply> invoke(Args a, EffectContext&) {
+        bool known = false;
+        for (auto const& [mount_id, host_dir] : pending_skill_mount_roots()) {
+            (void)host_dir;
+            if (mount_id == a.skill_name) {
+                known = true;
+                break;
+            }
+        }
+        if (!known) {
+            return std::unexpected(error{failure_class::contract, "unknown skill: " + a.skill_name,
+                                          "skill.unknown_name"});
+        }
+        shared_mounted_skills_state().mount(a.skill_name);
+        return Reply{true, "mounted: " + a.skill_name};
+    }
+};
+
+// ---- ContextProvider fixture: real conversation history + ONE merged skill system message ----------
+// Owns its own `SkillsProvider<>` (the only skills-related instance this provider needs) purely to
+// reach `allowed_tool_names_for`/`body_of` -- `AgentSession` has no accessor into its private
+// `history_provider_` member (by design, see `history_and_skills_provider.hpp`'s own top comment), so
+// this provider cannot be handed a pre-resolved answer from outside; it must be able to compute one
+// from nothing. This resolves the SAME deterministic builtin skill source `main()`'s own startup
+// materializer instance resolves, so both independently reach byte-identical results -- see
+// `core/skill_tool_scoping.hpp`'s own top comment for why the declared table here and the
+// invocation-time table `main()`'s tool-call loop uses must (and, by this determinism, do) agree.
+//
+// A real wire dump this session (response-dumps/test-dump.json) showed the advertisement message
+// (previously a SEPARATE `BuiltinSkillsProvider`'s own contribution) and the mounted-skill-body
+// messages arriving as TWO-OR-MORE separate `role: system` entries -- structurally fine (every
+// surveyed provider accepts multiple system messages) but not what a single, coherent system prompt
+// should look like. Fixed by having THIS provider alone own the whole skill-related system prompt:
+// `skills_.on_context(...)` is called for its own advertisement message, then every currently mounted
+// skill's full body is appended into that SAME message's text rather than pushed as its own message --
+// exactly one `role: system` entry, its content re-derived (never accumulated) fresh every call, so a
+// newly mounted skill's body genuinely REPLACES the previous turn's system prompt with a longer one,
+// not stacks alongside it. `BuiltinSkillsProvider`/`HistoryAndSkillsProvider` are no longer needed in
+// this file's own composition as a result -- this provider is a complete `ContextProvider` by itself.
 class ToolDeclaringHistoryProvider {
 public:
-    [[nodiscard]] task<result<ContextContribution>> on_context(SessionContext& session_ctx, EffectContext&) {
+    ToolDeclaringHistoryProvider() : skills_({make_builtin_skills_source()}) {}
+
+    [[nodiscard]] task<result<ContextContribution>> on_context(SessionContext& session_ctx,
+                                                                 EffectContext& ec) {
+        auto skills_contribution = co_await skills_.on_context(session_ctx, ec);
+        if (!skills_contribution) co_return std::unexpected(skills_contribution.error());
+
+        std::string combined_system_text;
+        if (!skills_contribution->messages.empty() && !skills_contribution->messages[0].content.empty()) {
+            if (auto const* t =
+                    std::get_if<Text>(&skills_contribution->messages[0].content[0].value)) {
+                combined_system_text = t->text;
+            }
+        }
+        // Full body for every currently MOUNTED skill, re-derived fresh from real state on every call
+        // and appended into the SAME text -- never a separate message. Unlike MAF's `load_skill` (an
+        // ephemeral tool-result message that can be lost to history compaction), this is reliably
+        // present on every subsequent turn as long as the skill stays mounted -- see
+        // mounted_skills_state.hpp's own top comment.
+        for (auto const& mounted_name : shared_mounted_skills_state().all()) {
+            auto body = skills_.body_of(mounted_name);
+            if (!body) continue;
+            combined_system_text += "\nMounted skill '" + mounted_name + "':\n" + *body;
+        }
+
         ContextContribution contribution;
-        contribution.messages.assign(session_ctx.history.begin(), session_ctx.history.end());
-        contribution.tools = ToolTable::from_tools<ExecuteCodeTool>().descriptors();
+        if (!combined_system_text.empty()) {
+            Message m;
+            m.role = role::system;
+            ContentItem item;
+            item.origin = content_origin::system;
+            item.value = Text{std::move(combined_system_text)};
+            m.content.push_back(std::move(item));
+            contribution.messages.push_back(std::move(m));
+        }
+
+        contribution.messages.insert(contribution.messages.end(), session_ctx.history.begin(),
+                                      session_ctx.history.end());
+
+        // Recomputed every call, not cached: mount state can change mid-conversation (that's the whole
+        // point of Phase 3), so the declared set must track it -- main()'s own invocation-time table
+        // must be recomputed on the same cadence, or declared/invocable would diverge (the exact
+        // cosmetic-scoping gap skill_tool_scoping.hpp's own top comment warns about).
+        auto const universe = ToolTable::from_tools<ExecuteCodeTool, MountSkillTool>();
+        auto const scoped = scope_tools_to_mounted_skills(
+            universe, skills_.allowed_tool_names_for(shared_mounted_skills_state().all()),
+            {std::string(MountSkillTool::name)});
+        contribution.tools = scoped.descriptors();
         co_return contribution;
     }
     task<std::monostate> on_turn_end(TurnView, EffectContext&) { co_return std::monostate{}; }
+
+private:
+    SkillsProvider<> skills_;
 };
 static_assert(ContextProvider<ToolDeclaringHistoryProvider>);
 
-// Default-constructible wrapper baking in the real §8f builtin skills -- same shape
-// tests/test_agent_session_skills_real_backend.cpp and
-// tests/test_agent_session_skills_live_e2e.cpp already established, duplicated here per this
-// codebase's own per-file-independence convention (those files' own top comments).
-class BuiltinSkillsProvider {
-public:
-    BuiltinSkillsProvider() : inner_({make_builtin_skills_source()}) {}
-    [[nodiscard]] task<result<ContextContribution>> on_context(SessionContext& sc, EffectContext& ec) {
-        return inner_.on_context(sc, ec);
-    }
-    task<std::monostate> on_turn_end(TurnView tv, EffectContext& ec) { return inner_.on_turn_end(tv, ec); }
-
-private:
-    SkillsProvider<> inner_;
-};
-static_assert(ContextProvider<BuiltinSkillsProvider>);
-
 using CliSession =
-    AgentSession<openai::OpenAIChatClient<InMemorySecretStore>, NoSessionState,
-                 HistoryAndSkillsProvider<ToolDeclaringHistoryProvider, BuiltinSkillsProvider>>;
+    AgentSession<openai::OpenAIChatClient<InMemorySecretStore>, NoSessionState, ToolDeclaringHistoryProvider>;
 static_assert(std::is_default_constructible_v<CliSession>);
 
 [[nodiscard]] Message user_message(std::string text) {
@@ -224,10 +353,11 @@ static_assert(std::is_default_constructible_v<CliSession>);
     return m;
 }
 
-void print_skills_banner() {
+void print_skills_banner(std::vector<native_jail::MaterializedSkillMount> const& materialized,
+                          SkillsProvider<>& startup_skills) {
     auto skills = make_builtin_skills_source().load_skills();
-    std::cout << "Skills mounted at /skills/<name> (resolved once, frozen for this session -- 009 "
-                 "§8c):\n";
+    std::cout << "Skills RESOLVED at /skills/<name> -- every one's files are unconditionally readable "
+                 "from turn 1 (009 §8b, unaffected by mount state):\n";
     if (skills) {
         for (auto const& s : *skills) {
             std::cout << "  - " << s.skill.frontmatter.name << ": " << s.skill.frontmatter.description
@@ -235,6 +365,39 @@ void print_skills_banner() {
         }
     } else {
         std::cout << "  (failed to resolve: " << skills.error().message << ")\n";
+    }
+
+    std::cout << "Materialized into the real sandbox (native_jail::materialize_skill_mounts):\n";
+    if (materialized.empty()) {
+        std::cout << "  (none)\n";
+    } else {
+        for (auto const& [mount_id, host_dir] : materialized) {
+            std::cout << "  - mount_id=" << mount_id
+                       << " host_dir=" << std::string(host_dir.begin(), host_dir.end()) << "\n";
+        }
+    }
+
+    std::cout << "Currently MOUNTED skills (agent-triggered via mount_skill -- 009 §8c Phase 3): ";
+    auto const& mounted = shared_mounted_skills_state().all();
+    if (mounted.empty()) {
+        std::cout << "(none -- nothing is pre-mounted; the agent must call mount_skill)\n";
+    } else {
+        for (std::size_t i = 0; i < mounted.size(); ++i) std::cout << (i ? ", " : "") << mounted[i];
+        std::cout << "\n";
+    }
+
+    std::cout << "Tools declared+invocable right now (mount_skill is always available; others unlock "
+                 "once their owning skill is mounted): ";
+    auto const universe = ToolTable::from_tools<ExecuteCodeTool, MountSkillTool>();
+    auto const scoped = scope_tools_to_mounted_skills(
+        universe, startup_skills.allowed_tool_names_for(mounted), {std::string(MountSkillTool::name)});
+    if (scoped.descriptors().empty()) {
+        std::cout << "(none)\n";
+    } else {
+        for (std::size_t i = 0; i < scoped.descriptors().size(); ++i) {
+            std::cout << (i ? ", " : "") << scoped.descriptors()[i].name;
+        }
+        std::cout << "\n";
     }
 }
 
@@ -252,15 +415,37 @@ int main() {
     std::string const host = env_or("AGENTENGINE_OPENROUTER_HOST", kDefaultHost);
 
     std::cout << "AgentEngine CLI chat -- host=" << host << " model=" << model << "\n";
-    print_skills_banner();
-    std::cout << "\nType a message and press Enter. Type 'exit' or 'quit' to stop.\n\n";
+
+    // Resolve + materialize skills into REAL files on disk before shared_python_runner()'s lazy
+    // singleton is ever touched (its mount_roots must be fully known at construction -- no public
+    // mutator exists after .initialize()). This is main()'s OWN SkillsProvider<> instance, independent
+    // of ToolDeclaringHistoryProvider's/BuiltinSkillsProvider's own instances inside CliSession -- all
+    // three resolve the identical, deterministic builtin skill source, so their outputs agree.
+    SkillsProvider<> startup_skills({make_builtin_skills_source()});
+    std::filesystem::path const skills_scratch =
+        std::filesystem::temp_directory_path() / "agentengine_cli_chat_workspace" / "skills";
+    auto materialized =
+        native_jail::materialize_skill_mounts(startup_skills, skills_scratch, {kWorkMount});
+    if (!materialized) {
+        std::cerr << "FATAL: failed to materialize skill mounts: " << materialized.error().message << "\n";
+        return 1;
+    }
+    pending_skill_mount_roots() = *materialized;
 
     InMemorySecretStore store;
     store.set(kSecretName, key_env);
-    CapabilitySet held = CapabilitySet::grant_root(
-        {Capability{cap::Secret{kSecretName, std::chrono::seconds{0}}},
-         Capability{cap::FsRead{kWorkMount, "", std::nullopt}},
-         Capability{cap::FsWrite{kWorkMount, "", std::nullopt, std::nullopt}}});
+    std::vector<Capability> grants = {
+        Capability{cap::Secret{kSecretName, std::chrono::seconds{0}}},
+        Capability{cap::FsRead{kWorkMount, "", std::nullopt}},
+        Capability{cap::FsWrite{kWorkMount, "", std::nullopt, std::nullopt}}};
+    for (auto const& [mount_id, host_dir] : *materialized) {
+        (void)host_dir;
+        grants.push_back(Capability{cap::FsRead{mount_id, "", std::nullopt}});
+    }
+    CapabilitySet held = CapabilitySet::grant_root(std::move(grants));
+
+    print_skills_banner(*materialized, startup_skills);
+    std::cout << "\nType a message and press Enter. Type 'exit' or 'quit' to stop.\n\n";
 
     ChatClientCapabilities caps;
     caps.streaming = true;
@@ -304,7 +489,17 @@ int main() {
             EffectContext exec_ctx;
             exec_ctx.principal = Principal{"cli-user", ""};
             exec_ctx.capabilities = &held;
-            auto const table = ToolTable::from_tools<ExecuteCodeTool>();
+            // Recomputed fresh EVERY round from the SAME live `shared_mounted_skills_state()` that
+            // `ToolDeclaringHistoryProvider::on_context()` just used to build what was declared to the
+            // model THIS round -- mount state can change mid-conversation now (Phase 3), so a table
+            // computed once before the loop would drift from what's declared the moment a mount
+            // happens. Never a differently-scoped table than what was just declared; see
+            // skill_tool_scoping.hpp's own top comment for why that divergence would be a real gap, not
+            // a cosmetic one.
+            auto const round_universe = ToolTable::from_tools<ExecuteCodeTool, MountSkillTool>();
+            auto const scoped_tools = scope_tools_to_mounted_skills(
+                round_universe, startup_skills.allowed_tool_names_for(shared_mounted_skills_state().all()),
+                {std::string(MountSkillTool::name)});
             for (std::size_t i = 0; i < calls.size(); ++i) {
                 ToolCall const& call = calls[i];
                 std::cout << "[agent calls " << call.tool_name << "]\n";
@@ -316,12 +511,19 @@ int main() {
                             std::cout << "    " << c->as_string() << "\n";
                         }
                     }
+                } else if (call.tool_name == "mount_skill") {
+                    auto args = json::parse(call.arguments_json);
+                    if (args) {
+                        if (auto const* s = args->find("skill_name"); s && s->is_string()) {
+                            std::cout << "  skill_name: " << s->as_string() << "\n";
+                        }
+                    }
                 }
                 auto parsed_args = json::parse(call.arguments_json);
                 ToolCallRequest req{call.call_id, call.tool_name,
                                     parsed_args ? *parsed_args : json::Value::make_object({}),
                                     /*arguments_tainted=*/true, static_cast<std::uint64_t>(i)};
-                ToolResult r = invoke_tool(table, held, req, exec_ctx, nullptr);
+                ToolResult r = invoke_tool(scoped_tools, held, req, exec_ctx, nullptr);
                 if (!r.content.empty()) {
                     if (auto const* d = std::get_if<Data>(&r.content[0].value)) {
                         auto parsed = json::parse(d->json);

@@ -1191,6 +1191,13 @@ add_executable(test_tool_pipeline test_tool_pipeline.cpp)
 target_link_libraries(test_tool_pipeline PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_tool_pipeline COMMAND test_tool_pipeline)
 
+# ---- Skills Phase 2: core/skill_tool_scoping.hpp -- pure ToolTable filtering plus the negative
+# control proving invoke_tool actually rejects a real tool absent from the scoped table (not just
+# cosmetic list-shortening). No skills/sandbox dependency -- core-tier only.
+add_executable(test_tool_table_scoping test_tool_table_scoping.cpp)
+target_link_libraries(test_tool_table_scoping PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_tool_table_scoping COMMAND test_tool_table_scoping)
+
 # ---- Capability-handle-reuse-denial, at the pipeline level (M2 Phase B task B4, 006 §8 G3) ------
 add_executable(test_tool_pipeline_capability_reuse test_tool_pipeline_capability_reuse.cpp)
 target_link_libraries(test_tool_pipeline_capability_reuse PRIVATE agentengine::core agentengine_warnings)
@@ -1643,6 +1650,31 @@ if(WIN32)
   add_test(NAME test_skill_provider_mount COMMAND test_skill_provider_mount)
 endif()
 
+# ---- Skills Phase 3 (decisions/ADR-024's addendum): agent-triggered, on-demand skill mounting.
+# Core-tier only (no native_jail/Python dependency) -- proves MountedSkillsState's own contract plus
+# the load-bearing chain: invoke_tool genuinely rejects a skill-named tool before that skill is
+# mounted, and the SAME call succeeds after, through the real SkillsProvider/scope_tools_to_mounted_
+# skills/invoke_tool pipeline.
+if(WIN32)
+  add_executable(test_on_demand_skill_mount test_on_demand_skill_mount.cpp)
+  target_link_libraries(test_on_demand_skill_mount PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_on_demand_skill_mount COMMAND test_on_demand_skill_mount)
+endif()
+
+# ---- Skills Phase 2: src/backends/native_jail/skill_mount_materializer.hpp -- the bridge that was
+# missing entirely before this session: SkillsProvider::mounted()'s Mounts, materialized to real files
+# on a real host directory via materialize_mount, plus the reserved-mount-id collision guard. Needs
+# agentengine::mediated_shell_runner for the real MediatedFileSystemAdapter (ADR-014), same as
+# test_worktree_mount_sync.
+if(WIN32)
+  add_executable(test_skill_mount_materializer test_skill_mount_materializer.cpp)
+  target_link_libraries(test_skill_mount_materializer PRIVATE
+    agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_skill_mount_materializer COMMAND test_skill_mount_materializer)
+  set_tests_properties(test_skill_mount_materializer PROPERTIES TIMEOUT 60)
+endif()
+
 # ---- Worktree mount<->real-directory sync (025 §5/§7, Milestone 3 Phase F1) ---------------------
 # Proves materialize_mount/harvest_mount (src/backends/native_jail/worktree_mount_sync.hpp) against
 # the REAL MediatedFileSystemAdapter (ADR-014), not a test double -- needs
@@ -1762,6 +1794,21 @@ if(AGENTENGINE_BUILD_PYTHON_RUNNER)
     AE_PYTHON_HOME="${AGENTENGINE_PYTHON_HOME}")
   add_test(NAME test_mediated_python_runner_agent_files_data COMMAND test_mediated_python_runner_agent_files_data)
   set_tests_properties(test_mediated_python_runner_agent_files_data PROPERTIES
+    ENVIRONMENT "${AE_PYTHON_TEST_ENV}" TIMEOUT 60)
+
+  # ---- Skills Phase 2: a real mounted skill, materialized to a real host directory, read by real
+  # Python code through a real mediated open() -- closes the gap where every prior skills test only
+  # proved mount_read from test-harness C++, never from inside a running sandbox. Needs
+  # agentengine::mediated_shell_runner too, for skill_mount_materializer.hpp's MediatedFileSystemAdapter
+  # dependency (transitively brings in agentengine::worktree_store, relinked explicitly for clarity).
+  add_executable(test_mediated_python_runner_skill_mounts test_mediated_python_runner_skill_mounts.cpp)
+  target_link_libraries(test_mediated_python_runner_skill_mounts PRIVATE
+    agentengine::core agentengine::mediated_python_runner agentengine::mediated_shell_runner
+    agentengine::worktree_store agentengine_warnings)
+  target_compile_definitions(test_mediated_python_runner_skill_mounts PRIVATE
+    AE_PYTHON_HOME="${AGENTENGINE_PYTHON_HOME}")
+  add_test(NAME test_mediated_python_runner_skill_mounts COMMAND test_mediated_python_runner_skill_mounts)
+  set_tests_properties(test_mediated_python_runner_skill_mounts PROPERTIES
     ENVIRONMENT "${AE_PYTHON_TEST_ENV}" TIMEOUT 60)
 
   # ---- Milestone 3 Phase G4: error mapping (026 §3, §9 Q2) execution proof -----------------------

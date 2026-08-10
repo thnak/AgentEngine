@@ -108,6 +108,18 @@ public:
         return t;
     }
 
+    // A second, runtime construction path alongside `from_tools<ToolTs...>()` -- needed when the
+    // actual offered set is a runtime-computed SUBSET of a compile-time-declared universe (e.g.
+    // `core/skill_tool_scoping.hpp` filtering by which skills are currently mounted). The result is
+    // just as immutable once built as one from `from_tools<...>()` -- this does not weaken 006 §6's
+    // "resolved once into an immutable table at run start" invariant, it only adds a second way to
+    // reach that same shape.
+    [[nodiscard]] static ToolTable from_descriptors(std::vector<ToolDescriptor> descriptors) {
+        ToolTable t;
+        t.descriptors_ = std::move(descriptors);
+        return t;
+    }
+
     [[nodiscard]] ToolDescriptor const* find(std::string_view name) const {
         for (auto const& d : descriptors_) {
             if (d.name == name) return &d;

@@ -238,11 +238,44 @@ A skill that ships **code** is packaged as an `ae:skill` plugin (§3) and inheri
 pipeline: signed, capability-declaring, operator-approved, digest-pinned, revocable. A skill that is
 pure instructions and references needs no component and is mounted directly.
 
-**`allowed-tools` is advisory, never a grant.** Upstream marks it experimental and its support
-varies by runtime — Anthropic's own Agent SDK documents that it is not honoured through the SDK and
-that skill filtering "is a context filter, not a sandbox". We treat it as a *request* to be
-reconciled against the operator's grant, exactly like a plugin manifest (§3): the manifest declares,
-the operator grants, capabilities enforce (007 §3).
+**`allowed-tools` is a request, reconciled against the operator's grant — never itself a grant.**
+Upstream marks it experimental and its support varies by runtime — Anthropic's own Agent SDK
+documents that it is not honoured through the SDK and that skill filtering "is a context filter, not
+a sandbox". Exactly like a plugin manifest (§3): the manifest declares, the operator grants,
+capabilities enforce (007 §3) — this project's own tool-invocation capability check (`tool_pipeline.
+hpp`'s `invoke_tool`) is the actual authority, never `allowed-tools` text by itself.
+
+**Amendment (Skills Phase 2, `core/skill_tool_scoping.hpp`).** This project's own implementation goes
+one step further than "advisory metadata reconciled by an operator": the union of `allowed-tools`
+across every currently RESOLVED skill (every skill the operator configured — `SkillsProvider::
+allowed_tool_names()`) is used to compute a `ToolTable` restricted to that set, and the SAME restricted
+table is used both for what is declared to the model and for every `invoke_tool(...)` call for the run
+— deliberately chosen over the survey of MAF (a fixed three-meta-tool indirection, never per-skill tool
+schemas) and Anthropic's/OpenAI's own "container" model (tool declarations stay static; only the
+underlying file/skill content varies), neither of which scopes tool visibility this way. A tool not
+named by any resolved skill is genuinely unreachable this run, not merely undeclared — see
+`decisions/ADR-024-skill-scoped-tool-and-mount-wiring.md` for the recorded reasoning, including why the
+two tables (declared, invocable) must be the same object rather than independently constructed. (Phase
+2's "every resolved skill" is unconditional/all-on-by-default; see the Phase 3 amendment immediately
+below for the narrowing to an agent-selected subset.)
+
+**Amendment (Skills Phase 3, "resolved" vs "mounted", `core/mounted_skills_state.hpp`).** Phase 2's
+scoping activates the tools of every RESOLVED skill unconditionally, from turn 1. This project narrows
+that further: a new, always-available `mount_skill(name)` tool lets the agent explicitly activate one
+resolved skill's tools, on demand — `allowed-tools` is now unioned across only the subset of resolved
+skills the agent has *mounted* this run (`SkillsProvider::allowed_tool_names_for`), not every resolved
+skill. **"Resolved" and "mounted" are deliberately different words for different things**: resolved
+(§8b, unconditional, eager, every configured skill) governs which skills' *files* are readable — this
+is unaffected by mounting and unaffected by this amendment; mounted (this amendment, agent-triggered,
+a subset of resolved) governs only which *tools* are declared/invocable and whether a skill's full body
+is proactively re-injected into context (an improvement over MAF's `load_skill`, whose result is an
+ordinary, ephemeral tool-result message vulnerable to being dropped by chat-history compaction — this
+project's mount state is real, persistent, per-run state, re-consulted fresh every turn). `mount_skill`
+itself reads or returns no content and grants no new capability — every resolved skill's files are
+already readable via a capability the operator granted unconditionally at session start (I3: a
+model-triggered call can never mint authority it wasn't already pre-provisioned); mounting only
+activates something already pre-authorized. See ADR-024's dated addendum for the full design record,
+including the MAF research this was directly informed by.
 
 **Skill names are labels, not identifiers.** Skills are namespaced per origin so a skill fetched
 from a remote source can never shadow a local one — a shadowing attack is otherwise trivial.

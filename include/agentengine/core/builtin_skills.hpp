@@ -28,6 +28,7 @@ namespace agentengine {
 inline constexpr std::string_view kUsingTheCodeInterpreterSkillMd = R"SKILL(---
 name: using-the-code-interpreter
 description: Idioms for the execute_code tool -- when one call suffices, when CodeAct's multi-step form pays for itself, and how session state persists across calls. Use this before writing Python to accomplish a task in this environment.
+allowed-tools: execute_code
 metadata:
   version: "1"
 ---
@@ -69,6 +70,7 @@ or recomputing a value from scratch -- persistence across calls is the whole poi
 inline constexpr std::string_view kUsingCodeactSkillMd = R"SKILL(---
 name: using-codeact
 description: Worked agent.* module examples for CodeAct -- filtering, transforming, and summarizing large intermediate results in-process instead of round-tripping every row through the model. Use this once a task needs several dependent execute_code steps, alongside the using-the-code-interpreter skill.
+allowed-tools: execute_code
 metadata:
   version: "1"
 ---
