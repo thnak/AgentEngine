@@ -638,6 +638,19 @@ if(AGENTENGINE_BUILD_PYTHON_RUNNER)
     "Directory containing python3<minor>.dll, prepended to PATH for tests" FORCE)
 endif()
 
+# ---- CLI chat (interactive validation of 009 §8's skill mechanism against a real model + real code
+# execution) -- only buildable when both a real chat backend (HTTPS) and a real Python embed
+# (AGENTENGINE_BUILD_PYTHON_RUNNER) are available; needs python3<minor>.dll reachable via PATH at run
+# time (Windows has no rpath), same AGENTENGINE_PYTHON_DLL_DIR every Python-runner test already uses.
+if(AGENTENGINE_WITH_HTTPS AND AGENTENGINE_BUILD_PYTHON_RUNNER)
+  add_executable(agentengine_cli_chat tools/cli_chat.cpp)
+  target_link_libraries(agentengine_cli_chat PRIVATE
+    agentengine::core agentengine::provider_http_client agentengine::mediated_python_runner
+    agentengine_warnings MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+  target_compile_definitions(agentengine_cli_chat PRIVATE
+    AE_PYTHON_HOME="${AGENTENGINE_PYTHON_HOME}")
+endif()
+
 # ---- Tests --------------------------------------------------------------------
 option(AGENTENGINE_BUILD_TESTS "Build AgentEngine tests" ON)
 if(AGENTENGINE_BUILD_TESTS)
