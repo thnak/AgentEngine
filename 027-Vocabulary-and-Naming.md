@@ -145,16 +145,34 @@ these has caused a real bug or a real misunderstanding somewhere in the ecosyste
 ## 6. Namespaces
 
 ```
-agentengine          (alias ae)   the public core
-agentengine::detail               internals, not user-facing
-agentengine::mcp  ::a2a  ::agui   protocol wire types and mappings only
-agentengine::pal                  nothing — platform code lives in Quark's pal
-quark                             the runtime, used verbatim
+agentengine                                       (alias ae)   the public core
+agentengine::detail                                            internals, not user-facing
+agentengine::trust  ::sandbox  ::workflow                      public core, split by module —
+                                                                same §2-4 vocabulary rules as bare
+                                                                agentengine, not a separate namespace
+agentengine::schema  ::json  ::yaml  ::response_format_codec   core/ format-handling helpers —
+                                                                same §2-4 vocabulary rules as bare
+                                                                agentengine
+agentengine::mcp  ::a2a  ::agui  ::openai  ::anthropic         protocol wire types and mappings
+                                                                only — own wire-format vocabulary,
+                                                                exempt from §2-4
+agentengine::pal                                               nothing — platform code lives in
+                                                                Quark's pal
+quark                                                           the runtime, used verbatim
 ```
 
 **The boundary rule from CONVENTIONS restated as a naming rule:** a `mcp::` or `a2a::` type never
 appears in `agentengine::core`. Translation happens at the protocol boundary. This is what keeps the
 collision register short — most collisions cannot reach the core because the type system stops them.
+
+**Corrected 2026-08-10 (ADR-025):** this diagram previously listed only `::detail`/`::mcp`/`::a2a`/
+`::agui`/`::pal`, omitting `::trust`, `::sandbox`, `::workflow`, `::schema`, `::json`, `::yaml`,
+`::response_format_codec`, `::openai`, and `::anthropic` even though all nine were already real,
+in-tree namespaces. `tools/naming_lint.py` (G1) had been built against this incomplete picture — it
+matched only the bare string `agentengine`, so every declaration inside a C++17 nested-namespace
+module (`trust`, `sandbox`, `workflow`, `schema`, `json`, `yaml`, `response_format_codec`) was
+silently invisible to the gate, never reported as a violation or a suppression. Fixed alongside this
+diagram correction; see ADR-025 for the full finding and falsifiable before/after evidence.
 
 ## 7. Terminology debt
 

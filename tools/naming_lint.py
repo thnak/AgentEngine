@@ -9,18 +9,35 @@ exported type appears in this RFC's tables; an unlisted public name fails CI."
 Deliberately NOT a full C++ frontend (027's own promotion gate doesn't demand one; the M0 breakdown
 names "deciding how strictly to parse C++ symbol names without a full compiler frontend" as the
 actual work here). This is a line-oriented brace-depth tracker: it knows enough to find declarations
-sitting directly inside `namespace agentengine { ... }` and to skip anything nested one level
-deeper (a nested namespace like `agentengine::detail`, or a struct/enum member) or shallower. It
-will misparse code that departs from this project's prevailing header style (one file, one
-`namespace agentengine { }` block, declarations not split across dense one-line blocks) rather than
+sitting directly inside `namespace agentengine { ... }` OR directly inside a C++17 nested-namespace
+block whose full spelling starts with `agentengine::` (e.g. `namespace agentengine::trust { ... }`),
+and to skip anything nested one level deeper still (a struct/enum member, or a further-nested
+namespace) or shallower. `agentengine::detail` (and anything nested under it) is excluded from scope
+by name, matching this project's own "internals, not user-facing" convention (CONVENTIONS.md layout
+table) — everything else spelled `agentengine::<module>` is a real, user-facing module namespace and
+was never meant to be invisible to this gate. Prior versions of this script matched the exact string
+`agentengine` only, which made every C++17-nested-namespace module (`agentengine::trust`,
+`::sandbox`, `::workflow`, and `core/`'s `::schema`/`::json`/`::yaml`/`::response_format_codec`)
+silently invisible — not reported as a violation, not counted as suppressed — including 027 §4's own
+flagship worked examples (`Executor`, `Edge`, `Workflow`, `EdgeFailurePolicy` in `workflow/graph.hpp`).
+Fixed 2026-08-10 (ADR-025) after a full-codebase audit surfaced this as the highest-severity finding:
+a promotion gate this project's own most security-relevant modules (`trust/`, `sandbox/`) could never
+actually fail. This is a scope-widening fix only — it makes previously-invisible names visible as
+violations or suppressions; reconciling that corrected violation set against 027's vocabulary tables
+is separate follow-up work (ADR-025 names it explicitly, not silently deferred here).
+It will still misparse code that departs from this project's prevailing header style (one file, one
+namespace block per module, declarations not split across dense one-line blocks) rather than
 silently approving something it can't actually see — false negatives are the failure mode to watch
 for on review, not false positives, since a name it fails to see simply never gets checked.
 
 Scope: include/agentengine/{core,trust,sandbox,plugin,workflow}/**/*.hpp. Excluded:
   - include/agentengine/detail/  — private internals, not user-facing (CONVENTIONS.md layout table).
-  - include/agentengine/protocol/**  — wire types live in agentengine::mcp / ::a2a / ::agui / ::openai,
-    not bare agentengine::: they are exempt from the *core* vocabulary tables by 027 §6's namespace
-    boundary rule, not by this script's own judgment call.
+  - include/agentengine/protocol/**  — wire types live in agentengine::mcp / ::a2a / ::agui / ::openai
+    / ::anthropic, not bare agentengine::: they are exempt from the *core* vocabulary tables by 027 §6's
+    namespace boundary rule, not by this script's own judgment call. Excluded at the directory level
+    (below), so the namespace-matching fix above never reaches these files regardless.
+  - `agentengine::detail` and anything nested under it, wherever it's opened — excluded by namespace
+    name (see `_in_scope_namespace` below), not by directory, since it can appear inside any module.
 
 Suppression: a declaration whose line (or the line immediately above it) contains
 `ae-naming-lint: allow <Name>` is skipped from failure but still reported as suppressed, so a
@@ -61,6 +78,18 @@ _NAMESPACE_OPEN = re.compile(r"^\s*namespace\s+([\w:]+)\s*\{")
 _ALLOW = re.compile(r"ae-naming-lint:\s*allow\s+([A-Za-z_]\w*)")
 
 
+def _in_scope_namespace(ns: str) -> bool:
+    """True for bare `agentengine` and any C++17 nested `agentengine::<module>` namespace, EXCEPT
+    `agentengine::detail` and anything nested under it. Directory-excluded trees (protocol/, detail/)
+    never reach this function at all (see `iter_headers`); this only decides in-scope-by-name for
+    files that ARE scanned but open a nested namespace other than bare `agentengine`."""
+    if ns == "agentengine":
+        return True
+    if not ns.startswith("agentengine::"):
+        return False
+    return ns != "agentengine::detail" and not ns.startswith("agentengine::detail::")
+
+
 def load_vocabulary() -> set[str]:
     text = VOCAB_RFC.read_text(encoding="utf-8")
     lines = text.splitlines()
@@ -99,10 +128,10 @@ def find_declarations(path: Path) -> list[tuple[int, str, bool]]:
             ns_stack.pop()
 
         current_ns = ns_stack[-1][1] if ns_stack else ""
-        # A declaration is "directly in agentengine" when, at the start of this line, we're
-        # exactly at agentengine's own scope depth (not nested inside a struct/enum body, and not
-        # inside a deeper namespace like agentengine::detail).
-        if current_ns == "agentengine" and depth_before == ns_stack[-1][0] and not ns_match:
+        # A declaration is "directly in an in-scope agentengine namespace" when, at the start of
+        # this line, we're exactly at that namespace's own scope depth (not nested inside a
+        # struct/enum body, and not inside a further-nested namespace).
+        if _in_scope_namespace(current_ns) and depth_before == ns_stack[-1][0] and not ns_match:
             m = _DECL.match(line)
             if m:
                 name = next(g for g in m.groups() if g)
