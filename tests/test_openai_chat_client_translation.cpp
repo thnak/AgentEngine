@@ -433,6 +433,68 @@ int main() {
         }
     }
 
+    // ---- D1: a resolved PARALLEL tool-call turn -- one AE Message carrying TWO ToolResult items -----
+    // A real caller resolving two tool calls the model issued in ONE turn (parallel_tool_calls above,
+    // D1-R6) most naturally builds ONE role::tool reply Message with two ToolResult content items --
+    // the multi-ToolResult shape `translate_message` alone silently mishandles (it tracks only a
+    // single `tool_call_id` variable, so the SECOND ToolResult processed overwrites the first: the
+    // first call's own tool_call_id is dropped entirely from the wire request, and its text gets
+    // merged under the SECOND call's id instead -- a real correlation bug a live provider would 400
+    // on, "tool_call_id ... not found" for the never-emitted first one). `build_request_body` is what
+    // callers actually use, so this proves the FULL fix (translate_message_to_wire), not just the
+    // helper in isolation.
+    {
+        Message reply;
+        reply.role = role::tool;
+        ToolResult tr1;
+        tr1.call_id = "call-1";
+        ContentItem inner1;
+        inner1.value = Data{R"({"artist":"Taylor Swift"})", std::nullopt};
+        tr1.content.push_back(std::move(inner1));
+        ContentItem item1;
+        item1.origin = content_origin::tool;
+        item1.value = std::move(tr1);
+        reply.content.push_back(std::move(item1));
+
+        ToolResult tr2;
+        tr2.call_id = "call-2";
+        ContentItem inner2;
+        inner2.value = Data{R"({"artist":"Maroon 5"})", std::nullopt};
+        tr2.content.push_back(std::move(inner2));
+        ContentItem item2;
+        item2.origin = content_origin::tool;
+        item2.value = std::move(tr2);
+        reply.content.push_back(std::move(item2));
+
+        ChatRequest req;
+        req.messages.push_back(text_message(role::user, "play a song from each"));
+        req.messages.push_back(tool_call_message("call-1", "spotify.play", R"({"artist":"Taylor Swift"})"));
+        // (in a real turn a second, sibling ToolCall would also be in that SAME assistant message --
+        // orthogonal to what this block proves, so kept to one for a focused fixture)
+        req.messages.push_back(std::move(reply));
+
+        auto body = build_request_body(req, "gpt-5", /*stream=*/false);
+        check(body.has_value(), "D1-R9: a request with a multi-ToolResult reply Message assembles");
+        if (body) {
+            auto const* messages = body->find("messages");
+            check(messages && messages->is_array() && messages->as_array().size() == 4,
+                  "D1-R9: THREE AE Messages produce FOUR wire messages -- the multi-ToolResult reply "
+                  "Message split into two separate tool-role wire objects, one per call_id, not one");
+            if (messages && messages->as_array().size() == 4) {
+                auto const& arr = messages->as_array();
+                check(arr[2].find("role")->as_string() == "tool" &&
+                          arr[2].find("tool_call_id")->as_string() == "call-1" &&
+                          arr[2].find("content")->as_string() == R"({"artist":"Taylor Swift"})",
+                      "D1-R9: the FIRST ToolResult (call-1) is not dropped -- previously silently lost");
+                check(arr[3].find("role")->as_string() == "tool" &&
+                          arr[3].find("tool_call_id")->as_string() == "call-2" &&
+                          arr[3].find("content")->as_string() == R"({"artist":"Maroon 5"})",
+                      "D1-R9: the SECOND ToolResult (call-2) is correct and not merged with the first's "
+                      "text under the wrong id");
+            }
+        }
+    }
+
     // ---- D3: a complex/nested args_schema_json passes through translate_tool completely unchanged ----
     {
         ToolDescriptor t;
@@ -740,6 +802,126 @@ int main() {
                       "default (0) when there is no usage object to read from");
             }
         }
+    }
+
+    // ---- ADR-023 Phase 1: apply_response_format_scan (decisions/ADR-023-response-format-codec-
+    // seam.md §6 point 3) -- `chat()` only calls this when `scan_response_format_leaks_` is armed
+    // (default false); the function itself is tested directly here, the same level
+    // `parse_chat_completion_response` itself is tested at above, rather than standing up
+    // test_openai_chat_client_live.cpp-style TLS server infrastructure for what is, at the chat()
+    // call site, a single `if` branch around this already-proven function.
+    {
+        Message message;
+        message.role = role::assistant;
+        ContentItem leaked;
+        leaked.origin = content_origin::assistant;
+        leaked.value = Text{"<|start|>assistant<|channel|>analysis<|message|>Need the weather.<|end|>"
+                             "<|start|>assistant<|channel|>final<|message|>It is sunny.<|return|>"};
+        message.content.push_back(std::move(leaked));
+
+        Message scanned = apply_response_format_scan(message, /*tools=*/{});
+        check(scanned.content.size() == 2,
+              "ADR-023 P1-R1: a leaked Harmony analysis+final turn splits into exactly 2 content items");
+        if (scanned.content.size() == 2) {
+            check(std::holds_alternative<Reasoning>(scanned.content[0].value),
+                  "ADR-023 P1-R1: item 0 is a real Reasoning content item, not raw text");
+            check(std::get<Reasoning>(scanned.content[0].value).text == "Need the weather.",
+                  "ADR-023 P1-R1: Reasoning text is cleaned (envelope tokens stripped)");
+            check(std::holds_alternative<Text>(scanned.content[1].value) && !scanned.content[1].tainted,
+                  "ADR-023 P1-R1: item 1 is clean, untainted final-channel Text");
+            check(std::get<Text>(scanned.content[1].value).text == "It is sunny.",
+                  "ADR-023 P1-R1: final Text is cleaned (envelope tokens stripped)");
+        }
+    }
+    {
+        // Ordinary clean content (no format markers) must survive `apply_response_format_scan`
+        // byte-identical -- proves the OpenAI-backend wiring doesn't corrupt the vastly more common
+        // case where nothing leaked, mirroring the codec's own negative control at a higher level.
+        Message message;
+        message.role = role::assistant;
+        ContentItem clean;
+        clean.origin = content_origin::assistant;
+        clean.value = Text{"The weather in San Francisco is sunny."};
+        message.content.push_back(clean);
+
+        Message scanned = apply_response_format_scan(message, /*tools=*/{});
+        check(scanned.content.size() == 1 &&
+                  std::holds_alternative<Text>(scanned.content[0].value) &&
+                  std::get<Text>(scanned.content[0].value).text == "The weather in San Francisco is sunny." &&
+                  !scanned.content[0].tainted,
+              "ADR-023 P1-R2: clean content with no format markers passes through apply_response_format_scan "
+              "byte-identical and untainted");
+    }
+    {
+        // A ToolCall item (from the wire's own structured tool_calls field) must never be touched by
+        // this function -- it only ever inspects `Text` items.
+        Message message;
+        message.role = role::assistant;
+        ContentItem call;
+        call.origin = content_origin::assistant;
+        call.value = ToolCall{"call_1", "get_weather", R"({"location":"SF"})"};
+        message.content.push_back(call);
+
+        Message scanned = apply_response_format_scan(message, /*tools=*/{});
+        check(scanned.content.size() == 1 && std::holds_alternative<ToolCall>(scanned.content[0].value) &&
+                  std::get<ToolCall>(scanned.content[0].value).call_id == "call_1",
+              "ADR-023 P1-R3: a structured ToolCall content item is left completely untouched -- this "
+              "function only ever inspects Text items, never re-derives or drops an already-structured call");
+    }
+
+    // ---- ADR-023 Phase 2: candidate -> real, tagged ToolCall promotion (§6 point 4) ----------------
+    {
+        // A candidate whose recipient matches a tool present in `request.tools` is promoted to a
+        // real ToolCall content item tagged text_derived -- never vendor_structured, so invoke_tool
+        // step 5 (core/tool_pipeline.hpp) can tell it apart from a vendor-structured call.
+        Message message;
+        message.role = role::assistant;
+        ContentItem leaked;
+        leaked.origin = content_origin::assistant;
+        leaked.value = Text{"<tool_call>{\"name\":\"get_weather\",\"arguments\":{\"location\":\"SF\"}}</tool_call>"};
+        message.content.push_back(std::move(leaked));
+
+        ToolDescriptor known_tool;
+        known_tool.name = "get_weather";
+        std::vector<ToolDescriptor> tools{known_tool};
+
+        Message scanned = apply_response_format_scan(message, tools);
+        check(scanned.content.size() == 1,
+              "ADR-023 P2-R1: a candidate matching a known tool yields exactly 1 content item");
+        if (scanned.content.size() == 1) {
+            check(std::holds_alternative<ToolCall>(scanned.content[0].value),
+                  "ADR-023 P2-R1: the item is a real ToolCall, not the Phase-1 inert diagnostic Text");
+            if (std::holds_alternative<ToolCall>(scanned.content[0].value)) {
+                ToolCall const& call = std::get<ToolCall>(scanned.content[0].value);
+                check(call.tool_name == "get_weather", "ADR-023 P2-R1: tool_name is the parsed recipient");
+                check(call.provenance == call_provenance::text_derived,
+                      "ADR-023 P2-R1: provenance is text_derived -- NEVER vendor_structured -- so "
+                      "invoke_tool step 5 applies the capability-scoped gate, not the tool's own "
+                      "approval_mode unconditionally");
+            }
+        }
+    }
+    {
+        // A candidate whose recipient does NOT match any tool in `request.tools` stays the Phase-1
+        // inert diagnostic Text -- promoting an unrecognized name would only reach invoke_tool step
+        // 1's "unknown tool" rejection anyway.
+        Message message;
+        message.role = role::assistant;
+        ContentItem leaked;
+        leaked.origin = content_origin::assistant;
+        leaked.value = Text{"<tool_call>{\"name\":\"totally_unknown_tool\",\"arguments\":{}}</tool_call>"};
+        message.content.push_back(std::move(leaked));
+
+        ToolDescriptor unrelated_tool;
+        unrelated_tool.name = "get_weather";
+        std::vector<ToolDescriptor> tools{unrelated_tool};
+
+        Message scanned = apply_response_format_scan(message, tools);
+        check(scanned.content.size() == 1 && std::holds_alternative<Text>(scanned.content[0].value) &&
+                  scanned.content[0].tainted,
+              "ADR-023 P2-R2: a candidate with no matching tool name stays the Phase-1 inert, tainted "
+              "diagnostic Text -- never promoted to a ToolCall for a tool that isn't even in this "
+              "call's own tool list");
     }
 
     if (g_failures == 0) {

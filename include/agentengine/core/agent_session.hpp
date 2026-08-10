@@ -356,7 +356,15 @@ public:
             co_return;
         }
 
-        ChatRequest request{contribution->messages};
+        // `contribution->tools` (a HistoryProviderT/future N-contributor assembler may declare tools,
+        // context_provider.hpp's own top comment) previously had no destination here at all -- computed
+        // by `on_context` above and then silently discarded, so no `AgentSession` run has ever been
+        // able to present a tool to a model through the real turn loop, only through the standalone
+        // `invoke_agent_tool()` entry point (test_agent_tool_invocation.cpp). Forwarded now; `messages`
+        // stays the first positional field so every existing single-brace `ChatRequest{...}` call site
+        // elsewhere is unaffected (this is the only construction site that had a `contribution` to draw
+        // a second field from).
+        ChatRequest request{contribution->messages, contribution->tools};
         if (!chat_client_) {
             // ADR-018: only reachable for a non-default-constructible `ChatClientT` whose owner never
             // called `emplace_chat_client()`. Same fail-closed shape as every other branch here --

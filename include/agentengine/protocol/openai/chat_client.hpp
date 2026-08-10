@@ -141,6 +141,47 @@ namespace detail {
     return json::Value::make_object(std::move(obj));
 }
 
+// A `role::tool` AE `Message` carrying N>1 `ToolResult` content items -- the natural shape a caller
+// resolving N parallel tool calls in one turn would build -- must become N separate wire
+// `{role:"tool", tool_call_id, content}` objects: OpenAI's Chat Completions contract requires one
+// message per `tool_call_id` (confirmed against the SDK's own request-message shape), unlike
+// Anthropic's Messages API, which legitimately bundles multiple `tool_result` blocks into a single
+// `user`-role message (protocol/anthropic/chat_client.hpp's own `translate_message`). `translate_
+// message` above tracks only ONE `tool_call_id` variable, so feeding it a multi-ToolResult Message
+// silently collapses to the LAST result's id, with every earlier ToolResult's text merged under that
+// wrong id -- a real correlation bug, not merely a hygiene one, that a real provider surfaces as
+// "tool_call_id ... not found" or an unresolved-tool-call 400 (the assistant turn's OTHER tool_calls
+// entries are left with no matching reply message at all). Every other message shape (user/assistant/
+// system, or a role::tool message with 0-1 ToolResult items) is unaffected -- still exactly one wire
+// message via `translate_message` unchanged.
+[[nodiscard]] inline std::vector<json::Value> translate_message_to_wire(Message const& m) {
+    if (m.role == role::tool) {
+        std::size_t tool_result_count = 0;
+        for (ContentItem const& item : m.content) {
+            if (std::holds_alternative<ToolResult>(item.value)) ++tool_result_count;
+        }
+        if (tool_result_count > 1) {
+            std::vector<json::Value> out;
+            out.reserve(tool_result_count);
+            for (ContentItem const& item : m.content) {
+                if (auto const* tr = std::get_if<ToolResult>(&item.value)) {
+                    Message single;
+                    single.role = role::tool;
+                    ContentItem wrapped;
+                    wrapped.origin = item.origin;
+                    wrapped.value = *tr;
+                    single.content.push_back(std::move(wrapped));
+                    out.push_back(translate_message(single));
+                }
+            }
+            return out;
+        }
+    }
+    std::vector<json::Value> out;
+    out.push_back(translate_message(m));
+    return out;
+}
+
 // D3: one `ToolDescriptor` -> `{"type":"function","function":{"name","description","parameters"}}`
 // (confirmed field names/nesting against the SDK's `InternalChatFunctionDefinition` serializer).
 // `args_schema_json` already IS the tool's JSON Schema text (006's own real per-run tool table, no
@@ -230,7 +271,9 @@ namespace detail {
 
     std::vector<json::Value> messages;
     messages.reserve(request.messages.size());
-    for (auto const& m : request.messages) messages.push_back(translate_message(m));
+    for (auto const& m : request.messages) {
+        for (auto& wire : translate_message_to_wire(m)) messages.push_back(std::move(wire));
+    }
     obj.emplace_back("messages", json::Value::make_array(std::move(messages)));
 
     if (!request.tools.empty()) {

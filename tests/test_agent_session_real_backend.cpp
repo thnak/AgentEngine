@@ -42,6 +42,7 @@
 #include "quark/core/testkit.hpp"
 
 #include "agentengine/core/agent_session.hpp"
+#include "agentengine/core/json_schema.hpp"
 #include "agentengine/protocol/openai/chat_client.hpp"
 #include "agentengine/trust/principal.hpp"
 #include "agentengine/trust/secret.hpp"
@@ -191,6 +192,45 @@ private:
     return m;
 }
 
+// Regression fixture for the tools-forwarding fix below: `AgentSession::handle()` previously built
+// `ChatRequest request{contribution->messages};`, discarding `contribution->tools` entirely --
+// `HistoryProvider<Window<N>>` (core/history_provider.hpp) never populates `.tools` itself, so this
+// wraps its exact windowing behaviour and additionally declares a fixed tool list, the same shape a
+// real skills/tools-declaring ContextProvider conformer would have. Default-constructible (no runtime
+// state to inject), matching this project's own CRTP-policy-tag idiom (`Window<N>` itself) rather than
+// a constructor argument -- `quark::TestKit<A>`'s `A actor_;` member requires the whole
+// `AgentSession<...>` to stay default-constructible (ADR-018's own established constraint).
+struct OneWeatherToolArgs {
+    std::string location;
+};
+AE_JSON_SCHEMA(OneWeatherToolArgs, location)
+
+struct OneWeatherToolReply {
+    std::string condition;
+};
+AE_JSON_SCHEMA(OneWeatherToolReply, condition)
+
+struct OneWeatherTool : Tool<OneWeatherTool> {
+    static constexpr std::string_view name = "get_weather";
+    static constexpr std::string_view description = "Get the current weather for a city.";
+    using Args = OneWeatherToolArgs;
+    using Reply = OneWeatherToolReply;
+    static result<Reply> invoke(Args, EffectContext&) { return Reply{"sunny"}; }
+};
+
+class ToolDeclaringHistoryProvider {
+public:
+    [[nodiscard]] task<result<ContextContribution>> on_context(SessionContext& session_ctx, EffectContext&) {
+        ContextContribution contribution;
+        contribution.messages.assign(session_ctx.history.begin(), session_ctx.history.end());
+        contribution.tools = ToolTable::from_tools<OneWeatherTool>().descriptors();
+        co_return contribution;
+    }
+    task<std::monostate> on_turn_end(TurnView, EffectContext&) { co_return std::monostate{}; }
+};
+static_assert(ContextProvider<ToolDeclaringHistoryProvider>,
+              "the test fixture itself must satisfy the concept AgentSession requires of HistoryProviderT");
+
 }  // namespace
 
 int main() {
@@ -321,6 +361,41 @@ int main() {
               "J1-R7: a run on a session whose ChatClientT was never emplaced FAILS CLOSED -- it never "
               "responds, rather than fabricating an AgentResponse for a turn that never reached a "
               "model (I3: nothing is invented on a path that produced no model output)");
+    }
+
+    // ---- J1-R8 (regression): a declared tool actually reaches the wire through a REAL session run ---
+    // Before this fix, `handle()` built `ChatRequest{contribution->messages}` -- `contribution->tools`
+    // was computed by the ContextProvider and then silently discarded, so no `AgentSession` run,
+    // through any HistoryProviderT, could ever present a tool to a model. Proven here against the same
+    // canned server / wire-inspection machinery J1-R1..R7 already use, with a session templated on
+    // `ToolDeclaringHistoryProvider` instead of the default `HistoryProvider<Window<0>>`.
+    {
+        using ToolSession = AgentSession<RealClient, NoSessionState, ToolDeclaringHistoryProvider>;
+        static_assert(std::is_default_constructible_v<ToolSession>,
+                      "J1-R8: a tool-declaring HistoryProviderT stays default-constructible too -- "
+                      "ADR-018's constraint applies uniformly, not just to the default provider");
+
+        quark::TestKit<ToolSession> tool_kit;
+        tool_kit.actor().emplace_chat_client(
+            "127.0.0.1", server.port(), "canned-model", SecretRef{"provider-key"}, caps, store, "/v1",
+            sandbox::resolve_host, /*ca_bundle=*/std::string{}, /*http_referer=*/std::string{},
+            /*x_title=*/std::string{}, /*end_user_id=*/std::string{}, /*seed=*/std::nullopt,
+            ProviderTransport::plaintext_http);
+        tool_kit.actor().initialize("session-with-tools", Principal{"owner", "tenant-a"});
+        tool_kit.actor().set_capabilities(&held);
+
+        quark::result<AgentResponse> r4 =
+            tool_kit.ask<AgentResponse>(StartRun{user_turn("what's the weather?")});
+        check(r4.has_value(), "J1-R8: a run on a tool-declaring session still completes");
+
+        std::string const sent = server.last_request_body();
+        check(sent.find(R"("tools":[)") != std::string::npos,
+              "J1-R8: the wire request the server ACTUALLY received now carries a top-level 'tools' "
+              "array -- before this fix this string could never appear, from any session, ever");
+        check(sent.find(R"("name":"get_weather")") != std::string::npos,
+              "J1-R8: the declared tool's own name is present inside that array -- the real "
+              "ToolDescriptor produced by ToolTable::from_tools<OneWeatherTool>() reached the wire "
+              "through the real turn loop, not a hand-built request the test assembled itself");
     }
 
     if (g_failures == 0) {
