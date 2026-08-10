@@ -820,6 +820,18 @@ if(AGENTENGINE_WITH_HTTPS)
       agentengine::core agentengine::provider_http_client agentengine::worktree_store agentengine_warnings
       MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
     add_test(NAME test_agent_session_skills_real_backend COMMAND test_agent_session_skills_real_backend)
+
+    # ---- Skills (009 §8), LIVE: the same HistoryAndSkillsProvider composition driven through a
+    # two-turn conversation (greeting, then "use your code execution skill") against a REAL remote
+    # model over OpenRouter -- the behavioural proof that a mounted skill's advertisement actually
+    # reaches and influences a real model's real tool selection, not just the outbound wire bytes
+    # (test_agent_session_skills_real_backend.cpp's own canned-server scope).
+    add_executable(test_agent_session_skills_live_e2e test_agent_session_skills_live_e2e.cpp)
+    target_link_libraries(test_agent_session_skills_live_e2e PRIVATE
+      agentengine::core agentengine::provider_http_client agentengine::worktree_store agentengine_warnings
+      MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+    add_test(NAME test_agent_session_skills_live_e2e COMMAND test_agent_session_skills_live_e2e)
+    set_tests_properties(test_agent_session_skills_live_e2e PROPERTIES LABELS "live-network" TIMEOUT 300)
   endif()
 
   # ---- Milestone 5 Phase J1 (roadmap exit criterion, 004 §7 G1): the same unchanged call site, run
