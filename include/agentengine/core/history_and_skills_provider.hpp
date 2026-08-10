@@ -49,8 +49,21 @@ public:
         // fresh `shared_ptr` each call; rebuilding it every turn would silently reconstruct a brand
         // new `SkillsProviderT` every turn, discarding its own `loaded_`/mounted state and breaking
         // `SkillsProvider`'s "resolve-once, freeze" guarantee (009 §8c) outright.
-        contributors_.push_back(make_context_provider_descriptor(std::move(history), history_budget));
+        //
+        // SKILLS FIRST, then history: `assemble_context` (context_assembly.hpp) concatenates every
+        // contributor's messages in declared order, `contributors_[0]` first -- that ordering rule
+        // exists there for DROP-order determinism (005 §3), but it also determines final wire message
+        // order, and this composition's own name ("History AND Skills") is not a reliable guide to
+        // which one should go first on the wire. `SkillsProviderT` contributes exactly one
+        // `role::system` advertisement message; a real conversation's history is everything that came
+        // before it. Pushing history first put that system message AFTER the entire conversation on
+        // every real request (confirmed against a live wire dump: the skill advertisement was the
+        // LAST message sent, not the first) -- the opposite of ordinary system-prompt convention and
+        // exactly the kind of placement that degrades a model's actual adherence to it. Regression-
+        // proven in test_agent_session_skills_real_backend.cpp (order, not just presence, now
+        // asserted).
         contributors_.push_back(make_context_provider_descriptor(std::move(skills), skills_budget));
+        contributors_.push_back(make_context_provider_descriptor(std::move(history), history_budget));
     }
 
     [[nodiscard]] task<result<ContextContribution>> on_context(SessionContext& session_ctx,

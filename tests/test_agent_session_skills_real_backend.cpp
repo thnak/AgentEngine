@@ -236,16 +236,25 @@ int main() {
                           "HistoryAndSkillsProvider-composed session");
 
     std::string const sent = server.last_request_body();
-    check(sent.find("hello with skills mounted") != std::string::npos,
+    auto const history_pos = sent.find("hello with skills mounted");
+    auto const skill_pos = sent.find("using-the-code-interpreter");
+    check(history_pos != std::string::npos,
           "R2: the session's own assembled HISTORY still reaches the wire -- composing with skills "
           "did not break the ordinary history contribution");
-    check(sent.find("using-the-code-interpreter") != std::string::npos &&
-              sent.find("execute_code") != std::string::npos,
+    check(skill_pos != std::string::npos && sent.find("execute_code") != std::string::npos,
           "R3: the SKILL ADVERTISEMENT (name + description, from the real builtin skill) ALSO "
           "reaches the wire request -- this is the load-bearing new check: it would be absent on a "
           "naive AgentSession<..., NoSessionState> using only the default HistoryProvider<Window<0>>, "
           "and is present here only because HistoryAndSkillsProvider actually composed both "
           "contributors through the real assemble_context()");
+    if (history_pos != std::string::npos && skill_pos != std::string::npos) {
+        check(skill_pos < history_pos,
+              "R3b: the skill advertisement is ORDERED BEFORE the conversation history on the wire, "
+              "not just present somewhere in the body -- a real provider (and a real model's own "
+              "system-prompt-adherence training) treats leading vs. trailing placement differently; "
+              "this is the regression test for a real bug where HistoryAndSkillsProvider pushed "
+              "history before skills, putting the system-shaped advertisement LAST on every request");
+    }
 
     if (r.has_value()) {
         check(!r->message.content.empty(), "R4: the AgentResponse carries content from the real server");
