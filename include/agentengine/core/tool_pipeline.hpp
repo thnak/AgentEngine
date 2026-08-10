@@ -26,6 +26,7 @@
 //   - step 10's audit record is a minimal in-memory struct; 016's full span/telemetry shape is out
 //     of scope for M2.
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <functional>
@@ -62,6 +63,16 @@ struct ToolDescriptor {
 
     using InvokeFn = std::function<result<json::Value>(json::Value const&, EffectContext&)>;
     InvokeFn invoke;
+
+    // ADR-023 §6 point 4 / 007 §4 amendment: `invoke_tool`'s step 5 reads this ONLY for a
+    // `text_derived` call (`ToolCallRequest::provenance` below) -- `Tool<Derived,...>::
+    // declared_effect_class()` (019 §3) already existed as a compile-time accessor but was never
+    // previously copied onto the runtime descriptor because nothing needed it at this layer before
+    // now. Appended last (this struct's own established convention) -- `at_most_once` is the same
+    // conservative default `declared_effect_class()` itself uses, so a hand-built `ToolDescriptor`
+    // that predates this field (not going through `make_tool_descriptor<T>()` below) fails CLOSED
+    // against auto-declassification rather than silently qualifying.
+    effect_class effect_class = effect_class::at_most_once;
 };
 
 template <class ToolT>
@@ -72,6 +83,7 @@ template <class ToolT>
     d.capability_ceiling = ToolT::declared_capabilities();
     d.approval = ToolT::declared_approval();
     d.backgroundable = ToolT::declared_backgroundable();
+    d.effect_class = ToolT::declared_effect_class();
     d.args_schema_json = ToolT::args_schema();
     d.reply_schema_json = ToolT::reply_schema();
     d.invoke = [](json::Value const& args_value, EffectContext& ctx) -> result<json::Value> {
@@ -126,6 +138,10 @@ struct ToolCallRequest {
     // `EffectContext::run_id`/`turn_index` already have). Defaults to 0 for every M2-era caller
     // that predates this field (aggregate init with fewer braces than members is unaffected).
     std::uint64_t call_index = 0;
+    // ADR-023 §6 point 4 / 007 §4 amendment: appended last, defaults to `vendor_structured` so
+    // every existing positional/aggregate `ToolCallRequest{...}` call site is unaffected. Read by
+    // `invoke_tool`'s step 5 below -- see that function's own comment for the full rule.
+    call_provenance provenance = call_provenance::vendor_structured;
 };
 
 // Milestone 4 Phase F1 (019 §3): "Every effect carries an idempotency key derived
@@ -225,6 +241,22 @@ namespace tool_pipeline_detail {
     return r;
 }
 
+// ADR-023 §6 point 4 / 007 §4 amendment, declassifier (a′): a `text_derived` call auto-declassifies
+// (skips step 5's approval entirely) ONLY when the target tool's declared capability ceiling is
+// made ENTIRELY of kinds `trust::is_inert_for_text_derived_declassification` proves safe (read-only/
+// informational -- an empty ceiling trivially qualifies, `std::all_of` over an empty range is `true`
+// by definition, which is exactly "no capabilities at all" auto-declassifying, the strongest case)
+// AND the tool is declared `effect_class::pure`. Everything else -- ANY other capability kind, or a
+// non-pure effect class -- requires approval, unconditionally. This function answers ONLY that
+// static question; it is never itself an approval decision (007 §4).
+[[nodiscard]] inline bool is_auto_declassifiable_text_derived_call(ToolDescriptor const& tool) noexcept {
+    if (tool.effect_class != agentengine::effect_class::pure) return false;
+    return std::all_of(tool.capability_ceiling.begin(), tool.capability_ceiling.end(),
+                        [](Capability const& c) {
+                            return is_inert_for_text_derived_declassification(capability_kind_of(c));
+                        });
+}
+
 }  // namespace tool_pipeline_detail
 
 // The ten-step pipeline (006 §3), against a single native tool call. `held` is the run's actual
@@ -286,7 +318,21 @@ namespace tool_pipeline_detail {
     }
 
     // -- step 5: approve ---------------------------------------------------------------------------
-    if (tool->approval != approval_mode::never_require) {
+    // ADR-023 §6 point 4 / 007 §4 amendment: a `text_derived` call NEVER consults `tool->approval`
+    // at all -- that setting was authored by the tool's declarer for VENDOR-STRUCTURED calls (a
+    // real, trusted wire-format field). A call reconstructed from raw model text is a different,
+    // weaker trust class by construction (007 §4: model-supplied text is never itself an
+    // authorization decision), so it gets its OWN gate (`is_auto_declassifiable_text_derived_call`)
+    // that can only ever be MORE restrictive than the tool's own setting, including overriding a
+    // tool's own `approval_mode::never_require` for anything with a real capability ceiling -- the
+    // exact override the confused-deputy scenario (ADR-023 §4b Finding 1) forced. A
+    // `vendor_structured` call (every caller before this amendment, and every caller that never sets
+    // `provenance`) takes the ORIGINAL branch, byte-for-byte unchanged.
+    bool const requires_approval =
+        (request.provenance == call_provenance::text_derived)
+            ? !is_auto_declassifiable_text_derived_call(*tool)
+            : (tool->approval != approval_mode::never_require);
+    if (requires_approval) {
         std::string canonical_args = json::dump(request.arguments);
         bool approved = approve && approve(request.tool_name, canonical_args);
         if (!approved) {

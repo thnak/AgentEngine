@@ -202,6 +202,55 @@ using Capability = std::variant<cap::FsRead, cap::FsWrite, cap::NetOut, cap::Net
                              // switch.
 }
 
+// decisions/ADR-023-response-format-codec-seam.md §6 point 4 / 007 §4 amendment: is this capability
+// KIND provably inert -- read-only/informational, no egress, no mutation, no recursive authority --
+// such that a tool whose ENTIRE declared ceiling is made of kinds like this can safely auto-
+// declassify a `text_derived` `ToolCall` (core/content.hpp) with no human in the loop? Consulted from
+// exactly one place, `core/tool_pipeline.hpp`'s `invoke_tool` step 5, never from anywhere that
+// decides trust for a `vendor_structured` call (007 §4: this function's answer is never itself an
+// approval decision, only one input a fail-closed gate reads).
+//
+// Deliberately an ALLOWLIST (`switch` with no `default:`, so a 16th `capability_kind` triggers
+// -Wswitch here -- a discovery aid, not a hard compile error, this project builds without -Werror,
+// same honest limitation `capability_from_kind`'s own trailing-fallback comment above already names)
+// rather than a denylist of the "obviously dangerous" kinds ADR-023 §6 point 4 named as examples
+// (`NetOut`/`FsWrite`/`Secret`/`AgentCall`/`Exec`) -- a denylist would silently classify any FUTURE
+// capability kind as safe by omission, the opposite of 007's own fail-closed posture everywhere else
+// (CapabilitySet's own empty-by-default rule, this file's own top comment). The trailing fallback
+// below returns `false` (unlike `capability_from_kind`'s `Entropy{}` convenience default) so a
+// missed enumerator fails CLOSED, not open.
+[[nodiscard]] inline bool is_inert_for_text_derived_declassification(capability_kind kind) noexcept {
+    switch (kind) {
+        case capability_kind::fs_read:     return true;   // read-only, no egress/mutation
+        case capability_kind::clock:       return true;   // read-only, informational
+        case capability_kind::entropy:     return true;   // read-only, informational
+
+        case capability_kind::fs_write:    return false;  // mutation
+        case capability_kind::net_out:     return false;  // egress
+        case capability_kind::net_listen:  return false;  // opens an inbound surface
+        case capability_kind::secret:      return false;  // accesses secrets
+        case capability_kind::env_read:    return false;  // env vars routinely carry secret-shaped
+                                                            // values (same reasoning as this file's
+                                                            // own env_write comment above)
+        case capability_kind::env_write:   return false;  // mutation
+        case capability_kind::exec:        return false;  // subprocess execution
+        case capability_kind::tool_call:   return false;  // recursive authority -- could chain into
+                                                            // invoking a dangerous tool
+        case capability_kind::runner_call: return false;  // arbitrary sandboxed code execution
+        case capability_kind::agent_call:  return false;  // recursive authority, cascades to another
+                                                            // agent
+        case capability_kind::schedule:    return false;  // effect deferred past the review window
+        case capability_kind::background:  return false;  // same "escapes the immediate review
+                                                            // window" reason as schedule
+        case capability_kind::elicit:      return false;  // can be used to social-engineer the human
+                                                            // via the agent
+    }
+    return false;  // unreachable (every enumerator handled above) -- fails CLOSED if the enum is
+                    // ever extended without updating this switch, the opposite direction from
+                    // capability_from_kind's own fallback above (deliberately: that fallback exists
+                    // so a legacy call site keeps compiling; this one guards a security decision).
+}
+
 // Compile-time capability *declaration* tags (002-Agent-Model-and-Authoring.md §3 / 006-Tool-and-
 // Function-Plane.md §1's own examples: `Capabilities<NetOut<"api.search.example">>`) — distinct
 // from the runtime `cap::*` instances above, and necessarily so: `cap::NetOut` carries a

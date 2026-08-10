@@ -94,6 +94,36 @@ The mechanism, not just the principle:
   from a model-supplied URL; deriving an approval decision from model-supplied text ("the user said
   it's fine"); selecting a policy by a name the model chose.
 
+**Amendment (2026-08-10, ADR-023 — `call_provenance` and the text-derived declassifier).** A tool
+call can arrive two ways that look identical once parsed but carry different trust: a
+**`vendor_structured`** call is a real field in a provider's own wire response (`tool_calls[]`/
+`tool_use`) — the serving layer itself committed to "the model invoked a tool," today's only path,
+unchanged trust posture. A **`text_derived`** call is pattern-matched by the host out of free-text
+`content` that leaked raw, non-JSON-field response-format tokens (OpenAI Harmony, DeepSeek/Hermes/
+Qwen tool-call delimiters — `docs/research/2026-08-10-provider-and-harmony-adapter-landscape.md`).
+The second case is exactly this section's own rule in a new shape: **model-supplied text, re-parsed
+heuristically, is never itself an authorization decision** — a `text_derived` call is `Tainted`
+regardless of how confidently it parsed.
+
+ADR-023's red-team pass (§4b) found the naive declassifier unsafe in a specific way worth stating
+here, not just in the ADR: schema-validating a `text_derived` call's arguments and then treating it
+as ordinary is **not** a valid declassifier under this section's own list, because a schema only
+bounds *shape*, not *intent* — an attacker who can choose arguments freely within a valid schema
+is not constrained by validation alone, and (worse) the resulting call is structurally
+indistinguishable from a `vendor_structured` one to any policy rule that doesn't itself check
+provenance. The declassifier this RFC actually admits is a **strict allowlist match against the
+target tool's own declared shape**, not its arguments: a `text_derived` call auto-declassifies only
+when the tool's entire capability ceiling is provably inert (read-only/informational — no
+`FsWrite`/`NetOut`/`NetListen`/`Secret`/`EnvWrite`/`Exec`/`ToolCall`/`RunnerCall`/`AgentCall`/
+`Schedule`/`Background`/`Elicit`; see `trust::is_inert_for_text_derived_declassification`,
+`trust/capability.hpp`) **and** the tool is declared `effect_class::pure` (019 §3). Every other
+`text_derived` call falls to the other admitted declassifier, **operator approval** — unconditionally,
+even overriding a tool's own `Approval<never_require>` declaration, because that declaration was
+authored for the trusted, vendor-structured path, not for text reconstructed from a raw leak.
+Enforced at exactly one point, `core/tool_pipeline.hpp`'s `invoke_tool` step 5 — see that function's
+own comment for the mechanism, and `tests/test_tool_pipeline.cpp`'s `ADR-023 P2-T2` case for the
+regression test encoding the confused-deputy scenario this amendment exists to close.
+
 ## 5. Policy
 
 Policy is **declarative, versioned configuration** — not code, not model-interpreted, not editable

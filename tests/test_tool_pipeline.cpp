@@ -73,6 +73,54 @@ struct GatedTool : agentengine::Tool<GatedTool, agentengine::Approval<agentengin
     static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) { return Reply{true}; }
 };
 
+// -- ADR-023 §6 point 4 / 007 §4 amendment: two tools for the text_derived declassifier gate --------
+
+struct PureArgs {
+    std::string note;
+};
+AE_JSON_SCHEMA(PureArgs, note)
+struct PureReply {
+    bool ok;
+};
+AE_JSON_SCHEMA(PureReply, ok)
+
+// Declares NO Capabilities<...> (empty ceiling by construction) and EffectClass<pure> -- the ONLY
+// shape `is_auto_declassifiable_text_derived_call` (tool_pipeline.hpp) accepts without a human.
+struct PureNoCapTool
+    : agentengine::Tool<PureNoCapTool, agentengine::EffectClass<agentengine::effect_class::pure>> {
+    static constexpr std::string_view name = "pure_no_cap";
+    static constexpr std::string_view description = "A capability-free, pure tool.";
+    using Args = PureArgs;
+    using Reply = PureReply;
+
+    static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) { return Reply{true}; }
+};
+
+struct DangerousArgs {
+    std::string account;
+};
+AE_JSON_SCHEMA(DangerousArgs, account)
+struct DangerousReply {
+    bool sent;
+};
+AE_JSON_SCHEMA(DangerousReply, sent)
+
+// A real, capability-bearing tool that ALSO declares Approval<never_require> -- a tool author who
+// decided their own VENDOR-STRUCTURED calls never need a human. ADR-023 §4b Finding 1's whole point:
+// a text_derived call must not inherit that decision. Declares NetOut, one of the kinds
+// `is_inert_for_text_derived_declassification` (trust/capability.hpp) classifies as dangerous.
+struct DangerousNeverRequireTool
+    : agentengine::Tool<DangerousNeverRequireTool,
+                          agentengine::Capabilities<agentengine::cap::decl::NetOut<"api.example.com">>,
+                          agentengine::Approval<agentengine::approval_mode::never_require>> {
+    static constexpr std::string_view name = "send_email";
+    static constexpr std::string_view description = "Sends an email (real egress capability).";
+    using Args = DangerousArgs;
+    using Reply = DangerousReply;
+
+    static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) { return Reply{true}; }
+};
+
 agentengine::EffectContext make_ctx() {
     agentengine::EffectContext ctx;
     ctx.principal = agentengine::Principal{"test-principal", ""};
@@ -88,7 +136,7 @@ int main() {
     using agentengine::ToolTable;
     using agentengine::invoke_tool;
 
-    auto const table = ToolTable::from_tools<EchoTool, GatedTool>();
+    auto const table = ToolTable::from_tools<EchoTool, GatedTool, PureNoCapTool, DangerousNeverRequireTool>();
 
     // -- G2 positive case: capability held, tool succeeds ----------------------------------------
     {
@@ -188,6 +236,120 @@ int main() {
         ToolCallRequest req{"call-7", "echo", *json::parse(R"({"message":"no decider needed"})"), false};
         auto result = invoke_tool(table, held, req, ctx, nullptr);
         check(!result.is_error, "never_require tool succeeds with no approval decider at all");
+    }
+
+    // ==============================================================================================
+    // ADR-023 §6 point 4 / 007 §4 amendment: the text_derived declassifier gate at invoke_tool step 5
+    // ==============================================================================================
+
+    // -- Positive control: a text_derived call to a capability-free, pure tool auto-declassifies --
+    // no approve() callback consulted at all, even though none is supplied (nullptr, same as it
+    // would fail on a tool that DID need one -- proving this isn't "no decider means allow").
+    {
+        using agentengine::call_provenance;
+        CapabilitySet held;  // PureNoCapTool declares no Capabilities<...> -- nothing to grant
+        auto ctx = make_ctx();
+        ToolCallRequest req{.call_id = "call-8",
+                              .tool_name = "pure_no_cap",
+                              .arguments = *json::parse(R"({"note":"leaked but harmless"})"),
+                              .provenance = call_provenance::text_derived};
+        bool decider_called = false;
+        agentengine::ApprovalDecider tripwire = [&](std::string_view, std::string const&) {
+            decider_called = true;
+            return false;  // if this ever runs, the call MUST still fail -- proving auto-declassify
+                            // isn't secretly routing through a permissive decider
+        };
+        auto result = invoke_tool(table, held, req, ctx, tripwire);
+        check(!result.is_error,
+              "ADR-023 P2-T1: text_derived call to a capability-free pure tool auto-declassifies "
+              "and succeeds");
+        check(!decider_called,
+              "ADR-023 P2-T1: the approval decider is never even consulted for an auto-declassifiable "
+              "call -- this is a real bypass of the approve() step, not a decider that happens to "
+              "always say yes");
+    }
+
+    // -- THE injection-scenario regression test (ADR-023 §4b Finding 1). A text_derived call to a
+    // real, capability-bearing tool that ALSO declares Approval<never_require> for its own
+    // vendor-structured calls must STILL be refused without an approving decider -- proving the
+    // text_derived gate overrides the tool's own approval_mode rather than deferring to it. This is
+    // the exact confused-deputy scenario the red-team pass found: attacker-controlled tool-result
+    // text, echoed by the model, reconstructed into a call addressed at a tool the agent genuinely
+    // holds NetOut for.
+    {
+        using agentengine::call_provenance;
+        // Matches EXACTLY what DangerousNeverRequireTool's declared NetOut<"api.example.com">
+        // converts to (trust/capability.hpp's to_capability(cap::decl::NetOut<Host>)) -- the agent
+        // genuinely holds this capability, so the call reaches step 5, not a step-4 capability
+        // denial (an empty host_allowlist would deny-all and fail for the wrong reason).
+        CapabilitySet held =
+            CapabilitySet::grant_root({agentengine::cap::NetOut{{"api.example.com"}, std::nullopt, {}}});
+        auto ctx = make_ctx();
+        ToolCallRequest req{.call_id = "call-9",
+                              .tool_name = "send_email",
+                              .arguments = *json::parse(R"({"account":"attacker-controlled"})"),
+                              .provenance = call_provenance::text_derived};
+        auto result_no_decider = invoke_tool(table, held, req, ctx, nullptr);
+        check(result_no_decider.is_error,
+              "ADR-023 P2-T2 (injection regression): a text_derived call to a NetOut-capable tool is "
+              "refused with no decider, EVEN THOUGH the tool itself declares Approval<never_require> "
+              "-- the override holds");
+
+        bool decider_called = false;
+        agentengine::ApprovalDecider deny = [&](std::string_view, std::string const&) {
+            decider_called = true;
+            return false;
+        };
+        auto result_denied = invoke_tool(table, held, req, ctx, deny);
+        check(result_denied.is_error && decider_called,
+              "ADR-023 P2-T2 (injection regression): with a decider present, it IS consulted (proving "
+              "the gate routes through the real approval step, not a separate silent-deny path) and "
+              "a 'no' from it still blocks the call");
+
+        agentengine::ApprovalDecider allow = [](std::string_view, std::string const&) { return true; };
+        auto result_approved = invoke_tool(table, held, req, ctx, allow);
+        check(!result_approved.is_error,
+              "ADR-023 P2-T2: an EXPLICIT human/policy approval still lets a text_derived call to a "
+              "capability-bearing tool through -- this is a gate, not a permanent block");
+    }
+
+    // -- vendor_structured calls are byte-for-byte unaffected: the SAME two tools, default provenance
+    {
+        using agentengine::call_provenance;
+        CapabilitySet held;
+        auto ctx = make_ctx();
+        // PureNoCapTool: vendor_structured + never_require (its actual declared_approval() default,
+        // since it declares no Approval<...> policy) succeeds with no decider -- same as echo's own
+        // "no decider needed" case above, now proven for a DIFFERENT tool too.
+        ToolCallRequest vendor_req{.call_id = "call-10",
+                                     .tool_name = "pure_no_cap",
+                                     .arguments = *json::parse(R"({"note":"normal wire call"})"),
+                                     .provenance = call_provenance::vendor_structured};
+        auto result = invoke_tool(table, held, vendor_req, ctx, nullptr);
+        check(!result.is_error,
+              "ADR-023 P2-T3: a vendor_structured call is completely unaffected by this amendment -- "
+              "identical behavior to before it existed");
+    }
+    {
+        // DangerousNeverRequireTool, held, vendor_structured: succeeds with NO decider at all --
+        // proving `tool->approval == never_require` is still honored EXACTLY as before for the
+        // vendor-structured path, even though the SAME tool now requires approval unconditionally
+        // when the SAME capability ceiling is reached via provenance = text_derived (the two tests
+        // above). The only thing that changed is which branch a given call takes; neither branch's
+        // own behavior changed.
+        using agentengine::call_provenance;
+        CapabilitySet held =
+            CapabilitySet::grant_root({agentengine::cap::NetOut{{"api.example.com"}, std::nullopt, {}}});
+        auto ctx = make_ctx();
+        ToolCallRequest vendor_req{.call_id = "call-11",
+                                     .tool_name = "send_email",
+                                     .arguments = *json::parse(R"({"account":"legit-user"})"),
+                                     .provenance = call_provenance::vendor_structured};
+        auto result = invoke_tool(table, held, vendor_req, ctx, nullptr);
+        check(!result.is_error,
+              "ADR-023 P2-T3: the SAME capability-bearing, never_require tool still runs with no "
+              "decider for a vendor_structured call -- the amendment narrows ONLY the text_derived "
+              "branch, never the existing vendor_structured one");
     }
 
     if (g_failures == 0) {

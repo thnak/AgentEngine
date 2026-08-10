@@ -47,6 +47,7 @@
 
 #ifdef AGENTENGINE_WITH_HTTPS
 
+#include <algorithm>
 #include <cctype>
 #include <charconv>
 #include <cstdint>
@@ -62,6 +63,7 @@
 
 #include "agentengine/core/chat_client.hpp"
 #include "agentengine/core/json_value.hpp"
+#include "agentengine/core/response_format_codec.hpp"
 #include "agentengine/core/stream.hpp"
 #include "agentengine/sandbox/incremental_http_body.hpp"
 #include "agentengine/sandbox/provider_http_client.hpp"
@@ -396,6 +398,57 @@ namespace detail {
     }
 
     return resp;
+}
+
+// ADR-023 Phase 1+2 (decisions/ADR-023-response-format-codec-seam.md §6 points 3-4). Opt-in only --
+// `OpenAIChatClient`'s `scan_response_format_leaks` constructor flag gates whether this is ever
+// called at all (default off, per the ADR's Finding 6: scanning is operator-armed, never
+// content-triggered). Runs `response_format_codec::decode_response_format` over every plain `Text`
+// item in the message -- the shape `parse_chat_completion_response` above always produces from the
+// wire's single `content` string field -- and splices in whatever it returns (unchanged verbatim
+// text on the overwhelmingly common clean-content path; split `Reasoning`/`Text`/inert-diagnostic
+// items when a serving layer leaked raw Harmony/DeepSeek/Hermes/`<think>` tokens). Never touches
+// `ToolCall` items already parsed from the wire's own structured `tool_calls` field -- those are
+// untouched, exactly as they are today; this function only ever looks at `content`.
+//
+// Phase 2: `tools` is `ChatRequest::tools` (chat_client.hpp), the SAME list already sent to the
+// vendor as this call's tool declarations -- reused here, not duplicated. For each detected
+// candidate whose recipient matches a KNOWN tool name, the corresponding inert diagnostic `Text`
+// item (`DetectedToolCallCandidate::diagnostic_item_index`) is replaced with a real `ToolCall`
+// content item tagged `provenance = call_provenance::text_derived`. An unrecognized recipient name
+// keeps the Phase-1 diagnostic Text unchanged -- promoting an unknown name would only reach
+// `invoke_tool` step 1's "unknown tool" rejection anyway (core/tool_pipeline.hpp), so this is a
+// hygiene choice, not a safety one. The actual trust decision for a promoted call happens entirely
+// in `invoke_tool` step 5, never here -- see response_format_codec.hpp's own top comment for the
+// full chain.
+[[nodiscard]] inline Message apply_response_format_scan(Message message,
+                                                           std::vector<ToolDescriptor> const& tools) {
+    std::vector<ContentItem> rewritten;
+    rewritten.reserve(message.content.size());
+    std::uint64_t promoted_count = 0;
+    for (ContentItem& item : message.content) {
+        if (auto const* text = std::get_if<Text>(&item.value)) {
+            auto decoded = response_format_codec::decode_response_format(text->text);
+            for (auto const& candidate : decoded.candidates) {
+                auto const tool_it = std::find_if(
+                    tools.begin(), tools.end(),
+                    [&candidate](ToolDescriptor const& t) { return t.name == candidate.recipient; });
+                if (tool_it == tools.end()) continue;  // unrecognized name: keep the diagnostic Text
+                ContentItem promoted;
+                promoted.value = ToolCall{"text_derived_" + std::to_string(promoted_count++),
+                                            candidate.recipient, candidate.arguments_json,
+                                            content_origin::assistant, call_provenance::text_derived};
+                promoted.origin = content_origin::assistant;
+                promoted.tainted = true;  // 003 §2 / 007 §4: reconstructed from model-supplied text
+                decoded.items[candidate.diagnostic_item_index] = std::move(promoted);
+            }
+            for (ContentItem& decoded_item : decoded.items) rewritten.push_back(std::move(decoded_item));
+        } else {
+            rewritten.push_back(std::move(item));
+        }
+    }
+    message.content = std::move(rewritten);
+    return message;
 }
 
 // D2: `Transfer-Encoding: chunked` framing (RFC 9112 §7.1) -- decoded independently of the network
@@ -782,7 +835,13 @@ public:
                       std::string ca_bundle_pem_override = {}, std::string http_referer = {},
                       std::string x_title = {}, std::string end_user_id = {},
                       std::optional<std::int64_t> seed = std::nullopt,
-                      sandbox::ProviderTransport transport = sandbox::ProviderTransport::tls)
+                      sandbox::ProviderTransport transport = sandbox::ProviderTransport::tls,
+                      // ADR-023 Phase 1: off by default -- scanning `content` for raw response-format
+                      // leaks (Harmony/DeepSeek/Hermes/`<think>`) is operator-armed, never
+                      // content-triggered (the ADR's Finding 6). Appended last, same "never insert
+                      // earlier" convention this constructor's own file-top comment already documents
+                      // for every optional param above.
+                      bool scan_response_format_leaks = false)
         : host_(std::move(host)),
           port_(port),
           model_(std::move(model)),
@@ -796,7 +855,8 @@ public:
           x_title_(std::move(x_title)),
           end_user_id_(std::move(end_user_id)),
           seed_(seed),
-          transport_(transport) {}
+          transport_(transport),
+          scan_response_format_leaks_(scan_response_format_leaks) {}
 
     [[nodiscard]] ChatClientCapabilities capabilities() const { return capabilities_; }
 
@@ -823,7 +883,13 @@ public:
         }
         auto parsed = json::parse(*decoded_body);
         if (!parsed) co_return std::unexpected(parsed.error());
-        co_return detail::parse_chat_completion_response(*parsed);
+        auto response = detail::parse_chat_completion_response(*parsed);
+        if (!response) co_return std::unexpected(response.error());
+        if (scan_response_format_leaks_) {
+            response->message =
+                detail::apply_response_format_scan(std::move(response->message), request.tools);
+        }
+        co_return response;
     }
 
     [[nodiscard]] stream<ChatResponseUpdate> chat_stream(ChatRequest request, EffectContext& ctx) const {
@@ -861,6 +927,7 @@ private:
     std::string end_user_id_;
     std::optional<std::int64_t> seed_;
     sandbox::ProviderTransport transport_;
+    bool scan_response_format_leaks_;
 };
 
 }  // namespace agentengine::openai

@@ -501,6 +501,13 @@ if(AGENTENGINE_WITH_HTTPS)
     agentengine::core agentengine::provider_http_client agentengine_warnings)
   add_test(NAME test_openai_chat_client_translation COMMAND test_openai_chat_client_translation)
 
+  # ---- ADR-023 Phase 1: response-format codec (decisions/ADR-023-response-format-codec-seam.md) ----
+  # Pure logic (core/response_format_codec.hpp) proven directly against real Harmony/DeepSeek/Hermes/
+  # <think> example strings -- no network, no ChatClient backend involved, only core content types.
+  add_executable(test_response_format_codec test_response_format_codec.cpp)
+  target_link_libraries(test_response_format_codec PRIVATE agentengine::core agentengine_warnings)
+  add_test(NAME test_response_format_codec COMMAND test_response_format_codec)
+
   # End-to-end proof against a real local TLS server: secret resolution -> request build -> real
   # HTTPS exchange -> response/stream parse, for both chat() and chat_stream().
   add_executable(test_openai_chat_client_live test_openai_chat_client_live.cpp)

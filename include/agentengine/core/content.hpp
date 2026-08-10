@@ -56,11 +56,25 @@ struct Data {  // ae-naming-lint: allow Data — pre-existing M0 scaffolding, re
     friend bool operator==(Data const&, Data const&) = default;
 };
 
+// decisions/ADR-023-response-format-codec-seam.md §6 point 4 / 007 §4 amendment: WHERE a call came
+// from is load-bearing, not decorative. `vendor_structured` is today's only path -- a backend's own
+// wire-format `tool_calls`/`tool_use` field, unchanged trust posture. `text_derived` means a
+// `ChatClient` (e.g. `OpenAIChatClient`, only when `scan_response_format_leaks` is armed) pattern-
+// matched this call out of free-text `content` that leaked raw response-format tokens (Harmony/
+// DeepSeek/Hermes/etc) -- model-supplied text, re-parsed heuristically, never itself an authorization
+// decision (007 §4: "no policy-deciding API accepts a tainted value"). `core/tool_pipeline.hpp`'s
+// `ToolCallRequest` carries the same enum for exactly this reason -- see its own field comment and
+// `invoke_tool`'s step 5, the ONE place this value is ever consulted for an approval decision.
+enum class call_provenance { vendor_structured, text_derived };  // ae-naming-lint: allow call_provenance — 007 §4 amendment names this concept normatively; 027 has not been updated to list it
+
 struct ToolCall {  // ae-naming-lint: allow ToolCall — pre-existing M0 scaffolding, reconcile at owning milestone
     std::string call_id;
     std::string tool_name;
     std::string arguments_json;
     content_origin origin = content_origin::assistant;
+    // Appended last (003 §6's field-ordering lesson) -- defaults to `vendor_structured` so every
+    // existing positional `ToolCall{a,b,c}`/`{a,b,c,d}` call site is unaffected.
+    call_provenance provenance = call_provenance::vendor_structured;
 
     friend bool operator==(ToolCall const&, ToolCall const&) = default;
 };
