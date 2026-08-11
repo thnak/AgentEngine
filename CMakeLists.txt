@@ -652,6 +652,16 @@ if(AGENTENGINE_WITH_HTTPS AND AGENTENGINE_BUILD_PYTHON_RUNNER)
     AE_PYTHON_HOME="${AGENTENGINE_PYTHON_HOME}")
 endif()
 
+# ---- Examples -------------------------------------------------------------------
+# "Get started" examples (mirrors Microsoft Agent Framework's samples/01-get-started progression) --
+# small, offline, single-file programs, one AgentEngine concept each. Needs only agentengine::core;
+# no HTTPS/Python runner prerequisites, unlike agentengine_cli_chat above.
+option(AGENTENGINE_BUILD_EXAMPLES "Build AgentEngine get-started examples" ON)
+if(AGENTENGINE_BUILD_EXAMPLES)
+  enable_testing()
+  add_subdirectory(examples)
+endif()
+
 # ---- Tests --------------------------------------------------------------------
 option(AGENTENGINE_BUILD_TESTS "Build AgentEngine tests" ON)
 if(AGENTENGINE_BUILD_TESTS)
