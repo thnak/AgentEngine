@@ -44,6 +44,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <memory_resource>
 #include <string>
 #include <vector>
 
@@ -55,6 +56,7 @@
 #include "agentengine/core/codeact_tool_union.hpp"
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/mounted_skills_state.hpp"
+#include "agentengine/core/run_event.hpp"
 #include "agentengine/core/skill_provider.hpp"
 #include "agentengine/core/skill_tool_scoping.hpp"
 #include "agentengine/core/tool_call_extraction.hpp"
@@ -583,6 +585,69 @@ void print_skills_banner(std::vector<native_jail::MaterializedSkillMount> const&
     }
 }
 
+// Renders one RunEvent (013 §1's real, currently-emitted vocabulary — run/turn/model-call/tool-call
+// boundaries; AgentSession::handle() fires these today, see agent_session.hpp's own emit_run_event
+// call sites) as one human-readable line. NOT token-by-token streaming: AgentSession's internal
+// loop calls the blocking ChatClient::chat(), never chat_stream(), so a model_delta event never
+// fires here -- what this renders is the real structural trace of one turn (which tools ran, in
+// what order, whether they succeeded), drained right after the turn's ask() resolves, not
+// interleaved with generation in real wall-clock time.
+[[nodiscard]] std::string describe_event(RunEvent const& ev) {
+    switch (ev.kind) {
+        case run_event_kind::run_started: return "run started";
+        case run_event_kind::run_finished: return "run finished";
+        case run_event_kind::run_canceled: return "run canceled";
+        case run_event_kind::run_failed: {
+            auto const& p = std::get<run_event_payload::RunFailed>(ev.payload);
+            return "run FAILED: " + p.message + " (" + p.error_code + ")";
+        }
+        case run_event_kind::turn_started: {
+            auto const& p = std::get<run_event_payload::Turn>(ev.payload);
+            return "turn " + std::to_string(p.turn_index) + " started";
+        }
+        case run_event_kind::turn_finished: {
+            auto const& p = std::get<run_event_payload::Turn>(ev.payload);
+            return "turn " + std::to_string(p.turn_index) + " finished";
+        }
+        case run_event_kind::model_call_started: return "  thinking... (calling the model)";
+        case run_event_kind::model_call_finished: return "  model responded";
+        case run_event_kind::tool_call_started: {
+            auto const& p = std::get<run_event_payload::ToolCallStarted>(ev.payload);
+            return "  -> calling tool '" + p.tool_name + "' (call_id=" + p.call_id + ")";
+        }
+        case run_event_kind::tool_call_finished: {
+            auto const& p = std::get<run_event_payload::ToolCallFinished>(ev.payload);
+            return std::string("  <- tool call ") + (p.ok ? "OK" : "FAILED") +
+                   " (call_id=" + p.call_id + ")";
+        }
+        case run_event_kind::input_required: return "  [suspended: waiting for input]";
+        case run_event_kind::input_resolved: return "  [resumed]";
+        case run_event_kind::approval_requested: return "  [suspended: waiting for human approval]";
+        case run_event_kind::approval_resolved: {
+            auto const& p = std::get<run_event_payload::ApprovalResolved>(ev.payload);
+            return std::string("  [approval ") + (p.approved ? "GRANTED" : "DENIED") + "]";
+        }
+        case run_event_kind::warning: {
+            auto const& p = std::get<run_event_payload::Warning>(ev.payload);
+            return "  [warning] " + p.message;
+        }
+        default: return "  [event]";  // auth_*/policy_decision/artifact_produced/sandbox_exec_*/
+                                       // tool_call_delta/model_delta: real kinds, no emitter yet
+                                       // (agent_session.hpp) -- kept generic rather than silently
+                                       // dropped, so a future emitter is visible here immediately.
+    }
+}
+
+// Reasoning/<think>-channel extraction (ADR-023) only populates a real `Reasoning` content item
+// when the ChatClient is constructed with `scan_response_format_leaks=true` -- see main() below.
+[[nodiscard]] std::vector<std::string> reasoning_texts_of(Message const& m) {
+    std::vector<std::string> out;
+    for (ContentItem const& item : m.content) {
+        if (auto const* r = std::get_if<Reasoning>(&item.value)) out.push_back(r->text);
+    }
+    return out;
+}
+
 }  // namespace
 
 int main() {
@@ -628,11 +693,22 @@ int main() {
     ChatClientCapabilities caps;
     caps.streaming = true;
     caps.tool_calling = true;
+    caps.reasoning = true;
     caps.max_output_tokens = 2048;
 
     quark::TestKit<CliSession> kit;
+    // Trailing args beyond `caps`/`store`/`kPathPrefix` are every one of OpenAIChatClient's own
+    // defaults spelled out verbatim (chat_client.hpp's own constructor), EXCEPT the last:
+    // `scan_response_format_leaks=true` arms ADR-023's Reasoning/<think>-channel extraction, so a
+    // real Reasoning content item shows up on `resp->message` below when the model produces one --
+    // off by default everywhere else in this codebase (operator-armed, never content-triggered,
+    // per that ADR's own Finding 6), armed here because this CLI's whole point is showing a human
+    // what the agent is actually doing.
     kit.actor().emplace_chat_client(host, kHttpsPort, model, SecretRef{kSecretName}, caps, store,
-                                     kPathPrefix);
+                                     kPathPrefix, sandbox::resolve_host, std::string{}, std::string{},
+                                     std::string{}, std::string{}, std::nullopt,
+                                     sandbox::ProviderTransport::tls,
+                                     /*scan_response_format_leaks=*/true);
     // `kMaxToolRoundsPerTurn` is now the SESSION's own internal round bound (`AgentSession::handle()`'s
     // loop, agent_session.hpp) rather than a loop this file drives externally -- one `StartRun` ask
     // below now resolves an entire multi-round tool conversation internally before returning.
@@ -640,6 +716,10 @@ int main() {
     kit.actor().initialize(session_id, Principal{"cli-user", ""}, /*token_budget=*/std::nullopt,
                             /*max_turns=*/kMaxToolRoundsPerTurn);
     kit.actor().set_capabilities(&held);
+    // 013 §1's real run-event stream -- fires run/turn/model-call/tool-call boundaries as
+    // AgentSession::handle() actually reaches them (see describe_event()'s own comment for exactly
+    // which kinds are real today). Enabled once, for the whole session; drained after every turn.
+    auto event_stream = kit.actor().enable_event_stream(std::pmr::get_default_resource());
     // `ExecuteCodeTool`/`MountSkillTool` declare no `Approval<M>` policy (`approval_mode::
     // never_require`, tool.hpp's own fail-open default), so `invoke_tool`'s step 5 never consults a
     // decider for either -- no `set_approval_decider()` call is needed for this demo to keep working.
@@ -669,15 +749,18 @@ int main() {
         if (line.empty()) continue;
 
         // One ask now resolves the WHOLE multi-round tool conversation for this turn internally
-        // (AgentSession::handle()'s own loop) -- per-round diagnostics (which tool was called, its
-        // code/skill_name argument, stdout/stderr) that this file used to print by hand-driving the
-        // loop are no longer observable from here without consuming `enable_event_stream()`'s
-        // `tool_call_started`/`tool_call_finished` events (agent_session.hpp), which this pass does
-        // not wire up -- a named simplification, not an attempt to preserve the old level of detail.
+        // (AgentSession::handle()'s own loop). `event_stream` fills up DURING this call but can only
+        // be drained after it returns -- `quark::TestKit::ask()` is synchronous, so there is no
+        // concurrent point to interleave printing with; what follows is the full, real, in-order
+        // trace of everything that happened this turn, not simulated after the fact.
         quark::result<AgentResponse> resp = kit.ask<AgentResponse>(StartRun{user_message(line)});
+        while (auto ev = event_stream.next()) std::cout << describe_event(*ev) << "\n";
         if (!resp.has_value()) {
             std::cout << "[error: " << resp.error().detail << "]\n";
             continue;
+        }
+        for (std::string const& reasoning : reasoning_texts_of(resp->message)) {
+            std::cout << "  [thinking] " << reasoning << "\n";
         }
         std::string const text = text_of(resp->message);
         if (!text.empty()) std::cout << "Agent: " << text << "\n";
