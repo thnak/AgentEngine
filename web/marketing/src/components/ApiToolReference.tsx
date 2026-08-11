@@ -65,7 +65,7 @@ export function ApiToolReference() {
 
         <RevealGroup>
           <RevealItem>
-            <div className="section-head" style={{ marginTop: 48, marginBottom: 22 }}>
+            <div className="section-head anchor-target" style={{ marginTop: 48, marginBottom: 22 }} id="tool-schema-types">
               <span className="eyebrow">C++ type → JSON Schema type</span>
               <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>
                 What <code>AE_JSON_SCHEMA</code> actually emits
@@ -83,7 +83,7 @@ export function ApiToolReference() {
           </RevealItem>
         </RevealGroup>
 
-        <RevealGroup className="spec-layout" style={{ marginTop: 48 }}>
+        <RevealGroup className="spec-layout anchor-target" style={{ marginTop: 48 }} id="tool-schema-example">
           <RevealGroup>
             <RevealItem>
               <p style={{ color: "var(--text-dim)", lineHeight: 1.65, marginBottom: 16 }}>
@@ -111,7 +111,7 @@ export function ApiToolReference() {
 
         <RevealGroup>
           <RevealItem>
-            <div className="section-head" style={{ marginTop: 48, marginBottom: 22 }}>
+            <div className="section-head anchor-target" style={{ marginTop: 48, marginBottom: 22 }} id="tool-descriptor">
               <span className="eyebrow">Where the schema goes</span>
               <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>
                 <code>ToolDescriptor</code> — one entry in the per-run tool table

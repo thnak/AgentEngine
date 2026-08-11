@@ -4,7 +4,10 @@ import { trustEntries } from "../data/apiContent";
 
 function TrustSandboxDetailApp() {
   return (
-    <ApiDetailLayout active="trust-sandbox">
+    <ApiDetailLayout
+      active="trust-sandbox"
+      sections={trustEntries.map((e) => ({ id: e.id, label: e.tag }))}
+    >
       <ApiSection
         id="trust-sandbox"
         eyebrow="Trust & isolation — L1"

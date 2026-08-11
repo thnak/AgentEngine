@@ -3,7 +3,7 @@ import { ApiProtocolStatus } from "../components/ApiProtocolStatus";
 
 function ProtocolsDetailApp() {
   return (
-    <ApiDetailLayout active="protocols">
+    <ApiDetailLayout active="protocols" sections={[{ id: "protocols", label: "Protocol surfaces" }]}>
       <ApiProtocolStatus />
     </ApiDetailLayout>
   );

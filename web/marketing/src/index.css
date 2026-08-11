@@ -138,6 +138,7 @@ button {
 .section {
   padding: 96px 0;
   position: relative;
+  scroll-margin-top: 80px;
 }
 
 .section-head {
@@ -858,25 +859,6 @@ button {
   background: var(--accent-pink);
 }
 
-.api-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 18px;
-}
-
-@media (max-width: 780px) {
-  .api-grid {
-    grid-template-columns: 1fr;
-  }
-}
-
-.api-card {
-  padding: 24px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
 .api-card-head {
   display: flex;
   justify-content: flex-end;
@@ -888,15 +870,50 @@ button {
   word-break: break-word;
 }
 
-.api-card h3 {
-  font-size: 1.05rem;
-  letter-spacing: -0.01em;
+/* ---------- Doc-style entry list (replaces the old card grid inside ApiSection) ---------- */
+
+.doc-entries {
+  display: flex;
+  flex-direction: column;
 }
 
-.api-card p {
+.doc-entry {
+  padding: 26px 0;
+  border-top: 1px solid var(--border);
+  scroll-margin-top: 80px;
+}
+
+/* Any element targeted by a sidebar/scroll-spy anchor that isn't already .section or
+ * .doc-entry (both of which carry their own scroll-margin-top). */
+.anchor-target {
+  scroll-margin-top: 80px;
+}
+
+.doc-entry:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+
+.doc-entry-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.doc-entry h3 {
+  font-size: 1.15rem;
+  letter-spacing: -0.01em;
+  margin: 4px 0 10px;
+}
+
+.doc-entry p {
   color: var(--text-dim);
-  font-size: 0.9rem;
-  line-height: 1.6;
+  font-size: 0.94rem;
+  line-height: 1.65;
+  max-width: 720px;
 }
 
 .api-cite {
@@ -1045,4 +1062,185 @@ button {
 .rfc-chip:hover {
   color: var(--text);
   border-color: var(--border-strong);
+}
+
+/* ---------- API detail page: left sidebar layout ---------- */
+
+.api-layout {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  gap: 32px;
+  align-items: start;
+  max-width: calc(var(--max-width) + 260px + 80px);
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+.api-content {
+  min-width: 0;
+}
+
+.api-content .container {
+  padding: 0 32px;
+}
+
+.api-sidebar {
+  position: sticky;
+  top: 55px;
+  align-self: start;
+  max-height: calc(100vh - 55px);
+  overflow-y: auto;
+  padding: 28px 20px 40px 0;
+  border-right: 1px solid var(--border);
+}
+
+.api-sidebar-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.82rem;
+  color: var(--text-faint);
+  margin-bottom: 20px;
+}
+
+.api-sidebar-back:hover {
+  color: var(--text-dim);
+}
+
+.api-sidebar-group + .api-sidebar-group {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+}
+
+.api-sidebar-label {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  margin-bottom: 10px;
+}
+
+.api-sidebar-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.api-sidebar-link {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 0.88rem;
+  color: var(--text-dim);
+  line-height: 1.3;
+}
+
+.api-sidebar-link:hover {
+  color: var(--text);
+  background: var(--panel);
+}
+
+.api-sidebar-link[aria-current="page"] {
+  color: var(--text);
+  background: var(--panel-strong);
+  font-weight: 600;
+}
+
+.api-sidebar-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent-teal);
+}
+
+.api-sidebar-dot.is-design {
+  background: var(--accent-pink);
+}
+
+.api-sidebar-sublist {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 2px 0 6px 26px;
+  padding-left: 12px;
+  border-left: 1px solid var(--border);
+}
+
+.api-sidebar-sublink {
+  padding: 5px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 0.82rem;
+  color: var(--text-faint);
+  line-height: 1.3;
+}
+
+.api-sidebar-sublink:hover {
+  color: var(--text-dim);
+}
+
+.api-sidebar-sublink[aria-current="true"] {
+  color: var(--accent-teal);
+}
+
+.api-sidebar-mobile {
+  display: none;
+}
+
+@media (max-width: 900px) {
+  .api-layout {
+    display: block;
+    padding: 0;
+  }
+
+  .api-content .container {
+    padding: 0 24px;
+  }
+
+  .api-sidebar {
+    display: none;
+  }
+
+  .api-sidebar-mobile {
+    display: block;
+    position: sticky;
+    top: 55px;
+    z-index: 40;
+    border-bottom: 1px solid var(--border);
+    background: rgba(8, 8, 15, 0.86);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+  }
+
+  .api-sidebar-mobile-inner {
+    display: flex;
+    gap: 6px;
+    padding: 10px 24px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .api-sidebar-mobile-inner::-webkit-scrollbar {
+    display: none;
+  }
+
+  .api-sidebar-mobile-link {
+    flex: none;
+    padding: 7px 13px;
+    border-radius: 999px;
+    font-size: 0.84rem;
+    color: var(--text-dim);
+    white-space: nowrap;
+  }
+
+  .api-sidebar-mobile-link[aria-current="page"] {
+    color: var(--text);
+    background: var(--panel-strong);
+    border: 1px solid var(--border-strong);
+  }
 }

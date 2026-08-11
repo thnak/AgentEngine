@@ -12,7 +12,7 @@ export function ApiHero() {
         >
           <div className="hero-badge glass">
             <span className="dot" aria-hidden="true" />
-            Milestones 0–4 complete · Milestone 5 in progress (Phase J remaining)
+            Milestones 0–6 complete · Milestone 7 (protocol conformance) in progress
           </div>
 
           <h1>

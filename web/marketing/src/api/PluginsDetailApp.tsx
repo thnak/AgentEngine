@@ -4,7 +4,7 @@ import { pluginEntries } from "../data/apiContent";
 
 function PluginsDetailApp() {
   return (
-    <ApiDetailLayout active="plugins">
+    <ApiDetailLayout active="plugins" sections={pluginEntries.map((e) => ({ id: e.id, label: e.tag }))}>
       <ApiSection
         id="plugins"
         eyebrow="Plugin ABI — D2"

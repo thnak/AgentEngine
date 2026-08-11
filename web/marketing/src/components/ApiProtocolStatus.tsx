@@ -30,7 +30,9 @@ export function ApiProtocolStatus() {
                     RFC {p.rfc}
                   </a>
                 </div>
-                <span className="status-badge status-design">Designed, not built</span>
+                <span className={`status-badge status-${p.status}`}>
+                  {p.status === "real" ? "Real & tested" : "Designed, not built"}
+                </span>
                 <p className="protocol-note">{p.note}</p>
               </div>
             </RevealItem>

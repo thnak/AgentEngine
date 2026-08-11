@@ -1,4 +1,3 @@
-import { motion } from "framer-motion";
 import type { ReactNode } from "react";
 import type { ApiEntry } from "../data/apiContent";
 import { RevealGroup, RevealItem } from "./Reveal";
@@ -11,6 +10,8 @@ function StatusBadge({ status }: { status: ApiEntry["status"] }) {
   );
 }
 
+// A stacked reference-doc list, not a grid of showcase cards: each entry is addressable by
+// its own id (the sidebar's "on this page" anchors and scroll-spy target these directly).
 export function ApiSection({
   id,
   eyebrow,
@@ -33,24 +34,20 @@ export function ApiSection({
           <p>{description}</p>
         </div>
 
-        <RevealGroup className="api-grid">
+        <RevealGroup className="doc-entries">
           {entries.map((e) => (
             <RevealItem key={e.id}>
-              <motion.article
-                className="api-card glass"
-                whileHover={{ y: -4, borderColor: "rgba(255,255,255,0.22)" }}
-                transition={{ type: "spring", stiffness: 300, damping: 22 }}
-              >
-                <div className="api-card-head">
+              <article className="doc-entry" id={e.id}>
+                <div className="doc-entry-head">
+                  <code className="api-tag">{e.tag}</code>
                   <StatusBadge status={e.status} />
                 </div>
-                <code className="api-tag">{e.tag}</code>
                 <h3>{e.title}</h3>
                 <p>{e.body}</p>
                 <a className="api-cite" href={e.href} target="_blank" rel="noreferrer">
                   {e.cite}
                 </a>
-              </motion.article>
+              </article>
             </RevealItem>
           ))}
         </RevealGroup>

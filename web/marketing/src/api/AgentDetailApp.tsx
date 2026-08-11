@@ -5,7 +5,13 @@ import { authoringEntries } from "../data/apiContent";
 
 function AgentDetailApp() {
   return (
-    <ApiDetailLayout active="agent">
+    <ApiDetailLayout
+      active="agent"
+      sections={[
+        ...authoringEntries.map((e) => ({ id: e.id, label: e.tag })),
+        { id: "authoring-sample", label: "Worked example" },
+      ]}
+    >
       <ApiSection
         id="agent"
         eyebrow="C++ CRTP authoring surface — 002"

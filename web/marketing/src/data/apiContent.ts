@@ -44,7 +44,7 @@ export const apiPages: ApiPage[] = [
     href: `${SITE_BASE}/api/skill.html`,
     eyebrow: "009 §8 — Plugin and Extension System",
     description: "SKILL.md frontmatter, progressive-disclosure loading, and why it's a filesystem mount, not a tool call.",
-    status: "design",
+    status: "real",
   },
   {
     id: "trust-sandbox",
@@ -97,7 +97,7 @@ export const authoringEntries: ApiEntry[] = [
     tag: "Agent<Derived, Policies...>",
     title: "Agent — the CRTP base every agent derives from",
     body:
-      "An empty compile-time tag, not a runtime base class — no virtual dispatch. Policies are template parameters: ChatClientId<Id> (required, no default), Tools<Ts...>, Capabilities<Cs...>, SandboxProfile<P>, MaxTurns<N> (default 16), TokenBudget<N>, plus six tags accepted but not yet interpreted by register_agent<A>() (Concurrency, Retry, Memory, Middleware, Stateless, OutputSchema). The derived struct supplies static name and instructions.",
+      "An empty compile-time tag, not a runtime base class — no virtual dispatch. Policies are template parameters: ChatClientId<Id> (required, no default), Tools<Ts...>, Capabilities<Cs...>, SandboxProfile<P>, MaxTurns<N> (default 16), TokenBudget<N>, plus four tags accepted but still not interpreted by register_agent<A>() (Concurrency, Retry, Memory, Middleware). Two more that used to be in that uninterpreted group now have real validation: Stateless<N> is checked against std::is_empty_v<Derived>, and OutputSchema<T> is compiled to JSON Schema text and checked for enforceability against the bound registry (Milestone 5 Phase B5/B6). The derived struct supplies static name and instructions.",
     cite: "include/agentengine/core/agent.hpp:119",
     href: gh("include/agentengine/core/agent.hpp"),
   },
@@ -107,7 +107,7 @@ export const authoringEntries: ApiEntry[] = [
     tag: "register_agent<A>()",
     title: "register_agent — compiles and validates the whole policy set",
     body:
-      "Returns result<AgentMetadata>. Real, distinct failure codes: agent.chat_client_id_missing, agent.tool_name_collision, agent.capability_ceiling_exceeded (every tool's declared capabilities must be covered by the agent's ceiling), plus sandbox-profile and output-schema checks. The handoff-cycle check is a stubbed always-pass — it needs 014's workflow graph, out of scope until Milestone 6.",
+      "Returns result<AgentMetadata>. Real, distinct failure codes: agent.chat_client_id_missing, agent.tool_name_collision, agent.capability_ceiling_exceeded (every tool's declared capabilities must be covered by the agent's ceiling), plus sandbox-profile and output-schema checks. The handoff-cycle check is still a stubbed always-pass — Milestone 6 shipped 014's real workflow graph, but this check was never wired to it, so it remains open work in Milestone 7.",
     cite: "include/agentengine/core/agent_registry.hpp:489",
     href: gh("include/agentengine/core/agent_registry.hpp"),
   },
@@ -149,7 +149,7 @@ export const toolStaticMembers: FieldSpec[] = [
     name: "invoke(Args, EffectContext&)",
     type: "static result<Reply>",
     required: true,
-    notes: "Synchronous by design, not a coroutine — ae::task<T> stays deferred until a milestone actually needs concurrent tool calls (tool.hpp:92-94).",
+    notes: "Synchronous by design, not a coroutine — ae::task<T> stays deferred until a milestone actually needs concurrent tool calls (tool.hpp:112-114).",
   },
   {
     name: "declared_capabilities()",
@@ -243,13 +243,16 @@ struct ToolDescriptor {
     std::string description;
     std::vector<Capability> capability_ceiling;  // from Capabilities<...>
     approval_mode approval = approval_mode::never_require;
+    // Milestone 7 Phase B (006 §6b): false unless the tool declared Backgroundable --
+    // read by background_task() to reject an undeclared tool before it ever runs.
+    bool backgroundable = false;
     std::string args_schema_json;
     std::string reply_schema_json;
 
     using InvokeFn = std::function<result<json::Value>(json::Value const&, EffectContext&)>;
     InvokeFn invoke;
 };
-// include/agentengine/core/tool_pipeline.hpp:50-60`;
+// include/agentengine/core/tool_pipeline.hpp:52-66`;
 
 export const trustEntries: ApiEntry[] = [
   {
@@ -259,7 +262,7 @@ export const trustEntries: ApiEntry[] = [
     title: "Capability declarations — I2 enforced by the type system",
     body:
       "Declaration tags: FsRead<Mount>, FsWrite<Mount>, NetOut<Host>, NetListen, Secret<Name>, ToolCall<Name>, RunnerCall<Name>, Exec<Profile>, Clock<Ms>, Entropy, EnvRead<Key>, EnvWrite<Key>, AgentCall<AgentId,MaxDepth>, Schedule<...>, Background<...>, Elicit. CapabilitySet::attenuate() only narrows — there is no constructor that grants everything.",
-    cite: "include/agentengine/trust/capability.hpp:219",
+    cite: "include/agentengine/trust/capability.hpp:77",
     href: gh("include/agentengine/trust/capability.hpp"),
   },
   {
@@ -281,8 +284,8 @@ export const runtimeEntries: ApiEntry[] = [
     tag: "AgentSession<ChatClientT, StateT, HistoryProviderT>",
     title: "AgentSession — a real Quark actor, not a facade",
     body:
-      "A quark::Actor<AgentSession<...>, quark::Sequential> proven end-to-end by the M1 walking skeleton: ask<AgentResponse>(StartRun{...}) grows history() by a real user+assistant turn pair with real reply text and token usage. Sixteen further tests cover checkpoint, fork, delegation, redact, isolation, node-loss fencing, poison-run handling, suspend/resume, and token budgets.",
-    cite: "include/agentengine/core/agent_session.hpp:231",
+      "A quark::Actor<AgentSession<...>, quark::Sequential> proven end-to-end by the M1 walking skeleton: ask<AgentResponse>(StartRun{...}) grows history() by a real user+assistant turn pair with real reply text and token usage. Twenty-three further test files cover checkpoint, fork, delegation, redact, isolation, node-loss fencing, poison-run handling, suspend/resume, token budgets, background tasks, timers, and skill mounting end-to-end.",
+    cite: "include/agentengine/core/agent_session.hpp:252",
     href: gh("include/agentengine/core/agent_session.hpp"),
   },
   {
@@ -292,7 +295,7 @@ export const runtimeEntries: ApiEntry[] = [
     title: "Real, tested provider backends — Milestone 5, done",
     body:
       "AnthropicChatClient posts to /v1/messages with real streaming (chat_stream()) and prompt-cache TTL support. OpenAIChatClient posts to /v1/chat/completions, streaming via a detached worker. ReplayChatClient replays a recorded run deterministically offline — the I5 seam. All three conform to the same ChatClient interface tools and agents are written against.",
-    cite: "include/agentengine/protocol/anthropic/chat_client.hpp:818",
+    cite: "include/agentengine/protocol/anthropic/chat_client.hpp:981",
     href: gh("include/agentengine/protocol/anthropic/chat_client.hpp"),
   },
 ];
@@ -357,6 +360,7 @@ export interface ProtocolEntry {
   name: string;
   rfc: string;
   rfcHref: string;
+  status: ApiStatus;
   note: string;
 }
 
@@ -366,35 +370,40 @@ export const protocolEntries: ProtocolEntry[] = [
     name: "MCP server + client",
     rfc: "011-MCP-Conformance",
     rfcHref: gh("011-MCP-Conformance.md"),
-    note: "protocol/mcp/ holds a 4-line README naming the RFC and the 2026-07-28 protocol revision. No headers, no source, no tests.",
+    status: "real",
+    note: "protocol/mcp/ has real headers (json_rpc.hpp, server.hpp, client.hpp, progress.hpp) and five test files. McpServer is a transport-agnostic request dispatcher over the real ToolTable — server/discover, tools/list, tools/call all work. What's missing: real Streamable HTTP/stdio transport (a later sub-phase) — hand it a JsonRpcRequest and you get a JsonRpcResponse back, but nothing puts bytes on a socket yet.",
   },
   {
     id: "a2a",
     name: "A2A",
     rfc: "012-A2A-Conformance",
     rfcHref: gh("012-A2A-Conformance.md"),
-    note: "Same shape as MCP: a README pointing at the RFC, nothing implemented yet.",
+    status: "real",
+    note: "protocol/a2a/ has real headers and six test files. A2aServer implements SendMessage/GetTask/CancelTask over a real AgentSession run. Two real gaps: no JSON-RPC/REST envelope yet (transport-agnostic, same layering as MCP), and AgentSession's turn loop is still fully synchronous end-to-end, so TASK_STATE_SUBMITTED/WORKING are never independently observable.",
   },
   {
     id: "agui",
     name: "AG-UI streaming surface",
     rfc: "013-UI-and-Streaming-Surfaces",
     rfcHref: gh("013-UI-and-Streaming-Surfaces.md"),
-    note: "Same shape again — RFC-only.",
+    status: "real",
+    note: "protocol/agui/ has real headers and three test files. RunEventProjector maps the real internal run-event stream onto AG-UI wire events (TEXT_MESSAGE_START/CONTENT/END, RunFinishedInterrupt) and sse.hpp encodes them — real projection logic, not yet wired to a serving transport.",
   },
   {
     id: "openai-inbound",
     name: "OpenAI-compatible HTTP (inbound)",
     rfc: "013-UI-and-Streaming-Surfaces",
     rfcHref: gh("013-UI-and-Streaming-Surfaces.md"),
-    note: "Not the same thing as OpenAIChatClient above, which is an outbound provider client. Serving agentengine agents behind an OpenAI-shaped endpoint is unbuilt.",
+    status: "design",
+    note: "Not the same thing as OpenAIChatClient above, which is an outbound provider client. Serving agentengine agents behind an OpenAI-shaped endpoint is unbuilt — the one surface on this page with no real code behind it yet.",
   },
   {
     id: "declarative",
     name: "Declarative YAML/JSON agent format",
     rfc: "015-Declarative-Agent-Format",
     rfcHref: gh("015-Declarative-Agent-Format.md"),
-    note: "No parser exists. The Milestone 7 exit criterion is a YAML agent producing byte-identical AgentMetadata to its C++ equivalent (I6) — not yet reached.",
+    status: "real",
+    note: "core/agent_yaml_compiler.hpp is real and tested: it compiles an Agent document to the same AgentMetadata register_agent<A>() produces, for agent_name, instructions, chat_client_id, max_turns, token_budget, approval, concurrency, telemetry, and sandbox_profile.is_strict. tools/capability_ceiling stay honestly empty — no name-keyed tool/capability registry exists yet to resolve spec.tools against — which is exactly why the Milestone 7 exit criterion (byte-identical AgentMetadata against the C++ equivalent, I6) isn't reached yet.",
   },
 ];
 
@@ -411,9 +420,9 @@ export const apiRfcLinks: RfcLink[] = [
   { label: "007 — Capability and Trust Model", href: gh("007-Capability-and-Trust-Model.md"), status: "real" },
   { label: "008 — Sandbox and Isolation", href: gh("008-Sandbox-and-Isolation.md"), status: "real" },
   { label: "009 — Plugin and Extension System", href: gh("009-Plugin-and-Extension-System.md"), status: "real" },
-  { label: "011 — MCP Conformance", href: gh("011-MCP-Conformance.md"), status: "design" },
-  { label: "012 — A2A Conformance", href: gh("012-A2A-Conformance.md"), status: "design" },
-  { label: "013 — UI and Streaming Surfaces", href: gh("013-UI-and-Streaming-Surfaces.md"), status: "design" },
+  { label: "011 — MCP Conformance", href: gh("011-MCP-Conformance.md"), status: "real" },
+  { label: "012 — A2A Conformance", href: gh("012-A2A-Conformance.md"), status: "real" },
+  { label: "013 — UI and Streaming Surfaces", href: gh("013-UI-and-Streaming-Surfaces.md"), status: "real" },
   { label: "014 — Workflow and Orchestration", href: gh("014-Workflow-and-Orchestration.md"), status: "design" },
-  { label: "015 — Declarative Agent Format", href: gh("015-Declarative-Agent-Format.md"), status: "design" },
+  { label: "015 — Declarative Agent Format", href: gh("015-Declarative-Agent-Format.md"), status: "real" },
 ];

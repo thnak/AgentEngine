@@ -4,7 +4,7 @@ import { runtimeEntries } from "../data/apiContent";
 
 function RuntimeDetailApp() {
   return (
-    <ApiDetailLayout active="runtime">
+    <ApiDetailLayout active="runtime" sections={runtimeEntries.map((e) => ({ id: e.id, label: e.tag }))}>
       <ApiSection
         id="runtime"
         eyebrow="Agent core — L2"

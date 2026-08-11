@@ -6,7 +6,7 @@ import { RevealGroup, RevealItem } from "./Reveal";
 
 export function ApiAuthoringSample() {
   return (
-    <section className="section" style={{ paddingTop: 0 }}>
+    <section className="section" style={{ paddingTop: 0 }} id="authoring-sample">
       <div className="container">
         <RevealGroup>
           <RevealItem>
