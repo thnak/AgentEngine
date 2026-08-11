@@ -1,7 +1,25 @@
-import { gh, genericSkills, skillFrontmatterFields } from "../data/apiContent";
+import {
+  gh,
+  genericSkills,
+  skillCollisionSnippet,
+  skillFrontmatterFields,
+  skillSourceConceptSnippet,
+  skillSourceEntries,
+  skillToolScopingSnippet,
+  skillsProviderApiSnippet,
+} from "../data/apiContent";
+import { highlightCpp } from "../lib/highlightCpp";
 import { ApiTable } from "./ApiTable";
 import { CodePanel } from "./CodePanel";
 import { RevealGroup, RevealItem } from "./Reveal";
+
+function StatusBadge({ status }: { status: "real" | "design" }) {
+  return (
+    <span className={`status-badge status-${status}`}>
+      {status === "real" ? "Real & tested" : "Designed, not built"}
+    </span>
+  );
+}
 
 const directoryTree = `skill-name/
 ├── SKILL.md          # YAML frontmatter + Markdown instructions
@@ -64,6 +82,49 @@ export function ApiSkillReference() {
 
         <RevealGroup>
           <RevealItem>
+            <div className="section-head anchor-target" style={{ marginTop: 48, marginBottom: 22 }} id="skill-source">
+              <span className="eyebrow">core/skill_source.hpp — where a skill comes from</span>
+              <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>
+                Two real <code>SkillSource</code> implementations, one concept
+              </h3>
+              <p>
+                Type-erased at runtime, not a compile-time template pack — a session declares
+                "load skills from these N sources" as ordinary runtime configuration (disk paths,
+                inline bundles), the same shape 006 §6's <code>ToolTable</code> already accepts for
+                tools. Both real sources below satisfy the same <code>SkillSource</code> concept and
+                get wrapped identically by <code>make_skill_source_descriptor</code> into the type-
+                erased <code>SkillSourceDescriptor</code> a <code>SkillsProvider</code> actually holds
+                a list of — a third source (a remote registry, say) would need nothing more than the
+                same two methods.
+              </p>
+            </div>
+          </RevealItem>
+
+          <RevealItem>
+            <div className="doc-entries">
+              {skillSourceEntries.map((e) => (
+                <article className="doc-entry" id={e.id} key={e.id}>
+                  <div className="doc-entry-head">
+                    <code className="api-tag">{e.tag}</code>
+                    <StatusBadge status={e.status} />
+                  </div>
+                  <h3>{e.title}</h3>
+                  <p>{e.body}</p>
+                  <a className="api-cite" href={e.href} target="_blank" rel="noreferrer">
+                    {e.cite}
+                  </a>
+                </article>
+              ))}
+            </div>
+          </RevealItem>
+
+          <RevealItem>
+            <CodePanel filename="skill_source.hpp">{highlightCpp(skillSourceConceptSnippet)}</CodePanel>
+          </RevealItem>
+        </RevealGroup>
+
+        <RevealGroup>
+          <RevealItem>
             <div className="section-head anchor-target" style={{ marginTop: 48, marginBottom: 22 }} id="skill-loading">
               <span className="eyebrow">How a skill loads — §8b</span>
               <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>
@@ -117,6 +178,130 @@ export function ApiSkillReference() {
               those two tools (plus <code>run_skill_script</code>) as a fixed three-tool surface
               regardless of catalog size. Loading is dynamic but snapshotted per run: a skill
               loaded mid-run does not retroactively change what earlier turns were permitted to do.
+            </p>
+          </RevealItem>
+        </RevealGroup>
+
+        <RevealGroup>
+          <RevealItem>
+            <div className="section-head anchor-target" style={{ marginTop: 48, marginBottom: 22 }} id="skill-mounting">
+              <span className="eyebrow">core/skill_provider.hpp — mounting</span>
+              <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>
+                <code>SkillsProvider</code> — a real <code>ContextProvider</code>, not a stub
+              </h3>
+              <p>
+                Resolves every declared source, mounts each resolved skill read-only through{" "}
+                <code>worktree.hpp</code>'s real Tree/Ref/Mount machinery, and contributes one{" "}
+                <code>role::system</code> advertisement message naming every mounted skill. A
+                mounted skill's <code>Mount.mount_id</code> is the BARE name (e.g.{" "}
+                <code>"using-codeact"</code>), not the literal <code>"/skills/&lt;name&gt;"</code>{" "}
+                string — <code>mount_id</code> is purely the capability-matching key{" "}
+                <code>cap::FsRead</code>/<code>cap::FsWrite</code> compare against, which is what
+                gives an operator genuine per-skill granularity (grant read access to one skill's
+                files without exposing every other mounted skill). The logical{" "}
+                <code>/skills/&lt;name&gt;</code> path is unaffected by this choice; it only ever
+                reaches the model via the advertisement message.
+              </p>
+            </div>
+          </RevealItem>
+
+          <RevealItem>
+            <CodePanel filename="skill_provider.hpp">{highlightCpp(skillsProviderApiSnippet)}</CodePanel>
+          </RevealItem>
+
+          <RevealItem>
+            <p className="gs-note" style={{ marginTop: 24 }}>
+              <strong>Anti-shadowing is a refusal, never a last-source-wins.</strong> Built entirely
+              into local vectors and assigned to <code>mounted()</code>'s backing state only on total
+              success — a collision anywhere in the loop fails the WHOLE <code>on_context()</code>{" "}
+              call closed, leaving zero skills mounted, not the ones that happened to process first.
+            </p>
+          </RevealItem>
+
+          <RevealItem>
+            <CodePanel filename="skill_provider.hpp — resolve_and_mount()">
+              {highlightCpp(skillCollisionSnippet)}
+            </CodePanel>
+          </RevealItem>
+        </RevealGroup>
+
+        <RevealGroup>
+          <RevealItem>
+            <div className="section-head anchor-target" style={{ marginTop: 48, marginBottom: 22 }} id="skill-tool-scoping">
+              <span className="eyebrow">core/skill_tool_scoping.hpp — §8c enforcement</span>
+              <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>
+                <code>allowed-tools</code> becomes a real restriction — if both sides stay in sync
+              </h3>
+              <p>
+                <code>scope_tools_to_mounted_skills()</code> filters a <code>ToolTable</code> down to
+                the names a caller allows, typically <code>SkillsProvider::allowed_tool_names()</code>{" "}
+                unioned with an always-on base set. That's real enforcement only when a caller applies
+                it on BOTH sides of the boundary — what's declared to the model (
+                <code>ContextContribution.tools</code>, computed each turn's <code>on_context</code>)
+                AND what <code>invoke_tool()</code> actually authorizes at call time. Filtering only
+                the declared side and leaving a broader table at the invocation site is cosmetic: a
+                tool "hidden" from the model's list is still callable if the invocation-time table
+                still contains it — I3 (model output is data, never itself an authorization decision)
+                only holds if the invoke-time check is the real one.
+              </p>
+            </div>
+          </RevealItem>
+
+          <RevealItem>
+            <CodePanel filename="skill_tool_scoping.hpp">{highlightCpp(skillToolScopingSnippet)}</CodePanel>
+          </RevealItem>
+        </RevealGroup>
+
+        <RevealGroup>
+          <RevealItem>
+            <div className="section-head anchor-target" style={{ marginTop: 48, marginBottom: 22 }} id="skill-on-demand">
+              <span className="eyebrow">Phase 3 addendum — ADR-024</span>
+              <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>
+                "Resolved" and "mounted" are independent concerns
+              </h3>
+              <p>
+                Every configured skill is <strong>resolved</strong> unconditionally at session
+                start — its files are materialized and its <code>cap::FsRead</code> is already
+                granted regardless of what happens next. <code>MountedSkillsState</code> tracks a
+                narrower, agent-triggered subset: which resolved skills are currently{" "}
+                <strong>mounted</strong>, meaning declared to the model and re-injected into context.
+                Mounting a skill grants no new authority (I3) — it only activates visibility into
+                capability that was already unconditionally provisioned. A deliberately plain mutable
+                set, not a token: <code>mount()</code> is idempotent, so an agent unsure of a skill's
+                state can call it again for free.
+              </p>
+            </div>
+          </RevealItem>
+        </RevealGroup>
+
+        <RevealGroup>
+          <RevealItem>
+            <div className="section-head anchor-target" style={{ marginTop: 48, marginBottom: 22 }} id="skill-composition">
+              <span className="eyebrow">core/history_and_skills_provider.hpp — wiring into AgentSession</span>
+              <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>
+                One <code>HistoryProviderT</code> slot, two contributors — and a real ordering bug
+                the tests now pin down
+              </h3>
+              <p>
+                <code>AgentSession&lt;ChatClientT, StateT, HistoryProviderT&gt;</code> has exactly one
+                history-provider slot. <code>HistoryAndSkillsProvider&lt;H, S&gt;</code> composes a
+                history provider and a <code>SkillsProvider</code> into that one slot via{" "}
+                <code>assemble_context</code>, built once in its constructor — never rebuilt inside{" "}
+                <code>on_context()</code>, or <code>SkillsProvider</code>'s resolve-once/freeze
+                guarantee would silently break every turn.
+              </p>
+            </div>
+          </RevealItem>
+
+          <RevealItem>
+            <p className="gs-note" style={{ marginTop: 24, borderLeftColor: "var(--accent-pink)" }}>
+              <strong>Order matters, and the first version had it backwards.</strong> Contributors
+              concatenate in declared order. Pushing history first put the skills' system-message
+              advertisement AFTER the entire conversation on every real request — confirmed against a
+              live wire dump, not a hypothetical — the opposite of ordinary system-prompt placement
+              and exactly the kind of thing that degrades a model's adherence to it. Skills now push
+              first. <code>test_agent_session_skills_real_backend.cpp</code> asserts message ORDER,
+              not just presence, so this can't silently regress.
             </p>
           </RevealItem>
         </RevealGroup>

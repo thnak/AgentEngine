@@ -338,7 +338,7 @@ export const skillFrontmatterFields: FieldSpec[] = [
     name: "allowed-tools",
     type: "space-separated list",
     required: false,
-    notes: '"Advisory, never a grant" (009 §8c) — marked experimental upstream. Real tool access is still mediated only by Capabilities<...>.',
+    notes: "Marked experimental upstream, but real on this side: skill_tool_scoping.hpp's scope_tools_to_mounted_skills() filters the tool table a caller declares to the model AND the table it authorizes invoke_tool() against from the same SkillsProvider::allowed_tool_names() union — real restriction, not cosmetic, as long as a caller recomputes both sides from the same live state.",
   },
 ];
 
@@ -354,6 +354,114 @@ export const genericSkills: GenericSkill[] = [
   { name: "producing-structured-output", teaches: "Shaping a final response against a declared schema (003 §5) reliably." },
   { name: "shell-pipelines", teaches: "ShellRunner's grammar (010 §2) — composing pipes/redirects within its documented subset." },
 ];
+
+// core/skill_source.hpp -- where a skill's parsed manifest+files actually come from, real and
+// tested for both shapes: a live host directory, or an in-memory bundle a caller already resolved.
+export const skillSourceEntries: ApiEntry[] = [
+  {
+    id: "inline-skill-source",
+    status: "real",
+    tag: "InlineSkillSource",
+    title: "InlineSkillSource — a caller-supplied bundle, no disk I/O at all",
+    body:
+      "Constructed with an origin_id and a std::vector<SkillSourceResult> the caller already built (typically via parse_skill_md against a string literal — builtin_skills.hpp's own pattern). load_skills() returns a copy of exactly what it was given, every call — cheap, side-effect-free, no state to invalidate. This is how the five §8f generic skills ship: compiled into the binary via make_builtin_skills_source(), never as loose files a deployment could omit or move.",
+    cite: "include/agentengine/core/skill_source.hpp:75",
+    href: gh("include/agentengine/core/skill_source.hpp"),
+  },
+  {
+    id: "disk-skill-source",
+    status: "real",
+    tag: "DiskSkillSource",
+    title: "DiskSkillSource — every skill-name/SKILL.md subdirectory of a real host directory",
+    body:
+      "Constructed with an origin_id and a filesystem root. load_skills() walks the root's immediate subdirectories; one with no SKILL.md is silently skipped (a real corpus mixes skill dirs with stray content), but one WITH an invalid SKILL.md fails the WHOLE call — all-or-nothing, so a caller never silently runs with only the good half of a source it believed loaded cleanly (§8a: 'rejects rather than guessing'). Each resolved skill's file bundle always includes SKILL.md itself plus everything under its scripts/, references/, and assets/ subdirectories, byte-for-byte.",
+    cite: "include/agentengine/core/skill_source.hpp:130",
+    href: gh("include/agentengine/core/skill_source.hpp"),
+  },
+];
+
+export const skillSourceConceptSnippet = `// The interface both sources above satisfy -- and the one a third
+// source (a remote registry, say) would need to satisfy too.
+template <class T>
+concept SkillSource = requires(T& s) {
+    { s.origin_id() } -> std::convertible_to<std::string_view>;
+    { s.load_skills() } -> std::same_as<result<std::vector<SkillSourceResult>>>;
+};
+
+// One file inside a skill's bundle, SKILL.md itself included.
+struct SkillBundleFile {
+    std::string relative_path;   // POSIX-style, relative to the skill's own directory root
+    std::vector<std::byte> bytes;
+};
+
+// One resolved skill, ready to be mounted.
+struct SkillSourceResult {
+    Skill skill;                        // parsed frontmatter + body (skill.hpp)
+    std::vector<SkillBundleFile> files;  // SKILL.md + scripts/references/assets, byte-for-byte
+};
+
+// The type-erased, runtime-configurable entry SkillsProvider actually holds a list of --
+// a session declares "load from these N sources" as RUNTIME config, not a compile-time pack,
+// because resolving sources happens once per run, never on Tool/ChatClient's hot path.
+struct SkillSourceDescriptor {
+    std::string origin_id;
+    std::function<result<std::vector<SkillSourceResult>>()> load_skills;
+};
+
+template <class SourceT> requires SkillSource<SourceT>
+[[nodiscard]] SkillSourceDescriptor make_skill_source_descriptor(SourceT source);
+// include/agentengine/core/skill_source.hpp:34-68`;
+
+export const skillsProviderApiSnippet = `// A real ContextProvider conformer -- occupies AgentSession's single
+// HistoryProviderT slot directly, or composed via HistoryAndSkillsProvider.
+template <WorktreeObjectStore ObjectStoreT = InMemoryWorktreeObjectStore>
+class SkillsProvider {
+public:
+    explicit SkillsProvider(std::vector<SkillSourceDescriptor> sources);
+
+    // Resolves every source exactly once; a second call is a no-op that
+    // returns the SAME cached result (009 §8c: "loading is dynamic but
+    // snapshotted per run -- a skill loaded mid-run does not retroactively
+    // change what earlier turns were permitted to do").
+    [[nodiscard]] result<void> ensure_loaded();
+
+    [[nodiscard]] task<result<ContextContribution>> on_context(SessionContext&, EffectContext&);
+
+    // Introspection -- meaningful only after ensure_loaded()/on_context()
+    // has run at least once; empty before that or on load failure.
+    [[nodiscard]] std::vector<Mount> const& mounted() const noexcept;
+    [[nodiscard]] std::vector<std::string> const& allowed_tool_names() const noexcept;
+    [[nodiscard]] std::vector<std::string> allowed_tool_names_for(
+        std::vector<std::string> const& mounted_names) const;
+    [[nodiscard]] std::optional<std::string> body_of(std::string const& name) const;
+};
+// include/agentengine/core/skill_provider.hpp:107-186`;
+
+export const skillCollisionSnippet = `for (auto& item : *resolved) {
+    std::string const& name = item.skill.frontmatter.name;
+    for (std::size_t i = 0; i < claimed_names.size(); ++i) {
+        if (claimed_names[i] == name) {
+            return std::unexpected(error{
+                failure_class::contract,
+                "skill '" + name + "' is declared by both '" + claimed_origins[i] +
+                    "' and '" + source.origin_id + "' -- a skill from one source must "
+                    "never shadow a skill from another (009 §8c)",
+                "skill.name_collision_across_sources"});
+        }
+    }
+    // ... claim it, assemble its Tree, commit its Ref ...
+}
+// Built entirely into LOCAL vectors, assigned to mounts_/summaries_ only on
+// total success -- a mid-loop collision leaves mounted() exactly as it was
+// before the call, never a partial set from whichever skills processed first.
+// include/agentengine/core/skill_provider.hpp:198-260`;
+
+export const skillToolScopingSnippet = `// Filters universe's descriptors down to those whose name is in allowed
+// (SkillsProvider::allowed_tool_names()) unioned with always_on.
+[[nodiscard]] inline ToolTable scope_tools_to_mounted_skills(
+    ToolTable const& universe, std::vector<std::string> const& allowed,
+    std::vector<std::string> const& always_on = {});
+// include/agentengine/core/skill_tool_scoping.hpp:47-57`;
 
 export interface ProtocolEntry {
   id: string;
