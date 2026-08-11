@@ -107,4 +107,15 @@ if(AGENTENGINE_WITH_HTTPS)
     MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
   add_test(NAME example_16_group_chat_live COMMAND agentengine_example_16_group_chat_live)
   set_tests_properties(example_16_group_chat_live PROPERTIES LABELS "live-network" TIMEOUT 300)
+
+  # 17: the live counterpart to 15's Planner half -- the moderator's "ledger" is a real model
+  # decision (parsed into ExecutorOutcome::routes), not a hardcoded turn counter, with a
+  # deterministic fallback ledger as a safety net if a live reply is ever unparseable.
+  add_executable(agentengine_example_17_planner_live 17_planner_live.cpp)
+  target_include_directories(agentengine_example_17_planner_live PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../tests")
+  target_link_libraries(agentengine_example_17_planner_live PRIVATE
+    agentengine::core agentengine::provider_http_client agentengine_warnings
+    MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+  add_test(NAME example_17_planner_live COMMAND agentengine_example_17_planner_live)
+  set_tests_properties(example_17_planner_live PROPERTIES LABELS "live-network" TIMEOUT 300)
 endif()
