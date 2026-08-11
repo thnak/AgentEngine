@@ -148,16 +148,53 @@ assembled at compile time.
 
 ```cpp
 struct RedactPii {
-    ae::task<> before_model(ModelCallContext& c);
-    ae::task<> after_model(ModelCallContext& c);
+    ae::task<std::monostate> before_model(ModelCallContext& c);
+    ae::task<std::monostate> after_model(ModelCallContext& c);
 };
 ```
+
+(Hook return type corrected 2026-08-11, ADR-033: `ae::task<>` — i.e. `quark::task<void>` — has no
+`await_resume()` and cannot be `co_await`ed by another coroutine at all; only `task<T>` for
+`T != void` (ADR-047) is genuinely awaitable, the same distinction `core/agent_session.hpp`'s
+`run_rounds` already had to correct for. A middleware hook is `co_await`ed by the chain runner, so it
+must return `task<std::monostate>`, matching that established codebase convention.)
 
 **Constraints:** middleware may inspect, annotate, rewrite content, short-circuit with a result, or
 deny — it may **not** widen capabilities (**I2**, no ambient authority; 007 §3.2's attenuation-only
 rule is the same constraint applied to this call site), and its effects are attributed to it by
 name in the trace. Deny-capable middleware is how content policy (017) plugs in without the core
 knowing about content policy.
+
+**A sharper form of the capability-widening rule, found during ADR-033's own red-team pass and worth
+stating explicitly: rewriting CONTENT can be a capability-reach change in effect, even though it
+mints no new `Capability`.** A `ToolCall` content item defaults to `call_provenance::vendor_structured`
+— the fully-trusted class `invoke_tool`'s step 5 checks only against the target tool's own
+`approval_mode` (007 §4 amendment, ADR-023). Middleware that rewrites `ChatResponse.message` can
+fabricate or mutate a `ToolCall`, laundering an untrusted decision through the same channel a
+genuine, vendor-returned call travels — the confused-deputy shape ADR-023 already closed once for
+raw model text, relocated to a middleware content rewrite. The model-call implementation (below)
+closes this by forcing any `ToolCall` not identical to one the real backend actually returned to
+`call_provenance::text_derived` before ever returning it — routing it through ADR-023's stricter
+gate, which overrides even a tool's own `never_require` for anything with a real capability ceiling
+or a non-pure effect class.
+
+**Implementation status (updated 2026-08-11, ADR-033):** the MODEL-CALL interception point is real:
+`MiddlewareChatClient<Inner, Ms...>` (`core/middleware.hpp`) is a `ChatClient`-conforming decorator
+— the same template-wrapper shape `core/resilient_chat_client.hpp`'s `ResilientChatClient<Inner>`
+already establishes — running a two-phase (`before_model` forward, `after_model` backward) chain
+around `Inner::chat()`, with compile-time hook detection (a middleware may define any subset of the
+two hooks) and the provenance-downgrade fix above. **`MiddlewareChatClient` must be the OUTER layer
+around `ResilientChatClient`, never the reverse** — composing it inside would re-run the whole
+before-phase under one retry-stable idempotency key and let a fallback-content hook silently corrupt
+circuit-breaker health tracking (see `core/middleware.hpp`'s own top comment for the full reasoning).
+The RUN/TURN/TOOL-CALL interception points remain declared-but-unwired — `AgentSession`'s turn loop
+is large, mature, and heavily tested; threading a middleware chain through it is separately-scoped,
+larger work this pass does not attempt, matching this project's own established "prove the mechanism
+against one real consumer, name the rest" precedent (`decisions/ADR-028-session-scoped-stateful-tools.md`).
+MAF's verified decorator-chain mechanics remain the prior art for that future work — a *separate*
+wrapping pipeline around the raw model call from the one around the whole run/turn (`AIAgentBuilder`),
+both composed by reverse-apply ordering so the first-registered middleware ends up outermost —
+`docs/research/2026-08-11-maf-middleware-codeact-skills-deep-dive.md` §1.
 
 ## 6. Metadata, validation, and startup
 

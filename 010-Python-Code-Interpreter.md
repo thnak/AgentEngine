@@ -18,8 +18,13 @@ choice grounded in what the Python ecosystem actually supports today.
 | **Shell** | `execute_shell(command) → outputs, artifacts` | Running ordinary commands — `ls`, `grep`, `git`, a build tool, a script — the things a person would reach for a terminal to do rather than write Python for |
 
 CodeAct is a *configuration* of the interpreter, not a separate subsystem: same tool, same sandbox,
-same approval, with the library granted or not. This mirrors the design MAF settled on (ADR 0024)
-and avoids two code paths for one capability. Shell is a **peer** to the interpreter, not a
+same approval, with the library granted or not. This mirrors the design MAF settled on (ADR 0024 —
+MAF's own `docs/decisions/0024-codeact-integration.md` in the `agent-framework` repo, unrelated to
+AgentEngine's own numbered `ADR-024-skill-scoped-tool-and-mount-wiring.md`; the two share a number
+by coincidence, not a topic) and avoids two code paths for one capability. The verified mechanics —
+CodeAct as an `AIContextProvider` contributing exactly one additive `execute_code` tool from a
+registry deliberately kept separate from the agent's direct tool list — are traced in
+`docs/research/2026-08-11-maf-middleware-codeact-skills-deep-dive.md` §3. Shell is a **peer** to the interpreter, not a
 capability reached only through it (`subprocess`, `os.system`) — see §1a for the concept that makes
 that true, and §3a for the state it shares.
 

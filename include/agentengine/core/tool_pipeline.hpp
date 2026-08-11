@@ -73,6 +73,20 @@ struct ToolDescriptor {
     // that predates this field (not going through `make_tool_descriptor<T>()` below) fails CLOSED
     // against auto-declassification rather than silently qualifying.
     effect_class effect_class = effect_class::at_most_once;
+
+    // Session-scoped-stateful-tools mechanism (ADR-028): `true` only for a descriptor built via
+    // `make_tool_descriptor_with_invoke<ToolT>()` below, whose `invoke` closure captures a
+    // reference into its owning provider's own session-scoped state (e.g. a persistent
+    // interpreter's exec state, mounted-skills tracking) rather than being a pure, ownership-free
+    // static call. `false` (the default) for every ordinary `make_tool_descriptor<ToolT>()` tool,
+    // unaffected. `background_task()` below refuses to background any descriptor with this set —
+    // `start_background_task()` (agent_session.hpp) detaches a real `std::thread` that would then
+    // hold a reference into session state with no synchronization against `AgentSession::
+    // fork_from()`/`clear_in_process_state()` (neither is part of `protocol`, so neither is
+    // Quark-`Sequential`-serialized against a detached background thread) — a real dangling-
+    // reference/data-race hazard found by design review, closed here structurally rather than left
+    // as a documented-only rule a future caller could violate by accident.
+    bool captures_session_state = false;
 };
 
 template <class ToolT>
@@ -90,6 +104,39 @@ template <class ToolT>
         auto args = schema::from_json<typename ToolT::Args>(args_value);
         if (!args) return std::unexpected(args.error());
         auto reply = ToolT::invoke(*args, ctx);
+        if (!reply) return std::unexpected(reply.error());
+        return schema::to_json(*reply);
+    };
+    return d;
+}
+
+// ADR-028 -- the general session-scoped-stateful-tools mechanism. Identical to
+// `make_tool_descriptor<ToolT>()` above (same compile-time extraction of `ToolT`'s declared
+// `Capabilities<...>`/`Approval<...>`/`EffectClass<...>`/schemas -- a state-capturing tool is
+// still a real `Tool<Derived, Policies...>` conformer, never a hand-built-from-scratch descriptor
+// that would silently default to an empty capability ceiling and `never_require` approval), except
+// `custom_invoke` runs INSTEAD OF `ToolT::invoke` -- letting the caller supply a callable that
+// captures whatever session-scoped state it needs (typically a non-static member function on the
+// state-owning `ContextProvider`, e.g. `[this](Args a, EffectContext& ctx) { return
+// this->real_invoke(a, ctx); }`). `ToolT::invoke` itself is never called on this path; it may even
+// be left undefined by `ToolT` if every call site uses this factory instead of the plain one.
+template <class ToolT, class InvokeFn>
+[[nodiscard]] ToolDescriptor make_tool_descriptor_with_invoke(InvokeFn custom_invoke) {
+    ToolDescriptor d;
+    d.name = std::string(ToolT::name);
+    d.description = std::string(ToolT::description);
+    d.capability_ceiling = ToolT::declared_capabilities();
+    d.approval = ToolT::declared_approval();
+    d.backgroundable = ToolT::declared_backgroundable();
+    d.effect_class = ToolT::declared_effect_class();
+    d.args_schema_json = ToolT::args_schema();
+    d.reply_schema_json = ToolT::reply_schema();
+    d.captures_session_state = true;
+    d.invoke = [custom_invoke = std::move(custom_invoke)](
+                   json::Value const& args_value, EffectContext& ctx) -> result<json::Value> {
+        auto args = schema::from_json<typename ToolT::Args>(args_value);
+        if (!args) return std::unexpected(args.error());
+        auto reply = custom_invoke(*args, ctx);
         if (!reply) return std::unexpected(reply.error());
         return schema::to_json(*reply);
     };
@@ -271,6 +318,27 @@ namespace tool_pipeline_detail {
 
 }  // namespace tool_pipeline_detail
 
+// ADR-029 needs the step-5 predicate OUTSIDE `invoke_tool()` itself, to decide BEFORE calling it
+// whether a round's pending calls need real human approval (`AgentSession::handle()`'s
+// suspend-for-approval path). Public re-export, single source of truth: `invoke_tool()`'s own step
+// 5 below calls this exact function too, so the two can never drift apart.
+[[nodiscard]] inline bool tool_call_requires_approval(ToolDescriptor const& tool,
+                                                        call_provenance provenance) noexcept {
+    using namespace tool_pipeline_detail;
+    return (provenance == call_provenance::text_derived)
+               ? !is_auto_declassifiable_text_derived_call(tool)
+               : (tool.approval != approval_mode::never_require);
+}
+
+// ADR-029 needs this outside `invoke_tool()` too, to build a denial `ToolResult` for a pending call
+// a human explicitly rejected (`AgentSession::handle()`'s resume-and-deny path) in exactly the same
+// shape a synchronous `ApprovalDecider`'s own denial already produces.
+[[nodiscard]] inline ToolResult make_denial_result(std::string call_id, std::string message,
+                                                     std::string error_code) {
+    return tool_pipeline_detail::make_error_result(
+        std::move(call_id), error{failure_class::policy, std::move(message), std::move(error_code)});
+}
+
 // The ten-step pipeline (006 §3), against a single native tool call. `held` is the run's actual
 // granted set (never mutated here); `ctx` is filled in with this call's per-invocation
 // `bound_capabilities` (step 7) for the duration of `invoke`, and cleared again before returning
@@ -340,10 +408,7 @@ namespace tool_pipeline_detail {
     // exact override the confused-deputy scenario (ADR-023 §4b Finding 1) forced. A
     // `vendor_structured` call (every caller before this amendment, and every caller that never sets
     // `provenance`) takes the ORIGINAL branch, byte-for-byte unchanged.
-    bool const requires_approval =
-        (request.provenance == call_provenance::text_derived)
-            ? !is_auto_declassifiable_text_derived_call(*tool)
-            : (tool->approval != approval_mode::never_require);
+    bool const requires_approval = tool_call_requires_approval(*tool, request.provenance);
     if (requires_approval) {
         std::string canonical_args = json::dump(request.arguments);
         bool approved = approve && approve(request.tool_name, canonical_args);
@@ -442,6 +507,19 @@ using BackgroundTaskCompletion = std::function<void(ToolResult, ToolInvocationAu
     if (!tool->backgroundable) {
         return std::unexpected(error{failure_class::policy, "tool is not declared Backgroundable",
                                       "tool.not_backgroundable"});
+    }
+
+    // ADR-028: a state-capturing descriptor's `invoke` closure holds a reference into its owning
+    // provider's session-scoped state -- backgrounding it would detach a real `std::thread` (below)
+    // holding that same reference with no synchronization against `AgentSession::fork_from()`/
+    // `clear_in_process_state()` (neither is part of `protocol`, so neither is Quark-`Sequential`-
+    // serialized against this detached thread). Refused here, structurally, at the same authorize
+    // step the plain `backgroundable` check above already gates -- never reached, not merely
+    // discouraged by convention.
+    if (tool->captures_session_state) {
+        return std::unexpected(error{failure_class::policy,
+                                      "a session-state-capturing tool may never be backgrounded",
+                                      "tool.state_capturing_not_backgroundable"});
     }
 
     // -- step 4/7: authorize + bind (the tool's own capability ceiling) -----------------------------

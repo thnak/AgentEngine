@@ -34,6 +34,7 @@
 #include <vector>
 
 #include "agentengine/core/error.hpp"
+#include "agentengine/core/sharing_mode.hpp"
 #include "agentengine/trust/capability.hpp"
 #include "quark/core/describe.hpp"
 #include "quark/core/event_log.hpp"
@@ -83,7 +84,10 @@ struct Ref {
     Digest      tree_digest;
 };
 
-enum class sharing_mode { shared, branch, readonly, scratch };
+// `sharing_mode` itself now lives in core/sharing_mode.hpp (ADR-032) -- included above -- so a
+// caller that only needs the enum value (workflow/graph.hpp) does not have to pull in everything
+// else this header depends on. Kept as a re-export point (the `#include` above) rather than moved
+// with no trace, so a reader landing here from 025 §3's own text still finds it.
 
 // The canonical byte serialization a Tree's digest is computed over. PRECONDITION: `tree.entries`
 // is already sorted by name (callers that can't guarantee this should go through `put_tree`, which

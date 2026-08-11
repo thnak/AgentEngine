@@ -295,8 +295,18 @@ int main() {
         // Positive control: the MEDIATED path (open()/io.open(), already capability-checked) still
         // works after every os.* denial above -- proves the fix denies the raw unmediated surface
         // specifically, not file I/O as a whole.
+        //
+        // Root-cause note (2026-08-11, investigating the long-standing "flake"): this MUST be a
+        // guest-relative mount path ("/work/..."), never a raw host-absolute path. `_ae_open`'s
+        // real implementation (`Internal_open`, mediated_python_runner.cpp) requires
+        // `split_guest_path` to succeed, which requires the path to start with '/' -- a Windows
+        // absolute path never does, so it raised an UNCAUGHT PermissionError every single time
+        // (this script has no try/except around this call), silently emptying stdout. Not flaky at
+        // all in isolation: 10/10 standalone reruns failed identically before this fix. Matches the
+        // SAME guest-path convention the junction positive control just below already uses
+        // ("/work/inside_link/ok.txt").
         {
-            ExecRequest req{"python", "with open(r'" + scratch + "\\inside\\victim.txt') as f:\n"
+            ExecRequest req{"python", "with open('/work/inside/victim.txt') as f:\n"
                                        "    print('MEDIATED_READ:', f.read())"};
             auto out = runner.run(req, state, ctx);
             AE_CHECK(out.has_value() && out->stdout_text.find("MEDIATED_READ: UNTOUCHED_SENTINEL") !=
@@ -356,17 +366,29 @@ int main() {
         // ---- object-graph introspection: can guest code recover a PRE-mediation reference to the
         // real socket.connect without ever calling sys.settrace, just by walking __globals__? -----
         {
-            // '_ae_open'/'_ae_connect'/'_ae_denied'/'call_tool' are the mediation WRAPPERS
-            // themselves -- exec() binds a def'd function's own name into the globals dict it
-            // executes in, so they are always present and finding them recovers nothing (they're
+            // '_ae_open'/'_ae_connect'/'_ae_denied'/'call_tool'/'_ae_fs_denied' are the mediation
+            // WRAPPERS themselves -- exec() binds a def'd function's own name into the globals dict
+            // it executes in, so they are always present and finding them recovers nothing (they're
             // exactly what socket.socket.connect/builtins.call_tool already publicly are). The
             // property under test is narrower and more precise: no OTHER callable -- in particular
             // nothing that still holds a reference to the real, pre-mediation connect -- is present.
+            //
+            // Root-cause note (2026-08-11, investigating the long-standing "flake"): `_ae_fs_denied`
+            // (mediated_python_runner.cpp's os.*-denial helper, added by the 2026-08-07 os.*
+            // mediation fix) was missing from this allowlist -- every run genuinely found it via
+            // __globals__ (confirmed: `LEAKED_NAMES: ['_ae_fs_denied']`, 10/10 standalone reruns,
+            // not flaky), and this check failed every time as a result, not occasionally. Verified
+            // this is the SAME class of expected wrapper name the comment above already describes,
+            // not a real bypass: `_ae_fs_denied` (mediated_python_runner.cpp:735-738) takes `*a,
+            // **kw` and unconditionally raises `PermissionError` -- it holds no reference to any
+            // real unmediated primitive and cannot be used to reach one. Its presence here is an
+            // ordinary consequence of every bootstrap-defined name sharing one exec() globals dict,
+            // exactly like its four siblings already allowlisted below.
             ExecRequest req{
                 "python",
                 "import socket\n"
                 "g = socket.socket.connect.__globals__\n"
-                "wrappers = {'_ae_open', '_ae_connect', '_ae_denied', 'call_tool'}\n"
+                "wrappers = {'_ae_open', '_ae_connect', '_ae_denied', 'call_tool', '_ae_fs_denied'}\n"
                 "leaked = [k for k in g if k not in ('__builtins__', '_ae_internal') and "
                 "k not in wrappers and not k.startswith('__') and callable(g.get(k))]\n"
                 "print('LEAKED_NAMES:', leaked)"};

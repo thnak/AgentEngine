@@ -110,13 +110,21 @@ struct InteractionRef {
     std::string interaction_id;
 };
 
+// ADR-029: `interaction_id` correlates these back to the `Interaction` (interaction.hpp)
+// `AgentSession::handle()` mints when suspending a round for real human approval -- without it, a
+// live consumer has no way to build the eventual `ResolveInteraction{interaction_id, approved}`
+// resume call. Appended... except these two payloads shipped with only `call_id` before ADR-029
+// and had zero real producers (run_event.hpp's own prior top comment), so widening the struct here
+// is a genuine field addition, not a break of any real wire contract yet exercised.
 struct ApprovalRequested {
     std::string call_id;
+    std::string interaction_id;
 };
 
 struct ApprovalResolved {
     std::string call_id;
     bool        approved = false;
+    std::string interaction_id;
 };
 
 struct Warning {

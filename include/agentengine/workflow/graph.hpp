@@ -32,6 +32,7 @@
 #include <vector>
 
 #include "agentengine/core/error.hpp"
+#include "agentengine/core/sharing_mode.hpp"
 
 namespace agentengine::workflow {
 
@@ -94,6 +95,21 @@ struct Executor {
     executor_kind kind = executor_kind::function;
     MessageTypeId input_type;
     MessageTypeId output_type;
+    // 014§1's named gap ("nothing states whether a workflow executor... gets its own sub-worktree,
+    // inherits the caller's, or shares one") -- closed by `workflow/worktree_scoping.hpp` (ADR-032).
+    // Default is `branch`, UNCONDITIONALLY, not 025 §3's "sequential defaults to shared" rule
+    // applied per-node: `WorkflowSupervisor::execute()`'s superstep model means any two executors
+    // reachable in the same round get concurrent asks (not only explicit `fan_out` edges -- two
+    // ordinary `direct` edges out of one source behave identically), and general graphs here have
+    // cycles and dynamic `switch_case` routing (§9 Q2), so statically proving two specific nodes can
+    // never co-occur in a round is not attempted -- it would need a full round-reachability analysis
+    // that cycles and dynamic routing make unsound to do cheaply. Getting "these are safely
+    // sequential, default to shared" WRONG is a real cross-executor data-visibility hazard (025 §4);
+    // defaulting to `branch` when `shared` would have been fine only costs an unnecessary (cheap,
+    // 025 §3's own table) merge. An author who knows a specific node is safe to share sets this
+    // explicitly -- mirroring 025 §3's own already-accepted precedent that `shared` for concurrent
+    // siblings "is never reached by a plain default."
+    sharing_mode  worktree_mode = sharing_mode::branch;
 
     friend bool operator==(Executor const&, Executor const&) = default;
 };
@@ -212,6 +228,17 @@ struct Workflow {
     // duplicate rather than as whichever downstream check happened to trip over it first.
     for (std::size_t i = 0; i < wf.executors.size(); ++i) {
         if (wf.executors[i].id.empty()) return fail("an executor has an empty id", "workflow.empty_executor_id");
+        // `worktree_scoping.hpp` (ADR-032) splices an executor id directly into a worktree ref name
+        // and a guest-facing mount id ("/agents/" + id). A '/' would let one id inject a bogus path
+        // segment into that splice -- 025 §5's "path escape is a security bug, not a bug" applies to
+        // the id namespace exactly as much as to a guest-supplied path, so it is rejected here,
+        // structurally, rather than left as something only the worktree-scoping layer defends
+        // against (defense at the one place every consumer -- including a future declarative loader
+        // that never touches worktree_scoping.hpp at all -- is guaranteed to pass through).
+        if (wf.executors[i].id.find('/') != std::string::npos) {
+            return fail("executor id '" + wf.executors[i].id + "' must not contain '/'",
+                        "workflow.executor_id_contains_slash");
+        }
         for (std::size_t j = i + 1; j < wf.executors.size(); ++j) {
             if (wf.executors[i].id == wf.executors[j].id) {
                 return fail("duplicate executor id: " + wf.executors[i].id, "workflow.duplicate_executor_id");
@@ -428,9 +455,15 @@ struct TypedExecutor {  // ae-naming-lint: allow TypedExecutor — the C++-form 
 
     std::string   id;
     executor_kind kind = executor_kind::function;
+    // `Executor::worktree_mode`'s escape hatch, reachable from here: `TypedExecutor` is a plain
+    // aggregate, so an author sets this via designated-initializer syntax
+    // (`TypedExecutor<In, Out>{.id = "reviewer", .worktree_mode = sharing_mode::shared}`) before
+    // calling `WorkflowBuilder::add` -- no separate builder method needed, and `describe()` below
+    // is the one place that has to remember to forward it.
+    sharing_mode  worktree_mode = sharing_mode::branch;
 
     [[nodiscard]] Executor describe() const {
-        return Executor{id, kind, message_type_id_of<In>(), message_type_id_of<Out>()};
+        return Executor{id, kind, message_type_id_of<In>(), message_type_id_of<Out>(), worktree_mode};
     }
 };
 

@@ -54,6 +54,13 @@ session:s-42                     ← root worktree, the session's disk
   /knowledge/<corpus>            operator-populated document corpus, read-only, shared (029 §5a)
 ```
 
+**As-built note on `/skills/<name>`:** this diagram is the target shape. Today, `SkillsProvider`
+materializes each skill from its own private, per-instance object/ref store (ADR-024 §4), not as a
+subtree of this session `Ref` — the sandbox filesystem ends up looking like the diagram, but the
+storage behind `/skills/<name>` and the storage behind `/work`/`/input`/`/out`/`/agents/*` are two
+separate content-addressed universes materialized side-by-side, not one shared tree. See
+`docs/architecture/worktree-sharing-skills-and-subagents.md` §2 for the full trace.
+
 **Sub-worktrees** exist because a session may run several agents (001 §4). Each is created with a
 declared **sharing mode**:
 

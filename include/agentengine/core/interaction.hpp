@@ -23,8 +23,11 @@ namespace agentengine {
 
 // 001 §2: "reason ∈ {input, auth}" — the tag that lets one mechanism serve both `InputRequired`
 // and `AuthRequired` without a caller needing to guess from context which kind of "waiting" it is
-// looking at.
-enum class interaction_reason { input, auth };  // ae-naming-lint: allow interaction_reason — 001 §2 names this concept normatively; 027 has not been updated to list it
+// looking at. ADR-029 amendment (design → red-team → prove → judge, not an ad-hoc addition, per
+// CLAUDE.md's governance for RFC-normative text): adds `approval` — a run suspended because a
+// pending tool call needs real human sign-off (`AgentSession::handle()`'s suspend-for-approval
+// path), the same "one mechanism, tagged by reason" shape `input`/`auth` already establish.
+enum class interaction_reason { input, auth, approval };  // ae-naming-lint: allow interaction_reason — 001 §2 names this concept normatively; 027 has not been updated to list it
 
 struct Interaction {  // ae-naming-lint: allow Interaction — 001 §2 names this concept normatively; 027 has not been updated to list it
     std::string        interaction_id;

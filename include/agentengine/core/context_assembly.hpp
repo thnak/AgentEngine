@@ -9,6 +9,17 @@
 // attaches through this seam once it is real, not before, so building the composition NOW against
 // a second provider that doesn't exist yet would be designing against vocabulary that might still
 // change shape).
+//
+// `assemble_context` runs contributors as independent fan-out, not a sequential pipeline (each
+// `on_context` call below sees only `session_ctx`/`ctx`, never a prior contributor's
+// `ContextContribution`) -- unlike MAF's `AIContextProvider`, which chains providers. This was a
+// real design question (OpenQuestions.md OQ-18), designed and red-teamed, not an oversight: a
+// generic reactive/pipeline mechanism was rejected (no provenance to know which provider produced
+// what without MAF's message-source-stamping this seam doesn't have; reopens the same
+// cross-contributor coupling the budget rule below already refuses). If you need a later contributor
+// to react to an earlier one's output, write a purpose-built composite `ContextProvider` that owns
+// its sub-providers directly (see `history_and_skills_provider.hpp`'s `HistoryAndSkillsProvider` for
+// the proven shape) instead of extending this function -- read OQ-18 before reopening this.
 
 #include <cstddef>
 #include <cstdint>

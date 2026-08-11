@@ -25,6 +25,23 @@ Edge     = direct | fan-out | fan-in | switch/case | multi-selection | chain
 - **Messages between executors are the content model** (003), so an agent node and a function node
   are interchangeable at an edge.
 
+**Worktree scoping across executors, the policy+minting half — resolved by ADR-032
+(2026-08-11):** every `Executor` (`workflow/graph.hpp`) declares its own `worktree_mode`
+(025 §3's `sharing_mode`), defaulting to `branch` unconditionally (not §3's "sequential defaults to
+shared" applied per-node — see the ADR for why that would be unsound for this RFC's cyclic,
+dynamically-routed graphs) with `shared`/`readonly`/`scratch` available as an explicit per-executor
+opt-in. `workflow/worktree_scoping.hpp`'s `mint_executor_worktrees`/`resume_executor_worktrees` turn
+that declaration into a real `SubWorktree` plus a capability-gated `Mount`, reusing 025 §3's
+primitive unmodified. **What ADR-032 does NOT close**: wiring the resulting grant into a running
+`FunctionExecutor`'s `EffectContext`/`ExecutorBody` (no production host builds a `FunctionExecutor`
+fleet today, so there is no real caller to design that wiring against yet); `agent`/`sub_workflow`-
+kind executor worktree wiring (those kinds are not built — `check_workflow_executable` still rejects
+them); WHEN a `branch` executor's worktree merges back into its parent (025 §4's merge-on-join has
+no hook into `WorkflowSupervisor::execute()` yet); and a `readonly` executor's guest-facing `Mount`
+(the existing `Mount`/`mount_read` primitive has no pinned-digest read path — a `core/worktree.hpp`
+change ADR-032 did not make as a drive-by). Full trace, including the pre-ADR-032 state:
+`docs/architecture/worktree-sharing-skills-and-subagents.md` §3.
+
 ## 2. Execution semantics
 
 - **Superstep model.** Execution proceeds in rounds: all messages delivered in round *n* are

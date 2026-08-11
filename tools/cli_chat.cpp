@@ -15,9 +15,16 @@
 // execution can be watched turn by turn instead of only asserted after the fact.
 //
 // ADR-002 §5.5.6 scope carried forward unchanged: at most one MediatedPythonRunner alive per process.
-// This CLI is that one process -- the runner and its ExecState are function-local statics, shared by
-// every execute_code call for the CLI's whole lifetime (real session-scoped variable persistence,
-// proven already by test_mediated_python_runner_smoke.cpp's own E2-C3).
+// This CLI is that one process -- the runner itself stays a function-local static, shared for the
+// CLI's whole lifetime (real session-scoped variable persistence, proven already by
+// test_mediated_python_runner_smoke.cpp's own E2-C3). ADR-030 (session-scoped CodeAct wiring) moved
+// everything genuinely SESSION-scoped (MountedSkillsState, ExecState) onto ToolDeclaringHistoryProvider
+// as real per-instance members (ADR-028's make_tool_descriptor_with_invoke), reached instead of
+// process-global statics -- and added CodeActRunnerBinding (codeact_runner_binding.hpp), which claims
+// this session's exclusive right to the still-shared runner and fails closed if a second session ever
+// tried to reach it: confirmed by red-team that MediatedPythonRunner's own internal state
+// (mediated_python_runner.cpp's file-scope globals) is not safely reentrant across different callers,
+// so "one interpreter per process" is enforced here, not merely commented.
 //
 // This whole TARGET only exists (root CMakeLists.txt's own `add_executable` call is inside
 // `if(AGENTENGINE_WITH_HTTPS AND AGENTENGINE_BUILD_PYTHON_RUNNER)`) when both a real chat backend and
@@ -44,11 +51,13 @@
 
 #include "agentengine/core/agent_session.hpp"
 #include "agentengine/core/builtin_skills.hpp"
+#include "agentengine/core/codeact_runner_binding.hpp"
 #include "agentengine/core/codeact_tool_union.hpp"
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/mounted_skills_state.hpp"
 #include "agentengine/core/skill_provider.hpp"
 #include "agentengine/core/skill_tool_scoping.hpp"
+#include "agentengine/core/tool_call_extraction.hpp"
 #include "agentengine/protocol/openai/chat_client.hpp"
 #include "agentengine/trust/principal.hpp"
 #include "agentengine/trust/secret.hpp"
@@ -90,36 +99,25 @@ struct ExecuteCodeReply {
 };
 AE_JSON_SCHEMA(ExecuteCodeReply, ok, stdout_text, stderr_text, result_repr)
 
-// Set exactly once, from main(), BEFORE any user turn can trigger the first execute_code call (and
-// therefore shared_python_runner()'s first, lazy construction below) -- main()'s own startup sequence
-// (materialize skills -> grant capabilities -> enter the interactive loop) always completes first, so
-// there is no real ordering hazard despite this being a plain static rather than an injected
-// dependency. `MediatedPythonConfig::mount_roots` has no public mutator after construction (must be
-// set before `.initialize()`), so this side channel is how a lazily-constructed singleton picks up
-// mount roots main() only learns about at runtime (materialization happens after this file's own
-// process starts -- it can never be a compile-time constant).
-[[nodiscard]] std::vector<native_jail::MaterializedSkillMount>& pending_skill_mount_roots() {
-    static std::vector<native_jail::MaterializedSkillMount> roots;
-    return roots;
-}
-
-// Skills Phase 3 (decisions/ADR-024's addendum): real, persistent, per-run state -- not a chat-history
-// message the way MAF's own `load_skill` result is (see mounted_skills_state.hpp's own top comment for
-// why that matters). Same function-local-static, single-process-scoped idiom as
-// `pending_skill_mount_roots()`/`shared_python_runner()` above: one instance, shared by reference
-// between `MountSkillTool::invoke()` (writer) and every later `on_context()`/tool-scoping call
-// (readers) -- `AgentSession` has no generic mechanism for a `Tool<>` to reach its own `StateT`, so this
-// works around that gap the same way this file already does for the Python runner's config.
-[[nodiscard]] MountedSkillsState& shared_mounted_skills_state() {
-    static MountedSkillsState state;
-    return state;
-}
-
-// ADR-002 §5.5.6: exactly one interpreter per process, for the process's whole lifetime -- a
-// function-local static, constructed on first real use, matching this CLI's own single-process scope
-// exactly (there is no multi-session story here to conflict with that rule).
-[[nodiscard]] native_jail::MediatedPythonRunner& shared_python_runner() {
-    static native_jail::MediatedPythonRunner runner = [] {
+// ADR-030 (session-scoped CodeAct wiring): `MediatedPythonRunner`/its mount-root config remain a
+// genuinely process-wide singleton -- ADR-002 §5.5.6 Finding 7.8 already documented "this design
+// requires one OS process per session" (CPython's classic embedding API only supports ONE
+// `Py_InitializeFromConfig` call per process, ever), and `codeact_runner_binding.hpp`'s own top
+// comment confirms directly (from `mediated_python_runner.cpp`'s own file-scope globals) that
+// `run()`/`refresh_agent_tools()` are not even safely re-entrant across DIFFERENT callers -- two
+// sessions cannot share this runner concurrently, not even under a lock/queue. So this stays a
+// lazy function-local static (matching this CLI's own single-process scope, and avoiding the
+// dangling-pointer risk a `main()`-local variable would have against Quark's own actor-drain
+// lifetime) -- what moved to real per-session state is everything genuinely session-scoped
+// (`MountedSkillsState`, `ExecState`, ADR-030's own `CodeActRunnerBinding` CLAIM, not the runner
+// object itself), via `ToolDeclaringHistoryProvider`'s own members below, reached through ADR-028's
+// `make_tool_descriptor_with_invoke` mechanism instead of a `Tool<>::invoke()` with no path back to
+// per-session state. `mount_roots` is read only on the FIRST call (a lazy-static-IIFE's inherent
+// "first caller wins" property, unchanged from this function's own pre-ADR-030 shape) -- callers
+// after the first must not assume their own `mount_roots` argument had any effect.
+[[nodiscard]] native_jail::MediatedPythonRunner& shared_python_runner(
+    std::vector<native_jail::MaterializedSkillMount> const& mount_roots) {
+    static native_jail::MediatedPythonRunner runner = [&] {
         native_jail::MediatedPythonConfig cfg;
         cfg.python_home = AE_PYTHON_HOME;
         std::filesystem::path const scratch =
@@ -127,7 +125,7 @@ AE_JSON_SCHEMA(ExecuteCodeReply, ok, stdout_text, stderr_text, result_repr)
         std::error_code ec;
         std::filesystem::create_directories(scratch, ec);
         cfg.mount_roots[kWorkMount] = scratch.wstring();
-        for (auto const& [mount_id, host_dir] : pending_skill_mount_roots()) {
+        for (auto const& [mount_id, host_dir] : mount_roots) {
             cfg.mount_roots[mount_id] = host_dir;
         }
         cfg.expose_agent_files_data = true;
@@ -144,13 +142,16 @@ AE_JSON_SCHEMA(ExecuteCodeReply, ok, stdout_text, stderr_text, result_repr)
     return runner;
 }
 
-// Real session state (010 §3a "shared by reference"): a variable a user's code defines in one
-// execute_code call is genuinely still there on the next call, across turns, for this CLI's whole
-// run -- the same guarantee test_mediated_python_runner_smoke.cpp's E2-C3 proves offline, now
-// observable interactively.
-[[nodiscard]] ExecState& shared_exec_state() {
-    static ExecState state{};
-    return state;
+// The claim guard (codeact_runner_binding.hpp) wrapping the singleton above -- also a lazy
+// function-local static (same lifetime as the runner it wraps, constructed once, on first real
+// use). `ToolDeclaringHistoryProvider::configure()` is this binding's one real caller: it fails
+// closed if any session OTHER than the one that bound first ever tries to reach the runner through
+// it, turning ADR-002 §5.5.6's rule into something enforced, not merely commented.
+[[nodiscard]] CodeActRunnerBinding<native_jail::MediatedPythonRunner>& shared_python_runner_binding(
+    std::vector<native_jail::MaterializedSkillMount> const& mount_roots) {
+    static CodeActRunnerBinding<native_jail::MediatedPythonRunner> binding(
+        shared_python_runner(mount_roots));
+    return binding;
 }
 
 // ---- A trivial, capability-free demo tool: proves a mounted skill's allowed-tools reaches
@@ -234,31 +235,13 @@ print(r.count)
 }
 
 // The ONE source list every independent SkillsProvider<> instance in this file resolves from --
-// main()'s startup_skills, ToolDeclaringHistoryProvider's skills_, shared_codeact_skills() below,
-// and print_skills_banner's own resolve -- so all four independently reach byte-identical results,
-// the same "resolve the SAME deterministic source, never a differently-scoped one" invariant this
+// main()'s startup_skills and ToolDeclaringHistoryProvider's own skills_ (ADR-030 folded the
+// former THIRD instance, shared_codeact_skills(), into reusing skills_ directly -- see that
+// provider's own real_execute_code()) -- so both independently reach byte-identical results, the
+// same "resolve the SAME deterministic source, never a differently-scoped one" invariant this
 // file's own comments already establish for the builtin-only case.
 [[nodiscard]] inline std::vector<SkillSourceDescriptor> demo_skill_sources() {
     return {make_builtin_skills_source(), make_codeact_demo_skill_source()};
-}
-
-// CodeAct's own SkillsProvider<> instance -- independent of ToolDeclaringHistoryProvider's/main()'s
-// own (SkillsProvider's own resolve-once/freeze contract means a fresh instance per call site is
-// correct here, not wasteful: this one is resolved exactly ONCE, for the process's whole lifetime,
-// the same function-local-static idiom shared_python_runner()/shared_mounted_skills_state() above
-// already use). Only ever read via allowed_tool_names_for() -- ExecuteCodeTool::invoke() has no
-// other reachable SkillsProvider<> instance to ask.
-[[nodiscard]] SkillsProvider<>& shared_codeact_skills() {
-    static SkillsProvider<> provider = [] {
-        SkillsProvider<> p(demo_skill_sources());
-        auto loaded = p.ensure_loaded();
-        if (!loaded) {
-            std::cerr << "FATAL: failed to resolve CodeAct demo skill sources: "
-                       << loaded.error().message << "\n";
-        }
-        return p;
-    }();
-    return provider;
 }
 
 struct ExecuteCodeTool : Tool<ExecuteCodeTool, Capabilities<cap::decl::FsRead<"work">,
@@ -272,43 +255,18 @@ struct ExecuteCodeTool : Tool<ExecuteCodeTool, Capabilities<cap::decl::FsRead<"w
     using Args = ExecuteCodeArgs;
     using Reply = ExecuteCodeReply;
 
-    static result<Reply> invoke(Args a, EffectContext& ctx) {
-        auto& runner = shared_python_runner();
-        if (!runner.ok()) {
-            return std::unexpected(error{failure_class::fatal,
-                                          "the embedded Python interpreter failed to initialize",
-                                          "cli_chat.python_runner_not_initialized"});
-        }
-
-        // CodeAct tool-bridge union, recomputed fresh on EVERY execute_code call -- the identical
-        // per-turn cadence scope_tools_to_mounted_skills already runs on for the model-facing
-        // declaration side below, so a mount that happened this same round is reflected before
-        // this call's own code runs, never a call behind. Three sources, per
-        // core/codeact_tool_union.hpp: this CLI's own bridgeable tools (none today -- execute_code
-        // and mount_skill are deliberately excluded from their own bridge), tools unlocked by
-        // currently mounted skills, and MCP-sourced tools (none in this demo -- no MCP server is
-        // connected here; see protocol/mcp/mcp_tool_bridge.hpp for that real, tested, separately
-        // wired path).
-        auto const codeact_universe = ToolTable::from_tools<WordCountTool>();
-        auto const codeact_skill_tools = scope_tools_to_mounted_skills(
-            codeact_universe,
-            shared_codeact_skills().allowed_tool_names_for(shared_mounted_skills_state().all()));
-        auto bridged = union_codeact_tools(ToolTable::from_tools<>(), codeact_skill_tools);
-        if (!bridged) return std::unexpected(bridged.error());
-        auto refreshed = runner.refresh_agent_tools(
-            native_jail::ToolBridgeConfig{*bridged, /*capabilities=*/{}, /*approved=*/true});
-        if (!refreshed) return std::unexpected(refreshed.error());
-
-        ExecRequest req{a.language.empty() ? "python" : a.language, a.code};
-        auto outcome = runner.run(req, shared_exec_state(), ctx);
-        if (!outcome) return std::unexpected(outcome.error());
-
-        Reply reply;
-        reply.ok = (outcome->klass == exec_outcome_class::ok);
-        reply.stdout_text = outcome->stdout_text;
-        reply.stderr_text = outcome->stderr_text;
-        reply.result_repr = outcome->result_repr;
-        return reply;
+    // ADR-030: this static invoke() is now an unreachable poison sentinel, not the real
+    // implementation -- `ToolDeclaringHistoryProvider::on_context()` below builds this tool's
+    // descriptor via `make_tool_descriptor_with_invoke`, whose closure captures `this` and calls
+    // `real_execute_code()` instead. `ExecuteCodeTool` still declares the real
+    // `Capabilities<...>`/`EffectClass<...>` policies -- `make_tool_descriptor_with_invoke` still
+    // extracts those from `ToolT` at compile time (ADR-028 §4) -- only the invoke BODY moved.
+    static result<Reply> invoke(Args, EffectContext&) {
+        return std::unexpected(error{failure_class::fatal,
+                                      "ExecuteCodeTool::invoke() must never run directly -- this "
+                                      "tool is only ever reached through "
+                                      "ToolDeclaringHistoryProvider::real_execute_code()",
+                                      "cli_chat.dead_static_invoke_path"});
     }
 };
 
@@ -343,21 +301,14 @@ struct MountSkillTool : Tool<MountSkillTool, EffectClass<effect_class::pure>> {
     using Args = MountSkillArgs;
     using Reply = MountSkillReply;
 
-    static result<Reply> invoke(Args a, EffectContext&) {
-        bool known = false;
-        for (auto const& [mount_id, host_dir] : pending_skill_mount_roots()) {
-            (void)host_dir;
-            if (mount_id == a.skill_name) {
-                known = true;
-                break;
-            }
-        }
-        if (!known) {
-            return std::unexpected(error{failure_class::contract, "unknown skill: " + a.skill_name,
-                                          "skill.unknown_name"});
-        }
-        shared_mounted_skills_state().mount(a.skill_name);
-        return Reply{true, "mounted: " + a.skill_name};
+    // ADR-030: same shape as `ExecuteCodeTool::invoke()` above -- unreachable poison, real logic in
+    // `ToolDeclaringHistoryProvider::real_mount_skill()`.
+    static result<Reply> invoke(Args, EffectContext&) {
+        return std::unexpected(error{failure_class::fatal,
+                                      "MountSkillTool::invoke() must never run directly -- this tool "
+                                      "is only ever reached through "
+                                      "ToolDeclaringHistoryProvider::real_mount_skill()",
+                                      "cli_chat.dead_static_invoke_path"});
     }
 };
 
@@ -382,9 +333,34 @@ struct MountSkillTool : Tool<MountSkillTool, EffectClass<effect_class::pure>> {
 // newly mounted skill's body genuinely REPLACES the previous turn's system prompt with a longer one,
 // not stacks alongside it. `BuiltinSkillsProvider`/`HistoryAndSkillsProvider` are no longer needed in
 // this file's own composition as a result -- this provider is a complete `ContextProvider` by itself.
+//
+// ADR-030: `mounted_skills_`/`exec_state_` are now REAL session-scoped members (ADR-028's
+// `make_tool_descriptor_with_invoke` mechanism), not process-global statics -- a real fix for a
+// latent, never-exercised bug (this CLI only ever runs one session, but nothing used to stop a
+// second one from silently sharing the first's mounted-skill/exec state). `execute_code` itself
+// still reaches a SHARED, process-wide `MediatedPythonRunner` (see `shared_python_runner_binding()`
+// above and `codeact_runner_binding.hpp` for exactly why that part can never be made per-session
+// with this codebase's current, single-interpreter-per-process CPython embedding) -- `configure()`
+// below is what claims this session's exclusive right to that shared runner, structurally failing
+// closed (not silently racing) if a second session ever tried to reach the same one.
 class ToolDeclaringHistoryProvider {
 public:
     ToolDeclaringHistoryProvider() : skills_(demo_skill_sources()) {}
+
+    // Host-only, configuration-time call (mirrors `AgentSession::set_capabilities()`/
+    // `emplace_chat_client()` -- never derived from model output, I3), made once by `main()` via the
+    // new `AgentSession::history_provider()` accessor, after `mount_roots` is known and before the
+    // first `StartRun` that could reach `execute_code`. Fails closed (mutates nothing) if
+    // `runner_binding`'s claim is already held by a DIFFERENT session_id.
+    [[nodiscard]] result<void> configure(
+        std::string session_id, CodeActRunnerBinding<native_jail::MediatedPythonRunner>& runner_binding,
+        std::vector<native_jail::MaterializedSkillMount> mount_roots) {
+        auto bound = runner_binding.bind(session_id);
+        if (!bound) return bound;
+        runner_binding_ = &runner_binding;
+        mount_roots_ = std::move(mount_roots);
+        return {};
+    }
 
     [[nodiscard]] task<result<ContextContribution>> on_context(SessionContext& session_ctx,
                                                                  EffectContext& ec) {
@@ -403,7 +379,7 @@ public:
         // ephemeral tool-result message that can be lost to history compaction), this is reliably
         // present on every subsequent turn as long as the skill stays mounted -- see
         // mounted_skills_state.hpp's own top comment.
-        for (auto const& mounted_name : shared_mounted_skills_state().all()) {
+        for (auto const& mounted_name : mounted_skills_.all()) {
             auto body = skills_.body_of(mounted_name);
             if (!body) continue;
             combined_system_text += "\nMounted skill '" + mounted_name + "':\n" + *body;
@@ -427,17 +403,113 @@ public:
         // point of Phase 3), so the declared set must track it -- main()'s own invocation-time table
         // must be recomputed on the same cadence, or declared/invocable would diverge (the exact
         // cosmetic-scoping gap skill_tool_scoping.hpp's own top comment warns about).
-        auto const universe = ToolTable::from_tools<ExecuteCodeTool, MountSkillTool>();
+        //
+        // ADR-030: built via `make_tool_descriptor_with_invoke`, not `ToolTable::from_tools<...>()`
+        // -- each closure captures `this`, reaching this provider's own `mounted_skills_`/
+        // `exec_state_`/`runner_binding_`/`skills_` instead of the process-global statics the
+        // pre-ADR-030 shape used. `ExecuteCodeTool`/`MountSkillTool` still supply their compile-time
+        // `Capabilities<...>`/`EffectClass<...>` declarations (ADR-028 §4) -- only the invoke BODY
+        // moved to `real_execute_code()`/`real_mount_skill()` below.
+        std::vector<ToolDescriptor> universe_descriptors = {
+            make_tool_descriptor_with_invoke<ExecuteCodeTool>(
+                [this](ExecuteCodeArgs a, EffectContext& ctx) { return real_execute_code(std::move(a), ctx); }),
+            make_tool_descriptor_with_invoke<MountSkillTool>(
+                [this](MountSkillArgs a, EffectContext& ctx) { return real_mount_skill(std::move(a), ctx); }),
+        };
+        ToolTable const universe = ToolTable::from_descriptors(std::move(universe_descriptors));
         auto const scoped = scope_tools_to_mounted_skills(
-            universe, skills_.allowed_tool_names_for(shared_mounted_skills_state().all()),
+            universe, skills_.allowed_tool_names_for(mounted_skills_.all()),
             {std::string(MountSkillTool::name)});
         contribution.tools = scoped.descriptors();
         co_return contribution;
     }
     task<std::monostate> on_turn_end(TurnView, EffectContext&) { co_return std::monostate{}; }
 
+    [[nodiscard]] MountedSkillsState const& mounted_skills() const noexcept { return mounted_skills_; }
+
 private:
+    // The real `execute_code` implementation (ADR-030) -- was `ExecuteCodeTool::invoke()`'s body
+    // before this pass, unchanged in substance, only in where it reaches its state FROM: `skills_`
+    // (this provider's own member, replacing the third independent `shared_codeact_skills()`
+    // instance -- confirmed by red-team to be a behavior-preserving consolidation, since all
+    // instances in this file always resolved the identical `demo_skill_sources()`),
+    // `mounted_skills_`/`exec_state_` (real per-session members, replacing
+    // `shared_mounted_skills_state()`/`shared_exec_state()`), and `runner_binding_->runner()` (the
+    // still-process-wide-shared interpreter, reached only if THIS session holds the claim --
+    // `configure()` is what established that, at session start, not per-call).
+    [[nodiscard]] result<ExecuteCodeReply> real_execute_code(ExecuteCodeArgs a, EffectContext& ctx) {
+        if (runner_binding_ == nullptr) {
+            return std::unexpected(error{failure_class::fatal,
+                                          "execute_code was called before configure() bound this "
+                                          "session to the shared CodeAct runner",
+                                          "cli_chat.codeact_not_configured"});
+        }
+        auto& runner = runner_binding_->runner();
+        if (!runner.ok()) {
+            return std::unexpected(error{failure_class::fatal,
+                                          "the embedded Python interpreter failed to initialize",
+                                          "cli_chat.python_runner_not_initialized"});
+        }
+
+        // CodeAct tool-bridge union, recomputed fresh on EVERY execute_code call -- the identical
+        // per-turn cadence scope_tools_to_mounted_skills already runs on for the model-facing
+        // declaration side above, so a mount that happened this same round is reflected before this
+        // call's own code runs, never a call behind. Three sources, per
+        // core/codeact_tool_union.hpp: this CLI's own bridgeable tools (none today -- execute_code
+        // and mount_skill are deliberately excluded from their own bridge), tools unlocked by
+        // currently mounted skills, and MCP-sourced tools (none in this demo -- no MCP server is
+        // connected here; see protocol/mcp/mcp_tool_bridge.hpp for that real, tested, separately
+        // wired path).
+        auto const codeact_universe = ToolTable::from_tools<WordCountTool>();
+        auto const codeact_skill_tools = scope_tools_to_mounted_skills(
+            codeact_universe, skills_.allowed_tool_names_for(mounted_skills_.all()));
+        auto bridged = union_codeact_tools(ToolTable::from_tools<>(), codeact_skill_tools);
+        if (!bridged) return std::unexpected(bridged.error());
+        auto refreshed = runner.refresh_agent_tools(
+            native_jail::ToolBridgeConfig{*bridged, /*capabilities=*/{}, /*approved=*/true});
+        if (!refreshed) return std::unexpected(refreshed.error());
+
+        ExecRequest req{a.language.empty() ? "python" : a.language, a.code};
+        auto outcome = runner.run(req, exec_state_, ctx);
+        if (!outcome) return std::unexpected(outcome.error());
+
+        ExecuteCodeReply reply;
+        reply.ok = (outcome->klass == exec_outcome_class::ok);
+        reply.stdout_text = outcome->stdout_text;
+        reply.stderr_text = outcome->stderr_text;
+        reply.result_repr = outcome->result_repr;
+        return reply;
+    }
+
+    // Real `mount_skill` implementation (ADR-030) -- was `MountSkillTool::invoke()`'s body; now
+    // checks against this provider's own `mount_roots_` (set once by `configure()`) and mutates
+    // this provider's own `mounted_skills_`, instead of the process-global statics the pre-ADR-030
+    // shape used.
+    [[nodiscard]] result<MountSkillReply> real_mount_skill(MountSkillArgs a, EffectContext&) {
+        bool known = false;
+        for (auto const& [mount_id, host_dir] : mount_roots_) {
+            (void)host_dir;
+            if (mount_id == a.skill_name) {
+                known = true;
+                break;
+            }
+        }
+        if (!known) {
+            return std::unexpected(error{failure_class::contract, "unknown skill: " + a.skill_name,
+                                          "skill.unknown_name"});
+        }
+        mounted_skills_.mount(a.skill_name);
+        return MountSkillReply{true, "mounted: " + a.skill_name};
+    }
+
     SkillsProvider<> skills_;
+    MountedSkillsState mounted_skills_;
+    ExecState exec_state_;
+    std::vector<native_jail::MaterializedSkillMount> mount_roots_;
+    // Non-owning -- `configure()`'s caller (`main()`) owns the referenced binding (itself wrapping
+    // the process-wide-shared runner, both static-lifetime), which must outlive this provider. Same
+    // "granted externally, never owned here" contract as `AgentSession::capabilities_`.
+    CodeActRunnerBinding<native_jail::MediatedPythonRunner>* runner_binding_ = nullptr;
 };
 static_assert(ContextProvider<ToolDeclaringHistoryProvider>);
 
@@ -455,36 +527,13 @@ static_assert(std::is_default_constructible_v<CliSession>);
     return m;
 }
 
-[[nodiscard]] std::vector<ToolCall> tool_calls_of(Message const& m) {
-    std::vector<ToolCall> out;
-    for (ContentItem const& item : m.content) {
-        if (auto const* tc = std::get_if<ToolCall>(&item.value)) out.push_back(*tc);
-    }
-    return out;
-}
-
-[[nodiscard]] std::string text_of(Message const& m) {
-    std::string out;
-    for (ContentItem const& item : m.content) {
-        if (auto const* t = std::get_if<Text>(&item.value)) out += t->text;
-    }
-    return out;
-}
-
-[[nodiscard]] Message tool_results_message(std::vector<ToolResult> results) {
-    Message m;
-    m.role = role::tool;
-    for (ToolResult& r : results) {
-        ContentItem item;
-        item.origin = content_origin::tool;
-        item.value = std::move(r);
-        m.content.push_back(std::move(item));
-    }
-    return m;
-}
+// `tool_calls_of`/`text_of`/`tool_results_message` now come from
+// agentengine/core/tool_call_extraction.hpp (`using namespace agentengine;` above) -- the external
+// round loop that used to need them here moved inside `AgentSession::handle()` itself; only
+// `text_of` is still called directly, to print the session's final converged answer.
 
 void print_skills_banner(std::vector<native_jail::MaterializedSkillMount> const& materialized,
-                          SkillsProvider<>& startup_skills) {
+                          SkillsProvider<>& startup_skills, MountedSkillsState const& mounted_skills) {
     std::cout << "Skills RESOLVED at /skills/<name> -- every one's files are unconditionally readable "
                  "from turn 1 (009 §8b, unaffected by mount state):\n";
     for (auto const& source : demo_skill_sources()) {
@@ -511,7 +560,7 @@ void print_skills_banner(std::vector<native_jail::MaterializedSkillMount> const&
     }
 
     std::cout << "Currently MOUNTED skills (agent-triggered via mount_skill -- 009 §8c Phase 3): ";
-    auto const& mounted = shared_mounted_skills_state().all();
+    auto const& mounted = mounted_skills.all();
     if (mounted.empty()) {
         std::cout << "(none -- nothing is pre-mounted; the agent must call mount_skill)\n";
     } else {
@@ -563,7 +612,6 @@ int main() {
         std::cerr << "FATAL: failed to materialize skill mounts: " << materialized.error().message << "\n";
         return 1;
     }
-    pending_skill_mount_roots() = *materialized;
 
     InMemorySecretStore store;
     store.set(kSecretName, key_env);
@@ -577,9 +625,6 @@ int main() {
     }
     CapabilitySet held = CapabilitySet::grant_root(std::move(grants));
 
-    print_skills_banner(*materialized, startup_skills);
-    std::cout << "\nType a message and press Enter. Type 'exit' or 'quit' to stop.\n\n";
-
     ChatClientCapabilities caps;
     caps.streaming = true;
     caps.tool_calling = true;
@@ -588,8 +633,33 @@ int main() {
     quark::TestKit<CliSession> kit;
     kit.actor().emplace_chat_client(host, kHttpsPort, model, SecretRef{kSecretName}, caps, store,
                                      kPathPrefix);
-    kit.actor().initialize("cli-chat-session", Principal{"cli-user", ""});
+    // `kMaxToolRoundsPerTurn` is now the SESSION's own internal round bound (`AgentSession::handle()`'s
+    // loop, agent_session.hpp) rather than a loop this file drives externally -- one `StartRun` ask
+    // below now resolves an entire multi-round tool conversation internally before returning.
+    std::string const session_id = "cli-chat-session";
+    kit.actor().initialize(session_id, Principal{"cli-user", ""}, /*token_budget=*/std::nullopt,
+                            /*max_turns=*/kMaxToolRoundsPerTurn);
     kit.actor().set_capabilities(&held);
+    // `ExecuteCodeTool`/`MountSkillTool` declare no `Approval<M>` policy (`approval_mode::
+    // never_require`, tool.hpp's own fail-open default), so `invoke_tool`'s step 5 never consults a
+    // decider for either -- no `set_approval_decider()` call is needed for this demo to keep working.
+
+    // ADR-030: claims this session's exclusive right to the shared, process-wide CodeAct runner
+    // (codeact_runner_binding.hpp) and hands the provider its real per-session mount-root knowledge
+    // -- must happen before the first StartRun that could reach execute_code. This CLI only ever
+    // runs ONE session, so this always succeeds in practice; the failure path exists because
+    // `configure()` is a real, general primitive (ADR-030's own proof,
+    // tests/test_codeact_runner_binding.cpp, exercises the rejection case a second session would hit).
+    auto configured = kit.actor().history_provider().configure(
+        session_id, shared_python_runner_binding(*materialized), *materialized);
+    if (!configured) {
+        std::cerr << "FATAL: failed to configure the CodeAct provider: " << configured.error().message
+                   << "\n";
+        return 1;
+    }
+
+    print_skills_banner(*materialized, startup_skills, kit.actor().history_provider().mounted_skills());
+    std::cout << "\nType a message and press Enter. Type 'exit' or 'quit' to stop.\n\n";
 
     std::string line;
     while (true) {
@@ -598,88 +668,19 @@ int main() {
         if (line == "exit" || line == "quit") break;
         if (line.empty()) continue;
 
-        Message next_input = user_message(line);
-        bool converged = false;
-
-        for (int round = 0; round < kMaxToolRoundsPerTurn; ++round) {
-            quark::result<AgentResponse> resp = kit.ask<AgentResponse>(StartRun{next_input});
-            if (!resp.has_value()) {
-                std::cout << "[error: " << resp.error().detail << "]\n";
-                converged = true;
-                break;
-            }
-
-            auto calls = tool_calls_of(resp->message);
-            if (calls.empty()) {
-                std::string const text = text_of(resp->message);
-                if (!text.empty()) std::cout << "Agent: " << text << "\n";
-                converged = true;
-                break;
-            }
-
-            std::vector<ToolResult> results;
-            results.reserve(calls.size());
-            EffectContext exec_ctx;
-            exec_ctx.principal = Principal{"cli-user", ""};
-            exec_ctx.capabilities = &held;
-            // Recomputed fresh EVERY round from the SAME live `shared_mounted_skills_state()` that
-            // `ToolDeclaringHistoryProvider::on_context()` just used to build what was declared to the
-            // model THIS round -- mount state can change mid-conversation now (Phase 3), so a table
-            // computed once before the loop would drift from what's declared the moment a mount
-            // happens. Never a differently-scoped table than what was just declared; see
-            // skill_tool_scoping.hpp's own top comment for why that divergence would be a real gap, not
-            // a cosmetic one.
-            auto const round_universe = ToolTable::from_tools<ExecuteCodeTool, MountSkillTool>();
-            auto const scoped_tools = scope_tools_to_mounted_skills(
-                round_universe, startup_skills.allowed_tool_names_for(shared_mounted_skills_state().all()),
-                {std::string(MountSkillTool::name)});
-            for (std::size_t i = 0; i < calls.size(); ++i) {
-                ToolCall const& call = calls[i];
-                std::cout << "[agent calls " << call.tool_name << "]\n";
-                if (call.tool_name == "execute_code") {
-                    auto args = json::parse(call.arguments_json);
-                    if (args) {
-                        if (auto const* c = args->find("code"); c && c->is_string()) {
-                            std::cout << "  code:\n";
-                            std::cout << "    " << c->as_string() << "\n";
-                        }
-                    }
-                } else if (call.tool_name == "mount_skill") {
-                    auto args = json::parse(call.arguments_json);
-                    if (args) {
-                        if (auto const* s = args->find("skill_name"); s && s->is_string()) {
-                            std::cout << "  skill_name: " << s->as_string() << "\n";
-                        }
-                    }
-                }
-                auto parsed_args = json::parse(call.arguments_json);
-                ToolCallRequest req{call.call_id, call.tool_name,
-                                    parsed_args ? *parsed_args : json::Value::make_object({}),
-                                    /*arguments_tainted=*/true, static_cast<std::uint64_t>(i)};
-                ToolResult r = invoke_tool(scoped_tools, held, req, exec_ctx, nullptr);
-                if (!r.content.empty()) {
-                    if (auto const* d = std::get_if<Data>(&r.content[0].value)) {
-                        auto parsed = json::parse(d->json);
-                        if (parsed) {
-                            if (auto const* out = parsed->find("stdout_text"); out && out->is_string() &&
-                                !out->as_string().empty()) {
-                                std::cout << "  stdout: " << out->as_string() << "\n";
-                            }
-                            if (auto const* err = parsed->find("stderr_text"); err && err->is_string() &&
-                                !err->as_string().empty()) {
-                                std::cout << "  stderr: " << err->as_string() << "\n";
-                            }
-                        }
-                    } else if (auto const* e = std::get_if<Error>(&r.content[0].value)) {
-                        std::cout << "  error: " << e->message << "\n";
-                    }
-                }
-                results.push_back(std::move(r));
-            }
-            next_input = tool_results_message(std::move(results));
+        // One ask now resolves the WHOLE multi-round tool conversation for this turn internally
+        // (AgentSession::handle()'s own loop) -- per-round diagnostics (which tool was called, its
+        // code/skill_name argument, stdout/stderr) that this file used to print by hand-driving the
+        // loop are no longer observable from here without consuming `enable_event_stream()`'s
+        // `tool_call_started`/`tool_call_finished` events (agent_session.hpp), which this pass does
+        // not wire up -- a named simplification, not an attempt to preserve the old level of detail.
+        quark::result<AgentResponse> resp = kit.ask<AgentResponse>(StartRun{user_message(line)});
+        if (!resp.has_value()) {
+            std::cout << "[error: " << resp.error().detail << "]\n";
+            continue;
         }
-
-        if (!converged) std::cout << "[gave up after " << kMaxToolRoundsPerTurn << " tool rounds]\n";
+        std::string const text = text_of(resp->message);
+        if (!text.empty()) std::cout << "Agent: " << text << "\n";
     }
 
     std::cout << "Goodbye.\n";

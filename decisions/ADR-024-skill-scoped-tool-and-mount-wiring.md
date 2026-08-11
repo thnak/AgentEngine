@@ -155,7 +155,23 @@ to the operator separately, out of this ADR's scope.
   structurally.
 - `allowed_tool_names()`/scoping only covers `native_jail`'s `MediatedPythonRunner`. `MediatedShellRunner`
   (bound to one mount id, not a map) and the `wasm` backend (Mount consumption explicitly out of scope
-  in its own source) have no equivalent wiring.
+  in its own source) have no equivalent wiring. **Assessed in depth (2026-08-11), deliberately not
+  forced this session, for concrete reasons rather than left as a bare "not done":**
+  `worktree_mount_sync.hpp`'s `materialize_mount`/`materialize_subtree` (the primitive
+  `skill_mount_materializer.hpp` already reuses for Python) is confirmed genuinely backend-agnostic —
+  it only depends on the abstract `FileSystemAdapter&` interface, not `MediatedPythonRunner`. But:
+  (a) the **wasm** backend's `fs-read`/`fs-write` host callbacks are literal
+  `trap_error("not implemented in M2's minimal host")` stubs (`wasm_backend.cpp`), and
+  `SandboxSpec::mounts` is never even read by `WasmBackend::create()` — there is no real I/O to
+  materialize a skill mount INTO yet; that's a separate, larger, already-deliberately-scoped-out
+  prerequisite (D3/ADR-010's own M2 task text), not a materialization-wiring gap. (b)
+  **`MediatedShellRunner` has zero production callers anywhere in the tree today** (not even
+  `tools/cli_chat.cpp` constructs one) — extending its single-`mount_id` binding to a real
+  multi-mount design (mirroring Python's `split_guest_path`-derived per-call mount resolution) would
+  be building a mechanism with no real consumer to prove it against, the same shape of risk this
+  project's own design reviews have repeatedly flagged elsewhere this cycle. Revisit either half once
+  its real prerequisite exists: wasm fs I/O for (a), a real `MediatedShellRunner` production call
+  site for (b) — not before.
 - `AgentSession` still owns no sandbox and no tool-call loop in production — every proof here runs
   through `cli_chat.cpp`'s hand-driven loop, not through `AgentSession::handle()` itself. Building that
   ownership is a separate, larger architectural question this ADR does not attempt.

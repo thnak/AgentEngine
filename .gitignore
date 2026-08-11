@@ -66,3 +66,6 @@ api-test.txt
 # Local-only provider credentials for the `live-network` ctest label
 # (tools/run-live-provider-tests.ps1 reads this) -- never commit
 apt-openrouter.txt
+
+# Local debug dumps of live-provider chat transcripts -- scratch, never committed
+response-dumps/

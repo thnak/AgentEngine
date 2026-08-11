@@ -183,7 +183,12 @@ reads to the model as "not available here" rather than as a policy essay.
 - **Versioned like a public API** (024), because prompts and agent code depend on it.
 - **Every call is an effect**: attributed, audited, budgeted, cancellable (I4).
 - **`agent.spawn` inherits an attenuated capability set** and a sub-worktree (025 §3) — a spawned
-  agent can never exceed its parent.
+  agent can never exceed its parent. Target design; not yet a real call path. `agent.spawn` has no
+  implementation to wire a sub-worktree to today — only its depth-budget half is proven, in
+  isolation from any real spawn (`decisions/ADR-006-agent-spawn-depth-budget-bound.md` §9), and
+  `AgentSession` owns no sandbox/tool-call loop in production yet
+  (`decisions/ADR-024-skill-scoped-tool-and-mount-wiring.md` §7). Full trace:
+  `docs/architecture/worktree-sharing-skills-and-subagents.md` §3.
 
 **The trade this makes explicit:** a richer library means the agent can do more per execution
 (fewer round trips, less token spend, better results) *and* a wider host attack surface. Each module
@@ -311,8 +316,50 @@ when it grows. Prompt bloat is a regression like any other; without a gate it on
   necessary; whether they are sufficient is unproven. **Partially resolved by
   `decisions/ADR-006-agent-spawn-depth-budget-bound.md`**: the depth half is proven sufficient
   against unbounded recursion, conditional on the effect-mediation boundary (006 §9 G4) holding —
-  see that ADR for the exact scope. The cost half (wall-clock/token spend per spawned run) remains
-  open, tracked against 023's budgets, not this ADR.
+  see that ADR for the exact scope. The cost half (token spend per spawned run — wall-clock is a
+  further, separately-deferred dimension, see below) has a **Draft design sketch (2026-08-11,
+  designed and red-teamed, deliberately NOT an ADR — no code, no tests, implementation currently
+  paused project-wide)**, not a resolution:
+
+  - **Correction first**: ADR-006 and `trust/spawn_budget.hpp`'s own comments cite "023's budgets"
+    as where a spawn's cost ceiling would come from. That's a miscitation — 023 is entirely engine
+    *overhead* regression benchmarks (allocations, atomics, dispatch, cold-start), with no section
+    defining per-run or per-spawn model-usage cost policy. The actually-relevant, already-real
+    mechanism is 001 §4/`TokenBudget<N>` (`agent_session.hpp`'s `run_tokens_consumed_` accounting,
+    real and enforced, "exceeded → Resource failure at the turn boundary") plus 007 §3 rule 2
+    (attenuation-only — already general enough to cover a cost dimension, not depth-specific).
+  - **A naive extension is actively wrong, not just incomplete.** The obvious move — add a
+    `remaining_tokens_` field to `SpawnBudget` alongside `remaining_depth_`, attenuated the same
+    way — inherits a bug from copying depth's pattern onto a semantically different quantity.
+    `SpawnBudget::attenuate_for_spawn()` is a pure, `const`, immutable-value-type call precisely
+    because depth is a **ceiling** (ordinary for two concurrent siblings to each independently
+    compute `parent_depth − 1` off the same parent — both should get it). Tokens are a
+    **consumed pool**, not a ceiling: two concurrent `agent.spawn` calls (concurrency this engine
+    already supports — `Parallelizable`, 006 §6b; `Concurrent`/map-reduce fan-out, 014 §3) each
+    independently attenuating against the same `remaining_tokens_` snapshot could each succeed up
+    to the full remaining amount — a double-spend that defeats the mechanism's entire purpose.
+    This is not hypothetical; it follows directly from capability handles materializing
+    independently per invocation (007 §3 property 3).
+  - **The corrected shape**: a separate `SpawnCostBudget` type — not fused into `SpawnBudget` — so
+    depth's ceiling semantics and tokens' consuming-pool semantics stay orthogonally provable (and
+    so a future wall-clock dimension, whose semantics are closer to depth's narrowing than to
+    tokens' consuming, doesn't get forced through the wrong primitive). Attenuation against the
+    pool must be serialized through the actor that owns the budget (matching Quark's actor model),
+    not a bare value-type call — closing the concurrent-double-spend gap requires a concurrency
+    red-team test in the style of ADR-006's own S-R1/S-R2 (exhaustive/repeated-attempt proof), not
+    just the single-call unit tests depth's proof used. The token amount a child receives must be
+    sourced only from that agent's own compiled `AgentMetadata::token_budget` (never from anything
+    a model's own output could set, I2/I3) — a wider parameter surface than depth's zero-argument
+    design, worth its own explicit mediation-boundary comment when built, not silently inherited
+    from ADR-006's depth-specific argument.
+  - **Wall-clock stays fully, explicitly open** — no existing per-run deadline-enforcement
+    mechanism exists to attenuate against (001's turn-loop prose names "deadline" as a guard;
+    `agent_session.hpp` implements none of it, unlike `TokenBudget<N>`). Not folded into "cost
+    half resolved" language — naming it separately is the point.
+  - This sketch becomes a real ADR (design → red-team → prove → judge, with implemented and
+    sanitizer-tested code, per this project's own ADR discipline — `decisions/README.md`, and the
+    precedent `OpenQuestions.md` OQ-18 already set for rejecting no-code, principle-only entries)
+    once implementation resumes, not before.
 - ~~**Q2** — Non-actionable failure phrasing (§3) is the hardest part to get right: too vague and the
   agent retries forever, too specific and it becomes an architecture description.~~ **Resolved: don't
   hand-tune wording — source it from real occurrences of the same exception class (2026-08-04):**
@@ -348,4 +395,36 @@ when it grows. Prompt bloat is a regression like any other; without a gate it on
   (capability fidelity + in-process necessity) applies unchanged — a JS surface offers the same
   modules for the same reasons, in JS idiom, not a fresh design question.
 - **Q5** — G1's threshold and corpus need to exist before this RFC can be promoted; without them the
-  central claim of this document is an assertion.
+  central claim of this document is an assertion. **Still open — a methodology skeleton exists
+  (2026-08-11, designed and red-teamed; no ADR needed, this is not a security/hot-path/capability
+  choice, but the corpus, threshold, and an actual G1 run do not exist yet, so Q5 stays open until
+  they do):**
+
+  - **Instantiates 022 §4's existing evaluation framework** for G1's specific claim, rather than
+    inventing a parallel one: task corpus (inputs, environment fixtures) + grader + pre-registered
+    decision rule, the same three parts 022 §4 already names.
+  - **Dual metric, not success-rate alone.** The first-draft protocol graded only first-attempt
+    execution success rate — but 022 §4 already lists **token cost** as a named Metric alongside
+    success rate, and §1 of this RFC gives token economics as reason #2 (of 3) for the whole
+    terse-environment design. A verbose-preamble control that ties the reference agent on success
+    rate while costing several times more tokens per attempt is exactly the outcome this RFC's own
+    rationale says should count as a loss for the preamble — a success-rate-only decision rule
+    would score that as a pass. Both metrics are pre-registered, co-equal comparison axes.
+  - **Threshold set pilot-then-confirm, not zero-data.** 022 §4 bars *post-hoc* threshold
+    selection ("Post-hoc threshold selection is how a regression ships") — it does not bar a pilot
+    phase informing a threshold subsequently locked before a separate confirmatory run. A number
+    picked with no pilot data at all is either unfalsifiably easy or unreachable by construction; a
+    pilot establishes the achievable range first, then the threshold is frozen before the
+    confirmatory corpus run that actually decides G1.
+  - **Corpus grows on its own trigger, not a borrowed one.** An earlier draft of this sketch cited
+    022 §5's injection-corpus growth cadence ("grows from real findings... every 024 §4.2 cycle
+    touching 007/008/017/018") as precedent — that cadence is keyed to security-ADR judging on
+    four specific RFCs and doesn't actually describe this corpus's domain. G1's corpus is a
+    UX/prompt-economics corpus; its own trigger is a new `agent.*` module clearing 026 §5's
+    curation rubric, or an observed real guessability failure in eval or production — named
+    explicitly rather than reusing language that doesn't fit the underlying event.
+  - **What this sketch does not do**: build the corpus, pick the actual threshold number, or run
+    G1. Mechanics-now, numbers-later is consistent with how `023-Performance-Targets-and-Budgets.md`
+    §8 resolved its own methodology-only questions (Q2: "a methodology fix, not a number change") —
+    but that precedent stops at mechanics; Q5's own text ("without them the central claim... is an
+    assertion") still governs the threshold and the corpus itself.

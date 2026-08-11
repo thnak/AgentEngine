@@ -932,6 +932,11 @@ add_executable(test_resilient_chat_client test_resilient_chat_client.cpp)
 target_link_libraries(test_resilient_chat_client PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_resilient_chat_client COMMAND test_resilient_chat_client)
 
+# ---- Middleware<Ms...>, model-call interception point (002 §5, ADR-033) ------------------------
+add_executable(test_middleware_chat_client test_middleware_chat_client.cpp)
+target_link_libraries(test_middleware_chat_client PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_middleware_chat_client COMMAND test_middleware_chat_client)
+
 # ---- Milestone 5 Phase F3 -- FailoverChatClient<Primary, Fallback...> (004 §4 explicit failover),
 # core/failover_chat_client.hpp.
 add_executable(test_failover_chat_client test_failover_chat_client.cpp)
@@ -943,6 +948,36 @@ add_test(NAME test_failover_chat_client COMMAND test_failover_chat_client)
 add_executable(test_agent_session_token_budget test_agent_session_token_budget.cpp)
 target_link_libraries(test_agent_session_token_budget PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_agent_session_token_budget COMMAND test_agent_session_token_budget)
+
+# ---- ADR-027 -- AgentSession's real, internal tool-call loop (agent_session.hpp handle()).
+add_executable(test_agent_session_tool_call_loop test_agent_session_tool_call_loop.cpp)
+target_link_libraries(test_agent_session_tool_call_loop PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_agent_session_tool_call_loop COMMAND test_agent_session_tool_call_loop)
+
+# ---- ADR-028 -- session-scoped stateful tools (tool_pipeline.hpp make_tool_descriptor_with_invoke).
+add_executable(test_session_scoped_stateful_tools test_session_scoped_stateful_tools.cpp)
+target_link_libraries(test_session_scoped_stateful_tools PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_session_scoped_stateful_tools COMMAND test_session_scoped_stateful_tools)
+
+# ---- ADR-029 -- suspend-for-human-approval mid-tool-loop (agent_session.hpp run_rounds()/ResolveInteraction).
+add_executable(test_agent_session_suspend_approval test_agent_session_suspend_approval.cpp)
+target_link_libraries(test_agent_session_suspend_approval PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_agent_session_suspend_approval COMMAND test_agent_session_suspend_approval)
+
+# ---- ADR-030 -- session-scoped CodeAct wiring: the runner-binding claim/fail-closed primitive.
+add_executable(test_codeact_runner_binding test_codeact_runner_binding.cpp)
+target_link_libraries(test_codeact_runner_binding PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_codeact_runner_binding COMMAND test_codeact_runner_binding)
+
+# ---- ADR-030 -- full-stack session isolation proof (AgentSession + provider + tool-call round loop).
+add_executable(test_codeact_session_isolation test_codeact_session_isolation.cpp)
+target_link_libraries(test_codeact_session_isolation PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_codeact_session_isolation COMMAND test_codeact_session_isolation)
+
+# ---- 026 §9 Q1 / OQ-14 -- SpawnCostBudgetActor, the actor-serialized spawn-cost pool primitive.
+add_executable(test_spawn_cost_budget test_spawn_cost_budget.cpp)
+target_link_libraries(test_spawn_cost_budget PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_spawn_cost_budget COMMAND test_spawn_cost_budget)
 
 # ---- Milestone 5 Phase G1 -- ChatCallRecording JSON codec (core/chat_recording.hpp), the shared
 # foundation RecordingChatClient<Inner> and ReplayChatClient both depend on.
@@ -1627,6 +1662,16 @@ if(WIN32)
   add_test(NAME test_worktree_staleness COMMAND test_worktree_staleness)
 endif()
 
+# ---- Workflow executor worktree scoping (014 §1 <-> 025 §3, ADR-032) ---------------------------
+# Builds real Blob/Tree fixtures via put_blob/put_tree, same real-crypto (compute_digest)
+# dependency as A1/B1/B2/B3's own tests above.
+if(WIN32)
+  add_executable(test_workflow_worktree_scoping test_workflow_worktree_scoping.cpp)
+  target_link_libraries(test_workflow_worktree_scoping PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_workflow_worktree_scoping COMMAND test_workflow_worktree_scoping)
+endif()
+
 # ---- Branch-merge concurrency proof (025 §9 G3, Milestone 3 Phase B4) ---------------------------
 # Builds real Blob/Tree fixtures via put_blob/put_tree, same real-crypto dependency as A1/B1/B2/B3.
 # Hundreds of simulated-interleaving trials, each doing real SHA-256 work -- bounded (decision 7),
@@ -1878,6 +1923,27 @@ if(AGENTENGINE_BUILD_PYTHON_RUNNER)
     AE_PYTHON_SITE_PACKAGES="${AGENTENGINE_PYTHON_SITE_PACKAGES}")
   add_test(NAME test_python_layer0_sweep COMMAND test_python_layer0_sweep)
   set_tests_properties(test_python_layer0_sweep PROPERTIES
+    ENVIRONMENT "${AE_PYTHON_TEST_ENV}" TIMEOUT 60)
+
+  # ADR-002 §6 item 5 / backlog item #39: does Py_NewInterpreterFromConfig (PEP 684) actually work
+  # as a per-session isolation unit on this concrete build, and does numpy load inside one? Talks
+  # to CPython directly, same reason and same pattern as test_python_layer0_sweep above.
+  add_executable(test_python_subinterpreter_spike test_python_subinterpreter_spike.cpp)
+  target_include_directories(test_python_subinterpreter_spike PRIVATE "${AGENTENGINE_PYTHON_ROOT}/include")
+  target_link_libraries(test_python_subinterpreter_spike PRIVATE
+    agentengine::core "${AE_PYTHON_IMPORT_LIB}" agentengine_warnings)
+  target_compile_definitions(test_python_subinterpreter_spike PRIVATE
+    AE_PYTHON_HOME="${AGENTENGINE_PYTHON_HOME}"
+    AE_PYTHON_SITE_PACKAGES="${AGENTENGINE_PYTHON_SITE_PACKAGES}")
+  # TWO separate ctest entries, not one -- a real finding this investigation made (see the file's
+  # own header comment): a failed numpy import inside a subinterpreter crashes the process on
+  # teardown, so "strict" and "legacy" must never share a process, matching CLAUDE.md's "a test
+  # proving a fork bomb is contained must not be able to take the machine with it".
+  add_test(NAME test_python_subinterpreter_spike_strict COMMAND test_python_subinterpreter_spike strict)
+  set_tests_properties(test_python_subinterpreter_spike_strict PROPERTIES
+    ENVIRONMENT "${AE_PYTHON_TEST_ENV}" TIMEOUT 60)
+  add_test(NAME test_python_subinterpreter_spike_legacy COMMAND test_python_subinterpreter_spike legacy)
+  set_tests_properties(test_python_subinterpreter_spike_legacy PROPERTIES
     ENVIRONMENT "${AE_PYTHON_TEST_ENV}" TIMEOUT 60)
 
   # Priority item 3: the real sys.meta_path finder -- claims A1, A3, plus the §3.4 item 3 / §5.5.2

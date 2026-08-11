@@ -1606,7 +1606,7 @@ inconclusive, and no claim's wording was narrowed to dodge a failure.
 | §6 item 1 (does CPython's C-level import machinery assume a literal `PyList` for `sys.meta_path`?) | **NOT ATTEMPTED** — this implementation replaced the whole list (`PyObject_SetAttrString(sys, "meta_path", new_list)`), never tested an immutable-sequence substitute | — |
 | §6 item 2 (does a `ModuleType.__setattr__` override intercept `sys.meta_path = other_list`?) | **NOT ATTEMPTED** | — |
 | §6 item 3 (does the `import` audit event fire on a `sys.modules` cache-hit path, not just first-load?) | **NOT ATTEMPTED** — §8.8's test only exercises first-load and denied-first-load cases, not a cache-hit case | — |
-| §6 item 5 (subinterpreter pooling feasibility) | **NOT ATTEMPTED** — this implementation is single-interpreter-per-process throughout, matching §5.5.6's decision | — |
+| §6 item 5 (subinterpreter pooling feasibility) | **ANSWERED (2026-08-11): NO on this build** — `Py_NewInterpreterFromConfig` itself works (creation + `sys.modules` isolation both confirmed), but `import numpy` fails under BOTH the strict PEP 684 config and the legacy shared-GIL config against the installed numpy 2.3.3; the strict config's failure additionally crashes the process on teardown (`STATUS_HEAP_CORRUPTION`). This implementation stays single-interpreter-per-process, matching §5.5.6's decision, now on two independent grounds | §11 |
 | §6 item 6 (`RealDirectoryFilesystemAdapter` TOCTOU-safety on Windows) | **NOT ATTEMPTED** — no filesystem adapter wired to `PythonRunner` this pass (ADR-001's `RealFileSystemAdapter` for `ShellRunner` is a separate, already-proven component this ADR does not reuse or extend) | — |
 | MSVC `_DEBUG`/`python313_d.lib` link failure | **Found and fixed** (build-configuration finding, not a design defect) | §8.1, §8.2 |
 | `winreg`, `marshal`, `zipimport`, `time` resident post-bootstrap, unnamed by either version of the ADR's example set | **New finding** | §8.6 |
@@ -1777,3 +1777,96 @@ here would be a component of that design, not replaced by it. What *would* reope
 the finder mechanism itself (not the package-granularity question) has a flaw the accepted A1/A3/A4
 verdicts missed, or a Linux/macOS run surfacing platform-specific behavior this Windows-only pass
 could not see.
+
+## 11. Addendum (2026-08-11) — §6 item 5 answered: subinterpreter pooling is NOT VIABLE on this
+build, with a real crash finding
+
+**Status of this addendum: Proposed, awaiting the project owner's explicit "Judged"** — separate
+from §10.1's own already-Judged status above, which this addendum does not reopen or modify (§10.5:
+nothing here contradicts the finder-mechanism decision). This closes backlog item #39 and §6 item
+5's own text, which explicitly framed the question as "answerable only by trying it."
+
+**The experiment** (`tests/test_python_subinterpreter_spike.cpp`, two independent process
+invocations — see below for why not one process): `Py_NewInterpreterFromConfig` under BOTH configs
+§6 item 5 named —
+the STRICT PEP 684 shape (own GIL, `check_multi_interp_extensions=1`, literally CPython's own
+documented default via `_PyInterpreterConfig_INIT`, `cpython/pylifecycle.h`) and the LEGACY shape
+(shared GIL, `check_multi_interp_extensions=0`, the pre-PEP-684 subinterpreter behavior) — against
+the real, installed `numpy 2.3.3` at `C:\Users\thanh\miniconda3` this ADR's own §8.9 already used
+for the main-interpreter numpy/pandas proof.
+
+**Part A, as §6 item 5 literally asked it — three facts, measured not assumed:**
+
+| Fact | Strict config | Legacy config |
+|---|---|---|
+| `Py_NewInterpreterFromConfig` succeeds at all | **YES** | **YES** |
+| `sys.modules` genuinely separate from the main interpreter (a `json` import in main is invisible in the sub) | **YES**, confirmed with a positive control (main's own `json` import is still intact after the subinterpreter is torn down) | **YES** (same check) |
+| `import numpy` succeeds | **NO** — `ModuleNotFoundError: No module named 'numpy'` deep inside `numpy._core.multiarray`'s own `from . import _multiarray_umath` relative import, surfaced through numpy's own (misleading) "you should not try to import numpy from its source directory" fallback message | **NO** — identical failure, unchanged by relaxing `check_multi_interp_extensions` to 0 |
+
+**numpy fails to import in a subinterpreter on this build, under EITHER configuration.** Relaxing
+`check_multi_interp_extensions` did not help, which is itself informative: this is not simply "an
+extension correctly refusing to load because it hasn't declared multi-phase-init support" (which
+would produce CPython's own clear `ImportError: module ... does not support loading in
+subinterpreters` message) — the actual failure shape (a *relative* import inside numpy's own
+package failing to resolve its own parent package name) is more consistent with numpy's C-level
+extension state genuinely not tolerating a second, independent interpreter in the same process,
+regardless of which subinterpreter shape is used.
+
+**A second, more severe finding, not asked for by §6 item 5 but found while running the experiment:
+a FAILED `import numpy` inside the STRICT config leaves the process's heap corrupted badly enough
+that tearing the subinterpreter down (`Py_EndInterpreter`) crashes it outright**
+(`STATUS_HEAP_CORRUPTION`, `0xC0000374`) — reproduced twice, pinpointed to that exact call via
+incremental `fflush()`-before-every-step instrumentation (every diagnostic line up to and including
+"about to call `Py_EndInterpreter`" is present in the captured output; the next line, "returned",
+never appears). This is why the shipped spike runs the strict and legacy configs as **two separate
+process invocations**, never two phases of one process (CLAUDE.md's "a test proving a fork bomb is
+contained must not be able to take the machine with it" applied directly to an experiment that can
+crash the host process), and why it deliberately **skips** `Py_EndInterpreter`/`Py_Finalize` and
+calls `std::_Exit` instead whenever a numpy import fails inside either config — a one-shot
+diagnostic process needs no clean CPython shutdown, and skipping the now-known-dangerous call is
+what keeps the test safely re-runnable rather than crashing every run.
+
+**Verdict on §6 item 5, Part A: NO, not on this build.** `Py_NewInterpreterFromConfig` itself works
+correctly (creation succeeds, `sys.modules` isolation is real) — the primitive is sound. But the
+actual workload this whole subsystem exists to support (010 §9 G1's "NumPy + pandas produces a
+chart artifact", the same target §8.9 already proved works in the ordinary, single-interpreter
+case) **cannot run inside a subinterpreter on the currently-installed numpy 2.3.3**, under either
+subinterpreter shape, and attempting it under the PEP 684-recommended strict shape is actively
+dangerous (a process-crashing failure mode), not merely unsupported.
+
+**Combined with §5.5.6's already-closed Part B decision** (subinterpreter pooling would also require
+turning the single host-side allowlist slot into a per-interpreter-keyed store and the audit hook
+into a `PyInterpreterState_Get()`-resolving lookup — a materially bigger change, independent of
+whether Part A succeeds): **subinterpreter pooling is not adopted, on two independent grounds now,
+not one.** Even if Part B's architecture work were done, Part A's own answer means numpy/pandas —
+the exact workload 010 §9 G1 targets — would not run inside the pooled subinterpreters anyway,
+without either a different numpy build (one that supports PEP 489 multi-phase init cleanly across
+all its C extensions, not just its pure-Python `__init__.py` layer) or further investigation this
+addendum does not attempt.
+
+**What this addendum does NOT claim:**
+- **Not a claim about numpy's general subinterpreter-readiness** — only about this specific
+  installed build (`numpy 2.3.3` via conda, MKL-linked, at `C:\Users\thanh\miniconda3`) on this
+  specific platform (Windows). A different numpy build (e.g., built without MKL, or a future numpy
+  release with full free-threading/subinterpreter support) might behave differently — untested,
+  named as a real follow-up rather than assumed.
+- **Not a root-cause diagnosis of numpy's own internals** — the exact C-level reason
+  `_multiarray_umath`'s relative import fails (single-phase-init extension state colliding across
+  interpreters, an MKL/distributor-init assumption about process-wide state, or something else) was
+  not traced further; the observable, reproducible fact (fails, and the strict path corrupts the
+  heap on cleanup) is what this ADR needed to answer §6 item 5, and tracing CPython's C internals
+  further was not necessary to reach that answer.
+- **Not a claim about pandas specifically** — pandas was not attempted (numpy failing first made it
+  moot; pandas already depends on numpy).
+- **Not a claim that NO C extension can ever work in a subinterpreter on this build** — only that
+  numpy specifically does not. A pure-Python-only or a genuinely PEP-489-compliant extension was not
+  tested and might behave differently.
+- **Does not reopen §10.1's finder-mechanism decision** (§10.5) — that decision concerns the
+  single-interpreter, per-process design this ADR already ships; this addendum only closes the
+  separate, always-open §6 item 5 question about a DIFFERENT architecture this ADR never adopted.
+
+**Files changed:** `tests/test_python_subinterpreter_spike.cpp` (new, two-mode diagnostic spike,
+never wired into `MediatedPythonRunner` or any production code path — this is fact-finding only,
+identical in kind to `test_python_layer0_sweep.cpp`); `tests/CMakeLists.txt` registers both modes
+(`test_python_subinterpreter_spike_strict`, `test_python_subinterpreter_spike_legacy`) as separate
+ctest entries, both passing (numpy import failure is a measured, reported fact, not a test bug).

@@ -6,14 +6,76 @@ shape of the project.
 
 **Legend:** 🔴 blocks a v1 decision · 🟠 needed before implementation of its area · 🟡 can wait
 
-**No open cross-cutting questions remain as of 2026-08-04.** OQ-1 through OQ-17 are all resolved
-(most recently OQ-8/OQ-9/OQ-10/OQ-11, closing out the 🟡 "can wait" tier). New questions are added
-here as they're identified; per-RFC open questions that don't change the shape of the project stay
-in their own RFC's §Open questions and are never promoted here by default.
+**No open cross-cutting questions remain as of 2026-08-11.** OQ-1 through OQ-18 are all resolved
+(most recently OQ-18). New questions are added here as they're identified; per-RFC open questions
+that don't change the shape of the project stay in their own RFC's §Open questions and are never
+promoted here by default.
 
 ---
 
 ## Resolved
+
+### OQ-18 — Should `ContextProvider` composition become a sequential pipeline, like MAF's?
+
+005 §5. A source-grounded pass on MAF's actual `AIContextProvider` mechanics
+(`docs/research/2026-08-11-maf-middleware-codeact-skills-deep-dive.md` §2) confirmed a real,
+previously-undocumented divergence: AgentEngine's `assemble_context()`
+(`include/agentengine/core/context_assembly.hpp`) composes multiple `ContextProvider`s as
+**independent fan-out** — each contributor sees only `SessionContext`/`EffectContext`, never a
+prior contributor's `ContextContribution` — merging all results afterward in declared order. MAF's
+`AIContextProvider.InvokingCoreAsync` is instead a **sequential pipeline**: provider N receives
+provider N−1's already-merged `AIContext` as its own input (`ChatClientAgent.cs:772-785`, confirmed
+by MAF's own doc comment), so a later provider can react to — dedupe against, build on, or suppress
+— an earlier one's contribution within the same turn.
+
+**Resolved by design → red-team → judge, no ADR needed (2026-08-11): reject a generic
+pipeline/reactive mechanism entirely; fan-out stays.** A concrete opt-in design (a second
+`ReactiveContextProvider` concept, detected at compile time, giving only providers that ask for it
+a read-only `accumulated_so_far` parameter) was drafted and red-teamed. The red-team found it
+insufficient as scoped and unnecessary as a generic mechanism:
+
+1. **No provenance, so the motivating example doesn't actually work.** Neither `ContextContribution`
+   nor `Message` tracks *which* provider contributed a given message/tool
+   (`include/agentengine/core/context_provider.hpp`, `content.hpp`) — unlike MAF, which
+   source-stamps every contributed message (`AIContextProvider.cs:174-176`,
+   `WithAgentRequestMessageSource`) specifically so a later provider can tell what it's reacting to.
+   A bare `accumulated_so_far` parameter without that stamp can only pattern-match flat merged
+   content heuristically — fragile, and in tension with I4 (every effect is attributable).
+2. **Reopens the exact coupling `context_assembly.hpp` already rejected**, just moved from the
+   budget layer (its own comment explicitly rejects a shared cross-contributor budget pool) to the
+   content layer — a reactive provider's output would depend on iteration order and every earlier
+   contributor's actual content, the same shape of unpredictability already ruled out once.
+3. **"Zero-cost, opt-in" doesn't survive the type-erasure boundary.** `ContextProviderDescriptor`'s
+   `std::function`-based closures are already the one shape `assemble_context` iterates; supporting
+   two provider shapes uniformly either widens every descriptor's signature (paid by non-reactive
+   providers too) or adds a real per-iteration runtime branch — a correctable overclaim, not fatal
+   on its own, but one more reason this isn't actually free.
+4. **A no-code, principle-only entry would break this project's own ADR discipline.** Every existing
+   ADR (`decisions/README.md`'s own definition; checked against all 26) pairs a decision with real,
+   implemented, tested C++23 code — none is argument-only.
+5. **The disagreement is resolvable by reading — a strictly better, already-working alternative
+   exists in this repo.** `include/agentengine/core/history_and_skills_provider.hpp`'s
+   `HistoryAndSkillsProvider<HistoryProviderT, SkillsProviderT>` is a real, proven pattern: a
+   bespoke class implementing `ContextProvider` that owns concrete sub-provider instances directly
+   (not via a generic table) and decides their composition itself — proven for the ordering problem
+   (skills-advertisement-before-history on the wire, regression-tested in
+   `test_agent_session_skills_real_backend.cpp`). The same pattern solves a future reactive need
+   (e.g. a Phase-G `MemoryProvider` deduping against a `SkillsProvider`'s advertisement) with
+   **better** provenance than the generic mechanism would have had — the composite's own code calls
+   each sub-provider directly, so it knows exactly which one produced what by construction, no
+   stamping mechanism required — at zero cost to every other provider that doesn't need it.
+
+**Decision:** `assemble_context`/`ContextProvider` are unchanged. When a concrete cross-provider
+reactive need materializes, solve it with a purpose-built composite provider in the
+`HistoryAndSkillsProvider` idiom, not by extending the generic seam. Revisit only if a *third*
+independent pairing shows the composite pattern doesn't scale — and if so, build and prove it as a
+real ADR with the provenance question answered as part of the implementation, not deferred again.
+This also resolves 005 §5's "named `ContextProvider` after MAF" framing: the compose-mechanics
+divergence from MAF is confirmed real and is now a recorded, judged design choice, not an
+undisclosed gap.
+
+Full text: `docs/research/2026-08-11-maf-middleware-codeact-skills-deep-dive.md` §2;
+`include/agentengine/core/context_assembly.hpp`; `include/agentengine/core/history_and_skills_provider.hpp`.
 
 ### OQ-11 — Licence and governance
 
@@ -231,8 +293,23 @@ rejected candidate (`agent.email`, which fails rule 3) to show the rubric actual
 rather than rubber-stamps. Second, `agent.spawn`'s named "sharpest case" — small-proved and
 red-teamed in `decisions/ADR-006-agent-spawn-depth-budget-bound.md`: depth bounds are sufficient
 against unbounded recursion, conditional on the effect-mediation boundary already assumed elsewhere
-(006 §9 G4) holding. The cost half of "depth and budget bounds" remains genuinely open — tracked
-against 023, not resolved by ADR-006.
+(006 §9 G4) holding.
+
+**The cost half is now also real, real-proven code, but only the standalone consume-pool
+primitive — not a wired `agent.spawn` call path (2026-08-11,
+`decisions/ADR-031-spawn-cost-budget-actor-primitive.md`).** `SpawnCostBudgetActor`
+(`trust/spawn_cost_budget.hpp`) is a real Quark `Sequential` actor holding a consumable token pool,
+proven under a REAL, multi-worker `quark::Engine` (not just `quark::TestKit`, which cannot exercise
+a genuine race) to reject the exact double-spend 026 §9 Q1's sketch warned a bare copyable value
+type would suffer: 8 concurrent callers contending for a 1000-token pool at 130 tokens each never
+grant more than 1000 total, with the actor's own Sequential dispatch closing the check-then-decrement
+race, no lock code written by hand. **Not resolved by this**: `agent.spawn` itself still has no real
+call path anywhere in this codebase (confirmed exhaustively during ADR-031's own design phase — no
+`Tool<>`-conforming spawn tool, no nested-agent-run invocation mechanism, no sub-worktree wiring, no
+production `AgentSession` tool-call loop able to host a spawned child; ADR-024 §7's own gap). Wiring
+`SpawnCostBudgetActor` to a real spawn is future work, blocked on that larger, separately-scoped
+machinery landing first — the same "small-proved standalone, not yet wired" shape ADR-006 already
+established for the depth half. Wall-clock/deadline budgeting stays fully open, unchanged.
 
 ### OQ-16 — CodeAct has no discoverability story for its own granted surface
 

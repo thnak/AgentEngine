@@ -61,6 +61,7 @@
 
 #include "agentengine/core/agent_session.hpp"
 #include "agentengine/core/json_schema.hpp"
+#include "agentengine/core/tool_call_extraction.hpp"
 #include "agentengine/protocol/openai/chat_client.hpp"
 #include "agentengine/trust/principal.hpp"
 #include "agentengine/trust/secret.hpp"
@@ -92,7 +93,29 @@ constexpr char const* kDefaultHost = "openrouter.ai";
 constexpr std::uint16_t kHttpsPort = 443;
 constexpr char const* kPathPrefix = "/api/v1";
 constexpr char const* kSecretName = "openrouter-api-key";
-constexpr int kMaxRounds = 6;  // fail the run (not hang) if a session never converges to plain Text
+constexpr int kMaxRounds = 6;  // AgentSession's own max_turns -- fails the run (not hang) if it never
+                                // converges to plain Text; this file only ever OBSERVES via one ask now.
+
+// `AgentSession::handle()` (agent_session.hpp) now resolves the whole multi-round tool conversation
+// INTERNALLY -- there is no external round loop left in this file to inspect each round's raw
+// `ToolCall`s/arguments directly (see agent_session.hpp's own design/red-team record,
+// ADR-027-agent-session-tool-call-loop.md). Structural facts this file still needs to prove --
+// which tools were actually called, and the EXACT value threaded from `get_weather`'s real result
+// into `convert_temperature`'s real argument -- are instead recorded from INSIDE each tool's own
+// `invoke()`, the same function-local-static idiom `tools/cli_chat.cpp` already uses for
+// process-scoped, test/demo-only observability. Cleared at the start of each of MT-1/MT-2 below.
+[[nodiscard]] std::set<std::string>& called_tools_log() {
+    static std::set<std::string> log;
+    return log;
+}
+[[nodiscard]] std::optional<double>& weather_returned_celsius_log() {
+    static std::optional<double> v;
+    return v;
+}
+[[nodiscard]] std::optional<double>& convert_arg_celsius_log() {
+    static std::optional<double> v;
+    return v;
+}
 
 // ---- The four tools: two real, two distractors that must never be called ------------------------
 
@@ -117,7 +140,12 @@ struct GetWeatherTool : Tool<GetWeatherTool, Capabilities<>, EffectClass<effect_
         "Get the current weather for a city. Returns temperature in Celsius ONLY -- never Fahrenheit.";
     using Args = GetWeatherArgs;
     using Reply = GetWeatherReply;
-    static result<Reply> invoke(Args, EffectContext&) { return Reply{13.7, "overcast"}; }
+    static result<Reply> invoke(Args, EffectContext&) {
+        called_tools_log().insert("get_weather");
+        Reply const reply{13.7, "overcast"};
+        weather_returned_celsius_log() = reply.temp_c;
+        return reply;
+    }
 };
 
 struct ConvertTempArgs {
@@ -140,6 +168,8 @@ struct ConvertTempTool : Tool<ConvertTempTool, Capabilities<>, EffectClass<effec
     using Args = ConvertTempArgs;
     using Reply = ConvertTempReply;
     static result<Reply> invoke(Args a, EffectContext&) {
+        called_tools_log().insert("convert_temperature");
+        convert_arg_celsius_log() = a.celsius;
         if (a.to_unit == "kelvin") return Reply{a.celsius + 273.15, "kelvin"};
         return Reply{a.celsius * 9.0 / 5.0 + 32.0, "fahrenheit"};
     }
@@ -160,7 +190,10 @@ struct GetTimeTool : Tool<GetTimeTool, Capabilities<>, EffectClass<effect_class:
     static constexpr std::string_view description = "Get the current local time for a timezone.";
     using Args = GetTimeArgs;
     using Reply = GetTimeReply;
-    static result<Reply> invoke(Args, EffectContext&) { return Reply{"14:32"}; }
+    static result<Reply> invoke(Args, EffectContext&) {
+        called_tools_log().insert("get_time");
+        return Reply{"14:32"};
+    }
 };
 
 struct StockPriceArgs {
@@ -177,7 +210,10 @@ struct StockPriceTool : Tool<StockPriceTool, Capabilities<>, EffectClass<effect_
     static constexpr std::string_view description = "Get the current market price for a stock ticker.";
     using Args = StockPriceArgs;
     using Reply = StockPriceReply;
-    static result<Reply> invoke(Args, EffectContext&) { return Reply{198.42, "USD"}; }
+    static result<Reply> invoke(Args, EffectContext&) {
+        called_tools_log().insert("stock_price");
+        return Reply{198.42, "USD"};
+    }
 };
 
 using AllToolsTable = ToolTable;
@@ -210,44 +246,11 @@ static_assert(ContextProvider<FourToolHistoryProvider>);
     return m;
 }
 
-[[nodiscard]] std::vector<ToolCall> tool_calls_of(Message const& m) {
-    std::vector<ToolCall> out;
-    for (ContentItem const& item : m.content) {
-        if (auto const* tc = std::get_if<ToolCall>(&item.value)) out.push_back(*tc);
-    }
-    return out;
-}
-
 [[nodiscard]] bool has_text(Message const& m) {
     for (ContentItem const& item : m.content) {
         if (std::holds_alternative<Text>(item.value)) return true;
     }
     return false;
-}
-
-// Executes one real ToolCall through the REAL ten-step pipeline (core/tool_pipeline.hpp) -- the same
-// table the session itself declared, not a second hand-rolled dispatch. All four tools here are
-// `Capabilities<>` + `EffectClass<pure>`, so an empty CapabilitySet and a null approve-decider are
-// correct, not a shortcut: step 4 has nothing to bind, step 5 needs no decider under `never_require`.
-[[nodiscard]] ToolResult execute_real(AllToolsTable const& table, ToolCall const& call,
-                                       std::uint64_t call_index, EffectContext& ctx) {
-    CapabilitySet empty;
-    auto args = json::parse(call.arguments_json);
-    ToolCallRequest req{call.call_id, call.tool_name, args ? *args : json::Value::make_object({}),
-                        /*arguments_tainted=*/true, call_index};
-    return invoke_tool(table, empty, req, ctx, nullptr);
-}
-
-[[nodiscard]] Message tool_results_message(std::vector<ToolResult> results) {
-    Message m;
-    m.role = role::tool;
-    for (ToolResult& r : results) {
-        ContentItem item;
-        item.origin = content_origin::tool;
-        item.value = std::move(r);
-        m.content.push_back(std::move(item));
-    }
-    return m;
 }
 
 }  // namespace
@@ -278,93 +281,42 @@ int main() {
     caps.parallel_tool_calls = true;
     caps.max_output_tokens = 1024;
 
-    AllToolsTable const table = all_tools_table();
-
     using RealClient = openai::OpenAIChatClient<InMemorySecretStore>;
     using Session = AgentSession<RealClient, NoSessionState, FourToolHistoryProvider>;
 
     // ==================== MT-1: sequential dependency + distractor-tool discipline =================
+    // `AgentSession::handle()` now resolves the whole tool chain internally (agent_session.hpp) --
+    // one `StartRun` ask returns the FINAL converged response, not an intermediate round. Structural
+    // facts this test needs (which tools ran, the exact threaded celsius value) are recorded from
+    // inside each tool's own `invoke()` via `called_tools_log()`/`*_celsius_log()` above.
     {
+        called_tools_log().clear();
+        weather_returned_celsius_log().reset();
+        convert_arg_celsius_log().reset();
+
         quark::TestKit<Session> kit;
         kit.actor().emplace_chat_client(host, kHttpsPort, model, SecretRef{kSecretName}, caps, store,
                                          kPathPrefix);
-        kit.actor().initialize("mt1-session", Principal{"live-e2e-principal", ""});
+        kit.actor().initialize("mt1-session", Principal{"live-e2e-principal", ""}, /*token_budget=*/std::nullopt,
+                                /*max_turns=*/static_cast<std::uint64_t>(kMaxRounds));
         kit.actor().set_capabilities(&held);
 
-        std::set<std::string> called_tools;
-        std::optional<double> weather_returned_celsius;
-        std::optional<double> convert_arg_celsius;
-        bool converged = false;
-
-        Message next_input = user_message(
+        Message const input = user_message(
             "Step 1: call get_weather for Seattle. Step 2: once you have that result, call "
             "convert_temperature with to_unit=fahrenheit, passing the EXACT celsius number "
             "get_weather returned -- do not estimate, round, or use outside knowledge of Seattle's "
             "weather. Step 3: after both calls, state the final Fahrenheit temperature in one "
             "sentence. Do not skip either tool call.");
 
-        for (int round = 0; round < kMaxRounds; ++round) {
-            quark::result<AgentResponse> resp = kit.ask<AgentResponse>(StartRun{next_input});
-            check(resp.has_value(), "MT1: round completes against the real provider");
-            if (!resp.has_value()) break;
-
-            auto calls = tool_calls_of(resp->message);
-            note("MT1 round tool_calls", std::to_string(calls.size()));
-            if (calls.empty()) {
-                check(has_text(resp->message), "MT1: a no-tool-call round carries a final Text answer");
-                converged = true;
-                break;
-            }
-
-            std::vector<ToolResult> results;
-            results.reserve(calls.size());
-            EffectContext exec_ctx;
-            exec_ctx.principal = Principal{"live-e2e-principal", ""};
-            for (std::size_t i = 0; i < calls.size(); ++i) {
-                ToolCall const& call = calls[i];
-                called_tools.insert(call.tool_name);
-                if (call.tool_name == "convert_temperature") {
-                    auto args = json::parse(call.arguments_json);
-                    if (args) {
-                        if (auto const* c = args->find("celsius"); c && c->is_number()) {
-                            convert_arg_celsius = c->as_number();
-                        }
-                    }
-                }
-                ToolResult r = execute_real(table, call, static_cast<std::uint64_t>(i), exec_ctx);
-                if (r.is_error) {
-                    // NOT a hard failure by itself: this pipeline's own real schema validation
-                    // (tool_pipeline.hpp step 2) legitimately rejects a malformed call, and a model
-                    // recovering by retrying with corrected arguments on the next round is realistic,
-                    // observed behaviour for a smaller/faster model tier -- proof the validation is
-                    // real, not proof AgentEngine is broken. The genuinely hard bar is below: the run
-                    // must still CONVERGE with the CORRECT threaded value, not that every single
-                    // attempt succeeds on the first try.
-                    std::string detail;
-                    if (!r.content.empty()) {
-                        if (auto const* e = std::get_if<Error>(&r.content[0].value)) detail = e->message;
-                    }
-                    note("MT1 tool call rejected (model will see the error, may retry)",
-                         call.tool_name + ": " + detail);
-                }
-                if (call.tool_name == "get_weather" && !r.is_error && !r.content.empty()) {
-                    if (auto const* d = std::get_if<Data>(&r.content[0].value)) {
-                        auto parsed = json::parse(d->json);
-                        if (parsed) {
-                            if (auto const* t = parsed->find("temp_c"); t && t->is_number()) {
-                                weather_returned_celsius = t->as_number();
-                            }
-                        }
-                    }
-                }
-                results.push_back(std::move(r));
-            }
-
-            next_input = tool_results_message(std::move(results));
+        quark::result<AgentResponse> resp = kit.ask<AgentResponse>(StartRun{input});
+        check(resp.has_value(),
+              "MT1: the session converges (resolves the whole tool chain internally, within "
+              "max_turns) against the real provider");
+        if (resp.has_value()) {
+            check(has_text(resp->message), "MT1: the converged response carries a final Text answer");
         }
 
-        check(converged, "MT1: the session reached a final Text answer within the round budget "
-                          "(it did not loop forever or dead-end mid-chain)");
+        auto const& called_tools = called_tools_log();
         check(called_tools.count("get_weather") == 1, "MT1: get_weather was actually called");
         check(called_tools.count("convert_temperature") == 1,
               "MT1: convert_temperature was actually called -- the model did not shortcut the "
@@ -374,79 +326,60 @@ int main() {
         check(called_tools.count("stock_price") == 0,
               "MT1: the stock_price DISTRACTOR was never called, despite being declared and available");
 
-        if (weather_returned_celsius && convert_arg_celsius) {
-            note("get_weather returned celsius", std::to_string(*weather_returned_celsius));
-            note("convert_temperature received celsius", std::to_string(*convert_arg_celsius));
-            check(std::fabs(*weather_returned_celsius - *convert_arg_celsius) < 0.01,
+        if (weather_returned_celsius_log() && convert_arg_celsius_log()) {
+            note("get_weather returned celsius", std::to_string(*weather_returned_celsius_log()));
+            note("convert_temperature received celsius", std::to_string(*convert_arg_celsius_log()));
+            check(std::fabs(*weather_returned_celsius_log() - *convert_arg_celsius_log()) < 0.01,
                   "MT1: convert_temperature's OWN celsius argument matches get_weather's ACTUAL "
                   "returned value (13.7) to within float noise -- real value-threading across a real "
-                  "multi-turn session against a real model, not a fabricated/guessed number");
+                  "multi-round session against a real model, resolved internally by AgentSession's "
+                  "own tool-call loop, not a fabricated/guessed number");
         }
     }
 
-    // ==================== MT-2: forced PARALLEL tool calls, resolved via the fixed wire path =========
+    // ==================== MT-2: forced PARALLEL tool calls, resolved internally =====================
+    // What's no longer externally observable under the internal-loop architecture: the STRICT "both
+    // calls landed in one round, as two distinct ToolCall content items" property this test used to
+    // assert directly on a raw intermediate response -- that response never leaves `handle()` now. A
+    // named, deliberate narrowing (proving it again would mean consuming `enable_event_stream()`'s
+    // `tool_call_started` events between two `turn_started` events, not wired up this pass), not
+    // silently dropped coverage. What MT-2 still proves: the model, explicitly instructed to call
+    // both tools "together, in this SAME response," genuinely reaches for BOTH real tools, and the
+    // run still converges -- which only happens if AgentSession's internal multi-`ToolResult`
+    // feed-back path (the same `tool_results_message` helper this file's fix #2 originally proved,
+    // now shared via tool_call_extraction.hpp) actually works against a real provider.
     {
+        called_tools_log().clear();
+
         quark::TestKit<Session> kit;
         kit.actor().emplace_chat_client(host, kHttpsPort, model, SecretRef{kSecretName}, caps, store,
                                          kPathPrefix);
-        kit.actor().initialize("mt2-session", Principal{"live-e2e-principal", ""});
+        kit.actor().initialize("mt2-session", Principal{"live-e2e-principal", ""}, /*token_budget=*/std::nullopt,
+                                /*max_turns=*/static_cast<std::uint64_t>(kMaxRounds));
         kit.actor().set_capabilities(&held);
 
         quark::result<AgentResponse> resp = kit.ask<AgentResponse>(StartRun{user_message(
             "You must call BOTH get_weather for \"Seattle\" AND get_time for \"Tokyo\" together, as "
             "two separate tool calls issued in this SAME response -- not one after the other across "
             "two turns. Do not answer with text yet; only issue both tool calls now.")});
-        check(resp.has_value(), "MT2: the forced-parallel round completes against the real provider");
-        if (!resp.has_value()) {
-            if (g_failures == 0) {
-                std::fprintf(stderr, "test_agent_session_live_multitool_e2e: ALL PASS\n");
-                return 0;
-            }
-            std::fprintf(stderr, "test_agent_session_live_multitool_e2e: %d FAILURE(S)\n", g_failures);
-            return 1;
-        }
-
-        auto calls = tool_calls_of(resp->message);
-        note("MT2 parallel tool_calls in one turn", std::to_string(calls.size()));
-        check(calls.size() >= 2,
-              "MT2: the model issued at least two ToolCall content items in a SINGLE assistant "
-              "turn -- real parallel tool calling, never exercised live in this codebase before");
-        if (calls.size() >= 2) {
-            check(calls[0].call_id != calls[1].call_id,
-                  "MT2: the two parallel calls carry distinct provider-issued call_ids");
-            std::set<std::string> names{calls[0].tool_name, calls[1].tool_name};
-            check(names.count("get_weather") == 1 && names.count("get_time") == 1,
-                  "MT2: both requested tools are present -- the model genuinely parallelized two "
-                  "DIFFERENT, independent calls, not the same call twice");
-        }
-
-        // Resolve ALL calls from this turn into ONE role::tool Message carrying N ToolResult items --
-        // the exact shape that was structurally broken before this file's own prerequisite fix #2.
-        std::vector<ToolResult> results;
-        results.reserve(calls.size());
-        EffectContext exec_ctx;
-        exec_ctx.principal = Principal{"live-e2e-principal", ""};
-        for (std::size_t i = 0; i < calls.size(); ++i) {
-            ToolResult r = execute_real(table, calls[i], static_cast<std::uint64_t>(i), exec_ctx);
-            check(!r.is_error, "MT2: real tool execution succeeds for each parallel call");
-            results.push_back(std::move(r));
-        }
-
-        quark::result<AgentResponse> resp2 = kit.ask<AgentResponse>(
-            StartRun{tool_results_message(std::move(results))});
-        check(resp2.has_value(),
-              "MT2: feeding back a SINGLE Message carrying multiple ToolResult items is ACCEPTED by "
-              "the real provider -- this is exactly fix #2 (translate_message_to_wire) proven live: "
-              "before it, at most one of the N tool_call_ids would ever reach the wire, and a real "
-              "provider would reject the request as having an unresolved tool_call from the prior turn");
-        if (resp2.has_value()) {
-            check(has_text(resp2->message),
-                  "MT2: after both parallel calls are resolved, the session produces a final Text "
+        check(resp.has_value(),
+              "MT2: the session converges (resolves both real tool calls internally, however many "
+              "rounds that takes) against the real provider");
+        if (resp.has_value()) {
+            check(has_text(resp->message),
+                  "MT2: after both calls are resolved internally, the session produces a final Text "
                   "answer -- the whole forced-parallel round trip completed end to end live");
         } else {
             std::fprintf(stderr, "       error: %.*s\n",
-                         static_cast<int>(resp2.error().detail.size()), resp2.error().detail.data());
+                         static_cast<int>(resp.error().detail.size()), resp.error().detail.data());
         }
+
+        auto const& called_tools = called_tools_log();
+        check(called_tools.count("get_weather") == 1,
+              "MT2: get_weather was actually called (real tool execution, not a fabricated answer)");
+        check(called_tools.count("get_time") == 1,
+              "MT2: get_time was actually called -- the model genuinely reached for BOTH requested "
+              "tools, not just one");
     }
 
     if (g_failures == 0) {

@@ -275,7 +275,12 @@ itself reads or returns no content and grants no new capability — every resolv
 already readable via a capability the operator granted unconditionally at session start (I3: a
 model-triggered call can never mint authority it wasn't already pre-provisioned); mounting only
 activates something already pre-authorized. See ADR-024's dated addendum for the full design record,
-including the MAF research this was directly informed by.
+including the MAF research this was directly informed by. A later, deeper pass on MAF's actual
+`SkillsProvider` dispatcher (`docs/research/2026-08-11-maf-middleware-codeact-skills-deep-dive.md`
+§4) further corroborates the ADR-024 rationale: MAF's per-script approval is coarse-grained by
+construction (one approval gate for the whole `run_skill_script` dispatcher, not per script) — the
+same shape of gap, one level down, from the load-before-use gap ADR-024 already found and built
+`MountedSkillsState` to close.
 
 **Skill names are labels, not identifiers.** Skills are namespaced per origin so a skill fetched
 from a remote source can never shadow a local one — a shadowing attack is otherwise trivial.

@@ -123,6 +123,24 @@ retrieval provider that exposes an on-demand search tool rather than always dump
 context is the concrete precedent (MAF's `TextSearchProvider`), and the same shape covers any
 provider that needs to hand the model a capability rather than a paragraph.
 
+**Composition mechanics — a verified, judged divergence from MAF (OQ-18, resolved 2026-08-11).**
+`assemble_context()` (`include/agentengine/core/context_assembly.hpp`) runs multiple contributors as
+**independent fan-out**: each `on_context()` call sees only `SessionContext`/`EffectContext`, never
+a prior contributor's `ContextContribution`, and results are merged afterward in declared order
+(`instructions` concatenated, `messages`/`tools` appended). MAF's own `AIContextProvider` does not
+work this way — it is a **sequential pipeline**: provider N's input is provider N−1's
+already-merged `AIContext`, letting a later provider see and react to an earlier one's contribution
+within the same turn (`docs/research/2026-08-11-maf-middleware-codeact-skills-deep-dive.md` §2). A
+generic pipeline/reactive mechanism was designed and red-teamed against this seam and **rejected**
+— it would reopen exactly the cross-contributor coupling this file's own budget rule already refuses
+(§3), and MAF's own version only works because it source-stamps every contributed message with its
+origin provider, a provenance mechanism this seam doesn't have and a bare accumulated-context
+parameter can't substitute for. The judged answer: fan-out stays generic; a concrete cross-provider
+reactive need (e.g. a future memory provider deduping against `SkillsProvider`) is solved with a
+purpose-built composite `ContextProvider` in the `HistoryAndSkillsProvider` idiom
+(`include/agentengine/core/history_and_skills_provider.hpp`) — which already proves the pattern for
+the ordering problem — not by extending this generic seam. Full reasoning: `OpenQuestions.md` OQ-18.
+
 Kinds: `HistoryProvider` (conversation history) · `SkillsProvider` (009 §8) · **working** memory
 (in-session scratch, this RFC's `state`) · **episodic** / **semantic** / **procedural** memory,
 whose storage model, writing, retrieval ranking, and consolidation are their own RFC (029) — this

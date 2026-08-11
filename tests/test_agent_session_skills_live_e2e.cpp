@@ -38,6 +38,7 @@
 #include "agentengine/core/history_and_skills_provider.hpp"
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/skill_provider.hpp"
+#include "agentengine/core/tool_call_extraction.hpp"
 #include "agentengine/protocol/openai/chat_client.hpp"
 #include "agentengine/trust/principal.hpp"
 #include "agentengine/trust/secret.hpp"
@@ -69,7 +70,20 @@ constexpr char const* kDefaultHost = "openrouter.ai";
 constexpr std::uint16_t kHttpsPort = 443;
 constexpr char const* kPathPrefix = "/api/v1";
 constexpr char const* kSecretName = "openrouter-api-key";
-constexpr int kMaxRounds = 6;
+constexpr int kMaxRounds = 6;  // AgentSession's own max_turns now (agent_session.hpp)
+
+// `AgentSession::handle()` now resolves any tool call internally (ADR-027-agent-session-tool-call-
+// loop.md) -- there is no external round loop left here to observe a raw `ToolCall` directly.
+// Recorded from inside `ExecuteCodeTool::invoke()` itself instead, the same function-local-static
+// idiom `tools/cli_chat.cpp` already uses.
+[[nodiscard]] bool& execute_code_called_log() {
+    static bool called = false;
+    return called;
+}
+[[nodiscard]] std::string& observed_code_arg_log() {
+    static std::string code;
+    return code;
+}
 
 // ---- A stand-in execute_code tool -- NOT the real sandboxed interpreter (010/026's own scope), a
 // deterministic fake that proves TOOL SELECTION driven by the mounted skill, the same way
@@ -127,7 +141,11 @@ struct ExecuteCodeTool : Tool<ExecuteCodeTool, Capabilities<>, EffectClass<effec
         "the tool the using-the-code-interpreter skill teaches idioms for.";
     using Args = ExecuteCodeArgs;
     using Reply = ExecuteCodeReply;
-    static result<Reply> invoke(Args a, EffectContext&) { return Reply{fake_execute(a.code)}; }
+    static result<Reply> invoke(Args a, EffectContext&) {
+        execute_code_called_log() = true;
+        observed_code_arg_log() = a.code;
+        return Reply{fake_execute(a.code)};
+    }
 };
 
 // ---- ContextProvider fixture: history + the one declared tool -- mirrors
@@ -175,31 +193,11 @@ static_assert(std::is_default_constructible_v<SkillsLiveSession>);
     return m;
 }
 
-[[nodiscard]] std::vector<ToolCall> tool_calls_of(Message const& m) {
-    std::vector<ToolCall> out;
-    for (ContentItem const& item : m.content) {
-        if (auto const* tc = std::get_if<ToolCall>(&item.value)) out.push_back(*tc);
-    }
-    return out;
-}
-
 [[nodiscard]] bool has_text(Message const& m) {
     for (ContentItem const& item : m.content) {
         if (std::holds_alternative<Text>(item.value)) return true;
     }
     return false;
-}
-
-[[nodiscard]] Message tool_results_message(std::vector<ToolResult> results) {
-    Message m;
-    m.role = role::tool;
-    for (ToolResult& r : results) {
-        ContentItem item;
-        item.origin = content_origin::tool;
-        item.value = std::move(r);
-        m.content.push_back(std::move(item));
-    }
-    return m;
 }
 
 }  // namespace
@@ -232,7 +230,8 @@ int main() {
     quark::TestKit<SkillsLiveSession> kit;
     kit.actor().emplace_chat_client(host, kHttpsPort, model, SecretRef{kSecretName}, caps, store,
                                      kPathPrefix);
-    kit.actor().initialize("skills-live-e2e-session", Principal{"live-e2e-principal", ""});
+    kit.actor().initialize("skills-live-e2e-session", Principal{"live-e2e-principal", ""},
+                            /*token_budget=*/std::nullopt, /*max_turns=*/static_cast<std::uint64_t>(kMaxRounds));
     kit.actor().set_capabilities(&held);
 
     // ==================== Turn 1: an ordinary greeting -- no tool involved ==========================
@@ -250,60 +249,31 @@ int main() {
     // resolves to anything if the model actually received and read the using-the-code-interpreter
     // skill's advertisement (SkillsProvider::on_context's system message), matching how a real skill
     // consumer discovers capability by name, not by memorizing the tool schema in isolation.
-    Message next_input = user_message(
+    //
+    // `AgentSession::handle()` now resolves any tool call internally (agent_session.hpp) -- one ask
+    // returns the final converged response directly; whether `execute_code` was actually called, and
+    // with what argument, is recorded from inside `ExecuteCodeTool::invoke()` itself (see
+    // `execute_code_called_log()`/`observed_code_arg_log()` above).
+    execute_code_called_log() = false;
+    observed_code_arg_log().clear();
+
+    quark::result<AgentResponse> resp = kit.ask<AgentResponse>(StartRun{user_message(
         "Please use your code execution skill to run some code that computes the sum 17 + 25, then "
-        "tell me the result.");
-
-    bool converged = false;
-    bool execute_code_called = false;
-    std::string observed_code_arg;
-
-    for (int round = 0; round < kMaxRounds; ++round) {
-        quark::result<AgentResponse> resp = kit.ask<AgentResponse>(StartRun{next_input});
-        check(resp.has_value(), "TURN2: round completes against the real provider");
-        if (!resp.has_value()) break;
-
-        auto calls = tool_calls_of(resp->message);
-        note("TURN2 round tool_calls", std::to_string(calls.size()));
-        if (calls.empty()) {
-            check(has_text(resp->message), "TURN2: a no-tool-call round carries a final text answer");
-            converged = true;
-            break;
-        }
-
-        std::vector<ToolResult> results;
-        results.reserve(calls.size());
-        EffectContext exec_ctx;
-        exec_ctx.principal = Principal{"live-e2e-principal", ""};
-        auto const table = ToolTable::from_tools<ExecuteCodeTool>();
-        for (std::size_t i = 0; i < calls.size(); ++i) {
-            ToolCall const& call = calls[i];
-            if (call.tool_name == "execute_code") {
-                execute_code_called = true;
-                auto args = json::parse(call.arguments_json);
-                if (args) {
-                    if (auto const* c = args->find("code"); c && c->is_string()) {
-                        observed_code_arg = c->as_string();
-                    }
-                }
-            }
-            CapabilitySet empty;
-            auto args = json::parse(call.arguments_json);
-            ToolCallRequest req{call.call_id, call.tool_name, args ? *args : json::Value::make_object({}),
-                                /*arguments_tainted=*/true, static_cast<std::uint64_t>(i)};
-            results.push_back(invoke_tool(table, empty, req, exec_ctx, nullptr));
-        }
-        next_input = tool_results_message(std::move(results));
+        "tell me the result.")});
+    check(resp.has_value(),
+          "TURN2: the session converges (resolves the tool call internally, within max_turns) "
+          "against the real provider");
+    if (resp.has_value()) {
+        check(has_text(resp->message), "TURN2: the converged response carries a final text answer");
     }
 
-    check(converged, "TURN2: the session reached a final text answer within the round budget");
-    check(execute_code_called,
+    check(execute_code_called_log(),
           "TURN2: execute_code was actually called -- the model reached for the tool its mounted "
           "using-the-code-interpreter skill names, in response to being asked for the SKILL by name, "
           "not the tool name -- the live, behavioural proof that a mounted skill actually reaches and "
           "influences a real model's real tool selection, not just the outbound wire bytes");
-    if (!observed_code_arg.empty()) {
-        note("execute_code code argument", observed_code_arg);
+    if (!observed_code_arg_log().empty()) {
+        note("execute_code code argument", observed_code_arg_log());
     }
 
     if (g_failures == 0) {

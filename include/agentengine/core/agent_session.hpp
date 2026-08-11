@@ -11,12 +11,15 @@
 // type-erasing the seam this early — 004's real `ChatClient` seam (and any type-erasure decision
 // for it) isn't due until Milestone 5.
 //
-// M1 scope only (docs/planning/milestone-1-core-substrate-breakdown.md task 3): `handle()`
-// implements 001 §3's turn loop in miniature — assemble context (the full history, trivially),
-// call the provider, append the response. Steps 3a-3c (tool-call resolution, approval, invocation)
-// don't apply with no tools declared yet (006/002 land in Milestone 2); policy resolution,
-// checkpointing (019), and real timestamps (which would be an unrecorded wall-clock read, 001 §7 —
-// premature before Clock is a wired capability) are deliberately not touched here.
+// `handle()` implements 001 §3's real turn loop: assemble context, call the provider, resolve any
+// tool calls the response carries via the real ten-step pipeline (006 §3, core/tool_pipeline.hpp),
+// feed results back, and repeat — bounded by `max_turns_` — until a round converges with no tool
+// call. See ADR-027-agent-session-tool-call-loop.md for the design/red-team/prove record; scoped
+// there to `EffectContext&`-only tools and synchronous-decider-only approval (session-scoped
+// stateful tools and suspend-for-human approval are separate, later design passes). Policy
+// resolution, checkpointing (019) of mid-loop state, and real timestamps (which would be an
+// unrecorded wall-clock read, 001 §7 — premature before Clock is a wired capability) are still
+// deliberately not touched here.
 
 #include <algorithm>
 #include <chrono>
@@ -28,6 +31,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <variant>
 #include <vector>
 
 #include "quark/core/actor.hpp"
@@ -48,6 +52,7 @@
 #include "agentengine/core/run_event.hpp"
 #include "agentengine/core/standing_effect.hpp"
 #include "agentengine/core/stream.hpp"
+#include "agentengine/core/tool_call_extraction.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/trust/principal.hpp"
 
@@ -124,6 +129,21 @@ struct StartRun {  // ae-naming-lint: allow StartRun — 001 §1 names this mess
     // retroactively made to supply one. Named explicitly, not silently assumed to be a security
     // regression: any NEW caller that wants the real admission check need only supply `caller`,
     // proven for real in `test_agent_session_admission.cpp`.
+    std::optional<SessionCaller> caller = std::nullopt;
+};
+
+// ADR-029: resumes a run `run_rounds()` suspended in its suspend-for-approval branch. A SEPARATE
+// message from `StartRun`, not an added field on it -- red-team finding #1 measured
+// `sizeof(quark::Ask<StartRun, AgentResponse>)` growing from 160 to 200 bytes with an added
+// `std::optional<std::string> resolving_interaction_id`, over Quark's hard 192-byte
+// `MessagePool::kMaxPayload` cap (CLAUDE.md: never fork/patch Quark in-tree to raise it). This
+// narrower, separate type was measured for real (a compiled probe, not estimated) at
+// `sizeof(quark::Ask<ResolveInteraction, AgentResponse>) == 136` bytes -- safely under the cap.
+struct ResolveInteraction {  // ae-naming-lint: allow ResolveInteraction — new ADR-029 vocabulary; 027 has not been updated to list it
+    std::string interaction_id;
+    bool        approved = false;
+    // Same admission shape and same narrowing rationale as `StartRun::caller` immediately above --
+    // reused, not reinvented, for exactly the reason that comment gives.
     std::optional<SessionCaller> caller = std::nullopt;
 };
 
@@ -252,21 +272,26 @@ template <class ChatClientT, class StateT = NoSessionState,
 class AgentSession
     : public quark::Actor<AgentSession<ChatClientT, StateT, HistoryProviderT>, quark::Sequential> {
 public:
-    using protocol = quark::Protocol<quark::Ask<StartRun, AgentResponse>, TimerWake, BackgroundTaskDone>;
+    using protocol = quark::Protocol<quark::Ask<StartRun, AgentResponse>,
+                                      quark::Ask<ResolveInteraction, AgentResponse>, TimerWake,
+                                      BackgroundTaskDone>;
 
-    // 001 §3's turn loop, in miniature. Milestone 5 Phase B4: `ChatClientT::chat()` is now a real
-    // `ae::task<result<ChatResponse>>` coroutine (chat_client.hpp), so this handler is Quark's async
-    // form (`quark::task<>`, ADR-007's hybrid dispatch) and `co_await`s it directly — the first
-    // `Ask<Q,R>` handler in either tree to combine async dispatch with `m.respond(...)`, per this
-    // milestone's own research: `m`'s underlying descriptor and `effect_context_` (an `AgentSession`
-    // data member, not a call-scoped value) both stay valid across every suspend point, so `m.respond`
-    // after a `co_await` is exactly as safe as it is in a sync handler. Every `ChatClientT` conformer
-    // used under `quark::TestKit` today never genuinely parks (no cross-actor `co_await` inside its
-    // own `chat()` body), so this `co_await` completes inline within one `drive()` pass — the same
-    // "no co_await ⇒ no real parking" property `task<void>` already relies on — and every existing
-    // `TestKit`-driven test keeps working unchanged; only a `ChatClientT` that itself awaits a genuine
-    // cross-actor primitive would need a real `Engine`, not `TestKit` (which has no async carrier —
-    // `quark/core/testkit.hpp`'s own `Suspended` seam note).
+    // 001 §3's turn loop, now a real bounded round loop (superseding M1's "one model call per run"
+    // scope note that used to sit here — see ADR-027-agent-session-tool-call-loop.md for the
+    // design/red-team/prove record). One `StartRun` ask can now trigger N internal rounds of
+    // model-call -> tool-call -> feed-back, all within this one coroutine, before exactly one
+    // `m.respond(...)` (or none, on any failure path — every branch below keeps the pre-existing
+    // "never fabricate a response, never hang" fail-closed shape: `quark::TestKit`/a real `Engine`'s
+    // reply-cell fails a never-answered `Ask` deterministically on handler completion, not a hang).
+    //
+    // Scope (decided, not re-litigated per-call): only tools whose `invoke()` needs nothing beyond
+    // `EffectContext&` are reachable through this loop — a tool needing session-scoped mutable state
+    // (a persistent interpreter, mounted-skill state) is a separate, later design (`Tool<>::invoke()`
+    // has no path to `state_` today). Approval is synchronous-decider only by default
+    // (`approval_decider_` below); ADR-029 adds an OPT-IN (`suspend_for_approval_`, default false)
+    // path that suspends a round for a real human answer via the `open_interaction()`/
+    // `resolve_interaction()` primitives this comment used to call "existing but unwired" — see
+    // `run_rounds()` and `handle(Ask<ResolveInteraction, ...>)` below.
     quark::task<> handle(quark::Ask<StartRun, AgentResponse> const& m) {
         // Milestone 5 Phase H2 (018 §2): admission is checked FIRST, before `run_counter_` even
         // increments — a denied caller must not consume a run_id or mutate any session state, the
@@ -280,150 +305,350 @@ public:
         if (m.query.caller.has_value() &&
             !principal_admitted_for(Principal{m.query.caller->id, m.query.caller->tenant_id}, principal_)) {
             ++admission_denied_count_;
-            // Same fail-closed shape as every other branch in this handler: never respond, rather
-            // than fabricate a denial `AgentResponse` there is no error slot to carry (see the
-            // budget/context/chat-failure branches below for the same reasoning, established
-            // Phase F4).
+            co_return;
+        }
+
+        // ADR-029 red-team finding #5, narrowed to `interaction_reason::approval` specifically (NOT
+        // `has_open_interactions()` in general): `test_agent_session_suspend_resume.cpp` /
+        // `test_suspended_zero_resources_e2e.cpp` already proved, before this ADR, that an open
+        // `input`/`auth` `Interaction` (001 §2's general "durable, out-of-band wait" record — e.g. a
+        // host's own passivate/reactivate bookkeeping) coexists fine with an ordinary new `StartRun`;
+        // that Interaction names no pending, un-invoked tool call and leaves `history_` in an
+        // otherwise-ordinary state a fresh run can safely append to. An open `approval` Interaction is
+        // different in kind: `run_rounds()`'s suspend branch (below) mints it ONLY while `history_`
+        // ends in a pending, un-invoked assistant tool-call round — a second concurrent `StartRun`
+        // over that exact state would be genuinely incoherent (which round do the eventual tool
+        // results belong to?), not merely redundant. So only THIS reason blocks a fresh run.
+        bool const has_open_approval =
+            std::any_of(open_interactions_.begin(), open_interactions_.end(),
+                        [](Interaction const& i) { return i.reason == interaction_reason::approval; });
+        if (has_open_approval) {
             co_return;
         }
 
         // 001 §1: "Run: An Ask<StartRun, RunResponse> to the session actor" — literally, one run
-        // per StartRun ask. `run_id` is minted here, deterministically, from the session's own
-        // monotonic counter (never wall-clock — 001 §7/I5), the identity 019 §3's idempotency-key
-        // derivation and this milestone's own Phase D checkpoint records both need.
+        // per StartRun ask, regardless of how many internal rounds it takes to converge. `run_id`
+        // is minted here, deterministically, from the session's own monotonic counter (never
+        // wall-clock — 001 §7/I5).
         run_counter_ += 1;
-        // Milestone 5 Phase F4 (004 §5: "per-run TokenBudget<N>"). A fresh accumulator for THIS run
-        // -- the budget is per-run, not per-session-lifetime, so a prior run's consumption must not
-        // carry over and silently tighten this one's ceiling.
         run_tokens_consumed_ = 0;
-        // Milestone 5 Phase H4 (018 §1: "delegation only via on_behalf_of, never token
-        // passthrough"). `effect_context_.principal` was never assigned anywhere before this —
-        // every effect and every outbound `ChatClient::chat()` call (018 §4's "native seam backend
-        // ... held to the identical discipline") saw a default-constructed, empty `Principal{}`
-        // regardless of who actually owned the session. The session's OWN owning principal
-        // (`principal_`, set once at `initialize()`) is exactly what 018 §1 asks an outbound call
-        // to carry: for a root session this IS the caller's real identity; for a session
-        // `initialize()`d with a `derive_on_behalf_of()`-derived principal (H4's delegated-call
-        // case — a sub-agent invocation, see `test_agent_session_delegation.cpp`), the very same
-        // assignment is what threads `on_behalf_of` through, with no separate/parallel path that
-        // could instead carry a forwarded caller token.
-        effect_context_.principal = principal_;
-        // ADR-018. Before it, this was never assigned anywhere: every session run carried a NULL
-        // capability set, so any effect reached from a turn -- including a real backend's own
-        // outbound-credential resolution (004 §1 / 018 §4) -- was denied by construction. Harmless
-        // while every conformer was a mock that performs no effects; the blocker the moment one is
-        // real. Non-owning, exactly like `EffectContext::capabilities` itself: the host that grants
-        // it owns it and must outlive the session. Stays null unless a host set one, so I2 holds
-        // unchanged -- an unset session still reaches no effect.
+        effect_context_.principal    = principal_;
         effect_context_.capabilities = capabilities_;
-        effect_context_.run_id     = session_id_ + ":run:" + std::to_string(run_counter_);
-        // 001 §2: "Turn: A segment of a run's coroutine between model calls." This milestone's
-        // turn loop (still M1's own scope: no tool-call loop, one model call per run) makes exactly
-        // one model call per run, so `turn_index` is always 0 here — real identity, not a fake
-        // placeholder, for the one turn that actually executes; a future multi-turn tool-calling
-        // loop would increment it once per additional model call within the SAME run, which is
-        // exactly what this field exists for. That loop itself is a separate, un-named gap (001 §3
-        // steps 3a-3c / 006's real tool pipeline are not wired into this handler at all) — not
-        // built here, named rather than silently assumed done.
-        effect_context_.turn_index = 0;
+        effect_context_.run_id       = session_id_ + ":run:" + std::to_string(run_counter_);
+        effect_context_.turn_index   = 0;
         last_run_id_ = effect_context_.run_id;
 
-        // Milestone 7 Phase A (013 §1). This run_id's own subsequence in `run_event_seq_by_run_`
-        // starts fresh at 1 the first time it's looked up (a map, keyed per run_id since Phase B --
-        // see `emit_run_event_for()`'s own comment) -- everything below is seq 1, 2, 3, ... for THIS
-        // run_id, never carrying a prior run's count forward (013 §1: "monotonic per run"). No event
-        // fires for the admission-denial branch above: 001 §1 mints no Run at all when admission
-        // fails, so there is no run_id to attach an event to.
         emit_run_event(run_event_kind::run_started);
-
         history_.push_back(m.query.input);
 
-        emit_run_event(run_event_kind::turn_started, run_event_payload::Turn{effect_context_.turn_index});
+        co_await run_rounds(m);
+    }
 
-        // Milestone 4 Phase B2: what the model sees is now derived through a real
-        // `ContextProvider` (005 §3/§5) instead of `ChatRequest{history_}` directly — still exactly
-        // one contributor (`HistoryProviderT`) for now, not yet the fully general N-contributor
-        // assembly (budgets/drop-order, Phase B3's own standalone `assemble_context()`); that
-        // generalization is deferred to Phase G, when a second real provider (memory) actually
-        // needs to be composed alongside this one (decision 7's build ordering).
+    // ADR-029: resumes a run `run_rounds()` suspended in its suspend-for-approval branch, with a
+    // real human's answer. Ordering below fixes red-team finding #4 (validate BEFORE resolving, not
+    // resolve-then-discover-a-mismatch): an unknown interaction id, or a `history_` tail that no
+    // longer looks like the exact pending round that was suspended, fails closed WITHOUT mutating
+    // `open_interactions_` or `history_` at all.
+    quark::task<> handle(quark::Ask<ResolveInteraction, AgentResponse> const& m) {
+        // Same admission shape as `StartRun::caller` (018 §2) above, reused for the same reason
+        // (red-team finding #6): an unrelated principal must not resolve another principal's pending
+        // approval by guessing an interaction_id.
+        if (m.query.caller.has_value() &&
+            !principal_admitted_for(Principal{m.query.caller->id, m.query.caller->tenant_id}, principal_)) {
+            ++admission_denied_count_;
+            co_return;
+        }
+
+        auto it = std::find_if(open_interactions_.begin(), open_interactions_.end(),
+                                [&](Interaction const& i) { return i.interaction_id == m.query.interaction_id; });
+        if (it == open_interactions_.end()) {
+            co_return;  // unknown id -- fail closed, nothing mutated
+        }
+
+        // `run_rounds()`'s suspend branch always leaves `history_` ending in the assistant message
+        // that carries the pending tool call(s) (it suspends BEFORE folding any tool-results message
+        // in) -- if that shape isn't still true, session state has moved on since suspension (a
+        // second resolver already ran, or something else mutated history_) and resuming now would
+        // resolve calls against a round that may no longer be the one a human actually reviewed.
+        if (history_.empty() || history_.back().role != role::assistant) {
+            co_return;
+        }
+        std::vector<ToolCall> const pending_calls = tool_calls_of(history_.back());
+        if (pending_calls.empty()) {
+            co_return;
+        }
+
+        result<void> const resolved = resolve_interaction(it->interaction_id);
+        if (!resolved) {
+            co_return;  // lost a race with another resolver for this same id -- fail closed
+        }
+        emit_run_event(run_event_kind::input_resolved,
+                        run_event_payload::InteractionRef{m.query.interaction_id});
+
+        std::size_t const response_msg_index = history_.size() - 1;
+
+        if (!m.query.approved) {
+            // Denied: fold a denial `ToolResult` for every pending call (the same shape
+            // `invoke_tool`'s own fail-closed-missing-decider path already produces) and feed it back
+            // to the model like any other tool error -- it may retry with different arguments,
+            // explain to the user why it can't proceed, or ask again. `tool_call_requires_approval`
+            // in `run_rounds()` is what decides whether a NEW attempt suspends again.
+            std::vector<ToolResult> results;
+            results.reserve(pending_calls.size());
+            for (ToolCall const& call : pending_calls) {
+                emit_run_event(run_event_kind::approval_resolved,
+                                run_event_payload::ApprovalResolved{call.call_id, false,
+                                                                      m.query.interaction_id});
+                results.push_back(
+                    make_denial_result(call.call_id, "denied by operator", "tool.approval_denied"));
+            }
+            history_.push_back(tool_results_message(std::move(results)));
+            co_await history_provider_.on_turn_end(
+                TurnView{std::span<Message const>{history_.data() + response_msg_index,
+                                                    history_.size() - response_msg_index}},
+                effect_context_);
+            emit_run_event(run_event_kind::turn_finished,
+                            run_event_payload::Turn{effect_context_.turn_index});
+            ++effect_context_.turn_index;
+            co_await run_rounds(m);
+            co_return;
+        }
+
+        // Approved: re-derive the same tool table this round would have used (a fresh `on_context`
+        // call, matching `run_rounds()`'s own "re-assembled fresh every round" rule) and invoke every
+        // pending call for real through the ordinary `invoke_tool` pipeline (not bypassed -- I3: a
+        // human's real decision drives this, but every other pipeline step -- capability, taint,
+        // idempotency, accounting -- still runs exactly as it would have inline). The one-shot
+        // decider approving unconditionally is safe specifically BECAUSE the validation above already
+        // confirmed `pending_calls` is the exact, unchanged set a human was shown.
         SessionContext session_ctx{session_id_, principal_, history_};
         result<ContextContribution> contribution =
             co_await history_provider_.on_context(session_ctx, effect_context_);
         if (!contribution) {
-            // Same fail-closed shape as the chat-failure branch below — never fabricate a context.
             emit_run_event(run_event_kind::run_failed,
-                            run_event_payload::RunFailed{"run.context_unavailable", contribution.error().message});
+                            run_event_payload::RunFailed{"run.context_unavailable",
+                                                          contribution.error().message});
             co_return;
         }
+        ToolTable const tool_table = ToolTable::from_descriptors(contribution->tools);
+        CapabilitySet const empty_caps = CapabilitySet::grant_root({});
+        CapabilitySet const& held      = capabilities_ ? *capabilities_ : empty_caps;
+        ApprovalDecider const one_shot_approve = [](std::string_view, std::string const&) { return true; };
 
-        // `contribution->tools` (a HistoryProviderT/future N-contributor assembler may declare tools,
-        // context_provider.hpp's own top comment) previously had no destination here at all -- computed
-        // by `on_context` above and then silently discarded, so no `AgentSession` run has ever been
-        // able to present a tool to a model through the real turn loop, only through the standalone
-        // `invoke_agent_tool()` entry point (test_agent_tool_invocation.cpp). Forwarded now; `messages`
-        // stays the first positional field so every existing single-brace `ChatRequest{...}` call site
-        // elsewhere is unaffected (this is the only construction site that had a `contribution` to draw
-        // a second field from).
-        ChatRequest request{contribution->messages, contribution->tools};
-        if (!chat_client_) {
-            // ADR-018: only reachable for a non-default-constructible `ChatClientT` whose owner never
-            // called `emplace_chat_client()`. Same fail-closed shape as every other branch here --
-            // never fabricate an `AgentResponse` for a run that never reached a model.
-            emit_run_event(run_event_kind::run_failed,
-                            run_event_payload::RunFailed{"run.no_chat_client", "no ChatClientT configured"});
-            co_return;
+        std::vector<ToolResult> results;
+        results.reserve(pending_calls.size());
+        for (std::size_t i = 0; i < pending_calls.size(); ++i) {
+            ToolCallRequest const req = tool_call_request_of(pending_calls[i], i);
+            emit_run_event(run_event_kind::tool_call_started,
+                            run_event_payload::ToolCallStarted{pending_calls[i].call_id,
+                                                                pending_calls[i].tool_name});
+            ToolInvocationAudit audit;
+            ToolResult result =
+                invoke_tool(tool_table, held, req, effect_context_, one_shot_approve, &audit);
+            emit_run_event(run_event_kind::tool_call_finished,
+                            run_event_payload::ToolCallFinished{audit.call_id, audit.ok});
+            emit_run_event(run_event_kind::approval_resolved,
+                            run_event_payload::ApprovalResolved{pending_calls[i].call_id, true,
+                                                                  m.query.interaction_id});
+            results.push_back(std::move(result));
         }
-        emit_run_event(run_event_kind::model_call_started);
-        result<ChatResponse> response = co_await chat_client_->chat(request, effect_context_);
-        emit_run_event(run_event_kind::model_call_finished);
-        if (!response) {
-            // 001 §6's failure classification isn't wired up at this milestone — fail closed by
-            // never responding, rather than fabricating a placeholder AgentResponse. The caller's
-            // ask then resolves however the reply-cell's own "never replied" path surfaces it
-            // (quark/core/testkit.hpp: "failed by reply-before-teardown if the handler never
-            // replied — never a hang").
-            emit_run_event(run_event_kind::run_failed,
-                            run_event_payload::RunFailed{"run.chat_failed", response.error().message});
-            co_return;
-        }
-
-        // Milestone 5 Phase F4 (004 §5: "per-run TokenBudget<N> -- exceeded -> Resource failure at
-        // the turn boundary"). Counts input_tokens + output_tokens: those two are what every
-        // backend's own wire usage report actually bills for. `cached_input_tokens` is a discount
-        // on part of the input total already counted (a cache HIT, not additional consumption);
-        // `reasoning_tokens`/`cache_write_tokens` are provider-specific sub-costs folded into what
-        // a provider already bills as output/input (docs/research/2026-08-07-provider-metadata-and-
-        // sampling-params-survey.md) -- adding either again here would double-count against the same
-        // ceiling. Enforced AFTER the call, never before: this milestone's turn loop makes exactly
-        // one model call per run (turn_index is always 0, no tool-call loop exists yet, see the
-        // comment above), so a pre-call check against an accumulator that is always 0 at call time
-        // would be validating a scenario that can't happen yet (CLAUDE.md).
-        run_tokens_consumed_ += response->usage.input_tokens + response->usage.output_tokens;
-        if (token_budget_.has_value() && run_tokens_consumed_ > *token_budget_) {
-            // Same fail-closed shape as the two branches above (context-contribution failure,
-            // chat-call failure): never fabricate a successful AgentResponse over budget, and don't
-            // append this turn to history either. `AgentResponse` has no error slot to carry a typed
-            // `Resource` failure through `Ask<StartRun, AgentResponse>`, so "closed" here means what
-            // it already means elsewhere in this handler: never respond. The caller's ask then
-            // resolves via the reply-cell's own "never replied" path (quark/core/testkit.hpp: "failed
-            // by reply-before-teardown if the handler never replied -- never a hang").
-            emit_run_event(run_event_kind::run_failed,
-                            run_event_payload::RunFailed{"run.token_budget_exceeded",
-                                                          "per-run token budget exceeded"});
-            co_return;
-        }
-
-        history_.push_back(response->message);
-        // Milestone 4 Phase G3: `TurnView` names exactly the messages THIS turn added -- the input
-        // plus the response, both just pushed and therefore contiguous at the tail of `history_`
-        // right now (a span taken AFTER both pushes complete, over the vector's current, single
-        // allocation -- never dangling across a push that could reallocate).
-        std::span<Message const> const turn_messages{history_.data() + history_.size() - 2, 2};
-        co_await history_provider_.on_turn_end(TurnView{turn_messages}, effect_context_);
+        history_.push_back(tool_results_message(std::move(results)));
+        co_await history_provider_.on_turn_end(
+            TurnView{std::span<Message const>{history_.data() + response_msg_index,
+                                                history_.size() - response_msg_index}},
+            effect_context_);
         emit_run_event(run_event_kind::turn_finished, run_event_payload::Turn{effect_context_.turn_index});
-        emit_run_event(run_event_kind::run_finished);
-        m.respond(AgentResponse{response->message, response->usage});
+        ++effect_context_.turn_index;
+        co_await run_rounds(m);
     }
+
+private:
+    // ADR-029: the shared "assemble context -> call model -> invoke calls -> fold results ->
+    // continue" control flow both `handle(Ask<StartRun, ...>)`'s fresh run and
+    // `handle(Ask<ResolveInteraction, ...>)`'s resumed continuation drive, written exactly once —
+    // previously this was `handle(Ask<StartRun, ...>)`'s entire loop body inline; ADR-029 factors it
+    // out rather than duplicating it a second time for the resume path. `AskT` is whichever of the
+    // two `quark::Ask<...>` types is currently driving the run; both share the same `respond
+    // (AgentResponse)` shape (Quark's `Ask<Q, R>` is uniform in `R` regardless of `Q`), which is all
+    // this needs from `m`. Returns `quark::task<std::monostate>`, never bare `quark::task<>` --
+    // ADR-047 (see task.hpp's own banner comment, and `context_provider.hpp`'s `on_turn_end` for
+    // this codebase's own established precedent): only `task<T>` for `T != void` is a genuinely
+    // awaitable nested coroutine a handler's own `task<void>` frame can `co_await`; a second
+    // top-level `task<void>` is the executor-only, detach()-only handler-frame type and has no
+    // `await_resume()` at all.
+    template <class AskT>
+    quark::task<std::monostate> run_rounds(AskT const& m) {
+        // ADR-018's non-owning capability pointer, `nullptr` by default ("this session may reach no
+        // effect", I2). `invoke_tool` takes `CapabilitySet const&`, not a pointer — a null
+        // `capabilities_` falls back to a real, empty, root-granted set so every tool call this run
+        // attempts fails CLOSED at `invoke_tool`'s own step-4 authorize check (`tool.capability_not_held`,
+        // fed back to the model like any other tool error) rather than this handler needing a second,
+        // bespoke "no capabilities at all" failure path. Reachable: a `HistoryProviderT` can declare
+        // tools independent of whether a host ever called `set_capabilities()`.
+        CapabilitySet const empty_caps = CapabilitySet::grant_root({});
+        CapabilitySet const& held      = capabilities_ ? *capabilities_ : empty_caps;
+
+        for (; effect_context_.turn_index < max_turns_; ++effect_context_.turn_index) {
+            emit_run_event(run_event_kind::turn_started, run_event_payload::Turn{effect_context_.turn_index});
+
+            // Milestone 4 Phase B2: what the model sees is derived through a real `ContextProvider`
+            // (005 §3/§5), re-assembled fresh every round — a `SkillsProvider`-composing provider may
+            // legitimately change what it declares between rounds (e.g. a `mount_skill` call landing
+            // mid-run), and re-deriving from the same live state every round is what keeps declared
+            // and invocable tools the SAME snapshot (see `tool_table` below), matching ADR-024's
+            // "declared and invocable stay derived from the same live state, on the same cadence"
+            // invariant rather than merely conventionally.
+            SessionContext session_ctx{session_id_, principal_, history_};
+            result<ContextContribution> contribution =
+                co_await history_provider_.on_context(session_ctx, effect_context_);
+            if (!contribution) {
+                emit_run_event(run_event_kind::run_failed,
+                                run_event_payload::RunFailed{"run.context_unavailable",
+                                                              contribution.error().message});
+                co_return std::monostate{};
+            }
+
+            // Same `contribution->tools` snapshot backs BOTH the declaration (`ChatRequest` below)
+            // and the invocation table (`invoke_tool` calls further down) — one `ToolTable`, not two
+            // independently constructed ones, closing structurally (for this loop) the "declared ≠
+            // invocable" trap ADR-024 §3a/§7 named as enforced only by convention in `cli_chat.cpp`.
+            ToolTable const tool_table = ToolTable::from_descriptors(contribution->tools);
+
+            ChatRequest request{contribution->messages, contribution->tools};
+            if (!chat_client_) {
+                emit_run_event(run_event_kind::run_failed,
+                                run_event_payload::RunFailed{"run.no_chat_client", "no ChatClientT configured"});
+                co_return std::monostate{};
+            }
+            emit_run_event(run_event_kind::model_call_started);
+            result<ChatResponse> response = co_await chat_client_->chat(request, effect_context_);
+            emit_run_event(run_event_kind::model_call_finished);
+            if (!response) {
+                emit_run_event(run_event_kind::run_failed,
+                                run_event_payload::RunFailed{"run.chat_failed", response.error().message});
+                co_return std::monostate{};
+            }
+
+            // Milestone 5 Phase F4 (004 §5: "per-run TokenBudget<N>"), now checked after EVERY
+            // round's model call, not just one — the accumulator is per-RUN (reset above), so a
+            // multi-round run's total is the sum across every round, exactly what "per-run" means
+            // once a run can contain more than one model call.
+            run_tokens_consumed_ += response->usage.input_tokens + response->usage.output_tokens;
+            if (token_budget_.has_value() && run_tokens_consumed_ > *token_budget_) {
+                emit_run_event(run_event_kind::run_failed,
+                                run_event_payload::RunFailed{"run.token_budget_exceeded",
+                                                              "per-run token budget exceeded"});
+                co_return std::monostate{};
+            }
+
+            std::size_t const response_msg_index = history_.size();
+            history_.push_back(response->message);
+
+            std::vector<ToolCall> const calls = tool_calls_of(response->message);
+            if (calls.empty()) {
+                // Converged: this round's response carries no tool call, so it's the run's final
+                // answer. `TurnView` here covers exactly this round's own addition (the response) —
+                // see the ADR's named residual on why this is narrower than the old single-call
+                // shape ({input, response}) and why nothing observes the difference yet.
+                co_await history_provider_.on_turn_end(
+                    TurnView{std::span<Message const>{history_.data() + response_msg_index, 1}},
+                    effect_context_);
+                emit_run_event(run_event_kind::turn_finished,
+                                run_event_payload::Turn{effect_context_.turn_index});
+                emit_run_event(run_event_kind::run_finished);
+                m.respond(AgentResponse{response->message, response->usage});
+                co_return std::monostate{};
+            }
+
+            // ADR-029: before invoking anything this round, decide whether ANY pending call needs
+            // real human approval that a synchronous `approval_decider_` cannot supply. Scope
+            // (red-team-confirmed, not a simplification): the WHOLE round suspends atomically -- no
+            // call in a round containing even one approval-needing call is invoked yet, matching the
+            // live-proven fact (MT-2) that a real round can carry more than one call, and this loop
+            // already treats a round as one unit (the single `tool_results_message` fold below).
+            // Opt-in only (`suspend_for_approval_` defaults false), and only when no real
+            // `approval_decider_` is configured -- with either condition false, behavior is
+            // byte-for-byte what ADR-027 shipped: every approval-needing call is evaluated (and,
+            // absent a decider, denied) by `invoke_tool` itself, same as before this ADR existed.
+            if (suspend_for_approval_ && !approval_decider_) {
+                bool any_needs_approval = false;
+                for (ToolCall const& call : calls) {
+                    ToolDescriptor const* td = tool_table.find(call.tool_name);
+                    if (td != nullptr && tool_call_requires_approval(*td, call.provenance)) {
+                        any_needs_approval = true;
+                        break;
+                    }
+                }
+                if (any_needs_approval) {
+                    Interaction const& interaction =
+                        open_interaction(effect_context_.run_id, interaction_reason::approval);
+                    emit_run_event(run_event_kind::input_required,
+                                    run_event_payload::InteractionRef{interaction.interaction_id});
+                    for (ToolCall const& call : calls) {
+                        emit_run_event(run_event_kind::approval_requested,
+                                        run_event_payload::ApprovalRequested{call.call_id,
+                                                                              interaction.interaction_id});
+                    }
+                    // Suspended -- deliberately no `m.respond()` here (same "never fabricate a
+                    // response, never hang" shape every other fail-closed branch in this function
+                    // uses): the caller's `Ask` is left unanswered until a matching
+                    // `Ask<ResolveInteraction, AgentResponse>` resumes this exact round.
+                    co_return std::monostate{};
+                }
+            }
+
+            // Sequential, not concurrent (matching the one proven reference shape, `cli_chat.cpp`'s
+            // former external loop) — 006 §6b's `Parallelizable`/concurrent dispatch is declared
+            // vocabulary this loop does not wire up. A tool call failing (`r.is_error`) does NOT
+            // abort the run: the error is folded into the tool-results message like any successful
+            // result and fed back to the model, which may retry, adjust, or explain — matching the
+            // one live-proven behavior this loop replaces (cli_chat.cpp's former external loop).
+            std::vector<ToolResult> results;
+            results.reserve(calls.size());
+            for (std::size_t i = 0; i < calls.size(); ++i) {
+                // `tool_call_request_of` (tool_call_extraction.hpp) is what threads `ToolCall::
+                // provenance` into `ToolCallRequest::provenance` — the fix for a real bug found
+                // while designing this loop: omitting it silently defaults every call to
+                // `vendor_structured`, letting a `text_derived` (laundered, model-injected) call
+                // bypass ADR-023 §4b Finding 1's declassification gate and be evaluated under the
+                // tool's own possibly-`never_require` approval mode instead. See that header's own
+                // comment for the full finding.
+                ToolCallRequest const req = tool_call_request_of(calls[i], i);
+                emit_run_event(run_event_kind::tool_call_started,
+                                run_event_payload::ToolCallStarted{calls[i].call_id, calls[i].tool_name});
+                ToolInvocationAudit audit;
+                ToolResult result = invoke_tool(tool_table, held, req, effect_context_, approval_decider_,
+                                                 &audit);
+                emit_run_event(run_event_kind::tool_call_finished,
+                                run_event_payload::ToolCallFinished{audit.call_id, audit.ok});
+                results.push_back(std::move(result));
+            }
+
+            std::size_t const tool_msg_index = history_.size();
+            history_.push_back(tool_results_message(std::move(results)));
+
+            co_await history_provider_.on_turn_end(
+                TurnView{std::span<Message const>{history_.data() + response_msg_index,
+                                                    history_.size() - response_msg_index}},
+                effect_context_);
+            emit_run_event(run_event_kind::turn_finished,
+                            run_event_payload::Turn{effect_context_.turn_index});
+            (void)tool_msg_index;  // named for readability of the span math above, not read separately
+        }
+
+        // Loop exhausted `max_turns_` without ever reaching a tool-call-free round — fails the whole
+        // run closed (no `m.respond()`), the same shape as every other branch above, rather than
+        // returning the last, still-incomplete model message. A session with an approval-gated tool
+        // and no `set_approval_decider()`/`suspend_for_approval_` configured lands here too (every
+        // call denied every round) — that specific cause is not yet distinguishable from ordinary
+        // non-convergence in this event, a named residual (see the ADR).
+        emit_run_event(run_event_kind::run_failed,
+                        run_event_payload::RunFailed{"run.max_turns_exceeded",
+                                                      "tool-call loop did not converge within max_turns"});
+        co_return std::monostate{};
+    }
+
+public:
 
     // Milestone 4 Phase E3: the tell a fired Quark reminder delivers (see `TimerWake`'s own
     // comment). No coroutine/suspend semantics attach to this — it is a plain, synchronous
@@ -560,11 +785,19 @@ public:
     // (agent_registry.hpp:60, itself compiled from an agent's declared `TokenBudget<N>` policy tag) --
     // wiring that end-to-end through however a session gets constructed from a registered agent is
     // left as a named follow-up; this parameter is the `AgentSession`-side mechanism that consumes it.
+    // `max_turns` is ADDITIVE, appended last with a default of `16` (matching `AgentMetadata::
+    // max_turns`'s own default, agent_registry.hpp) -- the same "old call sites keep compiling with
+    // their old behavior unchanged" precedent `token_budget` established immediately above it. Never
+    // `nullopt`/unbounded: an internal tool-call loop that could run forever is exactly the "an
+    // unbounded workflow does not run — the bound is required" rule 014 §2 states elsewhere, applied
+    // here to a single run's own internal rounds.
     void initialize(std::string session_id, Principal principal,
-                     std::optional<std::uint64_t> token_budget = std::nullopt) {
+                     std::optional<std::uint64_t> token_budget = std::nullopt,
+                     std::uint64_t max_turns = 16) {
         session_id_   = std::move(session_id);
         principal_    = std::move(principal);
         token_budget_ = token_budget;
+        max_turns_    = max_turns;
     }
 
     // ADR-018 (closes the Milestone 5 Phase J1 residual): construct this session's `ChatClientT` IN
@@ -595,6 +828,40 @@ public:
     void set_capabilities(CapabilitySet const* capabilities) noexcept { capabilities_ = capabilities; }
     [[nodiscard]] CapabilitySet const* capabilities() const noexcept { return capabilities_; }
 
+    // The synchronous approval gate every round's `invoke_tool` calls thread through (tool_pipeline.hpp
+    // step 5). Defaults to an empty `ApprovalDecider{}` — `invoke_tool`'s own `approve &&
+    // approve(...)` short-circuits to `false`, i.e. fail-closed: any tool declaring
+    // `approval_mode != never_require` is denied on every call until a real decider is configured.
+    // Configuration-time, like `set_capabilities()` immediately above — never derived from model
+    // output (I3).
+    void set_approval_decider(ApprovalDecider approve) { approval_decider_ = std::move(approve); }
+    [[nodiscard]] ApprovalDecider const& approval_decider() const noexcept { return approval_decider_; }
+
+    // ADR-030: a mutable accessor to the session's own `HistoryProviderT` instance, host-callable
+    // like `set_capabilities()`/`emplace_chat_client()` immediately above -- needed the moment a
+    // provider carries real, host-supplied configuration beyond what its own default constructor can
+    // know (ADR-028 already established a provider MAY own session-scoped data; this is the
+    // symmetric case of a provider needing session-external, host-owned configuration handed to it
+    // after construction, e.g. a non-owning pointer to a process-wide-shared resource). Configuration-
+    // time only, never derived from model output (I3) -- the same contract every other accessor in
+    // this group already documents.
+    [[nodiscard]] HistoryProviderT& history_provider() noexcept { return history_provider_; }
+
+    // ADR-029: opts a session INTO suspending a round for a real human answer
+    // (`Ask<ResolveInteraction, AgentResponse>`) instead of `invoke_tool`'s ordinary fail-closed-deny
+    // when an approval-needing call has no synchronous `approval_decider_` configured. Defaults
+    // false, like `approval_decider_` defaults empty — an existing caller that configures neither
+    // gets the exact ADR-027 behavior (every approval-needing call denied every round, run eventually
+    // fails `run.max_turns_exceeded`), not a silent behavior change. Configuration-time, same
+    // category as `set_capabilities()`/`set_approval_decider()` immediately above.
+    void set_suspend_for_approval(bool suspend) noexcept { suspend_for_approval_ = suspend; }
+    [[nodiscard]] bool suspend_for_approval() const noexcept { return suspend_for_approval_; }
+
+    // The per-run bound on internal tool-call rounds (see `handle()`'s own loop and `initialize()`'s
+    // `max_turns` parameter, which is the normal way this gets set before the first `StartRun`).
+    void set_max_turns(std::uint64_t max_turns) noexcept { max_turns_ = max_turns; }
+    [[nodiscard]] std::uint64_t max_turns() const noexcept { return max_turns_; }
+
     // Milestone 4 Phase C1 (005 §6: "Fork — copy-on-write new session id from a history prefix;
     // the sanctioned answer to concurrent runs (001 §4) and to 'what if' exploration"). Copies
     // `source`'s `principal`/`history` (up to `history_prefix_len`, or the whole history if
@@ -623,6 +890,18 @@ public:
 
         state_    = source.state_;
         metadata_ = source.metadata_;
+        // ADR-028 addendum: this was correctly left uncopied when `history_provider_` could only
+        // ever be pure wiring/configuration (the same category `chat_client_`/`capabilities_` still
+        // are, deliberately left untouched below). Since ADR-028, a `HistoryProviderT` MAY also own
+        // real session-scoped DATA (e.g. a stateful tool's accumulated counter/exec state) via
+        // `make_tool_descriptor_with_invoke` -- copying it here is what keeps a fork's `history_`
+        // (already copied above, which may reference that provider's PAST results) consistent with
+        // the state that would actually produce the NEXT one, instead of silently resetting to a
+        // fresh default the moment a provider adopts ADR-028's mechanism. Requires `HistoryProviderT`
+        // to be copy-assignable -- checked only at THIS method's own instantiation (a provider that
+        // owns something non-copyable, e.g. a real `MediatedPythonRunner`, correctly fails to compile
+        // here rather than silently forking into an unsafe partial copy).
+        history_provider_ = source.history_provider_;
 
         run_counter_ = 0;
         last_run_id_.clear();
@@ -634,8 +913,10 @@ public:
         timer_wakes_ = 0;
         // Phase F4: per-run, same category as run_counter_ above -- a fork has had no runs of its
         // own yet, so it starts with no accumulated consumption either. `token_budget_` (the
-        // configured ceiling) is NOT reset here, same reasoning as `chat_client_`/`history_provider_`
-        // above it staying untouched: it is session configuration, not per-run counter state.
+        // configured ceiling) is NOT reset here, same reasoning as `chat_client_`/`capabilities_`
+        // staying untouched: it is session configuration, not per-run counter state.
+        // `history_provider_` moved OUT of that "untouched" set above (ADR-028 addendum) -- it can
+        // now carry real session-scoped data, not just wiring.
         run_tokens_consumed_ = 0;
         // Phase H2: same reasoning again -- a fork has had no admission denials of its own yet.
         admission_denied_count_ = 0;
@@ -725,15 +1006,12 @@ public:
     [[nodiscard]] std::uint64_t run_tokens_consumed() const noexcept { return run_tokens_consumed_; }
 
     // Milestone 4 Phase E1 (001 §2: "Entering InputRequired or AuthRequired mints one or more
-    // durable Interaction records"). Host-callable, like fork/redact/delete — NOT wired into the
-    // synchronous turn loop: 001 §3's step 3b ("request approval if policy demands it — may →
-    // InputRequired") would be the real trigger, but that needs `ae::task<T>` coroutines to
-    // actually suspend a run mid-turn, which stays unwired project-wide (chat_client.hpp/
-    // tool_pipeline.hpp/sandbox's own runner.hpp all say the same thing: deferred past this
-    // milestone). What IS real here: minting, tracking, and resolving `Interaction` records with
-    // the exact correlation identity 001 §2 specifies — the vocabulary and lifecycle, proven
-    // standalone, the same relationship Phase A1's `session_actor_id()` had to real addressing
-    // before anything called it from a live turn loop.
+    // durable Interaction records"). Host-callable, like fork/redact/delete. ADR-029 (2026-08-11) is
+    // the first REAL caller from inside the turn loop itself: `run_rounds()`'s suspend-for-approval
+    // branch mints one of these with `interaction_reason::approval` when a pending tool call needs
+    // real human sign-off and no synchronous `approval_decider_` is configured. `input`/`auth`
+    // (001 §3 step 3b's InputRequired/AuthRequired) stay exactly as unwired as this comment
+    // originally said — this task only wires the `approval` reason, the one ADR-029 scoped.
     [[nodiscard]] Interaction const& open_interaction(std::string run_id, interaction_reason reason) {
         interaction_counter_ += 1;
         Interaction interaction{};
@@ -831,6 +1109,15 @@ public:
         token_budget_         = std::nullopt;
         run_tokens_consumed_  = 0;
         admission_denied_count_ = 0;
+        // Same "configured ceiling" category as `token_budget_` immediately above -- reset to its
+        // own fresh-construction default, not left at whatever the deleted session had configured.
+        max_turns_            = 16;
+        // ADR-028 addendum: this function's own contract is "no residue left to read back through
+        // ANY of this class's own accessors" (005 §6's "hard removal" promise) -- since ADR-028, a
+        // `HistoryProviderT` MAY hold real session-scoped data (a stateful tool's accumulated
+        // state), which would otherwise survive a "delete" as exactly the kind of readable residue
+        // this method exists to eliminate. Reset here for the same reason `state_` above already is.
+        history_provider_    = HistoryProviderT{};
     }
 
 private:
@@ -914,6 +1201,15 @@ private:
     // `initialize()`) and this run's running total (reset at the top of every `handle()`).
     std::optional<std::uint64_t>                       token_budget_;
     std::uint64_t                                      run_tokens_consumed_ = 0;
+    // The internal tool-call loop's own bound (`handle()`) -- configured via `initialize()`/
+    // `set_max_turns()`, same "configured ceiling" category as `token_budget_` immediately above.
+    std::uint64_t                                      max_turns_ = 16;
+    // The synchronous approval gate every round's `invoke_tool` call receives -- empty (fail-closed)
+    // by default, configured via `set_approval_decider()`.
+    ApprovalDecider                                     approval_decider_{};
+    // ADR-029 -- opts a session into suspending for a real human answer instead of `invoke_tool`'s
+    // ordinary fail-closed deny; see `set_suspend_for_approval()`'s own comment. Default false.
+    bool                                                 suspend_for_approval_ = false;
     // Milestone 5 Phase H2 (018 §2) -- how many `StartRun` asks this session has denied at
     // admission. Same "counter the caller/tests can observe even on the fail-closed path" shape as
     // `run_tokens_consumed_` immediately above it.
