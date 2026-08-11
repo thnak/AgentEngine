@@ -31,3 +31,46 @@ add_test(NAME example_05_human_approval COMMAND agentengine_example_05_human_app
 add_executable(agentengine_example_06_capabilities_and_denial 06_capabilities_and_denial.cpp)
 target_link_libraries(agentengine_example_06_capabilities_and_denial PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME example_06_capabilities_and_denial COMMAND agentengine_example_06_capabilities_and_denial)
+
+# 07-12: a curated sweep across the rest of MAF's own sample categories (streaming, memory,
+# concurrent/conditional-routing workflow patterns, skill mounting, checkpoint/restart) -- each
+# grounded in real, already-shipped AgentEngine code, not a re-implementation of anything.
+
+add_executable(agentengine_example_07_streaming 07_streaming.cpp)
+target_link_libraries(agentengine_example_07_streaming PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME example_07_streaming COMMAND agentengine_example_07_streaming)
+
+# Reuses tests/support/run_task_sync.hpp -- the same minimal, documented "drive a leaf task<T> that
+# never genuinely parks, outside any Activation/Engine" driver test_memory_provider.cpp itself uses
+# to call MemoryProvider::on_context()/on_turn_end() directly from a plain main(). MemoryProvider's
+# InMemoryWorktreeObjectStore needs agentengine::worktree_store (compute_digest et al. are compiled,
+# not header-only) -- Windows-only today, matching test_memory_provider.cpp's own guard.
+if(WIN32)
+  add_executable(agentengine_example_08_memory 08_memory.cpp)
+  target_include_directories(agentengine_example_08_memory PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../tests")
+  target_link_libraries(agentengine_example_08_memory PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME example_08_memory COMMAND agentengine_example_08_memory)
+endif()
+
+add_executable(agentengine_example_09_concurrent_workflow 09_concurrent_workflow.cpp)
+target_link_libraries(agentengine_example_09_concurrent_workflow PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME example_09_concurrent_workflow COMMAND agentengine_example_09_concurrent_workflow)
+
+add_executable(agentengine_example_10_conditional_routing 10_conditional_routing.cpp)
+target_link_libraries(agentengine_example_10_conditional_routing PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME example_10_conditional_routing COMMAND agentengine_example_10_conditional_routing)
+
+# SkillsProvider resolves a mounted skill into real worktree Tree/Ref storage -- needs
+# agentengine::worktree_store (compiled, not header-only), Windows-only today, matching
+# test_on_demand_skill_mount.cpp's own guard.
+if(WIN32)
+  add_executable(agentengine_example_11_skill_mount 11_skill_mount.cpp)
+  target_link_libraries(agentengine_example_11_skill_mount PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME example_11_skill_mount COMMAND agentengine_example_11_skill_mount)
+endif()
+
+add_executable(agentengine_example_12_session_checkpoint 12_session_checkpoint.cpp)
+target_link_libraries(agentengine_example_12_session_checkpoint PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME example_12_session_checkpoint COMMAND agentengine_example_12_session_checkpoint)
