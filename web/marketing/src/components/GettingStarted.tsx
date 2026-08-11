@@ -42,11 +42,12 @@ export function GettingStarted() {
           </h2>
           <p>
             AgentEngine is pre-v1, spec-driven software under active development — there is no
-            versioned package to install. Milestones 0–4 of the implementation roadmap (core
-            substrate, sandboxed tools, the interpreter and worktree, durable sessions and memory)
-            are complete; Milestone 5 (real provider backends, identity, secrets) is in progress.
-            What follows is the real developer-facing surface as of today, verified against the
-            actual headers and tests — not a stable, permanent API reference.
+            versioned package to install. Milestones 0–6 of the implementation roadmap (core
+            substrate, sandboxed tools, the interpreter and worktree, durable sessions and memory,
+            real provider backends, multi-agent workflow orchestration) are complete; Milestone 7
+            (protocol conformance — MCP, A2A, AG-UI) is in progress. What follows is the real
+            developer-facing surface as of today, verified against the actual headers and tests —
+            not a stable, permanent API reference.
           </p>
         </div>
 
@@ -131,13 +132,16 @@ export function GettingStarted() {
 
           <RevealItem>
             <p className="gs-note">
-              A registered agent's compiled metadata isn't wired to a live run loop yet — the
-              proven, tested path today (<code>tests/test_m1_walking_skeleton.cpp</code>) runs one
-              turn on an <code>AgentSession</code> Quark actor against a hand-rolled mock{" "}
-              <code>ChatClient</code>, with <code>Message</code>/<code>Content</code> as the wire
-              shape. The two meet once Milestone 5 lands a real <code>ChatClient</code> — the{" "}
-              <code>engine.create_session()</code> / <code>session.run_stream()</code> shape shown
-              above describes where this is headed, not something callable yet.
+              <code>register_agent&lt;A&gt;()</code>'s compiled metadata and the live run loop meet
+              on <code>AgentSession&lt;ChatClientT, StateT, HistoryProviderT&gt;</code> — a real
+              Quark actor whose <code>StartRun</code> ask resolves a whole multi-round tool
+              conversation internally (extracting, capability/approval-checking, and invoking every
+              tool call the bound <code>ChatClientT</code> requests, feeding results back, and
+              converging on a final answer), not just one model call. Real, live backends exist for
+              Anthropic and OpenAI, plus a deterministic <code>ReplayChatClient</code> for offline
+              testing. See <code>examples/01_hello_agent.cpp</code> through{" "}
+              <code>examples/06_capabilities_and_denial.cpp</code> for small, runnable programs
+              built on exactly this shape — no network or API key required to build and run them.
             </p>
           </RevealItem>
         </RevealGroup>

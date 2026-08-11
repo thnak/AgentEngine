@@ -17,6 +17,7 @@ export const DECISIONS_URL = `${REPO_URL}/tree/main/decisions`;
 export const ROADMAP_URL = `${REPO_URL}/blob/main/docs/planning/v1-implementation-roadmap.md`;
 export const OPEN_QUESTIONS_URL = `${REPO_URL}/blob/main/OpenQuestions.md`;
 export const TESTS_URL = `${REPO_URL}/tree/main/tests`;
+export const EXAMPLES_URL = `${REPO_URL}/tree/main/examples`;
 
 export interface Pillar {
   id: string;
@@ -273,4 +274,5 @@ export const nextLinks: NextLink[] = [
   { label: "Decisions (ADRs)", href: DECISIONS_URL },
   { label: "Open questions", href: OPEN_QUESTIONS_URL },
   { label: "Browse the tests", href: TESTS_URL },
+  { label: "Browse the examples", href: EXAMPLES_URL },
 ];

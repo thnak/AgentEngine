@@ -1,4 +1,4 @@
-import { ROADMAP_URL, TESTS_URL } from "../data/content";
+import { EXAMPLES_URL, ROADMAP_URL, TESTS_URL } from "../data/content";
 import { apiRfcLinks } from "../data/apiContent";
 import { RevealGroup, RevealItem } from "./Reveal";
 
@@ -25,11 +25,15 @@ export function ApiNextSteps() {
                 <a href={ROADMAP_URL} target="_blank" rel="noreferrer" style={{ textDecoration: "underline" }}>
                   implementation roadmap
                 </a>{" "}
-                for milestone status, or browse{" "}
+                for milestone status, browse{" "}
                 <a href={TESTS_URL} target="_blank" rel="noreferrer" style={{ textDecoration: "underline" }}>
                   tests/
                 </a>{" "}
-                — every "real & tested" claim on this page cites one.
+                — every "real & tested" claim on this page cites one — or run{" "}
+                <a href={EXAMPLES_URL} target="_blank" rel="noreferrer" style={{ textDecoration: "underline" }}>
+                  examples/
+                </a>{" "}
+                for small, offline, single-file programs that build and pass, one concept each.
               </p>
             </div>
           </RevealItem>

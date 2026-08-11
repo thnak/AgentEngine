@@ -1,8 +1,8 @@
 import { SITE_BASE } from "../data/content";
 import { apiPages } from "../data/apiContent";
 
-/** The API section's left rail: site-wide navigation only (the seven parts) — the standard
- * three-rail docs layout (Stripe/MDN/Docusaurus) keeps this separate from the current page's own
+/** The API section's left rail: site-wide navigation only (the API's parts, all of apiPages) —
+ * the standard three-rail docs layout (Stripe/MDN/Docusaurus) keeps this separate from the current page's own
  * "on this page" anchors, which live in the right rail instead (see ApiToc). A horizontal pill
  * strip stands in for this on narrow viewports where there's no room for three columns. */
 export function ApiSidebar({ active }: { active: string }) {

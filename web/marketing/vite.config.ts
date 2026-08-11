@@ -20,6 +20,7 @@ export default defineConfig({
         apiSkill: fileURLToPath(new URL('./api/skill.html', import.meta.url)),
         apiTrustSandbox: fileURLToPath(new URL('./api/trust-sandbox.html', import.meta.url)),
         apiRuntime: fileURLToPath(new URL('./api/runtime.html', import.meta.url)),
+        apiWorkflow: fileURLToPath(new URL('./api/workflow.html', import.meta.url)),
         apiPlugins: fileURLToPath(new URL('./api/plugins.html', import.meta.url)),
         apiProtocols: fileURLToPath(new URL('./api/protocols.html', import.meta.url)),
       },

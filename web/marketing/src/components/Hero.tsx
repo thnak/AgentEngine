@@ -21,7 +21,7 @@ export function Hero() {
         <motion.div variants={container} initial="hidden" animate="show">
           <motion.div className="hero-badge glass" variants={item}>
             <span className="dot" aria-hidden="true" />
-            Status: design phase — 30 RFCs, every one Draft
+            Status: Milestones 0–6 complete · Milestone 7 (protocol conformance) in progress
           </motion.div>
 
           <motion.h1 variants={item}>

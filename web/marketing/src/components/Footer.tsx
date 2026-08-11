@@ -34,8 +34,8 @@ export function Footer() {
 
       <div className="container">
         <p className="footer-fine">
-          Status: design phase. No implementation yet — every RFC is Draft. Licence: not yet
-          decided (MIT is the working assumption, matching Quark).
+          Status: pre-v1, implementation under way — Milestones 0–6 complete, Milestone 7
+          (protocol conformance) in progress; every RFC is Reviewed. Licence: MIT, matching Quark.
         </p>
       </div>
     </footer>

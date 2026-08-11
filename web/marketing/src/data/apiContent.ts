@@ -79,6 +79,14 @@ export const apiPages: ApiPage[] = [
     status: "real",
   },
   {
+    id: "workflow",
+    label: "Workflow & Orchestration",
+    href: `${SITE_BASE}/api/workflow.html`,
+    eyebrow: "014 — Workflow and Orchestration",
+    description: "Executors, edges, and a real superstep engine — eight orchestration patterns as configurations of one graph, not eight subsystems.",
+    status: "real",
+  },
+  {
     id: "protocols",
     label: "Protocol surfaces",
     href: `${SITE_BASE}/api/protocols.html`,
@@ -290,19 +298,49 @@ export const runtimeEntries: ApiEntry[] = [
     id: "agent-session",
     status: "real",
     tag: "AgentSession<ChatClientT, StateT, HistoryProviderT>",
-    title: "AgentSession — a real Quark actor, not a facade",
+    title: "AgentSession — a real Quark actor, with a real internal tool-call loop",
     body:
-      "A quark::Actor<AgentSession<...>, quark::Sequential> proven end-to-end by the M1 walking skeleton: ask<AgentResponse>(StartRun{...}) grows history() by a real user+assistant turn pair with real reply text and token usage. Twenty-three further test files cover checkpoint, fork, delegation, redact, isolation, node-loss fencing, poison-run handling, suspend/resume, token budgets, background tasks, timers, and skill mounting end-to-end.",
-    cite: "include/agentengine/core/agent_session.hpp:252",
+      "A quark::Actor<AgentSession<...>, quark::Sequential> proven end-to-end by the M1 walking skeleton: ask<AgentResponse>(StartRun{...}) grows history() by a real user+assistant turn pair with real reply text and token usage. As of ADR-027, one StartRun ask resolves a WHOLE multi-round tool conversation internally — the ChatClient is called again and again, tool calls are extracted, capability/approval-checked, and invoked through the real 006 §3 pipeline, and results are fed back — all inside handle(), never a caller-driven loop. A text_derived ToolCall (reconstructed from model text rather than a real vendor tool-call field) is denied by the declassification gate regardless of the target tool's own approval_mode — the confused-deputy case ADR-023 named. Fails closed on every unresolved branch: a denied call never invokes, and exhausting max_turns_ without convergence never hangs, it simply never resolves the ask. Dozens of further test files cover checkpoint, fork, delegation, redact, isolation, node-loss fencing, poison-run handling, suspend/resume, token budgets, background tasks, timers, and skill mounting end-to-end.",
+    cite: "include/agentengine/core/agent_session.hpp:295",
     href: gh("include/agentengine/core/agent_session.hpp"),
+  },
+  {
+    id: "session-scoped-stateful-tools",
+    status: "real",
+    tag: "make_tool_descriptor_with_invoke<ToolT>(InvokeFn)",
+    title: "Session-scoped stateful tools — a tool can close over a session's own state",
+    body:
+      "A Tool<...> conformer's static invoke() has no path to its owning AgentSession's per-session data — every prior tool ran against process-wide statics if it needed to remember anything (tools/cli_chat.cpp's own CodeAct wiring, before ADR-030). make_tool_descriptor_with_invoke<ToolT>() keeps ToolT's compile-time-checked declarations (capability ceiling, approval, effect class, schemas) but lets a HistoryProviderT conformer supply the real invoke logic as a callable that captures its own member state — no core-seam change needed, since a provider is already a per-AgentSession-instance member. The one enforced guard: a state-capturing tool can never also be Backgroundable — background_task() rejects the combination outright, closing a real dangling-reference hazard a red-team pass found (a detached background thread is not Quark-Sequential-serialized against the capturing closure's own session-actor lifetime).",
+    cite: "include/agentengine/core/tool_pipeline.hpp",
+    href: gh("include/agentengine/core/tool_pipeline.hpp"),
+  },
+  {
+    id: "suspend-for-approval",
+    status: "real",
+    tag: "set_suspend_for_approval(true) / ResolveInteraction",
+    title: "Suspending a run for a real human approval, not just a synchronous decider",
+    body:
+      "A tool declared Approval<approval_mode::always_require> normally needs a synchronous approval_decider_ configured on the session. ADR-029 adds the alternative: with suspend_for_approval_ set and no decider configured, the WHOLE StartRun ask genuinely suspends — it never resolves — and a real Interaction opens (interaction_reason::approval), with input_required/approval_requested events on the run's event stream. A later ResolveInteraction{interaction_id, approved} ask resumes the SAME run (never a new run_id — 001's attributability invariant, I4): approved=true invokes the pending call for real through the ordinary capability-checked pipeline; approved=false folds a denial into history as an ordinary tool error. A second StartRun sent while an interaction is open is rejected outright, and a ResolveInteraction from a caller that doesn't match the session's owning principal is denied at admission before the interaction lookup even runs.",
+    cite: "include/agentengine/core/agent_session.hpp",
+    href: gh("decisions/ADR-029-suspend-for-human-approval.md"),
+  },
+  {
+    id: "middleware-chain",
+    status: "real",
+    tag: "MiddlewareChatClient<Inner, Ms...>",
+    title: "Middleware<Ms...> — a real before/after chain wrapping any ChatClient",
+    body:
+      "A decorator over any ChatClient conformer, same shape ResilientChatClient's retry/circuit-breaker wrapper already established: each Ms... in order gets a before_model(ModelCallContext&) hook (can rewrite the outgoing request or short-circuit with a synthetic response) and an after_model(ModelCallContext&) hook (sees the real response once it's settled). A red-team pass found the fatal case this mechanism has to close on its own: a content-rewriting middleware could otherwise forge or mutate a trusted ToolCall reconstructed from plain text, silently bypassing ADR-023's confused-deputy gate — content-rewrite is not the same threat class as capability-widening, but it reaches the same outcome if unchecked. enforce_backend_tool_call_provenance() forces any ToolCall a middleware's rewritten Message content didn't come verbatim from the backend down to call_provenance::text_derived, so it still has to earn its way through the ordinary declassification gate — a middleware can change what the model is asked or told, never what a tool call is trusted to have come from.",
+    cite: "include/agentengine/core/middleware.hpp",
+    href: gh("decisions/ADR-033-middleware-model-call-chain.md"),
   },
   {
     id: "chat-clients",
     status: "real",
     tag: "AnthropicChatClient · OpenAIChatClient · ReplayChatClient",
-    title: "Real, tested provider backends — Milestone 5, done",
+    title: "Real, tested provider backends",
     body:
-      "AnthropicChatClient posts to /v1/messages with real streaming (chat_stream()) and prompt-cache TTL support. OpenAIChatClient posts to /v1/chat/completions, streaming via a detached worker. ReplayChatClient replays a recorded run deterministically offline — the I5 seam. All three conform to the same ChatClient interface tools and agents are written against.",
+      "AnthropicChatClient posts to /v1/messages with real streaming (chat_stream()) and prompt-cache TTL support. OpenAIChatClient posts to /v1/chat/completions, streaming via a detached worker. ReplayChatClient replays a recorded run deterministically offline — the I5 seam. All three conform to the same ChatClient interface tools and agents are written against, and any of them can sit behind MiddlewareChatClient/ResilientChatClient unchanged.",
     cite: "include/agentengine/protocol/anthropic/chat_client.hpp:981",
     href: gh("include/agentengine/protocol/anthropic/chat_client.hpp"),
   },
@@ -515,6 +553,16 @@ export const codeActEntries: ApiEntry[] = [
     cite: "src/backends/native_jail/agent_files_data_codegen.hpp:20",
     href: gh("src/backends/native_jail/agent_files_data_codegen.hpp"),
   },
+  {
+    id: "session-scoped-codeact",
+    status: "real",
+    tag: "CodeActState (ADR-030)",
+    title: "One interpreter per session, enforced in code — not just true by accident",
+    body:
+      "Before ADR-030, tools/cli_chat.cpp wired execute_code/mount_skill through five independent process-wide static variables — a MediatedPythonRunner, ExecState, MountedSkillsState, a pending-mount-roots vector, and a second SkillsProvider instance — correct only because the CLI happens to run one session per process, with nothing enforcing that. A red-team pass rejected the obvious fix (give each session's provider its own separately-owned MediatedPythonRunner) on two fatal grounds: the runner routes through unsynchronized process-wide globals internally, and ADR-002 §5.5.6's own 'one OS process per session' rule was still just prose, never enforced. ADR-030's CodeActState makes each of the five pieces a real per-AgentSession member via ADR-028's make_tool_descriptor_with_invoke — the interpreter process boundary itself is what now keeps two sessions' CodeAct state genuinely apart, not a shared-process convention nobody checks.",
+    cite: "decisions/ADR-030-session-scoped-codeact-wiring.md",
+    href: gh("decisions/ADR-030-session-scoped-codeact-wiring.md"),
+  },
 ];
 
 export const codeActGeneratedFnSnippet = `// One tool -> one real Python function, generated from the SAME
@@ -576,6 +624,106 @@ auto const skill_tools = scope_tools_to_mounted_skills(
     shared_codeact_skills().allowed_tool_names_for(mounted));
 auto bridged = union_codeact_tools(ToolTable::from_tools<>(), skill_tools);
 runner.refresh_agent_tools(ToolBridgeConfig{*bridged, {}, /*approved=*/true});`;
+
+// 014-Workflow-and-Orchestration.md §1/§2/§3 -- Milestone 6, complete. A Workflow is DATA (nothing
+// here is an actor, a scheduler, or an execution decision); a WorkflowSupervisor actor runs it
+// round-by-round over a real quark::Engine.
+export interface WorkflowEdgeKind {
+  kind: string;
+  meaning: string;
+}
+
+export const workflowEdgeKinds: WorkflowEdgeKind[] = [
+  { kind: "direct", meaning: "One source, one target." },
+  { kind: "chain", meaning: "Sugar for a run of direct edges -- kept distinct because §3's Sequential pattern names it and a rendered graph should say what was authored." },
+  { kind: "fan_out", meaning: "One source, many targets, all fired in the SAME superstep round -- true concurrency, not N sequential calls." },
+  { kind: "fan_in", meaning: "Many sources, one target (the aggregator). The superstep model makes this well-defined: the target runs exactly ONCE per round, receiving one ContentItem per contributing branch in graph-declared order -- not once per inbound edge." },
+  { kind: "switch_case", meaning: "One source, many targets, exactly one selected by a case label the source executor returns in ExecutorOutcome::routes. The unselected branch's invoke() is never called." },
+  { kind: "multi_selection", meaning: "One source, many targets, a caller-chosen SUBSET fired -- the same routes mechanism as switch_case, naming more than one label." },
+];
+
+export const workflowGraphSnippet = `// The graph AS DATA -- no execution, no actors, no scheduling.
+// include/agentengine/workflow/graph.hpp
+enum class edge_kind { direct, fan_out, fan_in, switch_case, multi_selection, chain };
+enum class executor_kind { agent, function, sub_workflow, request_port };
+
+struct Executor {
+    std::string   id;              // unique within one Workflow; what edges reference
+    executor_kind kind = executor_kind::function;
+    MessageTypeId input_type;
+    MessageTypeId output_type;
+    // ADR-032: which SubWorktree/Mount this executor gets at run time.
+    // Default is branch, UNCONDITIONALLY -- see the ADR for why "shared
+    // for provably-sequential nodes" was rejected as unsound in general.
+    sharing_mode  worktree_mode = sharing_mode::branch;
+};
+
+struct Edge {
+    std::string from;
+    std::string to;
+    edge_kind   kind = edge_kind::direct;
+    std::string case_label;         // switch_case / multi_selection only
+    EdgeFailurePolicy on_failure;   // fail (default) | propagate | retry | fallback
+};
+
+struct TerminationBound {
+    std::optional<std::uint32_t> max_rounds;
+    std::optional<std::uint64_t> deadline_ms;
+    std::optional<std::uint64_t> token_budget;
+    // validate_workflow REQUIRES at least one -- "an unbounded workflow does not run" (014 §2).
+};
+
+struct Workflow {
+    std::string              id;
+    std::vector<Executor>    executors;
+    std::vector<Edge>        edges;
+    std::string              start;
+    std::vector<std::string> output_selection;  // may be empty -- a terminal executor can end it instead
+    TerminationBound         bound;
+};`;
+
+export const workflowEntries: ApiEntry[] = [
+  {
+    id: "workflow-supervisor",
+    status: "real",
+    tag: "WorkflowSupervisor · RunWorkflow -> WorkflowResult",
+    title: "The superstep barrier — measured, not inferred from correct output",
+    body:
+      "WorkflowSupervisor is a quark::Actor<..., quark::Sequential> that co_awaits cross-actor asks across a round barrier -- no round N+1 executor entry may precede every round-N executor's exit. This needs a real quark::Engine, not TestKit (which has no async carrier to host that co_await). Both of the properties that make this worth building are measured, not merely inferred from output that a fully-serialized or fully-overlapping implementation would produce identically: a 3-round chain's own entry/exit timestamps prove the barrier holds, and three nodes sleeping in one fan-out round are checked against the SERIAL sum to prove they genuinely overlapped, not silently degraded into one worker draining them in sequence (the exact regression a naive sequential-key placement caused once, before spread_executor_keys existed).",
+    cite: "include/agentengine/workflow/supervisor.hpp:154",
+    href: gh("include/agentengine/workflow/supervisor.hpp"),
+  },
+  {
+    id: "workflow-patterns",
+    status: "real",
+    tag: "014 §3 — eight patterns, one graph vocabulary",
+    title: "Sequential, Concurrent, Handoff, Router, and four more — configurations, not subsystems",
+    body:
+      "§3's claim is that its eight named orchestration patterns are configurations of the graph, not eight separate things to build, and test_workflow_patterns.cpp is that claim's proof: every row is built from nothing but executors, the six edge kinds above, and a termination bound, then run for real on the superstep engine. A fan-in aggregator is checked on its INVOCATION COUNT (exactly one call, not one per inbound edge) because a merge that silently ran three times would still produce a plausible-looking answer. A router is run against two different inputs through the SAME graph, because one probe can't distinguish a working classifier from a node hardcoded to one branch. An executor that names a route label the graph never declared fails the run with workflow_status::routing_failed rather than being silently ignored (an I3 boundary: a route target is engine-checked structure, never treated as free-form model output to trust).",
+    cite: "tests/test_workflow_patterns.cpp",
+    href: gh("tests/test_workflow_patterns.cpp"),
+  },
+  {
+    id: "workflow-worktree-scoping",
+    status: "real",
+    tag: "mint_executor_worktrees / resume_executor_worktrees (ADR-032)",
+    title: "Every executor gets its own worktree grant, minted or resumed — never assumed",
+    body:
+      "014 §1 named a real gap: nothing stated whether a workflow executor gets its own sub-worktree, inherits the caller's, or shares one. ADR-032 closes it: mint_executor_worktrees walks a Workflow's executors and mints a real 025 §3 SubWorktree (and, for shared/branch modes, a Mount + FsRead/FsWrite capability pair) per executor, keyed off each executor's own sharing_mode -- defaulting to branch UNCONDITIONALLY rather than reusing 025 §3's 'sequential defaults to shared' rule per node, because the superstep model gives concurrent asks to any two executors reachable in the same round (not only explicit fan_out edges), and general graphs here have cycles and dynamic switch_case routing that make proving two nodes can never co-occur unsound to do cheaply. A red-team pass found the mechanism's own fatal case before it shipped: readonly sharing_mode is structurally incompatible with a Mount (a Mount is what makes a sub-worktree reachable from inside a sandbox at all) -- resume_executor_worktrees fails closed on it rather than silently minting a working-but-wrong grant.",
+    cite: "include/agentengine/workflow/worktree_scoping.hpp",
+    href: gh("decisions/ADR-032-workflow-executor-worktree-scoping.md"),
+  },
+  {
+    id: "workflow-executable-kinds",
+    status: "real",
+    tag: "check_workflow_executable — a second, deliberately separate question",
+    title: "\"Is this graph well-formed\" and \"can THIS BUILD run it\" are two different checks",
+    body:
+      "014 §1 names four executor kinds: agent, function, sub_workflow, request_port. Milestone 6 built function (Phase B, the plain-callable node every pattern above is proven against) and request_port (Phase E). agent and sub_workflow nodes are real, validator-checked graph SHAPE — a graph naming one still validates, since validate_workflow answers 'is this well-formed' independent of what this build happens to implement, the same question 014 §7's rendering/diffing and the future 015 loader need answered honestly regardless of engine completeness — but check_workflow_executable refuses to RUN one: WorkflowSupervisor asks every non-port node through FunctionExecutor today, so an agent or sub_workflow node would silently run AS a plain function, producing plausible output from a graph whose declared behavior it doesn't match. A refused graph is recoverable; a quietly reinterpreted one is not.",
+    cite: "include/agentengine/workflow/graph.hpp:431",
+    href: gh("include/agentengine/workflow/graph.hpp"),
+  },
+];
 
 export interface ProtocolEntry {
   id: string;
@@ -645,6 +793,6 @@ export const apiRfcLinks: RfcLink[] = [
   { label: "011 — MCP Conformance", href: gh("011-MCP-Conformance.md"), status: "real" },
   { label: "012 — A2A Conformance", href: gh("012-A2A-Conformance.md"), status: "real" },
   { label: "013 — UI and Streaming Surfaces", href: gh("013-UI-and-Streaming-Surfaces.md"), status: "real" },
-  { label: "014 — Workflow and Orchestration", href: gh("014-Workflow-and-Orchestration.md"), status: "design" },
+  { label: "014 — Workflow and Orchestration", href: gh("014-Workflow-and-Orchestration.md"), status: "real" },
   { label: "015 — Declarative Agent Format", href: gh("015-Declarative-Agent-Format.md"), status: "real" },
 ];

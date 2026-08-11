@@ -15,7 +15,7 @@ function ApiHubGrid() {
     <section className="section" style={{ paddingTop: 0 }} id="parts">
       <div className="container">
         <div className="section-head">
-          <span className="eyebrow">Seven parts</span>
+          <span className="eyebrow">{apiPages.length} parts</span>
           <h2>
             Pick a part, <span className="grad-text">go deep</span>
           </h2>
