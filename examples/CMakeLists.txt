@@ -74,3 +74,14 @@ endif()
 add_executable(agentengine_example_12_session_checkpoint 12_session_checkpoint.cpp)
 target_link_libraries(agentengine_example_12_session_checkpoint PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME example_12_session_checkpoint COMMAND agentengine_example_12_session_checkpoint)
+
+# 13/14: two more 014 §3 workflow patterns not yet covered by 04/09/10 -- a bounded cycle
+# (Reflection/Critic) and the sixth edge kind, multi_selection (a caller-chosen subset, with no
+# §3 row of its own).
+add_executable(agentengine_example_13_reflection_loop 13_reflection_loop.cpp)
+target_link_libraries(agentengine_example_13_reflection_loop PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME example_13_reflection_loop COMMAND agentengine_example_13_reflection_loop)
+
+add_executable(agentengine_example_14_multi_selection 14_multi_selection.cpp)
+target_link_libraries(agentengine_example_14_multi_selection PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME example_14_multi_selection COMMAND agentengine_example_14_multi_selection)
