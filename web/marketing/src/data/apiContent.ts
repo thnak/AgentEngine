@@ -44,7 +44,7 @@ export const apiPages: ApiPage[] = [
     href: `${SITE_BASE}/api/codeact.html`,
     eyebrow: "026 — Agent-Facing Runtime Surface",
     description: "The nine agent.* Python modules execute_code can expose — which are real and reach the actual 006 §3 tool pipeline, and which are still just a registry entry.",
-    status: "design",
+    status: "real",
   },
   {
     id: "skill",
@@ -501,7 +501,7 @@ export const codeActEntries: ApiEntry[] = [
     tag: "agent.tools.<name>(...)",
     title: "agent.tools — every bridged tool as an ordinary Python function",
     body:
-      "Generated straight from the same ToolDescriptor every other tool-pipeline caller reads — never a hand-authored wrapper, so it cannot drift from the tool's real schema. A call keyword-encodes its arguments to JSON, hands them to the real 006 §3 pipeline via bridge_tool_call() (capability-checked against the sandbox's OWN ToolBridgeConfig::capabilities, never the calling agent's own ceiling — I2), and wraps the reply in _AeReply, an attribute-accessible generic object built from the parsed JSON dict — not a raw dict, not a per-tool dataclass. Fails closed: with no ToolBridgeConfig configured for a session, import agent raises ModuleNotFoundError inside the sandbox.",
+      "Generated straight from the same ToolDescriptor every other tool-pipeline caller reads — never a hand-authored wrapper, so it cannot drift from the tool's real schema. A call keyword-encodes its arguments to JSON, hands them to the real 006 §3 pipeline via bridge_tool_call() (capability-checked against the sandbox's OWN ToolBridgeConfig::capabilities, never the calling agent's own ceiling — I2), and wraps the reply in _AeReply, an attribute-accessible generic object built from the parsed JSON dict — not a raw dict, not a per-tool dataclass. Fails closed: with no ToolBridgeConfig configured for a session, import agent raises ModuleNotFoundError inside the sandbox. MediatedPythonRunner::refresh_agent_tools() reconfigures the bridge on an already-live interpreter — tools/cli_chat.cpp calls it before every execute_code, rebuilt from the current union of sources (see codeact_tool_union.hpp below), so a skill mounted mid-conversation is reachable from agent.tools on the very next call, not just at session start.",
     cite: "src/backends/native_jail/agent_tools_codegen.hpp:206",
     href: gh("src/backends/native_jail/agent_tools_codegen.hpp"),
   },
@@ -557,6 +557,25 @@ struct MediatedPythonConfig {
 };
 // src/backends/native_jail/tool_bridge.hpp:56-60
 // src/backends/native_jail/mediated_python_runner.hpp:81`;
+
+export const codeActUnionSnippet = `// The agent's own tools + tools unlocked by mounted skills + MCP-
+// discovered tools, merged into ONE bridge-ready ToolTable. A name
+// collision across ANY two sources is a hard error -- reject rather
+// than guess, matching SkillsProvider's own anti-shadowing precedent.
+result<ToolTable> union_codeact_tools(
+    ToolTable const& agent_tools,
+    ToolTable const& skill_unlocked_tools,
+    std::vector<ToolDescriptor> const& mcp_tools = {});
+// include/agentengine/core/codeact_tool_union.hpp
+
+// tools/cli_chat.cpp -- called before EVERY execute_code, same per-turn
+// cadence scope_tools_to_mounted_skills already runs on for the
+// model-facing declaration side:
+auto const skill_tools = scope_tools_to_mounted_skills(
+    codeact_universe,
+    shared_codeact_skills().allowed_tool_names_for(mounted));
+auto bridged = union_codeact_tools(ToolTable::from_tools<>(), skill_tools);
+runner.refresh_agent_tools(ToolBridgeConfig{*bridged, {}, /*approved=*/true});`;
 
 export interface ProtocolEntry {
   id: string;

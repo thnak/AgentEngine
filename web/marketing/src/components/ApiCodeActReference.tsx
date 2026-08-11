@@ -3,6 +3,7 @@ import {
   codeActBridgeConfigSnippet,
   codeActEntries,
   codeActGeneratedFnSnippet,
+  codeActUnionSnippet,
   gh,
 } from "../data/apiContent";
 import { highlightCpp } from "../lib/highlightCpp";
@@ -27,8 +28,8 @@ export function ApiCodeActReference() {
           <h2>
             CodeAct is <span className="grad-text">execute_code</span>, not a second tool
           </h2>
-          <span className="status-badge status-design" style={{ marginTop: 4 }}>
-            Designed, not built
+          <span className="status-badge status-real" style={{ marginTop: 4 }}>
+            Real & tested
           </span>
           <p style={{ marginTop: 16 }}>
             There is no <code>codeact</code> tool anywhere in this codebase. CodeAct is the SAME{" "}
@@ -39,7 +40,11 @@ export function ApiCodeActReference() {
             same capability-gated tool pipeline every other call goes through. Three of the nine{" "}
             <code>agent.*</code> modules 026 §5 names are real and reach the actual pipeline; six
             exist only as a registry entry today — this page draws that line module by module,
-            citations included.
+            citations included. <code>agent.tools</code> exposes the UNION of the agent's own
+            declared tools, tools unlocked by currently mounted skills, and tools discovered from a
+            connected MCP server. All three sources are real and tested; the agent's own tools and
+            skill-unlocked tools are live-wired in <code>tools/cli_chat.cpp</code> today — the MCP
+            source has no real server in this codebase to connect it to yet.
           </p>
         </div>
 
@@ -144,44 +149,73 @@ export function ApiCodeActReference() {
             <div className="section-head anchor-target" style={{ marginTop: 48, marginBottom: 22 }} id="codeact-skills">
               <span className="eyebrow">The real answer to "can CodeAct call a mounted skill's tools?"</span>
               <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>
-                Not yet — the two real halves exist, but nothing connects them
+                Yes — live in the CLI, rebuilt fresh on every execute_code call
               </h3>
               <p>
-                <code>tools/cli_chat.cpp</code>, the one real end-to-end driver, constructs its{" "}
-                <code>MediatedPythonConfig</code> with <code>python_home</code>,{" "}
-                <code>mount_roots</code>, and <code>expose_agent_files_data = true</code> — it never
-                sets <code>.tool_bridge</code>. With that field left at its <code>nullopt</code>{" "}
-                default, <code>agent.tools</code> doesn't exist in that session at all, regardless
-                of what's mounted. <code>skill_tool_scoping.hpp</code>'s{" "}
-                <code>scope_tools_to_mounted_skills()</code> IS real and live-wired in that same
-                file — but it only ever gates whether <code>execute_code</code> itself is
-                declared+invocable to the model as a TOP-LEVEL tool call. It has no path into a{" "}
-                <code>ToolBridgeConfig</code>, so it never affects what's callable FROM INSIDE a
-                running <code>execute_code</code> call.
+                <code>MediatedPythonRunner::refresh_agent_tools(ToolBridgeConfig)</code>{" "}
+                reconfigures <code>agent.tools</code> on an ALREADY-initialized interpreter — it
+                re-runs the same bootstrap <code>initialize()</code> ran once, against a fresh
+                throwaway globals dict, never tearing the interpreter down (ADR-002 §5.5.6 protects
+                "at most one interpreter alive at any instant," not "the bootstrap runs only once").{" "}
+                <code>core/codeact_tool_union.hpp</code>'s <code>union_codeact_tools()</code> merges
+                the three sources into one bridge-ready <code>ToolTable</code>, rejecting a name
+                collision across any two sources rather than picking a silent precedence order.{" "}
+                <code>tools/cli_chat.cpp</code> calls both, together, before every{" "}
+                <code>execute_code</code> — on the identical per-turn cadence{" "}
+                <code>scope_tools_to_mounted_skills</code> already uses for the model-facing
+                declaration side, so a skill mounted this same round is reachable from{" "}
+                <code>agent.tools</code> on the very next call, never a call behind.
               </p>
-              <p style={{ marginTop: 14 }}>
-                Concretely: mounting a skill whose <code>allowed-tools</code> names{" "}
-                <code>web_search</code> makes <code>web_search</code> callable as an ordinary model
-                tool call today — but does not make <code>agent.tools.web_search(...)</code>{" "}
-                callable from Python, because no session-scoped <code>ToolBridgeConfig</code> is
-                ever built from <code>SkillsProvider::allowed_tool_names_for(mounted)</code>. Both
-                real pieces already exist (the scoped tool table, and the bridge itself); wiring one
-                into the other — rebuilding <code>cfg.tool_bridge</code> from the current mount
-                state before each <code>execute_code</code> call, on the same per-turn cadence
-                <code>scope_tools_to_mounted_skills</code> already runs on — is real, scoped,
-                buildable work that just hasn't happened yet.
-              </p>
-              <div style={{ marginTop: 10, display: "flex", gap: 16, flexWrap: "wrap" }}>
-                <a href={gh("tools/cli_chat.cpp")} target="_blank" rel="noreferrer" className="api-cite" style={{ borderTop: "none", paddingTop: 0 }}>
-                  tools/cli_chat.cpp
-                </a>
-                <a href={gh("src/backends/native_jail/tool_bridge.hpp")} target="_blank" rel="noreferrer" className="api-cite" style={{ borderTop: "none", paddingTop: 0 }}>
-                  src/backends/native_jail/tool_bridge.hpp
-                </a>
-                <a href={gh("include/agentengine/core/skill_tool_scoping.hpp")} target="_blank" rel="noreferrer" className="api-cite" style={{ borderTop: "none", paddingTop: 0 }}>
-                  include/agentengine/core/skill_tool_scoping.hpp
-                </a>
-              </div>
+            </div>
+          </RevealItem>
+          <RevealItem>
+            <CodePanel filename="codeact_tool_union.hpp / cli_chat.cpp">
+              {highlightCpp(codeActUnionSnippet)}
+            </CodePanel>
+          </RevealItem>
+          <RevealItem>
+            <p className="gs-note" style={{ marginTop: 24 }}>
+              <strong>The sharp edge this surfaced: a fixed import allow-list.</strong> Stage B's
+              meta-path finder computes its allow-set ONCE, inside <code>initialize()</code>, from
+              the pre/post-bootstrap <code>sys.modules</code> diff. A session constructed with NO{" "}
+              <code>tool_bridge</code> never imports <code>json</code> during that one-time
+              pre-finder-install window, so <code>refresh_agent_tools()</code> calling{" "}
+              <code>import json</code> LATER — with the finder already installed — was denied:{" "}
+              <code>ModuleNotFoundError</code>. Fixed by having <code>refresh_agent_tools()</code>{" "}
+              extend the keep-set itself, the same "<code>json</code> becomes importable exactly
+              when <code>agent.tools</code> exists" intent this file's own comments already state
+              for the construction-time case, just applied when that decision is made later.
+              Regression-proven in <code>test_mediated_python_runner_agent_tools.cpp</code>'s
+              Scenario 4: refresh from no bridge, to tool A, to a DIFFERENT tool B — A genuinely
+              gone, not an additive merge.
+            </p>
+          </RevealItem>
+          <RevealItem>
+            <p style={{ marginTop: 14, color: "var(--text-dim)", lineHeight: 1.65 }}>
+              Proven with a real fixture, not just described: <code>tools/cli_chat.cpp</code> ships
+              a <code>codeact-demo</code> skill naming a trivial <code>word_count</code> tool in its{" "}
+              <code>allowed-tools</code> — deliberately excluded from the top-level model-callable
+              set, reachable ONLY as <code>agent.tools.word_count(...)</code> once{" "}
+              <code>codeact-demo</code> is mounted. Running the real binary confirms it: freshly
+              started, "Tools declared+invocable" lists only <code>mount_skill</code> —{" "}
+              <code>word_count</code> is absent until an agent actually mounts the skill that names
+              it, exactly as designed.
+            </p>
+          </RevealItem>
+          <RevealItem>
+            <div style={{ marginTop: 14, display: "flex", gap: 16, flexWrap: "wrap" }}>
+              <a href={gh("tools/cli_chat.cpp")} target="_blank" rel="noreferrer" className="api-cite" style={{ borderTop: "none", paddingTop: 0 }}>
+                tools/cli_chat.cpp
+              </a>
+              <a href={gh("include/agentengine/core/codeact_tool_union.hpp")} target="_blank" rel="noreferrer" className="api-cite" style={{ borderTop: "none", paddingTop: 0 }}>
+                include/agentengine/core/codeact_tool_union.hpp
+              </a>
+              <a href={gh("include/agentengine/protocol/mcp/mcp_tool_bridge.hpp")} target="_blank" rel="noreferrer" className="api-cite" style={{ borderTop: "none", paddingTop: 0 }}>
+                include/agentengine/protocol/mcp/mcp_tool_bridge.hpp
+              </a>
+              <a href={gh("src/backends/native_jail/mediated_python_runner.hpp")} target="_blank" rel="noreferrer" className="api-cite" style={{ borderTop: "none", paddingTop: 0 }}>
+                src/backends/native_jail/mediated_python_runner.hpp
+              </a>
             </div>
           </RevealItem>
         </RevealGroup>
@@ -193,11 +227,16 @@ export function ApiCodeActReference() {
               id="codeact-status"
               style={{ marginTop: 40, borderLeftColor: "var(--accent-pink)" }}
             >
-              <strong>Status: two of nine modules are real and live; one more is real but only
-              under test; six don't exist in code.</strong> <code>agent.tools</code> is real and
-              proven against a real embedded interpreter (test_mediated_python_runner_agent_tools.cpp)
-              but not wired into <code>tools/cli_chat.cpp</code> — reachable only in tests today.{" "}
-              <code>agent.files</code>/<code>agent.data</code> are real AND wired live in the CLI.{" "}
+              <strong>Status: three of nine modules are real and live; six don't exist in
+              code.</strong> <code>agent.tools</code> is real, proven against a real embedded
+              interpreter (<code>test_mediated_python_runner_agent_tools.cpp</code>), and wired
+              live in <code>tools/cli_chat.cpp</code> — reconfigured before every{" "}
+              <code>execute_code</code> call from the union of the agent's own tools and
+              mount-unlocked skill tools (<code>test_codeact_tool_union.cpp</code>).{" "}
+              <code>agent.files</code>/<code>agent.data</code> are real and were already wired live
+              in the CLI. The third union source, MCP-discovered tools, is real and tested against a
+              real <code>McpServer</code>/<code>McpClient</code> pair but has no live server in this
+              codebase to connect it to yet — see the Protocol surfaces page.{" "}
               <code>agent.memory</code>, <code>agent.notes</code>, <code>agent.output</code>,{" "}
               <code>agent.progress</code>, <code>agent.ask</code>, and <code>agent.spawn</code>{" "}
               exist only as a name/one-liner/gating-capability triple in{" "}
