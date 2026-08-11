@@ -1,25 +1,38 @@
 import type { PropsWithChildren } from "react";
+import { SITE_BASE } from "../data/content";
+import { apiPages } from "../data/apiContent";
 import { ApiNextSteps } from "./ApiNextSteps";
-import { ApiSidebar, type ApiSidebarSection } from "./ApiSidebar";
+import { ApiSidebar } from "./ApiSidebar";
+import { ApiToc, type ApiSidebarSection } from "./ApiToc";
 import { Footer } from "./Footer";
 import { Nav } from "./Nav";
 
-/** Shared chrome for every /api/*.html detail page: nav, the API section's own left sidebar
- * (a horizontal pill strip on narrow viewports), the page's own content, the "RFCs behind this
- * page" block, and the footer. `sections` feeds the sidebar's "on this page" anchor list. */
+/** Shared chrome for every /api/*.html detail page: the standard three-rail docs layout (Stripe/
+ * MDN/Docusaurus) — nav, a left rail of site-wide navigation (ApiSidebar), the page's own content
+ * behind a breadcrumb, and a right rail scoped to just this page's own sections (ApiToc). Both
+ * rails collapse to a horizontal pill strip below the three-column breakpoint. `sections` feeds
+ * the right rail's "on this page" anchor list. */
 export function ApiDetailLayout({
   active,
-  sections,
+  sections = [],
   children,
 }: PropsWithChildren<{ active: string; sections?: ApiSidebarSection[] }>) {
+  const page = apiPages.find((p) => p.id === active);
+
   return (
     <>
       <Nav page="api" />
       <div className="api-layout">
-        <ApiSidebar active={active} sections={sections} />
+        <ApiSidebar active={active} />
         <div className="api-content">
+          <nav className="api-breadcrumb" aria-label="Breadcrumb">
+            <a href={`${SITE_BASE}/api.html`}>API</a>
+            <span aria-hidden="true">/</span>
+            <span aria-current="page">{page?.label ?? active}</span>
+          </nav>
           <main>{children}</main>
         </div>
+        <ApiToc sections={sections} />
       </div>
       <ApiNextSteps />
       <Footer />

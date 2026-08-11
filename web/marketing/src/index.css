@@ -1064,14 +1064,18 @@ button {
   border-color: var(--border-strong);
 }
 
-/* ---------- API detail page: left sidebar layout ---------- */
+/* ---------- API detail page: three-rail layout (Stripe/MDN/Docusaurus convention) ---------- */
+/* Left rail = site-wide nav (ApiSidebar). Right rail = current-page TOC (ApiToc). The two are
+   kept structurally separate, not merged into one sidebar, because they answer different
+   questions ("where else can I go" vs. "where am I on this page") and track different state
+   (static vs. scroll position) — the standard every major docs site keeps apart. */
 
 .api-layout {
   display: grid;
-  grid-template-columns: 260px minmax(0, 1fr);
+  grid-template-columns: 260px minmax(0, 1fr) 220px;
   gap: 32px;
   align-items: start;
-  max-width: calc(var(--max-width) + 260px + 80px);
+  max-width: calc(var(--max-width) + 260px + 220px + 112px);
   margin: 0 auto;
   padding: 0 24px;
 }
@@ -1082,6 +1086,26 @@ button {
 
 .api-content .container {
   padding: 0 32px;
+  margin: 0;
+  max-width: none;
+}
+
+.api-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 20px 32px 0;
+  font-size: 0.8rem;
+  font-family: var(--font-mono);
+  color: var(--text-faint);
+}
+
+.api-breadcrumb a:hover {
+  color: var(--text-dim);
+}
+
+.api-breadcrumb span[aria-current="page"] {
+  color: var(--text-dim);
 }
 
 .api-sidebar {
@@ -1163,33 +1187,58 @@ button {
   background: var(--accent-pink);
 }
 
-.api-sidebar-sublist {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  margin: 2px 0 6px 26px;
-  padding-left: 12px;
+/* ---------- Right rail: current-page TOC (ApiToc) ---------- */
+
+.api-toc {
+  position: sticky;
+  top: 55px;
+  align-self: start;
+  max-height: calc(100vh - 55px);
+  overflow-y: auto;
+  padding: 28px 0 40px 20px;
   border-left: 1px solid var(--border);
 }
 
-.api-sidebar-sublink {
+.api-toc-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.api-toc-link {
+  display: block;
   padding: 5px 10px;
   border-radius: var(--radius-sm);
   font-size: 0.82rem;
   color: var(--text-faint);
-  line-height: 1.3;
+  line-height: 1.4;
+  border-left: 2px solid transparent;
 }
 
-.api-sidebar-sublink:hover {
+.api-toc-link:hover {
   color: var(--text-dim);
 }
 
-.api-sidebar-sublink[aria-current="true"] {
+.api-toc-link[aria-current="true"] {
   color: var(--accent-teal);
+  border-left-color: var(--accent-teal);
+  background: var(--panel);
 }
 
 .api-sidebar-mobile {
   display: none;
+}
+
+/* Right rail needs more room than the left one to avoid cramping the content column — drops
+   first, same order MDN/Docusaurus use, well before the two-column-to-mobile breakpoint. */
+@media (max-width: 1180px) {
+  .api-layout {
+    grid-template-columns: 260px minmax(0, 1fr);
+  }
+
+  .api-toc {
+    display: none;
+  }
 }
 
 @media (max-width: 900px) {
@@ -1200,6 +1249,10 @@ button {
 
   .api-content .container {
     padding: 0 24px;
+  }
+
+  .api-breadcrumb {
+    padding: 16px 24px 0;
   }
 
   .api-sidebar {
