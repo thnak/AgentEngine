@@ -39,6 +39,14 @@ export const apiPages: ApiPage[] = [
     status: "real",
   },
   {
+    id: "codeact",
+    label: "CodeAct — agent.*",
+    href: `${SITE_BASE}/api/codeact.html`,
+    eyebrow: "026 — Agent-Facing Runtime Surface",
+    description: "The nine agent.* Python modules execute_code can expose — which are real and reach the actual 006 §3 tool pipeline, and which are still just a registry entry.",
+    status: "design",
+  },
+  {
     id: "skill",
     label: "Skill",
     href: `${SITE_BASE}/api/skill.html`,
@@ -462,6 +470,93 @@ export const skillToolScopingSnippet = `// Filters universe's descriptors down t
     ToolTable const& universe, std::vector<std::string> const& allowed,
     std::vector<std::string> const& always_on = {});
 // include/agentengine/core/skill_tool_scoping.hpp:47-57`;
+
+// 026-Agent-Facing-Runtime-Surface.md §4/§5 -- CodeAct is not a separate tool, it's execute_code
+// with the agent Python library present in the sandbox. agent_library_manifest.hpp is the ONE
+// shared registry both the real dir(agent)/help(agent) story and the model-facing prompt summary
+// read from -- listed here in that same order.
+export interface AgentModule {
+  name: string;
+  oneLine: string;
+  status: ApiStatus;
+  gatedBy: string;
+}
+
+export const agentModuleRegistry: AgentModule[] = [
+  { name: "tools", oneLine: "Call your granted tools as ordinary functions.", status: "real", gatedBy: "cap::ToolCall<Name>" },
+  { name: "files", oneLine: "Read/write files in your workspace.", status: "real", gatedBy: "cap::FsRead / cap::FsWrite" },
+  { name: "data", oneLine: "Work with tabular/JSON inputs without loading them wholly.", status: "real", gatedBy: "cap::FsRead" },
+  { name: "memory", oneLine: "Read your ranked view of prior memory.", status: "design", gatedBy: "cap::FsRead" },
+  { name: "notes", oneLine: "Write durable notes that persist across turns.", status: "design", gatedBy: "cap::FsWrite" },
+  { name: "output", oneLine: "Emit your final structured output.", status: "design", gatedBy: "always present" },
+  { name: "progress", oneLine: "Report progress on long-running work.", status: "design", gatedBy: "always present" },
+  { name: "ask", oneLine: "Ask the caller a question and wait for a reply.", status: "design", gatedBy: "cap::Elicit" },
+  { name: "spawn", oneLine: "Run a sub-agent and get its result.", status: "design", gatedBy: "cap::AgentCall<Id, N>" },
+];
+
+export const codeActEntries: ApiEntry[] = [
+  {
+    id: "agent-tools-bridge",
+    status: "real",
+    tag: "agent.tools.<name>(...)",
+    title: "agent.tools — every bridged tool as an ordinary Python function",
+    body:
+      "Generated straight from the same ToolDescriptor every other tool-pipeline caller reads — never a hand-authored wrapper, so it cannot drift from the tool's real schema. A call keyword-encodes its arguments to JSON, hands them to the real 006 §3 pipeline via bridge_tool_call() (capability-checked against the sandbox's OWN ToolBridgeConfig::capabilities, never the calling agent's own ceiling — I2), and wraps the reply in _AeReply, an attribute-accessible generic object built from the parsed JSON dict — not a raw dict, not a per-tool dataclass. Fails closed: with no ToolBridgeConfig configured for a session, import agent raises ModuleNotFoundError inside the sandbox.",
+    cite: "src/backends/native_jail/agent_tools_codegen.hpp:206",
+    href: gh("src/backends/native_jail/agent_tools_codegen.hpp"),
+  },
+  {
+    id: "agent-files-data-bridge",
+    status: "real",
+    tag: "agent.files / agent.data",
+    title: "agent.files / agent.data — convenience wrappers, not a second capability path",
+    body:
+      "agent.files.input/artifact/list and agent.data.read_json/read_json_lines/read_csv_rows are ordinary-Python convenience over the SAME per-call cap::FsRead/cap::FsWrite check open()/listdir() already enforce — nothing here widens what a call can reach. The two streaming generators (read_json_lines, read_csv_rows) never materialize the whole file, making 026 §5's 'without loading them wholly into memory' claim literal rather than aspirational. Unlike agent.tools, this pair is actually wired live in tools/cli_chat.cpp (MediatedPythonConfig::expose_agent_files_data = true) — reachable in the real CLI today, not just under test.",
+    cite: "src/backends/native_jail/agent_files_data_codegen.hpp:20",
+    href: gh("src/backends/native_jail/agent_files_data_codegen.hpp"),
+  },
+];
+
+export const codeActGeneratedFnSnippet = `// One tool -> one real Python function, generated from the SAME
+// ToolDescriptor every other pipeline caller reads. Keyword-only
+// throughout; an omitted optional argument is left out of the wire
+// payload entirely (mirrors json_schema.hpp's "absent, not null" rule).
+def web_search(*, query: str, max_results: int = None):
+    """Search the web and return ranked results."""
+    _args = {}
+    _args['query'] = query
+    if max_results is not None:
+        _args['max_results'] = max_results
+    _reply_json = _ae_internal.call_tool('web_search', _json.dumps(_args))
+    return _AeReply(_json.loads(_reply_json))
+
+class _AeReply:
+    def __init__(self, _data):
+        self.__dict__.update(_data)   # attribute access, not dict indexing
+    def __repr__(self):
+        return 'Reply(' + repr(self.__dict__) + ')'
+// src/backends/native_jail/agent_tools_codegen.hpp:206-283`;
+
+export const codeActBridgeConfigSnippet = `// Host-configured, per-session -- never guest-derived. The sandbox's OWN
+// capability set, deliberately separate from the calling agent's own
+// ceiling (I2): there is no parameter here an agent-level CapabilitySet
+// could even be passed through as.
+struct ToolBridgeConfig {
+    ToolTable bridged_tools;
+    std::vector<Capability> capabilities;
+    bool approved = false;   // decided ONCE at execute_code time, not per call
+};
+
+// MediatedPythonConfig::tool_bridge is std::optional<ToolBridgeConfig>,
+// nullopt by default -- with none configured, "from agent import tools"
+// fails ModuleNotFoundError inside the sandbox: fail-closed, not silently
+// empty.
+struct MediatedPythonConfig {
+    std::optional<ToolBridgeConfig> tool_bridge;
+    // ...
+};
+// src/backends/native_jail/tool_bridge.hpp:56-60
+// src/backends/native_jail/mediated_python_runner.hpp:81`;
 
 export interface ProtocolEntry {
   id: string;
