@@ -153,6 +153,7 @@ session's leftover total).
 - `tests/CMakeLists.txt` — registers the new test target.
 
 Full regression suite: **179/180** tests pass; the one failure,
-`test_mediated_python_runner_hostile_corpus`, is the same pre-existing, unrelated flake already
+`test_mediated_python_runner_hostile_corpus`, is the same pre-existing, unrelated failure already
 recorded in ADR-024 §6 and reconfirmed unaffected by ADR-027 — untouched by any file this ADR
-changes.
+changes. **Corrected 2026-08-11**: it was two real, deterministic test-authoring bugs, not a flake;
+see ADR-024 §6's own corrected note.

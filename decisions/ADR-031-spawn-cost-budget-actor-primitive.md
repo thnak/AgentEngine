@@ -122,5 +122,6 @@ concurrency-dependent where the claim requires it (T2 — a real `quark::Engine`
 
 Full regression suite: no new failures introduced by this ADR (verified against the pre-existing
 baseline ADR-027/028/029/030 left — the one known failure,
-`test_mediated_python_runner_hostile_corpus`, is the same pre-existing, unrelated flake, untouched
-by any file this ADR changes).
+`test_mediated_python_runner_hostile_corpus`, is the same pre-existing, unrelated failure, untouched
+by any file this ADR changes). **Corrected 2026-08-11**: it was two real, deterministic
+test-authoring bugs, not a flake; see ADR-024 §6's own corrected note.

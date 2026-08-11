@@ -528,6 +528,15 @@ become a per-interpreter-keyed store and the audit hook to resolve "which sessio
 the isolation primitive" and is out of scope here. §6 item 5 is retained as a real open question,
 now stated with this dependency attached rather than read as a narrow compatibility check.
 
+**Enforced in code, not just prose (2026-08-11):** this section stated the "one OS process per
+session" rule as a deployment-shape recommendation with nothing in this codebase actually checking
+it. `decisions/ADR-030-session-scoped-codeact-wiring.md` (Proposed) makes each of `cli_chat.cpp`'s
+five previously process-wide CodeAct statics (the `MediatedPythonRunner` among them) a real
+per-`AgentSession`-instance member via ADR-028's mechanism, so the process boundary this rule
+depends on is now what actually keeps two sessions' interpreter state apart — not an unenforced
+convention a future caller could violate by accident. §6 item 5's subinterpreter-pooling question
+above is separately, now definitively answered NO on this build — see §11.
+
 ### 5.5.7 Finding 7.9 — `ExecState` concurrency under guest-spawned threads (decision, closed)
 
 **Decision:** rather than adding a mutex to `ExecState` (a spec-level change to

@@ -168,5 +168,6 @@ live model) matching ADR-027/028's own proof style.
 
 Full regression suite: no new failures introduced by this ADR (verified against the pre-existing
 178/179-179/180-pass baseline ADR-027/028 left — the one known failure,
-`test_mediated_python_runner_hostile_corpus`, is the same pre-existing, unrelated flake, untouched by
-any file this ADR changes).
+`test_mediated_python_runner_hostile_corpus`, is the same pre-existing, unrelated failure, untouched
+by any file this ADR changes). **Corrected 2026-08-11**: it was two real, deterministic
+test-authoring bugs, not a flake; see ADR-024 §6's own corrected note.

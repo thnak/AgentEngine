@@ -125,8 +125,9 @@ claim or red-team finding.
 | T15 | A hookless middleware compiles and is inert. | **CORRECT** |
 
 Full regression suite: **185/186** pass. The one failure, `test_mediated_python_runner_hostile_corpus`,
-is the same pre-existing, unrelated flake tracked separately (backlog item #38) — untouched by any
-file this ADR changes.
+is the same pre-existing, unrelated failure tracked separately (backlog item #38) — untouched by any
+file this ADR changes. **Resolved (2026-08-11, backlog item #38):** not a flake — two real,
+deterministic test-authoring bugs, both fixed the same day; see ADR-024 §6's own corrected note.
 
 ## 7. Files changed
 

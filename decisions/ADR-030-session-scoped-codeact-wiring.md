@@ -159,5 +159,6 @@ test doubles.
 
 Full regression suite: no new failures introduced by this ADR (verified against the pre-existing
 baseline ADR-027/028/029 left — the one known failure, `test_mediated_python_runner_hostile_corpus`,
-is the same pre-existing, unrelated flake, untouched by any file this ADR changes); `cli_chat.cpp`
-itself rebuilds and links cleanly against the corrected design.
+is the same pre-existing, unrelated failure, untouched by any file this ADR changes — **corrected
+2026-08-11**: two real, deterministic test-authoring bugs, not a flake; see ADR-024 §6's own
+corrected note); `cli_chat.cpp` itself rebuilds and links cleanly against the corrected design.

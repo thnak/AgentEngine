@@ -147,6 +147,15 @@ Offline: 175/176 tests pass. The one failure, `test_mediated_python_runner_hosti
 pre-existing, unrelated (real sandbox-mediation code untouched by this ADR), and was already reported
 to the operator separately, out of this ADR's scope.
 
+**Correction (2026-08-11):** this and every other ADR that repeated "pre-existing, unrelated flake"
+citing this section were wrong about the NATURE of the failure. Re-run in isolation, repeatedly, it
+was 100% reproducible, not intermittent — two real test-authoring bugs (`test_mediated_python_runner_
+hostile_corpus.cpp`'s E4-PY8f used a Windows-path literal instead of the mediated-`open()` guest-path
+convention, and E4-PY9's wrapper allowlist was missing `_ae_fs_denied`), not flakiness in the runner
+itself. Both fixed the same day this note was added; the file compiles and passes cleanly now, and
+the full suite is green with no known failures. "Pre-existing and unrelated" (real sandbox code, out
+of scope) was directionally fine; "flake" was not — never re-verified before being repeated forward.
+
 ## 7. Residuals, named rather than silently assumed closed
 
 - No type-level guarantee ties the declared and invocable tables together (§3b) — a future caller
@@ -175,6 +184,9 @@ to the operator separately, out of this ADR's scope.
 - `AgentSession` still owns no sandbox and no tool-call loop in production — every proof here runs
   through `cli_chat.cpp`'s hand-driven loop, not through `AgentSession::handle()` itself. Building that
   ownership is a separate, larger architectural question this ADR does not attempt.
+  **Closed by `decisions/ADR-027-agent-session-tool-call-loop.md` (Judged, 2026-08-11):** a real
+  multi-round tool-call loop now lives inside `AgentSession::handle()` itself, replacing the hand-
+  driven `cli_chat.cpp` loop this residual describes.
 - Per-skill `cap::FsRead` grants are all-or-nothing per mounted skill for the CLI's own demo (it grants
   every materialized skill); nothing in this design *requires* that — an operator embedding this
   differently can grant a real subset — but no test proves the subset case specifically.
@@ -219,6 +231,11 @@ shared via the same function-local-static, single-process-scoped idiom `cli_chat
 `shared_python_runner()`/`shared_exec_state()` — correct for this CLI's single-process scope, not a
 general solution for a multi-session production `AgentSession`. Named, not solved, matching §7's own
 "`AgentSession` owns no sandbox/tool-loop in production" residual — this is the same gap, one layer up.
+**Closed by `decisions/ADR-028-session-scoped-stateful-tools.md`** (`make_tool_descriptor_with_invoke
+<ToolT>`, Judged): a `Tool<>` conformer's `invoke()` can now be backed by a provider-owned member
+function with real, per-`AgentSession`-instance state. `decisions/ADR-030-session-scoped-codeact-
+wiring.md` (Proposed) then ports `MountedSkillsState`/`MediatedPythonRunner`/`ExecState` off the
+process-wide statics named here onto that mechanism for real.
 
 **I2/I3 argument, stated explicitly:** `mount_skill` cannot and does not grant new authority. Every
 resolved skill's files are already readable via a `cap::FsRead` the operator granted unconditionally at
@@ -233,8 +250,9 @@ pipeline). Run live against a real OpenRouter model: on the very first turn, the
 `mount_skill("using-the-code-interpreter")` before attempting `execute_code` — not because it was told
 to, but because `execute_code` genuinely was not in its declared tool list until the next internal
 round, once the mount was recorded. It never had to be rejected; the declaration-side scoping alone
-correctly shaped what the model attempted. 176/177 tests pass — the one failure is the same pre-existing
-`test_mediated_python_runner_hostile_corpus`, unrelated, reported separately.
+correctly shaped what the model attempted. 176/177 tests pass — the one failure is the same
+`test_mediated_python_runner_hostile_corpus` failure §6 above records and corrects
+(2026-08-11 note): a real, deterministic test bug, not a flake — fixed the same day.
 
 **Residuals**, additional to §7's own list: `MountedSkillsState` has no expiry/unmount within a run
 (matches 009 §8c's "snapshotted per run" framing, applied one layer up); no test exercises an operator

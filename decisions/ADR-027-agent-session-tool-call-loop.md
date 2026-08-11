@@ -134,8 +134,9 @@ covered" discipline)
 `tests/test_agent_session_tool_call_loop.cpp` (new, deterministic, offline — no live model, no
 network) — all 6 cases above, 14 individual assertions, all pass. Full regression suite: **178/179**
 tests pass (`ctest`, this session); the one failure, `test_mediated_python_runner_hostile_corpus`,
-is pre-existing and unrelated — already recorded as a separately-tracked, pre-existing flake in
-ADR-024 §6 (native-jail Python sandbox internals, no file this ADR touches). The two rewritten live
+is pre-existing and unrelated (native-jail Python sandbox internals, no file this ADR touches) —
+**corrected 2026-08-11**: not a flake, two real deterministic test-authoring bugs, both fixed the
+same day; see ADR-024 §6's own corrected note. The two rewritten live
 e2e tests (`test_agent_session_live_multitool_e2e.cpp`, `test_agent_session_skills_live_e2e.cpp`)
 — **re-run live against a real provider** (OpenRouter, `~deepseek/deepseek-v4-flash-latest`)
 after this ADR was judged: both pass, including the internal loop genuinely threading

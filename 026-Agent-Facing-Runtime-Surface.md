@@ -184,11 +184,14 @@ reads to the model as "not available here" rather than as a policy essay.
 - **Every call is an effect**: attributed, audited, budgeted, cancellable (I4).
 - **`agent.spawn` inherits an attenuated capability set** and a sub-worktree (025 §3) — a spawned
   agent can never exceed its parent. Target design; not yet a real call path. `agent.spawn` has no
-  implementation to wire a sub-worktree to today — only its depth-budget half is proven, in
-  isolation from any real spawn (`decisions/ADR-006-agent-spawn-depth-budget-bound.md` §9), and
-  `AgentSession` owns no sandbox/tool-call loop in production yet
-  (`decisions/ADR-024-skill-scoped-tool-and-mount-wiring.md` §7). Full trace:
-  `docs/architecture/worktree-sharing-skills-and-subagents.md` §3.
+  implementation to wire a sub-worktree to today — its depth-budget half is proven, in isolation
+  from any real spawn (`decisions/ADR-006-agent-spawn-depth-budget-bound.md` §9), and its cost-pool
+  half now has a real, tested actor primitive too (`decisions/ADR-031-spawn-cost-budget-actor-
+  primitive.md`) — but neither is wired to an actual nested-agent-run invocation mechanism, which
+  still does not exist anywhere in this codebase. `AgentSession` DOES now own a real production
+  tool-call loop (`decisions/ADR-027-agent-session-tool-call-loop.md`, closing the gap this line
+  used to name), but that loop has no `agent.spawn` case — a spawn call would still have nothing to
+  invoke. Full trace: `docs/architecture/worktree-sharing-skills-and-subagents.md` §3.
 
 **The trade this makes explicit:** a richer library means the agent can do more per execution
 (fewer round trips, less token spend, better results) *and* a wider host attack surface. Each module
@@ -317,9 +320,14 @@ when it grows. Prompt bloat is a regression like any other; without a gate it on
   `decisions/ADR-006-agent-spawn-depth-budget-bound.md`**: the depth half is proven sufficient
   against unbounded recursion, conditional on the effect-mediation boundary (006 §9 G4) holding —
   see that ADR for the exact scope. The cost half (token spend per spawned run — wall-clock is a
-  further, separately-deferred dimension, see below) has a **Draft design sketch (2026-08-11,
-  designed and red-teamed, deliberately NOT an ADR — no code, no tests, implementation currently
-  paused project-wide)**, not a resolution:
+  further, separately-deferred dimension, see below) started as a **Draft design sketch (2026-08-11,
+  designed and red-teamed, deliberately NOT an ADR at the time — no code, no tests yet)**, and is now
+  **resolved as real, tested code the same day**: `decisions/ADR-031-spawn-cost-budget-actor-
+  primitive.md` (Proposed) turned this sketch into `SpawnCostBudgetActor`, matching the corrected
+  shape this sketch calls for below. What ADR-031 does NOT claim, so this isn't overstated: `agent
+  .spawn` itself still has zero real call path anywhere in this codebase — no nested-agent-run
+  invocation mechanism exists for the cost-pool primitive to gate. The design reasoning below is kept
+  as the record of why the shape is what it is:
 
   - **Correction first**: ADR-006 and `trust/spawn_budget.hpp`'s own comments cite "023's budgets"
     as where a spawn's cost ceiling would come from. That's a miscitation — 023 is entirely engine
@@ -356,10 +364,9 @@ when it grows. Prompt bloat is a regression like any other; without a gate it on
     mechanism exists to attenuate against (001's turn-loop prose names "deadline" as a guard;
     `agent_session.hpp` implements none of it, unlike `TokenBudget<N>`). Not folded into "cost
     half resolved" language — naming it separately is the point.
-  - This sketch becomes a real ADR (design → red-team → prove → judge, with implemented and
-    sanitizer-tested code, per this project's own ADR discipline — `decisions/README.md`, and the
-    precedent `OpenQuestions.md` OQ-18 already set for rejecting no-code, principle-only entries)
-    once implementation resumes, not before.
+  - **Done:** this sketch became a real ADR the same day (design → red-team → prove, real code +
+    tests, per this project's own ADR discipline — `decisions/README.md`; `decisions/ADR-031-
+    spawn-cost-budget-actor-primitive.md`, Proposed, awaiting the project owner's explicit "Judged").
 - ~~**Q2** — Non-actionable failure phrasing (§3) is the hardest part to get right: too vague and the
   agent retries forever, too specific and it becomes an architecture description.~~ **Resolved: don't
   hand-tune wording — source it from real occurrences of the same exception class (2026-08-04):**

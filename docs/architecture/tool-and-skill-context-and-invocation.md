@@ -3,6 +3,13 @@
 **Compiled:** 2026-08-10 · **Status:** as-built trace, not a spec — cites the RFC/file each box comes
 from; when this disagrees with the code, the code (and the RFC it cites) wins, fix this doc.
 
+**Correction (2026-08-11):** `decisions/ADR-027-agent-session-tool-call-loop.md` (Judged) put a real
+tool-call loop inside `AgentSession::handle()` itself, the day after this doc was compiled. Path 1
+below described that loop as not existing ("`*** NO tool-call loop exists yet ***`") — that framing
+is now wrong; see the correction inline at Path 1 and the updated §4 verdict. Everything else in this
+doc (the `ContextProvider`/`Middleware` shapes, `ContextContribution.tools`, Paths 2 and 3) is
+unaffected and still accurate.
+
 Grew out of a direct question: does `invoke_agent_tool()` (`include/agentengine/core/agent_registry.hpp:505`)
 stay in sync with the mount-state-dependent tool set a `ContextProvider` declares to the model? Short
 answer up front: **no — because it isn't part of that flow at all.** It's a third, structurally separate
@@ -76,26 +83,32 @@ flowchart TB
     end
 
     subgraph Invoke["Invocation side (what a tool call actually runs against)"]
-        B1["AgentSession production turn loop\n*** NO tool-call loop exists yet ***\nresponse->message returned to caller, not executed"]
+        B1["AgentSession production turn loop (ADR-027)\ninvoke_tool(ToolTable::from_descriptors(contribution.tools), ...)\nrebuilt fresh every internal round, same snapshot A1 just declared"]
         B2["invoke_agent_tool()\nagent_registry.hpp:505\nToolTable = meta.tools\n(AgentMetadata, FIXED at register_agent<A>() time)"]
         B3["cli_chat.cpp main() loop, line 526\ninvoke_tool(scoped_tools, ...)\nToolTable = scope_tools_to_mounted_skills(...)\nrecomputed THIS round, same call as A2"]
     end
 
-    A1 -.->|"declares tools, but nothing invokes them yet"| B1
+    A1 -->|"same contribution.tools snapshot,\nsame internal round (ADR-027)"| B1
     A2 -->|"same universe + same shared_mounted_skills_state(),\nsame round"| B3
     B2 -.->|"no ContextProvider ever feeds this;\nonly caller is a unit test"| Test["test_agent_tool_invocation.cpp"]
 
-    style B1 fill:#444,color:#eee
+    style B1 fill:#2f6f4f,color:#fff
     style B2 fill:#7a3b3b,color:#fff
     style B3 fill:#2f6f4f,color:#fff
 ```
 
 ### Path 1 — `AgentSession`'s real production turn loop
-`agent_session.hpp` makes exactly **one model call per run** (own comment, lines 397-400: "no
-tool-call loop exists yet"). It declares `contribution.tools` into the `ChatRequest`, gets back
-`response->message` (which may itself contain a `ToolCall` content item), and returns that to the
-caller — it never invokes anything. Declaration exists; there is no matching invocation step to be
-"in sync" or "out of sync" with, because none runs here yet.
+**(Corrected 2026-08-11 — was accurate on 2026-08-10, no longer is.)** As of
+`decisions/ADR-027-agent-session-tool-call-loop.md` (Judged), one `StartRun` ask resolves a whole
+multi-round tool conversation inside `AgentSession::handle()` itself: it declares `contribution.tools`
+into the `ChatRequest` exactly as before, but a returned `ToolCall` is now extracted, capability/
+approval-checked, and invoked for real via `invoke_tool(ToolTable::from_descriptors(contribution
+.tools), ...)` — the SAME `ContextContribution` snapshot that round's declaration used, rebuilt fresh
+every internal round rather than cached across one. This is, structurally, Path 3's own discipline
+("declaration and invocation call the scoping logic with the same inputs, on the same cadence"),
+independently arrived at for this path — closing exactly the "declared ≠ invocable" gap this doc's §4
+originally flagged as a forward-looking risk. Declaration and invocation ARE in sync here now, by the
+same kind of construction Path 3 uses, not by accident.
 
 ### Path 2 — `invoke_agent_tool()`
 ```cpp
@@ -164,16 +177,14 @@ the same tool set in the current tree (`invoke_agent_tool` → static agent-decl
 by a unit test with no skills involved; `scope_tools_to_mounted_skills` + `invoke_tool` → the dynamic,
 mount-aware path, proven live by `cli_chat.cpp` / `test_agent_session_skills_live_e2e.cpp`).
 
-The risk is forward-looking, not present: if `AgentSession`'s production turn loop later grows the
-tool-call loop it doesn't have yet (closing the Path 1 gap above), whoever wires it must pick one of
-these two invocation shapes deliberately —
-
-- route through `scope_tools_to_mounted_skills`, recomputed at invocation time from the same live
-  state `on_context()` just used (Path 3's pattern), or
-- route through `invoke_agent_tool`/`AgentMetadata.tools` for agent-declared-only tools with no skill
-  involvement (Path 2's pattern) —
-
-and never let a skill-scoped tool be reachable through `invoke_agent_tool`, since `AgentMetadata` has
-no mount-state input to stay synced with even in principle. This is exactly the "declaration ≠
-invocation-time authorization" trap `skill_tool_scoping.hpp`'s top comment names directly, restated
-here against a concrete third path (`invoke_agent_tool`) that comment doesn't itself mention.
+**Resolved, not merely forward-looking, as of 2026-08-11:** the risk described here was "if
+`AgentSession`'s production turn loop later grows a tool-call loop, whoever wires it must pick
+deliberately between Path 3's live-recompute pattern and Path 2's fixed-at-registration pattern, and
+never let a skill-scoped tool reach `invoke_agent_tool`." ADR-027 built that loop and picked Path 3's
+pattern (`ToolTable::from_descriptors(contribution.tools)`, rebuilt every internal round from the same
+live `ContextContribution` that round's declaration used) — the correct choice this section called
+for. `invoke_agent_tool`/`AgentMetadata.tools` (Path 2) remains exactly as isolated as before: still
+only reachable from `test_agent_tool_invocation.cpp`, still never fed by a `ContextProvider`, still
+never used for a skill-scoped tool. The "declaration ≠ invocation-time authorization" trap
+`skill_tool_scoping.hpp`'s top comment names is closed on Path 1 the same way it was already closed on
+Path 3 — by construction, not by a shared library guarantee spanning both.
