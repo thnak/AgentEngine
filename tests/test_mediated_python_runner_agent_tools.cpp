@@ -59,6 +59,25 @@ struct EchoTool : Tool<EchoTool, Capabilities<cap::decl::Entropy>> {
     static result<Reply> invoke(Args a, EffectContext&) { return Reply{a.message}; }
 };
 
+// Scenario 4's own second tool set -- a DIFFERENT tool from EchoTool, so refreshing to this one
+// proves a real reconfiguration (old tool gone, new tool present), not an additive merge.
+struct RefreshedArgs {
+    std::string label;
+};
+AE_JSON_SCHEMA(RefreshedArgs, label)
+struct RefreshedReply {
+    std::string label;
+};
+AE_JSON_SCHEMA(RefreshedReply, label)
+
+struct RefreshedTool : Tool<RefreshedTool> {
+    static constexpr std::string_view name = "refreshed_tool";
+    static constexpr std::string_view description = "Present only after the second refresh.";
+    using Args = RefreshedArgs;
+    using Reply = RefreshedReply;
+    static result<Reply> invoke(Args a, EffectContext&) { return Reply{a.label}; }
+};
+
 }  // namespace
 
 int main() {
@@ -206,6 +225,78 @@ int main() {
         AE_CHECK(out.has_value() && out->stdout_text.find("NO_AGENT") != std::string::npos,
                  "G1-N2: with no tool bridge configured, 'import agent' fails ModuleNotFoundError -- "
                  "an ungranted module is simply absent (026 §5a), not present-but-empty");
+    }
+
+    // ================================================================================
+    // Scenario 4 (refresh_agent_tools -- the CodeAct/skill-union wiring's own seam,
+    // core/codeact_tool_union.hpp): proves reconfiguring agent.tools AFTER initialize(), on the
+    // SAME already-live interpreter, actually changes what's callable -- tool A present, then
+    // refreshed to tool B (A gone), all without tearing down the interpreter.
+    // ================================================================================
+    {
+        MediatedPythonConfig cfg;
+        cfg.python_home = AE_PYTHON_HOME;
+        // cfg.tool_bridge left at its default nullopt -- refresh_agent_tools() is what configures
+        // it, not the constructor, proving this ALSO works starting from "no bridge at all".
+
+        MediatedPythonRunner runner(std::move(cfg));
+        auto init = runner.initialize();
+        AE_CHECK(init.has_value(), "G2-R1: setup -- a fourth interpreter (no initial bridge) initializes cleanly");
+
+        ExecState state{};
+        EffectContext ctx{};
+
+        {
+            ExecRequest req{"python",
+                             "try:\n"
+                             "    import agent\n"
+                             "except ModuleNotFoundError as e:\n"
+                             "    print('NO_AGENT_YET:', e)"};
+            auto out = runner.run(req, state, ctx);
+            AE_CHECK(out.has_value() && out->stdout_text.find("NO_AGENT_YET") != std::string::npos,
+                     "G2-R1: before any refresh, agent.tools is absent, exactly like Scenario 3's "
+                     "construction-time nullopt case");
+        }
+
+        {
+            ToolBridgeConfig bridge_a;
+            bridge_a.bridged_tools = ToolTable::from_tools<EchoTool>();
+            bridge_a.capabilities = {cap::Entropy{}};
+            bridge_a.approved = true;
+            auto refreshed = runner.refresh_agent_tools(std::move(bridge_a));
+            AE_CHECK(refreshed.has_value(), "G2-R2: refresh_agent_tools() with tool A succeeds");
+
+            ExecRequest req{"python",
+                             "from agent import tools\n"
+                             "r = tools.echo_tool(message='after first refresh')\n"
+                             "print('A_WORKS:', r.message)"};
+            auto out = runner.run(req, state, ctx);
+            AE_CHECK(out.has_value() && out->stdout_text.find("A_WORKS: after first refresh") != std::string::npos,
+                     "G2-R2: a FRESH import agent (never previously bound in this session) sees the "
+                     "just-refreshed tool set on the very next run() call, real round trip");
+        }
+
+        {
+            ToolBridgeConfig bridge_b;
+            bridge_b.bridged_tools = ToolTable::from_tools<RefreshedTool>();  // note: NO EchoTool this time
+            bridge_b.capabilities = {};
+            bridge_b.approved = true;
+            auto refreshed = runner.refresh_agent_tools(std::move(bridge_b));
+            AE_CHECK(refreshed.has_value(), "G2-R3: refresh_agent_tools() with a DIFFERENT tool B succeeds");
+
+            ExecRequest req{"python",
+                             "import agent\n"
+                             "r = agent.tools.refreshed_tool(label='after second refresh')\n"
+                             "print('B_WORKS:', r.label)\n"
+                             "print('A_GONE:', hasattr(agent.tools, 'echo_tool'))"};
+            auto out = runner.run(req, state, ctx);
+            AE_CHECK(out.has_value() && out->stdout_text.find("B_WORKS: after second refresh") != std::string::npos,
+                     "G2-R3: the new tool B is callable via a fresh 'import agent; agent.tools....' "
+                     "reference on the very next run() call");
+            AE_CHECK(out.has_value() && out->stdout_text.find("A_GONE: False") != std::string::npos,
+                     "G2-R3: tool A is genuinely GONE from the refreshed module -- this is a real "
+                     "reconfiguration, not an additive merge that keeps stale entries around");
+        }
     }
 
     if (g_failures != 0) {

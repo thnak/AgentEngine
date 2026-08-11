@@ -1297,4 +1297,29 @@ result<ExecOutcome> MediatedPythonRunner::run(ExecRequest request, ExecState& st
     return outcome;
 }
 
+result<void> MediatedPythonRunner::refresh_agent_tools(ToolBridgeConfig config) {
+    if (!initialized_) {
+        return std::unexpected(error{failure_class::fatal, "MediatedPythonRunner is not initialized",
+                                      "python.agent_tools_not_initialized"});
+    }
+    // Mutating config_.tool_bridge IN PLACE, not reassigning config_ wholesale: g_current_config
+    // (set once, at the end of initialize()) is a pointer AT config_, not a snapshot of it --
+    // Internal_call_tool dereferences it fresh on every call_tool(), so this update is visible to
+    // the next bridged call with no further plumbing.
+    config_.tool_bridge = std::move(config);
+
+    // g_effective_keep_set (Stage B's own meta-path finder allow-set) is computed ONCE, inside
+    // initialize(), from the pre/post-bootstrap sys.modules diff -- a session constructed with NO
+    // tool_bridge never imported json during that one-time pre-finder-install window, so json was
+    // never captured into the keep-set and the finder (already installed by now, unlike during
+    // initialize()'s own bootstraps) would otherwise deny run_agent_tools_bootstrap's own `import
+    // json as _json` line below. A caller reaching refresh_agent_tools() at all is, by construction,
+    // now opting agent.tools INTO this session -- the exact same "json becomes importable exactly
+    // when agent.tools exists" intent agent_tools_codegen.hpp's own header comment already states
+    // for the construction-time case, just extended to apply when that decision is made later.
+    g_effective_keep_set.insert("json");
+
+    return run_agent_tools_bootstrap(config_.tool_bridge->bridged_tools);
+}
+
 }  // namespace agentengine::native_jail

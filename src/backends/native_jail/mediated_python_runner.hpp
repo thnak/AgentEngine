@@ -133,6 +133,25 @@ public:
     // interception).
     [[nodiscard]] result<ExecOutcome> run(ExecRequest request, ExecState& state, EffectContext& ctx);
 
+    // Reconfigures which tools `agent.tools` exposes on an ALREADY-initialized runner, without
+    // tearing down the one embedded interpreter (ADR-002 §5.5.6 protects "at most one interpreter
+    // alive at any instant," not "the tools bootstrap runs only once" -- confirmed by reading that
+    // ADR directly). Re-runs the exact same bootstrap `initialize()` ran once
+    // (`run_agent_tools_bootstrap`, self-contained: its own fresh throwaway globals dict and fresh
+    // `_ae_internal` module every call), which reassigns `sys.modules['agent.tools']` to a BRAND
+    // NEW module object -- so a later `import agent; agent.tools.foo(...)` sees exactly the new set.
+    //
+    // Named residual, not solved here: a name already bound via an earlier `from agent import
+    // tools` in this session's persisted `ExecState`/globals keeps referencing the OLD module
+    // object after a refresh -- only a FRESH `import agent; agent.tools.foo(...)` observes the
+    // update. Same category as skills' own "loading is dynamic but snapshotted per run" contract
+    // (009 §8c), not a gap unique to this method.
+    //
+    // Requires `ok()` first; fails closed (this file's own established idiom -- every other
+    // host-configured surface here defaults to "absent" rather than silently widening) if called
+    // before `initialize()` has run.
+    [[nodiscard]] result<void> refresh_agent_tools(ToolBridgeConfig config);
+
 private:
     MediatedPythonConfig config_;
     bool initialized_ = false;

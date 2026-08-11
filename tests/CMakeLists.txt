@@ -1005,6 +1005,14 @@ add_executable(test_mcp_client test_mcp_client.cpp)
 target_link_libraries(test_mcp_client PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_mcp_client COMMAND test_mcp_client)
 
+# ---- CodeAct tool-bridge union (core/codeact_tool_union.hpp, protocol/mcp/mcp_tool_bridge.hpp):
+# agent's own tools + skill-unlocked tools + MCP-discovered tools merged into one bridge-ready
+# ToolTable, cross-source name collisions rejected, MCP path proven against a real McpServer. No
+# CPython dependency -- unconditional, unlike the mediated_python_runner-linked tests below.
+add_executable(test_codeact_tool_union test_codeact_tool_union.cpp)
+target_link_libraries(test_codeact_tool_union PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_codeact_tool_union COMMAND test_codeact_tool_union)
+
 # ---- Milestone 7 Phase C4 -- the io.modelcontextprotocol/tasks extension (011 §3.6/§12): a
 # Backgroundable tool call started via a real McpServer, polled to completion via tasks/get, cancelled
 # via tasks/cancel -- reusing background_task() (real since Phase B) end to end -------------------

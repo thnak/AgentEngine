@@ -44,6 +44,7 @@
 
 #include "agentengine/core/agent_session.hpp"
 #include "agentengine/core/builtin_skills.hpp"
+#include "agentengine/core/codeact_tool_union.hpp"
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/mounted_skills_state.hpp"
 #include "agentengine/core/skill_provider.hpp"
@@ -53,6 +54,7 @@
 #include "agentengine/trust/secret.hpp"
 #include "backends/native_jail/mediated_python_runner.hpp"
 #include "backends/native_jail/skill_mount_materializer.hpp"
+#include "backends/native_jail/tool_bridge.hpp"
 
 using namespace agentengine;
 
@@ -151,6 +153,114 @@ AE_JSON_SCHEMA(ExecuteCodeReply, ok, stdout_text, stderr_text, result_repr)
     return state;
 }
 
+// ---- A trivial, capability-free demo tool: proves a mounted skill's allowed-tools reaches
+// CodeAct's agent.tools bridge, not only the top-level model tool-call surface (see
+// core/codeact_tool_union.hpp). Deliberately NOT in the top-level model-callable universe
+// (round_universe/scope_tools_to_mounted_skills below still only ever declares execute_code/
+// mount_skill) -- word_count is reachable ONLY as agent.tools.word_count(...) from inside a
+// running execute_code call, once the codeact-demo skill (below) is mounted.
+struct WordCountArgs {
+    std::string text;
+};
+AE_JSON_SCHEMA(WordCountArgs, text)
+struct WordCountReply {
+    int count = 0;
+};
+AE_JSON_SCHEMA(WordCountReply, count)
+
+struct WordCountTool : Tool<WordCountTool, EffectClass<effect_class::pure>> {
+    static constexpr std::string_view name = "word_count";
+    static constexpr std::string_view description =
+        "Counts whitespace-separated words in a string. A trivial, capability-free demo tool -- "
+        "reachable from agent.tools only once the codeact-demo skill is mounted.";
+    using Args = WordCountArgs;
+    using Reply = WordCountReply;
+
+    static result<Reply> invoke(Args a, EffectContext&) {
+        int count = 0;
+        bool in_word = false;
+        for (char c : a.text) {
+            bool const is_space = (c == ' ' || c == '\t' || c == '\n');
+            if (!is_space && !in_word) {
+                ++count;
+                in_word = true;
+            } else if (is_space) {
+                in_word = false;
+            }
+        }
+        return Reply{count};
+    }
+};
+
+// ---- The demo skill that unlocks word_count -- codeact_tool_union.hpp's own proof fixture ---------
+// An InlineSkillSource (skill_source.hpp), the same "no disk I/O" shape builtin_skills.hpp uses for
+// the five real shipped skills, alongside them via demo_skill_sources() below rather than replacing
+// them -- this file's own skill-resolution call sites (main()'s startup_skills,
+// ToolDeclaringHistoryProvider's skills_, print_skills_banner) all read the SAME source list, so
+// mounting/materializing/advertising this demo skill goes through exactly the real machinery a
+// third-party-authored skill would.
+inline constexpr std::string_view kCodeactDemoSkillMd = R"SKILL(---
+name: codeact-demo
+description: Demonstrates that a mounted skill's allowed-tools becomes callable from inside agent.tools (CodeAct), not only as a top-level model tool call. Mount this to unlock word_count for Python code.
+allowed-tools: word_count
+metadata:
+  version: "1"
+---
+# CodeAct demo
+
+Once mounted, `agent.tools.word_count(text=...)` becomes callable from inside `execute_code` --
+proving a skill's `allowed-tools` reaches CodeAct's bridge, not just the top-level tool-call
+surface. Try:
+
+```python
+from agent import tools
+r = tools.word_count(text="a real bridged call, not a stub")
+print(r.count)
+```
+)SKILL";
+
+[[nodiscard]] inline SkillSourceDescriptor make_codeact_demo_skill_source() {
+    std::string const text(kCodeactDemoSkillMd);
+    auto skill = parse_skill_md(text, "codeact-demo");
+    std::vector<SkillBundleFile> files;
+    if (skill) {
+        std::vector<std::byte> bytes(reinterpret_cast<std::byte const*>(text.data()),
+                                       reinterpret_cast<std::byte const*>(text.data()) + text.size());
+        files.push_back(SkillBundleFile{"SKILL.md", std::move(bytes)});
+    }
+    std::vector<SkillSourceResult> resolved;
+    if (skill) resolved.push_back(SkillSourceResult{std::move(*skill), std::move(files)});
+    return make_skill_source_descriptor(InlineSkillSource("cli_demo", std::move(resolved)));
+}
+
+// The ONE source list every independent SkillsProvider<> instance in this file resolves from --
+// main()'s startup_skills, ToolDeclaringHistoryProvider's skills_, shared_codeact_skills() below,
+// and print_skills_banner's own resolve -- so all four independently reach byte-identical results,
+// the same "resolve the SAME deterministic source, never a differently-scoped one" invariant this
+// file's own comments already establish for the builtin-only case.
+[[nodiscard]] inline std::vector<SkillSourceDescriptor> demo_skill_sources() {
+    return {make_builtin_skills_source(), make_codeact_demo_skill_source()};
+}
+
+// CodeAct's own SkillsProvider<> instance -- independent of ToolDeclaringHistoryProvider's/main()'s
+// own (SkillsProvider's own resolve-once/freeze contract means a fresh instance per call site is
+// correct here, not wasteful: this one is resolved exactly ONCE, for the process's whole lifetime,
+// the same function-local-static idiom shared_python_runner()/shared_mounted_skills_state() above
+// already use). Only ever read via allowed_tool_names_for() -- ExecuteCodeTool::invoke() has no
+// other reachable SkillsProvider<> instance to ask.
+[[nodiscard]] SkillsProvider<>& shared_codeact_skills() {
+    static SkillsProvider<> provider = [] {
+        SkillsProvider<> p(demo_skill_sources());
+        auto loaded = p.ensure_loaded();
+        if (!loaded) {
+            std::cerr << "FATAL: failed to resolve CodeAct demo skill sources: "
+                       << loaded.error().message << "\n";
+        }
+        return p;
+    }();
+    return provider;
+}
+
 struct ExecuteCodeTool : Tool<ExecuteCodeTool, Capabilities<cap::decl::FsRead<"work">,
                                                               cap::decl::FsWrite<"work">>,
                                 EffectClass<effect_class::at_most_once>> {
@@ -169,6 +279,26 @@ struct ExecuteCodeTool : Tool<ExecuteCodeTool, Capabilities<cap::decl::FsRead<"w
                                           "the embedded Python interpreter failed to initialize",
                                           "cli_chat.python_runner_not_initialized"});
         }
+
+        // CodeAct tool-bridge union, recomputed fresh on EVERY execute_code call -- the identical
+        // per-turn cadence scope_tools_to_mounted_skills already runs on for the model-facing
+        // declaration side below, so a mount that happened this same round is reflected before
+        // this call's own code runs, never a call behind. Three sources, per
+        // core/codeact_tool_union.hpp: this CLI's own bridgeable tools (none today -- execute_code
+        // and mount_skill are deliberately excluded from their own bridge), tools unlocked by
+        // currently mounted skills, and MCP-sourced tools (none in this demo -- no MCP server is
+        // connected here; see protocol/mcp/mcp_tool_bridge.hpp for that real, tested, separately
+        // wired path).
+        auto const codeact_universe = ToolTable::from_tools<WordCountTool>();
+        auto const codeact_skill_tools = scope_tools_to_mounted_skills(
+            codeact_universe,
+            shared_codeact_skills().allowed_tool_names_for(shared_mounted_skills_state().all()));
+        auto bridged = union_codeact_tools(ToolTable::from_tools<>(), codeact_skill_tools);
+        if (!bridged) return std::unexpected(bridged.error());
+        auto refreshed = runner.refresh_agent_tools(
+            native_jail::ToolBridgeConfig{*bridged, /*capabilities=*/{}, /*approved=*/true});
+        if (!refreshed) return std::unexpected(refreshed.error());
+
         ExecRequest req{a.language.empty() ? "python" : a.language, a.code};
         auto outcome = runner.run(req, shared_exec_state(), ctx);
         if (!outcome) return std::unexpected(outcome.error());
@@ -254,7 +384,7 @@ struct MountSkillTool : Tool<MountSkillTool, EffectClass<effect_class::pure>> {
 // this file's own composition as a result -- this provider is a complete `ContextProvider` by itself.
 class ToolDeclaringHistoryProvider {
 public:
-    ToolDeclaringHistoryProvider() : skills_({make_builtin_skills_source()}) {}
+    ToolDeclaringHistoryProvider() : skills_(demo_skill_sources()) {}
 
     [[nodiscard]] task<result<ContextContribution>> on_context(SessionContext& session_ctx,
                                                                  EffectContext& ec) {
@@ -355,16 +485,19 @@ static_assert(std::is_default_constructible_v<CliSession>);
 
 void print_skills_banner(std::vector<native_jail::MaterializedSkillMount> const& materialized,
                           SkillsProvider<>& startup_skills) {
-    auto skills = make_builtin_skills_source().load_skills();
     std::cout << "Skills RESOLVED at /skills/<name> -- every one's files are unconditionally readable "
                  "from turn 1 (009 §8b, unaffected by mount state):\n";
-    if (skills) {
-        for (auto const& s : *skills) {
-            std::cout << "  - " << s.skill.frontmatter.name << ": " << s.skill.frontmatter.description
-                       << "\n";
+    for (auto const& source : demo_skill_sources()) {
+        auto skills = source.load_skills();
+        if (skills) {
+            for (auto const& s : *skills) {
+                std::cout << "  - " << s.skill.frontmatter.name << ": "
+                           << s.skill.frontmatter.description << "\n";
+            }
+        } else {
+            std::cout << "  (failed to resolve '" << source.origin_id
+                       << "': " << skills.error().message << ")\n";
         }
-    } else {
-        std::cout << "  (failed to resolve: " << skills.error().message << ")\n";
     }
 
     std::cout << "Materialized into the real sandbox (native_jail::materialize_skill_mounts):\n";
@@ -421,7 +554,7 @@ int main() {
     // mutator exists after .initialize()). This is main()'s OWN SkillsProvider<> instance, independent
     // of ToolDeclaringHistoryProvider's/BuiltinSkillsProvider's own instances inside CliSession -- all
     // three resolve the identical, deterministic builtin skill source, so their outputs agree.
-    SkillsProvider<> startup_skills({make_builtin_skills_source()});
+    SkillsProvider<> startup_skills(demo_skill_sources());
     std::filesystem::path const skills_scratch =
         std::filesystem::temp_directory_path() / "agentengine_cli_chat_workspace" / "skills";
     auto materialized =
