@@ -92,3 +92,19 @@ add_test(NAME example_14_multi_selection COMMAND agentengine_example_14_multi_se
 add_executable(agentengine_example_15_group_chat_and_planner 15_group_chat_and_planner.cpp)
 target_link_libraries(agentengine_example_15_group_chat_and_planner PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME example_15_group_chat_and_planner COMMAND agentengine_example_15_group_chat_and_planner)
+
+# 16: the live counterpart to 15 -- two real OpenAIChatClient (OpenRouter) calls as workflow-node
+# bodies instead of plain functions. Needs AGENTENGINE_WITH_HTTPS (the real HTTPS client) and, like
+# every other live-network test in this repo, SKIPS (exit 0) rather than failing when
+# AGENTENGINE_OPENROUTER_API_KEY isn't set -- labelled live-network so a default `ctest` run and
+# CI both stay green with no credential and no network. Reuses tests/support/run_task_sync.hpp, the
+# same driver test_openrouter_live_e2e.cpp itself uses to call a real chat() from a plain main().
+if(AGENTENGINE_WITH_HTTPS)
+  add_executable(agentengine_example_16_group_chat_live 16_group_chat_live.cpp)
+  target_include_directories(agentengine_example_16_group_chat_live PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../tests")
+  target_link_libraries(agentengine_example_16_group_chat_live PRIVATE
+    agentengine::core agentengine::provider_http_client agentengine_warnings
+    MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+  add_test(NAME example_16_group_chat_live COMMAND agentengine_example_16_group_chat_live)
+  set_tests_properties(example_16_group_chat_live PROPERTIES LABELS "live-network" TIMEOUT 300)
+endif()
