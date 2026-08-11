@@ -85,3 +85,10 @@ add_test(NAME example_13_reflection_loop COMMAND agentengine_example_13_reflecti
 add_executable(agentengine_example_14_multi_selection 14_multi_selection.cpp)
 target_link_libraries(agentengine_example_14_multi_selection PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME example_14_multi_selection COMMAND agentengine_example_14_multi_selection)
+
+# 15: Group Chat and Planner (Magentic) -- 014 §3 gives both the SAME graph shape (a moderator
+# cycling among participants) and distinguishes them only by who owns the stopping decision, so
+# this one file builds that shape twice rather than pretending they're separate mechanisms.
+add_executable(agentengine_example_15_group_chat_and_planner 15_group_chat_and_planner.cpp)
+target_link_libraries(agentengine_example_15_group_chat_and_planner PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME example_15_group_chat_and_planner COMMAND agentengine_example_15_group_chat_and_planner)
