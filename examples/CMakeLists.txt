@@ -20,3 +20,14 @@ add_executable(agentengine_example_04_first_workflow 04_first_workflow.cpp)
 target_link_libraries(agentengine_example_04_first_workflow PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME example_04_first_workflow COMMAND agentengine_example_04_first_workflow)
 set_tests_properties(example_04_first_workflow PROPERTIES TIMEOUT 60)
+
+# 05/06 go beyond MAF's own progression -- they demonstrate two AgentEngine invariants (ADR-029
+# human-in-the-loop suspension, and I2's no-ambient-authority capability gate) that have no direct
+# MAF equivalent but are central to this engine's own model.
+add_executable(agentengine_example_05_human_approval 05_human_approval.cpp)
+target_link_libraries(agentengine_example_05_human_approval PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME example_05_human_approval COMMAND agentengine_example_05_human_approval)
+
+add_executable(agentengine_example_06_capabilities_and_denial 06_capabilities_and_denial.cpp)
+target_link_libraries(agentengine_example_06_capabilities_and_denial PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME example_06_capabilities_and_denial COMMAND agentengine_example_06_capabilities_and_denial)
