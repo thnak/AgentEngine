@@ -36,11 +36,12 @@
 //   - `next_async()` suspends a COROUTINE, not an OS thread -- parking it on a `condition_variable`
 //     would need a second, dedicated waiter thread to eventually notify it (busy machinery this design
 //     avoids entirely). Instead, `await_suspend()` does nothing but record the coroutine handle under
-//     the same mutex and return -- no loop, no poll, no cv wait. Whichever producer call
-//     (`push()`/`close()`/`fail()`) next makes an item or a terminal state available finds that
-//     recorded handle and calls `.resume()` on it DIRECTLY, from the producer's own thread, before
-//     that producer call returns. The suspended coroutine's remaining body (up to its next suspension
-//     or completion) therefore runs momentarily on the producer's thread -- a well-understood,
+//     the same mutex and return -- no loop, no poll, no cv wait. Whichever call next makes an item or
+//     a terminal state available (`push()` from the producer; `close()`/`fail()` from the producer, or
+//     `cancel()` from the CONSUMER itself -- see `channel_terminal`'s own comment below) finds that
+//     recorded handle and calls `.resume()` on it DIRECTLY, from ITS OWN thread, before that call
+//     returns. The suspended coroutine's remaining body (up to its next suspension or completion)
+//     therefore runs momentarily on that other thread -- a well-understood,
 //     intentional thread hop used by essentially every hand-rolled minimal async-channel/generator
 //     (this is not novel research; it is the same trick `cppcoro`-style async generators use). This is
 //     why there is no `condition_variable` on the async path: a suspended coroutine has already handed
@@ -80,10 +81,22 @@
 
 namespace agentengine::rt {
 
-// The three states a channel can be in. `open` is the only state new items may still be pushed in;
-// `closed`/`failed` are both terminal but distinguishable (mirrors `quark::ReplyStreamTerminal`'s own
-// closed-vs-failed split, reproduced here rather than assumed, per this file's own "not a port" rule).
-enum class channel_terminal { open, closed, failed };
+// The four states a channel can be in. `open` is the only state new items may still be pushed in;
+// `closed`/`failed`/`cancelled` are all terminal but mutually distinguishable.
+//
+// `closed` and `failed` mirror `quark::ReplyStreamTerminal`'s own closed-vs-failed split (reproduced
+// here rather than assumed, per this file's own "not a port" rule) -- both are PRODUCER-driven: the
+// producer decided the stream is over, either cleanly or with an error.
+//
+// `cancelled` is CONSUMER-driven (`channel_consumer<T,E>::cancel()`, below) and is deliberately its
+// own state rather than reusing `closed`. A producer that inspects `channel_producer<T,E>::terminal()`
+// after a `push()` comes back `terminated` can then tell "the consumer walked away, possibly with
+// buffered work never read" apart from "I chose to end this stream myself" -- e.g. a real SSE-reading
+// producer thread may want to skip logging an error for the former (the caller simply lost interest)
+// while still treating the latter -- or an unexpected `cancelled` it did not itself trigger -- as
+// worth noting. Collapsing this into `closed` would erase that distinction at the one place (the
+// producer) that could otherwise act on it, for the sole benefit of not adding one enumerator.
+enum class channel_terminal { open, closed, failed, cancelled };
 
 namespace detail {
 
@@ -102,11 +115,41 @@ struct channel_state {
     channel_terminal terminal = channel_terminal::open;
     std::optional<E> error;
     // At most one coroutine may be parked here at a time (single-consumer, see file banner). Whichever
-    // producer call next makes progress possible (`push()`/`close()`/`fail()`) takes this handle,
-    // clears the slot, and resumes it directly -- see file banner for why this is not a cv wait.
+    // call next makes progress possible -- `push()`/`close()`/`fail()` from the producer, or `cancel()`
+    // from the consumer itself -- takes this handle, clears the slot, and resumes it directly -- see
+    // file banner for why this is not a cv wait.
     std::coroutine_handle<> waiting_consumer;
 
     explicit channel_state(std::size_t cap) noexcept : capacity(cap) {}
+
+    // Idempotently transitions to a terminal state and wakes anyone who needs to notice: a producer
+    // thread parked in `push()`'s `not_full.wait()` (queue was at capacity), and/or a coroutine parked
+    // in `next_async()`. Shared by BOTH sides -- `channel_producer<T,E>::close()`/`fail()` and
+    // `channel_consumer<T,E>::cancel()` all funnel through here, so there is exactly one place that
+    // implements "first terminal transition wins" and exactly one place that implements the wake-up,
+    // regardless of which side triggered it.
+    //
+    // No-op (terminal/error left untouched) if already terminal -- a terminal state, once reached,
+    // never gets overwritten by a later call from either side. The wake-up below still runs even on
+    // the no-op path, matching the pre-existing `close()`/`fail()` behavior this is lifted from: it is
+    // harmless (`notify_all()` with no waiters does nothing, and `waiting_consumer` is guaranteed
+    // already empty here -- `next_awaiter::await_suspend()` never parks a handle while `terminal !=
+    // open`, so once any terminal is set, no later caller can find a handle left to double-resume).
+    void finish_terminal(channel_terminal which, std::optional<E> err) noexcept {
+        std::coroutine_handle<> waiter;
+        {
+            std::lock_guard lock(m);
+            if (terminal == channel_terminal::open) {
+                terminal = which;
+                error = std::move(err);
+            }
+            waiter = std::exchange(waiting_consumer, {});
+        }
+        // Wakes any thread blocked in push() with a full queue -- a terminal transition is the only
+        // OTHER way (besides draining) that push()'s wait predicate can become true.
+        not_full.notify_all();
+        if (waiter) waiter.resume();
+    }
 };
 
 }  // namespace detail
@@ -140,10 +183,12 @@ public:
     // Blocks the calling (real OS) thread while the queue is at capacity, waking only when the
     // consumer drains an item or the channel reaches ANY terminal state -- see file banner for why
     // blocking (not refusing) is this type's deliberate choice. Returns `terminated` (the value is
-    // NOT enqueued) if the channel was already closed/failed, or became so, before room existed --
-    // e.g. a consumer that cancels by dropping its `channel_consumer` while the producer is mid-block
-    // (dropping the consumer's shared_ptr does not itself signal termination in THIS type -- that is a
-    // future caller-side concern; here `terminated` covers the already-closed/failed case only).
+    // NOT enqueued) if the channel was already closed/failed/cancelled, or became so, before room
+    // existed -- e.g. a consumer that cancels (explicitly, or by simply dropping its
+    // `channel_consumer` -- its destructor calls `cancel()` too, below) while THIS call is mid-block:
+    // that is precisely the deadlock `channel_consumer<T,E>::cancel()` exists to close, and this
+    // `wait()`'s predicate already re-checks `terminal` on every wake regardless of which side (or
+    // which of the three terminal-reaching calls) caused it.
     [[nodiscard]] push_result push(T value) {
         std::unique_lock lock(state_->m);
         state_->not_full.wait(lock, [this] {
@@ -166,24 +211,22 @@ public:
     // Failed terminal, carrying `error` to the consumer.
     void fail(E error) noexcept { finish(channel_terminal::failed, std::move(error)); }
 
+    // Observes the channel's current terminal state. Added alongside `channel_consumer<T,E>::cancel()`
+    // so a producer whose `push()` comes back `terminated` can tell a consumer-initiated `cancel()`
+    // apart from its own `close()`/`fail()` -- see the `channel_terminal` enum's own comment for why
+    // that distinction exists. Safe to call at any time, including after this producer's own
+    // close()/fail(); mirrors `channel_consumer<T,E>::terminal()`.
+    [[nodiscard]] channel_terminal terminal() const noexcept {
+        std::lock_guard lock(state_->m);
+        return state_->terminal;
+    }
+
     [[nodiscard]] bool valid() const noexcept { return static_cast<bool>(state_); }
 
 private:
     void finish(channel_terminal which, std::optional<E> err) noexcept {
         if (!state_) return;  // moved-from producer -- destructor's fire-default is a no-op here
-        std::coroutine_handle<> waiter;
-        {
-            std::lock_guard lock(state_->m);
-            if (state_->terminal == channel_terminal::open) {
-                state_->terminal = which;
-                state_->error = std::move(err);
-            }
-            waiter = std::exchange(state_->waiting_consumer, {});
-        }
-        // Wakes any thread blocked in push() with a full queue -- close()/fail() are the only OTHER
-        // way (besides draining) that push()'s wait predicate can become true.
-        state_->not_full.notify_all();
-        if (waiter) waiter.resume();
+        state_->finish_terminal(which, std::move(err));
     }
 
     std::shared_ptr<detail::channel_state<T, E>> state_;
@@ -201,6 +244,40 @@ public:
     channel_consumer& operator=(channel_consumer const&) = delete;
     channel_consumer(channel_consumer&&) noexcept = default;
     channel_consumer& operator=(channel_consumer&&) noexcept = default;
+
+    // A consumer dropped without an explicit cancel() (an early return, an exception, a caller that
+    // simply stops caring mid-stream -- ADR-017's "drop the handle = cancel" house idiom, same as
+    // `channel_producer`'s own close()-on-drop fire-default above) still reaches a terminal. Without
+    // this, a producer thread genuinely parked in `push()` waiting for queue capacity that will now
+    // NEVER come (nobody is left to drain) would block forever -- this is the exact deadlock
+    // `cancel()` exists to close, so it must fire on every path off this type, not just an explicit
+    // call. `state_` is still fully valid here (destructor body runs before member destruction), so
+    // this is no different from calling cancel() from any other consumer-owning code.
+    ~channel_consumer() {
+        if (state_) cancel();
+    }
+
+    // Consumer-initiated cancellation: lets the reader side (not just the producer) push the channel
+    // to a terminal state. The real motivating case is a caller torn down mid-stream (e.g. a chat
+    // response consumer that stops reading early) -- without this, a producer stalled inside a
+    // blocking push() has no way to ever learn that draining has permanently stopped.
+    //
+    // Idempotent, exactly like close()/fail(): a no-op if the channel already reached ANY terminal
+    // state (first terminal transition wins, regardless of which side got there first) -- cancel()
+    // after the producer already closed/failed does not overwrite that outcome, and a later
+    // close()/fail() after a cancel() is equally a no-op (see finish_terminal()).
+    //
+    // Does NOT clear the queue. Items already buffered before cancel() remain available to one last
+    // try_pop()/next_async() drain, exactly like close()/fail() -- this file's "zero-data-loss"
+    // contract around done() (queue must be empty, not just terminal, before done() is true) makes no
+    // exception for which side triggered the terminal transition. There is no correctness reason to
+    // force an eager clear either: a consumer that calls cancel() is, by construction, the only reader
+    // there is, and it typically stops draining right after (this destructor's own fire-default is the
+    // common case) -- any items left behind are reclaimed once the last shared_ptr to the shared state
+    // drops, same as they would be for an un-drained close()/fail()'d channel nobody finishes reading.
+    void cancel() noexcept {
+        if (state_) state_->finish_terminal(channel_terminal::cancelled, std::nullopt);
+    }
 
     [[nodiscard]] bool valid() const noexcept { return static_cast<bool>(state_); }
 
@@ -257,8 +334,8 @@ private:
     // into the SHARED `channel_state::waiting_consumer`. If the coroutine parked there is destroyed
     // while still suspended (a `task<T>` dropped mid-await -- ADR-017 already establishes "drop the
     // handle = cancel" as a deliberate house idiom for `stream<T>`, so this is a real, not
-    // hypothetical, path), nothing used to clear that stale handle -- a LATER push()/close()/fail()
-    // would then call .resume() on an already-destroyed frame (a use-after-free). Fixed the same way
+    // hypothetical, path), nothing used to clear that stale handle -- a LATER push()/close()/fail()/
+    // cancel() would then call .resume() on an already-destroyed frame (a use-after-free). Fixed the same way
     // cppcoro-style cancellable awaiters do: `parked_` is true ONLY while genuinely suspended (set in
     // await_suspend(), cleared at the top of await_resume() on the normal-completion path); the
     // destructor checks it and, if still true, removes ITS OWN registration (guarded by an identity
@@ -290,7 +367,7 @@ private:
 
         [[nodiscard]] bool await_suspend(std::coroutine_handle<> h) {
             std::lock_guard lock(self->state_->m);
-            // Re-check under lock: a push()/close()/fail() may have landed in the gap between
+            // Re-check under lock: a push()/close()/fail()/cancel() may have landed in the gap between
             // await_ready()'s unlock and this lock -- if so, don't suspend at all (returning `false`
             // tells the compiler-generated machinery to resume the coroutine immediately instead).
             if (!self->state_->queue.empty() || self->state_->terminal != channel_terminal::open) {

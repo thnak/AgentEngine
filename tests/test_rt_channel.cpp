@@ -29,6 +29,25 @@
 //         in next_async() must not leave a dangling coroutine_handle behind. Proven by destroying such
 //         a task mid-park, then pushing/closing from a producer thread afterward -- the old code would
 //         call .resume() on the already-destroyed frame here (a use-after-free); this must not crash.
+//
+// T7-T10 cover `channel_consumer<T,E>::cancel()`, added to close a real deadlock hazard: with
+// termination previously producer-driven only (close()/fail()), a consumer simply dropped (or torn
+// down) while a producer thread sat blocked inside push() waiting for queue capacity had no way to
+// ever unblock it -- nothing would ever notify `not_full` again.
+//   T7  -- push() called AFTER cancel() already happened returns `terminated` immediately, with no
+//          blocking -- same contract close()/fail() already have.
+//   T8  -- THE deadlock this feature exists to close: a producer thread genuinely blocked inside
+//          push() on a full queue (proven stalled via the same wall-clock technique T2 uses), with a
+//          cancel() issued from a different (the "consumer's") thread. Proves the producer's push()
+//          call actually returns, via a BOUNDED wait (not a plain join(), which would itself hang
+//          forever if this feature were broken) -- reaching the assertion is the proof, not a
+//          test-harness timeout.
+//   T9  -- cancel() after the producer already closed is a no-op (first terminal transition wins,
+//          matching close()/fail()'s own idempotency) -- and an item pushed before that close() is
+//          still available for one last drain afterward (zero-data-loss is not weakened by cancel()).
+//   T10 -- cancel() fires from channel_consumer's OWN destructor (not just an explicit call) --
+//          mirrors how `ae::stream<T>`'s destructor already calls its cancel(), and is the actual
+//          shape of the real hazard: a consumer simply going out of scope mid-stream.
 
 #include <atomic>
 #include <chrono>
@@ -279,6 +298,163 @@ int main() {
               "consumer read (via the sync surface, since the async one was destroyed) still works");
         auto v = pair.consumer.try_pop();
         check(v.has_value() && *v == 42, "T6: the item pushed after destruction is still retrievable");
+    }
+
+    // T7: push() called AFTER cancel() already happened must return terminated immediately, without
+    // blocking -- same contract close()/fail() already have.
+    {
+        auto pair = make_channel<int>(4);
+        pair.consumer.cancel();
+        check(pair.consumer.terminal() == channel_terminal::cancelled,
+              "T7: cancel() before any push() latches a cancelled terminal");
+
+        auto const before = std::chrono::steady_clock::now();
+        auto r = pair.producer.push(1);
+        auto const elapsed = std::chrono::steady_clock::now() - before;
+
+        check(r == decltype(pair.producer)::push_result::terminated,
+              "T7: push() after cancel() is refused (terminated), not enqueued");
+        check(elapsed < std::chrono::milliseconds(50),
+              "T7: push() after cancel() returns immediately, it does not block");
+        check(pair.consumer.size() == 0, "T7: the refused push() did not enqueue its value");
+        check(pair.producer.terminal() == channel_terminal::cancelled,
+              "T7: the producer's own terminal() accessor observes the consumer-initiated cancelled "
+              "state (distinguishable from closed/failed)");
+    }
+
+    // T8: THE deadlock this feature exists to close -- a producer thread genuinely blocked inside
+    // push() on a full queue, with nobody left to drain, must be unblocked by a consumer-side
+    // cancel() call from a different thread, and must do so within a bounded wait, not hang forever.
+    {
+        constexpr std::size_t kCapacity = 2;
+        auto pair = make_channel<int>(kCapacity);
+        std::atomic<int> pushed_count{0};
+        std::atomic<bool> producer_done{false};
+        std::atomic<int> last_result{-1};  // 0 == ok, 1 == terminated, set just before producer_done
+
+        std::thread producer([&] {
+            for (int i = 0; i < static_cast<int>(kCapacity); ++i) {
+                (void)pair.producer.push(i);
+                pushed_count.fetch_add(1, std::memory_order_relaxed);
+            }
+            // The queue is now exactly at capacity and nobody is draining -- this call blocks until
+            // cancel() (below, from the main thread) unblocks it.
+            auto r = pair.producer.push(999);
+            last_result.store(r == decltype(pair.producer)::push_result::ok ? 0 : 1,
+                               std::memory_order_relaxed);
+            producer_done.store(true, std::memory_order_release);
+        });
+
+        // Confirm the producer thread is genuinely stalled at capacity before cancelling -- the same
+        // wall-clock technique T2 uses to prove push() really blocks (not a race-prone assumption).
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+        check(pushed_count.load(std::memory_order_relaxed) == static_cast<int>(kCapacity) &&
+                  !producer_done.load(std::memory_order_acquire),
+              "T8: setup: the producer thread is genuinely blocked in push() on the full queue, with "
+              "nobody draining");
+
+        pair.consumer.cancel();  // the consumer's thread signals cancellation
+
+        // Bounded wait for the producer to unblock -- deliberately NOT a plain join(), which would
+        // itself hang the whole test binary forever if this feature were broken, defeating the point
+        // of the test. 2s is generous headroom over the 150ms setup delay above.
+        auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (!producer_done.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        bool const unblocked = producer_done.load(std::memory_order_acquire);
+        check(unblocked,
+              "T8: cancel() issued from the consumer's thread unblocks the producer thread parked in "
+              "push() on a full queue, within a bounded wait -- THE deadlock this feature exists to "
+              "close");
+
+        if (unblocked) {
+            producer.join();
+            check(last_result.load(std::memory_order_relaxed) == 1,
+                  "T8: the push() call that was unblocked by cancel() returns terminated, not ok -- "
+                  "the value is not silently enqueued past cancellation");
+        } else {
+            // Do NOT join() here: if this branch is reached, push() is genuinely still blocked (the
+            // exact bug this test exists to catch), and join() would hang the whole test binary.
+            // Detach instead so the process can still report the failure above and exit cleanly.
+            producer.detach();
+        }
+
+        check(pair.consumer.terminal() == channel_terminal::cancelled,
+              "T8: the channel's terminal state is cancelled, distinguishable from closed/failed");
+    }
+
+    // T9: cancel() after the producer already reached a terminal (closed) is a no-op -- first
+    // terminal transition wins, matching close()/fail()'s own idempotency -- and does not weaken the
+    // zero-data-loss contract: an item pushed before that close() is still available for one last
+    // drain afterward.
+    {
+        auto pair = make_channel<int>(4);
+        (void)pair.producer.push(7);
+        pair.producer.close();
+        check(pair.consumer.terminal() == channel_terminal::closed, "T9: setup: the producer closed cleanly");
+
+        pair.consumer.cancel();
+        check(pair.consumer.terminal() == channel_terminal::closed,
+              "T9: cancel() after the producer already closed is a no-op -- terminal stays closed, "
+              "not overwritten to cancelled");
+
+        auto v = pair.consumer.try_pop();
+        check(v.has_value() && *v == 7,
+              "T9: the item pushed before close() is still available for a final drain even after a "
+              "subsequent no-op cancel() -- cancel() never discards already-buffered items");
+        check(pair.consumer.done(), "T9: done() is true once that final item is drained");
+    }
+
+    // T10: cancel() fires from channel_consumer's OWN destructor, not just via an explicit call --
+    // mirrors how ae::stream<T>'s destructor already calls its own cancel(), and reproduces the real
+    // hazard shape: a consumer simply going out of scope while a producer thread is mid-block.
+    {
+        constexpr std::size_t kCapacity = 1;
+        auto pair = make_channel<int>(kCapacity);
+        std::atomic<bool> producer_done{false};
+        std::atomic<int> last_result{-1};
+
+        std::thread producer([&] {
+            (void)pair.producer.push(0);  // fills the single slot
+            auto r = pair.producer.push(1);  // blocks -- queue full, nobody draining
+            last_result.store(r == decltype(pair.producer)::push_result::ok ? 0 : 1,
+                               std::memory_order_relaxed);
+            producer_done.store(true, std::memory_order_release);
+        });
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+        check(!producer_done.load(std::memory_order_acquire),
+              "T10: setup: the producer thread is genuinely blocked in push() before the consumer is "
+              "dropped");
+
+        {
+            // Move the consumer out of `pair` into a temporary that immediately goes out of scope --
+            // its destructor's cancel()-on-drop fire-default must fire here. `pair.consumer` itself is
+            // moved-from after this block and must not be touched again.
+            auto doomed = std::move(pair.consumer);
+        }
+
+        auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (!producer_done.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        bool const unblocked = producer_done.load(std::memory_order_acquire);
+        check(unblocked,
+              "T10: simply dropping (destroying) the channel_consumer unblocks a producer thread "
+              "parked in push() on a full queue, within a bounded wait -- the destructor's own "
+              "cancel()-on-drop fire-default, not just the explicit method, closes the deadlock");
+
+        if (unblocked) {
+            producer.join();
+            check(last_result.load(std::memory_order_relaxed) == 1,
+                  "T10: the push() call unblocked by the consumer's destructor returns terminated");
+            check(pair.producer.terminal() == channel_terminal::cancelled,
+                  "T10: the producer observes a cancelled terminal, reached via the consumer's "
+                  "destructor rather than an explicit cancel() call");
+        } else {
+            producer.detach();  // see T8's comment -- never join() a call that is still genuinely blocked
+        }
     }
 
     if (g_failures != 0) {
