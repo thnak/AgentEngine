@@ -1023,6 +1023,16 @@ add_executable(test_rt_spawn_cost_budget test_rt_spawn_cost_budget.cpp)
 target_link_libraries(test_rt_spawn_cost_budget PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_spawn_cost_budget COMMAND test_rt_spawn_cost_budget)
 
+# ---- ADR-037 -- agentengine::rt::ProjectRegistry, the Quark-actor-free replacement for the
+# in-memory-index half (H1-H3) of 030 Sec6's ProjectRegistry (project/registry.hpp). H4/H5/G4 --
+# project/project.hpp's own manifest snapshot and archived-member tail -- are NOT covered here (a
+# separate, larger gap needing a real append-only log store primitive, named in
+# include/agentengine/rt/project_registry.hpp's own banner) -- test_project_registry.cpp stays in
+# place, not deleted, since it is not yet fully superseded.
+add_executable(test_rt_project_registry test_rt_project_registry.cpp)
+target_link_libraries(test_rt_project_registry PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_project_registry COMMAND test_rt_project_registry)
+
 # ---- Milestone 5 Phase G1 -- ChatCallRecording JSON codec (core/chat_recording.hpp), the shared
 # foundation RecordingChatClient<Inner> and ReplayChatClient both depend on.
 add_executable(test_chat_recording_codec test_chat_recording_codec.cpp)
