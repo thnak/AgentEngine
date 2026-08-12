@@ -1033,6 +1033,14 @@ add_executable(test_rt_project_registry test_rt_project_registry.cpp)
 target_link_libraries(test_rt_project_registry PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_project_registry COMMAND test_rt_project_registry)
 
+# ---- ADR-037 -- ProjectSupervisor's checkpoint-orchestration role (project/lifecycle.hpp),
+# type-erased across heterogeneous rt::AgentSession<...> member instantiations without Quark's
+# ActorRef<A>::passivate(). See project_supervisor.hpp's own banner for the "checkpoint, not
+# passivate" scope narrowing.
+add_executable(test_rt_project_supervisor test_rt_project_supervisor.cpp)
+target_link_libraries(test_rt_project_supervisor PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_project_supervisor COMMAND test_rt_project_supervisor)
+
 # ---- Milestone 5 Phase G1 -- ChatCallRecording JSON codec (core/chat_recording.hpp), the shared
 # foundation RecordingChatClient<Inner> and ReplayChatClient both depend on.
 add_executable(test_chat_recording_codec test_chat_recording_codec.cpp)

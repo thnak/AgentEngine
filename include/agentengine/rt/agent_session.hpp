@@ -177,6 +177,7 @@
 #include "agentengine/core/tool_call_extraction.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/rt/async_mutex.hpp"
+#include "agentengine/rt/interaction_codec.hpp"
 #include "agentengine/rt/session_store.hpp"
 #include "agentengine/rt/task.hpp"
 #include "agentengine/trust/principal.hpp"
@@ -250,50 +251,9 @@ struct AgentSessionRecord {
     std::vector<Interaction> open_interactions;
 };
 
-[[nodiscard]] inline json::Value interaction_to_json(Interaction const& i) {
-    char const* reason_str = "input";
-    switch (i.reason) {
-        case interaction_reason::input:    reason_str = "input";    break;
-        case interaction_reason::auth:     reason_str = "auth";     break;
-        case interaction_reason::approval: reason_str = "approval"; break;
-    }
-    return json::Value::make_object({
-        {"interaction_id", json::Value::make_string(i.interaction_id)},
-        {"run_id", json::Value::make_string(i.run_id)},
-        {"reason", json::Value::make_string(reason_str)},
-        {"opened_at_ns", json::Value::make_number(static_cast<double>(i.opened_at_ns))},
-        {"expires_at_ns", json::Value::make_number(static_cast<double>(i.expires_at_ns))},
-    });
-}
-
-[[nodiscard]] inline result<Interaction> interaction_from_json(json::Value const& v) {
-    json::Value const* interaction_id = v.find("interaction_id");
-    json::Value const* run_id         = v.find("run_id");
-    json::Value const* reason         = v.find("reason");
-    json::Value const* opened_at_ns   = v.find("opened_at_ns");
-    json::Value const* expires_at_ns  = v.find("expires_at_ns");
-    if (interaction_id == nullptr || !interaction_id->is_string() || run_id == nullptr ||
-        !run_id->is_string() || reason == nullptr || !reason->is_string() ||
-        opened_at_ns == nullptr || !opened_at_ns->is_number() || expires_at_ns == nullptr ||
-        !expires_at_ns->is_number()) {
-        return std::unexpected(error{failure_class::contract, "malformed Interaction record",
-                                      "rt.agent_session.record.malformed"});
-    }
-    Interaction out{};
-    out.interaction_id = interaction_id->as_string();
-    out.run_id          = run_id->as_string();
-    std::string const& r = reason->as_string();
-    if (r == "input") out.reason = interaction_reason::input;
-    else if (r == "auth") out.reason = interaction_reason::auth;
-    else if (r == "approval") out.reason = interaction_reason::approval;
-    else {
-        return std::unexpected(error{failure_class::contract, "unknown interaction reason: " + r,
-                                      "rt.agent_session.record.malformed"});
-    }
-    out.opened_at_ns  = static_cast<std::int64_t>(opened_at_ns->as_number());
-    out.expires_at_ns = static_cast<std::int64_t>(expires_at_ns->as_number());
-    return out;
-}
+// interaction_to_json()/interaction_from_json() live in interaction_codec.hpp -- shared with
+// rt::WorkflowSupervisor's own record codec (see that header's own banner for why this used to be a
+// duplicated copy here and isn't anymore).
 
 [[nodiscard]] inline json::Value agent_session_record_to_json(AgentSessionRecord const& rec) {
     std::vector<json::Value> interactions;
