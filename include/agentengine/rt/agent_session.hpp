@@ -13,10 +13,16 @@
 //     ReminderService, a real integration-test-only surface (test_agent_session_timer_wake.cpp) this
 //     slice has no standalone replacement design for yet. `standing_effects_`'s OTHER wake row,
 //     "Local background task completion" (BackgroundTaskDone), IS migrated -- see Slice 3 below.
-//   - Event streaming (enable_event_stream/emit_run_event) still uses core/stream.hpp's EXISTING
-//     quark::ReplyStream-backed stream<T> -- core/stream.hpp's own backend migration to rt::channel<T>
-//     is separately-scoped Phase 1 work not yet done. Named here as an accepted interim residual, not
-//     silently hidden: this session is not fully Quark-free yet, specifically at this one seam.
+//   - Event streaming (enable_event_stream/emit_run_event) uses core/stream.hpp's stream<T> --
+//     UPDATED: core/stream.hpp's own backend migration (a later ADR-037 pass, after this slice was
+//     first written) swapped stream<T>'s internals from quark::ReplyStream to rt::channel<T>, so this
+//     is no longer an actor/mailbox-integrated dependency. A small residual remains at the TYPE level
+//     only: stream<T>::terminal()/fail_error() still return quark::ReplyStreamTerminal/quark::error
+//     (plain, dependency-free value types, kept deliberately for that migration's own narrow scope --
+//     see core/stream.hpp's own banner) rather than a native agentengine enum/error type. This no
+//     longer blocks anything ADR-037 actually cares about (no runtime coupling to Quark's scheduler),
+//     but Phase 4's eventual submodule removal still needs that type-level residual closed -- named
+//     here, not silently claimed fully resolved either.
 //
 // A LARGER, MORE FUNDAMENTAL NAMED GAP, found and corrected while writing this file (not discovered
 // later): removing `quark::Actor<Self, Sequential>` and Quark's mailbox does NOT, by itself, make
@@ -864,9 +870,9 @@ private:
     // this collapses the last three into ONE shared drain loop, gated only on whether to emit
     // model_delta events (`stream_model_calls_`), since "buffer silently" and "stream live" differ
     // ONLY in that one respect once chat() isn't being used. `ChatClientT::chat_stream()` still
-    // returns `agentengine::stream<ChatResponseUpdate>` (core/stream.hpp's quark::ReplyStream-backed
-    // type, not an rt:: one) -- see file banner's named residual on event streaming; that gap is
-    // unaffected by this consolidation, just inherited from the same place it always was.
+    // returns `agentengine::stream<ChatResponseUpdate>` (core/stream.hpp's type -- now rt::channel<T>-
+    // backed internally, see file banner's UPDATED note on event streaming) -- unaffected by this
+    // consolidation either way, just inherited from the same place it always was.
     // Fail-closed-on-missing-usage (004 §5's TokenBudget<N>) is preserved exactly, on both paths
     // through the shared loop.
     task<result<ChatResponse>> run_model_call(ChatRequest const& request, EffectContext& ctx) {

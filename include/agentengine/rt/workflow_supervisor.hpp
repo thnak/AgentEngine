@@ -47,9 +47,14 @@
 //     flat `MessageRecord` indirection (`content_record.hpp`'s whole reason for existing was working
 //     around `quark::Described` having no variant primitive -- a constraint that does not apply here).
 //
-// Live view (enable_live_view()/live_view_producer_) is a further, still-open residual, unaffected by
-// this slice -- still rides core/stream.hpp's quark::ReplyStream-backed stream<T>, the same accepted
-// interim residual rt::AgentSession's own event streaming carries (see that file's own banner).
+// Live view (enable_live_view()/live_view_producer_ -- NOT implemented by this Slice at all, unlike
+// AgentSession's own already-real enable_event_stream()) would ride core/stream.hpp's stream<T> once
+// built. UPDATED: that type's own backend migration (a later ADR-037 pass) swapped it from
+// quark::ReplyStream to rt::channel<T>, so implementing this here would no longer pull in actor/
+// mailbox machinery -- only the small remaining type-level residual rt::AgentSession's own banner
+// documents (terminal()/fail_error() still return quark::ReplyStreamTerminal/quark::error). Still not
+// implemented in this Slice regardless -- named as future work, not claimed done by a dependency
+// getting lighter elsewhere.
 //
 // THE ONE GENUINELY HARD DESIGN QUESTION: decision 5 in the original's own file banner ("Fan-out is
 // ISSUE-ALL-THEN-COLLECT... the supervisor issues every ask for round N before awaiting any of them...
