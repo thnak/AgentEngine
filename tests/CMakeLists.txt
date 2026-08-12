@@ -963,6 +963,13 @@ add_executable(test_agent_session_response_format_leak_scan test_agent_session_r
 target_link_libraries(test_agent_session_response_format_leak_scan PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_agent_session_response_format_leak_scan COMMAND test_agent_session_response_format_leak_scan)
 
+# ---- ADR-036 -- ModelCallGateway/MiddlewareModelCallGateway (retry+breaker+failover+middleware as
+# a real coroutine, AgentSession-pluggable without a template-signature change).
+add_executable(test_model_call_gateway test_model_call_gateway.cpp)
+target_include_directories(test_model_call_gateway PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_model_call_gateway PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_model_call_gateway COMMAND test_model_call_gateway)
+
 # ---- ADR-028 -- session-scoped stateful tools (tool_pipeline.hpp make_tool_descriptor_with_invoke).
 add_executable(test_session_scoped_stateful_tools test_session_scoped_stateful_tools.cpp)
 target_link_libraries(test_session_scoped_stateful_tools PRIVATE agentengine::core agentengine_warnings)

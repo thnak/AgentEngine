@@ -270,7 +270,8 @@ QUARK_SERIALIZE(AgentSessionRecord, (1, session_id), (2, principal_id), (3, prin
 
 template <class ChatClientT, class StateT = NoSessionState,
           class HistoryProviderT = HistoryProvider<Window<0>>>
-    requires ChatClient<ChatClientT> && ContextProvider<HistoryProviderT>
+    requires (ChatClient<ChatClientT> || ModelCallGatewayLike<ChatClientT>) &&
+             ContextProvider<HistoryProviderT>
 class AgentSession
     : public quark::Actor<AgentSession<ChatClientT, StateT, HistoryProviderT>, quark::Sequential> {
 public:
@@ -341,7 +342,25 @@ public:
         last_run_id_ = effect_context_.run_id;
 
         emit_run_event(run_event_kind::run_started);
-        if (stream_model_calls_) {
+        if constexpr (ModelCallGatewayLike<ChatClientT>) {
+            // ADR-036: the gateway-routed branch's own trade, distinct from ADR-034's
+            // stream_model_calls_ warning below (which never fires here -- see run_model_call()'s
+            // own comment for why that flag is simply irrelevant on this branch). Named per I8: a
+            // single round can now make up to `max_attempts * (1 + num_fallbacks)` real backend
+            // calls -- any of which may have consumed real provider-side compute -- before
+            // run_tokens_consumed_ is ever updated (that only happens once, after this whole call
+            // returns, from the one response that actually succeeds). Not a new hazard class (the
+            // single-attempt streaming path already only checks the budget post-hoc, agent_session.hpp
+            // own `run_rounds()`), but this branch is designed to make retry/failover the ergonomic
+            // default, so it's exercised far more often -- worth a visible fact about the run, not a
+            // silent one, matching this codebase's own established pattern for named trade-offs.
+            emit_run_event(run_event_kind::warning,
+                            run_event_payload::Warning{
+                                "this run routes model calls through a ModelCallGateway (ADR-036): no "
+                                "live model_delta events fire for a gateway-routed round, and a single "
+                                "round may make several real backend calls (retries/fallback tiers) "
+                                "before the per-run token budget is ever checked"});
+        } else if (stream_model_calls_) {
             // ADR-034: a visible fact about this run, not a silent one -- see
             // `set_stream_model_calls()`'s own comment for exactly what's traded away.
             // Response-format-leak-scanning is NOT on this list (ADR-035 Phase 1): it now runs
@@ -502,45 +521,60 @@ private:
     // which only ever ran inside `OpenAIChatClient::chat()` itself. `request.tools` is the same
     // `ChatRequest` already sent to the backend this round — no drift between what was declared and
     // what the scan matches candidates against.
+    // ADR-036: when `ChatClientT` is a `ModelCallGatewayLike` conformer (`core/model_call_gateway.hpp`'s
+    // `ModelCallGateway<Primary, Fallback...>`) instead of a raw `ChatClient`, this whole function
+    // collapses to one `co_await chat_client_->call(request, ctx)` — retry, circuit-breaking,
+    // failover, and middleware hooks all live inside the gateway's own `call()`, which is itself a
+    // real coroutine (unlike `chat_stream()`), so a middleware hook is a plain, safe `co_await` there
+    // with no leaked-frame hazard. No live `model_delta` events fire for a gateway-routed round (an
+    // accepted, named trade — see `model_call_gateway.hpp`'s own top comment for why a retried/
+    // failed-over/middleware-reviewed attempt cannot safely be shown to the caller live, token by
+    // token, without risking a silent mid-stream backend substitution). `stream_model_calls_` is
+    // simply irrelevant on this branch — a gateway-backed session's rounds are always
+    // buffer-then-return, never live-streamed, regardless of that flag's value.
     quark::task<result<ChatResponse>> run_model_call(ChatRequest const& request, EffectContext& ctx) {
         result<ChatResponse> response = std::unexpected(
             error{failure_class::contract, "unreachable: neither call path executed", "run.internal"});
 
-        if (!stream_model_calls_) {
-            response = co_await chat_client_->chat(request, ctx);
+        if constexpr (ModelCallGatewayLike<ChatClientT>) {
+            response = co_await chat_client_->call(request, ctx);
         } else {
-            stream<ChatResponseUpdate> s = chat_client_->chat_stream(request, ctx);
-            Message accumulated;
-            accumulated.role = role::assistant;
-            std::optional<Usage> usage;
-            while (!s.done()) {
-                while (std::optional<ChatResponseUpdate> upd = s.next()) {
-                    if (auto const* t = std::get_if<Text>(&upd->delta.value);
-                        t != nullptr && !t->text.empty()) {
-                        emit_run_event(run_event_kind::model_delta, run_event_payload::ModelDelta{t->text});
-                    }
-                    accumulated.content.push_back(upd->delta);
-                    if (upd->is_final && upd->usage.has_value()) usage = upd->usage;
-                }
-                // The ring is momentarily empty but the producer thread is still live (real backends
-                // run their blocking HTTP/SSE read loop on a detached worker thread, see
-                // chat_stream()'s own implementation) — a bounded sleep, not a bare spin, so this
-                // doesn't burn the actor's own worker-thread CPU for the whole call the way a tight
-                // yield()-loop would.
-                if (!s.done()) std::this_thread::sleep_for(std::chrono::milliseconds(5));
-            }
-            if (s.terminal() != quark::ReplyStreamTerminal::Closed) {
-                response = std::unexpected(error{failure_class::transient,
-                                                  "chat_stream() did not reach a clean terminal",
-                                                  "run.stream_incomplete"});
-            } else if (!usage.has_value()) {
-                response = std::unexpected(
-                    error{failure_class::contract,
-                          "streaming chat call completed with no reported token usage — refusing to "
-                          "treat it as zero-cost against the per-run token budget (004 §5)",
-                          "run.usage_unavailable"});
+            if (!stream_model_calls_) {
+                response = co_await chat_client_->chat(request, ctx);
             } else {
-                response = ChatResponse{std::move(accumulated), *usage};
+                stream<ChatResponseUpdate> s = chat_client_->chat_stream(request, ctx);
+                Message accumulated;
+                accumulated.role = role::assistant;
+                std::optional<Usage> usage;
+                while (!s.done()) {
+                    while (std::optional<ChatResponseUpdate> upd = s.next()) {
+                        if (auto const* t = std::get_if<Text>(&upd->delta.value);
+                            t != nullptr && !t->text.empty()) {
+                            emit_run_event(run_event_kind::model_delta, run_event_payload::ModelDelta{t->text});
+                        }
+                        accumulated.content.push_back(upd->delta);
+                        if (upd->is_final && upd->usage.has_value()) usage = upd->usage;
+                    }
+                    // The ring is momentarily empty but the producer thread is still live (real
+                    // backends run their blocking HTTP/SSE read loop on a detached worker thread, see
+                    // chat_stream()'s own implementation) — a bounded sleep, not a bare spin, so this
+                    // doesn't burn the actor's own worker-thread CPU for the whole call the way a
+                    // tight yield()-loop would.
+                    if (!s.done()) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                }
+                if (s.terminal() != quark::ReplyStreamTerminal::Closed) {
+                    response = std::unexpected(error{failure_class::transient,
+                                                      "chat_stream() did not reach a clean terminal",
+                                                      "run.stream_incomplete"});
+                } else if (!usage.has_value()) {
+                    response = std::unexpected(
+                        error{failure_class::contract,
+                              "streaming chat call completed with no reported token usage — refusing "
+                              "to treat it as zero-cost against the per-run token budget (004 §5)",
+                              "run.usage_unavailable"});
+                } else {
+                    response = ChatResponse{std::move(accumulated), *usage};
+                }
             }
         }
 

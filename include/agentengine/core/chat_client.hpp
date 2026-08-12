@@ -158,6 +158,20 @@ concept ChatClient = requires(T client, ChatRequest request, EffectContext& ctx)
     { client.chat_stream(request, ctx) } -> std::same_as<stream<ChatResponseUpdate>>;
 };
 
+// ADR-036: the alternate shape `AgentSession::ChatClientT` may satisfy instead of `ChatClient` above
+// -- `core/model_call_gateway.hpp`'s `ModelCallGateway<Primary, Fallback...>` is the one conformer,
+// deliberately NOT a `ChatClient` itself (it has no `chat()`/`chat_stream()` at all; retry, failover,
+// and middleware hooks live entirely inside its single `call()`, which needs to be a real coroutine
+// so a middleware hook can be `co_await`ed directly -- `chat_stream()`'s plain, non-coroutine
+// signature cannot safely host that, see `model_call_gateway.hpp`'s own top comment for the full
+// reasoning). `AgentSession::run_model_call()` picks between the two shapes with `if constexpr`; a
+// raw single backend (the common case, every pre-ADR-036 conformer) is completely unaffected.
+template <class T>
+concept ModelCallGatewayLike = requires(T gateway, ChatRequest request, EffectContext& ctx) {
+    { gateway.capabilities() } -> std::same_as<ChatClientCapabilities>;
+    { gateway.call(request, ctx) } -> std::same_as<task<result<ChatResponse>>>;
+};
+
 // 003 §4's three enforcement strategies, in the order the degradation rule (004 §2) prefers them.
 enum class output_schema_strategy { native, tool_shaped, parse_and_repair };  // ae-naming-lint: allow output_schema_strategy — 003 §4/004 §2 name this concept normatively; 027 has not been updated to list it
 

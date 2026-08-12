@@ -367,6 +367,26 @@ namespace detail {
     return error{klass, message, "openai.http_" + std::to_string(status)};
 }
 
+// The streaming counterpart to `map_http_status_error` above, for `producer.fail(quark::error{...})`
+// call sites (below) rather than `ae::error`. Deliberately STATUS-CODE-ONLY, no body/message parsing
+// at all -- `quark::error::detail` (`quark/core/error.hpp`) is a non-owning `std::string_view`, and
+// this classifier feeds error sites that run on a DETACHED background thread (`run_stream_worker`
+// below): that thread's stack -- including any parsed error-body string -- is gone the instant the
+// function returns, while a `stream<T>` consumer may read `fail_error().detail` well after that.
+// Every value this returns is a static string literal for exactly that reason (ADR-036 red-team
+// finding: reusing `map_http_status_error`'s dynamic, body-derived message here would be a real
+// dangling-view read, not a hypothetical one). Same retry-relevant split `map_http_status_error`
+// already makes (429/5xx retryable, everything else not), re-expressed in `quark::errc`'s coarser
+// two-bucket vocabulary -- the exact status is still visible in `chat()`'s own `ae::error` for a
+// caller on that path; only the coarser bucket survives on the streaming path, a real (documented,
+// not silently improved-away) limitation of `quark::error`'s thinner shape versus `ae::error`'s.
+[[nodiscard]] inline quark::error classify_http_status_stream_error(std::uint16_t status) noexcept {
+    if (status == 429 || status >= 500) {
+        return quark::error{quark::errc::overloaded, "openai.http_error_status_retryable"};
+    }
+    return quark::error{quark::errc::validation, "openai.http_error_status_nonretryable"};
+}
+
 // Factored out so the streaming path (below) parses a trailing `usage`-only SSE chunk with the
 // EXACT same field mapping as the non-streaming response body -- one implementation of the wire
 // contract, not two that could drift (this file's own D2 precedent for `StreamingUpdateAccumulator`
@@ -831,8 +851,12 @@ inline void run_stream_worker(std::string host, std::uint16_t port, std::string 
     }
     if (resp->status < 200 || resp->status >= 300) {
         // A non-2xx body is an error document, not SSE, so it produced no `data:` events and nothing
-        // bogus was pushed above -- the stream simply fails here instead.
-        producer.fail(quark::error{quark::errc::validation, "openai.http_error_status"});
+        // bogus was pushed above -- the stream simply fails here instead. ADR-036: status-code-only
+        // classification (never the dynamic body message -- see classify_http_status_stream_error's
+        // own comment) so a caller retrying on the streaming path (e.g. a future ModelCallGateway)
+        // can actually distinguish a retryable 429/5xx from a non-retryable 401/400, unlike the prior
+        // single coarse `errc::validation` for every status.
+        producer.fail(classify_http_status_stream_error(resp->status));
         return;
     }
     if (decode_error) {
