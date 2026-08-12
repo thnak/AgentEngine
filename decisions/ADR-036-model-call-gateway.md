@@ -186,3 +186,12 @@ pass**, both before and after the `chat_stream_drain.hpp` refactor.
   bounded or optimized (e.g., the last, no-more-retries-possible attempt could in principle stream
   live without risk, since there is nothing left to retry into; this optimization was considered and
   deliberately not built, to keep the first implementation's correctness surface small).
+- **`attempt_with_retry`'s backoff blocks the calling thread** (`std::this_thread::sleep_for`, no
+  `co_await`/suspension point across the whole retry loop) — code review finding (2026-08-12), named
+  here rather than silently left. On a shared thread pool this can stall other actors scheduled on
+  the same worker for the full multi-attempt window. Not a hazard newly introduced by this file:
+  `ResilientChatClient::chat()` already does the identical blocking `sleep_for` inside a `task<>`
+  coroutine, predating this ADR — `ModelCallGateway` faithfully replicated the established pattern
+  rather than inventing a new one. A real fix needs a coroutine-suspending timer primitive that does
+  not exist anywhere in Quark's `task<>` today and would touch both files; left for separate design →
+  red-team → prove work, not patched in as part of this ADR or its post-review fixes.

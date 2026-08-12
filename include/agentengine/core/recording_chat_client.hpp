@@ -4,20 +4,20 @@
 // the recording mechanism from RecordedChatClient's test-scoped fixture player to the real thing:
 // every real backend (D/E) records request, response or full ordered chunk sequence, timing, and
 // usage." `RecordingChatClient<Inner>` is that real mechanism -- a `ChatClient`-conforming wrapper
-// around ANY conforming `Inner` (Phase D's `OpenAIChatClient`, Phase E's Anthropic backend, a
-// `ResilientChatClient`/`FailoverChatClient` composition, or a test fake), so recording is available
-// uniformly regardless of which concrete backend produced the call.
+// around ANY conforming `Inner` (Phase D's `OpenAIChatClient`, Phase E's Anthropic backend, or a test
+// fake), so recording is available uniformly regardless of which concrete backend produced the call.
 //
 // Builds directly on `core/chat_recording.hpp`'s already-proven JSON envelope
 // (`ChatCallRecording`/`RecordedChunk`/`recording_mode`) -- this file owns none of that codec, only
 // the capture/timing logic that fills it in from a live call.
 //
-// `ChatClient` is a concept, never a base class (chat_client.hpp's own top comment) -- so, exactly
-// like `ResilientChatClient`/`FailoverChatClient`, this is a template wrapper composing over `Inner`,
-// never a virtual/type-erased decorator.
+// `ChatClient` is a concept, never a base class (chat_client.hpp's own top comment) -- so this is a
+// template wrapper composing over `Inner`, never a virtual/type-erased decorator (the same shape
+// `ModelCallGateway<Primary, Fallback...>`, core/model_call_gateway.hpp, composes over its own
+// backends).
 //
 // SINK, NOT FILE I/O: the constructor takes an injectable `RecordingSink` (`std::function<void
-// (ChatCallRecording)>`) -- the same testability-seam pattern as `ResilientChatClient`'s injectable
+// (ChatCallRecording)>`) -- the same testability-seam pattern as `ModelCallGateway`'s injectable
 // `JitterSource` (that file's own comment: "a testability seam, not a security bypass"). This class
 // never opens a file itself; a caller wanting durable recordings supplies a sink that calls
 // `write_chat_call_recording` (chat_recording.hpp) on its own chosen path -- keeping "how a recording
@@ -87,7 +87,7 @@ namespace agentengine {
 namespace recording_chat_client_detail {
 
 // The default sink: does nothing. "Nothing meaningful in product code" (task brief) -- there is no
-// single "real" default for "what to do with a recording" the way ResilientChatClient's jitter has a
+// single "real" default for "what to do with a recording" the way ModelCallGateway's jitter has a
 // real PRNG default; a caller who wants recordings persisted supplies a sink that does so (see
 // file-top comment). Named/addressable (not an inline lambda default arg) to mirror
 // `resilient_chat_client_detail::real_jitter`'s own function-pointer-default idiom.
@@ -116,8 +116,11 @@ inline void discard_recording(ChatCallRecording) noexcept {}
 // capture-and-emit recording that never changes what the caller observes (see file-top comment).
 template <class Inner>
 class RecordingChatClient {
-    static_assert(ChatClient<Inner>,
-                  "RecordingChatClient's Inner must satisfy the ChatClient concept (004 §1)");
+    // LegacyChatClient (chat_client.hpp), not ChatClient -- this type's own chat()/chat_stream()
+    // bodies below call `inner_.chat(...)` directly, which the relaxed `ChatClient` concept
+    // (ADR-035 Phase 3) no longer guarantees exists (code review finding, 2026-08-12).
+    static_assert(LegacyChatClient<Inner>,
+                  "RecordingChatClient's Inner must satisfy the LegacyChatClient concept (004 §1)");
 
 public:
     // Injectable capture sink -- the single seam this class offers (see file-top comment: "SINK, NOT

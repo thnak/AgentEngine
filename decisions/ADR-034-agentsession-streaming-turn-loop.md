@@ -143,6 +143,20 @@ fires `run_event_kind::model_delta` before being accumulated.
   does not opt into streaming — this ADR narrows what streaming itself can offer, it does not
   narrow the engine's baseline guarantees.
 
+## 7a. Amendment (2026-08-12): FailoverChatClient/ResilientChatClient removed
+
+§2's Fatal 1/Fatal 2 findings named `FailoverChatClient::chat_stream()`/`ResilientChatClient::
+chat_stream()`'s specific streaming-scoping limitations as the reason an unconditional streaming core
+loop was rejected. Both types were REMOVED 2026-08-12, together with `MiddlewareChatClient` (this
+repo had shipped nowhere, so no deprecation-then-migration cost) — `ModelCallGateway`/
+`MiddlewareModelCallGateway` (ADR-036) are their real, streaming-capable successors, plugged into
+`AgentSession::ChatClientT` directly (not wrapped underneath `chat_stream()`) via the
+`ModelCallGatewayLike` concept `run_model_call()` dispatches on. This ADR's own accepted design
+(`stream_model_calls_`, opt-in, default false) is unaffected by the removal — it still governs
+whether a raw, single-backend `ChatClientT` streams live, which is a question ADR-036's gateway path
+does not even ask (a gateway-routed round is always buffer-then-return, never live-streamed,
+regardless of this flag).
+
 ## 8. Files changed
 
 - `include/agentengine/core/chat_client.hpp` — `ChatResponseUpdate::usage` (additive).

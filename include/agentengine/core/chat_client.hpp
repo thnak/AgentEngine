@@ -171,6 +171,30 @@ concept ChatClient = requires(T client, ChatRequest request, EffectContext& ctx)
     { client.chat_stream(request, ctx) } -> std::same_as<stream<ChatResponseUpdate>>;
 };
 
+// The pre-Phase-3 full shape (`capabilities()` + `chat()` + `chat_stream()`), kept as its own concept
+// for `RecordingChatClient` (core/recording_chat_client.hpp), the one remaining `chat()`-only wrapper
+// template whose body unconditionally calls a wrapped instance's `.chat(...)` -- code review finding
+// (2026-08-12): after `ChatClient` above was relaxed to drop `chat()`, `RecordingChatClient`'s own
+// gating on `ChatClient<Inner>` stopped guaranteeing what its body actually needs, so a
+// chat_stream()-only backend (now a legal `ChatClient` conformer) plugged into it would pass silently
+// and then fail deep inside `.chat()` with an opaque "no member named chat" template error instead of
+// the intended, named diagnostic. `LegacyChatClient` is what `RecordingChatClient` gates on instead --
+// it is exactly what `ChatClient` used to require, given a name so it survives the relaxation as an
+// explicit, checkable requirement rather than silently reading `ChatClient` and hoping every conformer
+// still happens to have `chat()`. `ReplayChatClient` does NOT need this concept -- it doesn't wrap
+// another instance's `.chat(...)` at all, it implements both methods itself. `FailoverChatClient`/
+// `ResilientChatClient`/`MiddlewareChatClient` originally needed this concept too (and briefly used
+// it, 2026-08-12) but were REMOVED the same day -- this repo had shipped nowhere, so once ADR-036's
+// `ModelCallGateway`/`MiddlewareModelCallGateway` gave `AgentSession` a real, streaming-capable
+// successor, there was no deprecation-then-migration cost to justify keeping the three `chat()`-only
+// wrappers around.
+template <class T>
+concept LegacyChatClient = requires(T client, ChatRequest request, EffectContext& ctx) {
+    { client.capabilities() } -> std::same_as<ChatClientCapabilities>;
+    { client.chat(request, ctx) } -> std::same_as<task<result<ChatResponse>>>;
+    { client.chat_stream(request, ctx) } -> std::same_as<stream<ChatResponseUpdate>>;
+};
+
 // ADR-036: the alternate shape `AgentSession::ChatClientT` may satisfy instead of `ChatClient` above
 // -- `core/model_call_gateway.hpp`'s `ModelCallGateway<Primary, Fallback...>` is the one conformer,
 // deliberately NOT a `ChatClient` itself (it has no `chat()`/`chat_stream()` at all; retry, failover,

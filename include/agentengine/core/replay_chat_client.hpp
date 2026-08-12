@@ -36,8 +36,8 @@
 // Inter-chunk timing (004 §6/§7 G3: "UI cadence reproduces exactly") is reproduced by sleeping, before
 // each push, for the DELTA between this chunk's and the previous chunk's `elapsed_since_start` (0 for
 // the first chunk) -- an injectable `SleepFn` (default real `std::this_thread::sleep_for`) is the exact
-// testability-seam SHAPE `ResilientChatClient::JitterSource` already established
-// (core/resilient_chat_client.hpp: "a real constructor default, overridable in tests for determinism").
+// testability-seam SHAPE `ModelCallGateway::JitterSource` already established (core/model_call_gateway.hpp:
+// a real, callable default, overridable in tests for determinism).
 
 #include <chrono>
 #include <functional>
@@ -117,13 +117,13 @@ inline void run_replay_worker(std::vector<RecordedChunk> chunks, std::string str
 
 // The real, product-code `ChatClient` conformer that plays back ONE `ChatCallRecording` (see file
 // banner). Never a template -- there is exactly one shape of "replay this recording," unlike
-// `ResilientChatClient<Inner>`/`FailoverChatClient<Primary, Fallback...>`, which wrap an arbitrary
-// inner backend.
+// `ModelCallGateway<Primary, Fallback...>` (core/model_call_gateway.hpp), which wraps an arbitrary
+// set of backends.
 class ReplayChatClient {
 public:
     // Injectable inter-chunk sleep source -- default real (`replay_chat_client_detail::real_sleep`
-    // above), overridable in tests for determinism. Same seam shape as `ResilientChatClient::
-    // JitterSource` (core/resilient_chat_client.hpp): production code never passes a non-default sleep
+    // above), overridable in tests for determinism. Same seam shape as `ModelCallGateway::
+    // JitterSource` (core/model_call_gateway.hpp): production code never passes a non-default sleep
     // function, a test does, so it can assert exact chunk-timing deltas without real wall-clock sleeps.
     using SleepFn = std::function<void(std::chrono::milliseconds)>;
 
@@ -195,6 +195,6 @@ private:
 static_assert(ChatClient<ReplayChatClient>,
               "ReplayChatClient must satisfy the real ChatClient concept (004 §1) -- checked directly "
               "here, not deferred to per-instantiation tests, since this is a concrete (non-template) "
-              "type, unlike ResilientChatClient<Inner>/FailoverChatClient<Primary, Fallback...>.");
+              "type, unlike ModelCallGateway<Primary, Fallback...>.");
 
 }  // namespace agentengine

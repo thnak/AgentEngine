@@ -178,16 +178,23 @@ closes this by forcing any `ToolCall` not identical to one the real backend actu
 gate, which overrides even a tool's own `never_require` for anything with a real capability ceiling
 or a non-pure effect class.
 
-**Implementation status (updated 2026-08-11, ADR-033):** the MODEL-CALL interception point is real:
-`MiddlewareChatClient<Inner, Ms...>` (`core/middleware.hpp`) is a `ChatClient`-conforming decorator
-— the same template-wrapper shape `core/resilient_chat_client.hpp`'s `ResilientChatClient<Inner>`
-already establishes — running a two-phase (`before_model` forward, `after_model` backward) chain
-around `Inner::chat()`, with compile-time hook detection (a middleware may define any subset of the
-two hooks) and the provenance-downgrade fix above. **`MiddlewareChatClient` must be the OUTER layer
-around `ResilientChatClient`, never the reverse** — composing it inside would re-run the whole
-before-phase under one retry-stable idempotency key and let a fallback-content hook silently corrupt
-circuit-breaker health tracking (see `core/middleware.hpp`'s own top comment for the full reasoning).
-The RUN/TURN/TOOL-CALL interception points remain declared-but-unwired — `AgentSession`'s turn loop
+**Implementation status (updated 2026-08-12, ADR-033/ADR-036):** the MODEL-CALL interception point is
+real: `middleware.hpp`'s `ModelCallContext`/`run_before`/`run_after`/
+`enforce_backend_tool_call_provenance` run a two-phase (`before_model` forward, `after_model`
+backward) chain, with compile-time hook detection (a middleware may define any subset of the two
+hooks) and the provenance-downgrade fix above. The real consumer of this machinery is
+`MiddlewareModelCallGateway<Inner, Ms...>` (`core/model_call_gateway.hpp`, ADR-036), wrapping any
+`ModelCallGatewayLike` `Inner` — typically `ModelCallGateway<Primary, Fallback...>` (ADR-036's own
+retry+circuit-breaking+failover type), composed as `MiddlewareModelCallGateway<ModelCallGateway<
+Primary, Fallback...>, Ms...>` so the middleware chain runs exactly once per logical call, reviewing
+only the final, post-retry outcome (the same reasoning that originally justified a strict outer/inner
+composition order). This supersedes ADR-033's original consumer, `MiddlewareChatClient<Inner, Ms...>`
+(a `ChatClient`-conforming decorator composed over `ResilientChatClient<Inner>`) — both, along with
+`FailoverChatClient`, were REMOVED 2026-08-12: this repo had shipped nowhere, so there was no
+deprecation-then-migration cost to justify keeping the three `chat()`-only wrappers once
+`ModelCallGateway`/`MiddlewareModelCallGateway` gave `AgentSession` a real, streaming-capable
+successor with the identical combined-not-layered reasoning. The RUN/TURN/TOOL-CALL interception
+points remain declared-but-unwired — `AgentSession`'s turn loop
 is large, mature, and heavily tested; threading a middleware chain through it is separately-scoped,
 larger work this pass does not attempt, matching this project's own established "prove the mechanism
 against one real consumer, name the rest" precedent (`decisions/ADR-028-session-scoped-stateful-tools.md`).

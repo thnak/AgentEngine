@@ -187,6 +187,47 @@ separate, independently-tested commits rather than one. 208/208 pass, unchanged.
   relaxation — both rest on the deterministic offline suite (208/208) and, for Phase 1, the existing
   live/loopback-TLS coverage that was already in place.
 
+## 7a. Post-acceptance fixes (code review, 2026-08-12)
+
+A workflow-backed code review of this ADR's diff, run before project-owner sign-off, found two real
+gaps in what §5/§6 claimed versus the actual code, both fixed in place (not left as residuals):
+
+- **C7's "changes no existing conformer's behavior" was true, but the concept relaxation itself was
+  fictional for `AgentSession`**, the concept's one real consumer: `run_model_call()`'s non-gateway
+  branch unconditionally called `chat_client_->chat(request, ctx)` inside a plain runtime `if`, not
+  `if constexpr` — both arms had to compile regardless of `stream_model_calls_`'s value, so a
+  `chat_stream()`-only backend (exactly the case §5's own comment says "now conforms too") would
+  still fail to compile the moment it was plugged into `AgentSession<NewBackend, ...>`. Fixed:
+  `run_model_call()`'s not-streaming branch now picks `chat()` when available (`if constexpr` on a
+  `requires`-expression) and falls back to a buffered `drain_chat_stream()` (chat_stream_drain.hpp)
+  otherwise — the claim is now actually true for the consumer it exists to serve, not just for the
+  concept in isolation.
+- **The four legacy wrapper templates' compile-time gating stopped guaranteeing what their own
+  bodies need.** `FailoverChatClient`, `RecordingChatClient`, `ResilientChatClient`, and
+  `MiddlewareChatClient` all unconditionally call `.chat(...)` on the wrapped instance, but the
+  relaxed `ChatClient` concept no longer requires it — a chat_stream()-only backend would pass
+  whatever gate existed and then fail deep inside `.chat()` with an opaque template error instead of
+  the intended, named diagnostic. Fixed: added `LegacyChatClient` (`core/chat_client.hpp`) — the
+  exact pre-Phase-3 shape (`capabilities()`+`chat()`+`chat_stream()`) — and switched all four wrapper
+  templates to gate on it. **This was fixed in two passes, not one**: the first pass (same day)
+  covered only `FailoverChatClient`/`RecordingChatClient`, both of which already had a
+  `static_assert(ChatClient<Primary/Inner>)` to redirect. It missed `ResilientChatClient` (which had
+  no compile-time gate at all — a placebo `static_assert(true, ...)` sat after the class instead,
+  whose own comment's reasoning was wrong: `Inner` is just as concrete inside the class body as
+  `FailoverChatClient`'s `Primary`/`Fallback`, so a real `static_assert(LegacyChatClient<Inner>, ...)`
+  works identically) and `MiddlewareChatClient` (same gap, no gate at all). An independent judge
+  review, run specifically to sanity-check these fixes before sign-off, caught the gap by reading
+  every `.chat(...)` call site directly rather than trusting the first pass's own "fixed" claim —
+  both remaining templates were fixed the same way in a second pass, and the misleading placebo
+  assert was removed.
+- Also fixed as part of the same review: `chat_stream_drain.hpp`'s `drained_failure_to_agent_error()`
+  hardcoded `failure_class::transient` for every drained failure regardless of the underlying
+  `quark::errc`, which `HistoryProvider<Summarize<...>>::on_context` (Phase 3 part 2) then propagated
+  — contradicting C6's "preserves each call site's own existing failure semantics" claim for the
+  policy/contract case, and a real I2 hazard (a permanently-denied call could be retried forever by
+  any consumer keying retry policy off `failure_class`, e.g. `workflow/supervisor.hpp`). Fixed: added
+  `classify_drained_failure(quark::errc) -> failure_class`, a real mapping instead of a constant.
+
 ## 8. Files changed
 
 **Phase 1a:** `include/agentengine/protocol/anthropic/chat_client.hpp`,

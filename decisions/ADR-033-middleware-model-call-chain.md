@@ -101,6 +101,20 @@ merely asserted); the narrowed model-call-only scope does not violate any of §5
   does not attempt API-completeness scaffolding for interception points it does not wire; a future
   pass building those adds their vocabulary alongside real consumers, not ahead of them.
 
+## 5a. Amendment (2026-08-12): MiddlewareChatClient removed, superseded by MiddlewareModelCallGateway
+
+`MiddlewareChatClient<Inner, Ms...>` — this ADR's accepted consumer of the model-call machinery below
+— was REMOVED 2026-08-12, together with `FailoverChatClient`/`ResilientChatClient` (ADR-036 §7's own
+residual, closed by that removal): this repo had shipped nowhere, so there was no deprecation-then-
+migration cost to justify keeping three `chat()`-only wrapper templates once `ModelCallGateway`/
+`MiddlewareModelCallGateway` (ADR-036) gave `AgentSession` a real, streaming-capable path with the
+identical composition-order reasoning §5's "Composition order with `ResilientChatClient`" residual
+above named. `MiddlewareModelCallGateway<Inner, Ms...>` is the current real consumer — it reuses
+`ModelCallContext`/`middleware_detail::run_before`/`run_after`/`enforce_backend_tool_call_provenance`
+(§4 below) VERBATIM, unchanged by the removal; only `MiddlewareChatClient` itself is gone. This ADR's
+own regression suite (T1-T15, §6) survives: ported to `tests/test_middleware_model_call_gateway.cpp`
+(was `test_middleware_chat_client.cpp`), same 15 checks, same meaning, retargeted at the new wrapper.
+
 ## 6. Falsifiable claims and verdicts
 
 `tests/test_middleware_chat_client.cpp`, 15 blocks / 30 checks, each tracing to a specific design

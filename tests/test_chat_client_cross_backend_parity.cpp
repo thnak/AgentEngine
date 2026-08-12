@@ -18,7 +18,10 @@
 // an ad-hoc change), this file proves G1's actual claim at the layer 004 itself scopes to: ONE
 // unchanged call site (`run_it`, below), executed verbatim against three real, product-code `ChatClient`
 // conformers (Phase D's `OpenAIChatClient`, Phase E's `AnthropicChatClient`, Phase G's
-// `ReplayChatClient`) plus a `FailoverChatClient<Primary, Fallback>` composition of two of them.
+// `ReplayChatClient`) plus a `ModelCallGateway<Primary, Fallback>` (ADR-036) composition of two of
+// them, driven through its own `call()` surface (see `run_it_gateway`, below) -- (1)-(3)'s "one
+// unchanged call site" claim is specifically about the raw `ChatClient` conformers, not about the
+// gateway, which by design (ADR-036) exposes a real-coroutine `call()` distinct from `chat()`.
 //
 // Covers:
 //  (1) Identical caller-visible reply text ("PARITY_OK") comes back from all three backends through
@@ -29,11 +32,13 @@
 //      strategy per backend, exactly as each backend's own declared `ChatClientCapabilities` predicts
 //      (native / tool_shaped / parse_and_repair) -- the concrete, testable form of "capability-table-
 //      predicted differences."
-//  (4) `FailoverChatClient<OpenAIChatClient<Store>, AnthropicChatClient<Store>>`, with a primary
-//      pointed at a real closed loopback port (a genuine network failure, not a synthetic test double)
-//      and a fallback that genuinely succeeds -- `ChatResponse::fallback_tier == 1`, the "response
-//      metadata" half of the trace gate (Phase F3), proven here through two REAL backend conformers,
-//      not `test_failover_chat_client.cpp`'s synthetic doubles.
+//  (4) `ModelCallGateway<OpenAIChatClient<Store>, AnthropicChatClient<Store>>`, with a primary pointed
+//      at a real closed loopback port (a genuine network failure, not a synthetic test double) and a
+//      fallback that genuinely succeeds -- `ChatResponse::fallback_tier == 1`, the "response metadata"
+//      half of the trace gate (Phase F3, carried forward by ADR-036), proven here through two REAL
+//      backend conformers, not `test_model_call_gateway.cpp`'s scripted doubles. `FailoverChatClient`
+//      (the type this block originally proved) was removed 2026-08-12 -- `ModelCallGateway` is its
+//      real-failover successor (ADR-036), unshipped anywhere, so removed rather than deprecated.
 //
 // TLS test-server plumbing is a fourth, independent copy of `test_openai_chat_client_live.cpp`'s own
 // `TlsCannedServer`/`TestCertAuthority` pattern -- that file's own top comment already names this
@@ -63,7 +68,7 @@
 #include <vector>
 
 #include "agentengine/core/chat_recording.hpp"
-#include "agentengine/core/failover_chat_client.hpp"
+#include "agentengine/core/model_call_gateway.hpp"
 #include "agentengine/core/replay_chat_client.hpp"
 #include "agentengine/protocol/anthropic/chat_client.hpp"
 #include "agentengine/protocol/openai/chat_client.hpp"
@@ -341,6 +346,16 @@ template <class ChatClientT>
     return run_task_sync<result<ChatResponse>>(client.chat(req, ctx));
 }
 
+// `ModelCallGateway` is deliberately NOT a `ChatClient` (ADR-036) -- its real surface is `call()`, a
+// genuine coroutine, not `chat_stream()`'s plain function shape. Same driving mechanism as `run_it`
+// above, different method name.
+template <class GatewayT>
+[[nodiscard]] result<ChatResponse> run_it_gateway(GatewayT& gateway, ChatRequest const& req,
+                                                   EffectContext& ctx) {
+    using agentengine::test_support::run_task_sync;
+    return run_task_sync<result<ChatResponse>>(gateway.call(req, ctx));
+}
+
 [[nodiscard]] std::uint16_t unused_loopback_port() {
     // Bind + listen to claim a real ephemeral port from the OS, then immediately release it without
     // ever accepting a connection -- a subsequent connect attempt gets a real, deterministic
@@ -468,13 +483,30 @@ int main() {
         }
     }
 
-    // ---- (4): FailoverChatClient<real OpenAI, real Anthropic> -- primary genuinely fails ------------
+    // ---- (4): ModelCallGateway<real OpenAI, real Anthropic> -- primary genuinely fails -------------
     {
-        std::string const fallback_body =
-            R"({"id":"msg_2","type":"message","role":"assistant","model":"claude-mock",)"
-            R"("content":[{"type":"text","text":"FALLBACK_ANSWERED"}],)"
-            R"("stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":2}})";
-        TlsCannedServer fallback_server(leaf, http_response(fallback_body));
+        // ModelCallGateway drives every backend through chat_stream() (never chat()), including the
+        // fallback -- the canned response must be real, NAMED-EVENT Anthropic SSE framing (matching
+        // test_anthropic_chat_client_live.cpp's own "chat_stream(): a real TLS round-trip" fixture),
+        // not the flat, chat()-shaped JSON body this block originally sent to FailoverChatClient
+        // (which drove the fallback through .chat(), not .chat_stream()). Real bug caught and fixed
+        // during this port: without message_start/message_delta usage events, the gateway's own
+        // fail-closed-on-missing-usage rule (model_call_gateway.hpp's attempt_with_retry) rejects an
+        // otherwise-successful response as "gateway.usage_unavailable" -- exercise the SAME code path
+        // (004-Model-Provider-Plane.md §5's TokenBudget<N> depends on a true per-call token count) a
+        // real streaming fallback answer would.
+        std::string const fallback_sse =
+            "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":3,\"output_tokens\":1}}}\n\n"
+            "event: content_block_start\ndata: {\"index\":0,\"content_block\":{\"type\":\"text\"}}\n\n"
+            "event: content_block_delta\ndata: {\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"FALLBACK_ANSWERED\"}}\n\n"
+            "event: content_block_stop\ndata: {\"index\":0}\n\n"
+            "event: message_delta\ndata: {\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":2}}\n\n"
+            "event: message_stop\ndata: {}\n\n";
+        // This file's own http_response() helper (unlike test_anthropic_chat_client_live.cpp's) only
+        // ever frames with Content-Length, no chunked-transfer variant -- fine here, since the SSE
+        // parser reads the same event text regardless of HTTP framing; only chunked-transfer-decoding
+        // itself is untested by this file (that's test_anthropic_chat_client_live.cpp's own concern).
+        TlsCannedServer fallback_server(leaf, http_response(fallback_sse));
         check(fallback_server.ok(), "J1: fallback (Anthropic) test server started");
         if (fallback_server.ok()) {
             using Primary = openai::OpenAIChatClient<InMemorySecretStore>;
@@ -485,21 +517,27 @@ int main() {
             Fallback fallback("localhost", fallback_server.port(), "claude-sonnet-5",
                                SecretRef{"anthropic-api-key"}, ChatClientCapabilities{}, store, "/v1",
                                "2023-06-01", fake_resolver, leaf.cert_pem);
-            FailoverChatClient<Primary, Fallback> composed(std::move(primary), std::move(fallback));
-            static_assert(ChatClient<decltype(composed)>,
-                          "FailoverChatClient<Primary, Fallback> must itself satisfy ChatClient (004 §1)");
+            // max_attempts=1 on the primary tier -- this proof wants ONE genuine connection failure to
+            // trigger failover immediately, not RetryPolicy{}'s default 3 attempts with real backoff
+            // delay (retryable per model_call_gateway_detail::is_retryable: a closed loopback port
+            // reports quark::errc::unavailable, same bucket as a transient outage).
+            ModelCallGateway<Primary, Fallback> composed(std::move(primary),
+                                                          std::make_tuple(std::move(fallback)),
+                                                          RetryPolicy{.max_attempts = 1});
 
-            // The SAME unchanged call site as (1)-(3) above, now against a composed multi-backend
-            // conformer -- no special-casing needed for the fact that this "backend" is itself two.
-            auto resp = run_it(composed, req, ctx);
+            // The SAME `req`/`ctx` as (1)-(3) above, now against a composed multi-backend gateway --
+            // no special-casing needed for the fact that this "backend" is itself two, only a
+            // different driving helper (`run_it_gateway`, not `run_it`) since `call()`, not `chat()`,
+            // is this type's real surface (ADR-036).
+            auto resp = run_it_gateway(composed, req, ctx);
             check(resp.has_value(),
-                  "J1-R8: FailoverChatClient succeeds even though its primary is a real, closed loopback "
+                  "J1-R8: ModelCallGateway succeeds even though its primary is a real, closed loopback "
                   "port (a genuine connection failure) -- the fallback answers");
             if (resp) {
                 check(resp->fallback_tier == 1,
                       "J1-R9: ChatResponse::fallback_tier == 1 -- the trace's response-metadata half "
-                      "(Phase F3) is real end-to-end through two REAL backend conformers, not "
-                      "test_failover_chat_client.cpp's synthetic doubles");
+                      "(Phase F3, carried forward by ADR-036) is real end-to-end through two REAL "
+                      "backend conformers, not test_model_call_gateway.cpp's scripted doubles");
                 check(first_text(*resp) == "FALLBACK_ANSWERED",
                       "J1-R10: the fallback's own real response content comes through unchanged");
             }

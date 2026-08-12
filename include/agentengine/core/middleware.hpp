@@ -5,16 +5,21 @@
 // chain-composition logic or consumer" (§5's own prior text) to real, tested code. ADR-033
 // (decisions/ADR-033-middleware-model-call-chain.md).
 //
-// SCOPE, narrower than "implement Middleware<Ms...>" sounds, deliberately: only the model-call
-// point is wired to a real consumer this pass -- `MiddlewareChatClient<Inner, Ms...>`, a template
-// decorator conforming to the `ChatClient` concept itself, the SAME shape
-// `core/resilient_chat_client.hpp`'s `ResilientChatClient<Inner>` already establishes for wrapping a
-// `ChatClient` conformer (never a virtual base -- chat_client.hpp's own "never inherited from on the
-// hot path" rule). The run/turn/tool-call interception points are NOT wired into `AgentSession`'s
-// turn loop this pass -- that file is large, mature, and heavily tested; threading a middleware chain
-// through its template parameters and every call site is separately-scoped, larger work, matching
-// this project's own established "prove the mechanism against one real consumer, name the rest"
-// precedent (decisions/ADR-028-session-scoped-stateful-tools.md).
+// SCOPE, narrower than "implement Middleware<Ms...>" sounds, deliberately: only the model-call point
+// is wired to a real consumer. This file's own machinery below (`ModelCallContext`, `run_before`/
+// `run_after`, `enforce_backend_tool_call_provenance`, `MiddlewareTraceHook`) is that real consumer's
+// shared implementation -- originally reached only through `MiddlewareChatClient<Inner, Ms...>` (a
+// `ChatClient`-conforming template decorator, wrapping `Inner::chat()`), which was REMOVED 2026-08-12
+// along with `FailoverChatClient`/`ResilientChatClient` (this repo had shipped nowhere, so there was
+// no deprecation-then-migration cost to justify keeping a `chat()`-only wrapper once ADR-036 gave
+// `AgentSession` a real, streaming-capable path). `MiddlewareModelCallGateway<Inner, Ms...>`
+// (core/model_call_gateway.hpp, ADR-036) is the current real consumer -- it reuses every type/function
+// below VERBATIM, unchanged by the removal; only `MiddlewareChatClient` itself (further down this
+// file) is gone. The run/turn/tool-call interception points are NOT wired into `AgentSession`'s turn
+// loop -- that file is large, mature, and heavily tested; threading a middleware chain through its
+// template parameters and every call site is separately-scoped, larger work, matching this project's
+// own established "prove the mechanism against one real consumer, name the rest" precedent
+// (decisions/ADR-028-session-scoped-stateful-tools.md).
 //
 // I2 ENFORCEMENT, stated once here because it shapes every type below: `ModelCallContext` carries
 // NEITHER `EffectContext&` nor any capability-related type. A hook structurally cannot widen (or
@@ -48,14 +53,11 @@
 #include <string>
 #include <string_view>
 #include <tuple>
-#include <utility>
 #include <variant>
 
 #include "agentengine/core/chat_client.hpp"
 #include "agentengine/core/content.hpp"
-#include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/error.hpp"
-#include "agentengine/core/stream.hpp"
 #include "agentengine/core/task.hpp"
 
 namespace agentengine {
@@ -242,95 +244,5 @@ inline void enforce_backend_tool_call_provenance(Message& final_message,
 }
 
 }  // namespace middleware_detail
-
-// `MiddlewareChatClient<Inner, Ms...>` conforms to the `ChatClient` concept itself -- `capabilities()`
-// forwards unchanged, `chat()` runs the two-phase chain around `Inner::chat()`, `chat_stream()`
-// forwards UNINTERCEPTED (named residual: 004 §1's streaming path is a fundamentally different shape
-// -- a `stream<ChatResponseUpdate>` rather than an awaitable `task<result<ChatResponse>>` -- and
-// applying before/after hooks to a streaming response needs its own design this file does not
-// attempt).
-//
-// `Ms...` template-argument ORDER is registration order, and position 0 is OUTERMOST -- matching
-// `docs/research/2026-08-11-maf-middleware-codeact-skills-deep-dive.md` §1's "first-registered ends
-// up outermost" convention (MAF's `ChatClientBuilder`/`AIAgentBuilder` apply factories in REVERSE so
-// the first `.Use()` call wraps everything else; declaring `Ms...` in registration order and running
-// the before-phase FORWARD/after-phase BACKWARD produces the identical observable ordering without
-// needing to build actual nested wrapper objects).
-//
-// COMPOSITION ORDER WITH `ResilientChatClient<Inner>` (core/resilient_chat_client.hpp) -- a REAL,
-// MANDATORY caller contract, found during this design's own red-team pass: `MiddlewareChatClient`
-// MUST be the OUTER layer, i.e. `MiddlewareChatClient<ResilientChatClient<Real>, Ms...>`, never the
-// reverse. `ResilientChatClient::chat()` stamps ONE idempotency key, then may call its `Inner::chat()`
-// (a nested `MiddlewareChatClient`, in the wrong order) MULTIPLE TIMES across retry attempts -- every
-// attempt would re-run the WHOLE before-phase under that one "stable" key, and a hook with any
-// per-call variance (even reading real time) would send different payloads under a key that promises
-// otherwise (chat_client.hpp's own idempotency-key contract). Worse: an `after_model` hook that
-// synthesizes a fallback `ctx.response` in place of a real transient failure would make
-// `ResilientChatClient` observe a false success and stop retrying, silently corrupting its circuit
-// breaker's health tracking. Composing the other way (middleware outside resilience) avoids both:
-// hooks run exactly once per logical call, and `after_model` reviews only the final, post-retry
-// outcome.
-template <class Inner, class... Ms>
-class MiddlewareChatClient {
-public:
-    explicit MiddlewareChatClient(Inner inner, Ms... middlewares)
-        : inner_(std::move(inner)), middlewares_(std::move(middlewares)...) {}
-
-    MiddlewareChatClient& set_trace_hook(MiddlewareTraceHook hook) {
-        trace_hook_ = std::move(hook);
-        return *this;
-    }
-
-    [[nodiscard]] ChatClientCapabilities capabilities() const { return inner_.capabilities(); }
-
-    task<result<ChatResponse>> chat(ChatRequest request, EffectContext& ctx) {
-        ModelCallContext mctx{std::move(request), std::nullopt, std::nullopt};
-        std::size_t stopped_at = 0;
-
-        {
-            std::monostate const ignored =
-                co_await middleware_detail::run_before<0>(middlewares_, mctx, stopped_at, trace_hook_);
-            (void)ignored;
-        }
-
-        std::optional<ChatResponse> raw_backend_response;
-        if (!mctx.settled()) {
-            auto real = co_await inner_.chat(std::move(mctx.request), ctx);
-            if (real.has_value()) {
-                raw_backend_response = *real;
-                mctx.response         = *real;
-            } else {
-                mctx.failure = real.error();
-            }
-        }
-
-        {
-            std::monostate const ignored =
-                co_await middleware_detail::run_after<0>(middlewares_, mctx, stopped_at, trace_hook_);
-            (void)ignored;
-        }
-
-        if (mctx.response.has_value()) {
-            middleware_detail::enforce_backend_tool_call_provenance(mctx.response->message,
-                                                                     raw_backend_response);
-            co_return *mctx.response;
-        }
-        if (mctx.failure.has_value()) co_return std::unexpected(*mctx.failure);
-        // Unreachable given `settled()`'s own definition (one branch above always assigns one of the
-        // two fields before this point) -- fail closed rather than trust that invariant silently.
-        co_return std::unexpected(error{failure_class::fatal,
-                                         "middleware chain produced neither a response nor a failure",
-                                         "middleware.unsettled"});
-    }
-
-    [[nodiscard]] stream<ChatResponseUpdate> chat_stream(ChatRequest request, EffectContext& ctx) {
-        return inner_.chat_stream(std::move(request), ctx);
-    }
-
-private:
-    Inner              inner_;
-    std::tuple<Ms...>  middlewares_;
-    MiddlewareTraceHook trace_hook_;
-};
 
 }  // namespace agentengine

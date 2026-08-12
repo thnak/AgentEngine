@@ -43,6 +43,7 @@
 #include "quark/core/snapshot.hpp"
 
 #include "agentengine/core/chat_client.hpp"
+#include "agentengine/core/chat_stream_drain.hpp"
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/context_provider.hpp"
 #include "agentengine/core/effect_context.hpp"
@@ -499,7 +500,12 @@ private:
     // ADR-034: routes to `chat_stream()` when a caller has opted the session INTO streaming
     // (`stream_model_calls_`, default false — see `set_stream_model_calls()`'s own comment for the
     // real tradeoffs an opted-in caller accepts); otherwise calls `chat()` exactly as ADR-027
-    // shipped it, byte-for-byte, so every existing/default caller is completely unaffected.
+    // shipped it, byte-for-byte, so every existing/default caller is completely unaffected. Code
+    // review finding (2026-08-12): since ADR-035 Phase 3 no longer guarantees `chat()` exists on
+    // every `ChatClientT` (`ChatClient`'s relaxed concept), the not-streaming branch itself picks
+    // between `chat()` and a buffered `drain_chat_stream()` via `if constexpr` -- see that branch's
+    // own comment; a `chat_stream()`-only backend genuinely works through `AgentSession` now,
+    // matching what the concept relaxation actually claims.
     //
     // Text deltas fire a real `run_event_kind::model_delta` as they arrive (013 §1's own vocabulary,
     // previously declared with zero real emitter). Every delta's `ContentItem` — Text or an
@@ -540,7 +546,34 @@ private:
             response = co_await chat_client_->call(request, ctx);
         } else {
             if (!stream_model_calls_) {
-                response = co_await chat_client_->chat(request, ctx);
+                // Code review finding (2026-08-12): ADR-035 Phase 3 relaxed `ChatClient` to no longer
+                // require `chat()` (only `capabilities()`+`chat_stream()`), so `chat_client_->chat(...)`
+                // is no longer guaranteed to exist for every `ChatClientT` -- an unconditional call here
+                // would make that relaxation fictional for AgentSession, the concept's actual consumer.
+                // When `chat()` IS available (every conformer that exists today), call it exactly as
+                // before, byte for byte. When it isn't, buffer via the shared `drain_chat_stream()`
+                // primitive (chat_stream_drain.hpp) instead -- same fail-closed-on-missing-usage rule,
+                // no live `model_delta` events, matching what a `chat()`-having backend would produce.
+                if constexpr (requires(ChatClientT& c, ChatRequest const& r, EffectContext& e) {
+                                  { c.chat(r, e) } -> std::same_as<task<result<ChatResponse>>>;
+                              }) {
+                    response = co_await chat_client_->chat(request, ctx);
+                } else {
+                    DrainedChatStream drained = drain_chat_stream(chat_client_->chat_stream(request, ctx));
+                    if (!drained.ok) {
+                        response = std::unexpected(
+                            drained_failure_to_agent_error(drained.failure, "run.stream_incomplete"));
+                    } else if (!drained.usage.has_value()) {
+                        response = std::unexpected(
+                            error{failure_class::contract,
+                                  "streaming chat call completed with no reported token usage — "
+                                  "refusing to treat it as zero-cost against the per-run token "
+                                  "budget (004 §5)",
+                                  "run.usage_unavailable"});
+                    } else {
+                        response = ChatResponse{std::move(drained.accumulated), *drained.usage};
+                    }
+                }
             } else {
                 stream<ChatResponseUpdate> s = chat_client_->chat_stream(request, ctx);
                 Message accumulated;
@@ -992,13 +1025,16 @@ public:
     // exactly as ADR-027 shipped it, bit-for-bit.
     //
     // A DELIBERATE, DOCUMENTED TRADEOFF an opted-in caller accepts, not a strictly-better mode:
-    // `FailoverChatClient::chat_stream()` never falls over to a secondary backend (that type's own
-    // file-top comment states this scoping outright — failover is `chat()`-only); and
-    // `ResilientChatClient::chat_stream()` never reports an outcome to its circuit breaker (same
-    // file, same reason) — neither is silently broken by streaming so much as simply not part of
-    // what streaming exercises, and a caller composing either underneath a streaming session accepts
-    // losing that protection for this session. A `run_event_kind::warning` fires once per run when
-    // streaming is active, so this is a visible fact about the run, not a silent one.
+    // retry/failover/circuit-breaking under streaming is only available through `ModelCallGateway`
+    // (ADR-036), which is plugged in as `ChatClientT` itself via `ModelCallGatewayLike::call()` --
+    // an entirely different branch of `run_model_call()` (see the `if constexpr` above) that this
+    // flag is simply irrelevant to. A caller who instead plugs in a raw, chat_stream()-only backend
+    // and opts into THIS flag gets no retry/failover/breaker protection at all on that path, by
+    // construction (there is no wrapper left in this codebase that would have retrofitted it onto
+    // chat_stream() -- `FailoverChatClient`/`ResilientChatClient`, which historically wrapped
+    // `chat()` only, were removed 2026-08-12; see `retry_policy.hpp`'s own top comment). A
+    // `run_event_kind::warning` fires once per run when streaming is active, so this is a visible
+    // fact about the run, not a silent one.
     //
     // NOT on that tradeoff list (ADR-035 Phase 1, unlike ADR-034's original scope): response-format-
     // leak-scanning. `run_model_call()` applies `apply_response_format_scan()` itself, uniformly,

@@ -18,11 +18,24 @@
 //         through this new composition path).
 //   G5 -- AgentSession integration: AgentSession<ModelCallGateway<...>, ...> converges a real
 //         StartRun with zero model_delta events (the accepted trade) and fires the ADR-036 warning.
+//   G6 -- retries stop once the deadline is exhausted, without sleeping past it (ported from
+//         test_resilient_chat_client.cpp's (2), removed 2026-08-12 along with ResilientChatClient
+//         itself -- this behavior lives in ModelCallGateway::attempt_with_retry now, same test).
+//   G7 -- the idempotency key is identical across every retry attempt of the same logical call
+//         (ported from test_resilient_chat_client.cpp's (5), same reason as G6).
+//   G8 -- circuit breaker: trips after N consecutive failures, sheds immediately, then admits
+//         exactly one half-open probe after the cooldown elapses and recovers (ported from
+//         test_resilient_chat_client.cpp's (4); G3 above proves the trip+shed+failover interaction,
+//         this proves the raw trip -> shed -> cooldown -> half-open -> close cycle in isolation, no
+//         fallback tier involved -- ModelCallGateway<Primary> with zero fallbacks, a legitimate
+//         configuration this file's own top comment names).
 
+#include <chrono>
 #include <iostream>
 #include <memory>
 #include <memory_resource>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "quark/core/testkit.hpp"
@@ -72,9 +85,14 @@ class ScriptedGatewayBackend {
 public:
     std::vector<ScriptedOutcome> outcomes;
 
-    ScriptedGatewayBackend() : call_count_(std::make_shared<std::size_t>(0)) {}
+    ScriptedGatewayBackend()
+        : call_count_(std::make_shared<std::size_t>(0)),
+          observed_idempotency_keys_(std::make_shared<std::vector<std::string>>()) {}
 
     [[nodiscard]] std::size_t call_count() const { return *call_count_; }
+    [[nodiscard]] std::vector<std::string> const& observed_idempotency_keys() const {
+        return *observed_idempotency_keys_;
+    }
 
     [[nodiscard]] ae::ChatClientCapabilities capabilities() const { return {}; }
 
@@ -83,10 +101,11 @@ public:
             ae::error{ae::failure_class::contract, "this fixture only implements chat_stream()", "test.no_chat"});
     }
 
-    ae::stream<ae::ChatResponseUpdate> chat_stream(ae::ChatRequest const&, ae::EffectContext&) {
+    ae::stream<ae::ChatResponseUpdate> chat_stream(ae::ChatRequest const& request, ae::EffectContext&) {
         ae::stream_config<ae::ChatResponseUpdate> cfg;
         cfg.capacity = 32;
         auto pair = ae::make_stream<ae::ChatResponseUpdate>(std::pmr::get_default_resource(), cfg);
+        observed_idempotency_keys_->push_back(request.idempotency_key.value_or(std::string{}));
         std::size_t const call_count = *call_count_;
         if (call_count < outcomes.size()) {
             ScriptedOutcome const& o = outcomes[call_count];
@@ -108,6 +127,7 @@ public:
 
 private:
     std::shared_ptr<std::size_t> call_count_;
+    std::shared_ptr<std::vector<std::string>> observed_idempotency_keys_;
 };
 static_assert(ae::ChatClient<ScriptedGatewayBackend>);
 
@@ -333,6 +353,154 @@ int main() {
         AE_CHECK(saw_gateway_warning,
                  "G5: the ADR-036 gateway warning fires, naming the trade -- a visible fact about the "
                  "run, not a silent one, matching ADR-034's own established pattern");
+    }
+
+    // ---- G6: retries stop once the deadline is exhausted, without sleeping past it -----------------
+    {
+        // Always fails retryable -- the ONLY reason retrying stops here must be the deadline, not the
+        // script running out (a single scripted failure is enough: attempt 1 fails, the deadline
+        // check then refuses attempt 2 before it would ever consume a 2nd scripted outcome).
+        ScriptedGatewayBackend primary;
+        primary.outcomes = {ScriptedOutcome::fail(quark::errc::unavailable)};
+        ae::RetryPolicy retry;
+        retry.max_attempts = 10;
+        retry.base_delay = std::chrono::milliseconds(200);  // clearly bigger than the deadline below
+        retry.max_delay = std::chrono::milliseconds(1000);
+        retry.jitter_fraction = 0.0;
+        ae::BreakerConfig breaker;
+        breaker.fail_threshold = 100;  // never trips within this scenario's attempt count
+        ae::ModelCallGateway<ScriptedGatewayBackend> gw(primary, std::make_tuple(), retry, breaker, &no_jitter);
+
+        auto ctx = make_ctx();
+        ctx.deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(5);
+
+        auto const started = std::chrono::steady_clock::now();
+        auto r = ae::test_support::run_task_sync<ae::result<ae::ChatResponse>>(gw.call(make_request(), ctx));
+        auto const elapsed = std::chrono::steady_clock::now() - started;
+
+        AE_CHECK(!r.has_value(), "G6: returns an error once the deadline can't fit another backoff");
+        if (!r.has_value()) {
+            AE_CHECK(r.error().klass == ae::failure_class::transient,
+                     "G6: the returned error is the last real transient error (correctly classified "
+                     "by classify_drained_failure), not a fabricated one");
+        }
+        // base_delay (200ms) cannot fit inside the 5ms deadline after the first attempt -- so the
+        // gateway must give up after exactly ONE real attempt, never sleeping the full 200ms.
+        AE_CHECK(primary.call_count() == 1,
+                 "G6: exactly one real attempt is made -- the 200ms backoff can't fit the 5ms deadline");
+        AE_CHECK(elapsed < std::chrono::milliseconds(100),
+                 "G6: no retry sleep pushed wall-clock time anywhere near the 200ms backoff (proves the "
+                 "deadline clamp actually prevented the sleep, not just the retry-loop exit)");
+    }
+
+    // ---- G7: the idempotency key is identical across every retry attempt --------------------------
+    {
+        ScriptedGatewayBackend primary;
+        primary.outcomes = {
+            ScriptedOutcome::fail(quark::errc::unavailable), ScriptedOutcome::fail(quark::errc::unavailable),
+            ScriptedOutcome::fail(quark::errc::unavailable),
+            ScriptedOutcome::ok({text_delta("ok on 4th", true, ae::Usage{1, 1, 0, 0, 0.0})}),
+        };
+        ae::RetryPolicy retry;
+        retry.max_attempts = 4;
+        retry.base_delay = std::chrono::milliseconds(1);
+        retry.max_delay = std::chrono::milliseconds(2);
+        retry.jitter_fraction = 0.0;
+        ae::BreakerConfig breaker;
+        breaker.fail_threshold = 10;
+        ae::ModelCallGateway<ScriptedGatewayBackend> gw(primary, std::make_tuple(), retry, breaker, &no_jitter);
+
+        auto ctx = make_ctx();
+        ctx.run_id = "run-g7";
+        ctx.turn_index = 42;
+        auto r = ae::test_support::run_task_sync<ae::result<ae::ChatResponse>>(gw.call(make_request(), ctx));
+
+        AE_CHECK(r.has_value(), "G7: succeeds on the 4th attempt");
+        AE_CHECK(primary.call_count() == 4, "G7: exactly 4 real attempts were made");
+        auto const& keys = primary.observed_idempotency_keys();
+        AE_CHECK(keys.size() == 4, "G7: every one of the 4 attempts recorded an idempotency key");
+        std::string const expected = ae::IdempotencyKey{"run-g7", 42, 0, 0}.to_string();
+        bool all_match_expected = keys.size() == 4;
+        bool all_identical = keys.size() == 4;
+        for (std::size_t i = 0; i < keys.size(); ++i) {
+            if (keys[i] != expected) all_match_expected = false;
+            if (i > 0 && keys[i] != keys[0]) all_identical = false;
+        }
+        AE_CHECK(all_match_expected, "G7: attempt N's idempotency key matches the expected stable value");
+        AE_CHECK(all_identical,
+                 "G7: all 4 attempts observed the exact SAME idempotency key -- never regenerated per "
+                 "attempt");
+    }
+
+    // ---- G8: breaker trip -> shed -> cooldown -> half-open probe -> close, no fallback tier --------
+    {
+        // Real attempts (backend-reaching calls), in order: fail, fail, fail, [shed, no call], probe
+        // succeeds. max_attempts=1 so EACH top-level call() makes at most one real attempt -- isolates
+        // breaker behavior from the retry loop.
+        ScriptedGatewayBackend primary;
+        primary.outcomes = {
+            ScriptedOutcome::fail(quark::errc::unavailable), ScriptedOutcome::fail(quark::errc::unavailable),
+            ScriptedOutcome::fail(quark::errc::unavailable),
+            ScriptedOutcome::ok({text_delta("recovered", true, ae::Usage{1, 1, 0, 0, 0.0})}),
+            ScriptedOutcome::ok({text_delta("closed again", true, ae::Usage{1, 1, 0, 0, 0.0})}),
+        };
+        ae::RetryPolicy no_retry;
+        no_retry.max_attempts = 1;
+        ae::BreakerConfig breaker;
+        breaker.fail_threshold = 3;
+        breaker.open_duration = std::chrono::milliseconds(60);
+        // Zero fallbacks -- a legitimate configuration (this file's own top comment), and the point
+        // of this block: prove the raw breaker cycle, not a failover interaction (G3 already does that).
+        ae::ModelCallGateway<ScriptedGatewayBackend> gw(primary, std::make_tuple(), no_retry, breaker, &no_jitter);
+
+        // 3 consecutive real failures -> trips the breaker.
+        for (int i = 0; i < 3; ++i) {
+            auto ctx = make_ctx();
+            ctx.turn_index = static_cast<std::uint64_t>(i);
+            auto r = ae::test_support::run_task_sync<ae::result<ae::ChatResponse>>(gw.call(make_request(), ctx));
+            AE_CHECK(!r.has_value(), "G8: each of the first 3 calls fails (scripted, retryable)");
+            if (!r.has_value()) {
+                AE_CHECK(r.error().code == "gateway.attempt_failed",
+                         "G8: the first 3 failures are the gateway's own attempt-exhausted code -- "
+                         "proves these 3 really reached the backend, not a shed");
+            }
+        }
+        AE_CHECK(primary.call_count() == 3, "G8: 3 real attempts reached the backend to trip the breaker");
+
+        // Immediately after tripping: shed, no call reaches the backend.
+        {
+            auto ctx = make_ctx();
+            ctx.turn_index = 3;
+            auto r = ae::test_support::run_task_sync<ae::result<ae::ChatResponse>>(gw.call(make_request(), ctx));
+            AE_CHECK(!r.has_value(), "G8: a shed call is still reported as a failure");
+            if (!r.has_value()) {
+                AE_CHECK(r.error().code == "gateway.circuit_open",
+                         "G8: a shed call is reported with the breaker's OWN error code, not the "
+                         "backend's");
+            }
+            AE_CHECK(primary.call_count() == 3, "G8: shedding does NOT reach the backend -- call_count stays at 3");
+        }
+
+        // Wait out the cooldown, then the NEXT call must be admitted as the single half-open probe.
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        {
+            auto ctx = make_ctx();
+            ctx.turn_index = 4;
+            auto r = ae::test_support::run_task_sync<ae::result<ae::ChatResponse>>(gw.call(make_request(), ctx));
+            AE_CHECK(r.has_value(),
+                     "G8: after the cooldown elapses, exactly one half-open probe is admitted and, "
+                     "since it succeeds, the breaker closes again");
+            AE_CHECK(primary.call_count() == 4, "G8: the half-open probe DID reach the backend");
+        }
+
+        // Breaker is Closed again -- a further call behaves normally (reaches the backend, not shed).
+        {
+            auto ctx = make_ctx();
+            ctx.turn_index = 5;
+            auto r = ae::test_support::run_task_sync<ae::result<ae::ChatResponse>>(gw.call(make_request(), ctx));
+            AE_CHECK(r.has_value(), "G8: after closing, calls are admitted normally again");
+            AE_CHECK(primary.call_count() == 5, "G8: call_count advances again -- no longer shedding");
+        }
     }
 
     std::cout << (g_failures == 0 ? "test_model_call_gateway: OK\n" : "test_model_call_gateway: FAIL\n");

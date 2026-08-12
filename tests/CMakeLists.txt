@@ -926,22 +926,12 @@ add_executable(test_chat_client_stream test_chat_client_stream.cpp)
 target_link_libraries(test_chat_client_stream PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_chat_client_stream COMMAND test_chat_client_stream)
 
-# ---- Milestone 5 Phase F1/F2 -- ResilientChatClient<Inner> (retry + Quark 022 circuit breaking),
-# core/resilient_chat_client.hpp, against a hand-rolled scripted ChatClient conformer.
-add_executable(test_resilient_chat_client test_resilient_chat_client.cpp)
-target_link_libraries(test_resilient_chat_client PRIVATE agentengine::core agentengine_warnings)
-add_test(NAME test_resilient_chat_client COMMAND test_resilient_chat_client)
-
-# ---- Middleware<Ms...>, model-call interception point (002 §5, ADR-033) ------------------------
-add_executable(test_middleware_chat_client test_middleware_chat_client.cpp)
-target_link_libraries(test_middleware_chat_client PRIVATE agentengine::core agentengine_warnings)
-add_test(NAME test_middleware_chat_client COMMAND test_middleware_chat_client)
-
-# ---- Milestone 5 Phase F3 -- FailoverChatClient<Primary, Fallback...> (004 §4 explicit failover),
-# core/failover_chat_client.hpp.
-add_executable(test_failover_chat_client test_failover_chat_client.cpp)
-target_link_libraries(test_failover_chat_client PRIVATE agentengine::core agentengine_warnings)
-add_test(NAME test_failover_chat_client COMMAND test_failover_chat_client)
+# ---- Middleware<Ms...>, model-call interception point (002 §5, ADR-033), proven through
+# MiddlewareModelCallGateway (ADR-036) -- was test_middleware_chat_client.cpp/MiddlewareChatClient
+# until both were removed 2026-08-12.
+add_executable(test_middleware_model_call_gateway test_middleware_model_call_gateway.cpp)
+target_link_libraries(test_middleware_model_call_gateway PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_middleware_model_call_gateway COMMAND test_middleware_model_call_gateway)
 
 # ---- Milestone 5 Phase F4 -- per-run TokenBudget<N> enforcement at the turn boundary
 # (AgentSession::handle, agent_session.hpp).

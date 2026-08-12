@@ -35,9 +35,11 @@
 // rejected for `AgentSession`. Two small, composable pieces, not one large one.
 //
 // `ResilientChatClient`/`FailoverChatClient`/`MiddlewareChatClient` (the three original `chat()`-
-// only wrapper templates) are UNCHANGED and UNTOUCHED by this file -- they keep working for any
-// existing `chat()`-based consumer. This file's types reuse their building blocks directly
-// (`RetryPolicy`/`BreakerConfig` from resilient_chat_client.hpp; `ModelCallContext`/
+// only wrapper templates) were REMOVED 2026-08-12 -- this repo had shipped nowhere, so there was no
+// deprecation-then-migration cost to justify keeping them once this file gave `AgentSession` a real,
+// streaming-capable successor. This file's types reuse their building blocks directly
+// (`RetryPolicy`/`BreakerConfig`/`real_jitter` from retry_policy.hpp -- the file `resilient_chat_
+// client.hpp` was renamed to once `ResilientChatClient` itself was removed; `ModelCallContext`/
 // `MiddlewareTraceHook`/`middleware_detail::run_before`/`run_after`/
 // `enforce_backend_tool_call_provenance` from middleware.hpp) rather than reimplementing them --
 // one set of correct, already-tested primitives, not two independent copies that could drift.
@@ -72,7 +74,7 @@
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/middleware.hpp"
-#include "agentengine/core/resilient_chat_client.hpp"  // RetryPolicy, BreakerConfig, real_jitter
+#include "agentengine/core/retry_policy.hpp"  // RetryPolicy, BreakerConfig, real_jitter
 #include "agentengine/core/stream.hpp"
 #include "agentengine/core/task.hpp"
 #include "agentengine/core/tool_pipeline.hpp"  // IdempotencyKey
@@ -241,6 +243,17 @@ private:
                         drained_failure_to_agent_error(drained.failure, "gateway.attempt_failed"));
                 }
             }
+            // Code review finding (2026-08-12), recorded as a named residual rather than fixed here:
+            // this blocks the calling (actor worker) thread for `delay`, with no co_await/suspension
+            // point across the whole retry loop -- on a shared thread pool this can stall other
+            // actors scheduled on the same worker. NOT a hazard newly introduced by this file:
+            // `ResilientChatClient::chat()` (removed 2026-08-12; see retry_policy.hpp's own top
+            // comment) already did the identical blocking `sleep_for` inside a `task<>` coroutine,
+            // predating ADR-036. A real fix needs a coroutine-suspending timer primitive that doesn't
+            // exist anywhere in Quark's `task<>` today, and would touch both files -- new
+            // infrastructure, not a same-pass edit; left for separate design → red-team → prove work
+            // per this project's own governance for
+            // concurrency-critical changes.
             std::this_thread::sleep_for(delay);
         }
     }

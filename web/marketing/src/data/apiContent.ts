@@ -327,12 +327,12 @@ export const runtimeEntries: ApiEntry[] = [
   {
     id: "middleware-chain",
     status: "real",
-    tag: "MiddlewareChatClient<Inner, Ms...>",
-    title: "Middleware<Ms...> — a real before/after chain wrapping any ChatClient",
+    tag: "MiddlewareModelCallGateway<Inner, Ms...>",
+    title: "Middleware<Ms...> — a real before/after chain wrapping any model-call gateway",
     body:
-      "A decorator over any ChatClient conformer, same shape ResilientChatClient's retry/circuit-breaker wrapper already established: each Ms... in order gets a before_model(ModelCallContext&) hook (can rewrite the outgoing request or short-circuit with a synthetic response) and an after_model(ModelCallContext&) hook (sees the real response once it's settled). A red-team pass found the fatal case this mechanism has to close on its own: a content-rewriting middleware could otherwise forge or mutate a trusted ToolCall reconstructed from plain text, silently bypassing ADR-023's confused-deputy gate — content-rewrite is not the same threat class as capability-widening, but it reaches the same outcome if unchecked. enforce_backend_tool_call_provenance() forces any ToolCall a middleware's rewritten Message content didn't come verbatim from the backend down to call_provenance::text_derived, so it still has to earn its way through the ordinary declassification gate — a middleware can change what the model is asked or told, never what a tool call is trusted to have come from.",
-    cite: "include/agentengine/core/middleware.hpp",
-    href: gh("decisions/ADR-033-middleware-model-call-chain.md"),
+      "A decorator over any ModelCallGatewayLike backend (typically a retry/failover ModelCallGateway<Primary, Fallback...>), a real coroutine so a hook's co_await is completely ordinary: each Ms... in order gets a before_model(ModelCallContext&) hook (can rewrite the outgoing request or short-circuit with a synthetic response) and an after_model(ModelCallContext&) hook (sees the real response once it's settled). A red-team pass found the fatal case this mechanism has to close on its own: a content-rewriting middleware could otherwise forge or mutate a trusted ToolCall reconstructed from plain text, silently bypassing ADR-023's confused-deputy gate — content-rewrite is not the same threat class as capability-widening, but it reaches the same outcome if unchecked. enforce_backend_tool_call_provenance() forces any ToolCall a middleware's rewritten Message content didn't come verbatim from the backend down to call_provenance::text_derived, so it still has to earn its way through the ordinary declassification gate — a middleware can change what the model is asked or told, never what a tool call is trusted to have come from.",
+    cite: "include/agentengine/core/model_call_gateway.hpp",
+    href: gh("decisions/ADR-036-model-call-gateway.md"),
   },
   {
     id: "chat-clients",
@@ -340,7 +340,7 @@ export const runtimeEntries: ApiEntry[] = [
     tag: "AnthropicChatClient · OpenAIChatClient · ReplayChatClient",
     title: "Real, tested provider backends",
     body:
-      "AnthropicChatClient posts to /v1/messages with real streaming (chat_stream()) and prompt-cache TTL support. OpenAIChatClient posts to /v1/chat/completions, streaming via a detached worker. ReplayChatClient replays a recorded run deterministically offline — the I5 seam. All three conform to the same ChatClient interface tools and agents are written against, and any of them can sit behind MiddlewareChatClient/ResilientChatClient unchanged.",
+      "AnthropicChatClient posts to /v1/messages with real streaming (chat_stream()) and prompt-cache TTL support. OpenAIChatClient posts to /v1/chat/completions, streaming via a detached worker. ReplayChatClient replays a recorded run deterministically offline — the I5 seam. All three conform to the same ChatClient interface tools and agents are written against, and any of them can sit behind a ModelCallGateway/MiddlewareModelCallGateway composition unchanged for retry, failover, and middleware.",
     cite: "include/agentengine/protocol/anthropic/chat_client.hpp:981",
     href: gh("include/agentengine/protocol/anthropic/chat_client.hpp"),
   },

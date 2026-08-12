@@ -63,13 +63,43 @@ struct DrainedChatStream {
     return out;
 }
 
+// Maps `quark::errc`'s coarser vocabulary onto this codebase's own `failure_class` -- NOT a blanket
+// `transient`, because `failure_class` is what 004 §4's retry policy and `workflow/supervisor.hpp`'s
+// `is_retryable()` actually key off. Getting this wrong means a permanent, non-retryable failure
+// (e.g. `quark::errc::validation`, which `classify_http_status_stream_error` uses for a policy-denied
+// or malformed request -- see that function's own comment) would be relabeled retryable and retried
+// forever, an I2 hazard (retrying a denial is asking the same question until a different answer
+// comes back). Mirrors `ModelCallGateway`'s own `is_retryable()` split (only `unavailable`/`timeout`/
+// `overloaded` are retryable) plus `map_http_status_error`'s status->class mapping, re-expressed over
+// `quark::errc`'s thinner shape.
+[[nodiscard]] inline failure_class classify_drained_failure(quark::errc code) noexcept {
+    switch (code) {
+        case quark::errc::unavailable:
+        case quark::errc::timeout:
+        case quark::errc::overloaded:
+            return failure_class::transient;
+        case quark::errc::circuit_open:
+            return failure_class::resource;
+        case quark::errc::validation:
+        case quark::errc::not_found:
+        case quark::errc::serialization:
+            return failure_class::contract;
+        case quark::errc::ok:
+        case quark::errc::cancelled:
+        case quark::errc::supervised_stop:
+        case quark::errc::internal:
+        default:
+            return failure_class::fatal;
+    }
+}
+
 // Converts a drained failure into this codebase's own `ae::error` shape -- `quark::error::detail` is
 // a non-owning `string_view` pointing at a static literal (every real producer of one is required to
 // use a static literal, never a dynamic message -- see `protocol/openai/chat_client.hpp`'s own
 // `classify_http_status_stream_error` comment for why), so copying it into an owned `std::string`
 // here, at the point it's finally read, is a safe, ordinary copy.
 [[nodiscard]] inline error drained_failure_to_agent_error(quark::error const& e, char const* code) noexcept {
-    return error{failure_class::transient, std::string(e.detail), code};
+    return error{classify_drained_failure(e.code), std::string(e.detail), code};
 }
 
 }  // namespace agentengine
