@@ -44,18 +44,15 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <future>
 #include <iostream>
+#include <memory>
 #include <memory_resource>
 #include <stop_token>
 #include <string>
 #include <thread>
 #include <vector>
 
-#include "quark/core/actor_ref.hpp"
-#include "quark/core/engine.hpp"
-#include "quark/detail/message_pool.hpp"
-
-#include "agentengine/core/agent_session.hpp"
 #include "agentengine/core/builtin_skills.hpp"
 #include "agentengine/core/codeact_runner_binding.hpp"
 #include "agentengine/core/codeact_tool_union.hpp"
@@ -66,6 +63,8 @@
 #include "agentengine/core/skill_tool_scoping.hpp"
 #include "agentengine/core/tool_call_extraction.hpp"
 #include "agentengine/protocol/openai/chat_client.hpp"
+#include "agentengine/rt/agent_session.hpp"
+#include "agentengine/rt/thread_pool.hpp"
 #include "agentengine/trust/principal.hpp"
 #include "agentengine/trust/secret.hpp"
 #include "backends/native_jail/mediated_python_runner.hpp"
@@ -357,21 +356,21 @@ public:
     // new `AgentSession::history_provider()` accessor, before the first `StartRun` that could reach
     // `execute_code`.
     //
-    // ADR-034 CORRECTION (2026-08-12): does NOT resolve `shared_python_runner_binding()` here
-    // anymore -- that call is what lazily runs `Py_InitializeFromConfig` on first touch
-    // (`shared_python_runner()`'s own lazy static), and `configure()` is called from `main()`'s own
-    // thread. Once `main()` migrated off `quark::TestKit` onto a real `quark::Engine`
-    // (ADR-034's own CLI change), `execute_code` itself started running on the Engine's WORKER
-    // thread instead -- a real, reproduced crash (CPython's C API touched from a thread that never
+    // ADR-034 CORRECTION (2026-08-12), UPDATED for ADR-037's rt::ThreadPool migration: does NOT
+    // resolve `shared_python_runner_binding()` here -- that call is what lazily runs
+    // `Py_InitializeFromConfig` on first touch (`shared_python_runner()`'s own lazy static), and
+    // `configure()` is called from `main()`'s own thread. `execute_code` itself runs on
+    // `rt::ThreadPool`'s one worker thread (via `run_start_job`, this file's own -- originally the
+    // Quark Engine's worker thread before ADR-037 replaced it, same single-worker-thread property
+    // either way) -- a real, reproduced crash (CPython's C API touched from a thread that never
     // acquired its GIL state, since nothing in `mediated_python_runner.cpp` calls
     // `PyGILState_Ensure`; this codebase's embedding was never built or verified for multi-thread
-    // access, and hardening it is real, separate, out-of-scope follow-on work, not attempted here).
-    // The fix that keeps this file's own existing single-thread-does-all-Python-work invariant
-    // intact: defer BOTH the runner's construction/initialization AND the binding claim to
-    // `real_execute_code()`'s own first call, which runs wherever `execute_code` itself runs (the
-    // Engine's worker thread) -- init and every real Python call now consistently happen on the
-    // SAME thread, exactly like they implicitly did under `TestKit`. `mount_roots`/`session_id` are
-    // just stored here; nothing here touches Python.
+    // access, and hardening it is real, separate, out-of-scope follow-on work, not attempted here)
+    // is exactly as reachable through a ThreadPool worker as it was through an Engine worker, so the
+    // fix stays the same: defer BOTH the runner's construction/initialization AND the binding claim
+    // to `real_execute_code()`'s own first call, which runs wherever `execute_code` itself runs (the
+    // pool's one worker thread) -- init and every real Python call now consistently happen on the
+    // SAME thread. `mount_roots`/`session_id` are just stored here; nothing here touches Python.
     [[nodiscard]] result<void> configure(
         std::string session_id, std::vector<native_jail::MaterializedSkillMount> mount_roots) {
         session_id_  = std::move(session_id);
@@ -540,9 +539,24 @@ private:
 };
 static_assert(ContextProvider<ToolDeclaringHistoryProvider>);
 
-using CliSession =
-    AgentSession<openai::OpenAIChatClient<InMemorySecretStore>, NoSessionState, ToolDeclaringHistoryProvider>;
+using CliSession = agentengine::rt::AgentSession<openai::OpenAIChatClient<InMemorySecretStore>,
+                                                   agentengine::rt::NoSessionState,
+                                                   ToolDeclaringHistoryProvider>;
 static_assert(std::is_default_constructible_v<CliSession>);
+
+// ADR-037: wraps one turn's start_run() call as a task<void> job for rt::ThreadPool::submit() (which
+// only accepts task<void> -- see thread_pool.hpp's own contract), stashing the real result in a
+// shared slot the caller reads back after the job completes. Explicitly agentengine::rt::task<void>,
+// NOT the bare `task<>` alias -- since ADR-037's task<T> split (core/task.hpp), unqualified `task<>`
+// resolves to quark::task<void> (still needed by this file's own real ChatClient conformer's
+// internals, transitively, via the ChatClient/ContextProvider concepts elsewhere), which is the WRONG
+// type here and would not compile against ThreadPool::submit()'s signature.
+[[nodiscard]] agentengine::rt::task<void> run_start_job(
+    CliSession& actor, agentengine::rt::StartRun req,
+    std::shared_ptr<agentengine::result<agentengine::rt::AgentResponse>> out) {
+    *out = co_await actor.start_run(std::move(req));
+    co_return;
+}
 
 [[nodiscard]] Message user_message(std::string text) {
     Message m;
@@ -722,22 +736,15 @@ int main() {
     caps.reasoning = true;
     caps.max_output_tokens = 2048;
 
-    // ADR-034: real per-token streaming needs the session's own execution to genuinely run
-    // concurrently with a caller draining its event stream -- `quark::TestKit` (used here until
-    // this pass) is documented to run everything "on the calling thread... no threads, no wall-
-    // clock" (third_party/quark/include/quark/core/testkit.hpp's own top comment), so it cannot host
-    // this. A real, single-worker `quark::Engine` can: `CliSession` is configured as a plain local
-    // value exactly like `test_agent_session_suspend_resume.cpp`'s own real-Engine precedent
-    // (`Engine::spawn<A>()` hands back no mutable reference, so identity/config happen BEFORE
-    // `register_activation`, not after), then driven via `block_on(ref.ask<...>(...))` from this
-    // thread while the session's own coroutine runs on the engine's one worker thread.
-    auto const engine_config = quark::ConfigBuilder{}.workers(1).shards(1).default_drain_budget(64).build();
-    if (!engine_config) {
-        std::cerr << "FATAL: engine config failed to build\n";
-        return 1;
-    }
-    quark::Engine<>            engine(*engine_config);
-    quark::detail::MessagePool pool(64);
+    // ADR-037: real per-token streaming needs the session's own execution to genuinely run
+    // concurrently with a caller draining its event stream. Previously a real, single-worker
+    // `quark::Engine` (`quark::TestKit` runs everything "on the calling thread... no threads, no
+    // wall-clock" per its own top comment, so it could not host this) -- now a single-worker
+    // `agentengine::rt::ThreadPool`: `CliSession` is a plain local value (rt::AgentSession has no
+    // actor-framework construction ceremony to satisfy), driven per-turn by submitting a `task<void>`
+    // job (`run_start_job`, above) that runs `start_run()` to completion on the pool's one worker
+    // thread while THIS thread's drain loop (below) concurrently polls the event stream.
+    agentengine::rt::ThreadPool pool(1);
 
     CliSession actor;
     // Fixed and stable for this CLI's whole lifetime (one process, one session) -- passed below as
@@ -799,12 +806,6 @@ int main() {
         return 1;
     }
 
-    quark::Activation act{&actor, CliSession::dispatch_table(), pool.sink()};
-    engine.register_activation(quark::actor_id_of<CliSession>(1), act);
-    quark::LocalRouter          router(engine.post_courier(), pool);
-    quark::ActorRef<CliSession> ref = router.get<CliSession>(1);
-    engine.start();
-
     print_skills_banner(*materialized, startup_skills, actor.history_provider().mounted_skills());
     std::cout << "\nType a message and press Enter. Type 'exit' or 'quit' to stop.\n\n";
 
@@ -815,14 +816,17 @@ int main() {
         if (line == "exit" || line == "quit") break;
         if (line.empty()) continue;
 
-        // One ask now resolves the WHOLE multi-round tool conversation for this turn internally
-        // (AgentSession::handle()'s own loop), running on the engine's own worker thread. This
-        // thread blocks in block_on() while a dedicated drain thread concurrently polls
-        // `event_stream` and prints model_delta text as it actually arrives -- genuine token-by-
-        // token output, not a trace assembled after the fact. `std::jthread`'s destructor requests
-        // stop and joins automatically on every exit path (including an exception out of
-        // block_on()), so the drain thread never outlives this scope.
-        quark::result<AgentResponse> resp;
+        // One start_run() now resolves the WHOLE multi-round tool conversation for this turn
+        // internally (AgentSession::run_rounds()'s own loop), running on the ThreadPool's one worker
+        // thread (submitted via run_start_job, above). This thread blocks on the returned
+        // std::future while a dedicated drain thread concurrently polls `event_stream` and prints
+        // model_delta text as it actually arrives -- genuine token-by-token output, not a trace
+        // assembled after the fact. `std::jthread`'s destructor requests stop and joins automatically
+        // on every exit path (including an exception escaping the block below), so the drain thread
+        // never outlives this scope.
+        auto result_slot =
+            std::make_shared<agentengine::result<agentengine::rt::AgentResponse>>();
+        agentengine::rt::JobOutcome outcome;
         {
             bool mid_line = false;
             std::jthread drain([&](std::stop_token stop) {
@@ -846,11 +850,18 @@ int main() {
                 drain_once();  // whatever landed between the last poll and stop being requested
                 if (mid_line) std::cout << "\n";
             });
-            resp = block_on(ref.ask<AgentResponse>(StartRun{user_message(line)}));
-        }  // drain's destructor: request_stop() then join(), guaranteed before `resp` is read below
+            std::future<agentengine::rt::JobOutcome> fut = pool.submit(
+                run_start_job(actor, agentengine::rt::StartRun{user_message(line)}, result_slot));
+            outcome = fut.get();  // blocks until the worker finishes this turn's whole round loop
+        }  // drain's destructor: request_stop() then join(), guaranteed before `result_slot` is read
 
+        if (outcome.faulted) {
+            std::cout << "[internal error: start_run() faulted unexpectedly]\n";
+            continue;
+        }
+        agentengine::result<agentengine::rt::AgentResponse> const& resp = *result_slot;
         if (!resp.has_value()) {
-            std::cout << "[error: " << resp.error().detail << "]\n";
+            std::cout << "[error: " << resp.error().message << "]\n";
             continue;
         }
         for (std::string const& reasoning : reasoning_texts_of(resp->message)) {
@@ -863,11 +874,12 @@ int main() {
 
     std::cout << "Goodbye.\n";
     std::cout.flush();
-    // ADR-034 CORRECTION: `shared_python_runner()`'s process-lifetime singleton is destroyed as a
-    // function-local static during normal process exit -- on THIS (main()'s) thread, via the
-    // ordinary C++ static-destruction chain. Since real_execute_code()'s lazy init (see its own
-    // comment) now runs `Py_InitializeFromConfig` on the Engine's WORKER thread whenever execute_code
-    // is ever actually called, a normal `return` here would let `~MediatedPythonRunner()`'s
+    // ADR-034 CORRECTION, UPDATED for ADR-037: `shared_python_runner()`'s process-lifetime singleton
+    // is destroyed as a function-local static during normal process exit -- on THIS (main()'s)
+    // thread, via the ordinary C++ static-destruction chain. Since real_execute_code()'s lazy init
+    // (see its own comment) now runs `Py_InitializeFromConfig` on rt::ThreadPool's one worker thread
+    // whenever execute_code is ever actually called, a normal `return` here would let
+    // `~MediatedPythonRunner()`'s
     // `Py_Finalize()` run on a DIFFERENT thread than the one that initialized -- reproduced for real
     // as a hard STATUS_ACCESS_VIOLATION crash on process exit, CPython's own finalization having the
     // same single-thread-affinity expectation as initialization. Every other real caller of
