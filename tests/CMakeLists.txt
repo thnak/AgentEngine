@@ -1001,6 +1001,12 @@ add_executable(test_rt_async_mutex test_rt_async_mutex.cpp)
 target_link_libraries(test_rt_async_mutex PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_async_mutex COMMAND test_rt_async_mutex)
 
+# ---- ADR-037 Phase 2, Slice 1 -- agentengine::rt::AgentSession, the Quark-actor-free replacement
+# for agentengine::AgentSession's core turn loop.
+add_executable(test_rt_agent_session test_rt_agent_session.cpp)
+target_link_libraries(test_rt_agent_session PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_agent_session COMMAND test_rt_agent_session)
+
 # ---- ADR-028 -- session-scoped stateful tools (tool_pipeline.hpp make_tool_descriptor_with_invoke).
 add_executable(test_session_scoped_stateful_tools test_session_scoped_stateful_tools.cpp)
 target_link_libraries(test_session_scoped_stateful_tools PRIVATE agentengine::core agentengine_warnings)
