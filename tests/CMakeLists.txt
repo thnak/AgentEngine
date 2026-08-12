@@ -960,6 +960,41 @@ target_include_directories(test_model_call_gateway PRIVATE "${CMAKE_CURRENT_SOUR
 target_link_libraries(test_model_call_gateway PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_model_call_gateway COMMAND test_model_call_gateway)
 
+# ---- ADR-037 Phase 1 -- agentengine::rt::task<T>, the first piece of AgentEngine's own runtime
+# substrate (include/agentengine/rt/task.hpp), standalone and NOT yet wired into core/task.hpp.
+add_executable(test_rt_task test_rt_task.cpp)
+target_link_libraries(test_rt_task PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_task COMMAND test_rt_task)
+
+# ---- ADR-037 Phase 1 -- agentengine::rt::channel<T> (include/agentengine/rt/channel.hpp), a bounded,
+# thread-safe, backpressured producer/consumer channel meant to eventually replace
+# quark::ReplyStream<T*> as core/stream.hpp's internal backend. Standalone, zero quark:: dependency,
+# NOT yet wired into core/stream.hpp.
+add_executable(test_rt_channel test_rt_channel.cpp)
+target_link_libraries(test_rt_channel PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_channel COMMAND test_rt_channel)
+
+# ---- ADR-037 Phase 1 -- agentengine::rt::SessionStore, the host-injected persistence interface
+# (include/agentengine/rt/session_store.hpp) replacing quark::EventLog/FenceToken, standalone and NOT
+# yet wired into core/agent_session.hpp's snapshot/checkpoint functions.
+add_executable(test_rt_session_store test_rt_session_store.cpp)
+target_link_libraries(test_rt_session_store PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_session_store COMMAND test_rt_session_store)
+
+# ---- ADR-037 Phase 1 -- agentengine::rt::ThreadPool, the minimal executor for driving task<void> job
+# completion off the calling thread (include/agentengine/rt/thread_pool.hpp), standalone and NOT yet
+# wired into any live Quark-based code.
+add_executable(test_rt_thread_pool test_rt_thread_pool.cpp)
+target_link_libraries(test_rt_thread_pool PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_thread_pool COMMAND test_rt_thread_pool)
+
+# ---- ADR-037 Phase 1 -- agentengine::rt::CircuitBreaker, a self-contained reimplementation of
+# quark::CircuitBreaker's algorithm (include/agentengine/rt/circuit_breaker.hpp), standalone and NOT
+# yet wired into core/model_call_gateway.hpp.
+add_executable(test_rt_circuit_breaker test_rt_circuit_breaker.cpp)
+target_link_libraries(test_rt_circuit_breaker PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_circuit_breaker COMMAND test_rt_circuit_breaker)
+
 # ---- ADR-028 -- session-scoped stateful tools (tool_pipeline.hpp make_tool_descriptor_with_invoke).
 add_executable(test_session_scoped_stateful_tools test_session_scoped_stateful_tools.cpp)
 target_link_libraries(test_session_scoped_stateful_tools PRIVATE agentengine::core agentengine_warnings)
