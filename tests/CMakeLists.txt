@@ -1019,6 +1019,13 @@ add_executable(test_rt_agent_session_background_task test_rt_agent_session_backg
 target_link_libraries(test_rt_agent_session_background_task PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_agent_session_background_task COMMAND test_rt_agent_session_background_task)
 
+# ---- ADR-037 Phase 3, Slice 1 -- agentengine::rt::WorkflowSupervisor, the Quark-actor-free
+# replacement for workflow::WorkflowSupervisor's core superstep loop, fanning out through
+# rt::ThreadPool instead of quark::ActorRef<FunctionExecutor>::ask<>.
+add_executable(test_rt_workflow_supervisor test_rt_workflow_supervisor.cpp)
+target_link_libraries(test_rt_workflow_supervisor PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_workflow_supervisor COMMAND test_rt_workflow_supervisor)
+
 # ---- ADR-028 -- session-scoped stateful tools (tool_pipeline.hpp make_tool_descriptor_with_invoke).
 add_executable(test_session_scoped_stateful_tools test_session_scoped_stateful_tools.cpp)
 target_link_libraries(test_session_scoped_stateful_tools PRIVATE agentengine::core agentengine_warnings)
