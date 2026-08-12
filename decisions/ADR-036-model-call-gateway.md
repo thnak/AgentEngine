@@ -1,12 +1,13 @@
 # ADR-036 — A coroutine-based model-call gateway replaces `chat_stream()` wrapper-parity
 
-**Status:** Proposed (2026-08-12). Designed, red-teamed twice (independent passes via the `Agent`
-tool, general-purpose reviewer — §2 and §4), implemented, and proven (real code + a 20-check
-deterministic offline test suite, §6); awaiting the project owner's explicit "Judged" sign-off per
-this project's governance (`decisions/README.md`; `OpenQuestions.md` OQ-11's resolution that the
-project owner is the ADR judge, never an AI).
+**Status:** Judged, accepted (2026-08-12, by the project owner). Designed, red-teamed twice
+(independent passes via the `Agent` tool, general-purpose reviewer — §2 and §4), implemented, and
+proven (real code + a 20-check deterministic offline test suite, §6). Post-acceptance code-review
+and independent judge-review passes found and fixed real gaps before this sign-off, including the
+project owner's own follow-up decision to remove the three superseded legacy wrapper templates
+entirely rather than deprecate them — see §7's amendment.
 
-**Relates to:** `decisions/ADR-035-chatclient-streaming-completeness.md` (Proposed — this ADR is
+**Relates to:** `decisions/ADR-035-chatclient-streaming-completeness.md` (Judged — this ADR is
 that one's superseded-and-replaced Phase 2; see that document's §4). `decisions/ADR-033-middleware-
 model-call-chain.md` (Judged — `MiddlewareChatClient`'s `ModelCallContext`/`run_before`/`run_after`/
 `enforce_backend_tool_call_provenance` machinery, reused here verbatim). `include/agentengine/core/

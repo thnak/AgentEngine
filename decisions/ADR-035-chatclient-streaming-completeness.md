@@ -1,11 +1,11 @@
 # ADR-035 — Every `ChatClient` conformer becomes genuinely streaming-capable, then `chat()` stops being required
 
-**Status:** Proposed (2026-08-12). Designed, red-teamed (independent passes via the `Agent` tool,
-general-purpose reviewer, three separate rounds — §2, §3, §5), implemented in four sequential,
-individually built/tested/committed phases, and proven (real code + deterministic offline tests +
-one live-network run, §6); awaiting the project owner's explicit "Judged" sign-off per this
-project's governance (`decisions/README.md`; `OpenQuestions.md` OQ-11's resolution that the project
-owner is the ADR judge, never an AI).
+**Status:** Judged, accepted (2026-08-12, by the project owner). Designed, red-teamed (independent
+passes via the `Agent` tool, general-purpose reviewer, three separate rounds — §2, §3, §5),
+implemented in four sequential, individually built/tested/committed phases, and proven (real code +
+deterministic offline tests + one live-network run, §6). Post-acceptance code-review and independent
+judge-review passes found and fixed real gaps before this sign-off — see §7a; both are part of what
+was judged, not left outstanding.
 
 **Relates to:** `decisions/ADR-034-agentsession-streaming-turn-loop.md` (Proposed — the opt-in
 streaming turn loop this ADR completes: ADR-034 §7 explicitly left "the leak-scan gap... named, not
