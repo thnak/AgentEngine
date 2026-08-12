@@ -251,10 +251,26 @@ public:
 private:
     // ASYNCHRONOUS half's awaiter. See file banner for the full design rationale (no cv on this path
     // -- the producer resumes this directly from its own thread).
+    //
+    // CANCELLATION SAFETY (fixed 2026-08-12, found during an ADR-037 Phase 2 red-team pass before
+    // building an async mutex on top of this type): `await_suspend()` stores a raw coroutine_handle
+    // into the SHARED `channel_state::waiting_consumer`. If the coroutine parked there is destroyed
+    // while still suspended (a `task<T>` dropped mid-await -- ADR-017 already establishes "drop the
+    // handle = cancel" as a deliberate house idiom for `stream<T>`, so this is a real, not
+    // hypothetical, path), nothing used to clear that stale handle -- a LATER push()/close()/fail()
+    // would then call .resume() on an already-destroyed frame (a use-after-free). Fixed the same way
+    // cppcoro-style cancellable awaiters do: `parked_` is true ONLY while genuinely suspended (set in
+    // await_suspend(), cleared at the top of await_resume() on the normal-completion path); the
+    // destructor checks it and, if still true, removes ITS OWN registration (guarded by an identity
+    // check against `handle_`, so a THIRD registration that already replaced this one -- itself a
+    // separate, still-unsafe single-consumer misuse this type does not protect against, see the file
+    // banner's "single-consumer" note -- is never accidentally cleared by the wrong owner).
     struct next_awaiter {
         channel_consumer* self;
         std::optional<T> value;
         bool have_value = false;
+        bool parked = false;
+        std::coroutine_handle<> handle_{};
 
         [[nodiscard]] bool await_ready() {
             std::unique_lock lock(self->state_->m);
@@ -281,10 +297,13 @@ private:
                 return false;
             }
             self->state_->waiting_consumer = h;
+            handle_ = h;
+            parked = true;
             return true;  // genuinely suspend -- a producer call resumes `h` directly, later
         }
 
         [[nodiscard]] std::optional<T> await_resume() {
+            parked = false;  // reached the ordinary way -- nothing stale for the destructor to clean up
             if (have_value) return std::move(value);
             // Either await_ready()'s second branch fired (drained+terminal, no value), or a producer
             // call woke us after enqueuing something -- check the queue once more under lock.
@@ -297,6 +316,12 @@ private:
                 return v;
             }
             return std::nullopt;
+        }
+
+        ~next_awaiter() {
+            if (!parked) return;  // never suspended here, or resumed the ordinary way -- nothing to do
+            std::lock_guard lock(self->state_->m);
+            if (self->state_->waiting_consumer == handle_) self->state_->waiting_consumer = {};
         }
     };
 

@@ -995,6 +995,12 @@ add_executable(test_rt_circuit_breaker test_rt_circuit_breaker.cpp)
 target_link_libraries(test_rt_circuit_breaker PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_circuit_breaker COMMAND test_rt_circuit_breaker)
 
+# ---- ADR-037 Phase 2 -- agentengine::rt::AsyncMutex, I1's local replacement now that AgentSession
+# stops being a quark::Actor.
+add_executable(test_rt_async_mutex test_rt_async_mutex.cpp)
+target_link_libraries(test_rt_async_mutex PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_async_mutex COMMAND test_rt_async_mutex)
+
 # ---- ADR-028 -- session-scoped stateful tools (tool_pipeline.hpp make_tool_descriptor_with_invoke).
 add_executable(test_session_scoped_stateful_tools test_session_scoped_stateful_tools.cpp)
 target_link_libraries(test_session_scoped_stateful_tools PRIVATE agentengine::core agentengine_warnings)

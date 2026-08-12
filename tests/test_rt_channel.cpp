@@ -24,6 +24,11 @@
 //         implementation (next_awaiter::await_suspend() only records a handle and returns -- see
 //         channel.hpp's own file banner) -- proven structurally by that implementation and empirically
 //         by wall-clock (the result is only available AFTER the producer's delay has elapsed).
+//   T6 -- CANCELLATION SAFETY regression (found during an ADR-037 Phase 2 red-team pass, fixed the
+//         same day in channel.hpp's next_awaiter): a consumer task destroyed WHILE genuinely parked
+//         in next_async() must not leave a dangling coroutine_handle behind. Proven by destroying such
+//         a task mid-park, then pushing/closing from a producer thread afterward -- the old code would
+//         call .resume() on the already-destroyed frame here (a use-after-free); this must not crash.
 
 #include <atomic>
 #include <chrono>
@@ -71,6 +76,14 @@ task<std::vector<T>> collect_via_async(agentengine::rt::channel_consumer<T, E>& 
         out.push_back(std::move(*v));
     }
     co_return out;
+}
+
+// T6's body: parks forever on an empty channel's next_async() -- never actually resumes normally in
+// this test, since the whole point is to destroy the owning task WHILE it's still parked here.
+template <class T, class E>
+task<void> park_forever(agentengine::rt::channel_consumer<T, E>& consumer) {
+    (void)co_await consumer.next_async();
+    co_return;  // unreachable in T6
 }
 
 }  // namespace
@@ -239,6 +252,33 @@ int main() {
             std::vector<int> const expected = {0, 1, 2, 3, 4};
             check(result == expected, "T5: items pushed after the suspension arrive via next_async(), in order");
         }
+    }
+
+    // T6: destroying a task while it is genuinely parked in next_async() must not leave a dangling
+    // handle in the channel's shared state -- a later producer call must not crash.
+    {
+        auto pair = make_channel<int>(4);
+        {
+            task<void> t = park_forever(pair.consumer);
+            t.resume();  // runs to the co_await on an empty channel, genuinely suspends there
+            check(!t.done(), "T6: setup: the task is genuinely parked (not done) before destruction");
+            // t is destroyed HERE, at scope exit, while still suspended inside next_async(). Before
+            // the channel.hpp fix, this left channel_state::waiting_consumer pointing at the now-freed
+            // coroutine frame.
+        }
+
+        // If the dangling-handle bug were still present, either of these would resume a destroyed
+        // frame -- a use-after-free that may crash immediately, corrupt memory silently, or (under a
+        // sanitizer) abort. Reaching the check() calls below at all is part of the proof.
+        auto r = pair.producer.push(42);
+        check(r == decltype(pair.producer)::push_result::ok,
+              "T6: pushing after the parked consumer was destroyed does not crash");
+        pair.producer.close();
+        check(pair.consumer.terminal() == channel_terminal::closed,
+              "T6: the channel remains in a perfectly ordinary, usable state afterward -- a NEW "
+              "consumer read (via the sync surface, since the async one was destroyed) still works");
+        auto v = pair.consumer.try_pop();
+        check(v.has_value() && *v == 42, "T6: the item pushed after destruction is still retrievable");
     }
 
     if (g_failures != 0) {
