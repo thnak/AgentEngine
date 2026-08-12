@@ -151,10 +151,23 @@ struct ChatResponseUpdate {  // ae-naming-lint: allow ChatResponseUpdate — pre
 // background execution context performs the read loop, and returns the `stream<ChatResponseUpdate>`
 // drain handle to the caller immediately (`stream.hpp`'s own file banner has the full design rationale,
 // including why `ChatResponseUpdate` — not trivially copyable — is boxed per item on the ring).
+// ADR-035 Phase 3: `chat()` is deliberately NOT part of this concept's required shape anymore --
+// `chat_stream()` is the only method every conformer must have. This does NOT delete `chat()` from
+// any existing conformer (every real backend -- `OpenAIChatClient`/`AnthropicChatClient` -- and
+// every test/example fixture in this codebase still has one; nothing here forces removing it) --
+// it only WIDENS what can satisfy `ChatClient`: a future backend implementing `chat_stream()` alone,
+// with no `chat()` at all, now conforms too, where it previously would not have. Safe with zero
+// behavior change for anything that exists today: every current conformer was independently
+// verified genuinely streaming-capable (not a type-satisfying stub) ahead of this change, across a
+// 46-file conversion pass (ADR-035 Phase 3, part 1) plus the two production call sites that still
+// called `chat()` directly (`MemoryProvider::on_turn_end`, `HistoryProvider<Summarize<N,
+// SummarizerT>>::on_context`, both now drain `chat_stream()` instead — Phase 3, part 2). The three
+// `chat()`-only wrapper templates (`FailoverChatClient`/`ResilientChatClient`/`MiddlewareChatClient`)
+// are UNAFFECTED — they still declare and use `chat()`/`chat_stream()` internally as their own
+// concrete methods, unrelated to whether this concept requires either one.
 template <class T>
 concept ChatClient = requires(T client, ChatRequest request, EffectContext& ctx) {
     { client.capabilities() } -> std::same_as<ChatClientCapabilities>;
-    { client.chat(request, ctx) } -> std::same_as<task<result<ChatResponse>>>;
     { client.chat_stream(request, ctx) } -> std::same_as<stream<ChatResponseUpdate>>;
 };
 
