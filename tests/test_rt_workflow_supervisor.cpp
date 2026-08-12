@@ -17,6 +17,7 @@
 //         actor-restart budget needed) actually works end to end, not just in the file banner's prose.
 //   C5 -- a request-port suspend/resume round-trip.
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <mutex>
@@ -305,6 +306,188 @@ int main() {
             check(text_of(r2.output) == "in>ask>finish",
                   "C5: the port's response routed through to the terminal executor");
         }
+    }
+
+    // ---- P1: to_record()/restore_from_record() round-trips a completed run's position/output ----
+    {
+        Workflow wf;
+        wf.id        = "chkpt";
+        wf.executors = {node_desc("start"), node_desc("mid"), node_desc("end")};
+        wf.edges.push_back(Edge{"start", "mid", edge_kind::direct, {}});
+        wf.edges.push_back(Edge{"mid", "end", edge_kind::direct, {}});
+        wf.start = "start";
+        wf.output_selection.push_back("end");
+        wf.bound.max_rounds = 8;
+
+        auto passthrough = [](Message const& in,
+                              agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
+            return ExecutorOutcome{in};
+        };
+        std::vector<ExecutorBody> bodies = {
+            passthrough,
+            [](Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
+                return ExecutorOutcome{text_message(text_of(in) + ">mid")};
+            },
+            [](Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
+                return ExecutorOutcome{text_message(text_of(in) + ">end")};
+            },
+        };
+        WorkflowSupervisor sup;
+        sup.initialize(wf, bodies);
+        WorkflowResult r = drive(sup.run_workflow(RunWorkflow{text_message("in")}));
+        check(r.status == workflow_status::completed, "P1 setup: the run completes");
+
+        agentengine::rt::RunStateRecord rec = sup.to_record();
+        check(rec.run_id == sup.run_id(), "P1: to_record() carries the real run_id");
+        check(rec.rounds == 3, "P1: to_record() carries run position");
+        check(text_of(rec.selected_output) == "in>mid>end",
+              "P1: to_record() carries the real selected_output Message payload");
+
+        WorkflowSupervisor restored;
+        restored.initialize(wf, bodies);
+        restored.restore_from_record(rec);
+        check(restored.run_id() == rec.run_id, "P1: restore_from_record() restores run_id");
+        check(restored.rounds_executed() == 3, "P1: restore_from_record() restores rounds");
+    }
+
+    // ---- P2: save_workflow_checkpoint()/load_workflow_checkpoint() round-trip through a real -----
+    // ---- SessionStore conformer                                                                ----
+    {
+        Workflow wf;
+        wf.id        = "chkpt-store";
+        wf.executors = {node_desc("only")};
+        wf.start = "only";
+        wf.output_selection.push_back("only");
+        wf.bound.max_rounds = 8;
+        std::vector<ExecutorBody> bodies = {
+            [](Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
+                return ExecutorOutcome{in};
+            },
+        };
+        WorkflowSupervisor sup;
+        sup.initialize(wf, bodies);
+        WorkflowResult r = drive(sup.run_workflow(RunWorkflow{text_message("in")}));
+        check(r.status == workflow_status::completed, "P2 setup: the run completes");
+
+        agentengine::rt::InMemorySessionStore store;
+        auto saved = drive(agentengine::rt::save_workflow_checkpoint(sup, store));
+        check(saved.has_value(), "P2: save_workflow_checkpoint() succeeds");
+
+        auto loaded = agentengine::rt::load_workflow_checkpoint(store, sup.run_id());
+        check(loaded.has_value() && loaded->has_value(), "P2: load_workflow_checkpoint() finds it");
+        if (loaded.has_value() && loaded->has_value()) {
+            check((*loaded)->run_id == sup.run_id(), "P2: the loaded record's run_id round-trips");
+            check((*loaded)->rounds == r.rounds, "P2: the loaded record's rounds round-trips");
+        }
+    }
+
+    // ---- P3: loading a run_id that was never saved returns std::nullopt, not an error ------------
+    {
+        agentengine::rt::InMemorySessionStore store;
+        auto loaded = agentengine::rt::load_workflow_checkpoint(store, "never-existed");
+        check(loaded.has_value() && !loaded->has_value(),
+              "P3: an id that was never saved reports std::nullopt, not a failure");
+    }
+
+    // ---- P4: a RESTORED instance can actually resolve a real resume -- proof restore_from_record() --
+    // ---- reconstructs genuinely resolvable state (including open ports), not just similar fields ---
+    {
+        Workflow wf;
+        wf.id        = "chkpt-port";
+        wf.executors = {node_desc("start"), Executor{"ask", executor_kind::request_port, "T", "T"},
+                        node_desc("finish")};
+        wf.edges.push_back(Edge{"start", "ask", edge_kind::direct, {}});
+        wf.edges.push_back(Edge{"ask", "finish", edge_kind::direct, {}});
+        wf.start = "start";
+        wf.output_selection.push_back("finish");
+        wf.bound.max_rounds = 8;
+
+        std::vector<ExecutorBody> bodies = {
+            [](Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
+                return ExecutorOutcome{in};
+            },
+            {},
+            [](Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
+                return ExecutorOutcome{text_message(text_of(in) + ">finish")};
+            },
+        };
+        WorkflowSupervisor sup;
+        sup.initialize(wf, bodies);
+        WorkflowResult r1 = drive(sup.run_workflow(RunWorkflow{text_message("in")}));
+        check(r1.status == workflow_status::suspended, "P4 setup: the run suspends at the port");
+
+        agentengine::rt::RunStateRecord rec = sup.to_record();
+        check(rec.ports.size() == 1, "P4: the record carries the one open port");
+
+        // A fresh instance -- the graph is redeployed by the host from the same description, same
+        // contract the Quark original's own checkpoint carried (see file banner).
+        WorkflowSupervisor restored;
+        restored.initialize(wf, bodies);
+        restored.restore_from_record(rec);
+        check(restored.open_interactions().size() == 1,
+              "P4: the restored instance sees the same open port");
+
+        if (!restored.open_interactions().empty()) {
+            ResumeWorkflow resume{};
+            resume.interaction_id = restored.open_interactions().front().interaction_id;
+            resume.response       = text_message("in>ask");
+            WorkflowResult r2 = drive(restored.resume_workflow(resume));
+            check(r2.status == workflow_status::completed,
+                  "P4: the RESTORED instance completes a real resume -- proof restore_from_record() "
+                  "reconstructed genuinely resolvable state, not just cosmetically similar fields");
+            check(text_of(r2.output) == "in>ask>finish", "P4: the restored run's output is correct");
+        }
+    }
+
+    // ---- P5: the in-flight guard, proven with REAL threads (the first place in this migration ----
+    // ---- a lock is held across genuine ThreadPool-driven multi-thread work, not just coroutine ----
+    // ---- suspension -- see file banner for why AgentSession's own single-threaded proof         ----
+    // ---- pattern does not apply here: execute() never suspends internally, it BLOCKS via         ----
+    // ---- std::future::get(), so driving run_workflow() with one resume() call occupies its       ----
+    // ---- calling OS thread for the run's whole duration.                                         ----
+    {
+        std::atomic<bool> round_started{false};
+        Workflow wf;
+        wf.id        = "chkpt-inflight";
+        wf.executors = {node_desc("slow")};
+        wf.start = "slow";
+        wf.output_selection.push_back("slow");
+        wf.bound.max_rounds = 8;
+
+        std::vector<ExecutorBody> bodies = {
+            [&round_started](Message const& in,
+                             agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
+                round_started.store(true, std::memory_order_release);
+                std::this_thread::sleep_for(std::chrono::milliseconds(150));
+                return ExecutorOutcome{in};
+            },
+        };
+        WorkflowSupervisor sup;
+        sup.initialize(wf, bodies);
+
+        agentengine::rt::task<WorkflowResult> run_task = sup.run_workflow(RunWorkflow{text_message("in")});
+        std::thread driver([&run_task] { run_task.resume(); });
+
+        while (!round_started.load(std::memory_order_acquire)) std::this_thread::yield();
+
+        agentengine::rt::task<agentengine::rt::RunStateRecord> snap_task = sup.snapshot_record();
+        snap_task.resume();
+        check(!snap_task.done(),
+              "P5: a concurrent snapshot_record() call queues behind an in-flight round -- run_mutex_ "
+              "is genuinely held while the round's own ThreadPool job is still physically running on "
+              "a separate worker thread, not just while the coroutine machinery is 'logically' busy");
+
+        driver.join();
+        check(run_task.done(), "P5: the driven run completed");
+        check(snap_task.done(),
+              "P5: the queued snapshot_record() was released and completed once the run finished and "
+              "released run_mutex_");
+
+        WorkflowResult run_result = run_task.take_value();
+        check(run_result.status == workflow_status::completed, "P5: the run itself converged normally");
+        agentengine::rt::RunStateRecord rec = snap_task.take_value();
+        check(rec.rounds == 1,
+              "P5: the snapshot observed POST-run state -- proof the guard prevented a torn read");
     }
 
     if (g_failures == 0) {
