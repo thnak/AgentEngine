@@ -10,10 +10,11 @@
 //     the ONLY type ever `detach()`ed to Quark's own executor (`quark::task<>::detach()`). This role
 //     is structurally tied to the actor engine and stays `quark::task<void>`, UNCHANGED, for as long
 //     as any real `quark::Actor` (`core/agent_session.hpp`, `workflow/supervisor.hpp`,
-//     `workflow/executor.hpp`, `project/registry.hpp`, `project/lifecycle.hpp`,
-//     `trust/spawn_cost_budget.hpp` -- the six still-live actor types named in ADR-037's own removal
-//     scoping) still exists to be dispatched this way. Retargeting this half would not compile against
-//     any of them.
+//     `workflow/executor.hpp`, `project/registry.hpp`, `project/lifecycle.hpp` -- the still-live actor
+//     types named in ADR-037's own removal scoping; `trust/spawn_cost_budget.hpp`'s own
+//     `SpawnCostBudgetActor` was the first of the six retired outright, replaced by
+//     `agentengine::rt::SpawnCostBudget`, rt/spawn_cost_budget.hpp) still exists to be dispatched this
+//     way. Retargeting this half would not compile against any of the remaining ones.
 //
 //   - `task<T>` for `T != void` (ADR-047) is a nested, awaitable, value-returning coroutine --
 //     `quark::task<T>`'s OWN banner already establishes it has NO Quark-specific coupling beyond

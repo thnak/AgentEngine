@@ -24,21 +24,27 @@
 //     but Phase 4's eventual submodule removal still needs that type-level residual closed -- named
 //     here, not silently claimed fully resolved either.
 //
-// A LARGER, MORE FUNDAMENTAL NAMED GAP, found and corrected while writing this file (not discovered
-// later): removing `quark::Actor<Self, Sequential>` and Quark's mailbox does NOT, by itself, make
-// this type Quark-free. `ChatClientT`/`HistoryProviderT` are still the EXISTING `agentengine::
-// ChatClient`/`ContextProvider` conformers (`core/chat_client.hpp`/`core/context_provider.hpp`) --
-// every real backend (`OpenAIChatClient`, `AnthropicChatClient`, `ModelCallGateway`) and every
-// `HistoryProvider<...>` still returns `agentengine::task<T>`, which `core/task.hpp` still aliases to
-// `quark::task<T>` today. This file's own `run_model_call()`/`run_rounds()` `co_await` those calls
-// directly -- which compiles and works correctly (any `rt::task<T>` coroutine body can `co_await` any
-// awaitable, including a `quark::task<T>`, since both independently implement the same C++20 awaiter
-// protocol; they nest transparently) -- but it means this AgentSession is Quark-free at the
-// ACTOR/MAILBOX/DISPATCH layer specifically, NOT at the coroutine-TYPE layer that flows in through
-// every backend/provider it's plugged into. Making THAT layer Quark-free too needs a further, separate
-// migration: every `ChatClient`/`ContextProvider` conformer across `core/`/`protocol/` retargeted from
-// `agentengine::task<T>` (the `quark::task<T>` alias) to `agentengine::rt::task<T>` -- comparable in
-// scope to this file itself, not a side effect of it. Named here, not silently claimed done.
+// A LARGER, MORE FUNDAMENTAL NAMED GAP, found while writing this file -- RESOLVED by a later ADR-037
+// pass, kept here (updated, not deleted) since the reasoning is still the right way to understand why
+// it mattered. Removing `quark::Actor<Self, Sequential>` and Quark's mailbox does NOT, by itself, make
+// this type Quark-free: `ChatClientT`/`HistoryProviderT` are the EXISTING `agentengine::ChatClient`/
+// `ContextProvider` conformers (`core/chat_client.hpp`/`core/context_provider.hpp`), and every real
+// backend (`OpenAIChatClient`, `AnthropicChatClient`, `ModelCallGateway`) and every `HistoryProvider<...>`
+// names its return type through the `agentengine::task<T>` alias. `core/task.hpp` USED TO define that
+// alias as a single blanket `= quark::task<T>` for every T -- meaning every conformer was still
+// quark::task<T>-typed even though this file's own `run_model_call()`/`run_rounds()` could already
+// `co_await` them transparently (any `rt::task<T>` coroutine body can `co_await` any awaitable,
+// including a `quark::task<T>`, since both independently implement the same C++20 awaiter protocol).
+// UPDATE: `core/task.hpp` now splits the alias per-T -- `task<void>` (bare `task<>`) stays
+// `quark::task<void>` (Quark's ADR-007 dispatch-handler type, still needed by every still-live
+// `quark::Actor`), but `task<T>` for `T != void` now resolves to `agentengine::rt::task<T>` directly.
+// Since every conformer names its return type through the alias rather than the concrete type, this
+// closed the gap for all of them at once, with zero per-conformer source changes -- verified (not just
+// reasoned): a full rebuild (192 build/link steps) and the full test suite (216/216, including tests
+// that specifically exercise the OLD, still-Quark-actor-based AgentSession co_awaiting these same
+// conformers through this exact alias) passed clean across two consecutive runs. This AgentSession is
+// therefore Quark-free at BOTH the actor/mailbox/dispatch layer AND the coroutine-type layer now --
+// named here as resolved, not left to read as still-open.
 //
 // I1 ("one session, one executor"), Quark's actor mailbox's job before this migration, is now
 // enforced by `rt::AsyncMutex session_mutex_` (async_mutex.hpp, itself proven in this same phase):

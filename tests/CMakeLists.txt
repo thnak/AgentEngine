@@ -1016,10 +1016,12 @@ add_executable(test_codeact_session_isolation test_codeact_session_isolation.cpp
 target_link_libraries(test_codeact_session_isolation PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_codeact_session_isolation COMMAND test_codeact_session_isolation)
 
-# ---- 026 §9 Q1 / OQ-14 -- SpawnCostBudgetActor, the actor-serialized spawn-cost pool primitive.
-add_executable(test_spawn_cost_budget test_spawn_cost_budget.cpp)
-target_link_libraries(test_spawn_cost_budget PRIVATE agentengine::core agentengine_warnings)
-add_test(NAME test_spawn_cost_budget COMMAND test_spawn_cost_budget)
+# ---- ADR-037 -- agentengine::rt::SpawnCostBudget, the Quark-actor-free replacement for
+# 026 §9 Q1 / OQ-14's SpawnCostBudgetActor (rt::AsyncMutex replaces quark::Actor<Sequential> as the
+# check-and-decrement serialization mechanism).
+add_executable(test_rt_spawn_cost_budget test_rt_spawn_cost_budget.cpp)
+target_link_libraries(test_rt_spawn_cost_budget PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_spawn_cost_budget COMMAND test_rt_spawn_cost_budget)
 
 # ---- Milestone 5 Phase G1 -- ChatCallRecording JSON codec (core/chat_recording.hpp), the shared
 # foundation RecordingChatClient<Inner> and ReplayChatClient both depend on.
