@@ -1,10 +1,9 @@
 # ADR-034 — AgentSession's opt-in streaming turn loop
 
-**Status:** Proposed (2026-08-12). Designed, red-teamed (independent pass via the `Agent` tool,
-general-purpose reviewer), implemented, and proven (real code + deterministic offline tests, §6);
-awaiting the project owner's explicit "Judged" sign-off per this project's governance
-(`decisions/README.md`; `OpenQuestions.md` OQ-11's resolution that the project owner is the ADR
-judge, never an AI).
+**Status:** Judged, accepted (2026-08-12, by the project owner). Designed, red-teamed (independent
+pass via the `Agent` tool, general-purpose reviewer), implemented, and proven (real code +
+deterministic offline tests, §6). §2's `FailoverChatClient`/`ResilientChatClient` findings were
+superseded by their removal the same day (see §7a) — part of what was judged, not left outstanding.
 
 **Relates to:** `decisions/ADR-027-agent-session-tool-call-loop.md` (Judged — the internal
 multi-round tool-call loop this ADR's streaming path runs inside, unmodified in its own control

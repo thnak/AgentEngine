@@ -1,16 +1,17 @@
 # ADR-033 — `Middleware<Ms...>`: the model-call interception point
 
-**Status:** Proposed (2026-08-11). Designed, red-teamed (independent pass via the `Agent` tool,
-findings in §3), implemented, and proven (real code + tests, §4); awaiting the project owner's
-explicit "Judged" sign-off per this project's governance (`decisions/README.md`; `OpenQuestions.md`
-OQ-11's resolution that the project owner is the ADR judge).
+**Status:** Judged, accepted (2026-08-12, by the project owner). Designed, red-teamed (independent
+pass via the `Agent` tool, findings in §3), implemented, and proven (real code + tests, §4).
+`MiddlewareChatClient`, this ADR's original accepted consumer, was removed 2026-08-12 and superseded
+by `MiddlewareModelCallGateway` (ADR-036) — part of what was judged, not left outstanding; see §5a.
 
 **Relates to:** `002-Agent-Model-and-Authoring.md` §5 (the RFC this closes one interception point
 of); `decisions/ADR-023-response-format-codec-seam.md` (007 §4's `call_provenance` amendment — the
 mechanism this ADR's fatal-finding fix routes middleware-introduced tool calls through, unmodified);
-`core/resilient_chat_client.hpp` (the established decorator-wrapper idiom this design copies the
-shape of); `docs/research/2026-08-11-maf-middleware-codeact-skills-deep-dive.md` §1 (the MAF prior
-art this design's ordering convention is grounded in).
+the (now-removed, see §5a) `ResilientChatClient<Inner>` decorator-wrapper idiom this design originally
+copied the shape of; `docs/research/2026-08-11-maf-middleware-codeact-skills-deep-dive.md` §1 (the
+MAF prior art this design's ordering convention is grounded in); `decisions/ADR-036-model-call-
+gateway.md` (Judged — this ADR's machinery's current real consumer).
 
 ## 1. The question
 

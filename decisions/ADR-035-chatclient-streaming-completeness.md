@@ -7,7 +7,7 @@ deterministic offline tests + one live-network run, §6). Post-acceptance code-r
 judge-review passes found and fixed real gaps before this sign-off — see §7a; both are part of what
 was judged, not left outstanding.
 
-**Relates to:** `decisions/ADR-034-agentsession-streaming-turn-loop.md` (Proposed — the opt-in
+**Relates to:** `decisions/ADR-034-agentsession-streaming-turn-loop.md` (Judged — the opt-in
 streaming turn loop this ADR completes: ADR-034 §7 explicitly left "the leak-scan gap... named, not
 closed" and "`AnthropicChatClient`'s streaming path is not wired for usage capture" as residuals;
 both are closed here). `decisions/ADR-023-response-format-codec-seam.md` (Judged — the confused-
