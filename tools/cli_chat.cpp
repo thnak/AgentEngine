@@ -356,15 +356,27 @@ public:
 
     // Host-only, configuration-time call (mirrors `AgentSession::set_capabilities()`/
     // `emplace_chat_client()` -- never derived from model output, I3), made once by `main()` via the
-    // new `AgentSession::history_provider()` accessor, after `mount_roots` is known and before the
-    // first `StartRun` that could reach `execute_code`. Fails closed (mutates nothing) if
-    // `runner_binding`'s claim is already held by a DIFFERENT session_id.
+    // new `AgentSession::history_provider()` accessor, before the first `StartRun` that could reach
+    // `execute_code`.
+    //
+    // ADR-034 CORRECTION (2026-08-12): does NOT resolve `shared_python_runner_binding()` here
+    // anymore -- that call is what lazily runs `Py_InitializeFromConfig` on first touch
+    // (`shared_python_runner()`'s own lazy static), and `configure()` is called from `main()`'s own
+    // thread. Once `main()` migrated off `quark::TestKit` onto a real `quark::Engine`
+    // (ADR-034's own CLI change), `execute_code` itself started running on the Engine's WORKER
+    // thread instead -- a real, reproduced crash (CPython's C API touched from a thread that never
+    // acquired its GIL state, since nothing in `mediated_python_runner.cpp` calls
+    // `PyGILState_Ensure`; this codebase's embedding was never built or verified for multi-thread
+    // access, and hardening it is real, separate, out-of-scope follow-on work, not attempted here).
+    // The fix that keeps this file's own existing single-thread-does-all-Python-work invariant
+    // intact: defer BOTH the runner's construction/initialization AND the binding claim to
+    // `real_execute_code()`'s own first call, which runs wherever `execute_code` itself runs (the
+    // Engine's worker thread) -- init and every real Python call now consistently happen on the
+    // SAME thread, exactly like they implicitly did under `TestKit`. `mount_roots`/`session_id` are
+    // just stored here; nothing here touches Python.
     [[nodiscard]] result<void> configure(
-        std::string session_id, CodeActRunnerBinding<native_jail::MediatedPythonRunner>& runner_binding,
-        std::vector<native_jail::MaterializedSkillMount> mount_roots) {
-        auto bound = runner_binding.bind(session_id);
-        if (!bound) return bound;
-        runner_binding_ = &runner_binding;
+        std::string session_id, std::vector<native_jail::MaterializedSkillMount> mount_roots) {
+        session_id_  = std::move(session_id);
         mount_roots_ = std::move(mount_roots);
         return {};
     }
@@ -445,11 +457,20 @@ private:
     // still-process-wide-shared interpreter, reached only if THIS session holds the claim --
     // `configure()` is what established that, at session start, not per-call).
     [[nodiscard]] result<ExecuteCodeReply> real_execute_code(ExecuteCodeArgs a, EffectContext& ctx) {
-        if (runner_binding_ == nullptr) {
+        if (session_id_.empty()) {
             return std::unexpected(error{failure_class::fatal,
-                                          "execute_code was called before configure() bound this "
-                                          "session to the shared CodeAct runner",
+                                          "execute_code was called before configure() ran",
                                           "cli_chat.codeact_not_configured"});
+        }
+        // ADR-034 CORRECTION: lazily resolved and bound HERE, on first use, on THIS call's own
+        // thread -- see configure()'s own comment for why. `shared_python_runner_binding()`'s
+        // lazy-static IIFE (cli_chat.cpp, near main()) runs its Py_InitializeFromConfig call the
+        // first time this line executes, never before.
+        if (runner_binding_ == nullptr) {
+            auto& binding = shared_python_runner_binding(mount_roots_);
+            auto  bound   = binding.bind(session_id_);
+            if (!bound) return std::unexpected(bound.error());
+            runner_binding_ = &binding;
         }
         auto& runner = runner_binding_->runner();
         if (!runner.ok()) {
@@ -512,10 +533,11 @@ private:
     SkillsProvider<> skills_;
     MountedSkillsState mounted_skills_;
     ExecState exec_state_;
+    std::string session_id_;  // set by configure(); real_execute_code()'s "configured yet?" gate
     std::vector<native_jail::MaterializedSkillMount> mount_roots_;
-    // Non-owning -- `configure()`'s caller (`main()`) owns the referenced binding (itself wrapping
-    // the process-wide-shared runner, both static-lifetime), which must outlive this provider. Same
-    // "granted externally, never owned here" contract as `AgentSession::capabilities_`.
+    // Non-owning -- points at `shared_python_runner_binding()`'s own function-local static (process
+    // lifetime), lazily resolved by `real_execute_code()`'s first call (ADR-034 correction; see that
+    // function's own comment for why NOT resolved eagerly by configure()/main() anymore).
     CodeActRunnerBinding<native_jail::MediatedPythonRunner>* runner_binding_ = nullptr;
 };
 static_assert(ContextProvider<ToolDeclaringHistoryProvider>);
@@ -750,14 +772,12 @@ int main() {
     // never_require`, tool.hpp's own fail-open default), so `invoke_tool`'s step 5 never consults a
     // decider for either -- no `set_approval_decider()` call is needed for this demo to keep working.
 
-    // ADR-030: claims this session's exclusive right to the shared, process-wide CodeAct runner
-    // (codeact_runner_binding.hpp) and hands the provider its real per-session mount-root knowledge
-    // -- must happen before the first StartRun that could reach execute_code. This CLI only ever
-    // runs ONE session, so this always succeeds in practice; the failure path exists because
-    // `configure()` is a real, general primitive (ADR-030's own proof,
-    // tests/test_codeact_runner_binding.cpp, exercises the rejection case a second session would hit).
-    auto configured = actor.history_provider().configure(
-        session_id, shared_python_runner_binding(*materialized), *materialized);
+    // ADR-030: hands the provider its real per-session mount-root/session-id knowledge -- must
+    // happen before the first StartRun that could reach execute_code. ADR-034 correction: no
+    // longer resolves/claims the shared runner binding here (that's deferred to
+    // real_execute_code()'s own first call now, on whatever thread execute_code itself runs on --
+    // see ToolDeclaringHistoryProvider::configure()'s own comment for why).
+    auto configured = actor.history_provider().configure(session_id, *materialized);
     if (!configured) {
         std::cerr << "FATAL: failed to configure the CodeAct provider: " << configured.error().message
                    << "\n";
@@ -827,7 +847,24 @@ int main() {
     }
 
     std::cout << "Goodbye.\n";
-    return 0;
+    std::cout.flush();
+    // ADR-034 CORRECTION: `shared_python_runner()`'s process-lifetime singleton is destroyed as a
+    // function-local static during normal process exit -- on THIS (main()'s) thread, via the
+    // ordinary C++ static-destruction chain. Since real_execute_code()'s lazy init (see its own
+    // comment) now runs `Py_InitializeFromConfig` on the Engine's WORKER thread whenever execute_code
+    // is ever actually called, a normal `return` here would let `~MediatedPythonRunner()`'s
+    // `Py_Finalize()` run on a DIFFERENT thread than the one that initialized -- reproduced for real
+    // as a hard STATUS_ACCESS_VIOLATION crash on process exit, CPython's own finalization having the
+    // same single-thread-affinity expectation as initialization. Every other real caller of
+    // `MediatedPythonRunner` (the test suite's own single-threaded fixtures) never hits this, so the
+    // shared class itself is untouched -- this is scoped to the one caller that made init and
+    // finalize disagree about which thread owns them.
+    //
+    // Same fix this project already applied once for a related CPython-teardown hazard
+    // (tests/test_python_subinterpreter_spike.cpp, ADR-002 Section 11): skip the now-known-dangerous
+    // teardown path entirely and let the OS reclaim the process. Nothing here needs graceful
+    // shutdown -- no other process depends on this one's static destructors running.
+    std::_Exit(0);
 }
 
 #else   // AGENTENGINE_WITH_HTTPS
