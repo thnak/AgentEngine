@@ -14,11 +14,6 @@
 //     depended on Quark's actor tell()/self-addressing (quark::ActorRef<AgentSession>::tell()) to be
 //     thread-safe; the Quark-free replacement needs its own design (a real callback mechanism through
 //     rt::ThreadPool, most likely) before this can move, not a mechanical port.
-//   - Snapshot/checkpoint (save_agent_session_snapshot, load_agent_session_snapshot,
-//     checkpoint_if_due, delete_session, to_record/restore_from_record) -- these depended on
-//     quark::FenceToken/Activation/snapshot_sequential; the replacement uses rt::SessionStore
-//     (already built and tested, session_store.hpp) but the actual encode/decode + "safe to snapshot
-//     only when not in-flight" design is real, separate work, not done here.
 //   - Event streaming (enable_event_stream/emit_run_event) still uses core/stream.hpp's EXISTING
 //     quark::ReplyStream-backed stream<T> -- core/stream.hpp's own backend migration to rt::channel<T>
 //     is separately-scoped Phase 1 work not yet done. Named here as an accepted interim residual, not
@@ -49,6 +44,40 @@
 // exact race the mailbox used to make unreachable by construction. Every entry point below is
 // reviewed against this rule; a future one must be too.
 //
+// SLICE 2 ADDITION (snapshot/checkpoint, this file's own residual list above named this as not-yet-
+// done): `to_record()`/`restore_from_record()`, `snapshot_record()`, and the free functions
+// `save_agent_session_snapshot`/`load_agent_session_snapshot`/`checkpoint_if_due`/`delete_session`,
+// all built against `rt::SessionStore` (session_store.hpp, already built/tested in Phase 1) instead
+// of `quark::FenceToken`/`Activation`/`snapshot_sequential`. Two real design points, not a
+// mechanical port:
+//   - THE IN-FLIGHT GUARD (ADR-037 §5's own named red-team finding: "persistence's hardest problem
+//     -- safe concurrent snapshot -- is currently solved by Quark's FenceToken... Phase 1 needs its
+//     own design pass before it's trusted"). The Quark original relied on being called at the point
+//     `quiesce(Drain)` reaches on a Sequential actor -- i.e., the actor mailbox itself guaranteed no
+//     handler was concurrently mutating state. There is no mailbox anymore, so `snapshot_record()`
+//     (below) acquires `session_mutex_` -- the SAME `rt::AsyncMutex` `start_run()`/
+//     `resolve_interaction()` already use for I1 -- for the whole duration of reading state into an
+//     `AgentSessionRecord`. A concurrent `start_run()` and a concurrent `snapshot_record()` queue on
+//     the same FIFO lock; neither can observe the other's partial mutation. `delete_session()`
+//     (below) uses the equivalent locked path (`clear_in_process_state_locked()`) for the same
+//     reason on the write side.
+//   - ENCODE/DECODE: the Quark original used `quark::Described`/`QUARK_SERIALIZE`, which this file
+//     cannot depend on (a Quark type). Records are instead encoded as JSON via
+//     `core/json_value.hpp` (already std-only, zero Quark dependency) -- `agent_session_record_to_
+//     json()`/`_from_json()` plus a thin bytes<->text wrapper to satisfy `SessionStore`'s
+//     opaque-bytes contract.
+// A real, DELIBERATE narrowing versus the original `AgentSessionRecord`, named rather than silently
+// dropped: `created_at_ns`/`updated_at_ns` are NOT carried by this slice's record, because Slice 1's
+// own `AgentSession` never added `created_at_`/`updated_at_` members in the first place (001 §7
+// already documents the original's own versions of these fields as unwired placeholders carrying no
+// real wall-clock value project-wide -- this slice does not invent ones just to round-trip them).
+// A smaller, PRE-EXISTING residual, not introduced by this slice: `core/interaction.hpp` (already
+// included by Slice 1, for `Interaction`/`interaction_reason`) itself transitively includes
+// `quark/core/describe.hpp` for `QUARK_SERIALIZE` -- this file's own encode/decode never calls that
+// macro (it hand-writes JSON for `Interaction` instead), but the transitive include is still there.
+// Named here as the same kind of residual the file banner's "LARGER, MORE FUNDAMENTAL NAMED GAP"
+// paragraph already tracks (a coroutine-type-layer gap, not this seam), not overclaimed as fixed.
+//
 // `StartRun`/`ResolveInteraction` keep their EXISTING field shapes (matching core/agent_session.hpp's
 // own types) for call-site compatibility, but are no longer Quark::Ask<> messages -- the 192-byte
 // MessagePool::kMaxPayload constraint that shaped `SessionCaller` (a narrowed wire-sized identity
@@ -60,6 +89,7 @@
 // this migration).
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <span>
@@ -82,6 +112,7 @@
 #include "agentengine/core/tool_call_extraction.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/rt/async_mutex.hpp"
+#include "agentengine/rt/session_store.hpp"
 #include "agentengine/rt/task.hpp"
 #include "agentengine/trust/principal.hpp"
 
@@ -116,6 +147,132 @@ struct AgentResponse {
     Message message;
     Usage   usage;
 };
+
+// Slice 2's narrowed durable record -- see file banner for exactly what is and isn't carried
+// (notably: no created_at_ns/updated_at_ns, a deliberate narrowing vs. the Quark original's own
+// AgentSessionRecord; history/state/metadata are likewise not carried, same "no Message/ContentItem
+// serialization yet" gap the original named). `to_record()`/`restore_from_record()` (AgentSession
+// member functions, below) are the only two places that cross between the in-process type and this
+// shape, so the field list can't drift between them silently.
+struct AgentSessionRecord {
+    std::string session_id;
+    std::string principal_id;
+    std::string principal_tenant_id;
+    bool deleted = false;
+    std::uint64_t run_counter = 0;
+    std::uint64_t turn_index = 0;
+    std::vector<Interaction> open_interactions;
+};
+
+[[nodiscard]] inline json::Value interaction_to_json(Interaction const& i) {
+    char const* reason_str = "input";
+    switch (i.reason) {
+        case interaction_reason::input:    reason_str = "input";    break;
+        case interaction_reason::auth:     reason_str = "auth";     break;
+        case interaction_reason::approval: reason_str = "approval"; break;
+    }
+    return json::Value::make_object({
+        {"interaction_id", json::Value::make_string(i.interaction_id)},
+        {"run_id", json::Value::make_string(i.run_id)},
+        {"reason", json::Value::make_string(reason_str)},
+        {"opened_at_ns", json::Value::make_number(static_cast<double>(i.opened_at_ns))},
+        {"expires_at_ns", json::Value::make_number(static_cast<double>(i.expires_at_ns))},
+    });
+}
+
+[[nodiscard]] inline result<Interaction> interaction_from_json(json::Value const& v) {
+    json::Value const* interaction_id = v.find("interaction_id");
+    json::Value const* run_id         = v.find("run_id");
+    json::Value const* reason         = v.find("reason");
+    json::Value const* opened_at_ns   = v.find("opened_at_ns");
+    json::Value const* expires_at_ns  = v.find("expires_at_ns");
+    if (interaction_id == nullptr || !interaction_id->is_string() || run_id == nullptr ||
+        !run_id->is_string() || reason == nullptr || !reason->is_string() ||
+        opened_at_ns == nullptr || !opened_at_ns->is_number() || expires_at_ns == nullptr ||
+        !expires_at_ns->is_number()) {
+        return std::unexpected(error{failure_class::contract, "malformed Interaction record",
+                                      "rt.agent_session.record.malformed"});
+    }
+    Interaction out{};
+    out.interaction_id = interaction_id->as_string();
+    out.run_id          = run_id->as_string();
+    std::string const& r = reason->as_string();
+    if (r == "input") out.reason = interaction_reason::input;
+    else if (r == "auth") out.reason = interaction_reason::auth;
+    else if (r == "approval") out.reason = interaction_reason::approval;
+    else {
+        return std::unexpected(error{failure_class::contract, "unknown interaction reason: " + r,
+                                      "rt.agent_session.record.malformed"});
+    }
+    out.opened_at_ns  = static_cast<std::int64_t>(opened_at_ns->as_number());
+    out.expires_at_ns = static_cast<std::int64_t>(expires_at_ns->as_number());
+    return out;
+}
+
+[[nodiscard]] inline json::Value agent_session_record_to_json(AgentSessionRecord const& rec) {
+    std::vector<json::Value> interactions;
+    interactions.reserve(rec.open_interactions.size());
+    for (Interaction const& i : rec.open_interactions) interactions.push_back(interaction_to_json(i));
+    return json::Value::make_object({
+        {"session_id", json::Value::make_string(rec.session_id)},
+        {"principal_id", json::Value::make_string(rec.principal_id)},
+        {"principal_tenant_id", json::Value::make_string(rec.principal_tenant_id)},
+        {"deleted", json::Value::make_bool(rec.deleted)},
+        {"run_counter", json::Value::make_number(static_cast<double>(rec.run_counter))},
+        {"turn_index", json::Value::make_number(static_cast<double>(rec.turn_index))},
+        {"open_interactions", json::Value::make_array(std::move(interactions))},
+    });
+}
+
+[[nodiscard]] inline result<AgentSessionRecord> agent_session_record_from_json(json::Value const& v) {
+    json::Value const* session_id           = v.find("session_id");
+    json::Value const* principal_id         = v.find("principal_id");
+    json::Value const* principal_tenant_id  = v.find("principal_tenant_id");
+    json::Value const* deleted              = v.find("deleted");
+    json::Value const* run_counter          = v.find("run_counter");
+    json::Value const* turn_index           = v.find("turn_index");
+    json::Value const* open_interactions    = v.find("open_interactions");
+    if (session_id == nullptr || !session_id->is_string() || principal_id == nullptr ||
+        !principal_id->is_string() || principal_tenant_id == nullptr ||
+        !principal_tenant_id->is_string() || deleted == nullptr || !deleted->is_bool() ||
+        run_counter == nullptr || !run_counter->is_number() || turn_index == nullptr ||
+        !turn_index->is_number() || open_interactions == nullptr || !open_interactions->is_array()) {
+        return std::unexpected(error{failure_class::contract, "malformed AgentSessionRecord",
+                                      "rt.agent_session.record.malformed"});
+    }
+    AgentSessionRecord rec;
+    rec.session_id          = session_id->as_string();
+    rec.principal_id        = principal_id->as_string();
+    rec.principal_tenant_id = principal_tenant_id->as_string();
+    rec.deleted             = deleted->as_bool();
+    rec.run_counter         = static_cast<std::uint64_t>(run_counter->as_number());
+    rec.turn_index          = static_cast<std::uint64_t>(turn_index->as_number());
+    rec.open_interactions.reserve(open_interactions->as_array().size());
+    for (json::Value const& item : open_interactions->as_array()) {
+        result<Interaction> parsed = interaction_from_json(item);
+        if (!parsed) return std::unexpected(parsed.error());
+        rec.open_interactions.push_back(std::move(*parsed));
+    }
+    return rec;
+}
+
+[[nodiscard]] inline std::vector<std::byte> encode_agent_session_record(AgentSessionRecord const& rec) {
+    std::string const text = json::dump(agent_session_record_to_json(rec));
+    std::vector<std::byte> bytes;
+    bytes.reserve(text.size());
+    for (char c : text) bytes.push_back(static_cast<std::byte>(c));
+    return bytes;
+}
+
+[[nodiscard]] inline result<AgentSessionRecord> decode_agent_session_record(
+    std::vector<std::byte> const& bytes) {
+    std::string text;
+    text.reserve(bytes.size());
+    for (std::byte b : bytes) text.push_back(static_cast<char>(b));
+    result<json::Value> parsed = json::parse(text);
+    if (!parsed) return std::unexpected(parsed.error());
+    return agent_session_record_from_json(*parsed);
+}
 
 template <class ChatClientT, class StateT = NoSessionState,
           class HistoryProviderT = agentengine::HistoryProvider<agentengine::Window<0>>>
@@ -439,6 +596,52 @@ public:
         return {};
     }
 
+    // ---- Slice 2: snapshot/checkpoint (file banner has the design writeup) -------------------
+
+    // Unlocked, synchronous -- matches the original's own to_record()/restore_from_record() shape
+    // exactly (see file banner: field list is deliberately narrower). Not the caller's normal way
+    // to take a snapshot; see snapshot_record() below for the locked path every real caller should
+    // use instead. Kept public and separately callable anyway, matching the original, since a test
+    // may reasonably want to assert the record shape without going through the lock.
+    [[nodiscard]] AgentSessionRecord to_record() const {
+        AgentSessionRecord rec;
+        rec.session_id          = session_id_;
+        rec.principal_id        = principal_.id;
+        rec.principal_tenant_id = principal_.tenant_id;
+        rec.run_counter         = run_counter_;
+        rec.turn_index          = effect_context_.turn_index;
+        rec.open_interactions   = open_interactions_;
+        return rec;
+    }
+
+    void restore_from_record(AgentSessionRecord const& rec) {
+        session_id_ = rec.session_id;
+        principal_  = agentengine::Principal{rec.principal_id, rec.principal_tenant_id};
+        run_counter_ = rec.run_counter;
+        last_run_id_ = run_counter_ > 0 ? session_id_ + ":run:" + std::to_string(run_counter_)
+                                          : std::string{};
+        effect_context_.turn_index = rec.turn_index;
+        open_interactions_ = rec.open_interactions;
+    }
+
+    // The real, in-flight-safe way to read this session's durable state out: acquires
+    // session_mutex_ for the whole read, the same I1 guard every other public entry point uses --
+    // see file banner for why this replaces the Quark original's "called at the point quiesce(Drain)
+    // reaches" assumption. save_agent_session_snapshot() (free function, below) is built on this.
+    [[nodiscard]] task<AgentSessionRecord> snapshot_record() {
+        AsyncMutex::Guard guard = co_await session_mutex_.lock();
+        co_return to_record();
+    }
+
+    // Locked wrapper around clear_in_process_state() -- delete_session() (free function, below)
+    // needs this so a concurrently in-flight start_run()/resolve_interaction() can never race a
+    // deletion, the write-side counterpart to snapshot_record()'s read-side guard.
+    task<void> clear_in_process_state_locked() {
+        AsyncMutex::Guard guard = co_await session_mutex_.lock();
+        clear_in_process_state();
+        co_return;
+    }
+
 private:
     void emit_run_event(run_event_kind kind, RunEventPayload payload = run_event_payload::Empty{}) {
         emit_run_event_for(effect_context_.run_id, kind, std::move(payload));
@@ -691,5 +894,87 @@ private:
     // I1 -- see file banner. Every public async entry point acquires this for its whole duration.
     AsyncMutex                                            session_mutex_;
 };
+
+// Save `session`'s narrowed durable record under its own session_id() -- see file banner and
+// snapshot_record()'s own comment for the in-flight guard this relies on. `session` is non-const
+// (not const&, unlike the Quark original) because acquiring session_mutex_ mutates the mutex's own
+// state even though this operation is logically a read of session data.
+template <class ChatClientT, class StateT, class HistoryProviderT, SessionStore StoreT>
+[[nodiscard]] task<result<void>> save_agent_session_snapshot(
+    AgentSession<ChatClientT, StateT, HistoryProviderT>& session, StoreT& store) {
+    AgentSessionRecord rec = co_await session.snapshot_record();
+    co_return store.save(rec.session_id, encode_agent_session_record(rec));
+}
+
+// Load the latest durable record for `session_id`, or std::nullopt if it was never snapshotted or
+// was deleted (delete_session()'s tombstone) -- a caller of THIS function sees no distinction
+// between "never existed" and "deleted", matching the Quark original's own read-path property.
+// Synchronous (no task<T>) -- unlike save/delete, this never touches a live AgentSession instance,
+// so there is no in-flight state to guard against.
+template <SessionStore StoreT>
+[[nodiscard]] result<std::optional<AgentSessionRecord>> load_agent_session_snapshot(
+    StoreT const& store, std::string const& session_id) {
+    if (!store.exists(session_id)) return std::optional<AgentSessionRecord>{};
+    result<std::vector<std::byte>> bytes = store.load(session_id);
+    if (!bytes) return std::unexpected(bytes.error());
+    result<AgentSessionRecord> rec = decode_agent_session_record(*bytes);
+    if (!rec) return std::unexpected(rec.error());
+    if (rec->deleted) return std::optional<AgentSessionRecord>{};
+    return std::optional<AgentSessionRecord>{std::move(*rec)};
+}
+
+// Same cadence-policy shape as the Quark original's CheckpointCadence<N> -- a pure function of how
+// many turns have completed since the last checkpoint actually written, zero Quark dependency,
+// ported unchanged.
+template <std::uint32_t EveryNTurns>
+    requires(EveryNTurns >= 1)
+struct CheckpointCadence {
+    [[nodiscard]] static constexpr bool due(std::uint64_t turns_since_last_checkpoint) noexcept {
+        return turns_since_last_checkpoint >= EveryNTurns;
+    }
+};
+
+// The cadence-gated way a host calls save_agent_session_snapshot() at a turn boundary --
+// `turns_since_last_checkpoint` is the CALLER's own count (this function does no bookkeeping of its
+// own -- AgentSession has no ambient Store access, I2). Returns false (not an error) when the
+// cadence skips a write; result<bool> still surfaces a real store failure on the turns that DO
+// attempt one.
+template <class CadenceT, class ChatClientT, class StateT, class HistoryProviderT, SessionStore StoreT>
+[[nodiscard]] task<result<bool>> checkpoint_if_due(
+    AgentSession<ChatClientT, StateT, HistoryProviderT>& session, StoreT& store,
+    std::uint64_t turns_since_last_checkpoint) {
+    if (!CadenceT::due(turns_since_last_checkpoint)) co_return false;
+    result<void> saved = co_await save_agent_session_snapshot(session, store);
+    if (!saved) co_return std::unexpected(saved.error());
+    co_return true;
+}
+
+// Same "hard removal, with a completion receipt" shape as the Quark original -- a receipt naming
+// which of the two halves (durable tombstone, in-process clear) actually happened, since either can
+// independently fail.
+struct SessionDeletionReceipt {
+    std::string session_id;
+    bool        durable_record_removed = false;
+    bool        in_process_state_cleared = false;
+};
+
+template <class ChatClientT, class StateT, class HistoryProviderT, SessionStore StoreT>
+[[nodiscard]] task<result<SessionDeletionReceipt>> delete_session(
+    AgentSession<ChatClientT, StateT, HistoryProviderT>& session, StoreT& store) {
+    SessionDeletionReceipt receipt{};
+    receipt.session_id = session.session_id();
+
+    AgentSessionRecord tombstone{};
+    tombstone.session_id = receipt.session_id;
+    tombstone.deleted    = true;
+    result<void> saved = store.save(receipt.session_id, encode_agent_session_record(tombstone));
+    if (!saved) co_return std::unexpected(saved.error());
+    receipt.durable_record_removed = true;
+
+    co_await session.clear_in_process_state_locked();
+    receipt.in_process_state_cleared = true;
+
+    co_return receipt;
+}
 
 }  // namespace agentengine::rt
