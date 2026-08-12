@@ -1013,6 +1013,12 @@ add_executable(test_rt_agent_session_snapshot test_rt_agent_session_snapshot.cpp
 target_link_libraries(test_rt_agent_session_snapshot PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_agent_session_snapshot COMMAND test_rt_agent_session_snapshot)
 
+# ---- ADR-037 Phase 2, Slice 3 -- agentengine::rt::AgentSession's standing-effects/background-task
+# surface, backed by a BackgroundCompletionQueue instead of quark::ActorRef::tell().
+add_executable(test_rt_agent_session_background_task test_rt_agent_session_background_task.cpp)
+target_link_libraries(test_rt_agent_session_background_task PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_agent_session_background_task COMMAND test_rt_agent_session_background_task)
+
 # ---- ADR-028 -- session-scoped stateful tools (tool_pipeline.hpp make_tool_descriptor_with_invoke).
 add_executable(test_session_scoped_stateful_tools test_session_scoped_stateful_tools.cpp)
 target_link_libraries(test_session_scoped_stateful_tools PRIVATE agentengine::core agentengine_warnings)

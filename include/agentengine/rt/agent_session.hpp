@@ -9,11 +9,10 @@
 // run_model_call()/run_rounds()'s model-call + tool-call round loop, ADR-029's approval suspend/
 // resume, and the pure bookkeeping helpers (fork_from/redact/clear_in_process_state/open_interaction/
 // resolve_interaction). It does NOT yet migrate:
-//   - Standing effects / background tasks (start_background_task, cancel_standing_effect,
-//     list_standing_effects, the TimerWake/BackgroundTaskDone message types) -- these fundamentally
-//     depended on Quark's actor tell()/self-addressing (quark::ActorRef<AgentSession>::tell()) to be
-//     thread-safe; the Quark-free replacement needs its own design (a real callback mechanism through
-//     rt::ThreadPool, most likely) before this can move, not a mechanical port.
+//   - TimerWake (the reminder-service wake acknowledgement) -- depended on a live quark::Engine's
+//     ReminderService, a real integration-test-only surface (test_agent_session_timer_wake.cpp) this
+//     slice has no standalone replacement design for yet. `standing_effects_`'s OTHER wake row,
+//     "Local background task completion" (BackgroundTaskDone), IS migrated -- see Slice 3 below.
 //   - Event streaming (enable_event_stream/emit_run_event) still uses core/stream.hpp's EXISTING
 //     quark::ReplyStream-backed stream<T> -- core/stream.hpp's own backend migration to rt::channel<T>
 //     is separately-scoped Phase 1 work not yet done. Named here as an accepted interim residual, not
@@ -78,6 +77,56 @@
 // Named here as the same kind of residual the file banner's "LARGER, MORE FUNDAMENTAL NAMED GAP"
 // paragraph already tracks (a coroutine-type-layer gap, not this seam), not overclaimed as fixed.
 //
+// SLICE 3 ADDITION (standing effects / background tasks): `start_background_task()`/
+// `cancel_standing_effect()`/`list_standing_effects()`, backed by `agentengine::StandingEffect`
+// (standing_effect.hpp, reused verbatim -- pure data, no actor coupling, same "reuse despite its own
+// transitive quark/core/describe.hpp include" precedent Interaction already set, see Slice 2's own
+// paragraph above). `tool_pipeline.hpp::background_task()` itself needed ZERO changes -- it already
+// had no Quark dependency (steps 1-7 synchronous, step 8 onward a detached std::thread calling a
+// caller-supplied std::function on_complete). The ONLY Quark-coupled piece was the ORIGINAL
+// AgentSession wiring on_complete to `self.tell(BackgroundTaskDone{...})` -- a quark::ActorRef's
+// thread-safe, mailbox-serialized delivery into the actor's own processing queue. Design (produced by
+// an independent design/red-team pass before implementation, per this project's own governance for a
+// genuinely hard concurrency question, not an ad-hoc guess):
+//   - `on_complete` (running on the detached worker thread, no coroutine, cannot co_await
+//     session_mutex_) instead pushes a `BackgroundTaskDone{handle_id, call_id, ok}` into
+//     `background_completions_`, a `BackgroundCompletionQueue` (its own small, separate `std::mutex`
+//     + `std::deque` -- deliberately NOT session_mutex_, which only a coroutine can acquire) held
+//     behind a `std::shared_ptr` on `AgentSession`. The closure captures a `std::weak_ptr` to that
+//     queue, not `this`/a reference to the session -- if the session (and its queue) has already been
+//     destroyed by the time the worker finishes, `weak_ptr::lock()` returns null and the completion is
+//     silently dropped (no UAF), the same "no delivery guarantee, best-effort" spirit the original's
+//     `tell()`-into-a-possibly-gone-actor already implied without this file being able to inspect
+//     Quark's own answer to that case.
+//   - `drain_background_completions_locked()` (private, caller must already hold session_mutex_)
+//     drains the queue and applies each entry to `standing_effects_` exactly like the original's
+//     `handle(BackgroundTaskDone const&)` did (find by handle_id, capture owner_run_id BEFORE erasing,
+//     emit ToolCallFinished attributed to that run -- never whatever run is current when the
+//     completion happens to land). Called as the FIRST statement inside `start_run()`/
+//     `resolve_interaction()`, right after acquiring the guard -- so a host never has to remember to
+//     drain separately; `drain_background_completions()` (public, its own task<T>) exists for a host
+//     that wants to force a drain between runs anyway.
+//   - `start_background_task()`/`cancel_standing_effect()`/`list_standing_effects()` themselves stay
+//     PLAIN, UNLOCKED methods (no session_mutex_ acquisition) -- this is not an oversight, it matches
+//     the ORIGINAL's own asymmetry exactly: those three were never part of Quark's `Messages` type
+//     list for this actor either (unlike `BackgroundTaskDone`, which WAS), so they were already
+//     unserialized-by-the-mailbox in the Quark version too, the same category `fork_from()`/`redact()`/
+//     `clear_in_process_state()` above already fall into. NAMED, NOT SILENTLY ASSUMED SAFE: a host that
+//     calls these three concurrently with a `start_run()`/`resolve_interaction()` in flight on another
+//     "thread of control" races `standing_effects_` directly -- a real, pre-existing-in-kind
+//     precondition (not a new one introduced here), but easy to wrongly assume is now covered just
+//     because a completion queue exists. `cancel_standing_effect()` racing an already-queued-but-not-
+//     yet-drained completion is safe by construction: drain looks up by `handle_id`; if cancel already
+//     erased the entry, drain's lookup misses and no-ops, exactly the original's own documented
+//     idempotent-no-op behavior for "a late BackgroundTaskDone for a canceled handle."
+//   - `rt::channel<T>` (already built, Phase 1) was considered and rejected for this queue: its
+//     producer side is move-only and auto-closes on destruction, so sharing it across many independent
+//     detached-thread closures would need the exact same weak_ptr-to-a-shared-instance dance for zero
+//     benefit -- draining here is synchronous/opportunistic (never suspends), and a
+//     `{handle_id,call_id,bool}` payload needs no bounded-backpressure story `Background<max_concurrent>`
+//     doesn't already provide at the authorize step. A hand-rolled mutex+deque is simpler and has no
+//     close/terminal semantics to reason about for a queue that is never itself "done."
+//
 // `StartRun`/`ResolveInteraction` keep their EXISTING field shapes (matching core/agent_session.hpp's
 // own types) for call-site compatibility, but are no longer Quark::Ask<> messages -- the 192-byte
 // MessagePool::kMaxPayload constraint that shaped `SessionCaller` (a narrowed wire-sized identity
@@ -91,6 +140,9 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
@@ -108,6 +160,7 @@
 #include "agentengine/core/json_value.hpp"
 #include "agentengine/core/response_format_leak_scan.hpp"
 #include "agentengine/core/run_event.hpp"
+#include "agentengine/core/standing_effect.hpp"
 #include "agentengine/core/stream.hpp"
 #include "agentengine/core/tool_call_extraction.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
@@ -146,6 +199,27 @@ struct ResolveInteraction {
 struct AgentResponse {
     Message message;
     Usage   usage;
+};
+
+// Slice 3 -- what a completed background native tool call hands back. See file banner's "SLICE 3
+// ADDITION" paragraph for the full delivery-path design. Deliberately NOT the original's Quark
+// message type (no Ask/tell shape here -- this is plain data pushed into a BackgroundCompletionQueue,
+// never routed through anything actor-shaped).
+struct BackgroundTaskDone {
+    std::string handle_id;
+    std::string call_id;
+    bool        ok = false;
+};
+
+// The thread-safe handoff point between a detached worker thread (tool_pipeline.hpp's
+// background_task() step 8) and whichever coroutine later drains it under session_mutex_. Its OWN
+// mutex, never session_mutex_ -- a plain std::thread cannot co_await anything, so the one lock it
+// touches must be acquirable synchronously. Held behind a shared_ptr on AgentSession specifically so
+// a worker's completion closure can capture a weak_ptr instead of a reference into the (possibly by
+// then destroyed) AgentSession itself -- see file banner for the full lifetime rationale.
+struct BackgroundCompletionQueue {
+    std::mutex                     m;
+    std::deque<BackgroundTaskDone> pending;
 };
 
 // Slice 2's narrowed durable record -- see file banner for exactly what is and isn't carried
@@ -361,6 +435,7 @@ public:
     // return value instead of a never-answered Ask.
     task<result<AgentResponse>> start_run(StartRun request) {
         AsyncMutex::Guard guard = co_await session_mutex_.lock();  // I1 -- see file banner
+        drain_background_completions_locked();  // Slice 3 -- see file banner
 
         if (request.caller.has_value() &&
             !agentengine::principal_admitted_for(
@@ -413,6 +488,7 @@ public:
     // Replaces `handle(quark::Ask<ResolveInteraction, AgentResponse> const&)`.
     task<result<AgentResponse>> resolve_interaction(ResolveInteraction request) {
         AsyncMutex::Guard guard = co_await session_mutex_.lock();  // I1 -- see file banner
+        drain_background_completions_locked();  // Slice 3 -- see file banner
 
         if (request.caller.has_value() &&
             !agentengine::principal_admitted_for(
@@ -537,6 +613,11 @@ public:
         interaction_counter_ = 0;
         run_tokens_consumed_ = 0;
         admission_denied_count_ = 0;
+        // Same "no run identity of its own" rationale open_interactions_ above already documents --
+        // a fresh fork inherits none of the source's (or *this*'s own prior) outstanding background
+        // work. Same fix category as clear_in_process_state()'s own comment below.
+        standing_effects_.clear();
+        standing_effect_counter_ = 0;
     }
 
     [[nodiscard]] result<void> redact(std::string const& message_id, std::string reason, std::string actor) {
@@ -573,6 +654,17 @@ public:
         admission_denied_count_ = 0;
         max_turns_ = std::nullopt;
         history_provider_ = HistoryProviderT{};
+        // A real gap found in the Quark original (core/agent_session.hpp's own clear_in_process_
+        // state() never resets standing_effects_/standing_effect_counter_): this function's own
+        // contract is "no residue left to read back through ANY of this class's own accessors" (005
+        // §6), which list_standing_effects() would otherwise silently violate after a delete. Fixed
+        // here rather than ported forward unchanged -- background_completions_ is deliberately NOT
+        // reset (a shared_ptr whose identity a worker thread may already hold a weak_ptr to; dropping
+        // and reallocating it would not by itself invalidate anything, but a queue full of stale
+        // entries for effects that no longer exist is intentionally harmless -- the drain loop's own
+        // find_if() already no-ops on an unknown handle_id, same as a canceled one).
+        standing_effects_.clear();
+        standing_effect_counter_ = 0;
     }
 
     [[nodiscard]] Interaction const& open_interaction(std::string run_id, interaction_reason reason) {
@@ -642,7 +734,116 @@ public:
         co_return;
     }
 
+    // ---- Slice 3: standing effects / background tasks (file banner has the design writeup) --
+
+    // PLAIN, UNLOCKED -- matches the original's own asymmetry exactly; see file banner. Runs
+    // tool_pipeline.hpp's background_task() (steps 1-7 synchronous, step 8 onward a detached
+    // std::thread) unchanged, wiring on_complete to push into background_completions_ instead of
+    // the original's self.tell(BackgroundTaskDone{...}).
+    [[nodiscard]] result<agentengine::StandingEffect> start_background_task(
+        ToolTable const& table, ToolCallRequest const& request,
+        ApprovalDecider const& approve = ApprovalDecider{}) {
+        if (!capabilities_) {
+            return std::unexpected(error{failure_class::policy, "session has no granted capabilities",
+                                          "standing_effect.no_capabilities"});
+        }
+        std::size_t const current_count = static_cast<std::size_t>(std::count_if(
+            standing_effects_.begin(), standing_effects_.end(),
+            [](agentengine::StandingEffect const& e) {
+                return e.kind == agentengine::standing_effect_kind::background_task;
+            }));
+
+        std::string const handle_id =
+            session_id_ + ":standing:" + std::to_string(++standing_effect_counter_);
+        std::string const owner_run_id       = effect_context_.run_id;
+        std::string const owner_principal_id = effect_context_.principal.id;
+
+        std::weak_ptr<BackgroundCompletionQueue> weak_queue = background_completions_;
+        result<void> submitted = background_task(
+            table, *capabilities_, request, effect_context_, approve, current_count,
+            [weak_queue, handle_id, call_id = request.call_id](ToolResult /*result_out*/,
+                                                                 ToolInvocationAudit audit) mutable {
+                if (std::shared_ptr<BackgroundCompletionQueue> q = weak_queue.lock()) {
+                    std::lock_guard<std::mutex> lock(q->m);
+                    q->pending.push_back(
+                        BackgroundTaskDone{std::move(handle_id), std::move(call_id), audit.ok});
+                }  // else: session (and its queue) already gone -- drop, no UAF, no residue to clean up
+            });
+        if (!submitted) return std::unexpected(submitted.error());
+
+        agentengine::StandingEffect effect;
+        effect.handle_id    = handle_id;
+        effect.session_id   = session_id_;
+        effect.principal_id = owner_principal_id;
+        effect.run_id       = owner_run_id;
+        effect.kind         = agentengine::standing_effect_kind::background_task;
+        effect.label        = request.tool_name;
+        standing_effects_.push_back(effect);
+
+        emit_run_event_for(owner_run_id, run_event_kind::tool_call_started,
+                            run_event_payload::ToolCallStarted{request.call_id, request.tool_name});
+        return effect;
+    }
+
+    [[nodiscard]] std::vector<agentengine::StandingEffect> const& list_standing_effects() const noexcept {
+        return standing_effects_;
+    }
+
+    // Cancels the BOOKKEEPING only -- background_task() names no mechanism to interrupt an
+    // already-running native invoke(); a late completion for a canceled handle simply finds nothing
+    // to resolve in drain_background_completions_locked() (its own idempotent no-op), same as the
+    // original.
+    [[nodiscard]] result<void> cancel_standing_effect(std::string const& handle_id,
+                                                       agentengine::Principal const& caller_principal) {
+        auto it = std::find_if(standing_effects_.begin(), standing_effects_.end(),
+                                [&](agentengine::StandingEffect const& e) { return e.handle_id == handle_id; });
+        if (it == standing_effects_.end()) {
+            return std::unexpected(
+                error{failure_class::contract, "no such standing effect", "standing_effect.not_found"});
+        }
+        if (it->principal_id != caller_principal.id) {
+            return std::unexpected(error{failure_class::policy,
+                                          "cannot cancel a standing effect owned by a different principal",
+                                          "standing_effect.cross_principal_denied"});
+        }
+        standing_effects_.erase(it);
+        return {};
+    }
+
+    // Explicit host-callable drain, for a host that wants to flush completions between runs rather
+    // than waiting for the next start_run()/resolve_interaction() (which already drains
+    // automatically as their first step -- see file banner).
+    task<void> drain_background_completions() {
+        AsyncMutex::Guard guard = co_await session_mutex_.lock();
+        drain_background_completions_locked();
+        co_return;
+    }
+
 private:
+    // Caller must already hold session_mutex_ (start_run()/resolve_interaction() call this as their
+    // first step; drain_background_completions() -- public, above -- is the explicit-call path). See
+    // file banner's "SLICE 3 ADDITION" paragraph for the full design.
+    void drain_background_completions_locked() {
+        std::vector<BackgroundTaskDone> ready;
+        {
+            std::lock_guard<std::mutex> lock(background_completions_->m);
+            ready.assign(std::make_move_iterator(background_completions_->pending.begin()),
+                         std::make_move_iterator(background_completions_->pending.end()));
+            background_completions_->pending.clear();
+        }
+        for (BackgroundTaskDone const& m : ready) {
+            auto it = std::find_if(standing_effects_.begin(), standing_effects_.end(),
+                                    [&](agentengine::StandingEffect const& e) {
+                                        return e.handle_id == m.handle_id;
+                                    });
+            if (it == standing_effects_.end()) continue;  // canceled or already resolved -- no-op
+            std::string const owner_run_id = it->run_id;
+            standing_effects_.erase(it);
+            emit_run_event_for(owner_run_id, run_event_kind::tool_call_finished,
+                                run_event_payload::ToolCallFinished{m.call_id, m.ok});
+        }
+    }
+
     void emit_run_event(run_event_kind kind, RunEventPayload payload = run_event_payload::Empty{}) {
         emit_run_event_for(effect_context_.run_id, kind, std::move(payload));
     }
@@ -891,6 +1092,13 @@ private:
     std::uint64_t                                         admission_denied_count_ = 0;
     stream_producer<RunEvent>                             run_event_producer_;
     std::unordered_map<std::string, std::uint64_t>        run_event_seq_by_run_;
+    // Slice 3 -- see file banner's "SLICE 3 ADDITION" paragraph. Never null, never reassigned after
+    // construction -- a background worker's weak_ptr capture is only meaningful if this shared_ptr's
+    // identity stays stable for the AgentSession instance's whole lifetime.
+    std::shared_ptr<BackgroundCompletionQueue>            background_completions_ =
+        std::make_shared<BackgroundCompletionQueue>();
+    std::vector<agentengine::StandingEffect>              standing_effects_;
+    std::uint64_t                                         standing_effect_counter_ = 0;
     // I1 -- see file banner. Every public async entry point acquires this for its whole duration.
     AsyncMutex                                            session_mutex_;
 };
