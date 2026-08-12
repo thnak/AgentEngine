@@ -663,8 +663,9 @@ void print_skills_banner(std::vector<native_jail::MaterializedSkillMount> const&
     }
 }
 
-// Reasoning/<think>-channel extraction (ADR-023) only populates a real `Reasoning` content item
-// when the ChatClient is constructed with `scan_response_format_leaks=true` -- see main() below.
+// Reasoning/<think>-channel extraction (ADR-023, generalized ADR-035 Phase 1) only populates a real
+// `Reasoning` content item when scanning is armed -- `actor.set_scan_response_format_leaks(true)` in
+// main() below, applied post-hoc by AgentSession's own run_model_call() regardless of streaming.
 [[nodiscard]] std::vector<std::string> reasoning_texts_of(Message const& m) {
     std::vector<std::string> out;
     for (ContentItem const& item : m.content) {
@@ -748,10 +749,12 @@ int main() {
     // Trailing args beyond `caps`/`store`/`kPathPrefix` are every one of OpenAIChatClient's own
     // defaults spelled out verbatim (chat_client.hpp's own constructor), EXCEPT two: `end_user_id`
     // (see above) and `scan_response_format_leaks=true`, which arms ADR-023's Reasoning/<think>-
-    // channel extraction. NOTE (ADR-034): that scan runs only inside `chat()`, never
-    // `chat_stream()` -- with streaming engaged below, "[thinking]" from this mechanism will not
-    // fire; it's left armed only so the non-streaming path this file no longer takes stays correct
-    // if streaming is ever toggled off.
+    // channel extraction on this client's OWN `chat()`. Left armed only so the non-streaming path
+    // this file no longer takes stays correct if streaming is ever toggled off -- with streaming
+    // engaged below, this specific flag never fires (chat() is never called); the REAL scanning this
+    // CLI relies on now comes from AgentSession's own flag, set right after set_stream_model_calls()
+    // below (ADR-035 Phase 1 -- see that flag's own comment in agent_session.hpp for why it's the
+    // backend/path-agnostic one).
     actor.emplace_chat_client(host, kHttpsPort, model, SecretRef{kSecretName}, caps, store,
                                 kPathPrefix, sandbox::resolve_host, std::string{}, std::string{},
                                 std::string{}, session_id, std::nullopt,
@@ -761,11 +764,21 @@ int main() {
     // CLI no longer caps the internal tool-call loop's own round count at all.
     actor.initialize(session_id, Principal{"cli-user", ""});
     actor.set_capabilities(&held);
-    // ADR-034: real token-by-token streaming, traded for failover/circuit-breaker-feedback/
-    // response-format-leak-scanning not applying on this path -- see set_stream_model_calls()'s own
-    // comment in agent_session.hpp. A run_event_kind::warning fires once per run naming this trade;
-    // describe_event() below renders it like any other event.
+    // ADR-034: real token-by-token streaming, traded for failover/circuit-breaker-feedback not
+    // applying on this path -- see set_stream_model_calls()'s own comment in agent_session.hpp. A
+    // run_event_kind::warning fires once per run naming this trade; describe_event() below renders
+    // it like any other event.
     actor.set_stream_model_calls(true);
+    // ADR-035 Phase 1: the scan that actually matters for this CLI now that streaming is always on
+    // -- runs post-hoc, once per round, on the reconstructed Message (agent_session.hpp's
+    // run_model_call()), so reasoning_texts_of() below sees real extracted Reasoning items again.
+    // NAMED RESIDUAL: this does NOT retroactively clean up the LIVE model_delta printout further
+    // down (the drain thread prints raw text token-by-token AS it streams, before a round -- and
+    // therefore this scan -- has even finished); a leaked `<think>`/Harmony/etc block still appears
+    // once, raw, live, and then AGAIN, cleaned up, in the post-round `reasoning_texts_of()` output.
+    // Fixing the live path would mean buffering and re-scanning partial deltas mid-stream, a
+    // materially bigger feature than this pass's scope -- not attempted here.
+    actor.set_scan_response_format_leaks(true);
     // 013 §1's real run-event stream -- fires run/turn/model-call/tool-call/model-delta boundaries
     // as AgentSession::handle() actually reaches them. Enabled once, for the whole session; the
     // drain thread below (per turn) is what actually prints model_delta text AS it arrives.

@@ -958,6 +958,11 @@ add_executable(test_agent_session_streaming_model_calls test_agent_session_strea
 target_link_libraries(test_agent_session_streaming_model_calls PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_agent_session_streaming_model_calls COMMAND test_agent_session_streaming_model_calls)
 
+# ---- ADR-035 Phase 1 -- backend/path-agnostic response-format-leak-scan (run_model_call()).
+add_executable(test_agent_session_response_format_leak_scan test_agent_session_response_format_leak_scan.cpp)
+target_link_libraries(test_agent_session_response_format_leak_scan PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_agent_session_response_format_leak_scan COMMAND test_agent_session_response_format_leak_scan)
+
 # ---- ADR-028 -- session-scoped stateful tools (tool_pipeline.hpp make_tool_descriptor_with_invoke).
 add_executable(test_session_scoped_stateful_tools test_session_scoped_stateful_tools.cpp)
 target_link_libraries(test_session_scoped_stateful_tools PRIVATE agentengine::core agentengine_warnings)

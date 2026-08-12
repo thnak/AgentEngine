@@ -874,7 +874,15 @@ private:
                 b.seen = true;
                 auto const* dtype = delta->find("type");
                 std::string const dkind = (dtype && dtype->is_string()) ? dtype->as_string() : std::string{};
-                if (dkind == "text_delta") {
+                // ADR-035 Phase 1 hardening: only surface a `text_delta` as a `Text` content item
+                // when its own index was actually started as a `text` block (or never explicitly
+                // typed at all). A spec-compliant Anthropic server never sends `text_delta` for an
+                // index `content_block_start` declared `tool_use`/`thinking` -- but a malformed or
+                // buggy Anthropic-wire-compatible gateway (Bedrock/Vertex/self-hosted proxies are a
+                // real deployment shape here, not hypothetical) sending one anyway must not inject a
+                // stray `Text` item into `apply_response_format_scan`'s surface by misrouting through
+                // a mismatched `b.kind`.
+                if (dkind == "text_delta" && (b.kind.empty() || b.kind == "text")) {
                     auto const* text = delta->find("text");
                     if (text && text->is_string() && !text->as_string().empty()) {
                         ContentItem item;

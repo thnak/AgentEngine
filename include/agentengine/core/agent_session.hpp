@@ -50,6 +50,7 @@
 #include "agentengine/core/history_provider.hpp"
 #include "agentengine/core/interaction.hpp"
 #include "agentengine/core/json_value.hpp"
+#include "agentengine/core/response_format_leak_scan.hpp"
 #include "agentengine/core/run_event.hpp"
 #include "agentengine/core/standing_effect.hpp"
 #include "agentengine/core/stream.hpp"
@@ -343,12 +344,14 @@ public:
         if (stream_model_calls_) {
             // ADR-034: a visible fact about this run, not a silent one -- see
             // `set_stream_model_calls()`'s own comment for exactly what's traded away.
+            // Response-format-leak-scanning is NOT on this list (ADR-035 Phase 1): it now runs
+            // inside `run_model_call()` itself, applying uniformly whether or not this run streams
+            // -- see `set_scan_response_format_leaks()`'s own comment.
             emit_run_event(run_event_kind::warning,
                             run_event_payload::Warning{
                                 "this run streams each model call (ADR-034): failover/circuit-"
-                                "breaker-feedback/response-format-leak-scanning do not apply on the "
-                                "streaming path, even if the bound ChatClientT would otherwise "
-                                "provide them"});
+                                "breaker-feedback do not apply on the streaming path, even if the "
+                                "bound ChatClientT would otherwise provide them"});
         }
         history_.push_back(m.query.input);
 
@@ -492,41 +495,59 @@ private:
     // `std::optional` because not every backend/config populates it on the streaming path yet — this
     // function refuses to treat "the backend reported nothing" as "this call cost nothing", which is
     // the one way a silent budget bypass could otherwise happen.
+    //
+    // ADR-035 Phase 1: both branches converge on ONE tail below that applies
+    // `apply_response_format_scan()` when `scan_response_format_leaks_` is armed — backend-agnostic
+    // (OpenAI or Anthropic) and path-agnostic (streamed or not), unlike ADR-023's original scan,
+    // which only ever ran inside `OpenAIChatClient::chat()` itself. `request.tools` is the same
+    // `ChatRequest` already sent to the backend this round — no drift between what was declared and
+    // what the scan matches candidates against.
     quark::task<result<ChatResponse>> run_model_call(ChatRequest const& request, EffectContext& ctx) {
+        result<ChatResponse> response = std::unexpected(
+            error{failure_class::contract, "unreachable: neither call path executed", "run.internal"});
+
         if (!stream_model_calls_) {
-            co_return co_await chat_client_->chat(request, ctx);
+            response = co_await chat_client_->chat(request, ctx);
+        } else {
+            stream<ChatResponseUpdate> s = chat_client_->chat_stream(request, ctx);
+            Message accumulated;
+            accumulated.role = role::assistant;
+            std::optional<Usage> usage;
+            while (!s.done()) {
+                while (std::optional<ChatResponseUpdate> upd = s.next()) {
+                    if (auto const* t = std::get_if<Text>(&upd->delta.value);
+                        t != nullptr && !t->text.empty()) {
+                        emit_run_event(run_event_kind::model_delta, run_event_payload::ModelDelta{t->text});
+                    }
+                    accumulated.content.push_back(upd->delta);
+                    if (upd->is_final && upd->usage.has_value()) usage = upd->usage;
+                }
+                // The ring is momentarily empty but the producer thread is still live (real backends
+                // run their blocking HTTP/SSE read loop on a detached worker thread, see
+                // chat_stream()'s own implementation) — a bounded sleep, not a bare spin, so this
+                // doesn't burn the actor's own worker-thread CPU for the whole call the way a tight
+                // yield()-loop would.
+                if (!s.done()) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            if (s.terminal() != quark::ReplyStreamTerminal::Closed) {
+                response = std::unexpected(error{failure_class::transient,
+                                                  "chat_stream() did not reach a clean terminal",
+                                                  "run.stream_incomplete"});
+            } else if (!usage.has_value()) {
+                response = std::unexpected(
+                    error{failure_class::contract,
+                          "streaming chat call completed with no reported token usage — refusing to "
+                          "treat it as zero-cost against the per-run token budget (004 §5)",
+                          "run.usage_unavailable"});
+            } else {
+                response = ChatResponse{std::move(accumulated), *usage};
+            }
         }
 
-        stream<ChatResponseUpdate> s = chat_client_->chat_stream(request, ctx);
-        Message accumulated;
-        accumulated.role = role::assistant;
-        std::optional<Usage> usage;
-        while (!s.done()) {
-            while (std::optional<ChatResponseUpdate> upd = s.next()) {
-                if (auto const* t = std::get_if<Text>(&upd->delta.value); t != nullptr && !t->text.empty()) {
-                    emit_run_event(run_event_kind::model_delta, run_event_payload::ModelDelta{t->text});
-                }
-                accumulated.content.push_back(upd->delta);
-                if (upd->is_final && upd->usage.has_value()) usage = upd->usage;
-            }
-            // The ring is momentarily empty but the producer thread is still live (real backends run
-            // their blocking HTTP/SSE read loop on a detached worker thread, see chat_stream()'s own
-            // implementation) — a bounded sleep, not a bare spin, so this doesn't burn the actor's own
-            // worker-thread CPU for the whole call the way a tight yield()-loop would.
-            if (!s.done()) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        if (response.has_value() && scan_response_format_leaks_) {
+            response->message = apply_response_format_scan(std::move(response->message), request.tools);
         }
-        if (s.terminal() != quark::ReplyStreamTerminal::Closed) {
-            co_return std::unexpected(error{failure_class::transient,
-                                              "chat_stream() did not reach a clean terminal", "run.stream_incomplete"});
-        }
-        if (!usage.has_value()) {
-            co_return std::unexpected(
-                error{failure_class::contract,
-                      "streaming chat call completed with no reported token usage — refusing to "
-                      "treat it as zero-cost against the per-run token budget (004 §5)",
-                      "run.usage_unavailable"});
-        }
-        co_return ChatResponse{std::move(accumulated), *usage};
+        co_return response;
     }
 
     // ADR-029: the shared "assemble context -> call model -> invoke calls -> fold results ->
@@ -938,16 +959,35 @@ public:
     //
     // A DELIBERATE, DOCUMENTED TRADEOFF an opted-in caller accepts, not a strictly-better mode:
     // `FailoverChatClient::chat_stream()` never falls over to a secondary backend (that type's own
-    // file-top comment states this scoping outright — failover is `chat()`-only);
+    // file-top comment states this scoping outright — failover is `chat()`-only); and
     // `ResilientChatClient::chat_stream()` never reports an outcome to its circuit breaker (same
-    // file, same reason); and `OpenAIChatClient`'s `scan_response_format_leaks` (ADR-023's confused-
-    // deputy-in-raw-text detector) has no streaming-path equivalent — none of these are silently
-    // broken by streaming so much as they are simply not part of what streaming exercises, and a
-    // caller composing any of them underneath a streaming session accepts losing that protection for
-    // this session. A `run_event_kind::warning` fires once per run when streaming is active, so this
-    // is a visible fact about the run, not a silent one.
+    // file, same reason) — neither is silently broken by streaming so much as simply not part of
+    // what streaming exercises, and a caller composing either underneath a streaming session accepts
+    // losing that protection for this session. A `run_event_kind::warning` fires once per run when
+    // streaming is active, so this is a visible fact about the run, not a silent one.
+    //
+    // NOT on that tradeoff list (ADR-035 Phase 1, unlike ADR-034's original scope): response-format-
+    // leak-scanning. `run_model_call()` applies `apply_response_format_scan()` itself, uniformly,
+    // whether or not this flag is set — see `set_scan_response_format_leaks()` immediately below.
     void set_stream_model_calls(bool stream) noexcept { stream_model_calls_ = stream; }
     [[nodiscard]] bool stream_model_calls() const noexcept { return stream_model_calls_; }
+
+    // ADR-035 Phase 1: opts a session INTO `apply_response_format_scan()` (ADR-023 §6 points 3-4,
+    // now `core/response_format_leak_scan.hpp`) running once per model call, on the reconstructed
+    // `Message`, in `run_model_call()` — regardless of which `ChatClientT` backend produced it or
+    // whether this run streams. Defaults false, matching ADR-023 Finding 6: scanning is
+    // operator-armed, never content-triggered. Previously this protection existed ONLY as
+    // `OpenAIChatClient`'s own `scan_response_format_leaks` constructor flag, reachable solely
+    // through that backend's non-streaming `chat()` — `AnthropicChatClient` had no equivalent in
+    // either path. Arming THIS flag instead is now the general way to get the protection, on any
+    // backend, on any path; `OpenAIChatClient`'s own flag still exists (unchanged behavior, for a
+    // caller using that client directly without an `AgentSession`) but the two are independent knobs
+    // — arming both for the same `OpenAIChatClient`-backed, non-streaming session runs the scan
+    // twice, which is a safe no-op (`apply_response_format_scan` skips already-`tainted` items by
+    // construction — see that function's own comment for why re-scanning a diagnostic it already
+    // produced would otherwise be a real laundering path), not a behavior change, just wasted work.
+    void set_scan_response_format_leaks(bool scan) noexcept { scan_response_format_leaks_ = scan; }
+    [[nodiscard]] bool scan_response_format_leaks() const noexcept { return scan_response_format_leaks_; }
 
     // The per-run bound on internal tool-call rounds (see `handle()`'s own loop and `initialize()`'s
     // `max_turns` parameter, which is the normal way this gets set before the first `StartRun`).
@@ -1307,6 +1347,10 @@ private:
     // ADR-034 -- opts a session into streaming each round's model call; see
     // `set_stream_model_calls()`'s own comment for the real tradeoffs. Default false.
     bool                                                 stream_model_calls_ = false;
+    // ADR-035 Phase 1 -- opts a session into `apply_response_format_scan()` inside
+    // `run_model_call()`, backend-agnostically; see `set_scan_response_format_leaks()`'s own
+    // comment. Default false (ADR-023 Finding 6: operator-armed, never content-triggered).
+    bool                                                 scan_response_format_leaks_ = false;
     // Milestone 5 Phase H2 (018 §2) -- how many `StartRun` asks this session has denied at
     // admission. Same "counter the caller/tests can observe even on the fail-closed path" shape as
     // `run_tokens_consumed_` immediately above it.

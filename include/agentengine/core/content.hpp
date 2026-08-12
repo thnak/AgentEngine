@@ -58,8 +58,10 @@ struct Data {  // ae-naming-lint: allow Data — pre-existing M0 scaffolding, re
 
 // decisions/ADR-023-response-format-codec-seam.md §6 point 4 / 007 §4 amendment: WHERE a call came
 // from is load-bearing, not decorative. `vendor_structured` is today's only path -- a backend's own
-// wire-format `tool_calls`/`tool_use` field, unchanged trust posture. `text_derived` means a
-// `ChatClient` (e.g. `OpenAIChatClient`, only when `scan_response_format_leaks` is armed) pattern-
+// wire-format `tool_calls`/`tool_use` field, unchanged trust posture. `text_derived` means
+// `apply_response_format_scan()` (core/response_format_leak_scan.hpp; ADR-035 Phase 1 made this
+// backend-agnostic -- armed via `OpenAIChatClient::scan_response_format_leaks` for that backend
+// directly, or via `AgentSession::set_scan_response_format_leaks()` for any backend/path) pattern-
 // matched this call out of free-text `content` that leaked raw response-format tokens (Harmony/
 // DeepSeek/Hermes/etc) -- model-supplied text, re-parsed heuristically, never itself an authorization
 // decision (007 §4: "no policy-deciding API accepts a tainted value"). `core/tool_pipeline.hpp`'s
