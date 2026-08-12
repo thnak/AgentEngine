@@ -554,7 +554,8 @@ private:
         CapabilitySet const empty_caps = CapabilitySet::grant_root({});
         CapabilitySet const& held      = capabilities_ ? *capabilities_ : empty_caps;
 
-        for (; effect_context_.turn_index < max_turns_; ++effect_context_.turn_index) {
+        for (; !max_turns_.has_value() || effect_context_.turn_index < *max_turns_;
+             ++effect_context_.turn_index) {
             emit_run_event(run_event_kind::turn_started, run_event_payload::Turn{effect_context_.turn_index});
 
             // Milestone 4 Phase B2: what the model sees is derived through a real `ContextProvider`
@@ -853,13 +854,20 @@ public:
     // left as a named follow-up; this parameter is the `AgentSession`-side mechanism that consumes it.
     // `max_turns` is ADDITIVE, appended last with a default of `16` (matching `AgentMetadata::
     // max_turns`'s own default, agent_registry.hpp) -- the same "old call sites keep compiling with
-    // their old behavior unchanged" precedent `token_budget` established immediately above it. Never
-    // `nullopt`/unbounded: an internal tool-call loop that could run forever is exactly the "an
-    // unbounded workflow does not run — the bound is required" rule 014 §2 states elsewhere, applied
-    // here to a single run's own internal rounds.
+    // their old behavior unchanged" precedent `token_budget` established immediately above it.
+    //
+    // DELIBERATE DEPARTURE (2026-08-12, explicit project-owner decision): defaults to
+    // `std::nullopt` (unbounded), the same "nullopt = unbounded" convention `token_budget` already
+    // uses. This is knowingly NOT what 014 §2's "an unbounded workflow does not run — the bound is
+    // required" rule would say for a `Workflow`, and knowingly loosens I8 ("budgets are enforced")
+    // for this specific loop's default: nothing stops a model that never stops requesting tool
+    // calls from running forever (`test_agent_session_tool_call_loop.cpp`'s own R4/R5 already prove
+    // the bounded case still works correctly -- both pin an explicit `max_turns=3`, unaffected by
+    // this default change). A caller that wants the old safety valve back sets `max_turns` (or
+    // `token_budget`, which still defaults unbounded too and is the other real backstop) explicitly.
     void initialize(std::string session_id, Principal principal,
                      std::optional<std::uint64_t> token_budget = std::nullopt,
-                     std::uint64_t max_turns = 16) {
+                     std::optional<std::uint64_t> max_turns = std::nullopt) {
         session_id_   = std::move(session_id);
         principal_    = std::move(principal);
         token_budget_ = token_budget;
@@ -943,8 +951,8 @@ public:
 
     // The per-run bound on internal tool-call rounds (see `handle()`'s own loop and `initialize()`'s
     // `max_turns` parameter, which is the normal way this gets set before the first `StartRun`).
-    void set_max_turns(std::uint64_t max_turns) noexcept { max_turns_ = max_turns; }
-    [[nodiscard]] std::uint64_t max_turns() const noexcept { return max_turns_; }
+    void set_max_turns(std::optional<std::uint64_t> max_turns) noexcept { max_turns_ = max_turns; }
+    [[nodiscard]] std::optional<std::uint64_t> max_turns() const noexcept { return max_turns_; }
 
     // Milestone 4 Phase C1 (005 §6: "Fork — copy-on-write new session id from a history prefix;
     // the sanctioned answer to concurrent runs (001 §4) and to 'what if' exploration"). Copies
@@ -1194,8 +1202,9 @@ public:
         run_tokens_consumed_  = 0;
         admission_denied_count_ = 0;
         // Same "configured ceiling" category as `token_budget_` immediately above -- reset to its
-        // own fresh-construction default, not left at whatever the deleted session had configured.
-        max_turns_            = 16;
+        // own fresh-construction default (unbounded, see initialize()'s own comment), not left at
+        // whatever the deleted session had configured.
+        max_turns_            = std::nullopt;
         // ADR-028 addendum: this function's own contract is "no residue left to read back through
         // ANY of this class's own accessors" (005 §6's "hard removal" promise) -- since ADR-028, a
         // `HistoryProviderT` MAY hold real session-scoped data (a stateful tool's accumulated
@@ -1287,7 +1296,8 @@ private:
     std::uint64_t                                      run_tokens_consumed_ = 0;
     // The internal tool-call loop's own bound (`handle()`) -- configured via `initialize()`/
     // `set_max_turns()`, same "configured ceiling" category as `token_budget_` immediately above.
-    std::uint64_t                                      max_turns_ = 16;
+    // Defaults unbounded (nullopt) -- see `initialize()`'s own comment for the deliberate tradeoff.
+    std::optional<std::uint64_t>                        max_turns_;
     // The synchronous approval gate every round's `invoke_tool` call receives -- empty (fail-closed)
     // by default, configured via `set_approval_decider()`.
     ApprovalDecider                                     approval_decider_{};

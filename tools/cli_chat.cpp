@@ -87,8 +87,6 @@ constexpr std::uint16_t kHttpsPort = 443;
 constexpr char const* kPathPrefix = "/api/v1";
 constexpr char const* kSecretName = "openrouter-api-key";
 constexpr char const* kWorkMount = "work";
-constexpr int kMaxToolRoundsPerTurn = 6;  // guards against a runaway tool-call loop, never a hard cap
-                                            // on ordinary multi-step use
 
 // ---- The real execute_code tool: wired to MediatedPythonRunner, not a stand-in --------------------
 
@@ -741,23 +739,27 @@ int main() {
     quark::detail::MessagePool pool(64);
 
     CliSession actor;
+    // Fixed and stable for this CLI's whole lifetime (one process, one session) -- passed below as
+    // both AgentSession's own session_id AND the ChatClient's `end_user_id` (the OpenAI-compatible
+    // `user` body field), so a caching-aware provider/gateway sees a CONSISTENT identity across
+    // every call this process ever makes, not a fresh one per call, real Anthropic/OpenAI-side
+    // prompt-cache locality depends on -- a random or per-call value would never keep a cache hit.
+    std::string const session_id = "cli-chat-session";
     // Trailing args beyond `caps`/`store`/`kPathPrefix` are every one of OpenAIChatClient's own
-    // defaults spelled out verbatim (chat_client.hpp's own constructor), EXCEPT the last:
-    // `scan_response_format_leaks=true` arms ADR-023's Reasoning/<think>-channel extraction. NOTE
-    // (ADR-034): this scan runs only inside `chat()`, never `chat_stream()` -- with streaming
-    // engaged below, "[thinking]" from this mechanism will not fire; it's left armed only so the
-    // non-streaming path this file no longer takes stays correct if streaming is ever toggled off.
+    // defaults spelled out verbatim (chat_client.hpp's own constructor), EXCEPT two: `end_user_id`
+    // (see above) and `scan_response_format_leaks=true`, which arms ADR-023's Reasoning/<think>-
+    // channel extraction. NOTE (ADR-034): that scan runs only inside `chat()`, never
+    // `chat_stream()` -- with streaming engaged below, "[thinking]" from this mechanism will not
+    // fire; it's left armed only so the non-streaming path this file no longer takes stays correct
+    // if streaming is ever toggled off.
     actor.emplace_chat_client(host, kHttpsPort, model, SecretRef{kSecretName}, caps, store,
                                 kPathPrefix, sandbox::resolve_host, std::string{}, std::string{},
-                                std::string{}, std::string{}, std::nullopt,
+                                std::string{}, session_id, std::nullopt,
                                 sandbox::ProviderTransport::tls,
                                 /*scan_response_format_leaks=*/true);
-    // `kMaxToolRoundsPerTurn` is now the SESSION's own internal round bound (`AgentSession::handle()`'s
-    // loop, agent_session.hpp) rather than a loop this file drives externally -- one `StartRun` ask
-    // below now resolves an entire multi-round tool conversation internally before returning.
-    std::string const session_id = "cli-chat-session";
-    actor.initialize(session_id, Principal{"cli-user", ""}, /*token_budget=*/std::nullopt,
-                      /*max_turns=*/kMaxToolRoundsPerTurn);
+    // Unbounded by default now (agent_session.hpp's own initialize(), 2026-08-12 change) -- this
+    // CLI no longer caps the internal tool-call loop's own round count at all.
+    actor.initialize(session_id, Principal{"cli-user", ""});
     actor.set_capabilities(&held);
     // ADR-034: real token-by-token streaming, traded for failover/circuit-breaker-feedback/
     // response-format-leak-scanning not applying on this path -- see set_stream_model_calls()'s own
