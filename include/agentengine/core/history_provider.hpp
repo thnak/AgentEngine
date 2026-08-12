@@ -21,6 +21,7 @@
 #include <utility>
 
 #include "agentengine/core/chat_client.hpp"
+#include "agentengine/core/chat_stream_drain.hpp"  // ADR-035 Phase 3: drain_chat_stream, DrainedChatStream
 #include "agentengine/core/context_provider.hpp"
 
 namespace agentengine {
@@ -86,8 +87,11 @@ template <std::size_t N, class SummarizerT>
     requires ChatClient<SummarizerT>
 class HistoryProvider<Summarize<N, SummarizerT>> {
 public:
-    // Milestone 5 Phase B4: a real coroutine, not a cosmetic one -- this conformer `co_await`s a
-    // declared `SummarizerT::chat()` (004 §1) to produce the summary.
+    // ADR-035 Phase 3: drains `SummarizerT::chat_stream()` (never `chat()`, ahead of that method's
+    // eventual removal from the `ChatClient` concept) via the shared `drain_chat_stream()` helper.
+    // Unlike `MemoryProvider::on_turn_end`'s best-effort extraction, a summarization failure here
+    // still propagates (`std::unexpected`) -- this call site's own semantics are unchanged from
+    // when it called `chat()` directly, only the underlying method it drains changed.
     [[nodiscard]] task<result<ContextContribution>> on_context(SessionContext& session_ctx,
                                                                  EffectContext& ctx) {
         auto const& h = session_ctx.history;
@@ -105,13 +109,16 @@ public:
         std::vector<Message> recent(h.begin() + static_cast<std::ptrdiff_t>(split), h.end());
 
         ChatRequest summarize_request{std::move(older)};
-        result<ChatResponse> summary_response = co_await summarizer_.chat(summarize_request, ctx);
-        if (!summary_response) co_return std::unexpected(summary_response.error());
+        DrainedChatStream drained = drain_chat_stream(summarizer_.chat_stream(summarize_request, ctx));
+        if (!drained.ok) {
+            co_return std::unexpected(
+                drained_failure_to_agent_error(drained.failure, "history.summarize_failed"));
+        }
 
         // 005 §4: "a `system` summary message" — the summarizer's own reply, re-labeled `system`
         // regardless of what role it came back as, since a summary is never attributable to the
         // user or assistant turn it replaces.
-        Message summary_message      = summary_response->message;
+        Message summary_message      = std::move(drained.accumulated);
         summary_message.role         = role::system;
         contribution.messages.push_back(std::move(summary_message));
         contribution.messages.insert(contribution.messages.end(), recent.begin(), recent.end());

@@ -68,6 +68,7 @@
 #include <vector>
 
 #include "agentengine/core/chat_client.hpp"
+#include "agentengine/core/chat_stream_drain.hpp"  // DrainedChatStream, drain_chat_stream (ADR-035 Phase 3)
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/middleware.hpp"
@@ -83,44 +84,6 @@ namespace agentengine {
 
 namespace model_call_gateway_detail {
 
-// A single `chat_stream()` attempt, drained to completion. Mirrors `AgentSession::run_model_call()`'s
-// own streaming-branch poll loop and fail-closed-on-missing-usage rule EXACTLY (004 §5's
-// `TokenBudget<N>` depends on a true per-call token count; a call that reports no usage is never
-// silently treated as free) -- this file's whole reason to exist is giving that same reliability
-// this file's callers already trust, not a weaker copy of it.
-struct DrainedAttempt {
-    Message accumulated;
-    std::optional<Usage> usage;
-    bool ok = false;
-    quark::error failure{};  // meaningful only when !ok
-};
-
-[[nodiscard]] inline DrainedAttempt drain_chat_stream_to_message(stream<ChatResponseUpdate> s) {
-    DrainedAttempt out;
-    out.accumulated.role = role::assistant;
-    while (!s.done()) {
-        while (std::optional<ChatResponseUpdate> upd = s.next()) {
-            out.accumulated.content.push_back(upd->delta);
-            if (upd->is_final && upd->usage.has_value()) out.usage = upd->usage;
-        }
-        // Same bounded-sleep poll shape run_model_call() already uses -- the ring is momentarily
-        // empty but the producer thread (a detached HTTP/SSE read loop) is still live.
-        if (!s.done()) std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
-    if (s.terminal() != quark::ReplyStreamTerminal::Closed) {
-        out.ok = false;
-        out.failure = s.fail_error();
-        return out;
-    }
-    if (!out.usage.has_value()) {
-        out.ok = false;
-        out.failure = quark::error{quark::errc::internal, "gateway.usage_unavailable"};
-        return out;
-    }
-    out.ok = true;
-    return out;
-}
-
 // ADR-036 red-team: the retry-relevant split `chat()`'s own `ae::failure_class::transient` scoping
 // already makes (004 §4: retry applies to Transient only), re-expressed against `quark::errc`'s
 // coarser vocabulary -- the only thing a drained `chat_stream()` failure carries. Deliberately
@@ -129,17 +92,6 @@ struct DrainedAttempt {
 [[nodiscard]] inline bool is_retryable(quark::errc code) noexcept {
     return code == quark::errc::unavailable || code == quark::errc::timeout ||
            code == quark::errc::overloaded;
-}
-
-// A drained failure, or an admission shed, converted into this call's OWN `ae::error` (never a raw
-// `quark::error` leaked past this file -- callers of `ModelCallGateway::call()` see the same
-// `ae::error` shape every other `ChatClient`-adjacent failure uses). `quark::error::detail` is a
-// non-owning `string_view` (see `protocol/openai/chat_client.hpp`'s own `classify_http_status_
-// stream_error` comment for why every producer of one is a static literal) -- copying it into an
-// owned `ae::error::message` here, at the point it's finally read, is safe (the source literal has
-// static storage duration; this is an ordinary copy, not a dangling read).
-[[nodiscard]] inline error to_agent_error(quark::error const& e, char const* code) noexcept {
-    return error{failure_class::transient, std::string(e.detail), code};
 }
 
 }  // namespace model_call_gateway_detail
@@ -254,19 +206,26 @@ private:
                     error{failure_class::transient, "circuit open, admission shed", "gateway.circuit_open"});
             }
 
-            model_call_gateway_detail::DrainedAttempt drained =
-                model_call_gateway_detail::drain_chat_stream_to_message(backend.chat_stream(request, ctx));
+            DrainedChatStream drained = drain_chat_stream(backend.chat_stream(request, ctx));
+            // A Closed terminal with no reported usage is treated as a failure here, not a success
+            // -- 004 §5's TokenBudget<N> depends on a true per-call token count, so this gateway
+            // never lets a call with unknown cost masquerade as free (same fail-closed rule
+            // AgentSession::run_model_call() applies on its own streaming branch).
+            bool const succeeded = drained.ok && drained.usage.has_value();
+            if (drained.ok && !drained.usage.has_value()) {
+                drained.failure = quark::error{quark::errc::internal, "gateway.usage_unavailable"};
+            }
             ++attempts_used;
-            breaker.on_result(drained.ok, quark::monotonic_now_ns());
+            breaker.on_result(succeeded, quark::monotonic_now_ns());
 
-            if (drained.ok) {
+            if (succeeded) {
                 co_return ChatResponse{std::move(drained.accumulated), *drained.usage};
             }
 
             bool const retryable = model_call_gateway_detail::is_retryable(drained.failure.code);
             if (!retryable || attempts_used >= retry_policy_.max_attempts) {
                 co_return std::unexpected(
-                    model_call_gateway_detail::to_agent_error(drained.failure, "gateway.attempt_failed"));
+                    drained_failure_to_agent_error(drained.failure, "gateway.attempt_failed"));
             }
 
             std::chrono::milliseconds const delay = compute_backoff(attempts_used - 1);
@@ -274,12 +233,12 @@ private:
                 auto const now = std::chrono::steady_clock::now();
                 if (now >= ctx.deadline) {
                     co_return std::unexpected(
-                        model_call_gateway_detail::to_agent_error(drained.failure, "gateway.attempt_failed"));
+                        drained_failure_to_agent_error(drained.failure, "gateway.attempt_failed"));
                 }
                 auto const remaining = ctx.deadline - now;
                 if (delay > remaining) {
                     co_return std::unexpected(
-                        model_call_gateway_detail::to_agent_error(drained.failure, "gateway.attempt_failed"));
+                        drained_failure_to_agent_error(drained.failure, "gateway.attempt_failed"));
                 }
             }
             std::this_thread::sleep_for(delay);

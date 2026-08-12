@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "agentengine/core/chat_client.hpp"
+#include "agentengine/core/chat_stream_drain.hpp"  // ADR-035 Phase 3: drain_chat_stream, DrainedChatStream
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/context_provider.hpp"
 #include "agentengine/core/effect_context.hpp"
@@ -144,16 +145,20 @@ public:
     // EffectContext-carrying model call" (029 §4). Best-effort: an extraction failure (the
     // summarizer erroring, or the write itself failing) never fails the TURN this hook runs after
     // — extraction is opt-in background enrichment, not a load-bearing step of the turn loop
-    // (029 §4's own "opt-in policy, not implicit behaviour"). Milestone 5 Phase B4: a real coroutine
-    // now -- `co_await`s the declared `SummarizerT::chat()` (004 §1).
+    // (029 §4's own "opt-in policy, not implicit behaviour"). ADR-035 Phase 3: drains
+    // `SummarizerT::chat_stream()` (never `chat()`, ahead of that method's eventual removal from
+    // the `ChatClient` concept) via the shared `drain_chat_stream()` helper -- best-effort here
+    // means this call site doesn't need `DrainedChatStream::usage` at all (unlike
+    // `ModelCallGateway`/`AgentSession::run_model_call()`, which fail closed on missing usage for
+    // budget-enforcement reasons that don't apply to this opt-in background extraction).
     task<std::monostate> on_turn_end(TurnView turn, EffectContext& ctx) {
         if (turn.turn_messages.empty()) co_return std::monostate{};
 
         ChatRequest request{std::vector<Message>(turn.turn_messages.begin(), turn.turn_messages.end())};
-        result<ChatResponse> extracted = co_await summarizer_.chat(request, ctx);
-        if (!extracted) co_return std::monostate{};
-        if (extracted->message.content.empty()) co_return std::monostate{};
-        auto const* text = std::get_if<Text>(&extracted->message.content.front().value);
+        DrainedChatStream drained = drain_chat_stream(summarizer_.chat_stream(request, ctx));
+        if (!drained.ok) co_return std::monostate{};
+        if (drained.accumulated.content.empty()) co_return std::monostate{};
+        auto const* text = std::get_if<Text>(&drained.accumulated.content.front().value);
         if (text == nullptr || text->text.empty()) co_return std::monostate{};
 
         MemoryItem item{};
