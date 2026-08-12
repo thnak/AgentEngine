@@ -23,6 +23,7 @@
 #include <chrono>
 #include <cstdio>
 #include <memory>
+#include <memory_resource>
 #include <string>
 #include <thread>
 #include <vector>
@@ -75,7 +76,20 @@ public:
         reply.content.push_back(item);
         co_return ChatResponse{reply, Usage{1, 1, 0, 0, 0.0}};
     }
-    stream<ChatResponseUpdate> chat_stream(ChatRequest const&, EffectContext&) { return {}; }
+    stream<ChatResponseUpdate> chat_stream(ChatRequest const&, EffectContext&) {
+        stream_config<ChatResponseUpdate> cfg;
+        cfg.capacity = 32;  // generous enough that a small scripted response never blocks on credit
+        auto pair = make_stream<ChatResponseUpdate>(std::pmr::get_default_resource(), cfg);
+        ChatResponseUpdate upd{};
+        upd.delta.value  = Text{"ok"};
+        upd.delta.origin = content_origin::assistant;
+        upd.is_final     = true;
+        upd.usage        = Usage{1, 1, 0, 0, 0.0};
+        auto pushed = pair.producer.push(upd);
+        (void)pushed;
+        pair.producer.close();
+        return std::move(pair.consumer);
+    }
 };
 static_assert(ChatClient<CannedChatClient>, "CannedChatClient must satisfy the ChatClient concept");
 

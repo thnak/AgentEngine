@@ -8,6 +8,7 @@
 // that reaches into `AgentSession` and deletes/clears anything.
 
 #include <iostream>
+#include <memory_resource>
 #include <string>
 
 #include "quark/core/testkit.hpp"
@@ -41,7 +42,13 @@ public:
             ae::error{ae::failure_class::transient, "simulated provider outage", "chat.always_fails"});
     }
 
-    ae::stream<ae::ChatResponseUpdate> chat_stream(ae::ChatRequest const&, ae::EffectContext&) { return {}; }  // unused; empty/invalid stream
+    ae::stream<ae::ChatResponseUpdate> chat_stream(ae::ChatRequest const&, ae::EffectContext&) {
+        ae::stream_config<ae::ChatResponseUpdate> cfg;
+        cfg.capacity = 32;
+        auto pair = ae::make_stream<ae::ChatResponseUpdate>(std::pmr::get_default_resource(), cfg);
+        pair.producer.fail(quark::error{quark::errc::internal, "simulated provider outage"});
+        return std::move(pair.consumer);
+    }
 };
 static_assert(ae::ChatClient<AlwaysFailingChatClient>,
               "AlwaysFailingChatClient must satisfy the ChatClient concept (004 §1)");

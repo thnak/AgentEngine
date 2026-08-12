@@ -12,6 +12,7 @@
 // real ChatClient conformer sitting on top of it).
 
 #include <cstdio>
+#include <memory_resource>
 #include <string>
 
 #include "agentengine/core/chat_client.hpp"
@@ -58,8 +59,29 @@ public:
     }
 
     agentengine::stream<agentengine::ChatResponseUpdate> chat_stream(agentengine::ChatRequest const&,
-                                                                       agentengine::EffectContext&) {
-        return {};
+                                                                       agentengine::EffectContext& ctx) {
+        agentengine::stream_config<agentengine::ChatResponseUpdate> cfg;
+        cfg.capacity = 32;
+        auto pair =
+            agentengine::make_stream<agentengine::ChatResponseUpdate>(std::pmr::get_default_resource(), cfg);
+        // Resolution happens HERE, inside chat_stream(), against EffectContext -- mirrors chat()'s own
+        // fresh-per-call resolve(), never at construction.
+        auto lease = store_.resolve(api_key_ref_, ctx);
+        if (!lease) {
+            pair.producer.fail(quark::error{quark::errc::validation, "secret.not_granted"});
+            return std::move(pair.consumer);
+        }
+
+        agentengine::ChatResponseUpdate upd;
+        upd.delta.origin = agentengine::content_origin::assistant;
+        // Test-only: echoes the resolved credential back so the test can observe which value was
+        // actually used per call, mirroring chat()'s own observation point.
+        upd.delta.value = agentengine::Text{lease->reveal_text()};
+        upd.is_final    = true;
+        auto pushed = pair.producer.push(upd);
+        (void)pushed;
+        pair.producer.close();
+        return std::move(pair.consumer);
     }
 
 private:

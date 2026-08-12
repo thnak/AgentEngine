@@ -7,6 +7,7 @@
 // dispatch cannot actually produce -- see server.hpp's own file-top comment for why).
 
 #include <cstdio>
+#include <memory_resource>
 #include <string>
 
 #include "quark/core/actor.hpp"
@@ -49,7 +50,20 @@ public:
         reply.content.push_back(item);
         co_return ae::ChatResponse{reply, ae::Usage{1, 1, 0, 0, 0.0}};
     }
-    ae::stream<ae::ChatResponseUpdate> chat_stream(ae::ChatRequest const&, ae::EffectContext&) { return {}; }
+    ae::stream<ae::ChatResponseUpdate> chat_stream(ae::ChatRequest const&, ae::EffectContext& ctx) {
+        ae::stream_config<ae::ChatResponseUpdate> cfg;
+        cfg.capacity = 32;  // generous enough that a small scripted response never blocks on credit
+        auto pair = ae::make_stream<ae::ChatResponseUpdate>(std::pmr::get_default_resource(), cfg);
+        ae::ChatResponseUpdate upd{};
+        upd.delta.value  = ae::Text{"reply to run " + ctx.run_id};
+        upd.delta.origin = ae::content_origin::assistant;
+        upd.is_final     = true;
+        upd.usage        = ae::Usage{1, 1, 0, 0, 0.0};
+        auto pushed = pair.producer.push(upd);
+        (void)pushed;
+        pair.producer.close();
+        return std::move(pair.consumer);
+    }
 };
 static_assert(ae::ChatClient<CannedChatClient>);
 
@@ -62,7 +76,13 @@ public:
         co_return std::unexpected(ae::error{ae::failure_class::transient, "deliberate chat failure",
                                              "test.deliberate_chat_failure"});
     }
-    ae::stream<ae::ChatResponseUpdate> chat_stream(ae::ChatRequest const&, ae::EffectContext&) { return {}; }
+    ae::stream<ae::ChatResponseUpdate> chat_stream(ae::ChatRequest const&, ae::EffectContext&) {
+        ae::stream_config<ae::ChatResponseUpdate> cfg;
+        cfg.capacity = 32;
+        auto pair = ae::make_stream<ae::ChatResponseUpdate>(std::pmr::get_default_resource(), cfg);
+        pair.producer.fail(quark::error{quark::errc::internal, "deliberate chat failure"});
+        return std::move(pair.consumer);
+    }
 };
 static_assert(ae::ChatClient<FailingChatClient>);
 

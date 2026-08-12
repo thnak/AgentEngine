@@ -13,6 +13,7 @@
 
 #include <cstdint>
 #include <iostream>
+#include <memory_resource>
 #include <string>
 
 #include "quark/core/testkit.hpp"
@@ -73,7 +74,34 @@ public:
         co_return ae::ChatResponse{reply, ae::Usage{in_tokens, out_tokens, 0, 0, 0.0}};
     }
 
-    ae::stream<ae::ChatResponseUpdate> chat_stream(ae::ChatRequest const&, ae::EffectContext&) { return {}; }  // unused; empty/invalid stream
+    ae::stream<ae::ChatResponseUpdate> chat_stream(ae::ChatRequest const& request, ae::EffectContext&) {
+        std::uint64_t in_tokens = 0;
+        std::uint64_t out_tokens = 0;
+        if (!request.messages.empty()) {
+            auto const& item = request.messages.back().content.front();
+            if (std::holds_alternative<ae::Text>(item.value)) {
+                std::string const& text = std::get<ae::Text>(item.value).text;
+                auto const comma = text.find(',');
+                if (comma != std::string::npos) {
+                    in_tokens  = std::stoull(text.substr(0, comma));
+                    out_tokens = std::stoull(text.substr(comma + 1));
+                }
+            }
+        }
+
+        ae::stream_config<ae::ChatResponseUpdate> cfg;
+        cfg.capacity = 32;
+        auto pair = ae::make_stream<ae::ChatResponseUpdate>(std::pmr::get_default_resource(), cfg);
+        ae::ChatResponseUpdate upd;
+        upd.delta.origin = ae::content_origin::assistant;
+        upd.delta.value  = ae::Text{"reply"};
+        upd.is_final     = true;
+        upd.usage        = ae::Usage{in_tokens, out_tokens, 0, 0, 0.0};
+        auto pushed = pair.producer.push(upd);
+        (void)pushed;
+        pair.producer.close();
+        return std::move(pair.consumer);
+    }
 };
 static_assert(ae::ChatClient<ScriptedUsageChatClient>,
               "ScriptedUsageChatClient must satisfy the ChatClient concept (004 §1)");

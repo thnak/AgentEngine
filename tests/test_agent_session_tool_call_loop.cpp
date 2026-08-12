@@ -145,7 +145,29 @@ public:
         co_return ae::ChatResponse{reply, ae::Usage{1, 1, 0, 0, 0.0}};
     }
 
-    ae::stream<ae::ChatResponseUpdate> chat_stream(ae::ChatRequest const&, ae::EffectContext&) { return {}; }
+    ae::stream<ae::ChatResponseUpdate> chat_stream(ae::ChatRequest const&, ae::EffectContext&) {
+        ae::stream_config<ae::ChatResponseUpdate> cfg;
+        cfg.capacity = 32;  // generous enough that a small scripted response never blocks on credit
+        auto pair = ae::make_stream<ae::ChatResponseUpdate>(std::pmr::get_default_resource(), cfg);
+        ae::Message reply;
+        if (always_tool_call) {
+            reply = make_tool_call_message("c-" + std::to_string(call_count), always_tool_call_name,
+                                            R"({"value":1})");
+        } else if (call_count < scripted_responses.size()) {
+            reply = scripted_responses[call_count];
+        } else {
+            reply = make_text_message("done");
+        }
+        ++call_count;
+        ae::ChatResponseUpdate upd;
+        if (!reply.content.empty()) upd.delta = reply.content.front();
+        upd.is_final = true;
+        upd.usage    = ae::Usage{1, 1, 0, 0, 0.0};
+        auto pushed = pair.producer.push(upd);
+        (void)pushed;
+        pair.producer.close();
+        return std::move(pair.consumer);
+    }
 
     [[nodiscard]] static ae::Message make_text_message(std::string text) {
         ae::Message m;

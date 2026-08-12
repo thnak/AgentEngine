@@ -8,6 +8,7 @@
 // carries (never a parallel identity parameter nobody wires through).
 
 #include <iostream>
+#include <memory_resource>
 #include <string>
 
 #include "quark/core/testkit.hpp"
@@ -49,7 +50,20 @@ public:
         co_return ae::ChatResponse{reply, ae::Usage{1, 1, 0, 0, 0.0}};
     }
 
-    ae::stream<ae::ChatResponseUpdate> chat_stream(ae::ChatRequest const&, ae::EffectContext&) { return {}; }  // unused; empty/invalid stream
+    ae::stream<ae::ChatResponseUpdate> chat_stream(ae::ChatRequest const&, ae::EffectContext& ctx) {
+        ae::stream_config<ae::ChatResponseUpdate> cfg;
+        cfg.capacity = 32;
+        auto pair = ae::make_stream<ae::ChatResponseUpdate>(std::pmr::get_default_resource(), cfg);
+        ae::ChatResponseUpdate upd;
+        upd.delta.origin = ae::content_origin::assistant;
+        upd.delta.value  = ae::Text{"run=" + ctx.run_id + " turn=" + std::to_string(ctx.turn_index)};
+        upd.is_final     = true;
+        upd.usage        = ae::Usage{1, 1, 0, 0, 0.0};
+        auto pushed = pair.producer.push(upd);
+        (void)pushed;
+        pair.producer.close();
+        return std::move(pair.consumer);
+    }
 };
 static_assert(ae::ChatClient<RecordingChatClient>,
               "RecordingChatClient must satisfy the ChatClient concept (004 §1)");

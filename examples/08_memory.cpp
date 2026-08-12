@@ -17,6 +17,7 @@
 // Run: ./agentengine_example_08_memory
 
 #include <cstdio>
+#include <memory_resource>
 #include <span>
 #include <string>
 #include <vector>
@@ -58,7 +59,20 @@ public:
         co_return ChatResponse{reply, Usage{1, 1, 0, 0, 0.0}};
     }
 
-    stream<ChatResponseUpdate> chat_stream(ChatRequest const&, EffectContext&) { return {}; }  // unused
+    stream<ChatResponseUpdate> chat_stream(ChatRequest const&, EffectContext&) {
+        stream_config<ChatResponseUpdate> cfg;
+        cfg.capacity = 32;
+        auto pair = make_stream<ChatResponseUpdate>(std::pmr::get_default_resource(), cfg);
+        ChatResponseUpdate upd;
+        upd.delta.origin = content_origin::assistant;
+        upd.delta.value  = Text{"the user prefers dark mode"};
+        upd.is_final     = true;
+        upd.usage        = Usage{1, 1, 0, 0, 0.0};
+        auto pushed      = pair.producer.push(upd);
+        (void)pushed;
+        pair.producer.close();
+        return std::move(pair.consumer);
+    }
 };
 static_assert(ChatClient<MockSummarizerClient>);
 

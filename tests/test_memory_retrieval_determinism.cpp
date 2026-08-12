@@ -10,6 +10,7 @@
 // must not need.
 
 #include <iostream>
+#include <memory_resource>
 #include <string>
 #include <vector>
 
@@ -42,7 +43,18 @@ public:
         co_return ae::ChatResponse{};
     }
 
-    ae::stream<ae::ChatResponseUpdate> chat_stream(ae::ChatRequest const&, ae::EffectContext&) { return {}; }  // unused; empty/invalid stream
+    ae::stream<ae::ChatResponseUpdate> chat_stream(ae::ChatRequest const&, ae::EffectContext&) {
+        ae::stream_config<ae::ChatResponseUpdate> cfg;
+        cfg.capacity = 32;
+        auto pair = ae::make_stream<ae::ChatResponseUpdate>(std::pmr::get_default_resource(), cfg);
+        ae::ChatResponseUpdate upd;  // mirrors chat()'s default-constructed ChatResponse{}
+        upd.is_final = true;
+        upd.usage    = ae::Usage{};
+        auto pushed = pair.producer.push(upd);
+        (void)pushed;
+        pair.producer.close();
+        return std::move(pair.consumer);
+    }
 
     int calls = 0;
 };

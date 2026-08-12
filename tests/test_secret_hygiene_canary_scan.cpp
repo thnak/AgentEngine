@@ -31,6 +31,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <memory_resource>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -347,7 +348,20 @@ public:
         reply.content.push_back(item);
         co_return ChatResponse{reply, Usage{1, 1, 0, 0, 0.0}};
     }
-    stream<ChatResponseUpdate> chat_stream(ChatRequest const&, EffectContext&) { return {}; }
+    stream<ChatResponseUpdate> chat_stream(ChatRequest const&, EffectContext&) {
+        stream_config<ChatResponseUpdate> cfg;
+        cfg.capacity = 32;
+        auto pair = make_stream<ChatResponseUpdate>(std::pmr::get_default_resource(), cfg);
+        ChatResponseUpdate upd;
+        upd.delta.origin = content_origin::assistant;
+        upd.delta.value  = Text{"reply"};
+        upd.is_final     = true;
+        upd.usage        = Usage{1, 1, 0, 0, 0.0};
+        auto pushed = pair.producer.push(upd);
+        (void)pushed;
+        pair.producer.close();
+        return std::move(pair.consumer);
+    }
 };
 static_assert(ChatClient<CannedChatClient>, "CannedChatClient must satisfy ChatClient (004 §1)");
 

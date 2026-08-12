@@ -11,6 +11,7 @@
 // Run: ./agentengine_example_03_multi_turn
 
 #include <cstdio>
+#include <memory_resource>
 #include <string>
 
 #include "quark/core/testkit.hpp"
@@ -63,7 +64,25 @@ public:
         co_return ChatResponse{reply, Usage{1, 1, 0, 0, 0.0}};
     }
 
-    stream<ChatResponseUpdate> chat_stream(ChatRequest const&, EffectContext&) { return {}; }  // unused
+    stream<ChatResponseUpdate> chat_stream(ChatRequest const&, EffectContext&) {
+        stream_config<ChatResponseUpdate> cfg;
+        cfg.capacity = 32;
+        auto pair = make_stream<ChatResponseUpdate>(std::pmr::get_default_resource(), cfg);
+        std::string const text =
+            call_count == 0
+                ? "Why did the pirate take so long to learn the alphabet? He kept getting stuck at C."
+                : "Same joke, now in the voice of the pirate's parrot: 'Stuck at C! Stuck at C!'";
+        ChatResponseUpdate upd;
+        upd.delta.origin = content_origin::assistant;
+        upd.delta.value  = Text{text};
+        upd.is_final     = true;
+        upd.usage        = Usage{1, 1, 0, 0, 0.0};
+        auto pushed      = pair.producer.push(upd);
+        (void)pushed;
+        pair.producer.close();
+        ++call_count;
+        return std::move(pair.consumer);
+    }
 };
 static_assert(ChatClient<JokerChatClient>);
 

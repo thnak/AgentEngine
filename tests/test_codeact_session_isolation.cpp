@@ -29,6 +29,7 @@
 //         point of use, not just at configure() time.
 
 #include <iostream>
+#include <memory_resource>
 #include <string>
 #include <vector>
 
@@ -162,7 +163,21 @@ public:
         ++call_count;
         co_return ae::ChatResponse{reply, ae::Usage{1, 1, 0, 0, 0.0}};
     }
-    ae::stream<ae::ChatResponseUpdate> chat_stream(ae::ChatRequest const&, ae::EffectContext&) { return {}; }
+    ae::stream<ae::ChatResponseUpdate> chat_stream(ae::ChatRequest const&, ae::EffectContext&) {
+        ae::stream_config<ae::ChatResponseUpdate> cfg;
+        cfg.capacity = 32;
+        auto pair = ae::make_stream<ae::ChatResponseUpdate>(std::pmr::get_default_resource(), cfg);
+        ae::Message reply = (call_count == 0) ? scripted_call : make_text_message("done");
+        ae::ChatResponseUpdate upd;
+        upd.delta    = reply.content.front();
+        upd.is_final = true;
+        upd.usage    = ae::Usage{1, 1, 0, 0, 0.0};
+        auto pushed  = pair.producer.push(upd);
+        (void)pushed;
+        pair.producer.close();
+        ++call_count;
+        return std::move(pair.consumer);
+    }
 
     [[nodiscard]] static ae::Message make_text_message(std::string text) {
         ae::Message m;

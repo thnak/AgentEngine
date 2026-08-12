@@ -5,6 +5,7 @@
 // is not done."
 
 #include <cassert>
+#include <memory_resource>
 #include <string>
 #include <variant>
 
@@ -33,7 +34,18 @@ struct DummyChatClient {
     ae::task<ae::result<ae::ChatResponse>> chat(ae::ChatRequest const&, ae::EffectContext&) {
         co_return ae::ChatResponse{};
     }
-    ae::stream<ae::ChatResponseUpdate> chat_stream(ae::ChatRequest const&, ae::EffectContext&) { return {}; }  // unused; empty/invalid stream
+    ae::stream<ae::ChatResponseUpdate> chat_stream(ae::ChatRequest const&, ae::EffectContext&) {
+        ae::stream_config<ae::ChatResponseUpdate> cfg;
+        cfg.capacity = 32;
+        auto pair = ae::make_stream<ae::ChatResponseUpdate>(std::pmr::get_default_resource(), cfg);
+        ae::ChatResponseUpdate upd;
+        upd.is_final = true;
+        upd.usage    = ae::Usage{};
+        auto pushed = pair.producer.push(upd);
+        (void)pushed;
+        pair.producer.close();
+        return std::move(pair.consumer);
+    }
 };
 static_assert(ae::ChatClient<DummyChatClient>,
               "DummyChatClient must satisfy the ChatClient concept (004 §1)");

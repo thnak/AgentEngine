@@ -15,6 +15,7 @@
 // that could instead smuggle a forwarded caller token.
 
 #include <iostream>
+#include <memory_resource>
 #include <optional>
 #include <string>
 
@@ -65,7 +66,20 @@ public:
         co_return ae::ChatResponse{reply, ae::Usage{1, 1, 0, 0, 0.0}};
     }
 
-    ae::stream<ae::ChatResponseUpdate> chat_stream(ae::ChatRequest const&, ae::EffectContext&) { return {}; }  // unused; empty/invalid stream
+    ae::stream<ae::ChatResponseUpdate> chat_stream(ae::ChatRequest const&, ae::EffectContext&) {
+        ae::stream_config<ae::ChatResponseUpdate> cfg;
+        cfg.capacity = 32;
+        auto pair = ae::make_stream<ae::ChatResponseUpdate>(std::pmr::get_default_resource(), cfg);
+        ae::ChatResponseUpdate upd;
+        upd.delta.origin = ae::content_origin::assistant;
+        upd.delta.value  = ae::Text{"reply"};
+        upd.is_final     = true;
+        upd.usage        = ae::Usage{1, 1, 0, 0, 0.0};
+        auto pushed = pair.producer.push(upd);
+        (void)pushed;
+        pair.producer.close();
+        return std::move(pair.consumer);
+    }
 };
 static_assert(ae::ChatClient<CapturingChatClient>,
               "CapturingChatClient must satisfy the ChatClient concept (004 §1)");

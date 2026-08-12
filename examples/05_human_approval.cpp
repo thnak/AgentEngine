@@ -109,7 +109,27 @@ public:
         co_return ChatResponse{reply, Usage{1, 1, 0, 0, 0.0}};
     }
 
-    stream<ChatResponseUpdate> chat_stream(ChatRequest const&, EffectContext&) { return {}; }  // unused
+    stream<ChatResponseUpdate> chat_stream(ChatRequest const&, EffectContext&) {
+        stream_config<ChatResponseUpdate> cfg;
+        cfg.capacity = 32;
+        auto pair = make_stream<ChatResponseUpdate>(std::pmr::get_default_resource(), cfg);
+        ChatResponseUpdate upd;
+        upd.delta.origin = content_origin::assistant;
+        if (call_count == 0) {
+            upd.delta.value = ToolCall{"c1", "send_message",
+                                        R"({"recipient":"team@example.com","body":"Ship it."})",
+                                        content_origin::assistant, call_provenance::vendor_structured};
+        } else {
+            upd.delta.value = Text{"Message sent."};
+        }
+        upd.is_final = true;
+        upd.usage    = Usage{1, 1, 0, 0, 0.0};
+        auto pushed  = pair.producer.push(upd);
+        (void)pushed;
+        pair.producer.close();
+        ++call_count;
+        return std::move(pair.consumer);
+    }
 };
 static_assert(ChatClient<ScriptedSendChatClient>);
 

@@ -14,6 +14,7 @@
 // Run: ./agentengine_example_01_hello_agent
 
 #include <cstdio>
+#include <memory_resource>
 #include <string>
 
 #include "quark/core/testkit.hpp"
@@ -58,7 +59,21 @@ public:
         co_return ChatResponse{reply, Usage{1, 1, 0, 0, 0.0}};
     }
 
-    stream<ChatResponseUpdate> chat_stream(ChatRequest const&, EffectContext&) { return {}; }  // unused
+    stream<ChatResponseUpdate> chat_stream(ChatRequest const&, EffectContext&) {
+        stream_config<ChatResponseUpdate> cfg;
+        cfg.capacity = 32;
+        auto pair = make_stream<ChatResponseUpdate>(std::pmr::get_default_resource(), cfg);
+        ChatResponseUpdate upd;
+        upd.delta.origin = content_origin::assistant;
+        upd.delta.value  = Text{"Why did the pirate take so long to learn the alphabet? "
+                                 "Because he kept getting stuck at C."};
+        upd.is_final = true;
+        upd.usage    = Usage{1, 1, 0, 0, 0.0};
+        auto pushed  = pair.producer.push(upd);
+        (void)pushed;
+        pair.producer.close();
+        return std::move(pair.consumer);
+    }
 };
 static_assert(ChatClient<JokerChatClient>, "JokerChatClient must satisfy the ChatClient concept");
 
