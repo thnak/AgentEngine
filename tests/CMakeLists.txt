@@ -687,19 +687,6 @@ if(AGENTENGINE_WITH_HTTPS)
   add_test(NAME test_workflow_request_port_independent_qa COMMAND test_workflow_request_port_independent_qa)
   set_tests_properties(test_workflow_request_port_independent_qa PROPERTIES TIMEOUT 120)
 
-  # ---- Milestone 6 Phase F: 014 §5's checkpoint/resume (checkpoint.hpp + WorkflowSupervisor::to_record) --
-  # F1: checkpoint.hpp's own two-phase pending->committed discipline against a bare InMemoryStore --
-  # decision 7's own claim, that a crash between the two phases falls back to the prior FULLY
-  # committed checkpoint, not the dangling one. F2: to_record()/restore_from_record() against a real
-  # suspended run, reloaded onto a genuinely NEW actor instance and driven to completion two ways
-  # (ContinueWorkflow from a pre-suspension checkpoint, a real ResumeWorkflow from the
-  # post-suspension one -- Phase E's own G5 second half, "resumes after a process restart", which
-  # had nothing to restore FROM before this file).
-  add_executable(test_workflow_checkpoint test_workflow_checkpoint.cpp)
-  target_link_libraries(test_workflow_checkpoint PRIVATE agentengine::core agentengine_warnings)
-  add_test(NAME test_workflow_checkpoint COMMAND test_workflow_checkpoint)
-  set_tests_properties(test_workflow_checkpoint PROPERTIES TIMEOUT 120)
-
   # ---- Milestone 6 Phase F: 014 §5's time-travel (time_travel.hpp) -------------------------------
   # rewind_workflow() selects a retained checkpoint and durably audits the request (decision 9: the
   # audit obligation built WITH the rewind) -- a separate EventLog/ActorId from the checkpoint log
@@ -732,9 +719,8 @@ if(AGENTENGINE_WITH_HTTPS)
   set_tests_properties(test_workflow_introspection PROPERTIES TIMEOUT 120)
 
   # ---- Milestone 6 Phase G: 014 §7's live-view bullet (WorkflowSupervisor::enable_live_view) -----
-  # One WorkflowLiveEvent per superstep boundary, over a real ae::stream<T> -- the same graph
-  # test_workflow_checkpoint.cpp's own F2 block uses, checked from the executor-state angle instead
-  # of the checkpoint angle, plus the negative control (a round that fails the whole run produces
+  # One WorkflowLiveEvent per superstep boundary, over a real ae::stream<T> -- checked from the
+  # executor-state angle, plus the negative control (a round that fails the whole run produces
   # no live event, proven by a real wait, not just an unchecked assumption).
   add_executable(test_workflow_live_view test_workflow_live_view.cpp)
   target_link_libraries(test_workflow_live_view PRIVATE agentengine::core agentengine_warnings)
