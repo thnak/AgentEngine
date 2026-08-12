@@ -293,7 +293,18 @@ namespace detail {
         obj.emplace_back("response_format", std::move(*response_format));
     }
 
-    if (stream) obj.emplace_back("stream", json::Value::make_bool(true));
+    if (stream) {
+        obj.emplace_back("stream", json::Value::make_bool(true));
+        // AgentSession's opt-in streaming turn loop (ADR-034) needs real per-call token usage to
+        // keep 004 §5's TokenBudget<N> enforced -- without this, the vendor's SSE stream never
+        // includes a usage object at all. A trailing chunk with `choices: []` and a top-level
+        // `usage` arrives just before `[DONE]` once this is set (confirmed against OpenRouter's own
+        // OpenAI-compatible streaming docs); StreamingUpdateAccumulator::items_from_block() below is
+        // what captures it.
+        std::vector<std::pair<std::string, json::Value>> stream_options;
+        stream_options.emplace_back("include_usage", json::Value::make_bool(true));
+        obj.emplace_back("stream_options", json::Value::make_object(std::move(stream_options)));
+    }
 
     if (!end_user_id.empty()) obj.emplace_back("user", json::Value::make_string(end_user_id));
     if (seed.has_value()) obj.emplace_back("seed", json::Value::make_number(static_cast<double>(*seed)));
@@ -356,6 +367,34 @@ namespace detail {
     return error{klass, message, "openai.http_" + std::to_string(status)};
 }
 
+// Factored out so the streaming path (below) parses a trailing `usage`-only SSE chunk with the
+// EXACT same field mapping as the non-streaming response body -- one implementation of the wire
+// contract, not two that could drift (this file's own D2 precedent for `StreamingUpdateAccumulator`
+// vs `parse_streaming_response_into_updates`).
+[[nodiscard]] inline Usage parse_usage_object(json::Value const& usage) {
+    Usage out;
+    if (auto const* pt = usage.find("prompt_tokens"); pt && pt->is_number()) {
+        out.input_tokens = static_cast<std::uint64_t>(pt->as_number());
+    }
+    if (auto const* ct = usage.find("completion_tokens"); ct && ct->is_number()) {
+        out.output_tokens = static_cast<std::uint64_t>(ct->as_number());
+    }
+    if (auto const* ptd = usage.find("prompt_tokens_details")) {
+        if (auto const* cached = ptd->find("cached_tokens"); cached && cached->is_number()) {
+            out.cached_input_tokens = static_cast<std::uint64_t>(cached->as_number());
+        }
+        if (auto const* cwt = ptd->find("cache_write_tokens"); cwt && cwt->is_number()) {
+            out.cache_write_tokens = static_cast<std::uint64_t>(cwt->as_number());
+        }
+    }
+    if (auto const* ctd = usage.find("completion_tokens_details")) {
+        if (auto const* rt = ctd->find("reasoning_tokens"); rt && rt->is_number()) {
+            out.reasoning_tokens = static_cast<std::uint64_t>(rt->as_number());
+        }
+    }
+    return out;
+}
+
 // D1: the non-streaming response. Field names confirmed against the SDK's `ChatCompletion`/
 // `ChatTokenUsage` serializers -- `choices[0].message.content`/`.tool_calls[]`, `usage.prompt_tokens`/
 // `.completion_tokens`/`.prompt_tokens_details.cached_tokens`/`.completion_tokens_details.
@@ -416,28 +455,7 @@ namespace detail {
     }
 
     if (auto const* usage = body.find("usage")) {
-        if (auto const* pt = usage->find("prompt_tokens"); pt && pt->is_number()) {
-            resp.usage.input_tokens = static_cast<std::uint64_t>(pt->as_number());
-        }
-        if (auto const* ct = usage->find("completion_tokens"); ct && ct->is_number()) {
-            resp.usage.output_tokens = static_cast<std::uint64_t>(ct->as_number());
-        }
-        if (auto const* ptd = usage->find("prompt_tokens_details")) {
-            if (auto const* cached = ptd->find("cached_tokens"); cached && cached->is_number()) {
-                resp.usage.cached_input_tokens = static_cast<std::uint64_t>(cached->as_number());
-            }
-            // Finding 5: an OpenRouter-specific extension field, no equivalent in plain OpenAI
-            // responses -- absent there, so this simply stays 0 (`Usage::cache_write_tokens`'s own
-            // default), not an error.
-            if (auto const* cwt = ptd->find("cache_write_tokens"); cwt && cwt->is_number()) {
-                resp.usage.cache_write_tokens = static_cast<std::uint64_t>(cwt->as_number());
-            }
-        }
-        if (auto const* ctd = usage->find("completion_tokens_details")) {
-            if (auto const* rt = ctd->find("reasoning_tokens"); rt && rt->is_number()) {
-                resp.usage.reasoning_tokens = static_cast<std::uint64_t>(rt->as_number());
-            }
-        }
+        resp.usage = parse_usage_object(*usage);
     }
 
     return resp;
@@ -669,7 +687,19 @@ public:
             ChatResponseUpdate last;
             last.delta = std::move(*held_);
             last.is_final = true;
+            last.usage = captured_usage_;  // nullopt if the vendor never sent stream_options.include_usage
             held_.reset();
+            out.push_back(std::move(last));
+        } else if (captured_usage_.has_value()) {
+            // A genuinely empty completion (no text, no tool call) still carries real usage -- never
+            // drop it just because there was no content item to hang it off of. An empty Text delta
+            // is a legitimate final update on its own (ADR-034's caller only reads `.usage`/
+            // `.is_final` off it, never assumes non-empty text).
+            ChatResponseUpdate last;
+            last.delta.value  = Text{};
+            last.delta.origin = content_origin::assistant;
+            last.is_final     = true;
+            last.usage        = captured_usage_;
             out.push_back(std::move(last));
         }
         return out;
@@ -704,6 +734,12 @@ private:
             }
             auto parsed = json::parse(payload);
             if (!parsed) continue;  // one malformed chunk is skipped, not fatal to the whole stream
+            // ADR-034: the `stream_options.include_usage` trailing chunk carries a top-level `usage`
+            // object and an EMPTY (or absent) `choices` array -- captured here, BEFORE the
+            // choices-empty check below would otherwise skip this exact chunk entirely.
+            if (auto const* usage = parsed->find("usage")) {
+                captured_usage_ = parse_usage_object(*usage);
+            }
             json::Value const* choices = parsed->find("choices");
             if (!choices || !choices->is_array() || choices->as_array().empty()) continue;
             json::Value const& choice0 = choices->as_array().front();
@@ -747,6 +783,7 @@ private:
     sandbox::SseEventFramer framer_;
     std::vector<PendingToolCall> pending_by_index_;
     std::optional<ContentItem> held_;
+    std::optional<Usage> captured_usage_;  // ADR-034: from a stream_options.include_usage trailing chunk
 };
 
 // D2: the one-shot parse, for a body that genuinely is fully in hand. Implemented ON TOP of the

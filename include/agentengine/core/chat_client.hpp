@@ -122,6 +122,13 @@ struct ChatResponse {
 struct ChatResponseUpdate {  // ae-naming-lint: allow ChatResponseUpdate — pre-existing M0 scaffolding, reconcile at owning milestone
     ContentItem delta;
     bool        is_final = false;
+    // ADR-034 (AgentSession's opt-in streaming turn loop). Appended last, additive (003 §6's own
+    // field-ordering lesson) -- every pre-existing `ChatResponseUpdate{delta, is_final}` call site
+    // keeps compiling unchanged. Populated only on the terminal update (is_final == true), and only
+    // when the backend actually reported usage for this call; nullopt means "this backend/call
+    // provided none" -- a caller that needs usage (AgentSession's streaming loop, 004 §5's
+    // TokenBudget<N>) must treat nullopt as a hard failure, never silently as zero cost.
+    std::optional<Usage> usage = std::nullopt;
 };
 
 // concept, not a base class (004 §1) — a backend satisfies this shape; it is never inherited from

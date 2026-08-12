@@ -30,6 +30,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <unordered_map>
 #include <variant>
 #include <vector>
@@ -339,6 +340,16 @@ public:
         last_run_id_ = effect_context_.run_id;
 
         emit_run_event(run_event_kind::run_started);
+        if (stream_model_calls_) {
+            // ADR-034: a visible fact about this run, not a silent one -- see
+            // `set_stream_model_calls()`'s own comment for exactly what's traded away.
+            emit_run_event(run_event_kind::warning,
+                            run_event_payload::Warning{
+                                "this run streams each model call (ADR-034): failover/circuit-"
+                                "breaker-feedback/response-format-leak-scanning do not apply on the "
+                                "streaming path, even if the bound ChatClientT would otherwise "
+                                "provide them"});
+        }
         history_.push_back(m.query.input);
 
         co_await run_rounds(m);
@@ -463,6 +474,61 @@ public:
     }
 
 private:
+    // ADR-034: routes to `chat_stream()` when a caller has opted the session INTO streaming
+    // (`stream_model_calls_`, default false — see `set_stream_model_calls()`'s own comment for the
+    // real tradeoffs an opted-in caller accepts); otherwise calls `chat()` exactly as ADR-027
+    // shipped it, byte-for-byte, so every existing/default caller is completely unaffected.
+    //
+    // Text deltas fire a real `run_event_kind::model_delta` as they arrive (013 §1's own vocabulary,
+    // previously declared with zero real emitter). Every delta's `ContentItem` — Text or an
+    // eventually-assembled ToolCall — is accumulated, IN ORDER, into one reconstructed `Message`;
+    // `tool_call_extraction.hpp`'s `tool_calls_of()`/`text_of()` (what this loop and its callers
+    // actually read the result through) are genuinely position/count-agnostic across however many
+    // separate content items a Message carries, so this reconstruction needs no merging step to be
+    // equivalent to what `chat()`'s own one-shot parse would have produced.
+    //
+    // Fails closed, hard, on missing usage: 004 §5's `TokenBudget<N>` depends on
+    // `run_tokens_consumed_` being a true per-call count. `ChatResponseUpdate::usage` is
+    // `std::optional` because not every backend/config populates it on the streaming path yet — this
+    // function refuses to treat "the backend reported nothing" as "this call cost nothing", which is
+    // the one way a silent budget bypass could otherwise happen.
+    quark::task<result<ChatResponse>> run_model_call(ChatRequest const& request, EffectContext& ctx) {
+        if (!stream_model_calls_) {
+            co_return co_await chat_client_->chat(request, ctx);
+        }
+
+        stream<ChatResponseUpdate> s = chat_client_->chat_stream(request, ctx);
+        Message accumulated;
+        accumulated.role = role::assistant;
+        std::optional<Usage> usage;
+        while (!s.done()) {
+            while (std::optional<ChatResponseUpdate> upd = s.next()) {
+                if (auto const* t = std::get_if<Text>(&upd->delta.value); t != nullptr && !t->text.empty()) {
+                    emit_run_event(run_event_kind::model_delta, run_event_payload::ModelDelta{t->text});
+                }
+                accumulated.content.push_back(upd->delta);
+                if (upd->is_final && upd->usage.has_value()) usage = upd->usage;
+            }
+            // The ring is momentarily empty but the producer thread is still live (real backends run
+            // their blocking HTTP/SSE read loop on a detached worker thread, see chat_stream()'s own
+            // implementation) — a bounded sleep, not a bare spin, so this doesn't burn the actor's own
+            // worker-thread CPU for the whole call the way a tight yield()-loop would.
+            if (!s.done()) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        if (s.terminal() != quark::ReplyStreamTerminal::Closed) {
+            co_return std::unexpected(error{failure_class::transient,
+                                              "chat_stream() did not reach a clean terminal", "run.stream_incomplete"});
+        }
+        if (!usage.has_value()) {
+            co_return std::unexpected(
+                error{failure_class::contract,
+                      "streaming chat call completed with no reported token usage — refusing to "
+                      "treat it as zero-cost against the per-run token budget (004 §5)",
+                      "run.usage_unavailable"});
+        }
+        co_return ChatResponse{std::move(accumulated), *usage};
+    }
+
     // ADR-029: the shared "assemble context -> call model -> invoke calls -> fold results ->
     // continue" control flow both `handle(Ask<StartRun, ...>)`'s fresh run and
     // `handle(Ask<ResolveInteraction, ...>)`'s resumed continuation drive, written exactly once —
@@ -521,7 +587,7 @@ private:
                 co_return std::monostate{};
             }
             emit_run_event(run_event_kind::model_call_started);
-            result<ChatResponse> response = co_await chat_client_->chat(request, effect_context_);
+            result<ChatResponse> response = co_await run_model_call(request, effect_context_);
             emit_run_event(run_event_kind::model_call_finished);
             if (!response) {
                 emit_run_event(run_event_kind::run_failed,
@@ -856,6 +922,24 @@ public:
     // category as `set_capabilities()`/`set_approval_decider()` immediately above.
     void set_suspend_for_approval(bool suspend) noexcept { suspend_for_approval_ = suspend; }
     [[nodiscard]] bool suspend_for_approval() const noexcept { return suspend_for_approval_; }
+
+    // ADR-034: opts a session INTO real per-token streaming of each round's model call
+    // (`ChatClientT::chat_stream()` instead of `chat()`), emitting `run_event_kind::model_delta` as
+    // text arrives. Defaults false — an existing caller that never calls this keeps calling `chat()`
+    // exactly as ADR-027 shipped it, bit-for-bit.
+    //
+    // A DELIBERATE, DOCUMENTED TRADEOFF an opted-in caller accepts, not a strictly-better mode:
+    // `FailoverChatClient::chat_stream()` never falls over to a secondary backend (that type's own
+    // file-top comment states this scoping outright — failover is `chat()`-only);
+    // `ResilientChatClient::chat_stream()` never reports an outcome to its circuit breaker (same
+    // file, same reason); and `OpenAIChatClient`'s `scan_response_format_leaks` (ADR-023's confused-
+    // deputy-in-raw-text detector) has no streaming-path equivalent — none of these are silently
+    // broken by streaming so much as they are simply not part of what streaming exercises, and a
+    // caller composing any of them underneath a streaming session accepts losing that protection for
+    // this session. A `run_event_kind::warning` fires once per run when streaming is active, so this
+    // is a visible fact about the run, not a silent one.
+    void set_stream_model_calls(bool stream) noexcept { stream_model_calls_ = stream; }
+    [[nodiscard]] bool stream_model_calls() const noexcept { return stream_model_calls_; }
 
     // The per-run bound on internal tool-call rounds (see `handle()`'s own loop and `initialize()`'s
     // `max_turns` parameter, which is the normal way this gets set before the first `StartRun`).
@@ -1210,6 +1294,9 @@ private:
     // ADR-029 -- opts a session into suspending for a real human answer instead of `invoke_tool`'s
     // ordinary fail-closed deny; see `set_suspend_for_approval()`'s own comment. Default false.
     bool                                                 suspend_for_approval_ = false;
+    // ADR-034 -- opts a session into streaming each round's model call; see
+    // `set_stream_model_calls()`'s own comment for the real tradeoffs. Default false.
+    bool                                                 stream_model_calls_ = false;
     // Milestone 5 Phase H2 (018 §2) -- how many `StartRun` asks this session has denied at
     // admission. Same "counter the caller/tests can observe even on the fail-closed path" shape as
     // `run_tokens_consumed_` immediately above it.

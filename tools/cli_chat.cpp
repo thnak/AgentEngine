@@ -40,15 +40,20 @@
 
 #ifdef AGENTENGINE_WITH_HTTPS
 
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <memory_resource>
+#include <stop_token>
 #include <string>
+#include <thread>
 #include <vector>
 
-#include "quark/core/testkit.hpp"
+#include "quark/core/actor_ref.hpp"
+#include "quark/core/engine.hpp"
+#include "quark/detail/message_pool.hpp"
 
 #include "agentengine/core/agent_session.hpp"
 #include "agentengine/core/builtin_skills.hpp"
@@ -696,30 +701,51 @@ int main() {
     caps.reasoning = true;
     caps.max_output_tokens = 2048;
 
-    quark::TestKit<CliSession> kit;
+    // ADR-034: real per-token streaming needs the session's own execution to genuinely run
+    // concurrently with a caller draining its event stream -- `quark::TestKit` (used here until
+    // this pass) is documented to run everything "on the calling thread... no threads, no wall-
+    // clock" (third_party/quark/include/quark/core/testkit.hpp's own top comment), so it cannot host
+    // this. A real, single-worker `quark::Engine` can: `CliSession` is configured as a plain local
+    // value exactly like `test_agent_session_suspend_resume.cpp`'s own real-Engine precedent
+    // (`Engine::spawn<A>()` hands back no mutable reference, so identity/config happen BEFORE
+    // `register_activation`, not after), then driven via `block_on(ref.ask<...>(...))` from this
+    // thread while the session's own coroutine runs on the engine's one worker thread.
+    auto const engine_config = quark::ConfigBuilder{}.workers(1).shards(1).default_drain_budget(64).build();
+    if (!engine_config) {
+        std::cerr << "FATAL: engine config failed to build\n";
+        return 1;
+    }
+    quark::Engine<>            engine(*engine_config);
+    quark::detail::MessagePool pool(64);
+
+    CliSession actor;
     // Trailing args beyond `caps`/`store`/`kPathPrefix` are every one of OpenAIChatClient's own
     // defaults spelled out verbatim (chat_client.hpp's own constructor), EXCEPT the last:
-    // `scan_response_format_leaks=true` arms ADR-023's Reasoning/<think>-channel extraction, so a
-    // real Reasoning content item shows up on `resp->message` below when the model produces one --
-    // off by default everywhere else in this codebase (operator-armed, never content-triggered,
-    // per that ADR's own Finding 6), armed here because this CLI's whole point is showing a human
-    // what the agent is actually doing.
-    kit.actor().emplace_chat_client(host, kHttpsPort, model, SecretRef{kSecretName}, caps, store,
-                                     kPathPrefix, sandbox::resolve_host, std::string{}, std::string{},
-                                     std::string{}, std::string{}, std::nullopt,
-                                     sandbox::ProviderTransport::tls,
-                                     /*scan_response_format_leaks=*/true);
+    // `scan_response_format_leaks=true` arms ADR-023's Reasoning/<think>-channel extraction. NOTE
+    // (ADR-034): this scan runs only inside `chat()`, never `chat_stream()` -- with streaming
+    // engaged below, "[thinking]" from this mechanism will not fire; it's left armed only so the
+    // non-streaming path this file no longer takes stays correct if streaming is ever toggled off.
+    actor.emplace_chat_client(host, kHttpsPort, model, SecretRef{kSecretName}, caps, store,
+                                kPathPrefix, sandbox::resolve_host, std::string{}, std::string{},
+                                std::string{}, std::string{}, std::nullopt,
+                                sandbox::ProviderTransport::tls,
+                                /*scan_response_format_leaks=*/true);
     // `kMaxToolRoundsPerTurn` is now the SESSION's own internal round bound (`AgentSession::handle()`'s
     // loop, agent_session.hpp) rather than a loop this file drives externally -- one `StartRun` ask
     // below now resolves an entire multi-round tool conversation internally before returning.
     std::string const session_id = "cli-chat-session";
-    kit.actor().initialize(session_id, Principal{"cli-user", ""}, /*token_budget=*/std::nullopt,
-                            /*max_turns=*/kMaxToolRoundsPerTurn);
-    kit.actor().set_capabilities(&held);
-    // 013 §1's real run-event stream -- fires run/turn/model-call/tool-call boundaries as
-    // AgentSession::handle() actually reaches them (see describe_event()'s own comment for exactly
-    // which kinds are real today). Enabled once, for the whole session; drained after every turn.
-    auto event_stream = kit.actor().enable_event_stream(std::pmr::get_default_resource());
+    actor.initialize(session_id, Principal{"cli-user", ""}, /*token_budget=*/std::nullopt,
+                      /*max_turns=*/kMaxToolRoundsPerTurn);
+    actor.set_capabilities(&held);
+    // ADR-034: real token-by-token streaming, traded for failover/circuit-breaker-feedback/
+    // response-format-leak-scanning not applying on this path -- see set_stream_model_calls()'s own
+    // comment in agent_session.hpp. A run_event_kind::warning fires once per run naming this trade;
+    // describe_event() below renders it like any other event.
+    actor.set_stream_model_calls(true);
+    // 013 §1's real run-event stream -- fires run/turn/model-call/tool-call/model-delta boundaries
+    // as AgentSession::handle() actually reaches them. Enabled once, for the whole session; the
+    // drain thread below (per turn) is what actually prints model_delta text AS it arrives.
+    auto event_stream = actor.enable_event_stream(std::pmr::get_default_resource());
     // `ExecuteCodeTool`/`MountSkillTool` declare no `Approval<M>` policy (`approval_mode::
     // never_require`, tool.hpp's own fail-open default), so `invoke_tool`'s step 5 never consults a
     // decider for either -- no `set_approval_decider()` call is needed for this demo to keep working.
@@ -730,7 +756,7 @@ int main() {
     // runs ONE session, so this always succeeds in practice; the failure path exists because
     // `configure()` is a real, general primitive (ADR-030's own proof,
     // tests/test_codeact_runner_binding.cpp, exercises the rejection case a second session would hit).
-    auto configured = kit.actor().history_provider().configure(
+    auto configured = actor.history_provider().configure(
         session_id, shared_python_runner_binding(*materialized), *materialized);
     if (!configured) {
         std::cerr << "FATAL: failed to configure the CodeAct provider: " << configured.error().message
@@ -738,7 +764,13 @@ int main() {
         return 1;
     }
 
-    print_skills_banner(*materialized, startup_skills, kit.actor().history_provider().mounted_skills());
+    quark::Activation act{&actor, CliSession::dispatch_table(), pool.sink()};
+    engine.register_activation(quark::actor_id_of<CliSession>(1), act);
+    quark::LocalRouter          router(engine.post_courier(), pool);
+    quark::ActorRef<CliSession> ref = router.get<CliSession>(1);
+    engine.start();
+
+    print_skills_banner(*materialized, startup_skills, actor.history_provider().mounted_skills());
     std::cout << "\nType a message and press Enter. Type 'exit' or 'quit' to stop.\n\n";
 
     std::string line;
@@ -749,12 +781,39 @@ int main() {
         if (line.empty()) continue;
 
         // One ask now resolves the WHOLE multi-round tool conversation for this turn internally
-        // (AgentSession::handle()'s own loop). `event_stream` fills up DURING this call but can only
-        // be drained after it returns -- `quark::TestKit::ask()` is synchronous, so there is no
-        // concurrent point to interleave printing with; what follows is the full, real, in-order
-        // trace of everything that happened this turn, not simulated after the fact.
-        quark::result<AgentResponse> resp = kit.ask<AgentResponse>(StartRun{user_message(line)});
-        while (auto ev = event_stream.next()) std::cout << describe_event(*ev) << "\n";
+        // (AgentSession::handle()'s own loop), running on the engine's own worker thread. This
+        // thread blocks in block_on() while a dedicated drain thread concurrently polls
+        // `event_stream` and prints model_delta text as it actually arrives -- genuine token-by-
+        // token output, not a trace assembled after the fact. `std::jthread`'s destructor requests
+        // stop and joins automatically on every exit path (including an exception out of
+        // block_on()), so the drain thread never outlives this scope.
+        quark::result<AgentResponse> resp;
+        {
+            bool mid_line = false;
+            std::jthread drain([&](std::stop_token stop) {
+                auto drain_once = [&] {
+                    while (std::optional<RunEvent> ev = event_stream.next()) {
+                        if (ev->kind == run_event_kind::model_delta) {
+                            auto const& d = std::get<run_event_payload::ModelDelta>(ev->payload);
+                            std::cout << d.text_delta;
+                            std::cout.flush();
+                            mid_line = true;
+                        } else {
+                            if (mid_line) { std::cout << "\n"; mid_line = false; }
+                            std::cout << describe_event(*ev) << "\n";
+                        }
+                    }
+                };
+                while (!stop.stop_requested()) {
+                    drain_once();
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                }
+                drain_once();  // whatever landed between the last poll and stop being requested
+                if (mid_line) std::cout << "\n";
+            });
+            resp = block_on(ref.ask<AgentResponse>(StartRun{user_message(line)}));
+        }  // drain's destructor: request_stop() then join(), guaranteed before `resp` is read below
+
         if (!resp.has_value()) {
             std::cout << "[error: " << resp.error().detail << "]\n";
             continue;
@@ -762,8 +821,9 @@ int main() {
         for (std::string const& reasoning : reasoning_texts_of(resp->message)) {
             std::cout << "  [thinking] " << reasoning << "\n";
         }
-        std::string const text = text_of(resp->message);
-        if (!text.empty()) std::cout << "Agent: " << text << "\n";
+        // No separate "Agent: <text>" line: every round's text (including the final converging
+        // round's) was already printed token-by-token via model_delta above, live, as it was
+        // actually generated -- repeating it here would just duplicate it.
     }
 
     std::cout << "Goodbye.\n";
