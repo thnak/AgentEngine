@@ -662,31 +662,6 @@ if(AGENTENGINE_WITH_HTTPS)
   add_test(NAME test_workflow_failure COMMAND test_workflow_failure)
   set_tests_properties(test_workflow_failure PROPERTIES TIMEOUT 120)
 
-  # ---- Milestone 6 Phase E: 014 §4's request port, and the activation half of §8 G5 --------------
-  # The load-bearing check is E4's CENSUS. `ActorRef::passivate()` drains in-flight work and is never
-  # a mid-handler interrupt, so the tempting implementation of §4 -- co_await the human's response
-  # inside the running handler -- would keep the activation alive and G5 would be false while every
-  # other assertion here still passed. Only `went_dormant()` distinguishes the two designs. E3 is
-  # OQ-4's own case (several ports open on one run), which no test in this codebase had ever
-  # exercised: every prior use of `Interaction` opens at most one.
-  add_executable(test_workflow_request_port test_workflow_request_port.cpp)
-  target_link_libraries(test_workflow_request_port PRIVATE agentengine::core agentengine_warnings)
-  add_test(NAME test_workflow_request_port COMMAND test_workflow_request_port)
-  set_tests_properties(test_workflow_request_port PROPERTIES TIMEOUT 120)
-
-  # ---- Independent QA pass on Milestone 6 Phase E (014 §4's request port) ------------------------
-  # A SECOND, independent test file over the same request-port surface, derived from the RFC 014 §4
-  # text and the public struct/enum declarations rather than from reading test_workflow_request_port's
-  # own author's implementation-derived assertions. Probes: deadline accounting across a suspension,
-  # a port inside a cycle opening twice with different derived ids, §6 partial-result preservation
-  # against a routing failure discovered at resume time, a port and a failing sibling reached in the
-  # same fan-out round, `routes` on a non-switch_case port edge (I3), and open_interactions() parity
-  # in the OQ-4 two-port case including a rejected double-resolve.
-  add_executable(test_workflow_request_port_independent_qa test_workflow_request_port_independent_qa.cpp)
-  target_link_libraries(test_workflow_request_port_independent_qa PRIVATE agentengine::core agentengine_warnings)
-  add_test(NAME test_workflow_request_port_independent_qa COMMAND test_workflow_request_port_independent_qa)
-  set_tests_properties(test_workflow_request_port_independent_qa PROPERTIES TIMEOUT 120)
-
   # ---- Milestone 6 Phase F: 014 §5's time-travel (time_travel.hpp) -------------------------------
   # rewind_workflow() selects a retained checkpoint and durably audits the request (decision 9: the
   # audit obligation built WITH the rewind) -- a separate EventLog/ActorId from the checkpoint log
@@ -1011,6 +986,15 @@ add_test(NAME test_rt_agent_session_background_task COMMAND test_rt_agent_sessio
 add_executable(test_rt_workflow_supervisor test_rt_workflow_supervisor.cpp)
 target_link_libraries(test_rt_workflow_supervisor PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_workflow_supervisor COMMAND test_rt_workflow_supervisor)
+
+# ---- ADR-037 Phase 3, Slice 1 -- request-port behavior against rt::WorkflowSupervisor, superseding
+# the old Quark-actor-based test_workflow_request_port(.cpp)/test_workflow_request_port_independent_qa
+# (014 §4). E1/E2/E3/E5 and IQ1-IQ6, minus the two claims that are genuinely out of scope for `rt::`:
+# E0 (shared, unchanged workflow/graph.hpp validator code) and the activation-passivation half of
+# E1/E4 (there are no Quark activations in `rt::` for passivation to apply to).
+add_executable(test_rt_workflow_supervisor_request_port test_rt_workflow_supervisor_request_port.cpp)
+target_link_libraries(test_rt_workflow_supervisor_request_port PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_workflow_supervisor_request_port COMMAND test_rt_workflow_supervisor_request_port)
 
 # ---- ADR-028 -- session-scoped stateful tools (tool_pipeline.hpp make_tool_descriptor_with_invoke).
 add_executable(test_session_scoped_stateful_tools test_session_scoped_stateful_tools.cpp)
