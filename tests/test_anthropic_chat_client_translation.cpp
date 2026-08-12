@@ -456,6 +456,47 @@ int main() {
                       "E-STREAM-R1: partial_json fragments from separate content_block_delta events "
                       "concatenate into valid JSON");
                 check((*updates)[2].is_final, "E-STREAM-R1: the last update is marked is_final");
+                check(!(*updates)[0].usage.has_value() && !(*updates)[1].usage.has_value(),
+                      "E-STREAM-R1: usage is not attached to the interim (non-final) updates");
+                check((*updates)[2].usage.has_value(),
+                      "E-STREAM-R1 (ADR-035): the final update carries real usage -- the message_start/"
+                      "message_delta events threaded through StreamingUpdateAccumulator all the way to "
+                      "ChatResponseUpdate.usage, closing the gap AnthropicUsageSnapshot/"
+                      "seed_usage_from_message_start/accumulate_message_delta_usage were already tested "
+                      "for (E2-R1) but never wired to actually populate");
+                if ((*updates)[2].usage.has_value()) {
+                    check((*updates)[2].usage->input_tokens == 10,
+                          "E-STREAM-R1: input_tokens comes from message_start (10), never overwritten by "
+                          "message_delta since message_delta's usage omits input_tokens here");
+                    check((*updates)[2].usage->output_tokens == 25,
+                          "E-STREAM-R1: output_tokens is message_delta's cumulative total (25), NOT "
+                          "message_start's initial value (1) and NOT their sum (26)");
+                }
+            }
+        }
+    }
+
+    // ---- E-STREAM-R2 (ADR-035): a completion with genuinely no content items (no text, no tool call, no
+    // thinking) still surfaces real usage -- the synthesized-empty-final-update path in finish() ---------
+    {
+        std::string sse =
+            "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":8,\"output_tokens\":0}}}\n\n"
+            "event: message_delta\ndata: {\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":3}}\n\n"
+            "event: message_stop\ndata: {}\n\n";
+        auto updates = parse_streaming_response_into_updates(sse, /*is_chunked=*/false);
+        check(updates.has_value(), "E-STREAM-R2: a content-free stream (usage-only) still parses");
+        if (updates) {
+            check(updates->size() == 1,
+                  "E-STREAM-R2: exactly one synthesized final update carries the usage, even though no "
+                  "content_block ever arrived to hold it");
+            if (updates->size() == 1) {
+                check((*updates)[0].is_final, "E-STREAM-R2: the synthesized update is marked is_final");
+                check((*updates)[0].usage.has_value(), "E-STREAM-R2: the synthesized update carries usage");
+                if ((*updates)[0].usage.has_value()) {
+                    check((*updates)[0].usage->input_tokens == 8 && (*updates)[0].usage->output_tokens == 3,
+                          "E-STREAM-R2: usage values are correct on the synthesized update (input from "
+                          "message_start, output overwritten by message_delta's cumulative total)");
+                }
             }
         }
     }

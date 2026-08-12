@@ -801,7 +801,18 @@ public:
             ChatResponseUpdate last;
             last.delta = std::move(*held_);
             last.is_final = true;
+            last.usage = captured_usage();
             held_.reset();
+            out.push_back(std::move(last));
+        } else if (auto usage = captured_usage(); usage.has_value()) {
+            // A genuinely empty completion (no text, no tool call, no thinking block) still carries
+            // real usage -- never drop it just because there was no content item to hang it off of
+            // (same reasoning as the OpenAI-side accumulator's own handling of this case).
+            ChatResponseUpdate last;
+            last.delta.value  = Text{};
+            last.delta.origin = content_origin::assistant;
+            last.is_final     = true;
+            last.usage        = usage;
             out.push_back(std::move(last));
         }
         return out;
@@ -882,10 +893,39 @@ private:
                 }
                 // signature_delta: signature intentionally dropped (file banner (3)).
             }
-            // content_block_stop/message_start/message_delta/message_stop carry no content item of
-            // their own; block completion is settled from `pending_by_index_` at `finish()`.
+            // content_block_stop/message_stop carry no content item of their own; block completion
+            // is settled from `pending_by_index_` at `finish()`. message_start/message_delta carry
+            // no content item either, but DO carry real usage (ADR-034/035) -- captured below via
+            // the file banner's own (6) E2 reduce, previously computed but never attached to a
+            // `ChatResponseUpdate` before `ChatResponseUpdate::usage` existed to hold it.
+            else if (ev.type == "message_start") {
+                auto parsed = json::parse(ev.data);
+                if (!parsed) continue;
+                if (auto const* message = parsed->find("message")) {
+                    if (auto const* usage = message->find("usage")) {
+                        seed_usage_from_message_start(usage_snapshot_, *usage);
+                    }
+                }
+            } else if (ev.type == "message_delta") {
+                auto parsed = json::parse(ev.data);
+                if (!parsed) continue;
+                if (auto const* usage = parsed->find("usage")) {
+                    accumulate_message_delta_usage(usage_snapshot_, *usage);
+                }
+            }
         }
         return out;
+    }
+
+    [[nodiscard]] std::optional<Usage> captured_usage() const {
+        if (!usage_snapshot_.input_tokens.has_value() && usage_snapshot_.output_tokens == 0) {
+            return std::nullopt;  // message_start never arrived (or carried nothing) -- report absence
+        }
+        Usage u;
+        u.input_tokens        = usage_snapshot_.input_tokens.value_or(0);
+        u.output_tokens       = usage_snapshot_.output_tokens;
+        u.cached_input_tokens = usage_snapshot_.cache_read_input_tokens.value_or(0);
+        return u;
     }
 
     bool chunked_;
@@ -893,6 +933,7 @@ private:
     sandbox::SseEventFramer framer_;
     std::vector<PendingBlock> pending_by_index_;
     std::optional<ContentItem> held_;
+    AnthropicUsageSnapshot usage_snapshot_;
 };
 
 // The one-shot parse, for a body genuinely fully in hand -- implemented on top of the incremental
