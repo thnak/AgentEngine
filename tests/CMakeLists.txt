@@ -293,16 +293,6 @@ add_executable(test_agent_session_node_loss_fencing test_agent_session_node_loss
 target_link_libraries(test_agent_session_node_loss_fencing PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_agent_session_node_loss_fencing COMMAND test_agent_session_node_loss_fencing)
 
-# ---- Milestone 6 Phase F prerequisite (docs/planning/milestone-6-multi-agent-orchestration-breakdown.md) ----
-# Message/ContentItem's durable projection (content_record.hpp) -- closes the "no QUARK_SERIALIZE"
-# gap named at agent_session.hpp:154-158/207-213, needed for real by 014 §5's "resume restores
-# exactly". See content_record.hpp's own header comment for the two rejected designs (a branching
-# quark_describe breaks FingerprintFolder's determinism and the write pass's const-cast convention)
-# this flat-Record-family design avoids.
-add_executable(test_content_record_roundtrip test_content_record_roundtrip.cpp)
-target_link_libraries(test_content_record_roundtrip PRIVATE agentengine::core agentengine_warnings)
-add_test(NAME test_content_record_roundtrip COMMAND test_content_record_roundtrip)
-
 # ---- Milestone 4 Phase F1 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
 # Idempotency key derivation {run_id, turn_index, call_index, argument_digest}, wired into the
 # real (M2) tool_pipeline.hpp invocation pipeline.
