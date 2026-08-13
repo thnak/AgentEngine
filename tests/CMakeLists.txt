@@ -973,6 +973,17 @@ add_executable(test_rt_workflow_time_travel test_rt_workflow_time_travel.cpp)
 target_link_libraries(test_rt_workflow_time_travel PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_workflow_time_travel COMMAND test_rt_workflow_time_travel)
 
+# ---- ADR-037 -- agentengine::rt::ProjectRegistry's archived-member tail (030 Sec6/§7), wiring
+# rt::AppendLogStore into the gap project_registry.hpp's own banner named as deferred: "the archived
+# tail is genuinely, structurally append-only... this needs a genuine append-only log store primitive
+# nothing in this codebase has built yet." Ports the old test_project_registry.cpp's own H5 (exact
+# archival order) and G4 (at-scale, 2000 members) claims functionally; test_project_registry.cpp
+# stays in place, not deleted, since its H4/G4 manifest-snapshot-cost claims still have no rt::
+# equivalent (no ProjectRecord manifest has been ported yet -- separate, smaller follow-up).
+add_executable(test_rt_project_archive test_rt_project_archive.cpp)
+target_link_libraries(test_rt_project_archive PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_project_archive COMMAND test_rt_project_archive)
+
 # ---- Milestone 5 Phase G1 -- ChatCallRecording JSON codec (core/chat_recording.hpp), the shared
 # foundation RecordingChatClient<Inner> and ReplayChatClient both depend on.
 add_executable(test_chat_recording_codec test_chat_recording_codec.cpp)
