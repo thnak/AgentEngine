@@ -14,28 +14,31 @@
 // is a real, honest status distinct from `completed`: the caller is TOLD the bound is what stopped
 // it, not left to guess whether the graph "finished" on its own.
 //
+// ADR-037: driven through `agentengine::rt::WorkflowSupervisor` -- a plain coroutine substrate, no
+// Quark actor engine underneath. `run_workflow()` returns an `rt::task<WorkflowResult>`; the local
+// `drive<T>()` helper below just resumes it to completion (its only suspension points are an
+// uncontended mutex and a nested `co_await` that never itself suspends -- see
+// `tests/test_rt_workflow_supervisor.cpp`'s own `drive<T>()` comment for why one `resume()` always
+// finishes it here). No engine, no router, no actor refs, no placement dance.
+//
 // Run: ./agentengine_example_13_reflection_loop
 
 #include <cstdio>
-#include <memory>
 #include <string>
 #include <vector>
 
-#include "quark/core/actor.hpp"
-#include "quark/core/actor_ref.hpp"
-#include "quark/core/engine.hpp"
-#include "quark/detail/message_pool.hpp"
-
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/tool_call_extraction.hpp"
-#include "agentengine/workflow/executor.hpp"
+#include "agentengine/rt/workflow_supervisor.hpp"
 #include "agentengine/workflow/graph.hpp"
-#include "agentengine/workflow/placement.hpp"
-#include "agentengine/workflow/supervisor.hpp"
 
-using namespace quark;
 using namespace agentengine;
 using namespace agentengine::workflow;
+using agentengine::rt::ExecutorBody;
+using agentengine::rt::RunWorkflow;
+using agentengine::rt::WorkflowResult;
+using agentengine::rt::WorkflowSupervisor;
+using agentengine::rt::workflow_status;
 
 namespace {
 
@@ -68,56 +71,20 @@ void check(bool cond, char const* what) {
     };
 }
 
-constexpr std::uint64_t kSupervisorKey = 100;
-
-struct Harness {
-    Engine<>            engine;
-    detail::MessagePool pool{64};
-    LocalRouter          router;
-    std::vector<std::unique_ptr<FunctionExecutor>> nodes;
-    std::vector<std::unique_ptr<Activation>>       node_acts;
-    std::vector<std::uint64_t>                     keys;
-
-    explicit Harness(EngineConfig const& cfg, std::size_t node_count)
-        : engine(cfg), router(engine.post_courier(), pool) {
-        keys = spread_executor_keys(node_count, engine.shard_count(), [this](std::uint64_t k) {
-            return engine.shard_of(actor_id_of<FunctionExecutor>(k));
-        });
-    }
-
-    void add_node(std::string name, ExecutorBody body) {
-        auto node = std::make_unique<FunctionExecutor>();
-        node->initialize(std::move(name), std::move(body), EffectContext{});
-        auto act = make_workflow_activation(*node, pool.sink());
-        engine.register_activation(actor_id_of<FunctionExecutor>(keys[nodes.size()]), *act);
-        nodes.push_back(std::move(node));
-        node_acts.push_back(std::move(act));
-    }
-
-    [[nodiscard]] ActorRef<WorkflowSupervisor> install(Workflow const& wf, WorkflowSupervisor& sup,
-                                                        std::unique_ptr<Activation>& sup_act) {
-        std::vector<ActorRef<FunctionExecutor>> refs;
-        for (std::size_t i = 0; i < nodes.size(); ++i) refs.push_back(router.get<FunctionExecutor>(keys[i]));
-        sup.initialize(wf, refs);
-        sup_act = make_workflow_activation(sup, pool.sink());
-        engine.register_activation(actor_id_of<WorkflowSupervisor>(kSupervisorKey), *sup_act);
-        return router.get<WorkflowSupervisor>(kSupervisorKey);
-    }
-};
-
 [[nodiscard]] Executor node_desc(char const* id) { return Executor{id, executor_kind::function, "T", "T"}; }
+
+// Safe here: run_workflow()'s only suspension points are the run mutex's uncontended fast path and
+// a nested co_await whose own body never suspends either -- see
+// tests/test_rt_workflow_supervisor.cpp's own drive<T>() comment for the full reasoning.
+template <class T>
+T drive(agentengine::rt::task<T> t) {
+    while (!t.done()) t.resume();
+    return t.take_value();
+}
 
 }  // namespace
 
 int main() {
-    auto const config = ConfigBuilder{}.workers(4).shards(4).default_drain_budget(64).build();
-    check(config.has_value(), "engine config builds (4 workers / 4 shards)");
-    if (!config) return 1;
-
-    Harness h(*config, /*node_count=*/2);
-    h.add_node("writer", appender("write"));
-    h.add_node("critic", appender("critique"));
-
     // The cycle: writer -> critic -> writer, both plain direct edges. A `Workflow` with no bound at
     // all fails `validate_workflow` (014 §2's real requirement) -- max_rounds below IS the safety
     // net that makes authoring a cycle at all acceptable.
@@ -131,23 +98,19 @@ int main() {
     wf.bound.max_rounds = 6;
     check(validate_workflow(wf).has_value(), "a cyclic graph with a bound validates (014 §9 Q2)");
 
-    WorkflowSupervisor           supervisor;
-    std::unique_ptr<Activation>  sup_act;
-    ActorRef<WorkflowSupervisor> sup = h.install(wf, supervisor, sup_act);
+    std::vector<ExecutorBody> bodies = {appender("write"), appender("critique")};
+    WorkflowSupervisor         supervisor;
+    supervisor.initialize(wf, bodies);
 
-    h.engine.start();
-    quark::result<WorkflowResult> r = block_on(sup.ask<WorkflowResult>(RunWorkflow{text_message("draft")}));
-    check(r.has_value(), "the workflow run completes (in the sense of returning a result)");
-    if (r.has_value()) {
-        check(r->status == workflow_status::bound_max_rounds,
-              "the bound stopped the loop -- an honest status distinct from workflow_status::"
-              "completed, telling the caller WHY it ended rather than leaving them to guess");
-        check(r->rounds == 6, "exactly max_rounds rounds ran, no more");
-        std::string const output = text_of(r->output);
-        std::printf("%s\n", output.c_str());
-        check(output == "draft>write>critique>write>critique>write>critique",
-              "the draft threaded through 3 full writer/critic cycles before the bound stopped it");
-    }
+    WorkflowResult r = drive(supervisor.run_workflow(RunWorkflow{text_message("draft")}));
+    check(r.status == workflow_status::bound_max_rounds,
+          "the bound stopped the loop -- an honest status distinct from workflow_status::"
+          "completed, telling the caller WHY it ended rather than leaving them to guess");
+    check(r.rounds == 6, "exactly max_rounds rounds ran, no more");
+    std::string const output = text_of(r.output);
+    std::printf("%s\n", output.c_str());
+    check(output == "draft>write>critique>write>critique>write>critique",
+          "the draft threaded through 3 full writer/critic cycles before the bound stopped it");
 
     std::fprintf(stderr, g_failures == 0 ? "example_13_reflection_loop: OK\n"
                                           : "example_13_reflection_loop: FAIL\n");

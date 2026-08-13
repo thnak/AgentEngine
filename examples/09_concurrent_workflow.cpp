@@ -9,31 +9,33 @@
 //
 // The aggregator receiving exactly one call, not three, is the property this example measures, not
 // just infers from correct-looking output -- a fan-in that silently degraded into three separate
-// calls would still produce a plausible answer.
+// calls would still produce a plausible answer. ADR-037's Quark-free `rt::WorkflowSupervisor`
+// (agentengine/rt/workflow_supervisor.hpp) drives the graph via `rt::ThreadPool` fan-out instead of
+// separate Quark actors, so there is no `FunctionExecutor::invocations()` counter to read anymore --
+// the aggregator's own body is wrapped with a small invocation-counting lambda instead, wiring-only,
+// the body function itself (`aggregate`) is unchanged.
 //
 // Run: ./agentengine_example_09_concurrent_workflow
 
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <memory>
 #include <string>
 #include <vector>
 
-#include "quark/core/actor.hpp"
-#include "quark/core/actor_ref.hpp"
-#include "quark/core/engine.hpp"
-#include "quark/detail/message_pool.hpp"
-
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/tool_call_extraction.hpp"
-#include "agentengine/workflow/executor.hpp"
-#include "agentengine/workflow/graph.hpp"
-#include "agentengine/workflow/placement.hpp"
-#include "agentengine/workflow/supervisor.hpp"
+#include "agentengine/rt/workflow_supervisor.hpp"
 
-using namespace quark;
 using namespace agentengine;
 using namespace agentengine::workflow;
+using agentengine::rt::ExecutorBody;
+using agentengine::rt::ExecutorOutcome;
+using agentengine::rt::RunWorkflow;
+using agentengine::rt::WorkflowResult;
+using agentengine::rt::WorkflowSupervisor;
+using agentengine::rt::workflow_status;
 
 namespace {
 
@@ -88,62 +90,33 @@ void check(bool cond, char const* what) {
     return text_message(all_text_of(in));
 }
 
-constexpr std::uint64_t kSupervisorKey = 100;
-
-// Same construction shape as 04_first_workflow.cpp, generalized to N nodes -- `Activation` is
-// non-movable, so each node's own `unique_ptr` keeps its address stable for the Activation wrapping
-// it.
-struct Harness {
-    Engine<>            engine;
-    detail::MessagePool pool{64};
-    LocalRouter          router;
-    std::vector<std::unique_ptr<FunctionExecutor>> nodes;
-    std::vector<std::unique_ptr<Activation>>       node_acts;
-    std::vector<std::uint64_t>                     keys;
-
-    explicit Harness(EngineConfig const& cfg, std::size_t node_count)
-        : engine(cfg), router(engine.post_courier(), pool) {
-        keys = spread_executor_keys(node_count, engine.shard_count(), [this](std::uint64_t k) {
-            return engine.shard_of(actor_id_of<FunctionExecutor>(k));
-        });
-    }
-
-    void add_node(std::string name, ExecutorBody body) {
-        auto node = std::make_unique<FunctionExecutor>();
-        node->initialize(std::move(name), std::move(body), EffectContext{});
-        auto act = make_workflow_activation(*node, pool.sink());
-        engine.register_activation(actor_id_of<FunctionExecutor>(keys[nodes.size()]), *act);
-        nodes.push_back(std::move(node));
-        node_acts.push_back(std::move(act));
-    }
-
-    [[nodiscard]] ActorRef<WorkflowSupervisor> install(Workflow const& wf, WorkflowSupervisor& sup,
-                                                        std::unique_ptr<Activation>& sup_act) {
-        std::vector<ActorRef<FunctionExecutor>> refs;
-        for (std::size_t i = 0; i < nodes.size(); ++i) refs.push_back(router.get<FunctionExecutor>(keys[i]));
-        sup.initialize(wf, refs);
-        sup_act = make_workflow_activation(sup, pool.sink());
-        engine.register_activation(actor_id_of<WorkflowSupervisor>(kSupervisorKey), *sup_act);
-        return router.get<WorkflowSupervisor>(kSupervisorKey);
-    }
-};
+// Wraps `body` with an invocation counter -- the wiring-level replacement for the old
+// `FunctionExecutor::invocations()` actor state, so this example can still measure (not just infer)
+// that the aggregator ran exactly once.
+[[nodiscard]] ExecutorBody counted(ExecutorBody body, std::shared_ptr<std::atomic<std::uint32_t>> count) {
+    return [body = std::move(body), count](Message const& in,
+                                           EffectContext& ctx) -> agentengine::result<ExecutorOutcome> {
+        count->fetch_add(1, std::memory_order_relaxed);
+        return body(in, ctx);
+    };
+}
 
 [[nodiscard]] Executor node_desc(char const* id) { return Executor{id, executor_kind::function, "T", "T"}; }
+
+// Drives an agentengine::rt::task<T> to completion. Safe here: nothing in a WorkflowSupervisor
+// round genuinely suspends on an external wake (fan-out concurrency happens through
+// std::future::get(), an ordinary blocking call, not a coroutine suspension) -- the same "safe
+// because nothing here genuinely suspends" reasoning every rt:: test file's own drive<T>() relies
+// on.
+template <class T>
+T drive(agentengine::rt::task<T> t) {
+    while (!t.done()) t.resume();
+    return t.take_value();
+}
 
 }  // namespace
 
 int main() {
-    auto const config = ConfigBuilder{}.workers(4).shards(4).default_drain_budget(64).build();
-    check(config.has_value(), "engine config builds (4 workers / 4 shards)");
-    if (!config) return 1;
-
-    Harness h(*config, /*node_count=*/5);
-    h.add_node("src", source);
-    h.add_node("upper", worker("upper"));
-    h.add_node("lower", worker("lower"));   // still uppercases -- the NAME is what distinguishes it
-    h.add_node("title", worker("title"));
-    h.add_node("agg", aggregate);
-
     Workflow wf;
     wf.id        = "fan-out-fan-in";
     wf.executors = {node_desc("src"), node_desc("upper"), node_desc("lower"), node_desc("title"),
@@ -157,25 +130,30 @@ int main() {
     wf.bound.max_rounds = 8;
     check(validate_workflow(wf).has_value(), "the graph validates");
 
-    WorkflowSupervisor           supervisor;
-    std::unique_ptr<Activation>  sup_act;
-    ActorRef<WorkflowSupervisor> sup = h.install(wf, supervisor, sup_act);
+    auto agg_invocations = std::make_shared<std::atomic<std::uint32_t>>(0);
 
-    h.engine.start();
-    quark::result<WorkflowResult> r = block_on(sup.ask<WorkflowResult>(RunWorkflow{text_message("hi")}));
-    check(r.has_value(), "the workflow run completes");
-    if (r.has_value()) {
-        check(r->status == workflow_status::completed, "the graph terminates by running dry (014 §2)");
-        check(r->rounds == 3, "src, workers, aggregator = 3 rounds -- the fan-out round runs ONCE, "
-                               "not once per worker");
-        check(h.nodes[4]->invocations() == 1,
-              "the aggregator ran EXACTLY ONCE -- three inbound fan_in edges merged into one "
-              "delivery, not three separate calls (014 §2's own claim: 'makes fan-in well-defined')");
-        std::string const output = all_text_of(r->output);
-        std::printf("%s\n", output.c_str());
-        check(output == "upper:HI + lower:HI + title:HI",
-              "the aggregator saw all three branches, in graph-declared order");
-    }
+    // `bodies` is parallel to `wf.executors` by index: src, upper, lower, title, agg.
+    std::vector<ExecutorBody> bodies = {
+        source,
+        worker("upper"),
+        worker("lower"),  // still uppercases -- the NAME is what distinguishes it
+        worker("title"),
+        counted(aggregate, agg_invocations),
+    };
+    WorkflowSupervisor sup;
+    sup.initialize(wf, bodies);
+
+    WorkflowResult r = drive(sup.run_workflow(RunWorkflow{text_message("hi")}));
+    check(r.status == workflow_status::completed, "the graph terminates by running dry (014 §2)");
+    check(r.rounds == 3, "src, workers, aggregator = 3 rounds -- the fan-out round runs ONCE, "
+                          "not once per worker");
+    check(agg_invocations->load(std::memory_order_relaxed) == 1,
+          "the aggregator ran EXACTLY ONCE -- three inbound fan_in edges merged into one "
+          "delivery, not three separate calls (014 §2's own claim: 'makes fan-in well-defined')");
+    std::string const output = all_text_of(r.output);
+    std::printf("%s\n", output.c_str());
+    check(output == "upper:HI + lower:HI + title:HI",
+          "the aggregator saw all three branches, in graph-declared order");
 
     std::fprintf(stderr, g_failures == 0 ? "example_09_concurrent_workflow: OK\n"
                                           : "example_09_concurrent_workflow: FAIL\n");

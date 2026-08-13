@@ -7,30 +7,32 @@
 // `std::vector<std::string>` of the case labels THIS call selects, out of the ones the graph
 // actually declares. Only the edge(s) whose label appears in `routes` fire; the rest never run,
 // which is what this example measures (an invocation counter), not just infers from output text.
+// ADR-037's Quark-free `rt::WorkflowSupervisor` (agentengine/rt/workflow_supervisor.hpp) drives the
+// graph directly through plain coroutines, so there is no `FunctionExecutor::invocations()` to read
+// anymore -- each branch handler is wrapped with a small invocation-counting lambda instead,
+// wiring-only, the handler bodies themselves (`triage`/`handler`) are unchanged.
 //
 // Run: ./agentengine_example_10_conditional_routing
 
+#include <atomic>
 #include <cstdio>
 #include <functional>
 #include <memory>
 #include <string>
 #include <vector>
 
-#include "quark/core/actor.hpp"
-#include "quark/core/actor_ref.hpp"
-#include "quark/core/engine.hpp"
-#include "quark/detail/message_pool.hpp"
-
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/tool_call_extraction.hpp"
-#include "agentengine/workflow/executor.hpp"
-#include "agentengine/workflow/graph.hpp"
-#include "agentengine/workflow/placement.hpp"
-#include "agentengine/workflow/supervisor.hpp"
+#include "agentengine/rt/workflow_supervisor.hpp"
 
-using namespace quark;
 using namespace agentengine;
 using namespace agentengine::workflow;
+using agentengine::rt::ExecutorBody;
+using agentengine::rt::ExecutorOutcome;
+using agentengine::rt::RunWorkflow;
+using agentengine::rt::WorkflowResult;
+using agentengine::rt::WorkflowSupervisor;
+using agentengine::rt::workflow_status;
 
 namespace {
 
@@ -72,42 +74,16 @@ void check(bool cond, char const* what) {
     };
 }
 
-constexpr std::uint64_t kSupervisorKey = 100;
-
-struct Harness {
-    Engine<>            engine;
-    detail::MessagePool pool{64};
-    LocalRouter          router;
-    std::vector<std::unique_ptr<FunctionExecutor>> nodes;
-    std::vector<std::unique_ptr<Activation>>       node_acts;
-    std::vector<std::uint64_t>                     keys;
-
-    explicit Harness(EngineConfig const& cfg, std::size_t node_count)
-        : engine(cfg), router(engine.post_courier(), pool) {
-        keys = spread_executor_keys(node_count, engine.shard_count(), [this](std::uint64_t k) {
-            return engine.shard_of(actor_id_of<FunctionExecutor>(k));
-        });
-    }
-
-    void add_node(std::string name, ExecutorBody body) {
-        auto node = std::make_unique<FunctionExecutor>();
-        node->initialize(std::move(name), std::move(body), EffectContext{});
-        auto act = make_workflow_activation(*node, pool.sink());
-        engine.register_activation(actor_id_of<FunctionExecutor>(keys[nodes.size()]), *act);
-        nodes.push_back(std::move(node));
-        node_acts.push_back(std::move(act));
-    }
-
-    [[nodiscard]] ActorRef<WorkflowSupervisor> install(Workflow const& wf, WorkflowSupervisor& sup,
-                                                        std::unique_ptr<Activation>& sup_act) {
-        std::vector<ActorRef<FunctionExecutor>> refs;
-        for (std::size_t i = 0; i < nodes.size(); ++i) refs.push_back(router.get<FunctionExecutor>(keys[i]));
-        sup.initialize(wf, refs);
-        sup_act = make_workflow_activation(sup, pool.sink());
-        engine.register_activation(actor_id_of<WorkflowSupervisor>(kSupervisorKey), *sup_act);
-        return router.get<WorkflowSupervisor>(kSupervisorKey);
-    }
-};
+// Wraps `body` with an invocation counter -- the wiring-level replacement for the old
+// `FunctionExecutor::invocations()` actor state, so this example can still measure (not just infer)
+// that exactly one branch ran.
+[[nodiscard]] ExecutorBody counted(ExecutorBody body, std::shared_ptr<std::atomic<std::uint32_t>> count) {
+    return [body = std::move(body), count](Message const& in,
+                                           EffectContext& ctx) -> agentengine::result<ExecutorOutcome> {
+        count->fetch_add(1, std::memory_order_relaxed);
+        return body(in, ctx);
+    };
+}
 
 [[nodiscard]] Executor node_desc(char const* id) { return Executor{id, executor_kind::function, "T", "T"}; }
 
@@ -126,41 +102,47 @@ struct Harness {
 
 [[nodiscard]] std::string all_text_of(Message const& m) { return text_of(m); }
 
+// Drives an agentengine::rt::task<T> to completion. Safe here: nothing in a WorkflowSupervisor
+// round genuinely suspends on an external wake (fan-out concurrency happens through
+// std::future::get(), an ordinary blocking call, not a coroutine suspension) -- the same "safe
+// because nothing here genuinely suspends" reasoning every rt:: test file's own drive<T>() relies
+// on.
+template <class T>
+T drive(agentengine::rt::task<T> t) {
+    while (!t.done()) t.resume();
+    return t.take_value();
+}
+
 }  // namespace
 
 int main() {
-    auto const config = ConfigBuilder{}.workers(4).shards(4).default_drain_budget(64).build();
-    check(config.has_value(), "engine config builds (4 workers / 4 shards)");
-    if (!config) return 1;
-
     Workflow const wf = make_graph();
     check(validate_workflow(wf).has_value(), "the graph validates");
 
     // Run the SAME graph against two different inputs -- proving the classifier's output steers the
     // route, not that one branch is hardcoded to always fire.
     for (std::string const& input : {std::string("my invoice is wrong"), std::string("the app crashed")}) {
-        Harness h(*config, 3);
-        h.add_node("triage", triage([](std::string const& text) {
-                       return text.find("invoice") != std::string::npos ? "billing" : "tech";
-                   }));
-        h.add_node("billing", handler("billing"));
-        h.add_node("tech", handler("tech"));
+        auto billing_invocations = std::make_shared<std::atomic<std::uint32_t>>(0);
+        auto tech_invocations    = std::make_shared<std::atomic<std::uint32_t>>(0);
 
-        WorkflowSupervisor           supervisor;
-        std::unique_ptr<Activation>  sup_act;
-        ActorRef<WorkflowSupervisor> sup = h.install(wf, supervisor, sup_act);
+        // `bodies` is parallel to `wf.executors` by index: triage, billing, tech.
+        std::vector<ExecutorBody> bodies = {
+            triage([](std::string const& text) {
+                return text.find("invoice") != std::string::npos ? "billing" : "tech";
+            }),
+            counted(handler("billing"), billing_invocations),
+            counted(handler("tech"), tech_invocations),
+        };
+        WorkflowSupervisor sup;
+        sup.initialize(wf, bodies);
 
-        h.engine.start();
-        quark::result<WorkflowResult> r =
-            block_on(sup.ask<WorkflowResult>(RunWorkflow{text_message(input)}));
-        check(r.has_value(), ("the run completes for input: " + input).c_str());
-        if (r.has_value()) {
-            bool const expect_billing = input.find("invoice") != std::string::npos;
-            std::printf("%s\n", all_text_of(r->output).c_str());
-            check(h.nodes[1]->invocations() == (expect_billing ? 1u : 0u) &&
-                      h.nodes[2]->invocations() == (expect_billing ? 0u : 1u),
-                  "exactly ONE branch ran -- the unselected branch's invoke() was never called");
-        }
+        WorkflowResult r = drive(sup.run_workflow(RunWorkflow{text_message(input)}));
+        check(r.status == workflow_status::completed, ("the run completes for input: " + input).c_str());
+        bool const expect_billing = input.find("invoice") != std::string::npos;
+        std::printf("%s\n", all_text_of(r.output).c_str());
+        check(billing_invocations->load(std::memory_order_relaxed) == (expect_billing ? 1u : 0u) &&
+                  tech_invocations->load(std::memory_order_relaxed) == (expect_billing ? 0u : 1u),
+              "exactly ONE branch ran -- the unselected branch's invoke() was never called");
     }
 
     std::fprintf(stderr, g_failures == 0 ? "example_10_conditional_routing: OK\n"
