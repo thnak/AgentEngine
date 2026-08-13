@@ -49,12 +49,12 @@
 //
 // Live view (enable_live_view()/live_view_producer_ -- NOT implemented by this Slice at all, unlike
 // AgentSession's own already-real enable_event_stream()) would ride core/stream.hpp's stream<T> once
-// built. UPDATED: that type's own backend migration (a later ADR-037 pass) swapped it from
-// quark::ReplyStream to rt::channel<T>, so implementing this here would no longer pull in actor/
-// mailbox machinery -- only the small remaining type-level residual rt::AgentSession's own banner
-// documents (terminal()/fail_error() still return quark::ReplyStreamTerminal/quark::error). Still not
-// implemented in this Slice regardless -- named as future work, not claimed done by a dependency
-// getting lighter elsewhere.
+// built. UPDATED: that type's own backend migration (an ADR-037 pass) swapped it from
+// quark::ReplyStream to rt::channel<T>, and a LATER ADR-037 pass closed the last type-level residual
+// too (terminal()/fail_error() now return agentengine::stream_terminal/agentengine::error, not
+// quark::ReplyStreamTerminal/quark::error) -- implementing this here would pull in NO Quark dependency
+// at all, type-level or runtime. Still not implemented in this Slice regardless -- named as future
+// work, not claimed done by a dependency getting lighter elsewhere.
 //
 // THE ONE GENUINELY HARD DESIGN QUESTION: decision 5 in the original's own file banner ("Fan-out is
 // ISSUE-ALL-THEN-COLLECT... the supervisor issues every ask for round N before awaiting any of them...

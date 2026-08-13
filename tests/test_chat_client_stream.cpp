@@ -98,7 +98,7 @@ public:
                 item.value  = agentengine::Text{words[i]};
                 update.delta    = std::move(item);
                 update.is_final = (i + 1 == words.size());
-                if (producer.push(std::move(update)) != quark::ReplyPush::Ok) {
+                if (producer.push(std::move(update)) != agentengine::stream_push::ok) {
                     return;  // consumer cancelled/deadlined -- stop producing, no further pushes
                 }
             }
@@ -164,7 +164,7 @@ int main() {
               "(0 loss, 0 duplication, 0 reorder -- ADR-018's own proven properties, reached through "
               "ae::stream<T>)");
         check(saw_final, "B4b-R1: the last chunk is marked is_final");
-        check(s.terminal() == quark::ReplyStreamTerminal::Closed,
+        check(s.terminal() == stream_terminal::closed,
               "B4b-R1: the stream reaches the success terminal (in-band EoS)");
         check(!s.gap_detected(), "B4b-R1: no gap in the delivered sequence");
     }
@@ -178,7 +178,7 @@ int main() {
             while (auto update = s.next()) { (void)update; check(false, "B4b-R2: no item should be delivered"); }
             if (!s.done()) std::this_thread::yield();
         }
-        check(s.terminal() == quark::ReplyStreamTerminal::Closed, "B4b-R2: an empty stream still closes cleanly");
+        check(s.terminal() == stream_terminal::closed, "B4b-R2: an empty stream still closes cleanly");
     }
 
     // ---- B4b-R3: dropping the consumer mid-stream cancels it; the producer thread stops and joins --

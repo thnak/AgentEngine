@@ -519,8 +519,9 @@ int main() {
                                "2023-06-01", fake_resolver, leaf.cert_pem);
             // max_attempts=1 on the primary tier -- this proof wants ONE genuine connection failure to
             // trigger failover immediately, not RetryPolicy{}'s default 3 attempts with real backoff
-            // delay (retryable per model_call_gateway_detail::is_retryable: a closed loopback port
-            // reports quark::errc::unavailable, same bucket as a transient outage).
+            // delay (retryable per model_call_gateway_detail::is_retryable: a closed loopback port's
+            // "connect refused" is failure_class::transient, forwarded verbatim from the network layer
+            // -- net_egress_proxy.cpp's own classification -- same bucket as a transient outage).
             ModelCallGateway<Primary, Fallback> composed(std::move(primary),
                                                           std::make_tuple(std::move(fallback)),
                                                           RetryPolicy{.max_attempts = 1});

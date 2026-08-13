@@ -68,7 +68,6 @@
 #include "agentengine/sandbox/incremental_http_body.hpp"
 #include "agentengine/sandbox/provider_http_client.hpp"
 #include "agentengine/trust/secret.hpp"
-#include "quark/core/error.hpp"
 
 namespace agentengine::openai {
 
@@ -367,25 +366,17 @@ namespace detail {
     return error{klass, message, "openai.http_" + std::to_string(status)};
 }
 
-// The streaming counterpart to `map_http_status_error` above, for `producer.fail(quark::error{...})`
-// call sites (below) rather than `ae::error`. Deliberately STATUS-CODE-ONLY, no body/message parsing
-// at all -- `quark::error::detail` (`quark/core/error.hpp`) is a non-owning `std::string_view`, and
-// this classifier feeds error sites that run on a DETACHED background thread (`run_stream_worker`
-// below): that thread's stack -- including any parsed error-body string -- is gone the instant the
-// function returns, while a `stream<T>` consumer may read `fail_error().detail` well after that.
-// Every value this returns is a static string literal for exactly that reason (ADR-036 red-team
-// finding: reusing `map_http_status_error`'s dynamic, body-derived message here would be a real
-// dangling-view read, not a hypothetical one). Same retry-relevant split `map_http_status_error`
-// already makes (429/5xx retryable, everything else not), re-expressed in `quark::errc`'s coarser
-// two-bucket vocabulary -- the exact status is still visible in `chat()`'s own `ae::error` for a
-// caller on that path; only the coarser bucket survives on the streaming path, a real (documented,
-// not silently improved-away) limitation of `quark::error`'s thinner shape versus `ae::error`'s.
-[[nodiscard]] inline quark::error classify_http_status_stream_error(std::uint16_t status) noexcept {
-    if (status == 429 || status >= 500) {
-        return quark::error{quark::errc::overloaded, "openai.http_error_status_retryable"};
-    }
-    return quark::error{quark::errc::validation, "openai.http_error_status_nonretryable"};
-}
+// ADR-037 (second pass): `classify_http_status_stream_error` -- the streaming path's own separate,
+// coarser status classifier -- is GONE. It existed only because `quark::error::detail` was a
+// non-owning `std::string_view`, and this classifier fed `producer.fail()` sites running on a
+// DETACHED background thread whose stack (including any parsed error-body string) is gone the instant
+// the function returns, while a `stream<T>` consumer may read `fail_error()` well after that --
+// reusing `map_http_status_error`'s dynamic, body-derived message there would have been a real
+// dangling-view read. `agentengine::error::message` OWNS its text, so that hazard no longer exists:
+// `run_stream_worker` below calls `map_http_status_error(status, {})` directly (an empty body, since
+// the streaming path's error document was never captured as a separate buffer -- see that call site's
+// own comment), getting the exact SAME status-code-driven retryable/policy/contract split `chat()`'s
+// own non-streaming path already uses, from ONE function instead of two that could drift.
 
 // Factored out so the streaming path (below) parses a trailing `usage`-only SSE chunk with the
 // EXACT same field mapping as the non-streaming response body -- one implementation of the wire
@@ -808,7 +799,10 @@ inline void run_stream_worker(std::string host, std::uint16_t port, std::string 
     // no check at all.
     auto body = build_request_body(request, model, /*stream=*/true, end_user_id, seed, caps);
     if (!body) {
-        producer.fail(quark::error{quark::errc::validation, "openai.request_build_failed"});
+        // Forward the REAL error `build_request_body` already computed -- no longer discarded in
+        // favor of a synthetic stand-in now that `producer.fail()` takes `agentengine::error` (owned
+        // message) directly, the same shape `chat()`'s own non-streaming path already returns.
+        producer.fail(body.error());
         return;
     }
     auto req = build_http_request(path, api_key, json::dump(*body), http_referer, x_title);
@@ -834,7 +828,7 @@ inline void run_stream_worker(std::string host, std::uint16_t port, std::string 
             return false;
         }
         for (auto& update : *updates) {
-            if (producer.push(std::move(update)) != quark::ReplyPush::Ok) {
+            if (producer.push(std::move(update)) != stream_push::ok) {
                 push_failed = true;  // consumer cancelled/deadlined -- the ring already latched why
                 return false;
             }
@@ -846,27 +840,34 @@ inline void run_stream_worker(std::string host, std::uint16_t port, std::string 
                                                               resolver, ca_bundle_pem_override, transport);
     if (push_failed) return;  // nothing left to say; the consumer is gone
     if (!resp) {
-        producer.fail(quark::error{quark::errc::unavailable, "openai.exchange_failed"});
+        // Forward the network layer's own real, already-correctly-classified error (transient for a
+        // connect/timeout failure, resource for a byte-cap trip, policy for a denied grant -- see
+        // sandbox/net_egress_proxy.cpp) instead of a blanket synthetic "unavailable" -- a genuine
+        // correctness fix this migration enables: the old blanket classification would have retried a
+        // byte-cap/policy failure that should never be retried.
+        producer.fail(resp.error());
         return;
     }
     if (resp->status < 200 || resp->status >= 300) {
         // A non-2xx body is an error document, not SSE, so it produced no `data:` events and nothing
-        // bogus was pushed above -- the stream simply fails here instead. ADR-036: status-code-only
-        // classification (never the dynamic body message -- see classify_http_status_stream_error's
-        // own comment) so a caller retrying on the streaming path (e.g. a future ModelCallGateway)
-        // can actually distinguish a retryable 429/5xx from a non-retryable 401/400, unlike the prior
-        // single coarse `errc::validation` for every status.
-        producer.fail(classify_http_status_stream_error(resp->status));
+        // bogus was pushed above -- the stream simply fails here instead. Reuses `map_http_status_
+        // error` directly (see that helper's own updated comment) rather than a second, coarser
+        // classifier -- an empty body since the streaming path never captured the raw error document
+        // as a separate buffer, so the message falls back to the generic "openai http status N" form;
+        // the classification itself (transient/policy/contract) is unaffected either way.
+        producer.fail(map_http_status_error(resp->status, {}));
         return;
     }
     if (decode_error) {
-        producer.fail(quark::error{quark::errc::serialization, "openai.stream_parse_failed"});
+        // Forward the accumulator's own real decode error (already `agentengine::error`) rather than a
+        // synthetic stand-in -- same reasoning as `!body` above.
+        producer.fail(*decode_error);
         return;
     }
 
     if (acc) {
         for (auto& update : acc->finish()) {
-            if (producer.push(std::move(update)) != quark::ReplyPush::Ok) return;
+            if (producer.push(std::move(update)) != stream_push::ok) return;
         }
     }
     producer.close();
@@ -960,7 +961,10 @@ public:
         auto pair = make_stream<ChatResponseUpdate>(std::pmr::get_default_resource());
         auto lease = store_.resolve(api_key_ref_, ctx);
         if (!lease) {
-            pair.producer.fail(quark::error{quark::errc::validation, "secret.not_granted"});
+            // Forward the SecretStore's own real error (already correctly classified, typically
+            // failure_class::policy for a denied grant) instead of a synthetic stand-in -- matches
+            // chat()'s own non-streaming path exactly, which already returns lease.error() unchanged.
+            pair.producer.fail(lease.error());
             return std::move(pair.consumer);
         }
         // ADR-017: read the token BEFORE moving the producer into the thread. Argument evaluation

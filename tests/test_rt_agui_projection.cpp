@@ -82,7 +82,8 @@ public:
         cfg.capacity = 32;  // generous enough that a small scripted response never blocks on credit
         auto pair = ae::make_stream<ae::ChatResponseUpdate>(std::pmr::get_default_resource(), cfg);
         if (fail_next) {
-            pair.producer.fail(quark::error{quark::errc::internal, "scripted failure"});
+            pair.producer.fail(
+                ae::error{ae::failure_class::fatal, "scripted failure", "test.scripted_failure"});
             return std::move(pair.consumer);
         }
         ae::ChatResponseUpdate upd{};

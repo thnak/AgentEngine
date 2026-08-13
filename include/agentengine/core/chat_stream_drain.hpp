@@ -9,11 +9,18 @@
 //
 // Deliberately policy-free: this function does NOT decide retry-worthiness, does NOT fail closed on
 // missing usage, does NOT emit any run_event -- those are each caller's OWN concern (`ModelCallGateway`
-// decides retries from `quark::errc`; `AgentSession::run_model_call()` fails closed on missing usage
+// decides retries from `failure_class`; `AgentSession::run_model_call()` fails closed on missing usage
 // AND fires `model_delta` events live, which is different enough from every OTHER caller here that it
 // keeps its own inline loop rather than using this shared one -- see that function's own comment).
 // `memory_provider.hpp`/`history_provider.hpp` don't care about usage at all; this type reports it as
 // `std::optional` precisely so a caller that doesn't need it can simply ignore the field.
+//
+// ADR-037 (second pass): `DrainedChatStream::failure` is now `agentengine::error` directly -- a
+// producer that fails a stream already constructs a real, correctly-classified `error` (see
+// `core/stream.hpp`'s own migration), so there is no longer a thinner `quark::errc` vocabulary to
+// translate FROM. `classify_drained_failure(quark::errc)` is gone entirely: `failure_class` already
+// IS the retry-relevant classification (004 §4), carried on `error` itself now, not derived from it
+// after the fact.
 
 #include <chrono>
 #include <optional>
@@ -23,16 +30,13 @@
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/stream.hpp"
 
-#include "quark/core/error.hpp"
-#include "quark/core/reply_stream.hpp"
-
 namespace agentengine {
 
 struct DrainedChatStream {
     Message accumulated;
     std::optional<Usage> usage;
     bool ok = false;
-    quark::error failure{};  // meaningful only when !ok
+    error failure{};  // meaningful only when !ok
 };
 
 // Drains `s` to completion (poll loop: pull everything currently buffered, sleep briefly if the
@@ -54,7 +58,7 @@ struct DrainedChatStream {
         // bare spin.
         if (!s.done()) std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
-    if (s.terminal() == quark::ReplyStreamTerminal::Closed) {
+    if (s.terminal() == stream_terminal::closed) {
         out.ok = true;
     } else {
         out.ok = false;
@@ -63,43 +67,15 @@ struct DrainedChatStream {
     return out;
 }
 
-// Maps `quark::errc`'s coarser vocabulary onto this codebase's own `failure_class` -- NOT a blanket
-// `transient`, because `failure_class` is what 004 §4's retry policy and `workflow/supervisor.hpp`'s
-// `is_retryable()` actually key off. Getting this wrong means a permanent, non-retryable failure
-// (e.g. `quark::errc::validation`, which `classify_http_status_stream_error` uses for a policy-denied
-// or malformed request -- see that function's own comment) would be relabeled retryable and retried
-// forever, an I2 hazard (retrying a denial is asking the same question until a different answer
-// comes back). Mirrors `ModelCallGateway`'s own `is_retryable()` split (only `unavailable`/`timeout`/
-// `overloaded` are retryable) plus `map_http_status_error`'s status->class mapping, re-expressed over
-// `quark::errc`'s thinner shape.
-[[nodiscard]] inline failure_class classify_drained_failure(quark::errc code) noexcept {
-    switch (code) {
-        case quark::errc::unavailable:
-        case quark::errc::timeout:
-        case quark::errc::overloaded:
-            return failure_class::transient;
-        case quark::errc::circuit_open:
-            return failure_class::resource;
-        case quark::errc::validation:
-        case quark::errc::not_found:
-        case quark::errc::serialization:
-            return failure_class::contract;
-        case quark::errc::ok:
-        case quark::errc::cancelled:
-        case quark::errc::supervised_stop:
-        case quark::errc::internal:
-        default:
-            return failure_class::fatal;
-    }
-}
-
-// Converts a drained failure into this codebase's own `ae::error` shape -- `quark::error::detail` is
-// a non-owning `string_view` pointing at a static literal (every real producer of one is required to
-// use a static literal, never a dynamic message -- see `protocol/openai/chat_client.hpp`'s own
-// `classify_http_status_stream_error` comment for why), so copying it into an owned `std::string`
-// here, at the point it's finally read, is a safe, ordinary copy.
-[[nodiscard]] inline error drained_failure_to_agent_error(quark::error const& e, char const* code) noexcept {
-    return error{classify_drained_failure(e.code), std::string(e.detail), code};
+// Re-labels a drained failure's `code` field for a caller that wants every failure funneled through
+// its own stable identifier (e.g. `ModelCallGateway::call()`'s callers matching on
+// "gateway.attempt_failed" regardless of which underlying backend/reason produced it) -- `klass`/
+// `message`/`native_code` all pass through unchanged, since `error` already carries the real,
+// correctly-classified `failure_class` from wherever it was constructed (004 §4's retry policy keys
+// off `klass == failure_class::transient` directly; there is no separate coarser vocabulary left to
+// translate through, unlike the old `quark::errc`-keyed `classify_drained_failure` this replaces).
+[[nodiscard]] inline error drained_failure_to_agent_error(error const& e, char const* code) noexcept {
+    return error{e.klass, e.message, code, e.native_code};
 }
 
 }  // namespace agentengine

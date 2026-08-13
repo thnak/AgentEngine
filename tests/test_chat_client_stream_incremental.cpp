@@ -167,7 +167,7 @@ struct DrainTiming {
     std::chrono::steady_clock::duration total{};
     int text_updates = 0;
     std::string text;
-    quark::ReplyStreamTerminal terminal = quark::ReplyStreamTerminal::Open;
+    stream_terminal terminal = stream_terminal::open;
 };
 
 // Drains a live stream, recording when the FIRST item landed and when the stream ended.
@@ -231,7 +231,7 @@ int main() {
             stream<ChatResponseUpdate> s = client.chat_stream(request_asking("hi"), ctx);
             DrainTiming const t = drain_timed(s);
 
-            check(t.terminal == quark::ReplyStreamTerminal::Closed,
+            check(t.terminal == stream_terminal::closed,
                   "G1 (OpenAI): the incremental stream reaches the success terminal");
             check(t.text_updates == kChunkCount && t.text == std::string(kChunkCount, 'x'),
                   "G1 (OpenAI): every text delta is delivered exactly once, with no loss and no "
@@ -276,7 +276,7 @@ int main() {
             stream<ChatResponseUpdate> s = client.chat_stream(request_asking("hi"), ctx);
             DrainTiming const t = drain_timed(s);
 
-            check(t.terminal == quark::ReplyStreamTerminal::Closed,
+            check(t.terminal == stream_terminal::closed,
                   "G3 (Anthropic): the incremental stream reaches the success terminal");
             check(t.text_updates == kChunkCount && t.text == std::string(kChunkCount, 'y'),
                   "G3 (Anthropic): every text_delta is delivered exactly once through the named-event "

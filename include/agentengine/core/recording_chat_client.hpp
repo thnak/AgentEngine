@@ -52,17 +52,19 @@
 // same instance backing many turns), so a tracked member thread that joins-then-replaces would
 // wrongly serialize concurrent streams that have nothing to do with each other.
 //
-// PRODUCER-SIDE TERMINAL MIRRORING IS ONLY A PARTIAL MIRROR, NAMED HONESTLY: Quark's
-// `ReplyStreamProducer<F>` (third_party/quark/include/quark/core/reply_stream.hpp) exposes exactly
-// two producer-side terminal setters, `close()` (-> Closed) and `fail(error)` (-> Failed).
-// `Cancelled`/`DeadlineExceeded` have NO producer-side setter at all -- `ReplyStream<F>::cancel()`/
-// `expire_deadline()` are CONSUMER-side operations on quark::ReplyStream's own file banner. So when
-// Inner's stream ends Cancelled or DeadlineExceeded, this wrapper's own outbound producer cannot
-// literally reproduce that exact terminal cause through the public API -- it calls `fail()` with a
-// translated `quark::error` (`errc::cancelled` / `errc::timeout`) as the closest honest
-// approximation, rather than silently mislabeling either as a plain Closed success. The RECORDING
-// itself (`ChatCallRecording::stream_terminal`, a plain string) is NOT subject to this restriction
-// and always records the real cause exactly ("closed"/"cancelled"/"deadline_exceeded"/"failed").
+// PRODUCER-SIDE TERMINAL MIRRORING IS ONLY A PARTIAL MIRROR, NAMED HONESTLY: `stream_producer<T>`
+// (core/stream.hpp) exposes exactly two producer-side terminal setters, `close()` (-> closed) and
+// `fail(error)` (-> failed). `cancelled` has NO producer-side setter at all -- `stream<T>::cancel()`
+// is a CONSUMER-side operation. So when Inner's stream ends cancelled, this wrapper's own outbound
+// producer cannot literally reproduce that exact terminal cause through the public API -- it calls
+// `fail()` with a translated `error` as the closest honest approximation, rather than silently
+// mislabeling it as a plain Closed success. The RECORDING itself (`ChatCallRecording::stream_terminal`,
+// a plain string) is NOT subject to this restriction and always records the real cause exactly
+// ("closed"/"cancelled"/"deadline_exceeded"/"failed" -- "deadline_exceeded" a wire-format value kept
+// for backward compatibility with recordings made before ADR-037's stream.hpp migration, see
+// `replay_chat_client.hpp`'s own `terminal_to_error`; no LIVE stream can reach it anymore, since
+// `rt::channel_terminal` -- this codebase's actual backend since that migration -- has no deadline
+// concept at all).
 
 #include <chrono>
 #include <functional>
@@ -79,9 +81,6 @@
 #include "agentengine/core/stream.hpp"
 #include "agentengine/core/task.hpp"
 
-#include "quark/core/error.hpp"
-#include "quark/core/reply_stream.hpp"
-
 namespace agentengine {
 
 namespace recording_chat_client_detail {
@@ -93,18 +92,18 @@ namespace recording_chat_client_detail {
 // `resilient_chat_client_detail::real_jitter`'s own function-pointer-default idiom.
 inline void discard_recording(ChatCallRecording) noexcept {}
 
-// `quark::ReplyStreamTerminal` (Closed/Cancelled/DeadlineExceeded/Failed) -> the wire string
-// `ChatCallRecording::stream_terminal` expects (chat_recording.hpp's own field comment names exactly
-// these four strings). Only meaningful once a stream has actually reached a terminal (i.e. `done()`
-// is true) -- `Open` has no wire representation and is unreachable from that call site.
-[[nodiscard]] inline std::string_view stream_terminal_to_wire_string(
-    quark::ReplyStreamTerminal terminal) noexcept {
+// `stream_terminal` (open/closed/cancelled/failed) -> the wire string `ChatCallRecording::
+// stream_terminal` expects (chat_recording.hpp's own field comment names four strings, including
+// "deadline_exceeded" -- see file banner for why a LIVE stream can never produce that one anymore;
+// this switch has no case for it since it is not a reachable input here). Only meaningful once a
+// stream has actually reached a terminal (i.e. `done()` is true) -- `open` has no wire representation
+// and is unreachable from that call site.
+[[nodiscard]] inline std::string_view stream_terminal_to_wire_string(stream_terminal terminal) noexcept {
     switch (terminal) {
-        case quark::ReplyStreamTerminal::Closed: return "closed";
-        case quark::ReplyStreamTerminal::Cancelled: return "cancelled";
-        case quark::ReplyStreamTerminal::DeadlineExceeded: return "deadline_exceeded";
-        case quark::ReplyStreamTerminal::Failed: return "failed";
-        case quark::ReplyStreamTerminal::Open: return "";
+        case stream_terminal::closed:    return "closed";
+        case stream_terminal::cancelled: return "cancelled";
+        case stream_terminal::failed:    return "failed";
+        case stream_terminal::open:      return "";
     }
     return "";
 }
@@ -200,7 +199,7 @@ public:
                         if (downstream_alive) {
                             // ...then move the original into the new stream -- the caller-facing
                             // delivery, never reordered or altered relative to Inner's own sequence.
-                            if (producer.push(std::move(*update)) != quark::ReplyPush::Ok) {
+                            if (producer.push(std::move(*update)) != stream_push::ok) {
                                 downstream_alive = false;
                             }
                         }
@@ -208,7 +207,7 @@ public:
                     if (!inner_stream.done()) std::this_thread::yield();
                 }
 
-                quark::ReplyStreamTerminal const terminal = inner_stream.terminal();
+                stream_terminal const terminal = inner_stream.terminal();
                 std::string const terminal_wire =
                     std::string(recording_chat_client_detail::stream_terminal_to_wire_string(terminal));
 
@@ -217,8 +216,8 @@ public:
                 rec.mode = recording_mode::streaming;
                 rec.chunks = std::move(chunks);
                 rec.stream_terminal = terminal_wire;
-                if (terminal == quark::ReplyStreamTerminal::Failed) {
-                    rec.stream_error_detail = std::string(inner_stream.fail_error().detail);
+                if (terminal == stream_terminal::failed) {
+                    rec.stream_error_detail = inner_stream.fail_error().message;
                 }
                 rec.duration = std::chrono::duration_cast<std::chrono::milliseconds>(
                     std::chrono::steady_clock::now() - start);
@@ -232,32 +231,31 @@ public:
                 // `terminal()`/`done()` becoming true the instant `close()`/`fail()` below runs).
                 sink(std::move(rec));
 
-                // Mirror Inner's terminal onto the new producer -- exactly (Closed/Failed) where the
-                // public API allows it, translated where it does not (Cancelled/DeadlineExceeded --
-                // see file-top comment "PRODUCER-SIDE TERMINAL MIRRORING IS ONLY A PARTIAL MIRROR").
+                // Mirror Inner's terminal onto the new producer -- exactly (closed/failed) where the
+                // public API allows it, translated where it does not (cancelled -- see file-top
+                // comment "PRODUCER-SIDE TERMINAL MIRRORING IS ONLY A PARTIAL MIRROR"). No separate
+                // "deadline_exceeded" case: `stream_terminal` (rt::channel_terminal) structurally
+                // cannot produce one.
                 switch (terminal) {
-                    case quark::ReplyStreamTerminal::Closed:
+                    case stream_terminal::closed:
                         producer.close();
                         break;
-                    case quark::ReplyStreamTerminal::Failed:
+                    case stream_terminal::failed:
                         producer.fail(inner_stream.fail_error());
                         break;
-                    case quark::ReplyStreamTerminal::Cancelled:
-                        producer.fail(quark::error{quark::errc::cancelled,
-                                                    "recording_chat_client.inner_stream_cancelled"});
+                    case stream_terminal::cancelled:
+                        producer.fail(error{failure_class::fatal,
+                                             "the inner (recorded) chat_stream() call was cancelled",
+                                             "recording_chat_client.inner_stream_cancelled"});
                         break;
-                    case quark::ReplyStreamTerminal::DeadlineExceeded:
-                        producer.fail(
-                            quark::error{quark::errc::timeout,
-                                         "recording_chat_client.inner_stream_deadline_exceeded"});
-                        break;
-                    case quark::ReplyStreamTerminal::Open:
+                    case stream_terminal::open:
                     default:
                         // Unreachable: inner_stream.done() == true (the outer while's own exit
-                        // condition) guarantees terminal() != Open here.
+                        // condition) guarantees terminal() != open here.
                         producer.fail(
-                            quark::error{quark::errc::internal,
-                                         "recording_chat_client.unexpected_open_terminal"});
+                            error{failure_class::fatal,
+                                  "recording_chat_client: inner stream ended in an unexpected open terminal",
+                                  "recording_chat_client.unexpected_open_terminal"});
                         break;
                 }
             })

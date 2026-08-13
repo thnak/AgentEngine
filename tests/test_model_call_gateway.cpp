@@ -3,10 +3,10 @@
 // Inner) -- deterministic, offline, no live model, no network. A scripted `ChatClientT` test double
 // with a REAL `chat_stream()` (same shape test_agent_session_streaming_model_calls.cpp's own
 // ScriptedStreamingChatClient uses) drives every scenario, extended to script FAILURES (a specific
-// quark::errc) as well as successes.
+// failure_class) as well as successes.
 //
 // Covers, one case per block in `main()`:
-//   G1 -- retry: the primary's first attempt fails with a retryable errc (unavailable), the second
+//   G1 -- retry: the primary's first attempt fails with a retryable class (transient), the second
 //         succeeds; exactly 2 attempts happen, the breaker sees one failure then one success.
 //   G2 -- non-retryable failure exhausts the tier in ONE attempt (no wasted retry), still succeeds
 //         via failover to the fallback; fallback_tier == 1 is stamped on the final ChatResponse.
@@ -60,15 +60,15 @@ int g_failures = 0;
     } while (0)
 
 // ---- A scripted backend: each call() consumes the NEXT scripted outcome (success or a specific
-// quark::errc failure), in order. Distinct instances for primary/fallback so each has its own
+// failure_class failure), in order. Distinct instances for primary/fallback so each has its own
 // independent call_count/script. ------------------------------------------------------------------
 struct ScriptedOutcome {
     bool succeed = true;
     std::vector<ae::ChatResponseUpdate> updates;
-    quark::errc fail_code = quark::errc::internal;
+    ae::failure_class fail_klass = ae::failure_class::fatal;
 
     static ScriptedOutcome ok(std::vector<ae::ChatResponseUpdate> u) { return ScriptedOutcome{true, std::move(u), {}}; }
-    static ScriptedOutcome fail(quark::errc c) { return ScriptedOutcome{false, {}, c}; }
+    static ScriptedOutcome fail(ae::failure_class k) { return ScriptedOutcome{false, {}, k}; }
 };
 
 // `ModelCallGateway`'s constructor takes `Primary primary`/`std::tuple<Fallback...> fallbacks` BY
@@ -112,10 +112,11 @@ public:
                 }
                 pair.producer.close();
             } else {
-                pair.producer.fail(quark::error{o.fail_code, "scripted_failure"});
+                pair.producer.fail(ae::error{o.fail_klass, "scripted_failure", "test.scripted_failure"});
             }
         } else {
-            pair.producer.fail(quark::error{quark::errc::internal, "no more scripted outcomes"});
+            pair.producer.fail(
+                ae::error{ae::failure_class::fatal, "no more scripted outcomes", "test.no_more_outcomes"});
         }
         ++*call_count_;
         return std::move(pair.consumer);
@@ -185,7 +186,7 @@ int main() {
     {
         ScriptedGatewayBackend primary;
         primary.outcomes = {
-            ScriptedOutcome::fail(quark::errc::unavailable),
+            ScriptedOutcome::fail(ae::failure_class::transient),
             ScriptedOutcome::ok({text_delta("hi", /*is_final=*/true, ae::Usage{2, 3, 0, 0, 0.0})}),
         };
         ae::ModelCallGateway<ScriptedGatewayBackend> gw(primary, std::make_tuple(), fast_retry_policy(),
@@ -202,7 +203,7 @@ int main() {
     // ---- G2: non-retryable failure exhausts the tier in ONE attempt, failover to fallback ---------
     {
         ScriptedGatewayBackend primary;
-        primary.outcomes = {ScriptedOutcome::fail(quark::errc::validation)};  // never retried
+        primary.outcomes = {ScriptedOutcome::fail(ae::failure_class::contract)};  // never retried
         ScriptedGatewayBackend fallback;
         fallback.outcomes = {
             ScriptedOutcome::ok({text_delta("fallback answer", /*is_final=*/true, ae::Usage{1, 1, 0, 0, 0.0})}),
@@ -227,9 +228,9 @@ int main() {
         ae::RetryPolicy no_retry;
         no_retry.max_attempts = 1;
         primary.outcomes = {
-            ScriptedOutcome::fail(quark::errc::unavailable), ScriptedOutcome::fail(quark::errc::unavailable),
-            ScriptedOutcome::fail(quark::errc::unavailable), ScriptedOutcome::fail(quark::errc::unavailable),
-            ScriptedOutcome::fail(quark::errc::unavailable),
+            ScriptedOutcome::fail(ae::failure_class::transient), ScriptedOutcome::fail(ae::failure_class::transient),
+            ScriptedOutcome::fail(ae::failure_class::transient), ScriptedOutcome::fail(ae::failure_class::transient),
+            ScriptedOutcome::fail(ae::failure_class::transient),
         };
         ScriptedGatewayBackend fallback;
         fallback.outcomes = {
@@ -303,7 +304,7 @@ int main() {
         // script running out (a single scripted failure is enough: attempt 1 fails, the deadline
         // check then refuses attempt 2 before it would ever consume a 2nd scripted outcome).
         ScriptedGatewayBackend primary;
-        primary.outcomes = {ScriptedOutcome::fail(quark::errc::unavailable)};
+        primary.outcomes = {ScriptedOutcome::fail(ae::failure_class::transient)};
         ae::RetryPolicy retry;
         retry.max_attempts = 10;
         retry.base_delay = std::chrono::milliseconds(200);  // clearly bigger than the deadline below
@@ -339,8 +340,8 @@ int main() {
     {
         ScriptedGatewayBackend primary;
         primary.outcomes = {
-            ScriptedOutcome::fail(quark::errc::unavailable), ScriptedOutcome::fail(quark::errc::unavailable),
-            ScriptedOutcome::fail(quark::errc::unavailable),
+            ScriptedOutcome::fail(ae::failure_class::transient), ScriptedOutcome::fail(ae::failure_class::transient),
+            ScriptedOutcome::fail(ae::failure_class::transient),
             ScriptedOutcome::ok({text_delta("ok on 4th", true, ae::Usage{1, 1, 0, 0, 0.0})}),
         };
         ae::RetryPolicy retry;
@@ -381,8 +382,8 @@ int main() {
         // breaker behavior from the retry loop.
         ScriptedGatewayBackend primary;
         primary.outcomes = {
-            ScriptedOutcome::fail(quark::errc::unavailable), ScriptedOutcome::fail(quark::errc::unavailable),
-            ScriptedOutcome::fail(quark::errc::unavailable),
+            ScriptedOutcome::fail(ae::failure_class::transient), ScriptedOutcome::fail(ae::failure_class::transient),
+            ScriptedOutcome::fail(ae::failure_class::transient),
             ScriptedOutcome::ok({text_delta("recovered", true, ae::Usage{1, 1, 0, 0, 0.0})}),
             ScriptedOutcome::ok({text_delta("closed again", true, ae::Usage{1, 1, 0, 0, 0.0})}),
         };

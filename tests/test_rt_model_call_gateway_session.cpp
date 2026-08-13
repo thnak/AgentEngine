@@ -72,7 +72,7 @@ T drive(agentengine::rt::task<T> t) {
 struct ScriptedOutcome {
     bool succeed = true;
     std::vector<agentengine::ChatResponseUpdate> updates;
-    quark::errc fail_code = quark::errc::internal;
+    agentengine::failure_class fail_klass = agentengine::failure_class::fatal;
 
     static ScriptedOutcome ok(std::vector<agentengine::ChatResponseUpdate> u) {
         return ScriptedOutcome{true, std::move(u), {}};
@@ -114,10 +114,12 @@ public:
                 }
                 pair.producer.close();
             } else {
-                pair.producer.fail(quark::error{o.fail_code, "scripted_failure"});
+                pair.producer.fail(
+                    agentengine::error{o.fail_klass, "scripted_failure", "test.scripted_failure"});
             }
         } else {
-            pair.producer.fail(quark::error{quark::errc::internal, "no more scripted outcomes"});
+            pair.producer.fail(agentengine::error{agentengine::failure_class::fatal,
+                                                    "no more scripted outcomes", "test.no_more_outcomes"});
         }
         ++*call_count_;
         return std::move(pair.consumer);

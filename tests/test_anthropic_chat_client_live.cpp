@@ -497,7 +497,7 @@ int main() {
             check(received.size() == 2 && received[0] == "Hi " && received[1] == "there!",
                   "chat_stream(): a real chunked-transfer-encoded, NAMED-EVENT SSE response, sent over a "
                   "real TLS socket, decodes and delivers through ae::stream<T> in order with 0 loss");
-            check(s.terminal() == quark::ReplyStreamTerminal::Closed,
+            check(s.terminal() == stream_terminal::closed,
                   "chat_stream(): the stream reaches the success terminal");
         }
     }
@@ -542,7 +542,7 @@ int main() {
                   "though the ring's own default capacity (256) is smaller than the event count -- the "
                   "REAL Anthropic detached background worker must have blocked on ring credit at least "
                   "once, and did so losslessly rather than dropping anything");
-            check(s.terminal() == quark::ReplyStreamTerminal::Closed,
+            check(s.terminal() == stream_terminal::closed,
                   "chat_stream()+backpressure: the stream still reaches the success terminal");
         }
     }
@@ -632,7 +632,7 @@ int main() {
                       "through the real backend, not just the offline parser E-STREAM-R1 already proves");
                 check(received[2].is_final, "chat_stream()+tool_use: the assembled tool_use is final");
             }
-            check(s.terminal() == quark::ReplyStreamTerminal::Closed,
+            check(s.terminal() == stream_terminal::closed,
                   "chat_stream()+tool_use: the stream reaches the success terminal");
         }
     }

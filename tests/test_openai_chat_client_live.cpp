@@ -469,7 +469,7 @@ int main() {
             check(received.size() == 2 && received[0] == "Hi " && received[1] == "there!",
                   "chat_stream(): a real chunked-transfer-encoded SSE response, sent over a real TLS "
                   "socket, decodes and delivers through ae::stream<T> in order with 0 loss");
-            check(s.terminal() == quark::ReplyStreamTerminal::Closed,
+            check(s.terminal() == stream_terminal::closed,
                   "chat_stream(): the stream reaches the success terminal");
         }
     }
@@ -517,7 +517,7 @@ int main() {
                   "ring's own default capacity (256) is smaller than the event count -- the REAL detached "
                   "background worker (not the B4b synthetic conformer) must have blocked on ring credit "
                   "at least once, and did so losslessly rather than dropping anything");
-            check(s.terminal() == quark::ReplyStreamTerminal::Closed,
+            check(s.terminal() == stream_terminal::closed,
                   "chat_stream()+backpressure: the stream still reaches the success terminal");
         }
     }
@@ -531,7 +531,7 @@ int main() {
     // BINARY completing at all, rather than the process hanging forever with an orphaned worker thread
     // stuck in producer.push() waiting for ring credit that will never arrive once the consumer is gone.
     // stream<T>'s destructor (core/stream.hpp) cancels the ring on drop, and run_stream_worker's push
-    // loop already checks for exactly that: `if (producer.push(...) != quark::ReplyPush::Ok) return;`.
+    // loop already checks for exactly that: `if (producer.push(...) != stream_push::ok) return;`.
     {
         std::string sse;
         constexpr int kEventCount = 50;
@@ -609,7 +609,7 @@ int main() {
                       "backend, not just the offline parser D2-R4 already proves");
                 check(received[2].is_final, "chat_stream()+tool_call: the assembled tool call is final");
             }
-            check(s.terminal() == quark::ReplyStreamTerminal::Closed,
+            check(s.terminal() == stream_terminal::closed,
                   "chat_stream()+tool_call: the stream reaches the success terminal");
         }
     }
@@ -749,7 +749,7 @@ int main() {
                   "still streams a real SSE response through ae::stream<T> correctly -- the fields reach "
                   "run_stream_worker's own build_request_body/build_http_request calls without breaking "
                   "the detached worker's request construction");
-            check(s.terminal() == quark::ReplyStreamTerminal::Closed,
+            check(s.terminal() == stream_terminal::closed,
                   "chat_stream()+attribution: the stream still reaches the success terminal");
         }
     }

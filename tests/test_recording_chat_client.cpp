@@ -32,8 +32,6 @@
 #include "agentengine/core/recording_chat_client.hpp"
 #include "agentengine/trust/principal.hpp"
 
-#include "quark/core/reply_stream.hpp"
-
 #include "support/run_task_sync.hpp"
 
 namespace {
@@ -128,7 +126,7 @@ public:
                 item.value = agentengine::Text{words[i]};
                 update.delta = std::move(item);
                 update.is_final = (i + 1 == words.size());
-                if (producer.push(std::move(update)) != quark::ReplyPush::Ok) {
+                if (producer.push(std::move(update)) != agentengine::stream_push::ok) {
                     return;  // consumer cancelled/deadlined -- stop producing
                 }
             }
@@ -294,7 +292,7 @@ int main() {
         check(received == words,
               "(3) the caller receives all N chunks in the SAME order/content Inner produced");
         check(saw_final, "(3) the last delivered chunk is marked is_final");
-        check(s.terminal() == quark::ReplyStreamTerminal::Closed,
+        check(s.terminal() == stream_terminal::closed,
               "(4) the caller-facing stream's own terminal mirrors Inner's normal close");
 
         // s.done() == true is exactly the release/acquire synchronization point that also guarantees

@@ -1,43 +1,29 @@
 #pragma once
 // Implements 004-Model-Provider-Plane.md §1's `ae::stream<T>`. ADR-037: this file's INTERNAL backend
-// is now `agentengine::rt::channel<T, quark::error>` (rt/channel.hpp) instead of Quark's actor-
+// is `agentengine::rt::channel<T, agentengine::error>` (rt/channel.hpp) instead of Quark's actor-
 // integrated `ReplyStream`/`StreamChannel`/ask-stream OPEN-handshake machinery -- the mailbox-adjacent
 // runtime dependency ADR-037 exists to remove. Milestone 5 Phase B4b's own original design note
 // ("ae::stream<T> is an AgentEngine-side wrapper over Quark's already-Accepted ReplyStream/
 // StreamChannel primitives") is superseded by this migration; the paragraphs below replace it.
 //
-// SCOPE, DELIBERATELY NARROW -- named, not silently oversold. This swaps the INTERNAL backend only.
-// The PUBLIC API keeps its EXACT existing shape: `terminal()` still returns `quark::ReplyStreamTerminal`,
-// `fail_error()` still returns `quark::error`, `push()` still returns `quark::ReplyPush`. Every existing
-// call site (`core/chat_stream_drain.hpp`, `core/recording_chat_client.hpp`, `core/replay_chat_client.hpp`,
-// both `AgentSession` variants, every live ChatClient backend and its tests) needed ZERO source changes
-// as a result of this migration -- confirmed by rebuilding and running the full suite unchanged. This is
-// a deliberate choice, not an oversight:
+// ADR-037 (second pass): the PUBLIC vocabulary is now Quark-free too. `terminal()` returns
+// `agentengine::stream_terminal` (a direct alias of `rt::channel_terminal` -- see below for why no
+// translation switch is needed), `fail_error()` returns `agentengine::error`, `push()` returns
+// `agentengine::stream_push`. The FIRST pass (preserved history below) deliberately kept the old
+// `quark::error`/`quark::ReplyStreamTerminal`/`quark::ReplyPush` public types, naming the full
+// migration as separately-scoped follow-up work because it was entangled across
+// `chat_stream_drain.hpp`, both protocol chat clients, and the recording/replay round-trip. This file
+// (plus that whole entangled surface) is that follow-up, done in one pass so nothing is left
+// half-migrated.
 //
-//   `quark::error`/`quark::ReplyStreamTerminal`/`quark::ReplyPush` (quark/core/error.hpp,
-//   quark/core/reply_stream.hpp's own enums) are plain, trivially-copyable value types with NO actor/
-//   mailbox/scheduler coupling of their own -- reusing them here costs nothing at the "no more Quark
-//   RUNTIME dependency" level ADR-037 actually cares about. What is REMOVED by this migration is the
-//   genuinely actor-integrated machinery: `quark::ReplyStream<T*>`/`ReplyStreamProducer<T*>`/
-//   `StreamChannel<F>` (the credit-controlled ring itself, tied to Quark's own scheduler/dispatch
-//   assumptions) and the `make_ask_stream`/`StreamResponder::accept`/`block_on_open` OPEN-handshake
-//   ceremony (built to arbitrate a cross-actor ask that never applied to this file's own "plain,
-//   synchronous, in-process `chat_stream()` call" usage in the first place -- see the retired design
-//   note's own point (2), preserved below since the reasoning still holds against `rt::channel<T>` too).
-//
-//   Migrating the PUBLIC types as well (`quark::error` -> `agentengine::error`, `ReplyStreamTerminal`
-//   -> a native enum) is real, separately-scoped follow-up work this pass deliberately does NOT
-//   attempt, because it is entangled far beyond this file: `core/chat_stream_drain.hpp`'s
-//   `classify_drained_failure()` and `ModelCallGateway`'s own retry logic are keyed DIRECTLY on
-//   `quark::errc` values fed by HTTP-status classification in `protocol/openai/chat_client.hpp`/
-//   `protocol/anthropic/chat_client.hpp`, and `core/replay_chat_client.hpp`/`core/recording_chat_client.hpp`
-//   round-trip `quark::error`/`quark::ReplyStreamTerminal` through the PERSISTED recording format
-//   itself (`terminal_to_quark_error()`, the wire-string mapping switch). Rewriting that whole error
-//   vocabulary is a real, valuable task -- Phase 4's eventual submodule removal still needs it done
-//   before `quark::error`/`quark::ReplyStreamTerminal` can stop existing at all -- but it is NOT a
-//   "swap the backend" change, and bundling it into this pass would have meant a much larger, riskier
-//   edit across the entire model-call/streaming error-classification surface for one migration. Named
-//   here as the real residual it is, not silently narrowed away.
+// ONE GENUINE SIMPLIFICATION, not just a rename: `quark::ReplyStreamTerminal` had FIVE values
+// (Open/Closed/Cancelled/DeadlineExceeded/Failed) because it also described Quark's own
+// `ReplyStream<T>::expire_deadline()` consumer-side operation -- but `rt::channel<T,E>` (this file's
+// actual backend since the first pass) has no deadline concept at all, so `DeadlineExceeded` was
+// ALREADY structurally unreachable through this type (the old `terminal()` switch had a documented
+// dead case for it). `rt::channel_terminal` has exactly the four values this type can actually reach
+// -- `stream_terminal` is a direct alias of it, so `terminal()` is now `return inner_.terminal();`
+// with no translation switch left to maintain a permanently-unreachable fifth case for.
 //
 // (Renumbered from the retired design note, preserved verbatim where the reasoning is unchanged)
 //
@@ -91,12 +77,20 @@
 #include <stop_token>
 #include <utility>
 
+#include "agentengine/core/error.hpp"
 #include "agentengine/rt/channel.hpp"
 
-#include "quark/core/error.hpp"
-#include "quark/core/reply_stream.hpp"
-
 namespace agentengine {
+
+// Direct alias, not a translation target -- see file banner for why `rt::channel_terminal`'s four
+// values (open/closed/cancelled/failed) are exactly what this type can ever reach, no fifth
+// unreachable case to carry around.
+using stream_terminal = rt::channel_terminal;
+
+// `rt::channel_producer<T,E>::push_result` re-expressed as a non-templated, standalone enum -- the
+// nested member type is templated on T/E and can't be aliased once without picking a concrete T, so
+// this is a small, separately-defined mirror (same two values, same meaning) rather than an alias.
+enum class stream_push { ok, terminated };
 
 // The producer side — held by a `ChatClient` conformer's `chat_stream()` implementation, or by
 // whatever background execution context (thread, detached task) it hands production off to, since
@@ -106,8 +100,7 @@ template <class T>
 class stream_producer {
 public:
     stream_producer() noexcept = default;
-    explicit stream_producer(rt::channel_producer<T, quark::error> inner,
-                              std::stop_source stop = {}) noexcept
+    explicit stream_producer(rt::channel_producer<T, error> inner, std::stop_source stop = {}) noexcept
         : inner_(std::move(inner)), stop_(std::move(stop)) {}
 
     stream_producer(const stream_producer&) = delete;
@@ -116,19 +109,19 @@ public:
     stream_producer& operator=(stream_producer&&) noexcept = default;
 
     // Pushes `value` directly -- no boxing (see file banner) -- blocking (losslessly) until the
-    // channel has room or reaches ANY terminal state. `Terminated` means the consumer cancelled/
+    // channel has room or reaches ANY terminal state. `terminated` means the consumer cancelled/
     // dropped its `stream<T>`, or the channel was already closed/failed -- stop producing.
-    [[nodiscard]] quark::ReplyPush push(T value) {
+    [[nodiscard]] stream_push push(T value) {
         auto const r = inner_.push(std::move(value));
-        return r == rt::channel_producer<T, quark::error>::push_result::ok ? quark::ReplyPush::Ok
-                                                                             : quark::ReplyPush::Terminated;
+        return r == rt::channel_producer<T, error>::push_result::ok ? stream_push::ok
+                                                                      : stream_push::terminated;
     }
 
     // In-band EoS. Idempotent; also fires automatically (as Closed) if the producer is dropped without
     // an explicit close()/fail() (rt::channel_producer's own destructor fire-default).
     void close() noexcept { inner_.close(); }
     // Mid-stream failure terminal — carries the error to the consumer.
-    void fail(quark::error e) noexcept { inner_.fail(std::move(e)); }
+    void fail(error e) noexcept { inner_.fail(std::move(e)); }
     [[nodiscard]] bool valid() const noexcept { return inner_.valid(); }
 
     // ADR-017. Hand this to any blocking work this producer drives that would otherwise keep running
@@ -142,7 +135,7 @@ public:
     [[nodiscard]] std::stop_token stop_token() const noexcept { return stop_.get_token(); }
 
 private:
-    rt::channel_producer<T, quark::error> inner_;
+    rt::channel_producer<T, error> inner_;
     std::stop_source stop_;
 };
 
@@ -152,7 +145,7 @@ template <class T>
 class stream {
 public:
     stream() noexcept = default;
-    explicit stream(rt::channel_consumer<T, quark::error> inner, std::stop_source stop = {}) noexcept
+    explicit stream(rt::channel_consumer<T, error> inner, std::stop_source stop = {}) noexcept
         : inner_(std::move(inner)), stop_(std::move(stop)) {}
 
     stream(const stream&) = delete;
@@ -174,18 +167,10 @@ public:
 
     [[nodiscard]] bool done() const noexcept { return inner_.done(); }
 
-    [[nodiscard]] quark::ReplyStreamTerminal terminal() const noexcept {
-        switch (inner_.terminal()) {
-            case rt::channel_terminal::open:      return quark::ReplyStreamTerminal::Open;
-            case rt::channel_terminal::closed:    return quark::ReplyStreamTerminal::Closed;
-            case rt::channel_terminal::cancelled: return quark::ReplyStreamTerminal::Cancelled;
-            case rt::channel_terminal::failed:    return quark::ReplyStreamTerminal::Failed;
-        }
-        return quark::ReplyStreamTerminal::Cancelled;  // unreachable -- channel_terminal is exhaustive
-                                                        // above; see file banner on DeadlineExceeded
-                                                        // never being reachable through this path
-    }
-    [[nodiscard]] quark::error fail_error() const noexcept { return inner_.error().value_or(quark::error{}); }
+    // Direct passthrough -- see file banner: stream_terminal IS rt::channel_terminal, no translation
+    // needed.
+    [[nodiscard]] stream_terminal terminal() const noexcept { return inner_.terminal(); }
+    [[nodiscard]] error fail_error() const noexcept { return inner_.error().value_or(error{}); }
     // Always false -- see file banner: rt::channel<T,E> structurally cannot gap (blocks, never drops
     // or dedups a retried identity).
     [[nodiscard]] bool gap_detected() const noexcept { return false; }
@@ -199,7 +184,7 @@ public:
     }
 
 private:
-    rt::channel_consumer<T, quark::error> inner_;
+    rt::channel_consumer<T, error> inner_;
     std::stop_source stop_;
 };
 
@@ -227,7 +212,7 @@ struct stream_config {
 // named here rather than silently ignored without comment.
 template <class T>
 [[nodiscard]] stream_pair<T> make_stream(std::pmr::memory_resource* /*mr*/, stream_config<T> cfg = {}) {
-    auto pair = rt::make_channel<T, quark::error>(cfg.capacity);
+    auto pair = rt::make_channel<T, error>(cfg.capacity);
     // ADR-017: ONE stop-state, shared by copy. `std::stop_source`'s copy constructor shares the
     // associated stop-state rather than duplicating it, so the consumer's `request_stop()` is visible
     // through the producer's `stop_token()` with no extra allocation and no plumbing between them.

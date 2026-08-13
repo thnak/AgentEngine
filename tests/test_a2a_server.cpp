@@ -80,7 +80,8 @@ public:
         ae::stream_config<ae::ChatResponseUpdate> cfg;
         cfg.capacity = 32;
         auto pair = ae::make_stream<ae::ChatResponseUpdate>(std::pmr::get_default_resource(), cfg);
-        pair.producer.fail(quark::error{quark::errc::internal, "deliberate chat failure"});
+        pair.producer.fail(ae::error{ae::failure_class::transient, "deliberate chat failure",
+                                      "test.deliberate_chat_failure"});
         return std::move(pair.consumer);
     }
 };

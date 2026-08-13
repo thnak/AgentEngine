@@ -19,19 +19,18 @@
 // `chat_stream()`'s detached-background-thread-pushes-into-a-`stream_producer` shape mirrors
 // `protocol/openai/chat_client.hpp`'s own `chat_stream()` (that file's own top comment: `chat_stream()`
 // must return the drain handle to the caller synchronously and cannot keep producing after it
-// returns). ONE deliberate, named deviation from that file's own FURTHER discipline ("every parameter
-// is owned by value... touches no state owned by *this, so its lifetime is fully decoupled from the
-// client object's"): `quark::error::detail` is a non-owning `std::string_view` (quark/core/error.hpp's
-// own contract: "errors never own heap on the failure path" -- every other `producer.fail(quark::
-// error{...})` call site in this codebase passes a STRING LITERAL, confirmed directly by grep across
-// protocol/openai and protocol/anthropic, never a dynamic string). A recorded `stream_error_detail` is
-// real, dynamic text with nowhere static to live, so the "failed" terminal's error borrows it from
-// `recording_` (a member of `*this`) rather than a thread-local copy that would dangle the instant the
-// worker thread returns. Consequence, named rather than hidden: a `ReplayChatClient` must outlive any
-// `stream<ChatResponseUpdate>` whose `fail_error().detail` a caller intends to read -- true by
-// construction of "one instance per scenario, kept alive for the scenario's duration" (this file's own
-// design, and every test in test_replay_chat_client.cpp), never a hazard in practice here, but a real
-// constraint the OpenAI backend does not share and this file does not pretend otherwise.
+// returns), and now genuinely matches that file's own "every parameter is owned by value... touches no
+// state owned by *this" discipline WITHOUT EXCEPTION -- a prior ADR-037 pass's own residual is closed
+// here. `quark::error::detail` was a non-owning `std::string_view` (`errors never own heap on the
+// failure path`), which forced the old worker to borrow a recorded `stream_error_detail` string
+// straight out of `recording_` (a member of `*this`) rather than copy it, since nowhere static existed
+// to own dynamic, recorded text -- the file's own named consequence: "a `ReplayChatClient` must
+// outlive any `stream<ChatResponseUpdate>` whose `fail_error().detail` a caller intends to read."
+// `agentengine::error::message` is an OWNED `std::string` (core/error.hpp), so that constraint is
+// simply gone: `chat_stream()` copies `recording_.stream_error_detail` into an ordinary by-value
+// argument before spawning the thread (the same way `recording_.chunks` already was), and the worker
+// owns its own copy from that point on -- no borrowed state, no outlive requirement, matching the
+// OpenAI backend's own discipline exactly rather than a documented, accepted exception to it.
 //
 // Inter-chunk timing (004 §6/§7 G3: "UI cadence reproduces exactly") is reproduced by sleeping, before
 // each push, for the DELTA between this chunk's and the previous chunk's `elapsed_since_start` (0 for
@@ -55,8 +54,6 @@
 #include "agentengine/core/stream.hpp"
 #include "agentengine/core/task.hpp"
 
-#include "quark/core/error.hpp"
-
 namespace agentengine {
 
 namespace replay_chat_client_detail {
@@ -67,31 +64,34 @@ namespace replay_chat_client_detail {
 inline void real_sleep(std::chrono::milliseconds d) { std::this_thread::sleep_for(d); }
 
 // Translates a recorded `stream_terminal` ("cancelled" | "deadline_exceeded" | "failed" | anything
-// else/unset) into the `quark::errc` this project's own quark/core/error.hpp declares -- "cancelled" ->
-// `cancelled` (a caller-initiated-teardown code, the closest fit to a recorded cancellation),
-// "deadline_exceeded" -> `timeout` (quark's own deadline-fired code), "failed"/anything unrecognized ->
-// `internal` (quark::errc has no generic "the callee gave up" code; `internal` is this file's own
-// catch-all, named here rather than silently mapped onto something the wire vocabulary doesn't
-// actually say). `detail` is a `std::string_view` borrowed from the CALLING `ReplayChatClient`'s own
-// long-lived `recording_` member (see file banner) -- never a thread-local copy.
-[[nodiscard]] inline quark::error terminal_to_quark_error(std::string_view stream_terminal,
-                                                           std::string_view detail) noexcept {
-    if (stream_terminal == "cancelled") return quark::error{quark::errc::cancelled, detail};
-    if (stream_terminal == "deadline_exceeded") return quark::error{quark::errc::timeout, detail};
-    return quark::error{quark::errc::internal, detail};  // "failed" or unset/unrecognized
+// else/unset) into an `agentengine::error` -- "cancelled" -> `failure_class::fatal` (a caller-
+// initiated teardown that ends the run, matching `classify_drained_failure`'s own now-retired
+// "cancelled is never retried" precedent), "deadline_exceeded" -> `failure_class::transient` (a real,
+// retryable timeout condition; kept as an INPUT string this function still recognizes even though no
+// LIVE stream can produce that terminal anymore -- see file banner and `recording_chat_client.hpp`'s
+// own note -- since old, already-persisted recordings may still carry it on disk), "failed"/anything
+// unrecognized -> `failure_class::fatal` (this file's own catch-all, named here rather than silently
+// mapped onto something the wire vocabulary doesn't actually say). `detail` is taken and stored BY
+// VALUE -- `error::message` owns its text, so there is nothing left to borrow (see file banner).
+[[nodiscard]] inline error terminal_to_error(std::string_view stream_terminal, std::string detail) noexcept {
+    if (stream_terminal == "cancelled") {
+        return error{failure_class::fatal, std::move(detail), "replay_chat_client.stream_cancelled"};
+    }
+    if (stream_terminal == "deadline_exceeded") {
+        return error{failure_class::transient, std::move(detail),
+                      "replay_chat_client.stream_deadline_exceeded"};
+    }
+    return error{failure_class::fatal, std::move(detail), "replay_chat_client.stream_failed"};
 }
 
 // The detached background worker (mirrors protocol/openai/chat_client.hpp's own `run_stream_worker` --
-// see that file's top comment for why detached, not a tracked member). `chunks` is a VALUE COPY (each
-// `RecordedChunk` owns its own strings, safe to copy across the thread boundary, and leaves the
-// originating `ReplayChatClient`'s own `recording_.chunks` untouched for a possible second
-// `chat_stream()` call against the same instance). `stream_terminal` is likewise a value copy (short,
-// only ever compared, never held past this function's return). `error_detail` is DELIBERATELY NOT a
-// value copy -- see file banner for why a `quark::error`'s `detail` cannot safely be backed by a
-// thread-local string; it borrows from the calling `ReplayChatClient`'s own `recording_` member
-// instead, which the caller is required to keep alive (file banner).
+// see that file's top comment for why detached, not a tracked member). Every parameter is owned by
+// value, INCLUDING `error_detail` now (see file banner) -- `chunks`/`stream_terminal`/`error_detail`
+// are all independent copies, safe across the thread boundary and leaving the originating
+// `ReplayChatClient`'s own `recording_` untouched for a possible second `chat_stream()` call against
+// the same instance.
 inline void run_replay_worker(std::vector<RecordedChunk> chunks, std::string stream_terminal,
-                               std::string_view error_detail, stream_producer<ChatResponseUpdate> producer,
+                               std::string error_detail, stream_producer<ChatResponseUpdate> producer,
                                std::function<void(std::chrono::milliseconds)> sleep_fn) {
     std::chrono::milliseconds previous{0};
     for (auto& chunk : chunks) {
@@ -102,14 +102,14 @@ inline void run_replay_worker(std::vector<RecordedChunk> chunks, std::string str
         if (delta < std::chrono::milliseconds{0}) delta = std::chrono::milliseconds{0};
         if (sleep_fn) sleep_fn(delta);
         previous = chunk.elapsed_since_start;
-        if (producer.push(std::move(chunk.update)) != quark::ReplyPush::Ok) {
+        if (producer.push(std::move(chunk.update)) != stream_push::ok) {
             return;  // consumer cancelled/deadlined -- stop producing, mirrors every real backend here
         }
     }
     if (stream_terminal == "closed") {
         producer.close();
     } else {
-        producer.fail(terminal_to_quark_error(stream_terminal, error_detail));
+        producer.fail(terminal_to_error(stream_terminal, std::move(error_detail)));
     }
 }
 
@@ -172,16 +172,20 @@ public:
             // Contract mismatch: push nothing, fail immediately (task instruction: "it should carry a
             // real failure terminal since it IS a contract mismatch, not merely an unimplemented
             // feature" -- unlike RecordedChatClient::chat_stream()'s own plain empty-stream stub).
-            pair.producer.fail(
-                quark::error{quark::errc::validation, "replay_chat_client.mode_mismatch_unary"});
+            pair.producer.fail(error{failure_class::contract,
+                                      "ReplayChatClient::chat_stream() called against a UNARY-mode "
+                                      "recording -- a streaming call against a unary-shaped recording "
+                                      "is a contract mismatch, never silently coerced",
+                                      "replay_chat_client.mode_mismatch_unary"});
             return std::move(pair.consumer);
         }
 
-        // See file banner: `recording_.stream_error_detail` is passed as a borrowing string_view, not
-        // copied -- the worker thread reads it (if it needs to fail()) while `*this` is still alive.
+        // See file banner: `recording_.stream_error_detail` is copied BY VALUE here, before the thread
+        // is spawned -- the worker thread owns its own independent copy, so `*this` no longer needs to
+        // outlive it.
         std::thread(&replay_chat_client_detail::run_replay_worker, recording_.chunks,
-                    recording_.stream_terminal, std::string_view{recording_.stream_error_detail},
-                    std::move(pair.producer), sleep_fn_)
+                    recording_.stream_terminal, recording_.stream_error_detail, std::move(pair.producer),
+                    sleep_fn_)
             .detach();
         return std::move(pair.consumer);
     }

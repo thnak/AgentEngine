@@ -94,14 +94,13 @@ namespace model_call_gateway_detail {
         .count();
 }
 
-// ADR-036 red-team: the retry-relevant split `chat()`'s own `ae::failure_class::transient` scoping
-// already makes (004 §4: retry applies to Transient only), re-expressed against `quark::errc`'s
-// coarser vocabulary -- the only thing a drained `chat_stream()` failure carries. Deliberately
-// conservative: `validation`/`serialization`/`not_found`/`internal`/`cancelled`/`supervised_stop`
-// are never retried, matching "policy/contract/resource/fatal aren't retried" on the `chat()` side.
-[[nodiscard]] inline bool is_retryable(quark::errc code) noexcept {
-    return code == quark::errc::unavailable || code == quark::errc::timeout ||
-           code == quark::errc::overloaded;
+// ADR-036 (ADR-037 second pass: `DrainedChatStream::failure` is now `ae::error` directly, so this is
+// simply the SAME `failure_class::transient` scoping `chat()`'s own retry logic already uses -- 004
+// §4: retry applies to Transient only. Deliberately conservative, matching "policy/contract/resource/
+// fatal aren't retried" on the `chat()` side; no separate coarser vocabulary to re-derive this from
+// anymore -- the old `quark::errc`-keyed split this replaced is gone with `classify_drained_failure`.
+[[nodiscard]] inline bool is_retryable(failure_class klass) noexcept {
+    return klass == failure_class::transient;
 }
 
 }  // namespace model_call_gateway_detail
@@ -225,7 +224,8 @@ private:
             // AgentSession::run_model_call() applies on its own streaming branch).
             bool const succeeded = drained.ok && drained.usage.has_value();
             if (drained.ok && !drained.usage.has_value()) {
-                drained.failure = quark::error{quark::errc::internal, "gateway.usage_unavailable"};
+                drained.failure = error{failure_class::fatal, "streaming call reported no token usage",
+                                         "gateway.usage_unavailable"};
             }
             ++attempts_used;
             breaker.on_result(succeeded, model_call_gateway_detail::monotonic_now_ns());
@@ -234,7 +234,7 @@ private:
                 co_return ChatResponse{std::move(drained.accumulated), *drained.usage};
             }
 
-            bool const retryable = model_call_gateway_detail::is_retryable(drained.failure.code);
+            bool const retryable = model_call_gateway_detail::is_retryable(drained.failure.klass);
             if (!retryable || attempts_used >= retry_policy_.max_attempts) {
                 co_return std::unexpected(
                     drained_failure_to_agent_error(drained.failure, "gateway.attempt_failed"));

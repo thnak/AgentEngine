@@ -14,15 +14,11 @@
 //     slice has no standalone replacement design for yet. `standing_effects_`'s OTHER wake row,
 //     "Local background task completion" (BackgroundTaskDone), IS migrated -- see Slice 3 below.
 //   - Event streaming (enable_event_stream/emit_run_event) uses core/stream.hpp's stream<T> --
-//     UPDATED: core/stream.hpp's own backend migration (a later ADR-037 pass, after this slice was
-//     first written) swapped stream<T>'s internals from quark::ReplyStream to rt::channel<T>, so this
-//     is no longer an actor/mailbox-integrated dependency. A small residual remains at the TYPE level
-//     only: stream<T>::terminal()/fail_error() still return quark::ReplyStreamTerminal/quark::error
-//     (plain, dependency-free value types, kept deliberately for that migration's own narrow scope --
-//     see core/stream.hpp's own banner) rather than a native agentengine enum/error type. This no
-//     longer blocks anything ADR-037 actually cares about (no runtime coupling to Quark's scheduler),
-//     but Phase 4's eventual submodule removal still needs that type-level residual closed -- named
-//     here, not silently claimed fully resolved either.
+//     RESOLVED: core/stream.hpp's own backend migration (an ADR-037 pass after this slice was first
+//     written) swapped stream<T>'s internals from quark::ReplyStream to rt::channel<T>, and a LATER
+//     ADR-037 pass finished the job: stream<T>::terminal()/fail_error() now return
+//     agentengine::stream_terminal/agentengine::error (native, dependency-free types) instead of
+//     quark::ReplyStreamTerminal/quark::error. No residual left here at all.
 //
 // A LARGER, MORE FUNDAMENTAL NAMED GAP, found while writing this file -- RESOLVED by a later ADR-037
 // pass, kept here (updated, not deleted) since the reasoning is still the right way to understand why
@@ -876,7 +872,7 @@ private:
                 }
                 if (!s.done()) std::this_thread::sleep_for(std::chrono::milliseconds(5));
             }
-            if (s.terminal() != quark::ReplyStreamTerminal::Closed) {
+            if (s.terminal() != stream_terminal::closed) {
                 response = std::unexpected(error{failure_class::transient,
                                                   "chat_stream() did not reach a clean terminal",
                                                   "run.stream_incomplete"});

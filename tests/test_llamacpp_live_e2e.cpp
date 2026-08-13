@@ -395,7 +395,7 @@ int main() {
         for (auto const& u : updates) {
             if (auto const* t = std::get_if<Text>(&u.delta.value)) streamed += t->text;
         }
-        check(s.terminal() == quark::ReplyStreamTerminal::Closed,
+        check(s.terminal() == stream_terminal::closed,
               "LC-6: a real streaming exchange over PLAINTEXT reaches the success terminal");
         check(!streamed.empty(),
               "LC-6: llama.cpp's own `Transfer-Encoding: chunked` SSE response -- real `data:` events "
@@ -405,7 +405,7 @@ int main() {
         if (!updates.empty()) {
             check(updates.back().is_final, "LC-6: the last delivered update is flagged final");
         }
-        note("stream terminal", s.terminal() == quark::ReplyStreamTerminal::Closed ? "Closed" : "Failed");
+        note("stream terminal", s.terminal() == stream_terminal::closed ? "Closed" : "Failed");
         note("stream updates", std::to_string(updates.size()));
         note("stream text", streamed);
     }

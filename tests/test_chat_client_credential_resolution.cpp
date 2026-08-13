@@ -68,7 +68,7 @@ public:
         // fresh-per-call resolve(), never at construction.
         auto lease = store_.resolve(api_key_ref_, ctx);
         if (!lease) {
-            pair.producer.fail(quark::error{quark::errc::validation, "secret.not_granted"});
+            pair.producer.fail(lease.error());
             return std::move(pair.consumer);
         }
 

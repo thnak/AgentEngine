@@ -297,7 +297,7 @@ int main() {
         stream<ChatResponseUpdate> s =
             oai.chat_stream(request_asking("Reply with exactly one word: pong"), ctx);
         auto updates = drain(s);
-        check(s.terminal() == quark::ReplyStreamTerminal::Closed,
+        check(s.terminal() == stream_terminal::closed,
               "OR-OAI-2: a real streaming exchange reaches the SUCCESS terminal -- the detached worker "
               "closed the ring rather than failing it");
         check(!updates.empty(), "OR-OAI-2: at least one update was delivered through ae::stream<T>");
@@ -490,7 +490,7 @@ int main() {
         stream<ChatResponseUpdate> s =
             ant.chat_stream(request_asking("Reply with exactly one word: pong"), ctx);
         auto updates = drain(s);
-        check(s.terminal() == quark::ReplyStreamTerminal::Closed,
+        check(s.terminal() == stream_terminal::closed,
               "OR-ANT-2: a real named-event streaming exchange reaches the success terminal");
         check(!updates.empty(), "OR-ANT-2: at least one update was delivered");
         check(!text_of(updates).empty(),

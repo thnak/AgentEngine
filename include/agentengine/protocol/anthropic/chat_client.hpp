@@ -112,7 +112,6 @@
 #include "agentengine/sandbox/incremental_http_body.hpp"
 #include "agentengine/sandbox/provider_http_client.hpp"
 #include "agentengine/trust/secret.hpp"
-#include "quark/core/error.hpp"
 
 namespace agentengine::anthropic {
 
@@ -968,7 +967,10 @@ inline void run_stream_worker(std::string host, std::uint16_t port, std::string 
                                std::stop_token stop) {
     auto body = build_request_body(request, model, caps, /*stream=*/true, end_user_id, cache_ttl);
     if (!body) {
-        producer.fail(quark::error{quark::errc::validation, "anthropic.request_build_failed"});
+        // Forward the real error (see protocol/openai/chat_client.hpp's identical rationale) instead
+        // of a synthetic stand-in -- agentengine::error owns its message, so there is no dangling-view
+        // hazard left across the detached-thread boundary.
+        producer.fail(body.error());
         return;
     }
     auto req = build_http_request(path, api_key, api_version, json::dump(*body), http_referer, x_title);
@@ -991,7 +993,7 @@ inline void run_stream_worker(std::string host, std::uint16_t port, std::string 
             return false;
         }
         for (auto& update : *updates) {
-            if (producer.push(std::move(update)) != quark::ReplyPush::Ok) {
+            if (producer.push(std::move(update)) != stream_push::ok) {
                 push_failed = true;
                 return false;
             }
@@ -1003,20 +1005,28 @@ inline void run_stream_worker(std::string host, std::uint16_t port, std::string 
                                                               resolver, ca_bundle_pem_override, transport);
     if (push_failed) return;
     if (!resp) {
-        producer.fail(quark::error{quark::errc::unavailable, "anthropic.exchange_failed"});
+        // Forward the network layer's own real, already-correctly-classified error -- see
+        // protocol/openai/chat_client.hpp's identical rationale (a genuine correctness fix: the old
+        // blanket "unavailable" would have retried a byte-cap/policy failure that should never be
+        // retried).
+        producer.fail(resp.error());
         return;
     }
     if (resp->status < 200 || resp->status >= 300) {
-        producer.fail(quark::error{quark::errc::validation, "anthropic.http_error_status"});
+        // Reuses `map_http_status_error` directly -- see protocol/openai/chat_client.hpp's identical
+        // rationale. This is a genuine improvement over the old flat `errc::validation` for every
+        // status: the streaming path now gets the SAME transient/policy/contract split `chat()`'s own
+        // non-streaming path already has, for the first time.
+        producer.fail(map_http_status_error(resp->status, {}));
         return;
     }
     if (decode_error) {
-        producer.fail(quark::error{quark::errc::serialization, "anthropic.stream_parse_failed"});
+        producer.fail(*decode_error);
         return;
     }
     if (acc) {
         for (auto& update : acc->finish()) {
-            if (producer.push(std::move(update)) != quark::ReplyPush::Ok) return;
+            if (producer.push(std::move(update)) != stream_push::ok) return;
         }
     }
     producer.close();
@@ -1098,7 +1108,9 @@ public:
         auto pair = make_stream<ChatResponseUpdate>(std::pmr::get_default_resource());
         auto lease = store_.resolve(api_key_ref_, ctx);
         if (!lease) {
-            pair.producer.fail(quark::error{quark::errc::validation, "secret.not_granted"});
+            // Forward the SecretStore's own real error -- matches chat()'s own non-streaming path,
+            // which already returns lease.error() unchanged.
+            pair.producer.fail(lease.error());
             return std::move(pair.consumer);
         }
         // ADR-017: read the token BEFORE moving the producer (see the OpenAI backend's identical note

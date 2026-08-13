@@ -94,7 +94,7 @@ public:
                 item.value  = Text{(i == 0 ? words[i] : " " + words[i])};
                 update.delta    = std::move(item);
                 update.is_final = (i + 1 == words.size());
-                if (producer.push(std::move(update)) != quark::ReplyPush::Ok) return;  // consumer gone
+                if (producer.push(std::move(update)) != stream_push::ok) return;  // consumer gone
             }
             producer.close();
         });
@@ -135,7 +135,7 @@ int main() {
     check(received == "Why did the pirate take so long to learn the alphabet",
           "the words arrived in order, exactly once each, across the thread boundary");
     check(saw_final, "the last update is marked is_final");
-    check(s.terminal() == quark::ReplyStreamTerminal::Closed, "the stream reached the success terminal");
+    check(s.terminal() == stream_terminal::closed, "the stream reached the success terminal");
 
     std::fprintf(stderr,
                  g_failures == 0 ? "example_07_streaming: OK\n" : "example_07_streaming: FAIL\n");

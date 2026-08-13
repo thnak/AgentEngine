@@ -37,8 +37,6 @@
 #include "agentengine/core/replay_chat_client.hpp"
 #include "agentengine/trust/principal.hpp"
 
-#include "quark/core/error.hpp"
-
 #include "support/run_task_sync.hpp"
 
 namespace {
@@ -207,7 +205,7 @@ int main() {
               "(4) all N chunks replay in the SAME order with the SAME content (004 §7 G3's literal "
               "gate: identical chunk boundaries)");
         check(saw_final, "(4) the last chunk's is_final flag replays verbatim");
-        check(s.terminal() == quark::ReplyStreamTerminal::Closed,
+        check(s.terminal() == stream_terminal::closed,
               "(4) a \"closed\" stream_terminal reaches the success terminal");
     }
 
@@ -240,7 +238,7 @@ int main() {
         bool saw_final = false;
         drain_stream(s, received, saw_final);
 
-        check(s.terminal() == quark::ReplyStreamTerminal::Closed, "(5) the stream still closes cleanly");
+        check(s.terminal() == stream_terminal::closed, "(5) the stream still closes cleanly");
         std::vector<std::chrono::milliseconds> const expected_deltas{
             std::chrono::milliseconds(0),   // first chunk: delta from 0
             std::chrono::milliseconds(50),  // 50 - 0
@@ -266,14 +264,15 @@ int main() {
         std::vector<std::string> received;
         bool saw_final = false;
         drain_stream(s, received, saw_final);
-        check(s.terminal() == quark::ReplyStreamTerminal::Closed,
+        check(s.terminal() == stream_terminal::closed,
               "(6) stream_terminal == \"closed\" produces terminal() == Closed");
     }
     {
-        // "failed" -> Failed, carrying the recorded detail text. The ReplayChatClient instance (owner
-        // of the recording the detail text is borrowed from -- see replay_chat_client.hpp's own file
-        // banner) is kept alive for as long as `s`/`fail_error()` are read, by construction (same
-        // block scope).
+        // "failed" -> Failed, carrying the recorded detail text. `error::message` owns its text
+        // (core/error.hpp), so unlike the old `quark::error::detail` borrow, there is no requirement
+        // that `client`/`rec` outlive `s`/`fail_error()` anymore (replay_chat_client.hpp's own file
+        // banner) -- kept in the same block scope here regardless, purely because there is no reason
+        // not to.
         ChatCallRecording rec;
         rec.mode = recording_mode::streaming;
         rec.chunks.push_back(make_chunk("partial", std::chrono::milliseconds(0), false));
@@ -290,20 +289,20 @@ int main() {
 
         check(received == std::vector<std::string>{"partial"},
               "(6) the one chunk before the failure still replays before the Failed terminal");
-        check(s.terminal() == quark::ReplyStreamTerminal::Failed,
+        check(s.terminal() == stream_terminal::failed,
               "(6) stream_terminal == \"failed\" produces terminal() == Failed");
-        check(s.fail_error().detail == "synthetic mid-stream provider failure",
+        check(s.fail_error().message == "synthetic mid-stream provider failure",
               "(6) fail_error() carries the recorded stream_error_detail text verbatim");
     }
     {
         // Bonus (cheap alongside the above): "cancelled"/"deadline_exceeded" map onto the matching
-        // quark::errc, not a generic catch-all -- proves terminal_to_quark_error's own dispatch table.
+        // stable error code, not a generic catch-all -- proves terminal_to_error's own dispatch table.
         for (auto const& [terminal_str, expected_code] :
-             std::vector<std::pair<std::string, quark::errc>>{
-                 {"cancelled", quark::errc::cancelled},
-                 {"deadline_exceeded", quark::errc::timeout},
-                 {"failed", quark::errc::internal},
-                 {"some_unrecognized_value", quark::errc::internal},
+             std::vector<std::pair<std::string, std::string>>{
+                 {"cancelled", "replay_chat_client.stream_cancelled"},
+                 {"deadline_exceeded", "replay_chat_client.stream_deadline_exceeded"},
+                 {"failed", "replay_chat_client.stream_failed"},
+                 {"some_unrecognized_value", "replay_chat_client.stream_failed"},
              }) {
             ChatCallRecording rec;
             rec.mode = recording_mode::streaming;
@@ -318,10 +317,10 @@ int main() {
             bool saw_final = false;
             drain_stream(s, received, saw_final);
 
-            check(s.terminal() == quark::ReplyStreamTerminal::Failed,
+            check(s.terminal() == stream_terminal::failed,
                   ("(6 bonus) stream_terminal \"" + terminal_str + "\" produces terminal() == Failed").c_str());
             check(s.fail_error().code == expected_code,
-                  ("(6 bonus) stream_terminal \"" + terminal_str + "\" maps to the expected quark::errc")
+                  ("(6 bonus) stream_terminal \"" + terminal_str + "\" maps to the expected error code")
                       .c_str());
         }
     }
@@ -344,7 +343,7 @@ int main() {
               "(7) chat_stream() against a unary recording never pushes a single item -- contract "
               "mismatch, not silently coerced");
         check(!saw_final, "(7) no is_final chunk is ever observed");
-        check(s.terminal() == quark::ReplyStreamTerminal::Failed,
+        check(s.terminal() == stream_terminal::failed,
               "(7) the stream fails closed immediately rather than silently returning an empty success");
     }
 

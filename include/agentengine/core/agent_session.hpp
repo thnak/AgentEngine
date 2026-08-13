@@ -595,7 +595,7 @@ private:
                     // tight yield()-loop would.
                     if (!s.done()) std::this_thread::sleep_for(std::chrono::milliseconds(5));
                 }
-                if (s.terminal() != quark::ReplyStreamTerminal::Closed) {
+                if (s.terminal() != stream_terminal::closed) {
                     response = std::unexpected(error{failure_class::transient,
                                                       "chat_stream() did not reach a clean terminal",
                                                       "run.stream_incomplete"});

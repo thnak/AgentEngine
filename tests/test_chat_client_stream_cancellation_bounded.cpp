@@ -541,7 +541,7 @@ int main() {
                 if (!s.done()) std::this_thread::yield();
             }
             auto const elapsed = std::chrono::steady_clock::now() - t0;
-            check(s.terminal() == quark::ReplyStreamTerminal::Closed, "J3-R1: fast case reaches Closed");
+            check(s.terminal() == stream_terminal::closed, "J3-R1: fast case reaches Closed");
             check(elapsed < std::chrono::seconds(2),
                   "J3-R2: the common case (fast provider, non-incremental fetch) completes end to end "
                   "in well under 2s on loopback -- the socket is opened, fully read, and closed within "
