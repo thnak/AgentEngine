@@ -827,15 +827,6 @@ add_executable(test_agent_session_tool_call_loop test_agent_session_tool_call_lo
 target_link_libraries(test_agent_session_tool_call_loop PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_agent_session_tool_call_loop COMMAND test_agent_session_tool_call_loop)
 
-add_executable(test_agent_session_streaming_model_calls test_agent_session_streaming_model_calls.cpp)
-target_link_libraries(test_agent_session_streaming_model_calls PRIVATE agentengine::core agentengine_warnings)
-add_test(NAME test_agent_session_streaming_model_calls COMMAND test_agent_session_streaming_model_calls)
-
-# ---- ADR-035 Phase 1 -- backend/path-agnostic response-format-leak-scan (run_model_call()).
-add_executable(test_agent_session_response_format_leak_scan test_agent_session_response_format_leak_scan.cpp)
-target_link_libraries(test_agent_session_response_format_leak_scan PRIVATE agentengine::core agentengine_warnings)
-add_test(NAME test_agent_session_response_format_leak_scan COMMAND test_agent_session_response_format_leak_scan)
-
 # ---- ADR-036 -- ModelCallGateway/MiddlewareModelCallGateway (retry+breaker+failover+middleware as
 # a real coroutine, AgentSession-pluggable without a template-signature change).
 add_executable(test_model_call_gateway test_model_call_gateway.cpp)
@@ -941,11 +932,6 @@ add_executable(test_rt_workflow_supervisor_patterns test_rt_workflow_supervisor_
 target_link_libraries(test_rt_workflow_supervisor_patterns PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_workflow_supervisor_patterns COMMAND test_rt_workflow_supervisor_patterns)
 
-# ---- ADR-028 -- session-scoped stateful tools (tool_pipeline.hpp make_tool_descriptor_with_invoke).
-add_executable(test_session_scoped_stateful_tools test_session_scoped_stateful_tools.cpp)
-target_link_libraries(test_session_scoped_stateful_tools PRIVATE agentengine::core agentengine_warnings)
-add_test(NAME test_session_scoped_stateful_tools COMMAND test_session_scoped_stateful_tools)
-
 # ---- ADR-037 Phase 2, Slice 1 -- ADR-029's suspend-for-human-approval mechanism, re-proven against
 # agentengine::rt::AgentSession -- supersedes the old, Quark-actor-based
 # test_agent_session_suspend_approval(.cpp).
@@ -958,10 +944,15 @@ add_executable(test_codeact_runner_binding test_codeact_runner_binding.cpp)
 target_link_libraries(test_codeact_runner_binding PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_codeact_runner_binding COMMAND test_codeact_runner_binding)
 
-# ---- ADR-030 -- full-stack session isolation proof (AgentSession + provider + tool-call round loop).
-add_executable(test_codeact_session_isolation test_codeact_session_isolation.cpp)
-target_link_libraries(test_codeact_session_isolation PRIVATE agentengine::core agentengine_warnings)
-add_test(NAME test_codeact_session_isolation COMMAND test_codeact_session_isolation)
+# ---- ADR-037 Phase 2 -- porting test_session_scoped_stateful_tools(.cpp) (ADR-028's session-scoped
+# stateful tools mechanism), test_codeact_session_isolation(.cpp) (ADR-030's full-stack session
+# isolation proof), and test_agent_session_delegation(.cpp) (018 §1's on_behalf_of delegation) onto
+# agentengine::rt::AgentSession directly -- supersedes all three. test_codeact_runner_binding.cpp
+# (above) is untouched -- it proves CodeActRunnerBinding<RunnerT>'s own claim/fail-closed logic in
+# isolation, with no AgentSession involvement to migrate.
+add_executable(test_rt_agent_session_tooling_and_delegation test_rt_agent_session_tooling_and_delegation.cpp)
+target_link_libraries(test_rt_agent_session_tooling_and_delegation PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_agent_session_tooling_and_delegation COMMAND test_rt_agent_session_tooling_and_delegation)
 
 # ---- ADR-037 -- agentengine::rt::SpawnCostBudget, the Quark-actor-free replacement for
 # 026 §9 Q1 / OQ-14's SpawnCostBudgetActor (rt::AsyncMutex replaces quark::Actor<Sequential> as the
@@ -1027,11 +1018,13 @@ add_executable(test_agent_session_admission test_agent_session_admission.cpp)
 target_link_libraries(test_agent_session_admission PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_agent_session_admission COMMAND test_agent_session_admission)
 
-# ---- Milestone 7 Phase A -- 013 §1's internal run event stream (run_event.hpp,
-# AgentSession::enable_event_stream()): real emission at the turn loop's actual boundaries -----------
-add_executable(test_agent_session_run_event_stream test_agent_session_run_event_stream.cpp)
-target_link_libraries(test_agent_session_run_event_stream PRIVATE agentengine::core agentengine_warnings)
-add_test(NAME test_agent_session_run_event_stream COMMAND test_agent_session_run_event_stream)
+# ---- ADR-037 Phase 2 -- porting test_agent_session_streaming_model_calls(.cpp) (ADR-034 streaming
+# turn loop), test_agent_session_response_format_leak_scan(.cpp) (ADR-035 Phase 1 leak scan), and
+# test_agent_session_run_event_stream(.cpp) (Milestone 7 Phase A run event stream) onto
+# agentengine::rt::AgentSession directly -- supersedes all three.
+add_executable(test_rt_agent_session_streaming_and_events test_rt_agent_session_streaming_and_events.cpp)
+target_link_libraries(test_rt_agent_session_streaming_and_events PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_agent_session_streaming_and_events COMMAND test_rt_agent_session_streaming_and_events)
 
 # ---- Milestone 7 Phase B -- 006 §6b's Backgroundable/StandingEffect (standing_effect.hpp,
 # tool_pipeline.hpp::background_task(), AgentSession::start_background_task()) -----------------------
@@ -1157,13 +1150,6 @@ add_test(NAME test_workflow_yaml_compiler COMMAND test_workflow_yaml_compiler)
 add_executable(test_agent_yaml_compiler test_agent_yaml_compiler.cpp)
 target_link_libraries(test_agent_yaml_compiler PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_agent_yaml_compiler COMMAND test_agent_yaml_compiler)
-
-# ---- Milestone 5 Phase H4 -- EffectContext::principal wired through every outbound ChatClient
-# call, including on_behalf_of delegation for a session initialized with a derive_on_behalf_of()'d
-# principal (018 §1's "delegation only via on_behalf_of, never token passthrough").
-add_executable(test_agent_session_delegation test_agent_session_delegation.cpp)
-target_link_libraries(test_agent_session_delegation PRIVATE agentengine::core agentengine_warnings)
-add_test(NAME test_agent_session_delegation COMMAND test_agent_session_delegation)
 
 # ---- Dependency-free JSON value/parser/serializer (M2 Phase B task B2, core/json_value.hpp) ----
 # Header-only, core-tier -- links only agentengine::core (no nlohmann::json; this IS the seam that
