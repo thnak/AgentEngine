@@ -593,15 +593,6 @@ if(AGENTENGINE_WITH_HTTPS)
   add_test(NAME test_workflow_introspection COMMAND test_workflow_introspection)
   set_tests_properties(test_workflow_introspection PROPERTIES TIMEOUT 120)
 
-  # ---- Milestone 6 Phase G: 014 §7's live-view bullet (WorkflowSupervisor::enable_live_view) -----
-  # One WorkflowLiveEvent per superstep boundary, over a real ae::stream<T> -- checked from the
-  # executor-state angle, plus the negative control (a round that fails the whole run produces
-  # no live event, proven by a real wait, not just an unchecked assumption).
-  add_executable(test_workflow_live_view test_workflow_live_view.cpp)
-  target_link_libraries(test_workflow_live_view PRIVATE agentengine::core agentengine_warnings)
-  add_test(NAME test_workflow_live_view COMMAND test_workflow_live_view)
-  set_tests_properties(test_workflow_live_view PROPERTIES TIMEOUT 120)
-
   # ---- Milestone 6 Phase I: 030 §4's directed lifecycle (lifecycle.hpp) --------------------------
   # PassivatableHandle's real point, proven with REAL actors: one ProjectSupervisor holds a REAL
   # AgentSession<CannedChatClient> (a member session) and a REAL WorkflowSupervisor (a
@@ -876,6 +867,15 @@ add_test(NAME test_rt_workflow_supervisor COMMAND test_rt_workflow_supervisor)
 add_executable(test_rt_workflow_supervisor_request_port test_rt_workflow_supervisor_request_port.cpp)
 target_link_libraries(test_rt_workflow_supervisor_request_port PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_workflow_supervisor_request_port COMMAND test_rt_workflow_supervisor_request_port)
+
+# ---- ADR-037 Phase 3 -- 014 §7's live-view bullet (WorkflowSupervisor::enable_live_view) against
+# rt::WorkflowSupervisor -- supersedes the old Quark-actor-based test_workflow_live_view.cpp (LV1/LV2,
+# reused verbatim). One WorkflowLiveEvent per superstep boundary over a real agentengine::stream<T>,
+# checked from the executor-state angle, plus the negative control (a round that fails the whole run
+# produces no live event, proven by draining to empty, not just an unchecked assumption).
+add_executable(test_rt_workflow_live_view test_rt_workflow_live_view.cpp)
+target_link_libraries(test_rt_workflow_live_view PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_workflow_live_view COMMAND test_rt_workflow_live_view)
 
 # ---- ADR-037 Phase 3, Slice 1 -- bound/failure-policy behavior (B3-B5, D1-D4) ported from the two
 # retired Quark-actor-based test_workflow_superstep(.cpp)/test_workflow_failure(.cpp) onto

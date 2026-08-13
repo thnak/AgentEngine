@@ -47,14 +47,19 @@
 //     flat `MessageRecord` indirection (`content_record.hpp`'s whole reason for existing was working
 //     around `quark::Described` having no variant primitive -- a constraint that does not apply here).
 //
-// Live view (enable_live_view()/live_view_producer_ -- NOT implemented by this Slice at all, unlike
-// AgentSession's own already-real enable_event_stream()) would ride core/stream.hpp's stream<T> once
-// built. UPDATED: that type's own backend migration (an ADR-037 pass) swapped it from
-// quark::ReplyStream to rt::channel<T>, and a LATER ADR-037 pass closed the last type-level residual
-// too (terminal()/fail_error() now return agentengine::stream_terminal/agentengine::error, not
-// quark::ReplyStreamTerminal/quark::error) -- implementing this here would pull in NO Quark dependency
-// at all, type-level or runtime. Still not implemented in this Slice regardless -- named as future
-// work, not claimed done by a dependency getting lighter elsewhere.
+// Live view (enable_live_view()/live_view_producer_) -- IMPLEMENTED (a later ADR-037 pass, after
+// Slice 1/2 were first written): rides `core/stream.hpp`'s `stream<T>` directly, which by this point
+// carries NO Quark dependency at all, type-level or runtime (an earlier ADR-037 pass moved it off
+// `quark::ReplyStream` onto `rt::channel<T>`; a later one closed the last type-level residual --
+// `terminal()`/`fail_error()` now return `agentengine::stream_terminal`/`agentengine::error`, not
+// `quark::ReplyStreamTerminal`/`quark::error`). `workflow/live_view.hpp` (`WorkflowLiveEvent`,
+// `ExecutorLiveState`) is reused directly via `#include`, the same "reuse the shape, not reproduce
+// it" precedent `workflow/graph.hpp` already set for this file -- that header is already plain value
+// types with zero Quark coupling of its own, so there is nothing to hand-reproduce. Fires from the
+// SAME superstep-boundary point the original's own `live_view_producer_.push()` did (`execute()`,
+// right after `state_.pending = std::move(next);`, before the suspend check) -- built from the SAME
+// round-local `exec_deliveries`/`replies`/`port_deliveries` the original used, not reconstructed from
+// `state_` after the fact (which no longer distinguishes "ran ok" from "ran and failed" once folded).
 //
 // THE ONE GENUINELY HARD DESIGN QUESTION: decision 5 in the original's own file banner ("Fan-out is
 // ISSUE-ALL-THEN-COLLECT... the supervisor issues every ask for round N before awaiting any of them...
@@ -102,6 +107,7 @@
 #include <functional>
 #include <future>
 #include <memory>
+#include <memory_resource>
 #include <string>
 #include <utility>
 #include <vector>
@@ -111,6 +117,7 @@
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/interaction.hpp"
 #include "agentengine/core/json_value.hpp"
+#include "agentengine/core/stream.hpp"
 #include "agentengine/rt/async_mutex.hpp"
 #include "agentengine/rt/interaction_codec.hpp"
 #include "agentengine/rt/message_codec.hpp"
@@ -118,6 +125,7 @@
 #include "agentengine/rt/task.hpp"
 #include "agentengine/rt/thread_pool.hpp"
 #include "agentengine/workflow/graph.hpp"
+#include "agentengine/workflow/live_view.hpp"
 
 namespace agentengine::rt {
 
@@ -483,6 +491,19 @@ public:
         return out;
     }
 
+    // 014 §7's live-view bullet. Constructs a fresh, directly-connected producer/consumer pair
+    // (`agentengine::make_stream`, core/stream.hpp) over `WorkflowLiveEvent`, keeps the producer, and
+    // hands the caller the consumer -- see file banner for exactly where in `execute()` it fires from.
+    // A second call REPLACES the producer (the previous consumer then reads `done()`); there is no
+    // fan-out to multiple simultaneous live viewers in this build, matching the original exactly.
+    [[nodiscard]] agentengine::stream<agentengine::workflow::WorkflowLiveEvent> enable_live_view(
+        std::pmr::memory_resource* mr,
+        agentengine::stream_config<agentengine::workflow::WorkflowLiveEvent> cfg = {}) {
+        auto pair            = agentengine::make_stream<agentengine::workflow::WorkflowLiveEvent>(mr, cfg);
+        live_view_producer_  = std::move(pair.producer);
+        return std::move(pair.consumer);
+    }
+
     task<WorkflowResult> run_workflow(RunWorkflow request) {
         AsyncMutex::Guard guard = co_await run_mutex_.lock();  // I1 -- see file banner
         if (!valid_) co_return WorkflowResult{workflow_status::invalid};
@@ -770,6 +791,29 @@ private:
             }
             state_.pending = std::move(next);
 
+            // 014 §7's live-view bullet, same superstep boundary -- see file banner. `exec_deliveries`/
+            // `replies`/`port_deliveries` are still this iteration's locals, built fresh from THIS
+            // round, not reconstructed from `state_` (which no longer distinguishes "ran ok" from "ran
+            // and failed" once folded into `partial`/`unopened_ports`).
+            if (live_view_producer_.valid()) {
+                agentengine::workflow::WorkflowLiveEvent ev;
+                ev.round = rounds_;
+                ev.executor_states.reserve(exec_deliveries.size() + port_deliveries.size());
+                for (std::size_t i = 0; i < exec_deliveries.size(); ++i) {
+                    auto const st = replies[i].ok ? agentengine::workflow::executor_live_state::ran_ok
+                                                    : agentengine::workflow::executor_live_state::ran_failed;
+                    ev.executor_states.push_back(agentengine::workflow::ExecutorLiveState{
+                        graph_.executors[exec_deliveries[i].executor_index].id, st});
+                }
+                for (auto const& d : port_deliveries) {
+                    ev.executor_states.push_back(agentengine::workflow::ExecutorLiveState{
+                        graph_.executors[d.executor_index].id,
+                        agentengine::workflow::executor_live_state::port_open});
+                }
+                ev.in_flight_message_count = state_.pending.size();
+                (void)live_view_producer_.push(std::move(ev));
+            }
+
             if (!ports_.empty()) {
                 status = workflow_status::suspended;
                 break;
@@ -949,6 +993,9 @@ private:
     ThreadPool     pool_;
     // I1 -- see file banner. Every public async entry point acquires this for its whole duration.
     AsyncMutex     run_mutex_;
+    // 014 §7 live view -- invalid until enable_live_view() is called, matching the original's own
+    // "Phase G: invalid until enable_live_view()" comment verbatim.
+    agentengine::stream_producer<agentengine::workflow::WorkflowLiveEvent> live_view_producer_;
 };
 
 // Save `supervisor`'s current run under its own run_id() -- see file banner and snapshot_record()'s
