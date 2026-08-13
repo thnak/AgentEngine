@@ -317,12 +317,16 @@ add_executable(test_idempotency_key test_idempotency_key.cpp)
 target_link_libraries(test_idempotency_key PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_idempotency_key COMMAND test_idempotency_key)
 
-# ---- Milestone 4 Phase F2 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
-# Effect journaling (intent before execution, outcome after) atop Quark's Store/EventLog, reusing
-# a session's own ActorId (session_actor_id, A1) -- no second persistence engine.
-add_executable(test_effect_journal test_effect_journal.cpp)
-target_link_libraries(test_effect_journal PRIVATE agentengine::core agentengine_warnings)
-add_test(NAME test_effect_journal COMMAND test_effect_journal)
+# ---- ADR-037 -- agentengine::rt::EffectJournalEntry (019 §3's effect journaling: intent before
+# execution, outcome after), ported off the old Quark quark::Store/EventLog shape onto
+# rt::AppendLogStore -- name-scoped by session_id rather than sharing a literal Store/ActorId slot
+# with the session's own checkpoint (rt::SessionStore and rt::AppendLogStore are structurally
+# different interfaces; see effect_journal.hpp's own banner). Supersedes test_effect_journal.cpp,
+# whose F2-R1..R7 claims are ported (J1-J7) and whose F2-R8 is replaced with a genuinely analogous
+# J8 (two sessions' journals in the same store instance never collide).
+add_executable(test_rt_effect_journal test_rt_effect_journal.cpp)
+target_link_libraries(test_rt_effect_journal PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_effect_journal COMMAND test_rt_effect_journal)
 
 # ---- Milestone 4 Phase F4 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
 # 019 §6's rewind-then-reexecute rule: effect_class/EffectClass<C>, authorize_reexecution(), proven
