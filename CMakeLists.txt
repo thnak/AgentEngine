@@ -22,29 +22,27 @@ if(WIN32)
   add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN)
 endif()
 
-# ---- Quark (submodule; never forked or patched in-tree, CLAUDE.md) -----------
-# Force Quark's own test/bench suite off before pulling it in as a subdirectory — AgentEngine's
-# build must not drag in Quark's CTest targets or benchmarks.
-set(QUARK_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-set(QUARK_BUILD_BENCH OFF CACHE BOOL "" FORCE)
-
-add_subdirectory(third_party/quark)
-
 # ---- Core vocabulary (header-only for now; no .cpp under include/agentengine) --
 add_library(agentengine_core INTERFACE)
 target_include_directories(agentengine_core INTERFACE
   "${CMAKE_CURRENT_SOURCE_DIR}/include")
-target_link_libraries(agentengine_core INTERFACE quark::quark)
 target_compile_features(agentengine_core INTERFACE cxx_std_23)
+# ADR-037: the Quark actor-engine submodule (third_party/quark) is fully removed -- agentengine::pal
+# (include/agentengine/pal/net.hpp) is a small, standalone, vendored replacement for the one slice of
+# Quark's own PAL this project ever used (portable non-blocking sockets), so ws2_32 -- previously
+# inherited transitively via quark::quark's own PUBLIC link on Windows -- is linked directly here now.
+if(WIN32)
+  target_link_libraries(agentengine_core INTERFACE ws2_32)
+endif()
 add_library(agentengine::core ALIAS agentengine_core)
 
 # ---- Egress proxy (src/sandbox/) -- Windows + Linux ---------------------------------------------
 # Implements decisions/ADR-011-first-party-egress-proxy.md (008 §10 Q3, M2 Phase F task F1): the
 # host-mediated mechanism NetOut (007 §3) is enforced through. Ordinary OS socket/DNS APIs
-# (getaddrinfo/inet_pton/select) plus third_party/quark's already-vendored, cross-platform PAL socket
-# primitives (quark::quark, pulled in transitively via agentengine::core) -- no new third-party
-# dependency, so this needs no CMake option gate beyond the platform-independent build itself (ws2_32
-# is already a PUBLIC link of the quark target on Windows).
+# (getaddrinfo/inet_pton/select) plus agentengine::pal's own vendored, cross-platform socket
+# primitives (include/agentengine/pal/net.hpp, pulled in transitively via agentengine::core) -- no
+# third-party dependency at all now, so this needs no CMake option gate beyond the platform-
+# independent build itself (ws2_32 is linked directly on agentengine::core on Windows, above).
 add_library(agentengine_net_egress_proxy STATIC
   src/sandbox/net_egress_proxy.cpp)
 target_link_libraries(agentengine_net_egress_proxy PUBLIC agentengine::core)
@@ -334,8 +332,7 @@ if(AGENTENGINE_WITH_HTTPS)
   # OFF under add_subdirectory() -- ENABLE_PROGRAMS defaults ON regardless, and
   # MBEDTLS_FATAL_WARNINGS (also ON by default) is a third-party library's own warning posture
   # under whatever compiler flags it happens to be built with here, not something this project's
-  # own AgentEngineWarnings module should be answerable for -- both forced off, matching
-  # QUARK_BUILD_TESTS/QUARK_BUILD_BENCH's own precedent for Quark above.
+  # own AgentEngineWarnings module should be answerable for -- both forced off.
   set(ENABLE_PROGRAMS OFF CACHE BOOL "" FORCE)
   set(ENABLE_TESTING OFF CACHE BOOL "" FORCE)
   set(MBEDTLS_FATAL_WARNINGS OFF CACHE BOOL "" FORCE)

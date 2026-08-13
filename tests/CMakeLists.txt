@@ -82,7 +82,7 @@ try_compile(AE_SANDBOX_PROFILE_REJECTS_NON_CONFORMING_TYPE
   "${CMAKE_CURRENT_BINARY_DIR}/compile_fail_checks/sandbox_profile_rejects_non_conforming_type"
   "${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/sandbox_profile_rejects_non_conforming_type.cpp"
   CXX_STANDARD 23
-  CMAKE_FLAGS "-DINCLUDE_DIRECTORIES=${PROJECT_SOURCE_DIR}/include;${PROJECT_SOURCE_DIR}/third_party/quark/include;${PROJECT_SOURCE_DIR}/third_party/quark"
+  CMAKE_FLAGS "-DINCLUDE_DIRECTORIES=${PROJECT_SOURCE_DIR}/include"
   OUTPUT_VARIABLE AE_SANDBOX_PROFILE_REJECTS_NON_CONFORMING_TYPE_LOG)
 if(AE_SANDBOX_PROFILE_REJECTS_NON_CONFORMING_TYPE)
   message(FATAL_ERROR
@@ -95,7 +95,7 @@ try_compile(AE_SANDBOX_PROFILE_POSITIVE_CONTROL
   "${CMAKE_CURRENT_BINARY_DIR}/compile_fail_checks/sandbox_profile_positive_control"
   "${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/sandbox_profile_positive_control.cpp"
   CXX_STANDARD 23
-  CMAKE_FLAGS "-DINCLUDE_DIRECTORIES=${PROJECT_SOURCE_DIR}/include;${PROJECT_SOURCE_DIR}/third_party/quark/include;${PROJECT_SOURCE_DIR}/third_party/quark"
+  CMAKE_FLAGS "-DINCLUDE_DIRECTORIES=${PROJECT_SOURCE_DIR}/include"
   OUTPUT_VARIABLE AE_SANDBOX_PROFILE_POSITIVE_CONTROL_LOG)
 if(NOT AE_SANDBOX_PROFILE_POSITIVE_CONTROL)
   message(FATAL_ERROR
@@ -160,7 +160,7 @@ if(WIN32)
       "${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/worktree_object_store_rejects_blob_digest_override.cpp"
       "${PROJECT_SOURCE_DIR}/src/core/worktree_digest.cpp"
     CMAKE_FLAGS
-      "-DINCLUDE_DIRECTORIES=${PROJECT_SOURCE_DIR}/include;${PROJECT_SOURCE_DIR}/third_party/quark/include;${PROJECT_SOURCE_DIR}/third_party/quark"
+      "-DINCLUDE_DIRECTORIES=${PROJECT_SOURCE_DIR}/include"
       "-DCMAKE_CXX_STANDARD=23" "-DCMAKE_CXX_STANDARD_REQUIRED=ON"
     LINK_LIBRARIES bcrypt
     OUTPUT_VARIABLE AE_WORKTREE_STORE_REJECTS_BLOB_DIGEST_OVERRIDE_LOG)
@@ -178,7 +178,7 @@ if(WIN32)
       "${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/worktree_object_store_rejects_tree_digest_override.cpp"
       "${PROJECT_SOURCE_DIR}/src/core/worktree_digest.cpp"
     CMAKE_FLAGS
-      "-DINCLUDE_DIRECTORIES=${PROJECT_SOURCE_DIR}/include;${PROJECT_SOURCE_DIR}/third_party/quark/include;${PROJECT_SOURCE_DIR}/third_party/quark"
+      "-DINCLUDE_DIRECTORIES=${PROJECT_SOURCE_DIR}/include"
       "-DCMAKE_CXX_STANDARD=23" "-DCMAKE_CXX_STANDARD_REQUIRED=ON"
     LINK_LIBRARIES bcrypt
     OUTPUT_VARIABLE AE_WORKTREE_STORE_REJECTS_TREE_DIGEST_OVERRIDE_LOG)
@@ -203,7 +203,7 @@ if(WIN32)
       "${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/worktree_object_store_positive_control.cpp"
       "${PROJECT_SOURCE_DIR}/src/core/worktree_digest.cpp"
     CMAKE_FLAGS
-      "-DINCLUDE_DIRECTORIES=${PROJECT_SOURCE_DIR}/include;${PROJECT_SOURCE_DIR}/third_party/quark/include;${PROJECT_SOURCE_DIR}/third_party/quark"
+      "-DINCLUDE_DIRECTORIES=${PROJECT_SOURCE_DIR}/include"
       "-DCMAKE_CXX_STANDARD=23" "-DCMAKE_CXX_STANDARD_REQUIRED=ON"
     LINK_LIBRARIES bcrypt
     OUTPUT_VARIABLE AE_WORKTREE_STORE_POSITIVE_CONTROL_LOG)
