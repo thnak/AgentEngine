@@ -16,8 +16,9 @@
 //   G4 -- MiddlewareModelCallGateway: an after_model hook that fabricates a ToolCall gets it forced
 //         to call_provenance::text_derived (the fatal-finding fix, unchanged, now proven reachable
 //         through this new composition path).
-//   G5 -- AgentSession integration: AgentSession<ModelCallGateway<...>, ...> converges a real
-//         StartRun with zero model_delta events (the accepted trade) and fires the ADR-036 warning.
+//   (G5, AgentSession integration, was ported onto agentengine::rt::AgentSession in ADR-037 Phase 2
+//   -- see test_rt_model_call_gateway_session.cpp -- and removed from this file; every other case
+//   here never touched AgentSession/quark::TestKit at all.)
 //   G6 -- retries stop once the deadline is exhausted, without sleeping past it (ported from
 //         test_resilient_chat_client.cpp's (2), removed 2026-08-12 along with ResilientChatClient
 //         itself -- this behavior lives in ModelCallGateway::attempt_with_retry now, same test).
@@ -38,15 +39,10 @@
 #include <thread>
 #include <vector>
 
-#include "quark/core/testkit.hpp"
-
-#include "agentengine/core/agent_session.hpp"
 #include "agentengine/core/chat_client.hpp"
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/model_call_gateway.hpp"
-#include "agentengine/core/run_event.hpp"
 #include "agentengine/core/tool_call_extraction.hpp"
-#include "agentengine/trust/principal.hpp"
 #include "support/run_task_sync.hpp"
 
 namespace {
@@ -295,65 +291,11 @@ int main() {
         }
     }
 
-    // ---- G5: AgentSession integration -- ModelCallGatewayLike plugs into ChatClientT directly ------
-    {
-        struct GatewayHistoryProvider {
-            [[nodiscard]] ae::task<ae::result<ae::ContextContribution>> on_context(ae::SessionContext& sc,
-                                                                                      ae::EffectContext&) {
-                ae::ContextContribution c;
-                c.messages.assign(sc.history.begin(), sc.history.end());
-                co_return c;
-            }
-            ae::task<std::monostate> on_turn_end(ae::TurnView, ae::EffectContext&) { co_return std::monostate{}; }
-        };
-        static_assert(ae::ContextProvider<GatewayHistoryProvider>);
-
-        using GatewayT = ae::ModelCallGateway<ScriptedGatewayBackend>;
-        using Session = ae::AgentSession<GatewayT, ae::NoSessionState, GatewayHistoryProvider>;
-
-        quark::TestKit<Session> kit;
-        ScriptedGatewayBackend primary;
-        primary.outcomes = {
-            ScriptedOutcome::ok({text_delta("gateway-routed answer", true, ae::Usage{4, 2, 0, 0, 0.0})}),
-        };
-        kit.actor().emplace_chat_client(primary, std::make_tuple(), fast_retry_policy(), ae::BreakerConfig{},
-                                          GatewayT::JitterSource(&no_jitter));
-        kit.actor().initialize("s-g5", ae::Principal{"p", ""});
-        ae::CapabilitySet const held = ae::CapabilitySet::grant_root({});
-        kit.actor().set_capabilities(&held);
-
-        ae::Message user_msg;
-        user_msg.role = ae::role::user;
-        ae::ContentItem item;
-        item.origin = ae::content_origin::user;
-        item.value = ae::Text{"hello"};
-        user_msg.content.push_back(item);
-
-        auto viewer = kit.actor().enable_event_stream(std::pmr::get_default_resource());
-        auto r = kit.ask<ae::AgentResponse>(ae::StartRun{user_msg});
-        AE_CHECK(r.has_value(), "G5: a gateway-backed AgentSession run converges");
-        if (r.has_value()) {
-            AE_CHECK(text_of(r->message) == "gateway-routed answer", "G5: the gateway's response reaches AgentResponse");
-        }
-
-        std::vector<ae::RunEvent> events;
-        while (auto ev = viewer.next()) events.push_back(std::move(*ev));
-        std::size_t delta_count = 0;
-        bool saw_gateway_warning = false;
-        for (auto const& ev : events) {
-            if (ev.kind == ae::run_event_kind::model_delta) ++delta_count;
-            if (ev.kind == ae::run_event_kind::warning) {
-                auto const& p = std::get<ae::run_event_payload::Warning>(ev.payload);
-                if (p.message.find("ModelCallGateway") != std::string::npos) saw_gateway_warning = true;
-            }
-        }
-        AE_CHECK(delta_count == 0,
-                 "G5: zero model_delta events fire for a gateway-routed round -- the accepted, named "
-                 "trade (a retried/failed-over/middleware-reviewed attempt cannot be shown live)");
-        AE_CHECK(saw_gateway_warning,
-                 "G5: the ADR-036 gateway warning fires, naming the trade -- a visible fact about the "
-                 "run, not a silent one, matching ADR-034's own established pattern");
-    }
+    // G5 (AgentSession integration) was ported onto agentengine::rt::AgentSession directly in
+    // ADR-037 Phase 2 -- see test_rt_model_call_gateway_session.cpp's own banner, which confirms
+    // this file's G1-G4/G6-G9 never touch AgentSession/quark::TestKit at all, only G5 did. That
+    // file's own G5 checks the identical four claims this block used to (converges, gateway
+    // response reaches AgentResponse, zero model_delta events, the ADR-036 gateway warning fires).
 
     // ---- G6: retries stop once the deadline is exhausted, without sleeping past it -----------------
     {
