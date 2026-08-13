@@ -111,6 +111,16 @@ extensions, not a place to reach for something exotic) — every primitive on th
 the table above already exists and is independently proven; what's missing is the adapter function
 itself and a real answer to the `CapabilitySet`-sourcing question.
 
+## Related finding from a later pass (2026-08-13): `resume_workflow()` has no admission check
+
+While red-teaming a different topic (`batch-inference-coalescing-design-draft.md`), it surfaced that
+`WorkflowSupervisor::resume_workflow()` (`rt/workflow_supervisor.hpp:540-570`) has **no caller/
+principal field and no admission check at all** — unlike `AgentSession::resolve_interaction()`, which
+checks the resolving caller against the pending interaction's owner via `principal_admitted_for()`
+(ADR-029's own finding #6). Any caller who learns an `interaction_id` can resolve a pending
+`request_port` today, regardless of who opened it. Independent of this doc's own topic, but recorded
+here too since it's the same `WorkflowSupervisor` HITL surface — a real, separately-landable fix.
+
 ## Where this was NOT deferred, for the record
 
 Unlike `backgroundable-standingeffect-gap.md`, this was not passed over unnamed — M6 named it directly

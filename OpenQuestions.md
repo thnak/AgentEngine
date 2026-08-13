@@ -6,9 +6,10 @@ shape of the project.
 
 **Legend:** 🔴 blocks a v1 decision · 🟠 needed before implementation of its area · 🟡 can wait
 
-**One open cross-cutting question as of 2026-08-13: OQ-19.** OQ-1 through OQ-18 are all resolved. New
-questions are added here as they're identified; per-RFC open questions that don't change the shape of
-the project stay in their own RFC's §Open questions and are never promoted here by default.
+**Two open cross-cutting questions as of 2026-08-13: OQ-19, OQ-20.** OQ-1 through OQ-18 are all
+resolved. New questions are added here as they're identified; per-RFC open questions that don't change
+the shape of the project stay in their own RFC's §Open questions and are never promoted here by
+default.
 
 ---
 
@@ -34,6 +35,33 @@ principal? Blocks 014 §3's `agent`-kind executor and, transitively, honest "mul
 (as opposed to multi-*function*-node orchestration with a model call inside one function, which is all
 that's demonstrated today, per the gap doc's `examples/16_group_chat_live.cpp` citation). **Explicit
 project-owner direction (2026-08-13): document only, do not implement yet.**
+
+### OQ-20 — Coalescing concurrent agents onto one vendor batch inference call 🟠
+
+User proposal (2026-08-13): since providers support batch inference, let concurrently-running agents
+share one batch submission to save cost. 004 §8 Q1 already resolved that `batch` rides
+`Backgroundable`/`StandingEffect` (not a bespoke structure) — that prerequisite shipped for TOOL calls
+in M7 Phase B but was never extended to model calls. Full gap analysis, vendor-API research (OpenAI/
+Anthropic batch mechanics, fetched and cited), and six concrete open design questions (batch-eligibility
+granularity, coalescing-coordinator ownership/flush trigger, N-way result fan-out onto the existing
+completion-queue idiom, `custom_id`/principal attribution and a named cross-tenant metadata-leak
+question, poll-ownership/durability, and a caller-visible cost-vs-latency policy surface):
+`docs/planning/batch-inference-coalescing-gap.md`, `docs/research/2026-08-13-vendor-batch-inference-apis.md`.
+**Resolved, red-teamed once:** `docs/planning/batch-inference-coalescing-design-draft.md` — reuses
+`request_port`/`Interaction` (durable) instead of `StandingEffect` (non-durable today) for the
+suspend/resume shape, needs no new message type (`resume_workflow()` already resolves N ports one at
+a time), and surfaced a real, independent gap worth fixing on its own regardless of batch's fate:
+**`WorkflowSupervisor::resume_workflow()` has no caller/admission check at all** — unlike
+`AgentSession::resolve_interaction()`'s own `principal_admitted_for()` check (ADR-029). Five remaining
+punch-list items, none implemented.
+
+**Load-bearing finding, confirmed from real vendor docs, not assumed:** batch mode is structurally
+single-shot — neither OpenAI's nor Anthropic's batch API lets a batched request see a tool result and
+continue the same turn. A multi-round `AgentSession` tool-calling loop would need each round submitted
+as its own batch job, multiplying a turn's latency by however many rounds it takes (often <1h to 24h
+PER round). This does not block the idea — it fits N independent single-shot calls (e.g. workflow
+fan-out nodes) well — but it means "batch mode" cannot be a blanket accelerator for arbitrary agents.
+**Explicit project-owner direction (2026-08-13): document only, do not implement yet.**
 
 ---
 
