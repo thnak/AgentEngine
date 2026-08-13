@@ -56,7 +56,12 @@ not retrofitted once effects exist.
 **Exit:** a single hard-coded agent runs one turn against a mock `ChatClient`, on a Quark
 `AgentSession` actor, with `Message`/`Content` as the wire shape and `Tainted<T>` compiling correctly
 (007 §9 G2's compile-fail proof, provable even with nothing else built) — no tools, no sandbox, no
-real provider, in-memory session only. This is 001 §9 G1/G2 in miniature.
+real provider, in-memory session only. This is 001 §9 G1/G2 in miniature. (Historical: proven at the
+time by `test_m1_walking_skeleton.cpp` against a real `quark::TestKit<AgentSession>`. ADR-037 later
+removed Quark as the core runtime entirely; this milestone-gate claim is superseded by
+`test_rt_agent_session.cpp`'s own S1, proven the identical way against `rt::AgentSession` instead —
+the old file was retired as redundant rather than ported, since S1 already covers every assertion it
+made.)
 
 This mock `ChatClient` (and the `ChatClientId` policy tag 002's CRTP surface requires at compile time,
 needed once M2 authors an agent with `002`) is hand-rolled ahead of RFC 004's own design — 004 isn't

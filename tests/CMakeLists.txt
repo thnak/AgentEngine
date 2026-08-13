@@ -223,13 +223,6 @@ target_link_libraries(smoke_vocabulary PRIVATE agentengine::core agentengine_war
 
 add_test(NAME smoke_vocabulary COMMAND smoke_vocabulary)
 
-# ---- Milestone 1 exit criterion (docs/planning/milestone-1-core-substrate-breakdown.md task 4) --
-# One hard-coded agent, one turn, against a mock ChatClient, on a real Quark AgentSession actor via
-# quark::TestKit (single-actor harness, no cluster/engine bring-up needed).
-add_executable(test_m1_walking_skeleton test_m1_walking_skeleton.cpp)
-target_link_libraries(test_m1_walking_skeleton PRIVATE agentengine::core agentengine_warnings)
-add_test(NAME test_m1_walking_skeleton COMMAND test_m1_walking_skeleton)
-
 # ---- Milestone 4 Phase B2 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
 # HistoryProvider<Window<N>>, the first real ContextProvider conformer -- standalone (unit) and
 # wired end to end through AgentSession's real turn loop.
