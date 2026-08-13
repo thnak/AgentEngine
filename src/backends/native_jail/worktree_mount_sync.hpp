@@ -41,6 +41,7 @@
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/worktree.hpp"
+#include "agentengine/rt/append_log_store.hpp"
 #include "agentengine/sandbox/filesystem_adapter.hpp"
 #include "agentengine/trust/capability.hpp"
 
@@ -74,7 +75,7 @@ namespace detail {
 // host side before anything beneath them is written: `FileSystemAdapter::write_file` does not
 // create parents itself (both existing implementations fail closed on a missing parent rather than
 // silently `mkdir -p`ing).
-template <WorktreeObjectStore OS, quark::Store RS>
+template <WorktreeObjectStore OS, rt::AppendLogStore RS>
 [[nodiscard]] result<void> materialize_subtree(OS& object_store, RS& ref_store, Mount const& mount,
                                                 cap::FsRead const& granted, Digest const& tree_digest,
                                                 std::string const& guest_prefix, FileSystemAdapter& fs) {
@@ -101,7 +102,7 @@ template <WorktreeObjectStore OS, quark::Store RS>
 // root, matching `split_mount_path`'s convention), committing every file found into `mount`'s tree
 // via `mount_write` -- the SAME `granted`-capability + quota enforcement a guest `open(path, "w")`
 // gets -- and appending one `ContentItem` per file harvested to `out`.
-template <WorktreeObjectStore OS, quark::Store RS>
+template <WorktreeObjectStore OS, rt::AppendLogStore RS>
 [[nodiscard]] result<void> harvest_subtree(OS& object_store, RS& ref_store, Mount const& mount,
                                             cap::FsWrite const& granted, std::string const& guest_prefix,
                                             FileSystemAdapter& fs, std::vector<ContentItem>& out) {
@@ -134,7 +135,7 @@ template <WorktreeObjectStore OS, quark::Store RS>
 
 // Primes `fs` (a real host directory, e.g. what `MediatedPythonConfig::mount_roots[mount.mount_id]`
 // points at) with `mount`'s CURRENT tree content, through `granted` (an already-bound cap::FsRead).
-template <WorktreeObjectStore OS, quark::Store RS>
+template <WorktreeObjectStore OS, rt::AppendLogStore RS>
 [[nodiscard]] result<void> materialize_mount(OS& object_store, RS& ref_store, Mount const& mount,
                                               cap::FsRead const& granted, FileSystemAdapter& fs) {
     auto ref = read_ref(ref_store, mount.ref_name);
@@ -156,7 +157,7 @@ template <WorktreeObjectStore OS, quark::Store RS>
 // through leaves every file committed before it durably saved -- not silently rolled back --
 // matching this seam's existing per-write-commit granularity rather than inventing a batch-commit
 // transaction this codebase has nowhere else.
-template <WorktreeObjectStore OS, quark::Store RS>
+template <WorktreeObjectStore OS, rt::AppendLogStore RS>
 [[nodiscard]] result<std::vector<ContentItem>> harvest_mount(OS& object_store, RS& ref_store,
                                                                Mount const& mount, cap::FsWrite const& granted,
                                                                FileSystemAdapter& fs) {

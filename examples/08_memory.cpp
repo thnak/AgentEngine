@@ -25,6 +25,7 @@
 #include "agentengine/core/context_assembly.hpp"
 #include "agentengine/core/history_provider.hpp"
 #include "agentengine/core/memory_provider.hpp"
+#include "agentengine/rt/append_log_store.hpp"
 #include "support/run_task_sync.hpp"
 
 using namespace agentengine;
@@ -87,13 +88,13 @@ static_assert(ChatClient<MockSummarizerClient>);
     return m;
 }
 
-using Provider = MemoryProvider<MockSummarizerClient, InMemoryWorktreeObjectStore, quark::InMemoryStore>;
+using Provider = MemoryProvider<MockSummarizerClient, InMemoryWorktreeObjectStore, rt::InMemoryAppendLogStore>;
 
 }  // namespace
 
 int main() {
     InMemoryWorktreeObjectStore object_store;
-    quark::InMemoryStore         ref_store;
+    rt::InMemoryAppendLogStore   ref_store;
     Principal const principal{"p-demo", ""};
 
     check(ensure_memory_worktree(object_store, ref_store, principal).has_value(),

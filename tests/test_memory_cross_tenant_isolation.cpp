@@ -19,9 +19,8 @@
 #include <iostream>
 #include <string>
 
-#include "quark/core/persistence.hpp"
-
 #include "agentengine/core/memory.hpp"
+#include "agentengine/rt/append_log_store.hpp"
 
 namespace {
 
@@ -40,7 +39,7 @@ int g_failures = 0;
 } // namespace
 
 int main() {
-    quark::InMemoryStore ref_store;
+    ae::rt::InMemoryAppendLogStore ref_store;
     ae::InMemoryWorktreeObjectStore object_store;
 
     // Same `id`, DIFFERENT tenants -- the case Milestone 4's own suite never exercised.
@@ -55,9 +54,9 @@ int main() {
     AE_CHECK(ae::memory_mount_id(tenant_a_admin) != ae::memory_mount_id(tenant_b_admin),
              "I1-R2: same fix, for mount_id -- the internal capability-matching key mount_read/"
              "mount_write actually compare");
-    AE_CHECK(ae::ref_actor_id(ae::memory_ref_name(tenant_a_admin)) !=
-                 ae::ref_actor_id(ae::memory_ref_name(tenant_b_admin)),
-             "I1-R3: the distinct ref names resolve to distinct ActorIds too -- real worktree "
+    AE_CHECK(ae::ref_log_id(ae::memory_ref_name(tenant_a_admin)) !=
+                 ae::ref_log_id(ae::memory_ref_name(tenant_b_admin)),
+             "I1-R3: the distinct ref names resolve to distinct log ids too -- real worktree "
              "isolation, not just distinct strings that happen to still collide downstream");
 
     // --- End-to-end: each tenant's "admin" gets a genuinely separate, non-colliding worktree -----

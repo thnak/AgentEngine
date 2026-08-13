@@ -36,6 +36,7 @@
 // "is skill X currently active."
 
 #include <algorithm>
+#include <memory>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -45,7 +46,7 @@
 #include "agentengine/core/reference_agent_prompt.hpp"
 #include "agentengine/core/skill_source.hpp"
 #include "agentengine/core/worktree.hpp"
-#include "quark/core/persistence.hpp"
+#include "agentengine/rt/append_log_store.hpp"
 
 namespace agentengine {
 
@@ -147,7 +148,7 @@ public:
     // after at least one `on_context()`/`ensure_loaded()` call; empty before that or on load failure.
     [[nodiscard]] std::vector<Mount> const& mounted() const noexcept { return mounts_; }
     [[nodiscard]] ObjectStoreT& object_store() noexcept { return object_store_; }
-    [[nodiscard]] quark::InMemoryStore& ref_store() noexcept { return ref_store_; }
+    [[nodiscard]] rt::InMemoryAppendLogStore& ref_store() noexcept { return *ref_store_; }
 
     // Deduplicated union of every currently RESOLVED skill's `allowed-tools` frontmatter field -- same
     // resolve-once/freeze lifecycle and empty-before/on-failure contract as `mounted()`. This is the
@@ -235,7 +236,7 @@ private:
                 auto tree_digest = skill_provider_detail::assemble_tree(object_store_, std::move(pending));
                 if (!tree_digest) return std::unexpected(tree_digest.error());
 
-                auto committed_ref = commit_ref(ref_store_, "skill:" + name, *tree_digest);
+                auto committed_ref = commit_ref(*ref_store_, "skill:" + name, *tree_digest);
                 if (!committed_ref) return std::unexpected(committed_ref.error());
 
                 // Bare skill name, not "/skills/" + name -- see this file's own top comment for why
@@ -262,7 +263,16 @@ private:
 
     std::vector<SkillSourceDescriptor> sources_;
     ObjectStoreT object_store_;
-    quark::InMemoryStore ref_store_;
+    // Held via shared_ptr, not by value: `rt::InMemoryAppendLogStore` owns a `std::mutex` (its own
+    // internal locking), which makes it move-only by default -- but `SkillsProvider` itself must stay
+    // COPY-constructible, because `HistoryAndSkillsProvider`'s `make_context_provider_descriptor`
+    // stores it inside a `std::function`-based type-erased wrapper, and `std::function` requires its
+    // target to be CopyConstructible to be stored at all (even though this codebase's own call site
+    // only ever MOVES a SkillsProvider into that wrapper once, never actually copies it at runtime).
+    // The indirection is behaviorally inert -- there is exactly one SkillsProvider instance per
+    // session either way -- and keeps `rt::InMemoryAppendLogStore` itself unchanged rather than
+    // bolting a lock-and-copy constructor onto a primitive other callers rely on staying simple.
+    std::shared_ptr<rt::InMemoryAppendLogStore> ref_store_ = std::make_shared<rt::InMemoryAppendLogStore>();
     bool loaded_ = false;
     result<void> load_error_ = result<void>{};
     std::vector<Mount> mounts_;

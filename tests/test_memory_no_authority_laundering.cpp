@@ -21,6 +21,7 @@
 #include <string>
 
 #include "agentengine/core/memory_provider.hpp"
+#include "agentengine/rt/append_log_store.hpp"
 #include "support/run_task_sync.hpp"
 
 namespace {
@@ -65,7 +66,7 @@ int main() {
     // checked BOTH ways, hostile and genuine, so the tainting isn't accidentally source-dependent --
     {
         ae::InMemoryWorktreeObjectStore object_store;
-        quark::InMemoryStore ref_store;
+        ae::rt::InMemoryAppendLogStore ref_store;
         ae::Principal const principal{"p-victim", ""};
         auto bootstrapped = ae::ensure_memory_worktree(object_store, ref_store, principal);
         check(bootstrapped.has_value(), "setup: memory worktree bootstraps");
@@ -111,7 +112,7 @@ int main() {
                 return std::move(pair.consumer);
             }
         };
-        ae::MemoryProvider<NoopSummarizer, ae::InMemoryWorktreeObjectStore, quark::InMemoryStore> provider{
+        ae::MemoryProvider<NoopSummarizer, ae::InMemoryWorktreeObjectStore, ae::rt::InMemoryAppendLogStore> provider{
             object_store, ref_store, mount, read_cap, write_cap, NoopSummarizer{}, /*max_injected=*/10};
 
         std::vector<ae::Message> history;

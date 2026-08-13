@@ -17,7 +17,7 @@
 #include "agentengine/core/worktree.hpp"
 
 using namespace agentengine;
-using quark::InMemoryStore;
+using agentengine::rt::InMemoryAppendLogStore;
 
 namespace {
 
@@ -57,7 +57,7 @@ int main() {
     // D1-C1: committing a fresh name's first turn succeeds, returns the moved Ref, and turn == 1
     // (the first SeqNo a fresh EventSourced log ever assigns).
     {
-        InMemoryStore ref_store;
+        InMemoryAppendLogStore ref_store;
         InMemoryWorktreeObjectStore obj_store;
         auto d0 = empty_tree(obj_store);
 
@@ -70,7 +70,7 @@ int main() {
     // D1-C2: a second turn on the SAME name returns a strictly increasing turn number, and the Ref's
     // live head reflects the LATEST commit, exactly like an ordinary commit_ref call would.
     {
-        InMemoryStore ref_store;
+        InMemoryAppendLogStore ref_store;
         InMemoryWorktreeObjectStore obj_store;
         auto d0 = empty_tree(obj_store);
         auto d1 = one_file_tree(obj_store, "v1");
@@ -88,7 +88,7 @@ int main() {
     // D1-R1: two independently-named refs' turn counters never interfere -- a busy ref having
     // already reached turn 5 does not push a freshly-named ref's first turn past 1.
     {
-        InMemoryStore ref_store;
+        InMemoryAppendLogStore ref_store;
         InMemoryWorktreeObjectStore obj_store;
         auto d0 = empty_tree(obj_store);
         for (int i = 0; i < 5; ++i) {
@@ -104,7 +104,7 @@ int main() {
     // read_ref's live head moves BACKWARD to it (assignment, not a side channel), and (c) a rewind
     // never destroys what it rewound past -- a second rewind recovers the turn-3 state exactly.
     {
-        InMemoryStore ref_store;
+        InMemoryAppendLogStore ref_store;
         InMemoryWorktreeObjectStore obj_store;
         std::string const name = "session:rewind-1";
 
@@ -157,7 +157,7 @@ int main() {
     // was never committed -- neither 0 (turns start at 1) nor a number past the last commit -- fails
     // closed with a stable code, never silently resolving to a neighboring commit.
     {
-        InMemoryStore ref_store;
+        InMemoryAppendLogStore ref_store;
         InMemoryWorktreeObjectStore obj_store;
         std::string const name = "session:rewind-negative";
         auto d0 = empty_tree(obj_store);
@@ -189,7 +189,7 @@ int main() {
     // the ordinary read path a guest would actually use -- 025 §7's "files that appear are just
     // files" holds through a rewind too, not only through direct Digest/Tree inspection.
     {
-        InMemoryStore ref_store;
+        InMemoryAppendLogStore ref_store;
         InMemoryWorktreeObjectStore obj_store;
         std::string const name = "session:rewind-mount";
         Mount mount{"/work", name, ""};

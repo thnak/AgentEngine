@@ -20,7 +20,7 @@
 using namespace agentengine;
 using namespace agentengine::native_jail;
 using namespace agentengine::native_jail::mediated_shell;
-using quark::InMemoryStore;
+using InMemoryStore = agentengine::rt::InMemoryAppendLogStore;
 
 namespace {
 

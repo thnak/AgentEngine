@@ -11,9 +11,8 @@
 #include <iostream>
 #include <string>
 
-#include "quark/core/persistence.hpp"
-
 #include "agentengine/core/memory.hpp"
+#include "agentengine/rt/append_log_store.hpp"
 
 namespace {
 
@@ -32,7 +31,7 @@ int g_failures = 0;
 } // namespace
 
 int main() {
-    quark::InMemoryStore ref_store;
+    ae::rt::InMemoryAppendLogStore ref_store;
     ae::InMemoryWorktreeObjectStore object_store;
 
     ae::Principal const alice{"p-alice", "tenant-1"};
@@ -42,8 +41,8 @@ int main() {
     AE_CHECK(ae::memory_ref_name(alice) == "principal:tenant-1:p-alice",
              "G1-C1: the memory ref name is 'principal:<tenant_id>:<id>', 029 §2's naming extended "
              "with tenant_id in Milestone 5 Phase I1 (see memory_ref_name's own comment)");
-    AE_CHECK(ae::ref_actor_id(ae::memory_ref_name(alice)) != ae::ref_actor_id(ae::memory_ref_name(bob)),
-             "G1-R1: two principals' memory worktrees resolve to distinct ActorIds -- the SAME "
+    AE_CHECK(ae::ref_log_id(ae::memory_ref_name(alice)) != ae::ref_log_id(ae::memory_ref_name(bob)),
+             "G1-R1: two principals' memory worktrees resolve to distinct log ids -- the SAME "
              "isolation mechanism A1 proved for sessions, one level up, not a new one");
 
     auto ref1 = ae::ensure_memory_worktree(object_store, ref_store, alice);

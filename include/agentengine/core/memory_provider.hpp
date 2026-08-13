@@ -26,6 +26,7 @@
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/memory.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
+#include "agentengine/rt/append_log_store.hpp"
 
 namespace agentengine {
 
@@ -72,7 +73,7 @@ namespace memory_detail {
 // Deterministic, replayable retrieval (029 §9 G1: "byte-identical ContextContribution... given a
 // fixed memory-worktree tree digest and a fixed turn; no network call occurs") — every input is
 // either stored, structured data or the query text itself; nothing here reads a clock or calls out.
-template <WorktreeObjectStore OS, quark::Store RS>
+template <WorktreeObjectStore OS, rt::AppendLogStore RS>
 [[nodiscard]] result<std::vector<MemoryItem>> rank_memory_items(OS& object_store, RS& ref_store,
                                                                    Mount const& mount,
                                                                    cap::FsRead const& granted,
@@ -103,11 +104,11 @@ template <WorktreeObjectStore OS, quark::Store RS>
 }
 
 // The `ContextProvider` conformer 029 §4/§5 both attach through. `OS`/`RS` mirror
-// `WorktreeObjectStore`/`quark::Store`'s own template shape everywhere else in this project;
+// `WorktreeObjectStore`/`rt::AppendLogStore`'s own template shape everywhere else in this project;
 // `SummarizerT` is a declared `ChatClient` (004 §1) used ONLY for extraction (§4), never for
 // retrieval (§5's whole point is that default retrieval needs no model call at all).
 template <class SummarizerT, class OS, class RS>
-    requires ChatClient<SummarizerT> && WorktreeObjectStore<OS> && quark::Store<RS>
+    requires ChatClient<SummarizerT> && WorktreeObjectStore<OS> && rt::AppendLogStore<RS>
 class MemoryProvider {
 public:
     MemoryProvider(OS& object_store, RS& ref_store, Mount mount, cap::FsRead read_cap,

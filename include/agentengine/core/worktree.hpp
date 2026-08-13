@@ -14,16 +14,19 @@
 // tracked gap (the milestone-3 breakdown's own decision 2), not silently assumed available -- links
 // against `agentengine::worktree_store`, Windows-only for now.
 //
-// `Ref` persistence is deliberately NOT part of this header's store: a Ref is ordinary small
-// Quark-actor state (mutates often, wants fencing/durability/history) and goes through Quark's
-// `Store` seam directly, unlike Blob/Tree (immutable, digest-addressed, write-once) -- see the
+// `Ref` persistence is deliberately NOT part of this header's store: a Ref mutates often and wants
+// durability/history, unlike Blob/Tree (immutable, digest-addressed, write-once) -- see the
 // milestone-3 breakdown's decision 1 for why forcing both shapes through one seam would be a
-// genuine misfit, not an elegant reuse.
+// genuine misfit, not an elegant reuse. ADR-037: Ref persistence rides `agentengine::rt::
+// AppendLogStore` (rt/append_log_store.hpp) -- each `RefMoved` commit is one appended, JSON-encoded
+// entry under a log id derived from the Ref's own `name` (`ref_log_id`, below), and `read_ref`
+// reconstructs current state by reading the tail and taking the last entry -- the same "replay to
+// reach current state" property 025 §9 G1 asks for, just without a separate typed EventLog/ActorId
+// bridge: `rt::LogId` is already the plain string a Ref's `name` naturally is.
 
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <functional>
 #include <optional>
 #include <set>
 #include <span>
@@ -34,14 +37,10 @@
 #include <vector>
 
 #include "agentengine/core/error.hpp"
+#include "agentengine/core/json_value.hpp"
 #include "agentengine/core/sharing_mode.hpp"
+#include "agentengine/rt/append_log_store.hpp"
 #include "agentengine/trust/capability.hpp"
-#include "quark/core/describe.hpp"
-#include "quark/core/event_log.hpp"
-#include "quark/core/ids.hpp"
-#include "quark/core/persistence.hpp"
-#include "quark/core/serialize.hpp"
-#include "quark/core/snapshot.hpp"
 
 namespace agentengine {
 
@@ -186,120 +185,97 @@ private:
 static_assert(WorktreeObjectStore<InMemoryWorktreeObjectStore>);
 
 // ============================================================================================
-// Ref persistence (025 §2's "a mutable name -> Tree digest") -- ordinary Quark-actor state, going
-// through Quark's `Store` seam directly rather than this header's own object store (see the
-// file-top comment and docs/planning/milestone-3-worktree-interpreter-codeact-breakdown.md
-// decision 1). Modeled as EventSourced (012), not snapshot-only: an append-only log of `RefMoved`
-// events gives a Ref its own history for free -- each committed digest is a retained, replayable
-// log entry -- which Phase D's turn-boundary commit / rewind tasks (D1/D2) build on directly
-// rather than needing a separate per-turn digest ledger invented from scratch.
+// Ref persistence (025 §2's "a mutable name -> Tree digest") -- rides `agentengine::rt::
+// AppendLogStore` (see the file-top comment and docs/planning/milestone-3-worktree-interpreter-
+// codeact-breakdown.md decision 1). An append-only log of `RefMoved` entries gives a Ref its own
+// history for free -- each committed digest is a retained, replayable log entry -- which Phase D's
+// turn-boundary commit / rewind tasks (D1/D2) build on directly rather than needing a separate
+// per-turn digest ledger invented from scratch.
 // ============================================================================================
 
-// One committed Ref update: the tree it now points at. `QUARK_SERIALIZE` must sit in the same
-// namespace as the type so the generated `quark_describe` is found by ADL (the same rule Quark's
-// own persistence tests document).
+// One committed Ref update: the tree it now points at.
 struct RefMoved {
     Digest tree_digest;
 };
-QUARK_SERIALIZE(RefMoved, (1, tree_digest))
 
-// The folded state: just the latest digest. The number of moves is deliberately not duplicated
-// here -- `EventLog::commit()`'s own return value, and a recovered `RecoveredState::last_seq`,
-// already answer "how many," so there is nothing this struct needs to track redundantly.
-struct RefState {
-    Digest tree_digest;
-};
-QUARK_SERIALIZE(RefState, (1, tree_digest))
+[[nodiscard]] inline agentengine::json::Value ref_moved_to_json(RefMoved const& e) {
+    return agentengine::json::Value::make_object({
+        {"tree_digest", agentengine::json::Value::make_string(e.tree_digest)},
+    });
+}
 
-inline void apply_ref_moved(RefState& state, RefMoved const& event) {
-    state.tree_digest = event.tree_digest;
+[[nodiscard]] inline result<RefMoved> ref_moved_from_json(agentengine::json::Value const& v) {
+    agentengine::json::Value const* digest_v = v.find("tree_digest");
+    if (digest_v == nullptr || !digest_v->is_string()) {
+        return std::unexpected(error{failure_class::contract, "malformed RefMoved entry",
+                                      "worktree.ref_entry_malformed"});
+    }
+    return RefMoved{digest_v->as_string()};
+}
+
+// The log id a Ref's human-readable `name` (e.g. "session:s-42") maps to -- `rt::LogId` is already
+// a plain string, so unlike the old Quark `ActorId` bridge (a hashed uint64 instance key under a
+// type-tagged space) there is nothing to hash: the name itself, suffixed to keep it visually
+// distinct from other log kinds sharing the same physical store (matching
+// `effect_journal_log_id`/`project_archive_log_id`'s own suffix convention).
+[[nodiscard]] inline rt::LogId ref_log_id(std::string_view name) {
+    return std::string(name) + ":ref";
 }
 
 namespace detail {
-// `quark::error` (`errc` + a borrowed `string_view`) and `agentengine::error` (`failure_class` +
-// owned `std::string` + a stable code) are two different error vocabularies -- Quark's `Store`
-// returns the former, every seam header in this codebase returns the latter (core/error.hpp). This
-// is the one place that boundary is crossed for the Ref persistence functions below. `errc::
-// unavailable` specifically means 012's fencing rejection (a superseded writer) -- mapped to
-// `contract`, not `transient`: retrying with the SAME stale fence can never succeed, only
-// acquiring a fresh one can, which is a caller-contract fact, not a "try again later" one.
-[[nodiscard]] inline error from_quark_error(quark::error const& e, std::string_view code) {
-    failure_class klass = failure_class::fatal;
-    switch (e.code) {
-        case quark::errc::unavailable:
-        case quark::errc::validation:
-        case quark::errc::serialization:
-        case quark::errc::not_found:
-            klass = failure_class::contract;
-            break;
-        case quark::errc::timeout:
-        case quark::errc::overloaded:
-        case quark::errc::circuit_open:
-            klass = failure_class::resource;
-            break;
-        case quark::errc::cancelled:
-            klass = failure_class::transient;
-            break;
-        default:
-            klass = failure_class::fatal;
-            break;
-    }
-    return error{klass, std::string(e.detail), std::string(code)};
+// Decodes one raw log entry's bytes into a RefMoved, sharing the byte<->text<->json plumbing every
+// AppendLogStore-backed reader in this codebase repeats (effect_journal.hpp, project_archive.hpp).
+[[nodiscard]] inline result<RefMoved> decode_ref_moved(std::vector<std::byte> const& bytes) {
+    std::string text;
+    text.reserve(bytes.size());
+    for (std::byte b : bytes) text.push_back(static_cast<char>(b));
+    auto parsed = agentengine::json::parse(text);
+    if (!parsed) return std::unexpected(parsed.error());
+    return ref_moved_from_json(*parsed);
+}
+
+// Shared body of `commit_ref`/`commit_turn` below: appends one `RefMoved` entry under `name`'s own
+// log, and returns both the resulting `Ref` AND the `SeqNo` this commit landed at -- `commit_ref`
+// discards the latter (ordinary callers don't need it), `commit_turn` (Phase D1) surfaces it as a
+// turn's identity. There is no separate "mint" vs "update" entry point -- append doesn't need one,
+// since the store's own strict-seq-monotonicity already makes a first commit and a later commit the
+// same call.
+template <rt::AppendLogStore StoreT>
+[[nodiscard]] result<std::pair<Ref, rt::SeqNo>> commit_ref_impl(StoreT& store, std::string name,
+                                                                  Digest tree_digest) {
+    std::string const text = agentengine::json::dump(ref_moved_to_json(RefMoved{tree_digest}));
+    std::vector<std::byte> bytes;
+    bytes.reserve(text.size());
+    for (char c : text) bytes.push_back(static_cast<std::byte>(c));
+    auto appended = store.append(ref_log_id(name), std::move(bytes));
+    if (!appended) return std::unexpected(appended.error());
+    return std::make_pair(Ref{std::move(name), std::move(tree_digest)}, *appended);
 }
 } // namespace detail
 
-// The stable ActorId a Ref's human-readable `name` (e.g. "session:s-42") maps to: `RefState`'s own
-// 016 fingerprint as the type tag, plus a hash of `name` as the instance key -- Quark's `ActorId`
-// key is a `std::uint64_t`, not a string (ids.hpp), so this is the one place that gap is bridged.
-[[nodiscard]] inline quark::ActorId ref_actor_id(std::string_view name) noexcept {
-    return quark::ActorId{quark::durable_type_key<RefState>(), std::hash<std::string_view>{}(name)};
-}
-
-namespace detail {
-// Shared body of `commit_ref`/`commit_turn` below: acquires a fresh fence for `name`'s ActorId,
-// appends one `RefMoved` event under it, and returns both the resulting `Ref` AND the `SeqNo` this
-// commit landed at in the ref's own log -- `commit_ref` discards the latter (ordinary callers don't
-// need it), `commit_turn` (Phase D1) surfaces it as a turn's identity. There is no separate "mint"
-// vs "update" entry point -- EventSourced append doesn't need one, since the fence and the store's
-// own strict-seq-monotonicity (012) already make a first commit and a later commit the same call.
-template <quark::Store S>
-[[nodiscard]] result<std::pair<Ref, quark::SeqNo>> commit_ref_impl(S& store, std::string name,
-                                                                     Digest tree_digest) {
-    auto const id = ref_actor_id(name);
-    auto const fence = store.acquire_fence(id);
-    quark::EventLog<RefMoved, S> log(store, id, fence, store.last_seq(id) + 1);
-    log.stage(RefMoved{tree_digest});
-    auto committed = log.commit();
-    if (!committed) {
-        return std::unexpected(detail::from_quark_error(committed.error(), "worktree.ref_commit_failed"));
-    }
-    return std::make_pair(Ref{std::move(name), tree_digest}, *committed);
-}
-} // namespace detail
-
-// Mint or move a Ref: acquires a fresh fence for `name`'s ActorId, appends one `RefMoved` event
-// under it, and returns the resulting `Ref`. There is no separate "mint" vs "update" entry point --
-// EventSourced append doesn't need one, since the fence and the store's own strict-seq-
-// monotonicity (012) already make a first commit and a later commit the same call.
-template <quark::Store S>
-[[nodiscard]] result<Ref> commit_ref(S& store, std::string name, Digest tree_digest) {
+// Mint or move a Ref: appends one `RefMoved` entry under `name`'s own log and returns the resulting
+// `Ref`. There is no separate "mint" vs "update" entry point -- append doesn't need one, since the
+// store's own strict-seq-monotonicity already makes a first commit and a later commit the same
+// call.
+template <rt::AppendLogStore StoreT>
+[[nodiscard]] result<Ref> commit_ref(StoreT& store, std::string name, Digest tree_digest) {
     auto r = detail::commit_ref_impl(store, std::move(name), std::move(tree_digest));
     if (!r) return std::unexpected(r.error());
     return std::move(r->first);
 }
 
-// Read a Ref's current state by replaying its durable log -- a fresh process, a restart, or a node
-// migration all reach the identical state this way, which is 025 §9 G1's mechanism in miniature.
-// `nullopt` when `name` has never been committed (no snapshot, no log entries).
-template <quark::Store S>
-[[nodiscard]] result<std::optional<Ref>> read_ref(S& store, std::string name) {
-    auto const id = ref_actor_id(name);
-    auto rec = quark::recover_event_sourced<RefState, RefMoved>(store, id, RefState{}, apply_ref_moved);
-    if (!rec) {
-        return std::unexpected(detail::from_quark_error(rec.error(), "worktree.ref_read_failed"));
-    }
-    if (rec->last_seq == 0) return std::optional<Ref>{};  // never committed
-    return std::optional<Ref>{Ref{std::move(name), rec->state.tree_digest}};
+// Read a Ref's current state by reading its durable log's tail and taking the last entry -- a fresh
+// process, a restart, or a node migration all reach the identical state this way, which is 025 §9
+// G1's mechanism in miniature. `nullopt` when `name` has never been committed (no log entries).
+template <rt::AppendLogStore StoreT>
+[[nodiscard]] result<std::optional<Ref>> read_ref(StoreT const& store, std::string name) {
+    auto raw = store.read_from(ref_log_id(name), 0);
+    if (!raw) return std::unexpected(raw.error());
+    if (raw->empty()) return std::optional<Ref>{};  // never committed
+
+    auto moved = detail::decode_ref_moved(raw->back());
+    if (!moved) return std::unexpected(moved.error());
+    return std::optional<Ref>{Ref{std::move(name), std::move(moved->tree_digest)}};
 }
 
 // ============================================================================================
@@ -320,41 +296,43 @@ template <quark::Store S>
 // the ref's log -- what a caller (the not-yet-built session/turn-loop layer, 019/session-shaped)
 // hands back to a later `rewind_to_turn` call to name this exact point again.
 struct TurnCommit {
-    Ref          ref;
-    quark::SeqNo turn;
+    Ref       ref;
+    rt::SeqNo turn;
 };
 
 // D1: commits `tree_digest` as the current tree at a turn boundary, returning which turn this was
-// (025 §6: "a turn's committed tree digest is recorded with the turn"). Built on the same
-// fence+append machinery as `commit_ref` (`detail::commit_ref_impl`) -- committing IS what a turn
-// boundary does; this function's only addition over a plain `commit_ref` call is not discarding the
-// SeqNo the commit landed at.
-template <quark::Store S>
-[[nodiscard]] result<TurnCommit> commit_turn(S& store, std::string name, Digest tree_digest) {
+// (025 §6: "a turn's committed tree digest is recorded with the turn"). Built on the same append
+// machinery as `commit_ref` (`detail::commit_ref_impl`) -- committing IS what a turn boundary does;
+// this function's only addition over a plain `commit_ref` call is not discarding the SeqNo the
+// commit landed at.
+template <rt::AppendLogStore StoreT>
+[[nodiscard]] result<TurnCommit> commit_turn(StoreT& store, std::string name, Digest tree_digest) {
     auto r = detail::commit_ref_impl(store, std::move(name), std::move(tree_digest));
     if (!r) return std::unexpected(r.error());
     return TurnCommit{std::move(r->first), r->second};
 }
 
-// D2 (part 1): the tree digest retained at `turn` in `name`'s own log -- fetched by reading the log
-// tail from exactly `turn` and taking the first entry, which `quark::Store::read_log`'s own contract
-// (`seq >= from`, strictly increasing) guarantees is either the entry AT `turn` or the next one
-// actually retained after it; this only returns success when that first entry's seq is an EXACT
-// match, so a caller asking for a turn that was compacted away or never existed fails closed rather
-// than silently being handed a neighboring commit under the requested turn's name.
-template <quark::Store S>
-[[nodiscard]] result<Digest> turn_digest_at(S& store, std::string const& name, quark::SeqNo turn) {
-    auto const id = ref_actor_id(name);
-    auto cur = store.read_log(id, turn);
-    if (!cur) return std::unexpected(detail::from_quark_error(cur.error(), "worktree.turn_read_failed"));
-    if (!cur->empty() && cur->begin()->seq == turn) {
-        auto ev = quark::read_migrated<RefMoved, RefMoved>(cur->begin()->record.data(),
-                                                             cur->begin()->record.size());
-        if (!ev) return std::unexpected(detail::from_quark_error(ev.error(), "worktree.turn_decode_failed"));
-        return ev->tree_digest;
+// D2 (part 1): the tree digest retained at `turn` in `name`'s own log -- `rt::AppendLogStore` never
+// compacts (append_log_store.hpp's own contract: every seq from 1..last_seq stays retained), so
+// `turn` names an exact entry or none at all; `read_from(id, turn - 1)` returns entries with seq >
+// turn - 1, i.e. starting exactly at `turn`, and its first element (if any) IS that entry. A caller
+// asking for `turn == 0` or a turn beyond the log's own tail fails closed
+// (`worktree.turn_not_found`) rather than silently being handed a neighboring commit.
+template <rt::AppendLogStore StoreT>
+[[nodiscard]] result<Digest> turn_digest_at(StoreT const& store, std::string const& name, rt::SeqNo turn) {
+    if (turn == 0) {
+        return std::unexpected(error{failure_class::contract, "no commit is retained at the requested turn",
+                                      "worktree.turn_not_found"});
     }
-    return std::unexpected(error{failure_class::contract, "no commit is retained at the requested turn",
-                                  "worktree.turn_not_found"});
+    auto tail = store.read_from(ref_log_id(name), turn - 1);
+    if (!tail) return std::unexpected(tail.error());
+    if (tail->empty()) {
+        return std::unexpected(error{failure_class::contract, "no commit is retained at the requested turn",
+                                      "worktree.turn_not_found"});
+    }
+    auto moved = detail::decode_ref_moved(tail->front());
+    if (!moved) return std::unexpected(moved.error());
+    return moved->tree_digest;
 }
 
 // D2 (part 2): rewind as ref reassignment (025's own framing, restated by §9 G5) -- fetches the
@@ -364,8 +342,8 @@ template <quark::Store S>
 // after it is destroyed -- a second `rewind_to_turn` can always recover the exact state that existed
 // just before the first one, proving G5's "reproduces that turn's tree exactly" is not merely true
 // for the one turn rewound to, but stays true of the whole history around it.
-template <quark::Store S>
-[[nodiscard]] result<TurnCommit> rewind_to_turn(S& store, std::string name, quark::SeqNo turn) {
+template <rt::AppendLogStore StoreT>
+[[nodiscard]] result<TurnCommit> rewind_to_turn(StoreT& store, std::string name, rt::SeqNo turn) {
     auto digest = turn_digest_at(store, name, turn);
     if (!digest) return std::unexpected(digest.error());
     return commit_turn(store, std::move(name), std::move(*digest));
@@ -408,7 +386,7 @@ struct SubWorktree {
     return compute_digest(canonical_tree_bytes(Tree{}));
 }
 
-template <quark::Store S>
+template <rt::AppendLogStore S>
 [[nodiscard]] result<SubWorktree> create_sub_worktree(S& store, Ref const& parent,
                                                        std::string child_name, sharing_mode mode) {
     switch (mode) {
@@ -437,7 +415,7 @@ template <quark::Store S>
 // creation time WITHOUT touching the store (so a later move of the parent's own Ref, or of any
 // other Ref, can never leak into a readonly view); every other mode replays `backing_ref_name`'s
 // own durable log, which for `shared` IS the parent's log.
-template <quark::Store S>
+template <rt::AppendLogStore S>
 [[nodiscard]] result<std::optional<Ref>> read_sub_worktree(S& store, SubWorktree const& sub) {
     if (sub.mode == sharing_mode::readonly) {
         return std::optional<Ref>{Ref{sub.name, sub.pinned_digest}};
@@ -450,7 +428,7 @@ template <quark::Store S>
 // `backing_ref_name` exactly as a top-level `commit_ref` would (for `shared`, this literally IS a
 // commit to the parent's own Ref, which is what makes the write immediately visible to every
 // sibling reading through that same name).
-template <quark::Store S>
+template <rt::AppendLogStore S>
 [[nodiscard]] result<Ref> write_sub_worktree(S& store, SubWorktree const& sub, Digest new_tree_digest) {
     if (sub.mode == sharing_mode::readonly) {
         return std::unexpected(error{failure_class::policy,
@@ -628,7 +606,7 @@ struct BranchMergeOutcome {
 // load and, if the residual window between the recheck below and `commit_ref` proves reachable,
 // drives a real fix (e.g. a compare-and-set primitive on `Store`) rather than living with this
 // best-effort recheck indefinitely.
-template <WorktreeObjectStore OS, quark::Store RS>
+template <WorktreeObjectStore OS, rt::AppendLogStore RS>
 [[nodiscard]] result<BranchMergeOutcome> merge_branch_into_parent(OS& object_store, RS& ref_store,
                                                                    SubWorktree const& branch,
                                                                    Ref const& expected_parent) {
@@ -675,7 +653,7 @@ template <WorktreeObjectStore OS, quark::Store RS>
 // NOT retried -- it is a real, terminal result, returned immediately like any other successful call;
 // only `worktree.merge_stale_parent` drives another attempt. Phase B4's own concurrency proof is what
 // exercises this under many simulated interleavings; this function is the mechanism, not the proof.
-template <WorktreeObjectStore OS, quark::Store RS>
+template <WorktreeObjectStore OS, rt::AppendLogStore RS>
 [[nodiscard]] result<BranchMergeOutcome> retry_merge_branch_into_parent(OS& object_store, RS& ref_store,
                                                                          SubWorktree const& branch,
                                                                          Ref initial_expected_parent,
@@ -888,7 +866,7 @@ struct SharedStalenessNote {
 // `scratch` are private until an explicit merge, and `readonly` is pinned at creation, so neither
 // can ever be "stale" in this sense; both fail closed here rather than silently returning an empty
 // note that could be misread as "nothing changed").
-template <WorktreeObjectStore OS, quark::Store RS>
+template <WorktreeObjectStore OS, rt::AppendLogStore RS>
 [[nodiscard]] result<SharedStalenessNote> check_shared_staleness(OS& object_store, RS& ref_store,
                                                                   SubWorktree const& shared,
                                                                   Digest const& last_read_digest) {
@@ -1153,7 +1131,7 @@ template <WorktreeObjectStore S>
 // invented here -- must cover `guest_path` (a capability scoped to `/work/output` can't read
 // `/work/private`). `granted.size_cap_bytes`, if set, is enforced after the read (the size is only
 // known once the blob is fetched).
-template <WorktreeObjectStore OS, quark::Store RS>
+template <WorktreeObjectStore OS, rt::AppendLogStore RS>
 [[nodiscard]] result<std::vector<std::byte>> mount_read(OS& object_store, RS& ref_store, Mount const& mount,
                                                           cap::FsRead const& granted,
                                                           std::string const& guest_path) {
@@ -1212,7 +1190,7 @@ template <WorktreeObjectStore OS, quark::Store RS>
 // on device)"): a `failure_class::resource` error with that literal message, so a future guest-
 // facing translator (Phase E's `PythonRunner`/`ShellRunner`) has an ordinary OS-shaped message ready
 // to raise, not a policy identifier to reword.
-template <WorktreeObjectStore OS, quark::Store RS>
+template <WorktreeObjectStore OS, rt::AppendLogStore RS>
 [[nodiscard]] result<Ref> mount_write(OS& object_store, RS& ref_store, Mount const& mount,
                                        cap::FsWrite const& granted, std::string const& guest_path,
                                        std::span<std::byte const> content) {

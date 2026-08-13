@@ -15,7 +15,7 @@
 #include "agentengine/core/worktree.hpp"
 
 using namespace agentengine;
-using quark::InMemoryStore;
+using InMemoryStore = agentengine::rt::InMemoryAppendLogStore;
 
 namespace {
 

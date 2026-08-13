@@ -20,6 +20,7 @@
 #include "agentengine/core/context_assembly.hpp"
 #include "agentengine/core/history_provider.hpp"
 #include "agentengine/core/memory_provider.hpp"
+#include "agentengine/rt/append_log_store.hpp"
 #include "support/run_task_sync.hpp"
 
 namespace {
@@ -84,13 +85,14 @@ ae::Message make_msg(ae::role r, std::string text, std::string message_id) {
     return m;
 }
 
-using Provider = ae::MemoryProvider<MockSummarizerClient, ae::InMemoryWorktreeObjectStore, quark::InMemoryStore>;
+using Provider =
+    ae::MemoryProvider<MockSummarizerClient, ae::InMemoryWorktreeObjectStore, ae::rt::InMemoryAppendLogStore>;
 
 } // namespace
 
 int main() {
     ae::InMemoryWorktreeObjectStore object_store;
-    quark::InMemoryStore ref_store;
+    ae::rt::InMemoryAppendLogStore ref_store;
     ae::Principal const principal{"p-jules", ""};
 
     auto bootstrapped = ae::ensure_memory_worktree(object_store, ref_store, principal);

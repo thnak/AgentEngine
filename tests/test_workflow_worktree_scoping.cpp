@@ -15,7 +15,7 @@
 
 using namespace agentengine;
 using namespace agentengine::workflow;
-using quark::InMemoryStore;
+using InMemoryStore = agentengine::rt::InMemoryAppendLogStore;
 
 namespace {
 

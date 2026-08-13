@@ -24,6 +24,7 @@
 
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/worktree.hpp"
+#include "agentengine/rt/append_log_store.hpp"
 #include "agentengine/trust/capability.hpp"
 #include "agentengine/workflow/graph.hpp"
 
@@ -104,7 +105,7 @@ namespace detail {
 // cases call `commit_ref` unconditionally ("mint or move", no existence check of its own, by
 // design -- core/worktree.hpp's own comment), so this existence check is this file's job, not
 // something the primitive underneath does for it.
-template <quark::Store RS>
+template <rt::AppendLogStore RS>
 [[nodiscard]] result<std::vector<ExecutorWorktreeGrant>> mint_executor_worktrees(
     RS& ref_store, Ref const& run_parent_ref, Workflow const& wf) {
     std::vector<ExecutorWorktreeGrant> out;
@@ -154,7 +155,7 @@ template <quark::Store RS>
 // `backing_ref_name`), but `merge_branch_into_parent` on a resumed branch would need that ancestor
 // re-supplied by the same future checkpoint-schema change. Named, not fixed, matching the
 // `readonly` gap above.
-template <quark::Store RS>
+template <rt::AppendLogStore RS>
 [[nodiscard]] result<std::vector<ExecutorWorktreeGrant>> resume_executor_worktrees(
     RS& ref_store, Ref const& run_parent_ref, Workflow const& wf) {
     std::vector<ExecutorWorktreeGrant> out;

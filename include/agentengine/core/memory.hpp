@@ -17,6 +17,7 @@
 
 #include "agentengine/core/json_value.hpp"
 #include "agentengine/core/worktree.hpp"
+#include "agentengine/rt/append_log_store.hpp"
 #include "agentengine/trust/principal.hpp"
 
 namespace agentengine {
@@ -76,7 +77,7 @@ struct MemoryItem {  // ae-naming-lint: allow MemoryItem — pre-existing M0 sca
 // been committed at least once (worktree.hpp's own contract: "this mount's ref has never been
 // committed" is a hard error, not an implicit bootstrap) — this is that one bootstrap step, real
 // and needed, not assumed away.
-template <WorktreeObjectStore OS, quark::Store RS>
+template <WorktreeObjectStore OS, rt::AppendLogStore RS>
 [[nodiscard]] result<Ref> ensure_memory_worktree(OS& object_store, RS& ref_store,
                                                    Principal const& principal) {
     auto const name = memory_ref_name(principal);
@@ -259,7 +260,7 @@ template <WorktreeObjectStore OS, quark::Store RS>
 // `item.content`'s own digest) and written back into the caller's `item`, matching "identity, not
 // assigned" — a caller passes a candidate item without a real id and gets one filled in as a side
 // effect of the write actually landing.
-template <WorktreeObjectStore OS, quark::Store RS>
+template <WorktreeObjectStore OS, rt::AppendLogStore RS>
 [[nodiscard]] result<Ref> write_memory_item(OS& object_store, RS& ref_store, Mount const& mount,
                                               cap::FsWrite const& granted, MemoryItem& item) {
     auto content_bytes =
@@ -274,7 +275,7 @@ template <WorktreeObjectStore OS, quark::Store RS>
                         record_bytes);
 }
 
-template <WorktreeObjectStore OS, quark::Store RS>
+template <WorktreeObjectStore OS, rt::AppendLogStore RS>
 [[nodiscard]] result<MemoryItem> read_memory_item(OS& object_store, RS& ref_store, Mount const& mount,
                                                     cap::FsRead const& granted, memory_kind kind,
                                                     std::string const& id) {
@@ -317,7 +318,7 @@ template <WorktreeObjectStore S>
 // `MemoryItem` under `mount`, decoded — a never-committed or empty memory worktree yields an
 // empty list, not an error (matching `load_agent_session_snapshot`'s own "absence is not a
 // failure" precedent).
-template <WorktreeObjectStore OS, quark::Store RS>
+template <WorktreeObjectStore OS, rt::AppendLogStore RS>
 [[nodiscard]] result<std::vector<MemoryItem>> list_memory_items(OS& object_store, RS& ref_store,
                                                                    Mount const& mount,
                                                                    cap::FsRead const& granted) {

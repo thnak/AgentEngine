@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "agentengine/core/memory_provider.hpp"
+#include "agentengine/rt/append_log_store.hpp"
 #include "support/run_task_sync.hpp"
 
 namespace {
@@ -61,7 +62,8 @@ public:
 static_assert(ae::ChatClient<TripwireSummarizer>,
               "TripwireSummarizer must satisfy the ChatClient concept (004 §1)");
 
-using Provider = ae::MemoryProvider<TripwireSummarizer, ae::InMemoryWorktreeObjectStore, quark::InMemoryStore>;
+using Provider =
+    ae::MemoryProvider<TripwireSummarizer, ae::InMemoryWorktreeObjectStore, ae::rt::InMemoryAppendLogStore>;
 
 ae::Message make_msg(ae::role r, std::string text, std::string message_id) {
     ae::ContentItem item{};
@@ -112,7 +114,7 @@ bool contribution_identical(ae::ContextContribution const& a, ae::ContextContrib
 
 int main() {
     ae::InMemoryWorktreeObjectStore object_store;
-    quark::InMemoryStore ref_store;
+    ae::rt::InMemoryAppendLogStore ref_store;
     ae::Principal const principal{"p-h3", ""};
 
     auto bootstrapped = ae::ensure_memory_worktree(object_store, ref_store, principal);

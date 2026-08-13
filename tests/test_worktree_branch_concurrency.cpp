@@ -5,10 +5,13 @@
 // of] randomized interleavings."
 //
 // Concurrency here is a single-threaded, discrete-event SIMULATION, not real OS threads: real
-// threads calling into InMemoryStore/InMemoryWorktreeObjectStore (plain unordered_maps, no internal
-// locking) would be a data race in the TEST HARNESS itself -- undefined behavior unrelated to what
-// this is trying to prove -- and CLAUDE.md's Machine Safety section rules out spawning
-// hardware_concurrency() threads regardless. Instead: N agents all observe the SAME parent snapshot
+// threads racing on InMemoryWorktreeObjectStore (a plain unordered_map, no internal locking) would
+// be a data race in the TEST HARNESS itself -- undefined behavior unrelated to what this is trying
+// to prove -- and CLAUDE.md's Machine Safety section rules out spawning hardware_concurrency()
+// threads regardless. (InMemoryStore/rt::InMemoryAppendLogStore does hold its own internal mutex,
+// but this test's whole point is exercising the SEAM-level staleness check -- `merge_stale_parent`
+// -- deterministically across many interleavings, not merely proving the store itself doesn't
+// corrupt under raw concurrent access.) Instead: N agents all observe the SAME parent snapshot
 // (the worst-case, maximally contentious scenario -- everyone started before anyone committed), then
 // their merge attempts are dispatched one at a time in a RANDOMIZED order across many trials. Every
 // agent but the first-in-order genuinely observes a stale parent on its first attempt (proven, not
@@ -30,7 +33,7 @@
 #include "agentengine/core/worktree.hpp"
 
 using namespace agentengine;
-using quark::InMemoryStore;
+using InMemoryStore = agentengine::rt::InMemoryAppendLogStore;
 
 namespace {
 
@@ -63,7 +66,7 @@ Digest blob_of(InMemoryWorktreeObjectStore& store, std::string const& content) {
 // three-way merge check at all -- exactly the "auto-apply" 025 §4 forbids. Used only as a positive
 // control (B4-C3, below) to prove the real test's "no lost update" assertion actually fails when the
 // underlying merge logic is broken, not that it passes vacuously.
-template <quark::Store RS>
+template <rt::AppendLogStore RS>
 result<Ref> naive_last_writer_wins_merge(RS& ref_store, SubWorktree const& branch,
                                           std::string const& parent_name) {
     auto branch_ref = read_ref(ref_store, branch.backing_ref_name);
