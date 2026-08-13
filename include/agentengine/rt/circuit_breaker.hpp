@@ -1,11 +1,10 @@
 #pragma once
 // ADR-037 Phase 1: `agentengine::rt::CircuitBreaker`, reproducing `quark::CircuitBreaker`'s
-// (third_party/quark/include/quark/core/governance.hpp) Closed -> Open -> Half-Open state machine
-// as new, self-contained AgentEngine code -- zero `quark::` dependency, zero `#include` of anything
-// under `quark/`. Lives under `agentengine::rt`, a NEW namespace, deliberately not yet wired into
-// `core/model_call_gateway.hpp` (which still uses the real `quark::CircuitBreaker`/`quark::Admit`
-// today) -- this file proves the replacement standalone; Phase 2 is what swaps the gateway over to
-// it, one migration at a time per ADR-037 §7, not this file.
+// (historical: third_party/quark/include/quark/core/governance.hpp) Closed -> Open -> Half-Open
+// state machine as new, self-contained AgentEngine code -- zero `quark::` dependency. Lives under
+// `agentengine::rt`. RESOLVED by a later ADR-037 Phase 2 pass: `core/model_call_gateway.hpp` now
+// wires a real `rt::CircuitBreaker` per backend (see that file's own banner) -- this file's
+// standalone proof was the precursor to that migration, not still-pending work.
 //
 // Why reproduce rather than redesign: `model_call_gateway.hpp`'s `attempt_with_retry` depends on
 // this EXACT state machine's exact semantics (022-Resource-Governance-and-Overload-Control §3, as

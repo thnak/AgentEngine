@@ -1,6 +1,6 @@
 # 005 — Sessions, State and Memory
 
-**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Depends on:** 001, 003, 019, Quark 012/027 · **Gate:** §7
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Depends on:** 001, 003, 019, 027 (historical: originally also depended on Quark 012 — ADR-037 removed that dependency) · **Gate:** §7
 
 ## Goal
 
@@ -20,29 +20,41 @@ this RFC still says "session" throughout in prose, as before.
 AgentSession = { session_id, principal, history[], state, metadata, created_at, updated_at }
 ```
 
-- One **Quark actor instance**, keyed by `session_id` (001 §1). Single-executor by I1.
+- A plain templated class instance, one per session, keyed by `session_id` (001 §1; `rt/agent_session.hpp`)
+  — no actor lifecycle (historical: was one Quark actor instance before ADR-037 removed Quark).
+  Single-executor by I1, now enforced by `rt::AsyncMutex` held for the whole duration of every
+  public async entry point — a runtime-checked guard, not the structural mailbox exclusivity Quark
+  gave for free; ADR-037's own red-team pass names this a real, honest narrowing.
 - **`history`** is an append-mostly sequence of `Message` (003). Rewriting history is an explicit,
   audited operation (compaction, redaction, fork), never an incidental mutation.
 - **`state`** is a typed bag for workflow and agent scratch state, checkpointed with the session.
-- A session belongs to exactly one **principal** (007); cross-principal access is denied at the
-  actor boundary, not by a later check.
+- A session belongs to exactly one **principal** (007); cross-principal access is denied by the
+  `rt::AsyncMutex`-guarded entry point (historical: "at the actor boundary" before ADR-037), not by
+  a later check.
 
-**Lifecycle:** sessions are activated on demand, passivated when idle (Quark ADR-028/034), and
-evicted per policy. An idle session costs storage, not memory — the per-GB idle-session density is
-a 023 budget.
+**Lifecycle:** sessions are activated on demand and evicted per policy. **Passivation of an idle
+session (historical: Quark ADR-028/034's host-managed passivate/reactivate) is not carried over**:
+AgentEngineSpecification.md §7 names the absence of host-managed passivation/reactivation across
+process restarts or node loss as a permanent, accepted gap from ADR-037, not a re-hosted mechanism —
+an idle session's storage cost (the per-GB idle-session density budget, 023) still applies, but the
+activate-on-demand/passivate-when-idle lifecycle itself is not currently reproduced in `rt::`.
 
 ## 2. Persistence
 
-The store is Quark 012's `Store` seam. Two modes, selected per deployment:
+The store is `rt::SessionStore` (single-slot, overwrite-latest) and `rt::AppendLogStore`
+(append-only, multi-version) — two distinct contracts (historical: both were unified under Quark
+012's single `Store` seam before ADR-037 removed that dependency). Two modes, selected per
+deployment:
 
 | Mode | Shape | Use |
 |---|---|---|
-| **Snapshot** | Whole session serialized at intervals / turn boundaries | Simple, small sessions |
-| **Event-sourced** | Append each turn's events; periodic checkpoints | Long sessions, audit, time-travel (014) |
+| **Snapshot** | Whole session serialized at intervals / turn boundaries, via `rt::SessionStore` | Simple, small sessions |
+| **Event-sourced** | Append each turn's events via `rt::AppendLogStore`; periodic checkpoints | Long sessions, audit, time-travel (014) |
 
-Defaults follow Quark's dependency posture: `InMemoryStore` for tests, `FileStore` (append-only WAL
-+ durable flush) as the std-only default, SQLite/RocksDB/Postgres/object-store as opt-in adapters
-behind the same seam. **AgentEngine adds no storage engine of its own.**
+Defaults follow AgentEngine's own minimal-dependency posture (historical: originally Quark's):
+`InMemoryStore` for tests, `FileStore` (append-only WAL + durable flush) as the std-only default,
+SQLite/RocksDB/Postgres/object-store as opt-in adapters behind the same seam. **AgentEngine adds no
+storage engine of its own.**
 
 **Durability contract:** a turn is acknowledged to the caller only after its effects and history
 delta are durable, or the session declares an `at_most_once_ack` durability policy — a

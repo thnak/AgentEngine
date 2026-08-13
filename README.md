@@ -3,14 +3,17 @@
 **A C++23 engine for building agent applications — sandboxed by construction, standards-native,
 cross-platform.**
 
-AgentEngine hosts agents, sessions, tools, and multi-agent workflows on top of the
-[Quark](https://github.com/thnak/QuarkCpp) actor engine. Untrusted code isolation and a Python code
-interpreter are **built-in subsystems, not optional add-ons**, and the protocol surface is the open
-agent stack of 2026 — MCP, A2A, AG-UI, OpenTelemetry GenAI — rather than a proprietary API.
+AgentEngine hosts agents, sessions, tools, and multi-agent workflows on its own `agentengine::rt::`
+runtime substrate (historical: originally built on top of the
+[Quark](https://github.com/thnak/QuarkCpp) actor engine; ADR-037 removed that dependency entirely
+and the `third_party/quark` submodule is gone from the tree). Untrusted code isolation and a Python
+code interpreter are **built-in subsystems, not optional add-ons**, and the protocol surface is the
+open agent stack of 2026 — MCP, A2A, AG-UI, OpenTelemetry GenAI — rather than a proprietary API.
 
 The developer model is deliberately **MAF-shaped** (the agent / session / tool / middleware /
-graph-workflow vocabulary Microsoft Agent Framework established), expressed in **Quark's zero-cost
-CRTP policy idiom** instead of runtime configuration objects.
+graph-workflow vocabulary Microsoft Agent Framework established), expressed in AgentEngine's own
+**zero-cost CRTP policy idiom** (originally modeled on Quark's identical idiom) instead of runtime
+configuration objects.
 
 > **Status: implementation under way.** All 30 RFCs have passed review (each RFC's own header reads
 > **Reviewed**, dated 2026-08-05) and this repository now contains a real, tested C++23
@@ -110,7 +113,7 @@ Evidence: [`docs/research/2026-standards-landscape.md`](docs/research/2026-stand
 
 | | |
 |---|---|
-| **I1** | One session, one executor (Quark's single-executor invariant) |
+| **I1** | One session, one executor — `rt::AsyncMutex`, a runtime-checked guard (historical: originally Quark's structural, mailbox-enforced single-executor invariant; ADR-037) |
 | **I2** | No ambient authority — every effect needs an explicitly passed capability |
 | **I3** | Model output is data, never authority |
 | **I4** | Every effect is attributable — span + audit record, always |
@@ -128,11 +131,15 @@ Full statements: [AgentEngineSpecification.md §4](AgentEngineSpecification.md).
  L3  Orchestration         workflow graph, handoff, group chat, checkpoint / resume / time-travel
  L2  Agent core            Agent · AgentSession · Tool plane · ChatClient plane · Middleware
  L1  Trust & isolation     capability model · sandbox seam · WASM component plugin ABI
- L0  Runtime substrate     Quark: scheduler, mailbox, cluster, persistence, timers, PAL
+ L0  Runtime substrate     agentengine::rt:: async mutex, thread pool, session/append-log store,
+                           circuit breaker, channel/stream backend, PAL
 ```
 
-AgentEngine writes no scheduler, no mailbox, no cluster membership, no persistence engine, and no
-timer wheel — every one of those is a Quark seam it configures.
+AgentEngine owns its own scheduler-equivalent (`rt::ThreadPool`), its own single-executor guard
+(`rt::AsyncMutex`), and its own durability seam (`rt::SessionStore`/`rt::AppendLogStore`) — no
+distributed cluster membership, no actor mailbox (historical: L0 used to be a configured Quark seam;
+ADR-037 replaced it with this self-contained substrate, and there is no multi-node cluster story at
+all post-migration).
 
 ## The specification set
 
@@ -142,7 +149,7 @@ Start with the [specification](AgentEngineSpecification.md), then
 
 | # | Document | Covers | Status |
 |---|---|---|---|
-| — | [AgentEngineSpecification.md](AgentEngineSpecification.md) | Vision, layering, invariants, locked decisions, Quark mapping, glossary | Draft |
+| — | [AgentEngineSpecification.md](AgentEngineSpecification.md) | Vision, layering, invariants, locked decisions, the runtime substrate, glossary | Draft |
 | — | [CONVENTIONS.md](CONVENTIONS.md) | The binding coding contract | Draft |
 | 001 | [Execution Model](001-Execution-Model.md) | Run lifecycle, turn loop, concurrency, cancellation, failure, replay | Reviewed |
 | 002 | [Agent Model and Authoring](002-Agent-Model-and-Authoring.md) | CRTP policy surface, composition, middleware, metadata validation | Reviewed |
@@ -209,12 +216,17 @@ in-process enforcement half"; ADR-014 is Windows-only with named untested residu
 actually reached **Proven** yet by this ladder's own strict definition. Check the ADR itself before
 citing one as closing a specific gate item.
 
-## Relationship to Quark
+## Relationship to Quark (historical)
 
-Quark is consumed as an **unmodified submodule**. AgentEngine maps its concepts onto Quark's
-(sessions are actors, runs are asks, streams are credit-rings, durability is the `Store` seam) and
-never patches it in-tree; runtime changes go upstream as Quark RFCs. Quark's 28 specs and 36 ADRs
-are an asset precisely because they describe the code that actually runs.
+AgentEngine used to consume [Quark](https://github.com/thnak/QuarkCpp) as an **unmodified
+submodule**, mapping its own concepts onto Quark's (sessions were actors, runs were asks, streams
+were credit-rings, durability was the `Store` seam) and never patching it in-tree — runtime changes
+went upstream as Quark RFCs. `decisions/ADR-037-remove-quark-as-core-runtime.md` (executed
+2026-08-13) removed that dependency entirely: `third_party/quark` is no longer a submodule of this
+repository, and AgentEngine's runtime substrate is now its own `agentengine::rt::` namespace (see
+`AgentEngineSpecification.md` §7). The design → red-team → prove → judge ADR process this project
+uses is still modeled on Quark's own governance discipline, which is unaffected by the runtime
+change.
 
 ## Contributing
 
@@ -226,4 +238,5 @@ the code. Contested, hot-path, or security-critical designs go through
 ## Licence
 
 Not yet decided ([024 Q1](024-Versioning-Compatibility-and-Governance.md)); MIT is the working
-assumption, matching Quark.
+assumption (historical: originally chosen to match Quark's own licence, back when Quark was a
+consumed dependency; ADR-037 removed that dependency, the MIT assumption itself is unchanged).

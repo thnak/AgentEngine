@@ -39,7 +39,9 @@ The consequences are the useful part:
 - **Identity is the digest**, so artifacts (010 §4), blobs in messages (003 §3), and worktree files
   are the same objects with the same provenance.
 
-Storage is Quark 012's `Store` seam. **No new storage engine.**
+Ref history is `agentengine::rt::AppendLogStore`-backed (historical: originally Quark 012's `Store`
+seam; ADR-037 removed Quark and replaced this backend, see `core/worktree.hpp`'s own file banner).
+**No new storage engine.**
 
 ## 3. Layout and sub-worktrees
 
@@ -86,9 +88,13 @@ the read-skew hazard; it is never reached by a plain default.
 
 ## 4. Concurrency and merge
 
-- **One writer per tree.** A worktree node is a Quark actor; writes to a given tree serialize
-  through it (Quark's single-executor invariant). There is no file locking protocol and no lost
-  update.
+- **One writer per tree.** Writes to a given tree serialize through one turn at a time — best-effort
+  today via the caller's own `session_mutex_`-style serialization (historical: a worktree node used
+  to be a Quark actor with writes serialized through its mailbox, Quark's single-executor invariant;
+  ADR-037 removed Quark, and `core/worktree.hpp`'s own file banner names full elimination of the
+  residual race as needing a real fix, e.g. a compare-and-set primitive on the store, not yet built).
+  There is no file locking protocol and no lost update in the common case; the narrowed residual is
+  named, not silently assumed closed.
 - **Merge on join.** A `branch` sub-worktree merges back when its agent completes. Three-way merge
   against the common ancestor:
   - disjoint changes → merged automatically;
@@ -131,8 +137,10 @@ FsWrite<mount>  → { worktree ref, subtree path, byte quota, file-count cap }
   recorded with the turn.
 - **Turn-boundary commit**: at each turn boundary the current tree is committed and its digest
   recorded, making per-turn rewind possible at no meaningful cost.
-- **Restore after restart or node migration** is fetching the tree by digest — worktrees are
-  location-independent, which is what lets Quark place a session anywhere in a cluster.
+- **Restore after restart** is fetching the tree by digest — worktrees are location-independent
+  (historical: this location-independence was originally what let Quark place a session anywhere in
+  a cluster; ADR-037 removed Quark and `agentengine::rt::` has no multi-node cluster placement
+  mechanism at all, so "node migration" is currently out of scope, not carried over).
 - **Retention and GC**: unreachable objects are collected by policy; retained checkpoints pin their
   trees. Redaction and deletion (005 §6) must reach the object store, including unreferenced blobs.
 

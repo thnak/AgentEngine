@@ -10,11 +10,13 @@
 // `_from_json`/`_from_wire_string` inverses) -- the functions below are that same logic, copied
 // verbatim rather than reused via #include, for exactly one reason: chat_recording.hpp also includes
 // "agentengine/core/chat_client.hpp" (needed there for its own ChatRequest/ChatResponse recording
-// functions, which this file does not need), and chat_client.hpp pulls in agentengine::task<T> (the
-// quark::task<T> alias, core/task.hpp) transitively -- reintroducing exactly the Quark-coroutine-type
-// residual rt::AgentSession's own file banner already names as a SEPARATE, not-yet-closed migration,
-// into a file (workflow_supervisor.hpp) that currently has NO such residual at all (its ExecutorBody
-// is a plain std::function, no ChatClientT involved). Duplicating ~350 lines of ALREADY-PROVEN,
+// functions, which this file does not need) -- pulling that dependency chain into a file
+// (workflow_supervisor.hpp) that has no ChatClientT involvement at all (its ExecutorBody is a plain
+// std::function) is an unwarranted coupling regardless of what agentengine::task<T> itself resolves
+// to today (historical: at the time this file was written, chat_client.hpp transitively pulled in
+// the still-Quark-coupled `agentengine::task<T>` alias, core/task.hpp -- that residual is long since
+// closed, `task<T>` is Quark-free now, but the coupling argument stands on its own). Duplicating
+// ~350 lines of ALREADY-PROVEN,
 // unchanged logic here keeps that clean claim intact; #include-ing chat_recording.hpp would not.
 // A future consolidation (hoisting this codec somewhere both files can share without either pulling
 // in the other's dependencies) is real follow-up work, not done here.

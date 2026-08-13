@@ -47,7 +47,9 @@ window, with the reason stated. Nothing else may.
 
 ## 4. The decision process
 
-Inherited from Quark, because it works and because contributors move between the repos:
+Inherited from Quark's own governance process, because it works and because contributors move
+between the repos (historical design-lineage credit — unaffected by ADR-037, which removed Quark as
+a runtime dependency, not this process convention):
 
 1. **RFC** — a design lands as a numbered spec (or an amendment to one) with explicit open
    questions. Status **Draft**.
@@ -86,9 +88,11 @@ a claim without a positive control (022 §5) does not count as proven at all.
 
 - ~~**Q1** — Licence. Quark is MIT; matching it is the default assumption and is not yet decided by
   the project owner.~~ **Resolved, MIT (OQ-11, 2026-08-04):** confirmed by the project owner,
-  matching Quark exactly — avoids a licence mismatch between the engine and the submodule it depends
-  on for everything (CLAUDE.md's locked decision that Quark is never forked, only depended on), and
-  is the assumption this RFC was already carrying. `LICENSE` at the repo root.
+  matching Quark exactly — at the time, this avoided a licence mismatch between the engine and the
+  submodule it depended on for everything (historical: CLAUDE.md's then-locked decision that Quark
+  was never forked, only depended on; ADR-037, 2026-08-13, removed that dependency entirely, so the
+  original rationale no longer applies, but the MIT choice itself was never revisited and stands as
+  the assumption this RFC already carries). `LICENSE` at the repo root.
 
   **Third-party dependency licensing position** (raised by `docs/planning/v1-office-user-toolkit.md`
   against Pandoc/GPL-2.0-or-later and `docxtpl`/LGPL): MIT places no copyleft obligation on the
@@ -105,13 +109,14 @@ a claim without a positive control (022 §5) does not count as proven at all.
   operational question for the same Python-package surface.
 - ~~**Q2** — Whether AgentEngine and Quark should share a release cadence, given the submodule
   coupling.~~ **Resolved, No, independent cadences (2026-08-04, no longer entangled with a macOS PAL
-  requirement — 021 §7 OQ-1 resolved macOS out of scope entirely):** the same deliberate-pin-bump
-  discipline already established for every other pinned dependency this session (Wasmtime, the
-  interpreter image, GenAI semconv) applies to the Quark submodule pin too, and that pattern doesn't
-  need a synchronized release cadence to work — AgentEngine bumps its Quark pin on its own schedule,
-  gated on its own full suite passing against the new commit, never automatically tracking Quark's
-  release dates. Sharing a cadence would add cross-project release-train coordination for no benefit
-  this already-working pattern doesn't deliver. The two projects sharing contributors (§4's stated
+  requirement — 021 §7 OQ-1 resolved macOS out of scope entirely) — SUPERSEDED by ADR-037
+  (2026-08-13):** at the time, the same deliberate-pin-bump discipline already established for every
+  other pinned dependency (Wasmtime, the interpreter image, GenAI semconv) applied to the Quark
+  submodule pin too, and that pattern didn't need a synchronized release cadence to work — AgentEngine
+  bumped its Quark pin on its own schedule, gated on its own full suite passing against the new
+  commit, never automatically tracking Quark's release dates. ADR-037 removed Quark as a dependency
+  entirely, so there is no submodule pin left to bump at all and this question is now moot rather
+  than resolved-independent. The two projects sharing contributors (§4's stated
   reason for sharing a *decision process*) is a different, weaker coupling than sharing a *release
   schedule*, and only the former is actually needed.
 - ~~**Q3** — Governance if the project takes outside contributions: who judges an ADR, and what

@@ -41,10 +41,15 @@ detailed enough to implement directly — nothing here is an open design questio
   `list_standing_effects()` / `cancel_standing_effect(handle)`. This also resolves 010's open question
   about whether backgrounding is permitted at all (gated by `Background`, accounted under the same
   usage/duration/bytes tracking as any tool call, §3 step 10).
-- **019 §2.** The wake-condition table has six rows; two are wired (Timer/schedule via Quark's durable
-  reminders; Human/caller input via `Interaction`/`InputRequired`, both built in M4). "Local background
-  task completion" is the row this gap blocks. ("External event" and "Remote task completion" are a
-  separate, also-unbuilt residual — they need 012/A2A, M7's RFC, not this one.)
+- **019 §2.** The wake-condition table has six rows; two were wired (Timer/schedule via Quark's
+  durable reminders; Human/caller input via `Interaction`/`InputRequired`, both built in M4). "Local
+  background task completion" is the row this gap blocks. ("External event" and "Remote task
+  completion" are a separate, also-unbuilt residual — they need 012/A2A, M7's RFC, not this one.)
+  **Superseded note (ADR-037):** the Timer/schedule row's wiring depended on a live `quark::Engine`'s
+  `ReminderService` (`rt/agent_session.hpp`'s own file banner names this explicitly as a residual NOT
+  yet migrated, unlike the rest of `AgentSession`) — `decisions/ADR-037-remove-quark-as-core-runtime.md`
+  removed Quark entirely, so this row needs a standalone `rt::`-based replacement design before it can
+  be considered wired again, not just re-verified.
 - **Proof obligations already named**, not yet attempted: **G6** (a run that calls `schedule_wakeup`/
   `watch_resource` is fully `Suspended` — no activation, sandbox, connection, or thread — until its
   wake condition fires; measured, not asserted), **G7** (`background_task` doesn't block the calling
@@ -55,11 +60,17 @@ detailed enough to implement directly — nothing here is an open design questio
 
 Code: verified by direct grep of `include/` — **zero implementation.** No `Backgroundable`,
 `StandingEffect`, `background_task`, `list_standing_effects`, or `cancel_standing_effect` symbol exists
-anywhere. The only adjacent artifact is `TimerWake` (`include/agentengine/core/agent_session.hpp:137`),
-which proves a Quark durable reminder can reach a session actor's real `session_actor_id()` end to end
-— its own comment is explicit that it stops there: *"what a real 'resume the paused run this timer was
+anywhere. The only adjacent artifact is `TimerWake`, which at the time proved a Quark durable reminder
+could reach a session actor's real `session_actor_id()` end to end — its own comment was explicit that
+it stopped there: *"what a real 'resume the paused run this timer was
 arming' would DO needs 006 §6b's `schedule_wakeup`/`Backgroundable`, confirmed absent from this
-codebase... a different, un-built vertical this task does not invent standing in for."*
+codebase... a different, un-built vertical this task does not invent standing in for."* (Historical
+citation path: originally `include/agentengine/core/agent_session.hpp:137`, since deleted — ADR-037
+ported `AgentSession` to `rt/agent_session.hpp`, but explicitly did NOT migrate `TimerWake`, naming it
+a residual with "no standalone replacement design for yet" in that file's own banner. The gap this
+section describes is therefore now wider than originally scoped: not just "`Backgroundable`/
+`StandingEffect` don't exist," but "the one adjacent artifact this section anchored to no longer
+exists in its old form either.")
 
 ## Downstream work already blocked on this
 

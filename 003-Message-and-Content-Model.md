@@ -1,6 +1,6 @@
 # 003 — Message and Content Model
 
-**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Depends on:** Quark 003/016 · **Used by:** 004, 005, 011, 012, 013 · **Gate:** §7
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Depends on:** (historical: originally also depended on Quark 003/016 — ADR-037 removed that dependency) · **Used by:** 004, 005, 011, 012, 013 · **Gate:** §7
 
 ## Goal
 
@@ -88,12 +88,15 @@ Draft on the strength of more than this edit alone.
 ## 3. Large content: `BlobRef`
 
 Content above a configured threshold is stored out-of-line as a `BlobRef{digest, media_type, size,
-store}` and passed by reference through mailboxes, checkpoints, and protocol frames.
+store}` and passed by reference through session state, checkpoints, and protocol frames (historical:
+"mailboxes" before ADR-037 removed Quark's actor mailboxes; the reference-not-copy discipline is
+unchanged).
 
-Rationale: Quark's descriptor budget is one cache line, message payloads are stored separately
-(Quark 003), and a 40 MB PDF must never be copied per turn. Blob storage is a seam (019) with an
-in-memory default and file/object-store backends. **Digests are content-addressed**, which makes
-artifact identity, dedup, replay, and audit fall out for free.
+Rationale: keep the in-line message descriptor small (historical: one cache line, matching Quark's
+own descriptor budget — Quark 003 — before ADR-037 removed that dependency), store message payloads
+separately, and never copy a 40 MB PDF per turn. Blob storage is a seam (019) with an in-memory
+default and file/object-store backends. **Digests are content-addressed**, which makes artifact
+identity, dedup, replay, and audit fall out for free.
 
 ## 4. Structured output
 
@@ -110,8 +113,10 @@ Validation is JSON Schema 2020-12, matching MCP's tool schemas, so one validator
 ## 5. Serialization and the wire
 
 - **In-process**, messages are C++ types; no serialization on the local path.
-- **Cross-node and durable**, they use Quark 016 (one `describe` per type, canonical tagged
-  encoding with a negotiated tagless fast path, schema evolution + migrations).
+- **Durable**, they serialize through `rt::SessionStore`/`rt::AppendLogStore` (historical: this was
+  Quark 016's canonical tagged encoding — one `describe` per type, negotiated tagless fast path,
+  schema evolution + migrations — before ADR-037 removed Quark; AgentEngine has no multi-node
+  cluster story to serialize *for* any more, so "cross-node" is out of scope, not carried over).
 - **Cross-protocol**, each surface owns its own mapping module (`protocol/*/mapping.hpp`) with a
   **round-trip test as the gate**: `internal → wire → internal` must preserve every content item,
   including unknown ones (§1).

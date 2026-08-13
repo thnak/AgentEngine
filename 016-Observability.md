@@ -56,7 +56,10 @@ Beyond the convention's client metrics:
 - **Saturation**: sessions active/passivated, queue depths, sandbox pool utilization.
 
 Cardinality is bounded deliberately: principal ids and session ids are **not** metric dimensions
-(they are span/audit fields). Quark's cardinality discipline (ADR-022) applies.
+(they are span/audit fields) — a design principle originally adopted from Quark's own cardinality
+discipline (historical credit; Quark itself was removed as AgentEngine's dependency by ADR-037,
+`AgentEngineSpecification.md` §7). Note this RFC's "ADR-022" citation predates and is unrelated to
+this repo's own `decisions/ADR-022-inbound-listener-reactor-model.md`.
 
 ## 4. Content capture and privacy
 

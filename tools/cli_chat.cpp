@@ -6,8 +6,9 @@
 //
 // Same composition tests/test_agent_session_skills_live_e2e.cpp already proves automatically
 // (HistoryAndSkillsProvider<ToolDeclaringHistoryProvider, BuiltinSkillsProvider> driving a real
-// AgentSession via quark::TestKit -- the only demonstrated way in this codebase to run an AgentSession
-// synchronously from a plain main(), the same pattern every live e2e test in tests/ already uses).
+// agentengine::rt::AgentSession directly -- historical: originally via quark::TestKit, before
+// ADR-037 ported that test off quark::TestKit<Session>/quark::Ask<> onto rt::AgentSession, the same
+// pattern every live e2e test in tests/ already uses).
 // What this file adds beyond that automated test: a REAL ExecuteCodeTool wired to
 // native_jail::MediatedPythonRunner (a genuinely new capability this codebase had never had a Tool<>
 // wrapper for -- see this file's own research: no such wrapper existed anywhere before this), and a
@@ -546,11 +547,12 @@ static_assert(std::is_default_constructible_v<CliSession>);
 
 // ADR-037: wraps one turn's start_run() call as a task<void> job for rt::ThreadPool::submit() (which
 // only accepts task<void> -- see thread_pool.hpp's own contract), stashing the real result in a
-// shared slot the caller reads back after the job completes. Explicitly agentengine::rt::task<void>,
-// NOT the bare `task<>` alias -- since ADR-037's task<T> split (core/task.hpp), unqualified `task<>`
-// resolves to quark::task<void> (still needed by this file's own real ChatClient conformer's
-// internals, transitively, via the ChatClient/ContextProvider concepts elsewhere), which is the WRONG
-// type here and would not compile against ThreadPool::submit()'s signature.
+// shared slot the caller reads back after the job completes. Explicitly agentengine::rt::task<void>
+// here for clarity at the call site (historical: during an intermediate ADR-037 phase, core/task.hpp
+// briefly split task<T> per-T and the bare `task<>` alias resolved to quark::task<void> -- a
+// DIFFERENT, non-awaitable type that would not have compiled against ThreadPool::submit()'s
+// signature; that split is long gone, `task<>` now resolves to `agentengine::rt::task<void>` too, so
+// the qualification here is a style choice, not a correctness requirement).
 [[nodiscard]] agentengine::rt::task<void> run_start_job(
     CliSession& actor, agentengine::rt::StartRun req,
     std::shared_ptr<agentengine::result<agentengine::rt::AgentResponse>> out) {

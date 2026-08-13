@@ -5,12 +5,15 @@ Guidance for Claude Code when working in this repository.
 ## What this is
 
 **AgentEngine** is a C++23 engine for building agent applications: agents, sessions, tools, and
-multi-agent workflows on top of the [Quark](https://github.com/thnak/QuarkCpp) actor engine, with
-sandboxed execution and a Python code interpreter as built-in subsystems, speaking the open agent
-protocols of 2026 (MCP, A2A, AG-UI, OpenTelemetry GenAI).
+multi-agent workflows on its own `agentengine::rt::` runtime substrate (historical: originally built
+on top of the [Quark](https://github.com/thnak/QuarkCpp) actor engine; ADR-037 removed that
+dependency entirely and `third_party/quark` is gone from the tree), with sandboxed execution and a
+Python code interpreter as built-in subsystems, speaking the open agent protocols of 2026 (MCP, A2A,
+AG-UI, OpenTelemetry GenAI).
 
 The developer model is **MAF-shaped** (Microsoft Agent Framework's agent/session/tool/workflow
-vocabulary) expressed in **Quark's zero-cost CRTP policy idiom**.
+vocabulary) expressed in AgentEngine's own **zero-cost CRTP policy idiom** (originally modeled on
+Quark's identical idiom).
 
 **The project is spec-driven.** 30 RFC documents (`NNN-*.md`) are the authoritative design;
 `decisions/ADR-*.md` are executed proofs. **When code and a spec disagree, the spec wins**; if the
@@ -33,7 +36,7 @@ per-milestone breakdown docs for current phase/gate status, not this prose.
 ## Read first
 
 1. **[AgentEngineSpecification.md](AgentEngineSpecification.md)** — vision, layering, the eight core
-   invariants, the three locked decisions, the Quark mapping.
+   invariants, the locked decisions, the runtime substrate.
 2. **[CONVENTIONS.md](CONVENTIONS.md)** — the binding coding contract.
 3. **[README.md](README.md)** — the RFC index and reading order.
 4. **[OpenQuestions.md](OpenQuestions.md)** — what is unresolved and what it blocks.
@@ -51,7 +54,11 @@ model output influence a permission decision, it is wrong regardless of how well
 
 ## Locked decisions — do not relitigate without an ADR
 
-- **Quark is a submodule, never forked or patched in-tree.** Runtime changes go upstream.
+- **Quark is not a dependency of this project.** (Historical: it used to be consumed as an
+  unmodified submodule, with runtime changes going upstream — `decisions/ADR-037-remove-quark-as-
+  core-runtime.md`, executed 2026-08-13, removed it entirely; `third_party/quark` is gone from the
+  tree and AgentEngine's runtime substrate is now its own `agentengine::rt::` namespace.) Do not
+  reintroduce a Quark dependency without a new ADR relitigating this.
 - **WASM Component Model (WASI 0.3) is the plugin ABI** — tools, skills, providers, memory stores,
   filters, and the C/C++ library track (009 §7).
 - **The Python code interpreter is embedded native CPython, permanently — never WASM, never a

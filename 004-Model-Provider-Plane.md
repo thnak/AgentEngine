@@ -26,7 +26,9 @@ struct ChatClient {                                 // concept, not a base class
 
 - **Requests carry `EffectContext`** — principal, deadline, trace context, budget — because a model
   call is an attributable effect (**I4**), not a library call.
-- **Streaming is a Quark credit-controlled stream** (Quark 024/ADR-018), so a slow consumer stalls
+- **Streaming is `agentengine::stream<T>`, a credit-controlled producer/consumer pair over
+  `rt::channel<T,E>`** (historical: Quark's credit-controlled `ReplyStream`/`StreamChannel` before
+  ADR-018/ADR-037; same credit-controlled contract, different backend), so a slow consumer stalls
   the provider read rather than growing an unbounded buffer.
 - **Cancellation is `stop_token`**, propagated into the HTTP/socket layer.
 - **Outbound credentials follow 018 §3's rule, not an exception to it.** A native `ChatClient`
@@ -118,8 +120,10 @@ concrete pre-implementation checklist item for its `ChatClient` backend, not a r
   budget is a bug.
 - **Idempotency:** a retried call carries a stable idempotency key so a provider that supports it
   does not double-charge or double-execute.
-- **Rate limits and overload** use Quark 022 (token buckets, deadline-aware shedding, circuit
-  breaking) rather than a bespoke limiter. A provider-level breaker trips per `{tenant, provider,
+- **Rate limits and overload** use `rt::CircuitBreaker` (`rt/circuit_breaker.hpp`) plus
+  `RetryPolicy`/`ModelCallGateway` for the model-call path (historical: Quark 022's token buckets,
+  deadline-aware shedding, and circuit breaking before ADR-037 removed that dependency) rather than
+  a bespoke limiter. A provider-level breaker trips per `{tenant, provider,
   model, SecretRef}` — tenant is part of the key, not an afterthought, so one tenant tripping a
   breaker cannot silently degrade another's calls through the same provider (018 §6).
 - **Failover** between providers is *explicit policy*, never implicit: a failover that silently

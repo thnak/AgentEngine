@@ -297,12 +297,14 @@ against unbounded recursion, conditional on the effect-mediation boundary alread
 
 **The cost half is now also real, real-proven code, but only the standalone consume-pool
 primitive — not a wired `agent.spawn` call path (2026-08-11,
-`decisions/ADR-031-spawn-cost-budget-actor-primitive.md`).** `SpawnCostBudgetActor`
-(`trust/spawn_cost_budget.hpp`) is a real Quark `Sequential` actor holding a consumable token pool,
-proven under a REAL, multi-worker `quark::Engine` (not just `quark::TestKit`, which cannot exercise
-a genuine race) to reject the exact double-spend 026 §9 Q1's sketch warned a bare copyable value
+`decisions/ADR-031-spawn-cost-budget-actor-primitive.md`).** `SpawnCostBudgetActor` (historical: a
+real Quark `Sequential` actor holding a consumable token pool, proven under a REAL, multi-worker
+`quark::Engine`, not just `quark::TestKit`, which cannot exercise a genuine race — ADR-037 later
+ported this onto `agentengine::rt::SpawnCostBudget`, `rt::AsyncMutex` replacing `quark::Actor<
+Sequential>` as the serialization mechanism, see `include/agentengine/rt/spawn_cost_budget.hpp`) was
+proven to reject the exact double-spend 026 §9 Q1's sketch warned a bare copyable value
 type would suffer: 8 concurrent callers contending for a 1000-token pool at 130 tokens each never
-grant more than 1000 total, with the actor's own Sequential dispatch closing the check-then-decrement
+grant more than 1000 total, with the serialized dispatch closing the check-then-decrement
 race, no lock code written by hand. **Not resolved by this**: `agent.spawn` itself still has no real
 call path anywhere in this codebase (confirmed exhaustively during ADR-031's own design phase — no
 `Tool<>`-conforming spawn tool, no nested-agent-run invocation mechanism, no sub-worktree wiring, no
@@ -486,8 +488,9 @@ outright rather than downgraded to a lower tier.
 re-grounded instead in a Windows-hosting finding (`docs/research/2026-microvm-windows-portability.md`,
 2026-08-04: Firecracker is architecturally Linux+KVM-only, no production-grade Windows-hosted path
 exists either) so the decision doesn't lose its footing now that macOS is moot rather than missing.
-Re-adding macOS later, if a PAL backend is ever contributed to Quark, is a fresh decision starting at
-Best-effort — not a reinstatement.
+Re-adding macOS later, if a macOS PAL backend is ever built for `agentengine::pal` (historical: this
+was originally framed as "contributed to Quark," back when Quark was still the vendored PAL; ADR-037
+removed that dependency), is a fresh decision starting at Best-effort — not a reinstatement.
 
 Updated to match: `021-Platform-Support-and-Portability.md` §2 (target matrix), §3 (per-subsystem
 table), §5 (CI matrix), §6 (G1), §7 (this question); `CONVENTIONS.md` Target & scope;

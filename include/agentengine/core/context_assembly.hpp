@@ -78,8 +78,10 @@ struct ContextProviderDescriptor {
     // signature (context_provider.hpp) -- forced by the same cascade that made HistoryProvider and
     // MemoryProvider real coroutines, not an independent design choice here.
     using OnContextFn = std::function<task<result<ContextContribution>>(SessionContext&, EffectContext&)>;
-    // `task<std::monostate>`, not `task<>` -- `quark::task<void>` isn't awaitable at all (see
-    // context_provider.hpp's own comment on `ContextProvider::on_turn_end`); nothing here calls
+    // `task<std::monostate>`, not `task<>` -- historical: `quark::task<void>` wasn't awaitable at
+    // all before ADR-037 (see context_provider.hpp's own comment on `ContextProvider::on_turn_end`
+    // for the full history; `task<void>` is genuinely awaitable now, this is kept by convention, not
+    // necessity); nothing here calls
     // `co_await` on the stored closure's result today (`assemble_context` never invokes
     // `on_turn_end`), but the type must still match what every real conformer's method returns.
     using OnTurnEndFn = std::function<task<std::monostate>(TurnView, EffectContext&)>;
@@ -94,7 +96,8 @@ struct ContextProviderDescriptor {
 // produced this turn, and must persist that state across turns, not be reconstructed per call.
 // Neither closure is itself a coroutine -- calling `shared->on_context(...)` just creates and
 // returns the (lazy, not-yet-run) task<T> object, which the closure forwards by value; the actual
-// body only runs once something later `co_await`s it (quark/core/task.hpp's own lazy-start idiom).
+// body only runs once something later `co_await`s it (rt/task.hpp's own lazy-start idiom, historical:
+// quark/core/task.hpp's before ADR-037 removed Quark).
 template <class ProviderT>
     requires ContextProvider<ProviderT>
 [[nodiscard]] ContextProviderDescriptor make_context_provider_descriptor(ProviderT provider,

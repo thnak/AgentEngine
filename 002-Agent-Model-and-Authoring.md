@@ -6,7 +6,9 @@
 
 Define what an agent *is* to the engine, and the C++ surface an author writes. The shape is
 MAF's — an agent with instructions, a model, tools, and middleware, run against a session — and the
-mechanism is Quark's: **CRTP policy template parameters resolved to metadata at startup, with no
+mechanism is AgentEngine's own zero-cost CRTP policy idiom (historical: originally modeled on
+Quark's identical idiom; ADR-037 removed Quark as a runtime dependency, but the authoring style it
+inspired is unchanged): **CRTP policy template parameters resolved to metadata at startup, with no
 runtime configuration objects and no reflection**.
 
 ## 1. What an agent is
@@ -78,8 +80,10 @@ auto stream = session.run_stream<Researcher>("Compare WASI 0.2 and 0.3.");
 while (auto update = block_on(stream.next())) { render(*update); }
 ```
 
-`session.run<A>()` posts an `Ask` to the session actor (001 §1). The typed `SessionRef` is Quark's
-`ActorRef<A>` discipline: always typed, never stringly.
+`session.run<A>()` calls `AgentSession::start_run<A>()`, an `rt::task<result<AgentResponse>>`
+coroutine (001 §1; historical: this was `Ask<StartRun,...>` to a Quark session actor before
+ADR-037 removed Quark as a dependency). The typed `SessionRef` keeps the same always-typed,
+never-stringly discipline (historical: originally Quark's `ActorRef<A>` discipline).
 
 ## 3. The policy vocabulary
 
@@ -102,7 +106,7 @@ class template cannot share one identifier in the same namespace. `ChatClientId`
 | `Memory<Ms...>` | Memory/context providers (005) | none |
 | `Middleware<Ms...>` | Ordered middleware chain (§5) | none |
 | `Telemetry<Capture>` | `MetadataOnly` / `WithContent` / `Off` (016) | `MetadataOnly` |
-| `Stateless<N>` | Agent holds no cross-run state; hosted as a Quark pool | off |
+| `Stateless<N>` | Agent holds no cross-run state (historical: hosted as a Quark pool before ADR-037 removed Quark; the `rt::` hosting mechanism for this policy is not yet re-specified) | off |
 | `OutputSchema<T>` | Structured-output contract (003) | free text |
 
 **What `SandboxProfile<P>` governs.** It is not one dial over every sandboxed effect an agent can
@@ -153,11 +157,13 @@ struct RedactPii {
 };
 ```
 
-(Hook return type corrected 2026-08-11, ADR-033: `ae::task<>` — i.e. `quark::task<void>` — has no
-`await_resume()` and cannot be `co_await`ed by another coroutine at all; only `task<T>` for
-`T != void` (ADR-047) is genuinely awaitable, the same distinction `core/agent_session.hpp`'s
-`run_rounds` already had to correct for. A middleware hook is `co_await`ed by the chain runner, so it
-must return `task<std::monostate>`, matching that established codebase convention.)
+(Hook return type corrected 2026-08-11, ADR-033: `ae::task<>` — i.e. `task<void>` (historical: at
+the time of ADR-033 this was `quark::task<void>`; ADR-037 later removed Quark, and `ae::task<T>` is
+now a plain `agentengine::rt::task<T>` alias, `core/task.hpp`) — has no `await_resume()` and cannot
+be `co_await`ed by another coroutine at all; only `task<T>` for `T != void` (ADR-047) is genuinely
+awaitable, the same distinction `core/agent_session.hpp`'s `run_rounds` already had to correct for.
+A middleware hook is `co_await`ed by the chain runner, so it must return `task<std::monostate>`,
+matching that established codebase convention.)
 
 **Constraints:** middleware may inspect, annotate, rewrite content, short-circuit with a result, or
 deny — it may **not** widen capabilities (**I2**, no ambient authority; 007 §3.2's attenuation-only

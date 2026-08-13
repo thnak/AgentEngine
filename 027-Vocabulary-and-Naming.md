@@ -35,7 +35,7 @@ Names verified against `agent_framework` (Python core) unless marked **ours**.
 | Name | Meaning here | Source |
 |---|---|---|
 | `Agent` | A named unit that turns input into output using a model, tools, and instructions (002) | MAF |
-| `AgentSession` | The durable conversation state an agent operates on; one Quark actor instance (005) | MAF |
+| `AgentSession` | The durable conversation state an agent operates on; a plain templated class instance, no actor lifecycle (005) (historical: "one Quark actor instance" before ADR-037 removed Quark as a dependency) | MAF |
 | `SessionContext` | The per-run view of a session handed to providers and middleware | MAF |
 | `SessionStore` | The persistence seam for sessions | MAF |
 | `ChatClient` | The inference seam — one provider/endpoint (004) | MAF (`BaseChatClient`) |
@@ -115,8 +115,8 @@ word is free, and we take it. §5 records the collision so nobody re-imports the
 | **`EmbeddedHost`** | The in-process bring-up object a C++ application constructs to link the engine as a library and mint `Run`/`ReplyStream` handles (020 §3a) | **ours** |
 | **`Project`** | A durable index above a session — a root session plus every session it transitively owns, with directed pause/restore distinct from idle passivation (030) | **ours** |
 | **`ExecState`** | The `{cwd, env}` shared by reference across every `Runner` call in a session (010 §3a) | **ours** |
-| `Actor` · `Activation` · `Worker` · `Shard` · `Mailbox` · `ActorRef<A>` · `Policy` | Quark's runtime vocabulary, used **verbatim and unchanged** | Quark |
-| `ae::task<T>` · `ae::result<T>` | Coroutine return type · `std::expected<T, error>` | Quark |
+| `Actor` · `Activation` · `Worker` · `Shard` · `Mailbox` · `ActorRef<A>` · `Policy` | **Retired vocabulary** — none of these names are used anywhere in AgentEngine's codebase today (historical: this was Quark's runtime vocabulary, used verbatim and unchanged, before `decisions/ADR-037-remove-quark-as-core-runtime.md` removed Quark as a dependency entirely; there is no actor model left to name) | Quark (historical) |
+| `ae::task<T>` · `ae::result<T>` | Coroutine return type · `std::expected<T, error>` | `agentengine::rt::` (historical: `task<T>` originated as a `quark::task<T>` alias before ADR-037; `core/task.hpp` now defines it directly, zero Quark dependency) |
 
 The trust and isolation names are ours because **MAF has no capability model, no sandbox seam, and
 no worktree**. That is the substantive difference between the two systems, and it deserves its own
@@ -131,13 +131,13 @@ these has caused a real bug or a real misunderstanding somewhere in the ecosyste
 
 | Word | In AgentEngine core | Elsewhere | Rule |
 |---|---|---|---|
-| **`Resource`** | **Quark's**: a dependency with a lifetime scope, resolved at activation (Quark 004) | **MCP**: server-exposed content addressed by URI. **MAF**: `SkillResource`, a bundled file | A bare `Resource` is always Quark's. MCP's is `mcp::Resource`, never imported unqualified. Skill files are `SkillResource`. |
+| **`Resource`** | **Nothing.** There is no `Resource` type in core (historical: this used to be Quark's — a dependency with a lifetime scope, resolved at activation, Quark 004 — before ADR-037 removed Quark as a dependency; the word is free in core prose again, though the collision-avoidance habit below is worth keeping for readers coming from Quark) | **MCP**: server-exposed content addressed by URI. **MAF**: `SkillResource`, a bundled file | MCP's is `mcp::Resource`, never imported unqualified. Skill files are `SkillResource`. |
 | **`Task`** | **Nothing.** There is no `Task` type in core | `ae::task<T>` is the coroutine type. **A2A**: `Task`, a unit of delegated work = our `Run`. **MCP**: the `tasks` extension | Lowercase `task<T>` is the coroutine and only that. `a2a::Task` and `mcp::Task` stay namespaced. **Never declare a bare `Task` type.** |
 | **`Skill`** | A `SKILL.md` bundle (§3) | **A2A**: `AgentSkill`, a discovery record in an Agent Card — no instructions body, no files, no progressive disclosure. Functionally closer to a tool listing | `a2a::AgentSkill` is never abbreviated to `Skill`, in code or prose. |
 | **`Plugin`** | A signed WASM component package (009) | **Semantic Kernel**: a group of functions ≈ our tool set | Do not re-import the SK meaning. |
 | **`Session`** | `AgentSession` — durable conversation state | **MCP ≤ 2025-11-25**: a transport-level session, **removed** in `2026-07-28` | Never use "session" for a connection or transport concept. That word is now free precisely because MCP gave it up. |
-| **`Executor`** | A workflow graph node (014) | **Quark**: informally, the worker currently holding an activation | In AgentEngine prose "executor" always means the graph node; Quark's sense is written as "the worker holding the activation". **Code/shell execution units (010) are deliberately named `Runner`, not `Executor`**, precisely to avoid a third meaning of a word this table already has to disambiguate twice. |
-| **`Context`** | Four distinct types | `SessionContext` (per-run session view), `WorkflowContext` (per-executor), `MessageContext` (Quark: ambient per-message stop token, deadline, trace id), `EffectContext` (attribution for an effect) | Never write bare `Context`. Each is spelled in full at every use. |
+| **`Executor`** | A workflow graph node (014) | historical: **Quark** informally used it for the worker currently holding an activation — moot now, AgentEngine has no actor model post-ADR-037 | In AgentEngine prose "executor" always means the graph node. **Code/shell execution units (010) are deliberately named `Runner`, not `Executor`**, precisely to avoid a second meaning of a word this table already has to disambiguate. |
+| **`Context`** | Four distinct types | `SessionContext` (per-run session view), `WorkflowContext` (per-executor), `MessageContext` (ambient per-message stop token, deadline, trace id — historical: Quark's concept before ADR-037), `EffectContext` (attribution for an effect) | Never write bare `Context`. Each is spelled in full at every use. |
 | **`Provider`** | `ContextProvider`, `HistoryProvider`, `SkillsProvider` | Colloquially, "provider" often means the *model vendor* | The inference seam is `ChatClient`, never `Provider`. **This supersedes RFC 004's use of "provider".** |
 | **`Content`** | One element of a message (§2) | **A2A**: `Part`. **MCP**: content block | `Content` in core; `Part` appears only in `a2a::` mapping code. |
 | **`Tool`** | Same concept everywhere | MCP `Tool`, MAF `FunctionTool`/`AITool` | No collision. Use freely. |
@@ -156,9 +156,18 @@ agentengine::schema  ::json  ::yaml  ::response_format_codec   core/ format-hand
 agentengine::mcp  ::a2a  ::agui  ::openai  ::anthropic         protocol wire types and mappings
                                                                 only — own wire-format vocabulary,
                                                                 exempt from §2-4
-agentengine::pal                                               nothing — platform code lives in
-                                                                Quark's pal
-quark                                                           the runtime, used verbatim
+agentengine::pal                                               a small, self-contained, vendored
+                                                                socket PAL (historical: "nothing —
+                                                                platform code lives in Quark's pal"
+                                                                before ADR-037 removed Quark)
+agentengine::rt                                                the runtime substrate: async mutex,
+                                                                thread pool, session/append-log
+                                                                store, circuit breaker,
+                                                                channel/stream backend (ADR-037;
+                                                                historical: this row used to read
+                                                                "quark — the runtime, used verbatim"
+                                                                — there is no `quark` namespace in
+                                                                this codebase anymore)
 ```
 
 **The boundary rule from CONVENTIONS restated as a naming rule:** a `mcp::` or `a2a::` type never

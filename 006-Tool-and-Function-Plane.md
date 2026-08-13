@@ -95,7 +95,7 @@ Every tool call, regardless of source, traverses exactly this pipeline:
 3. taint         arguments carrying model-originated content are tainted (003 §2)
 4. authorize     capability check against the run's set          (007)
 5. approve       policy → auto | require approval → InputRequired (001 §2)
-6. admit         rate limit, concurrency, quota                  (Quark 022)
+6. admit         rate limit, concurrency, quota                  (historical: Quark 022 — ADR-037 removed that dependency)
 7. bind          materialize capability handles for this call only
 8. invoke        with deadline + stop_token, in the declared isolation — may emit interim
                  progress via `EffectContext.report_progress` (§6a); a `Backgroundable` tool
@@ -197,7 +197,9 @@ no `Suspended` state to resume into.
   into the future and how many concurrent registrations an agent may hold, for the same reason
   `NetOut` is bounded by an allowlist: an unparameterized "may schedule" is a hole, not a capability.
   Both resolve to the same underlying registration — a durable wake condition on the run (019 §2's
-  "Timer/schedule" and "External event" rows), backed by Quark's durable reminders (Quark 027) — so
+  "Timer/schedule" and "External event" rows), conceptually carried over from Quark's durable
+  reminders (historical: Quark 027, before ADR-037 removed Quark as a dependency; the concept is
+  now hosted in `rt::`, but this RFC does not name the specific current backing mechanism) — so
   no new scheduling primitive is invented here, only the missing producer-side hook, the same shape
   §6a took for progress.
 - **The run actually suspends.** Calling either tool and then ending the turn (001 §3) transitions the

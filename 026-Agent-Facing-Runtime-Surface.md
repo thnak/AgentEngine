@@ -352,8 +352,10 @@ when it grows. Prompt bloat is a regression like any other; without a gate it on
     depth's ceiling semantics and tokens' consuming-pool semantics stay orthogonally provable (and
     so a future wall-clock dimension, whose semantics are closer to depth's narrowing than to
     tokens' consuming, doesn't get forced through the wrong primitive). Attenuation against the
-    pool must be serialized through the actor that owns the budget (matching Quark's actor model),
-    not a bare value-type call — closing the concurrent-double-spend gap requires a concurrency
+    pool must be serialized through whatever owns the budget (`rt::SpawnCostBudget`'s
+    `rt::AsyncMutex`-guarded serialization, historical: originally Quark's actor model before
+    ADR-037), not a bare value-type call — closing the concurrent-double-spend gap requires a
+    concurrency
     red-team test in the style of ADR-006's own S-R1/S-R2 (exhaustive/repeated-attempt proof), not
     just the single-call unit tests depth's proof used. The token amount a child receives must be
     sourced only from that agent's own compiled `AgentMetadata::token_budget` (never from anything

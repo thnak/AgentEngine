@@ -51,8 +51,11 @@ own header comment, *"a complete, self-contained `ContextProvider` conformer"* t
 object/ref store**:
 
 ```cpp
-ObjectStoreT object_store_;        // skill_provider.hpp:264 — private to THIS provider instance
-quark::InMemoryStore ref_store_;   // skill_provider.hpp:265 — private to THIS provider instance
+ObjectStoreT object_store_;                            // skill_provider.hpp — private to THIS
+                                                         // provider instance
+std::shared_ptr<rt::InMemoryAppendLogStore> ref_store_; // skill_provider.hpp:275 — private to THIS
+                                                         // provider instance (historical:
+                                                         // quark::InMemoryStore before ADR-037)
 ```
 
 For each resolved skill, it assembles a `Tree`, commits it under `"skill:" + name` as its own `Ref`

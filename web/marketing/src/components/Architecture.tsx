@@ -37,8 +37,9 @@ export function Architecture() {
         <RevealGroup>
           <RevealItem>
             <p className="layer-rule">
-              AgentEngine writes no scheduler, no mailbox, no cluster membership, no persistence
-              engine, and no timer wheel — every one of those is a Quark seam it configures.
+              AgentEngine owns its own runtime substrate — a thread pool, a single-executor guard,
+              a session/append-log durability seam, a circuit breaker, and a channel/stream backend
+              — no distributed cluster, no actor mailbox.
             </p>
           </RevealItem>
         </RevealGroup>

@@ -101,9 +101,10 @@
 // retry mechanism needed underneath it.
 //
 // `ExecuteReply`/`ExecutorOutcome`/`ExecutorBody`/`failure_marker()` are reused SHAPES, hand-
-// reproduced here rather than `#include`-d from `workflow/executor.hpp` -- that header also pulls in
+// reproduced here rather than `#include`-d from `workflow/executor.hpp` (historical: that header,
+// since deleted along with the rest of the pre-ADR-037 actor machinery, also pulled in
 // `quark/core/actor.hpp`/`quark/core/supervision.hpp` for `FunctionExecutor`'s own actor machinery,
-// which this file must not transitively depend on. Same "reuse the shape, not the include" precedent
+// which this file had to not transitively depend on). Same "reuse the shape, not the include" precedent
 // `rt::task<T>` itself set relative to `quark::task<T>` (task.hpp's own banner). `ExecuteRequest`
 // itself is NOT reproduced -- it existed only because Quark's fixed 192-byte message-pool cell forced
 // the round number into its own struct rather than an ordinary function parameter; that constraint is

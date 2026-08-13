@@ -67,8 +67,9 @@ passivation, and restart — decomposes into **two different problems** with two
 ### 2a. Files → the worktree, not the sandbox
 
 Files must **not** depend on sandbox survival. They belong to a durable, content-addressed virtual
-filesystem the engine owns (RFC 025), backed by Quark's `Store` seam and checkpointed with the
-session. A sandbox mounts a subtree; destroying the sandbox loses nothing.
+filesystem the engine owns (RFC 025), backed by `agentengine::rt::AppendLogStore` and checkpointed
+with the session (historical: originally Quark's `Store` seam; ADR-037 replaced the backend, the
+contract is unchanged). A sandbox mounts a subtree; destroying the sandbox loses nothing.
 
 This is the single most important structural decision here: it makes file persistence independent of
 runtime, profile, OS, and process lifetime. Every profile gets identical file semantics.

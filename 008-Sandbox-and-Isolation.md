@@ -67,7 +67,9 @@ The plugin host requires a runtime providing **all three** of:
 1. **The Component Model** — WIT worlds, typed imports/exports. The entire plugin ABI (009) is built
    on it.
 2. **WASI 0.3** (released 2026-06-11) — `async func`, `stream<T>`, `future<T>` in the Canonical ABI,
-   so guest async maps onto Quark coroutines instead of a thread per call.
+   so guest async maps onto `agentengine::rt::task<T>` coroutines instead of a thread per call
+   (historical: this originally mapped onto Quark's coroutine handlers — ADR-037 removed Quark and
+   replaced its runtime with `agentengine::rt::`).
 3. **WebAssembly 3.0** core features (completed 2025-09-17) — at minimum **exception handling**
    (real C++ libraries assume exceptions, which the C/C++ plugin track needs) and **memory64**
    (removes the 4 GB ceiling for data-heavy codecs and interpreters). GC and tail calls widen which
@@ -374,9 +376,12 @@ The isolation boundary that matters is **between sessions**, not between executi
 session. A session is one principal, one conversation, one capability set; keeping a live sandbox
 for its duration is what makes a conversation feel continuous rather than amnesiac.
 
-- **Default lifetime is `per_session`**, bound to the session's Quark actor: created on first use,
-  retained while the session is active, destroyed when the session ends. `per_run` and `per_exec`
-  remain available and are the right choice for one-shot or adversarial workloads.
+- **Default lifetime is `per_session`**, bound to the session's `AgentSession` object lifetime
+  (historical: originally the session's Quark actor; ADR-037 removed Quark, and a session is now a
+  plain `AgentSession` instance with no actor lifecycle, owned by whatever host code holds it):
+  created on first use, retained while the session is active, destroyed when the session ends.
+  `per_run` and `per_exec` remain available and are the right choice for one-shot or adversarial
+  workloads.
 - **Cross-session reuse is prohibited in every profile.** A guest instance is never handed to a
   different session or principal. This is the line that pooling may not cross.
 - **Pooled instances are reset to a snapshot taken before any untrusted input** — never merely
@@ -387,8 +392,11 @@ for its duration is what makes a conversation feel continuous rather than amnesi
 
 ### 6a. Surviving passivation
 
-Quark passivates idle sessions (ADR-028/034). What happens to in-memory interpreter state then is
-**profile-dependent, and the difference is stated rather than papered over**:
+**(Historical: Quark previously passivated idle sessions per ADR-028/034; ADR-037 removed Quark, and
+no host-managed session-passivation mechanism currently exists in `agentengine::rt::` — this is a
+named gap, not a silently-working feature.)** The rest of this section states the target behavior
+for in-memory interpreter state whenever passivation exists: it is **profile-dependent, and the
+difference is stated rather than papered over**:
 
 | | `wasm` (plugins, 009) | `native-jail` (interpreter and shell, 010) |
 |---|---|---|

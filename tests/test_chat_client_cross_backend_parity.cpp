@@ -5,14 +5,18 @@
 //
 // Scoping decision, named honestly rather than silently assumed: "agent" here is proven at the
 // ChatClient-plane call site (004's own scope), not by instantiating a real `ae::AgentSession<...>`
-// actor. `AgentSession<ChatClientT>`'s `chat_client_` member (core/agent_session.hpp) has no public
-// setter and no non-default constructor -- by design, per `initialize()`'s own comment: "the mock
-// ChatClient's own canned behavior is already baked in by construction rather than passed through
-// TestKit." `quark::TestKit<A>` (third_party/quark/include/quark/core/testkit.hpp:313) only ever
-// default-constructs its actor ("A actor_; // default-init (implicit ctor)") -- Quark is a submodule
-// this project never patches in-tree (CLAUDE.md), so there is no way to forward a runtime-configured
-// `OpenAIChatClient<Store>`/`AnthropicChatClient<Store>` (Phase D/E -- neither is default-
-// constructible; both need a host/port/SecretRef at construction) through `TestKit` today. Rather than
+// end to end. (Historical, at the time this file was written: `AgentSession<ChatClientT>`'s
+// `chat_client_` member -- then `core/agent_session.hpp`, since deleted, ADR-037 ported it to
+// `rt/agent_session.hpp` -- had no public setter and no non-default constructor -- by design, per
+// `initialize()`'s own comment: "the mock ChatClient's own canned behavior is already baked in by
+// construction rather than passed through TestKit." `quark::TestKit<A>` (then
+// third_party/quark/include/quark/core/testkit.hpp:313, since removed entirely) only ever
+// default-constructed its actor ("A actor_; // default-init (implicit ctor)") -- Quark was a
+// submodule this project never patched in-tree (CLAUDE.md), so there was no way to forward a
+// runtime-configured `OpenAIChatClient<Store>`/`AnthropicChatClient<Store>` (Phase D/E -- neither is
+// default-constructible; both need a host/port/SecretRef at construction) through `TestKit` then.
+// Whether this scoping constraint still holds against `rt::AgentSession` is not re-verified here.)
+// Rather than
 // invent new, unreviewed `AgentSession` wiring under this proof phase's own time budget (CLAUDE.md:
 // invariant-adjacent, hot-path-adjacent surfaces go through design -> red-team -> prove -> judge, not
 // an ad-hoc change), this file proves G1's actual claim at the layer 004 itself scopes to: ONE

@@ -133,8 +133,9 @@ export function GettingStarted() {
           <RevealItem>
             <p className="gs-note">
               <code>register_agent&lt;A&gt;()</code>'s compiled metadata and the live run loop meet
-              on <code>AgentSession&lt;ChatClientT, StateT, HistoryProviderT&gt;</code> — a real
-              Quark actor whose <code>StartRun</code> ask resolves a whole multi-round tool
+              on <code>AgentSession&lt;ChatClientT, StateT, HistoryProviderT&gt;</code> — running
+              on AgentEngine's own <code>agentengine::rt::</code> runtime, whose{" "}
+              <code>StartRun</code> resolves a whole multi-round tool
               conversation internally (extracting, capability/approval-checking, and invoking every
               tool call the bound <code>ChatClientT</code> requests, feeding results back, and
               converging on a final answer), not just one model call. Real, live backends exist for

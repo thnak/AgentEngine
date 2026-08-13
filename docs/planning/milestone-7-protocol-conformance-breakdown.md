@@ -12,6 +12,17 @@ enforcement), and 006 §6b's G6-G9 ... all hold — closing 019 §2's wake-condi
 (Declarative Agent and Workflow Format), plus 006 §6b (`Backgroundable`/`StandingEffect`) per
 `docs/planning/backgroundable-standingeffect-gap.md`'s assignment. All five Reviewed (2026-08-05).
 
+**Historical note (added post-ADR-037, 2026-08-13):** every `quark::`/`Quark` reference below (e.g.
+`quark::Engine`, `quark::TestKit`, Quark's `EventLog<T,S>`/`Store`) is a dated, point-in-time record
+of what this milestone's phases were actually built and proven against as of 2026-08-08, matching
+this doc's own append-only "Outcome" log convention — it is not a claim about what exists today.
+`decisions/ADR-037-remove-quark-as-core-runtime.md` (executed 2026-08-13, after this doc's most
+recent dated entry) later removed Quark as a dependency entirely; every test file this doc names as
+proven "under `quark::TestKit`" or "against a REAL `quark::Engine`" has since been ported onto
+`agentengine::rt::` equivalents (see `tests/CMakeLists.txt`'s own per-test ADR-037 migration notes).
+Anyone resuming Milestone 7 work from this doc should read its Quark mentions as history, and check
+current test files directly for what they actually run against today.
+
 ## Current state (verified 2026-08-08, after M6)
 
 | Item | State |

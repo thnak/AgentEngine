@@ -1,6 +1,6 @@
 # 001 — Execution Model
 
-**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Depends on:** 003, 006, 007, Quark 001/002/006/015/018 · **Gate:** §9
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Depends on:** 003, 006, 007 (historical: originally also Quark 001/002/006/015/018 — ADR-037 removed Quark as a dependency, see §1) · **Gate:** §9
 
 ## Goal
 
@@ -8,24 +8,31 @@ Define how an agent application *runs*: what a run is, what executes it, what ma
 concurrently, and how cancellation, deadlines, and failure behave. Everything else in this
 specification assumes this model.
 
-## 1. The actor mapping
+## 1. The runtime mapping
 
-AgentEngine does not implement a scheduler. It maps its concepts onto Quark's and inherits Quark's
-proven invariants.
+AgentEngine implements its own runtime substrate, `agentengine::rt::` — plain, host-held C++23
+objects and coroutines, no actor engine underneath. (Historical: this section originally mapped
+every concept below onto Quark, a distributed actor engine AgentEngine was built directly on top
+of; `decisions/ADR-037-remove-quark-as-core-runtime.md`, executed 2026-08-13, removed that
+dependency entirely and `third_party/quark` is no longer part of this repository. See
+`AgentEngineSpecification.md` §7 for the full current mapping table.)
 
-| Concept | Quark realization |
+| Concept | `rt::` realization |
 |---|---|
-| **`AgentSession`** | One actor instance, key = `session_id`, `Sequential`, durable via Quark 012 (027 §7: the type is `AgentSession`; "session" stays fine in prose) |
-| **Run** | An `Ask<StartRun, RunResponse>` to the session actor; `ask_stream` for streaming |
+| **`AgentSession`** | A plain templated class instance, one per session, no actor lifecycle; durable via `rt::SessionStore`/`rt::AppendLogStore` (027 §7: the type is `AgentSession`; "session" stays fine in prose) |
+| **Run** | `AgentSession::start_run()`, an `rt::task<result<AgentResponse>>` coroutine; `agentengine::stream<T>` for streaming |
 | **Turn** | A segment of a run's coroutine between model calls |
-| **Agent** | An actor *type* + its compiled metadata (002); stateless agents may be `Stateless<N>` pools |
-| **Tool invocation** | A message to a tool executor — pool actor, plugin host, or sandbox |
-| **Workflow** | A supervising actor owning a graph of executor actors (014) |
+| **Agent** | A conforming C++ type + its compiled metadata (002) |
+| **Tool invocation** | An ordinary (possibly coroutine) function call through `tool_pipeline.hpp`'s invoke path — no message send |
+| **Workflow** | `WorkflowSupervisor`, a plain object driving a superstep loop over a graph of executors via `rt::ThreadPool` (014) |
 
-**I1 (one session, one executor)** is therefore not something this engine enforces — it is Quark's
-single-executor invariant, and AgentEngine adds no locks, no session mutex, and no re-entrancy of
-its own. A second concurrent run against the same session queues behind the first in mailbox FIFO
-order (see §4 for the alternative the caller may request).
+**I1 (one session, one executor)** is enforced by `rt::AsyncMutex session_mutex_`, acquired for the
+whole duration of every public async entry point (`start_run`, `resolve_interaction`) — a
+runtime-checked guard, not an actor mailbox's structural exclusivity (historical: this invariant
+used to be Quark's own single-executor mailbox guarantee, requiring no locks of AgentEngine's own;
+ADR-037's own red-team finding names this as a real, honestly-tracked regression from
+structurally-enforced to runtime-checked). A second concurrent run against the same session queues
+behind the first on that same lock (see §4 for the alternative the caller may request).
 
 ## 2. Run lifecycle
 
@@ -89,15 +96,18 @@ guards: max_turns, deadline, token budget, cancellation
   pre-registered policy. Nothing in the model's output selects its own permissions (**I3**).
 - **Every iteration is a checkpoint boundary** (019). A run may be suspended between turns without
   losing work and without holding a sandbox, connection, or activation.
-- **Streaming does not change the loop**, only the emission: with `ask_stream` the response is
-  emitted incrementally over Quark's credit-controlled reply ring (Quark 006/024, ADR-018), so a
-  slow consumer applies backpressure to the provider read instead of buffering unboundedly.
+- **Streaming does not change the loop**, only the emission: the response is emitted incrementally
+  over `agentengine::stream<T>`, a credit-controlled producer/consumer pair over `rt::channel<T,E>`
+  (historical: originally Quark's own credit-controlled reply ring, ADR-018; ADR-037 replaced the
+  backend, the credit-controlled contract itself is unchanged), so a slow consumer applies
+  backpressure to the provider read instead of buffering unboundedly.
 
 ## 4. Concurrency
 
 Three distinct concurrency axes, with different answers:
 
-1. **Across sessions** — fully parallel. This is the scaling axis; Quark's scheduler owns it.
+1. **Across sessions** — fully parallel. This is the scaling axis; `rt::ThreadPool` (historical:
+   Quark's scheduler before ADR-037) owns it.
 2. **Within a run, across tool calls** — parallel *only* when every tool in the batch declares
    `Parallelizable` (006). A batch containing one non-parallelizable tool runs the whole batch
    sequentially in the model's emitted order. Default is sequential: a tool that mutates external
@@ -114,11 +124,13 @@ capability set, never a superset (007).
 
 ## 5. Cancellation and deadlines
 
-- Cancellation is Quark's `std::stop_token`, propagated into the provider call, the sandbox
-  execution, and every outbound protocol request. There is no cooperative-polling-only path.
-- Deadlines are **monotonic and propagated as remaining duration** (Quark 018), including across
-  nodes and into MCP/A2A calls, so a cross-process agent call inherits the caller's budget instead
-  of restarting the clock.
+- Cancellation is plain `std::stop_token`, propagated into the provider call, the sandbox
+  execution, and every outbound protocol request. There is no cooperative-polling-only path
+  (unchanged by ADR-037 — this was never actor-specific).
+- Deadlines are **monotonic and propagated as remaining duration**, including into MCP/A2A calls, so
+  a cross-process agent call inherits the caller's budget instead of restarting the clock (there is
+  no multi-node cluster in `rt::` land — see `AgentEngineSpecification.md` §7 — so cross-*node*
+  propagation is out of scope post-ADR-037).
 - **A canceled run must still be attributable and finalizable**: partial results, token usage, and
   emitted effects are recorded. Cancellation is a state, not an abort.
 - Deadline exhaustion inside a turn terminates the run at the next checkpoint boundary with
@@ -134,8 +146,11 @@ capability set, never a superset (007).
   retrying a `Policy` denial is how a loop becomes an attack.
 - **A tool failure is not a run failure by default** — it is a tool result the model observes and
   may recover from, bounded by `max_consecutive_tool_failures`.
-- **Supervision** uses Quark 007: a run that violates an invariant fails the run and, per policy,
-  restarts or stops the session actor without taking down the node.
+- **Supervision**: a run that violates an invariant fails the run and returns a
+  `JobOutcome{faulted, fault_ptr}` (`rt::ThreadPool::submit()`'s own containment) to the caller,
+  without taking down the process (historical: this used to be Quark's actor-restart supervision,
+  §7's policy-driven restart/stop; ADR-037's own containment mechanism is per-unit-of-work, not
+  actor-restart-shaped — a named, permanent narrowing, not a like-for-like port).
 - **A sandbox failure (timeout, OOM, crash, escape attempt) is always a structured result**, never
   a host crash and never an exception crossing the seam (008).
 
@@ -148,7 +163,7 @@ Every nondeterministic input crosses a recorded seam:
 | Provider call | request + response (or stream chunks) | serving from the recording |
 | Sandbox execution | inputs, outputs, exit status, artifact digests | replaying outputs |
 | Tool invocation (remote) | request + response | replaying the response |
-| Clock | monotonic reads at turn boundaries | virtual clock (Quark 014) |
+| Clock | monotonic reads at turn boundaries | virtual clock (historical: Quark 014's mechanism before ADR-037; the recorded-seam contract itself is unchanged) |
 | RNG | seed | reseeding |
 
 A recorded run replays with **no external service contacted**. This is the substrate for the
@@ -159,15 +174,18 @@ controls in 016 apply to recordings as strictly as to telemetry.
 
 | Work | Executes on | Why |
 |---|---|---|
-| Turn loop, context assembly, middleware | Session activation (Quark worker) | cheap, non-blocking, ordered |
+| Turn loop, context assembly, middleware | The calling coroutine directly (`rt::AsyncMutex`-guarded, no per-session worker) | cheap, non-blocking, ordered |
 | Provider HTTP/stream I/O | Async coroutine over the PAL event loop | no thread per run |
-| Native in-process tool | Session activation if declared `Fast`; pool actor otherwise | avoid blocking the drain path |
+| Native in-process tool | Inline if declared `Fast`; `rt::ThreadPool` otherwise | avoid blocking the drain path |
 | WASM plugin call | Plugin host, on a pooled instance | µs instantiation, no thread |
 | Sandbox execution (interpreter) | Out-of-process backend, awaited asynchronously | isolation requires a boundary |
-| Blocking/foreign C tool | Quark `BlockingHandler` (ADR-015), per invocation | the one axis stackless cannot serve |
+| Blocking/foreign C tool | `rt::ThreadPool::submit()`, per invocation | the one axis stackless cannot serve |
 
-**Rule:** nothing that can block for more than a bounded budget runs on a session activation. A
-tool that lies about being `Fast` is a defect caught by the drain-budget test (023).
+**Rule:** nothing that can block for more than a bounded budget runs inline on the session's own
+call stack. A tool that lies about being `Fast` is a defect caught by the drain-budget test (023).
+(Historical: this section originally described "session activation"/"pool actor" as Quark's own
+per-actor scheduling primitives; ADR-037 removed Quark, and `rt::` has no per-actor scheduling — see
+`AgentEngineSpecification.md` §7.)
 
 ## 9. Promotion gate
 

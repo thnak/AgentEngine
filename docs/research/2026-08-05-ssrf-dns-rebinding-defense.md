@@ -71,7 +71,9 @@ never runs against a string at all — it runs against the 32-bit `in_addr` `get
 `inet_pton` for an IP-literal allowlist entry) already produced, which is the canonical binary form
 regardless of how the original text was spelled. The IPv6-form bypass is moot for a different reason
 (§5): this proxy's connect path is IPv4-only (matching the vendored PAL's own current locator
-limitation, `third_party/quark/pal/*/net.hpp`), so `getaddrinfo` is called with `ai_family = AF_INET`
+limitation, `include/agentengine/pal/net.hpp` — historical: `third_party/quark/pal/*/net.hpp` before
+ADR-037 removed Quark and replaced this backend with `agentengine::pal`), so `getaddrinfo` is called
+with `ai_family = AF_INET`
 and an IPv6-only answer is a resolution failure, not a silently-accepted alternate encoding of an
 address this proxy would otherwise have blocked.
 
@@ -85,8 +87,10 @@ address this proxy would otherwise have blocked.
   does not attempt to build). `https://` allowlist/request entries are rejected with a clear,
   structured error. A follow-up ADR is needed once a TLS client exists to extend `HostEgressProxy` to
   `https`.
-- **IPv6 egress.** Matches the vendored PAL's own IPv4-only locator (`quark::pal::tcp_connect` takes a
-  32-bit host-order address). An IPv6-only host fails closed with a clear "could not resolve an
+- **IPv6 egress.** Matches the vendored PAL's own IPv4-only locator (`agentengine::pal::tcp_connect`,
+  `include/agentengine/pal/net.hpp`, takes a 32-bit host-order address — historical:
+  `quark::pal::tcp_connect` before ADR-037). An IPv6-only host fails closed with a clear "could not
+  resolve an
   IPv4 address for this host" error — an honest capability gap, not a silent narrowing of the
   blocklist's coverage.
 - **Automatic redirect-following.** A 3xx response is returned to the caller as-is; the proxy does not

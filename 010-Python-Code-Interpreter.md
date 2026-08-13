@@ -314,8 +314,9 @@ traces are comparable across frameworks.
   a fixed minimum rescan (monthly) plus an out-of-band bump for any CVSS-High-or-above finding in a
   pinned package, each bump a deliberate, single-commit change gated on the full §9 promotion suite
   passing clean before the pin moves — the identical discipline already applied to the Wasmtime pin
-  (009 §11 Q4) and Quark's submodule commit, extended to this pinned artifact rather than left
-  ungoverned.
+  (009 §11 Q4), extended to this pinned artifact rather than left ungoverned (historical: this
+  discipline was also previously applied to Quark's submodule commit — ADR-037 removed the Quark
+  submodule from the project entirely).
 - ~~**Q2** — Nested per-tool approval inside CodeAct: better fidelity, worse UX. Left open.~~
   **Resolved, No new interactive mode — the fidelity gap closes through policy, not through
   interrupting the run (2026-08-04):** the tension dissolves once "fidelity" is split into two

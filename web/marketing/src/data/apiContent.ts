@@ -67,7 +67,7 @@ export const apiPages: ApiPage[] = [
     label: "AgentSession & ChatClient",
     href: `${SITE_BASE}/api/runtime.html`,
     eyebrow: "Agent core (L2)",
-    description: "The Quark actor a session really runs on, and the live Anthropic/OpenAI/Replay provider backends behind it.",
+    description: "AgentEngine's own agentengine::rt:: runtime a session really runs on, and the live Anthropic/OpenAI/Replay provider backends behind it.",
     status: "real",
   },
   {
@@ -298,11 +298,11 @@ export const runtimeEntries: ApiEntry[] = [
     id: "agent-session",
     status: "real",
     tag: "AgentSession<ChatClientT, StateT, HistoryProviderT>",
-    title: "AgentSession — a real Quark actor, with a real internal tool-call loop",
+    title: "AgentSession — running on AgentEngine's own runtime, with a real internal tool-call loop",
     body:
-      "A quark::Actor<AgentSession<...>, quark::Sequential> proven end-to-end by the M1 walking skeleton: ask<AgentResponse>(StartRun{...}) grows history() by a real user+assistant turn pair with real reply text and token usage. As of ADR-027, one StartRun ask resolves a WHOLE multi-round tool conversation internally — the ChatClient is called again and again, tool calls are extracted, capability/approval-checked, and invoked through the real 006 §3 pipeline, and results are fed back — all inside handle(), never a caller-driven loop. A text_derived ToolCall (reconstructed from model text rather than a real vendor tool-call field) is denied by the declassification gate regardless of the target tool's own approval_mode — the confused-deputy case ADR-023 named. Fails closed on every unresolved branch: a denied call never invokes, and exhausting max_turns_ without convergence never hangs, it simply never resolves the ask. Dozens of further test files cover checkpoint, fork, delegation, redact, isolation, node-loss fencing, poison-run handling, suspend/resume, token budgets, background tasks, timers, and skill mounting end-to-end.",
-    cite: "include/agentengine/core/agent_session.hpp:295",
-    href: gh("include/agentengine/core/agent_session.hpp"),
+      "agentengine::rt::AgentSession<ChatClientT, StateT, HistoryProviderT>, proven end-to-end since the M1 walking skeleton: start_run(StartRun{...}) grows history() by a real user+assistant turn pair with real reply text and token usage. As of ADR-027, one start_run() call resolves a WHOLE multi-round tool conversation internally — the ChatClient is called again and again, tool calls are extracted, capability/approval-checked, and invoked through the real 006 §3 pipeline, and results are fed back — all inside start_run(), never a caller-driven loop. A text_derived ToolCall (reconstructed from model text rather than a real vendor tool-call field) is denied by the declassification gate regardless of the target tool's own approval_mode — the confused-deputy case ADR-023 named. Fails closed on every unresolved branch: a denied call never invokes, and exhausting max_turns_ without convergence never hangs, it simply returns a failed result. Dozens of further test files cover checkpoint, fork, delegation, redact, isolation, poison-run handling, suspend/resume, token budgets, background tasks, timers, and skill mounting end-to-end. (Historical: originally a quark::Actor<AgentSession<...>, quark::Sequential>, addressed via ask<AgentResponse>(); ADR-037 ported it onto this rt:: runtime, same behavioral guarantees, no actor/mailbox mechanism underneath.)",
+    cite: "include/agentengine/rt/agent_session.hpp:323",
+    href: gh("include/agentengine/rt/agent_session.hpp"),
   },
   {
     id: "session-scoped-stateful-tools",
@@ -310,7 +310,7 @@ export const runtimeEntries: ApiEntry[] = [
     tag: "make_tool_descriptor_with_invoke<ToolT>(InvokeFn)",
     title: "Session-scoped stateful tools — a tool can close over a session's own state",
     body:
-      "A Tool<...> conformer's static invoke() has no path to its owning AgentSession's per-session data — every prior tool ran against process-wide statics if it needed to remember anything (tools/cli_chat.cpp's own CodeAct wiring, before ADR-030). make_tool_descriptor_with_invoke<ToolT>() keeps ToolT's compile-time-checked declarations (capability ceiling, approval, effect class, schemas) but lets a HistoryProviderT conformer supply the real invoke logic as a callable that captures its own member state — no core-seam change needed, since a provider is already a per-AgentSession-instance member. The one enforced guard: a state-capturing tool can never also be Backgroundable — background_task() rejects the combination outright, closing a real dangling-reference hazard a red-team pass found (a detached background thread is not Quark-Sequential-serialized against the capturing closure's own session-actor lifetime).",
+      "A Tool<...> conformer's static invoke() has no path to its owning AgentSession's per-session data — every prior tool ran against process-wide statics if it needed to remember anything (tools/cli_chat.cpp's own CodeAct wiring, before ADR-030). make_tool_descriptor_with_invoke<ToolT>() keeps ToolT's compile-time-checked declarations (capability ceiling, approval, effect class, schemas) but lets a HistoryProviderT conformer supply the real invoke logic as a callable that captures its own member state — no core-seam change needed, since a provider is already a per-AgentSession-instance member. The one enforced guard: a state-capturing tool can never also be Backgroundable — background_task() rejects the combination outright, closing a real dangling-reference hazard a red-team pass found (a detached background thread is not serialized against the capturing closure's own session lifetime by rt::AsyncMutex).",
     cite: "include/agentengine/core/tool_pipeline.hpp",
     href: gh("include/agentengine/core/tool_pipeline.hpp"),
   },
@@ -626,8 +626,9 @@ auto bridged = union_codeact_tools(ToolTable::from_tools<>(), skill_tools);
 runner.refresh_agent_tools(ToolBridgeConfig{*bridged, {}, /*approved=*/true});`;
 
 // 014-Workflow-and-Orchestration.md §1/§2/§3 -- Milestone 6, complete. A Workflow is DATA (nothing
-// here is an actor, a scheduler, or an execution decision); a WorkflowSupervisor actor runs it
-// round-by-round over a real quark::Engine.
+// here is an actor, a scheduler, or an execution decision); a WorkflowSupervisor runs it
+// round-by-round over AgentEngine's own agentengine::rt:: runtime (historical: originally a real
+// quark::Engine; ADR-037 replaced it).
 export interface WorkflowEdgeKind {
   kind: string;
   meaning: string;
@@ -689,9 +690,9 @@ export const workflowEntries: ApiEntry[] = [
     tag: "WorkflowSupervisor · RunWorkflow -> WorkflowResult",
     title: "The superstep barrier — measured, not inferred from correct output",
     body:
-      "WorkflowSupervisor is a quark::Actor<..., quark::Sequential> that co_awaits cross-actor asks across a round barrier -- no round N+1 executor entry may precede every round-N executor's exit. This needs a real quark::Engine, not TestKit (which has no async carrier to host that co_await). Both of the properties that make this worth building are measured, not merely inferred from output that a fully-serialized or fully-overlapping implementation would produce identically: a 3-round chain's own entry/exit timestamps prove the barrier holds, and three nodes sleeping in one fan-out round are checked against the SERIAL sum to prove they genuinely overlapped, not silently degraded into one worker draining them in sequence (the exact regression a naive sequential-key placement caused once, before spread_executor_keys existed).",
-    cite: "include/agentengine/workflow/supervisor.hpp:154",
-    href: gh("include/agentengine/workflow/supervisor.hpp"),
+      "WorkflowSupervisor, running on AgentEngine's own agentengine::rt:: runtime, co_awaits cross-executor calls across a round barrier -- no round N+1 executor entry may precede every round-N executor's exit, enforced by rt::AsyncMutex/rt::ThreadPool rather than an actor mailbox. Both of the properties that make this worth building are measured, not merely inferred from output that a fully-serialized or fully-overlapping implementation would produce identically: a 3-round chain's own entry/exit timestamps prove the barrier holds, and three nodes sleeping in one fan-out round are checked against the SERIAL sum to prove they genuinely overlapped, not silently degraded into one worker draining them in sequence (the exact regression a naive sequential-key placement caused once, before spread_executor_keys existed). (Historical: originally a quark::Actor<..., quark::Sequential> needing a real quark::Engine to host its cross-actor co_await; ADR-037 ported it onto rt::, same measured guarantees.)",
+    cite: "include/agentengine/rt/workflow_supervisor.hpp:472",
+    href: gh("include/agentengine/rt/workflow_supervisor.hpp"),
   },
   {
     id: "workflow-patterns",

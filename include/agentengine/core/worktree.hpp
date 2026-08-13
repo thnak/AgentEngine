@@ -76,8 +76,8 @@ struct Tree {
 
 // A mutable name -> Tree digest (025 §2) -- what "the worktree" currently is, for one session or
 // one principal (029 §2 reuses this exact shape one level up, scoped to a principal instead).
-// Persistence is Quark's `Store` seam directly, not this header's object store -- see the file-top
-// comment and the milestone-3 breakdown's decision 1.
+// Persistence rides `agentengine::rt::AppendLogStore` directly, not this header's object store --
+// see the file-top comment (ADR-037) and the milestone-3 breakdown's decision 1.
 struct Ref {
     std::string name;       // e.g. "session:s-42" or "principal:p-7"
     Digest      tree_digest;
@@ -600,9 +600,9 @@ struct BranchMergeOutcome {
 // re-read live and compared against what the caller passed: if the parent moved in between (someone
 // else merged first), this fails closed with `worktree.merge_stale_parent` rather than silently
 // merging against a base that is no longer current. This narrows, but does not eliminate, the race:
-// full elimination needs the read-merge-commit sequence to run inside one Quark-actor turn (025
+// full elimination needs the read-merge-commit sequence to run inside one serialized turn (025
 // §4's "one writer per tree"), which this seam-level function -- called directly by a caller, not
-// yet wrapped in an actor -- cannot itself guarantee. Phase B4 stress-proves this under concurrent
+// yet wrapped in one -- cannot itself guarantee. Phase B4 stress-proves this under concurrent
 // load and, if the residual window between the recheck below and `commit_ref` proves reachable,
 // drives a real fix (e.g. a compare-and-set primitive on `Store`) rather than living with this
 // best-effort recheck indefinitely.

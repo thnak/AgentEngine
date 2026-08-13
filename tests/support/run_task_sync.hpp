@@ -1,16 +1,19 @@
 #pragma once
-// Test-only synchronous driver for an `ae::task<T>` (quark::task<T>, ADR-047) whose body is known to
-// never genuinely park -- e.g. a ChatClient test conformer exercised directly from a plain `main()`,
-// with no `quark::Activation`/`Engine` anywhere in the picture. `quark::task<T>` has no synchronous
-// "drive to completion and give me the value" API by design: it is meant to be `co_await`ed only from
-// inside another coroutine (`quark/core/task.hpp`'s own banner comment; `task_value_return_test.cpp`
-// never drives one from a plain function either). Milestone 5 Phase B4
+// Test-only synchronous driver for an `ae::task<T>` (`agentengine::rt::task<T>`, `core/task.hpp`)
+// whose body is known to never genuinely park -- e.g. a ChatClient test conformer exercised directly
+// from a plain `main()`, with no `rt::ThreadPool`/session runtime anywhere in the picture.
+// `rt::task<T>` has no synchronous "drive to completion and give me the value" API by design: it is
+// meant to be `co_await`ed only from inside another coroutine (`rt/task.hpp`'s own banner comment;
+// `task_value_return_test.cpp` never drives one from a plain function either). Milestone 5 Phase B4
 // (docs/planning/milestone-5-providers-identity-secrets-breakdown.md) needs exactly this seam: several
-// pre-existing tests call a `ChatClient` conformer's `chat()` directly, outside any actor, and the
-// conformers themselves are trivial (no real I/O, no cross-actor `co_await` inside) -- so a minimal
+// pre-existing tests call a `ChatClient` conformer's `chat()` directly, outside any session, and the
+// conformers themselves are trivial (no real I/O, no cross-call `co_await` inside) -- so a minimal
 // driver coroutine, manually `resume()`d once, is enough; nothing here supplies a wakeup carrier, so
 // if the awaited task ever DID genuinely park, this would simply hang (never do this outside a test).
-// Real, actor-hosted call sites (AgentSession::handle) use a real `quark::Activation` instead.
+// Real, session-hosted call sites (`AgentSession::start_run`) run inline on the caller's own coroutine
+// instead (historical: this comment used to describe `quark::task<T>` and a real `quark::Activation`
+// before ADR-037 removed Quark as a dependency; `agentengine::rt::task<T>` has no actor/activation
+// concept at all).
 
 #include <coroutine>
 #include <exception>
@@ -31,7 +34,7 @@ struct DriverPromise {
     Driver<T> get_return_object() noexcept {
         return Driver<T>{std::coroutine_handle<DriverPromise>::from_promise(*this)};
     }
-    // Lazy, matching quark::task<>/task<T>'s own idiom: the caller resumes it explicitly, once.
+    // Lazy, matching rt::task<T>'s own idiom: the caller resumes it explicitly, once.
     std::suspend_always initial_suspend() noexcept { return {}; }
     std::suspend_always final_suspend() noexcept { return {}; }
     void return_void() noexcept {}

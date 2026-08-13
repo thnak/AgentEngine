@@ -30,13 +30,10 @@ export function Hero() {
           </motion.h1>
 
           <motion.p className="lede" variants={item}>
-            AgentEngine hosts agents, sessions, tools, and multi-agent workflows on the{" "}
-            <a href="https://github.com/thnak/QuarkCpp" target="_blank" rel="noreferrer" style={{ textDecoration: "underline" }}>
-              Quark
-            </a>{" "}
-            actor engine. Untrusted code isolation and a Python interpreter are built-in
-            subsystems, not optional add-ons — speaking the open agent protocols of 2026: MCP, A2A,
-            AG-UI, OpenTelemetry GenAI.
+            AgentEngine hosts agents, sessions, tools, and multi-agent workflows on its own
+            self-contained C++23 runtime. Untrusted code isolation and a Python interpreter are
+            built-in subsystems, not optional add-ons — speaking the open agent protocols of 2026:
+            MCP, A2A, AG-UI, OpenTelemetry GenAI.
           </motion.p>
 
           <motion.div className="hero-ctas" variants={item}>

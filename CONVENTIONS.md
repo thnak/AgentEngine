@@ -10,12 +10,14 @@ negotiable here either.
 
 - **Windows 11 / x86-64 is the v1 target.** Linux / x86-64 is the next target, taken up once the
   Windows implementation reaches a stable state — not built simultaneously from day one.
-  **macOS is not a target**: Quark has no macOS PAL backend, none is planned, and no AgentEngine
-  RFC may claim macOS support (021 §2/§7 OQ-1 resolved).
-- **All OS specifics go through a seam, even for a single-platform build.** Quark's PAL (spec 019)
-  for scheduler/IO/clock/net; the Sandbox backend interface (008) for isolation; the plugin host
-  (009) for WASM. AgentEngine core contains **no** `#ifdef _WIN32` outside those seams — this holds
-  from the first Windows-only line of code, so adding Linux later is a backend, not a rewrite.
+  **macOS is not a target**: no macOS PAL backend exists, none is planned, and no AgentEngine
+  RFC may claim macOS support (021 §2/§7 OQ-1 resolved) (historical: this followed Quark's own PAL
+  coverage before ADR-037 removed Quark as a dependency; the policy is unchanged).
+- **All OS specifics go through a seam, even for a single-platform build.** `agentengine::pal` (spec
+  019; historical: Quark's PAL before ADR-037) for scheduler/IO/clock/net; the Sandbox backend
+  interface (008) for isolation; the plugin host (009) for WASM. AgentEngine core contains **no**
+  `#ifdef _WIN32` outside those seams — this holds from the first Windows-only line of code, so
+  adding Linux later is a backend, not a rewrite.
 - **Isolation parity is a gate, not a goal.** Any capability the sandbox seam exposes must be
   enforceable on every OS in the *current* target set (021 §2) or it does not enter the seam.
   Backends may differ in *strength* (documented per profile in 008); they may not differ in
@@ -24,11 +26,13 @@ negotiable here either.
 ## Language & dependencies
 
 - **C++23, std-first core.** `std::expected`, `<coroutine>`, `std::stop_token`, `std::pmr`,
-  concepts + deducing-this. Matches Quark, which the core sits directly on.
+  concepts + deducing-this (historical: matched Quark, which the core originally sat directly on,
+  before ADR-037 removed that dependency).
 - **Error model: `ae::result<T> = std::expected<T, ae::error>`.** No exceptions for control flow.
   Hot paths are `noexcept`. Exceptions may surface only from cold setup paths.
 - **Dependency posture — the three tiers.**
-  1. **Core (`include/agentengine/core`)**: std + Quark only. No third-party dependency, ever.
+  1. **Core (`include/agentengine/core`)**: std only, zero third-party dependency, ever (historical:
+     this tier included Quark before ADR-037 removed it as a dependency).
   2. **Seam backends (`src/backends/*`)**: may take a heavy dependency (wasmtime, an HTTP client,
      a JSON library, a TLS stack), one dependency per backend, behind a CMake option, never
      linked into a build that does not select that backend.
@@ -59,7 +63,9 @@ negotiable here either.
 ## Hot-path rules (023)
 
 - **Zero heap allocations in the per-token streaming path** (measured with a hooked allocator).
-- **A run's steady state costs one Quark activation**, not a thread, and not a fiber.
+- **A run's steady state costs one `rt::AsyncMutex`-guarded in-flight call**, not a thread, and not
+  a fiber (historical: "one Quark activation" before ADR-037 replaced actor mailbox exclusivity
+  with `rt::AsyncMutex`).
 - **Session footprint is budgeted**: idle sessions per GB is a benchmarked number, not an estimate.
 - Sandbox creation is amortized: profiles declare whether they pool, snapshot, or cold-start, and
   each declares a measured p50/p99 (023).
@@ -78,7 +84,6 @@ include/agentengine/
 src/
   backends/        sandbox backends (wasm/, native_jail/, remote/) + provider clients
   ...              non-template translation units
-third_party/quark/ Quark submodule — unmodified, never patched in tree
 wit/               WIT worlds defining the plugin ABI (009) — versioned, the contract of record
 plugins/           first-party plugin sources (build to .wasm components)
 schema/            JSON Schema for the declarative format (015) + protocol fixtures

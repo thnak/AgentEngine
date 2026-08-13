@@ -1,4 +1,4 @@
-import { QUARK_URL, README_URL, REPO_URL, SPEC_URL } from "../data/content";
+import { README_URL, REPO_URL, SPEC_URL } from "../data/content";
 
 export function Footer() {
   return (
@@ -12,7 +12,7 @@ export function Footer() {
             AgentEngine
           </a>
           <p className="footer-fine">
-            C++23 · Quark actor engine · MCP · A2A · AG-UI · OTel GenAI
+            C++23 · agentengine::rt:: runtime · MCP · A2A · AG-UI · OTel GenAI
           </p>
         </div>
 
@@ -26,16 +26,13 @@ export function Footer() {
           <a href={README_URL} target="_blank" rel="noreferrer">
             RFC index
           </a>
-          <a href={QUARK_URL} target="_blank" rel="noreferrer">
-            Quark
-          </a>
         </nav>
       </div>
 
       <div className="container">
         <p className="footer-fine">
           Status: pre-v1, implementation under way — Milestones 0–6 complete, Milestone 7
-          (protocol conformance) in progress; every RFC is Reviewed. Licence: MIT, matching Quark.
+          (protocol conformance) in progress; every RFC is Reviewed. Licence: MIT.
         </p>
       </div>
     </footer>

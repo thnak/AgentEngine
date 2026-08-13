@@ -1,6 +1,6 @@
 # 022 — Testing and Evaluation
 
-**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Depends on:** 001, 008, 016, 019, Quark 014 · **Gate:** §7
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Depends on:** 001, 008, 016, 019 (historical: originally also Quark 014 — ADR-037 removed Quark as a dependency, see §2) · **Gate:** §7
 
 ## Goal
 
@@ -13,7 +13,7 @@ requires.
 | Kind | What it covers | Determinism |
 |---|---|---|
 | **Unit** | Types, schemas, mappings, policy evaluation | Exact |
-| **Simulation** | Full engine on Quark's deterministic scheduler: interleavings, failures, timeouts, restarts, with no real threads or clocks | Exact |
+| **Simulation** | Full engine on a deterministic scheduler: interleavings, failures, timeouts, restarts, with no real threads or clocks (historical: this rode Quark's own deterministic scheduler; ADR-037 removed Quark, and `agentengine::rt::` has no deterministic-simulation scheduler of its own yet — a named, currently-unbuilt gap, not a like-for-like port) | Exact |
 | **Replay** | A recorded run re-executed offline (001 §7) | Exact |
 | **Conformance** | Protocol suites at a named revision (011, 012, 013) | Exact |
 | **Hostile** | Sandbox containment, injection, path escape, capability leaks (008, 017) | Exact outcome class |
@@ -26,7 +26,14 @@ gate gets disabled by the third person it inconveniences.
 
 ## 2. Deterministic simulation
 
-Built on Quark 014's simulation scheduler:
+**Historical note (ADR-037):** this section was originally built entirely on Quark 014's simulation
+scheduler. ADR-037 (2026-08-13) removed Quark as a dependency; `agentengine::rt::` has no
+deterministic-simulation scheduler of its own today, so the capabilities below are retained as the
+design intent this testing model still wants, not a description of a mechanism that currently
+exists. Real, tested replacements are ordinary unit/integration tests over `rt::` primitives
+directly (see `tests/` — 220+ passing tests) rather than a full deterministic-scheduler simulation.
+
+Originally built on Quark 014's simulation scheduler:
 
 - **Virtual time** — timeouts, deadlines, reminders, and idle passivation are tested in
   milliseconds of real time.

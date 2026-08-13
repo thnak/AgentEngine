@@ -87,7 +87,9 @@ struct SecretStore {                                  // concept
   audit — not a filter applied at query time.
 - Cross-tenant access is denied at the actor boundary; a cross-tenant leak is a release-blocking
   defect class, tested with a dedicated suite.
-- Resource limits and cost budgets are per tenant (Quark 022), so one tenant cannot starve another.
+- Resource limits and cost budgets are per tenant, so one tenant cannot starve another (historical:
+  this RFC originally cited Quark 022 here; ADR-037 removed that dependency,
+  `AgentEngineSpecification.md` §7).
 
 ## 7. Promotion gate
 
@@ -108,9 +110,10 @@ struct SecretStore {                                  // concept
   already lists for A2A, not a competing fourth mechanism. OAuth/OIDC stays the default for arbitrary
   A2A peers (no prior trust-domain federation needed); SPIFFE-backed mTLS fits the service-to-service
   case OAuth serves worst — an operator's own multi-deployment estate, a federated partner, or a
-  020 §3b triggered run with no calling human to derive a principal from. Mirrors Quark 020 §1's
-  `NodeAuthority` seam, which already names SPIFFE IDs as a pluggable cluster-admission backend one
-  layer down. **X42** (cross-boundary agent trust and governance, OpenQuestions.md OQ-9), if it
+  020 §3b triggered run with no calling human to derive a principal from (historical: this mirrored
+  Quark 020 §1's `NodeAuthority` seam, which already named SPIFFE IDs as a pluggable cluster-admission
+  backend one layer down; ADR-037 removed Quark, and AgentEngine has no multi-node cluster story at
+  all today, `AgentEngineSpecification.md` §7). **X42** (cross-boundary agent trust and governance, OpenQuestions.md OQ-9), if it
   matures and is adopted, would be a governance layer *above* this (cross-organizational trust
   federation), not a replacement for the mTLS/SPIFFE mechanism itself. Full text and the identical
   resolution for the 007-side duplicate: 007 §10 Q4.
@@ -134,7 +137,8 @@ struct SecretStore {                                  // concept
   customers or regulators independent, non-repudiable proof, a deployment choice rather than a v1
   engine requirement — gets a documented path, not a default: an optional signing adapter over the
   existing audit sink, keyed by the `Keyring` seam (the same self-contained-default-plus-heavier-
-  optional-adapter pattern Quark 020 uses for crypto generally), for operators whose trust model
+  optional-adapter pattern this design borrowed from Quark 020's crypto approach — historical credit;
+  ADR-037 removed Quark itself, `AgentEngineSpecification.md` §7), for operators whose trust model
   genuinely differs from 007 §1's.
 - ~~**Q4** — Agent identity in a registry sense: if agents are published and discovered, who vouches
   for the binding between an agent id and its operator?~~ **Resolved, nobody but the relying party's

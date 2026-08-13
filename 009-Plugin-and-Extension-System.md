@@ -24,7 +24,9 @@ capabilities the host hands it, and cannot take the host down.
   limiting: **a heavy library is safer as a plugin than as a linked host dependency**, because a
   plugin holds only what it is granted (see §7).
 - **Async without threads.** WASI 0.3 (2026-06-11) put `async func`, `stream<T>`, and `future<T>`
-  in the Canonical ABI, which maps onto Quark's coroutine handlers instead of a thread per call.
+  in the Canonical ABI, which maps onto `agentengine::rt::task<T>` coroutines instead of a thread per
+  call (historical: originally Quark's coroutine handlers — ADR-037 removed Quark and replaced its
+  runtime with `agentengine::rt::`).
 
 Ecosystem risk here is fundamentally different from the Python-on-WASM risk that shaped 010: **we**
 define the WIT world, and plugin authors compile *to* it from the language they already use. There
@@ -382,8 +384,9 @@ dimension so a misbehaving plugin is visible without code changes.
 - ~~**Q1** — Whether `ae:provider` plugins are viable for latency-sensitive streaming, or whether
   providers should stay host-side seams.~~ **Resolved, conditionally viable, gated on a measurement
   rather than asserted (2026-08-04):** the architectural question is already answered — WASI 0.3's
-  `stream<T>`/`future<T>` map onto Quark coroutines (§1) specifically so guest streaming doesn't need
-  a thread per call, so there's no structural reason `ae:provider` can't stream. What's unproven, with
+  `stream<T>`/`future<T>` map onto `agentengine::rt::task<T>` coroutines (§1) (historical: originally
+  Quark coroutines — ADR-037 removed Quark) specifically so guest streaming doesn't need a thread per
+  call, so there's no structural reason `ae:provider` can't stream. What's unproven, with
   no implementation to measure (design phase), is the marginal per-chunk host↔guest crossing cost
   against a real streaming provider, which 004 §7 G4's existing host-side budget doesn't include.
   Resolved as: **default stays host-side `ChatClient` seams** (004 §3) for the two first-class
@@ -440,9 +443,10 @@ dimension so a misbehaving plugin is visible without code changes.
   this date) — no 0.2/0.3-RC compatibility range. Unlike MCP/A2A, Wasmtime is a build-time embedded
   dependency, not a wire peer whose independently-released versions we must interoperate with
   regardless of our own choice — nothing external forces us to support more than one at a time. Pin
-  to one specific version, the same discipline CONVENTIONS already applies to Quark's submodule
-  commit, CMake's floor, and the compiler versions in 021 §5: a bump is a deliberate, single-commit
-  change gated on the full 008/009 hostile and conformance suites passing clean against the new
+  to one specific version, the same discipline CONVENTIONS already applies to CMake's floor and the
+  compiler versions in 021 §5 (historical: this discipline also previously applied to Quark's
+  submodule commit — ADR-037 removed the Quark submodule from the project entirely): a bump is a
+  deliberate, single-commit change gated on the full 008/009 hostile and conformance suites passing clean against the new
   version before the pin moves, never an ongoing dual-version support burden. Doubling conformance
   and sandbox-escape surface to track two Wasmtime majors concurrently — real cost the "async ABI is
   not a small compatibility surface" framing was right to flag — buys nothing when no external actor

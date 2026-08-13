@@ -56,8 +56,11 @@ maintain per surface.
 
 - **Ordered and monotonic** per run, with a sequence number; a consumer that reconnects resumes by
   sequence where the transport allows and re-syncs by snapshot where it does not.
-- **Backpressure-aware**: emission rides Quark's credit-controlled streams (Quark 024/ADR-018) — a
-  slow UI stalls the producer rather than growing an unbounded buffer.
+- **Backpressure-aware**: emission rides `agentengine::stream<T>` over `rt::channel<T,E>`'s
+  credit-controlled contract (historical: originally described as riding Quark's credit-controlled
+  streams, Quark 024/ADR-018 — ADR-037 removed Quark; the same credit-controlled contract is now
+  implemented natively, see `core/stream.hpp`/`rt/channel.hpp`) — a slow UI stalls the producer rather
+  than growing an unbounded buffer.
 - **Sensitive-content aware**: events carry the same taint and capture policy as telemetry (016);
   a surface configured for metadata-only never sees content it should not.
 - **Replayable**: an event stream replayed from a recording drives a UI identically.
@@ -278,33 +281,41 @@ Approval payloads carry the **exact validated arguments** and the hash the appro
   credit or a shared cursor. Quark's `Topic<M>` is best-effort at-most-once, which is *wrong* here —
   and A2A makes it a **MUST** that every concurrent subscriber to a task receives identical events in
   identical order, so best-effort fan-out is not merely undesirable, it is non-conformant.~~
-  **Resolved (2026-08-04), fully — see below.** For the embedded-host case, 020 §3a licenses
-  `Topic<M>` for *secondary, in-process-only* observers of a run (a debug pane alongside a primary
-  view, where a dropped UI frame is not a correctness bug); A2A's own stricter MUST is closed by the
-  locally-built ordered fan-out below, not by `Topic<M>`.
+  **Resolved (2026-08-04), fully — see below.** For the embedded-host case, 020 §3a originally
+  licensed `Topic<M>` for *secondary, in-process-only* observers of a run (a debug pane alongside a
+  primary view, where a dropped UI frame is not a correctness bug); A2A's own stricter MUST is closed
+  by the locally-built ordered fan-out below, not by `Topic<M>`. **(Historical: ADR-037 removed Quark
+  entirely, so `Topic<M>` is no longer available at all — 020 §3a now serves secondary local
+  observers through the same `Run::observe()` mechanism described below, not a separate best-effort
+  primitive.)**
 
-  **Upstream primitive requested and scoped**: filed as
+  **Upstream primitive originally requested and scoped (historical, closed by ADR-037)**: filed as
   [QuarkCpp#10](https://github.com/thnak/QuarkCpp/issues/10), pre-registered as
   [Quark ADR-039](https://github.com/thnak/QuarkCpp/blob/master/decisions/ADR-039-ordered-reliable-multi-subscriber-fanout.md)
-  (Draft — sketch only, no red-team/prove pass yet). Checking our own §2.3/§2.4 against Quark's
-  proposed two-policy design (`EvictAfter<N>` vs `Block`) settled which one we actually need: A2A's
-  ordering MUST applies only to *currently attached* subscribers, and §2.4 explicitly disclaims
-  gap-free delivery on reconnect (`GetTask`, not the stream, is the source of truth). So
-  `EvictAfter<N>` alone — bounded buffer, then evict with an explicit gap signal, treated by our
-  client exactly like any other A2A disconnect/resubscribe — is sufficient; `Block` is not required
-  for this need.
+  (Draft — sketch only, no red-team/prove pass ever ran). This was never adopted as a live plan to
+  wait on: checking our own §2.3/§2.4 against Quark's then-proposed two-policy design (`EvictAfter<N>`
+  vs `Block`) had already settled which one we'd need even if it shipped: A2A's ordering MUST applies
+  only to *currently attached* subscribers, and §2.4 explicitly disclaims gap-free delivery on
+  reconnect (`GetTask`, not the stream, is the source of truth). So `EvictAfter<N>` alone — bounded
+  buffer, then evict with an explicit gap signal, treated by our client exactly like any other A2A
+  disconnect/resubscribe — was sufficient; `Block` was not required. ADR-037 (2026-08-13) removed
+  Quark as a dependency entirely, so this upstream thread is now moot rather than open: the filed
+  QuarkCpp issue is a historical artifact of a severed relationship, not a live tracking item for
+  AgentEngine.
 
   ~~Still blocked on Quark actually proving and shipping the primitive.~~ **Resolved, don't wait
-  on it (2026-08-04):** A2A conformance (012 §8 G1, zero MUST-level failures) can't be hostage to an
-  external, unscheduled primitive landing in a dependency's own roadmap. What A2A's MUST actually
-  needs is narrower than the generic problem Quark's `Topic<M>`/ADR-039 is solving for: ordered
-  fan-out with bounded eviction for exactly **one** already-ordered internal stream (013 §1), not an
-  arbitrary-topic generic pub/sub primitive. That's implementable as ordinary AgentEngine-owned code
-  — a small per-subscriber cursor plus a bounded ring buffer, held by the run's supervising actor or
-  a dedicated fan-out actor, applying `EvictAfter<N>` directly — with no dependency on Quark shipping
-  anything new. The upstream ask (QuarkCpp#10) stays filed, since a general primitive would still
-  benefit other Quark consumers and let this local implementation be replaced later, but it is no
-  longer this RFC's gate blocker.
+  on it (2026-08-04, and moot outright after ADR-037):** A2A conformance (012 §8 G1, zero MUST-level
+  failures) was never going to be hostage to an external, unscheduled primitive landing in a
+  dependency's own roadmap, and after ADR-037 there is no such dependency to wait on at all. What
+  A2A's MUST actually needed was narrower than the generic problem Quark's `Topic<M>`/ADR-039 was
+  solving for: ordered fan-out with bounded eviction for exactly **one** already-ordered internal
+  stream (013 §1), not an arbitrary-topic generic pub/sub primitive. That was implemented as ordinary
+  AgentEngine-owned code — a small per-subscriber cursor plus a bounded ring buffer, held by the run's
+  supervising component, applying `EvictAfter<N>` directly — with no dependency on Quark shipping
+  anything new, then or now. The upstream ask (QuarkCpp#10) is left filed only as a courtesy to
+  QuarkCpp's own separate project (historical: it might still benefit other, unrelated Quark
+  consumers); it was never this RFC's gate blocker, and ADR-037 closes the question of AgentEngine
+  ever adopting whatever eventually ships from it.
 - ~~**Q3** — How much history a late-attaching consumer receives (snapshot + tail, or full replay).~~
   **Resolved, snapshot + tail, confirming what the two most detailed protocol mappings already do
   (2026-08-04):** this wasn't actually undecided so much as unstated as a cross-cutting rule — §2.1's

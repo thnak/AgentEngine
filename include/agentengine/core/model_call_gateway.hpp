@@ -260,7 +260,10 @@ private:
             // `ResilientChatClient::chat()` (removed 2026-08-12; see retry_policy.hpp's own top
             // comment) already did the identical blocking `sleep_for` inside a `task<>` coroutine,
             // predating ADR-036. A real fix needs a coroutine-suspending timer primitive that doesn't
-            // exist anywhere in Quark's `task<>` today, and would touch both files -- new
+            // exist anywhere in `rt::task<T>` today (historical: originally "Quark's task<>," before
+            // ADR-037 replaced the underlying coroutine type; the gap itself -- confirmed still live,
+            // see the blocking `sleep_for` below -- was never specific to which task type), and would
+            // touch both files -- new
             // infrastructure, not a same-pass edit; left for separate design → red-team → prove work
             // per this project's own governance for
             // concurrency-critical changes.

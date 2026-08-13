@@ -76,15 +76,25 @@ does not include G6." The two-phase pending→committed discipline G6 exercises 
 items 1-3 above, M6's breakdown doc does not say which later milestone picks this up — it only says
 "deferred."
 
+**Superseded note (ADR-037, 2026-08-13):** the "Quark has real `cluster.hpp`/`membership.hpp`/
+`placement.hpp`, so this is not impossible" reasoning above no longer holds — `decisions/ADR-037-
+remove-quark-as-core-runtime.md` removed Quark as a dependency entirely, and `agentengine::rt::` has
+no cluster/membership/placement mechanism of any kind. Before M9 can pick this gate up, it needs a
+real cluster substrate built from scratch, not "stand up a harness against Quark's existing one" —
+a materially larger scope than this note originally assumed. Left named as a real, larger gap for
+whoever scopes M9, not silently narrowed back to the original estimate.
+
 **Resolved here:** `020-Configuration-and-Hosting.md` §3a's hosting-shape table names a **Cluster**
 hosting shape explicitly — "N nodes over Quark's cluster (010/021/026) with sessions placed by
-HRW/VirtualBins" — as one of five shapes 020 covers, and 020 is an **M9** RFC. A ≥3-node cluster
-with injected node failure is not buildable as a standalone test harness before the Cluster hosting
-shape itself exists and is exercised; building throwaway cluster-test infra ahead of 020 would mean
-maintaining two multi-node harnesses (a disposable one now, 020's real one later) rather than one.
-**Assigning 014 §8 G6 to M9**, to be proven once 020's Cluster hosting shape is real, is therefore
-the same reasoning already applied to 006 §6b's M7 assignment: build the gate against real
-infrastructure, not a stub that has to be reconciled later.
+HRW/VirtualBins" (historical: 020 itself now marks this row as design intent only, not currently
+buildable post-ADR-037) — as one of five shapes 020 covers, and 020 is an **M9** RFC. A ≥3-node
+cluster with injected node failure is not buildable as a standalone test harness before the Cluster
+hosting shape itself exists and is exercised; building throwaway cluster-test infra ahead of 020
+would mean maintaining two multi-node harnesses (a disposable one now, 020's real one later) rather
+than one. **Assigning 014 §8 G6 to M9**, to be proven once 020's Cluster hosting shape is real
+(now a from-scratch build, not a Quark-backed one), is therefore the same reasoning already applied
+to 006 §6b's M7 assignment: build the gate against real infrastructure, not a stub that has to be
+reconciled later.
 
 `v1-implementation-roadmap.md`'s M9 section should name this the same way M7's section now names
 006 §6b's rationale.

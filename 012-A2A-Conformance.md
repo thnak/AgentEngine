@@ -72,7 +72,9 @@ implementations — and the TCK checks each binding separately (§8).
   generation order and never reordered, on any binding. Our stream is already ordered and
   sequence-numbered per run (013 §1). Where multiple clients subscribe to one task, events **MUST**
   be broadcast identically and in the same order to every stream, and closing one **MUST NOT** affect
-  the others — which is why Quark's best-effort `Topic<M>` is the wrong primitive here (013 Q2).
+  the others — which is why best-effort fan-out (the shape Quark's `Topic<M>` had, evaluated and
+  rejected for this purpose — 013 §7 Q2; historical citation, since ADR-037 removed Quark as a
+  dependency entirely) is the wrong primitive here.
 - **`SubscribeToTask`'s first event MUST be the current `Task` snapshot**, which closes the
   get-then-subscribe race by construction.
 - **Push notifications** deliver a `StreamResponse` over plain HTTP+JSON regardless of the agent's
@@ -116,8 +118,10 @@ as a local one:
 - **Discovery** by well-known agent card URL, or explicit configuration; cards are cached, verified,
   and **digest-pinned** — a card whose skills or schemas change is re-approved rather than silently
   trusted (007 §7, the same anti-rug-pull discipline as MCP servers).
-- **Deadlines propagate** as remaining duration (Quark 018): a remote agent inherits the caller's
-  budget rather than restarting the clock.
+- **Deadlines propagate** as remaining duration: a remote agent inherits the caller's budget rather
+  than restarting the clock (historical: previously cited to Quark's own RFC 018 as the design
+  precedent — ADR-037 removed Quark; deadline/budget propagation now lives in `agentengine::rt::`,
+  though the exact current implementation is not re-verified here).
 - **Cancellation propagates** — a canceled run cancels the remote task; a remote task that ignores
   cancellation is bounded by the deadline.
 - **Long-running remote tasks** map onto our `Suspended` state (019), so waiting on a multi-hour

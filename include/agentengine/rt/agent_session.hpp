@@ -31,16 +31,18 @@
 // quark::task<T>-typed even though this file's own `run_model_call()`/`run_rounds()` could already
 // `co_await` them transparently (any `rt::task<T>` coroutine body can `co_await` any awaitable,
 // including a `quark::task<T>`, since both independently implement the same C++20 awaiter protocol).
-// UPDATE: `core/task.hpp` now splits the alias per-T -- `task<void>` (bare `task<>`) stays
-// `quark::task<void>` (Quark's ADR-007 dispatch-handler type, still needed by every still-live
-// `quark::Actor`), but `task<T>` for `T != void` now resolves to `agentengine::rt::task<T>` directly.
-// Since every conformer names its return type through the alias rather than the concrete type, this
-// closed the gap for all of them at once, with zero per-conformer source changes -- verified (not just
-// reasoned): a full rebuild (192 build/link steps) and the full test suite (216/216, including tests
-// that specifically exercise the OLD, still-Quark-actor-based AgentSession co_awaiting these same
-// conformers through this exact alias) passed clean across two consecutive runs. This AgentSession is
-// therefore Quark-free at BOTH the actor/mailbox/dispatch layer AND the coroutine-type layer now --
-// named here as resolved, not left to read as still-open.
+// UPDATE (superseded by a LATER ADR-037 pass, kept here since the history is still the right way to
+// understand why it mattered): `core/task.hpp` briefly split the alias per-T -- `task<void>` (bare
+// `task<>`) stayed `quark::task<void>` (Quark's ADR-007 dispatch-handler type, needed by every
+// still-live `quark::Actor` at that point in the migration), while `task<T>` for `T != void` already
+// resolved to `agentengine::rt::task<T>` directly. That split is now GONE: every `quark::Actor` type
+// this project ever defined has since been deleted, so `task<T>` for every `T`, including `void`,
+// resolves to `agentengine::rt::task<T>` through one blanket alias (`core/task.hpp`'s own current
+// banner). Since every conformer names its return type through the alias rather than the concrete
+// type, this closed the gap for all of them at once, with zero per-conformer source changes --
+// verified (not just reasoned) at the time via a full rebuild and the full test suite passing clean
+// across two consecutive runs. This AgentSession is Quark-free at BOTH the actor/mailbox/dispatch
+// layer AND the coroutine-type layer.
 //
 // I1 ("one session, one executor"), Quark's actor mailbox's job before this migration, is now
 // enforced by `rt::AsyncMutex session_mutex_` (async_mutex.hpp, itself proven in this same phase):

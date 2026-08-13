@@ -27,11 +27,11 @@ namespace {
 
 constexpr int kIoTimeoutMs = 10'000;
 
-// Mirrors net_egress_proxy.cpp's own `wait_ready` exactly (same quark::pal primitive, same
+// Mirrors net_egress_proxy.cpp's own `wait_ready` exactly (same agentengine::pal primitive, same
 // select()-based readiness wait) -- kept as an independent copy rather than a shared header, since
-// each is a ~10-line, fully self-contained primitive over quark::pal and the two translation units
-// have no other reason to depend on each other (CLAUDE.md: three similar lines beat a premature
-// abstraction).
+// each is a ~10-line, fully self-contained primitive over agentengine::pal and the two translation
+// units have no other reason to depend on each other (CLAUDE.md: three similar lines beat a
+// premature abstraction).
 bool wait_ready(agentengine::pal::fd_t fd, bool for_write, int timeout_ms) {
     ::fd_set set;
     FD_ZERO(&set);
@@ -54,7 +54,7 @@ std::string mbedtls_error_string(int code) {
 // mbedTLS's own BIO contract (ssl.h's mbedtls_ssl_send_t/mbedtls_ssl_recv_t): return the byte count
 // on success, 0 on a clean peer close (recv only), or a negative MBEDTLS_ERR_* code. Reimplements
 // mbedTLS's own reference `mbedtls_net_send`/`mbedtls_net_recv` (net_sockets.c) against
-// quark::pal's primitives instead of calling POSIX/Winsock directly a second time -- the same
+// agentengine::pal's primitives instead of calling POSIX/Winsock directly a second time -- the same
 // primitive choice net_egress_proxy.cpp's own plain-HTTP path already made, kept consistent here
 // rather than introducing a second raw-socket code path for the same job. `wait_ready` blocking
 // inside these callbacks is why `TlsClientSession::send`/`recv` never surface WANT_READ/WANT_WRITE

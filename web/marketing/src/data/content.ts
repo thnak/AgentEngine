@@ -9,7 +9,6 @@
 export const SITE_BASE = "/AgentEngine";
 
 export const REPO_URL = "https://github.com/thnak/AgentEngine";
-export const QUARK_URL = "https://github.com/thnak/QuarkCpp";
 export const SPEC_URL = `${REPO_URL}/blob/main/AgentEngineSpecification.md`;
 export const README_URL = `${REPO_URL}/blob/main/README.md`;
 export const CONVENTIONS_URL = `${REPO_URL}/blob/main/CONVENTIONS.md`;
@@ -124,7 +123,7 @@ export const layers: Layer[] = [
     id: "l0",
     level: "L0",
     name: "Runtime substrate",
-    detail: "Quark: scheduler, mailbox, cluster, persistence, timers, PAL",
+    detail: "agentengine::rt:: async mutex, thread pool, session/append-log store, circuit breaker, channel/stream backend, PAL",
   },
 ];
 
@@ -191,10 +190,10 @@ export const buildSteps: BuildStep[] = [
   {
     id: "clone",
     index: "01",
-    title: "Clone with submodules",
-    command: "git clone --recursive https://github.com/thnak/AgentEngine.git\ncd AgentEngine",
+    title: "Clone",
+    command: "git clone https://github.com/thnak/AgentEngine.git\ncd AgentEngine",
     detail:
-      "Quark is pinned as a submodule at third_party/quark — consumed unmodified, never forked or patched in tree. Runtime changes go upstream as Quark RFCs.",
+      "No submodules to fetch — AgentEngine is a self-contained repository. (Historical: it used to pin the Quark actor engine as a submodule at third_party/quark; ADR-037 removed that dependency entirely, replacing it with the in-house agentengine::rt:: runtime.)",
   },
   {
     id: "configure",

@@ -31,7 +31,7 @@ That is why the load-bearing defences live in 007 (capabilities), 008 (isolation
 | **Provenance** | Taint tracking, transitive, type-enforced | 003 §2 |
 | **Structural** | Prompt-level separation of instructions from data | §3 |
 | **Detection** | Heuristic and model-based filters on ingress and egress | §4 |
-| **Containment** | Egress allowlists, output constraints, rate limits | 007, 008, Quark 022 |
+| **Containment** | Egress allowlists, output constraints, rate limits | 007, 008 (historical: also cited Quark 022; ADR-037 removed that dependency) |
 | **Attribution** | Every effect auditable; anomaly visible | 007 §8, 016 |
 
 **Layers are independent.** Detection failing must not enable an effect that authority and approval

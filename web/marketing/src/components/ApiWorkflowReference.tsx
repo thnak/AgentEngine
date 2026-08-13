@@ -32,8 +32,8 @@ export function ApiWorkflowReference() {
           <p style={{ marginTop: 16 }}>
             A <code>Workflow</code> is executors, edges, a start node, an output selection, and a
             termination bound — nothing here is an actor, a scheduler, or a runtime decision.{" "}
-            <code>WorkflowSupervisor</code> is what actually runs one, over a real{" "}
-            <code>quark::Engine</code>, one superstep round at a time. 014 §3's eight named
+            <code>WorkflowSupervisor</code> is what actually runs one, over AgentEngine's own{" "}
+            <code>agentengine::rt::</code> runtime, one superstep round at a time. 014 §3's eight named
             orchestration patterns (Sequential, Concurrent, Handoff, Router, and four more) are
             proven as configurations of the same six edge kinds below — not eight separate
             subsystems to build. See{" "}

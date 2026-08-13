@@ -266,9 +266,12 @@ duration, trace/span id}`.
   less well" — client-credentials grants typically mean a shared AS and long-lived static secrets):
   service-to-service calls within an operator-controlled trust domain (their own multi-deployment
   estate, or a federated partner via SPIFFE trust-domain federation), and 020 §3b's triggered runs
-  with no calling human to derive a principal from. This mirrors a choice already made one layer down
-  — Quark 020 §1's `NodeAuthority` seam already names SPIFFE IDs as a pluggable cluster-admission
-  backend alongside a shared CA — rather than inventing a different answer for the principal layer.
+  with no calling human to derive a principal from. This mirrored a choice already made one layer
+  down — Quark 020 §1's `NodeAuthority` seam named SPIFFE IDs as a pluggable cluster-admission
+  backend alongside a shared CA — rather than inventing a different answer for the principal layer
+  (historical: that "layer down" no longer exists in AgentEngine — ADR-037 removed Quark, and
+  AgentEngine has no multi-node cluster story at all now; the reasoning above stands on its own for
+  the principal layer, it just no longer mirrors a live lower layer).
   X42 (OpenQuestions.md OQ-9), if adopted, would be a governance layer *above* this (cross-
   organizational trust federation), not a replacement for it. Full text and the identical resolution
   for the 018-side duplicate: 018 §8 Q1.

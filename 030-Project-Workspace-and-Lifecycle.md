@@ -1,12 +1,15 @@
 # 030 — Project: Workspace Grouping and Directed Lifecycle
 
-**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Depends on:** 001, 005, 007, 014, 020, 025, Quark 012/ADR-034 · **Gate:** §7
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Depends on:** 001, 005, 007, 014, 020, 025 (historical: originally also Quark 012/ADR-034 — ADR-037 removed Quark as a dependency; `decisions/ADR-038-rt-project-passivation-semantics.md` re-derives this RFC's own passivation mechanism against `agentengine::rt::`) · **Gate:** §7
 
 ## Goal
 
 Give a host application a durable, addressable unit *above* a single session — a **Project** — that
 groups a root session and every session it transitively owns, with directed pause/resume distinct
-from Quark's idle-triggered passivation, so a host can present "the user's open workspaces" as a
+from idle-triggered passivation (historical: originally Quark's idle-triggered passivation; ADR-037
+removed Quark, and `agentengine::rt::` has no host-managed idle eviction at all — see
+`decisions/ADR-038-rt-project-passivation-semantics.md`), so a host can present "the user's open
+workspaces" as a
 first-class, unboundedly-many, independently resumable list. 020 §3a's embedded case (WinUI tabs) is
 the motivating one, but the concept is host-shape-agnostic.
 
@@ -68,8 +71,10 @@ Project = {
 ## 3. Persistence: a new record, the same seam
 
 005 §2's rule holds without exception here: **AgentEngine adds no storage engine of its own.** A
-Project's manifest is a new *record type*, stored through Quark 012's `Store` seam exactly like
-`AgentSession` is (005 §2) — keyed by `project_id` instead of `session_id`. It needs none of
+Project's manifest is a new *record type*, stored through `agentengine::rt::SessionStore` exactly
+like `AgentSession` is (005 §2) — keyed by `project_id` instead of `session_id` (historical:
+originally Quark 012's `Store` seam; ADR-037 replaced the backend, the contract is unchanged). It
+needs none of
 `AgentSession`'s two-mode complexity: a manifest changes rarely (a member added, a status flip, a
 title edit) and its active-member list stays small, so **it is always snapshot-mode**, never
 event-sourced — there is no "Project history" to replay, only current membership (active and
@@ -80,37 +85,54 @@ engine.
 
 ## 4. Directed lifecycle: pause is not idle eviction
 
-005 §1's passivation is automatic and idle-triggered — an actor kept busy (a session hit by recurring
+**Historical note (ADR-037/ADR-038):** this section originally described directed pause as built
+directly on Quark's own actor-layer passivation primitive. ADR-037 removed Quark as a dependency
+entirely, and `decisions/ADR-038-rt-project-passivation-semantics.md` re-derived what survives: a
+plain `rt::AgentSession` has no runtime managing its residency, so eviction-from-memory (the idle
+wheel, `ActorRef<A>::passivate()`'s reuse of that path) is gone completely — there is no host-managed
+passivation/reactivation across process restarts or node loss in `rt::` land at all. What survives is
+the OTHER half passivation always did — flush durable state first — as
+`rt::ProjectSupervisor::checkpoint_members_and_workflows()`; `rt::pause_project()`/`archive_project()`
+flip the manifest's status ONLY if every checkpoint succeeds, a real, deliberate fail-closed choice
+the Quark original's bare-`bool` `passivate()` had no shape to make. The original text below is kept
+for its still-relevant framing of the PROBLEM (005 §1's passivation is automatic/idle-triggered, with
+no caller-facing directed teardown), even though the described SOLUTION mechanism is superseded.
+
+005 §1's passivation is automatic and idle-triggered — a session kept busy (hit by recurring
 reminders, say) never idles out, and there is today no caller-facing way to say "tear this down now"
-at the AgentEngine layer. Quark already solved exactly this at the actor layer:
-**`ActorRef<A>::passivate()` (Quark ADR-034, Accepted)** is a fire-and-forget, on-demand teardown that
-reuses the identical deactivation path the idle wheel uses, flushes the actor's latest state through
-the same `Store::save_snapshot` seam a `declare_lazy<A>(store,...)` actor already gets on automatic
-eviction, and is proven race-free against a concurrent idle-triggered passivation (two triggers
-converge on exactly one retirement — `engine_passivate_test`, ADR-034 evidence table).
+at the AgentEngine layer. (Historical: Quark used to solve exactly this at the actor layer via
+`ActorRef<A>::passivate()`, Quark ADR-034 — a fire-and-forget, on-demand teardown reusing the
+identical deactivation path the idle wheel used, flushing the actor's latest state through the same
+`Store::save_snapshot` seam a `declare_lazy<A>(store,...)` actor already got on automatic eviction,
+proven race-free against a concurrent idle-triggered passivation. ADR-037/ADR-038 replaced this: see
+the note above.)
 
 `pause_project(project_id)` is built from this primitive directly, not reinvented:
 
-- **Pause** — call `.passivate()` on every member session's `ActorRef<AgentSession>` (and on the
-  Project's own supervising actor, last), then mark the manifest `Paused`. Each passivate's
-  persistence flush **is** the save — there is no separate "save" step to design, because 001 §3
-  already made every turn boundary a checkpoint and ADR-034's flush persists exactly that latest
-  checkpoint. A paused Project holds zero session activations and zero sandboxes: 008 §6a already
-  guarantees the latter per session, and pausing every member session inherits it project-wide.
-- **Pause and workflow-supervising actors.** §8 Q4 extends `.passivate()` to any workflow-supervising
-  actor (014) hosted under a member session. That actor may be mid-superstep when pause is requested;
-  passivation is not assumed to interrupt it instantaneously. Consistent with 014 §2's round model,
-  the pause signal is queued and delivered as an ordinary message, processed at that actor's next
-  superstep boundary — the pause completes once that boundary is reached and the checkpoint flushed,
-  same as any other message the actor processes, not before.
-- **Restore** — read the manifest back by `project_id`. This does **not** need to eagerly reactivate
-  every member session: 005 §1's "activated on demand" already covers that — the moment a host issues
-  a Run against any member, Quark's lazy activation (`declare_lazy<A>`) brings that one session back
-  from its last flushed snapshot. Restore only repopulates the host's view (member list, titles,
-  worktree refs) cheaply, without paying to reactivate N sessions the user isn't looking at yet.
+- **Pause** — `rt::pause_project()` (ADR-038) calls
+  `rt::ProjectSupervisor::checkpoint_members_and_workflows()` on every member session (and the
+  Project's own workflow supervisors), then flips the manifest to `Paused` ONLY if every checkpoint
+  succeeds — a real, deliberate fail-closed choice (historical: originally `.passivate()` on every
+  member session's `ActorRef<AgentSession>`, Quark ADR-034, whose bare-`bool` return had no shape to
+  make this fail-closed distinction; ADR-037 removed the actor-eviction half of passivation entirely
+  — a plain `rt::AgentSession` has no runtime managing its residency — leaving only the durable-flush
+  half, which is what `checkpoint_members_and_workflows()` reproduces). A paused Project's sessions
+  hold zero sandboxes (008 §6a); there is no "session activation" left to hold zero of, since there
+  is no actor runtime managing activations at all post-ADR-037.
+- **Pause and workflow-supervising code.** §8 Q4's extension applies to `WorkflowSupervisor` (014)
+  instances hosted under a member session the same way, via the same `checkpoint_members_and_
+  workflows()` call (historical: originally `.passivate()` on a workflow-supervising actor).
+- **Restore** — read the manifest back by `project_id`. This does **not** need to eagerly reconstruct
+  every member session: 005 §1's "activated on demand" intent is retained as host-side "construct
+  the `AgentSession` object lazily, from its last flushed checkpoint, only when a Run is actually
+  issued against it" (historical: this used to be Quark's automatic `declare_lazy<A>` lazy
+  activation; `rt::` has no equivalent runtime-managed laziness, so the host must implement this
+  construct-on-demand behavior itself now — a named, permanent narrowing from a structural to a
+  host-implemented property). Restore only repopulates the host's view (member list, titles,
+  worktree refs) cheaply, without paying to reconstruct N sessions the user isn't looking at yet.
 - **Resume / continue** — the ordinary case: a host starts a new Run against a member session
   (usually root) exactly as if the project had never paused. The pause/restore cycle is invisible to
-  the run itself, same as any idle-then-reactivated session today.
+  the run itself, same as any lazily-reconstructed session today.
 - **Archive** — pause, then apply 005 §6 / 025 §6 retention policy; distinct from **delete** (005 §6),
   which is a data-subject-request-grade hard removal, not a lifecycle state.
 
@@ -195,16 +217,18 @@ drives Runs against the member sessions exactly as 020 §3a already describes.
   property rather than assuming it.
 - ~~**Q4** — Relationship to 014's workflow checkpoint/resume: does pausing the Project need to reach
   into the workflow's own checkpoint store, or is "the session is paused" already sufficient?~~
-  **Resolved, Yes, pause must explicitly reach a workflow's own supervising actor too — extending
-  §4's same primitive, not assuming session-pause covers it (2026-08-04):** 001 §1's actor-mapping
-  table lists "Workflow" and "AgentSession" as distinct rows ("a supervising actor owning a graph of
-  executor actors" versus "one actor instance") — a workflow running inside a session is, per that
-  table, its own Quark actor, not the session's own activation wearing a different hat. The
-  conservative answer, given the question's own genuine uncertainty: `pause_project` (§4) is extended
-  to `.passivate()` any workflow-supervising actor(s) hosted under a member session, using the
-  identical ADR-034 primitive already built on, not a second mechanism. Assuming session-pause
-  transitively covers a separately-addressed actor risks leaving a workflow actor — and transitively
-  its own checkpoint store — live after a Project reports itself `Paused`, contradicting §4's own "a
-  paused Project holds zero session activations and zero sandboxes" claim. §7 G1's activation-count-
-  drops-to-zero gate is what makes this claim actually hold, provided pause's iteration covers
-  workflow actors explicitly rather than by assumption.
+  **Resolved, Yes, pause must explicitly reach a workflow's own supervising code too — extending
+  §4's same primitive, not assuming session-pause covers it (2026-08-04):** 001 §1's runtime-mapping
+  table lists "Workflow" and "AgentSession" as distinct rows (a `WorkflowSupervisor` owning a graph
+  of executors versus `AgentSession`'s own plain instance) — a workflow running inside a session is,
+  per that table, its own distinct object, not the session's own instance wearing a different hat.
+  The conservative answer, given the question's own genuine uncertainty: `pause_project` (§4) is
+  extended to call `checkpoint_members_and_workflows()` against any `WorkflowSupervisor` instance(s)
+  hosted under a member session, using the identical mechanism already built on, not a second one
+  (historical: originally "its own Quark actor," extended via `.passivate()` and the identical
+  ADR-034 primitive, before ADR-037/ADR-038 replaced the underlying mechanism — the "extend the same
+  primitive to workflows too" decision itself is unaffected). Assuming session-pause transitively
+  covers a separately-addressed workflow risks leaving it — and transitively its own checkpoint
+  store — live after a Project reports itself `Paused`, contradicting §4's own claim that a paused
+  Project holds zero sandboxes. §7 G1's gate is what makes this claim actually hold, provided pause's
+  iteration covers workflow supervisors explicitly rather than by assumption.

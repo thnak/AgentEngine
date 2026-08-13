@@ -135,17 +135,19 @@ struct ChatResponseUpdate {  // ae-naming-lint: allow ChatResponseUpdate — pre
 // on the hot path (CONVENTIONS.md: "no virtual for policy on the hot path").
 //
 // Milestone 5 Phase B4a: `chat`'s return type is `ae::task<result<ChatResponse>>` — 004 §1's literal
-// signature, real now that Quark's `task<T>` for non-void `T` landed (ADR-047, submodule bumped to
-// `dcb191f`). A conformer's `chat()` is therefore a coroutine (`co_return`s its `result<ChatResponse>`
-// rather than `return`ing it); every caller `co_await`s it from inside its own coroutine (an async
-// actor handler, or another nested `ae::task<T>`) — `quark::task<T>` has no synchronous "drive to
-// completion" API by design (see `quark/core/task.hpp`'s banner comment and
-// `task_value_return_test.cpp`'s own precedent), so there is no way to call `chat()` from ordinary,
-// non-coroutine code and get a value back inline.
+// signature (historical: originally real once Quark's `task<T>` for non-void `T` landed, ADR-047;
+// `ae::task<T>` is now `agentengine::rt::task<T>` directly, ADR-037 removed Quark entirely, see
+// `core/task.hpp`'s own current banner). A conformer's `chat()` is therefore a coroutine
+// (`co_return`s its `result<ChatResponse>` rather than `return`ing it); every caller `co_await`s it
+// from inside its own coroutine — `rt::task<T>` has no synchronous "drive to completion" API by
+// design (see `rt/task.hpp`'s own banner comment and `task_value_return_test.cpp`'s own precedent),
+// so there is no way to call `chat()` from ordinary, non-coroutine code and get a value back inline.
 //
 // Milestone 5 Phase B4b: `chat_stream`'s return type is `ae::stream<ChatResponseUpdate>` — 004 §1's
-// literal signature, real now that `agentengine/core/stream.hpp` wraps Quark's already-Accepted
-// `ReplyStream`/`StreamChannel` credit-controlled ring (RFC 024/ADR-018). Unlike `chat()`, this is NOT
+// literal signature. `agentengine/core/stream.hpp` now wraps `rt::channel<T,E>` (historical:
+// originally Quark's already-Accepted `ReplyStream`/`StreamChannel` credit-controlled ring, RFC
+// 024/ADR-018, before ADR-037 replaced the backend; the credit-controlled contract is unchanged).
+// Unlike `chat()`, this is NOT
 // `ae::task<...>`-wrapped — the return itself is synchronous; a conformer that streams for real (an
 // HTTP/SSE backend, Phase D/E) hands the `stream_producer<ChatResponseUpdate>` half off to whatever
 // background execution context performs the read loop, and returns the `stream<ChatResponseUpdate>`

@@ -7,7 +7,10 @@
 Multi-agent structure that is **explicit, typed, checkpointable, and inspectable** — a graph of
 executors with typed edges — rather than emergent behaviour from agents calling each other. The
 shape is MAF's workflow model (executors, edges, fan-out/fan-in, checkpointing, human-in-the-loop,
-time-travel), expressed in the CRTP idiom and hosted on Quark actors.
+time-travel), expressed in the CRTP idiom and driven by `WorkflowSupervisor`, a plain object running
+a superstep loop over `rt::ThreadPool` (historical: earlier revisions of this RFC hosted executors on
+Quark actors; ADR-037 removed Quark as AgentEngine's runtime — see
+`AgentEngineSpecification.md` §7).
 
 ## 1. Model
 
@@ -20,8 +23,11 @@ Edge     = direct | fan-out | fan-in | switch/case | multi-selection | chain
 - **Executors are typed by their input and output message types.** An edge that connects
   incompatible types fails to build — at compile time for the C++ form, at load for the declarative
   form (015), using the same validator (I6).
-- **Executors are Quark actors**; the workflow is a supervising actor owning them. Concurrency,
-  ordering, and failure isolation come from the runtime, not from a bespoke executor pool.
+- **Executors are plain objects**; `WorkflowSupervisor` (`rt/workflow_supervisor.hpp`) owns them and
+  drives the superstep loop, dispatching each round's executor calls through `rt::ThreadPool` for
+  real concurrent fan-out. Concurrency, ordering, and failure isolation come from the runtime, not
+  from a bespoke executor pool (historical: this RFC originally hosted executors as Quark actors,
+  with the supervising actor owning them; ADR-037 removed Quark — `AgentEngineSpecification.md` §7).
 - **Messages between executors are the content model** (003), so an agent node and a function node
   are interchangeable at an edge.
 
@@ -84,7 +90,8 @@ produce multiple concurrent `Interaction` records (001 §2) on the same run — 
 `interaction_id` a set rather than a singleton, resolving OQ-4.
 
 A suspended workflow **holds no resources**: it is checkpointed, its activations passivate, and it
-resumes on the response, on a durable reminder (Quark 027), or never — an abandoned workflow is
+resumes on the response, on a durable reminder (the runtime's durable reminders — formerly Quark's;
+carried over intact by ADR-037's `rt::` migration), or never — an abandoned workflow is
 garbage-collected by policy, not leaked. The request port's `InputRequired` carries the same
 `request_id`-shaped correlation token defined in 001 §2; a checkpoint taken while suspended stores
 the pending request indexed by that token, matching MAF's own checkpoint/request-info coupling
@@ -94,7 +101,10 @@ the pending request indexed by that token, matching MAF's own checkpoint/request
 
 - **Checkpoint at superstep boundaries**: executor states, in-flight messages, workflow state,
   and the run's position. Backed by the same store as sessions (005 §2).
-- **Resume** restores exactly, on any node in a cluster (Quark placement decides where).
+- **Resume** restores exactly, on the same node (historical: this RFC originally described resume on
+  any node in a cluster, with Quark placement deciding where; ADR-037 removed Quark and AgentEngine
+  has no multi-node cluster story at all — this is a real, permanent narrowing, not a renamed
+  mechanism, per `AgentEngineSpecification.md` §7).
 - **Time-travel**: rewind to any retained checkpoint and re-run forward, optionally with modified
   state — the debugging feature that makes multi-agent systems tractable. Retention is policy;
   every rewind is audited, because rewinding a workflow that already had external effects is a
@@ -107,8 +117,16 @@ the pending request indexed by that token, matching MAF's own checkpoint/request
 
 - An executor failure is classified (001 §6) and handled by the edge's declared policy: propagate,
   retry, route to a fallback branch, or fail the workflow.
-- **Supervision** is Quark 007: an executor that violates an invariant is restarted or stopped
-  without taking the workflow down, subject to a bounded escalation.
+- **Supervision** is per-round fault containment: `rt::ThreadPool::submit()`'s `JobOutcome{faulted,
+  fault_ptr}` stops a throwing executor's job from crashing the process or hanging the collector, the
+  faulted job is classified `failure_class::transient`, and the workflow's own edge-level retry
+  policy (this section, first bullet) handles it — without taking the workflow down (historical: this
+  RFC originally specified Quark 007 actor supervision, restarting a faulting executor's actor,
+  bounded, with escalation; ADR-037 removed Quark and, with it, the actor-restart mechanism. There is
+  no restart-budget mechanism today because `ExecutorBody` is a plain function call with no
+  persistent per-executor state a restart would recover — a real, deliberate narrowing, not a
+  same-shape replacement. See `rt/workflow_supervisor.hpp`'s file banner and
+  `AgentEngineSpecification.md` §7).
 - **Partial results are preserved** — a failed workflow's completed executor outputs are available
   in its final state, not discarded.
 
@@ -134,7 +152,12 @@ that cannot be drawn is a workflow nobody can review.
   cluster nodes, killed at a superstep boundary via a node failure injected between checkpoint-pending
   and checkpoint-committed, resumes with output identical to the uninterrupted control; a failure
   injected strictly before checkpoint-pending is observed leaves no partial/ambiguous checkpoint —
-  resume falls back to the prior committed one.
+  resume falls back to the prior committed one. (Historical: this gate assumed the multi-node cluster
+  placement this RFC originally specified over Quark. ADR-037 removed Quark, and AgentEngine has no
+  multi-node cluster story at all — a real, permanent gap, not a renamed mechanism, per
+  `AgentEngineSpecification.md` §7. This gate is currently moot/unattainable as written; it is left
+  here as a record of the cross-node consistency reasoning in §9 Q4, not as a live promotion
+  criterion.)
 
 ## 9. Open questions
 
@@ -181,12 +204,16 @@ that cannot be drawn is a workflow nobody can review.
   known to be globally quiescent; no distributed-snapshot protocol (Chandy-Lamport or similar) needs
   inventing. What's added, concretely: the checkpoint commits in two phases from the supervising
   actor's view — mark checkpoint-pending once every round-*n* completion is observed, wait for each
-  executor's own per-actor persistence (Quark 012's `Store`, node-local, already durable regardless
-  of placement) to confirm, then mark the checkpoint committed — the same intent-then-confirm
-  discipline 019 §3 already applies to effects, applied here to the checkpoint itself. A node failure
-  between "pending" and "committed" leaves an incomplete checkpoint that resume treats as "hadn't
-  happened," never as ambiguous partial state. This is the same question as 019 §8 Q3 (now resolved
-  there too, pointing back here) — one resolution, not two.
+  executor's own per-actor persistence (node-local, already durable regardless of placement) to
+  confirm, then mark the checkpoint committed — the same intent-then-confirm discipline 019 §3 already
+  applies to effects, applied here to the checkpoint itself. A node failure between "pending" and
+  "committed" leaves an incomplete checkpoint that resume treats as "hadn't happened," never as
+  ambiguous partial state. This is the same question as 019 §8 Q3 (now resolved there too, pointing
+  back here) — one resolution, not two. (Historical: this reasoning, and the "distinct cluster nodes"
+  premise it and G6 above depend on, assumed Quark's multi-node placement and the Quark 012 `Store`
+  seam it persisted through. ADR-037 removed Quark; AgentEngine has no multi-node cluster story today
+  — the resolution's *logic* still holds for a hypothetical future cluster, but nothing here currently
+  executes across nodes, per `AgentEngineSpecification.md` §7.)
 - ~~**Q5** — §3's pattern table has no row for MAF's fifth named orchestration pattern, Magentic.~~
   **Resolved:** given its own row, **Planner (Magentic)**, distinct from Group chat/debate — see §3.
   Grounded in `docs/research/2026-maf-orchestration-patterns.md` (2026-08-04): the graph shape is the

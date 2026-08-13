@@ -119,8 +119,9 @@ privacy-gated. MCP's `_meta` trace propagation (SEP-414) is the cross-process li
   granted.
 
 **Consequence (RFCs 008/009):** the plugin ABI targets **WASI 0.3 components**, and the async
-primitives map onto Quark's coroutine handlers rather than requiring a blocking thread per call.
-Pinning to a Wasmtime version that ships 0.3 by default is a build-matrix requirement.
+primitives map onto `agentengine::rt::task<T>`'s coroutine handlers rather than requiring a blocking
+thread per call (historical: originally Quark's coroutine handlers, before ADR-037 removed Quark as
+a dependency). Pinning to a Wasmtime version that ships 0.3 by default is a build-matrix requirement.
 
 ## 6. Python in WebAssembly — the decisive finding
 

@@ -65,10 +65,10 @@ target_link_libraries(agentengine_policy_reachability PRIVATE agentengine::core 
 # table, CommandRegistry, and RealFileSystemAdapter. A STATIC library (not header-only) so Sh-S1's
 # static "zero references to a process-creation primitive" check (ADR-001 §7 finding 1's fix) can
 # be stated at link-target granularity: this library links ONLY against agentengine::core (header
-# -only vocabulary + Quark) and the C++ standard library — nothing here can pull in an object that
-# defines CreateProcess/_wspawnv/system/LoadLibrary/posix_spawn/exec*/fork by construction of what
-# it's linked against, which tests/test_shell_runner_proof.cpp verifies against the actual built
-# artifact, not against prose.
+# -only vocabulary, no Quark dependency since ADR-037) and the C++ standard library -- nothing here
+# can pull in an object that defines CreateProcess/_wspawnv/system/LoadLibrary/posix_spawn/exec*/
+# fork by construction of what it's linked against, which tests/test_shell_runner_proof.cpp
+# verifies against the actual built artifact, not against prose.
 add_library(agentengine_shell_runner STATIC
   src/backends/native_jail/shell_parser.cpp
   src/backends/native_jail/shell_dispatch.cpp

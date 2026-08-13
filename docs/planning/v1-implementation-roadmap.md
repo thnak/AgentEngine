@@ -34,12 +34,14 @@ repeated per milestone below.
 
 ## Milestone 0 — Bootstrap
 
-Not an RFC. Repo scaffolding: CMake ≥ 3.28 / C++23 per 021 §5, Quark pinned as a submodule (never
-forked — CLAUDE.md's locked decision), a CI skeleton on Windows + Linux (021 §5's matrix, even if
-most jobs are placeholders initially), and the 027 naming-lint stub wired in from the start.
+Not an RFC. Repo scaffolding: CMake ≥ 3.28 / C++23 per 021 §5, a CI skeleton on Windows + Linux (021
+§5's matrix, even if most jobs are placeholders initially), and the 027 naming-lint stub wired in
+from the start. (Historical: at the time, this also pinned Quark as a submodule, never forked —
+CLAUDE.md's then-locked decision. `decisions/ADR-037-remove-quark-as-core-runtime.md`, executed
+2026-08-13, removed that dependency entirely; `third_party/quark` is no longer part of this repo.)
 
-**Exit:** an empty engine target links against the pinned Quark commit and builds clean on both
-platforms under the CI matrix.
+**Exit:** an empty engine target builds clean on both platforms under the CI matrix (historical:
+originally also required linking against the pinned Quark commit, before ADR-037 removed Quark).
 
 ## Milestone 1 — Core substrate: the walking skeleton
 
@@ -47,7 +49,9 @@ platforms under the CI matrix.
 core types only: `Capability`, `Principal`, `EffectContext`, the taint mechanism; the full policy
 engine and sandbox enforcement land in M2).
 
-001 and 003 have no internal RFC dependencies (Quark only) and nearly everything else depends on one
+001 and 003 have no internal RFC dependencies (historical: "Quark only," before ADR-037 removed
+Quark as a dependency; the in-house `rt::` runtime now, with no RFC-level dependency either) and
+nearly everything else depends on one
 or both — they're the actual foundation regardless of what the dependency lines say elsewhere. 007's
 *types* (not its policy evaluation or sandbox enforcement, which need 006/008/009 to mean anything)
 are pulled forward here because I2/I3 need to be structurally true from the first agent that runs,

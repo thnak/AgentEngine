@@ -5,7 +5,9 @@
 ## Goal
 
 Turn every performance claim into a **pass/fail verdict a benchmark prints**, against a named
-reference machine — the discipline Quark's 023 established, applied to agent-shaped work.
+reference machine — the discipline AgentEngine's own 023 applies to agent-shaped work (historical:
+adapted from Quark's identical discipline, its own 023, before ADR-037 removed Quark as a
+dependency).
 
 ## 1. What is being measured
 
@@ -57,8 +59,10 @@ These are **pass/fail CTest gates**, not noise-sensitive benchmarks, and they ar
 matter most because they cannot be excused by hardware:
 
 - **0 heap allocations** in the per-chunk streaming path.
-- **0 cross-core atomic RMW** added to Quark's drain path by AgentEngine.
-- **A run's steady state is one Quark activation** — not a thread, not a fiber.
+- **0 cross-core atomic RMW** added to the drain path by AgentEngine (historical: "Quark's drain
+  path" before ADR-037 replaced the backend; the budget itself is unchanged).
+- **A run's steady state is one `rt::AsyncMutex`-guarded in-flight call** — not a thread, not a
+  fiber (historical: "one Quark activation" before ADR-037).
 - **A suspended run holds zero activations, sandboxes, connections, and threads** (019 §7 G3).
 - **Capability handles do not outlive their invocation** (007 §9 G4).
 - **No sandbox, process, file, or handle leak** over 10⁵ cycles (008 §9 G4).
@@ -97,11 +101,15 @@ this project does not ship an empty results file to look organized).
 ## 8. Open questions
 
 - ~~**Q1** — Which reference machine. Quark's is a virtualized Xeon Silver 4208; sharing it makes
-  cross-project comparison possible and understates modern hardware.~~ **Resolved, Quark's own
-  reference machine (2026-08-04):** the quantity this RFC measures — engine *overhead*, what
-  AgentEngine adds on top of Quark (§1) — is only meaningfully comparable against Quark's own
-  baseline if measured on the identical machine; a different one would need cross-machine
-  normalization for the one comparison that matters most to a project built as a layer over Quark.
+  cross-project comparison possible and understates modern hardware.~~ **Resolved 2026-08-04, Quark's
+  own reference machine — REOPENED by ADR-037 (2026-08-13):** the original resolution's whole premise
+  was that the quantity this RFC measures — engine *overhead*, what AgentEngine adds on top of Quark
+  (§1) — is only meaningfully comparable against Quark's own baseline if measured on the identical
+  machine, "the one comparison that matters most to a project built as a layer over Quark." ADR-037
+  removed Quark as a dependency entirely: AgentEngine is no longer a layer over Quark, there is no
+  Quark baseline left to stay comparable against, and this resolution's own reasoning no longer
+  applies. Which machine now gates the merge is an open question again, not silently still Quark's;
+  a fresh reference-machine decision is named here as real follow-up work, not resolved by this pass.
   "Understates modern hardware" is a real but weaker cost here than for raw-throughput numbers:
   these are relative overhead budgets (avoided allocations, avoided atomic RMW, coroutine dispatch
   cost), which are less hardware-generation-sensitive than absolute compute throughput. A second,

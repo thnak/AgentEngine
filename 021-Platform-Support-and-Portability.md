@@ -1,6 +1,6 @@
 # 021 — Platform Support and Portability
 
-**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Depends on:** 008, 009, Quark 019 · **Gate:** §6
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Depends on:** 008, 009 (historical: originally also Quark 019 — ADR-037 removed Quark as a dependency) · **Gate:** §6
 
 ## Goal
 
@@ -21,10 +21,10 @@ falsifiable rather than aspirational.
 | Platform | Tier (intent) | Notes |
 |---|---|---|
 | Windows 11 / x86-64 | **Supported** | The v1 target — primary and, for now, only platform under active implementation; MSVC + clang-cl |
-| Linux / x86-64 | **Next** (not yet gated) | Quark's own reference target; taken up once the Windows implementation reaches a stable state — a sequenced follow-on, not simultaneous v1 work |
-| Linux / arm64 | CI-verified (deferred with Linux/x86-64) | Quark runs its matrix here; budgets not re-baselined |
+| Linux / x86-64 | **Next** (not yet gated) | Taken up once the Windows implementation reaches a stable state — a sequenced follow-on, not simultaneous v1 work (historical: originally framed as "Quark's own reference target" before ADR-037 removed Quark as a dependency) |
+| Linux / arm64 | CI-verified (deferred with Linux/x86-64) | Budgets not re-baselined (historical: "Quark runs its matrix here" before ADR-037) |
 | Windows / arm64 | Best-effort | — |
-| macOS (any arch) | **Unsupported — not a target** | Quark has no macOS PAL backend and none is planned; no AgentEngine RFC may claim macOS support. Resolved 2026-08-03 (see OpenQuestions.md); previously listed here as Supported on the reasoning that dropping `microvm` (008 §1) removed the only profile-specific gap — that reasoning never addressed the PAL gap itself, which is the actual blocker |
+| macOS (any arch) | **Unsupported — not a target** | No macOS PAL backend exists and none is planned; no AgentEngine RFC may claim macOS support. Resolved 2026-08-03 (see OpenQuestions.md); previously listed here as Supported on the reasoning that dropping `microvm` (008 §1) removed the only profile-specific gap — that reasoning never addressed the PAL gap itself, which is the actual blocker (historical: originally reasoned from "Quark has no macOS PAL backend"; unaffected by ADR-037 since `agentengine::pal` never had a macOS backend either) |
 
 **Honesty requirement:** the README's support table is generated from CI results, not written by
 hand. A tier is a statement about what CI proves.
@@ -33,7 +33,7 @@ hand. A tier is a statement about what CI proves.
 
 | Subsystem | Mechanism | Portability risk |
 |---|---|---|
-| Scheduler, mailbox, timers, cluster | Quark + PAL (`linux_x86_64`, `windows_x86_64` backends exist) | None for the current target set — both backends AgentEngine needs (Windows now, Linux next) already exist upstream in Quark |
+| Scheduler, mailbox, timers, cluster | `agentengine::rt::` + PAL (`linux_x86_64`, `windows_x86_64` PAL backends exist) | None for the current target set — the PAL backend AgentEngine needs today (Windows) exists, Linux next (historical: this layer used to be Quark + PAL, with both backends existing upstream in Quark; ADR-037 removed Quark, `rt::` has no cluster mechanism at all) |
 | Networking / TLS | PAL sockets + a TLS seam backend | Platform TLS stores differ; certificate handling is the usual trap |
 | Filesystem / workspaces | PAL file IO + path canonicalization | **High**: case-insensitivity, ADS, long paths, reparse points, `\\?\`, symlinks. Path escape is a security bug, so this is tested as security, not convenience |
 | `wasm` profile | wasmtime (WASI 0.3) | **Lowest** — identical semantics on both targeted OSes |
@@ -58,8 +58,10 @@ hand. A tier is a statement about what CI proves.
 ## 5. Build
 
 - CMake ≥ 3.28, C++23. Compilers: MSVC 19.4x, g++ 14+, clang 20+ (clang-cl on Windows).
-- Quark as a submodule; wasmtime and other backend dependencies behind CMake options, each
-  independently disable-able (a minimal build is core + `wasm` profile).
+- No submodules — AgentEngine is a self-contained repository (historical: Quark used to be pinned
+  as a submodule here; `decisions/ADR-037-remove-quark-as-core-runtime.md`, executed 2026-08-13,
+  removed that dependency entirely). wasmtime and other backend dependencies stay behind CMake
+  options, each independently disable-able (a minimal build is core + `wasm` profile).
 - CI matrix (current target set): {Windows} × {Release, ASan+UBSan} × {MSVC, clang-cl}, plus the
   conformance suites and the budget gate on the reference machine. Linux ({gcc, clang} × {Release,
   ASan+UBSan+TSan}) is added when Linux implementation begins (§2). No macOS row — not a target.
@@ -106,4 +108,5 @@ hand. A tier is a statement about what CI proves.
   preference) is a separate question this evidence doesn't settle either way — the prove exercised
   only official-release download/link/run, not a from-source-in-CI path, so it cannot close that
   half of the question.
-- **Q4** — arm64 budget re-baselining (inherits Quark's open question).
+- **Q4** — arm64 budget re-baselining (historical: originally framed as inheriting Quark's open
+  question; now an AgentEngine-owned open question in its own right post-ADR-037).

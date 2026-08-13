@@ -1,6 +1,6 @@
 # 019 — Durability and Long-Running Agents
 
-**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Depends on:** 001, 005, 014, Quark 012/017/027 · **Gate:** §7
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Depends on:** 001, 005, 014 (historical: originally also depended on Quark 012/017/027 — ADR-037 removed that dependency; see `AgentEngineSpecification.md` §7) · **Gate:** §7
 
 ## Goal
 
@@ -15,8 +15,10 @@ external effects.
 - **Content** is the run's position, session delta, workflow executor states and in-flight messages,
   pending approvals/input requests, and the capability set (recorded as *references*, never as live
   handles — a serialized capability handle would be a forgeable capability).
-- **Storage** is the Quark 012 `Store` seam, shared with sessions (005 §2). No second persistence
-  engine.
+- **Storage** is `rt::SessionStore`/`rt::AppendLogStore`, shared with sessions (005 §2). No second
+  persistence engine (historical: this RFC originally specified the Quark 012 `Store` seam here;
+  ADR-037 removed Quark and replaced the one seam with two distinct contracts — single-slot
+  overwrite-latest vs. append-only multi-version — per `AgentEngineSpecification.md` §7).
 - **Cost is bounded**: incremental deltas plus periodic full checkpoints, with the cadence a policy.
 
 ## 2. Suspension
@@ -27,7 +29,7 @@ record plus a wake condition. Wake conditions:
 | Condition | Mechanism |
 |---|---|
 | Human/caller input | `InputRequired` resolution (001 §2, 013 §5) |
-| Timer / schedule | Quark durable reminders (027) — at-least-once, wall-clock, mass-due-safe |
+| Timer / schedule | The runtime's durable reminders (formerly Quark's; carried over intact by ADR-037's `rt::` migration) — at-least-once, wall-clock, mass-due-safe |
 | External event | Webhook, queue message, or A2A push (012 §2) |
 | Remote task completion | Poll or callback from a remote A2A/MCP task |
 | Local background task completion | A `Backgroundable` tool call detached via `background_task` (006 §6b) |
@@ -55,8 +57,11 @@ The hard part. Restart and rewind both re-execute code; external effects must no
 - **Effects are classified** by the tool declaration: `pure` (safe to repeat), `idempotent` (safe
   with a key), `at-most-once` (must not be repeated — journaled, and on ambiguity surfaced to a
   human rather than guessed).
-- Quark 017's transactional-outbox discipline backs outbound messaging; this RFC does not invent a
-  delivery mechanism.
+- Transactional-outbox discipline backs outbound messaging; this RFC does not invent a delivery
+  mechanism (historical: originally cited as Quark 017's discipline specifically; ADR-037 removed
+  that dependency. For the model-call path, the analogous concern is now `rt::CircuitBreaker` /
+  `RetryPolicy` / `ModelCallGateway`; for outbound messaging generally, no verified `rt::`-side
+  successor is named here — treat the Quark citation as historical only).
 
 **Stated plainly:** for an `at-most-once` effect interrupted at exactly the wrong moment, the engine
 reports *indeterminate* rather than guessing. Guessing is how a payment gets made twice.
@@ -65,8 +70,13 @@ reports *indeterminate* rather than guessing. Guessing is how a payment gets mad
 
 - **Process restart**: sessions and runs reload on demand from the store; suspended runs wake on
   their conditions.
-- **Node loss**: Quark placement (010/026) reactivates the session elsewhere; fencing prevents two
-  activations of the same session, which is the split-brain that would corrupt history.
+- **Node loss**: not handled. This RFC originally specified Quark placement (010/026) reactivating
+  the session elsewhere, with fencing preventing two activations of the same session (the split-brain
+  that would corrupt history). ADR-037 removed Quark, and AgentEngine has no multi-node cluster story
+  at all today — host-managed passivation/reactivation of a session across node loss is a real,
+  permanent gap, accepted rather than replaced (ADR-037's own completion note names five node-loss-
+  fencing test files retired as this accepted gap; `AgentEngineSpecification.md` §7). Process restart
+  on the *same* node, above, is unaffected.
 - **Poison runs**: a run that fails repeatedly on resume is quarantined after a bounded number of
   attempts, with its state preserved for inspection — not retried forever, and not discarded.
 - **Deploys**: a version-skew policy declares whether an in-flight run resumes on a new agent
@@ -97,8 +107,10 @@ This is the guard rail that keeps time-travel a debugging tool rather than an in
   injector that duplicates and delays; the external counter reads exactly 1 over 10⁴ trials.
 - **G3** — a suspended run's resident cost is storage-only: no activation, no sandbox, no
   connection, no thread (measured by census, not asserted).
-- **G4** — 10⁶ reminders due simultaneously wake without a thundering herd (inherits Quark ADR-017's
-  mass-due gate).
+- **G4** — 10⁶ reminders due simultaneously wake without a thundering herd (historical: this gate
+  originally inherited Quark's own ADR-017 mass-due gate; the durable-reminders mechanism itself
+  carried over intact into `rt::` per ADR-037, so this gate still applies to the current runtime —
+  only the Quark citation is historical).
 - **G5** — a poison run is quarantined after its bound with state intact and an operator-visible
   reason.
 - **G6** — an `at-most-once` effect is interrupted by a fault injector at exactly the ambiguous

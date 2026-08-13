@@ -1,6 +1,6 @@
 # 020 — Configuration and Hosting
 
-**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Depends on:** 002, 006, 008, 015, 018, 019, Quark 013 · **Gate:** §7
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Depends on:** 002, 006, 008, 015, 018, 019 (historical: originally also Quark 013 — ADR-037 removed Quark as a dependency) · **Gate:** §7
 
 ## Goal
 
@@ -17,8 +17,9 @@ and define the shapes in which the engine is hosted.
 | Version | part of the agent version (002 §7) | independent |
 
 **The test for where a knob belongs:** if changing it changes what the agent *would do given the
-same input*, it is policy. This is Quark's policy-vs-config boundary (Quark 013) applied one layer
-up, and it exists so that "it worked in staging" means something.
+same input*, it is policy. This is AgentEngine's own policy-vs-config boundary (historical: applied
+one layer up from Quark's identical boundary, Quark 013, before ADR-037 removed that dependency),
+and it exists so that "it worked in staging" means something.
 
 **One hard rule:** configuration may **never widen** capabilities, weaken a sandbox profile below
 its declared floor, or disable an approval requirement. Those are policy. A deployment that can
@@ -27,9 +28,10 @@ turn off the sandbox through an environment variable does not have a sandbox.
 ## 2. Configuration model
 
 - **Sources, in precedence order:** defaults < file < environment < CLI < programmatic.
-- **Scoped overrides** mirroring Quark's resolution: defaults < engine < node < agent-type <
-  session. Resolved once at startup into an immutable table; live-reconfigurable knobs are
-  explicitly marked (Quark ADR-008's frozen-core/hot-leaf discipline).
+- **Scoped overrides**: defaults < engine < node < agent-type < session. Resolved once at startup
+  into an immutable table; live-reconfigurable knobs are explicitly marked (historical: this
+  frozen-core/hot-leaf discipline mirrored Quark's own resolution and ADR-008, before ADR-037
+  removed Quark as a dependency; the discipline itself is unchanged).
 - **Every knob declares** its type, default, valid range, reconfiguration class (`BuildOnly` /
   `Live`), and whether it is security-relevant. Security-relevant knobs are `BuildOnly` and logged
   at startup with their effective values.
@@ -44,7 +46,7 @@ turn off the sandbox through an environment variable does not have a sandbox.
 |---|---|---|
 | **Embedded library** | Link the engine into an application; own the event loop or let the engine own one | Desktop apps, games, existing C++ services |
 | **Standalone server** | One process exposing the protocol surfaces (011/012/013) over HTTP | The common deployment |
-| **Cluster** | N nodes over Quark's cluster (010/021/026) with sessions placed by HRW/VirtualBins | Scale-out, HA |
+| **Cluster** | N nodes with sessions placed by HRW/VirtualBins (historical design intent only — no cluster placement mechanism exists in `agentengine::rt::`; this used to ride Quark's cluster machinery, ADR-037 removed Quark and there is no multi-node story at all today, see §5) | Scale-out, HA (not currently buildable) |
 | **CLI / one-shot** | Run an agent or workflow to completion and exit | Automation, CI, scripting |
 | **Sidecar** | Engine alongside an application, local IPC | Polyglot deployments before bindings exist |
 
@@ -58,44 +60,51 @@ and engine here: the host is in the same process as the `Run`, so it consumes 01
 directly, in its native struct form, with none of the wire translation AG-UI/A2A/MCP exist to do.
 
 **Bring-up.** The host constructs an **`EmbeddedHost`** from resolved configuration (§2), which
-brings up Quark's actor system in-process. §3 already names the choice: the host's own loop pumps
-the scheduler, or the engine owns its worker threads outright. For a host with a UI message pump it
-cannot give up — WinUI's `DispatcherQueue`, Win32's `GetMessage`, Qt's `QEventLoop` — the fit is
-**the engine owns its threads**: a UI thread must never be the thread the actor scheduler blocks on.
+brings up AgentEngine's own `agentengine::rt::` runtime in-process (historical: this used to bring
+up Quark's actor system before ADR-037 removed that dependency). §3 already names the choice: the
+host's own loop pumps `rt::ThreadPool`, or the engine owns its worker threads outright. For a host
+with a UI message pump it cannot give up — WinUI's `DispatcherQueue`, Win32's `GetMessage`, Qt's
+`QEventLoop` — the fit is **the engine owns its threads**: a UI thread must never be a thread
+`rt::ThreadPool` blocks on.
 
-**Starting and draining a run.** No new primitive: `ask_stream<RunEvent>(StartRun{...})` (already
-named in 001 §2) has the signature Quark's ADR-018 gives it —
-`task<expected<ReplyStream<RunEvent>, error>>` — and the host `co_await`s it once to obtain the
-`ReplyStream<RunEvent>`, then drains it in an ordinary coroutine loop. That drain **is** the
-backpressure signal 013 §1 already promises ("a slow consumer applies backpressure to the provider
-read instead of buffering unboundedly") — it was never a protocol-only property, it is Quark's
-credit-controlled reply ring (ADR-018), and an embedded host gets it for free by doing nothing
-special. This is what makes "asynchronous by default" true here rather than aspirational: a run was
-never going to emit faster than whatever is draining it, embedded host or not.
+**Starting and draining a run.** No new primitive: `start_run(StartRun{...})` (already named in 001
+§2) returns `agentengine::rt::task<result<AgentResponse>>`, and the host `co_await`s it once; a
+streaming host instead consumes `agentengine::stream<RunEvent>` (`core/stream.hpp`, over
+`rt::channel<T,E>`) in an ordinary coroutine drain loop. That drain **is** the backpressure signal
+013 §1 already promises ("a slow consumer applies backpressure to the provider read instead of
+buffering unboundedly") — it was never a protocol-only property, it is `stream<T>`'s own
+credit-controlled contract (historical: originally Quark's credit-controlled reply ring, ADR-018;
+ADR-037 replaced the backend, the contract is unchanged), and an embedded host gets it for free by
+doing nothing special. This is what makes "asynchronous by default" true here rather than
+aspirational: a run was never going to emit faster than whatever is draining it, embedded host or
+not.
 
 **One handle, one `Run`.** A tab per subagent (per the earlier discussion: 001 §4 sub-agents are
 already separate `Run`s on separate `AgentSession`s) is exactly one independently-drained
-`ReplyStream<RunEvent>` per tab. No new concept — N tabs is N ordinary drain loops.
+`stream<RunEvent>` per tab. No new concept — N tabs is N ordinary drain loops.
 
-**Threading is the host's problem, explicitly.** The engine delivers `ReplyStream` resumption on
-whichever Quark worker thread produced the event — never on a thread the host designated, because
-the engine has no way to know a host has a UI thread, let alone which one. A host that mutates a UI
-object from inside the drain coroutine without marshaling (`winrt::resume_foreground(dispatcherQueue)`
+**Threading is the host's problem, explicitly.** The engine delivers stream resumption on whichever
+`rt::ThreadPool` worker thread produced the event (historical: "whichever Quark worker thread"
+before ADR-037) — never on a thread the host designated, because the engine has no way to know a
+host has a UI thread, let alone which one. A host that mutates a UI object from inside the drain
+coroutine without marshaling (`winrt::resume_foreground(dispatcherQueue)`
 or equivalent) has a host bug, not an engine defect. Stated plainly so it doesn't get discovered by
 a flaky WinUI reference app: this has to be documented, not assumed away.
 
-**Secondary local observers on one run — a partial answer to 013 Q2.** 013 Q2 flags that Quark's
-`Topic<M>` (ADR-019) is the wrong primitive for A2A's multi-subscriber requirement, because A2A
-**must** deliver identical events in identical order to every concurrent subscriber and `Topic<M>` is
-deliberately best-effort, at-most-once, per-subscriber drop-on-full. That disqualification is
-specific to the A2A conformance obligation — it is not a defect in `Topic<M>` itself. For a second
-in-process observer on one run (a debug pane alongside the tab's primary view, say), best-effort is
-exactly the right shape: a coalesced or dropped UI frame is not a correctness bug the way a missed
-A2A task update would be. So: a run's **primary** stream is always the credit-controlled
-`ReplyStream` from `ask_stream` above; a run **may** additionally `publish` its events onto a
-`Topic<RunEvent>` for secondary in-process observers only, never as a substitute for a protocol
-surface's delivery guarantee. This closes the embedded-only slice of 013 Q2; A2A's stricter
-requirement is untouched and still needs its own primitive.
+**Secondary local observers on one run — a partial answer to 013 Q2.** 013 Q2 flags that a
+best-effort, at-most-once, per-subscriber drop-on-full pub-sub primitive (historical: Quark's
+`Topic<M>`, ADR-019, before ADR-037 removed Quark as a dependency) is the wrong shape for A2A's
+multi-subscriber requirement, because A2A **must** deliver identical events in identical order to
+every concurrent subscriber. That disqualification is specific to the A2A conformance obligation —
+it is not a defect in a best-effort primitive itself. For a second in-process observer on one run (a
+debug pane alongside the tab's primary view, say), best-effort is exactly the right shape: a
+coalesced or dropped UI frame is not a correctness bug the way a missed A2A task update would be.
+So: a run's **primary** stream is always the credit-controlled `stream<RunEvent>` from `start_run`
+above; a run **may** additionally fan its events out to secondary in-process observers only, never
+as a substitute for a protocol surface's delivery guarantee — see §8 Q6's resolution below to build
+this as ordinary AgentEngine-owned code rather than lean on any Quark primitive. This closes the
+embedded-only slice of 013 Q2; A2A's stricter requirement is untouched and still needs its own
+primitive.
 
 **Feeding input back and cancelling.** Both are already-named mechanisms, not embedding-specific
 ones: resolving `InputRequired`/`ApprovalRequested` (001 §2) is an ordinary `ask` carrying the resume
@@ -156,10 +165,19 @@ mistake once is enough.
 
 ## 5. Cluster concerns
 
-- **Session placement** and reactivation come from Quark; AgentEngine chooses the key
-  (`session_id`) and the placement policy.
+**Historical note (ADR-037):** this section describes multi-node cluster placement as it was
+originally designed, riding Quark's own cluster/placement machinery. ADR-037 (2026-08-13) removed
+Quark as a dependency entirely and audited zero real cluster footprint in AgentEngine's build even
+before removal (`decisions/ADR-037-remove-quark-as-core-runtime.md` §2) — `agentengine::rt::` has
+no multi-node cluster placement mechanism at all. The concerns below are retained as an honest
+record of unbuilt, currently out-of-scope future work, not a description of anything that exists
+today.
+
+- **Session placement** and reactivation used to come from Quark; AgentEngine chose the key
+  (`session_id`) and the placement policy. No placement/reactivation mechanism exists post-ADR-037.
 - **Sandbox locality**: a `native-jail` sandbox is node-local; a session that migrates loses warm
-  sandboxes, which is a cost, not a correctness issue (010 §3 clean-state contract makes it safe).
+  sandboxes, which is a cost, not a correctness issue (010 §3 clean-state contract makes it safe) —
+  moot without a cluster to migrate across.
 - **Rolling upgrade**: drain, fenced hand-off, version-skew policy for in-flight runs (019 §4).
 - **Capacity**: sandbox pools, provider connection pools, and session density are the three limits
   that matter; each has a budget in 023.
@@ -263,10 +281,12 @@ mistake once is enough.
   **Resolved, Yes, first-class `Run::observe()` (2026-08-04):** the blocking condition in this
   question's own prior update no longer holds — 013 §7 Q2 resolved to building the needed ordered,
   bounded-eviction fan-out as ordinary AgentEngine-owned code (a per-subscriber cursor plus a bounded
-  ring buffer) rather than waiting on Quark's still-unshipped ADR-039 primitive. That same mechanism,
+  ring buffer) rather than waiting on Quark's still-unshipped ADR-039 primitive (historical: moot
+  regardless since ADR-037 later removed Quark as a dependency entirely). That same mechanism,
   already required for AgentEngine's own A2A conformance, is the natural backing for a general
   `Run::observe()` serving any secondary local observer (a debug pane, a metrics tick, a second UI) —
-  giving every observer ordered, gap-signaled delivery instead of best-effort `Topic<M>` drop, with
-  nothing to wait on. `Topic<M>` composition stays available as the lighter-weight option for an
-  observer that genuinely doesn't care about gaps (a live metrics tick, §3a's own example), not the
-  only local multi-observer option.
+  giving every observer ordered, gap-signaled delivery instead of best-effort drop-on-full, with
+  nothing to wait on. A lighter-weight, best-effort composition (historical: `Topic<M>`, Quark's own
+  primitive) is no longer available post-ADR-037; an observer that genuinely doesn't care about gaps
+  (a live metrics tick, §3a's own example) uses the same `Run::observe()` mechanism today, not a
+  separate primitive.

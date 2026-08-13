@@ -41,7 +41,8 @@ kit for no defensive benefit to anyone who couldn't already reproduce it themsel
 
 In scope: the engine core, the sandbox/isolation backends (008), the plugin ABI (009), the Python
 interpreter mediation layer (010), protocol conformance surfaces (011/012/013). Out of scope:
-vulnerabilities in a model provider's own service, in a third-party MCP server or plugin not shipped
-by this project, or in the vendored Quark submodule (report those upstream at
-[QuarkCpp](https://github.com/thnak/QuarkCpp) — never patched in-tree here, per CLAUDE.md's locked
-decision).
+vulnerabilities in a model provider's own service, or in a third-party MCP server or plugin not
+shipped by this project. (Historical: this section used to also carve out the vendored
+[QuarkCpp](https://github.com/thnak/QuarkCpp) submodule as out of scope, reported upstream instead
+— `decisions/ADR-037-remove-quark-as-core-runtime.md` removed that dependency entirely, so there is
+no vendored Quark code left in this tree to carve out.)

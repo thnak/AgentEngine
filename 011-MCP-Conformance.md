@@ -22,7 +22,10 @@ session, and the `Mcp-Session-Id` header. Every request is self-contained, carry
 version and client capabilities in `_meta`. That is not a detail — it means:
 
 - **No connection state machine.** A client is a request builder plus a cache, which maps cleanly
-  onto Quark's stateless-worker pools (Quark 025) rather than a per-server connection actor.
+  onto `agentengine::rt::ThreadPool` rather than a per-server connection actor (historical: originally
+  described as mapping onto Quark's stateless-worker pools — ADR-037 removed Quark; the exact
+  current MCP-server threading shape should be re-verified against `rt::ThreadPool`'s implementation
+  rather than assumed identical).
 - **No session affinity**, so horizontal scaling and load balancing are free on both sides.
 - **Reconnect is not a resumption problem.** SSE resumability and message redelivery were removed
   (`Last-Event-ID` and event ids are gone); a broken response stream loses the in-flight request and
