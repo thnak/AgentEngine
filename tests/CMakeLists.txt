@@ -988,6 +988,13 @@ add_executable(test_rt_project_supervisor test_rt_project_supervisor.cpp)
 target_link_libraries(test_rt_project_supervisor PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_project_supervisor COMMAND test_rt_project_supervisor)
 
+# ---- ADR-037 -- agentengine::rt::AppendLogStore, the append-only persistence primitive both
+# rt::WorkflowSupervisor's own time-travel gap and rt::ProjectRegistry's own archived-tail gap name
+# as their shared missing dependency. Not wired into either yet -- proven standalone first.
+add_executable(test_rt_append_log_store test_rt_append_log_store.cpp)
+target_link_libraries(test_rt_append_log_store PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_append_log_store COMMAND test_rt_append_log_store)
+
 # ---- Milestone 5 Phase G1 -- ChatCallRecording JSON codec (core/chat_recording.hpp), the shared
 # foundation RecordingChatClient<Inner> and ReplayChatClient both depend on.
 add_executable(test_chat_recording_codec test_chat_recording_codec.cpp)
