@@ -1,5 +1,14 @@
 # ADR-022 — Inbound listener I/O model: share Quark's reactor, or a standalone one?
 
+**Superseded in full (2026-08-13) by `decisions/ADR-039-inbound-transport-host-pluggable.md`.** This
+ADR's entire question — which reactor a first-party AgentEngine-owned listener shares — is moot on two
+independent grounds: ADR-037 deleted every Quark type (`TcpTransport`, `pal::IoContext`) its designs
+were built from, and ADR-039 no longer accepts that AgentEngine builds a first-party listener at all
+(a host-pluggable transport is the current direction). This document's own text is kept unmodified as
+the historical record; read ADR-039 for the current direction. §6's real, code-grounded finding about
+`TcpTransport::on_accept_ready()` accepting unauthenticated connections remains a real, still-relevant
+observation about Quark itself, independent of this ADR's own superseded decision.
+
 **Status:** Judged (2026-08-08). Design B (standalone reactor) accepted. Follow-on to
 `decisions/ADR-021-inbound-protocol-trust-boundary.md` §6/§8, which accepted first-party TLS+auth
 termination (Design A there) as AgentEngine's strategic direction for MCP/A2A inbound identity, and

@@ -1,5 +1,14 @@
 # ADR-021 — Inbound protocol trust boundary: who terminates TLS+OAuth 2.1 for MCP/A2A?
 
+**Superseded (2026-08-13) by `decisions/ADR-039-inbound-transport-host-pluggable.md`** for §3–§8's
+own strategic direction ("AgentEngine owns TLS/auth first-party") — ADR-039 accepts a host-pluggable
+transport instead, given no comparable SDK (MAF, OpenAI Agents SDK) owns its own listener and this
+project's own protocol dispatchers were already transport-agnostic (§2's own inventory, below). This
+document's own text is kept unmodified as the historical record of how that first decision was made;
+read ADR-039 for the current direction. §7's real, Judged bearer-token mechanism
+(`trust/bearer_token.hpp`/`hmac.hpp`) is NOT superseded — it survives unchanged as a reusable
+primitive under the new design (ADR-039 §3c/§4).
+
 **Status:** Judged (2026-08-08) — the STRATEGIC question only (§8). Design A (first-party termination)
 accepted; its core bearer-token mechanism is real, red-teamed, and proven
 (`trust/bearer_token.hpp`/`hmac.hpp`, `tests/test_bearer_token_proof.cpp`, 32/32 checks). The network

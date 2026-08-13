@@ -1554,6 +1554,13 @@ if(WIN32)
   target_link_libraries(test_bearer_token_proof PRIVATE
     agentengine::core agentengine::capability_token agentengine_warnings)
   add_test(NAME test_bearer_token_proof COMMAND test_bearer_token_proof)
+
+  # ---- ADR-039 prove phase -- trust::principal_from_bearer_claims(), the canonical claims -> Principal
+  # bridge every host-pluggable transport adapter is expected to call (decisions/ADR-039) -------------
+  add_executable(test_principal_from_bearer_claims test_principal_from_bearer_claims.cpp)
+  target_link_libraries(test_principal_from_bearer_claims PRIVATE
+    agentengine::core agentengine::capability_token agentengine_warnings)
+  add_test(NAME test_principal_from_bearer_claims COMMAND test_principal_from_bearer_claims)
 endif()
 
 # ---- Worktree content-addressed object store (025 §2, Milestone 3 Phase A1) --------------------

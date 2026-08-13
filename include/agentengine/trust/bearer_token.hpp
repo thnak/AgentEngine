@@ -40,6 +40,7 @@
 
 #include "agentengine/core/error.hpp"
 #include "agentengine/trust/hmac.hpp"
+#include "agentengine/trust/principal.hpp"
 
 namespace agentengine::trust {
 
@@ -105,5 +106,28 @@ struct BearerVerificationRequest {
 [[nodiscard]] result<BearerTokenClaims> verify_bearer_token(BearerToken const& token, BearerSecretKey const& key,
                                                               BearerVerificationRequest const& request,
                                                               ReplayGuard& replay_guard);
+
+// ADR-039's canonical claims -> Principal bridge. Exists so that "every host that wants to reuse this
+// project's own already-proven bearer-token mechanism" (ADR-039 §4) has exactly ONE audited mapping to
+// call, instead of each host-pluggable transport adapter hand-rolling its own -- the same "one shared
+// primitive, not N independently-written ones" move ADR-021's own hmac.hpp extraction already made.
+// Deliberately takes ONLY `verify_bearer_token`'s own successful return value, never the raw token or
+// unverified claims -- there is no way to call this without a prior, real signature/exp/aud/iss/replay
+// check having already passed. `kind` is a caller-supplied parameter, not read from the token: nothing
+// in `BearerTokenClaims` states principal_kind (018 SS1's identity credential asserts WHO, not WHAT KIND
+// of caller), and a bearer-token issuer choosing to assert `kind` from token content would let anything
+// mintable off the SAME key claim a stronger kind (e.g. `service` over `human`) than the issuing host
+// actually intended for that subject -- the caller (the host's own route/endpoint configuration, the
+// same "never derived from the token" discipline `expected_aud`/`expected_iss` already use) decides.
+// Defaults to `service`: MCP/A2A inbound callers are overwhelmingly machine/service identities, not
+// interactive humans typing at a terminal (that case already has its own `make_local_cli_principal`).
+[[nodiscard]] inline Principal principal_from_bearer_claims(BearerTokenClaims const& claims,
+                                                              principal_kind kind = principal_kind::service) {
+    Principal p{};
+    p.id        = claims.sub;
+    p.tenant_id = claims.tenant_id;
+    p.kind      = kind;
+    return p;
+}
 
 } // namespace agentengine::trust
