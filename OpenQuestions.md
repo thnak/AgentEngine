@@ -22,10 +22,18 @@ execution (`check_workflow_executable()`, `workflow/graph.hpp:431`) — no runti
 `AgentSession` as a workflow node yet. Full gap analysis, current-state citations, and a source-grounded
 study of how MAF (.NET) built the equivalent bridge:
 `docs/planning/agent-as-workflow-executor-gap.md`, `docs/research/2026-08-13-maf-agent-as-workflow-executor.md`.
-A design draft exists and has already been red-teamed once:
-`docs/planning/agent-as-workflow-executor-design-draft.md` — the first draft's "no core-seam change
-needed" claim was FALSE against real code (a genuine checkpoint/resume amnesia bug and a genuine
-concurrent double-resume race, both FATAL as originally scoped); read it before implementing.
+A design draft exists and has been red-teamed twice:
+`docs/planning/agent-as-workflow-executor-design-draft.md`. First pass: the original "no core-seam
+change needed" claim was FALSE against real code (a genuine checkpoint/resume amnesia bug and a
+genuine concurrent double-resume race, both FATAL as originally scoped). Second pass (2026-08-13),
+resolving the punch list: capability sourcing reuses `WorkflowSupervisor::initialize()`'s already-
+present but unused `contexts` parameter (no new API needed for the grant itself, only a new
+`check_workflow_executable()` overload to verify it); the concurrent-hazard fix quarantines only the
+specific hazardous delivery through the EXISTING failure-policy channel, not a whole-round abort (the
+first attempt at this resolution was itself found too harsh); and a proposed `TaggedExecutorBody`
+wrapper was FATAL as scoped (breaks every real call site) — fixed via `std::function::target<T>()`,
+which has zero precedent anywhere in this codebase and needs its own positive-control test before
+being trusted. Read the design draft before implementing.
 
 MAF's own design gives no precedent for this question — it has no in-process capability/authority
 system analogous to `CapabilitySet`/`EffectContext::capabilities`. A future ADR must decide: does an

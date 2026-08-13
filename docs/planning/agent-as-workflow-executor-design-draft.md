@@ -129,7 +129,88 @@ the graph is tested, never the runtime REFUSAL.
    closing the stale-comment gap named in §2's RESIDUAL finding. This does not depend on any of items
    1-4 above and can land on its own, independent of when (or whether) the rest of this design proceeds.
 
-## 4. What survives from the first draft, unchanged
+## 5. Resolving the §3 punch list — second red-team pass (2026-08-13)
+
+Worked through all five items plus the original capability-sourcing question (from the research doc,
+"MAF gives zero precedent for this"). Red-teamed once more before recording as resolved.
+
+**Capability sourcing — reuse existing, unused infrastructure, don't invent new.**
+`WorkflowSupervisor::initialize(Workflow graph, std::vector<ExecutorBody> bodies,
+std::vector<EffectContext> contexts = {})` (`rt/workflow_supervisor.hpp:483-492`) ALREADY accepts a
+per-executor-index `contexts` parameter — `contexts_.resize(graph_.executors.size())` — that nothing
+currently populates meaningfully (the file's own comment says so directly). Confirmed by red-team:
+only one read site (`:751`) and one write site (`initialize()` itself) exist for `contexts_` in the
+whole file, nothing else assumes it stays default, and — unlike the ADR-028 `Backgroundable`+
+`captures_session_state` hazard (a reference outliving its owner via a DETACHED thread) — `execute()`'s
+dispatch loop always synchronously `.get()`s every job before the round returns
+(`workflow_supervisor.hpp:758`), so a `contexts_[idx]`'s borrowed `capabilities`/`bound_capabilities`
+pointer never outlives an ordinary synchronous call the way a detached-thread capture could. **Design:**
+(a) `Executor` gains a static, graph-declared `capability_ceiling` field (mirroring
+`Tool<...>::capability_ceiling`, I2's "declared statically" discipline) naming WHAT a node needs; (b)
+the actual granted `CapabilitySet` a node's `AgentSession` runs with comes from whatever `EffectContext`
+the CALLER populates into `contexts[i]` at `initialize()` time — the existing seam, finally used, no
+new API surface; (c) `check_workflow_executable()` needs a genuinely NEW overload taking `contexts` too
+(its current signature, `graph.hpp:431`, sees only the graph) to verify `contexts[i]`'s granted
+capabilities actually satisfy `graph.executors[i].capability_ceiling` before accepting the graph as
+executable — a real, small, additive signature change, not yet built. `initialize()`'s own comment
+(`:475-482`) goes stale the moment this ships and needs to state the borrowed-pointer lifetime contract
+explicitly (matching `effect_context.hpp:18,25`'s own inline statement of that contract).
+
+**Item 1 (checkpoint/resume) — confirmed lower-risk than it looked, accept and test the limitation.**
+Red-team confirmed directly: `restore_from_record()` never touches `bodies_`, and the only real
+checkpoint-resume precedent (`test_rt_workflow_checkpoint_g2.cpp`) always resupplies fresh bodies to a
+genuinely new `WorkflowSupervisor` instance before restoring — a stale `AgentSession&` inside an old
+closure is structurally UNREACHABLE on resume, not merely unlikely. Resolution stands as originally
+scoped: document and test that resuming a checkpointed run gives each `agent`-kind node a fresh,
+history-less session (matching `AgentSessionRecord`'s own already-accepted no-`history_` gap,
+`examples/12_session_checkpoint.cpp:139-143`), proven by a real test that fails if this silently changes
+— not a design gap needing new serialization work.
+
+**Item 2 (concurrent same-node hazard) — corrected: quarantine the specific hazardous delivery, don't
+abort the whole round.** First resolution pass proposed failing the ENTIRE round closed the moment a
+duplicate `executor_index` is found among a round's gathered `exec_deliveries`. Red-team found this is
+**strictly harsher than the existing `broke` failure path**: today, when routing fails mid-round, EVERY
+OTHER `exec_delivery` in that round still runs and gets recorded into `state_.partial`
+(`workflow_supervisor.hpp:780-787`) — only downstream routing aborts. Aborting the whole round before
+any dispatch would silently discard unrelated, unaffected nodes' legitimate work in the same round, and
+none of the six existing `workflow_status` values (`:188-196`) honestly describes "nothing ran, a
+duplicate delivery was detected." **Corrected design:** detect the duplicate at gather time (still
+before dispatch, still evades the race — red-team confirmed `exec_deliveries` is built once, fully,
+before any `pool_.submit()`, so a gather-time check cannot be evaded across the retry-attempt loop), but
+instead of aborting the round, feed ONLY the hazardous entries into the SAME per-delivery
+failure-outcome channel `JobOutcome`/`ExecuteReply` already uses for a real executor failure — i.e., the
+duplicate deliveries fail individually (attributable to the specific node, a specific error code, e.g.
+`workflow.duplicate_delivery_same_round`), routed through the EXISTING failure-policy/retry/fallback
+machinery `tests/test_rt_workflow_supervisor_failure_policies.cpp` already proves works, while every
+OTHER unrelated delivery in that round dispatches and completes normally. No new `workflow_status`
+value needed — this reuses the executor-failure shape, not the whole-run-invalid shape.
+
+**Item 3 (`Executor::capability_ceiling` + YAML atomicity) — unchanged from the first pass**, folded
+into the capability-sourcing design above: the field, its YAML-compiler counterpart, and
+`check_workflow_executable()`'s extended gate must land in the same change, proven identical over both
+a C++-built and YAML-compiled graph (I6).
+
+**Item 4 (structural marker for an agent-backed body) — FATAL in the first resolution, fixed.**
+Wrapping `ExecutorBody` in a new `TaggedExecutorBody{ExecutorBody body; bool is_agent_backed;}` struct
+"alongside" the existing type is not additive as scoped: red-team confirmed grepping every real call
+site (`examples/04,09,10,13,14,15,16,17`, every `test_rt_workflow_supervisor*.cpp`) shows all of them
+pass plain `std::vector<ExecutorBody>` to `initialize()` — introducing a second element type either
+breaks `initialize()`'s signature for every existing caller, or gets stripped away before ever reaching
+`bodies_[i]`, leaving nothing for the new gate to inspect. **Corrected:** don't change the vector's
+element type at all. Give `agent_session_as_executor_body()`'s returned callable a FIXED,
+non-templated functor type (independent of the adapter's own `ChatClientT`/`HistoryProviderT` template
+parameters — e.g. a plain `AgentExecutorBodyTag` class with `operator()` matching `ExecutorBody`'s
+signature), and check it via `std::function`'s own built-in type erasure:
+`bodies_[i].target<AgentExecutorBodyTag>() != nullptr`. `std::vector<ExecutorBody> bodies` stays
+byte-identical — zero existing call site changes. **Named caveat, not yet closed:** `.target<T>()` has
+ZERO precedent anywhere in this codebase (confirmed by grep across `include/`/`src/`) — it needs its
+own positive-control test (confirm it correctly returns non-null for a real tagged body AND null for an
+ordinary one) before being trusted as an enforcement gate, not assumed correct by C++ standard-library
+reputation alone.
+
+**Item 5 (test-coverage gap fix)** — unchanged, still independently landable, no design dependency.
+
+## 6. What survives from the first draft, unchanged
 
 The core mechanism shape — a standalone adapter function driving `AgentSession::start_run()` via the
 same `drive<T>()` bridge already proven for `ChatClient::chat()`, requiring no change to

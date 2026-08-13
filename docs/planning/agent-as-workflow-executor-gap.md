@@ -15,12 +15,20 @@ deliberately shaped after MAF's vocabulary and mechanics (`CLAUDE.md`: "The deve
 MAF-shaped"); this gap should be closed by following MAF's real shape, not by inventing an
 incompatible one.
 
-**Design draft, already red-teamed once:** `agent-as-workflow-executor-design-draft.md`. The first
-draft's "no core-seam change needed" claim turned out FALSE against real code — a genuine checkpoint/
-resume amnesia bug and a genuine concurrent double-resume race, both FATAL as originally scoped. Read
-that doc before starting any implementation; it also names one small, independently-landable
-prerequisite (a real test for `check_workflow_executable()`'s runtime refusal — see "What's real
-today" below, last paragraph) that doesn't depend on the rest of the design.
+**Design draft, red-teamed twice:** `agent-as-workflow-executor-design-draft.md`. First pass: the
+original "no core-seam change needed" claim turned out FALSE against real code — a genuine checkpoint/
+resume amnesia bug and a genuine concurrent double-resume race, both FATAL as originally scoped.
+Second pass (2026-08-13): resolved all five punch-list items plus the original capability-sourcing
+question. Headline results: `WorkflowSupervisor::initialize()` already has an unused `contexts`
+parameter that's the natural capability-grant seam (no new API needed there); the concurrent-hazard
+fix quarantines only the specific hazardous delivery through the existing failure-policy channel
+rather than aborting the whole round (an earlier resolution attempt was strictly harsher than
+necessary); and a proposed `TaggedExecutorBody` wrapper was FATAL as scoped (breaks every existing
+call site) — fixed via `std::function::target<T>()`, which has zero precedent in this codebase and
+needs its own positive-control test. Read that doc before starting any implementation; it also names
+one small, independently-landable prerequisite (a real test for `check_workflow_executable()`'s
+runtime refusal — see "What's real today" below, last paragraph) that doesn't depend on the rest of
+the design.
 
 ## What's real today
 
