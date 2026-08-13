@@ -6,10 +6,16 @@
 //   P1 -- to_record()/restore_from_record() round-trips session identity + run position.
 //   P2 -- save_agent_session_snapshot()/load_agent_session_snapshot() round-trip through a real
 //         SessionStore conformer (InMemorySessionStore).
+//   P2b -- (ported from test_agent_session_snapshot.cpp, now fully superseded and retired) a second
+//         save() under the same id overwrites the latest state -- recovery returns the LATEST
+//         snapshot, not the first one.
 //   P3 -- loading a session id that was never saved returns std::nullopt, not an error.
 //   P4 -- delete_session() tombstones the durable record AND clears in-process state; a post-delete
 //         load() sees no residue, matching the Quark original's own "no distinction between never
-//         existed and deleted" read-path property.
+//         existed and deleted" read-path property. Also proves (ported from
+//         test_agent_session_delete.cpp, now fully superseded and retired) that EVERY accessor
+//         reports no residue -- principal, history, a non-trivial StateT reset to its own default,
+//         metadata, and run identity -- not just session_id.
 //   P5 -- checkpoint_if_due()'s cadence gate: skips writes below the threshold, writes once it's
 //         reached, exactly like the Quark original's CheckpointCadence<N>.
 //   P6 -- THE REAL POINT of this slice's own design (file banner): the in-flight guard.
@@ -187,6 +193,17 @@ int main() {
                   "P2: the loaded record's principal round-trips");
             check(rec.run_counter == 1, "P2: the loaded record's run_counter round-trips");
         }
+
+        // P2b (ported from test_agent_session_snapshot.cpp, now retired): a second save() under the
+        // same id overwrites the latest state -- the store's own single-slot, overwrite-latest
+        // contract, exercised through save_agent_session_snapshot() specifically rather than assumed.
+        session.initialize("p2", Principal{"p2-renamed", "tenant-x"});
+        auto saved_again = drive(save_agent_session_snapshot(session, store));
+        check(saved_again.has_value(), "P2b setup: a second snapshot under the same id succeeds");
+        auto loaded_again = load_agent_session_snapshot(store, "p2");
+        check(loaded_again.has_value() && loaded_again->has_value() &&
+                  (*loaded_again)->principal_id == "p2-renamed",
+              "P2b: recovery returns the LATEST snapshot, not the first one");
     }
 
     // P3: loading a session id that was never saved returns std::nullopt, not an error.
@@ -198,11 +215,17 @@ int main() {
     }
 
     // P4: delete_session() tombstones the durable record AND clears in-process state; a post-delete
-    // load sees no residue.
+    // load sees no residue. Uses a non-trivial StateT (ported from test_agent_session_delete.cpp,
+    // now retired) so this also proves clear_in_process_state() resets StateT to its own default,
+    // not just session_id -- and every OTHER accessor (principal, history, metadata, last_run_id)
+    // reports no residue either, matching that file's own C3-R3..R8 sweep.
     {
-        AgentSession<OneShotChatClient> session;
-        session.initialize("p4", Principal{"p4", ""});
+        struct ScratchState { int notes = 0; };
+        AgentSession<OneShotChatClient, ScratchState> session;
+        session.initialize("p4", Principal{"p4", "tenant-p4"});
         session.emplace_chat_client();
+        session.state().notes = 42;
+        session.metadata()["k"] = "v";
         InMemorySessionStore store;
         auto ran = drive(session.start_run(StartRun{user_message("hi")}));
         check(ran.has_value(), "P4 setup: the run converges");
@@ -215,7 +238,13 @@ int main() {
             check(receipt->durable_record_removed, "P4: the receipt reports the durable half done");
             check(receipt->in_process_state_cleared, "P4: the receipt reports the in-process half done");
         }
-        check(session.session_id().empty(), "P4: in-process state was actually cleared, not just claimed");
+        check(session.session_id().empty(), "P4: session_id is cleared, not just history");
+        check(session.principal().id.empty() && session.principal().tenant_id.empty(),
+              "P4: principal is cleared");
+        check(session.history().empty(), "P4: history is cleared");
+        check(session.state().notes == 0, "P4: state resets to StateT's own default, not just left as-is");
+        check(session.metadata().empty(), "P4: metadata is cleared");
+        check(session.last_run_id().empty(), "P4: run identity is cleared");
 
         auto loaded = load_agent_session_snapshot(store, "p4");
         check(loaded.has_value() && !loaded->has_value(),

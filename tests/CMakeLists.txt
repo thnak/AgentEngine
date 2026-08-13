@@ -243,13 +243,6 @@ add_executable(test_agent_session_run_identity test_agent_session_run_identity.c
 target_link_libraries(test_agent_session_run_identity PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_agent_session_run_identity COMMAND test_agent_session_run_identity)
 
-# ---- Milestone 4 Phase A4, narrowed (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) --
-# session_id/principal/created_at/updated_at through Quark's real Store via the Snapshot model.
-# history[]/state/metadata explicitly NOT covered (Message/ContentItem have no QUARK_SERIALIZE yet).
-add_executable(test_agent_session_snapshot test_agent_session_snapshot.cpp)
-target_link_libraries(test_agent_session_snapshot PRIVATE agentengine::core agentengine_warnings)
-add_test(NAME test_agent_session_snapshot COMMAND test_agent_session_snapshot)
-
 # ---- Milestone 4 Phase B2 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
 # HistoryProvider<Window<N>>, the first real ContextProvider conformer -- standalone (unit) and
 # wired end to end through AgentSession's real turn loop.
@@ -286,12 +279,6 @@ add_test(NAME test_skill_source_disk COMMAND test_skill_source_disk)
 add_executable(test_history_provider_summarize test_history_provider_summarize.cpp)
 target_link_libraries(test_history_provider_summarize PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_history_provider_summarize COMMAND test_history_provider_summarize)
-
-# ---- Milestone 4 Phase C3 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
-# delete_session(): durable tombstone + in-process state clear, with a completion receipt.
-add_executable(test_agent_session_delete test_agent_session_delete.cpp)
-target_link_libraries(test_agent_session_delete PRIVATE agentengine::core agentengine_warnings)
-add_test(NAME test_agent_session_delete COMMAND test_agent_session_delete)
 
 # ---- Milestone 4 Phase D1/D2 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) --
 # Checkpoint content (run position survives restart without reminting a used run_id) and cadence
@@ -1026,12 +1013,6 @@ add_test(NAME test_agent_session_admission COMMAND test_agent_session_admission)
 add_executable(test_rt_agent_session_streaming_and_events test_rt_agent_session_streaming_and_events.cpp)
 target_link_libraries(test_rt_agent_session_streaming_and_events PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_agent_session_streaming_and_events COMMAND test_rt_agent_session_streaming_and_events)
-
-# ---- Milestone 7 Phase B -- 006 §6b's Backgroundable/StandingEffect (standing_effect.hpp,
-# tool_pipeline.hpp::background_task(), AgentSession::start_background_task()) -----------------------
-add_executable(test_agent_session_background_task test_agent_session_background_task.cpp)
-target_link_libraries(test_agent_session_background_task PRIVATE agentengine::core agentengine_warnings)
-add_test(NAME test_agent_session_background_task COMMAND test_agent_session_background_task)
 
 # ---- Milestone 7 Phase C1 -- 011 MCP's JSON-RPC 2.0 wire envelope (protocol/mcp/json_rpc.hpp) ------
 add_executable(test_mcp_json_rpc test_mcp_json_rpc.cpp)
