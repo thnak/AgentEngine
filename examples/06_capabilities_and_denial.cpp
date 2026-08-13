@@ -19,18 +19,19 @@
 #include <memory_resource>
 #include <string>
 
-#include "quark/core/testkit.hpp"
-
-#include "agentengine/core/agent_session.hpp"
 #include "agentengine/core/chat_client.hpp"
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/tool.hpp"
 #include "agentengine/core/tool_call_extraction.hpp"
+#include "agentengine/rt/agent_session.hpp"
 #include "agentengine/trust/capability.hpp"
 #include "agentengine/trust/principal.hpp"
 
 using namespace agentengine;
+using agentengine::rt::AgentSession;
+using agentengine::rt::NoSessionState;
+using agentengine::rt::StartRun;
 
 namespace {
 
@@ -144,6 +145,14 @@ static_assert(ChatClient<ScriptedWriteChatClient>);
 
 using WriteAgent = AgentSession<ScriptedWriteChatClient, NoSessionState, WriteHistoryProvider>;
 
+// Drives an agentengine::rt::task<T> to completion. Safe here: nothing in this example's turn loop
+// suspends on anything external.
+template <class T>
+T drive(agentengine::rt::task<T> t) {
+    while (!t.done()) t.resume();
+    return t.take_value();
+}
+
 }  // namespace
 
 int main() {
@@ -151,12 +160,13 @@ int main() {
     {
         write_tool_invoked() = false;
 
-        quark::TestKit<WriteAgent> kit;
-        kit.actor().initialize("s-no-grant", Principal{"p-demo", ""});
+        WriteAgent session;
+        session.initialize("s-no-grant", Principal{"p-demo", ""});
+        session.emplace_chat_client();
         CapabilitySet const held = CapabilitySet::grant_root({});  // deliberately empty
-        kit.actor().set_capabilities(&held);
+        session.set_capabilities(&held);
 
-        auto r = kit.ask<AgentResponse>(StartRun{user_message("Write a note for me.")});
+        auto r = drive(session.start_run(StartRun{user_message("Write a note for me.")}));
         check(r.has_value(), "no grant: the run still converges -- the denial is fed back as an "
                               "ordinary tool error, not a run-level failure");
         check(!write_tool_invoked(),
@@ -168,13 +178,14 @@ int main() {
     {
         write_tool_invoked() = false;
 
-        quark::TestKit<WriteAgent> kit;
-        kit.actor().initialize("s-granted", Principal{"p-demo", ""});
+        WriteAgent session;
+        session.initialize("s-granted", Principal{"p-demo", ""});
+        session.emplace_chat_client();
         CapabilitySet const held = CapabilitySet::grant_root(
             {Capability{cap::FsWrite{"work", "", std::nullopt, std::nullopt}}});
-        kit.actor().set_capabilities(&held);
+        session.set_capabilities(&held);
 
-        auto r = kit.ask<AgentResponse>(StartRun{user_message("Write a note for me.")});
+        auto r = drive(session.start_run(StartRun{user_message("Write a note for me.")}));
         check(r.has_value(), "granted: the run converges");
         check(write_tool_invoked(),
               "granted: write_note's invoke() ran for real -- same tool, same call, only the "

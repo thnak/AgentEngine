@@ -19,18 +19,20 @@
 #include <memory_resource>
 #include <string>
 
-#include "quark/core/testkit.hpp"
-
-#include "agentengine/core/agent_session.hpp"
 #include "agentengine/core/chat_client.hpp"
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/run_event.hpp"
 #include "agentengine/core/tool.hpp"
 #include "agentengine/core/tool_call_extraction.hpp"
+#include "agentengine/rt/agent_session.hpp"
 #include "agentengine/trust/principal.hpp"
 
 using namespace agentengine;
+using agentengine::rt::AgentSession;
+using agentengine::rt::NoSessionState;
+using agentengine::rt::ResolveInteraction;
+using agentengine::rt::StartRun;
 
 namespace {
 
@@ -145,22 +147,31 @@ static_assert(ChatClient<ScriptedSendChatClient>);
 
 using SendAgent = AgentSession<ScriptedSendChatClient, NoSessionState, SendHistoryProvider>;
 
+// Drives an agentengine::rt::task<T> to completion. Safe here: nothing in this example's turn loop
+// suspends on anything external.
+template <class T>
+T drive(agentengine::rt::task<T> t) {
+    while (!t.done()) t.resume();
+    return t.take_value();
+}
+
 }  // namespace
 
 int main() {
-    quark::TestKit<SendAgent> kit;
-    kit.actor().initialize("s-approval", Principal{"p-demo", ""});
+    SendAgent session;
+    session.initialize("s-approval", Principal{"p-demo", ""});
+    session.emplace_chat_client();
     CapabilitySet const held = CapabilitySet::grant_root({});
-    kit.actor().set_capabilities(&held);
-    kit.actor().set_suspend_for_approval(true);  // ADR-029: no decider configured -> genuinely suspend
+    session.set_capabilities(&held);
+    session.set_suspend_for_approval(true);  // ADR-029: no decider configured -> genuinely suspend
 
-    auto viewer = kit.actor().enable_event_stream(std::pmr::get_default_resource());
-    auto r1 = kit.ask<AgentResponse>(StartRun{user_message("Message the team that we're shipping.")});
+    auto viewer = session.enable_event_stream(std::pmr::get_default_resource());
+    auto r1 = drive(session.start_run(StartRun{user_message("Message the team that we're shipping.")}));
     check(!r1.has_value(),
-          "the StartRun ask never resolves while the tool call awaits approval -- fail-closed, not "
-          "a hang, exactly like every other unresolved branch in AgentSession's turn loop");
+          "start_run() fails while the tool call awaits approval -- fail-closed, not a hang, exactly "
+          "like every other unresolved branch in AgentSession's turn loop");
     check(!send_tool_invoked(), "send_message was NOT called -- suspension happens before invocation");
-    check(kit.actor().has_open_interactions(), "a real Interaction opened for this suspension");
+    check(session.has_open_interactions(), "a real Interaction opened for this suspension");
 
     bool saw_approval_requested = false;
     while (auto ev = viewer.next()) {
@@ -169,14 +180,16 @@ int main() {
     check(saw_approval_requested, "an approval_requested event fired for the pending call");
     std::printf("[suspended] waiting for human approval to send: \"Ship it.\"\n");
 
-    // In a real deployment this ResolveInteraction ask arrives later, from whatever surface a human
-    // actually approves things through (a CLI prompt, a web console) -- here it's just the next line.
-    std::string const interaction_id = kit.actor().open_interactions().front().interaction_id;
-    auto r2 = kit.ask<AgentResponse>(ResolveInteraction{interaction_id, /*approved=*/true, std::nullopt});
+    // In a real deployment this resolve_interaction() call arrives later, from whatever surface a
+    // human actually approves things through (a CLI prompt, a web console) -- here it's just the
+    // next line.
+    std::string const interaction_id = session.open_interactions().front().interaction_id;
+    auto r2 = drive(
+        session.resolve_interaction(ResolveInteraction{interaction_id, /*approved=*/true, std::nullopt}));
     check(r2.has_value(), "approving resumes the SAME run and it converges to a final answer");
     check(send_tool_invoked(), "send_message's invoke() ran for real after approval, through the "
                                 "ordinary capability-checked tool pipeline");
-    check(!kit.actor().has_open_interactions(), "the interaction closed once resolved");
+    check(!session.has_open_interactions(), "the interaction closed once resolved");
     if (r2.has_value()) std::printf("%s\n", text_of(r2->message).c_str());
 
     std::fprintf(stderr,

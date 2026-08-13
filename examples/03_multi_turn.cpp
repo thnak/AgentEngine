@@ -2,8 +2,8 @@
 //
 // Mirrors Microsoft Agent Framework's samples/01-get-started/03_multi_turn: ask the same agent two
 // things in a row and show the second answer is aware of the first. In AgentEngine there is no
-// separate "session" object you thread through calls -- the `AgentSession` actor itself IS the
-// conversation: every `StartRun` ask against the same session actor appends to its own durable
+// separate "session" object you thread through calls -- the `rt::AgentSession` itself IS the
+// conversation: every `start_run()` call against the same session appends to its own durable
 // `history_` (005 §3) and that whole accumulated history is what the next turn's `ChatClient` sees
 // (through whatever `HistoryProviderT` the session was built with -- the default,
 // `HistoryProvider<Window<0>>`, is unbounded, matching what's used here).
@@ -14,15 +14,15 @@
 #include <memory_resource>
 #include <string>
 
-#include "quark/core/testkit.hpp"
-
-#include "agentengine/core/agent_session.hpp"
 #include "agentengine/core/chat_client.hpp"
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/tool_call_extraction.hpp"
+#include "agentengine/rt/agent_session.hpp"
 #include "agentengine/trust/principal.hpp"
 
 using namespace agentengine;
+using agentengine::rt::AgentSession;
+using agentengine::rt::StartRun;
 
 namespace {
 
@@ -96,22 +96,31 @@ static_assert(ChatClient<JokerChatClient>);
     return m;
 }
 
+// Drives an agentengine::rt::task<T> to completion. Safe here: JokerChatClient::chat() never
+// suspends on anything external, so one resume() loop resolves the whole run.
+template <class T>
+T drive(agentengine::rt::task<T> t) {
+    while (!t.done()) t.resume();
+    return t.take_value();
+}
+
 }  // namespace
 
 int main() {
     using JokeAgent = AgentSession<JokerChatClient>;
-    quark::TestKit<JokeAgent> kit;
-    kit.actor().initialize("s-multi-turn", Principal{"p-demo", ""});
+    JokeAgent session;
+    session.initialize("s-multi-turn", Principal{"p-demo", ""});
+    session.emplace_chat_client();
 
     // Turn 1, on the session.
-    auto r1 = kit.ask<AgentResponse>(StartRun{user_message("Tell me a joke about a pirate.")});
+    auto r1 = drive(session.start_run(StartRun{user_message("Tell me a joke about a pirate.")}));
     check(r1.has_value(), "turn 1 answers");
     if (r1.has_value()) std::printf("%s\n", text_of(r1->message).c_str());
 
     // Turn 2, on the SAME session -- no new AgentSession, no session object passed explicitly; the
-    // history from turn 1 is already part of this actor's own state.
-    auto r2 = kit.ask<AgentResponse>(
-        StartRun{user_message("Now tell the same joke in the voice of a pirate's parrot.")});
+    // history from turn 1 is already part of this session's own state.
+    auto r2 = drive(session.start_run(
+        StartRun{user_message("Now tell the same joke in the voice of a pirate's parrot.")}));
     check(r2.has_value(), "turn 2 answers");
     if (r2.has_value()) std::printf("%s\n", text_of(r2->message).c_str());
 
@@ -122,7 +131,7 @@ int main() {
     }
     // history_ now holds 4 messages: [user:1, assistant:1, user:2, assistant:2] -- both turns are
     // durably recorded on the session, not just the two replies printed above.
-    check(kit.actor().history().size() == 4,
+    check(session.history().size() == 4,
           "both turns are durably recorded in the session's own history");
 
     std::fprintf(stderr,
