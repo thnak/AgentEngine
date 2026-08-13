@@ -280,12 +280,17 @@ add_executable(test_history_provider_summarize test_history_provider_summarize.c
 target_link_libraries(test_history_provider_summarize PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_history_provider_summarize COMMAND test_history_provider_summarize)
 
-# ---- Milestone 4 Phase D1/D2 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) --
-# Checkpoint content (run position survives restart without reminting a used run_id) and cadence
-# (CheckpointCadence<N>/checkpoint_if_due() actually skip writes between checks).
-add_executable(test_agent_session_checkpoint test_agent_session_checkpoint.cpp)
-target_link_libraries(test_agent_session_checkpoint PRIVATE agentengine::core agentengine_warnings)
-add_test(NAME test_agent_session_checkpoint COMMAND test_agent_session_checkpoint)
+# ---- ADR-037 Phase 2 -- porting test_agent_session_checkpoint.cpp's D1 (restart doesn't remint a
+# run_id) and D2 (CheckpointCadence<N> fires at the exact expected turns over a real 7-turn
+# sequence, and the durable/live-state lag is honestly observable) onto rt::AgentSession directly.
+# Split into two files since the two claims are genuinely independent -- supersedes the old file.
+add_executable(test_rt_agent_session_checkpoint_restart test_rt_agent_session_checkpoint_restart.cpp)
+target_link_libraries(test_rt_agent_session_checkpoint_restart PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_agent_session_checkpoint_restart COMMAND test_rt_agent_session_checkpoint_restart)
+
+add_executable(test_rt_agent_session_checkpoint_cadence test_rt_agent_session_checkpoint_cadence.cpp)
+target_link_libraries(test_rt_agent_session_checkpoint_cadence PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_agent_session_checkpoint_cadence COMMAND test_rt_agent_session_checkpoint_cadence)
 
 # ---- Milestone 4 Phase E2 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
 # Suspended holds zero resources -- the first AgentEngine test anywhere to stand up a real
@@ -795,16 +800,19 @@ add_executable(test_middleware_model_call_gateway test_middleware_model_call_gat
 target_link_libraries(test_middleware_model_call_gateway PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_middleware_model_call_gateway COMMAND test_middleware_model_call_gateway)
 
-# ---- Milestone 5 Phase F4 -- per-run TokenBudget<N> enforcement at the turn boundary
-# (AgentSession::handle, agent_session.hpp).
-add_executable(test_agent_session_token_budget test_agent_session_token_budget.cpp)
-target_link_libraries(test_agent_session_token_budget PRIVATE agentengine::core agentengine_warnings)
-add_test(NAME test_agent_session_token_budget COMMAND test_agent_session_token_budget)
+# ---- ADR-037 Phase 2 -- per-run TokenBudget<N> enforcement, ported onto rt::AgentSession directly.
+# Claim (2) (over-budget fails closed) was already covered by test_rt_agent_session.cpp's S4 and
+# test_rt_agent_session_streaming_and_events.cpp's A4b -- NOT re-ported; this file covers the three
+# claims that were genuinely uncovered (under-budget succeeds, unbounded default, per-run reset).
+add_executable(test_rt_agent_session_token_budget test_rt_agent_session_token_budget.cpp)
+target_link_libraries(test_rt_agent_session_token_budget PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_agent_session_token_budget COMMAND test_rt_agent_session_token_budget)
 
-# ---- ADR-027 -- AgentSession's real, internal tool-call loop (agent_session.hpp handle()).
-add_executable(test_agent_session_tool_call_loop test_agent_session_tool_call_loop.cpp)
-target_link_libraries(test_agent_session_tool_call_loop PRIVATE agentengine::core agentengine_warnings)
-add_test(NAME test_agent_session_tool_call_loop COMMAND test_agent_session_tool_call_loop)
+# ---- ADR-037 Phase 2 -- ADR-027's real, internal tool-call loop, ported onto rt::AgentSession
+# directly -- supersedes test_agent_session_tool_call_loop.cpp.
+add_executable(test_rt_agent_session_tool_call_loop test_rt_agent_session_tool_call_loop.cpp)
+target_link_libraries(test_rt_agent_session_tool_call_loop PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_agent_session_tool_call_loop COMMAND test_rt_agent_session_tool_call_loop)
 
 # ---- ADR-036 -- ModelCallGateway/MiddlewareModelCallGateway (retry+breaker+failover+middleware as
 # a real coroutine, AgentSession-pluggable without a template-signature change).
@@ -1085,12 +1093,12 @@ add_executable(test_agui_types test_agui_types.cpp)
 target_link_libraries(test_agui_types PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_agui_types COMMAND test_agui_types)
 
-# ---- Milestone 7 Phase E2 -- 013 §2.1/§2.2's projection from the internal RunEvent stream (real
-# since Phase A) onto AgUiEvent (protocol\agui\projection.hpp): a REAL AgentSession turn loop for
-# the wired event kinds, hand-fed RunEvents for every kind with no real producer yet -------------
-add_executable(test_agui_projection test_agui_projection.cpp)
-target_link_libraries(test_agui_projection PRIVATE agentengine::core agentengine_warnings)
-add_test(NAME test_agui_projection COMMAND test_agui_projection)
+# ---- ADR-037 Phase 2 -- 013 §2.1/§2.2's projection from the internal RunEvent stream onto AgUiEvent
+# (protocol\agui\projection.hpp), ported onto rt::AgentSession directly for its two AgentSession-
+# driven blocks (the hand-fed-RunEvent blocks needed no changes) -- supersedes test_agui_projection.
+add_executable(test_rt_agui_projection test_rt_agui_projection.cpp)
+target_link_libraries(test_rt_agui_projection PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_agui_projection COMMAND test_rt_agui_projection)
 
 # ---- Milestone 7 Phase E3 -- 013 §4's SSE framing (protocol\agui\sse.hpp): one "data: <json>\n\n"
 # frame per AG-UI event, proven against real RunEventProjector output ------------------------------
@@ -1109,9 +1117,11 @@ add_executable(test_mcp_progress test_mcp_progress.cpp)
 target_link_libraries(test_mcp_progress PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_mcp_progress COMMAND test_mcp_progress)
 
-add_executable(test_cross_surface_equivalence test_cross_surface_equivalence.cpp)
-target_link_libraries(test_cross_surface_equivalence PRIVATE agentengine::core agentengine_warnings)
-add_test(NAME test_cross_surface_equivalence COMMAND test_cross_surface_equivalence)
+# ---- ADR-037 Phase 2 -- 013 §6 G3's cross-surface equivalence proof, ported onto rt::AgentSession
+# directly for its AgentSession-driven setup -- supersedes test_cross_surface_equivalence.cpp.
+add_executable(test_rt_cross_surface_equivalence test_rt_cross_surface_equivalence.cpp)
+target_link_libraries(test_rt_cross_surface_equivalence PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_cross_surface_equivalence COMMAND test_rt_cross_surface_equivalence)
 
 # ---- Milestone 7 Phase F1 -- 015 §2/§3's YAML-subset parser (core\yaml_value.hpp): block/flow
 # style, block literals, quoted/plain scalars -- proven against the RFC's own example documents ----

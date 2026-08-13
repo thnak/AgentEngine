@@ -10,7 +10,6 @@
 #include <variant>
 
 #include "agentengine/core/agent.hpp"
-#include "agentengine/core/agent_session.hpp"
 #include "agentengine/core/chat_client.hpp"
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/context_provider.hpp"
@@ -20,6 +19,7 @@
 #include "agentengine/core/tool.hpp"
 #include "agentengine/core/worktree.hpp"
 #include "agentengine/plugin/plugin.hpp"
+#include "agentengine/rt/agent_session.hpp"
 #include "agentengine/sandbox/runner.hpp"
 #include "agentengine/sandbox/sandbox.hpp"
 #include "agentengine/trust/capability.hpp"
@@ -120,10 +120,11 @@ int main() {
     ctx.trace_id = "trace-1";
     ctx.span_id = "span-1";
 
-    // -- AgentSession (core/agent_session.hpp) — a real Quark actor as of Milestone 1; the actual
-    // turn-loop/dispatch behavior is exercised end-to-end in test_m1_walking_skeleton.cpp via
-    // quark::TestKit, not here (this file only proves the headers compile together). --
-    ae::AgentSession<DummyChatClient> session{};
+    // -- AgentSession (ADR-037: rt/agent_session.hpp, the Quark-actor-free replacement for the
+    // retired core/agent_session.hpp) -- the actual turn-loop/dispatch behavior is exercised
+    // end-to-end in test_rt_agent_session.cpp, not here (this file only proves the headers compile
+    // together and that a conforming ChatClientT type-checks against AgentSession's constraints). --
+    ae::rt::AgentSession<DummyChatClient> session{};
     assert(session.history().empty());
 
     // -- Message containing a Text ContentItem (core/content.hpp) --

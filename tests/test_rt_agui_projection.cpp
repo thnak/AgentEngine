@@ -1,20 +1,28 @@
-// Milestone 7 Phase E2 (013-UI-and-Streaming-Surfaces.md §2.1/§2.2, docs/planning/milestone-7-
-// protocol-conformance-breakdown.md). Proves `RunEventProjector` (protocol/agui/projection.hpp) both
-// end to end against a REAL `AgentSession` turn loop (via `enable_event_stream()`, real since Phase
-// A) for the event kinds it actually produces today, and directly (hand-fed `RunEvent`s) for every
-// OTHER kind the vocabulary names but no real producer exists for yet -- honestly split, matching
+// ADR-037 port of test_agui_projection.cpp onto agentengine::rt::AgentSession (include/agentengine/
+// rt/agent_session.hpp) -- the Quark-actor-free replacement for agentengine::AgentSession (core/
+// agent_session.hpp). Milestone 7 Phase E2 (013-UI-and-Streaming-Surfaces.md §2.1/§2.2,
+// docs/planning/milestone-7-protocol-conformance-breakdown.md). Proves `RunEventProjector`
+// (protocol/agui/projection.hpp) both end to end against a REAL `rt::AgentSession` turn loop (via
+// `enable_event_stream()`, real since Phase A, ported to rt:: by ADR-037 Phase 2 Slice 1) for the
+// event kinds it actually produces today, and directly (hand-fed `RunEvent`s) for every OTHER kind
+// the vocabulary names but no real producer exists for yet -- honestly split, matching
 // `test_agent_session_run_event_stream.cpp`'s own precedent for exactly this same real/unwired split.
+//
+// ONLY the two AgentSession-driven blocks (E2-1, E2-2) changed versus the original: `quark::TestKit
+// <Session> kit; kit.actor()...`/`kit.ask<AgentResponse>(...)` (a Quark actor's mailbox-serialized
+// ask/reply) becomes a plain `Session session; session...` local plus a `drive<T>()` loop over
+// `start_run()`'s returned `rt::task<T>` -- the same pattern test_rt_agent_session.cpp/test_rt_agent_
+// session_streaming_and_events.cpp already establish. Every hand-fed-RunEvent block (E2-3 onward)
+// needs no changes at all -- it never touches AgentSession in the first place.
 
 #include <iostream>
 #include <memory_resource>
 #include <string>
 
-#include "quark/core/testkit.hpp"
-
-#include "agentengine/core/agent_session.hpp"
 #include "agentengine/core/chat_client.hpp"
 #include "agentengine/core/content.hpp"
 #include "agentengine/protocol/agui/projection.hpp"
+#include "agentengine/rt/agent_session.hpp"
 
 namespace {
 
@@ -31,6 +39,15 @@ int g_failures = 0;
     } while (0)
 
 namespace agui = agentengine::agui;
+
+// Same "safe here because nothing genuinely suspends externally" drive<T>() every other
+// test_rt_agent_session*.cpp file uses -- the ScriptedChatClient fixture below co_returns
+// immediately from both chat() and chat_stream().
+template <class T>
+T drive(agentengine::rt::task<T> t) {
+    while (!t.done()) t.resume();
+    return t.take_value();
+}
 
 ae::Message make_turn(std::string message_id) {
     ae::ContentItem item{};
@@ -92,12 +109,12 @@ std::vector<ae::RunEvent> drain(ae::stream<ae::RunEvent>& s) {
 int main() {
     // --- E2-1: a REAL success-path run, projected end to end -----------------------------------------
     {
-        using Session = ae::AgentSession<ScriptedChatClient>;
-        quark::TestKit<Session> kit;
-        kit.actor().initialize("s-success", ae::Principal{"p1", ""});
-        auto viewer = kit.actor().enable_event_stream(std::pmr::get_default_resource());
+        using Session = agentengine::rt::AgentSession<ScriptedChatClient>;
+        Session session;
+        session.initialize("s-success", ae::Principal{"p1", ""});
+        auto viewer = session.enable_event_stream(std::pmr::get_default_resource());
 
-        auto r = kit.ask<ae::AgentResponse>(ae::StartRun{make_turn("m-1")});
+        auto r = drive(session.start_run(agentengine::rt::StartRun{make_turn("m-1")}));
         AE_CHECK(r.has_value(), "E2-1: the real run succeeds");
         auto internal_events = drain(viewer);
         AE_CHECK(internal_events.size() == 6, "E2-1: the real turn loop emits its known 6-event sequence");
@@ -139,14 +156,14 @@ int main() {
 
     // --- E2-2: a REAL failing run projects to RunError -----------------------------------------------
     {
-        using Session = ae::AgentSession<ScriptedChatClient>;
-        quark::TestKit<Session> kit;
-        kit.actor().initialize("s-fail", ae::Principal{"p1", ""});
-        kit.actor().emplace_chat_client().fail_next = true;
-        auto viewer = kit.actor().enable_event_stream(std::pmr::get_default_resource());
+        using Session = agentengine::rt::AgentSession<ScriptedChatClient>;
+        Session session;
+        session.initialize("s-fail", ae::Principal{"p1", ""});
+        session.emplace_chat_client().fail_next = true;
+        auto viewer = session.enable_event_stream(std::pmr::get_default_resource());
 
-        auto r = kit.ask<ae::AgentResponse>(ae::StartRun{make_turn("m-2")});
-        AE_CHECK(!r.has_value(), "E2-2: the scripted chat failure fails the ask (fail-closed, never replies)");
+        auto r = drive(session.start_run(agentengine::rt::StartRun{make_turn("m-2")}));
+        AE_CHECK(!r.has_value(), "E2-2: the scripted chat failure fails the run (fail-closed)");
         auto internal_events = drain(viewer);
 
         agui::RunEventProjector projector("thread-2");
@@ -165,6 +182,7 @@ int main() {
 
     // --- E2-3 through E2-N: hand-fed RunEvents for every kind with no real producer yet, honestly ---
     // --- exercised directly rather than claimed proven end-to-end (run_event.hpp's own scope note). -
+    // No AgentSession involved below -- unchanged from the original file.
     agui::RunEventProjector projector("thread-3");
 
     // model_delta (mid-message content) -- needs an open message first.
@@ -317,9 +335,9 @@ int main() {
     }
 
     if (g_failures == 0) {
-        std::cout << "test_agui_projection: ALL PASS\n";
+        std::cout << "test_rt_agui_projection: ALL PASS\n";
         return 0;
     }
-    std::cerr << "test_agui_projection: " << g_failures << " failure(s)\n";
+    std::cerr << "test_rt_agui_projection: " << g_failures << " failure(s)\n";
     return 1;
 }
