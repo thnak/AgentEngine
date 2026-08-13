@@ -1,12 +1,13 @@
 // Milestone 5 Phase A (docs/planning/milestone-5-providers-identity-secrets-breakdown.md):
-// SecretRef/SecretLease/SecretStore (trust/secret.hpp), a capability-gated wrapper over Quark's
-// own, already-Accepted SecretSource seam (020-Security §4). Proves: A1/A2 (SecretRef is a name,
+// SecretRef/SecretLease/SecretStore (trust/secret.hpp), a capability-gated wrapper over the
+// SecretSource seam (020-Security §4, ported off Quark by ADR-037's Quark-usage sweep,
+// 2026-08-13 -- see trust/secret.hpp's own banner). Proves: A1/A2 (SecretRef is a name,
 // SecretLease is non-copyable and redacted by construction), the fail-closed capability gate every
 // backend shares (018 §4's "a native seam backend is held to the identical discipline" rule, not a
-// plugin-only one), A3 (AgentEngineSecretStore over quark::EnvSecretSource/FileSecretSource
-// resolves real values), and A4 (scoping per name -- a grant for one secret does not authorize
-// another -- and rotation without restart -- a changed backing value is visible on the very next
-// resolve(), because nothing holds a lease across calls).
+// plugin-only one), A3 (AgentEngineSecretStore over EnvSecretSource/FileSecretSource resolves real
+// values), and A4 (scoping per name -- a grant for one secret does not authorize another -- and
+// rotation without restart -- a changed backing value is visible on the very next resolve(),
+// because nothing holds a lease across calls).
 
 #include <cstdio>
 #include <fstream>
@@ -16,7 +17,6 @@
 #include <type_traits>
 
 #include "agentengine/trust/secret.hpp"
-#include "quark/core/secret.hpp"
 
 using namespace agentengine;
 
@@ -128,14 +128,14 @@ int main() {
                   "across calls to go stale");
     }
 
-    // ---- A3: AgentEngineSecretStore over quark::EnvSecretSource resolves a real env var ---------
+    // ---- A3: AgentEngineSecretStore over EnvSecretSource resolves a real env var -----------------
     {
 #if defined(_WIN32)
         _putenv_s("QUARK_SECRET_test-env-secret", "env-value-123");
 #else
         setenv("QUARK_SECRET_test-env-secret", "env-value-123", 1);
 #endif
-        AgentEngineSecretStore store(std::make_unique<quark::EnvSecretSource>());
+        AgentEngineSecretStore store(std::make_unique<EnvSecretSource>());
         CapabilitySet held = CapabilitySet::grant_root({cap::Secret{"test-env-secret", std::chrono::seconds{0}}});
         auto ctx = make_ctx();
         ctx.capabilities = &held;
@@ -151,7 +151,7 @@ int main() {
         AE_CHECK(!missing.has_value(), "A3: EnvSecretSource fails closed (not empty-string) when unset");
     }
 
-    // ---- A3: AgentEngineSecretStore over quark::FileSecretSource resolves a real file -----------
+    // ---- A3: AgentEngineSecretStore over FileSecretSource resolves a real file --------------------
     {
         std::string dir = ".";  // CTest's own working directory -- writable, cleaned up by us below
         std::string path = dir + "/ae_test_secret_file_store_secret";
@@ -159,7 +159,7 @@ int main() {
             std::ofstream f(path, std::ios::binary);
             f << "file-value-456\n";
         }
-        AgentEngineSecretStore store(std::make_unique<quark::FileSecretSource>(dir));
+        AgentEngineSecretStore store(std::make_unique<FileSecretSource>(dir));
         CapabilitySet held = CapabilitySet::grant_root(
             {cap::Secret{"ae_test_secret_file_store_secret", std::chrono::seconds{0}}});
         auto ctx = make_ctx();

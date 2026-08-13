@@ -44,7 +44,7 @@ public:
         agentengine::ChatRequest const&, agentengine::EffectContext& ctx) {
         // Resolution happens HERE, inside chat(), against EffectContext -- never at construction.
         // store_.resolve(...) stays synchronous (trust/secret.hpp's own decision -- the underlying
-        // quark::SecretSource::get() has no I/O to suspend on) so no co_await is needed for it.
+        // SecretSource::get() has no I/O to suspend on) so no co_await is needed for it.
         auto lease = store_.resolve(api_key_ref_, ctx);
         if (!lease) co_return std::unexpected(lease.error());
 
