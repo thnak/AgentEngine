@@ -237,12 +237,6 @@ add_executable(test_agent_session_isolation test_agent_session_isolation.cpp)
 target_link_libraries(test_agent_session_isolation PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_agent_session_isolation COMMAND test_agent_session_isolation)
 
-# ---- Milestone 4 Phase A2 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
-# Typed `state` (005 §8 Q1) + `metadata` fields on AgentSession, neither of which existed before.
-add_executable(test_agent_session_state test_agent_session_state.cpp)
-target_link_libraries(test_agent_session_state PRIVATE agentengine::core agentengine_warnings)
-add_test(NAME test_agent_session_state COMMAND test_agent_session_state)
-
 # ---- Milestone 4 Phase A3 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
 # Real 001 §1/§2 Run/Turn identity (run_id/turn_index on EffectContext), minted per StartRun.
 add_executable(test_agent_session_run_identity test_agent_session_run_identity.cpp)
@@ -262,10 +256,6 @@ add_test(NAME test_agent_session_snapshot COMMAND test_agent_session_snapshot)
 add_executable(test_history_provider test_history_provider.cpp)
 target_link_libraries(test_history_provider PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_history_provider COMMAND test_history_provider)
-
-add_executable(test_agent_session_history_window test_agent_session_history_window.cpp)
-target_link_libraries(test_agent_session_history_window PRIVATE agentengine::core agentengine_warnings)
-add_test(NAME test_agent_session_history_window COMMAND test_agent_session_history_window)
 
 # ---- Milestone 4 Phase B3 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
 # Generalized N-contributor assemble_context(): per-contributor token budgets, deterministic
@@ -297,19 +287,6 @@ add_executable(test_history_provider_summarize test_history_provider_summarize.c
 target_link_libraries(test_history_provider_summarize PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_history_provider_summarize COMMAND test_history_provider_summarize)
 
-# ---- Milestone 4 Phase C1 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
-# fork_from(): copy-on-write new session from a history prefix, reusing A1/A4 directly.
-add_executable(test_agent_session_fork test_agent_session_fork.cpp)
-target_link_libraries(test_agent_session_fork PRIVATE agentengine::core agentengine_warnings)
-add_test(NAME test_agent_session_fork COMMAND test_agent_session_fork)
-
-# ---- Milestone 4 Phase C2 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
-# redact(): in-place tombstone (Custom content kind) carrying reason/actor; proves propagation
-# into a subsequently-computed Summarize<N> derived summary (005 §6).
-add_executable(test_agent_session_redact test_agent_session_redact.cpp)
-target_link_libraries(test_agent_session_redact PRIVATE agentengine::core agentengine_warnings)
-add_test(NAME test_agent_session_redact COMMAND test_agent_session_redact)
-
 # ---- Milestone 4 Phase C3 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
 # delete_session(): durable tombstone + in-process state clear, with a completion receipt.
 add_executable(test_agent_session_delete test_agent_session_delete.cpp)
@@ -322,12 +299,6 @@ add_test(NAME test_agent_session_delete COMMAND test_agent_session_delete)
 add_executable(test_agent_session_checkpoint test_agent_session_checkpoint.cpp)
 target_link_libraries(test_agent_session_checkpoint PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_agent_session_checkpoint COMMAND test_agent_session_checkpoint)
-
-# ---- Milestone 4 Phase E1 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
-# Interaction (001 §2): mint/resolve lifecycle + checkpoint round-trip (closes D1's placeholder gap).
-add_executable(test_agent_session_interaction test_agent_session_interaction.cpp)
-target_link_libraries(test_agent_session_interaction PRIVATE agentengine::core agentengine_warnings)
-add_test(NAME test_agent_session_interaction COMMAND test_agent_session_interaction)
 
 # ---- Milestone 4 Phase E2 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
 # Suspended holds zero resources -- the first AgentEngine test anywhere to stand up a real
@@ -623,45 +594,6 @@ if(AGENTENGINE_WITH_HTTPS)
   target_link_libraries(test_workflow_graph_validation PRIVATE agentengine::core agentengine_warnings)
   add_test(NAME test_workflow_graph_validation COMMAND test_workflow_graph_validation)
 
-  # ---- Milestone 6 Phase B: 014 §2's superstep model, on a REAL quark::Engine --------------------
-  # Not TestKit: it has no async carrier, and a supervisor whose whole job is co_await-ing
-  # cross-actor asks cannot run under it (breakdown decision 3). The two claims worth a real Engine
-  # are measured, not inferred from the code's shape: the superstep barrier is checked on entry/exit
-  # TIMESTAMPS (correct output alone would pass against a serialized OR an overlapping
-  # implementation), and fan-out overlap is checked against the serial sum (the check that fails if
-  # someone writes the obvious co_await-per-node dispatch loop, which is correct and silently turns
-  # 014 §3's Concurrent pattern into Sequential). 4 workers / 4 shards per CLAUDE.md.
-  add_executable(test_workflow_superstep test_workflow_superstep.cpp)
-  target_link_libraries(test_workflow_superstep PRIVATE agentengine::core agentengine_warnings)
-  add_test(NAME test_workflow_superstep COMMAND test_workflow_superstep)
-  set_tests_properties(test_workflow_superstep PROPERTIES TIMEOUT 120)
-
-  # ---- Milestone 6 Phase C: 014 §3's eight patterns, as graph configurations ---------------------
-  # §3 claims its patterns are "configurations of the graph, not separate subsystems". Every row is
-  # built here from nothing but §1 vocabulary and run on the Phase B engine, so what is ABSENT is
-  # part of the proof. Carries the I3 boundary check for routing: an executor -- in production, one
-  # fed by a model -- can select among declared edges and nothing more; an invented label must reach
-  # nothing AND be reported, never silently end a branch with an empty result.
-  add_executable(test_workflow_patterns test_workflow_patterns.cpp)
-  target_link_libraries(test_workflow_patterns PRIVATE agentengine::core agentengine_warnings)
-  add_test(NAME test_workflow_patterns COMMAND test_workflow_patterns)
-  set_tests_properties(test_workflow_patterns PROPERTIES TIMEOUT 120)
-
-  # ---- Milestone 6 Phase D: 014 §6's failure handling ------------------------------------------
-  # Covers §6's three bullets and the one thing it leaves open. The phase turns on there being TWO
-  # failure channels: a body that RETURNS an error (the actor is healthy; the edge's declared policy
-  # decides) and a body that THROWS (Quark 007 restarts the actor and dead-letters the pending ask).
-  # A suite that only exercised `ok = false` would prove half of §6 and would never discover whether
-  # a faulting executor stalls the supervisor -- so D5 throws, and asserts on a COMPLETED run rather
-  # than merely on a non-crash. The classification checks are the other load-bearing pair: a
-  # `contract` failure is invoked ONCE under a budget of 3 (deterministic, so retrying learns
-  # nothing) and a `policy` failure once under a budget of 5 (a denial re-asked is an I2 concern),
-  # with D2's retried `transient` failure as their positive control.
-  add_executable(test_workflow_failure test_workflow_failure.cpp)
-  target_link_libraries(test_workflow_failure PRIVATE agentengine::core agentengine_warnings)
-  add_test(NAME test_workflow_failure COMMAND test_workflow_failure)
-  set_tests_properties(test_workflow_failure PROPERTIES TIMEOUT 120)
-
   # ---- Milestone 6 Phase F: 014 §5's time-travel (time_travel.hpp) -------------------------------
   # rewind_workflow() selects a retained checkpoint and durably audits the request (decision 9: the
   # audit obligation built WITH the rewind) -- a separate EventLog/ActorId from the checkpoint log
@@ -725,16 +657,6 @@ if(AGENTENGINE_WITH_HTTPS)
   target_link_libraries(test_project_lifecycle PRIVATE agentengine::core agentengine_warnings)
   add_test(NAME test_project_lifecycle COMMAND test_project_lifecycle)
   set_tests_properties(test_project_lifecycle PROPERTIES TIMEOUT 120)
-
-  # ---- Milestone 6 Phase J: 014 §8's own promotion gate G1 (half 1 of the milestone exit criterion) --
-  # Reuses test_workflow_patterns.cpp's own eight §3 graph constructions, injecting a transient
-  # failure (retry-recovered) or a bounded delay (a real, short sleep inside an executor body --
-  # test_workflow_superstep.cpp's own B2 precedent) into one participating executor per pattern.
-  # Every assertion is the SAME correctness check the happy-path test already made.
-  add_executable(test_workflow_patterns_resilience test_workflow_patterns_resilience.cpp)
-  target_link_libraries(test_workflow_patterns_resilience PRIVATE agentengine::core agentengine_warnings)
-  add_test(NAME test_workflow_patterns_resilience COMMAND test_workflow_patterns_resilience)
-  set_tests_properties(test_workflow_patterns_resilience PROPERTIES TIMEOUT 120)
 
   # ---- Milestone 6 Phase J: 030 §7's own promotion gate G1 (half 2 of the milestone exit criterion) --
   # 100 real AgentSession actors, each with its own ProjectSupervisor (200 activations, an actor
@@ -968,6 +890,14 @@ add_executable(test_rt_agent_session test_rt_agent_session.cpp)
 target_link_libraries(test_rt_agent_session PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_agent_session COMMAND test_rt_agent_session)
 
+# ---- ADR-037 Phase 2, Slice 1 -- five real behavioral claims ported from the old, Quark-actor-based
+# test_agent_session_state/test_agent_session_history_window/test_agent_session_fork/
+# test_agent_session_redact/test_agent_session_interaction onto agentengine::rt::AgentSession
+# directly (STATE/WIN/FORK/REDACT/INT) -- supersedes all five.
+add_executable(test_rt_agent_session_lifecycle test_rt_agent_session_lifecycle.cpp)
+target_link_libraries(test_rt_agent_session_lifecycle PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_agent_session_lifecycle COMMAND test_rt_agent_session_lifecycle)
+
 # ---- ADR-037 Phase 2, Slice 2 -- agentengine::rt::AgentSession's snapshot/checkpoint surface,
 # built against rt::SessionStore instead of quark::FenceToken/snapshot_sequential.
 add_executable(test_rt_agent_session_snapshot test_rt_agent_session_snapshot.cpp)
@@ -996,15 +926,32 @@ add_executable(test_rt_workflow_supervisor_request_port test_rt_workflow_supervi
 target_link_libraries(test_rt_workflow_supervisor_request_port PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_workflow_supervisor_request_port COMMAND test_rt_workflow_supervisor_request_port)
 
+# ---- ADR-037 Phase 3, Slice 1 -- bound/failure-policy behavior (B3-B5, D1-D4) ported from the two
+# retired Quark-actor-based test_workflow_superstep(.cpp)/test_workflow_failure(.cpp) onto
+# rt::WorkflowSupervisor directly -- supersedes both.
+add_executable(test_rt_workflow_supervisor_failure_policies test_rt_workflow_supervisor_failure_policies.cpp)
+target_link_libraries(test_rt_workflow_supervisor_failure_policies PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_workflow_supervisor_failure_policies COMMAND test_rt_workflow_supervisor_failure_policies)
+
+# ---- ADR-037 Phase 3 -- routing behavior (fan_in/switch_case/multi_selection/cyclic, plus retry
+# composing with each) ported from the two retired Quark-actor-based
+# test_workflow_patterns(.cpp)/test_workflow_patterns_resilience(.cpp) onto rt::WorkflowSupervisor
+# directly -- supersedes both, including the I3 routing boundary check (RF-1/RF-2).
+add_executable(test_rt_workflow_supervisor_patterns test_rt_workflow_supervisor_patterns.cpp)
+target_link_libraries(test_rt_workflow_supervisor_patterns PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_workflow_supervisor_patterns COMMAND test_rt_workflow_supervisor_patterns)
+
 # ---- ADR-028 -- session-scoped stateful tools (tool_pipeline.hpp make_tool_descriptor_with_invoke).
 add_executable(test_session_scoped_stateful_tools test_session_scoped_stateful_tools.cpp)
 target_link_libraries(test_session_scoped_stateful_tools PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_session_scoped_stateful_tools COMMAND test_session_scoped_stateful_tools)
 
-# ---- ADR-029 -- suspend-for-human-approval mid-tool-loop (agent_session.hpp run_rounds()/ResolveInteraction).
-add_executable(test_agent_session_suspend_approval test_agent_session_suspend_approval.cpp)
-target_link_libraries(test_agent_session_suspend_approval PRIVATE agentengine::core agentengine_warnings)
-add_test(NAME test_agent_session_suspend_approval COMMAND test_agent_session_suspend_approval)
+# ---- ADR-037 Phase 2, Slice 1 -- ADR-029's suspend-for-human-approval mechanism, re-proven against
+# agentengine::rt::AgentSession -- supersedes the old, Quark-actor-based
+# test_agent_session_suspend_approval(.cpp).
+add_executable(test_rt_agent_session_suspend_approval test_rt_agent_session_suspend_approval.cpp)
+target_link_libraries(test_rt_agent_session_suspend_approval PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_agent_session_suspend_approval COMMAND test_rt_agent_session_suspend_approval)
 
 # ---- ADR-030 -- session-scoped CodeAct wiring: the runner-binding claim/fail-closed primitive.
 add_executable(test_codeact_runner_binding test_codeact_runner_binding.cpp)
