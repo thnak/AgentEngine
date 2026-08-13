@@ -2,15 +2,17 @@
 
 **Status:** Draft · **Revision:** 0.1 · **Date:** 2026-07-31
 
-AgentEngine is a **C++23 engine for building agent applications**: a runtime that hosts agents,
-sessions, tools, and multi-agent workflows on top of the [Quark](https://github.com/thnak/QuarkCpp)
-actor engine, with **untrusted code isolation and a Python code interpreter and shell as
-first-class, built-in subsystems**, speaking the **open agent protocols of 2026** (MCP, A2A, AG-UI,
-OpenTelemetry GenAI) rather than a proprietary surface.
+AgentEngine is a **C++23 engine for building agent applications**: a self-contained runtime that
+hosts agents, sessions, tools, and multi-agent workflows on plain C++23 objects and coroutines
+(`agentengine::rt::`, ADR-037 — no actor engine underneath), with **untrusted code isolation and a
+Python code interpreter and shell as first-class, built-in subsystems**, speaking the **open agent
+protocols of 2026** (MCP, A2A, AG-UI, OpenTelemetry GenAI) rather than a proprietary surface.
 
 Its developer model is deliberately **MAF-shaped** — the agent / session / tool / middleware /
-graph-workflow vocabulary that Microsoft Agent Framework established — expressed in Quark's
-**zero-cost CRTP policy** idiom instead of runtime configuration objects.
+graph-workflow vocabulary that Microsoft Agent Framework established — expressed in AgentEngine's
+own **zero-cost CRTP policy** idiom (originally modeled on the [Quark](https://github.com/thnak/QuarkCpp)
+actor engine's identical idiom, before ADR-037 removed that dependency) instead of runtime
+configuration objects.
 
 ---
 
@@ -19,8 +21,10 @@ graph-workflow vocabulary that Microsoft Agent Framework established — express
 Every production agent platform re-solves the same five problems, badly and separately:
 
 1. **Concurrency and lifecycle** — thousands of long-lived, stateful, resumable conversations,
-   each of which must not race with itself. This is an *actor* problem, and it has already been
-   solved: Quark.
+   each of which must not race with itself. A single-process agent SDK does not need a distributed
+   actor engine to guarantee this (ADR-037): a plain object plus a runtime-checked async mutex per
+   session (`rt::AsyncMutex`) is enough, and it is what every comparable framework — Microsoft Agent
+   Framework, the OpenAI Agents SDK, Anthropic's own agent patterns — actually ships.
 2. **Isolation** — a model emits code and tool arguments that are, by construction, attacker
    influenced. Most frameworks bolt a sandbox on as an optional tool; it must be the substrate.
 3. **Interoperability** — the protocol layer moved fast (MCP went stateless on 2026-07-28; A2A
@@ -31,8 +35,9 @@ Every production agent platform re-solves the same five problems, badly and sepa
 5. **Portability** — Windows first, Linux next once Windows is stable, with the *same* isolation
    guarantees on each, not a different security story per OS. macOS is not a target (021 §2/§7).
 
-AgentEngine's thesis: solve (1) by *not* solving it — layer on a proven actor engine — and spend
-the entire design budget on (2)–(5).
+AgentEngine's thesis: (1) does not need a distributed actor engine's worth of machinery for a
+single-process SDK — a small, self-contained runtime substrate (`agentengine::rt::`) covers it —
+freeing the design budget for (2)–(5).
 
 ## 2. Non-goals
 
@@ -50,7 +55,8 @@ the entire design budget on (2)–(5).
  L3  Orchestration         workflow graph, handoff, group chat, checkpoint / resume / time-travel
  L2  Agent core            Agent · AgentSession · Tool plane · ChatClient plane · Middleware
  L1  Trust & isolation     capability model · sandbox seam · WASM component plugin ABI
- L0  Runtime substrate     Quark: scheduler, mailbox, cluster, persistence, timers, PAL
+ L0  Runtime substrate     agentengine::rt::: coroutine tasks, AsyncMutex, ThreadPool, channel/stream,
+                           SessionStore/AppendLogStore, a vendored socket PAL (ADR-037)
 ```
 
 **The layering rule:** a layer may depend only on layers below it, and only through the seam that
@@ -62,9 +68,12 @@ capability; everything above it holds handles.
 These are the load-bearing statements of the whole system. Every RFC restates the subset it
 touches; every one of them is a testable gate, not a slogan.
 
-- **I1 — One session, one executor.** A `Session` is a Quark actor. Its message history and state
-  are mutated by at most one executor at any instant, and turn order is the mailbox FIFO order.
-  Inherited verbatim from Quark 001; AgentEngine adds no locking of its own.
+- **I1 — One session, one executor.** A `Session`'s message history and state are mutated by at
+  most one executor at any instant, and turn order is FIFO. Enforced by `rt::AsyncMutex`, acquired
+  for the whole duration of every public async entry point (`start_run`, `resolve_interaction`) —
+  a runtime-checked guard, not a mailbox's structural exclusivity (ADR-037 §5's own named
+  narrowing: a new entry point that forgets to acquire it would reintroduce the exact race a
+  mailbox used to make unreachable by construction).
 
 - **I2 — No ambient authority.** Filesystem, network, clock-as-entropy, environment, subprocess,
   and secret access are reachable *only* through an explicitly passed capability handle. Code
@@ -95,14 +104,19 @@ touches; every one of them is a testable gate, not a slogan.
 - **I8 — Budgets are enforced, not documented.** Turn latency, sandbox cold start, per-session
   footprint, and engine overhead have numeric budgets (023) checked by a benchmark gate.
 
-## 5. The three decisions locked before RFC-001
+## 5. Decisions locked before RFC-001
 
-### D1 — Quark is a dependency, not a fork
+### D1 — Quark is a dependency, not a fork (SUPERSEDED by ADR-037)
 
-Quark is consumed as an **unmodified submodule**. AgentEngine maps its concepts onto Quark's
-(§7) and never patches Quark in-tree. If AgentEngine needs a runtime change, it goes upstream as a
-Quark RFC + ADR. Rationale: Quark's 28 specs and 36 ADRs are an asset only while they describe the
-code actually running; a fork forfeits them on day one.
+Originally: Quark consumed as an **unmodified submodule**, never patched in-tree, with AgentEngine
+mapping its own concepts onto Quark's. **ADR-037 (`decisions/ADR-037-remove-quark-as-core-runtime.md`,
+executed 2026-08-13) overturned this decision entirely** — the project owner's reasoning was that an
+agent engine should provide an API to build AI systems the way Microsoft Agent Framework, the OpenAI
+Agents SDK, and Anthropic's own agent patterns do, none of which ship a custom actor/distributed
+runtime; carrying one as the foundation clutters the implementation and confuses the purpose of what
+an agent engine is for. `third_party/quark` is no longer a submodule of this repository; AgentEngine's
+runtime substrate is now `agentengine::rt::` (§7). Kept here, marked superseded rather than deleted,
+so the historical record of why the *original* choice was made is not lost.
 
 ### D2 — WASM Component Model is the plugin ABI; the sandbox is a seam with profiles
 
@@ -153,8 +167,8 @@ gated on a reference out-of-process consumer (020 §8 Q3, resolved 2026-08-04).
 ### D4 — Files belong to the worktree, not to the sandbox
 
 Every session owns a **worktree** (025): a content-addressed virtual disk the engine manages,
-durable through Quark's `Store` seam, mounted into sandboxes as ordinary directories. Multiple agents
-in one session share it or branch from it with an explicit merge.
+durable through `rt::AppendLogStore` (§7), mounted into sandboxes as ordinary directories. Multiple
+agents in one session share it or branch from it with an explicit merge.
 
 The reason this is a locked decision rather than an implementation detail: if files live inside the
 sandbox, then persistence, crash survival, portability across profiles, shareability between agents,
@@ -203,8 +217,8 @@ architecture detail: containment results must be identical.
 
 | Term | Meaning |
 |---|---|
-| **Agent** | A named, addressable unit that turns input into output using a model, tools, and instructions. Hosted as a Quark actor type. |
-| **`AgentSession`** | The durable conversation state an agent operates on: message history, state bag, and the seam to persistence. One Quark actor instance per session. |
+| **Agent** | A named, addressable unit that turns input into output using a model, tools, and instructions. Expressed as an `agentengine::rt::AgentSession<ChatClientT, StateT, HistoryProviderT>` CRTP instantiation. |
+| **`AgentSession`** | The durable conversation state an agent operates on: message history, state bag, and the seam to persistence. A plain, host-held C++ object — one instance per session, no actor engine managing its lifecycle. |
 | **Run** | One invocation of an agent against a session, producing a response (possibly streamed) and zero or more effects. The unit of tracing, checkpointing, and replay. |
 | **Turn** | One model call plus the tool invocations it triggers, inside a run. |
 | **Tool** | A declared, schema-typed capability an agent may invoke. Backed by a native function, a WASM component, an MCP server, or a remote agent. |
@@ -218,30 +232,46 @@ architecture detail: containment results must be identical.
 | **`ChatClient`** | The seam to an inference API (OpenAI-compatible, Anthropic, local, hosted). Not named `Provider` — that word stays free for the colloquial "model vendor" sense (004, 027 §5). |
 | **Principal** | The authenticated identity on whose behalf a run executes; propagated into every effect and every outbound protocol call. |
 
-Quark's vocabulary (Actor, Activation, Worker, Shard, Mailbox, Policy, `ActorRef`) is used
-verbatim where it appears; AgentEngine does not rename it.
+## 7. The runtime substrate
 
-## 7. The Quark mapping
+AgentEngine was originally built on top of Quark, a distributed actor engine (mailbox dispatch,
+cluster placement, `Sequential` policy, snapshot/event-sourced persistence) — the vocabulary that
+motivated this document's own earlier title for this section, "The Quark mapping." **ADR-037
+(`decisions/ADR-037-remove-quark-as-core-runtime.md`) removed that dependency entirely**: the
+project owner's own reasoning was that an agent engine should provide an API to build AI systems,
+the way Microsoft Agent Framework, the OpenAI Agents SDK, and Anthropic's own agent patterns do —
+none of which ship a custom actor/distributed runtime — not carry a distributed-actor-engine's own
+concerns baked into its foundation. `third_party/quark` is no longer a submodule of this repository.
 
-| AgentEngine concept | Quark mechanism | Spec |
+AgentEngine's runtime is now the `agentengine::rt::` namespace — plain, host-held C++23 objects and
+coroutines, no actor engine underneath:
+
+| AgentEngine concept | `rt::` mechanism | Header |
 |---|---|---|
-| `AgentSession` | Actor instance, keyed by `session_id`, `Sequential` | Quark 001/005 |
-| Run | Ask-message to the session actor; `ask_stream` when streamed | Quark 006, ADR-018 |
-| Streaming response | `ask_stream` reply-credit-ring | Quark 006/024 |
-| Session history durability | `Store` seam — snapshot + event-sourced | Quark 012 |
-| Worktree objects and refs | Same `Store` seam, content-addressed | Quark 012 |
-| Live sandbox bound to a conversation | Sandbox owned by the session actor; passivation drives snapshot/teardown | Quark ADR-028/034 |
-| Long-running / scheduled agents | Durable reminders (SEGSTREAM) | Quark 027 |
-| Tool invocation | Message to a tool actor / stateless worker pool | Quark 025 |
-| Multi-node agent placement | HRW / VirtualBins placement | Quark 010/026 |
-| Cancellation & deadlines | `std::stop_token` + monotonic deadline propagation | Quark 018 |
-| Backpressure on token streams | Credit-controlled inbound streams | Quark 024 |
-| Failure isolation per run | Guarded handler core, supervision policies | Quark 007 |
-| Deterministic replay | Simulation scheduler | Quark 014 |
-| OS portability | PAL (`linux_x86_64`, `windows_x86_64` backends present) | Quark 019 |
+| `AgentSession` | A plain templated class instance, one per session, no actor lifecycle | `rt/agent_session.hpp` |
+| Run | `AgentSession::start_run()`, an `rt::task<result<AgentResponse>>` coroutine | `rt/agent_session.hpp` |
+| Streaming response | `agentengine::stream<T>`, a credit-controlled producer/consumer pair over `rt::channel<T,E>` | `core/stream.hpp`, `rt/channel.hpp` |
+| Session/workflow durability | `rt::SessionStore` (single-slot, overwrite-latest) and `rt::AppendLogStore` (append-only, multi-version) — two distinct contracts for two distinct needs, not one seam doing both | `rt/session_store.hpp`, `rt/append_log_store.hpp` |
+| Worktree objects and refs | `rt::AppendLogStore`-backed `Ref` history (content-addressed Blob/Tree storage is, and always was, independent of any actor engine) | `core/worktree.hpp` |
+| Multi-agent workflows | `WorkflowSupervisor`, a plain object driving a superstep loop via `rt::ThreadPool` for real concurrent fan-out | `rt/workflow_supervisor.hpp`, `rt/thread_pool.hpp` |
+| Tool invocation | An ordinary (possibly coroutine) function call through `tool_pipeline.hpp`'s invoke path — no message send | `core/tool_pipeline.hpp` |
+| Cancellation & deadlines | `std::stop_token` + monotonic deadline propagation (unchanged — this was never actor-specific) | throughout |
+| Failure isolation per unit of work | `rt::ThreadPool::submit()`'s `JobOutcome{faulted, fault_ptr}` containment, not actor-restart supervision | `rt/thread_pool.hpp` |
+| One-session-one-executor (I1) | `rt::AsyncMutex`, acquired for the whole duration of every public async entry point — a runtime-checked guard, not a mailbox's structural exclusivity | `rt/async_mutex.hpp` |
+| OS portability (sockets) | `agentengine::pal` — a small, self-contained, vendored socket PAL (the one slice of Quark's own PAL this project ever used) | `pal/net.hpp` |
 
-**Consequence:** AgentEngine writes no scheduler, no mailbox, no cluster membership, no persistence
-engine, and no timer wheel. Every one of those is a Quark seam it configures.
+**Consequence:** AgentEngine writes no scheduler, no mailbox, no cluster membership, no distributed
+persistence engine, and no timer wheel — none of that ever needed reproducing, because none of it
+was load-bearing for a single-process agent SDK in the first place. What *is* reproduced, narrowly,
+is the thin slice of real capability the actor engine happened to also provide: `rt::AsyncMutex` for
+I1 in place of mailbox exclusivity, `rt::ThreadPool` for genuine concurrent fan-out in place of
+per-actor scheduling, and `agentengine::pal` for portable sockets in place of Quark's own PAL. A few
+real, permanent narrowings resulted and are named as such, not silently smoothed over: there is no
+host-managed passivation/reactivation of a session across process restarts or node loss in `rt::`
+land (ADR-037's own completion note, §9, names the five test files retired as an accepted gap rather
+than ported), and there is no multi-node cluster placement story at all (AgentEngine was already a
+single-process SDK in practice before this migration — §2 of ADR-037 audited zero real footprint
+from Quark's cluster/transport machinery going in).
 
 ## 8. Reading order
 

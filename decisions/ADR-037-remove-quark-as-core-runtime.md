@@ -1,11 +1,13 @@
 # ADR-037 — Remove Quark as AgentEngine's core runtime; become a plain C++ SDK
 
-**Status:** Proposed, design-only (2026-08-12). This is a Phase 0 design + red-team document — no
-code has been written or migrated. Per this project's own governance
-(`decisions/README.md`; `OpenQuestions.md` OQ-11), the project owner judges an ADR; this one in
-particular cannot be "proven" the normal way (real code + tests) until Phases 1-4 (§7) each land and
-are separately verified — this document is the design those phases follow, not a claim any of them
-are done.
+**Status:** Proposed — Phases 1-5 (§7) are now EXECUTED (2026-08-13), not just designed. Every
+`quark::` production dependency named in §8's file list (and several found only during execution,
+notably `quark::pal`'s socket primitives — see the completion note after §8) has been ported to
+`agentengine::rt::`/vendored standalone, the `third_party/quark` submodule itself has been removed
+from the tree, and the whole suite has been re-verified green from a genuinely from-scratch build
+(no cached state that could paper over a dangling reference). Per this project's own governance
+(`decisions/README.md`; `OpenQuestions.md` OQ-11), only the project owner can mark an ADR "Judged" —
+this document records the work as done, not as self-certified accepted.
 
 **Relates to:** `AgentEngineSpecification.md` (the "Quark mapping" section this ADR proposes to
 retire — see §8); every ADR from 001 through 036 (their BEHAVIORAL claims — what a session/workflow
@@ -213,3 +215,40 @@ Not exhaustive — a real accounting is Phase 1's own job. The largest-known ite
 `include/agentengine/trust/spawn_cost_budget.hpp`, `include/agentengine/trust/secret.hpp`, ~42 test
 files currently on `quark::TestKit`/`quark::Engine`, `AgentEngineSpecification.md`, `CMakeLists.txt`,
 and eventual removal of the `third_party/quark` submodule itself.
+
+## 9. Completion note (2026-08-13) — what actually happened across Phases 1-5
+
+Executed across many sessions under the `agentengine::rt::` namespace exactly as §7 sequenced it
+(new substrate first, then migrate `AgentSession`, then `WorkflowSupervisor`, then remove Quark, then
+re-verify) — real code, real tests, real commits throughout, not a single big-bang cutover. A few
+things this document's own Phase 0 design could not have anticipated, named honestly rather than
+silently smoothed over:
+
+- **Every file named in §8 was ported or deleted**, plus several this document never named because
+  they were only discovered as real dependencies during execution: `include/agentengine/core/
+  interaction.hpp`'s `QUARK_SERIALIZE` tag, `include/agentengine/core/content_record.hpp` (deleted
+  outright once its only real consumer, `workflow/checkpoint.hpp`, was gone), and — the largest
+  surprise — **`quark::pal`, Quark's cross-platform socket PAL**, which `src/sandbox/
+  net_egress_proxy.cpp` and `src/sandbox/tls_client.cpp` depended on purely as a portable-sockets
+  utility, structurally unrelated to the actor engine this ADR's own title scopes to ("as core
+  runtime"). Per an explicit project-owner decision made when this was found, it was vendored
+  standalone as `include/agentengine/pal/net.hpp` rather than kept as a narrower, permanent
+  Quark-for-pal-only dependency — so the submodule really is gone, not narrowed-and-kept.
+- **Five tests were retired as accepted, permanent gaps rather than ported**, per explicit
+  project-owner decision: `test_agent_session_node_loss_fencing.cpp`, `test_agent_session_
+  suspend_resume.cpp`, `test_agent_session_timer_wake.cpp`, `test_session_restart_identical_
+  resume.cpp`, `test_suspended_zero_resources_e2e.cpp` — all tested genuinely `quark::Actor`-specific
+  concepts (passivation, distributed fencing, a durable reminder reaching a live `Engine`) that
+  `agentengine::rt::`'s plain host-held object model has no equivalent for and was never designed to
+  grow one. Host-managed passivation/reactivation across process restarts and node loss is therefore
+  a real, permanent, named gap in this codebase's own capabilities from here forward — not an
+  oversight, a scope decision.
+- **§7's own Phase 5 action ("update `AgentEngineSpecification.md`'s Quark mapping section") is
+  done** — see that document's own §7, which now describes the `agentengine::rt::` substrate instead
+  of the retired Quark mapping.
+- **One real residual surfaced during Phase 5's own from-scratch verification, deliberately left
+  untouched**: the root `CMakeLists.txt`'s vendored CA-bundle `EXPECTED_HASH` pin
+  (`file(DOWNLOAD "https://curl.se/ca/cacert.pem" ...)`) no longer matches what curl.se currently
+  serves — almost certainly legitimate upstream CA-bundle rotation, not tampering, but a
+  security-relevant trust anchor is not this ADR's call to update unilaterally. Flagged for the
+  project owner, not silently "fixed" as a side effect of an unrelated commit.
