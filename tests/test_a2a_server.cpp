@@ -1,22 +1,22 @@
 // Milestone 7 Phase D3 (012-A2A-Conformance.md §2.3, docs/planning/milestone-7-protocol-conformance-
 // breakdown.md). Proves `A2aServer` (protocol/a2a/server.hpp) end to end against a REAL
-// `quark::Engine`-hosted `AgentSession` -- `Task.id` really is the session's own `run_id`
+// `agentengine::rt::AgentSession` -- `Task.id` really is the session's own `run_id`
 // (`AgentSession::last_run_id()`), `SendMessage` really drives a full turn through a real
 // `ChatClient`, and `GetTask`/`CancelTask` behave exactly as this codebase's own current
 // capabilities allow (never claiming an in-flight/cancellable/interrupted state this synchronous
 // dispatch cannot actually produce -- see server.hpp's own file-top comment for why).
+//
+// ADR-037: ported off `quark::Engine`/`Actor`/`ActorRef` onto `rt::AgentSession` directly -- this
+// test's own `RunStarter` now `drive()`s `session.start_run()`'s returned `rt::task<...>` to
+// completion inline (single-threaded, deterministic; matching the `drive<T>()` idiom every other
+// `rt::` test in this suite already uses) instead of `block_on(ref.ask<...>(...))` against a real
+// actor mailbox. Same behavior proven, no engine/mailbox left to stand it up.
 
 #include <cstdio>
 #include <memory_resource>
 #include <string>
 
-#include "quark/core/actor.hpp"
-#include "quark/core/actor_ref.hpp"
-#include "quark/core/engine.hpp"
-
 #include "agentengine/protocol/a2a/server.hpp"
-
-using namespace quark;
 
 namespace {
 
@@ -31,7 +31,14 @@ void check(bool cond, char const* what) {
 }
 
 namespace ae  = agentengine;
+namespace art = agentengine::rt;
 namespace a2a = agentengine::a2a;
+
+template <class T>
+T drive(art::task<T> t) {
+    while (!t.done()) t.resume();
+    return t.take_value();
+}
 
 // Same shape test_agent_session_suspend_resume.cpp's own CannedChatClient uses -- echoes the run_id
 // back so a test can verify the REAL run actually executed, not a stub returning canned text blind
@@ -89,39 +96,23 @@ static_assert(ae::ChatClient<FailingChatClient>);
 
 template <class ChatClientT>
 struct Harness {
-    using Session = ae::AgentSession<ChatClientT>;
+    using Session = art::AgentSession<ChatClientT>;
 
-    [[nodiscard]] static EngineConfig make_config() {
-        auto built = ConfigBuilder{}.workers(1).shards(1).default_drain_budget(64).build();
-        return *built;  // this test's own fixed config always builds successfully
-    }
+    Session session;
 
-    Engine<>            eng{make_config()};
-    detail::MessagePool pool{64};
-    Session              actor;
-    Activation           act;
-    // A MEMBER, not a constructor-local -- `ActorRef` (below) holds a raw `LocalRouter*` (Quark's own
-    // `ActorRef(ActorId, LocalRouter*)` constructor), so the router must outlive every `ref` use, not
-    // just the constructor body it was built in.
-    LocalRouter          router;
-    ActorRef<Session>    ref;
-
-    Harness(std::string session_id, ActorId id)
-        : act{&actor, Session::dispatch_table(), pool.sink()}, router{eng.post_courier(), pool} {
-        actor.initialize(session_id, ae::Principal{"p-owner", ""});
-        eng.register_activation(id, act);
-        ref = router.get<Session>(1);
-        eng.start();
+    explicit Harness(std::string session_id) {
+        session.initialize(std::move(session_id), ae::Principal{"p-owner", ""});
+        session.emplace_chat_client();
     }
 
     [[nodiscard]] a2a::RunStarter starter() {
-        return [this](ae::StartRun req) -> ae::result<a2a::RunOutcome> {
-            result<ae::AgentResponse> resp = block_on(ref.template ask<ae::AgentResponse>(std::move(req)));
+        return [this](art::StartRun req) -> ae::result<a2a::RunOutcome> {
+            ae::result<art::AgentResponse> resp = drive(session.start_run(std::move(req)));
             if (!resp) {
                 return std::unexpected(ae::error{ae::failure_class::transient,
                                                   "the run did not complete", "a2a.run_did_not_complete"});
             }
-            return a2a::RunOutcome{actor.last_run_id(), *resp};
+            return a2a::RunOutcome{session.last_run_id(), *resp};
         };
     }
 };
@@ -141,7 +132,7 @@ a2a::Message text_message(std::string text) {
 int main() {
     // --- D3-1/2/3: a real SendMessage produces a Task whose id IS the real run_id, COMPLETED, with -
     // --- the real reply content and a two-message history.                                        ---
-    Harness<CannedChatClient> h{"s-a2a", actor_id_of<Harness<CannedChatClient>::Session>(1)};
+    Harness<CannedChatClient> h{"s-a2a"};
     a2a::A2aServer server(h.starter(), "ctx-1");
 
     auto sent = server.send_message(text_message("hello"));
@@ -149,7 +140,7 @@ int main() {
     std::string task_id;
     if (sent.has_value()) {
         task_id = sent->id;
-        check(task_id == h.actor.last_run_id(),
+        check(task_id == h.session.last_run_id(),
               "D3-1: Task.id IS the real run_id (012 §1: Task ← Run), not a separately invented id");
         check(sent->status.state == a2a::task_state::completed,
               "D3-2: a real successful run produces TASK_STATE_COMPLETED");
@@ -210,7 +201,7 @@ int main() {
     // --- state FAILED, with its own dispatcher-minted id (no run_id was learnable from the failed --
     // --- ask) -- proven against a SECOND real session, not a fabricated in-memory shortcut.        ---
     {
-        Harness<FailingChatClient> hf{"s-a2a-fail", actor_id_of<Harness<FailingChatClient>::Session>(1)};
+        Harness<FailingChatClient> hf{"s-a2a-fail"};
         a2a::A2aServer failing_server(hf.starter(), "ctx-2");
         auto failed = failing_server.send_message(text_message("this will fail"));
         check(failed.has_value(),

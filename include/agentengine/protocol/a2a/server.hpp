@@ -6,11 +6,11 @@
 // Transport-agnostic, like `protocol/mcp/server.hpp`: no JSON-RPC/REST envelope here (that is D4+'s
 // own job, matching MCP's own "envelope first" split, C1 before C2), and no actor-messaging plumbing
 // either -- `A2aServer` is handed a `RunStarter` (a plain callable that starts one run and returns
-// once it settles) rather than an `ActorRef`/`Engine` itself, exactly the same "no real transport yet,
-// take what a transport would supply as given" layering `McpServer` already established for
-// `held`/`approve`. This phase's OWN test wires a `RunStarter` against a REAL `quark::Engine`-backed
-// `AgentSession`, the same "same process, two roles, real machinery underneath" shape every prior
-// Phase C/D test already used.
+// once it settles) rather than an `AgentSession` reference itself, exactly the same "no real
+// transport yet, take what a transport would supply as given" layering `McpServer` already
+// established for `held`/`approve`. This phase's OWN test wires a `RunStarter` against a REAL
+// `agentengine::rt::AgentSession`, the same "same process, two roles, real machinery underneath"
+// shape every prior Phase C/D test already used.
 //
 // §1: "Task ← Run... contextId groups related tasks and maps onto our session." A `Task.id` IS the
 // `run_id` `AgentSession::last_run_id()` reports once a run settles (never a separately invented id)
@@ -18,13 +18,24 @@
 // increments, agent_session.hpp's own `handle()` comment), in which case there is no `run_id` to
 // borrow; `send_message()` mints its own task id for exactly that one case, named explicitly below.
 //
-// Task lifecycle honesty: `AgentSession`'s current turn loop (still M1-era, agent_session.hpp's own
-// comments throughout) makes `Ask<StartRun, AgentResponse>` fully SYNCHRONOUS/blocking end to end --
-// it either responds with a real `AgentResponse` or never responds at all (fail-closed). There is no
-// tool-call loop, no real approval gate, and `open_interaction()`/`resolve_interaction()` are
-// host-callable but NOT wired into the turn loop (agent_session.hpp's own Phase E1 comment: "NOT
-// wired into the synchronous turn loop... What IS real here: minting, tracking, and resolving
-// Interaction records... the vocabulary and lifecycle, proven standalone"). Consequently:
+// ADR-037: ported onto `agentengine::rt::AgentSession` (rt/agent_session.hpp) -- `RunStarter`/
+// `RunOutcome` now name `rt::StartRun`/`rt::AgentResponse` instead of the old Quark-actor-backed
+// `agentengine::StartRun`/`agentengine::AgentResponse` (core/agent_session.hpp). This dispatcher was
+// ALREADY transport-agnostic before this port (it only ever named `StartRun`/`AgentResponse` as
+// types passed through a caller-supplied `RunStarter` callable, never touched `quark::` itself), so
+// the only real change is which header those two type names resolve from -- everything else in this
+// file (task-id minting, task-state mapping, the honesty notes below) is unchanged. `A2aClient`
+// (client.hpp) needed NO changes at all: it was already fully transport-agnostic (`RemoteAgentTransport`
+// is three plain `Message`/`Task`-typed callables with no `AgentSession` dependency of any kind).
+//
+// Task lifecycle honesty: `AgentSession`'s current turn loop (still M1-era, rt/agent_session.hpp's
+// own comments throughout) makes `start_run(StartRun) -> task<result<AgentResponse>>` fully
+// SYNCHRONOUS/blocking end to end from a caller's point of view -- it either resolves with a real
+// `AgentResponse` or never resolves at all (fail-closed). There is no tool-call loop, no real
+// approval gate, and `open_interaction()`/`resolve_interaction()` are host-callable but NOT wired
+// into the turn loop (rt/agent_session.hpp's own Phase E1-equivalent comment: "NOT wired into the
+// synchronous turn loop... What IS real here: minting, tracking, and resolving Interaction
+// records... the vocabulary and lifecycle, proven standalone"). Consequently:
 //   - `TASK_STATE_SUBMITTED`/`TASK_STATE_WORKING` are never independently OBSERVABLE from outside --
 //     `send_message()` itself blocks until the run settles, so a caller never sees an intermediate
 //     state (the same "no `returnImmediately: true` async dispatch built yet" gap named below).
@@ -51,27 +62,28 @@
 #include <unordered_map>
 #include <utility>
 
-#include "agentengine/core/agent_session.hpp"
 #include "agentengine/core/error.hpp"
 #include "agentengine/protocol/a2a/mapping.hpp"
 #include "agentengine/protocol/a2a/types.hpp"
+#include "agentengine/rt/agent_session.hpp"
 
 namespace agentengine::a2a {
 
 // What starting one real run and waiting for it to settle actually returns: `AgentResponse` alone
-// (agent_session.hpp) carries no `run_id` in-band, so a caller that wants to correlate a `Task.id`
-// with the real run must ALSO read `AgentSession::last_run_id()` right after the ask resolves -- the
-// same thing `AgentSessionRecord`'s own checkpoint-content comment already documents as the
-// established way to learn a run's id after the fact. `RunOutcome` names that pairing explicitly
-// rather than asking every caller to remember to fetch it separately.
+// (rt/agent_session.hpp) carries no `run_id` in-band, so a caller that wants to correlate a
+// `Task.id` with the real run must ALSO read `AgentSession::last_run_id()` right after the call
+// resolves -- the same thing `AgentSessionRecord`'s own checkpoint-content comment already
+// documents as the established way to learn a run's id after the fact. `RunOutcome` names that
+// pairing explicitly rather than asking every caller to remember to fetch it separately.
 struct RunOutcome {
-    std::string   run_id;
-    AgentResponse response;
+    std::string                    run_id;
+    agentengine::rt::AgentResponse response;
 };
 
-// A BLOCKING call: returns only once the underlying `Ask<StartRun, AgentResponse>` has settled (or
-// failed to). See file-top comment for exactly what that means for task-state observability.
-using RunStarter = std::function<result<RunOutcome>(StartRun)>;
+// A BLOCKING call from the caller's point of view: returns only once the underlying
+// `rt::AgentSession::start_run()` call has settled (or failed to). See file-top comment for exactly
+// what that means for task-state observability.
+using RunStarter = std::function<result<RunOutcome>(agentengine::rt::StartRun)>;
 
 namespace server_detail {
 
@@ -99,7 +111,7 @@ public:
     // parameter to honour differently, since this dispatcher has exactly one dispatch shape today.
     [[nodiscard]] result<Task> send_message(Message const& inbound) {
         agentengine::Message input = from_a2a_message(inbound);
-        result<RunOutcome> outcome = starter_(StartRun{std::move(input)});
+        result<RunOutcome> outcome = starter_(agentengine::rt::StartRun{std::move(input)});
 
         std::lock_guard<std::mutex> lock(mutex_);
         if (!outcome) {

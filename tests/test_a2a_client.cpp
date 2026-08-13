@@ -1,23 +1,21 @@
 // Milestone 7 Phase D4 (012-A2A-Conformance.md §3/§4a, docs/planning/milestone-7-protocol-
 // conformance-breakdown.md). Proves `A2aClient` (protocol/a2a/client.hpp) against a REAL `A2aServer`
-// (server.hpp, D3) wired over a real `quark::Engine`-hosted `AgentSession` for the happy-path
+// (server.hpp, D3) wired over a real `agentengine::rt::AgentSession` for the happy-path
 // send/get/cancel passthrough, and a hand-rolled `CardFetcher` for the digest-pinned Agent Card
 // caching/rug-pull properties that need fine control over what a "peer" returns across multiple
 // fetches -- the identical split `test_mcp_client.cpp` already uses (a real server for the happy
 // path, a mock for multi-call cache control).
+//
+// ADR-037: ported off `quark::Engine`/`Actor`/`ActorRef` onto `rt::AgentSession` directly, matching
+// test_a2a_server.cpp's own port -- `A2aClient` (client.hpp) itself needed NO source changes: it was
+// already fully transport-agnostic before this port, with no `AgentSession` dependency of any kind.
 
 #include <cstdio>
 #include <memory_resource>
 #include <string>
 
-#include "quark/core/actor.hpp"
-#include "quark/core/actor_ref.hpp"
-#include "quark/core/engine.hpp"
-
 #include "agentengine/protocol/a2a/client.hpp"
 #include "agentengine/protocol/a2a/server.hpp"
-
-using namespace quark;
 
 namespace {
 
@@ -32,7 +30,14 @@ void check(bool cond, char const* what) {
 }
 
 namespace ae  = agentengine;
+namespace art = agentengine::rt;
 namespace a2a = agentengine::a2a;
+
+template <class T>
+T drive(art::task<T> t) {
+    while (!t.done()) t.resume();
+    return t.take_value();
+}
 
 class CannedChatClient {
 public:
@@ -64,37 +69,24 @@ public:
 };
 static_assert(ae::ChatClient<CannedChatClient>);
 
-using Session = ae::AgentSession<CannedChatClient>;
+using Session = art::AgentSession<CannedChatClient>;
 
 struct Harness {
-    [[nodiscard]] static EngineConfig make_config() {
-        auto built = ConfigBuilder{}.workers(1).shards(1).default_drain_budget(64).build();
-        return *built;
-    }
+    Session session;
 
-    Engine<>             eng{make_config()};
-    detail::MessagePool  pool{64};
-    Session               actor;
-    Activation            act;
-    LocalRouter           router;
-    ActorRef<Session>     ref;
-
-    Harness()
-        : act{&actor, Session::dispatch_table(), pool.sink()}, router{eng.post_courier(), pool} {
-        actor.initialize("s-a2a-client", ae::Principal{"p-owner", ""});
-        eng.register_activation(actor_id_of<Session>(1), act);
-        ref = router.get<Session>(1);
-        eng.start();
+    Harness() {
+        session.initialize("s-a2a-client", ae::Principal{"p-owner", ""});
+        session.emplace_chat_client();
     }
 
     [[nodiscard]] a2a::RunStarter starter() {
-        return [this](ae::StartRun req) -> ae::result<a2a::RunOutcome> {
-            result<ae::AgentResponse> resp = block_on(ref.template ask<ae::AgentResponse>(std::move(req)));
+        return [this](art::StartRun req) -> ae::result<a2a::RunOutcome> {
+            ae::result<art::AgentResponse> resp = drive(session.start_run(std::move(req)));
             if (!resp) {
                 return std::unexpected(ae::error{ae::failure_class::transient,
                                                   "the run did not complete", "a2a.run_did_not_complete"});
             }
-            return a2a::RunOutcome{actor.last_run_id(), *resp};
+            return a2a::RunOutcome{session.last_run_id(), *resp};
         };
     }
 };
