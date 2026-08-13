@@ -26,7 +26,7 @@
 #include <string_view>
 
 #include "agentengine/core/error.hpp"
-#include "pal/net.hpp"
+#include "agentengine/pal/net.hpp"
 
 namespace agentengine::sandbox {
 
@@ -50,7 +50,7 @@ public:
     // otherwise). A testability seam, not a security bypass, matching ADR-011's own injectable-
     // resolver precedent (net_egress_proxy.hpp's `HostEgressProxy::resolver`) -- production code
     // (net_egress_proxy.cpp's own call site) never passes a non-empty override.
-    [[nodiscard]] static result<TlsClientSession> handshake(quark::pal::fd_t fd, std::string_view hostname,
+    [[nodiscard]] static result<TlsClientSession> handshake(agentengine::pal::fd_t fd, std::string_view hostname,
                                                               std::string_view ca_bundle_pem_override = {});
 
     TlsClientSession(TlsClientSession&&) noexcept;

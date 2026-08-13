@@ -59,7 +59,7 @@
 // long chain of thought will exceed it. The default prefix is Qwen's own thinking-off directive;
 // point this at a non-Qwen model and set the variable to that model's equivalent, or to empty.
 
-#include "pal/net.hpp"
+#include "agentengine/pal/net.hpp"
 
 #include <cstdint>
 #include <cstdio>
@@ -197,7 +197,7 @@ int main() {
     }
 
 #if defined(_WIN32)
-    quark::pal::ensure_winsock();
+    agentengine::pal::ensure_winsock();
 #endif
 
     std::string const host = env_or("AGENTENGINE_LLAMACPP_HOST", "127.0.0.1");

@@ -32,7 +32,7 @@ constexpr int kIoTimeoutMs = 10'000;
 // each is a ~10-line, fully self-contained primitive over quark::pal and the two translation units
 // have no other reason to depend on each other (CLAUDE.md: three similar lines beat a premature
 // abstraction).
-bool wait_ready(quark::pal::fd_t fd, bool for_write, int timeout_ms) {
+bool wait_ready(agentengine::pal::fd_t fd, bool for_write, int timeout_ms) {
     ::fd_set set;
     FD_ZERO(&set);
     FD_SET(fd, &set);
@@ -61,21 +61,21 @@ std::string mbedtls_error_string(int code) {
 // to their own callers -- a spurious would-block after `wait_ready` said ready is retried in the
 // caller loop below, not treated as a real error.
 int bio_send(void* ctx, unsigned char const* buf, std::size_t len) {
-    auto* fd = static_cast<quark::pal::fd_t*>(ctx);
+    auto* fd = static_cast<agentengine::pal::fd_t*>(ctx);
     if (!wait_ready(*fd, /*for_write=*/true, kIoTimeoutMs)) return MBEDTLS_ERR_SSL_TIMEOUT;
-    auto r = quark::pal::send_some(*fd, reinterpret_cast<std::byte const*>(buf), len);
+    auto r = agentengine::pal::send_some(*fd, reinterpret_cast<std::byte const*>(buf), len);
     if (!r) {
-        if (r.error() == quark::pal::would_block()) return MBEDTLS_ERR_SSL_WANT_WRITE;
+        if (r.error() == agentengine::pal::would_block()) return MBEDTLS_ERR_SSL_WANT_WRITE;
         return MBEDTLS_ERR_NET_SEND_FAILED;
     }
     return static_cast<int>(*r);
 }
 int bio_recv(void* ctx, unsigned char* buf, std::size_t len) {
-    auto* fd = static_cast<quark::pal::fd_t*>(ctx);
+    auto* fd = static_cast<agentengine::pal::fd_t*>(ctx);
     if (!wait_ready(*fd, /*for_write=*/false, kIoTimeoutMs)) return MBEDTLS_ERR_SSL_TIMEOUT;
-    auto r = quark::pal::recv_some(*fd, reinterpret_cast<std::byte*>(buf), len);
+    auto r = agentengine::pal::recv_some(*fd, reinterpret_cast<std::byte*>(buf), len);
     if (!r) {
-        if (r.error() == quark::pal::would_block()) return MBEDTLS_ERR_SSL_WANT_READ;
+        if (r.error() == agentengine::pal::would_block()) return MBEDTLS_ERR_SSL_WANT_READ;
         return MBEDTLS_ERR_NET_RECV_FAILED;
     }
     return static_cast<int>(*r);
@@ -84,7 +84,7 @@ int bio_recv(void* ctx, unsigned char* buf, std::size_t len) {
 }  // namespace
 
 struct TlsClientSession::Impl {
-    quark::pal::fd_t fd{};
+    agentengine::pal::fd_t fd{};
     mbedtls_entropy_context entropy;
     mbedtls_ctr_drbg_context drbg;
     mbedtls_x509_crt ca_chain;
@@ -114,7 +114,7 @@ TlsClientSession::TlsClientSession(TlsClientSession&&) noexcept = default;
 TlsClientSession& TlsClientSession::operator=(TlsClientSession&&) noexcept = default;
 TlsClientSession::~TlsClientSession() = default;
 
-result<TlsClientSession> TlsClientSession::handshake(quark::pal::fd_t fd, std::string_view hostname,
+result<TlsClientSession> TlsClientSession::handshake(agentengine::pal::fd_t fd, std::string_view hostname,
                                                        std::string_view ca_bundle_pem_override) {
     auto impl = std::make_unique<Impl>();
     impl->fd = fd;

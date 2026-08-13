@@ -18,7 +18,7 @@
 
 #ifdef AGENTENGINE_WITH_HTTPS
 
-#include "pal/net.hpp"
+#include "agentengine/pal/net.hpp"
 
 #include <chrono>
 #include <cstdint>
@@ -58,11 +58,11 @@ constexpr char const* kResponseBody = R"({"ok":true,"who":"plain-http-loopback"}
 class PlainHttpTestServer {
 public:
     PlainHttpTestServer() {
-        auto listen_r = quark::pal::tcp_listen(static_cast<std::uint64_t>(kLoopbackHostOrder), 0);
+        auto listen_r = agentengine::pal::tcp_listen(static_cast<std::uint64_t>(kLoopbackHostOrder), 0);
         ok_ = listen_r.has_value();
         if (ok_) {
             listen_fd_ = *listen_r;
-            port_ = *quark::pal::local_port(listen_fd_);
+            port_ = *agentengine::pal::local_port(listen_fd_);
             thread_ = std::jthread([this](std::stop_token st) { run(st); });
         }
     }
@@ -71,7 +71,7 @@ public:
             thread_.request_stop();
             thread_.join();
         }
-        if (ok_) quark::pal::close_fd(listen_fd_);
+        if (ok_) agentengine::pal::close_fd(listen_fd_);
     }
     PlainHttpTestServer(PlainHttpTestServer const&) = delete;
 
@@ -82,26 +82,26 @@ public:
 private:
     void run(std::stop_token st) {
         while (!st.stop_requested()) {
-            auto a = quark::pal::accept_one(listen_fd_);
+            auto a = agentengine::pal::accept_one(listen_fd_);
             if (!a) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
                 continue;
             }
             serve_one(*a, st);
-            quark::pal::close_fd(*a);
+            agentengine::pal::close_fd(*a);
         }
     }
 
-    void serve_one(quark::pal::fd_t fd, std::stop_token const& st) {
+    void serve_one(agentengine::pal::fd_t fd, std::stop_token const& st) {
         // Drain whatever arrives until the request head is complete (or the peer gives up). A TLS
         // ClientHello arriving here is binary garbage that never contains "\r\n\r\n" -- which is
         // exactly the G4 case, and why this loop must be bounded rather than waiting forever.
         std::string buf;
         std::byte chunk[1024];
         for (int i = 0; i < 200 && !st.stop_requested(); ++i) {
-            auto r = quark::pal::recv_some(fd, chunk, sizeof(chunk));
+            auto r = agentengine::pal::recv_some(fd, chunk, sizeof(chunk));
             if (!r) {
-                if (r.error() == quark::pal::would_block()) {
+                if (r.error() == agentengine::pal::would_block()) {
                     std::this_thread::sleep_for(std::chrono::milliseconds(5));
                     continue;
                 }
@@ -118,10 +118,10 @@ private:
                                std::to_string(body.size()) + "\r\n\r\n" + body;
         std::size_t sent = 0;
         while (sent < response.size()) {
-            auto w = quark::pal::send_some(fd, reinterpret_cast<std::byte const*>(response.data() + sent),
+            auto w = agentengine::pal::send_some(fd, reinterpret_cast<std::byte const*>(response.data() + sent),
                                             response.size() - sent);
             if (!w) {
-                if (w.error() == quark::pal::would_block()) continue;
+                if (w.error() == agentengine::pal::would_block()) continue;
                 return;
             }
             sent += *w;
@@ -130,7 +130,7 @@ private:
     }
 
     bool ok_ = false;
-    quark::pal::fd_t listen_fd_{};
+    agentengine::pal::fd_t listen_fd_{};
     std::uint16_t port_ = 0;
     int connections_served_ = 0;
     std::jthread thread_;
@@ -165,7 +165,7 @@ constexpr BlockedSample kBlockedSamples[] = {
 
 int main() {
 #if defined(_WIN32)
-    quark::pal::ensure_winsock();
+    agentengine::pal::ensure_winsock();
 #endif
 
     // ---- G1 (POSITIVE CONTROL): the guest resolver still refuses every blocked range --------------

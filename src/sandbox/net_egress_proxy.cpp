@@ -7,7 +7,7 @@
 #include "agentengine/sandbox/tls_client.hpp"
 #endif
 
-#include "pal/net.hpp"
+#include "agentengine/pal/net.hpp"
 
 #if defined(_WIN32)
 // winsock2.h/ws2tcpip.h already pulled in transitively by pal/windows_x86_64/net.hpp (getaddrinfo,
@@ -63,7 +63,7 @@ bool equals_ci(std::string_view a, std::string_view b) noexcept {
 
 constexpr int kIoTimeoutMs = 10'000;
 
-bool wait_ready(quark::pal::fd_t fd, bool for_write, int timeout_ms) {
+bool wait_ready(agentengine::pal::fd_t fd, bool for_write, int timeout_ms) {
     ::fd_set set;
     FD_ZERO(&set);
     FD_SET(fd, &set);
@@ -77,8 +77,8 @@ bool wait_ready(quark::pal::fd_t fd, bool for_write, int timeout_ms) {
 }
 
 struct FdGuard {
-    quark::pal::fd_t fd;
-    ~FdGuard() { quark::pal::close_fd(static_cast<int>(fd)); }
+    agentengine::pal::fd_t fd;
+    ~FdGuard() { agentengine::pal::close_fd(static_cast<int>(fd)); }
 };
 
 // Milestone 5 Phase C2 (net_egress_proxy.hpp's own comment on `perform_http_exchange`/
@@ -93,16 +93,16 @@ result<std::monostate> check_not_cancelled(std::stop_token const& stop) {
     return std::monostate{};
 }
 
-result<std::monostate> send_all(quark::pal::fd_t fd, std::string const& data) {
+result<std::monostate> send_all(agentengine::pal::fd_t fd, std::string const& data) {
     std::size_t sent = 0;
     while (sent < data.size()) {
         if (!wait_ready(fd, /*for_write=*/true, kIoTimeoutMs)) {
             return std::unexpected(error{failure_class::transient, "timed out sending request", "net.connect_failed"});
         }
-        auto r = quark::pal::send_some(fd, reinterpret_cast<std::byte const*>(data.data() + sent),
+        auto r = agentengine::pal::send_some(fd, reinterpret_cast<std::byte const*>(data.data() + sent),
                                         data.size() - sent);
         if (!r) {
-            if (r.error() == quark::pal::would_block()) continue;
+            if (r.error() == agentengine::pal::would_block()) continue;
             return std::unexpected(error{failure_class::transient, "send failed", "net.connect_failed"});
         }
         sent += *r;
@@ -231,7 +231,7 @@ struct ResolvedCandidates {
 
 result<ResolvedCandidates> resolve_candidates(std::string const& host_str) {
 #if defined(_WIN32)
-    quark::pal::ensure_winsock();
+    agentengine::pal::ensure_winsock();
 #endif
     // Fast path: a numeric IPv4 literal never touches the resolver. inet_pton's strict, dotted-quad-
     // only grammar (unlike the legacy, lenient inet_addr/gethostbyname) is what makes a decimal/
@@ -320,10 +320,10 @@ result<NetEgressResponse> perform_http_exchange(VerifiedEndpoint endpoint, std::
                                                                   kHardResponseCeilingBytes);
     if (auto const c = check_not_cancelled(stop); !c) return std::unexpected(c.error());
 #if defined(_WIN32)
-    quark::pal::ensure_winsock();
+    agentengine::pal::ensure_winsock();
 #endif
 
-    auto connect_r = quark::pal::tcp_connect(endpoint.ipv4_host_order, endpoint.port);
+    auto connect_r = agentengine::pal::tcp_connect(endpoint.ipv4_host_order, endpoint.port);
     if (!connect_r) {
         return std::unexpected(error{failure_class::transient, "connect failed", "net.connect_failed"});
     }
@@ -332,7 +332,7 @@ result<NetEgressResponse> perform_http_exchange(VerifiedEndpoint endpoint, std::
     if (!wait_ready(guard.fd, /*for_write=*/true, kIoTimeoutMs)) {
         return std::unexpected(error{failure_class::transient, "connect timed out", "net.connect_failed"});
     }
-    if (auto const cr = quark::pal::connect_result(guard.fd); !cr) {
+    if (auto const cr = agentengine::pal::connect_result(guard.fd); !cr) {
         return std::unexpected(error{failure_class::transient, "connect refused or failed", "net.connect_failed"});
     }
 
@@ -361,9 +361,9 @@ result<NetEgressResponse> perform_http_exchange(VerifiedEndpoint endpoint, std::
         if (!wait_ready(guard.fd, /*for_write=*/false, kIoTimeoutMs)) {
             return std::unexpected(error{failure_class::transient, "timed out reading response", "net.connect_failed"});
         }
-        auto const r = quark::pal::recv_some(guard.fd, chunk.data(), chunk.size());
+        auto const r = agentengine::pal::recv_some(guard.fd, chunk.data(), chunk.size());
         if (!r) {
-            if (r.error() == quark::pal::would_block()) continue;
+            if (r.error() == agentengine::pal::would_block()) continue;
             return std::unexpected(error{failure_class::transient, "recv failed", "net.connect_failed"});
         }
         if (*r == 0) break;  // peer closed -- normal end of a Connection:-close response
@@ -394,10 +394,10 @@ result<NetEgressResponse> perform_https_exchange(VerifiedEndpoint endpoint, std:
                                                                   kHardResponseCeilingBytes);
     if (auto const c = check_not_cancelled(stop); !c) return std::unexpected(c.error());
 #if defined(_WIN32)
-    quark::pal::ensure_winsock();
+    agentengine::pal::ensure_winsock();
 #endif
 
-    auto connect_r = quark::pal::tcp_connect(endpoint.ipv4_host_order, endpoint.port);
+    auto connect_r = agentengine::pal::tcp_connect(endpoint.ipv4_host_order, endpoint.port);
     if (!connect_r) {
         return std::unexpected(error{failure_class::transient, "connect failed", "net.connect_failed"});
     }
@@ -406,7 +406,7 @@ result<NetEgressResponse> perform_https_exchange(VerifiedEndpoint endpoint, std:
     if (!wait_ready(guard.fd, /*for_write=*/true, kIoTimeoutMs)) {
         return std::unexpected(error{failure_class::transient, "connect timed out", "net.connect_failed"});
     }
-    if (auto const cr = quark::pal::connect_result(guard.fd); !cr) {
+    if (auto const cr = agentengine::pal::connect_result(guard.fd); !cr) {
         return std::unexpected(error{failure_class::transient, "connect refused or failed", "net.connect_failed"});
     }
 
@@ -532,9 +532,9 @@ result<NetEgressResponse> perform_http_exchange_streaming(
         std::min<std::uint64_t>(byte_cap.value_or(kHardResponseCeilingBytes), kHardResponseCeilingBytes);
     if (auto const c = check_not_cancelled(stop); !c) return std::unexpected(c.error());
 #if defined(_WIN32)
-    quark::pal::ensure_winsock();
+    agentengine::pal::ensure_winsock();
 #endif
-    auto connect_r = quark::pal::tcp_connect(endpoint.ipv4_host_order, endpoint.port);
+    auto connect_r = agentengine::pal::tcp_connect(endpoint.ipv4_host_order, endpoint.port);
     if (!connect_r) {
         return std::unexpected(error{failure_class::transient, "connect failed", "net.connect_failed"});
     }
@@ -542,7 +542,7 @@ result<NetEgressResponse> perform_http_exchange_streaming(
     if (!wait_ready(guard.fd, /*for_write=*/true, kIoTimeoutMs)) {
         return std::unexpected(error{failure_class::transient, "connect timed out", "net.connect_failed"});
     }
-    if (auto const cr = quark::pal::connect_result(guard.fd); !cr) {
+    if (auto const cr = agentengine::pal::connect_result(guard.fd); !cr) {
         return std::unexpected(
             error{failure_class::transient, "connect refused or failed", "net.connect_failed"});
     }
@@ -556,9 +556,9 @@ result<NetEgressResponse> perform_http_exchange_streaming(
                 return std::unexpected(
                     error{failure_class::transient, "timed out reading response", "net.connect_failed"});
             }
-            auto const r = quark::pal::recv_some(guard.fd, reinterpret_cast<std::byte*>(buf), len);
+            auto const r = agentengine::pal::recv_some(guard.fd, reinterpret_cast<std::byte*>(buf), len);
             if (!r) {
-                if (r.error() == quark::pal::would_block()) continue;
+                if (r.error() == agentengine::pal::would_block()) continue;
                 return std::unexpected(error{failure_class::transient, "recv failed", "net.connect_failed"});
             }
             return *r;
@@ -576,9 +576,9 @@ result<NetEgressResponse> perform_https_exchange_streaming(
         std::min<std::uint64_t>(byte_cap.value_or(kHardResponseCeilingBytes), kHardResponseCeilingBytes);
     if (auto const c = check_not_cancelled(stop); !c) return std::unexpected(c.error());
 #if defined(_WIN32)
-    quark::pal::ensure_winsock();
+    agentengine::pal::ensure_winsock();
 #endif
-    auto connect_r = quark::pal::tcp_connect(endpoint.ipv4_host_order, endpoint.port);
+    auto connect_r = agentengine::pal::tcp_connect(endpoint.ipv4_host_order, endpoint.port);
     if (!connect_r) {
         return std::unexpected(error{failure_class::transient, "connect failed", "net.connect_failed"});
     }
@@ -586,7 +586,7 @@ result<NetEgressResponse> perform_https_exchange_streaming(
     if (!wait_ready(guard.fd, /*for_write=*/true, kIoTimeoutMs)) {
         return std::unexpected(error{failure_class::transient, "connect timed out", "net.connect_failed"});
     }
-    if (auto const cr = quark::pal::connect_result(guard.fd); !cr) {
+    if (auto const cr = agentengine::pal::connect_result(guard.fd); !cr) {
         return std::unexpected(
             error{failure_class::transient, "connect refused or failed", "net.connect_failed"});
     }

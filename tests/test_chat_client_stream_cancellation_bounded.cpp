@@ -52,7 +52,7 @@
 #include <sys/select.h>
 #endif
 
-#include "pal/net.hpp"
+#include "agentengine/pal/net.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -158,7 +158,7 @@ private:
     mbedtls_ctr_drbg_context drbg_{};
 };
 
-bool wait_ready(quark::pal::fd_t fd, bool for_write, int timeout_ms) {
+bool wait_ready(agentengine::pal::fd_t fd, bool for_write, int timeout_ms) {
     ::fd_set set;
     FD_ZERO(&set);
     FD_SET(fd, &set);
@@ -172,7 +172,7 @@ bool wait_ready(quark::pal::fd_t fd, bool for_write, int timeout_ms) {
 }
 
 struct BioCtx {
-    quark::pal::fd_t fd;
+    agentengine::pal::fd_t fd;
     // Mutable per-call read timeout -- the handshake and the FIRST post-handshake read need the full
     // budget (a client on loopback can still take a moment to connect+write), but a server that reads
     // in a "drain up to N times" loop after the request has already fully arrived should not block
@@ -186,15 +186,15 @@ constexpr int kDrainPollTimeoutMs = 100;
 int bio_send(void* ctx, unsigned char const* buf, std::size_t len) {
     auto* c = static_cast<BioCtx*>(ctx);
     if (!wait_ready(c->fd, true, kBioTimeoutMs)) return MBEDTLS_ERR_SSL_TIMEOUT;
-    auto r = quark::pal::send_some(c->fd, reinterpret_cast<std::byte const*>(buf), len);
-    if (!r) return r.error() == quark::pal::would_block() ? MBEDTLS_ERR_SSL_WANT_WRITE : MBEDTLS_ERR_NET_SEND_FAILED;
+    auto r = agentengine::pal::send_some(c->fd, reinterpret_cast<std::byte const*>(buf), len);
+    if (!r) return r.error() == agentengine::pal::would_block() ? MBEDTLS_ERR_SSL_WANT_WRITE : MBEDTLS_ERR_NET_SEND_FAILED;
     return static_cast<int>(*r);
 }
 int bio_recv(void* ctx, unsigned char* buf, std::size_t len) {
     auto* c = static_cast<BioCtx*>(ctx);
     if (!wait_ready(c->fd, false, c->recv_timeout_ms)) return MBEDTLS_ERR_SSL_TIMEOUT;
-    auto r = quark::pal::recv_some(c->fd, reinterpret_cast<std::byte*>(buf), len);
-    if (!r) return r.error() == quark::pal::would_block() ? MBEDTLS_ERR_SSL_WANT_READ : MBEDTLS_ERR_NET_RECV_FAILED;
+    auto r = agentengine::pal::recv_some(c->fd, reinterpret_cast<std::byte*>(buf), len);
+    if (!r) return r.error() == agentengine::pal::would_block() ? MBEDTLS_ERR_SSL_WANT_READ : MBEDTLS_ERR_NET_RECV_FAILED;
     return static_cast<int>(*r);
 }
 
@@ -219,11 +219,11 @@ public:
         mbedtls_pk_parse_key(&key_, reinterpret_cast<unsigned char const*>(kc.key_pem.c_str()),
                               kc.key_pem.size() + 1, nullptr, 0, mbedtls_ctr_drbg_random, &drbg_);
 
-        auto listen_r = quark::pal::tcp_listen(static_cast<std::uint64_t>(kLoopbackHostOrder), 0);
+        auto listen_r = agentengine::pal::tcp_listen(static_cast<std::uint64_t>(kLoopbackHostOrder), 0);
         ok_ = listen_r.has_value();
         if (ok_) {
             listen_fd_ = *listen_r;
-            port_ = *quark::pal::local_port(listen_fd_);
+            port_ = *agentengine::pal::local_port(listen_fd_);
             thread_ = std::jthread([this](std::stop_token st) { run(st); });
         }
     }
@@ -232,7 +232,7 @@ public:
             thread_.request_stop();
             thread_.join();
         }
-        if (ok_) quark::pal::close_fd(listen_fd_);
+        if (ok_) agentengine::pal::close_fd(listen_fd_);
         mbedtls_pk_free(&key_);
         mbedtls_x509_crt_free(&cert_);
         mbedtls_ctr_drbg_free(&drbg_);
@@ -257,13 +257,13 @@ public:
 private:
     void run(std::stop_token st) {
         while (!st.stop_requested()) {
-            auto a = quark::pal::accept_one(listen_fd_);
+            auto a = agentengine::pal::accept_one(listen_fd_);
             if (!a) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
                 continue;
             }
             serve_one(*a);
-            quark::pal::close_fd(*a);
+            agentengine::pal::close_fd(*a);
         }
     }
 
@@ -283,7 +283,7 @@ private:
         return true;
     }
 
-    void serve_one(quark::pal::fd_t fd) {
+    void serve_one(agentengine::pal::fd_t fd) {
         BioCtx ctx{fd, kBioTimeoutMs};
         mbedtls_ssl_config conf;
         mbedtls_ssl_context ssl;
@@ -351,7 +351,7 @@ private:
     int chunk_count_;
     std::chrono::milliseconds inter_chunk_delay_;
     bool ok_ = false;
-    quark::pal::fd_t listen_fd_{};
+    agentengine::pal::fd_t listen_fd_{};
     std::uint16_t port_ = 0;
     std::jthread thread_;
     std::atomic<bool> completed_fully_{false};
@@ -376,11 +376,11 @@ public:
         mbedtls_pk_parse_key(&key_, reinterpret_cast<unsigned char const*>(kc.key_pem.c_str()),
                               kc.key_pem.size() + 1, nullptr, 0, mbedtls_ctr_drbg_random, &drbg_);
 
-        auto listen_r = quark::pal::tcp_listen(static_cast<std::uint64_t>(kLoopbackHostOrder), 0);
+        auto listen_r = agentengine::pal::tcp_listen(static_cast<std::uint64_t>(kLoopbackHostOrder), 0);
         ok_ = listen_r.has_value();
         if (ok_) {
             listen_fd_ = *listen_r;
-            port_ = *quark::pal::local_port(listen_fd_);
+            port_ = *agentengine::pal::local_port(listen_fd_);
             thread_ = std::jthread([this](std::stop_token st) { run(st); });
         }
     }
@@ -389,7 +389,7 @@ public:
             thread_.request_stop();
             thread_.join();
         }
-        if (ok_) quark::pal::close_fd(listen_fd_);
+        if (ok_) agentengine::pal::close_fd(listen_fd_);
         mbedtls_pk_free(&key_);
         mbedtls_x509_crt_free(&cert_);
         mbedtls_ctr_drbg_free(&drbg_);
@@ -403,17 +403,17 @@ public:
 private:
     void run(std::stop_token st) {
         while (!st.stop_requested()) {
-            auto a = quark::pal::accept_one(listen_fd_);
+            auto a = agentengine::pal::accept_one(listen_fd_);
             if (!a) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
                 continue;
             }
             serve_one(*a);
-            quark::pal::close_fd(*a);
+            agentengine::pal::close_fd(*a);
         }
     }
 
-    void serve_one(quark::pal::fd_t fd) {
+    void serve_one(agentengine::pal::fd_t fd) {
         BioCtx ctx{fd, kBioTimeoutMs};
         mbedtls_ssl_config conf;
         mbedtls_ssl_context ssl;
@@ -476,7 +476,7 @@ private:
     mbedtls_ctr_drbg_context drbg_;
     std::string raw_response_;
     bool ok_ = false;
-    quark::pal::fd_t listen_fd_{};
+    agentengine::pal::fd_t listen_fd_{};
     std::uint16_t port_ = 0;
     std::jthread thread_;
 };
@@ -497,7 +497,7 @@ private:
 
 int main() {
 #if defined(_WIN32)
-    quark::pal::ensure_winsock();
+    agentengine::pal::ensure_winsock();
 #endif
 
     TestCertAuthority ca;

@@ -30,7 +30,7 @@
 // (third_party/quark/pal/linux_x86_64/net.hpp uses std::atomic<bool> without including <atomic>).
 #include <atomic>
 
-#include "pal/net.hpp"
+#include "agentengine/pal/net.hpp"
 
 #if defined(_WIN32)
 // select()/FD_SET/FD_ZERO already pulled in transitively by pal/windows_x86_64/net.hpp.
@@ -154,7 +154,7 @@ private:
 
 // -- a loopback TLS server, one handshake per connection, then a fixed HTTP response ---------------
 
-bool wait_ready(quark::pal::fd_t fd, bool for_write, int timeout_ms) {
+bool wait_ready(agentengine::pal::fd_t fd, bool for_write, int timeout_ms) {
     ::fd_set set;
     FD_ZERO(&set);
     FD_SET(fd, &set);
@@ -168,20 +168,20 @@ bool wait_ready(quark::pal::fd_t fd, bool for_write, int timeout_ms) {
 }
 
 struct BioCtx {
-    quark::pal::fd_t fd;
+    agentengine::pal::fd_t fd;
 };
 int bio_send(void* ctx, unsigned char const* buf, std::size_t len) {
     auto* c = static_cast<BioCtx*>(ctx);
     if (!wait_ready(c->fd, true, 5000)) return MBEDTLS_ERR_SSL_TIMEOUT;
-    auto r = quark::pal::send_some(c->fd, reinterpret_cast<std::byte const*>(buf), len);
-    if (!r) return r.error() == quark::pal::would_block() ? MBEDTLS_ERR_SSL_WANT_WRITE : MBEDTLS_ERR_NET_SEND_FAILED;
+    auto r = agentengine::pal::send_some(c->fd, reinterpret_cast<std::byte const*>(buf), len);
+    if (!r) return r.error() == agentengine::pal::would_block() ? MBEDTLS_ERR_SSL_WANT_WRITE : MBEDTLS_ERR_NET_SEND_FAILED;
     return static_cast<int>(*r);
 }
 int bio_recv(void* ctx, unsigned char* buf, std::size_t len) {
     auto* c = static_cast<BioCtx*>(ctx);
     if (!wait_ready(c->fd, false, 5000)) return MBEDTLS_ERR_SSL_TIMEOUT;
-    auto r = quark::pal::recv_some(c->fd, reinterpret_cast<std::byte*>(buf), len);
-    if (!r) return r.error() == quark::pal::would_block() ? MBEDTLS_ERR_SSL_WANT_READ : MBEDTLS_ERR_NET_RECV_FAILED;
+    auto r = agentengine::pal::recv_some(c->fd, reinterpret_cast<std::byte*>(buf), len);
+    if (!r) return r.error() == agentengine::pal::would_block() ? MBEDTLS_ERR_SSL_WANT_READ : MBEDTLS_ERR_NET_RECV_FAILED;
     return static_cast<int>(*r);
 }
 
@@ -200,11 +200,11 @@ public:
         mbedtls_pk_parse_key(&key_, reinterpret_cast<unsigned char const*>(kc.key_pem.c_str()),
                               kc.key_pem.size() + 1, nullptr, 0, mbedtls_ctr_drbg_random, &drbg_);
 
-        auto listen_r = quark::pal::tcp_listen(static_cast<std::uint64_t>(kLoopbackHostOrder), 0);
+        auto listen_r = agentengine::pal::tcp_listen(static_cast<std::uint64_t>(kLoopbackHostOrder), 0);
         ok_ = listen_r.has_value();
         if (ok_) {
             listen_fd_ = *listen_r;
-            port_ = *quark::pal::local_port(listen_fd_);
+            port_ = *agentengine::pal::local_port(listen_fd_);
             thread_ = std::jthread([this](std::stop_token st) { run(st); });
         }
     }
@@ -213,7 +213,7 @@ public:
             thread_.request_stop();
             thread_.join();
         }
-        if (ok_) quark::pal::close_fd(listen_fd_);
+        if (ok_) agentengine::pal::close_fd(listen_fd_);
         mbedtls_pk_free(&key_);
         mbedtls_x509_crt_free(&cert_);
         mbedtls_ctr_drbg_free(&drbg_);
@@ -228,18 +228,18 @@ public:
 private:
     void run(std::stop_token st) {
         while (!st.stop_requested()) {
-            auto a = quark::pal::accept_one(listen_fd_);
+            auto a = agentengine::pal::accept_one(listen_fd_);
             if (!a) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
                 continue;
             }
             accept_count_.fetch_add(1);
             serve_one(*a);
-            quark::pal::close_fd(*a);
+            agentengine::pal::close_fd(*a);
         }
     }
 
-    void serve_one(quark::pal::fd_t fd) {
+    void serve_one(agentengine::pal::fd_t fd) {
         BioCtx ctx{fd};
         mbedtls_ssl_config conf;
         mbedtls_ssl_context ssl;
@@ -298,7 +298,7 @@ private:
     mbedtls_entropy_context entropy_;
     mbedtls_ctr_drbg_context drbg_;
     bool ok_ = false;
-    quark::pal::fd_t listen_fd_{};
+    agentengine::pal::fd_t listen_fd_{};
     std::uint16_t port_ = 0;
     std::atomic<int> accept_count_{0};
     std::jthread thread_;
@@ -308,7 +308,7 @@ private:
 
 int main() {
 #if defined(_WIN32)
-    quark::pal::ensure_winsock();
+    agentengine::pal::ensure_winsock();
 #endif
 
     TestCertAuthority ca;
@@ -349,7 +349,7 @@ int main() {
         TlsTestServer server(valid_leaf);
         check(server.ok(), "C1: valid-leaf test server started");
         if (server.ok()) {
-            auto connect_r = quark::pal::tcp_connect(kLoopbackHostOrder, server.port());
+            auto connect_r = agentengine::pal::tcp_connect(kLoopbackHostOrder, server.port());
             check(connect_r.has_value(), "C1: connect() to the test server succeeds");
             if (connect_r) {
                 auto session = TlsClientSession::handshake(*connect_r, "test.invalid", root.cert_pem);
@@ -367,7 +367,7 @@ int main() {
                               "C1: the real HTTP response text round-trips through TLS unchanged");
                     }
                 }
-                quark::pal::close_fd(*connect_r);
+                agentengine::pal::close_fd(*connect_r);
             }
         }
     }
@@ -377,12 +377,12 @@ int main() {
         TlsTestServer server(untrusted_leaf);
         check(server.ok(), "C2: untrusted-root test server started");
         if (server.ok()) {
-            auto connect_r = quark::pal::tcp_connect(kLoopbackHostOrder, server.port());
+            auto connect_r = agentengine::pal::tcp_connect(kLoopbackHostOrder, server.port());
             if (connect_r) {
                 auto session = TlsClientSession::handshake(*connect_r, "test.invalid", root.cert_pem);
                 check(!session.has_value(), "C2: a cert signed by a root NOT in the trust store is rejected");
                 if (!session) check(session.error().code == "net.tls_certificate_rejected", "C2: specific diagnostic code");
-                quark::pal::close_fd(*connect_r);
+                agentengine::pal::close_fd(*connect_r);
             }
         }
     }
@@ -392,7 +392,7 @@ int main() {
         TlsTestServer server(wrong_host_leaf);
         check(server.ok(), "C3: wrong-hostname test server started");
         if (server.ok()) {
-            auto connect_r = quark::pal::tcp_connect(kLoopbackHostOrder, server.port());
+            auto connect_r = agentengine::pal::tcp_connect(kLoopbackHostOrder, server.port());
             if (connect_r) {
                 // The client asks for "test.invalid" -- the server's cert is only valid for
                 // "wrong.invalid" (trusted root, valid dates, just the wrong name).
@@ -400,7 +400,7 @@ int main() {
                 check(!session.has_value(),
                       "C3: a trusted, unexpired cert valid for a DIFFERENT hostname is still rejected");
                 if (!session) check(session.error().code == "net.tls_certificate_rejected", "C3: specific diagnostic code");
-                quark::pal::close_fd(*connect_r);
+                agentengine::pal::close_fd(*connect_r);
             }
         }
     }
@@ -410,12 +410,12 @@ int main() {
         TlsTestServer server(expired_leaf);
         check(server.ok(), "C4: expired-leaf test server started");
         if (server.ok()) {
-            auto connect_r = quark::pal::tcp_connect(kLoopbackHostOrder, server.port());
+            auto connect_r = agentengine::pal::tcp_connect(kLoopbackHostOrder, server.port());
             if (connect_r) {
                 auto session = TlsClientSession::handshake(*connect_r, "test.invalid", root.cert_pem);
                 check(!session.has_value(), "C4: an expired certificate is rejected");
                 if (!session) check(session.error().code == "net.tls_certificate_rejected", "C4: specific diagnostic code");
-                quark::pal::close_fd(*connect_r);
+                agentengine::pal::close_fd(*connect_r);
             }
         }
     }
