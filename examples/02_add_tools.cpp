@@ -26,9 +26,6 @@
 #include <string>
 #include <vector>
 
-#include "quark/core/testkit.hpp"
-
-#include "agentengine/core/agent_session.hpp"
 #include "agentengine/core/chat_client.hpp"
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/context_provider.hpp"
@@ -36,9 +33,13 @@
 #include "agentengine/core/tool.hpp"
 #include "agentengine/core/tool_call_extraction.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
+#include "agentengine/rt/agent_session.hpp"
 #include "agentengine/trust/principal.hpp"
 
 using namespace agentengine;
+using agentengine::rt::AgentSession;
+using agentengine::rt::NoSessionState;
+using agentengine::rt::StartRun;
 
 namespace {
 
@@ -153,17 +154,27 @@ static_assert(ChatClient<ScriptedWeatherChatClient>);
 
 using WeatherAgent = AgentSession<ScriptedWeatherChatClient, NoSessionState, WeatherHistoryProvider>;
 
+// Drives an agentengine::rt::task<T> to completion. Safe here: nothing in this example's turn loop
+// suspends on anything external -- the same "safe because nothing here genuinely suspends" reasoning
+// every rt:: test file's own drive<T>() relies on.
+template <class T>
+T drive(agentengine::rt::task<T> t) {
+    while (!t.done()) t.resume();
+    return t.take_value();
+}
+
 }  // namespace
 
 int main() {
-    quark::TestKit<WeatherAgent> kit;
-    kit.actor().initialize("s-weather", Principal{"p-demo", ""});
+    WeatherAgent session;
+    session.initialize("s-weather", Principal{"p-demo", ""});
+    session.emplace_chat_client();
     // Even an all-empty-Capabilities<> tool must be authorized against a real, explicitly granted
     // CapabilitySet (I2: no ambient authority) -- there is no "no capabilities needed" bypass.
     CapabilitySet const held = CapabilitySet::grant_root({});
-    kit.actor().set_capabilities(&held);
+    session.set_capabilities(&held);
 
-    auto r = kit.ask<AgentResponse>(StartRun{user_message("What is the weather like in Amsterdam?")});
+    auto r = drive(session.start_run(StartRun{user_message("What is the weather like in Amsterdam?")}));
     check(r.has_value(), "the agent's tool-call round trip converges to a final answer");
     if (r.has_value()) {
         std::string const reply = text_of(r->message);

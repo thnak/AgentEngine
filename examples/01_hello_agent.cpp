@@ -2,9 +2,12 @@
 //
 // Mirrors Microsoft Agent Framework's samples/01-get-started/01_hello_agent: build an agent, send
 // it one message, print what comes back. AgentEngine's equivalent of MAF's `AIAgent` is
-// `AgentSession<ChatClientT>` (agentengine/core/agent_session.hpp), driven here through
-// `quark::TestKit` -- no live `quark::Engine` is needed for a single request/reply turn (see
-// 04_first_workflow.cpp for when a real Engine is required).
+// `agentengine::rt::AgentSession<ChatClientT>` (agentengine/rt/agent_session.hpp, ADR-037's
+// Quark-free replacement for the old, Quark-actor-based `agentengine::AgentSession`) -- driven here
+// by resuming its returned `agentengine::rt::task<T>` directly, the same "safe because nothing here
+// genuinely suspends on an external wake" idiom every rt:: test file's own `drive<T>()` uses; no
+// actor engine of any kind is needed for a single request/reply turn (see 04_first_workflow.cpp for
+// the workflow case).
 //
 // The ChatClient below is a small deterministic fake (`JokerChatClient`), not a real OpenAI/
 // Anthropic backend, so this example builds and runs completely offline with no API key and no
@@ -17,15 +20,15 @@
 #include <memory_resource>
 #include <string>
 
-#include "quark/core/testkit.hpp"
-
-#include "agentengine/core/agent_session.hpp"
 #include "agentengine/core/chat_client.hpp"
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/tool_call_extraction.hpp"
+#include "agentengine/rt/agent_session.hpp"
 #include "agentengine/trust/principal.hpp"
 
 using namespace agentengine;
+using agentengine::rt::AgentSession;
+using agentengine::rt::StartRun;
 
 namespace {
 
@@ -87,6 +90,16 @@ static_assert(ChatClient<JokerChatClient>, "JokerChatClient must satisfy the Cha
     return m;
 }
 
+// Drives an agentengine::rt::task<T> to completion. Safe here: JokerChatClient::chat() never
+// suspends on anything external (it co_returns immediately), so one resume() loop resolves the
+// whole run -- the same "safe because nothing here genuinely suspends" reasoning every rt:: test
+// file's own drive<T>() relies on.
+template <class T>
+T drive(agentengine::rt::task<T> t) {
+    while (!t.done()) t.resume();
+    return t.take_value();
+}
+
 }  // namespace
 
 int main() {
@@ -94,10 +107,11 @@ int main() {
     // (HistoryProvider<Window<0>>, an unbounded window) and NoSessionState -- everything a one-shot
     // hello-world agent needs.
     using HelloAgent = AgentSession<JokerChatClient>;
-    quark::TestKit<HelloAgent> kit;
-    kit.actor().initialize("s-hello", Principal{"p-demo", ""});
+    HelloAgent session;
+    session.initialize("s-hello", Principal{"p-demo", ""});
+    session.emplace_chat_client();
 
-    auto r = kit.ask<AgentResponse>(StartRun{user_message("Tell me a joke about a pirate.")});
+    auto r = drive(session.start_run(StartRun{user_message("Tell me a joke about a pirate.")}));
     check(r.has_value(), "the agent answers the single turn");
     if (r.has_value()) {
         std::string const reply = text_of(r->message);
