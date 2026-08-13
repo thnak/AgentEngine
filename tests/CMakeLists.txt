@@ -681,28 +681,20 @@ if(AGENTENGINE_WITH_HTTPS)
     MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
   add_test(NAME test_reasoning_effort_portability COMMAND test_reasoning_effort_portability)
 
-  # ---- ADR-018: a REAL ChatClient backend driven through a live AgentSession turn loop -------------
-  # Closes Milestone 5's Phase J1 residual. Before it, AgentSession<OpenAIChatClient<...>> did not
-  # merely lack a way to be configured -- it failed to COMPILE, because quark::TestKit<A> default-
-  # constructs its actor and a real backend holds a `Store const&`. So 001 §3's turn loop and a
-  # backend that actually talks to a server had never been demonstrated together. Deterministic
-  # (canned loopback server, no live model), so it belongs in the default suite.
-  add_executable(test_agent_session_real_backend test_agent_session_real_backend.cpp)
-  target_link_libraries(test_agent_session_real_backend PRIVATE
-    agentengine::core agentengine::provider_http_client agentengine_warnings
-    MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
-  add_test(NAME test_agent_session_real_backend COMMAND test_agent_session_real_backend)
-
-  # ---- Skills (009 §8), composed with ADR-018: HistoryAndSkillsProvider through a REAL AgentSession
-  # turn loop against a real backend -- proves skill advertisement AND ordinary history both reach a
-  # real outbound wire request. Needs agentengine::worktree_store's real compute_digest (SkillsProvider
-  # -> put_blob/put_tree), Windows-only for now (the same WIN32 gate every other worktree test uses).
+  # ---- ADR-037 Phase 2 -- porting test_agent_session_real_backend(.cpp) (ADR-018: a REAL ChatClient
+  # backend driven through a live AgentSession turn loop) and test_agent_session_skills_real_backend
+  # (.cpp) (009 §8 + ADR-018: HistoryAndSkillsProvider through a real backend) onto
+  # agentengine::rt::AgentSession directly, consolidated into ONE file (both share the identical
+  # canned-local-HTTP-server shape) -- supersedes both. Still Windows-only (needs
+  # agentengine::worktree_store's real compute_digest for the skills half) and still
+  # AGENTENGINE_WITH_HTTPS-gated (guarded inside the .cpp itself, so this registration is
+  # unconditional -- the file's own #else main(){return 0;} makes it a no-op test when HTTPS is off).
   if(WIN32)
-    add_executable(test_agent_session_skills_real_backend test_agent_session_skills_real_backend.cpp)
-    target_link_libraries(test_agent_session_skills_real_backend PRIVATE
+    add_executable(test_rt_agent_session_real_backend test_rt_agent_session_real_backend.cpp)
+    target_link_libraries(test_rt_agent_session_real_backend PRIVATE
       agentengine::core agentengine::provider_http_client agentengine::worktree_store agentengine_warnings
       MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
-    add_test(NAME test_agent_session_skills_real_backend COMMAND test_agent_session_skills_real_backend)
+    add_test(NAME test_rt_agent_session_real_backend COMMAND test_rt_agent_session_real_backend)
 
     # ---- Skills (009 §8), LIVE: the same HistoryAndSkillsProvider composition driven through a
     # two-turn conversation (greeting, then "use your code execution skill") against a REAL remote
@@ -833,6 +825,15 @@ add_executable(test_model_call_gateway test_model_call_gateway.cpp)
 target_include_directories(test_model_call_gateway PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_model_call_gateway PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_model_call_gateway COMMAND test_model_call_gateway)
+
+# ---- ADR-037 Phase 2 -- porting G5 (test_model_call_gateway.cpp's own "AgentSession integration"
+# block, the ONE case in that file that touched AgentSession/quark::TestKit at all) onto
+# agentengine::rt::AgentSession directly. G1-G4/G6-G9 exercise ModelCallGateway/
+# MiddlewareModelCallGateway standalone with no AgentSession involvement and are left untouched in
+# test_model_call_gateway.cpp above.
+add_executable(test_rt_model_call_gateway_session test_rt_model_call_gateway_session.cpp)
+target_link_libraries(test_rt_model_call_gateway_session PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_model_call_gateway_session COMMAND test_rt_model_call_gateway_session)
 
 # ---- ADR-037 Phase 1 -- agentengine::rt::task<T>, the first piece of AgentEngine's own runtime
 # substrate (include/agentengine/rt/task.hpp), standalone and NOT yet wired into core/task.hpp.
