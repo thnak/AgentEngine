@@ -185,6 +185,19 @@ void test_p1_pause_healthy() {
     check(paused.status == project_status::paused,
           "P1: the record's status flips to paused only after a successful checkpoint");
     check(member_store.exists("member-p1"), "P1: the member's snapshot actually landed");
+
+    // I4 (030 §4: "the pause/restore cycle is invisible to the run"), reframed honestly for rt::
+    // land: there is no actor to evict and lazily reactivate here (rt::ProjectSupervisor's own
+    // banner -- checkpointing is read-only observation of a live, host-held object, never a teardown
+    // of it), so "resume" has nothing to undo. What DOES still need proving is that the checkpoint
+    // itself never disturbs the member session's own live state -- a real, SECOND Run issued right
+    // after pause_project() must continue the SAME run-id sequence exactly as if nothing had
+    // happened, the same claim test_agent_session_suspend_resume.cpp proves for a session paused
+    // directly, now proven for one checkpointed through a Project.
+    auto second = drive(member.start_run(StartRun{user_message("again")}));
+    check(second.has_value() && member.last_run_id() == "member-p1:run:2",
+          "I4: a Run against the member session right after pause_project() continues the SAME run "
+          "sequence uninterrupted -- checkpointing is read-only, it never disturbs the live session");
 }
 
 void test_p2_pause_fail_closed() {

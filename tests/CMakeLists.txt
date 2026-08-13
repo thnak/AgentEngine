@@ -593,27 +593,6 @@ if(AGENTENGINE_WITH_HTTPS)
   add_test(NAME test_workflow_introspection COMMAND test_workflow_introspection)
   set_tests_properties(test_workflow_introspection PROPERTIES TIMEOUT 120)
 
-  # ---- Milestone 6 Phase I: 030 §4's directed lifecycle (lifecycle.hpp) --------------------------
-  # PassivatableHandle's real point, proven with REAL actors: one ProjectSupervisor holds a REAL
-  # AgentSession<CannedChatClient> (a member session) and a REAL WorkflowSupervisor (a
-  # workflow-supervising actor, 030 §8 Q4's own case) -- two different C++ actor types, passivated
-  # uniformly. Pause drops all three activations (session, workflow, the ProjectSupervisor itself,
-  # last) to Dormant by census; restore never reactivates anything; a real Run after restore
-  # continues the session's own run sequence untouched; archive reuses the same pause sequence.
-  add_executable(test_project_lifecycle test_project_lifecycle.cpp)
-  target_link_libraries(test_project_lifecycle PRIVATE agentengine::core agentengine_warnings)
-  add_test(NAME test_project_lifecycle COMMAND test_project_lifecycle)
-  set_tests_properties(test_project_lifecycle PROPERTIES TIMEOUT 120)
-
-  # ---- Milestone 6 Phase J: 030 §7's own promotion gate G1 (half 2 of the milestone exit criterion) --
-  # 100 real AgentSession actors, each with its own ProjectSupervisor (200 activations, an actor
-  # count per decision 8's own reasoning, never a thread count). Pausing #50 drops its own two
-  # activations to zero by census; the other 99 each complete a real second Run with their own
-  # run-id sequence uninterrupted, and a timed sample shows no structural latency regression.
-  add_executable(test_project_scale_isolation test_project_scale_isolation.cpp)
-  target_link_libraries(test_project_scale_isolation PRIVATE agentengine::core agentengine_warnings)
-  add_test(NAME test_project_scale_isolation COMMAND test_project_scale_isolation)
-  set_tests_properties(test_project_scale_isolation PROPERTIES TIMEOUT 180)
 
   # ---- ADR-020 gates G1-G7: 004 §2's portable reasoning_effort, mapped down by both backends ------
   # Drives BOTH backends from the same enumerator values in one file, on purpose: the amendment's
@@ -975,6 +954,18 @@ add_test(NAME test_rt_project_archive COMMAND test_rt_project_archive)
 add_executable(test_rt_project_manifest test_rt_project_manifest.cpp)
 target_link_libraries(test_rt_project_manifest PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_project_manifest COMMAND test_rt_project_manifest)
+
+# ---- ADR-037 -- 030 §7's own promotion gate G1 against rt::ProjectSupervisor/rt::pause_project --
+# supersedes the old Quark-actor-based test_project_scale_isolation.cpp (and, together with
+# test_rt_project_supervisor.cpp's own Q1/Q4, test_project_lifecycle.cpp too -- both retired, see
+# their own git history). 100 real AgentSession objects, each with its own ProjectSupervisor and its
+# own InMemorySessionStore; pausing #50 is proven to touch ONLY #50's own store (structural
+# isolation, standing in for the old Dormant-census/latency measurements that have no rt:: analogue
+# -- see this file's own header comment for why), while the other 99 each complete a real second Run
+# uninterrupted.
+add_executable(test_rt_project_scale_isolation test_rt_project_scale_isolation.cpp)
+target_link_libraries(test_rt_project_scale_isolation PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_project_scale_isolation COMMAND test_rt_project_scale_isolation)
 
 # ---- Milestone 5 Phase G1 -- ChatCallRecording JSON codec (core/chat_recording.hpp), the shared
 # foundation RecordingChatClient<Inner> and ReplayChatClient both depend on.
