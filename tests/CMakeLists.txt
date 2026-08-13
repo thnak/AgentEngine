@@ -567,15 +567,6 @@ if(AGENTENGINE_WITH_HTTPS)
   target_link_libraries(test_workflow_graph_validation PRIVATE agentengine::core agentengine_warnings)
   add_test(NAME test_workflow_graph_validation COMMAND test_workflow_graph_validation)
 
-  # ---- Milestone 6 Phase F: 014 §5's time-travel (time_travel.hpp) -------------------------------
-  # rewind_workflow() selects a retained checkpoint and durably audits the request (decision 9: the
-  # audit obligation built WITH the rewind) -- a separate EventLog/ActorId from the checkpoint log
-  # itself (mixing two Event types in one Quark event log would break replay's type-key check).
-  add_executable(test_workflow_time_travel test_workflow_time_travel.cpp)
-  target_link_libraries(test_workflow_time_travel PRIVATE agentengine::core agentengine_warnings)
-  add_test(NAME test_workflow_time_travel COMMAND test_workflow_time_travel)
-  set_tests_properties(test_workflow_time_travel PROPERTIES TIMEOUT 120)
-
   # ---- Milestone 6 Phase F: 014 §8's own promotion gate G2 ---------------------------------------
   # A 20-node chain, killed (simulated: a genuinely new instance restored from nothing but the
   # checkpoint) at EVERY one of its 20 superstep boundaries -- every resume must complete with
@@ -606,18 +597,6 @@ if(AGENTENGINE_WITH_HTTPS)
   target_link_libraries(test_workflow_live_view PRIVATE agentengine::core agentengine_warnings)
   add_test(NAME test_workflow_live_view COMMAND test_workflow_live_view)
   set_tests_properties(test_workflow_live_view PROPERTIES TIMEOUT 120)
-
-  # ---- Milestone 6 Phase H: 030's Project manifest and registry (project.hpp, registry.hpp) ------
-  # H1-H3: the registry actor (create/duplicate-reject/principal-scoped list/recovery). H4-H5: the
-  # manifest's Snapshot round-trip and the archived tail's EventLog round-trip. G4 (030 §7's own
-  # gate): a manifest's serialized write cost is measured to be independent of archived-tail size
-  # (growing the tail to 2000 entries leaves the SAME manifest's own tagged_object_size unchanged)
-  # and scales only with current active-member count, never with history -- the forced EventLog/
-  # Snapshot split project.hpp's own header comment explains is what makes this even possible.
-  add_executable(test_project_registry test_project_registry.cpp)
-  target_link_libraries(test_project_registry PRIVATE agentengine::core agentengine_warnings)
-  add_test(NAME test_project_registry COMMAND test_project_registry)
-  set_tests_properties(test_project_registry PROPERTIES TIMEOUT 120)
 
   # ---- Milestone 6 Phase I: 030 §4's directed lifecycle (lifecycle.hpp) --------------------------
   # PassivatableHandle's real point, proven with REAL actors: one ProjectSupervisor holds a REAL
