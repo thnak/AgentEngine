@@ -230,19 +230,6 @@ add_executable(test_m1_walking_skeleton test_m1_walking_skeleton.cpp)
 target_link_libraries(test_m1_walking_skeleton PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_m1_walking_skeleton COMMAND test_m1_walking_skeleton)
 
-# ---- Milestone 4 Phase A1 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
-# session_actor_id() + real two-session isolation, closing 001 §1's session_id-keying gap M1 left
-# unwired.
-add_executable(test_agent_session_isolation test_agent_session_isolation.cpp)
-target_link_libraries(test_agent_session_isolation PRIVATE agentengine::core agentengine_warnings)
-add_test(NAME test_agent_session_isolation COMMAND test_agent_session_isolation)
-
-# ---- Milestone 4 Phase A3 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
-# Real 001 §1/§2 Run/Turn identity (run_id/turn_index on EffectContext), minted per StartRun.
-add_executable(test_agent_session_run_identity test_agent_session_run_identity.cpp)
-target_link_libraries(test_agent_session_run_identity PRIVATE agentengine::core agentengine_warnings)
-add_test(NAME test_agent_session_run_identity COMMAND test_agent_session_run_identity)
-
 # ---- Milestone 4 Phase B2 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
 # HistoryProvider<Window<N>>, the first real ContextProvider conformer -- standalone (unit) and
 # wired end to end through AgentSession's real turn loop.
@@ -312,12 +299,6 @@ add_test(NAME test_agent_session_timer_wake COMMAND test_agent_session_timer_wak
 add_executable(test_agent_session_node_loss_fencing test_agent_session_node_loss_fencing.cpp)
 target_link_libraries(test_agent_session_node_loss_fencing PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_agent_session_node_loss_fencing COMMAND test_agent_session_node_loss_fencing)
-
-# ---- Milestone 4 Phase E4 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
-# Poison-run quarantine: PoisonRunPolicy<N> fires at exactly the bound; state preserved, not discarded.
-add_executable(test_agent_session_poison_run test_agent_session_poison_run.cpp)
-target_link_libraries(test_agent_session_poison_run PRIVATE agentengine::core agentengine_warnings)
-add_test(NAME test_agent_session_poison_run COMMAND test_agent_session_poison_run)
 
 # ---- Milestone 6 Phase F prerequisite (docs/planning/milestone-6-multi-agent-orchestration-breakdown.md) ----
 # Message/ContentItem's durable projection (content_record.hpp) -- closes the "no QUARK_SERIALIZE"
@@ -1007,12 +988,16 @@ add_executable(test_principal_delegation test_principal_delegation.cpp)
 target_link_libraries(test_principal_delegation PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_principal_delegation COMMAND test_principal_delegation)
 
-# ---- Milestone 5 Phase H2 -- admission check at the AgentSession actor boundary (018 §2),
-# StartRun::caller (agent_session.hpp), opt-in and additive over the pre-H2 unconditional-admission
-# behavior every pre-existing StartRun{message} call site across tests/ still relies on.
-add_executable(test_agent_session_admission test_agent_session_admission.cpp)
-target_link_libraries(test_agent_session_admission PRIVATE agentengine::core agentengine_warnings)
-add_test(NAME test_agent_session_admission COMMAND test_agent_session_admission)
+# ---- ADR-037 Phase 2, Slice 1 -- ports test_agent_session_admission.cpp (018 §2 admission),
+# test_agent_session_isolation.cpp (001 §1 per-session isolation, session_actor_id() restated as a
+# direct behavioral proof since rt:: has no actor-id concept), test_agent_session_poison_run.cpp
+# (019 §4 PoisonRunPolicy<N> quarantine, copied dependency-free rather than pulled in from the
+# Quark-coupled core/agent_session.hpp), and test_agent_session_run_identity.cpp (001 §1/§2 run_id/
+# turn_index identity, extended with a within-run turn_index-advances proof) onto rt::AgentSession
+# directly -- supersedes all four.
+add_executable(test_rt_agent_session_identity_and_admission test_rt_agent_session_identity_and_admission.cpp)
+target_link_libraries(test_rt_agent_session_identity_and_admission PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_agent_session_identity_and_admission COMMAND test_rt_agent_session_identity_and_admission)
 
 # ---- ADR-037 Phase 2 -- porting test_agent_session_streaming_model_calls(.cpp) (ADR-034 streaming
 # turn loop), test_agent_session_response_format_leak_scan(.cpp) (ADR-035 Phase 1 leak scan), and
