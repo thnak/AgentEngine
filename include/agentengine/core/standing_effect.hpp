@@ -15,15 +15,19 @@
 // yet; its wake condition is 019 §2's "External event" row, which needs 012 (A2A) -- this milestone's
 // own Phase D, not this one. Both are named here, not silently claimed built.
 //
-// All-scalar/string fields -- no variant, no serialization gap -- so `StandingEffect` is `Described`
-// (QUARK_SERIALIZE-able) from the start, the same precedent `Interaction` (interaction.hpp, M4 Phase
-// E1) already set for exactly this reason: a session's own durable record can embed it directly
-// (`AgentSessionRecord.open_standing_effects`, agent_session.hpp) without inventing a projection.
+// `StandingEffect` is in-memory-only, never persisted -- it is NOT one of `AgentSessionRecord`'s own
+// `QUARK_SERIALIZE`'d fields (agent_session.hpp's own field list has no `standing_effects`/
+// `open_standing_effects` entry: only `open_interactions` crosses the durability boundary). An
+// earlier draft of this file's own comment anticipated embedding it directly and tagged the struct
+// `QUARK_SERIALIZE`-able for that reason -- that embedding never happened, and ADR-037's Quark-usage
+// sweep (2026-08-13) found the tag genuinely dead: no `Store`/`Snapshot`/`EventLog` call anywhere in
+// this codebase ever invokes `StandingEffect`'s generated `quark_describe`. Removed rather than kept
+// as documented-but-unused, matching this project's own "don't carry a tag with no real caller"
+// discipline -- a future phase that DOES need to persist a `StandingEffect` re-adds a codec at that
+// point (a JSON encode/decode pair, matching every `rt::` record's own established pattern, not this
+// removed Quark tag).
 
-#include <cstdint>
 #include <string>
-
-#include "quark/core/describe.hpp"
 
 namespace agentengine {
 
@@ -53,7 +57,5 @@ struct StandingEffect {  // ae-naming-lint: allow StandingEffect — 006 §6b na
 
     friend bool operator==(StandingEffect const&, StandingEffect const&) = default;
 };
-QUARK_SERIALIZE(StandingEffect, (1, handle_id), (2, session_id), (3, principal_id), (4, run_id),
-                 (5, kind), (6, label))
 
 }  // namespace agentengine
