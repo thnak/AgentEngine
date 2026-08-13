@@ -10,11 +10,13 @@
 // model-backed node looks like TODAY, as an ordinary `function`-kind executor whose body happens to
 // call a real `ChatClient`.
 //
-// `ChatClient::chat()` is a coroutine (`ae::task<result<ChatResponse>>`), but `ExecutorBody` is a
-// plain synchronous `std::function`. `tests/support/run_task_sync.hpp` (the same minimal driver
-// `tests/test_openrouter_live_e2e.cpp` itself uses to call a real HTTPS `chat()` from a plain
-// `main()`) is what bridges the two here -- safe because the real HTTPS client's I/O is genuinely
-// blocking under the hood, never something that needs a live `quark::Engine` reactor to progress.
+// `ChatClient::chat()` is a coroutine (`ae::task<result<ChatResponse>>`, which under ADR-037 resolves
+// to `agentengine::rt::task<result<ChatResponse>>` for any non-void `T` -- core/task.hpp), but
+// `rt::ExecutorBody` is a plain synchronous `std::function`. `rt::task<T>` was built to support being
+// driven directly (`.resume()`/`.done()`/`.take_value()`), not just `co_await`ed, so the bridge here
+// is the same plain `drive<T>()` loop every migrated rt:: file uses -- safe because the real HTTPS
+// client's I/O is genuinely blocking under the hood, never something that needs a live reactor to
+// progress.
 //
 // Needs AGENTENGINE_OPENROUTER_API_KEY in the environment -- run via
 // `tools/run-live-provider-tests.ps1`, or set it yourself. SKIPS (exit 0), same as every other
@@ -25,29 +27,35 @@
 
 #include <cstdio>
 #include <cstdlib>
-#include <memory>
 #include <string>
 #include <vector>
-
-#include "quark/core/actor.hpp"
-#include "quark/core/actor_ref.hpp"
-#include "quark/core/engine.hpp"
-#include "quark/detail/message_pool.hpp"
 
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/tool_call_extraction.hpp"
 #include "agentengine/protocol/openai/chat_client.hpp"
+#include "agentengine/rt/workflow_supervisor.hpp"
 #include "agentengine/trust/principal.hpp"
 #include "agentengine/trust/secret.hpp"
-#include "agentengine/workflow/executor.hpp"
 #include "agentengine/workflow/graph.hpp"
-#include "agentengine/workflow/placement.hpp"
-#include "agentengine/workflow/supervisor.hpp"
-#include "support/run_task_sync.hpp"
 
-using namespace quark;
 using namespace agentengine;
 using namespace agentengine::workflow;
+using agentengine::rt::ExecutorBody;
+using agentengine::rt::RunWorkflow;
+using agentengine::rt::WorkflowResult;
+using agentengine::rt::WorkflowSupervisor;
+using agentengine::rt::workflow_status;
+
+// Drives an `agentengine::rt::task<T>` to completion from a plain, non-coroutine `main()` -- the same
+// helper `tests/test_rt_workflow_supervisor.cpp` establishes: safe here because neither the
+// workflow's own superstep loop nor a debater's `client.chat()` call genuinely parks (the real HTTPS
+// client blocks under the hood instead of suspending a coroutine), so one external `resume()` chain
+// runs the whole thing inline.
+template <class T>
+[[nodiscard]] T drive(agentengine::rt::task<T> t) {
+    while (!t.done()) t.resume();
+    return t.take_value();
+}
 
 namespace {
 
@@ -95,7 +103,7 @@ using RealClient = openai::OpenAIChatClient<InMemorySecretStore>;
         req.messages.push_back(sys);
         req.messages.push_back(text_message("Transcript so far:\n" + transcript));
 
-        auto resp = test_support::run_task_sync<agentengine::result<ChatResponse>>(client.chat(req, ctx));
+        auto resp = drive(client.chat(req, ctx));
         if (!resp.has_value()) {
             return std::unexpected(resp.error());
         }
@@ -104,43 +112,6 @@ using RealClient = openai::OpenAIChatClient<InMemorySecretStore>;
         return text_message(transcript + "\n\n" + persona + ": " + reply);
     };
 }
-
-constexpr std::uint64_t kSupervisorKey = 100;
-
-struct Harness {
-    Engine<>            engine;
-    detail::MessagePool pool{64};
-    LocalRouter          router;
-    std::vector<std::unique_ptr<FunctionExecutor>> nodes;
-    std::vector<std::unique_ptr<Activation>>       node_acts;
-    std::vector<std::uint64_t>                     keys;
-
-    explicit Harness(EngineConfig const& cfg, std::size_t node_count)
-        : engine(cfg), router(engine.post_courier(), pool) {
-        keys = spread_executor_keys(node_count, engine.shard_count(), [this](std::uint64_t k) {
-            return engine.shard_of(actor_id_of<FunctionExecutor>(k));
-        });
-    }
-
-    void add_node(std::string name, ExecutorBody body) {
-        auto node = std::make_unique<FunctionExecutor>();
-        node->initialize(std::move(name), std::move(body), EffectContext{});
-        auto act = make_workflow_activation(*node, pool.sink());
-        engine.register_activation(actor_id_of<FunctionExecutor>(keys[nodes.size()]), *act);
-        nodes.push_back(std::move(node));
-        node_acts.push_back(std::move(act));
-    }
-
-    [[nodiscard]] ActorRef<WorkflowSupervisor> install(Workflow const& wf, WorkflowSupervisor& sup,
-                                                        std::unique_ptr<Activation>& sup_act) {
-        std::vector<ActorRef<FunctionExecutor>> refs;
-        for (std::size_t i = 0; i < nodes.size(); ++i) refs.push_back(router.get<FunctionExecutor>(keys[i]));
-        sup.initialize(wf, refs);
-        sup_act = make_workflow_activation(sup, pool.sink());
-        engine.register_activation(actor_id_of<WorkflowSupervisor>(kSupervisorKey), *sup_act);
-        return router.get<WorkflowSupervisor>(kSupervisorKey);
-    }
-};
 
 [[nodiscard]] Executor node_desc(char const* id) { return Executor{id, executor_kind::function, "T", "T"}; }
 
@@ -182,18 +153,8 @@ int main() {
     ctx.principal     = agentengine::Principal{"example-16-principal", ""};
     ctx.capabilities  = &held;
 
-    auto const config = ConfigBuilder{}.workers(4).shards(4).default_drain_budget(64).build();
-    check(config.has_value(), "engine config builds (4 workers / 4 shards)");
-    if (!config) return 1;
-
     // The SAME "moderator cycles among participants, bounded by the caller's round count" shape
     // 15_group_chat_and_planner.cpp uses -- just two live nodes instead of two plain functions.
-    Harness h(*config, /*node_count=*/2);
-    h.add_node("optimist", debater("the Optimist", "Argue FOR using microservices for a new project.",
-                                    client, ctx));
-    h.add_node("skeptic", debater("the Skeptic", "Argue AGAINST using microservices for a new project.",
-                                   client, ctx));
-
     Workflow wf;
     wf.id        = "group-chat-live";
     wf.executors = {node_desc("optimist"), node_desc("skeptic")};
@@ -204,20 +165,23 @@ int main() {
     wf.bound.max_rounds = 4;  // two turns each -- short and cheap
     check(validate_workflow(wf).has_value(), "the graph validates");
 
-    WorkflowSupervisor           supervisor;
-    std::unique_ptr<Activation>  sup_act;
-    ActorRef<WorkflowSupervisor> sup = h.install(wf, supervisor, sup_act);
+    // `bodies` is parallel to `wf.executors` BY INDEX (WorkflowSupervisor::initialize()'s own
+    // convention) -- so the order here must match {"optimist", "skeptic"} above exactly.
+    std::vector<ExecutorBody> bodies = {
+        debater("the Optimist", "Argue FOR using microservices for a new project.", client, ctx),
+        debater("the Skeptic", "Argue AGAINST using microservices for a new project.", client, ctx),
+    };
 
-    h.engine.start();
-    quark::result<WorkflowResult> r = block_on(sup.ask<WorkflowResult>(
+    WorkflowSupervisor supervisor;
+    supervisor.initialize(wf, bodies);
+
+    WorkflowResult r = drive(supervisor.run_workflow(
         RunWorkflow{text_message("Topic: should we use microservices for a new project?")}));
-    check(r.has_value(), "the workflow run completes");
-    if (r.has_value()) {
-        check(r->status == workflow_status::bound_max_rounds,
-              "the caller's round bound is the termination contract, same as the offline example");
-        std::printf("\n--- transcript --------------------------------------------\n%s\n",
-                    text_of(r->output).c_str());
-    }
+    check(r.status != workflow_status::invalid, "the workflow run completes");
+    check(r.status == workflow_status::bound_max_rounds,
+          "the caller's round bound is the termination contract, same as the offline example");
+    std::printf("\n--- transcript --------------------------------------------\n%s\n",
+                text_of(r.output).c_str());
 
     std::fprintf(stderr, g_failures == 0 ? "example_16_group_chat_live: OK\n"
                                           : "example_16_group_chat_live: FAIL\n");
