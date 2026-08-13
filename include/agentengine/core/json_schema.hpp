@@ -11,6 +11,14 @@
 // three, but the discipline (one field list, found by ADL, never hand-duplicated) is the same one
 // 006 §1 cites.
 //
+// AE_FOR_EACH (below) is a self-contained reimplementation of the same variadic-counting
+// preprocessor trick `quark/core/describe.hpp`'s own QUARK_FOR_EACH uses -- this file used to
+// `#include "quark/core/describe.hpp"` purely to borrow that one macro (ADR-037's Quark-usage sweep,
+// 2026-08-13, found it was the file's ONLY Quark dependency: no Described/quark_describe/actor
+// coupling anywhere else here). Since the trick is generic preprocessor plumbing with zero
+// dependency on anything else in that header, copying it locally removes the include entirely
+// rather than dragging in the whole Quark submodule for one macro.
+//
 // Field types are read via decltype(declval<Type&>().member) -- no instance is constructed, so
 // Args/Reply types need no default constructor.  "required" is derived structurally: a
 // std::optional<T> member is not required, everything else is -- the RFC's own `int max_results =
@@ -35,11 +43,39 @@
 #include <utility>
 #include <vector>
 
-#include "quark/core/describe.hpp"  // reused only for its QUARK_FOR_EACH variadic-expansion macro
-
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/fixed_string.hpp"
 #include "agentengine/core/json_value.hpp"
+
+// Variadic FOR_EACH over up to 16 plain tokens (member names) -- see file banner for why this is
+// copied here rather than pulled in from quark/core/describe.hpp. The QUARK_FE_EXPAND-style wrapper
+// is kept (not simplified away) because it is specifically what makes this correct under MSVC's
+// non-conforming preprocessor, which this project targets (CLAUDE.md's Windows/MSVC build).
+#define AE_FE_EXPAND(x) x
+#define AE_FE_0(WHAT)
+#define AE_FE_1(WHAT, X) WHAT(X)
+#define AE_FE_2(WHAT, X, ...) WHAT(X) AE_FE_EXPAND(AE_FE_1(WHAT, __VA_ARGS__))
+#define AE_FE_3(WHAT, X, ...) WHAT(X) AE_FE_EXPAND(AE_FE_2(WHAT, __VA_ARGS__))
+#define AE_FE_4(WHAT, X, ...) WHAT(X) AE_FE_EXPAND(AE_FE_3(WHAT, __VA_ARGS__))
+#define AE_FE_5(WHAT, X, ...) WHAT(X) AE_FE_EXPAND(AE_FE_4(WHAT, __VA_ARGS__))
+#define AE_FE_6(WHAT, X, ...) WHAT(X) AE_FE_EXPAND(AE_FE_5(WHAT, __VA_ARGS__))
+#define AE_FE_7(WHAT, X, ...) WHAT(X) AE_FE_EXPAND(AE_FE_6(WHAT, __VA_ARGS__))
+#define AE_FE_8(WHAT, X, ...) WHAT(X) AE_FE_EXPAND(AE_FE_7(WHAT, __VA_ARGS__))
+#define AE_FE_9(WHAT, X, ...) WHAT(X) AE_FE_EXPAND(AE_FE_8(WHAT, __VA_ARGS__))
+#define AE_FE_10(WHAT, X, ...) WHAT(X) AE_FE_EXPAND(AE_FE_9(WHAT, __VA_ARGS__))
+#define AE_FE_11(WHAT, X, ...) WHAT(X) AE_FE_EXPAND(AE_FE_10(WHAT, __VA_ARGS__))
+#define AE_FE_12(WHAT, X, ...) WHAT(X) AE_FE_EXPAND(AE_FE_11(WHAT, __VA_ARGS__))
+#define AE_FE_13(WHAT, X, ...) WHAT(X) AE_FE_EXPAND(AE_FE_12(WHAT, __VA_ARGS__))
+#define AE_FE_14(WHAT, X, ...) WHAT(X) AE_FE_EXPAND(AE_FE_13(WHAT, __VA_ARGS__))
+#define AE_FE_15(WHAT, X, ...) WHAT(X) AE_FE_EXPAND(AE_FE_14(WHAT, __VA_ARGS__))
+#define AE_FE_16(WHAT, X, ...) WHAT(X) AE_FE_EXPAND(AE_FE_15(WHAT, __VA_ARGS__))
+
+#define AE_FE_GET(_1, _2, _3, _4, _5, _6, _7, _8, _9, _10, _11, _12, _13, _14, _15, _16, NAME, ...) \
+    NAME
+#define AE_FOR_EACH(WHAT, ...)                                                                     \
+    AE_FE_EXPAND(AE_FE_GET(__VA_ARGS__, AE_FE_16, AE_FE_15, AE_FE_14, AE_FE_13, AE_FE_12, AE_FE_11, \
+                            AE_FE_10, AE_FE_9, AE_FE_8, AE_FE_7, AE_FE_6, AE_FE_5, AE_FE_4,         \
+                            AE_FE_3, AE_FE_2, AE_FE_1)(WHAT, __VA_ARGS__))
 
 namespace agentengine {
 
@@ -413,9 +449,8 @@ result<T> from_json(json::Value const& v) {
 
 }  // namespace agentengine::schema
 
-// AE_JSON_SCHEMA(Type, member1, member2, ...) -- up to 16 members (QUARK_FOR_EACH's own limit;
-// quark/core/describe.hpp is reused here rather than re-deriving the same variadic-counting
-// preprocessor machinery, per 006 §1's explicit "Quark 016's one-describe discipline" citation).
+// AE_JSON_SCHEMA(Type, member1, member2, ...) -- up to 16 members (AE_FOR_EACH's own limit, matching
+// its own quark/core/describe.hpp precedent this file's banner explains).
 // Expands to a `ae_json_schema(type_tag<Type>)` free function found by ADL from type_fragment<T>().
 //
 // AE_JSON_SCHEMA_FIELD_ cannot reference `Type` directly: it is a macro parameter of the
@@ -444,13 +479,13 @@ result<T> from_json(json::Value const& v) {
     inline std::string ae_json_schema(::agentengine::schema::type_tag<Type>) {               \
         using AeJsonSchemaSelf = Type;                                                       \
         ::agentengine::schema::ObjectBuilder ob;                                             \
-        QUARK_FOR_EACH(AE_JSON_SCHEMA_FIELD_, __VA_ARGS__)                                   \
+        AE_FOR_EACH(AE_JSON_SCHEMA_FIELD_, __VA_ARGS__)                                   \
         return ob.build();                                                                   \
     }                                                                                        \
     inline ::agentengine::json::Value ae_to_json(Type const& self) {                         \
         using AeJsonSchemaSelf = Type;                                                       \
         ::agentengine::schema::ToJsonBuilder ae_tb;                                          \
-        QUARK_FOR_EACH(AE_JSON_TO_FIELD_, __VA_ARGS__)                                       \
+        AE_FOR_EACH(AE_JSON_TO_FIELD_, __VA_ARGS__)                                       \
         return ae_tb.build();                                                                \
     }                                                                                        \
     inline ::agentengine::result<Type> ae_from_json(::agentengine::json::Value const& value,  \
@@ -461,6 +496,6 @@ result<T> from_json(json::Value const& v) {
                 "expected a JSON object for " #Type, "json.expected_object"});               \
         }                                                                                     \
         Type out{};                                                                          \
-        QUARK_FOR_EACH(AE_JSON_FROM_FIELD_, __VA_ARGS__)                                     \
+        AE_FOR_EACH(AE_JSON_FROM_FIELD_, __VA_ARGS__)                                     \
         return out;                                                                          \
     }
