@@ -6,10 +6,34 @@ shape of the project.
 
 **Legend:** 🔴 blocks a v1 decision · 🟠 needed before implementation of its area · 🟡 can wait
 
-**No open cross-cutting questions remain as of 2026-08-11.** OQ-1 through OQ-18 are all resolved
-(most recently OQ-18). New questions are added here as they're identified; per-RFC open questions
-that don't change the shape of the project stay in their own RFC's §Open questions and are never
-promoted here by default.
+**One open cross-cutting question as of 2026-08-13: OQ-19.** OQ-1 through OQ-18 are all resolved. New
+questions are added here as they're identified; per-RFC open questions that don't change the shape of
+the project stay in their own RFC's §Open questions and are never promoted here by default.
+
+---
+
+## Open
+
+### OQ-19 — Where does an agent-executor's `CapabilitySet` come from? 🟠
+
+`executor_kind::agent` (014 §3/§7) is real at the graph-declaration layer but structurally refused at
+execution (`check_workflow_executable()`, `workflow/graph.hpp:431`) — no runtime bridge wraps a real
+`AgentSession` as a workflow node yet. Full gap analysis, current-state citations, and a source-grounded
+study of how MAF (.NET) built the equivalent bridge:
+`docs/planning/agent-as-workflow-executor-gap.md`, `docs/research/2026-08-13-maf-agent-as-workflow-executor.md`.
+A design draft exists and has already been red-teamed once:
+`docs/planning/agent-as-workflow-executor-design-draft.md` — the first draft's "no core-seam change
+needed" claim was FALSE against real code (a genuine checkpoint/resume amnesia bug and a genuine
+concurrent double-resume race, both FATAL as originally scoped); read it before implementing.
+
+MAF's own design gives no precedent for this question — it has no in-process capability/authority
+system analogous to `CapabilitySet`/`EffectContext::capabilities`. A future ADR must decide: does an
+agent-executor's capability ceiling come from the workflow's own declaration (analogous to a tool's
+`capability_ceiling`), a per-executor binding-time grant, or something derived from the invoking run's
+principal? Blocks 014 §3's `agent`-kind executor and, transitively, honest "multi-agent orchestration"
+(as opposed to multi-*function*-node orchestration with a model call inside one function, which is all
+that's demonstrated today, per the gap doc's `examples/16_group_chat_live.cpp` citation). **Explicit
+project-owner direction (2026-08-13): document only, do not implement yet.**
 
 ---
 
