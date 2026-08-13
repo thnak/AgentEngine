@@ -4,6 +4,47 @@
 not itself a spec or ADR — every finding below still needs its own ADR before anything is built
 against it, per the process this document's own findings confirm the project actually follows.
 
+**Update (2026-08-13, status only — the body below is unedited, per this doc's own "verbatim...
+unedited except this header" convention):** two real-code events since this run change two rows'
+status. Neither was re-derived from scratch here — both are cross-checked against the actual ADRs
+that landed, matching this doc's own evidence discipline.
+
+- **Gap 8 (naming-lint namespace bug) is CLOSED.** Its suggested title,
+  `naming-lint-namespace-coverage-and-vocabulary-reconciliation`, matches
+  `decisions/ADR-025-naming-lint-namespace-scope-and-027-vocabulary-diagram.md` (Judged) — confirmed
+  the exact bug this row named (`tools/naming_lint.py` matching the literal string `"agentengine"`
+  only, blind to `trust::`/`sandbox::`/`workflow::`) and fixed the scanner. That ADR's own text is
+  explicit that the ~263-name BULK RECONCILIATION against 027 §2-4 is deliberately NOT done in the
+  same change (sequencing decision, not an oversight) — so "gap 8 closed" means the scanner is fixed
+  and honestly failing against the real surface, not that every unlisted name has been triaged yet.
+- **Gap 23 (milestone-status doc drift) is CLOSED.** Its own suggested title,
+  `milestone-status-doc-accuracy-and-drift-lint`, is exactly what shipped as
+  `decisions/ADR-026-milestone-status-doc-accuracy-and-drift-lint.md` (Judged) — the CLAUDE.md/
+  README.md/marketing-site corrections and `tools/milestone_status_lint.py` this row called for are
+  real. A separate, unrelated pass (2026-08-13, the post-ADR-037 Quark-mention sweep) additionally
+  corrected residual staleness this row didn't originally scope (RFC-body present-tense Quark claims,
+  code-comment banners) — see `decisions/README.md`'s own ADR-037 row for that sweep's own accounting.
+- **Gap 1 (network listener) is REDIRECTED, not closed — and its own recommended approach is now
+  explicitly rejected.** `decisions/ADR-039-inbound-transport-host-pluggable.md` (Proposed,
+  2026-08-13) supersedes ADR-021 §3–8/ADR-022 in full: it does NOT "build the already-Judged
+  listener/TLS/parser now" (this row's own recommendation) — it accepts that AgentEngine builds no
+  first-party listener at all, ever, matching MAF/OpenAI Agents SDK precedent neither this audit nor
+  ADR-021/022 had checked against. Two things this row named ARE independently addressed inside
+  ADR-039: principal propagation (closed via a real, proven `trust::principal_from_bearer_claims()`
+  bridge plus a session-scoped, not per-call, `Principal` binding contract) and the same **A2A
+  cross-tenant task-history leak** this audit's own transcript found — ADR-039 §3d independently
+  re-derives it from current code (`a2a/server.hpp`'s own comment: "no principal/authorization
+  boundary in this transport-agnostic dispatcher yet") and names it as an explicit, not-yet-closed
+  residual, not a silently dropped one.
+- **The other 21 gaps below were NOT re-verified this pass.** They still reflect the 2026-08-10
+  snapshot. ADR-037 (Quark removal, 2026-08-13) touched large parts of the tree these gaps cite by
+  file:line — the underlying LOGIC most of these findings describe (capability/taint/sandbox/memory
+  behavior) is independent of the actor-engine substrate ADR-037 replaced, so the findings themselves
+  are not expected to have been invalidated by it, but exact file:line citations in the full per-gap
+  transcripts may no longer resolve to the same lines, or even the same file (e.g. anything under the
+  old `core/agent_session.hpp`, deleted by ADR-037, now lives under `rt/agent_session.hpp`). Re-verify
+  citations before acting on any of the remaining 21, don't assume they still resolve as written.
+
 Produced by a 5-stage multi-agent workflow: 9 discovery agents swept the codebase by
 milestone/RFC cluster plus a dedicated ADR-conformance sweep and a roadmap-claims-vs-reality
 sweep, seeded with 7 gaps already known from the Milestone 7 Phase G audit
@@ -35,14 +76,14 @@ needs the full reasoning behind a specific line item below, not just the one-lin
 
 | # | Title | Severity | Verdict | Recommended approach (one line) |
 |---|---|---|---|---|
-| 1 | No real network listener despite ADR-021/022 deciding its shape | **High** | needs_adr | Build the already-Judged listener/TLS/parser now; gate wiring it to McpServer/A2aServer on a new ADR that fixes principal propagation and closes the A2A cross-tenant task-history leak. |
-| 8 | 027's naming-lint gate fails on main (76 unlisted + 112 suppressed names) | **High** | needs_adr | Fix the scanner's namespace-matching bug first — it's blind to ~40 files under `agentengine::{trust,sandbox,workflow}`, the highest-risk modules — before any bulk table reconciliation, or "G3 satisfied" becomes a false claim. |
+| 1 | No real network listener despite ADR-021/022 deciding its shape | **High** | ~~needs_adr~~ **[2026-08-13: REDIRECTED, ADR-039 Proposed]** | ~~Build the already-Judged listener/TLS/parser now~~ — superseded: ADR-039 rejects building one at all; principal propagation and the A2A cross-tenant leak this row named are both independently addressed there (see header update). |
+| 8 | 027's naming-lint gate fails on main (76 unlisted + 112 suppressed names) | **High** | ~~needs_adr~~ **[2026-08-13: CLOSED, ADR-025 Judged]** | Scanner fixed as recommended; bulk table reconciliation against 027 §2-4 deliberately deferred by that same ADR, still open. |
 | 10 | Linux native-jail gives the guest full host FS read/write + process visibility | **High** | needs_adr | Build pivot_root+bind-mount containment, but the cited path-validation primitive is ADR-014's already-rejected, TOCTOU-vulnerable design — must use the accepted open-then-verify primitive, fix a repeated-exec `rmdir` bug that breaks a currently-passing test, and narrow the blanket `/usr` bind-mount. |
 | 12 | ShellRunner write builtins unconditionally deny writes under any quota-capped FsWrite grant | **High** | needs_adr | The gate-only fix would flip a safe denial bug into a silent, unbounded quota bypass (MediatedFileSystemAdapter never enforces quota on writes) — must ship the gate fix and live usage enforcement together. |
 | 15 | AgentSession acks a turn before it's durable; no `at_most_once_ack` escape hatch | **High** | needs_adr | Add an `AckPolicy` (default `AtMostOnceAck`, opt-in `RequireDurableAck`), but the proposed insertion point sits *after* `run_finished` is already emitted (breaks a tested invariant), and the required type-erased Store seam doesn't exist yet. |
 | 16 | `ContextContribution.instructions` computed but silently dropped before reaching the model | **High** | needs_adr | Route instructions through the existing `role::system` wire channel — but that channel is taint-blind end-to-end today (tainted memory content already rides it unchecked by both backends); must close that first. |
 | 19 | Image/Audio/Video/File (and Anthropic Reasoning) content silently dropped outbound despite declared capability bits | **High** | needs_adr | Split into Phase 1 (fail-closed capability gate + symmetric drop-signal, implementable now) and Phase 2 (real wire encoding), which is blocked on RFC 019's blob-store seam — which does not exist anywhere in the tree. |
-| 23 | CLAUDE.md/README claim Milestones 7-9 "have not started" though M7 is substantially built | **High** | needs_adr | Correct the docs and add a CI lint modeled on `naming_lint.py` — but a third, worse-offending location exists (the marketing site) and the proposed lint's regex self-collides with its own corrected text; both must be fixed before landing. |
+| 23 | CLAUDE.md/README claim Milestones 7-9 "have not started" though M7 is substantially built | **High** | ~~needs_adr~~ **[2026-08-13: CLOSED, ADR-026 Judged]** | Docs corrected, lint (`tools/milestone_status_lint.py`) shipped and wired into CI as recommended. |
 | 2 | AgentMetadata/Workflow have no description/version fields | Medium | needs_adr | Add optional fields wired through 5 call sites — sound, but must close a naming collision with `Tool<>`'s own `description` static and state the I6 equivalence guarantee honestly (proven only for the maintained corpus, not structurally). |
 | 3 | No generic JSON Schema 2020-12 validator | Medium | needs_adr | Build `core/json_schema_validator.hpp` with the proposed keyword subset/budgets — but wire it at `invoke_tool()`'s InvokeFn construction site (not the MCP dispatcher), add the missing outbound client-side strict check, and close a regex-DoS/`$ref`-cycle budget gap. |
 | 4 | No tool/capability name-keyed registry | Medium | needs_adr | The submitted proposal was placeholder text with no real content — a real design must resolve I2 capability-ceiling binding, I3 resolution timing, namespace squatting, and WASM-ABI conformance from scratch. |
@@ -98,9 +139,11 @@ Pulled from the individual approaches — these are explicitly out-of-scope item
 
 ## What to Do Next, Ordered by Priority
 
-1. **Fix the naming-lint namespace bug (gap 8) before anything else.** It is currently blind to `agentengine::trust`, `::sandbox`, and `::workflow` — the exact modules the other high-severity findings live in. Any other reconciliation work risks being validated by a broken gate, and 027 §6's namespace diagram needs updating to match reality first.
+1. ~~**Fix the naming-lint namespace bug (gap 8) before anything else.**~~ **DONE (2026-08-13, ADR-025).**
 
-2. **Correct the milestone-status claim (gap 23) immediately** — it's the cheapest fix on the list (docs + a CI lint) and it's actively misleading anyone using CLAUDE.md/README as a status source. Fix the marketing site's `ApiProtocolStatus.tsx` in the same pass (worse-offending, currently claims *zero* implementation exists for MCP/A2A/AG-UI) and test the proposed lint regex against its own corrected paragraph before wiring it into CI.
+2. ~~**Correct the milestone-status claim (gap 23) immediately**~~ **DONE (2026-08-13, ADR-026 + the
+   2026-08-13 post-ADR-037 Quark-mention sweep, which also caught the marketing-site drift this item
+   named).**
 
 3. **Treat the three sandbox/native-jail findings (10, 11, 12) as the security-critical core of this audit.** These are the most direct threats to I2 ("no ambient authority"): Linux gives guests the whole host filesystem and process table, ShellRunner's quota gate is inverted, and the Windows fix is blocked on an unverified privilege assumption. Spike the Windows privilege question empirically first (cheap, fast, gates the whole approach), then take Linux and ShellRunner through design → red-team → prove → judge together since they share the "gate-only fix creates a silent bypass" failure pattern.
 
