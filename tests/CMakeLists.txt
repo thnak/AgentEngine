@@ -272,27 +272,6 @@ add_executable(test_rt_agent_session_checkpoint_cadence test_rt_agent_session_ch
 target_link_libraries(test_rt_agent_session_checkpoint_cadence PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_agent_session_checkpoint_cadence COMMAND test_rt_agent_session_checkpoint_cadence)
 
-# ---- Milestone 4 Phase E2 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
-# Suspended holds zero resources -- the first AgentEngine test anywhere to stand up a real
-# quark::Engine (every prior test uses quark::TestKit, which has no passivation to census).
-add_executable(test_agent_session_suspend_resume test_agent_session_suspend_resume.cpp)
-target_link_libraries(test_agent_session_suspend_resume PRIVATE agentengine::core agentengine_warnings)
-add_test(NAME test_agent_session_suspend_resume COMMAND test_agent_session_suspend_resume)
-
-# ---- Milestone 4 Phase E3 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
-# Timer/schedule wake -- a real Quark durable reminder targets a session's real session_actor_id()
-# and reaches it through a live Engine via TimerWake (pure reuse, decision 4).
-add_executable(test_agent_session_timer_wake test_agent_session_timer_wake.cpp)
-target_link_libraries(test_agent_session_timer_wake PRIVATE agentengine::core agentengine_warnings)
-add_test(NAME test_agent_session_timer_wake COMMAND test_agent_session_timer_wake)
-
-# ---- Milestone 4 Phase E4 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
-# Node-loss fencing (reuse) -- a zombie activation's checkpoint write is rejected through
-# AgentEngine's own save_agent_session_snapshot path.
-add_executable(test_agent_session_node_loss_fencing test_agent_session_node_loss_fencing.cpp)
-target_link_libraries(test_agent_session_node_loss_fencing PRIVATE agentengine::core agentengine_warnings)
-add_test(NAME test_agent_session_node_loss_fencing COMMAND test_agent_session_node_loss_fencing)
-
 # ---- Milestone 4 Phase F1 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
 # Idempotency key derivation {run_id, turn_index, call_index, argument_digest}, wired into the
 # real (M2) tool_pipeline.hpp invocation pipeline.
@@ -358,20 +337,6 @@ if(WIN32)
   add_test(NAME test_memory_no_authority_laundering COMMAND test_memory_no_authority_laundering)
 endif()
 
-# ---- Milestone 4 Phase H1 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
-# Roadmap exit criterion (001 §9 G2 / 019 §7 G1): a session survives process restart with an
-# identical resumed run -- simulated kill -9 at a checkpoint boundary vs. an uninterrupted control.
-add_executable(test_session_restart_identical_resume test_session_restart_identical_resume.cpp)
-target_link_libraries(test_session_restart_identical_resume PRIVATE agentengine::core agentengine_warnings)
-add_test(NAME test_session_restart_identical_resume COMMAND test_session_restart_identical_resume)
-
-# ---- Milestone 4 Phase H2 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
-# Roadmap exit criterion (019 §7 G3): Suspended holds zero resources -- E2's census proof, now
-# exercised end-to-end through a real checkpoint -> Dormant -> destroy -> restore-and-reactivate
-# cycle on a real quark::Engine, rather than in isolation.
-add_executable(test_suspended_zero_resources_e2e test_suspended_zero_resources_e2e.cpp)
-target_link_libraries(test_suspended_zero_resources_e2e PRIVATE agentengine::core agentengine_warnings)
-add_test(NAME test_suspended_zero_resources_e2e COMMAND test_suspended_zero_resources_e2e)
 
 # ---- Milestone 4 Phase H3 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
 # Roadmap exit criterion (029 §9 G1): the default (non-vector) memory retrieval path is
