@@ -78,13 +78,21 @@
 #include "agentengine/core/stream.hpp"
 #include "agentengine/core/task.hpp"
 #include "agentengine/core/tool_pipeline.hpp"  // IdempotencyKey
-
-#include "quark/core/deadline.hpp"    // quark::monotonic_now_ns()
-#include "quark/core/governance.hpp"  // quark::CircuitBreaker, quark::Admit
+#include "agentengine/rt/circuit_breaker.hpp"  // rt::CircuitBreaker, rt::Admit (ADR-037 Phase 2)
 
 namespace agentengine {
 
 namespace model_call_gateway_detail {
+
+// Replaces `quark::monotonic_now_ns()` (ADR-037): a plain monotonic ns-since-epoch reading,
+// std-only, no PAL indirection needed here -- this file's only use is feeding `rt::CircuitBreaker`'s
+// `now_ns` parameter, which only ever compares two readings from the SAME clock for elapsed time,
+// never a real wall-clock timestamp.
+[[nodiscard]] inline std::int64_t monotonic_now_ns() noexcept {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
 
 // ADR-036 red-team: the retry-relevant split `chat()`'s own `ae::failure_class::transient` scoping
 // already makes (004 §4: retry applies to Transient only), re-expressed against `quark::errc`'s
@@ -99,8 +107,10 @@ namespace model_call_gateway_detail {
 }  // namespace model_call_gateway_detail
 
 // Retry (F1-shaped, reusing `RetryPolicy` verbatim) + circuit-breaking (F2-shaped, reusing
-// `BreakerConfig` verbatim, one REAL `quark::CircuitBreaker` PER backend -- 004 §4/decision 6's
-// breaker key is {provider, model, secret}, so a chain of N distinct backends needs N distinct
+// `BreakerConfig` verbatim, one REAL `rt::CircuitBreaker` (ADR-037 Phase 2 -- a faithful,
+// Quark-free port of `quark::CircuitBreaker`'s exact state machine, see rt/circuit_breaker.hpp's
+// own banner) PER backend -- 004 §4/decision 6's breaker key is {provider, model, secret}, so a
+// chain of N distinct backends needs N distinct
 // breakers, never one shared across the whole chain) + failover (tries Primary, then each Fallback
 // in declaration order, first success wins, stamps `ChatResponse::fallback_tier` -- same contract
 // `FailoverChatClient::chat()` already established) -- all through ONE real coroutine, `call()`.
@@ -198,12 +208,12 @@ private:
     // it simply exhausts this tier immediately, falling through to the next one (or the final
     // failure, if this was the last tier).
     template <class Backend>
-    task<result<ChatResponse>> attempt_with_retry(Backend& backend, quark::CircuitBreaker& breaker,
+    task<result<ChatResponse>> attempt_with_retry(Backend& backend, rt::CircuitBreaker& breaker,
                                                     ChatRequest const& request, EffectContext& ctx) {
         std::uint32_t attempts_used = 0;
         for (;;) {
-            quark::Admit const admit = breaker.on_send(quark::monotonic_now_ns());
-            if (admit == quark::Admit::Shed) {
+            rt::Admit const admit = breaker.on_send(model_call_gateway_detail::monotonic_now_ns());
+            if (admit == rt::Admit::Shed) {
                 co_return std::unexpected(
                     error{failure_class::transient, "circuit open, admission shed", "gateway.circuit_open"});
             }
@@ -218,7 +228,7 @@ private:
                 drained.failure = quark::error{quark::errc::internal, "gateway.usage_unavailable"};
             }
             ++attempts_used;
-            breaker.on_result(succeeded, quark::monotonic_now_ns());
+            breaker.on_result(succeeded, model_call_gateway_detail::monotonic_now_ns());
 
             if (succeeded) {
                 co_return ChatResponse{std::move(drained.accumulated), *drained.usage};
@@ -276,7 +286,7 @@ private:
     Primary primary_;
     std::tuple<Fallback...> fallbacks_;
     RetryPolicy retry_policy_;
-    std::vector<quark::CircuitBreaker> breakers_;  // index 0 = primary's, index I = fallbacks_[I-1]'s
+    std::vector<rt::CircuitBreaker> breakers_;  // index 0 = primary's, index I = fallbacks_[I-1]'s
     JitterSource jitter_;
 };
 
