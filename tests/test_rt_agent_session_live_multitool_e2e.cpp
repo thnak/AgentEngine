@@ -11,7 +11,7 @@
 //      messages}`, silently discarding `contribution->tools` -- a real session run had NEVER been
 //      able to present a tool declaration to a model, through any HistoryProviderT, ever. Fixed to
 //      forward `contribution->tools`; regression-proven offline in test_agent_session_real_backend.cpp
-//      (case "J1-R8").
+//      (case "J1-R8", now ported to test_rt_agent_session_real_backend.cpp's own "J1-R8").
 //   2. `openai::detail::translate_message` (protocol/openai/chat_client.hpp) tracked only ONE
 //      `tool_call_id` when a single AE `Message` carried multiple `ToolResult` content items -- the
 //      natural shape for resolving N parallel tool calls in ONE session turn (StartRun takes exactly
@@ -45,6 +45,17 @@
 // CREDENTIALS ARE NEVER COMPILED IN (018 §4) -- same environment-variable contract as
 // test_openrouter_live_e2e.cpp: AGENTENGINE_OPENROUTER_API_KEY (required, else SKIP),
 // AGENTENGINE_OPENROUTER_MODEL (optional), AGENTENGINE_OPENROUTER_HOST (optional).
+//
+// ADR-037: ported off `quark::TestKit<Session>`/`kit.ask<...>(...)` onto `agentengine::rt::AgentSession`
+// directly -- both live turns now go through a local `drive<T>()` helper (`agentengine::rt::task<T>`
+// resumed to completion inline), the same idiom every other `test_rt_agent_session*.cpp` file already
+// uses (see e.g. test_rt_agent_session_real_backend.cpp), instead of `block_on(kit.ask<...>(...))`
+// against a real actor mailbox. `emplace_chat_client()`/`initialize()`/`set_capabilities()` are called
+// directly on the session value -- there is no `kit.actor()` indirection left to go through. The four
+// tools, the `FourToolHistoryProvider` ContextProvider fixture, the prompts, and every assertion below
+// are unchanged: same behavior proven, no actor/mailbox left to stand it up. This file touches no
+// checkpoint/snapshot machinery (neither did the file it supersedes), so `save_agent_session_snapshot`/
+// `InMemorySessionStore` (rt/agent_session.hpp's own Slice 2) are not involved here.
 
 #ifdef AGENTENGINE_WITH_HTTPS
 
@@ -57,16 +68,16 @@
 #include <string>
 #include <vector>
 
-#include "quark/core/testkit.hpp"
-
-#include "agentengine/core/agent_session.hpp"
 #include "agentengine/core/json_schema.hpp"
-#include "agentengine/core/tool_call_extraction.hpp"
 #include "agentengine/protocol/openai/chat_client.hpp"
+#include "agentengine/rt/agent_session.hpp"
 #include "agentengine/trust/principal.hpp"
 #include "agentengine/trust/secret.hpp"
 
 using namespace agentengine;
+using agentengine::rt::AgentSession;
+using agentengine::rt::NoSessionState;
+using agentengine::rt::StartRun;
 
 namespace {
 
@@ -83,6 +94,15 @@ void note(char const* label, std::string const& value) {
     std::fprintf(stderr, "  .. %s = %s\n", label, value.c_str());
 }
 
+// Same "safe here because nothing genuinely suspends externally" drive<T>() every other
+// test_rt_agent_session*.cpp file uses -- OpenAIChatClient::chat()'s own blocking socket I/O happens
+// as an ordinary synchronous call inside the coroutine body, never a real suspension point.
+template <class T>
+T drive(agentengine::rt::task<T> t) {
+    while (!t.done()) t.resume();
+    return t.take_value();
+}
+
 [[nodiscard]] std::string env_or(char const* name, std::string fallback) {
     char const* v = std::getenv(name);
     return (v && *v) ? std::string(v) : std::move(fallback);
@@ -96,7 +116,7 @@ constexpr char const* kSecretName = "openrouter-api-key";
 constexpr int kMaxRounds = 6;  // AgentSession's own max_turns -- fails the run (not hang) if it never
                                 // converges to plain Text; this file only ever OBSERVES via one ask now.
 
-// `AgentSession::handle()` (agent_session.hpp) now resolves the whole multi-round tool conversation
+// `AgentSession::start_run()` (rt/agent_session.hpp) resolves the whole multi-round tool conversation
 // INTERNALLY -- there is no external round loop left in this file to inspect each round's raw
 // `ToolCall`s/arguments directly (see agent_session.hpp's own design/red-team record,
 // ADR-027-agent-session-tool-call-loop.md). Structural facts this file still needs to prove --
@@ -259,7 +279,7 @@ int main() {
     char const* key_env = std::getenv("AGENTENGINE_OPENROUTER_API_KEY");
     if (!key_env || !*key_env) {
         std::fprintf(stderr,
-                     "test_agent_session_live_multitool_e2e: SKIPPED -- "
+                     "test_rt_agent_session_live_multitool_e2e: SKIPPED -- "
                      "AGENTENGINE_OPENROUTER_API_KEY is not set.\n"
                      "  Run tools/run-live-provider-tests.ps1, or set the variable yourself, to "
                      "exercise a real provider.\n");
@@ -268,7 +288,7 @@ int main() {
 
     std::string const model = env_or("AGENTENGINE_OPENROUTER_MODEL", kDefaultModel);
     std::string const host = env_or("AGENTENGINE_OPENROUTER_HOST", kDefaultHost);
-    std::fprintf(stderr, "test_agent_session_live_multitool_e2e: host=%s model=%s\n", host.c_str(),
+    std::fprintf(stderr, "test_rt_agent_session_live_multitool_e2e: host=%s model=%s\n", host.c_str(),
                  model.c_str());
 
     InMemorySecretStore store;
@@ -285,21 +305,21 @@ int main() {
     using Session = AgentSession<RealClient, NoSessionState, FourToolHistoryProvider>;
 
     // ==================== MT-1: sequential dependency + distractor-tool discipline =================
-    // `AgentSession::handle()` now resolves the whole tool chain internally (agent_session.hpp) --
-    // one `StartRun` ask returns the FINAL converged response, not an intermediate round. Structural
-    // facts this test needs (which tools ran, the exact threaded celsius value) are recorded from
-    // inside each tool's own `invoke()` via `called_tools_log()`/`*_celsius_log()` above.
+    // `AgentSession::start_run()` now resolves the whole tool chain internally (rt/agent_session.hpp)
+    // -- one `StartRun` call returns the FINAL converged response, not an intermediate round.
+    // Structural facts this test needs (which tools ran, the exact threaded celsius value) are
+    // recorded from inside each tool's own `invoke()` via `called_tools_log()`/`*_celsius_log()` above.
     {
         called_tools_log().clear();
         weather_returned_celsius_log().reset();
         convert_arg_celsius_log().reset();
 
-        quark::TestKit<Session> kit;
-        kit.actor().emplace_chat_client(host, kHttpsPort, model, SecretRef{kSecretName}, caps, store,
-                                         kPathPrefix);
-        kit.actor().initialize("mt1-session", Principal{"live-e2e-principal", ""}, /*token_budget=*/std::nullopt,
-                                /*max_turns=*/static_cast<std::uint64_t>(kMaxRounds));
-        kit.actor().set_capabilities(&held);
+        Session session;
+        session.emplace_chat_client(host, kHttpsPort, model, SecretRef{kSecretName}, caps, store,
+                                     kPathPrefix);
+        session.initialize("mt1-session", Principal{"live-e2e-principal", ""}, /*token_budget=*/std::nullopt,
+                            /*max_turns=*/static_cast<std::uint64_t>(kMaxRounds));
+        session.set_capabilities(&held);
 
         Message const input = user_message(
             "Step 1: call get_weather for Seattle. Step 2: once you have that result, call "
@@ -308,7 +328,8 @@ int main() {
             "weather. Step 3: after both calls, state the final Fahrenheit temperature in one "
             "sentence. Do not skip either tool call.");
 
-        quark::result<AgentResponse> resp = kit.ask<AgentResponse>(StartRun{input});
+        agentengine::result<agentengine::rt::AgentResponse> resp =
+            drive(session.start_run(StartRun{input}));
         check(resp.has_value(),
               "MT1: the session converges (resolves the whole tool chain internally, within "
               "max_turns) against the real provider");
@@ -340,8 +361,8 @@ int main() {
     // ==================== MT-2: forced PARALLEL tool calls, resolved internally =====================
     // What's no longer externally observable under the internal-loop architecture: the STRICT "both
     // calls landed in one round, as two distinct ToolCall content items" property this test used to
-    // assert directly on a raw intermediate response -- that response never leaves `handle()` now. A
-    // named, deliberate narrowing (proving it again would mean consuming `enable_event_stream()`'s
+    // assert directly on a raw intermediate response -- that response never leaves `start_run()` now.
+    // A named, deliberate narrowing (proving it again would mean consuming `enable_event_stream()`'s
     // `tool_call_started` events between two `turn_started` events, not wired up this pass), not
     // silently dropped coverage. What MT-2 still proves: the model, explicitly instructed to call
     // both tools "together, in this SAME response," genuinely reaches for BOTH real tools, and the
@@ -351,17 +372,18 @@ int main() {
     {
         called_tools_log().clear();
 
-        quark::TestKit<Session> kit;
-        kit.actor().emplace_chat_client(host, kHttpsPort, model, SecretRef{kSecretName}, caps, store,
-                                         kPathPrefix);
-        kit.actor().initialize("mt2-session", Principal{"live-e2e-principal", ""}, /*token_budget=*/std::nullopt,
-                                /*max_turns=*/static_cast<std::uint64_t>(kMaxRounds));
-        kit.actor().set_capabilities(&held);
+        Session session;
+        session.emplace_chat_client(host, kHttpsPort, model, SecretRef{kSecretName}, caps, store,
+                                     kPathPrefix);
+        session.initialize("mt2-session", Principal{"live-e2e-principal", ""}, /*token_budget=*/std::nullopt,
+                            /*max_turns=*/static_cast<std::uint64_t>(kMaxRounds));
+        session.set_capabilities(&held);
 
-        quark::result<AgentResponse> resp = kit.ask<AgentResponse>(StartRun{user_message(
-            "You must call BOTH get_weather for \"Seattle\" AND get_time for \"Tokyo\" together, as "
-            "two separate tool calls issued in this SAME response -- not one after the other across "
-            "two turns. Do not answer with text yet; only issue both tool calls now.")});
+        agentengine::result<agentengine::rt::AgentResponse> resp = drive(session.start_run(StartRun{
+            user_message("You must call BOTH get_weather for \"Seattle\" AND get_time for \"Tokyo\" "
+                         "together, as two separate tool calls issued in this SAME response -- not one "
+                         "after the other across two turns. Do not answer with text yet; only issue "
+                         "both tool calls now.")}));
         check(resp.has_value(),
               "MT2: the session converges (resolves both real tool calls internally, however many "
               "rounds that takes) against the real provider");
@@ -370,8 +392,8 @@ int main() {
                   "MT2: after both calls are resolved internally, the session produces a final Text "
                   "answer -- the whole forced-parallel round trip completed end to end live");
         } else {
-            std::fprintf(stderr, "       error: %.*s\n",
-                         static_cast<int>(resp.error().detail.size()), resp.error().detail.data());
+            std::fprintf(stderr, "       error: %s (%s)\n", resp.error().message.c_str(),
+                         resp.error().code.c_str());
         }
 
         auto const& called_tools = called_tools_log();
@@ -383,10 +405,10 @@ int main() {
     }
 
     if (g_failures == 0) {
-        std::fprintf(stderr, "test_agent_session_live_multitool_e2e: ALL PASS\n");
+        std::fprintf(stderr, "test_rt_agent_session_live_multitool_e2e: ALL PASS\n");
         return 0;
     }
-    std::fprintf(stderr, "test_agent_session_live_multitool_e2e: %d FAILURE(S)\n", g_failures);
+    std::fprintf(stderr, "test_rt_agent_session_live_multitool_e2e: %d FAILURE(S)\n", g_failures);
     return 1;
 }
 

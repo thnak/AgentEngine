@@ -13,6 +13,18 @@
 // Every negative assertion below ("the canary never appears in X") is paired with a positive control
 // proving the canary really was exercised as a live credential first (J2-R1/R2) -- otherwise a scan
 // that finds nothing because the secret was never actually used would be a vacuous pass.
+//
+// ADR-037: ported off quark::TestKit<Session>/agentengine::core::AgentSession onto
+// agentengine::rt::AgentSession directly for the checkpoint leg (5) -- this test's own
+// drive<T>() runs session.start_run()'s returned rt::task<...> to completion inline (single-
+// threaded, deterministic; matching the drive<T>() idiom every other rt:: test in this suite already
+// uses) instead of kit.ask<...>(...) against a real actor mailbox. The old quark::InMemoryStore /
+// acquire_fence()-gated save_agent_session_snapshot(activation, store, actor, fence) call is replaced
+// by rt::InMemorySessionStore and the fence-free save_agent_session_snapshot(session, store) --
+// rt::AgentSession serializes concurrent snapshot access internally via its own session_mutex_
+// (AsyncMutex), so there is no separate fence token to acquire at the call site anymore. All other
+// legs of this file (positive control, recordings, error path, SecretLease redaction) were already
+// Quark-free and are untouched.
 
 #include <mbedtls/ctr_drbg.h>
 #include <mbedtls/entropy.h>
@@ -39,16 +51,13 @@
 #include <thread>
 #include <vector>
 
-#include "quark/core/activation.hpp"
-#include "quark/core/persistence.hpp"
-#include "quark/core/testkit.hpp"
-
-#include "agentengine/core/agent_session.hpp"
 #include "agentengine/core/chat_client.hpp"
 #include "agentengine/core/chat_recording.hpp"
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/recording_chat_client.hpp"
 #include "agentengine/protocol/openai/chat_client.hpp"
+#include "agentengine/rt/agent_session.hpp"
+#include "agentengine/rt/session_store.hpp"
 #include "agentengine/trust/principal.hpp"
 #include "agentengine/trust/secret.hpp"
 #include "support/run_task_sync.hpp"
@@ -56,6 +65,8 @@
 using namespace agentengine;
 
 namespace {
+
+namespace rt = agentengine::rt;
 
 int g_failures = 0;
 void check(bool cond, char const* what) {
@@ -65,6 +76,14 @@ void check(bool cond, char const* what) {
     } else {
         std::fprintf(stderr, "  ok: %s\n", what);
     }
+}
+
+// Same "safe here because nothing genuinely suspends externally" drive<T>() every other rt:: test in
+// this suite uses.
+template <class T>
+T drive(rt::task<T> t) {
+    while (!t.done()) t.resume();
+    return t.take_value();
 }
 
 // The planted canary -- distinctive enough that an accidental substring collision is not a realistic
@@ -466,19 +485,25 @@ int main() {
         }
     }
 
-    // ---- (5) Checkpoints (M4, real): AgentSessionRecord has no field that could carry the canary ----
-    // Named explicitly, not silently assumed: AgentSessionRecord's own QUARK_SERIALIZE field list
-    // (agent_session.hpp) is session_id/principal_id/principal_tenant_id/created_at_ns/updated_at_ns/
-    // deleted/run_counter/turn_index/open_interactions -- no ChatRequest/ChatResponse/SecretRef field
-    // exists anywhere in it, and Interaction (interaction.hpp) is interaction_id/run_id/reason/
-    // opened_at_ns/expires_at_ns -- also no content-carrying field. "Zero occurrences" holds by
-    // construction; this scans the REAL encoded snapshot bytes (not just the struct definition) to
-    // make that a verified fact, not an inference from reading the header.
+    // ---- (5) Checkpoints (M4, real; agentengine::rt::AgentSession per ADR-037): AgentSessionRecord --
+    // has no field that could carry the canary --------------------------------------------------------
+    // Named explicitly, not silently assumed: AgentSessionRecord's own field list (rt/agent_session.
+    // hpp) is session_id/principal_id/principal_tenant_id/deleted/run_counter/turn_index/
+    // open_interactions -- no ChatRequest/ChatResponse/SecretRef field exists anywhere in it, and
+    // Interaction (interaction.hpp) is interaction_id/run_id/reason/opened_at_ns/expires_at_ns -- also
+    // no content-carrying field. "Zero occurrences" holds by construction; this scans the REAL encoded
+    // snapshot bytes (not just the struct definition) to make that a verified fact, not an inference
+    // from reading the header. rt::InMemorySessionStore::load() hands back the exact bytes
+    // rt::save_agent_session_snapshot() wrote -- no fence token needed at this call site (unlike the
+    // old quark::InMemoryStore::acquire_fence()-gated path); rt::AgentSession serializes concurrent
+    // access to itself internally via session_mutex_ (I1, file banner of rt/agent_session.hpp).
     {
-        using Session = AgentSession<CannedChatClient>;
-        quark::TestKit<Session> kit;
-        kit.actor().initialize("s-canary-checkpoint", Principal{"p-test", ""});
-        auto r = kit.ask<AgentResponse>(StartRun{[] {
+        using Session = rt::AgentSession<CannedChatClient>;
+        Session session;
+        session.initialize("s-canary-checkpoint", Principal{"p-test", ""});
+        session.emplace_chat_client();
+
+        auto r = drive(session.start_run(rt::StartRun{[] {
             ContentItem item;
             item.value = Text{"hello"};
             item.origin = content_origin::user;
@@ -487,20 +512,18 @@ int main() {
             input.message_id = "m-1";
             input.content.push_back(item);
             return input;
-        }()});
+        }()}));
         check(r.has_value(), "J2: an ordinary (non-canary-touching) turn runs so there is a real "
                               "session to checkpoint");
 
-        quark::InMemoryStore snap_store;
-        auto const id = session_actor_id(kit.actor().session_id());
-        auto const fence = snap_store.acquire_fence(id);
-        auto saved = save_agent_session_snapshot(kit.activation(), snap_store, kit.actor(), fence);
+        rt::InMemorySessionStore snap_store;
+        auto saved = drive(rt::save_agent_session_snapshot(session, snap_store));
         check(saved.has_value(), "J2: the session snapshot saves");
 
-        auto raw = snap_store.load_snapshot(id);
-        check(raw.has_value() && raw->has_value(), "J2: the raw snapshot record is readable back");
-        if (raw && raw->has_value()) {
-            check(!contains((*raw)->record, kCanary),
+        auto raw = snap_store.load(session.session_id());
+        check(raw.has_value(), "J2: the raw snapshot record is readable back");
+        if (raw.has_value()) {
+            check(!contains(*raw, kCanary),
                   "J2-R6: the canary secret never appears in the REAL encoded checkpoint bytes -- "
                   "AgentSessionRecord structurally has no field capable of carrying request/response/"
                   "secret content (verified against its own field list, not just by construction)");
@@ -510,9 +533,9 @@ int main() {
     mbedtls_pk_free(&leaf_key);
 
     if (g_failures == 0) {
-        std::fprintf(stderr, "test_secret_hygiene_canary_scan: ALL PASS\n");
+        std::fprintf(stderr, "test_rt_secret_hygiene_canary_scan: ALL PASS\n");
         return 0;
     }
-    std::fprintf(stderr, "test_secret_hygiene_canary_scan: %d FAILURE(S)\n", g_failures);
+    std::fprintf(stderr, "test_rt_secret_hygiene_canary_scan: %d FAILURE(S)\n", g_failures);
     return 1;
 }

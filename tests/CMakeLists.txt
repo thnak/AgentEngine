@@ -477,12 +477,14 @@ if(AGENTENGINE_WITH_HTTPS)
   # the live proof for two real bugs this file's own prerequisite fixed (see its own top comment):
   # AgentSession silently dropping declared tools from its outbound request, and the OpenAI backend
   # mishandling a Message carrying multiple ToolResult items (the parallel-tool-call reply shape).
-  add_executable(test_agent_session_live_multitool_e2e test_agent_session_live_multitool_e2e.cpp)
-  target_link_libraries(test_agent_session_live_multitool_e2e PRIVATE
+  # ADR-037: ported off quark::TestKit<Session> onto agentengine::rt::AgentSession directly --
+  # supersedes the old test_agent_session_live_multitool_e2e.cpp (removed).
+  add_executable(test_rt_agent_session_live_multitool_e2e test_rt_agent_session_live_multitool_e2e.cpp)
+  target_link_libraries(test_rt_agent_session_live_multitool_e2e PRIVATE
     agentengine::core agentengine::provider_http_client agentengine_warnings
     MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
-  add_test(NAME test_agent_session_live_multitool_e2e COMMAND test_agent_session_live_multitool_e2e)
-  set_tests_properties(test_agent_session_live_multitool_e2e PROPERTIES LABELS "live-network" TIMEOUT 300)
+  add_test(NAME test_rt_agent_session_live_multitool_e2e COMMAND test_rt_agent_session_live_multitool_e2e)
+  set_tests_properties(test_rt_agent_session_live_multitool_e2e PROPERTIES LABELS "live-network" TIMEOUT 300)
 
   # ---- ADR-016 gates G1-G4: host-initiated provider egress address policy + transport --------------
   # The positive control for ADR-016. It relaxes the SSRF blocked-range table on the provider path
@@ -565,12 +567,14 @@ if(AGENTENGINE_WITH_HTTPS)
     # model over OpenRouter -- the behavioural proof that a mounted skill's advertisement actually
     # reaches and influences a real model's real tool selection, not just the outbound wire bytes
     # (test_agent_session_skills_real_backend.cpp's own canned-server scope).
-    add_executable(test_agent_session_skills_live_e2e test_agent_session_skills_live_e2e.cpp)
-    target_link_libraries(test_agent_session_skills_live_e2e PRIVATE
+    # ADR-037: ported off quark::TestKit<Session> onto agentengine::rt::AgentSession directly --
+    # supersedes the old test_agent_session_skills_live_e2e.cpp (removed).
+    add_executable(test_rt_agent_session_skills_live_e2e test_rt_agent_session_skills_live_e2e.cpp)
+    target_link_libraries(test_rt_agent_session_skills_live_e2e PRIVATE
       agentengine::core agentengine::provider_http_client agentengine::worktree_store agentengine_warnings
       MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
-    add_test(NAME test_agent_session_skills_live_e2e COMMAND test_agent_session_skills_live_e2e)
-    set_tests_properties(test_agent_session_skills_live_e2e PROPERTIES LABELS "live-network" TIMEOUT 300)
+    add_test(NAME test_rt_agent_session_skills_live_e2e COMMAND test_rt_agent_session_skills_live_e2e)
+    set_tests_properties(test_rt_agent_session_skills_live_e2e PROPERTIES LABELS "live-network" TIMEOUT 300)
   endif()
 
   # ---- Milestone 5 Phase J1 (roadmap exit criterion, 004 §7 G1): the same unchanged call site, run
@@ -586,11 +590,13 @@ if(AGENTENGINE_WITH_HTTPS)
   # persisted artifact this milestone's mechanisms actually produce (recordings, checkpoints,
   # error-path text) for zero occurrences, paired with a positive control proving the secret really
   # was exercised as a live credential.
-  add_executable(test_secret_hygiene_canary_scan test_secret_hygiene_canary_scan.cpp)
-  target_link_libraries(test_secret_hygiene_canary_scan PRIVATE
+  # ADR-037: ported off quark::TestKit<Session>/core::AgentSession onto agentengine::rt::AgentSession
+  # for the checkpoint leg (5) -- supersedes the old test_secret_hygiene_canary_scan.cpp (removed).
+  add_executable(test_rt_secret_hygiene_canary_scan test_rt_secret_hygiene_canary_scan.cpp)
+  target_link_libraries(test_rt_secret_hygiene_canary_scan PRIVATE
     agentengine::core agentengine::provider_http_client agentengine_warnings
     MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
-  add_test(NAME test_secret_hygiene_canary_scan COMMAND test_secret_hygiene_canary_scan)
+  add_test(NAME test_rt_secret_hygiene_canary_scan COMMAND test_rt_secret_hygiene_canary_scan)
 
   # ---- Milestone 5 Phase J3 (roadmap exit criterion, 004 §7 G2): the common-case (fast provider)
   # bounded-release proof, plus a real, quantified finding that chat_stream()'s own fetch has no

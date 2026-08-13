@@ -22,6 +22,13 @@
 // CREDENTIALS ARE NEVER COMPILED IN (018 §4) -- same environment-variable contract as every other
 // live test in this suite: AGENTENGINE_OPENROUTER_API_KEY (required, else SKIP),
 // AGENTENGINE_OPENROUTER_MODEL (optional), AGENTENGINE_OPENROUTER_HOST (optional).
+//
+// ADR-037: ported off `quark::TestKit<Session>`/`quark::Ask<>` onto `agentengine::rt::AgentSession`
+// directly -- `kit.ask<AgentResponse>(StartRun{...})` against an actor mailbox becomes
+// `drive(session.start_run(StartRun{...}))`, the same `drive<T>()` idiom every other `rt::` test in
+// this suite already uses (see test_rt_agent_session_tooling_and_delegation.cpp,
+// test_rt_agent_session_real_backend.cpp). Nothing about WHAT this file proves changed -- only the
+// AgentSession plumbing driving it.
 
 #ifdef AGENTENGINE_WITH_HTTPS
 
@@ -31,19 +38,21 @@
 #include <string>
 #include <vector>
 
-#include "quark/core/testkit.hpp"
-
-#include "agentengine/core/agent_session.hpp"
 #include "agentengine/core/builtin_skills.hpp"
 #include "agentengine/core/history_and_skills_provider.hpp"
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/skill_provider.hpp"
 #include "agentengine/core/tool_call_extraction.hpp"
 #include "agentengine/protocol/openai/chat_client.hpp"
+#include "agentengine/rt/agent_session.hpp"
 #include "agentengine/trust/principal.hpp"
 #include "agentengine/trust/secret.hpp"
 
 using namespace agentengine;
+using agentengine::rt::AgentResponse;
+using agentengine::rt::AgentSession;
+using agentengine::rt::NoSessionState;
+using agentengine::rt::StartRun;
 
 namespace {
 
@@ -65,6 +74,15 @@ void note(char const* label, std::string const& value) {
     return (v && *v) ? std::string(v) : std::move(fallback);
 }
 
+// Same "safe here because nothing genuinely suspends externally" drive<T>() every other
+// test_rt_agent_session*.cpp file uses (OpenAIChatClient::chat()'s own blocking socket I/O happens as
+// an ordinary synchronous call inside the coroutine body, never a real suspension point).
+template <class T>
+T drive(agentengine::rt::task<T> t) {
+    while (!t.done()) t.resume();
+    return t.take_value();
+}
+
 constexpr char const* kDefaultModel = "~deepseek/deepseek-v4-flash-latest";
 constexpr char const* kDefaultHost = "openrouter.ai";
 constexpr std::uint16_t kHttpsPort = 443;
@@ -72,7 +90,7 @@ constexpr char const* kPathPrefix = "/api/v1";
 constexpr char const* kSecretName = "openrouter-api-key";
 constexpr int kMaxRounds = 6;  // AgentSession's own max_turns now (agent_session.hpp)
 
-// `AgentSession::handle()` now resolves any tool call internally (ADR-027-agent-session-tool-call-
+// `AgentSession::start_run()` now resolves any tool call internally (ADR-027-agent-session-tool-call-
 // loop.md) -- there is no external round loop left here to observe a raw `ToolCall` directly.
 // Recorded from inside `ExecuteCodeTool::invoke()` itself instead, the same function-local-static
 // idiom `tools/cli_chat.cpp` already uses.
@@ -206,7 +224,7 @@ int main() {
     char const* key_env = std::getenv("AGENTENGINE_OPENROUTER_API_KEY");
     if (!key_env || !*key_env) {
         std::fprintf(stderr,
-                     "test_agent_session_skills_live_e2e: SKIPPED -- "
+                     "test_rt_agent_session_skills_live_e2e: SKIPPED -- "
                      "AGENTENGINE_OPENROUTER_API_KEY is not set.\n"
                      "  Run tools/run-live-provider-tests.ps1, or set the variable yourself, to "
                      "exercise a real provider.\n");
@@ -215,7 +233,7 @@ int main() {
 
     std::string const model = env_or("AGENTENGINE_OPENROUTER_MODEL", kDefaultModel);
     std::string const host = env_or("AGENTENGINE_OPENROUTER_HOST", kDefaultHost);
-    std::fprintf(stderr, "test_agent_session_skills_live_e2e: host=%s model=%s\n", host.c_str(),
+    std::fprintf(stderr, "test_rt_agent_session_skills_live_e2e: host=%s model=%s\n", host.c_str(),
                  model.c_str());
 
     InMemorySecretStore store;
@@ -227,16 +245,16 @@ int main() {
     caps.tool_calling = true;
     caps.max_output_tokens = 1024;
 
-    quark::TestKit<SkillsLiveSession> kit;
-    kit.actor().emplace_chat_client(host, kHttpsPort, model, SecretRef{kSecretName}, caps, store,
-                                     kPathPrefix);
-    kit.actor().initialize("skills-live-e2e-session", Principal{"live-e2e-principal", ""},
-                            /*token_budget=*/std::nullopt, /*max_turns=*/static_cast<std::uint64_t>(kMaxRounds));
-    kit.actor().set_capabilities(&held);
+    SkillsLiveSession session;
+    session.emplace_chat_client(host, kHttpsPort, model, SecretRef{kSecretName}, caps, store,
+                                 kPathPrefix);
+    session.initialize("skills-live-e2e-session", Principal{"live-e2e-principal", ""},
+                        /*token_budget=*/std::nullopt, /*max_turns=*/static_cast<std::uint64_t>(kMaxRounds));
+    session.set_capabilities(&held);
 
     // ==================== Turn 1: an ordinary greeting -- no tool involved ==========================
-    quark::result<AgentResponse> greeting =
-        kit.ask<AgentResponse>(StartRun{user_message("Hi there! How are you doing today?")});
+    result<AgentResponse> greeting =
+        drive(session.start_run(StartRun{user_message("Hi there! How are you doing today?")}));
     check(greeting.has_value(), "TURN1: the greeting round completes against the real provider");
     if (greeting.has_value()) {
         check(has_text(greeting->message), "TURN1: the greeting gets back a real text reply");
@@ -250,16 +268,16 @@ int main() {
     // skill's advertisement (SkillsProvider::on_context's system message), matching how a real skill
     // consumer discovers capability by name, not by memorizing the tool schema in isolation.
     //
-    // `AgentSession::handle()` now resolves any tool call internally (agent_session.hpp) -- one ask
-    // returns the final converged response directly; whether `execute_code` was actually called, and
-    // with what argument, is recorded from inside `ExecuteCodeTool::invoke()` itself (see
+    // `AgentSession::start_run()` now resolves any tool call internally (agent_session.hpp) -- one
+    // call returns the final converged response directly; whether `execute_code` was actually called,
+    // and with what argument, is recorded from inside `ExecuteCodeTool::invoke()` itself (see
     // `execute_code_called_log()`/`observed_code_arg_log()` above).
     execute_code_called_log() = false;
     observed_code_arg_log().clear();
 
-    quark::result<AgentResponse> resp = kit.ask<AgentResponse>(StartRun{user_message(
+    result<AgentResponse> resp = drive(session.start_run(StartRun{user_message(
         "Please use your code execution skill to run some code that computes the sum 17 + 25, then "
-        "tell me the result.")});
+        "tell me the result.")}));
     check(resp.has_value(),
           "TURN2: the session converges (resolves the tool call internally, within max_turns) "
           "against the real provider");
@@ -277,10 +295,10 @@ int main() {
     }
 
     if (g_failures == 0) {
-        std::fprintf(stderr, "test_agent_session_skills_live_e2e: ALL PASS\n");
+        std::fprintf(stderr, "test_rt_agent_session_skills_live_e2e: ALL PASS\n");
         return 0;
     }
-    std::fprintf(stderr, "test_agent_session_skills_live_e2e: %d FAILURE(S)\n", g_failures);
+    std::fprintf(stderr, "test_rt_agent_session_skills_live_e2e: %d FAILURE(S)\n", g_failures);
     return 1;
 }
 
