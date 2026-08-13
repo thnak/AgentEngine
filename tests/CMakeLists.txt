@@ -984,6 +984,15 @@ add_executable(test_rt_project_archive test_rt_project_archive.cpp)
 target_link_libraries(test_rt_project_archive PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_project_archive COMMAND test_rt_project_archive)
 
+# ---- ADR-037 -- agentengine::rt::ProjectRecord's manifest snapshot (rt::SessionStore, single-slot --
+# active_members stays small by construction, so no AppendLogStore is needed here unlike the archived
+# tail above) and the directed-lifecycle status-flip functions (pause_project/restore_project/
+# archive_project), layered on rt::ProjectSupervisor's own checkpoint_members_and_workflows(). Closes
+# the last named residual from both rt::ProjectRegistry's and rt::ProjectSupervisor's own banners.
+add_executable(test_rt_project_manifest test_rt_project_manifest.cpp)
+target_link_libraries(test_rt_project_manifest PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_project_manifest COMMAND test_rt_project_manifest)
+
 # ---- Milestone 5 Phase G1 -- ChatCallRecording JSON codec (core/chat_recording.hpp), the shared
 # foundation RecordingChatClient<Inner> and ReplayChatClient both depend on.
 add_executable(test_chat_recording_codec test_chat_recording_codec.cpp)
