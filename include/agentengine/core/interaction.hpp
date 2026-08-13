@@ -8,16 +8,19 @@
 // text rather than reopening design.
 //
 // All scalar/string fields — unlike `Message`/`ContentItem` (003, A4's own named serialization
-// gap) or `Capability` (D1's own named gap), `Interaction` has NO variant and is `Described`
-// (`QUARK_SERIALIZE`-able) from the start, so it can be embedded directly in a durable checkpoint
-// (`AgentSessionRecord.open_interactions`, agent_session.hpp) — 019 §1's "pending approvals/input
-// requests" checkpoint-content item, which D1 could only leave as an always-empty placeholder
-// before this type existed for real.
+// gap) or `Capability` (D1's own named gap), `Interaction` has no variant, so it round-trips through
+// a durable checkpoint trivially — 019 §1's "pending approvals/input requests" checkpoint-content
+// item (`rt::AgentSessionRecord.open_interactions`, rt/agent_session.hpp), encoded via
+// `rt/interaction_codec.hpp`'s own hand-written JSON codec.
+//
+// ADR-037: no longer `QUARK_SERIALIZE`'d — that macro's only real consumer was the old Quark-actor
+// `agentengine::AgentSessionRecord` (core/agent_session.hpp, deleted) and `workflow/checkpoint.hpp`
+// (also deleted, zero remaining consumers). `rt::` land has always encoded this type as JSON instead
+// (`rt/interaction_codec.hpp`), never through Quark's wire codec — this header now has zero Quark
+// dependency of any kind.
 
 #include <cstdint>
 #include <string>
-
-#include "quark/core/describe.hpp"
 
 namespace agentengine {
 
@@ -41,7 +44,5 @@ struct Interaction {  // ae-naming-lint: allow Interaction — 001 §2 names thi
 
     friend bool operator==(Interaction const&, Interaction const&) = default;
 };
-QUARK_SERIALIZE(Interaction, (1, interaction_id), (2, run_id), (3, reason), (4, opened_at_ns),
-                 (5, expires_at_ns))
 
 } // namespace agentengine
