@@ -1,9 +1,9 @@
 # ADR-029 — Suspending a run mid-tool-loop for real human approval
 
-**Status:** Proposed (2026-08-11). Designed, red-teamed, implemented, and proven (real code +
-deterministic tests, §5); awaiting the project owner's explicit "Judged" sign-off per this
-project's governance (`decisions/README.md`; `OpenQuestions.md` OQ-11's resolution that the project
-owner is the ADR judge).
+**Status:** Judged, accepted (2026-08-13). Designed, red-teamed, implemented, and proven (real code
++ deterministic tests, §5); accepted by the project owner per this project's governance
+(`decisions/README.md`; `OpenQuestions.md` OQ-11's resolution that the project owner is the ADR
+judge).
 
 **Relates to:** `decisions/ADR-027-agent-session-tool-call-loop.md` (this ADR closes its second named
 out-of-scope residual — session-scoped stateful tools was ADR-028's; "Approval is synchronous-decider

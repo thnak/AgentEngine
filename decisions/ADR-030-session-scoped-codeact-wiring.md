@@ -1,9 +1,9 @@
 # ADR-030 — Session-scoped CodeAct wiring
 
-**Status:** Proposed (2026-08-11). Designed, red-teamed, implemented, and proven (real code +
-deterministic tests, §5); awaiting the project owner's explicit "Judged" sign-off per this
-project's governance (`decisions/README.md`; `OpenQuestions.md` OQ-11's resolution that the project
-owner is the ADR judge).
+**Status:** Judged, accepted (2026-08-13). Designed, red-teamed, implemented, and proven (real code
++ deterministic tests, §5); accepted by the project owner per this project's governance
+(`decisions/README.md`; `OpenQuestions.md` OQ-11's resolution that the project owner is the ADR
+judge).
 
 **Relates to:** `decisions/ADR-028-session-scoped-stateful-tools.md` §6 ("Real CodeAct wiring...
 is separate, later work — this ADR proves the general mechanism only"), the residual this ADR
