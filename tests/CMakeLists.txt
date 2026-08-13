@@ -963,6 +963,16 @@ add_executable(test_rt_append_log_store test_rt_append_log_store.cpp)
 target_link_libraries(test_rt_append_log_store PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_append_log_store COMMAND test_rt_append_log_store)
 
+# ---- ADR-037 -- agentengine::rt::WorkflowSupervisor's time-travel surface (014 §5's "rewind to
+# any retained checkpoint"), wiring rt::AppendLogStore into the gap workflow_supervisor.hpp's own
+# Slice 2 banner named as deferred. Additive over Slice 2's existing single-slot
+# save_workflow_checkpoint/load_workflow_checkpoint (rt::SessionStore, still used for ordinary
+# crash-recovery resume) -- this file answers the genuinely different "rewind to ANY retained
+# checkpoint" claim a single-slot store cannot serve.
+add_executable(test_rt_workflow_time_travel test_rt_workflow_time_travel.cpp)
+target_link_libraries(test_rt_workflow_time_travel PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_workflow_time_travel COMMAND test_rt_workflow_time_travel)
+
 # ---- Milestone 5 Phase G1 -- ChatCallRecording JSON codec (core/chat_recording.hpp), the shared
 # foundation RecordingChatClient<Inner> and ReplayChatClient both depend on.
 add_executable(test_chat_recording_codec test_chat_recording_codec.cpp)
