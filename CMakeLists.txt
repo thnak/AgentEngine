@@ -360,16 +360,18 @@ if(AGENTENGINE_WITH_HTTPS)
   # Mozilla's own root program) -- mbedTLS has no OS-trust-store integration of its own (unlike
   # OpenSSL/Schannel); vendoring one keeps this project's own "no host-machine-dependent build
   # state" posture (matching AGENTENGINE_VENDOR_PYTHON's own comment above) rather than trusting
-  # whatever the build machine happens to have installed. AgentEngine now owns this file's rotation
-  # over time (ADR-013 section 9's named residual) -- bundle snapshot dated 2026-07-16 (curl.se's
-  # own header line), fetched and hand-verified during this task.
+  # whatever the build machine happens to have installed. AgentEngine owns this file's rotation over
+  # time (ADR-013 section 9's named residual) -- bundle snapshot dated 2026-08-13 (curl.se's own
+  # header line: "Certificate data from Mozilla as of: Thu Aug 13 03:12:01 2026 GMT"), re-fetched and
+  # hand-verified (downloaded independently, content inspected, hash computed locally before pinning)
+  # after the prior 2026-07-16 pin went stale from ordinary upstream CA-bundle rotation.
   option(AGENTENGINE_VENDOR_CA_BUNDLE
     "Fetch a pinned, checksummed CA root bundle instead of using a local PEM file"
     ON)
   if(AGENTENGINE_VENDOR_CA_BUNDLE)
     set(AE_CA_BUNDLE_PATH "${CMAKE_CURRENT_BINARY_DIR}/vendored_ca_bundle/cacert.pem")
     file(DOWNLOAD "https://curl.se/ca/cacert.pem" "${AE_CA_BUNDLE_PATH}"
-      EXPECTED_HASH SHA256=3ff344e30b9b1ed2971044eabb438a08f2e2245ddb5f8ab1a3ad8b63ab4eaf91)
+      EXPECTED_HASH SHA256=f66dff1bdf8f96060b8177976f8b7d9254bc89bc4db933d769f7384d28480bc9)
   else()
     set(AE_CA_BUNDLE_PATH "${AGENTENGINE_CA_BUNDLE_PATH}" CACHE FILEPATH
       "Path to a local PEM CA bundle to embed instead of the vendored one")
