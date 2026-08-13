@@ -61,6 +61,17 @@
 // round-local `exec_deliveries`/`replies`/`port_deliveries` the original used, not reconstructed from
 // `state_` after the fact (which no longer distinguishes "ran ok" from "ran and failed" once folded).
 //
+// Checkpoint hook (set_checkpoint_hook()/checkpoint_hook_) -- ADDED for ADR-037 task #60 (porting
+// test_workflow_checkpoint_g2.cpp's G2 promotion-gate sweep). The original's own `CheckpointHook`
+// (`std::function<void(std::uint32_t round, RunStateRecord const&)>`) is reproduced verbatim, fired
+// from the exact SAME superstep-boundary point as the original (`execute()`, right after
+// `state_.pending = std::move(next);`, immediately BEFORE the live-view push above) -- 014 §5's own
+// "round N's results are fully folded into state_/ports_, round N+1 has not started yet" reasoning
+// carries over unchanged, since this is a caller-injected callback (I2: no ambient Store authority),
+// not a design that needed re-deriving for rt:: land. G2 itself needs no OTHER new capability: it
+// only ever drives `run_workflow()`/`continue_workflow()` and reads `to_record()`/
+// `restore_from_record()`, all of which Slice 2 already built.
+//
 // THE ONE GENUINELY HARD DESIGN QUESTION: decision 5 in the original's own file banner ("Fan-out is
 // ISSUE-ALL-THEN-COLLECT... the supervisor issues every ask for round N before awaiting any of them...
 // then collects the futures in FIXED INDEX ORDER") got its REAL concurrency from each executor being a
@@ -491,6 +502,13 @@ public:
         return out;
     }
 
+    // 014 §5's checkpoint-at-superstep-boundary hook -- see file banner's "Checkpoint hook" paragraph.
+    // Reproduced verbatim from the original: a caller-injected callback (I2), never an ambient Store,
+    // fired with the round just completed and a full `to_record()` snapshot taken at exactly that
+    // boundary.
+    using CheckpointHook = std::function<void(std::uint32_t round, RunStateRecord const&)>;
+    void set_checkpoint_hook(CheckpointHook hook) { checkpoint_hook_ = std::move(hook); }
+
     // 014 §7's live-view bullet. Constructs a fresh, directly-connected producer/consumer pair
     // (`agentengine::make_stream`, core/stream.hpp) over `WorkflowLiveEvent`, keeps the producer, and
     // hands the caller the consumer -- see file banner for exactly where in `execute()` it fires from.
@@ -791,6 +809,12 @@ private:
             }
             state_.pending = std::move(next);
 
+            // 014 §5: "Checkpoint at superstep boundaries." Right here -- round N's results are fully
+            // folded into state_/ports_, round N+1 (or a suspension) has not started yet. Fires
+            // whether or not this round is about to suspend, so a checkpoint taken here always has
+            // enough to resume from either way -- see file banner's "Checkpoint hook" paragraph.
+            if (checkpoint_hook_) checkpoint_hook_(rounds_, to_record());
+
             // 014 §7's live-view bullet, same superstep boundary -- see file banner. `exec_deliveries`/
             // `replies`/`port_deliveries` are still this iteration's locals, built fresh from THIS
             // round, not reconstructed from `state_` (which no longer distinguishes "ran ok" from "ran
@@ -996,6 +1020,9 @@ private:
     // 014 §7 live view -- invalid until enable_live_view() is called, matching the original's own
     // "Phase G: invalid until enable_live_view()" comment verbatim.
     agentengine::stream_producer<agentengine::workflow::WorkflowLiveEvent> live_view_producer_;
+    // 014 §5 checkpoint hook -- see file banner's "Checkpoint hook" paragraph. nullptr by default,
+    // matching the original's own "Phase F: nullptr by default" comment.
+    CheckpointHook checkpoint_hook_;
 };
 
 // Save `supervisor`'s current run under its own run_id() -- see file banner and snapshot_record()'s

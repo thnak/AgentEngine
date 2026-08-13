@@ -571,16 +571,6 @@ if(AGENTENGINE_WITH_HTTPS)
   target_link_libraries(test_workflow_graph_validation PRIVATE agentengine::core agentengine_warnings)
   add_test(NAME test_workflow_graph_validation COMMAND test_workflow_graph_validation)
 
-  # ---- Milestone 6 Phase F: 014 §8's own promotion gate G2 ---------------------------------------
-  # A 20-node chain, killed (simulated: a genuinely new instance restored from nothing but the
-  # checkpoint) at EVERY one of its 20 superstep boundaries -- every resume must complete with
-  # output identical to an uninterrupted control. 21 short-lived engines in sequence, never
-  # concurrent -- a longer timeout than this file's siblings to give that room.
-  add_executable(test_workflow_checkpoint_g2 test_workflow_checkpoint_g2.cpp)
-  target_link_libraries(test_workflow_checkpoint_g2 PRIVATE agentengine::core agentengine_warnings)
-  add_test(NAME test_workflow_checkpoint_g2 COMMAND test_workflow_checkpoint_g2)
-  set_tests_properties(test_workflow_checkpoint_g2 PROPERTIES TIMEOUT 300)
-
   # ---- Milestone 6 Phase G: 014 §7's rendering and diffing (introspection.hpp) -------------------
   # Render is a TOTAL function -- the falsifiable bar is "a valid workflow that cannot be drawn" --
   # proven against a graph exercising all four executor kinds, all six edge kinds, a fallback
@@ -966,6 +956,16 @@ add_test(NAME test_rt_project_manifest COMMAND test_rt_project_manifest)
 add_executable(test_rt_project_scale_isolation test_rt_project_scale_isolation.cpp)
 target_link_libraries(test_rt_project_scale_isolation PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_project_scale_isolation COMMAND test_rt_project_scale_isolation)
+
+# ---- ADR-037 -- 014 §8's own promotion gate G2, reproven against agentengine::rt::WorkflowSupervisor
+# -- supersedes the old Quark-actor-based test_workflow_checkpoint_g2.cpp. A 20-node chain, killed
+# (simulated: a genuinely new instance restore_from_record()'d from nothing but the checkpoint) at
+# EVERY one of its 20 superstep boundaries -- every resume must complete with output identical to an
+# uninterrupted control. 21 plain host-held WorkflowSupervisor instances in sequence, never
+# concurrent -- no Engine/Activation stack needed, so the old 300s timeout is dropped.
+add_executable(test_rt_workflow_checkpoint_g2 test_rt_workflow_checkpoint_g2.cpp)
+target_link_libraries(test_rt_workflow_checkpoint_g2 PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_workflow_checkpoint_g2 COMMAND test_rt_workflow_checkpoint_g2)
 
 # ---- Milestone 5 Phase G1 -- ChatCallRecording JSON codec (core/chat_recording.hpp), the shared
 # foundation RecordingChatClient<Inner> and ReplayChatClient both depend on.
