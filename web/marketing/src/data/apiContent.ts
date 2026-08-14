@@ -782,6 +782,44 @@ template <class SourceT> requires SkillSource<SourceT>
 [[nodiscard]] SkillSourceDescriptor make_skill_source_descriptor(SourceT source);
 // include/agentengine/core/skill_source.hpp:34-68`;
 
+export const inlineSkillSourceShapeSnippet = `// include/agentengine/core/skill_source.hpp -- the whole class, verbatim
+class InlineSkillSource {
+public:
+    InlineSkillSource(std::string origin_id, std::vector<SkillSourceResult> skills)
+        : origin_id_(std::move(origin_id)), skills_(std::move(skills)) {}
+
+    [[nodiscard]] std::string_view origin_id() const noexcept { return origin_id_; }
+    [[nodiscard]] result<std::vector<SkillSourceResult>> load_skills() const { return skills_; }
+
+private:
+    std::string origin_id_;
+    std::vector<SkillSourceResult> skills_;
+};
+static_assert(SkillSource<InlineSkillSource>);
+// That's the entire implementation -- no disk I/O, no caching logic, no invalidation to get wrong.
+// load_skills() hands back a COPY of exactly what the constructor was given, every single call.`;
+
+export const inlineSkillSourceExampleSnippet = `// Build one skill entirely in memory, from a string literal -- no SKILL.md file on disk anywhere.
+// Same pattern builtin_skills.hpp uses to ship this engine's own five generic skills.
+auto skill = parse_skill_md(
+    "---\\nname: inline-skill\\ndescription: A programmatically defined skill.\\n---\\nBody.\\n",
+    "inline-skill");                                        // parse_skill_md(text, expected_dir_name)
+
+std::vector<SkillBundleFile> files;
+files.push_back(SkillBundleFile{"SKILL.md", /* the raw bytes of that same text */ {}});
+// A real bundle can push more files here too -- scripts/, references/, assets/ -- there's no
+// requirement that an inline skill be JUST the manifest.
+
+std::vector<SkillSourceResult> supplied;
+supplied.push_back(SkillSourceResult{*skill, files});
+
+InlineSkillSource source("my-origin", supplied);
+source.origin_id();     // == "my-origin"
+source.load_skills();   // == supplied, every time -- deterministic, no state to invalidate
+
+// Hand it to SkillsProvider the same way DiskSkillSource would be handed:
+SkillSourceDescriptor descriptor = make_skill_source_descriptor(std::move(source));`;
+
 export const skillsProviderApiSnippet = `// A real ContextProvider conformer -- occupies AgentSession's single
 // HistoryProviderT slot directly, or composed via HistoryAndSkillsProvider.
 template <WorktreeObjectStore ObjectStoreT = InMemoryWorktreeObjectStore>

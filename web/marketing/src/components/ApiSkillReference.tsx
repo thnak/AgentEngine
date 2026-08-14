@@ -1,6 +1,8 @@
 import {
   gh,
   genericSkills,
+  inlineSkillSourceExampleSnippet,
+  inlineSkillSourceShapeSnippet,
   skillCollisionSnippet,
   skillFrontmatterFields,
   skillSourceConceptSnippet,
@@ -121,6 +123,55 @@ export function ApiSkillReference() {
 
           <RevealItem>
             <CodePanel filename="skill_source.hpp">{highlightCpp(skillSourceConceptSnippet)}</CodePanel>
+          </RevealItem>
+        </RevealGroup>
+
+        <RevealGroup>
+          <RevealItem>
+            <div className="section-head anchor-target" style={{ marginTop: 48, marginBottom: 22 }} id="inline-skill-source-detail">
+              <span className="eyebrow">InlineSkillSource, in full</span>
+              <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>
+                The whole class is nine lines — here's every one of them
+              </h3>
+              <p>
+                <code>InlineSkillSource</code> is deliberately the simplest possible{" "}
+                <code>SkillSource</code> conformer: a constructor that stores what it's given, and
+                two accessors that hand it back. No parsing, no I/O, no cache to go stale — the
+                caller does the work (usually via <code>parse_skill_md</code> against a string
+                literal) before this type ever sees it.
+              </p>
+            </div>
+          </RevealItem>
+
+          <RevealItem>
+            <CodePanel filename="skill_source.hpp">{highlightCpp(inlineSkillSourceShapeSnippet)}</CodePanel>
+          </RevealItem>
+
+          <RevealItem>
+            <p style={{ marginTop: 20, color: "var(--text-dim)", lineHeight: 1.65 }}>
+              A worked example — build one skill entirely in memory and hand it to a{" "}
+              <code>SkillsProvider</code> the same way a disk-backed skill would be, no filesystem
+              involved at any point:
+            </p>
+          </RevealItem>
+
+          <RevealItem>
+            <CodePanel filename="test_skill_source_inline.cpp">
+              {highlightCpp(inlineSkillSourceExampleSnippet)}
+            </CodePanel>
+          </RevealItem>
+
+          <RevealItem>
+            <p className="gs-note" style={{ marginTop: 20 }}>
+              <strong>Why this exists, not just how:</strong> the five built-in skills this engine
+              ships (<code>using-the-code-interpreter</code>, <code>using-codeact</code>, …) are
+              compiled into the binary as raw string literals — <code>builtin_skills.hpp</code>{" "}
+              parses each one the same way, at construction time, so a deployment can never omit or
+              move a loose <code>SKILL.md</code> file that a core skill depends on. It stops just
+              short of literally constructing an <code>InlineSkillSource</code> instance (it builds
+              the type-erased <code>SkillSourceDescriptor</code> directly, since the whole list is
+              already resolved once, eagerly) — same idea, one layer lower.
+            </p>
           </RevealItem>
         </RevealGroup>
 

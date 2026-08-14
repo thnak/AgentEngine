@@ -4,6 +4,7 @@ import { ApiSkillReference } from "../components/ApiSkillReference";
 const sections = [
   { id: "skills", label: "Overview" },
   { id: "skill-source", label: "SkillSource" },
+  { id: "inline-skill-source-detail", label: "InlineSkillSource, in full" },
   { id: "skill-loading", label: "How a skill loads" },
   { id: "skill-mounting", label: "Mounting — SkillsProvider" },
   { id: "skill-tool-scoping", label: "Tool scoping" },
