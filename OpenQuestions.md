@@ -6,7 +6,7 @@ shape of the project.
 
 **Legend:** 🔴 blocks a v1 decision · 🟠 needed before implementation of its area · 🟡 can wait
 
-**Two open cross-cutting questions as of 2026-08-13: OQ-19, OQ-20.** OQ-1 through OQ-18 are all
+**Three open cross-cutting questions as of 2026-08-14: OQ-19, OQ-20, OQ-21.** OQ-1 through OQ-18 are all
 resolved. New questions are added here as they're identified; per-RFC open questions that don't change
 the shape of the project stay in their own RFC's §Open questions and are never promoted here by
 default.
@@ -70,6 +70,62 @@ as its own batch job, multiplying a turn's latency by however many rounds it tak
 PER round). This does not block the idea — it fits N independent single-shot calls (e.g. workflow
 fan-out nodes) well — but it means "batch mode" cannot be a blanket accelerator for arbitrary agents.
 **Explicit project-owner direction (2026-08-13): document only, do not implement yet.**
+
+### OQ-21 — External process hooks (Claude-Code-style lifecycle interception) 🟠
+
+User observation (2026-08-14): AgentEngine has no equivalent of Claude Code's Hooks feature, and MAF
+(this project's developer-model prior art) has no such concept either. Confirmed, not assumed: real
+vendor docs for both Claude Code's Hooks and the OpenAI Agents SDK's `RunHooks`/`AgentHooks` were
+fetched and cited — `docs/research/2026-08-14-claude-code-hooks-mechanics.md`. **Load-bearing finding:
+"Hooks" names two architecturally unrelated things across the industry.** The OpenAI Agents SDK's
+hooks are in-process, observation-only async callbacks — the same shape as 002 §5's own declared
+`Middleware<Ms...>`, which is already a strict superset (deny-capable at its one wired point, the
+model-call interception, ADR-033) of what OpenAI ships. Claude Code's Hooks are out-of-process,
+config-driven, deny/rewrite-capable external commands — and its own docs state plainly that a hook
+"runs with the full permissions of the user running Claude Code," unsandboxed. That execution model is
+exactly what **I2** and `009-Plugin-and-Extension-System.md` §5 (which names `subprocess` explicitly as
+unavailable to any plugin world) already rule out — the real gap is the event taxonomy and the
+allow/deny/rewrite decision shape, not Claude Code's ambient-authority process-exec model.
+
+Full gap analysis grounded in real code citations (`middleware.hpp`, `tool_pipeline.hpp`'s
+`ApprovalDecider`, `agent_session.hpp`'s `run_rounds()`, `run_event.hpp`'s already-real observation
+stream): `docs/planning/external-process-hooks-gap.md`. **Resolved, red-teamed once:**
+`docs/planning/external-process-hooks-design-draft.md` — scopes narrowly to the tool-call point (the
+one clean choke point `invoke_tool()` already provides) by extending the already-proven
+`ApprovalDecider` seam rather than adding a parallel Middleware chain; routes any hook that reaches an
+external process through the EXISTING suspend/resume `Interaction` mechanism (ADR-029, a new
+`interaction_reason::hook_decision`) instead of an inline blocking call; and leaves `RunEvent` untouched
+as the complete, already-real answer for every observational (non-gating) hook — 16 of Claude Code's 24
+named events are pure observation and need zero core change to serve externally today. Red-team found
+two fatal problems in the first-pass draft, both closed in the resolved version: (1) `start_run()` holds
+`session_mutex_` for the whole run with no timeout, so an inline-`co_await`ed external-dispatch hook
+would stall the entire session indefinitely — closed by the suspend/resume correction; (2) no concrete
+insertion point existed for a provenance-downgrade guard on a hook-rewritten tool call, reopening the
+exact confused-deputy hole ADR-023/ADR-033 already closed once — closed by
+`enforce_hook_rewritten_tool_call_provenance()`, diffing the request's arguments before/after the hook
+runs. Four must-fix gaps also closed (chain-runner mismatch against `run_rounds()`'s real seven-exit-path
+shape, so run/turn-level *gating* hooks are scoped out as separate future work; two-independent-gates
+ambiguity between `ApprovalDecider` and a naive new hook pair, closed by sequencing the hook stage
+strictly before `ApprovalDecider` rather than running them independently; the observation-vocabulary-vs-
+trigger-mechanism conflation; and the `RunContext`/`TurnContext` field list, narrowed away entirely once
+scope shrank to tool-call only). **Second pass (2026-08-14), run/turn-level internal (in-process)
+hooks:** an RAII `TurnBoundaryGuard`/`RunBoundaryGuard` mechanism was proposed to close Q1's own named
+gap (only 1 of `run_rounds()`'s 7 exit paths emits a matching `turn_finished`) without restructuring the
+loop — the firing mechanism itself is real and precedented (`AsyncMutex::Guard` already does exactly
+this to release `session_mutex_` across all 7 exits). Red-team found two of the capabilities proposed on
+top of it **structurally impossible**, not just hard: a destructor cannot be a coroutine (C++20 forbids
+it), so an async/external-dispatching hook cannot run from one; and `co_return` finalizes a coroutine's
+result before any local's destructor runs, so an "`after_turn` hook overrides the outcome and forces
+another round" capability (the Claude-Code-`Stop`-hook analog) cannot be delivered from a destructor
+either — both would need explicit calls placed before each `co_return`, the exact restructuring this
+approach tried to avoid. **Resolved narrower**: the guard survives scoped to synchronous, non-throwing,
+non-overriding, observation-only `after_turn`/`after_run`, closing the 5-of-7-exits-have-no-closing-
+event gap for real. `before_run`/`before_turn` **denial** (ordinary inline synchronous calls, unaffected
+by the destructor findings) stays available, confirmed clean. Gating/override power and any
+external-dispatching hook at run/turn level remain explicitly unresolved, now for a sharper, correctly-
+identified reason. Six remaining punch-list items, none implemented — real, named follow-on work, not
+silently dropped. **No project-owner implementation direction yet — this is a fresh design draft, not a
+standing "document only" instruction like OQ-19/OQ-20.**
 
 ---
 
