@@ -124,7 +124,7 @@ handle multiple `role::system` entries by concatenation, not by taking only the 
 real, checked compatibility, not an unverified assumption.
 
 **"First-match" or field-ordering ambiguity does not apply here** — unlike `find_fs_write`/
-`find_fs_read` (ADR-040), there is exactly one `.instructions` field per `ContextContribution` and
+`find_fs_read` (ADR-056), there is exactly one `.instructions` field per `ContextContribution` and
 one merge step; no analogous "which of several candidates wins" question exists for this fix.
 
 ## 5. What this ADR does not claim

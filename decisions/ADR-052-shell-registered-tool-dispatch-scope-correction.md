@@ -5,7 +5,7 @@ and documented at the exact call site.
 
 **Relates to:** `docs/planning/2026-08-10-full-codebase-adr-gap-audit.md` gap #13 (the finding this
 ADR closes). `decisions/ADR-001-shellrunner-grammar-and-dispatch.md` (Judged — Design A, the design
-this finding actually concerns). `decisions/ADR-040-fs-quota-capability-gate-fix.md` (this session's
+this finding actually concerns). `decisions/ADR-056-fs-quota-capability-gate-fix.md` (this session's
 earlier finding that `mediated_shell_dispatch.cpp`, not `shell_dispatch.cpp`, is the real, live
 native-jail shell path — reused here, not re-derived).
 
@@ -26,7 +26,7 @@ before this ADR, not added by it) already states plainly: "the minimum type-eras
 make `CommandRegistry`'s three-way lookup real and testable (Sh-C2), **not an implementation of
 006's ten-step pipeline**." `shell_dispatch.cpp`'s `dispatch_command()` does call
 `resolved.tool->invoke(argv, ctx)` directly, with none of 006 §3's gates — but this is `shell_
-dispatch.cpp`, the file this session's own earlier ADR-040 already confirmed by name is "the
+dispatch.cpp`, the file this session's own earlier ADR-056 already confirmed by name is "the
 untouched `shell_dispatch.cpp` spike," distinct from `mediated_shell_dispatch.cpp` (the real,
 Judged, actually-used native-jail shell path). Confirmed directly, again, for this ADR: grepping the
 whole tree for `shell_runner.hpp` (the header exposing this dispatch path) finds exactly two

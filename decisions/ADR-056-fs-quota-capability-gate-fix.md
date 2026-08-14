@@ -1,4 +1,9 @@
-# ADR-040 — Fixing the `FsRead`/`FsWrite` quota-capability gate (false denial + silent bypass)
+# ADR-056 — Fixing the `FsRead`/`FsWrite` quota-capability gate (false denial + silent bypass)
+
+**Renumbered 2026-08-14 from ADR-040 to ADR-056**, unrelated to this ADR's own content: merging with
+`origin/main` found the remote's own, independently-numbered `ADR-040-wasm-tool-pipeline-bridge.md`
+already claiming that number — renumbered here (the locally unpushed side) rather than disturbing the
+remote's already-shared ADR-040.
 
 **Status:** Judged (2026-08-14, project owner sign-off). Designed, red-teamed (self-authored, see §3),
 implemented, and proven (real code + a new regression block, §5).

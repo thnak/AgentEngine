@@ -100,7 +100,7 @@ arbitrary secret the test itself creates is NOT reachable via the same code path
 This directly answers the audit's own implicit worry ("is this leak actually scoped, or could it reach
 arbitrary host content") with a real, executed, currently-green check
 (`ctest -R test_native_jail_abuse_corpus_windows`, confirmed passing this pass alongside the full
-175/175 suite run for `decisions/ADR-040-fs-quota-capability-gate-fix.md`).
+175/175 suite run for `decisions/ADR-056-fs-quota-capability-gate-fix.md`).
 
 **Corrected in the same pass**: `decisions/ADR-004-appcontainer-native-jail-windows-backend.md` §11
 item 1 still read as an open "suggested next step" (no strikethrough, unlike its sibling item 3) even

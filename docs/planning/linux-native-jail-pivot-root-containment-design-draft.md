@@ -2,7 +2,7 @@
 
 **Status:** Design draft, self-red-teamed once (below) — **not an ADR, no code written, not built or
 executed**. This machine is Windows-only for this session (no Linux dev/test environment available),
-so unlike this pass's other two closed gaps (ADR-040, ADR-041 — both real code, built, tested,
+so unlike this pass's other two closed gaps (ADR-056, ADR-041 — both real code, built, tested,
 175/175 green), this document stops at design + red-team. Per the same project-owner posture already
 applied to OQ-19/OQ-20 (`OpenQuestions.md`): document what implementation needs, do not implement
 without the ability to prove it. Seeds a future ADR once a Linux build/test environment is available
@@ -83,7 +83,7 @@ file's real, current control flow.
    1a. **Bind-mount sources are host config** (each granted `MountSpec::source`, decided by the
        calling C++ code from a real worktree/vendored-tree path), not guest-relative strings — so
        they are used directly as real filesystem paths, the same trust tier `mount_root_usage()`
-       (the Windows quota-scan primitive, ADR-040) already treats its own `mount_root` argument as.
+       (the Windows quota-scan primitive, ADR-056) already treats its own `mount_root` argument as.
        `open_within_mount_root`'s POSIX analogue is the primitive to reach for only if some future
        change lets a bind-mount source be even partially guest-influenced; nothing here proposes that.
 2. **Build the new root under a fresh, private, per-invocation directory** — not nested inside (or

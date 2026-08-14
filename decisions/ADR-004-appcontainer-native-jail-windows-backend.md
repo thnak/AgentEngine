@@ -450,7 +450,7 @@ comparison measures against.
    not silently regressed) directly alongside the same case's primary assertion that an arbitrary
    non-curated file (`secret_file`) reads `ESCAPE_DENIED` — the pairing that makes it a real positive
    control: the leak is bounded to the OS's own curated file set, not a general containment failure.
-   Green as of `decisions/ADR-040-fs-quota-capability-gate-fix.md`'s full-suite run (2026-08-14,
+   Green as of `decisions/ADR-056-fs-quota-capability-gate-fix.md`'s full-suite run (2026-08-14,
    175/175). This entry was stale before that check — the test existed since the M2 implementation but
    this checklist item was never updated to reflect it (see `decisions/ADR-041-appcontainer-ace-leak-
    accepted-residual.md` for the full accounting).
