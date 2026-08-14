@@ -130,9 +130,10 @@ Full suite: green (this pass), zero regressions.
 
 ## Amendment (2026-08-14): real merge-on-join wiring
 
-**Status of this amendment: implemented and proven (§ below); awaiting the project owner's own
-explicit sign-off, separate from this ADR's original Judged verdict above** (per this project's
-governance, `decisions/README.md`; `OpenQuestions.md` OQ-11).
+**Status of this amendment: Judged (2026-08-14, project owner sign-off)**, separate from this ADR's
+original Judged verdict above (per this project's governance, `decisions/README.md`; `OpenQuestions.md`
+OQ-11). Re-verified at sign-off review: `tests/test_rt_workflow_supervisor_merge_on_join.cpp` (J1-J3)
+still passes in full, unchanged since commit `82ee6b0`.
 
 At the project owner's explicit direction, this ADR's own §6 residual is closed: a `branch`-mode
 workflow executor's worktree now genuinely folds back into its parent, mechanically wired end to end,
