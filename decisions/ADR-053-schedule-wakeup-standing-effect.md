@@ -145,9 +145,10 @@ edited headers plus the new test binary.
 
 ## Amendment (2026-08-14): `schedule_wakeup` exposed as a real, model-callable tool
 
-**Status of this amendment: implemented and proven (§ below); awaiting the project owner's own
-explicit sign-off, separate from this ADR's original Judged verdict above** (per this project's
-governance, `decisions/README.md`; `OpenQuestions.md` OQ-11).
+**Status of this amendment: Judged (2026-08-14, project owner sign-off)**, separate from this ADR's
+original Judged verdict above (per this project's governance, `decisions/README.md`; `OpenQuestions.md`
+OQ-11). Re-verified at sign-off review: `tests/test_rt_agent_session_schedule_wakeup_tool.cpp` (G1-G6)
+still passes in full, unchanged since commit `732f6a8`.
 
 At the project owner's explicit direction, this ADR's own §5 residual is closed: `schedule_wakeup` is
 now a real tool the MODEL itself can call mid-turn, per 006 §6b's own normative framing ("declared
