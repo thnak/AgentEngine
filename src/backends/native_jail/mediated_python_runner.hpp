@@ -91,6 +91,14 @@ struct MediatedPythonConfig {
     // `tool_bridge.has_value()` gate -- default `false` changes nothing for a caller that predates G2.
     bool expose_agent_files_data = false;
 
+    // decisions/ADR-057-agent-ask-suspend-without-deadlock.md §9 (026 §5's `agent.ask`, Design B:
+    // abort-and-replay). Same separate-opt-in shape as `expose_agent_files_data` immediately above,
+    // for the identical reason that field's own comment gives: several pre-existing tests/sessions
+    // predate this flag and must see no change in default behavior. `false` (the default) means
+    // `agent.ask` is simply absent -- `import agent; agent.ask(...)` fails the ordinary
+    // AttributeError/ModuleNotFoundError way, not a special-cased denial.
+    bool expose_agent_ask = false;
+
     // Milestone 3 Phase F3 (010 §3 items 4/5): the per-session output-discipline cap applied to
     // `stdout_text`/`stderr_text`/`result_repr` before `run()` returns -- see
     // `output_discipline.hpp`'s own header for why this is a fixed byte constant rather than the

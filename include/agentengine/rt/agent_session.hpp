@@ -203,6 +203,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -258,11 +259,27 @@ struct ResolveInteraction {
     std::string interaction_id;
     bool        approved = false;
     std::optional<SessionCaller> caller = std::nullopt;
+    // ADR-057 §9: additive -- interpreted ONLY when the named interaction's own `reason ==
+    // interaction_reason::codeact_ask`; `approved` above stays exactly as-is, interpreted only for
+    // `reason == interaction_reason::approval`. Appended last (this project's own established
+    // field-ordering convention -- every existing positional `ResolveInteraction{a,b,c}` call site
+    // is unaffected, the 4th field simply defaults to `std::nullopt`).
+    std::optional<std::string> answer = std::nullopt;
 };
 
 struct AgentResponse {
     Message message;
     Usage   usage;
+    // ADR-058 §8 (Design B) -- additive, appended last (this project's own established field-
+    // ordering discipline; ADR-058 §4 B4 confirmed exactly one positional-aggregate
+    // `AgentResponse{...}` construction site exists in the whole tree, so this keeps it compiling
+    // unchanged). Populated only when a session has `set_output_schema()` configured AND the
+    // converged response's text content validated successfully against it -- raw, still-erased JSON
+    // text; the caller who owns the real T parses it a second time via
+    // `schema::from_json_value<T>`/`schema::from_json<T>` (AgentSession itself never needs to know
+    // T, matching ADR-058 §4 B2). `nullopt` means either no OutputSchema<T> was declared for this
+    // session, or the run never reached a converged response.
+    std::optional<std::string> structured_output_json;
 };
 
 // Slice 3 -- what a completed background native tool call hands back. See file banner's "SLICE 3
@@ -338,6 +355,29 @@ struct ScheduleWakeupTool : agentengine::Tool<ScheduleWakeupTool> {
             "method must never actually run",
             "schedule_wakeup.unreachable_static_invoke"});
     }
+};
+
+// ADR-057 §9 (Design B: abort-and-replay for `agent.ask()`, 026 §5): the host-side replay record a
+// suspended `codeact_ask` `Interaction` needs to resume -- keyed by `interaction_id` in
+// `AgentSession::pending_codeact_asks_` (below), NOT carried in the `Interaction` record itself
+// (which stays the same small, uniform shape every reason uses). `source`/`language` are the
+// ORIGINAL model-issued call's own arguments, captured once when the ask first suspends the round --
+// re-invoking `execute_code` on resolve replays against these, never anything the model supplies
+// again, which is exactly what makes this host-driven replay rather than a new model-issued call.
+// `answers_so_far` grows by one element per `resolve_interaction()` call against this
+// `interaction_id` (ADR-057 §9: "chaining through as many questions as one script asks without
+// minting a new interaction_id per question"). Deliberately NOT durably checkpointed (no codec, no
+// field in `AgentSessionRecord`) -- the same "not yet solved" scope `Interaction::
+// expires_at_ns` already carries project-wide (ADR-029 §6), not a new gap this ADR introduces.
+struct PendingCodeActAsk {
+    std::string              source;
+    std::string              language;
+    std::vector<std::string> answers_so_far;
+    std::string               tool_call_id;
+    // The most recently raised prompt -- what a caller re-reading `open_interactions()` after a
+    // second/third ask-pending would want to show; not itself load-bearing for the replay mechanism
+    // (the STORED source/language/answers are what actually drive the re-run).
+    std::string               prompt;
 };
 
 // Slice 2's narrowed durable record -- see file banner for exactly what is and isn't carried
@@ -475,6 +515,26 @@ public:
     void set_max_turns(std::optional<std::uint64_t> max_turns) noexcept { max_turns_ = max_turns; }
     [[nodiscard]] std::optional<std::uint64_t> max_turns() const noexcept { return max_turns_; }
 
+    // ADR-058 §8 (Design B) -- additive opt-in, same shape as set_suspend_for_approval/
+    // set_stream_model_calls above: unset by default (has_output_schema() false), every existing
+    // caller unaffected. `json` is 003 §4's OutputSchema<T> contract, already compiled to JSON
+    // Schema text (schema::json_schema_of<T>()) by the caller -- AgentSession stores it erased and
+    // never needs to know T (ADR-058 §4 B2). `validate` closes over the caller's real T
+    // (schema::from_json<T>/schema::from_json_value<T>), matching this codebase's own "type-driven
+    // parse is the validator" idiom (003 §4, corrected 2026-08-14). Returns `result<void>`, not a
+    // bare bool (ADR-058 §4 B3), so a real failure carries a real message. `strategy` gates whether
+    // the REQUEST carries a native structured-output constraint (run_rounds(), native only) --
+    // validation of the RESPONSE, below, applies regardless of strategy.
+    void set_output_schema(std::string json, agentengine::output_schema_strategy strategy,
+                            std::function<result<void>(std::string_view)> validate) {
+        output_schema_json_     = std::move(json);
+        output_schema_strategy_ = strategy;
+        output_schema_validate_ = std::move(validate);
+    }
+    [[nodiscard]] bool has_output_schema() const noexcept {
+        return static_cast<bool>(output_schema_validate_);
+    }
+
     [[nodiscard]] stream<RunEvent> enable_event_stream(std::pmr::memory_resource* mr,
                                                         stream_config<RunEvent> cfg = {}) {
         auto pair            = make_stream<RunEvent>(mr, cfg);
@@ -523,14 +583,23 @@ public:
                 "run.admission_denied"});
         }
 
-        bool const has_open_approval =
+        // ADR-057 §9 / §4 Finding A2: an open `codeact_ask` interaction must reject a fresh
+        // `StartRun` too, unlike a plain `input`/`auth` interaction (ADR-029 finding #5's own,
+        // deliberately narrower rule -- those "legitimately coexist with an ordinary fresh StartRun,
+        // a host's own passivate/reactivate bookkeeping"). A codeact ask's replay state
+        // (`pending_codeact_asks_`) is keyed to one specific suspended round's own `history_`/
+        // `exec_state_` -- a second concurrent `StartRun` racing that state is exactly the I1
+        // violation this check exists to prevent, the same reasoning `approval` already gets.
+        bool const has_open_approval_or_codeact_ask =
             std::any_of(open_interactions_.begin(), open_interactions_.end(), [](Interaction const& i) {
-                return i.reason == interaction_reason::approval;
+                return i.reason == interaction_reason::approval ||
+                       i.reason == interaction_reason::codeact_ask;
             });
-        if (has_open_approval) {
+        if (has_open_approval_or_codeact_ask) {
             co_return std::unexpected(agentengine::error{
                 agentengine::failure_class::contract,
-                "a round is already suspended awaiting approval -- resolve it before starting a new run",
+                "a round is already suspended awaiting approval or an agent.ask() answer -- resolve "
+                "it before starting a new run",
                 "run.approval_pending"});
         }
 
@@ -599,6 +668,17 @@ public:
                 "session.resolve_interaction.nothing_pending"});
         }
 
+        // ADR-057 §9: a `codeact_ask` interaction resolves through a genuinely different mechanism
+        // (host-driven replay against a STORED script, bypassing the model and `ExecuteCodeArgs`
+        // entirely) -- branches out here, AFTER the identical validation the approval path above
+        // already ran (open interaction found, `history_`'s tail is still the exact suspended
+        // assistant tool-call message -- same order/shape ADR-029's own finding #4 established),
+        // BEFORE `resolve_interaction_record()` erases the interaction (the codeact_ask branch may
+        // need to keep it open, if the script ask-pends again).
+        if (it->reason == interaction_reason::codeact_ask) {
+            co_return co_await resolve_codeact_ask(request, it->interaction_id);
+        }
+
         result<void> const resolved = resolve_interaction_record(it->interaction_id);
         if (!resolved) {
             co_return std::unexpected(resolved.error());
@@ -651,8 +731,16 @@ public:
                             run_event_payload::ToolCallStarted{pending_calls[i].call_id,
                                                                 pending_calls[i].tool_name});
             ToolInvocationAudit audit;
+            // ADR-060: bound fresh for THIS call only, reset immediately after regardless of outcome
+            // -- the same per-call bracketing discipline `codeact_preseeded_answers` uses one function
+            // down, applied independently here since that field's own bracket doesn't cover this site.
+            effect_context_.report_progress = [this, call_id = req.call_id](std::string_view text) {
+                emit_run_event(run_event_kind::tool_call_delta,
+                                run_event_payload::ToolCallDelta{call_id, std::string(text)});
+            };
             ToolResult result =
                 invoke_tool(tool_table, held, req, effect_context_, one_shot_approve, &audit);
+            effect_context_.report_progress = [](std::string_view) {};
             emit_run_event(run_event_kind::tool_call_finished,
                             run_event_payload::ToolCallFinished{audit.call_id, audit.ok});
             emit_run_event(run_event_kind::approval_resolved,
@@ -1116,6 +1204,127 @@ private:
         co_return response;
     }
 
+    // ADR-057 §9 (Design B: abort-and-replay for `agent.ask()`): `resolve_interaction()`'s
+    // `codeact_ask` branch, factored out here because it needs the SAME `on_context`/`invoke_tool`/
+    // `on_turn_end` shape the approval branch (`resolve_interaction()`, above) already uses, but
+    // diverges in two load-bearing ways -- (1) the call it re-invokes is built from the STORED
+    // `source`/`language`, never from `pending_calls`' own arguments (bypassing the model and the
+    // public `ExecuteCodeArgs` schema entirely, since this is host-driven replay, not a new
+    // model-issued call); (2) it may need to leave the SAME interaction open a second/third time
+    // (chained `agent.ask()` calls) rather than always closing it the way an approval resolution
+    // always does. `interaction_id` has already been validated as open, with `history_`'s tail still
+    // the exact suspended assistant tool-call message, by the caller (`resolve_interaction()`) before
+    // this is reached -- this function does not re-check either.
+    task<result<AgentResponse>> resolve_codeact_ask(ResolveInteraction const& request,
+                                                       std::string const& interaction_id) {
+        if (!request.answer.has_value()) {
+            co_return std::unexpected(error{
+                failure_class::contract,
+                "resolving a codeact_ask interaction requires an answer",
+                "session.resolve_interaction.answer_required"});
+        }
+        auto rec_it = pending_codeact_asks_.find(interaction_id);
+        if (rec_it == pending_codeact_asks_.end()) {
+            // Should be unreachable in practice -- `open_interactions_`/`pending_codeact_asks_` are
+            // always mutated together (see that map's own comment) -- but this is a real, checked
+            // guard rather than an assumed invariant, matching this project's own fail-closed
+            // discipline for anything that would otherwise be an unchecked lookup into a map keyed by
+            // caller-influenced-adjacent state.
+            co_return std::unexpected(error{
+                failure_class::fatal,
+                "internal error: no stored codeact-ask record for this open interaction",
+                "session.resolve_interaction.codeact_ask_record_missing"});
+        }
+        rec_it->second.answers_so_far.push_back(*request.answer);
+
+        emit_run_event(run_event_kind::input_resolved, run_event_payload::InteractionRef{interaction_id});
+
+        SessionContext session_ctx{session_id_, principal_, history_};
+        result<ContextContribution> contribution =
+            co_await history_provider_.on_context(session_ctx, effect_context_);
+        if (!contribution) {
+            emit_run_event(run_event_kind::run_failed,
+                            run_event_payload::RunFailed{"run.context_unavailable",
+                                                          contribution.error().message});
+            co_return std::unexpected(contribution.error());
+        }
+        ToolTable const tool_table = ToolTable::from_descriptors(contribution->tools);
+        CapabilitySet const empty_caps = CapabilitySet::grant_root({});
+        CapabilitySet const& held      = capabilities_ ? *capabilities_ : empty_caps;
+        ApprovalDecider const one_shot_approve = [](std::string_view, std::string const&) { return true; };
+
+        // Rebuilt directly from the STORED record, never from `pending_calls`' own
+        // `arguments_json` -- see this function's own top comment for why.
+        json::Value const args = json::Value::make_object({
+            {"code", json::Value::make_string(rec_it->second.source)},
+            {"language", json::Value::make_string(rec_it->second.language)},
+        });
+        ToolCallRequest const req{rec_it->second.tool_call_id, "execute_code", args,
+                                    /*arguments_tainted=*/false, /*call_index=*/0,
+                                    call_provenance::vendor_structured};
+
+        emit_run_event(run_event_kind::tool_call_started,
+                        run_event_payload::ToolCallStarted{req.call_id, req.tool_name});
+        // ADR-057 §9: the ONE place `EffectContext::codeact_preseeded_answers` is ever set -- for the
+        // exact duration of this one `invoke_tool()` call, cleared immediately after regardless of
+        // outcome, the same discipline `tool_pipeline.hpp`'s own `ctx.bound_capabilities` bracket
+        // already uses for a different per-call field on this same struct.
+        effect_context_.codeact_preseeded_answers = rec_it->second.answers_so_far;
+        // ADR-060: same bracketing discipline as `codeact_preseeded_answers` immediately above, its
+        // own independent set/clear pair around this same call -- both fields are per-call, neither
+        // implies the other.
+        effect_context_.report_progress = [this, call_id = req.call_id](std::string_view text) {
+            emit_run_event(run_event_kind::tool_call_delta,
+                            run_event_payload::ToolCallDelta{call_id, std::string(text)});
+        };
+        ToolInvocationAudit audit;
+        // Named `tool_result`, not `result` -- the latter would shadow the `agentengine::result<T>`
+        // alias template for the rest of this function's scope (a real MSVC C2760 hit while writing
+        // this, not a hypothetical style nit -- `result<void>` below would otherwise parse as
+        // `(local variable result) < void` instead of a template-id).
+        ToolResult tool_result =
+            invoke_tool(tool_table, held, req, effect_context_, one_shot_approve, &audit);
+        effect_context_.codeact_preseeded_answers.clear();
+        effect_context_.report_progress = [](std::string_view) {};
+        emit_run_event(run_event_kind::tool_call_finished,
+                        run_event_payload::ToolCallFinished{audit.call_id, audit.ok});
+
+        if (!audit.ok && audit.error_code == "codeact.ask_pending") {
+            std::string prompt;
+            if (!tool_result.content.empty()) {
+                if (auto const* e = std::get_if<Error>(&tool_result.content.front().value)) prompt = e->message;
+            }
+            rec_it->second.prompt = prompt;
+            emit_run_event(run_event_kind::input_required,
+                            run_event_payload::InteractionRef{interaction_id});
+            emit_run_event(run_event_kind::codeact_ask_requested,
+                            run_event_payload::CodeActAskRequested{req.call_id, interaction_id, prompt});
+            co_return std::unexpected(error{failure_class::contract,
+                                             "round suspended awaiting an agent.ask() answer",
+                                             kSuspendedForCodeActAsk});
+        }
+
+        // Completed -- success or an ordinary tool failure, either way NOT another ask-pending.
+        // Closes the interaction, folds the real ToolResult exactly where the original call would
+        // have landed, and continues run_rounds() normally, matching the approval branch's own shape
+        // one function up.
+        pending_codeact_asks_.erase(rec_it);
+        result<void> const erased = resolve_interaction_record(interaction_id);
+        if (!erased) co_return std::unexpected(erased.error());
+
+        std::size_t const response_msg_index = history_.size() - 1;
+        std::vector<ToolResult> results;
+        results.push_back(std::move(tool_result));
+        history_.push_back(tool_results_message(std::move(results)));
+        co_await history_provider_.on_turn_end(
+            TurnView{std::span<Message const>{history_.data() + response_msg_index,
+                                                history_.size() - response_msg_index}},
+            effect_context_);
+        emit_run_event(run_event_kind::turn_finished, run_event_payload::Turn{effect_context_.turn_index});
+        ++effect_context_.turn_index;
+        co_return co_await run_rounds();
+    }
+
     // Same shape as core/agent_session.hpp's own run_rounds() -- ported to rt::task<T>, no longer
     // templated on AskT (there is only one caller shape now, a plain `result<AgentResponse>` return),
     // otherwise byte-for-byte identical logic.
@@ -1188,6 +1397,20 @@ private:
                 contribution->messages.insert(contribution->messages.begin(), std::move(instructions_msg));
             }
             ChatRequest request{contribution->messages, contribution->tools};
+            // ADR-058 §8 (Design B) -- scoped to `native` ONLY, deliberately. Both real backends'
+            // own translation code (protocol/openai/chat_client.hpp:289-293,
+            // protocol/anthropic/chat_client.hpp:409-413) serialize `request.output_schema_json`
+            // onto the wire UNCONDITIONALLY whenever it is set -- neither checks
+            // `ChatClientCapabilities.structured_output_native` first. So this scoping is a real,
+            // load-bearing necessity, not belt-and-suspenders: if this field were populated while
+            // `output_schema_strategy_` were `tool_shaped`/`parse_and_repair` (the two strategies
+            // §3 deliberately leaves unimplemented), a backend with no real support contract for
+            // constrained decoding would still send the field to the provider, an ADR-058 open
+            // sub-question this line's own scoping resolves rather than assumes.
+            if (output_schema_validate_ &&
+                output_schema_strategy_ == agentengine::output_schema_strategy::native) {
+                request.output_schema_json = output_schema_json_;
+            }
             if (!chat_client_) {
                 emit_run_event(run_event_kind::run_failed,
                                 run_event_payload::RunFailed{"run.no_chat_client", "no ChatClientT configured"});
@@ -1222,8 +1445,35 @@ private:
                     effect_context_);
                 emit_run_event(run_event_kind::turn_finished,
                                 run_event_payload::Turn{effect_context_.turn_index});
+
+                // ADR-058 §8 (Design B) -- the round already decided "no more tool calls, this is
+                // the final answer" (B5's identified seam). Applies REGARDLESS of which strategy
+                // was chosen (native/tool_shaped/parse_and_repair all get validated the same way --
+                // only whether the REQUEST carried a native constraint differed, above). A session
+                // with no set_output_schema() call at all (output_schema_validate_ unset) never runs
+                // this branch at all -- O3's own regression/positive-control claim.
+                std::optional<std::string> structured_output_json;
+                if (output_schema_validate_) {
+                    std::string text_content = text_of(response->message);
+                    result<void> const validated = output_schema_validate_(text_content);
+                    if (!validated) {
+                        emit_run_event(run_event_kind::run_failed,
+                                        run_event_payload::RunFailed{
+                                            "run.output_schema_validation_failed",
+                                            validated.error().message});
+                        // Fail the run closed -- never a silent pass-through of unvalidated text as
+                        // if it were the structured result (ADR-058 §8, a deliberate, documented
+                        // choice; 003 §4 does not itself specify this, per ADR-058 §7's own residual).
+                        co_return std::unexpected(error{failure_class::contract,
+                                                         validated.error().message,
+                                                         "run.output_schema_validation_failed"});
+                    }
+                    structured_output_json = std::move(text_content);
+                }
+
                 emit_run_event(run_event_kind::run_finished);
-                co_return AgentResponse{response->message, response->usage};
+                co_return AgentResponse{response->message, response->usage,
+                                         std::move(structured_output_json)};
             }
 
             if (suspend_for_approval_ && !approval_decider_) {
@@ -1266,10 +1516,86 @@ private:
                 emit_run_event(run_event_kind::tool_call_started,
                                 run_event_payload::ToolCallStarted{calls[i].call_id, calls[i].tool_name});
                 ToolInvocationAudit audit;
+                // ADR-060: bound fresh for THIS call only, reset immediately after regardless of
+                // outcome -- rebinding every loop iteration is what makes two sequential calls in the
+                // same round each get their own correctly-tagged call_id, never a leaked prior binding.
+                effect_context_.report_progress = [this, call_id = req.call_id](std::string_view text) {
+                    emit_run_event(run_event_kind::tool_call_delta,
+                                    run_event_payload::ToolCallDelta{call_id, std::string(text)});
+                };
                 ToolResult result = invoke_tool(tool_table, held, req, effect_context_, approval_decider_,
                                                  &audit);
+                effect_context_.report_progress = [](std::string_view) {};
                 emit_run_event(run_event_kind::tool_call_finished,
                                 run_event_payload::ToolCallFinished{audit.call_id, audit.ok});
+
+                // ADR-057 §9: a script inside `execute_code` called `agent.ask()` with no answer yet
+                // available (Design B: abort-and-replay) -- `real_execute_code()`'s own host
+                // implementation (cli_chat.cpp) is what maps this outcome to the sentinel error code
+                // checked here; this is a real, deliberate producer/consumer contract between a
+                // host's `execute_code` tool and this generic session loop, the same shape
+                // `kSuspendedForApproval`'s own sentinel already establishes one layer up.
+                if (!audit.ok && audit.error_code == "codeact.ask_pending") {
+                    if (calls.size() != 1) {
+                        // ADR-057 §9: "a multi-call round where one call ask-pends fails closed... a
+                        // named residual, not solved here" -- deliberately NOT folding whatever
+                        // results (including this one) were already produced, and NOT invoking any
+                        // remaining calls in this round. Any side effects already committed by an
+                        // earlier call in this same round (if this ask-pending call wasn't first)
+                        // are NOT undone -- the same kind of un-reconciled residual ADR-057 §4 already
+                        // names for a script's OWN interior side effects on replay (§9's B7 test).
+                        emit_run_event(
+                            run_event_kind::run_failed,
+                            run_event_payload::RunFailed{
+                                "run.codeact_ask_in_multi_call_round_unsupported",
+                                "a script called agent.ask() inside a round with more than one "
+                                "pending tool call -- not supported (ADR-057 §9)"});
+                        co_return std::unexpected(error{
+                            failure_class::contract,
+                            "agent.ask() is not supported in a round with more than one pending tool "
+                            "call",
+                            "run.codeact_ask_in_multi_call_round_unsupported"});
+                    }
+
+                    std::string prompt;
+                    if (!result.content.empty()) {
+                        if (auto const* e = std::get_if<Error>(&result.content.front().value)) {
+                            prompt = e->message;
+                        }
+                    }
+                    std::string code, language;
+                    if (json::Value const* code_v = req.arguments.find("code");
+                        code_v != nullptr && code_v->is_string()) {
+                        code = code_v->as_string();
+                    }
+                    if (json::Value const* lang_v = req.arguments.find("language");
+                        lang_v != nullptr && lang_v->is_string()) {
+                        language = lang_v->as_string();
+                    }
+
+                    Interaction const& interaction =
+                        open_interaction(effect_context_.run_id, interaction_reason::codeact_ask);
+                    PendingCodeActAsk record;
+                    record.source = std::move(code);
+                    record.language = std::move(language);
+                    record.tool_call_id = calls[i].call_id;
+                    record.prompt = prompt;
+                    pending_codeact_asks_[interaction.interaction_id] = std::move(record);
+
+                    emit_run_event(run_event_kind::input_required,
+                                    run_event_payload::InteractionRef{interaction.interaction_id});
+                    emit_run_event(run_event_kind::codeact_ask_requested,
+                                    run_event_payload::CodeActAskRequested{
+                                        calls[i].call_id, interaction.interaction_id, prompt});
+
+                    // Suspended -- exactly the "never fold, never fabricate a response" shape the
+                    // approval branch above already uses: no history mutation, a named sentinel error
+                    // code the caller checks first.
+                    co_return std::unexpected(error{failure_class::contract,
+                                                     "round suspended awaiting an agent.ask() answer",
+                                                     kSuspendedForCodeActAsk});
+                }
+
                 results.push_back(std::move(result));
             }
 
@@ -1308,6 +1634,14 @@ public:
     // channel this way -- named as a real design question, not silently assumed to be the final shape.
     static constexpr char const* kSuspendedForApproval = "run.suspended_for_approval";
 
+    // ADR-057 §9's own sentinel, alongside `kSuspendedForApproval` immediately above -- the same
+    // "never fold, never fabricate a response" shape, checked by the caller the identical way. Fires
+    // from `run_rounds()`'s invoke loop (a script's FIRST `agent.ask()` call this round) AND from
+    // `resolve_interaction()`'s `codeact_ask` branch (a chained SECOND/THIRD `agent.ask()` call in
+    // the same script, discovered on replay) -- both cases leave the SAME `Interaction` open, just
+    // possibly with an updated stored prompt.
+    static constexpr char const* kSuspendedForCodeActAsk = "run.suspended_for_codeact_ask";
+
 private:
     std::string                                       session_id_;
     agentengine::Principal                             principal_;
@@ -1318,6 +1652,14 @@ private:
     std::string                                         last_run_id_;
     std::vector<Interaction>                            open_interactions_;
     std::uint64_t                                       interaction_counter_ = 0;
+    // ADR-057 §9 -- guarded the same way `open_interactions_` above is: every access happens inside
+    // `start_run()`/`resolve_interaction()`/`run_rounds()`, all of which run only while
+    // `session_mutex_` is held by the calling coroutine's own `AsyncMutex::Guard` (I1). Keyed by
+    // `interaction_id`, mirroring the `open_interactions_` vector's own identity for a `codeact_ask`
+    // reason -- an entry here always corresponds to exactly one entry in `open_interactions_` with
+    // the same id and `reason == interaction_reason::codeact_ask`, for as long as that interaction
+    // stays open (erased from both together, `resolve_interaction()`'s codeact_ask branch below).
+    std::unordered_map<std::string, PendingCodeActAsk> pending_codeact_asks_;
     std::optional<ChatClientT>                          chat_client_ = make_default_chat_client();
     CapabilitySet const*                                capabilities_ = nullptr;
     HistoryProviderT                                    history_provider_;
@@ -1329,6 +1671,14 @@ private:
     bool                                                  suspend_for_approval_ = false;
     bool                                                  stream_model_calls_ = false;
     bool                                                  scan_response_format_leaks_ = false;
+    // ADR-058 §8 (Design B) -- additive opt-in. Empty/unset by default; `output_schema_validate_`
+    // holding no target IS the "unset" signal (has_output_schema()), not a separate bool -- the same
+    // "the function itself is the presence flag" shape `approval_decider_` already uses one member
+    // up (`suspend_for_approval_ && !approval_decider_`).
+    std::string                                          output_schema_json_;
+    agentengine::output_schema_strategy                  output_schema_strategy_ =
+        agentengine::output_schema_strategy::native;
+    std::function<result<void>(std::string_view)>        output_schema_validate_;
     std::uint64_t                                         admission_denied_count_ = 0;
     stream_producer<RunEvent>                             run_event_producer_;
     std::unordered_map<std::string, std::uint64_t>        run_event_seq_by_run_;

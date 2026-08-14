@@ -30,7 +30,17 @@ namespace agentengine {
 // CLAUDE.md's governance for RFC-normative text): adds `approval` — a run suspended because a
 // pending tool call needs real human sign-off (`AgentSession::handle()`'s suspend-for-approval
 // path), the same "one mechanism, tagged by reason" shape `input`/`auth` already establish.
-enum class interaction_reason { input, auth, approval };  // ae-naming-lint: allow interaction_reason — 001 §2 names this concept normatively; 027 has not been updated to list it
+// ADR-057 amendment: adds `codeact_ask` — a run suspended because a script running inside
+// `execute_code` called `agent.ask()` (026 §5, Design B: abort-and-replay). Deliberately NOT the
+// same tag as plain `input`, even though `agent.ask` maps to `interaction_reason::input` in 026 §5's
+// own table: ADR-057 §4 Finding A2 found that an ordinary `input`/`auth` interaction is
+// proven-and-tested (ADR-029 finding #5) to legitimately coexist with a fresh `StartRun`, but a
+// codeact ask must NOT permit that -- its replay state (the stored script source/language/answers)
+// is keyed to one specific suspended round, and a second concurrent `StartRun` would race the same
+// `history_`/`exec_state_` the suspended script is mid-replay against. `start_run()`'s admission
+// check has a matching arm for this reason, distinct from the `input`/`auth` case it deliberately
+// still allows through.
+enum class interaction_reason { input, auth, approval, codeact_ask };  // ae-naming-lint: allow interaction_reason — 001 §2 names this concept normatively; 027 has not been updated to list it
 
 struct Interaction {  // ae-naming-lint: allow Interaction — 001 §2 names this concept normatively; 027 has not been updated to list it
     std::string        interaction_id;

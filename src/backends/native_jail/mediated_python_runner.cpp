@@ -29,6 +29,7 @@
                                                      // intent, not spike-code reuse (that rule is
                                                      // about python_lockdown.cpp/python_runner.hpp).
 #include "agentengine/trust/capability.hpp"
+#include "backends/native_jail/agent_ask_codegen.hpp"  // ADR-057 §9, 026 §5
 #include "backends/native_jail/agent_files_data_codegen.hpp"  // Milestone 3 Phase G2, 026 §5
 #include "backends/native_jail/agent_tools_codegen.hpp"  // Milestone 3 Phase G1, 026 §4/§5
 #include "backends/native_jail/output_discipline.hpp"  // Milestone 3 Phase F3, 010 §3 items 4/5
@@ -111,6 +112,37 @@ EffectContext* g_current_ctx = nullptr;      // set at run() entry, cleared at r
 MediatedPythonConfig const* g_current_config = nullptr;  // for mount_roots lookup inside the open()
                                                            // callback; stable for the object's whole
                                                            // life, set once at construction.
+
+// ADR-057 §9 (Design B: abort-and-replay for `agent.ask()`). Same "set at run() entry, cleared at
+// run() exit, safe as a bare TU-static because the GIL means there is never more than one run() call
+// active at a time in this process" shape `g_current_ctx` above already documents -- these two
+// mirror it exactly. `g_preseeded_answers` points at THIS call's own
+// `ExecRequest::preseeded_answers` (never owned here); `g_preseeded_answer_index` is the count of
+// preseeded answers `_ae_internal.ask_or_raise` has already consumed THIS run() call, reset to 0 at
+// every run() entry -- a fresh replay call always starts consuming from index 0 again, by design
+// (ADR-057 §9: "an unconsumed preseeded answer at the current call index is returned directly... and
+// the index advances").
+std::vector<std::string> const* g_preseeded_answers = nullptr;
+std::size_t                     g_preseeded_answer_index = 0;
+
+// The `AskPending` sentinel exception type (ADR-057 §9) -- created once, at initialize() time
+// (`install_ask_pending_exception`, below), for the whole process's lifetime, mirroring
+// `g_finder_type`'s own one-time-install shape. Never placed in `sys.modules`/any guest-reachable
+// namespace under its own right (only `_ae_internal.ask_or_raise` ever raises it) -- guest code can
+// catch it via `except Exception` like any other exception, but has no name to import or re-raise it
+// under, the same "no Python-reachable handle to the real mechanism" posture
+// `g_real_socket_connect`'s own comment establishes for a different primitive.
+PyObject* g_ask_pending_exc_type = nullptr;
+
+result<void> install_ask_pending_exception() {
+    g_ask_pending_exc_type = PyErr_NewException("agentengine._ae_internal.AskPending", nullptr, nullptr);
+    if (!g_ask_pending_exc_type) {
+        PyErr_Clear();
+        return std::unexpected(error{failure_class::fatal, "could not create the AskPending exception type",
+                                      "python.ask_pending_exc_install_failed"});
+    }
+    return {};
+}
 
 PyObject* g_real_meta_path = nullptr;  // the ORIGINAL sys.meta_path list, captured before
                                         // replacement -- our finder delegates allowed names to these.
@@ -666,11 +698,42 @@ PyObject* Internal_call_tool(PyObject* /*self*/, PyObject* args) {
     return PyUnicode_FromString(reply_json.c_str());
 }
 
+// `_ae_internal.ask_or_raise(prompt) -> str` -- ADR-057 §9's replay mechanism, the ONLY way the
+// bootstrap-installed `agent.ask` (agent_ask_codegen.hpp) reaches an answer. Consults THIS run()
+// call's own preseeded-answer list (`g_preseeded_answers`/`g_preseeded_answer_index`, set at run()
+// entry) in call order: the Nth call this run() makes returns `preseeded_answers[N]` directly and
+// advances the index, exactly like an ordinary function returning a value -- no suspension, no
+// callback, nothing CPython-thread-unsafe (ADR-057 §4 Finding 0-2's whole reason Design C was
+// defeated does not apply here: this function ALWAYS returns or raises synchronously, on the one
+// thread that ever touches this interpreter). Once the preseeded list is exhausted, the NEXT call
+// raises the `AskPending` sentinel carrying the prompt text as its one argument -- caught in
+// `run_capturing()` below, never allowed to reach `PyErr_Print()`'s ordinary traceback path (an
+// ask-pending is not a script error).
+PyObject* Internal_ask_or_raise(PyObject* /*self*/, PyObject* args) {
+    char const* prompt_c = nullptr;
+    if (!PyArg_ParseTuple(args, "s", &prompt_c)) return nullptr;
+
+    if (g_preseeded_answers && g_preseeded_answer_index < g_preseeded_answers->size()) {
+        std::string const& answer = (*g_preseeded_answers)[g_preseeded_answer_index];
+        ++g_preseeded_answer_index;
+        return PyUnicode_FromString(answer.c_str());
+    }
+
+    if (!g_ask_pending_exc_type) {
+        PyErr_SetString(PyExc_RuntimeError,
+                         "internal error: the AskPending exception type was never installed");
+        return nullptr;
+    }
+    PyErr_SetString(g_ask_pending_exc_type, prompt_c);
+    return nullptr;
+}
+
 PyMethodDef g_internal_methods[] = {
     {"open", Internal_open, METH_VARARGS, nullptr},
     {"listdir", Internal_listdir, METH_VARARGS, nullptr},
     {"do_connect", Internal_do_connect, METH_VARARGS, nullptr},
     {"call_tool", Internal_call_tool, METH_VARARGS, nullptr},
+    {"ask_or_raise", Internal_ask_or_raise, METH_VARARGS, nullptr},
     {nullptr, nullptr, 0, nullptr},
 };
 
@@ -891,6 +954,48 @@ result<void> run_agent_files_data_bootstrap() {
     return {};
 }
 
+// ADR-057 §9 (026 §5): executes `agent_ask_codegen.hpp`'s static module source, identical shape to
+// `run_agent_files_data_bootstrap` immediately above (own fresh throwaway globals dict, own fresh
+// `_ae_internal` module -- the ONE built during `run_mediation_bootstrap` lived only in that
+// function's own dict, already gone by the time this runs).
+result<void> run_agent_ask_bootstrap() {
+    PyObject* internal_module = PyModule_Create(&g_internal_moddef);
+    if (!internal_module) {
+        return std::unexpected(error{failure_class::fatal, "could not create _ae_internal module for "
+                                      "the agent.ask bootstrap", "python.agent_ask_bootstrap_failed"});
+    }
+
+    PyObject* globals = PyDict_New();
+    PyDict_SetItemString(globals, "__builtins__", PyEval_GetBuiltins());
+    PyDict_SetItemString(globals, "_ae_internal", internal_module);
+    Py_DECREF(internal_module);
+
+    std::string module_source = generate_agent_ask_module_source();
+    PyObject* run_result = PyRun_String(module_source.c_str(), Py_file_input, globals, globals);
+    bool ok = run_result != nullptr;
+    std::string err;
+    if (!run_result) {
+        PyObject *type = nullptr, *value = nullptr, *tb = nullptr;
+        PyErr_Fetch(&type, &value, &tb);
+        PyErr_NormalizeException(&type, &value, &tb);
+        if (value) {
+            PyObject* s = PyObject_Str(value);
+            if (s) { err = PyUnicode_AsUTF8(s); Py_DECREF(s); }
+        }
+        Py_XDECREF(type);
+        Py_XDECREF(value);
+        Py_XDECREF(tb);
+    } else {
+        Py_DECREF(run_result);
+    }
+    Py_DECREF(globals);
+    if (!ok) {
+        return std::unexpected(error{failure_class::fatal, "agent.ask bootstrap raised: " + err,
+                                      "python.agent_ask_bootstrap_failed"});
+    }
+    return {};
+}
+
 std::unordered_set<std::string> snapshot_current_module_names() {
     std::unordered_set<std::string> names;
     PyObject* modules = PyImport_GetModuleDict();  // borrowed
@@ -1030,11 +1135,29 @@ result<void> MediatedPythonRunner::initialize() {
         if (!agent_files_data) return std::unexpected(agent_files_data.error());
     }
 
+    // ADR-057 §9 (026 §5's `agent.ask`): same "runs BEFORE the keep-set snapshot, using the SAME
+    // pre_bootstrap_modules baseline" reasoning G1/G2's own bootstraps already establish -- so
+    // `agent`/`agent.ask` (newly created here) survive `sweep_to_keep_set()` below instead of being
+    // deleted right after creation. Gated on the dedicated `expose_agent_ask` opt-in, matching G2's
+    // own `expose_agent_files_data` gate.
+    if (config_.expose_agent_ask) {
+        auto agent_ask = run_agent_ask_bootstrap();
+        if (!agent_ask) return std::unexpected(agent_ask.error());
+    }
+
     compute_effective_keep_set(pre_bootstrap_modules);
     sweep_to_keep_set();
 
     auto finder = install_finder();
     if (!finder) return std::unexpected(finder.error());
+
+    // ADR-057 §9: installed unconditionally (cheap -- one PyErr_NewException call), independent of
+    // `expose_agent_ask`, mirroring `install_finder()`'s own always-on shape immediately above --
+    // there is no meaningful "half configured" state to gate this against, and a future session that
+    // opts into agent.ask via `refresh_agent_tools`-style reconfiguration (not built this pass) would
+    // otherwise need a second install point.
+    auto ask_pending_exc = install_ask_pending_exception();
+    if (!ask_pending_exc) return std::unexpected(ask_pending_exc.error());
 
     g_package_policy_allowlist = &config_.package_policy_allowlist;
     g_current_config = &config_;
@@ -1079,7 +1202,46 @@ struct CapturedOutput {
     // Milestone 3 Phase F3 (010 §3's "value never print()-ed" gap) -- empty means no trailing
     // expression value was found/produced this call, not "unpopulated."
     std::string result_repr;
+    // ADR-057 §9: set iff the script's execution ended with an unconsumed `agent.ask()` call --
+    // `std::nullopt` for every ordinary completion (success OR an ordinary script exception, which
+    // still goes through the normal `PyErr_Print()`-to-stderr-capture path unchanged).
+    std::optional<std::string> ask_prompt;
 };
+
+// ADR-057 §9: if the currently-set Python exception is the `AskPending` sentinel
+// (`g_ask_pending_exc_type`, installed once at initialize() time), fetches and clears it, extracts
+// the prompt text carried as the exception's own argument, and returns true -- the caller's signal
+// to skip the ordinary `PyErr_Print()`-to-stderr path entirely (an ask-pending is a genuine, orderly
+// suspension outcome, not a script error to report). Returns false, leaving whatever exception state
+// existed untouched, for every other case (no exception at all, or a genuine script exception) --
+// the caller's own `PyErr_Print()` call is what handles those, unchanged from before this ADR.
+bool check_and_consume_ask_pending(std::optional<std::string>& out_prompt) {
+    if (!PyErr_Occurred()) return false;
+    if (!g_ask_pending_exc_type || !PyErr_ExceptionMatches(g_ask_pending_exc_type)) return false;
+
+    PyObject *type = nullptr, *value = nullptr, *tb = nullptr;
+    PyErr_Fetch(&type, &value, &tb);
+    PyErr_NormalizeException(&type, &value, &tb);
+    std::string prompt;
+    if (value) {
+        PyObject* args = PyObject_GetAttrString(value, "args");
+        if (args && PyTuple_Check(args) && PyTuple_Size(args) >= 1) {
+            PyObject* arg0 = PyTuple_GetItem(args, 0);  // borrowed
+            PyObject* s = PyObject_Str(arg0);
+            if (s) {
+                char const* c = PyUnicode_AsUTF8(s);
+                if (c) prompt = c;
+                Py_DECREF(s);
+            }
+        }
+        Py_XDECREF(args);
+    }
+    Py_XDECREF(type);
+    Py_XDECREF(value);
+    Py_XDECREF(tb);
+    out_prompt = std::move(prompt);
+    return true;
+}
 
 // ============================================================================================
 // Milestone 3 Phase F3's result_repr split (010 §3 items 4/5). Finds a plausible EXEC/EVAL split
@@ -1201,6 +1363,10 @@ result<CapturedOutput> run_capturing(std::string const& source) {
     PyObject* main_dict = main_module ? PyModule_GetDict(main_module) : nullptr;  // borrowed
 
     std::string result_repr;
+    // ADR-057 §9: populated iff the script ended with an unconsumed `agent.ask()` call -- checked at
+    // every point below that would otherwise call `PyErr_Print()`, so an ask-pending is intercepted
+    // BEFORE it would be reported as an ordinary script exception.
+    std::optional<std::string> ask_prompt;
     if (main_dict) {
         auto split = split_trailing_expression(source);
         if (split) {
@@ -1225,16 +1391,18 @@ result<CapturedOutput> run_capturing(std::string const& source) {
                         }
                     }
                     Py_DECREF(value);
-                } else {
+                } else if (!check_and_consume_ask_pending(ask_prompt)) {
                     PyErr_Print();  // the eval part raised -- goes to stderr capture, like any exception.
                 }
-            } else {
+            } else if (!check_and_consume_ask_pending(ask_prompt)) {
                 PyErr_Print();
             }
         } else {
             PyObject* run_result = PyRun_String(source.c_str(), Py_file_input, main_dict, main_dict);
             if (!run_result) {
-                PyErr_Print();  // writes the traceback to sys.stderr -- currently our StringIO capture.
+                if (!check_and_consume_ask_pending(ask_prompt)) {
+                    PyErr_Print();  // writes the traceback to sys.stderr -- currently our StringIO capture.
+                }
             } else {
                 Py_DECREF(run_result);
             }
@@ -1251,6 +1419,7 @@ result<CapturedOutput> run_capturing(std::string const& source) {
 
     CapturedOutput co;
     co.result_repr = std::move(result_repr);
+    co.ask_prompt = std::move(ask_prompt);
     PyObject* out_text = PyObject_CallMethod(out_capture, "getvalue", nullptr);
     PyObject* err_text = PyObject_CallMethod(err_capture, "getvalue", nullptr);
     if (out_text) { char const* s = PyUnicode_AsUTF8(out_text); if (s) co.out_text = s; Py_DECREF(out_text); }
@@ -1276,12 +1445,19 @@ result<ExecOutcome> MediatedPythonRunner::run(ExecRequest request, ExecState& st
 
     g_current_ctx = &ctx;  // real per-call capability freshness: every open()/socket() check made
                             // during this run() consults THIS ctx, not one fixed at construction.
+    // ADR-057 §9: this call's own replay state -- reset at every run() entry (a fresh call, whether
+    // a genuine first attempt or a host-driven replay, always starts consuming preseeded answers
+    // from index 0). Cleared again at exit below, the same bracket `g_current_ctx` already uses.
+    g_preseeded_answers = &request.preseeded_answers;
+    g_preseeded_answer_index = 0;
     sync_state_into_process(state);
 
     auto captured = run_capturing(request.source);
 
     sync_process_into_state(state);
     g_current_ctx = nullptr;
+    g_preseeded_answers = nullptr;
+    g_preseeded_answer_index = 0;
 
     if (!captured) return std::unexpected(captured.error());
 
@@ -1292,6 +1468,19 @@ result<ExecOutcome> MediatedPythonRunner::run(ExecRequest request, ExecState& st
     auto stdout_capped = cap_output(std::move(captured->out_text), config_.output_cap_bytes);
     auto stderr_capped = cap_output(std::move(captured->err_text), config_.output_cap_bytes);
     auto repr_capped = cap_output(std::move(captured->result_repr), config_.output_cap_bytes);
+
+    // ADR-057 §9: an ask-pending outcome is a genuine, orderly suspension, not an ordinary
+    // completion -- surfaced as its own `exec_outcome_class`, never folded into `ok` with the prompt
+    // hidden in `stderr_text`. stdout/stderr captured up to the ask are still meaningful (real side
+    // effects already ran) and are still returned, matching an ordinary `ok` outcome's own shape.
+    if (captured->ask_prompt.has_value()) {
+        ExecOutcome ask_outcome{};
+        ask_outcome.klass = exec_outcome_class::ask_pending;
+        ask_outcome.stdout_text = std::move(stdout_capped.text);
+        ask_outcome.stderr_text = std::move(stderr_capped.text);
+        ask_outcome.ask_prompt = std::move(*captured->ask_prompt);
+        return ask_outcome;
+    }
 
     ExecOutcome outcome{};
     outcome.klass = exec_outcome_class::ok;

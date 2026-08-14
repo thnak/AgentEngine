@@ -134,6 +134,17 @@ AE_JSON_SCHEMA(ExecuteCodeReply, ok, stdout_text, stderr_text, result_repr)
             cfg.mount_roots[mount_id] = host_dir;
         }
         cfg.expose_agent_files_data = true;
+        // ADR-057 §9 (026 §5's `agent.ask`, Design B: abort-and-replay) -- real wiring so the CLI's
+        // own execute_code tool can reach `agent.ask()`, matching this file's own `expose_agent_
+        // files_data = true` one line up. This CLI does not itself implement a host-driven resolve/
+        // replay loop (that is `rt::AgentSession::resolve_interaction()`'s job, proven by
+        // tests/test_agent_session_suspend_codeact_ask.cpp against a real embedded interpreter, not
+        // this CLI's own single-session, non-AgentSession-hosted `real_execute_code()` wiring) -- a
+        // script calling `agent.ask()` here simply surfaces `ExecOutcome::klass == ask_pending` as
+        // an ordinary tool failure (`codeact.ask_pending`) with no resume path, same as any other
+        // unresolved suspension a host has not wired a UI for yet (matching ADR-029 §6's identical
+        // scoping call for this CLI's own approval path).
+        cfg.expose_agent_ask = true;
         return native_jail::MediatedPythonRunner(std::move(cfg));
     }();
     static bool const initialized = [] {
@@ -495,9 +506,25 @@ private:
             native_jail::ToolBridgeConfig{*bridged, /*capabilities=*/{}, /*approved=*/true});
         if (!refreshed) return std::unexpected(refreshed.error());
 
-        ExecRequest req{a.language.empty() ? "python" : a.language, a.code};
+        // ADR-057 §9: `ctx.codeact_preseeded_answers` is host-driven replay state, set (only) by
+        // `rt::AgentSession::resolve_interaction()`'s `codeact_ask` branch immediately before
+        // re-invoking this SAME function against a STORED script -- see that field's own comment on
+        // `EffectContext` for why it is threaded this way rather than as a new `ExecuteCodeArgs`
+        // field. Empty for every ordinary, model-issued call (the common case), so this line changes
+        // nothing about this tool's existing behavior for a script that never calls `agent.ask()`.
+        ExecRequest req{a.language.empty() ? "python" : a.language, a.code, ctx.codeact_preseeded_answers};
         auto outcome = runner.run(req, exec_state_, ctx);
         if (!outcome) return std::unexpected(outcome.error());
+
+        // ADR-057 §9: an ask-pending outcome is mapped to a ToolResult carrying the sentinel error
+        // code `codeact.ask_pending`, with the prompt as the error's own message -- NEVER folded as
+        // an ordinary success or failure. `rt::AgentSession::run_rounds()`/`resolve_interaction()`
+        // (rt/agent_session.hpp) is what recognizes this exact code and turns it into a real
+        // suspend/resume cycle; this CLI's own driver (main(), above) has no such wiring, so a script
+        // calling `agent.ask()` here simply surfaces as an ordinary tool failure with this code.
+        if (outcome->klass == exec_outcome_class::ask_pending) {
+            return std::unexpected(error{failure_class::contract, outcome->ask_prompt, "codeact.ask_pending"});
+        }
 
         ExecuteCodeReply reply;
         reply.ok = (outcome->klass == exec_outcome_class::ok);

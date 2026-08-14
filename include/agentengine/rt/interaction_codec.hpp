@@ -19,9 +19,10 @@ namespace agentengine::rt {
 [[nodiscard]] inline agentengine::json::Value interaction_to_json(agentengine::Interaction const& i) {
     char const* reason_str = "input";
     switch (i.reason) {
-        case agentengine::interaction_reason::input:    reason_str = "input";    break;
-        case agentengine::interaction_reason::auth:     reason_str = "auth";     break;
-        case agentengine::interaction_reason::approval: reason_str = "approval"; break;
+        case agentengine::interaction_reason::input:       reason_str = "input";       break;
+        case agentengine::interaction_reason::auth:        reason_str = "auth";        break;
+        case agentengine::interaction_reason::approval:    reason_str = "approval";    break;
+        case agentengine::interaction_reason::codeact_ask: reason_str = "codeact_ask"; break;
     }
     return agentengine::json::Value::make_object({
         {"interaction_id", agentengine::json::Value::make_string(i.interaction_id)},
@@ -53,6 +54,7 @@ namespace agentengine::rt {
     if (r == "input") out.reason = agentengine::interaction_reason::input;
     else if (r == "auth") out.reason = agentengine::interaction_reason::auth;
     else if (r == "approval") out.reason = agentengine::interaction_reason::approval;
+    else if (r == "codeact_ask") out.reason = agentengine::interaction_reason::codeact_ask;
     else {
         return std::unexpected(agentengine::error{agentengine::failure_class::contract,
                                                     "unknown interaction reason: " + r,

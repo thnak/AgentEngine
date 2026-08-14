@@ -108,7 +108,16 @@ provider capability (004) and recorded in the trace:
 3. **Parse-and-repair** — bounded re-ask on validation failure. Last resort; counted in metrics
    because a high repair rate is a provider or prompt defect worth surfacing.
 
-Validation is JSON Schema 2020-12, matching MCP's tool schemas, so one validator serves both.
+**Validation is type-driven parsing against the declared C++ shape, matching MCP's tool-argument
+validation, so one mechanism serves both** (corrected 2026-08-14, `decisions/ADR-058-agent-output-
+live-wiring.md` §4 C1/C2 — this line previously described validation as a generic JSON Schema
+2020-12 rule engine; direct inspection found neither `OutputSchema<T>` nor tool arguments were ever
+checked against one, and the schema this codebase's own generator (`schema::json_schema_of<T>`)
+compiles is structurally incapable of expressing anything beyond type/required-ness — no `pattern`,
+length, numeric bound, or `enum` constraint is ever emitted — so a real rule engine run against these
+schemas would reject nothing a type-driven parse doesn't already reject. If the schema generator is
+later enriched to emit those constraints, revisit whether a real validator earns its cost then; until
+it is, one exists to enforce nothing beyond what type-driven parsing already does).
 
 ## 5. Serialization and the wire
 

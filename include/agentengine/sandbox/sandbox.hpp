@@ -138,9 +138,27 @@ struct SandboxHandle {  // ae-naming-lint: allow SandboxHandle — pre-existing 
 struct ExecRequest {  // ae-naming-lint: allow ExecRequest — pre-existing M0 scaffolding, reconcile at owning milestone
     std::string language;  // "python" | "shell" | ... (010 §1)
     std::string source;
+    // ADR-057 §9 (Design B: abort-and-replay for `agent.ask()`, 026 §5): host-driven REPLAY state,
+    // never model-facing -- unlike `language`/`source` above (which mirror the model-visible
+    // `ExecuteCodeArgs` schema, cli_chat.cpp), this field is deliberately NOT part of that JSON
+    // schema. Consumed in call order by `agent.ask(prompt)`'s C implementation
+    // (`_ae_internal.ask_or_raise`, mediated_python_runner.cpp): the Nth call to `agent.ask()` this
+    // `run()` invocation makes returns `preseeded_answers[N]` directly (advancing an internal index)
+    // if one exists at that position; once exhausted, the NEXT `agent.ask()` call raises the
+    // sentinel `AskPending` exception instead, translated to `ExecOutcome{klass: ask_pending,
+    // ask_prompt}`. Empty (the default) means an ordinary, non-replay call -- every `Runner` that
+    // never implements `agent.ask()` (e.g. a shell runner) simply ignores this field, the same
+    // "unused field, not a gap" convention `ExecOutcome::result_repr`'s own comment documents one
+    // struct over.
+    std::vector<std::string> preseeded_answers;
 };
 
-enum class exec_outcome_class { ok, timeout, oom, crash, policy_violation, escape_attempt };  // ae-naming-lint: allow exec_outcome_class — pre-existing M0 scaffolding, reconcile at owning milestone
+// ADR-057 §9 (Design B): `ask_pending` -- a script's `agent.ask()` call had no more preseeded
+// answers to consume this `run()` invocation. NOT a crash/timeout/policy outcome: the interpreter's
+// C API call has already returned by the time anyone would wait on a human (ADR-057 §4's own reason
+// Design A/C were defeated but Design B was not), so this is a genuine, orderly outcome class, not
+// an escape hatch bolted onto `crash`.
+enum class exec_outcome_class { ok, timeout, oom, crash, policy_violation, escape_attempt, ask_pending };  // ae-naming-lint: allow exec_outcome_class — pre-existing M0 scaffolding, reconcile at owning milestone
 
 struct ExecOutcome {  // ae-naming-lint: allow ExecOutcome — pre-existing M0 scaffolding, reconcile at owning milestone
     exec_outcome_class klass = exec_outcome_class::ok;
@@ -161,6 +179,11 @@ struct ExecOutcome {  // ae-naming-lint: allow ExecOutcome — pre-existing M0 s
     // worktree mounts (008 §2/010 §3a keep them mount-agnostic), so this field starts empty and is
     // filled in by whichever layer just did the harvesting.
     std::vector<ContentItem> artifacts;
+    // ADR-057 §9 (Design B): the prompt text a script's `agent.ask()` call raised, when
+    // `klass == ask_pending` -- empty otherwise, the same "empty means legitimately absent, not
+    // unpopulated" convention `result_repr` above already documents for exactly this reason (a
+    // `Runner` that never implements `agent.ask()` never sets this field either).
+    std::string ask_prompt;
 };
 
 // concept, not a base class (008 §2). Return types are constrained to their synchronous

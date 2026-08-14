@@ -2204,3 +2204,527 @@ export const apiRfcLinks: RfcLink[] = [
   { label: "015 — Declarative Agent Format", href: gh("015-Declarative-Agent-Format.md"), status: "real" },
   { label: "025 — Worktree and Virtual Filesystem", href: gh("025-Worktree-and-Virtual-Filesystem.md"), status: "real" },
 ];
+
+// ---- Trust & Sandbox page: RFC 008 §2a/§4/§4a (backend mechanics, custom backends, remote
+// callback auth) and §5-§8 (determinism/replay, lifetime/pooling/state, failure & abuse,
+// observability). Ported from a pre-i18n draft into the bilingual copy.en/copy.vi shape the rest
+// of this page and file already use -- prose fields are Record<Lang, T[]>, code snippets/ADR
+// citations/file paths/test names stay identical in both languages since they're not prose.
+
+// ---- 008 §4/§2a/§4a: backend mechanics, custom backends, remote callback auth ------------------
+
+export interface SandboxMechanicsRow {
+  axis: string;
+  nativeJail: string;
+  wasm: string;
+}
+
+// What "capability enforcement per backend" (008 §4) concretely means for the two backends that
+// exist as real code today -- read directly off native_jail_backend.cpp/.hpp and wasm_backend.cpp/
+// .hpp, not paraphrased from the RFC table alone. `remote` is deliberately excluded from this table:
+// it is scaffolding only (no live backend to read a mechanism off), which is exactly §4a's subject.
+export const sandboxBackendMechanicsRows: Record<Lang, SandboxMechanicsRow[]> = {
+  en: [
+    {
+      axis: "Boundary model",
+      nativeJail: "OS process jail -- AppContainer identity/token (Windows) + Job Object resource limits. Kernel-enforced, per-OS.",
+      wasm: "Software capability model -- no OS boundary at all. A component can only reach what the host linker actually defined for it.",
+    },
+    {
+      axis: "What a grant becomes, concretely",
+      nativeJail: "A SECURITY_CAPABILITIES token attribute + ACL grants on mounted paths (AppContainerProfile::grant_path) + JobObjectLimits counters -- set up ONCE, at process launch.",
+      wasm: "Which ae:tool/* host interfaces load_component() decides to link at all -- computed ONCE per load, from the component's own declared imports intersected with what was granted.",
+    },
+    {
+      axis: "Enforcement point",
+      nativeJail: "OS access-check on every open()/socket() PLUS interpreter-level mediation of both (008 §1b) as the PRIMARY layer -- the kernel ACL is backstop, not primary, for reads (see finding below).",
+      wasm: "Every gated host callback (cb_fs_read, cb_http_request, cb_resolve_secret, ...) is itself the only way in -- there is no syscall to make, so there is no second layer to compare it against.",
+    },
+    {
+      axis: "A real gap this project measured",
+      nativeJail: "AppContainer's default-deny ACL model is NOT a sufficient filesystem boundary by itself -- win.ini and drivers\\etc\\hosts carry ALL (RESTRICTED) APPLICATION PACKAGES read ACEs by Windows' own default, independent of any grant (ADR-004 §6 finding 1).",
+      wasm: "ae:tool/blob and ae:tool/tool-call are recognized in the WIT contract but never linked -- a component that imports either always fails load_component() with wasm.unimplemented_import, not a silent no-op (ADR-010 scope note).",
+    },
+  ],
+  vi: [
+    {
+      axis: "Mô hình ranh giới",
+      nativeJail: "Jail tiến trình cấp hệ điều hành -- token identity của AppContainer (Windows) + giới hạn tài nguyên của Job Object. Được kernel thực thi, theo từng OS.",
+      wasm: "Mô hình capability phần mềm -- hoàn toàn không có ranh giới ở cấp OS. Một component chỉ có thể chạm tới những gì host linker thực sự định nghĩa cho nó.",
+    },
+    {
+      axis: "Một sự cấp phát cụ thể trở thành gì",
+      nativeJail: "Một thuộc tính token SECURITY_CAPABILITIES + các ACL cấp trên những path được mount (AppContainerProfile::grant_path) + bộ đếm JobObjectLimits -- được thiết lập MỘT LẦN, tại thời điểm khởi chạy tiến trình.",
+      wasm: "Những host interface ae:tool/* nào mà load_component() quyết định link vào -- được tính MỘT LẦN cho mỗi lần load, từ giao của các import mà component tự khai báo với những gì đã được cấp.",
+    },
+    {
+      axis: "Điểm thực thi",
+      nativeJail: "Kiểm tra truy cập của OS trên mỗi open()/socket() CỘNG VỚI việc trung gian hóa (mediation) cả hai ở cấp trình thông dịch (008 §1b) như lớp CHÍNH -- ACL của kernel chỉ là lớp dự phòng, không phải lớp chính, đối với việc đọc (xem phát hiện bên dưới).",
+      wasm: "Mỗi host callback bị kiểm soát (cb_fs_read, cb_http_request, cb_resolve_secret, ...) tự nó là cách DUY NHẤT để vào -- không có syscall nào để thực hiện, nên không có lớp thứ hai nào để so sánh với nó.",
+    },
+    {
+      axis: "Một khoảng trống có thật mà dự án này đã đo được",
+      nativeJail: "Mô hình ACL mặc định-từ-chối của AppContainer KHÔNG PHẢI là một ranh giới filesystem đủ mạnh nếu đứng một mình -- win.ini và drivers\\etc\\hosts mang các ACE cho phép đọc dành cho ALL (RESTRICTED) APPLICATION PACKAGES theo mặc định của chính Windows, độc lập với bất kỳ sự cấp phát nào (ADR-004 §6, phát hiện 1).",
+      wasm: "ae:tool/blob và ae:tool/tool-call được nhận diện trong hợp đồng WIT nhưng không bao giờ được link -- một component import một trong hai interface này luôn khiến load_component() thất bại với wasm.unimplemented_import, không phải một no-op âm thầm (ghi chú phạm vi của ADR-010).",
+    },
+  ],
+};
+
+// native_jail_backend.cpp's exec(): the AppContainer + Job Object setup that turns a SandboxSpec
+// into a real restricted process, trimmed to the capability-relevant lines. Comments are the file's
+// own, not summarized. Code/comments are language-neutral -- identical in both copy.en and copy.vi.
+export const nativeJailProcessLaunchSnippet = `// src/backends/native_jail/native_jail_backend.cpp -- NativeJailBackend::exec() (trimmed)
+
+SECURITY_CAPABILITIES sec_cap{};
+sec_cap.AppContainerSid = shared.profile->sid();   // identity: what this process IS, not a syscall filter
+sec_cap.Capabilities = nullptr;                    // zero granted Windows capabilities (ADR-004 AC-S1)
+sec_cap.CapabilityCount = 0;                        // -- denies NetOut/socket by construction
+
+DWORD child_process_policy = PROCESS_CREATION_CHILD_PROCESS_RESTRICTED;  // 008 §4 "Exec (nested): denied"
+UpdateProcThreadAttribute(attr_list, 0, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
+                           &sec_cap, sizeof(sec_cap), nullptr, nullptr);
+UpdateProcThreadAttribute(attr_list, 0, PROC_THREAD_ATTRIBUTE_CHILD_PROCESS_POLICY,
+                           &child_process_policy, sizeof(child_process_policy), nullptr, nullptr);
+
+// CREATE_SUSPENDED: assign to the Job Object BEFORE the entry point runs, so every ResourceLimits
+// axis applies from the guest's very first instruction, not after some head start.
+CreateProcessW(nullptr, mutable_cmdline.data(), nullptr, nullptr, /*bInheritHandles=*/TRUE,
+                EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
+                env_block.data(), inst.cwd.empty() ? nullptr : inst.cwd.c_str(), &si, &pi);
+inst.job.assign_process(pi.hProcess);
+ResumeThread(pi.hThread);
+
+// wall_ms, not cpu_ms, is what this backend reliably enforces (ADR-004 §10: JOB_OBJECT_LIMIT_JOB_TIME
+// fired automatically in only 3 of 11 measured runs). The wall-clock watcher below is trusted instead.
+auto wait_outcome = inst.job.wait_or_kill(pi.hProcess, std::chrono::milliseconds{inst.limits.wall_ms});`;
+
+// wasm_backend.cpp's load_component(): the real two-stage import-gating check, trimmed. This is
+// what "host function imports gated by the component's granted capabilities at instantiation"
+// means concretely -- not a description of the idea, the actual loop.
+export const wasmImportGatingSnippet = `// src/backends/wasm/wasm_backend.cpp -- WasmBackend::load_component() (trimmed, ADR-010 §3.1/§3.3)
+
+for (std::size_t i = 0; i < wasmtime_component_type_import_count(ty, engine); ++i) {
+    std::string const name = /* this component's i'th declared WIT import, e.g. "ae:tool/fs@1.0.0" */;
+    interface_class const cls = classify_interface(name);
+
+    if (cls == interface_class::unknown) {
+        // NOT a blocklist miss -- an import outside the ae:tool contract entirely fails to load.
+        return std::unexpected({failure_class::contract,
+            "component imports an interface outside the ae:tool contract: " + name,
+            "wasm.unknown_import"});
+    }
+    if (cls == interface_class::unimplemented) {   // ae:tool/blob, ae:tool/tool-call
+        return std::unexpected({failure_class::contract,
+            "component imports an unimplemented ae:tool host interface: " + name,
+            "wasm.unimplemented_import"});
+    }
+    if (cls != interface_class::always_ok) {
+        // Stage 1: does the PLUGIN'S OWN manifest even request this capability class?
+        if (!interface_covered(cls, manifest.requested_capabilities))
+            return std::unexpected({failure_class::policy, "manifest does not request " + name,
+                                     "wasm.manifest_capability_not_requested"});
+        // Stage 2: did the OPERATOR actually grant it to this sandbox? (007 §3 CapabilitySet::contains
+        // -- the same check every other capability path uses, not a parallel one built for wasm.)
+        if (!inst.operator_grant.contains_kind(capability_kind_of(/* matching requested cap */)))
+            return std::unexpected({failure_class::policy, "operator did not grant " + name,
+                                     "wasm.operator_grant_missing"});
+    }
+    classes.push_back(cls);   // only imports that survive BOTH stages reach the linker at all
+}
+// Later, per invoke_tool() call: the linker defines a host function ONLY for interfaces in \`classes\`
+// -- an interface never imported never gets wired up, whether or not it was granted.`;
+
+// The per-call sequence 008 §4's "host function import (WIT)" row compresses into five words --
+// invoke_tool()'s real binding/revocation order, ADR-010 §3.2, mirroring 006 §3 step 10's
+// unconditional-revoke rule for the native tool pipeline (same idiom, different backend).
+export const capabilityEnforcementSteps: Record<Lang, PipelineStep[]> = {
+  en: [
+    { index: "1", title: "Bind (never the whole grant)", body: "For each capability the COMPONENT'S OWN manifest requested -- never the operator's full CapabilitySet -- operator_grant.bind(requirement) is tried. One BoundCapability per requested entry." },
+    { index: "2", title: "Link only what's bound", body: "The linker defines a host function for an ae:tool/* interface only if that interface survived load_component()'s two-stage gate. An interface the component never imported gets no host function at all -- not a stub that denies, an absence." },
+    { index: "3", title: "Instantiate fresh", body: "No pooling (ADR-010 §3.5) -- a new store+linker+instance per call. 008 §6a's snapshot-reset problem is sidestepped by construction, not solved: there is no persistent instance to reset." },
+    { index: "4", title: "Every call re-checks its own kind", body: "Inside the callback itself (e.g. cb_fs_read), BoundCapability's own kind is checked again before touching anything -- the interface-level gate above answers 'may this component reach fs at all', this answers 'is THIS specific call within what was bound'." },
+    { index: "5", title: "Revoke unconditionally", body: "revoke_all() runs whether guest.invoke succeeded, trapped, or errored -- every bound capability is gone before invoke_tool() returns, the same unconditional-revoke shape 006 §3 step 10 uses for native tools." },
+  ],
+  vi: [
+    { index: "1", title: "Bind (ràng buộc — không bao giờ là toàn bộ cấp phát)", body: "Với mỗi capability mà CHÍNH manifest của component yêu cầu -- không bao giờ là toàn bộ CapabilitySet của operator -- operator_grant.bind(requirement) sẽ được thử. Một BoundCapability cho mỗi mục được yêu cầu." },
+    { index: "2", title: "Link (liên kết) chỉ những gì đã ràng buộc", body: "Linker chỉ định nghĩa một host function cho một interface ae:tool/* nếu interface đó vượt qua cổng hai giai đoạn của load_component(). Một interface mà component chưa bao giờ import thì hoàn toàn không có host function nào -- không phải một stub từ chối, mà là một sự vắng mặt." },
+    { index: "3", title: "Instantiate (khởi tạo) mới hoàn toàn", body: "Không dùng pooling (ADR-010 §3.5) -- một store+linker+instance mới cho mỗi lệnh gọi. Vấn đề reset-về-snapshot của 008 §6a bị né tránh nhờ chính cấu trúc, không phải được giải quyết: không có instance nào tồn tại lâu dài để reset." },
+    { index: "4", title: "Mỗi lệnh gọi tự kiểm tra lại kind của chính nó", body: "Bên trong chính callback (ví dụ cb_fs_read), kind của BoundCapability được kiểm tra lại trước khi chạm vào bất cứ thứ gì -- cổng ở cấp interface bên trên trả lời câu hỏi 'component này có được chạm tới fs nói chung không', còn đây trả lời câu hỏi 'lệnh gọi CỤ THỂ này có nằm trong những gì đã được ràng buộc không'." },
+    { index: "5", title: "Thu hồi vô điều kiện", body: "revoke_all() luôn chạy bất kể guest.invoke thành công, bị trap, hay lỗi -- mọi capability đã ràng buộc đều biến mất trước khi invoke_tool() trả về, cùng hình dạng thu-hồi-vô-điều-kiện mà bước 10 của 006 §3 dùng cho tool gốc (native)." },
+  ],
+};
+
+// 008 §2's SandboxBackend concept, verbatim from the real header -- what "the seam is open" (§2a)
+// actually requires a custom backend to satisfy. Nothing engine-private about it: a deployer's own
+// gVisor/Kata/microVM-backed type conforms the identical way. Language-neutral code, single string.
+export const customBackendConceptSnippet = `// include/agentengine/sandbox/sandbox.hpp -- the actual concept, not a paraphrase
+template <class T>
+concept SandboxBackend = requires(T backend, SandboxSpec spec, SandboxHandle& handle,
+                                   ExecRequest request, EffectContext& ctx) {
+    { T::traits } -> std::convertible_to<ProfileTraits const&>;
+    { backend.create(spec, ctx) } -> std::same_as<result<SandboxHandle>>;
+    { backend.exec(handle, request, ctx) } -> std::same_as<result<ExecOutcome>>;
+    { backend.destroy(handle) } -> std::same_as<void>;
+};
+
+// Both real backends assert conformance at file scope -- the exact mechanism a deployer's own
+// custom backend would use too, no engine change required:
+static_assert(SandboxBackend<agentengine::native_jail::NativeJailBackend>);  // native_jail_backend.hpp
+static_assert(SandboxBackend<agentengine::wasm::WasmBackend>);              // wasm_backend.hpp
+
+// 008 §2a: "a deployer's own type wrapping gVisor, Kata, a future microVM backend, or anything else
+// that fits their environment works exactly the same way native-jail or remote does, because from
+// the engine's point of view there is no difference." It runs UNSANDBOXED, host-trust-tier (007 §6
+// T0) -- the engine does not attempt to contain the thing that creates and manages containment.`;
+
+// 008 §4a: RemoteExecToken, applied to trust/capability_token.hpp -- the SAME mint_root/attenuate/
+// verify triple ADR-005 Design A proved out (executed, red-teamed, ASan-clean) for capabilities
+// crossing a process boundary generally. The generic primitive below is real code; RemoteExecToken
+// is that primitive's RFC-named application to the `remote` profile's callback specifically -- there
+// is no live `remote` backend in this codebase yet to call mint_root() from, so this is the real
+// mechanism 008 §4a commits to using, not yet a wired end-to-end path. Language-neutral, single string.
+export const remoteCallbackAuthSnippet = `// include/agentengine/trust/capability_token.hpp -- the real, generic primitive (ADR-005 Design A)
+struct CapabilityToken {
+    capability_kind kind;
+    std::string param;            // e.g. exec_id/run_id, opaque and kind-specific (007 §3)
+    std::vector<Caveat> caveats;  // e.g. ExpiresAt -- applied in mint order, verify() replays it
+    Mac signature;                // HMAC chain over (kind, param, caveats) -- ADR-005 §3.2
+};
+
+// Only the minting host ever holds \`key\` -- a token proves nothing about possessing it.
+result<CapabilityToken> mint_root(SecretKey const& key, capability_kind kind, std::string param);
+result<CapabilityToken> attenuate(CapabilityToken const& parent, Caveat caveat);  // no \`key\` needed
+result<void> verify(CapabilityToken const& token, SecretKey const& key, EvaluationRequest const& req);
+
+// 008 §4a's RemoteExecToken: this primitive, minted with kind = remote_exec_callback and
+// param = {exec_id, run_id}, at the same point the host constructs the Exec's SandboxSpec.
+// verify() is a PURE LOCAL computation -- the host recomputes the HMAC chain from its own key and
+// the token's own fields; no round trip to the remote backend is structurally required to establish
+// authenticity (ADR-005 claim A5). A bit-flipped signature, a tampered exec_id, or a widened
+// ExpiresAt caveat all fail verify() the same way ADR-005's red-team corpus (R-A1-R-A6) proved.`;
+
+// The three properties 008 §4a builds RemoteExecToken out of -- minting, verification, and
+// revocation are three DIFFERENT mechanisms layered together, not one, because a self-verifying
+// token structurally cannot be "unminted" early (ADR-005 §6 claim B3).
+export const remoteCallbackAuthSteps: Record<Lang, PipelineStep[]> = {
+  en: [
+    { index: "1", title: "Mint", body: "The host mints RemoteExecToken at the SAME point it constructs the SandboxSpec for an Exec -- handed to the remote backend alongside, not instead of, the out-of-band CRD/vendor-API spec delivery §4a's table already covers." },
+    { index: "2", title: "Callback arrives", body: "The remote instance calls back for Secret resolution, ToolCall dispatch, or any effect \"egress is always host-mediated\" routes through the host -- presenting the token it was handed at mint time." },
+    { index: "3", title: "Verify (pure local computation)", body: "The host recomputes the HMAC chain from its OWN root key and the token's own (kind, param, caveats) -- no round trip to the remote backend or any external party is structurally required (ADR-005 claim A5)." },
+    { index: "4", title: "Liveness check (the one thing verify() alone can't do)", body: "A token that verifies cryptographically but names an exec_id no longer in the host's live-exec table is still rejected -- destroy() removes that entry the instant teardown completes, giving immediate revocation without reintroducing a registry as the SOURCE of authority." },
+  ],
+  vi: [
+    { index: "1", title: "Mint (tạo)", body: "Host tạo (mint) RemoteExecToken tại ĐÚNG thời điểm nó dựng SandboxSpec cho một Exec -- được trao cho remote backend đi KÈM, không phải THAY THẾ, cho việc chuyển giao spec CRD/vendor-API ngoài băng thông mà bảng của §4a đã nêu." },
+    { index: "2", title: "Callback đến", body: "Instance remote gọi ngược lại để phân giải Secret, để dispatch một ToolCall, hoặc cho bất kỳ effect nào mà nguyên tắc \"egress luôn được host trung gian hóa\" định tuyến qua host -- kèm theo token nó được trao tại thời điểm mint." },
+    { index: "3", title: "Verify (tính toán cục bộ thuần túy)", body: "Host tự tính lại chuỗi HMAC từ CHÍNH root key của nó và (kind, param, caveats) của chính token -- xét về cấu trúc, không cần round trip nào tới remote backend hay bất kỳ bên ngoài nào (ADR-005, khẳng định A5)." },
+    { index: "4", title: "Kiểm tra tính còn hiệu lực (điều duy nhất verify() một mình không làm được)", body: "Một token xác minh đúng về mặt mật mã nhưng nêu tên một exec_id không còn trong bảng exec-đang-sống của host vẫn bị từ chối -- destroy() xóa mục đó ngay khi teardown hoàn tất, mang lại khả năng thu hồi tức thời mà không phải đưa một registry trở lại làm NGUỒN thẩm quyền." },
+  ],
+};
+
+// ---- 008 §5: Determinism and replay -------------------------------------------------------------
+
+// Language-neutral: the whole real Determinism/SandboxSpec shape, comments included.
+export const sandboxDeterminismSnippet = `// include/agentengine/sandbox/sandbox.hpp:120-131 -- the WHOLE real shape.
+// Two bools, nothing more: "no ambient env, no egress" (008 §5's prose) is NOT a third
+// Determinism field -- it falls out of wasm's own no-ambient-authority default (I2, §4's
+// "egress is always host-mediated"), not a toggle this struct itself carries.
+struct Determinism {
+    bool virtual_clock = false;
+    bool seeded_rng = false;
+};
+
+struct SandboxSpec {
+    CapabilitySet          capabilities;
+    ResourceLimits         limits;
+    std::vector<MountSpec> mounts;
+    NetPolicy              net;
+    Determinism            determinism;   // <- this struct
+    sandbox_lifetime       lifetime = sandbox_lifetime::per_session;
+};`;
+
+export interface DeterminismRow {
+  label: string;
+  claim: string;
+  detail: string;
+}
+
+export const sandboxDeterminismRows: Record<Lang, DeterminismRow[]> = {
+  en: [
+    {
+      label: "wasm — deterministic mode",
+      claim: "Pure function of (component, inputs, capabilities)",
+      detail:
+        "virtual_clock + seeded_rng on, combined with content-addressed inputs (003 §3) — the outcome is cacheable by digest and genuinely replayable offline (I5), not merely re-runnable.",
+    },
+    {
+      label: "native-jail / remote",
+      claim: "Recordable, not deterministic",
+      detail:
+        "Inputs, outputs, exit status, and artifact digests are recordable (§2's backend contract, item 6) — replay serves the recorded output rather than re-deriving it from a re-run. The spec states the difference rather than claiming determinism it can't enforce.",
+    },
+  ],
+  vi: [
+    {
+      label: "wasm — chế độ tất định (deterministic)",
+      claim: "Hàm thuần túy của (component, inputs, capabilities)",
+      detail:
+        "Bật virtual_clock + seeded_rng, kết hợp với input được định địa chỉ theo nội dung (content-addressed, 003 §3) — kết quả cache được theo digest và thực sự phát lại (replay) được ở chế độ offline (I5), không chỉ đơn thuần là chạy lại được.",
+    },
+    {
+      label: "native-jail / remote",
+      claim: "Ghi lại được (recordable), không tất định",
+      detail:
+        "Input, output, exit status, và digest của artifact đều ghi lại được (mục 6 trong hợp đồng backend của §2) — phát lại phục vụ đúng output đã ghi, chứ không suy dẫn lại nó từ một lần chạy lại. Spec nêu rõ sự khác biệt này thay vì tuyên bố một tính tất định mà nó không thể thực thi.",
+    },
+  ],
+};
+
+// ---- 008 §6: Lifetime, pooling, and state ---------------------------------------------------------
+
+// Reuses PipelineStep's own {index, title, body} shape (defined above for toolPipelineSteps) so the
+// "Lifetime & pooling" section can render through the SAME .ladder markup the trust pipeline does.
+export const sandboxLifetimeSteps: Record<Lang, PipelineStep[]> = {
+  en: [
+    { index: "per_exec", title: "One sandbox per exec()", body: "Nothing survives even between two execs of the SAME run. The right choice for fully adversarial or one-shot workloads where sharing state across calls is itself unwanted." },
+    { index: "per_run", title: "One sandbox per start_run() call", body: "Lives for one multi-round tool conversation, then is destroyed. The right choice for one-shot workloads that still need state to survive a few tool rounds." },
+    { index: "per_session", title: "Bound to the AgentSession object (the default)", body: "Created on first use, retained while the session is active, destroyed when the session ends — what makes a conversation feel continuous rather than amnesiac." },
+  ],
+  vi: [
+    { index: "per_exec", title: "Một sandbox cho mỗi exec()", body: "Không có gì sống sót được kể cả giữa hai exec của CÙNG một run. Lựa chọn đúng cho các workload hoàn toàn đối kháng (adversarial) hoặc dùng-một-lần, nơi việc chia sẻ trạng thái giữa các lệnh gọi tự nó là điều không mong muốn." },
+    { index: "per_run", title: "Một sandbox cho mỗi lệnh gọi start_run()", body: "Sống trong suốt một cuộc hội thoại tool nhiều vòng, rồi bị hủy. Lựa chọn đúng cho các workload dùng-một-lần nhưng vẫn cần trạng thái sống sót qua vài vòng tool." },
+    { index: "per_session", title: "Gắn với đối tượng AgentSession (mặc định)", body: "Được tạo khi dùng lần đầu, được giữ lại trong khi session còn hoạt động, bị hủy khi session kết thúc — điều khiến một cuộc hội thoại cảm giác liên tục thay vì mất trí nhớ (amnesiac)." },
+  ],
+};
+
+// Language-neutral code, identical in both languages.
+export const sandboxLifetimeSnippet = `// include/agentengine/sandbox/sandbox.hpp:23,131
+enum class sandbox_lifetime { per_exec, per_run, per_session };
+
+struct SandboxSpec {
+    // ...
+    sandbox_lifetime lifetime = sandbox_lifetime::per_session;   // 008 §6's default
+};`;
+
+export interface PassivationRow {
+  aspect: string;
+  wasm: string;
+  nativeJail: string;
+}
+
+// 008 §6a's own table, verbatim — the difference is stated, not papered over.
+export const sandboxPassivationRows: Record<Lang, PassivationRow[]> = {
+  en: [
+    { aspect: "Files across passivation", wasm: "Worktree — always", nativeJail: "Worktree — always" },
+    {
+      aspect: "In-memory state across passivation",
+      wasm: "Snapshot and restore (quiescent points only)",
+      nativeJail: "Lost — session resumes with a clean interpreter and shell (010 §3a)",
+    },
+  ],
+  vi: [
+    { aspect: "File qua các lần passivation", wasm: "Worktree — luôn luôn", nativeJail: "Worktree — luôn luôn" },
+    {
+      aspect: "Trạng thái trong bộ nhớ qua các lần passivation",
+      wasm: "Snapshot và khôi phục (chỉ tại các điểm tĩnh lặng — quiescent point)",
+      nativeJail: "Mất — session được khôi phục với một trình thông dịch và shell sạch (010 §3a)",
+    },
+  ],
+};
+
+// ---- 008 §7: Failure and abuse ---------------------------------------------------------------------
+
+export interface AbuseCase {
+  name: string;
+  containment: string;
+  status: "contained" | "gap";
+}
+
+// 008 §7's own named list. Each has a test in the hostile suite; per CONVENTIONS, hostile tests are
+// themselves resource-capped so they cannot take the dev box down.
+export const sandboxAbuseCases: Record<Lang, AbuseCase[]> = {
+  en: [
+    {
+      name: "Fork bomb",
+      containment:
+        "PROCESS_CREATION_CHILD_PROCESS_RESTRICTED denies nested exec outright (008 §4's Exec row) — not the pids limit. Measured: requested=40 succeeded=0 contained; the same probe unsandboxed (positive control) succeeded=10 of 10.",
+      status: "contained",
+    },
+    {
+      name: "OOM",
+      containment:
+        "ResourceLimits::memory_bytes → JOBOBJECT_EXTENDED_LIMIT_INFORMATION memory cap. Measured: a 512 MB allocation under a 32 MB cap reports oom; the identical shape with the limit disabled reports ok.",
+      status: "contained",
+    },
+    {
+      name: "Infinite loop",
+      containment:
+        "ResourceLimits::wall_ms — the host-side watcher, measured reliable independent of any native kernel limit (500–504 ms for a 500 ms deadline).",
+      status: "contained",
+    },
+    {
+      name: "Unbounded output",
+      containment: "ResourceLimits::output_bytes — an unbounded stdout is itself a denial-of-service on the host (§2 backend contract, item 2).",
+      status: "contained",
+    },
+    { name: "Filesystem quota exhaustion", containment: "MountSpec::quota_bytes, enforced per mount.", status: "contained" },
+    {
+      name: "Symlink / .. path escape",
+      containment: "Path canonicalization at the mount boundary, plus interpreter-level open() mediation (§1b) as a second, independent layer.",
+      status: "contained",
+    },
+    { name: "TOCTOU on mounts", containment: "Named and tested in the hostile corpus.", status: "contained" },
+    { name: "DNS-rebinding around an egress allowlist", containment: "Re-resolve and re-check the address post-connect against the allowlist (§10 OQ-3).", status: "contained" },
+    {
+      name: "SSRF to link-local metadata endpoints",
+      containment: "169.254.169.254 and friends — blocked by default in every profile, not opt-in.",
+      status: "contained",
+    },
+    { name: "Guest → host time manipulation", containment: "Named and tested in the hostile corpus.", status: "contained" },
+    { name: "Host resource exhaustion via many concurrent sandboxes", containment: "Named and tested in the hostile corpus.", status: "contained" },
+    {
+      name: "Read-access leak via inherited OS-default ACEs (native-jail / Windows)",
+      containment:
+        "win.ini, drivers\\etc\\hosts and similar carry ALL APPLICATION PACKAGES read grants by Windows' OWN default, independent of any capability this profile grants — exactly why §1b makes interpreter-level open() mediation PRIMARY rather than relying on the kernel jail's ACL model for reads.",
+      status: "gap",
+    },
+    {
+      name: "Filesystem / process-list containment (native-jail / Linux)",
+      containment:
+        "M2 Phase C gives the guest a private mount namespace (CLONE_NEWNS) but nothing populates it yet — a Linux guest can read/write anywhere the invoking user can, and /proc shows the HOST's real process list, not a namespace-local one. The equivalent Windows probe IS genuinely contained (AppContainer restricts CreateToolhelp32Snapshot). Tracked gap, not silently dropped — GitHub issue #5.",
+      status: "gap",
+    },
+  ],
+  vi: [
+    {
+      name: "Fork bomb",
+      containment:
+        "PROCESS_CREATION_CHILD_PROCESS_RESTRICTED từ chối thẳng việc exec lồng nhau (dòng Exec của 008 §4) — không phải giới hạn pids. Đo được: requested=40 succeeded=0, bị chặn hoàn toàn; cùng phép thử đó khi KHÔNG sandbox (positive control) thành công 10/10.",
+      status: "contained",
+    },
+    {
+      name: "OOM",
+      containment:
+        "ResourceLimits::memory_bytes → giới hạn bộ nhớ JOBOBJECT_EXTENDED_LIMIT_INFORMATION. Đo được: một lần cấp phát 512 MB dưới cap 32 MB báo cáo oom; cùng hình dạng đó khi tắt giới hạn báo cáo ok.",
+      status: "contained",
+    },
+    {
+      name: "Vòng lặp vô hạn",
+      containment:
+        "ResourceLimits::wall_ms — bộ giám sát (watcher) phía host, đo được là đáng tin cậy độc lập với bất kỳ giới hạn kernel gốc nào (500–504 ms cho một deadline 500 ms).",
+      status: "contained",
+    },
+    {
+      name: "Output không giới hạn",
+      containment: "ResourceLimits::output_bytes — một stdout không giới hạn tự nó đã là một denial-of-service lên host (mục 2 trong hợp đồng backend của §2).",
+      status: "contained",
+    },
+    { name: "Cạn kiệt quota filesystem", containment: "MountSpec::quota_bytes, được thực thi theo từng mount.", status: "contained" },
+    {
+      name: "Symlink / thoát đường dẫn qua ..",
+      containment: "Chuẩn hóa (canonicalization) đường dẫn tại ranh giới mount, cộng với việc trung gian hóa open() ở cấp trình thông dịch (§1b) như một lớp thứ hai, độc lập.",
+      status: "contained",
+    },
+    { name: "TOCTOU trên các mount", containment: "Được nêu tên và kiểm thử trong bộ hostile corpus.", status: "contained" },
+    { name: "DNS-rebinding để vòng qua egress allowlist", containment: "Phân giải lại và kiểm tra lại địa chỉ sau khi kết nối, đối chiếu với allowlist (§10 OQ-3).", status: "contained" },
+    {
+      name: "SSRF tới endpoint metadata link-local",
+      containment: "169.254.169.254 và các địa chỉ tương tự — bị chặn theo mặc định ở MỌI profile, không phải một tùy chọn bật thêm.",
+      status: "contained",
+    },
+    { name: "Guest thao túng thời gian của host", containment: "Được nêu tên và kiểm thử trong bộ hostile corpus.", status: "contained" },
+    { name: "Cạn kiệt tài nguyên host qua nhiều sandbox đồng thời", containment: "Được nêu tên và kiểm thử trong bộ hostile corpus.", status: "contained" },
+    {
+      name: "Rò rỉ quyền đọc qua các ACE mặc định kế thừa từ OS (native-jail / Windows)",
+      containment:
+        "win.ini, drivers\\etc\\hosts và các file tương tự mang quyền đọc ALL APPLICATION PACKAGES theo mặc định của CHÍNH Windows, độc lập với bất kỳ capability nào profile này cấp — chính xác lý do vì sao §1b biến việc trung gian hóa open() ở cấp trình thông dịch thành lớp CHÍNH thay vì dựa vào mô hình ACL của kernel jail cho việc đọc.",
+      status: "gap",
+    },
+    {
+      name: "Cách ly filesystem / danh sách tiến trình (native-jail / Linux)",
+      containment:
+        "M2 Phase C trao cho guest một mount namespace riêng (CLONE_NEWNS) nhưng chưa có gì lấp đầy nó — một guest Linux có thể đọc/ghi ở bất cứ đâu mà user gọi nó có thể, và /proc hiển thị đúng danh sách tiến trình THẬT của host, không phải một danh sách chỉ giới hạn trong namespace. Phép thử tương đương trên Windows THỰC SỰ bị chặn (AppContainer hạn chế CreateToolhelp32Snapshot). Một khoảng trống được theo dõi, không bị âm thầm bỏ qua — GitHub issue #5.",
+      status: "gap",
+    },
+  ],
+};
+
+export interface JobTimeRun {
+  run: number;
+  fired: boolean;
+  cpuConsumedMs: number;
+  overrun: string;
+}
+
+// decisions/ADR-004-appcontainer-native-jail-windows-backend.md §10.2 -- test_job_time_limit, run 11
+// times across 3 invocations of the test binary: a CPU-spinning child under cpu_ms=500 with a
+// generous wall_ms=5000 backstop, so the measurement shows which mechanism actually fires.
+// Purely numeric/measured data -- language-neutral, not a Record<Lang, ...>.
+export const sandboxJobTimeRuns: JobTimeRun[] = [
+  { run: 1, fired: true, cpuConsumedMs: 2921.9, overrun: "5.84x" },
+  { run: 2, fired: true, cpuConsumedMs: 687.5, overrun: "1.38x" },
+  { run: 3, fired: false, cpuConsumedMs: 4765.6, overrun: "9.53x" },
+  { run: 4, fired: false, cpuConsumedMs: 4843.8, overrun: "9.69x" },
+  { run: 5, fired: false, cpuConsumedMs: 4859.4, overrun: "9.72x" },
+  { run: 6, fired: true, cpuConsumedMs: 4109.4, overrun: "8.22x" },
+  { run: 7, fired: false, cpuConsumedMs: 4890.6, overrun: "9.78x" },
+  { run: 8, fired: false, cpuConsumedMs: 4875.0, overrun: "9.75x" },
+  { run: 9, fired: false, cpuConsumedMs: 4890.6, overrun: "9.78x" },
+  { run: 10, fired: false, cpuConsumedMs: 4890.6, overrun: "9.78x" },
+  { run: 11, fired: false, cpuConsumedMs: 4875.0, overrun: "9.75x" },
+];
+
+// ---- 008 §8: Observability -------------------------------------------------------------------------
+
+export interface ObservabilityField {
+  name: string;
+  meaning: string;
+}
+
+// 008 §8's own per-exec field list, verbatim. `name` renders inside <code> in the page (a field
+// name, not prose) so it stays identical across languages; only `meaning` is translated.
+export const sandboxObservabilityFields: Record<Lang, ObservabilityField[]> = {
+  en: [
+    { name: "profile / backend", meaning: "Which SandboxProfile<P> resolved to which concrete backend for this exec." },
+    { name: "cold / warm", meaning: "Whether this exec paid a create() cost or reused a live/pooled instance." },
+    { name: "create / exec / destroy durations", meaning: "Per-phase timing, not just total wall time." },
+    { name: "peak memory", meaning: "High-water mark against ResourceLimits::memory_bytes." },
+    { name: "CPU ms", meaning: "Best-effort on Windows native-jail (see the callout above) — still recorded, just not the dependable bound." },
+    { name: "bytes in / out", meaning: "Against ResourceLimits::output_bytes and net_bytes." },
+    { name: "egress hosts contacted", meaning: "What the host-mediated proxy actually let through, not just what NetPolicy::allowlist permits in principle." },
+    { name: "capabilities used", meaning: "The subset of SandboxSpec::capabilities the exec actually exercised — attribution (I4)." },
+    { name: "outcome class", meaning: "One of exec_outcome_class — ok, timeout, oom, crash, policy_violation, escape_attempt, ask_pending." },
+  ],
+  vi: [
+    { name: "profile / backend", meaning: "SandboxProfile<P> nào đã phân giải thành backend cụ thể nào cho exec này." },
+    { name: "cold / warm", meaning: "Exec này có phải trả chi phí create() hay đã tái sử dụng một instance đang sống/trong pool." },
+    { name: "create / exec / destroy durations", meaning: "Thời gian theo từng giai đoạn, không chỉ tổng wall time." },
+    { name: "peak memory", meaning: "Mức đỉnh (high-water mark) so với ResourceLimits::memory_bytes." },
+    { name: "CPU ms", meaning: "Best-effort trên Windows native-jail (xem ghi chú bên trên) — vẫn được ghi lại, chỉ là không phải một giới hạn đáng tin cậy." },
+    { name: "bytes in / out", meaning: "Đối chiếu với ResourceLimits::output_bytes và net_bytes." },
+    { name: "egress hosts contacted", meaning: "Những gì proxy được host trung gian hóa thực sự cho đi qua, không chỉ những gì NetPolicy::allowlist cho phép về nguyên tắc." },
+    { name: "capabilities used", meaning: "Tập con của SandboxSpec::capabilities mà exec thực sự đã dùng đến — khả năng quy trách nhiệm (attribution, I4)." },
+    { name: "outcome class", meaning: "Một trong các exec_outcome_class — ok, timeout, oom, crash, policy_violation, escape_attempt, ask_pending." },
+  ],
+};
+
+// Language-neutral code, identical in both languages.
+export const sandboxRunEventSnippet = `// include/agentengine/core/run_event.hpp -- the run-event enum ALREADY names sandbox exec
+// boundaries as first-class events, not a bolt-on:
+enum class run_event_kind {
+    // ...
+    sandbox_exec_started, sandbox_exec_finished,
+    // ...
+};
+
+// SandboxExecStarted/Finished share this shape today -- exec_id only. The richer §8 per-exec
+// field list (profile, timings, peak memory, bytes, egress hosts, capabilities used, outcome
+// class) is not yet threaded onto this payload.
+struct SandboxExec {
+    std::string exec_id;
+};
+
+// This file's own top comment is explicit about what's designed vs. wired: AgentSession's real
+// turn loop fires Run/Turn/ModelCall/StateChanged events today, but "ToolCall*/SandboxExec*/
+// ArtifactProduced/ModelDelta/RunCanceled have no real producer inside AgentSession today" -- the
+// turn loop makes one synchronous chat_client_->chat() call and never reaches the tool pipeline
+// (let alone a sandbox exec) at all yet.`;

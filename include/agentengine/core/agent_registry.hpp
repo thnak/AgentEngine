@@ -526,15 +526,46 @@ template <class A>
 // can never fail this call's own `contains()` check for a tool it declares); core/tool_pipeline.hpp's
 // `invoke_tool()` (Phase B, 006 §3's real ten-step pipeline, ADR-009's CapabilitySet::bind/revoke) is
 // the actual mechanism -- this is the one glue function connecting an agent's compiled metadata to
-// it. `CapabilitySet::grant_root` is called fresh per invocation rather than cached on `AgentMetadata`
-// itself: `AgentMetadata` is 002 §1's read-only compiled table (no request-scoped state), and a
-// `CapabilitySet` is cheap to construct from the same `capability_ceiling` vector already sitting
-// there (ADR-009's own type, not reinvented).
+// it.
+//
+// decisions/ADR-059-invoke-agent-tool-capability-attenuation.md (design -> red-team -> prove ->
+// judge, required per CLAUDE.md/I2): the target agent's own compiled `meta.capability_ceiling` is
+// NEVER granted directly (that was the bug this ADR fixes -- `grant_root(meta.capability_ceiling)`
+// minted the TARGET's own full ceiling unconditionally, ignoring what the CALLER invoking this
+// function actually holds, a textbook I2 ambient-authority hole). Instead, `ctx.capabilities` (the
+// caller's own actually-held set, `effect_context.hpp:18`) is attenuated DOWN to the target's
+// declared ceiling via `CapabilitySet::attenuate()` (ADR-009, already proven): the target's ceiling
+// becomes the requested narrower set, checked against the caller's held set as parent. The result is
+// bounded on BOTH sides at once -- never wider than what the caller holds, and never wider than what
+// the target itself declares (`attenuate()`'s own `grant_root(narrower)` return means the derived set
+// is exactly the target's ceiling, not the caller's possibly-larger held set, ADR-009 C2). A caller
+// with no held capabilities at all (`ctx.capabilities == nullptr`) fails closed rather than being
+// silently read as "everything" -- there is nothing to attenuate from.
 [[nodiscard]] inline ToolResult invoke_agent_tool(AgentMetadata const& meta, ToolCallRequest const& request,
                                                    EffectContext& ctx, ApprovalDecider const& approve = {},
                                                    ToolInvocationAudit* audit_out = nullptr) {
-    CapabilitySet const ceiling = CapabilitySet::grant_root(meta.capability_ceiling);
-    return invoke_tool(meta.tools, ceiling, request, ctx, approve, audit_out);
+    auto fail_closed = [&](error const& e) -> ToolResult {
+        if (audit_out) {
+            audit_out->call_id = request.call_id;
+            audit_out->tool_name = request.tool_name;
+            audit_out->ok = false;
+            audit_out->error_code = e.code;
+            audit_out->result_bytes = 0;
+            audit_out->duration = std::chrono::steady_clock::duration{};
+        }
+        return tool_pipeline_detail::make_error_result(request.call_id, e);
+    };
+
+    if (!ctx.capabilities) {
+        return fail_closed(error{failure_class::policy,
+                                  "invoke_agent_tool: caller has no capabilities to attenuate from",
+                                  "agent_call.no_caller_capabilities"});
+    }
+    result<CapabilitySet> attenuated = ctx.capabilities->attenuate(meta.capability_ceiling);
+    if (!attenuated) {
+        return fail_closed(attenuated.error());
+    }
+    return invoke_tool(meta.tools, *attenuated, request, ctx, approve, audit_out);
 }
 
 }  // namespace agentengine

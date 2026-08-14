@@ -46,6 +46,7 @@ enum class run_event_kind {  // ae-naming-lint: allow run_event_kind — 013 §1
     input_required, input_resolved,
     auth_required, auth_resolved,
     approval_requested, approval_resolved,
+    codeact_ask_requested,
     warning, policy_decision,
 };
 
@@ -135,6 +136,19 @@ struct PolicyDecision {
     std::string description;
 };
 
+// ADR-057 §9 (Design B: abort-and-replay for `agent.ask()`, 026 §5): fired alongside
+// `input_required` (which carries only `interaction_id`, the InteractionRef shape shared with
+// `auth_required`/`approval_requested`) so a live consumer sees the actual prompt text without a
+// second round trip. `interaction_id` correlates back to the same `Interaction` this suspension
+// opened (or, on a chained second/third `agent.ask()` in one script, the SAME `interaction_id` a
+// prior `codeact_ask_requested` already named -- ADR-057 §9 deliberately does not mint a new one per
+// question).
+struct CodeActAskRequested {
+    std::string call_id;
+    std::string interaction_id;
+    std::string prompt;
+};
+
 }  // namespace run_event_payload
 
 using RunEventPayload = std::variant<run_event_payload::Empty, run_event_payload::RunFailed,
@@ -144,7 +158,7 @@ using RunEventPayload = std::variant<run_event_payload::Empty, run_event_payload
                                       run_event_payload::StateChanged, run_event_payload::ArtifactProduced,
                                       run_event_payload::InteractionRef, run_event_payload::ApprovalRequested,
                                       run_event_payload::ApprovalResolved, run_event_payload::Warning,
-                                      run_event_payload::PolicyDecision>;
+                                      run_event_payload::PolicyDecision, run_event_payload::CodeActAskRequested>;
 
 // 013 §1: "Ordered and monotonic per run, with a sequence number." `seq` starts at 1 for the first
 // event a given run emits -- 0 is never a real sequence number, so a default-constructed RunEvent is

@@ -536,6 +536,23 @@ using BackgroundTaskCompletion = std::function<void(ToolResult, ToolInvocationAu
                                       "tool.state_capturing_not_backgroundable"});
     }
 
+    // ADR-060 §4 (red-team finding, must-fix): `ctx` above is a BY-VALUE parameter -- a real copy of
+    // whatever the caller's own `EffectContext` looked like at the call site. `AgentSession::
+    // start_background_task()` (rt/agent_session.hpp) is documented "PLAIN, UNLOCKED" and can race a
+    // `report_progress` bracket window (rt/agent_session.hpp's own three `invoke_tool()` call sites)
+    // open on a different thread of control -- if that race let a live `report_progress` closure
+    // (captured `[this, call_id]` into the ORIGINATING session) survive into this copy, a backgrounded
+    // tool's ORDINARY call to `ctx.report_progress(...)` below would reach back into that session's
+    // `emit_run_event()` from THIS function's own detached `std::thread` (below) -- a genuine, unlocked
+    // data race on `run_event_seq_by_run_` (an `std::unordered_map`), reachable with no tool misuse at
+    // all, just the intended use of the very feature ADR-060 adds. Reset structurally, here, on this
+    // function's own local copy -- unconditionally, not left as a documented-only rule a future caller
+    // could violate -- so step 8 below never runs a tool against a live callback into a foreign thread.
+    // 006 §6b's own scope (ADR-060 §3) never promised `Backgroundable`/`StandingEffect` progress
+    // delivery through this channel; this makes that exclusion true by construction, not merely true
+    // because nobody has tried yet.
+    ctx.report_progress = [](std::string_view) {};
+
     // -- step 4/7: authorize + bind (the tool's own capability ceiling) -----------------------------
     std::vector<BoundCapability> bound;
     bound.reserve(tool->capability_ceiling.size());

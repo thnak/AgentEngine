@@ -896,6 +896,26 @@ add_executable(test_rt_agent_session_suspend_approval test_rt_agent_session_susp
 target_link_libraries(test_rt_agent_session_suspend_approval PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_agent_session_suspend_approval COMMAND test_rt_agent_session_suspend_approval)
 
+# ---- ADR-044 prove phase -- EffectContext::report_progress(), a real call-scoped reverse channel
+# into emit_run_event()/enable_event_stream() (run_event_kind::tool_call_delta), bracketed at all
+# three real invoke_tool() call sites in rt/agent_session.hpp, plus a direct regression test against
+# tool_pipeline.hpp::background_task() proving the §4 must-fix finding (a Backgroundable tool's
+# invoke() must never reach a report_progress closure copied from a racing foreground bracket) is
+# closed structurally. Pure AgentSession/tool_pipeline logic, no CPython -- belongs in the default
+# `build` tree, matching test_rt_agent_session_suspend_approval's own link set exactly.
+add_executable(test_agent_session_tool_call_progress test_agent_session_tool_call_progress.cpp)
+target_link_libraries(test_agent_session_tool_call_progress PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_agent_session_tool_call_progress COMMAND test_agent_session_tool_call_progress)
+
+# ---- ADR-042 (Design B) prove phase -- OutputSchema<T> wired into a live rt::AgentSession turn:
+# set_output_schema()'s additive opt-in, native-only request-side scoping, and response-side
+# validation at the convergence branch. Pure AgentSession/ChatClient logic, no CPython -- belongs in
+# the default `build` tree, matching test_rt_agent_session_suspend_approval's own link set exactly
+# (agentengine::core + agentengine_warnings only, no AGENTENGINE_BUILD_PYTHON_RUNNER gate needed).
+add_executable(test_agent_session_output_schema test_agent_session_output_schema.cpp)
+target_link_libraries(test_agent_session_output_schema PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_agent_session_output_schema COMMAND test_agent_session_output_schema)
+
 # ---- ADR-030 -- session-scoped CodeAct wiring: the runner-binding claim/fail-closed primitive.
 add_executable(test_codeact_runner_binding test_codeact_runner_binding.cpp)
 target_link_libraries(test_codeact_runner_binding PRIVATE agentengine::core agentengine_warnings)
@@ -1935,6 +1955,20 @@ if(AGENTENGINE_BUILD_PYTHON_RUNNER)
     AE_PYTHON_HOME="${AGENTENGINE_PYTHON_HOME}")
   add_test(NAME test_mediated_python_runner_error_mapping COMMAND test_mediated_python_runner_error_mapping)
   set_tests_properties(test_mediated_python_runner_error_mapping PROPERTIES
+    ENVIRONMENT "${AE_PYTHON_TEST_ENV}" TIMEOUT 60)
+
+  # ---- ADR-041 (agent.ask suspend/replay, Design B) prove phase -----------------------------------
+  # Needs a REAL rt::AgentSession<...> driving a REAL MediatedPythonRunner -- links both
+  # agentengine::core (rt::AgentSession) and agentengine::mediated_python_runner, matching
+  # test_mediated_python_runner_agent_tools' own link set plus the rt:: pieces
+  # test_rt_agent_session_suspend_approval already needs.
+  add_executable(test_agent_session_suspend_codeact_ask test_agent_session_suspend_codeact_ask.cpp)
+  target_link_libraries(test_agent_session_suspend_codeact_ask PRIVATE
+    agentengine::core agentengine::mediated_python_runner agentengine_warnings)
+  target_compile_definitions(test_agent_session_suspend_codeact_ask PRIVATE
+    AE_PYTHON_HOME="${AGENTENGINE_PYTHON_HOME}")
+  add_test(NAME test_agent_session_suspend_codeact_ask COMMAND test_agent_session_suspend_codeact_ask)
+  set_tests_properties(test_agent_session_suspend_codeact_ask PROPERTIES
     ENVIRONMENT "${AE_PYTHON_TEST_ENV}" TIMEOUT 60)
 
   # ---- Milestone 3 Phase H1: reference-agent task corpus (026 §8 G1) ------------------------------
