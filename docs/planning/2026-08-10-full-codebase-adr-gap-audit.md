@@ -9,8 +9,18 @@ unedited except this header" convention):** two real-code events since this run 
 status. Neither was re-derived from scratch here — both are cross-checked against the actual ADRs
 that landed, matching this doc's own evidence discipline.
 
-**Update (2026-08-14, status only, same convention):** four real-code events and one design-only
+**Update (2026-08-14, status only, same convention):** five real-code events and one design-only
 (no-code) event.
+
+- **Gap 2 (AgentMetadata/Workflow missing description/version) is CLOSED.**
+  `decisions/ADR-044-agent-workflow-description-version.md` (Proposed) confirms this is not new
+  surface — 002 §1/§7 has specified `{agent_id, description, version}` as agent identity since the
+  RFC was written; three independent compilers (A2A Agent Card, Agent YAML, Workflow YAML) hit the
+  identical gap independently and each honestly recorded it. Fixed via `requires`-detected optional
+  statics (not required — avoids breaking every existing native agent), 4 real call sites wired (the
+  audit's "5" was an overcount), and a checked-not-assumed field-insertion-order risk (grepped for
+  positional aggregate-init before landing fields mid-struct, per `Usage`'s own prior amendment
+  lesson). I6 test extended, full suite green.
 
 - **Gap 15 (ack races ahead of durability) is CLOSED.** `decisions/ADR-043-ack-durability-policy.md`
   (Proposed) corrects this row's own cited blocker on both counts: a `SessionStore` seam already
@@ -111,8 +121,8 @@ that landed, matching this doc's own evidence discipline.
   re-derives it from current code (`a2a/server.hpp`'s own comment: "no principal/authorization
   boundary in this transport-agnostic dispatcher yet") and names it as an explicit, not-yet-closed
   residual, not a silently dropped one.
-- **The other 15 gaps below were NOT re-verified this pass** (gap 10 above was re-verified and
-  designed against, but stays open — not counted as re-verified-and-closed like 8/11/12/15/16/21/23;
+- **The other 14 gaps below were NOT re-verified this pass** (gap 10 above was re-verified and
+  designed against, but stays open — not counted as re-verified-and-closed like 2/8/11/12/15/16/21/23;
   gap 21 itself is only partially closed, see its own row below). They still reflect the 2026-08-10
   snapshot. ADR-037 (Quark removal, 2026-08-13) touched large parts of the tree these gaps cite by
   file:line — the underlying LOGIC most of these findings describe (capability/taint/sandbox/memory
@@ -161,7 +171,7 @@ needs the full reasoning behind a specific line item below, not just the one-lin
 | 16 | `ContextContribution.instructions` computed but silently dropped before reaching the model | **High** | ~~needs_adr~~ **[2026-08-14: CLOSED, ADR-042 Proposed]** | Routed through `role::system` as recommended, gated by making `Tainted<T>` real for this one field first (closing the "must close that first" precondition this row itself named) rather than the whole content model. |
 | 19 | Image/Audio/Video/File (and Anthropic Reasoning) content silently dropped outbound despite declared capability bits | **High** | needs_adr | Split into Phase 1 (fail-closed capability gate + symmetric drop-signal, implementable now) and Phase 2 (real wire encoding), which is blocked on RFC 019's blob-store seam — which does not exist anywhere in the tree. |
 | 23 | CLAUDE.md/README claim Milestones 7-9 "have not started" though M7 is substantially built | **High** | ~~needs_adr~~ **[2026-08-13: CLOSED, ADR-026 Judged]** | Docs corrected, lint (`tools/milestone_status_lint.py`) shipped and wired into CI as recommended. |
-| 2 | AgentMetadata/Workflow have no description/version fields | Medium | needs_adr | Add optional fields wired through 5 call sites — sound, but must close a naming collision with `Tool<>`'s own `description` static and state the I6 equivalence guarantee honestly (proven only for the maintained corpus, not structurally). |
+| 2 | AgentMetadata/Workflow have no description/version fields | Medium | ~~needs_adr~~ **[2026-08-14: CLOSED, ADR-044 Proposed]** | Optional fields wired through 4 real call sites (the "5" was an overcount); the `Tool<>` naming overlap is real but not a compile collision (unrelated CRTP bases) — named explicitly rather than "closed"; I6 equivalence guarantee stated honestly as before (still example-proven, not structural). |
 | 3 | No generic JSON Schema 2020-12 validator | Medium | needs_adr | Build `core/json_schema_validator.hpp` with the proposed keyword subset/budgets — but wire it at `invoke_tool()`'s InvokeFn construction site (not the MCP dispatcher), add the missing outbound client-side strict check, and close a regex-DoS/`$ref`-cycle budget gap. |
 | 4 | No tool/capability name-keyed registry | Medium | needs_adr | The submitted proposal was placeholder text with no real content — a real design must resolve I2 capability-ceiling binding, I3 resolution timing, namespace squatting, and WASM-ABI conformance from scratch. |
 | 5 | ToolTable has zero runtime construction API (name-keyed half) | Medium | needs_adr | Add a `ToolRegistry` wired through `compile_agent_document` — but the proposed nullptr-fail-closed policy inverts an existing convention and breaks a currently-passing test (015 §2's own worked example). |
@@ -174,7 +184,7 @@ needs the full reasoning behind a specific line item below, not just the one-lin
 | 20 | Cross-provider Reasoning-exclusion design (003 §8 Q2) never implemented | Medium | needs_adr | Wire `ChatClientId` provenance through — but a real production call site (`HistoryAndSkillsProvider`) was missed, and `FailoverChatClient`'s Primary-only identity would falsely flag ordinary failover as cross-provider. |
 | 21 | Content model never uses type-level `Tainted<T>` for text/structured fields | Medium | needs_adr **[2026-08-14: PARTIALLY CLOSED, ADR-042 Proposed — see gap 16]** | ~~Proposed accessors are additive and bypassable...~~ — ADR-042 gives `Tainted<T>` its first real field (`ContextContribution.instructions` only, needed by gap 16). The three named consumption boundaries (cli_chat.cpp, mcp/server.hpp, tool_bridge.hpp) still read raw `ContentItem` fields unchecked — this row's broader claim stays open, a full content-model migration is real, separately-scoped RFC-003-§2-level work. |
 | 22 | 014 §8 G3 (10³-seed scheduling shuffle test) never built, undisclosed | Medium | needs_adr | Write the missing test per the M6 breakdown's own already-designed architecture — but "the test exists" is falsely claimed in more than the two spots the architect named; all must be retracted together. |
-| 6 | `output_schema $ref` never resolved by the declarative compiler | Low | needs_adr | Add an opt-in `SchemaRefResolver` — but must extract the *full* enforceability check (not half), reuse `worktree.hpp`'s tested path validator for Windows-safe traversal checks, and not overstate unbuilt digest/signing infrastructure as a safety net. |
+| 6 | `output_schema $ref` never resolved by the declarative compiler | Low | needs_adr **[2026-08-14: re-verified, still open — see priority note below]** | Add an opt-in `SchemaRefResolver` — but must extract the *full* enforceability check (not half), reuse ~~`worktree.hpp`'s~~ **`worktree_mount_fs.hpp`'s** (this row's own citation was wrong — `worktree.hpp` has no path-validation logic) tested path validator for Windows-safe traversal checks, and not overstate unbuilt digest/signing infrastructure as a safety net. |
 | 14 | 025 §4 conflict-surfacing (`/conflicts/<path>.<agent>`) unimplemented | Low | needs_adr | Materializing evidence into the parent Ref via `commit_ref` directly contradicts an already-passing test ("parent Ref unchanged on failed merge") and misattributes ours/theirs — needs a different storage location and a real committer-identity source. |
 
 ---
@@ -228,7 +238,7 @@ Pulled from the individual approaches — these are explicitly out-of-scope item
 
 5. ~~**Fix the durability/ack gap (15)**...~~ **DONE (2026-08-14, ADR-043).** The premise this item was scheduled behind was itself wrong — no Store type-erasure question needed resolving; the seam already existed as a deliberate `concept`.
 
-6. **Batch the remaining medium/low findings by subsystem** rather than one-by-one: the declarative-agent-surface cluster (2, 3, 4, 5, 6) shares a single registry/validator design space and should go through one coordinated ADR sequence rather than five independent ones; the memory-subsystem cluster (17, 18) and the model-provider-fidelity cluster (19, 20) are each internally coupled the same way.
+6. **Batch the remaining medium/low findings by subsystem** rather than one-by-one: the declarative-agent-surface group (3, 4, 5, 6 — 2 is now closed, see its own row) shares a single registry/validator design space and should go through one coordinated ADR sequence rather than four independent ones; the memory-subsystem group (17, 18) and the model-provider-fidelity group (19, 20) are each internally coupled the same way.
 
 7. **Assign real ADR numbers before any of the above lands** — resolve the `ADR-025` collision across all 23 suggested titles by sequencing them (likely ADR-025 through ADR-047, in the priority order above) as part of scheduling this work, not as an afterthought at merge time.
 

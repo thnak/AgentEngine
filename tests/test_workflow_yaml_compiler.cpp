@@ -7,6 +7,7 @@
 // uses -- the actual I6 property this compiler exists to serve.
 
 #include <cstdio>
+#include <optional>
 #include <string>
 
 #include "agentengine/core/yaml_value.hpp"
@@ -80,7 +81,7 @@ spec:
     {
         std::string const doc = R"YAML(apiVersion: agentengine.dev/v1
 kind: Workflow
-metadata: { id: research-and-write, version: 0.3.0 }
+metadata: { id: research-and-write, version: 0.3.0, description: "Research a topic and write it up." }
 spec:
   start: planner
   executors:
@@ -106,6 +107,13 @@ spec:
                       "W-2: validate_workflow() ACCEPTS the extended document -- a genuinely valid "
                       "Workflow, produced by the declarative loader, checked by the SAME shared "
                       "validator the C++ WorkflowBuilder form uses (I6)");
+
+                // Gap-2 fix (2026-08-14, decisions/ADR-044-*.md): metadata.description/version now
+                // have real slots.
+                check(compiled->description == "Research a topic and write it up.",
+                      "W-2: description <- metadata.description");
+                check(compiled->version == std::optional<std::string>{"0.3.0"},
+                      "W-2: version <- metadata.version");
 
                 // Spot-check the compiled shape.
                 auto const* planner = compiled->find("planner");

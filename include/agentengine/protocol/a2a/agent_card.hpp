@@ -12,10 +12,13 @@
 // straight from `ToolDescriptor`, the same "one schema source" discipline `protocol/mcp/server.hpp`'s
 // own `to_mcp_tool_list_entry()` already uses for `tools/list`) -- and nothing it does not. `002 §7`
 // itself says an agent's interop identity is `{agent_id, version}` and that Agent Cards are "generated
-// from this same metadata," but `AgentMetadata` (002-owned, M2/M5 vintage) has no `description`,
-// `version`, or modality-declaration fields yet -- a real, named gap, not silently invented here by
-// repurposing `agent_instructions` as a card description or fabricating a version string. Those fields
-// are therefore explicit, caller-supplied `AgentCardIdentity` inputs until 002 grows them for real.
+// from this same metadata." Gap-2 fix (2026-08-14, decisions/ADR-044-*.md): `AgentMetadata` now
+// carries real `agent_description`/`agent_version` fields, closing that gap for real -- `identity`'s
+// own `description`/`version` remain explicit, caller-supplied OVERRIDES (see `to_agent_card()`'s own
+// comment), not the only source, for a card that legitimately wants different framing than the raw
+// agent metadata. Modality-declaration fields (`default_input_modes`/`default_output_modes`) still
+// have no home in `AgentMetadata` -- that part of the original gap stays open, named here, not fixed
+// by this pass.
 //
 // §2.1's own "advertises only what's proven" rule is why `supported_interfaces` defaults EMPTY and
 // `capabilities.streaming`/`push_notifications` default `false`: no JSON-RPC/REST binding, no
@@ -95,8 +98,13 @@ struct AgentCardIdentity {
 [[nodiscard]] inline AgentCard to_agent_card(AgentMetadata const& meta, AgentCardIdentity const& identity) {
     AgentCard card;
     card.name        = meta.agent_name;
-    card.description = identity.description;
-    card.version      = identity.version;
+    // Gap-2 fix (2026-08-14, decisions/ADR-044-*.md): AgentMetadata now carries real
+    // agent_description/agent_version fields. `identity`'s own fields still win when the caller
+    // explicitly supplies them (an Agent Card MAY legitimately want different framing than the raw
+    // agent metadata) -- this only fills in from `meta` when the caller left `identity` at its
+    // default-empty, so no existing caller's behavior changes.
+    card.description = !identity.description.empty() ? identity.description : meta.agent_description;
+    card.version = !identity.version.empty() ? identity.version : meta.agent_version.value_or("");
     card.supported_interfaces = identity.supported_interfaces;
     card.default_input_modes  = identity.default_input_modes;
     card.default_output_modes = identity.default_output_modes;

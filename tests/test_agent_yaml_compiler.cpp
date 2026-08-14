@@ -33,6 +33,10 @@ struct ResearcherAgent
                 ae::TokenBudget<200000>, ae::Approval<ae::approval_mode::policy_driven>> {
     static constexpr std::string_view name         = "researcher";
     static constexpr std::string_view instructions = "Research the question. Cite sources.\n";
+    // Gap-2 fix (2026-08-14, decisions/ADR-044-*.md): optional statics, detected via
+    // agent_registry.hpp's has_agent_description/has_agent_version concepts.
+    static constexpr std::string_view description = "Researches a question and cites sources.";
+    static constexpr std::string_view version      = "1.4.0";
 };
 
 }  // namespace
@@ -103,6 +107,10 @@ spec:
                 check(!compiled_meta.output_schema_json.has_value(),
                       "F-1: output_schema_json stays unset -- the document only supplies a $ref to an "
                       "external file, which this compiler does not resolve");
+                check(compiled_meta.agent_description == "Researches a question and cites sources.",
+                      "F-1: agent_description <- metadata.description");
+                check(compiled_meta.agent_version == std::optional<std::string>{"1.4.0"},
+                      "F-1: agent_version <- metadata.version");
             }
         }
     }
@@ -124,6 +132,9 @@ spec:
             check(cpp_meta->approval == compiled_meta.approval,
                   "F-2: approval agrees -- I6: two independently-compiled forms of the same agent "
                   "produce identical metadata for every field this compiler covers");
+            check(cpp_meta->agent_description == compiled_meta.agent_description,
+                  "F-2: agent_description agrees");
+            check(cpp_meta->agent_version == compiled_meta.agent_version, "F-2: agent_version agrees");
         }
     }
 

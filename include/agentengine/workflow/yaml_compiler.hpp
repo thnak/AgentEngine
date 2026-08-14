@@ -187,10 +187,15 @@ namespace json = agentengine::json;
     Workflow wf;
     if (metadata) {
         if (json::Value const* id = metadata->find("id"); id && id->is_string()) wf.id = id->as_string();
-        // §3's own metadata.version has no home in graph.hpp's Workflow struct (pure graph shape, no
-        // document-identity/versioning field) -- read here for completeness, intentionally dropped,
-        // the same honest "the struct doesn't have a slot for this yet" finding D2 already recorded
-        // for AgentMetadata's own missing description/version fields.
+        // Gap-2 fix (2026-08-14, decisions/ADR-044-*.md): Workflow now has real description/version
+        // slots -- see that struct's own comment.
+        if (json::Value const* description = metadata->find("description");
+            description && description->is_string()) {
+            wf.description = description->as_string();
+        }
+        if (json::Value const* version = metadata->find("version"); version && version->is_string()) {
+            wf.version = version->as_string();
+        }
     }
 
     if (json::Value const* start = spec->find("start"); start && start->is_string()) wf.start = start->as_string();

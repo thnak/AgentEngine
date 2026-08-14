@@ -26,12 +26,11 @@
 // on, distinct from the tools/capabilities registry gap). `output_schema_strategy_chosen` is therefore
 // also never set (it depends on `output_schema_json` existing, `agent_registry.hpp`'s own rule).
 //
-// `metadata.version`/`metadata.description` have no home in `AgentMetadata`'s own current shape --
-// read from the document, then honestly dropped, the SAME finding Phase D2 (Agent Card generation)
-// and Phase F2 (the Workflow-document compiler) already recorded independently for their own compiled
-// targets. Three independent compilers hitting the identical gap is itself a signal `AgentMetadata`
-// (002-owned) genuinely needs these fields at some point -- not something this file's own authority
-// extends to fixing.
+// `metadata.version`/`metadata.description` -- CLOSED (2026-08-14, decisions/ADR-044-*.md):
+// `AgentMetadata` gained real `agent_description`/`agent_version` fields, closing the identical gap
+// Phase D2 (Agent Card generation) and Phase F2 (the Workflow-document compiler) independently
+// recorded for their own compiled targets. Three independent compilers hitting the same gap was the
+// signal that `AgentMetadata` (002-owned) genuinely needed these fields -- it now does.
 
 #include <cstdint>
 #include <optional>
@@ -94,7 +93,15 @@ namespace agent_yaml_compiler_detail {
 
     if (metadata) {
         if (json::Value const* id = metadata->find("id"); id && id->is_string()) meta.agent_name = id->as_string();
-        // metadata.version/description: read, then honestly dropped -- see file-top comment.
+        // Gap-2 fix (2026-08-14, decisions/ADR-044-*.md): AgentMetadata now has real slots for both --
+        // see that struct's own comment.
+        if (json::Value const* description = metadata->find("description");
+            description && description->is_string()) {
+            meta.agent_description = description->as_string();
+        }
+        if (json::Value const* version = metadata->find("version"); version && version->is_string()) {
+            meta.agent_version = version->as_string();
+        }
     }
 
     if (json::Value const* instructions = spec->find("instructions"); instructions && instructions->is_string()) {

@@ -53,6 +53,14 @@ namespace agentengine {
 struct AgentMetadata {  // ae-naming-lint: allow AgentMetadata — pre-existing M0 scaffolding pattern for this milestone's new types, reconcile at owning milestone (matches ToolDescriptor/ToolTable's own deferred status, core/tool_pipeline.hpp)
     std::string agent_name;
     std::string agent_instructions;
+    // Gap-2 fix (2026-08-14, decisions/ADR-044-*.md): 002 §1/§7's own identity list
+    // ("stable agent_id, name, description, version") named these two from the start; this struct
+    // simply never grew them. `agent_description` defaults empty (matching `agent_name`'s own "not
+    // declared" convention); `agent_version` is `optional`, not a defaulted empty string, because
+    // "no version declared" and "declared as the empty string" are genuinely different states a
+    // consumer (an A2A Agent Card, an MCP server descriptor) needs to tell apart.
+    std::string agent_description;
+    std::optional<std::string> agent_version;
     std::string chat_client_id;
     ToolTable tools;
     std::vector<Capability> capability_ceiling;
@@ -420,12 +428,32 @@ using agent_base_t = decltype(agent_base_of(std::declval<A const&>()));
 template <class A, class Base>
 struct compiler;  // primary intentionally undefined -- Base must be A's own Agent<A, Policies...>
 
+// Gap-2 fix: `description`/`version` are optional statics, unlike the required `name`/`instructions`
+// (`A::name`/`A::instructions` are used directly above with no detection -- a type missing either
+// already fails to compile at `register_agent<A>()`, by design, per this file's own §6 comment).
+// Making these two REQUIRED as well would break every existing `Agent<Derived,...>` conformer that
+// predates this fix; `requires`-detected optional statics, defaulting to "not declared," extend the
+// identity 002 §1 always specified without an invasive, breaking migration.
+//
+// Naming note, not a compile hazard: `Tool<Derived, Policies...>` (core/tool.hpp) also requires a
+// CRTP-provided `static description` -- same member name, different meaning (a tool's schema text
+// shown to a model vs. an agent's identity text for a card/listing). No actual collision is possible
+// (`Agent<Derived,...>` and `Tool<Derived,...>` are unrelated CRTP bases, never satisfied by the same
+// type), but an author skimming both conventions could reasonably expect them to mean the same thing.
+// Flagged here rather than silently left for someone to discover the hard way.
+template <class A>
+concept has_agent_description = requires { { A::description } -> std::convertible_to<std::string_view>; };
+template <class A>
+concept has_agent_version = requires { { A::version } -> std::convertible_to<std::string_view>; };
+
 template <class A, class... Policies>
 struct compiler<A, Agent<A, Policies...>> {
     [[nodiscard]] static result<AgentMetadata> run(ChatClientRegistry const* registry) {
         AgentMetadata meta;
         meta.agent_name = std::string(A::name);
         meta.agent_instructions = std::string(A::instructions);
+        if constexpr (has_agent_description<A>) meta.agent_description = std::string(A::description);
+        if constexpr (has_agent_version<A>) meta.agent_version = std::string(A::version);
         meta.chat_client_id = std::string(chat_client_id_of<Policies...>());
 
         if (auto r = check_chat_client_id(meta.chat_client_id); !r) return std::unexpected(r.error());

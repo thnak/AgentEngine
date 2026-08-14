@@ -189,6 +189,13 @@ struct TerminationBound {
 
 struct Workflow {
     std::string           id;
+    // Gap-2 fix (2026-08-14, decisions/ADR-044-*.md): 015 §3's own document shape already carries
+    // `metadata.version`/`metadata.description` (agent_yaml_compiler.hpp's sibling compiler for
+    // Agent documents found the identical gap first) -- this struct simply had no slot for either.
+    // `description` defaults empty (matching `id`'s own "not declared" convention); `version` is
+    // `optional` since "undeclared" and "declared empty" are different states.
+    std::string               description;
+    std::optional<std::string> version;
     std::vector<Executor> executors;
     std::vector<Edge>     edges;
     std::string           start;
@@ -493,6 +500,17 @@ public:
 
     WorkflowBuilder& start_at(std::string executor_id) {
         wf_.start = std::move(executor_id);
+        return *this;
+    }
+
+    // Gap-2 fix: native-authoring parity with the declarative form's `metadata.description`/
+    // `metadata.version` -- optional, chainable, matching this builder's own existing style.
+    WorkflowBuilder& description(std::string text) {
+        wf_.description = std::move(text);
+        return *this;
+    }
+    WorkflowBuilder& version(std::string v) {
+        wf_.version = std::move(v);
         return *this;
     }
 
