@@ -68,6 +68,40 @@ export function ApiWorkflowReference() {
           </RevealItem>
         </RevealGroup>
 
+        <RevealGroup style={{ marginTop: 40 }}>
+          <RevealItem>
+            <div className="flow glass">
+              <div className="flow-node is-purple">
+                <div className="flow-node-title">A</div>
+                <div className="flow-node-sub">one source executor</div>
+              </div>
+              <div className="flow-arrow">fan_out — every target fires in the SAME superstep round, concurrently</div>
+              <div className="flow-row">
+                <div className="flow-node">
+                  <div className="flow-node-title">B</div>
+                </div>
+                <div className="flow-node">
+                  <div className="flow-node-title">C</div>
+                </div>
+                <div className="flow-node">
+                  <div className="flow-node-title">D</div>
+                </div>
+              </div>
+              <div className="flow-arrow">fan_in — the aggregator runs exactly ONCE per round</div>
+              <div className="flow-node is-teal">
+                <div className="flow-node-title">E</div>
+                <div className="flow-node-sub">one ContentItem per contributing branch, in graph-declared order — never once per inbound edge</div>
+              </div>
+            </div>
+            <div className="flow-loop-note" style={{ marginTop: 14 }}>
+              The superstep engine fires every executor reachable in one round concurrently — that's
+              true even without an explicit <code>fan_out</code> edge naming them; <code>fan_out</code>{" "}
+              exists so a rendered graph says what was actually authored, not because it's the only
+              way concurrency happens.
+            </div>
+          </RevealItem>
+        </RevealGroup>
+
         <RevealGroup className="anchor-target" style={{ marginTop: 48 }} id="workflow-graph-shape">
           <RevealGroup>
             <RevealItem>
