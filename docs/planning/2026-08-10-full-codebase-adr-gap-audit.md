@@ -9,7 +9,7 @@ unedited except this header" convention):** two real-code events since this run 
 status. Neither was re-derived from scratch here — both are cross-checked against the actual ADRs
 that landed, matching this doc's own evidence discipline.
 
-**Update (2026-08-14, status only, same convention):** ten real-code events and two design-only
+**Update (2026-08-14, status only, same convention):** thirteen real-code events and two design-only
 (no-code) events.
 
 - **Gap 3 (no generic JSON Schema validator) is CLOSED.**
@@ -196,6 +196,41 @@ that landed, matching this doc's own evidence discipline.
   `HasProducerChatClientId` concept so a `ChatClientT` without it gets unchanged behavior, never a
   compile break. First real producer of `run_event_kind::policy_decision` (013 §1's own long-dormant
   vocabulary). New test file + Anthropic translation extension, full suite green.
+- **Gap 9 (027's `UsageDetails` vs. code's `Usage`) is CLOSED, and the direction of drift is
+  reversed from the audit's own framing.** `decisions/ADR-050-usage-usagedetails-canonical-name-
+  reconciliation.md` (Proposed) confirms 003 §6 and 004 both already, consistently, normatively
+  spell it `Usage` — 027's own table row was the outlier despite citing 003 §6 as its source; the
+  naming-lint script confirmed this structurally (`Usage` needed a suppression comment to avoid
+  being flagged unlisted). Fixed via one table-row correction, no code renamed. Verified with a real
+  before/after lint run (96→95 suppressed, the identical 202 unlisted names, proving no silent
+  absorption of ADR-025's own deferred bulk-reconciliation backlog).
+- **Gap 13 (shell-dispatched Tools bypass the 006 §3 pipeline) is CLOSED, and the finding is
+  narrowed to what's actually reachable.** `decisions/ADR-052-shell-registered-tool-dispatch-scope-
+  correction.md` (Proposed) confirms the bypass CODE is real (`shell_dispatch.cpp`'s `dispatch_
+  command()` calls a `RegisteredTool`'s bare closure with no gates) but was never reachable:
+  `command_registry.hpp`'s own pre-existing comment already discloses `RegisteredTool` is a test
+  stub for name-resolution precedence, "NOT an implementation of 006's ten-step pipeline," and
+  `shell_dispatch.cpp` (already confirmed by this session's own ADR-040 to be "the untouched spike")
+  has zero production call sites. The REAL, live shell path (`mediated_shell_dispatch.cpp`) has zero
+  tool-dispatch code at all — nothing to bypass because nothing dispatches there yet. This row's own
+  other named symptoms (null-`tool_bridge` crash, collapsed denials, missing `call_index`) don't
+  exist in current code either. No functional change: warning comments land at the exact bypass call
+  site and the type's own definition, both naming the real requirement (route through `invoke_tool()`)
+  for whichever future work eventually builds real shell-tool dispatch.
+- **Gap 22 (014 §8 G3's 10³-seed shuffle test, never built) is CLOSED.**
+  `decisions/ADR-051-workflow-scheduling-shuffle-test.md` (Proposed) confirms the test genuinely
+  never existed — the M6 breakdown doc's own decisions 5/8 only ever designed it. Found and fixed a
+  real, narrower documentation gap along the way: that same doc's own Phase J completion section
+  silently dropped G3 between its "delivered" claim (naming only G1/030§7 G1) and its own separate
+  "deliberately does NOT close" list (G3 absent from that too) — corrected with an honest update note
+  rather than rewritten. Built `tests/test_rt_workflow_supervisor_scheduling_shuffle.cpp`, broadening
+  `test_rt_workflow_supervisor_patterns.cpp`'s own already-proven (single-hand-picked-delay)
+  fan-out/fan-in claim to a real 1000-seed sweep of independently randomized delays, against the
+  CURRENT (post-ADR-037) `ThreadPool`-backed fan-out mechanism. Self-red-team: paired with a real
+  negative control (a deliberately order-dependent executor, proven to actually diverge across a
+  200-seed subset) so the positive 1000-seed pass is a demonstrated real check, not a vacuous one.
+  One `WorkflowSupervisor` built once, re-run sequentially across every seed, matching the M6 doc's
+  own machine-safety design. Full suite green (~19s added, an accepted, already-anticipated cost).
 - **Gap 8 (naming-lint namespace bug) is CLOSED.** Its suggested title,
   `naming-lint-namespace-coverage-and-vocabulary-reconciliation`, matches
   `decisions/ADR-025-naming-lint-namespace-scope-and-027-vocabulary-diagram.md` (Judged) — confirmed
@@ -223,9 +258,9 @@ that landed, matching this doc's own evidence discipline.
   re-derives it from current code (`a2a/server.hpp`'s own comment: "no principal/authorization
   boundary in this transport-agnostic dispatcher yet") and names it as an explicit, not-yet-closed
   residual, not a silently dropped one.
-- **The other 8 gaps below were NOT re-verified this pass** (gaps 4 and 10 above were re-verified
+- **The other 5 gaps below were NOT re-verified this pass** (gaps 4 and 10 above were re-verified
   and designed against, but stay open — not counted as re-verified-and-closed like
-  2/3/8/11/12/15/16/17/18/19/20/21/23; gap 21 itself is only partially closed, and gap 5 is
+  2/3/8/9/11/12/13/15/16/17/18/19/20/21/22/23; gap 21 itself is only partially closed, and gap 5 is
   corrected+designed alongside gap 4 without being independently closed, see their own rows above).
   They still reflect the 2026-08-10
   snapshot. ADR-037 (Quark removal, 2026-08-13) touched large parts of the tree these gaps cite by
@@ -280,14 +315,14 @@ needs the full reasoning behind a specific line item below, not just the one-lin
 | 4 | No tool/capability name-keyed registry | Medium | needs_adr **[2026-08-14: DESIGNED, not implemented]** | ~~The submitted proposal was placeholder text with no real content...~~ — `docs/planning/tool-capability-registry-design-draft.md` reuses `ChatClientRegistry`'s shape + `check_capability_ceiling()`'s validation pattern rather than inventing from scratch; resolves I2/I3/squatting as designed, self-red-teamed. Not built (no Linux-style blocker here — just scoped as document-only per project-owner direction). |
 | 5 | ToolTable has zero runtime construction API (name-keyed half) | Medium | needs_adr **[2026-08-14: corrected + designed, not implemented]** | ~~ToolTable has zero runtime construction API~~ was already stale before this pass — the descriptor-keyed half (`from_descriptors()`) landed 2026-08-10; only the name-keyed half was ever really open. The gap-4 design draft's own §2/§3 explicitly checked and preserved the exact nullptr-vs-supplied-registry distinction this row warned about, so the currently-passing 015 §2 worked-example test stays green under the new design. |
 | 7 | M7 Phase G gate 006 §6b G6 (`schedule_wakeup`) is unprovable as written | Medium | needs_adr | Give `schedule_wakeup` a real `StandingEffect` producer — but must enforce `Schedule<max_horizon>` at arm time (currently unbounded, a live I2 gap) and name the missing `ReminderService`-access seam. |
-| 9 | 027's canonical name `UsageDetails` has drifted to `Usage` in code | Medium | needs_adr | A mechanical rename only works once 003 §6 and 004 (which normatively say `Usage`, not `UsageDetails`) are reconciled too — otherwise it trades one spec/code drift for another. |
+| 9 | 027's canonical name `UsageDetails` has drifted to `Usage` in code | Medium | ~~needs_adr~~ **[2026-08-14: CLOSED, ADR-050 Proposed]** | ~~A mechanical rename only works once 003 §6 and 004... are reconciled too~~ — they already are, in the CODE's favor: both normatively say `Usage`, confirmed directly, so 027's own table row was corrected instead (one row, no code renamed) — the drift ran the opposite direction from this row's own framing. |
 | 11 | Windows native-jail leaks curated host files via inherited AppContainer ACEs | Medium | ~~needs_adr~~ **[2026-08-14: CLOSED, ADR-041 Proposed]** | ~~The deny-only-SID fix is blocked pending an empirical spike: the proposed launch APIs (`CreateProcessAsUser`/`WithTokenW`) need privileges a standard non-admin deployment account likely doesn't hold.~~ — this blocker is a misattribution (that API isn't used anywhere in this codebase); the real fix (interpreter-level `open()` mediation as primary boundary) already shipped and is already Judged, and the leak's boundedness is already proven by an existing, passing test. |
-| 13 | Shell-dispatched registered Tools bypass the 006 §3 tool pipeline | Medium | needs_adr | Route shell tool calls through `bridge_tool_call` like Python's bridge already does — but fix a null-`tool_bridge` crash, stop collapsing capability/approval denials into continuable errors, and give `call_index` a real source. |
+| 13 | Shell-dispatched registered Tools bypass the 006 §3 tool pipeline | Medium | ~~needs_adr~~ **[2026-08-14: CLOSED, ADR-052 Proposed]** | ~~Route shell tool calls through bridge_tool_call... fix a null-tool_bridge crash, stop collapsing capability/approval denials... give call_index a real source.~~ — none of that code exists to fix: the bypass lives entirely in `shell_dispatch.cpp`, a confirmed-unreachable spike (`RegisteredTool`'s own comment already discloses it's a test stub, not a real pipeline), and the REAL shell path dispatches no Tools by name at all yet. Closed via warning comments at the two places a future real integration would look, not by building unscoped new dispatch machinery. |
 | 17 | MemoryProvider renders ModelInferred and UserStated items identically | Medium | ~~needs_adr~~ **[2026-08-14: CLOSED, ADR-046 Proposed]** | Confidence-label prefix shipped as recommended, paired with fixing Anthropic's zero-separator system-message concatenation first (confirmed real) — and the label-forgery surface the fix itself introduces is closed via a marker-neutralizing transform applied to retrieved content before any real label is emitted. |
 | 18 | Default memory ranking is additive, not salience×recency×keyword | Medium | ~~needs_adr~~ **[2026-08-14: CLOSED, ADR-047 Proposed]** | Fixed to a genuine product as recommended, using the Store's own actual SeqNo for recency (not a commit-history scan, confirmed unbuildable against this codebase's history-free `Ref` model) — but neither the product's raw factors nor an unnormalized raw SeqNo were usable directly; both needed non-degenerate transforms, self-red-teamed before any test ran. |
 | 20 | Cross-provider Reasoning-exclusion design (003 §8 Q2) never implemented | Medium | ~~needs_adr~~ **[2026-08-14: CLOSED, ADR-049 Proposed]** | ~~Wire ChatClientId provenance through... a real production call site (HistoryAndSkillsProvider) was missed, and FailoverChatClient's Primary-only identity would falsely flag ordinary failover as cross-provider.~~ — `FailoverChatClient` is gone (ADR-036), mooting that blocker; the real missed call site is `run_rounds()`'s own direct `history_provider_.on_context()` call, not `assemble_context()` (unused by AgentSession); identity is derived from the bound backend's own real construction state instead of threading the compile-time `ChatClientId<...>` policy tag through. |
 | 21 | Content model never uses type-level `Tainted<T>` for text/structured fields | Medium | needs_adr **[2026-08-14: PARTIALLY CLOSED, ADR-042 Proposed — see gap 16]** | ~~Proposed accessors are additive and bypassable...~~ — ADR-042 gives `Tainted<T>` its first real field (`ContextContribution.instructions` only, needed by gap 16). The three named consumption boundaries (cli_chat.cpp, mcp/server.hpp, tool_bridge.hpp) still read raw `ContentItem` fields unchecked — this row's broader claim stays open, a full content-model migration is real, separately-scoped RFC-003-§2-level work. |
-| 22 | 014 §8 G3 (10³-seed scheduling shuffle test) never built, undisclosed | Medium | needs_adr | Write the missing test per the M6 breakdown's own already-designed architecture — but "the test exists" is falsely claimed in more than the two spots the architect named; all must be retracted together. |
+| 22 | 014 §8 G3 (10³-seed scheduling shuffle test) never built, undisclosed | Medium | ~~needs_adr~~ **[2026-08-14: CLOSED, ADR-051 Proposed]** | Written per the M6 breakdown's own already-designed architecture, as recommended (one Engine, 1000 seeds, re-run sequentially) — no shipped doc anywhere was found to actually claim this test existed (the audit's own "falsely claimed" framing describes its own internal architect/red-team exchange, not this repository), but a real, narrower, related documentation gap WAS found and fixed: the M6 breakdown's own Phase J completion section silently dropped G3 between "delivered" and "explicitly deferred" rather than naming it in either. |
 | 6 | `output_schema $ref` never resolved by the declarative compiler | Low | needs_adr **[2026-08-14: re-verified, still open — see priority note below]** | Add an opt-in `SchemaRefResolver` — but must extract the *full* enforceability check (not half), reuse ~~`worktree.hpp`'s~~ **`worktree_mount_fs.hpp`'s** (this row's own citation was wrong — `worktree.hpp` has no path-validation logic) tested path validator for Windows-safe traversal checks, and not overstate unbuilt digest/signing infrastructure as a safety net. |
 | 14 | 025 §4 conflict-surfacing (`/conflicts/<path>.<agent>`) unimplemented | Low | needs_adr | Materializing evidence into the parent Ref via `commit_ref` directly contradicts an already-passing test ("parent Ref unchanged on failed merge") and misattributes ours/theirs — needs a different storage location and a real committer-identity source. |
 
@@ -305,9 +340,9 @@ All 23 confirmed gaps. Each carries a suggested title, but nearly all were indep
 
 - **Trust boundary / network listener:** `ADR-025-inbound-principal-propagation-and-per-resource-authorization.md` (gap 1)
 - **Agent/workflow metadata & declarative surface:** `agent-workflow-description-version-metadata` (2), `json-schema-instance-validator-wiring` (3), `name-keyed-tool-capability-registry` (4), `declarative-tool-registry-resolution` (5), `declarative-output-schema-ref-resolution` (6)
-- **Workflow orchestration proofs:** `schedule-wakeup-standing-effect-and-horizon-enforcement` (7), `workflow-g3-shuffle-determinism-test` (22), `conflict-evidence-materialization` (14)
-- **Governance / documentation integrity:** `naming-lint-namespace-coverage-and-vocabulary-reconciliation` (8), `usage-usagedetails-canonical-name-reconciliation` (9), `milestone-status-doc-accuracy-and-drift-lint` (23)
-- **Sandbox / native-jail (highest consequence for I2):** `linux-native-jail-pivot-root-containment` (10), `windows-native-jail-appcontainer-token-hardening` (11), `shellrunner-fswrite-quota-gate-and-enforcement` (12), `shell-tool-dispatch-bridge-unification` (13)
+- **Workflow orchestration proofs:** `schedule-wakeup-standing-effect-and-horizon-enforcement` (7), ~~`workflow-g3-shuffle-determinism-test` (22)~~ **[2026-08-14: CLOSED, `decisions/ADR-051-workflow-scheduling-shuffle-test.md`]**, `conflict-evidence-materialization` (14)
+- **Governance / documentation integrity:** `naming-lint-namespace-coverage-and-vocabulary-reconciliation` (8), ~~`usage-usagedetails-canonical-name-reconciliation` (9)~~ **[2026-08-14: CLOSED, `decisions/ADR-050-usage-usagedetails-canonical-name-reconciliation.md`]**, `milestone-status-doc-accuracy-and-drift-lint` (23)
+- **Sandbox / native-jail (highest consequence for I2):** `linux-native-jail-pivot-root-containment` (10), `windows-native-jail-appcontainer-token-hardening` (11), `shellrunner-fswrite-quota-gate-and-enforcement` (12), ~~`shell-tool-dispatch-bridge-unification` (13)~~ **[2026-08-14: CLOSED, `decisions/ADR-052-shell-registered-tool-dispatch-scope-correction.md` — narrowed, not built, see that ADR]**
 - **Session durability & content taint (I3/I4):** `agent-session-ack-durability-policy` (15), `context-instructions-taint-channel` (16), `content-item-taint-enforcement` (21)
 - **Memory subsystem:** ~~`memory-confidence-labeling-and-system-message-separation` (17)~~ **[2026-08-14: CLOSED, `decisions/ADR-046-memory-confidence-labels-and-system-message-separator.md`]**, ~~`memory-ranking-recency-signal` (18)~~ **[2026-08-14: CLOSED, `decisions/ADR-047-memory-ranking-product-formula.md`]**
 - **Model provider content fidelity:** ~~`outbound-multimodal-capability-gate` (19, Phase 1 only — Phase 2 needs a second, later ADR once RFC 019's blob-store seam exists)~~ **[2026-08-14: CLOSED, `decisions/ADR-048-outbound-media-capability-gate.md`, Phase 1 only — Phase 2 still needs RFC 019]**, ~~`cross-provider-reasoning-exclusion` (20)~~ **[2026-08-14: CLOSED, `decisions/ADR-049-cross-provider-reasoning-exclusion.md`]**
@@ -342,7 +377,7 @@ Pulled from the individual approaches — these are explicitly out-of-scope item
 
 5. ~~**Fix the durability/ack gap (15)**...~~ **DONE (2026-08-14, ADR-043).** The premise this item was scheduled behind was itself wrong — no Store type-erasure question needed resolving; the seam already existed as a deliberate `concept`.
 
-6. **Batch the remaining medium/low findings by subsystem** rather than one-by-one: of the original declarative-agent-surface group (2, 3, 4, 5, 6), only gap 6 remains fully open (2 and 3 closed; 4 designed; 5 rides on 4 landing as real code) — worth revisiting once gap 4's design is implemented, since gap 6's "full enforceability check" and gap 3's validator both feed it. ~~The memory-subsystem group (17, 18)~~ **DONE (2026-08-14, ADR-046/ADR-047)** — both closed with real code, full suite green. ~~The model-provider-fidelity group (19, 20)~~ **DONE (2026-08-14, ADR-048/ADR-049)** — both closed with real code, full suite green. Every originally-identified subsystem batch is now either closed or (gap 6) blocked on a named, separate precondition; what remains is five independent stragglers (7, 9, 13, 14, 22) with no natural batching of their own.
+6. **Batch the remaining medium/low findings by subsystem** rather than one-by-one: of the original declarative-agent-surface group (2, 3, 4, 5, 6), only gap 6 remains fully open (2 and 3 closed; 4 designed; 5 rides on 4 landing as real code) — worth revisiting once gap 4's design is implemented, since gap 6's "full enforceability check" and gap 3's validator both feed it. ~~The memory-subsystem group (17, 18)~~ **DONE (2026-08-14, ADR-046/ADR-047)** — both closed with real code, full suite green. ~~The model-provider-fidelity group (19, 20)~~ **DONE (2026-08-14, ADR-048/ADR-049)** — both closed with real code, full suite green. ~~Gaps 9, 13, and 22~~ **DONE (2026-08-14, ADR-050/ADR-051/ADR-052)** — each turned out, on re-grounding, to be a documentation/scope correction rather than the live bug its own row implied (9: 027's table was the drifted party, not the code; 13: the bypass is confirmed-unreachable spike code; 22: the test's own absence was undisclosed, now built for real). Every originally-identified subsystem batch is now either closed or (gap 6) blocked on a named, separate precondition; what remains is two genuinely independent items with no natural batching (7, 14).
 
 7. **Assign real ADR numbers before any of the above lands** — resolve the `ADR-025` collision across all 23 suggested titles by sequencing them (likely ADR-025 through ADR-047, in the priority order above) as part of scheduling this work, not as an afterthought at merge time.
 

@@ -48,7 +48,12 @@ struct RegisteredRunner {
 
 // A registered Tool (006). Argv-to-typed-Args mapping is explicitly undesigned (ADR-001 §11 item
 // 3) — this is the minimum type-erased shape needed to make CommandRegistry's three-way lookup
-// real and testable (Sh-C2), not an implementation of 006's ten-step pipeline.
+// real and testable (Sh-C2), not an implementation of 006's ten-step pipeline. Gap-audit finding
+// 13 / ADR-052: `invoke` below is called directly by `shell_dispatch.cpp`'s `dispatch_command()`,
+// with NO capability-ceiling check, NO approval gate, NO call provenance — deliberately, matching
+// this struct's own stated test-stub scope, not a live bug (`shell_dispatch.cpp` has zero
+// production call sites today). A REAL future Tool-dispatch integration must invoke through
+// `invoke_tool()` (core/tool_pipeline.hpp), never this closure directly.
 struct RegisteredTool {
     std::string name;
     std::function<result<ExecOutcome>(std::vector<std::string> const&, EffectContext&)> invoke;

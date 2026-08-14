@@ -270,6 +270,21 @@ result<CommandOutcome> dispatch_command(std::string_view name, std::vector<std::
         return resolved.runner->invoke(sub_request, state, ctx);
     }
     case agentengine::native_jail::command_kind::tool:
+        // GAP-AUDIT FINDING 13 / ADR-052 (2026-08-14): `RegisteredTool::invoke()` is a raw,
+        // type-erased closure (command_registry.hpp's own comment: "the minimum shape needed to
+        // make CommandRegistry's three-way lookup real and testable... NOT an implementation of
+        // 006's ten-step pipeline") -- calling it directly here, as ADR-001's Design A always did,
+        // bypasses capability-ceiling checks, approval gating, and call provenance entirely. This
+        // was never a hidden bug: ADR-001 (Judged) scoped `RegisteredTool` to prove name-resolution
+        // PRECEDENCE (Sh-C2), never real tool invocation, and `shell_dispatch.cpp` itself has zero
+        // production call sites (confirmed: only test_shell_runner_proof.cpp/test_native_jail_
+        // runner_stubs.cpp include shell_runner.hpp) -- the real, live native-jail shell path is
+        // `mediated_shell_dispatch.cpp`, which does not dispatch registered Tools by name at all
+        // today. THIS COMMENT EXISTS SO THAT NEVER CHANGES BY ACCIDENT: a future implementation
+        // that wires real Tool dispatch into EITHER shell path must route through `invoke_tool()`
+        // (core/tool_pipeline.hpp) -- the same real pipeline `bridge_tool_call()` (native_jail/
+        // tool_bridge.hpp) already routes Python's own tool calls through -- never call a
+        // `RegisteredTool`'s bare `invoke` closure directly the way this line does.
         return resolved.tool->invoke(argv, ctx);
     case agentengine::native_jail::command_kind::not_found:
         return std::unexpected(

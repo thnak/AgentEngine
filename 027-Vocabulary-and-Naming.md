@@ -44,7 +44,7 @@ Names verified against `agent_framework` (Python core) unless marked **ours**.
 | `ChatResponse` / `ChatResponseUpdate` | A model call's result / streamed increment | MAF |
 | `AgentResponse` / `AgentResponseUpdate` | A run's result / streamed increment | MAF |
 | `ResponseStream` | The streamed-response handle | MAF |
-| `UsageDetails` | Token and cost accounting (003 §6) | MAF |
+| **`Usage`** | Token and cost accounting (003 §6) | **ours** (deliberately shorter than MAF's `UsageDetails` — 003 §6 and 004 have both normatively spelled it `Usage` since those RFCs were first written; this row itself was the drifted one, corrected 2026-08-14, gap-audit finding 9, `decisions/ADR-050-*.md` — not a rename of already-shipped code) |
 | **`Run`** | One invocation of an agent against a session — the unit of tracing, checkpointing, replay, and the thing an A2A `Task` maps to (001) | **ours** |
 | **`Turn`** | One model call plus the tool invocations it triggers, inside a run | **ours** |
 

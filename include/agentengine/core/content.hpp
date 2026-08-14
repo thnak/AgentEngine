@@ -134,7 +134,9 @@ struct ContentItem {  // ae-naming-lint: allow ContentItem — pre-existing M0 s
 
 enum class role { system, user, assistant, tool };  // ae-naming-lint: allow role — pre-existing M0 scaffolding, reconcile at owning milestone
 
-struct Usage {  // ae-naming-lint: allow Usage — pre-existing M0 scaffolding, reconcile at owning milestone
+struct Usage {  // gap-audit finding 9 (2026-08-14, decisions/ADR-050-*.md): 027's own table now lists
+                // `Usage`, not `UsageDetails` — this name was always right, the vocabulary table was
+                // the stale one; no suppression comment needed here anymore.
     std::uint64_t input_tokens = 0;
     std::uint64_t output_tokens = 0;
     std::uint64_t cached_input_tokens = 0;

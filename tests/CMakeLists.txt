@@ -863,6 +863,13 @@ add_executable(test_rt_workflow_supervisor_patterns test_rt_workflow_supervisor_
 target_link_libraries(test_rt_workflow_supervisor_patterns PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_workflow_supervisor_patterns COMMAND test_rt_workflow_supervisor_patterns)
 
+# ---- ADR-051 (gap-audit finding 22 / 014 §8 G3) -- the 10^3-seed scheduling shuffle test, never
+# built before this file: shuffled intra-round completion order produces identical output, and a
+# deliberately order-dependent executor is caught by the same sweep.
+add_executable(test_rt_workflow_supervisor_scheduling_shuffle test_rt_workflow_supervisor_scheduling_shuffle.cpp)
+target_link_libraries(test_rt_workflow_supervisor_scheduling_shuffle PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_workflow_supervisor_scheduling_shuffle COMMAND test_rt_workflow_supervisor_scheduling_shuffle)
+
 # ---- ADR-037 Phase 2, Slice 1 -- ADR-029's suspend-for-human-approval mechanism, re-proven against
 # agentengine::rt::AgentSession -- supersedes the old, Quark-actor-based
 # test_agent_session_suspend_approval(.cpp).

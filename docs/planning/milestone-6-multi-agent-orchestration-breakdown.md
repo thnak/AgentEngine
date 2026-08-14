@@ -500,7 +500,18 @@ time-travel (F), rendering/diffing/live-view (G), the Project manifest and regis
 lifecycle (I), and this phase's own exit-criterion proof (J). The roadmap's own Milestone 6 exit
 criterion -- "each 014 §3 pattern runs correctly under injected executor failure (014 §8 G1), and
 pausing one Project has zero observable effect on N-1 others (030 §7 G1)" -- is the pair Phase J
-proves. What Milestone 6 deliberately does NOT close is listed below, unchanged by Phase J and
+proves.
+
+**Update (2026-08-14, gap-audit finding 22):** 014 §8 G3 (the 10³-seed scheduling shuffle test)
+was never actually built by Phase J, despite decision 8 above naming it as something "Phase J must
+assert" -- and its absence went unrecorded in both directions: Phase J's own completion claim above
+names only G1/030§7 G1, and the "deliberately does NOT close" list right below never named G3 either,
+so it silently fell through the gap between "delivered" and "explicitly deferred" rather than landing
+in either. Closed for real, separately, via `tests/test_rt_workflow_supervisor_scheduling_shuffle.cpp`
+and `decisions/ADR-051-workflow-scheduling-shuffle-test.md` -- reusing this doc's own decision 5/8
+design (one `WorkflowSupervisor`, re-run sequentially across 1000 seeds, never one spawned per seed).
+
+What Milestone 6 deliberately does NOT close is listed below, unchanged by Phase J and
 carried forward to the milestones already named for each: M7 (015's declarative loader, 013's four
 HITL surfaces), M9 (020's `EmbeddedHost` facade, and the ≥3-node cluster claim -- 020's Cluster
 hosting shape is the only RFC in the roadmap that owns multi-node deployment at all, so that is
