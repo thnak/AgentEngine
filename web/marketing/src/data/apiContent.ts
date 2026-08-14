@@ -293,6 +293,95 @@ export const trustEntries: ApiEntry[] = [
   },
 ];
 
+// ---- Trust & Sandbox page: illustrated walkthrough data ------------------------------------------
+
+export interface PipelineStep {
+  index: string;
+  title: string;
+  body: string;
+}
+
+// 006 §3's real ten-step invocation pipeline, invoke_tool() (core/tool_pipeline.hpp) narrated step
+// by step, verbatim from that function's own `-- step N: ... --` comments.
+export const toolPipelineSteps: PipelineStep[] = [
+  { index: "1", title: "Resolve", body: "table.find(tool_name) — an unknown tool name fails closed with tool.unknown_name before anything else runs." },
+  { index: "2", title: "Validate + Taint", body: "The raw JSON args are parsed against the tool's own Args schema; whether they came from model output is stamped as one bool on the call, not deep per-field propagation." },
+  { index: "4 / 7", title: "Authorize + bind", body: "For each capability in the tool's declared ceiling, held.bind(requirement) is tried. Any single miss fails the WHOLE call closed with tool.capability_not_held — no partial binding, and the error names neither what's missing nor what IS held." },
+  { index: "5", title: "Approve", body: "never_require auto-approves; always_require calls the injected ApprovalDecider over the call's canonical JSON args. A text_derived call (reconstructed from plain text) gets its OWN, stricter gate here regardless of the tool's own setting — the confused-deputy override ADR-023 forced." },
+  { index: "6", title: "Admit", body: "Rate-limit/concurrency/quota admission — a documented no-op today (out of scope for the milestone that built this pipeline), not a silently dropped step." },
+  { index: "8", title: "Invoke", body: "Only reached if every earlier gate passed. The deadline is checked at this boundary (not preemptible mid-call); tool->invoke(args, ctx) runs with ctx.bound_capabilities pointing at exactly this call's bound handles." },
+  { index: "10", title: "Account", body: "Every bound capability handle is revoked — unconditionally, success or failure, before step 9. A handle from call N is unusable in call N+1 by construction, not by convention." },
+  { index: "9", title: "Normalize", body: "The tool's own result (or the failure from any earlier step) becomes one ToolResult — the shape that folds back into history() as the model's next input." },
+];
+
+export const capabilityDenialExampleSnippet = `// examples/06_capabilities_and_denial.cpp (trimmed)
+struct WriteNoteTool
+    : Tool<WriteNoteTool, Capabilities<cap::decl::FsWrite<"work">>, EffectClass<effect_class::pure>> {
+    static constexpr std::string_view name = "write_note";
+    static result<Reply> invoke(Args, EffectContext&) { /* ... actually writes ... */ }
+};
+// Capabilities<...> is WriteNoteTool's own declared CEILING -- what it might need. It is NOT a
+// grant. Nothing about this declaration lets the tool run.
+
+// Session 1: nothing granted.
+CapabilitySet const held = CapabilitySet::grant_root({});          // deliberately empty
+session.set_capabilities(&held);
+auto r1 = drive(session.start_run(StartRun{user_message("Write a note for me.")}));
+// r1 STILL converges (the denial is an ordinary tool error fed back to the model, not a run
+// failure) -- but write_note's invoke() never ran. I2 denied the call before it got there.
+
+// Session 2: the SAME tool, the SAME scripted call -- only the grant differs.
+CapabilitySet const held2 = CapabilitySet::grant_root(
+    {Capability{cap::FsWrite{"work", "", std::nullopt, std::nullopt}}});
+session2.set_capabilities(&held2);
+auto r2 = drive(session2.start_run(StartRun{user_message("Write a note for me.")}));
+// r2 converges AND write_note's invoke() ran for real.`;
+
+export const attenuationExampleSnippet = `// trust/capability.hpp -- CapabilitySet::attenuate(): a STRICTLY NARROWER derived set, or nothing
+CapabilitySet const root = CapabilitySet::grant_root({
+    Capability{cap::FsRead{"work", "", std::nullopt}},
+    Capability{cap::FsWrite{"work", "", std::nullopt, std::nullopt}},
+});
+
+// Ask for a subset -- succeeds, because every requested entry is subsumed by something root holds.
+result<CapabilitySet> child = root.attenuate({Capability{cap::FsRead{"work", "notes/", std::nullopt}}});
+// child.has_value() == true -- a real, independently-holdable CapabilitySet, narrower than root.
+
+// Ask for anything root does NOT hold -- fails closed, all-or-nothing (never a silent partial grant).
+result<CapabilitySet> denied = root.attenuate({Capability{cap::NetOut{{"api.example.com:443:https"}, std::nullopt}}});
+// denied.has_value() == false -- capability.attenuation_not_subsumed.
+// There is no constructor anywhere in this header that WIDENS -- grant_root() is the one
+// explicitly-named entry point host policy calls, never reachable from model output (I3).`;
+
+export interface SandboxBackendRow {
+  name: string;
+  strength: number;
+  platforms: string;
+  coldStart: string;
+  note: string;
+}
+
+// Real ProfileTraits values, read directly off each backend's own `static constexpr traits`.
+export const sandboxBackends: SandboxBackendRow[] = [
+  { name: "native_jail (Windows)", strength: 50, platforms: "Windows x86_64", coldStart: "milliseconds", note: "AppContainer + Job Objects" },
+  { name: "native_jail (Linux)", strength: 50, platforms: "Linux x86_64", coldStart: "milliseconds", note: "cgroups + seccomp" },
+  { name: "wasm", strength: 40, platforms: "Windows + Linux x86_64", coldStart: "microseconds–low ms", note: "Wasmtime-backed" },
+  { name: "remote", strength: 0, platforms: "n/a — scaffolding only", coldStart: "network-dependent", note: "deferred to Milestone 9" },
+];
+
+export const sandboxProfileSnippet = `// include/agentengine/sandbox/sandbox.hpp -- SandboxProfile<Strict>'s real resolution rule
+// "the highest-strength backend that supports the CURRENT platform, ties broken toward
+// whichever supports MORE platforms" -- 008 §3, resolve_strict():
+std::optional<std::size_t> resolve_strict(std::span<ProfileTraits const> candidates,
+                                           platform_id current) {
+    // ... skips anything that doesn't support \`current\`, then picks max by
+    //     {strength, popcount(platform_mask)} ...
+}
+
+// On Windows today: native_jail (strength 50) beats wasm (strength 40) -- Strict resolves to
+// native_jail. \`SandboxProfile<P>\` also accepts a CONCRETE backend directly (SandboxProfile<Wasm>)
+// when a caller wants a specific one regardless of ranking.`;
+
 export const runtimeEntries: ApiEntry[] = [
   {
     id: "agent-session",
