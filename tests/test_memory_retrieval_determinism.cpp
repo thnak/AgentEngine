@@ -90,7 +90,12 @@ std::string text_of_content(ae::ContentItem const& item) {
 
 // Every field a caller could observe, compared explicitly -- "byte-identical," not "looks close."
 bool contribution_identical(ae::ContextContribution const& a, ae::ContextContribution const& b) {
-    if (a.instructions != b.instructions) return false;
+    // `Tainted<T>` deliberately provides no `operator==` (no implicit anything on a security-critical
+    // path, tainted.hpp's own doc comment) -- compare explicitly via the same declassifier every
+    // other reader of this field must use.
+    if (a.instructions.has_value() != b.instructions.has_value()) return false;
+    if (a.instructions.has_value() &&
+        a.instructions->unsafe_view() != b.instructions->unsafe_view()) return false;
     if (a.messages.size() != b.messages.size()) return false;
     for (std::size_t i = 0; i < a.messages.size(); ++i) {
         ae::Message const& ma = a.messages[i];

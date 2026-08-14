@@ -917,6 +917,26 @@ private:
             }
 
             ToolTable const tool_table = ToolTable::from_descriptors(contribution->tools);
+            // Gap-16 fix (2026-08-14): `contribution->instructions` used to be read this far and then
+            // never referenced again -- silently dropped, never reaching the model. The ONE explicit
+            // declassification site for the whole engine: `.unsafe_view()` here does not itself decide
+            // anything is safe -- that decision was already made, explicitly, by whichever
+            // `ContextProvider` constructed the `TaintedText` (context_provider.hpp's own comment).
+            // This just materializes an already-vetted value onto the wire, prepended so it establishes
+            // context ahead of everything else, matching `HistoryAndSkillsProvider`'s own
+            // system-message-first convention (tools/cli_chat.cpp) -- a second, independent role::system
+            // message from another contributor coexists fine (both real backends already concatenate
+            // every role::system message they see, not just the first).
+            if (contribution->instructions.has_value()) {
+                Message instructions_msg;
+                instructions_msg.role = role::system;
+                ContentItem item;
+                item.origin  = content_origin::system;
+                item.tainted = false;  // already declassified above, not re-derived from tainted input
+                item.value   = Text{contribution->instructions->unsafe_view()};
+                instructions_msg.content.push_back(std::move(item));
+                contribution->messages.insert(contribution->messages.begin(), std::move(instructions_msg));
+            }
             ChatRequest request{contribution->messages, contribution->tools};
             if (!chat_client_) {
                 emit_run_event(run_event_kind::run_failed,

@@ -145,9 +145,15 @@ struct ContextAssemblyResult {
             continue;
         }
 
+        // Concatenating two ALREADY-explicitly-trusted TaintedText values and rewrapping the result
+        // is not a new trust decision (neither capability-granting nor policy-deciding, `tainted.hpp`'s
+        // own carve-out) -- each contributor already made its own declassification choice at
+        // construction; this only merges data multiple contributors independently vetted.
         if (contribution->instructions.has_value()) {
-            if (!out.combined.instructions.has_value()) out.combined.instructions = std::string{};
-            *out.combined.instructions += *contribution->instructions;
+            std::string const& piece = contribution->instructions->unsafe_view();
+            out.combined.instructions = out.combined.instructions.has_value()
+                                             ? TaintedText{out.combined.instructions->unsafe_view() + piece}
+                                             : TaintedText{piece};
         }
 
         std::vector<Message>& msgs = contribution->messages;

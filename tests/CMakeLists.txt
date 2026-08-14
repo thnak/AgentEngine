@@ -755,6 +755,13 @@ add_executable(test_rt_agent_session test_rt_agent_session.cpp)
 target_link_libraries(test_rt_agent_session PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_agent_session COMMAND test_rt_agent_session)
 
+# ---- Gap-16/21 fix (2026-08-14, decisions/ADR-042-*.md) -- ContextContribution::instructions
+# actually reaching the model as a real role::system Message, taint-checked at the one explicit
+# declassification site.
+add_executable(test_rt_agent_session_instructions test_rt_agent_session_instructions.cpp)
+target_link_libraries(test_rt_agent_session_instructions PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_agent_session_instructions COMMAND test_rt_agent_session_instructions)
+
 # ---- ADR-037 Phase 2, Slice 1 -- five real behavioral claims ported from the old, Quark-actor-based
 # test_agent_session_state/test_agent_session_history_window/test_agent_session_fork/
 # test_agent_session_redact/test_agent_session_interaction onto agentengine::rt::AgentSession

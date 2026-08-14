@@ -9,8 +9,22 @@ unedited except this header" convention):** two real-code events since this run 
 status. Neither was re-derived from scratch here — both are cross-checked against the actual ADRs
 that landed, matching this doc's own evidence discipline.
 
-**Update (2026-08-14, status only, same convention):** two real-code events and one design-only
+**Update (2026-08-14, status only, same convention):** three real-code events and one design-only
 (no-code) event.
+
+- **Gaps 16 and 21 (the I3 taint pair) are PARTIALLY CLOSED, together, as this row's own note said
+  they had to be.** `decisions/ADR-042-context-instructions-taint-channel.md` (Proposed) confirms the
+  drop site is one level later than gap 16's framing implied (`assemble_context()` reads
+  `.instructions` correctly; `rt::AgentSession::run_rounds()` is where it actually vanishes, and
+  `ChatRequest` had no slot for it), retypes `ContextContribution::instructions` to `TaintedText` —
+  giving `Tainted<T>` (Judged as a type, 007 §9 G2, but never previously instantiated as a real field
+  anywhere) its first real content-model use — and wires the one explicit declassification site into
+  `run_rounds()`. Gap 16 is CLOSED for real: instructions now reach the model as a genuine
+  `role::system` message, proven by two new/extended test files (176/176 full suite). **Gap 21 is only
+  PARTIALLY closed** — this ADR deliberately gives `Tainted<T>` a real field only where gap 16 needed
+  it, not the full content-model migration gap 21's broader claim describes; `ContentItem::text` and
+  the three originally-cited consumption boundaries (`cli_chat.cpp`/`mcp/server.hpp`/`tool_bridge.hpp`)
+  remain raw and ungated, named as a real, still-open residual, not silently claimed closed.
 
 - **Gap 10 (Linux native-jail zero FS/process containment) is DOCUMENTED, not closed — deliberately,
   matching this pass's own project-owner-set precedent for OQ-19/OQ-20.**
@@ -79,9 +93,9 @@ that landed, matching this doc's own evidence discipline.
   re-derives it from current code (`a2a/server.hpp`'s own comment: "no principal/authorization
   boundary in this transport-agnostic dispatcher yet") and names it as an explicit, not-yet-closed
   residual, not a silently dropped one.
-- **The other 18 gaps below were NOT re-verified this pass** (gap 10 above was re-verified and
-  designed against, but stays open — not counted as re-verified-and-closed like 8/11/12/23). They
-  still reflect the 2026-08-10
+- **The other 16 gaps below were NOT re-verified this pass** (gap 10 above was re-verified and
+  designed against, but stays open — not counted as re-verified-and-closed like 8/11/12/16/21/23; gap
+  21 itself is only partially closed, see its own row below). They still reflect the 2026-08-10
   snapshot. ADR-037 (Quark removal, 2026-08-13) touched large parts of the tree these gaps cite by
   file:line — the underlying LOGIC most of these findings describe (capability/taint/sandbox/memory
   behavior) is independent of the actor-engine substrate ADR-037 replaced, so the findings themselves
@@ -126,7 +140,7 @@ needs the full reasoning behind a specific line item below, not just the one-lin
 | 10 | Linux native-jail gives the guest full host FS read/write + process visibility | **High** | needs_adr **[2026-08-14: DESIGNED, not implemented — see planning doc below]** | ~~Build pivot_root+bind-mount containment... narrow the blanket `/usr` bind-mount.~~ — the `/usr` bind-mount claim didn't correspond to real code; `docs/planning/linux-native-jail-pivot-root-containment-design-draft.md` reuses the accepted primitive as recommended, and its own red-team found two MUST-FIX ordering bugs (`MS_PRIVATE` propagation, two-step read-only remount) a naive implementation would have missed. Not built: no Linux dev/test environment available this pass. |
 | 12 | ShellRunner write builtins unconditionally deny writes under any quota-capped FsWrite grant | **High** | ~~needs_adr~~ **[2026-08-14: CLOSED, ADR-040 Proposed]** | Gate fix + live usage enforcement shipped together as recommended, plus the deferred FsRead mirror bug (gap 3/12's own note) folded in and closed too; Python-runner half is a pattern-match fix not locally build-verified (`AGENTENGINE_BUILD_PYTHON_RUNNER=OFF` here). |
 | 15 | AgentSession acks a turn before it's durable; no `at_most_once_ack` escape hatch | **High** | needs_adr | Add an `AckPolicy` (default `AtMostOnceAck`, opt-in `RequireDurableAck`), but the proposed insertion point sits *after* `run_finished` is already emitted (breaks a tested invariant), and the required type-erased Store seam doesn't exist yet. |
-| 16 | `ContextContribution.instructions` computed but silently dropped before reaching the model | **High** | needs_adr | Route instructions through the existing `role::system` wire channel — but that channel is taint-blind end-to-end today (tainted memory content already rides it unchecked by both backends); must close that first. |
+| 16 | `ContextContribution.instructions` computed but silently dropped before reaching the model | **High** | ~~needs_adr~~ **[2026-08-14: CLOSED, ADR-042 Proposed]** | Routed through `role::system` as recommended, gated by making `Tainted<T>` real for this one field first (closing the "must close that first" precondition this row itself named) rather than the whole content model. |
 | 19 | Image/Audio/Video/File (and Anthropic Reasoning) content silently dropped outbound despite declared capability bits | **High** | needs_adr | Split into Phase 1 (fail-closed capability gate + symmetric drop-signal, implementable now) and Phase 2 (real wire encoding), which is blocked on RFC 019's blob-store seam — which does not exist anywhere in the tree. |
 | 23 | CLAUDE.md/README claim Milestones 7-9 "have not started" though M7 is substantially built | **High** | ~~needs_adr~~ **[2026-08-13: CLOSED, ADR-026 Judged]** | Docs corrected, lint (`tools/milestone_status_lint.py`) shipped and wired into CI as recommended. |
 | 2 | AgentMetadata/Workflow have no description/version fields | Medium | needs_adr | Add optional fields wired through 5 call sites — sound, but must close a naming collision with `Tool<>`'s own `description` static and state the I6 equivalence guarantee honestly (proven only for the maintained corpus, not structurally). |
@@ -140,7 +154,7 @@ needs the full reasoning behind a specific line item below, not just the one-lin
 | 17 | MemoryProvider renders ModelInferred and UserStated items identically | Medium | needs_adr | Add a confidence-label prefix — but must pair it with fixing Anthropic's zero-separator system-message concatenation (labels visually bleed together) and address a new label-forgery surface the fix itself introduces. |
 | 18 | Default memory ranking is additive, not salience×recency×keyword | Medium | needs_adr | Fix the formula to a literal product (sound) — but the proposed recency signal is non-monotonic on overwrite and adds a real O(item-count) traversal; use the Store's actual sequence number instead. |
 | 20 | Cross-provider Reasoning-exclusion design (003 §8 Q2) never implemented | Medium | needs_adr | Wire `ChatClientId` provenance through — but a real production call site (`HistoryAndSkillsProvider`) was missed, and `FailoverChatClient`'s Primary-only identity would falsely flag ordinary failover as cross-provider. |
-| 21 | Content model never uses type-level `Tainted<T>` for text/structured fields | Medium | needs_adr | Proposed accessors are additive and bypassable — the raw fields stay directly readable at every real consumption boundary (cli_chat.cpp, mcp/server.hpp, tool_bridge.hpp), so I3 remains structurally unenforced. |
+| 21 | Content model never uses type-level `Tainted<T>` for text/structured fields | Medium | needs_adr **[2026-08-14: PARTIALLY CLOSED, ADR-042 Proposed — see gap 16]** | ~~Proposed accessors are additive and bypassable...~~ — ADR-042 gives `Tainted<T>` its first real field (`ContextContribution.instructions` only, needed by gap 16). The three named consumption boundaries (cli_chat.cpp, mcp/server.hpp, tool_bridge.hpp) still read raw `ContentItem` fields unchecked — this row's broader claim stays open, a full content-model migration is real, separately-scoped RFC-003-§2-level work. |
 | 22 | 014 §8 G3 (10³-seed scheduling shuffle test) never built, undisclosed | Medium | needs_adr | Write the missing test per the M6 breakdown's own already-designed architecture — but "the test exists" is falsely claimed in more than the two spots the architect named; all must be retracted together. |
 | 6 | `output_schema $ref` never resolved by the declarative compiler | Low | needs_adr | Add an opt-in `SchemaRefResolver` — but must extract the *full* enforceability check (not half), reuse `worktree.hpp`'s tested path validator for Windows-safe traversal checks, and not overstate unbuilt digest/signing infrastructure as a safety net. |
 | 14 | 025 §4 conflict-surfacing (`/conflicts/<path>.<agent>`) unimplemented | Low | needs_adr | Materializing evidence into the parent Ref via `commit_ref` directly contradicts an already-passing test ("parent Ref unchanged on failed merge") and misattributes ours/theirs — needs a different storage location and a real committer-identity source. |

@@ -13,7 +13,6 @@
 
 #include <optional>
 #include <span>
-#include <string>
 #include <string_view>
 #include <variant>
 #include <vector>
@@ -30,8 +29,21 @@ namespace agentengine {
 // Mirrors MAF's `AIContext` shape deliberately (docs/research/2026-maf-provider-concepts.md §1):
 // a provider is not limited to injecting text. `tools` here is the same declaration shape 006 §1
 // tools use; a provider-contributed tool still traverses the full invocation pipeline (006 §3).
+//
+// `instructions` is `TaintedText` (2026-08-14, gap-16/21 fix), not a plain `std::string`: this text
+// is destined for the `role::system` wire channel (`rt::AgentSession::run_rounds()`), the one place
+// content carries elevated, instruction-level authority with the model — I3 requires that anything
+// reaching it went through an explicit trust decision, not an implicit one. A `ContextProvider` that
+// wants to contribute instructions must construct `TaintedText{...}` explicitly; one whose text is
+// itself derived from already-tainted material (e.g. a memory item sourced from an external tool
+// result) must call that source's own `unsafe_view()` first — a visible, individually-reviewable
+// declassification inside THAT provider's own code, exactly the shape `tainted.hpp`'s own header
+// comment describes. This does not stop a provider from wrapping genuinely untrusted text carelessly
+// (`Tainted<T>` was never meant to catch that, see its own doc comment) — it stops the ACCIDENTAL
+// case, an implicit `std::string` -> "this reaches the model as instructions" path with no decision
+// point at all, which is what existed before this fix.
 struct ContextContribution {  // ae-naming-lint: allow ContextContribution — pre-existing M0 scaffolding, reconcile at owning milestone
-    std::optional<std::string> instructions;
+    std::optional<TaintedText> instructions;
     std::vector<Message>       messages;
     std::vector<ToolDescriptor> tools;
 };

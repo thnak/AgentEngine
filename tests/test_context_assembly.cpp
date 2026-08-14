@@ -60,6 +60,21 @@ struct FixedMessagesProvider {
 static_assert(ae::ContextProvider<FixedMessagesProvider>,
               "FixedMessagesProvider must satisfy ContextProvider (005 §5)");
 
+// Gap-16/21 fix (2026-08-14): a ContextProvider contributing `.instructions`, now `TaintedText` --
+// constructing it explicitly IS the trust decision (context_provider.hpp's own comment).
+struct FixedInstructionsProvider {
+    std::string text;
+
+    [[nodiscard]] ae::task<ae::result<ae::ContextContribution>> on_context(ae::SessionContext&, ae::EffectContext&) {
+        ae::ContextContribution c;
+        c.instructions = ae::TaintedText{text};
+        co_return c;
+    }
+    ae::task<std::monostate> on_turn_end(ae::TurnView, ae::EffectContext&) { co_return std::monostate{}; }
+};
+static_assert(ae::ContextProvider<FixedInstructionsProvider>,
+              "FixedInstructionsProvider must satisfy ContextProvider (005 §5)");
+
 } // namespace
 
 int main() {
@@ -138,6 +153,38 @@ int main() {
             ae::assemble_context(contributors, session_ctx, ctx));
         AE_CHECK(result3.drops.empty() && result3.combined.messages.size() == 1,
                  "B3-R8: a contribution well under its declared budget drops nothing");
+    }
+
+    // --- Gap-16/21 fix: multiple contributors' TaintedText instructions concatenate, in declared
+    // order, without re-litigating either contributor's own already-made trust decision ------------
+    {
+        std::vector<ae::Message> no_history;
+        std::vector<ae::ContextProviderDescriptor> contributors;
+        contributors.push_back(ae::make_context_provider_descriptor(
+            FixedInstructionsProvider{"first. "}, ae::ContextBudget{0}));
+        contributors.push_back(ae::make_context_provider_descriptor(
+            FixedInstructionsProvider{"second."}, ae::ContextBudget{0}));
+        ae::SessionContext session_ctx{"s-instructions", principal, no_history};
+        auto result4 = ae::test_support::run_task_sync<ae::ContextAssemblyResult>(
+            ae::assemble_context(contributors, session_ctx, ctx));
+        AE_CHECK(result4.combined.instructions.has_value(),
+                 "B3-I1: two instructions-contributing providers combine into a real value");
+        AE_CHECK(result4.combined.instructions.has_value() &&
+                     result4.combined.instructions->unsafe_view() == "first. second.",
+                 "B3-I2: combined instructions concatenate in DECLARED contributor order, exactly");
+    }
+    {
+        // A provider that contributes NOTHING to instructions (the dominant real-world shape today)
+        // leaves the combined field unset, not a stray empty TaintedText.
+        std::vector<ae::Message> no_history;
+        std::vector<ae::ContextProviderDescriptor> contributors;
+        contributors.push_back(ae::make_context_provider_descriptor(
+            FixedMessagesProvider{{make_msg("hi", "m-1")}}, ae::ContextBudget{0}));
+        ae::SessionContext session_ctx{"s-no-instructions", principal, no_history};
+        auto result5 = ae::test_support::run_task_sync<ae::ContextAssemblyResult>(
+            ae::assemble_context(contributors, session_ctx, ctx));
+        AE_CHECK(!result5.combined.instructions.has_value(),
+                 "B3-I3: a contributor that never sets .instructions leaves the combined field unset");
     }
 
     std::cout << (g_failures == 0 ? "test_context_assembly: OK\n" : "test_context_assembly: FAIL\n");
