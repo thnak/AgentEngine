@@ -9,10 +9,16 @@
 // run_model_call()/run_rounds()'s model-call + tool-call round loop, ADR-029's approval suspend/
 // resume, and the pure bookkeeping helpers (fork_from/redact/clear_in_process_state/open_interaction/
 // resolve_interaction). It does NOT yet migrate:
-//   - TimerWake (the reminder-service wake acknowledgement) -- depended on a live quark::Engine's
-//     ReminderService, a real integration-test-only surface (test_agent_session_timer_wake.cpp) this
-//     slice has no standalone replacement design for yet. `standing_effects_`'s OTHER wake row,
-//     "Local background task completion" (BackgroundTaskDone), IS migrated -- see Slice 3 below.
+//   - TimerWake (the reminder-service wake ACKNOWLEDGEMENT path itself) -- depended on a live
+//     quark::Engine's ReminderService, a real integration-test-only surface
+//     (test_agent_session_timer_wake.cpp) this slice has no standalone replacement design for. Still
+//     true, and Slice 4 (below) does NOT change it: nothing here resurrects a self-firing timer --
+//     a literal "AgentSession owns a background std::jthread" design was considered and rejected for
+//     schedule_wakeup too (docs/planning/schedule-wakeup-standing-effect-design-draft.md §4, ADR-053),
+//     for the same reason ADR-037 removed Quark's own ambient background activity in the first place.
+//     `standing_effects_`'s OTHER wake row, "Local background task completion" (BackgroundTaskDone),
+//     IS migrated -- see Slice 3 below; the THIRD row, "Timer/schedule" (`schedule_wakeup`), is now
+//     ALSO real, via a structurally different, host-polled mechanism -- see Slice 4.
 //   - Event streaming (enable_event_stream/emit_run_event) uses core/stream.hpp's stream<T> --
 //     RESOLVED: core/stream.hpp's own backend migration (an ADR-037 pass after this slice was first
 //     written) swapped stream<T>'s internals from quark::ReplyStream to rt::channel<T>, and a LATER
@@ -137,6 +143,51 @@
 //     doesn't already provide at the authorize step. A hand-rolled mutex+deque is simpler and has no
 //     close/terminal semantics to reason about for a queue that is never itself "done."
 //
+// SLICE 4 ADDITION (schedule_wakeup, ADR-053, closing 2026-08-10-full-codebase-adr-gap-audit.md gap
+// #7): `schedule_wakeup()`/`due_standing_effects()`, the THIRD real `StandingEffect` producer (019 §2's
+// "Timer/schedule" row, 006 §6b). Re-grounding this against current code (the design draft's own §1)
+// found the underlying primitive itself gone, not merely unwrapped -- ADR-037 removed Quark's
+// `ReminderService` entirely and `rt::` has never had ANY timer/delay primitive. The capability side
+// turned out to be already fully built and simply unused: 007 §3's own table names `Schedule<max_
+// horizon, max_active>` as a CAPABILITY (`cap::Schedule`/`cap::decl::Schedule<Seconds, MaxActive>`,
+// `trust/capability.hpp`), not a new CRTP policy tag the way the design draft's own §3(b) speculated
+// before this slice touched real code -- an agent that declares `Capabilities<cap::decl::Schedule<...>>`
+// already gets it compiled into `AgentMetadata::capability_ceiling` and bound into its session's
+// `CapabilitySet` through the EXISTING mechanism `Background<max_concurrent>` already exercises end to
+// end; only `CapabilitySet::find_schedule()` (mirroring `find_background()`) needed adding. Design,
+// matching `start_background_task()`'s own shape exactly:
+//   - `schedule_wakeup(delay, label, now)` is PLAIN, UNLOCKED, same asymmetry as
+//     `start_background_task()`/`cancel_standing_effect()` above (never part of Quark's own Messages
+//     list either -- see Slice 3's own paragraph for why that's a pre-existing, named, not-new
+//     precondition). `now` is a REQUIRED caller-supplied parameter, never read from an ambient clock --
+//     the same discipline `CircuitBreaker::on_send(now_ns)`/`on_result(now_ns)` already establishes in
+//     this codebase (I5: nondeterminism crosses a recorded seam), and the only way this stays free of a
+//     new ambient-Clock-capability violation (007 §3's own separate, explicitly-granted `Clock` cap).
+//   - Fails closed three ways, structurally rather than by runtime convention: no `cap::Schedule`
+//     granted at all (`schedule_wakeup.not_granted`); `delay` exceeds the grant's own `max_horizon`
+//     (`schedule_wakeup.horizon_exceeded` -- the audit's own "currently unbounded, a live I2 gap"
+//     finding, closed by a value the type/capability system won't let an over-long request past, not a
+//     check a caller could forget); the live count of already-armed `schedule_wakeup` effects meets the
+//     grant's own `max_active` (`schedule_wakeup.capacity_exceeded`, mirroring G9's `Background<
+//     max_concurrent>` precedent exactly).
+//   - Registration emits `state_changed` (006 §6b: "Registering, resolving, or cancelling one is
+//     visible on the run's event stream via StateChanged (013 §1)"), not `tool_call_started` --
+//     deliberately different from `start_background_task()`'s own event, since there is no
+//     `ToolCallRequest` backing a `schedule_wakeup` registration to attribute a tool-call-shaped event
+//     to.
+//   - `due_standing_effects(now)` is the design draft's own named "missing seam" (§3c): read-only,
+//     mirrors `open_interactions()`'s existing shape, returns every `schedule_wakeup` effect whose
+//     `fire_at <= now`. A HOST polls this -- deciding WHEN/HOW OFTEN is deliberately out of this
+//     primitive's own scope (a cron-style poll loop, a `tools/cli_chat.cpp`-style REPL tick, a future
+//     `EmbeddedHost` facade's own scheduler), matching this project's "host-injected, no ambient
+//     authority" pattern (`SessionStore`/`ChatClient`/`SecretStore` are all host-supplied seams, never
+//     an ambient engine service) rather than resurrecting a self-firing timer (file banner's residual
+//     paragraph above, and the design draft's own §4 self-red-team). A due entry is NOT auto-cleared by
+//     this call -- the real resumption call's own shape (a new `WakeupDue` request, or reuse of the
+//     existing turn-start path) is separate, not-yet-designed work the draft named explicitly and this
+//     slice does not attempt; a host that has acted on a due entry clears its bookkeeping via the
+//     already-general `cancel_standing_effect()` above.
+//
 // `StartRun`/`ResolveInteraction` keep their EXISTING field shapes (matching core/agent_session.hpp's
 // own types) for call-site compatibility, but are no longer Quark::Ask<> messages -- the 192-byte
 // MessagePool::kMaxPayload constraint that shaped `SessionCaller` (a narrowed wire-sized identity
@@ -148,6 +199,7 @@
 // this migration).
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -779,6 +831,66 @@ public:
         }
         standing_effects_.erase(it);
         return {};
+    }
+
+    // ---- Slice 4: schedule_wakeup (file banner has the design writeup) -----------------------
+
+    [[nodiscard]] result<agentengine::StandingEffect> schedule_wakeup(
+        std::chrono::milliseconds delay, std::string label, std::chrono::steady_clock::time_point now) {
+        if (!capabilities_) {
+            return std::unexpected(error{failure_class::policy, "session has no granted capabilities",
+                                          "standing_effect.no_capabilities"});
+        }
+        auto const schedule_cap = capabilities_->find_schedule();
+        if (!schedule_cap.has_value()) {
+            return std::unexpected(error{failure_class::policy,
+                                          "Schedule<max_horizon, max_active> not granted",
+                                          "schedule_wakeup.not_granted"});
+        }
+        if (delay < std::chrono::milliseconds{0} ||
+            std::chrono::duration_cast<std::chrono::seconds>(delay) > schedule_cap->max_horizon) {
+            return std::unexpected(error{failure_class::policy,
+                                          "delay exceeds the granted Schedule<max_horizon>",
+                                          "schedule_wakeup.horizon_exceeded"});
+        }
+        std::size_t const current_count = static_cast<std::size_t>(std::count_if(
+            standing_effects_.begin(), standing_effects_.end(),
+            [](agentengine::StandingEffect const& e) {
+                return e.kind == agentengine::standing_effect_kind::schedule_wakeup;
+            }));
+        if (current_count >= schedule_cap->max_active) {
+            return std::unexpected(error{failure_class::resource, "Schedule<max_active> ceiling reached",
+                                          "schedule_wakeup.capacity_exceeded"});
+        }
+
+        std::string const handle_id =
+            session_id_ + ":standing:" + std::to_string(++standing_effect_counter_);
+
+        agentengine::StandingEffect effect;
+        effect.handle_id    = handle_id;
+        effect.session_id   = session_id_;
+        effect.principal_id = effect_context_.principal.id;
+        effect.run_id       = effect_context_.run_id;
+        effect.kind         = agentengine::standing_effect_kind::schedule_wakeup;
+        effect.label        = label;
+        effect.fire_at      = now + delay;
+        standing_effects_.push_back(effect);
+
+        emit_run_event_for(effect_context_.run_id, run_event_kind::state_changed,
+                            run_event_payload::StateChanged{"schedule_wakeup armed: " + label});
+        return effect;
+    }
+
+    [[nodiscard]] std::vector<agentengine::StandingEffect> due_standing_effects(
+        std::chrono::steady_clock::time_point now) const {
+        std::vector<agentengine::StandingEffect> due;
+        for (agentengine::StandingEffect const& e : standing_effects_) {
+            if (e.kind == agentengine::standing_effect_kind::schedule_wakeup && e.fire_at.has_value() &&
+                *e.fire_at <= now) {
+                due.push_back(e);
+            }
+        }
+        return due;
     }
 
     // Explicit host-callable drain, for a host that wants to flush completions between runs rather

@@ -180,6 +180,68 @@ spec:
               "F-5: a document with no \"spec\" is rejected with the real missing_spec code");
     }
 
+    // --- F-6: gap-4/gap-5 closure (ADR-054) -- a ToolRegistry resolves spec.tools by name -----------
+    {
+        std::string const doc_with_tools = R"YAML(spec:
+  tools:
+    - web_search
+    - code_interpreter
+    - handoff: writer
+)YAML";
+
+        // F-6a: 015 §2's own example, RE-compiled through the SAME code path but with registry ==
+        // nullptr (the default): tools stays honestly empty, byte-identical to F-1's own already-
+        // passing assertion -- the additive parameter changes nothing for a caller that doesn't
+        // supply one.
+        auto no_registry = ae::compile_agent_document(*yaml::parse(doc_with_tools));
+        check(no_registry.has_value() && no_registry->tools.descriptors().empty(),
+              "F-6a: with registry == nullptr, spec.tools is still honestly empty -- unchanged from "
+              "before this parameter existed");
+
+        // F-6b: a registry IS supplied and has both named tools -- they resolve; the {handoff:...}
+        // entry is correctly ignored (014's vocabulary, not a tool name).
+        ae::ToolRegistry registry;
+        auto reg1 = registry.register_tool("web_search", [] {
+            ae::ToolDescriptor d;
+            d.name = "web_search";
+            d.invoke = [](ae::json::Value const&, ae::EffectContext&) -> ae::result<ae::json::Value> {
+                return ae::json::Value{};
+            };
+            return d;
+        }(), ae::tool_provenance::native);
+        auto reg2 = registry.register_tool("code_interpreter", [] {
+            ae::ToolDescriptor d;
+            d.name = "code_interpreter";
+            d.invoke = [](ae::json::Value const&, ae::EffectContext&) -> ae::result<ae::json::Value> {
+                return ae::json::Value{};
+            };
+            return d;
+        }(), ae::tool_provenance::native);
+        check(reg1.has_value() && reg2.has_value(), "F-6b setup: both fixture tools register");
+
+        auto with_registry = ae::compile_agent_document(*yaml::parse(doc_with_tools), &registry);
+        check(with_registry.has_value(), "F-6b: with a supplied registry, the document still compiles");
+        if (with_registry.has_value()) {
+            check(with_registry->tools.descriptors().size() == 2,
+                  "F-6b: exactly the two NAMED tools resolve -- the {handoff: writer} entry is not "
+                  "mistaken for a third tool name");
+            check(with_registry->tools.find("web_search") != nullptr &&
+                      with_registry->tools.find("code_interpreter") != nullptr,
+                  "F-6b: both resolved tools are the real, registered descriptors");
+        }
+
+        // F-6c: a name the registry doesn't have fails closed at compile time (002 §6's own fail-fast
+        // bar), naming the specific missing tool.
+        std::string const doc_missing_tool = "spec:\n  tools:\n    - not_registered\n";
+        auto missing = ae::compile_agent_document(*yaml::parse(doc_missing_tool), &registry);
+        check(!missing.has_value(),
+              "F-6c: a spec.tools entry not present in the supplied registry fails closed");
+        if (!missing.has_value()) {
+            check(missing.error().code == "agent.tool_not_found_in_registry",
+                  "F-6c: rejected with the real, specific error_code");
+        }
+    }
+
     if (g_failures == 0) {
         std::printf("test_agent_yaml_compiler: ALL PASS\n");
         return 0;

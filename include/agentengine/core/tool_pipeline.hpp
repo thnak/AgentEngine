@@ -143,6 +143,13 @@ template <class ToolT, class InvokeFn>
     return d;
 }
 
+// Forward-declared only -- the real type lives in core/tool_registry.hpp (gap-4 closure, ADR-054),
+// which itself depends on ToolDescriptor/ToolTable from THIS header, so the dependency can only run
+// one direction. `ToolTable::from_names()` below is declared here (next to `from_tools`/
+// `from_descriptors`, where a caller would look for it) and DEFINED out-of-line in
+// core/tool_registry.hpp -- a caller of `from_names()` must include that header, not just this one.
+class ToolRegistry;
+
 // 006 §6: static tools are resolved once into an immutable table at run start -- a mid-run change
 // to what's registered cannot alter what a run is allowed to call. Linear lookup: tool counts in
 // this milestone's scope are single digits, not a hot path.
@@ -166,6 +173,13 @@ public:
         t.descriptors_ = std::move(descriptors);
         return t;
     }
+
+    // A THIRD runtime construction path, name-keyed rather than descriptor-keyed -- gap-4/gap-5
+    // closure (ADR-054). DECLARED here, DEFINED in core/tool_registry.hpp (see the ToolRegistry
+    // forward declaration above for why) -- delegates to from_descriptors() above, no new ToolTable
+    // machinery.
+    [[nodiscard]] static result<ToolTable> from_names(std::vector<std::string> const& names,
+                                                        ToolRegistry const& registry);
 
     [[nodiscard]] ToolDescriptor const* find(std::string_view name) const {
         for (auto const& d : descriptors_) {

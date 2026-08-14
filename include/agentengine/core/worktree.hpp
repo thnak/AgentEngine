@@ -688,6 +688,95 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
 }
 
 // ============================================================================================
+// Conflict evidence materialization (025 §4: "the merge fails and is surfaced, with both versions
+// retained at /conflicts/<path>.<agent>, and the run's supervising agent or a human resolves it") --
+// gap-14 closure, ADR-055. `docs/planning/conflict-evidence-materialization-design-draft.md`'s own
+// design, implemented unchanged except one naming correction found while implementing it: the draft's
+// prose says "SubWorktree::child_name" for the branch's own identity -- the real field is
+// `SubWorktree::name` (`create_sub_worktree`'s own `child_name` PARAMETER becomes that struct's `name`
+// member; there is no field literally spelled `child_name`). Used as `branch.name` below.
+// ============================================================================================
+
+// A pure, deterministic function modeled directly on `memory.hpp`'s own `memory_ref_name(Principal
+// const&)` pattern -- deterministic and derived, never caller-supplied, so two different parent Refs
+// can never collide on the same conflicts Ref by construction (the identical rationale
+// `memory_ref_name`'s own comment gives for why an aliasing-prone caller-chosen id is a real
+// cross-something leakage hazard, not a hypothetical one).
+[[nodiscard]] inline std::string conflicts_ref_name(std::string const& parent_ref_name) {
+    return parent_ref_name + ":conflicts";
+}
+
+// Called by `merge_branch_into_parent()`'s own CALLER, never by that function itself -- keeps its
+// existing, already-relied-upon contract ("returns conflicts, touches nothing on failure") completely
+// unchanged; `expected_parent`'s own Ref is provably untouched regardless of what this function does,
+// since it commits only to a genuinely separate Ref (`conflicts_ref_name`). A no-op (returns success,
+// touches nothing) when `conflicts` is empty -- there is nothing to materialize.
+//
+// `ours_agent_id` is a REQUIRED, explicit parameter: the parent side's identity is NOT knowable from
+// inside the merge machinery itself (the parent could be the top-level session, another already-merged
+// sibling, anything) -- inferring or guessing it was considered and rejected (design draft §2c), the
+// caller is the only party that actually knows. `branch`'s own identity (`branch.name`) IS already
+// real and available, unlike `ours`'s.
+//
+// A SINGLE shared `:conflicts` Ref per parent accumulates every failed merge attempt against that
+// parent (new commits, tree grows) -- both versions retained, nothing silently overwritten, matching
+// 025 §4's own wording literally. This is a deliberate choice with a named consequence (design draft
+// §3): the conflicts Ref has no built-in retention/pruning, the same class of residual
+// `decisions/README.md`'s own ADR-038 entry already names for passivation/archival generally.
+//
+// Digests are reused directly from the ALREADY-STORED `MergeConflict::ours`/`::theirs` entries, never
+// re-written as fresh blobs: `object_store` is the SAME content-addressed store the parent/branch
+// trees already live in, so a `TreeEntry` pointing at an existing digest IS the "both versions
+// retained" requirement -- no data duplication, and correct regardless of whether a conflicting entry
+// is itself a blob or (a blob-vs-tree type fork) a tree, since `is_tree` is carried through unchanged.
+template <WorktreeObjectStore OS, rt::AppendLogStore RS>
+[[nodiscard]] result<void> materialize_merge_conflicts(OS& object_store, RS& ref_store,
+                                                         std::string const& parent_ref_name,
+                                                         std::string const& ours_agent_id,
+                                                         SubWorktree const& branch,
+                                                         std::vector<MergeConflict> const& conflicts) {
+    if (conflicts.empty()) return {};
+
+    std::string const ref_name = conflicts_ref_name(parent_ref_name);
+
+    // Seeded from whatever this parent's conflicts Ref already holds (possibly nothing, on the first
+    // failed merge against this parent) -- new entries are upserted by name, so a REPEAT conflict at
+    // the identical <path>.<agent> key simply replaces its own prior evidence; distinct keys never
+    // collide (both an add/add fork's ours AND theirs entries, and every earlier failed attempt's own
+    // entries, coexist in the same tree).
+    std::unordered_map<std::string, TreeEntry> entries_by_name;
+    auto existing = read_ref(ref_store, ref_name);
+    if (!existing) return std::unexpected(existing.error());
+    if (existing->has_value()) {
+        auto existing_tree = object_store.get_tree((*existing)->tree_digest);
+        if (!existing_tree) return std::unexpected(existing_tree.error());
+        for (TreeEntry const& e : existing_tree->entries) entries_by_name[e.name] = e;
+    }
+
+    for (MergeConflict const& c : conflicts) {
+        if (c.ours.has_value()) {
+            std::string name        = c.path + "." + ours_agent_id;
+            entries_by_name[name]   = TreeEntry{name, c.ours->digest, c.ours->is_tree};
+        }
+        if (c.theirs.has_value()) {
+            std::string name        = c.path + "." + branch.name;
+            entries_by_name[name]   = TreeEntry{name, c.theirs->digest, c.theirs->is_tree};
+        }
+    }
+
+    std::vector<TreeEntry> entries;
+    entries.reserve(entries_by_name.size());
+    for (auto& [name, entry] : entries_by_name) entries.push_back(std::move(entry));
+
+    auto tree_digest = object_store.put_tree(Tree{std::move(entries)});
+    if (!tree_digest) return std::unexpected(tree_digest.error());
+
+    auto committed = commit_ref(ref_store, ref_name, *tree_digest);
+    if (!committed) return std::unexpected(committed.error());
+    return {};
+}
+
+// ============================================================================================
 // `shared`-mode staleness note (025 §3/§10 Q2) -- Phase B3. `shared` gives immediate cross-
 // visibility (B1) with no merge step, which is exactly what makes it *safe* under 025 §4's single-
 // writer serialization but still *confusing*: a sibling's write between an agent's reads is

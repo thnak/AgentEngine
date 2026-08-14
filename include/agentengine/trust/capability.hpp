@@ -654,6 +654,20 @@ public:
         return std::nullopt;
     }
 
+    // ADR-053 (gap-7 closure): the same "pure lookup, not `subsumes()`-based" shape `find_background()`
+    // above already established, for the identical reason -- `AgentSession::schedule_wakeup()` needs
+    // to know THIS grant's own `max_horizon`/`max_active` ceiling to compare a requested delay and a
+    // live count against, which `contains()`'s object-shaped API cannot answer (a synthetic
+    // nullopt-ceiling `requested` reads as "asking for unlimited" and is rejected by `cap_covers`
+    // against any capped grant). `std::nullopt` means no `cap::Schedule` was granted at all -- no
+    // `schedule_wakeup` call is ever authorized, regardless of what an agent's own policy tags declare.
+    [[nodiscard]] std::optional<cap::Schedule> find_schedule() const {
+        for (Capability const& c : granted_) {
+            if (auto const* sc = std::get_if<cap::Schedule>(&c)) return *sc;
+        }
+        return std::nullopt;
+    }
+
     [[nodiscard]] result<BoundCapability> bind(Capability const& requirement) const {
         if (!contains(requirement)) {
             return std::unexpected(

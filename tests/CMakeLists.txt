@@ -823,6 +823,12 @@ add_executable(test_rt_agent_session_background_task test_rt_agent_session_backg
 target_link_libraries(test_rt_agent_session_background_task PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_agent_session_background_task COMMAND test_rt_agent_session_background_task)
 
+# ---- ADR-053 (gap-7 closure) -- agentengine::rt::AgentSession's THIRD real StandingEffect producer,
+# schedule_wakeup()/due_standing_effects() (agent_session.hpp's "SLICE 4 ADDITION").
+add_executable(test_rt_agent_session_schedule_wakeup test_rt_agent_session_schedule_wakeup.cpp)
+target_link_libraries(test_rt_agent_session_schedule_wakeup PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_agent_session_schedule_wakeup COMMAND test_rt_agent_session_schedule_wakeup)
+
 # ---- ADR-037 Phase 3, Slice 1 -- agentengine::rt::WorkflowSupervisor, the Quark-actor-free
 # replacement for workflow::WorkflowSupervisor's core superstep loop, fanning out through
 # rt::ThreadPool instead of quark::ActorRef<FunctionExecutor>::ask<>.
@@ -1141,6 +1147,11 @@ add_test(NAME test_workflow_yaml_compiler COMMAND test_workflow_yaml_compiler)
 add_executable(test_agent_yaml_compiler test_agent_yaml_compiler.cpp)
 target_link_libraries(test_agent_yaml_compiler PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_agent_yaml_compiler COMMAND test_agent_yaml_compiler)
+
+# ---- ADR-054 (gap-4/gap-5 closure) -- ToolRegistry / ToolTable::from_names() (core/tool_registry.hpp).
+add_executable(test_tool_registry test_tool_registry.cpp)
+target_link_libraries(test_tool_registry PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_tool_registry COMMAND test_tool_registry)
 
 # ---- Dependency-free JSON value/parser/serializer (M2 Phase B task B2, core/json_value.hpp) ----
 # Header-only, core-tier -- links only agentengine::core (no nlohmann::json; this IS the seam that
@@ -1651,6 +1662,14 @@ if(WIN32)
   target_link_libraries(test_worktree_merge PRIVATE
     agentengine::core agentengine::worktree_store agentengine_warnings)
   add_test(NAME test_worktree_merge COMMAND test_worktree_merge)
+endif()
+
+# ---- Conflict evidence materialization (025 §4, gap-14 closure, ADR-055) ------------------------
+if(WIN32)
+  add_executable(test_worktree_conflict_evidence test_worktree_conflict_evidence.cpp)
+  target_link_libraries(test_worktree_conflict_evidence PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_worktree_conflict_evidence COMMAND test_worktree_conflict_evidence)
 endif()
 
 # ---- shared-mode staleness note (025 §3/§10 Q2, Milestone 3 Phase B3) ---------------------------

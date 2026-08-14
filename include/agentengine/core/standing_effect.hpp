@@ -27,6 +27,8 @@
 // point (a JSON encode/decode pair, matching every `rt::` record's own established pattern, not this
 // removed Quark tag).
 
+#include <chrono>
+#include <optional>
 #include <string>
 
 namespace agentengine {
@@ -54,6 +56,13 @@ struct StandingEffect {  // ae-naming-lint: allow StandingEffect — 006 §6b na
                                            // not whatever run happens to be current when it resolves.
     standing_effect_kind kind = standing_effect_kind::background_task;
     std::string          label;           // background_task: the tool_name; introspection-only.
+    // ADR-053 (gap-7 closure): populated only for `kind == schedule_wakeup` -- the wake time this
+    // handle fires at, computed by `rt::AgentSession::schedule_wakeup()` as a caller-supplied `now +
+    // delay` at registration time (never an ambient clock read -- I5). `std::nullopt` for every other
+    // kind (`background_task`/`watch_resource` have no `fire_at` concept). Same in-memory-only
+    // durability caveat as the rest of `StandingEffect` (this file's own top comment) applies here
+    // too: a `schedule_wakeup` armed just before a process restart is lost, not a new regression.
+    std::optional<std::chrono::steady_clock::time_point> fire_at;
 
     friend bool operator==(StandingEffect const&, StandingEffect const&) = default;
 };
