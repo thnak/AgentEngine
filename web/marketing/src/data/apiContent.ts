@@ -1037,6 +1037,33 @@ export interface ProtocolEntry {
   note: string;
 }
 
+// ---- Protocols page: illustrated walkthrough data --------------------------------------------
+
+export const mcpDispatchSnippet = `// include/agentengine/protocol/mcp/server.hpp -- the real, transport-agnostic dispatcher
+class McpServer {
+public:
+    // Serves server/discover, tools/list, tools/call, tasks/get, tasks/cancel -- and nothing else.
+    [[nodiscard]] JsonRpcResponse dispatch(JsonRpcRequest const& req) const {
+        if (req.method == "tools/list") return handle_tools_list(req);
+        if (req.method == "tools/call") return handle_tools_call(req);
+        // ...
+    }
+};
+// Hand it a JsonRpcRequest, get a JsonRpcResponse back -- real, against a real ToolTable, through
+// the real invoke_tool() pipeline. Nothing here puts a byte on a socket: Streamable HTTP/stdio
+// transport is a separate, later sub-phase that calls THIS unchanged.`;
+
+export const declarativeCompilerSnippet = `// include/agentengine/core/agent_yaml_compiler.hpp
+// Compiles a parsed 015 §2 Agent document into the SAME AgentMetadata register_agent<A>()
+// (the C++ authoring form) produces -- I6's actual claim, not just its intent.
+[[nodiscard]] result<AgentMetadata> compile_agent_document(json::Value const& doc);
+
+// Real fields today: agent_name, instructions, chat_client_id, max_turns, token_budget, approval,
+// concurrency, telemetry, sandbox_profile.is_strict.
+// Honestly empty today: tools / capability_ceiling -- no name-keyed tool/capability registry
+// exists yet to resolve spec.tools against, which is exactly why byte-identical AgentMetadata
+// against the C++ equivalent isn't reached for every field yet.`;
+
 export const protocolEntries: ProtocolEntry[] = [
   {
     id: "mcp",
