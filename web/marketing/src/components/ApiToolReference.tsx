@@ -23,10 +23,43 @@ export function ApiToolReference() {
           <p>
             <code>Tool&lt;Derived, Policies...&gt;</code> fixes exactly one declaration surface —
             a schema-typed name, description, argument/reply pair, and an <code>invoke</code>{" "}
-            reachable only through the host's ten-step pipeline (006 §3). Every row below is a
-            real static member <code>Derived</code> must or may provide.
+            reachable only through the host's ten-step pipeline (006 §3, walked through on the
+            Capabilities &amp; Sandbox page). Every row below is a real static member{" "}
+            <code>Derived</code> must or may provide.
           </p>
         </div>
+
+        <RevealGroup>
+          <RevealItem>
+            <div className="flow glass" style={{ marginBottom: 48 }}>
+              <div className="flow-node is-purple">
+                <div className="flow-node-title">Tool&lt;Derived, Policies...&gt;</div>
+                <div className="flow-node-sub">Args/Reply nested types + AE_JSON_SCHEMA(Type, field1, field2, ...)</div>
+              </div>
+              <div className="flow-arrow">args_schema() / reply_schema() — json_schema_of&lt;T&gt;()</div>
+              <div className="flow-node">
+                <div className="flow-node-title">JSON Schema 2020-12 text</div>
+                <div className="flow-node-sub">field names + C++ types only — no description/title/enum (see below)</div>
+              </div>
+              <div className="flow-arrow">register_agent&lt;A&gt;() compiles every declared tool</div>
+              <div className="flow-node is-teal">
+                <div className="flow-node-title">ToolDescriptor</div>
+                <div className="flow-node-sub">one entry in the immutable per-run ToolTable (006 §6)</div>
+              </div>
+              <div className="flow-arrow">sent to the model, shaped per backend</div>
+              <div className="flow-row">
+                <div className="flow-node">
+                  <div className="flow-node-title">Anthropic</div>
+                  <div className="flow-node-sub">{"{name, description, input_schema}"}</div>
+                </div>
+                <div className="flow-node">
+                  <div className="flow-node-title">OpenAI</div>
+                  <div className="flow-node-sub">{'{type:"function", function:{name, description, parameters}}'}</div>
+                </div>
+              </div>
+            </div>
+          </RevealItem>
+        </RevealGroup>
 
         <RevealGroup>
           <RevealItem>
