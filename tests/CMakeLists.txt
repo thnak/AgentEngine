@@ -829,6 +829,11 @@ add_executable(test_rt_agent_session_schedule_wakeup test_rt_agent_session_sched
 target_link_libraries(test_rt_agent_session_schedule_wakeup PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_agent_session_schedule_wakeup COMMAND test_rt_agent_session_schedule_wakeup)
 
+# ---- ADR-053 §5 follow-up -- schedule_wakeup exposed as a real, model-callable declared tool.
+add_executable(test_rt_agent_session_schedule_wakeup_tool test_rt_agent_session_schedule_wakeup_tool.cpp)
+target_link_libraries(test_rt_agent_session_schedule_wakeup_tool PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_agent_session_schedule_wakeup_tool COMMAND test_rt_agent_session_schedule_wakeup_tool)
+
 # ---- ADR-037 Phase 3, Slice 1 -- agentengine::rt::WorkflowSupervisor, the Quark-actor-free
 # replacement for workflow::WorkflowSupervisor's core superstep loop, fanning out through
 # rt::ThreadPool instead of quark::ActorRef<FunctionExecutor>::ask<>.

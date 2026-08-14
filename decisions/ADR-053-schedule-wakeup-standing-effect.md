@@ -138,8 +138,84 @@ edited headers plus the new test binary.
   a new regression this ADR introduces.
 - **Does not close `watch_resource`** (019 §2's "External event" row) — needs 012 (A2A), per `standing_
   effect.hpp`'s own existing, correct scoping note; unrelated to this ADR.
-- **Does not expose `schedule_wakeup`/`due_standing_effects` as a model-callable declared tool.** This
-  ADR builds the direct `AgentSession` method surface (matching `start_background_task()`'s own shape,
-  which is likewise a direct method, not a `ToolTable` entry) — a `schedule_wakeup` `ToolDescriptor`
-  wired through the full ten-step tool pipeline (006 §3) so a MODEL can call it directly, rather than
-  only a host-side caller, is real, separate follow-up work this ADR does not attempt.
+- **~~Does not expose `schedule_wakeup`/`due_standing_effects` as a model-callable declared tool.~~
+  [2026-08-14: `schedule_wakeup` now IS a real, model-callable declared tool — see the Amendment
+  below.]** `due_standing_effects()` correctly stays host-only (unchanged) — it is a host-polling
+  primitive by design (§3 above), not something a model calls mid-turn.
+
+## Amendment (2026-08-14): `schedule_wakeup` exposed as a real, model-callable tool
+
+**Status of this amendment: implemented and proven (§ below); awaiting the project owner's own
+explicit sign-off, separate from this ADR's original Judged verdict above** (per this project's
+governance, `decisions/README.md`; `OpenQuestions.md` OQ-11).
+
+At the project owner's explicit direction, this ADR's own §5 residual is closed: `schedule_wakeup` is
+now a real tool the MODEL itself can call mid-turn, per 006 §6b's own normative framing ("declared
+tools gated by a new capability") and `019-Durability-and-Long-Running-Agents.md` §2's "Agent-callable,
+not just host-triggered" paragraph — *"`schedule_wakeup` and `watch_resource`... let the model itself
+arm a Timer/schedule or External-event wake and then end its turn... This adds a caller, not a new
+state machine."* Before this amendment, only a host-side C++ caller could reach `AgentSession::
+schedule_wakeup()` — the spec's own stated intent for this row was unmet, named honestly as the ADR's
+own residual rather than silently left unbuilt.
+
+**Why no existing mechanism could be reused, confirmed by direct investigation before designing
+anything new:**
+- `run_rounds()`'s tool-call loop (`agent_session.hpp`) has no reserved-tool-name interception anywhere
+  — every `ToolCall` the model emits, for every name, resolves through the ordinary, generic `ToolTable`
+  lookup and `invoke_tool()`. The `agent.ask`/`agent.spawn` names recalled as a possible precedent are
+  not turn-loop interception at all — they are CodeAct sandbox Python library entry points (026 §5),
+  and `agent.spawn` itself has no call path anywhere in this codebase (026 §5's own honest "would still
+  have nothing to invoke" note, confirmed independently).
+- ADR-028's `make_tool_descriptor_with_invoke<ToolT>()` mechanism (session-scoped stateful tools) is
+  real and reusable in shape, but every existing usage captures a `ContextProvider`/`HistoryProviderT`
+  instance's own state — never `AgentSession` itself. `EffectContext` (the only payload a tool's
+  `invoke` closure receives beyond its own `Args`) carries no seam back to the owning session at all
+  (ADR-028 §1's own exhaustive check of this, re-confirmed unchanged).
+- `start_background_task()`/`list_standing_effects()`/`cancel_standing_effect()` are ALL, today,
+  exactly what `schedule_wakeup()` was before this amendment: plain, unlocked `AgentSession` methods, a
+  host calls directly, never reachable from a model's own tool call.
+
+**The design**: `ScheduleWakeupTool` (`agent_session.hpp`, alongside the other `rt`-namespace request/
+reply types) is a real `Tool<Derived,...>` conformer with `Args{delay_ms, label}`/`Reply{handle_id}` —
+`now` is deliberately NEVER a model-suppliable argument (I3: model output is data, never authority over
+WHEN something fires). Its own static `invoke()` is an unreachable poison sentinel, matching ADR-028's
+own `CounterTool` precedent exactly. The REAL dispatch is a closure built via `make_tool_descriptor_
+with_invoke<ScheduleWakeupTool>([this](...) { return schedule_wakeup(...); })`, injected into
+`contribution->tools` inside `run_rounds()` itself — the ONE place in this codebase that legitimately
+has `this` (the owning `AgentSession`) in scope while also being where a turn's tool table is assembled,
+closing the exact seam ADR-028's own investigation found missing, by capturing the session directly
+rather than inventing a new generic pass-through mechanism. Offered ONLY when `capabilities_->find_
+schedule()` holds a value — never advertising a tool the model could never successfully call, and never
+letting an ungranted session synthesize a de facto grant merely by existing. No `Capabilities<...>`
+policy tag is declared on `ScheduleWakeupTool` itself: the real enforcement (grant held at all; delay
+within `max_horizon`; live count under `max_active`) is exactly the LIVE, per-call check `schedule_
+wakeup()` already performs — the same reason `Background<max_concurrent>`'s own enforcement lives
+inside `background_task()`'s body rather than a static descriptor field.
+
+**Evidence**: `tests/test_rt_agent_session_schedule_wakeup_tool.cpp` (G1-G6, new):
+- **G1** — a session with no `cap::Schedule` grant is never OFFERED the tool at all (absent from the
+  `ChatRequest.tools` the model actually sees).
+- **G2** — a session WITH a grant IS offered it, with the real name/description and a real args schema
+  naming both `delay_ms` and `label`.
+- **G3** — end to end: a scripted model tool-call produces a real `StandingEffect`, and the `handle_id`
+  round-tripped back through the ordinary `ToolResult` channel is the SAME one `AgentSession` itself
+  registered — never `ScheduleWakeupTool::invoke()`'s own unreachable sentinel value.
+- **G4** — end to end failure (horizon exceeded): the model sees the REAL `schedule_wakeup()` error
+  message through the ordinary `ToolResult` error channel, and nothing is registered.
+- **G5** — defense in depth: even a HALLUCINATED call against a session that was never offered the tool
+  (no grant) is rejected at `invoke_tool()`'s own ordinary step-1 resolve (`tool.unknown_name`) — the
+  tool genuinely isn't in that turn's table, not merely hidden from a UI layer above it.
+- **G6** — `max_active` is enforced end to end through the TOOL-CALL path too, not just the direct
+  `AgentSession::schedule_wakeup()` API S4 already covers: two calls in the SAME round against a
+  `Schedule<..,1>` grant produce exactly one registered effect.
+
+Full suite: green (this pass), zero regressions — every pre-existing `AgentSession`/tool-pipeline test
+(including `test_rt_agent_session_schedule_wakeup.cpp`'s own S1-S6 and `test_rt_agent_session_tooling_
+and_delegation.cpp`'s ADR-028 proofs) re-verified passing unchanged.
+
+**What this amendment does not claim**: `due_standing_effects()` stays host-only, unchanged (correctly
+— see above); `watch_resource` remains unbuilt (019 §2's "External event" row, needs 012/A2A,
+unrelated); a model cannot cancel its OWN armed `schedule_wakeup` mid-turn (`cancel_standing_effect()`
+is not exposed as a tool by this amendment — a real, separate scope decision, not attempted here);
+`StandingEffect` durability is unchanged (`fire_at` is still in-memory-only, the same pre-existing
+limitation named in §5 above).

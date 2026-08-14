@@ -286,6 +286,60 @@ struct BackgroundCompletionQueue {
     std::deque<BackgroundTaskDone> pending;
 };
 
+// ADR-053 §5's own named follow-up, closed here: `schedule_wakeup` exposed as a real, MODEL-callable
+// declared tool (006 §6b: "declared tools gated by a new capability... `Schedule<max_horizon,
+// max_active>`"; 019 §2's own "Agent-callable, not just host-triggered" paragraph: "`schedule_wakeup`
+// ... let[s] the model itself arm a Timer/schedule ... and then end its turn ... This adds a caller,
+// not a new state machine"). Args/Reply are intentionally minimal, matching the already-Judged
+// `AgentSession::schedule_wakeup(delay, label, now)` C++ API shape exactly. `now` is deliberately NOT
+// a model-suppliable argument -- I3 (model output is data, never authority) means the model does not
+// get to assert what time it currently is; the glue below (`run_rounds()`) reads real wall-clock time
+// once, at the actual moment of invocation, the same "recorded seam" any other host-triggered call in
+// this codebase reads real time at -- the model supplies only WHAT it wants (`delay_ms`, `label`).
+struct ScheduleWakeupArgs {
+    std::uint64_t delay_ms = 0;
+    std::string   label;
+};
+AE_JSON_SCHEMA(ScheduleWakeupArgs, delay_ms, label)
+
+struct ScheduleWakeupReply {
+    std::string handle_id;
+};
+AE_JSON_SCHEMA(ScheduleWakeupReply, handle_id)
+
+// `invoke()` is an unreachable poison sentinel, matching ADR-028's own `CounterTool` precedent
+// (test_rt_agent_session_tooling_and_delegation.cpp) -- real dispatch never reaches this static
+// method. It exists only so `ScheduleWakeupTool` satisfies `Tool<Derived,...>`'s CRTP contract (a
+// real Args/Reply/name/description/schema surface for `make_tool_descriptor_with_invoke<
+// ScheduleWakeupTool>()`, below, to extract at construction time). The actual dispatch happens
+// through the closure `run_rounds()` supplies, which reaches back into the owning `AgentSession`
+// directly by capturing `this` -- the one place in this codebase that CAN do that, since
+// `EffectContext` carries no seam back to the session (ADR-028 §1's own exhaustive check, confirmed
+// unchanged) and no `ContextProvider` owns a back-reference to its `AgentSession` either. No
+// `Capabilities<...>` policy tag is declared here deliberately: the REAL enforcement (does the
+// session hold a `cap::Schedule` grant at all; does this delay fit its `max_horizon`; is its
+// `max_active` already at capacity) is a LIVE, per-call check against a runtime count -- the exact
+// same reason `Background<max_concurrent>`'s own enforcement lives inside `background_task()`'s body
+// rather than a static `ToolDescriptor::capability_ceiling` entry, not this tool's own compile-time
+// declared ceiling (which a generic `invoke_tool()` step-4/7 bind could only check for bare
+// existence, never the live count `schedule_wakeup()` itself already checks correctly).
+struct ScheduleWakeupTool : agentengine::Tool<ScheduleWakeupTool> {
+    static constexpr std::string_view name = "schedule_wakeup";
+    static constexpr std::string_view description =
+        "Arms a durable wake condition that fires after the given delay (019 §2's Timer/schedule wake "
+        "row), then the run stays suspended until the host observes the wake is due and resumes it. "
+        "Requires a granted Schedule<max_horizon, max_active> capability.";
+    using Args  = ScheduleWakeupArgs;
+    using Reply = ScheduleWakeupReply;
+    static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) {
+        return std::unexpected(agentengine::error{
+            agentengine::failure_class::contract,
+            "schedule_wakeup invoked without its session-bound dispatch closure -- this static "
+            "method must never actually run",
+            "schedule_wakeup.unreachable_static_invoke"});
+    }
+};
+
 // Slice 2's narrowed durable record -- see file banner for exactly what is and isn't carried
 // (notably: no created_at_ns/updated_at_ns, a deliberate narrowing vs. the Quark original's own
 // AgentSessionRecord; history/state/metadata are likewise not carried, same "no Message/ContentItem
@@ -1093,6 +1147,23 @@ private:
                 if (chat_client_) {
                     filter_cross_provider_reasoning(*contribution, chat_client_->producer_chat_client_id());
                 }
+            }
+
+            // ADR-053 §5 follow-up: offer `schedule_wakeup` as a real, callable tool this turn --
+            // injected here, once per turn, rather than via the agent's own static `Tools<...>` policy
+            // list (ADR-028's own precedent: session-scoped tools contributed dynamically, extended one
+            // step further -- this closure captures the session itself, `this`, not a `ContextProvider`
+            // member). ONLY offered when the session actually holds a `cap::Schedule` grant: never
+            // advertise a tool the model could never successfully call (a confusing, wasted turn), and
+            // never let an ungranted session synthesize a de facto capability grant by merely existing.
+            if (capabilities_ && capabilities_->find_schedule().has_value()) {
+                contribution->tools.push_back(make_tool_descriptor_with_invoke<ScheduleWakeupTool>(
+                    [this](ScheduleWakeupArgs args, EffectContext&) -> result<ScheduleWakeupReply> {
+                        auto effect = schedule_wakeup(std::chrono::milliseconds(args.delay_ms),
+                                                       std::move(args.label), std::chrono::steady_clock::now());
+                        if (!effect) return std::unexpected(effect.error());
+                        return ScheduleWakeupReply{effect->handle_id};
+                    }));
             }
 
             ToolTable const tool_table = ToolTable::from_descriptors(contribution->tools);
