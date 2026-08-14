@@ -377,6 +377,83 @@ int main() {
               "thinking block without its real signature) -- only the text item survives");
     }
 
+    // ---- Gap-audit finding 20 / 003 §8 Q2: producer_chat_client_id stamping ------------------------
+    {
+        auto parsed = json::parse(R"({
+            "type":"message","role":"assistant",
+            "content":[{"type":"thinking","thinking":"stamped reasoning","signature":"sig"}]
+        })");
+        check(parsed.has_value(), "E6-R1 setup: literal thinking-block wire JSON parses");
+        if (parsed) {
+            auto resp = parse_message_response(*parsed, "anthropic:claude-opus-5");
+            check(resp.has_value() && resp->message.content.size() == 1, "E6-R1 setup: parses to one item");
+            if (resp && resp->message.content.size() == 1) {
+                auto const* reasoning = std::get_if<Reasoning>(&resp->message.content[0].value);
+                check(reasoning && reasoning->producer_chat_client_id == "anthropic:claude-opus-5",
+                      "E6-R1: parse_message_response() stamps producer_chat_client_id onto a "
+                      "'thinking' block when given one");
+            }
+
+            // Default (no producer id passed) -- every pre-existing call site stays unaffected.
+            auto resp_default = parse_message_response(*parsed);
+            check(resp_default.has_value() && resp_default->message.content.size() == 1 &&
+                      std::get_if<Reasoning>(&resp_default->message.content[0].value) != nullptr &&
+                      std::get<Reasoning>(resp_default->message.content[0].value).producer_chat_client_id.empty(),
+                  "E6-R2: parse_message_response() called WITHOUT a producer id (every pre-existing "
+                  "call site) stamps an empty string, not a fabricated one -- unchanged default "
+                  "behavior");
+        }
+    }
+    {
+        auto redacted = json::parse(R"({
+            "type":"message","role":"assistant",
+            "content":[{"type":"redacted_thinking","data":"opaque"}]
+        })");
+        check(redacted.has_value(), "E6-R3 setup: literal redacted_thinking wire JSON parses");
+        if (redacted) {
+            auto resp = parse_message_response(*redacted, "anthropic:claude-opus-5");
+            check(resp.has_value() && resp->message.content.size() == 1 &&
+                      std::get_if<Reasoning>(&resp->message.content[0].value) != nullptr &&
+                      std::get<Reasoning>(resp->message.content[0].value).producer_chat_client_id ==
+                          "anthropic:claude-opus-5",
+                  "E6-R3: redacted_thinking blocks are stamped identically to visible thinking blocks");
+        }
+    }
+    {
+        // The streaming path stamps via StreamingUpdateAccumulator::release() (the single choke
+        // point every emitted ContentItem passes through), proven directly against a real thinking
+        // SSE sequence rather than the one-shot parser.
+        std::string const sse =
+            "event: content_block_start\n"
+            "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\","
+            "\"thinking\":\"\"}}\n\n"
+            "event: content_block_delta\n"
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\","
+            "\"thinking\":\"streamed reasoning\"}}\n\n"
+            "event: content_block_stop\n"
+            "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n"
+            "event: message_delta\n"
+            "data: {\"type\":\"message_delta\",\"delta\":{},\"usage\":{\"output_tokens\":3}}\n\n";
+        auto updates = parse_streaming_response_into_updates(sse, /*is_chunked=*/false,
+                                                                "anthropic:claude-opus-5");
+        check(updates.has_value(), "E6-R4 setup: the streamed thinking sequence decodes");
+        if (updates) {
+            bool found_stamped_reasoning = false;
+            for (auto const& upd : *updates) {
+                if (auto const* r = std::get_if<Reasoning>(&upd.delta.value)) {
+                    if (r->text == "streamed reasoning" &&
+                        r->producer_chat_client_id == "anthropic:claude-opus-5") {
+                        found_stamped_reasoning = true;
+                    }
+                }
+            }
+            check(found_stamped_reasoning,
+                  "E6-R4: the STREAMING path stamps producer_chat_client_id identically to the "
+                  "one-shot parser -- release(), the single choke point, catches it regardless of "
+                  "which construction site built the Reasoning item");
+        }
+    }
+
     // ---- E1: an error envelope maps to a real failure ------------------------------------------------
     {
         auto parsed = json::parse(R"({"type":"error","error":{"type":"invalid_request_error","message":"bad model"}})");

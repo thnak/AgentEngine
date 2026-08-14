@@ -28,6 +28,17 @@ struct Text {  // ae-naming-lint: allow Text — pre-existing M0 scaffolding, re
 struct Reasoning {  // ae-naming-lint: allow Reasoning — pre-existing M0 scaffolding, reconcile at owning milestone
     std::string text;
     bool        encrypted = false;  // opaque pass-through only when true (003 §1)
+    // Gap-audit finding 20 / 003 §8 Q2 ("exclude from context assembly, never translate"): which
+    // backend actually produced this reasoning trace, "vendor:model" (the same runtime string shape
+    // `ChatClientId<"vendor:model">` and `ChatClientRegistry::register_client` already use). Stamped
+    // by the producing backend's own response parser; empty means "unknown provenance" (any record
+    // written before this field existed, or a `text_derived` leak-scan extraction whose whole
+    // trustworthiness is already in question — 003 §8 Q2's own "only when it originated from the
+    // ChatClientId currently bound" rule treats empty the same as any other non-matching id: excluded,
+    // never assumed safe). Appended last (003 §6's field-ordering lesson — see `Usage::
+    // cache_write_tokens`'s own comment for why), so every existing positional `Reasoning{text,
+    // encrypted}` call site keeps compiling unchanged.
+    std::string producer_chat_client_id;
 
     friend bool operator==(Reasoning const&, Reasoning const&) = default;
 };

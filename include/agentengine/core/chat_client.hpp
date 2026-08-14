@@ -12,6 +12,7 @@
 // dropping it, matching this project's own "narrower than the RFC's full text, not silently
 // assumed complete" discipline.
 
+#include <concepts>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -211,6 +212,21 @@ concept ModelCallGatewayLike = requires(T gateway, ChatRequest request, EffectCo
     { gateway.call(request, ctx) } -> std::same_as<task<result<ChatResponse>>>;
 };
 
+// Gap-audit finding 20 / 003 §8 Q2 ("a Reasoning item is included in a turn's assembled context only
+// when it originated from the ChatClientId currently bound"). Optional, duck-typed detection
+// (matching `agent_registry.hpp`'s own `has_agent_description`/`has_agent_version` precedent, ADR-044)
+// rather than a new member added to the `ChatClient`/`ModelCallGatewayLike` concepts' required shape
+// -- widening either of those would force every conformer (every mock/test fixture in this codebase)
+// to grow a method it has no real identity to report, for a check most of them don't need. A
+// `ChatClientT` that doesn't satisfy this concept (a mock, or a `ModelCallGateway` composition with
+// no single real backend identity of its own) simply gets no cross-provider filtering at all --
+// `AgentSession::run_rounds()`'s own `if constexpr` gate on this concept degrades to "unchanged
+// behavior," never a compile error and never a silently-wrong filter.
+template <class T>
+concept HasProducerChatClientId = requires(T const& t) {
+    { t.producer_chat_client_id() } -> std::convertible_to<std::string>;
+};
+
 // 003 §4's three enforcement strategies, in the order the degradation rule (004 §2) prefers them.
 enum class output_schema_strategy { native, tool_shaped, parse_and_repair };  // ae-naming-lint: allow output_schema_strategy — 003 §4/004 §2 name this concept normatively; 027 has not been updated to list it
 
@@ -230,6 +246,83 @@ enum class output_schema_strategy { native, tool_shaped, parse_and_repair };  //
     if (caps.structured_output_native) return output_schema_strategy::native;
     if (caps.tool_calling) return output_schema_strategy::tool_shaped;
     return output_schema_strategy::parse_and_repair;
+}
+
+// Gap-audit finding 19, Phase 1 (fail-closed capability gate + symmetric drop-signal — Phase 2, real
+// wire encoding, is blocked on RFC 019's blob-store seam, which doesn't exist anywhere in the tree).
+// Every real backend's outbound `translate_message()` silently drops `Media` content it has no wire
+// shape for (confirmed directly in both `protocol/openai/chat_client.hpp` and `protocol/anthropic/
+// chat_client.hpp` — the translation loop simply has no branch for `Media`, so it vanishes with no
+// signal at all, even when `ChatClientCapabilities` declares the matching `multimodal_in_*` bit
+// FALSE, meaning the drop was never even a real capability mismatch worth silently tolerating — it
+// was always going to be dropped, unconditionally, by every backend that exists today). This function
+// makes that failure LOUD instead: called once, before a request ever reaches a backend, it refuses
+// to proceed at all when the request carries `Media` content the bound backend hasn't declared
+// support for — the caller finds out via a real, attributable error, not a response that quietly
+// answers as if it never saw the attachment.
+enum class media_category { image, audio, video, file };  // ae-naming-lint: allow media_category — new gap-19 vocabulary; 027 has not been updated to list it
+
+// MIME-type-prefix categorization — matches `ChatClientCapabilities`'s own four `multimodal_in_*`
+// bits exactly. Anything not recognized as image/audio/video falls to `file`, the same catch-all
+// 004 §2's own capability bitset uses for "everything else."
+[[nodiscard]] inline media_category categorize_media_type(std::string_view media_type) noexcept {
+    if (media_type.starts_with("image/")) return media_category::image;
+    if (media_type.starts_with("audio/")) return media_category::audio;
+    if (media_type.starts_with("video/")) return media_category::video;
+    return media_category::file;
+}
+
+[[nodiscard]] inline bool media_capability_declared(media_category cat,
+                                                       ChatClientCapabilities const& caps) noexcept {
+    switch (cat) {
+        case media_category::image: return caps.multimodal_in_image;
+        case media_category::audio: return caps.multimodal_in_audio;
+        case media_category::video: return caps.multimodal_in_video;
+        case media_category::file: return caps.multimodal_in_file;
+    }
+    return false;
+}
+
+namespace chat_client_detail {
+
+// Recurses into `ToolResult::content` too — a tool reply carrying an image is exactly as
+// unencodable outbound as one arriving directly in a Message, and the ORIGINAL gap-19 finding named
+// "Media nested inside ToolResult::content" as unaddressed by either phase; walking the SAME
+// recursive shape `translate_message()`'s own tool-result loop already uses closes that specific
+// residual as a direct consequence of writing this check correctly, not as separately scoped work.
+[[nodiscard]] inline result<void> check_media_capability(std::vector<ContentItem> const& items,
+                                                            std::string const& message_id,
+                                                            ChatClientCapabilities const& caps) {
+    for (ContentItem const& item : items) {
+        if (auto const* media = std::get_if<Media>(&item.value)) {
+            media_category const cat = categorize_media_type(media->media_type);
+            if (!media_capability_declared(cat, caps)) {
+                return std::unexpected(error{
+                    failure_class::contract,
+                    "message '" + message_id + "' carries Media content (media_type='" +
+                        media->media_type +
+                        "') but the bound ChatClient does not declare the matching "
+                        "multimodal_in_* capability -- refusing to send a request that would "
+                        "silently drop it",
+                    "chat_client.multimodal_capability_missing"});
+            }
+        } else if (auto const* tool_result = std::get_if<ToolResult>(&item.value)) {
+            auto nested = check_media_capability(tool_result->content, message_id, caps);
+            if (!nested) return nested;
+        }
+    }
+    return {};
+}
+
+}  // namespace chat_client_detail
+
+[[nodiscard]] inline result<void> validate_outbound_media_capabilities(
+    ChatRequest const& request, ChatClientCapabilities const& caps) {
+    for (Message const& m : request.messages) {
+        auto r = chat_client_detail::check_media_capability(m.content, m.message_id, caps);
+        if (!r) return r;
+    }
+    return {};
 }
 
 // Milestone 5 Phase B6: the smallest useful slice of an eventual Engine-level ChatClient registry —

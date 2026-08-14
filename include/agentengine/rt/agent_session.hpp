@@ -829,6 +829,48 @@ private:
         (void)run_event_producer_.push(std::move(ev));
     }
 
+    // Gap-audit finding 20 / 003 §8 Q2. Drops every `Reasoning` content item whose
+    // `producer_chat_client_id` does not exactly match `current_chat_client_id` -- including an
+    // EMPTY stamp (a record written before this field existed, or a `text_derived` leak-scan
+    // extraction, core/response_format_codec.hpp, whose provenance is already untrustworthy by
+    // construction): Q2's own rule is an allowlist ("included only when it originated from..."),
+    // not a denylist, so unknown provenance is excluded, never assumed safe. A message that becomes
+    // empty SOLELY because of this filter is dropped entirely (never sent as an empty-content
+    // message); a message that was already empty for an unrelated reason is left alone. The excluded
+    // item is not deleted from anything durable -- `contribution` is this turn's own transient
+    // ContextContribution, not `history_`, so the original item stays intact there for audit/replay
+    // (Q2's own "excluded... not deleted" wording), and each exclusion fires a real
+    // `run_event_kind::policy_decision` (013 §1's own vocabulary; this is its first real producer).
+    void filter_cross_provider_reasoning(ContextContribution& contribution,
+                                          std::string const& current_chat_client_id) {
+        std::vector<Message> filtered;
+        filtered.reserve(contribution.messages.size());
+        for (Message& m : contribution.messages) {
+            bool const originally_empty = m.content.empty();
+            std::vector<ContentItem> kept;
+            kept.reserve(m.content.size());
+            for (ContentItem& item : m.content) {
+                auto const* r = std::get_if<Reasoning>(&item.value);
+                if (r != nullptr && r->producer_chat_client_id != current_chat_client_id) {
+                    emit_run_event(
+                        run_event_kind::policy_decision,
+                        run_event_payload::PolicyDecision{
+                            "excluded a Reasoning content item from message '" + m.message_id +
+                            "' -- produced by '" +
+                            (r->producer_chat_client_id.empty() ? "(unknown)" : r->producer_chat_client_id) +
+                            "', currently bound backend is '" + current_chat_client_id +
+                            "' (003 §8 Q2: reasoning is vendor-specific, never translated across "
+                            "providers)"});
+                    continue;
+                }
+                kept.push_back(std::move(item));
+            }
+            m.content = std::move(kept);
+            if (!m.content.empty() || originally_empty) filtered.push_back(std::move(m));
+        }
+        contribution.messages = std::move(filtered);
+    }
+
     // Same shape as core/agent_session.hpp's own run_model_call(), ported to rt::task<T>, with ONE
     // real consolidation (not a byte-for-byte port): the original had three branches (gateway /
     // buffered-chat() / buffered-drain-when-chat()-is-unavailable / live-streaming-when-opted-in) --
@@ -841,6 +883,18 @@ private:
     // Fail-closed-on-missing-usage (004 §5's TokenBudget<N>) is preserved exactly, on both paths
     // through the shared loop.
     task<result<ChatResponse>> run_model_call(ChatRequest const& request, EffectContext& ctx) {
+        // Gap-audit finding 19, Phase 1: fail closed BEFORE any backend ever sees this request, when
+        // it carries Media content the bound backend hasn't declared multimodal support for -- every
+        // real backend's own outbound translation silently drops what it can't encode (chat_client.
+        // hpp's own comment on `validate_outbound_media_capabilities`), so checking here is what
+        // turns a silent, unattributable content loss into a real, attributable run failure instead.
+        if (auto gate = validate_outbound_media_capabilities(request, chat_client_->capabilities());
+            !gate) {
+            emit_run_event(run_event_kind::run_failed,
+                            run_event_payload::RunFailed{gate.error().code, gate.error().message});
+            co_return std::unexpected(gate.error());
+        }
+
         result<ChatResponse> response = std::unexpected(
             error{failure_class::contract, "unreachable: neither call path executed", "run.internal"});
 
@@ -915,6 +969,18 @@ private:
                                 run_event_payload::RunFailed{"run.context_unavailable",
                                                               contribution.error().message});
                 co_return std::unexpected(contribution.error());
+            }
+
+            // Gap-audit finding 20 / 003 §8 Q2 ("exclude from context assembly, never translate"):
+            // strip any `Reasoning` content item this turn's contribution carries that did NOT
+            // originate from the currently-bound backend, before it ever reaches `ChatRequest`.
+            // Skipped entirely (no filtering, unchanged behavior) when `ChatClientT` doesn't expose
+            // an identity to compare against -- `if constexpr` on `HasProducerChatClientId`, never a
+            // runtime branch, so every existing mock/test ChatClientT is completely unaffected.
+            if constexpr (agentengine::HasProducerChatClientId<ChatClientT>) {
+                if (chat_client_) {
+                    filter_cross_provider_reasoning(*contribution, chat_client_->producer_chat_client_id());
+                }
             }
 
             ToolTable const tool_table = ToolTable::from_descriptors(contribution->tools);

@@ -483,7 +483,10 @@ inline constexpr std::uint64_t kMinThinkingBudgetTokens = 1024;
 
 // One inbound content block (§2/§7 of the wire-format research) -> zero-or-one AE ContentItem.
 // Shared between the non-streaming response parser and the streaming content_block accumulator.
-[[nodiscard]] inline std::optional<ContentItem> translate_response_block(json::Value const& block) {
+// `producer_chat_client_id` (gap-audit finding 20 / 003 §8 Q2) is stamped onto any `Reasoning` this
+// call produces -- defaults empty so every pre-existing call site (positional or not) is unaffected.
+[[nodiscard]] inline std::optional<ContentItem> translate_response_block(
+    json::Value const& block, std::string const& producer_chat_client_id = {}) {
     auto const* type = block.find("type");
     if (!type || !type->is_string()) return std::nullopt;
     std::string const& kind = type->as_string();
@@ -513,6 +516,7 @@ inline constexpr std::uint64_t kMinThinkingBudgetTokens = 1024;
         Reasoning r;
         r.text = (thinking && thinking->is_string()) ? thinking->as_string() : std::string{};
         r.encrypted = false;
+        r.producer_chat_client_id = producer_chat_client_id;
         item.value = std::move(r);
         return item;
     }
@@ -520,6 +524,7 @@ inline constexpr std::uint64_t kMinThinkingBudgetTokens = 1024;
         Reasoning r;
         r.text.clear();  // opaque `data` intentionally dropped, see file banner (3)
         r.encrypted = true;
+        r.producer_chat_client_id = producer_chat_client_id;
         item.value = std::move(r);
         return item;
     }
@@ -529,7 +534,8 @@ inline constexpr std::uint64_t kMinThinkingBudgetTokens = 1024;
 // E1: the non-streaming response. `content[]` (§7), `usage.input_tokens`/`output_tokens`/
 // `cache_read_input_tokens` (confirmed exact field names, distinct from OpenAI's `prompt_tokens`/
 // `completion_tokens`).
-[[nodiscard]] inline result<ChatResponse> parse_message_response(json::Value const& body) {
+[[nodiscard]] inline result<ChatResponse> parse_message_response(
+    json::Value const& body, std::string const& producer_chat_client_id = {}) {
     if (auto const* err = body.find("error")) {
         std::string msg = "unknown error";
         if (auto const* m = err->find("message"); m && m->is_string()) msg = m->as_string();
@@ -544,7 +550,7 @@ inline constexpr std::uint64_t kMinThinkingBudgetTokens = 1024;
     ChatResponse resp;
     resp.message.role = role::assistant;
     for (json::Value const& block : content->as_array()) {
-        if (auto item = translate_response_block(block)) {
+        if (auto item = translate_response_block(block, producer_chat_client_id)) {
             resp.message.content.push_back(std::move(*item));
         }
     }
@@ -757,7 +763,12 @@ struct SseEvent {
 // streaming and one-shot paths are one decoder rather than two that could drift.
 class StreamingUpdateAccumulator {  // ae-naming-lint: allow StreamingUpdateAccumulator — new ADR-019 vocabulary; 027 has not been updated to list it
 public:
-    explicit StreamingUpdateAccumulator(bool chunked) : chunked_(chunked) {}
+    // `producer_chat_client_id` (gap-audit finding 20): defaults empty, so every existing positional
+    // `StreamingUpdateAccumulator(chunked)` call site (every test in this file included) compiles and
+    // behaves identically -- an accumulator constructed without it simply never stamps a producer id
+    // onto any `Reasoning` it emits, same as before this field existed.
+    explicit StreamingUpdateAccumulator(bool chunked, std::string producer_chat_client_id = {})
+        : chunked_(chunked), producer_chat_client_id_(std::move(producer_chat_client_id)) {}
 
     [[nodiscard]] result<std::vector<ChatResponseUpdate>> feed(std::string_view bytes) {
         std::string decoded;
@@ -840,7 +851,15 @@ private:
         bool redacted = false;
     };
 
+    // Gap-audit finding 20 / 003 §8 Q2: this is the SINGLE choke point every ContentItem this
+    // accumulator produces passes through, regardless of which construction site built it (a
+    // `thinking`/`redacted_thinking` block reconstructed here in `finish()`, or any future content
+    // kind) -- stamping `producer_chat_client_id` here once, rather than at each construction site
+    // individually, means a future third construction site can never forget to stamp it.
     void release(std::vector<ChatResponseUpdate>* out, ContentItem item) {
+        if (auto* r = std::get_if<Reasoning>(&item.value)) {
+            r->producer_chat_client_id = producer_chat_client_id_;
+        }
         if (held_) {
             ChatResponseUpdate update;
             update.delta = std::move(*held_);
@@ -948,6 +967,7 @@ private:
     }
 
     bool chunked_;
+    std::string producer_chat_client_id_;
     sandbox::ChunkedBodyDecoder chunked_decoder_;
     sandbox::SseEventFramer framer_;
     std::vector<PendingBlock> pending_by_index_;
@@ -958,8 +978,8 @@ private:
 // The one-shot parse, for a body genuinely fully in hand -- implemented on top of the incremental
 // accumulator (ADR-019) so the two paths are one decoder, not two.
 [[nodiscard]] inline result<std::vector<ChatResponseUpdate>> parse_streaming_response_into_updates(
-    std::string_view raw_body, bool is_chunked) {
-    StreamingUpdateAccumulator acc(is_chunked);
+    std::string_view raw_body, bool is_chunked, std::string const& producer_chat_client_id = {}) {
+    StreamingUpdateAccumulator acc(is_chunked, producer_chat_client_id);
     auto fed = acc.feed(raw_body);
     if (!fed) return std::unexpected(fed.error());
     std::vector<ChatResponseUpdate> updates = std::move(*fed);
@@ -997,7 +1017,7 @@ inline void run_stream_worker(std::string host, std::uint16_t port, std::string 
         if (!acc) {
             bool const looks_like_sse = fragment.starts_with("event:") || fragment.starts_with("data:") ||
                                          fragment.starts_with(":");
-            acc.emplace(!looks_like_sse);
+            acc.emplace(!looks_like_sse, "anthropic:" + model);
         }
         auto updates = acc->feed(fragment);
         if (!updates) {
@@ -1090,6 +1110,17 @@ public:
 
     [[nodiscard]] ChatClientCapabilities capabilities() const { return capabilities_; }
 
+    // Gap-audit finding 20 / 003 §8 Q2: this bound instance's own real identity, "vendor:model" --
+    // the same runtime string shape `ChatClientId<"vendor:model">`/`ChatClientRegistry` already use.
+    // Deliberately derived from THIS instance's own construction parameters, not threaded in from an
+    // agent's compile-time `ChatClientId<...>` policy tag: what determines whether a `Reasoning`
+    // trace is safe to echo back is which backend/model actually produced it, a real runtime
+    // property of this object, not a separate compile-time configuration string that could in
+    // principle diverge from it. Not part of the `ChatClient` concept's required shape (optional,
+    // duck-typed detection via `HasProducerChatClientId`, chat_client.hpp) -- every other conformer
+    // (mocks, test fixtures) is unaffected by this method existing.
+    [[nodiscard]] std::string producer_chat_client_id() const { return "anthropic:" + model_; }
+
     [[nodiscard]] task<result<ChatResponse>> chat(ChatRequest const& request, EffectContext& ctx) const {
         // Resolution happens HERE, inside chat(), against EffectContext -- never at construction
         // (004 §1 / 018 §4, the same rule test_chat_client_credential_resolution.cpp proves).
@@ -1113,7 +1144,7 @@ public:
         }
         auto parsed = json::parse(*decoded_body);
         if (!parsed) co_return std::unexpected(parsed.error());
-        co_return detail::parse_message_response(*parsed);
+        co_return detail::parse_message_response(*parsed, producer_chat_client_id());
     }
 
     [[nodiscard]] stream<ChatResponseUpdate> chat_stream(ChatRequest request, EffectContext& ctx) const {

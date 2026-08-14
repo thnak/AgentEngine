@@ -925,6 +925,15 @@ public:
 
     [[nodiscard]] ChatClientCapabilities capabilities() const { return capabilities_; }
 
+    // Gap-audit finding 20 / 003 §8 Q2: this backend never PRODUCES a genuine `Reasoning` content
+    // item (confirmed: Chat Completions has no reasoning-trace field on a response message, this
+    // file's own comment on `parse_response`/usage-only `reasoning_tokens`) -- but it still needs to
+    // report its OWN identity here as a CONSUMER, so `AgentSession`'s cross-provider exclusion
+    // correctly recognizes and excludes an Anthropic-origin `Reasoning` item once a session switches
+    // to this backend. See `AnthropicChatClient::producer_chat_client_id()` for the full rationale
+    // this mirrors.
+    [[nodiscard]] std::string producer_chat_client_id() const { return "openai:" + model_; }
+
     [[nodiscard]] task<result<ChatResponse>> chat(ChatRequest const& request, EffectContext& ctx) const {
         // Resolution happens HERE, inside chat(), against EffectContext -- never at construction
         // (004 §1 / 018 §4, the same rule test_chat_client_credential_resolution.cpp proves).

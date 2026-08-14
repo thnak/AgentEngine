@@ -780,6 +780,23 @@ add_executable(test_rt_agent_session_instructions test_rt_agent_session_instruct
 target_link_libraries(test_rt_agent_session_instructions PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_agent_session_instructions COMMAND test_rt_agent_session_instructions)
 
+# ---- ADR-048 (gap-audit finding 19, Phase 1) -- fail-closed Media capability gate, pure function.
+add_executable(test_outbound_media_capability_gate test_outbound_media_capability_gate.cpp)
+target_link_libraries(test_outbound_media_capability_gate PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_outbound_media_capability_gate COMMAND test_outbound_media_capability_gate)
+
+# ---- ADR-048 (gap-audit finding 19, Phase 1) -- the same gate, wired end-to-end into
+# AgentSession::run_model_call(): a real run fails closed and chat() is never invoked.
+add_executable(test_rt_agent_session_media_capability_gate test_rt_agent_session_media_capability_gate.cpp)
+target_link_libraries(test_rt_agent_session_media_capability_gate PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_agent_session_media_capability_gate COMMAND test_rt_agent_session_media_capability_gate)
+
+# ---- ADR-049 (gap-audit finding 20 / 003 §8 Q2) -- cross-provider Reasoning exclusion, wired
+# end-to-end into AgentSession::run_rounds().
+add_executable(test_rt_agent_session_reasoning_provenance test_rt_agent_session_reasoning_provenance.cpp)
+target_link_libraries(test_rt_agent_session_reasoning_provenance PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_agent_session_reasoning_provenance COMMAND test_rt_agent_session_reasoning_provenance)
+
 # ---- Gap-15 fix (2026-08-14, decisions/ADR-043-*.md) -- start_run_with_ack_policy()'s
 # at_most_once/require_durable sequencing, and the turn-delta durable write/read round trip.
 add_executable(test_rt_agent_session_ack_policy test_rt_agent_session_ack_policy.cpp)

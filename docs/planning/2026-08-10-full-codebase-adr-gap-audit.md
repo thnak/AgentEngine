@@ -9,7 +9,7 @@ unedited except this header" convention):** two real-code events since this run 
 status. Neither was re-derived from scratch here — both are cross-checked against the actual ADRs
 that landed, matching this doc's own evidence discipline.
 
-**Update (2026-08-14, status only, same convention):** eight real-code events and two design-only
+**Update (2026-08-14, status only, same convention):** ten real-code events and two design-only
 (no-code) events.
 
 - **Gap 3 (no generic JSON Schema validator) is CLOSED.**
@@ -171,6 +171,31 @@ that landed, matching this doc's own evidence discipline.
   barely-relevant newer one), and a zero-salience extracted item isn't structurally rank-zero. Every
   pre-existing ranking-outcome assertion elsewhere in the suite re-verified unchanged under the new
   formula. Full suite green.
+- **Gap 19 (Media silently dropped outbound, Phase 1) is CLOSED.**
+  `decisions/ADR-048-outbound-media-capability-gate.md` (Proposed) confirms both real backends'
+  outbound translation drops `Media` content unconditionally, regardless of what
+  `ChatClientCapabilities` declares (neither ever checks the capability bit before not-encoding it).
+  Fixed with a real fail-closed gate (`validate_outbound_media_capabilities()`, `core/chat_client.hpp`)
+  wired into `AgentSession::run_model_call()` before any backend is ever called — an ungrantable
+  request now fails with a real, attributable error instead of quietly losing content. Phase 2 (real
+  wire encoding) stays out of scope, confirmed still blocked on RFC 019's blob-store seam, absent from
+  the tree. Closes the gap's own named "Media nested inside ToolResult::content... unaddressed by
+  either phase" residual as a direct consequence of the recursive check. Two new test files, full
+  suite green.
+- **Gap 20 (cross-provider reasoning exclusion, 003 §8 Q2) is CLOSED, and its own recommended
+  approach is corrected, not followed as-is.** `decisions/ADR-049-cross-provider-reasoning-
+  exclusion.md` (Proposed) confirms Q2's policy was already resolved (2026-08-04) but structurally
+  unimplementable — `Reasoning` carried no producer-identity field at all. This row's own cited
+  blocker (`FailoverChatClient`'s ambiguous identity) is moot, that type was removed the same day as
+  ADR-036 landed; this row's own "a real production call site (`HistoryAndSkillsProvider`) was
+  missed" is right in spirit but names the wrong file — `assemble_context()`'s drop-recording
+  mechanism is unused by `AgentSession` at all, the real site is `run_rounds()`'s direct call to
+  `history_provider_.on_context()`. Fixed via a new `producer_chat_client_id` field, stamped by
+  `AnthropicChatClient` (the only real producer in this codebase — OpenAI's backend has no
+  reasoning-trace field on a response at all, confirmed) and consumed through a new optional
+  `HasProducerChatClientId` concept so a `ChatClientT` without it gets unchanged behavior, never a
+  compile break. First real producer of `run_event_kind::policy_decision` (013 §1's own long-dormant
+  vocabulary). New test file + Anthropic translation extension, full suite green.
 - **Gap 8 (naming-lint namespace bug) is CLOSED.** Its suggested title,
   `naming-lint-namespace-coverage-and-vocabulary-reconciliation`, matches
   `decisions/ADR-025-naming-lint-namespace-scope-and-027-vocabulary-diagram.md` (Judged) — confirmed
@@ -198,11 +223,11 @@ that landed, matching this doc's own evidence discipline.
   re-derives it from current code (`a2a/server.hpp`'s own comment: "no principal/authorization
   boundary in this transport-agnostic dispatcher yet") and names it as an explicit, not-yet-closed
   residual, not a silently dropped one.
-- **The other 10 gaps below were NOT re-verified this pass** (gaps 4 and 10 above were re-verified
+- **The other 8 gaps below were NOT re-verified this pass** (gaps 4 and 10 above were re-verified
   and designed against, but stay open — not counted as re-verified-and-closed like
-  2/3/8/11/12/15/16/17/18/21/23; gap 21 itself is only partially closed, and gap 5 is corrected+designed
-  alongside gap 4 without being independently closed, see their own rows above). They still reflect
-  the 2026-08-10
+  2/3/8/11/12/15/16/17/18/19/20/21/23; gap 21 itself is only partially closed, and gap 5 is
+  corrected+designed alongside gap 4 without being independently closed, see their own rows above).
+  They still reflect the 2026-08-10
   snapshot. ADR-037 (Quark removal, 2026-08-13) touched large parts of the tree these gaps cite by
   file:line — the underlying LOGIC most of these findings describe (capability/taint/sandbox/memory
   behavior) is independent of the actor-engine substrate ADR-037 replaced, so the findings themselves
@@ -248,7 +273,7 @@ needs the full reasoning behind a specific line item below, not just the one-lin
 | 12 | ShellRunner write builtins unconditionally deny writes under any quota-capped FsWrite grant | **High** | ~~needs_adr~~ **[2026-08-14: CLOSED, ADR-040 Proposed]** | Gate fix + live usage enforcement shipped together as recommended, plus the deferred FsRead mirror bug (gap 3/12's own note) folded in and closed too; Python-runner half is a pattern-match fix not locally build-verified (`AGENTENGINE_BUILD_PYTHON_RUNNER=OFF` here). |
 | 15 | AgentSession acks a turn before it's durable; no `at_most_once_ack` escape hatch | **High** | ~~needs_adr~~ **[2026-08-14: CLOSED, ADR-043 Proposed]** | ~~Add an AckPolicy... the proposed insertion point sits after run_finished is already emitted... the required type-erased Store seam doesn't exist yet.~~ — both premises wrong: the Store seam already existed (a deliberate `concept`, never meant to be type-erased) and the fix never touches `run_finished`'s emission at all, since it's enforced entirely in two new free functions around `AgentSession`, not inside it. |
 | 16 | `ContextContribution.instructions` computed but silently dropped before reaching the model | **High** | ~~needs_adr~~ **[2026-08-14: CLOSED, ADR-042 Proposed]** | Routed through `role::system` as recommended, gated by making `Tainted<T>` real for this one field first (closing the "must close that first" precondition this row itself named) rather than the whole content model. |
-| 19 | Image/Audio/Video/File (and Anthropic Reasoning) content silently dropped outbound despite declared capability bits | **High** | needs_adr | Split into Phase 1 (fail-closed capability gate + symmetric drop-signal, implementable now) and Phase 2 (real wire encoding), which is blocked on RFC 019's blob-store seam — which does not exist anywhere in the tree. |
+| 19 | Image/Audio/Video/File (and Anthropic Reasoning) content silently dropped outbound despite declared capability bits | **High** | ~~needs_adr~~ **[2026-08-14: CLOSED, ADR-048 Proposed, Phase 1 only]** | Split as recommended into Phase 1 (fail-closed capability gate + symmetric drop-signal, implementable now — shipped) and Phase 2 (real wire encoding, still blocked on RFC 019's blob-store seam, confirmed absent from the tree). Also closes this row's own "Media nested inside ToolResult::content" residual as a direct consequence of the recursive check. The "Anthropic Reasoning" half of this row's title is gap 20's own separate mechanism (cross-provider exclusion, not a capability gate) — see that row. |
 | 23 | CLAUDE.md/README claim Milestones 7-9 "have not started" though M7 is substantially built | **High** | ~~needs_adr~~ **[2026-08-13: CLOSED, ADR-026 Judged]** | Docs corrected, lint (`tools/milestone_status_lint.py`) shipped and wired into CI as recommended. |
 | 2 | AgentMetadata/Workflow have no description/version fields | Medium | ~~needs_adr~~ **[2026-08-14: CLOSED, ADR-044 Proposed]** | Optional fields wired through 4 real call sites (the "5" was an overcount); the `Tool<>` naming overlap is real but not a compile collision (unrelated CRTP bases) — named explicitly rather than "closed"; I6 equivalence guarantee stated honestly as before (still example-proven, not structural). |
 | 3 | No generic JSON Schema 2020-12 validator | Medium | ~~needs_adr~~ **[2026-08-14: CLOSED, ADR-045 Proposed]** | Built `core/json_schema_validator.hpp` with a scoped keyword subset/budgets as recommended — but NOT wired to `invoke_tool()` (native tools already have stronger type-directed checking; the real consumer is the not-yet-built non-native tool-invocation path, gap #4) and NOT an "outbound client-side strict check" (011 §13 Q3 already resolved that's never meant to be a hard reject). Regex-DoS closed by never implementing `pattern`/regex at all — no existing bug, since this codebase has zero `std::regex` usage anywhere; `$ref`-cycle budget real and tested. |
@@ -260,7 +285,7 @@ needs the full reasoning behind a specific line item below, not just the one-lin
 | 13 | Shell-dispatched registered Tools bypass the 006 §3 tool pipeline | Medium | needs_adr | Route shell tool calls through `bridge_tool_call` like Python's bridge already does — but fix a null-`tool_bridge` crash, stop collapsing capability/approval denials into continuable errors, and give `call_index` a real source. |
 | 17 | MemoryProvider renders ModelInferred and UserStated items identically | Medium | ~~needs_adr~~ **[2026-08-14: CLOSED, ADR-046 Proposed]** | Confidence-label prefix shipped as recommended, paired with fixing Anthropic's zero-separator system-message concatenation first (confirmed real) — and the label-forgery surface the fix itself introduces is closed via a marker-neutralizing transform applied to retrieved content before any real label is emitted. |
 | 18 | Default memory ranking is additive, not salience×recency×keyword | Medium | ~~needs_adr~~ **[2026-08-14: CLOSED, ADR-047 Proposed]** | Fixed to a genuine product as recommended, using the Store's own actual SeqNo for recency (not a commit-history scan, confirmed unbuildable against this codebase's history-free `Ref` model) — but neither the product's raw factors nor an unnormalized raw SeqNo were usable directly; both needed non-degenerate transforms, self-red-teamed before any test ran. |
-| 20 | Cross-provider Reasoning-exclusion design (003 §8 Q2) never implemented | Medium | needs_adr | Wire `ChatClientId` provenance through — but a real production call site (`HistoryAndSkillsProvider`) was missed, and `FailoverChatClient`'s Primary-only identity would falsely flag ordinary failover as cross-provider. |
+| 20 | Cross-provider Reasoning-exclusion design (003 §8 Q2) never implemented | Medium | ~~needs_adr~~ **[2026-08-14: CLOSED, ADR-049 Proposed]** | ~~Wire ChatClientId provenance through... a real production call site (HistoryAndSkillsProvider) was missed, and FailoverChatClient's Primary-only identity would falsely flag ordinary failover as cross-provider.~~ — `FailoverChatClient` is gone (ADR-036), mooting that blocker; the real missed call site is `run_rounds()`'s own direct `history_provider_.on_context()` call, not `assemble_context()` (unused by AgentSession); identity is derived from the bound backend's own real construction state instead of threading the compile-time `ChatClientId<...>` policy tag through. |
 | 21 | Content model never uses type-level `Tainted<T>` for text/structured fields | Medium | needs_adr **[2026-08-14: PARTIALLY CLOSED, ADR-042 Proposed — see gap 16]** | ~~Proposed accessors are additive and bypassable...~~ — ADR-042 gives `Tainted<T>` its first real field (`ContextContribution.instructions` only, needed by gap 16). The three named consumption boundaries (cli_chat.cpp, mcp/server.hpp, tool_bridge.hpp) still read raw `ContentItem` fields unchecked — this row's broader claim stays open, a full content-model migration is real, separately-scoped RFC-003-§2-level work. |
 | 22 | 014 §8 G3 (10³-seed scheduling shuffle test) never built, undisclosed | Medium | needs_adr | Write the missing test per the M6 breakdown's own already-designed architecture — but "the test exists" is falsely claimed in more than the two spots the architect named; all must be retracted together. |
 | 6 | `output_schema $ref` never resolved by the declarative compiler | Low | needs_adr **[2026-08-14: re-verified, still open — see priority note below]** | Add an opt-in `SchemaRefResolver` — but must extract the *full* enforceability check (not half), reuse ~~`worktree.hpp`'s~~ **`worktree_mount_fs.hpp`'s** (this row's own citation was wrong — `worktree.hpp` has no path-validation logic) tested path validator for Windows-safe traversal checks, and not overstate unbuilt digest/signing infrastructure as a safety net. |
@@ -285,7 +310,7 @@ All 23 confirmed gaps. Each carries a suggested title, but nearly all were indep
 - **Sandbox / native-jail (highest consequence for I2):** `linux-native-jail-pivot-root-containment` (10), `windows-native-jail-appcontainer-token-hardening` (11), `shellrunner-fswrite-quota-gate-and-enforcement` (12), `shell-tool-dispatch-bridge-unification` (13)
 - **Session durability & content taint (I3/I4):** `agent-session-ack-durability-policy` (15), `context-instructions-taint-channel` (16), `content-item-taint-enforcement` (21)
 - **Memory subsystem:** ~~`memory-confidence-labeling-and-system-message-separation` (17)~~ **[2026-08-14: CLOSED, `decisions/ADR-046-memory-confidence-labels-and-system-message-separator.md`]**, ~~`memory-ranking-recency-signal` (18)~~ **[2026-08-14: CLOSED, `decisions/ADR-047-memory-ranking-product-formula.md`]**
-- **Model provider content fidelity:** `outbound-multimodal-capability-gate` (19, Phase 1 only — Phase 2 needs a second, later ADR once RFC 019's blob-store seam exists), `cross-provider-reasoning-exclusion` (20)
+- **Model provider content fidelity:** ~~`outbound-multimodal-capability-gate` (19, Phase 1 only — Phase 2 needs a second, later ADR once RFC 019's blob-store seam exists)~~ **[2026-08-14: CLOSED, `decisions/ADR-048-outbound-media-capability-gate.md`, Phase 1 only — Phase 2 still needs RFC 019]**, ~~`cross-provider-reasoning-exclusion` (20)~~ **[2026-08-14: CLOSED, `decisions/ADR-049-cross-provider-reasoning-exclusion.md`]**
 
 ### What's deferred (named residuals, not silently dropped)
 
@@ -298,7 +323,7 @@ Pulled from the individual approaches — these are explicitly out-of-scope item
 - **Gap 7:** `watch_resource` stays deferred pending 012/A2A; the mid-turn `ae::task<T>` suspension machinery is a separate, larger, already-documented project-wide gap.
 - **Gap 15:** `AgentSessionRecord` still doesn't serialize `history_` (message content) — `RequireDurableAck`, once fixed, only closes the acknowledgment-protocol half of 005 §2 until that already-tracked gap also lands.
 - **Gap 16:** wiring `AgentMetadata::agent_instructions` into a `ContextContribution` is out of scope — it needs an `AgentSession`-from-`AgentMetadata` construction point that doesn't exist yet.
-- **Gap 19:** Phase 2 (real Media wire encoding) is blocked on RFC 019's blob-store seam, which doesn't exist anywhere in the tree; `Citation`/`Custom` content kinds and `Media` nested inside `ToolResult::content` remain unaddressed by either phase.
+- **Gap 19:** ~~Phase 2 (real Media wire encoding) is blocked on RFC 019's blob-store seam, which doesn't exist anywhere in the tree; `Citation`/`Custom` content kinds and `Media` nested inside `ToolResult::content` remain unaddressed by either phase.~~ **[2026-08-14: `Media` nested inside `ToolResult::content` CLOSED alongside Phase 1, ADR-048]** — the recursive check catches it directly; `Citation`/`Custom` remain correctly out of scope (no capability bit applies to either); Phase 2 itself is still blocked on RFC 019, unchanged.
 - **Gap 20:** whether wrapper compositions (`FailoverChatClient`/`ResilientChatClient`) are in scope for v1's cross-provider exclusion, or explicitly deferred with a documented limitation, is left as an open decision for the ADR.
 
 ---
@@ -317,7 +342,7 @@ Pulled from the individual approaches — these are explicitly out-of-scope item
 
 5. ~~**Fix the durability/ack gap (15)**...~~ **DONE (2026-08-14, ADR-043).** The premise this item was scheduled behind was itself wrong — no Store type-erasure question needed resolving; the seam already existed as a deliberate `concept`.
 
-6. **Batch the remaining medium/low findings by subsystem** rather than one-by-one: of the original declarative-agent-surface group (2, 3, 4, 5, 6), only gap 6 remains fully open (2 and 3 closed; 4 designed; 5 rides on 4 landing as real code) — worth revisiting once gap 4's design is implemented, since gap 6's "full enforceability check" and gap 3's validator both feed it. ~~The memory-subsystem group (17, 18)~~ **DONE (2026-08-14, ADR-046/ADR-047)** — both closed with real code, full suite green; only the model-provider-fidelity group (19, 20) remains as a coupled batch worth doing together.
+6. **Batch the remaining medium/low findings by subsystem** rather than one-by-one: of the original declarative-agent-surface group (2, 3, 4, 5, 6), only gap 6 remains fully open (2 and 3 closed; 4 designed; 5 rides on 4 landing as real code) — worth revisiting once gap 4's design is implemented, since gap 6's "full enforceability check" and gap 3's validator both feed it. ~~The memory-subsystem group (17, 18)~~ **DONE (2026-08-14, ADR-046/ADR-047)** — both closed with real code, full suite green. ~~The model-provider-fidelity group (19, 20)~~ **DONE (2026-08-14, ADR-048/ADR-049)** — both closed with real code, full suite green. Every originally-identified subsystem batch is now either closed or (gap 6) blocked on a named, separate precondition; what remains is five independent stragglers (7, 9, 13, 14, 22) with no natural batching of their own.
 
 7. **Assign real ADR numbers before any of the above lands** — resolve the `ADR-025` collision across all 23 suggested titles by sequencing them (likely ADR-025 through ADR-047, in the priority order above) as part of scheduling this work, not as an afterthought at merge time.
 
