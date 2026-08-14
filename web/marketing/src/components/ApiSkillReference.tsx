@@ -8,6 +8,7 @@ import {
   skillToolScopingSnippet,
   skillsProviderApiSnippet,
 } from "../data/apiContent";
+import { SITE_BASE } from "../data/content";
 import { highlightCpp } from "../lib/highlightCpp";
 import { ApiTable } from "./ApiTable";
 import { CodePanel } from "./CodePanel";
@@ -206,6 +207,31 @@ export function ApiSkillReference() {
           </RevealItem>
 
           <RevealItem>
+            <div className="flow glass">
+              <div className="flow-row">
+                <div className="flow-node is-purple">
+                  <div className="flow-node-title">InlineSkillSource</div>
+                  <div className="flow-node-sub">bundled SKILL.md text</div>
+                </div>
+                <div className="flow-node is-purple">
+                  <div className="flow-node-title">DiskSkillSource</div>
+                  <div className="flow-node-sub">a real host directory</div>
+                </div>
+              </div>
+              <div className="flow-arrow">resolve_and_mount() — collision anywhere fails the WHOLE call closed</div>
+              <div className="flow-node">
+                <div className="flow-node-title">worktree.hpp Tree / Ref / Mount</div>
+                <div className="flow-node-sub">each resolved skill mounted read-only at /skills/&lt;name&gt;</div>
+              </div>
+              <div className="flow-arrow">on_context()</div>
+              <div className="flow-node is-teal">
+                <div className="flow-node-title">one role::system advertisement message</div>
+                <div className="flow-node-sub">names every mounted skill — ~100 tokens, regardless of catalog size</div>
+              </div>
+            </div>
+          </RevealItem>
+
+          <RevealItem>
             <CodePanel filename="skill_provider.hpp">{highlightCpp(skillsProviderApiSnippet)}</CodePanel>
           </RevealItem>
 
@@ -294,6 +320,27 @@ export function ApiSkillReference() {
           </RevealItem>
 
           <RevealItem>
+            <div className="compare-cols">
+              <div className="compare-col is-before">
+                <div className="compare-col-label">Wrong — history pushed first</div>
+                <p style={{ color: "var(--text-dim)", fontSize: "0.9rem", lineHeight: 1.6 }}>
+                  Wire order: [...whole conversation..., skills advertisement]. The system-message
+                  advertisement lands AFTER every prior turn — the opposite of ordinary system-prompt
+                  placement, confirmed against a live wire dump degrading model adherence to it.
+                </p>
+              </div>
+              <div className="compare-col is-after">
+                <div className="compare-col-label">Right — skills pushed first</div>
+                <p style={{ color: "var(--text-dim)", fontSize: "0.9rem", lineHeight: 1.6 }}>
+                  Wire order: [skills advertisement, ...whole conversation...]. Contributor order IS
+                  wire order (<code>assemble_context</code>'s own rule) — declaring skills before
+                  history in the constructor is now the whole fix.
+                </p>
+              </div>
+            </div>
+          </RevealItem>
+
+          <RevealItem>
             <p className="gs-note" style={{ marginTop: 24, borderLeftColor: "var(--accent-pink)" }}>
               <strong>Order matters, and the first version had it backwards.</strong> Contributors
               concatenate in declared order. Pushing history first put the skills' system-message
@@ -302,6 +349,19 @@ export function ApiSkillReference() {
               and exactly the kind of thing that degrades a model's adherence to it. Skills now push
               first. <code>test_agent_session_skills_real_backend.cpp</code> asserts message ORDER,
               not just presence, so this can't silently regress.
+            </p>
+          </RevealItem>
+
+          <RevealItem>
+            <p style={{ marginTop: 14, color: "var(--text-dim)", lineHeight: 1.65 }}>
+              <code>HistoryAndSkillsProvider&lt;H, S&gt;</code> is hand-written for exactly two
+              contributors. The generic version — any N real <code>ContextProvider</code>s (history,
+              skills, memory, …) in one slot, same <code>assemble_context</code> underneath — is{" "}
+              <code>ComposedContextProvider&lt;Ms...&gt;</code>, walked through on the{" "}
+              <a href={`${SITE_BASE}/api/runtime.html#context-providers`}>
+                AgentSession &amp; ChatClient page
+              </a>
+              .
             </p>
           </RevealItem>
         </RevealGroup>
