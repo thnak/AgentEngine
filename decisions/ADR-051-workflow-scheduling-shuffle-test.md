@@ -1,8 +1,7 @@
 # ADR-051 — The 014 §8 G3 scheduling-shuffle test, built for the first time
 
-**Status:** Proposed (2026-08-14). Designed, self-red-teamed, implemented, and proven (real code +
-new test file, full suite green); awaiting the project owner's explicit "Judged" sign-off per this
-project's governance (`decisions/README.md`; `OpenQuestions.md` OQ-11).
+**Status:** Judged (2026-08-14, project owner sign-off). Designed, self-red-teamed, implemented, and
+proven (real code + new test file, full suite green).
 
 **Relates to:** `docs/planning/2026-08-10-full-codebase-adr-gap-audit.md` gap #22 (the finding this
 ADR closes). `014-Workflow-and-Orchestration.md` §8 G3 (the gate itself: "shuffling intra-round

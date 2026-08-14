@@ -1,11 +1,9 @@
 # ADR-041 — Windows AppContainer's inherited-ACE read leak: accepted residual, not a new fix
 
-**Status:** Proposed (2026-08-14). This ADR documents an existing, already-accepted design decision
-(ADR-004 §6.1/§8.1/§8.3, Spiked-not-Judged but carried forward into the real M2 implementation per
-CLAUDE.md's "the ADRs' conclusions carry forward into M2; the spike code does not") and an already-
-existing, already-passing regression test — it ships no new product code. Awaiting the project
-owner's explicit "Judged" sign-off per this project's governance (`decisions/README.md`;
-`OpenQuestions.md` OQ-11).
+**Status:** Judged (2026-08-14, project owner sign-off). This ADR documents an existing, already-
+accepted design decision (ADR-004 §6.1/§8.1/§8.3, Spiked-not-Judged but carried forward into the real
+M2 implementation per CLAUDE.md's "the ADRs' conclusions carry forward into M2; the spike code does
+not") and an already-existing, already-passing regression test — it ships no new product code.
 
 **Relates to:** `docs/planning/2026-08-10-full-codebase-adr-gap-audit.md` gap #11 (the finding this
 ADR closes); `decisions/ADR-004-appcontainer-native-jail-windows-backend.md` §6.1/§8.1/§8.3/§11 item

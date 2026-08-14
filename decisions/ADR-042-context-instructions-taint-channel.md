@@ -1,8 +1,7 @@
 # ADR-042 — Wiring `ContextContribution.instructions` through a real, taint-checked `role::system` channel
 
-**Status:** Proposed (2026-08-14). Designed, self-red-teamed, implemented, and proven (real code +
-two new test files, full suite 176/176 green); awaiting the project owner's explicit "Judged"
-sign-off per this project's governance (`decisions/README.md`; `OpenQuestions.md` OQ-11).
+**Status:** Judged (2026-08-14, project owner sign-off). Designed, self-red-teamed, implemented, and
+proven (real code + two new test files, full suite 176/176 green).
 
 **Relates to:** `docs/planning/2026-08-10-full-codebase-adr-gap-audit.md` gaps #16 and #21 (both
 closed by this ADR, in the shape the audit itself said they had to be closed together: "these are

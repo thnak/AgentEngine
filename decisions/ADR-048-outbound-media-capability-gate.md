@@ -1,8 +1,7 @@
 # ADR-048 — A fail-closed outbound Media capability gate (gap 19, Phase 1)
 
-**Status:** Proposed (2026-08-14). Designed, self-red-teamed, implemented, and proven (real code +
-new tests across two files, full suite green); awaiting the project owner's explicit "Judged"
-sign-off per this project's governance (`decisions/README.md`; `OpenQuestions.md` OQ-11).
+**Status:** Judged (2026-08-14, project owner sign-off). Designed, self-red-teamed, implemented, and
+proven (real code + new tests across two files, full suite green).
 
 **Relates to:** `docs/planning/2026-08-10-full-codebase-adr-gap-audit.md` gap #19 (the finding this
 ADR closes, Phase 1 only). `004-Model-Provider-Plane.md` §2 (`ChatClientCapabilities`'s

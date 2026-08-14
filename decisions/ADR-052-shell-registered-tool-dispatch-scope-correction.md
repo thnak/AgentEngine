@@ -1,8 +1,7 @@
 # ADR-052 — Gap 13's "shell tool-pipeline bypass" is a stub's stated scope, not a live bug
 
-**Status:** Proposed (2026-08-14). Re-grounded against current code, corrected, and documented at
-the exact call site; awaiting the project owner's explicit "Judged" sign-off per this project's
-governance (`decisions/README.md`; `OpenQuestions.md` OQ-11).
+**Status:** Judged (2026-08-14, project owner sign-off). Re-grounded against current code, corrected,
+and documented at the exact call site.
 
 **Relates to:** `docs/planning/2026-08-10-full-codebase-adr-gap-audit.md` gap #13 (the finding this
 ADR closes). `decisions/ADR-001-shellrunner-grammar-and-dispatch.md` (Judged — Design A, the design

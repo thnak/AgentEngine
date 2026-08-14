@@ -1,8 +1,7 @@
 # ADR-047 — Memory ranking becomes a real product of salience, recency, and keyword overlap
 
-**Status:** Proposed (2026-08-14). Designed, self-red-teamed, implemented, and proven (real code +
-new test file, full suite green); awaiting the project owner's explicit "Judged" sign-off per this
-project's governance (`decisions/README.md`; `OpenQuestions.md` OQ-11).
+**Status:** Judged (2026-08-14, project owner sign-off). Designed, self-red-teamed, implemented, and
+proven (real code + new test file, full suite green).
 
 **Relates to:** `docs/planning/2026-08-10-full-codebase-adr-gap-audit.md` gap #18 (the finding this
 ADR closes: "Default memory ranking is additive, not salience×recency×keyword"). `029-Memory-

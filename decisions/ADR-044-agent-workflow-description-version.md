@@ -1,8 +1,7 @@
 # ADR-044 — `AgentMetadata`/`Workflow` gain real `description`/`version` fields
 
-**Status:** Proposed (2026-08-14). Designed, implemented, and proven (real code + extended tests,
-full suite green); awaiting the project owner's explicit "Judged" sign-off per this project's
-governance (`decisions/README.md`; `OpenQuestions.md` OQ-11).
+**Status:** Judged (2026-08-14, project owner sign-off). Designed, implemented, and proven (real
+code + extended tests, full suite green).
 
 **Relates to:** `docs/planning/2026-08-10-full-codebase-adr-gap-audit.md` gap #2 (the finding this ADR
 closes). `002-Agent-Model-and-Authoring.md` §1/§7 (the normative source of this requirement — this is

@@ -1,8 +1,7 @@
 # ADR-046 — Memory confidence labels, and a real separator between concatenated system texts
 
-**Status:** Proposed (2026-08-14). Designed, self-red-teamed, implemented, and proven (real code +
-extended tests, full suite green); awaiting the project owner's explicit "Judged" sign-off per this
-project's governance (`decisions/README.md`; `OpenQuestions.md` OQ-11).
+**Status:** Judged (2026-08-14, project owner sign-off). Designed, self-red-teamed, implemented, and
+proven (real code + extended tests, full suite green).
 
 **Relates to:** `docs/planning/2026-08-10-full-codebase-adr-gap-audit.md` gap #17 (the finding this
 ADR closes: "`MemoryProvider` renders `ModelInferred` and `UserStated` items identically"). `029-

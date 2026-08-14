@@ -1,9 +1,7 @@
 # ADR-040 — Fixing the `FsRead`/`FsWrite` quota-capability gate (false denial + silent bypass)
 
-**Status:** Proposed (2026-08-14). Designed, red-teamed (self-authored, see §3), implemented, and
-proven (real code + a new regression block, §5); awaiting the project owner's explicit "Judged"
-sign-off per this project's governance (`decisions/README.md`; `OpenQuestions.md` OQ-11's
-resolution that the project owner is the ADR judge).
+**Status:** Judged (2026-08-14, project owner sign-off). Designed, red-teamed (self-authored, see §3),
+implemented, and proven (real code + a new regression block, §5).
 
 **Relates to:** `docs/planning/2026-08-10-full-codebase-adr-gap-audit.md` gap #12 (the finding this
 ADR closes) and gap #3's deferred note (the symmetric `FsRead` bug, folded into this ADR's scope

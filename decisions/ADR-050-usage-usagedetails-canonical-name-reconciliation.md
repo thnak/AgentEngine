@@ -1,8 +1,7 @@
 # ADR-050 — `Usage`, not `UsageDetails`: reconciling 027 against 003/004 and shipped code
 
-**Status:** Proposed (2026-08-14). Designed, verified via a real before/after lint run; awaiting the
-project owner's explicit "Judged" sign-off per this project's governance (`decisions/README.md`;
-`OpenQuestions.md` OQ-11).
+**Status:** Judged (2026-08-14, project owner sign-off). Designed, verified via a real before/after
+lint run.
 
 **Relates to:** `docs/planning/2026-08-10-full-codebase-adr-gap-audit.md` gap #9 (the finding this
 ADR closes). `027-Vocabulary-and-Naming.md` §1-2 ("Normative for: every public identifier" — the
