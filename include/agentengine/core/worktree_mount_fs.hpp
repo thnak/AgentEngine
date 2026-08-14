@@ -33,7 +33,6 @@
 
 #include <windows.h>
 
-#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -124,10 +123,10 @@ private:
 // non-cyclic and bounded against a junction a prior write could have planted somewhere inside the
 // mount -- an availability/correctness precaution for a usage COUNTER, not a second ADR-014-grade
 // security boundary.
-struct MountUsage {
-    std::uint64_t total_bytes = 0;
-    std::uint32_t file_count  = 0;
-};
+// `MountUsage` itself now lives in `sandbox/filesystem_adapter.hpp` (2026-08-14, gap-12 fix) — this
+// header already includes it (above, for `DirEntry`), and the struct is plain data with no
+// Windows-specific content, so `FileSystemAdapter::usage()` (the portable seam) and this
+// Windows-only scan share one definition rather than two structurally-identical ones.
 [[nodiscard]] result<MountUsage> mount_root_usage(std::wstring const& mount_root);
 
 // TEST-ONLY, deliberately vulnerable control -- this project's established pattern for proving a

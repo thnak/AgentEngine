@@ -603,6 +603,27 @@ public:
         return std::nullopt;
     }
 
+    // Read-side twin of `find_fs_write` above, same reason: a caller with real read capacity to
+    // enforce (`size_cap_bytes`) needs the grant's OWN ceiling, not a `contains()` verdict against a
+    // synthetic uncapped `requested` (which `cap_covers` rejects against any capped parent — the
+    // identical bug class `find_fs_write`'s own comment documents, confirmed independently live in
+    // `mediated_shell_dispatch.cpp`'s `ls`/`cat`/`mv`/`cp` and `mediated_python_runner.cpp`'s
+    // read-mode `Internal_open`/`Internal_listdir`, 2026-08-10 gap audit #12). No live-usage
+    // enforcement is paired with this one (unlike `find_fs_write`'s quota check): a read never grows
+    // mount usage, so there is nothing for `size_cap_bytes` to be checked against here — it exists on
+    // `cap::FsRead` for a future per-call byte-budget use, not a cumulative mount-usage one.
+    [[nodiscard]] std::optional<cap::FsRead> find_fs_read(std::string const& mount_id,
+                                                            std::string const& path) const {
+        for (Capability const& c : granted_) {
+            if (auto const* fr = std::get_if<cap::FsRead>(&c)) {
+                if (fr->mount_id == mount_id && capability_detail::path_prefix_covers(fr->path_prefix, path)) {
+                    return *fr;
+                }
+            }
+        }
+        return std::nullopt;
+    }
+
     // A strictly-narrower derived set (007 §3 property 2 — attenuation only). Fails closed the
     // moment ANY requested entry isn't subsumed by something in this set: an all-or-nothing
     // derivation, never a partial grant a caller might mistake for "the rest was silently dropped".

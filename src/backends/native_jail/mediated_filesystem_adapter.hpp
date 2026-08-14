@@ -14,6 +14,7 @@
 // acts on. `list_directory` uses `GetFileInformationByHandleEx`/`FileFullDirectoryInfo` for the
 // identical reason, rather than `FindFirstFileW` (which re-resolves a path string).
 
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -34,6 +35,7 @@ public:
     result<std::vector<DirEntry>> list_directory(std::string_view path) override;
     result<bool> exists(std::string_view path) override;
     result<std::string> canonicalize(std::string_view path) override;
+    result<std::optional<MountUsage>> usage() override;
 
 private:
     explicit MediatedFileSystemAdapter(std::wstring root) : root_(std::move(root)) {}

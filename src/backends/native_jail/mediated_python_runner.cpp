@@ -376,8 +376,11 @@ PyObject* Internal_open(PyObject* /*self*/, PyObject* args) {
             return nullptr;
         }
     } else {
-        Capability requested = cap::FsRead{mount_id, mount_relative, std::nullopt};
-        if (!g_current_ctx->capabilities->contains(requested)) {
+        // Gap-12 fix (2026-08-10 audit #12, fixed 2026-08-14): the same nullopt-ceiling false-denial
+        // bug the write branch above was already fixed for (Phase G4) -- `find_fs_read` is the pure
+        // lookup, `contains()` against a synthetic uncapped `requested` is what a `size_cap_bytes`
+        // -capped grant used to fail against.
+        if (!g_current_ctx->capabilities->find_fs_read(mount_id, mount_relative)) {
             raise_permission_error("no capability grants read access to '" + std::string(path_c) + "'");
             return nullptr;
         }
@@ -494,8 +497,9 @@ PyObject* Internal_listdir(PyObject* /*self*/, PyObject* args) {
         raise_permission_error("no capability context available for file access");
         return nullptr;
     }
-    Capability requested = cap::FsRead{mount_id, mount_relative, std::nullopt};
-    if (!g_current_ctx->capabilities->contains(requested)) {
+    // Gap-12 fix (2026-08-10 audit #12, fixed 2026-08-14): same `find_fs_read` fix as `Internal_open`'s
+    // read branch above.
+    if (!g_current_ctx->capabilities->find_fs_read(mount_id, mount_relative)) {
         raise_permission_error("no capability grants read access to '" + std::string(path_c) + "'");
         return nullptr;
     }

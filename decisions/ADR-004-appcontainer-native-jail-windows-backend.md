@@ -444,8 +444,16 @@ comparison measures against.
 
 ## 11. Suggested next steps (not part of this ADR's evidence)
 
-1. Add the read-access-leak abuse case to 008 §7, with a hostile-suite test and the positive control
-   §8.3 describes.
+1. ~~Add the read-access-leak abuse case to 008 §7, with a hostile-suite test and the positive
+   control §8.3 describes.~~ **Done** — `tests/test_native_jail_abuse_corpus_windows.cpp`'s Case 4
+   (`M2 Phase C task C3`, commit `b39f5ea`) asserts `win.ini` reads `ESCAPE_OK` (the documented gap,
+   not silently regressed) directly alongside the same case's primary assertion that an arbitrary
+   non-curated file (`secret_file`) reads `ESCAPE_DENIED` — the pairing that makes it a real positive
+   control: the leak is bounded to the OS's own curated file set, not a general containment failure.
+   Green as of `decisions/ADR-040-fs-quota-capability-gate-fix.md`'s full-suite run (2026-08-14,
+   175/175). This entry was stale before that check — the test existed since the M2 implementation but
+   this checklist item was never updated to reflect it (see `decisions/ADR-041-appcontainer-ace-leak-
+   accepted-residual.md` for the full accounting).
 2. A real, adversarial red-team pass on this design — by a reviewer who did not write it — before any
    claim here is treated as more than a spike.
 3. ~~Build and measure the Job Object resource-limit layer against 021 Q2~~ **Done — §10.**

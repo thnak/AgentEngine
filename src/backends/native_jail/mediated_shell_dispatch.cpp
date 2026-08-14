@@ -48,6 +48,71 @@ result<void> require_capability(EffectContext const& ctx, Capability requested, 
     return {};
 }
 
+// Gap-12 fix (2026-08-10 audit #12, fixed 2026-08-14): `require_capability` above is right for
+// `cap::EnvWrite`/`cap::RunnerCall` (no quota field, so a synthetic uncapped `requested` never hits
+// `cap_covers`'s widening rejection), but was WRONG for `cap::FsRead`/`cap::FsWrite` -- every call
+// site below used to build `cap::FsWrite{mount_id, target, std::nullopt, std::nullopt}` and check it
+// via `contains()`, which `cap_covers` (capability.hpp) rejects against ANY quota-capped grant (a
+// capped parent, an uncapped "requested" reads as widening). That's a false denial, not a security
+// hole, but it made a quota-capped `FsWrite`/`FsRead` grant unusable from the shell exactly the way
+// Milestone 3 Phase G4 already found and fixed once for `mediated_python_runner.cpp`'s Python
+// `open()` bridge. These two helpers apply the same fix here: `find_fs_read`/`find_fs_write` are pure
+// lookups answering "what's the grant's OWN ceiling", not `contains()`'s "is a synthetic ceiling
+// covered" question.
+result<void> require_fs_read(EffectContext const& ctx, std::string const& mount_id, std::string const& target,
+                              char const* denial_message) {
+    if (!ctx.capabilities || !ctx.capabilities->find_fs_read(mount_id, target)) {
+        return std::unexpected(error{failure_class::policy, denial_message, "shell.capability_denied"});
+    }
+    return {};
+}
+
+// `enforce_quota`: true for operations that can grow this mount's usage (mkdir, `cp`, output
+// redirects) -- these get a live on-disk usage check against the grant's own `quota_bytes`/
+// `file_count_cap` before the operation proceeds, the audit's own "gate fix and live usage
+// enforcement together" requirement (MediatedFileSystemAdapter::write_file had -- and still has, at
+// the Win32-call level -- zero quota tracking of its own; this boundary check is where quota is
+// actually enforced). False for `rm` and `mv`: deletion can only reduce usage, and rename doesn't
+// grow it either (same mount, same bytes, no new directory entry) -- gating either behind "is the
+// mount CURRENTLY under quota" would be actively counterproductive for `rm` (the one operation that
+// gets a mount back under quota) and merely imprecise, not unsafe, for `mv`. Only `cp` -- which does
+// add a new file's worth of bytes/file-count -- passes `enforce_quota = true` from the shared mv/cp
+// call site below.
+result<void> require_fs_write(EffectContext const& ctx, FileSystemAdapter& fs, std::string const& mount_id,
+                               std::string const& target, char const* denial_message, bool enforce_quota) {
+    if (!ctx.capabilities) {
+        return std::unexpected(error{failure_class::policy, denial_message, "shell.capability_denied"});
+    }
+    auto granted = ctx.capabilities->find_fs_write(mount_id, target);
+    if (!granted) {
+        return std::unexpected(error{failure_class::policy, denial_message, "shell.capability_denied"});
+    }
+    if (!enforce_quota || (!granted->quota_bytes.has_value() && !granted->file_count_cap.has_value())) {
+        return {};
+    }
+    auto usage = fs.usage();
+    if (!usage) return std::unexpected(usage.error());
+    if (!*usage) {
+        // Capped grant, but this adapter cannot report usage -- fail closed rather than silently
+        // treat "unknown" as "under quota" (filesystem_adapter.hpp's own comment on `usage()`: this
+        // is exactly the silent-bypass shape the gap-12 fix exists to close).
+        return std::unexpected(error{failure_class::resource,
+                                      "quota enforcement required but usage could not be determined",
+                                      "shell.fs_quota_unavailable"});
+    }
+    if (granted->quota_bytes.has_value() && (*usage)->total_bytes > *granted->quota_bytes) {
+        // Same message/code shape as `core/worktree.hpp`'s `mount_write` (the one other place this
+        // project enforces a live FsWrite quota) -- not re-authored here.
+        return std::unexpected(
+            error{failure_class::resource, "No space left on device", "worktree.mount_write_quota_exceeded"});
+    }
+    if (granted->file_count_cap.has_value() && (*usage)->file_count > *granted->file_count_cap) {
+        return std::unexpected(error{failure_class::resource, "No space left on device",
+                                      "worktree.mount_write_file_count_exceeded"});
+    }
+    return {};
+}
+
 result<ExecOutcome> run_builtin(std::string const& name, std::vector<std::string> const& argv,
                                  std::string const* piped_stdin, FileSystemAdapter& fs,
                                  std::string const& mount_id, ExecState& state, EffectContext& ctx) {
@@ -68,8 +133,7 @@ result<ExecOutcome> run_builtin(std::string const& name, std::vector<std::string
     }
     if (name == "ls") {
         std::string target = argv.size() > 1 ? resolve_against_cwd(state.cwd, argv[1]) : state.cwd;
-        auto req = require_capability(ctx, cap::FsRead{mount_id, target, std::nullopt},
-                                       "ls: no capability grants read access to this path");
+        auto req = require_fs_read(ctx, mount_id, target, "ls: no capability grants read access to this path");
         if (!req) return std::unexpected(req.error());
         auto entries = fs.list_directory(target);
         if (!entries) return std::unexpected(entries.error());
@@ -82,8 +146,7 @@ result<ExecOutcome> run_builtin(std::string const& name, std::vector<std::string
             return out;
         }
         std::string target = resolve_against_cwd(state.cwd, argv[1]);
-        auto req = require_capability(ctx, cap::FsRead{mount_id, target, std::nullopt},
-                                       "cat: no capability grants read access to this path");
+        auto req = require_fs_read(ctx, mount_id, target, "cat: no capability grants read access to this path");
         if (!req) return std::unexpected(req.error());
         auto data = fs.read_file(target);
         if (!data) return std::unexpected(data.error());
@@ -116,8 +179,8 @@ result<ExecOutcome> run_builtin(std::string const& name, std::vector<std::string
         std::string target = resolve_against_cwd(state.cwd, argv[1]);
         bool parents = argv.size() > 2 && argv[1] == "-p";
         std::string real_target = parents ? resolve_against_cwd(state.cwd, argv[2]) : target;
-        auto req = require_capability(ctx, cap::FsWrite{mount_id, real_target, std::nullopt, std::nullopt},
-                                       "mkdir: no capability grants write access to this path");
+        auto req = require_fs_write(ctx, fs, mount_id, real_target,
+                                     "mkdir: no capability grants write access to this path", /*enforce_quota=*/true);
         if (!req) return std::unexpected(req.error());
         auto r = fs.make_directory(real_target, parents);
         if (!r) return std::unexpected(r.error());
@@ -129,8 +192,8 @@ result<ExecOutcome> run_builtin(std::string const& name, std::vector<std::string
         std::string const& raw = recursive ? (argv.size() > 2 ? argv[2] : "") : argv[1];
         if (raw.empty()) return std::unexpected(error{failure_class::contract, "rm: missing operand", "shell.rm_missing_operand"});
         std::string target = resolve_against_cwd(state.cwd, raw);
-        auto req = require_capability(ctx, cap::FsWrite{mount_id, target, std::nullopt, std::nullopt},
-                                       "rm: no capability grants write access to this path");
+        auto req = require_fs_write(ctx, fs, mount_id, target,
+                                     "rm: no capability grants write access to this path", /*enforce_quota=*/false);
         if (!req) return std::unexpected(req.error());
         auto r = fs.remove(target, recursive);
         if (!r) return std::unexpected(r.error());
@@ -140,11 +203,14 @@ result<ExecOutcome> run_builtin(std::string const& name, std::vector<std::string
         if (argv.size() < 3) return std::unexpected(error{failure_class::contract, name + ": missing operand", "shell." + name + "_missing_operand"});
         std::string src = resolve_against_cwd(state.cwd, argv[1]);
         std::string dst = resolve_against_cwd(state.cwd, argv[2]);
-        auto req_read = require_capability(ctx, cap::FsRead{mount_id, src, std::nullopt},
-                                            (name + ": no capability grants read access to the source").c_str());
+        auto req_read = require_fs_read(ctx, mount_id, src,
+                                         (name + ": no capability grants read access to the source").c_str());
         if (!req_read) return std::unexpected(req_read.error());
-        auto req_write = require_capability(ctx, cap::FsWrite{mount_id, dst, std::nullopt, std::nullopt},
-                                             (name + ": no capability grants write access to the destination").c_str());
+        // Only `cp` adds a new file's worth of bytes/file-count to the mount; `mv` renames in place
+        // (see `require_fs_write`'s own comment) -- so only `cp` needs the live quota check.
+        auto req_write = require_fs_write(ctx, fs, mount_id, dst,
+                                           (name + ": no capability grants write access to the destination").c_str(),
+                                           /*enforce_quota=*/name == "cp");
         if (!req_write) return std::unexpected(req_write.error());
         auto r = name == "mv" ? fs.rename(src, dst) : fs.copy_file(src, dst);
         if (!r) return std::unexpected(r.error());
@@ -254,8 +320,9 @@ result<ExecOutcome> evaluate_pipeline(PipelineNode const& pipeline, CommandRegis
 
         if (output_redirect) {
             std::string const& target = output_redirect->first;
-            auto req = require_capability(ctx, cap::FsWrite{mount_id, target, std::nullopt, std::nullopt},
-                                           "redirect: no capability grants write access to this path");
+            auto req = require_fs_write(ctx, fs, mount_id, target,
+                                         "redirect: no capability grants write access to this path",
+                                         /*enforce_quota=*/true);
             if (!req) return std::unexpected(req.error());
             std::span<std::byte const> bytes(reinterpret_cast<std::byte const*>(last.stdout_text.data()),
                                               last.stdout_text.size());

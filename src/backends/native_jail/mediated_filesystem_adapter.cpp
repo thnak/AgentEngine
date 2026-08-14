@@ -351,4 +351,14 @@ result<std::string> MediatedFileSystemAdapter::canonicalize(std::string_view pat
     return narrow(relative);
 }
 
+// Gap-12 fix (2026-08-14): `usage()`'s real answer for this adapter -- forwards to the same
+// `mount_root_usage` scan `Internal_open`'s write branch already uses (Milestone 3 Phase G4),
+// so `mediated_shell_dispatch.cpp`'s live-quota check shares the exact scanning logic rather than
+// a second, independently-reasoned copy.
+result<std::optional<MountUsage>> MediatedFileSystemAdapter::usage() {
+    auto u = mount_root_usage(root_);
+    if (!u) return std::unexpected(u.error());
+    return std::optional<MountUsage>(*u);
+}
+
 }  // namespace agentengine::native_jail::mediated_shell

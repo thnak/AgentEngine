@@ -292,6 +292,134 @@ int main() {
                  "F3-S1: the truncated stdout carries an explicit marker naming what happened");
     }
 
+    // ---- Gap-12 regression (2026-08-10 audit #12, fixed 2026-08-14): a quota-capped FsWrite/FsRead
+    // grant used to be UNCONDITIONALLY denied here (`cap_covers()` rejects any quota-capped parent
+    // against the synthetic uncapped `requested` a naive `contains()` check builds), and an uncapped
+    // grant enforced no live quota at all (MediatedFileSystemAdapter::write_file tracks nothing).
+    // Both halves are proven together, matching the audit's own "gate fix and live usage enforcement
+    // together" requirement. A fresh mount is used so the byte/file-count baseline is exactly known,
+    // not inherited from the accumulated state of the blocks above.
+    {
+        std::string const quota_scratch = scratch + "_quota";
+        std::filesystem::remove_all(quota_scratch);
+        std::filesystem::create_directories(quota_scratch);
+        std::wstring quota_scratch_w(quota_scratch.begin(), quota_scratch.end());
+        auto quota_adapter = MediatedFileSystemAdapter::create(quota_scratch_w);
+        AE_CHECK(quota_adapter.has_value(), "E3-Q0: setup -- a fresh mount for the quota tests");
+        MediatedShellRunner quota_shell(*quota_adapter, registry, "work");
+
+        // Seed exactly one 10-byte file ("123456789\n") with an uncapped grant, so the capped-grant
+        // checks below run against a KNOWN usage (1 file, 10 bytes).
+        {
+            ExecState state{};
+            CapabilitySet caps = full_caps();
+            EffectContext ctx{};
+            ctx.capabilities = &caps;
+            auto out = quota_shell.run(ExecRequest{"shell", "echo 123456789 > seed.txt"}, state, ctx);
+            AE_CHECK(out.has_value(), "E3-Q0: setup -- seeding a known 10-byte file succeeds");
+        }
+
+        // E3-Q1 (the false-denial half): a quota-capped grant with real headroom is USABLE at all --
+        // before the fix, ANY quota_bytes-capped FsWrite was denied regardless of actual usage.
+        {
+            ExecState state{};
+            CapabilitySet caps = CapabilitySet::grant_root(
+                {Capability{cap::FsWrite{"work", "", std::uint64_t{1'000'000}, std::nullopt}}});
+            EffectContext ctx{};
+            ctx.capabilities = &caps;
+            auto out = quota_shell.run(ExecRequest{"shell", "mkdir under_quota"}, state, ctx);
+            AE_CHECK(out.has_value(), "E3-Q1: mkdir succeeds under a quota-capped FsWrite grant with headroom");
+        }
+
+        // E3-Q2 (the silent-bypass half): a grant whose quota_bytes is ALREADY exceeded by real,
+        // on-disk usage denies a further quota-checked write -- before the fix nothing enforced this
+        // for an uncapped grant, and a capped grant never reached a live usage check at all (it was
+        // denied earlier, for the wrong reason). A quota denial is NOT one of `kHardStopCodes`
+        // (`shell.capability_denied` is, this isn't) -- consistent with `mediated_python_runner.cpp`'s
+        // `Internal_open`, where the identical condition surfaces as an ordinary, catchable
+        // `OSError`, not a hard denial -- so `evaluate_pipeline` reports it as an inspectable
+        // non-ok `ExecOutcome` (`out.has_value() == true`, `klass == policy_violation`), the same
+        // shape `cat` on a missing file already gets, not as a propagated `std::unexpected`.
+        {
+            ExecState state{};
+            CapabilitySet caps = CapabilitySet::grant_root(
+                {Capability{cap::FsWrite{"work", "", std::uint64_t{5}, std::nullopt}}});  // 5 < the 10 already used
+            EffectContext ctx{};
+            ctx.capabilities = &caps;
+            auto out = quota_shell.run(ExecRequest{"shell", "mkdir over_quota"}, state, ctx);
+            AE_CHECK(out.has_value() && out->klass == exec_outcome_class::policy_violation &&
+                         out->stderr_text == "No space left on device",
+                     "E3-Q2: mkdir is denied once real usage already exceeds the grant's quota_bytes");
+            AE_CHECK(!std::filesystem::exists(quota_scratch + "/over_quota"),
+                     "E3-Q2: the denied mkdir never reached the filesystem");
+        }
+
+        // E3-Q3: `rm` is NEVER quota-gated (deletion can only reduce usage) -- the same exhausted
+        // grant from E3-Q2 must still be able to delete, or a caller could never work back under quota.
+        {
+            ExecState state{};
+            CapabilitySet caps = CapabilitySet::grant_root(
+                {Capability{cap::FsWrite{"work", "", std::uint64_t{5}, std::nullopt}}});
+            EffectContext ctx{};
+            ctx.capabilities = &caps;
+            auto out = quota_shell.run(ExecRequest{"shell", "rm seed.txt"}, state, ctx);
+            AE_CHECK(out.has_value(),
+                     "E3-Q3: rm succeeds under an already-exhausted quota (deletion is never quota-gated)");
+        }
+
+        // E3-Q4: `mv` is NOT quota-gated (a rename adds no new bytes/file-count) while `cp` (which
+        // DOES add a new file's worth of usage) IS -- proven against the same exhausted grant.
+        {
+            // Setup, uncapped: give `cp` a real source file to read from.
+            ExecState setup_state{};
+            CapabilitySet setup_caps = full_caps();
+            EffectContext setup_ctx{};
+            setup_ctx.capabilities = &setup_caps;
+            auto setup_out = quota_shell.run(ExecRequest{"shell", "echo cp-src > cp_src.txt"}, setup_state, setup_ctx);
+            AE_CHECK(setup_out.has_value(), "E3-Q4: setup -- a real source file for cp exists");
+
+            ExecState state{};
+            CapabilitySet caps = CapabilitySet::grant_root(
+                {Capability{cap::FsRead{"work", "", std::nullopt}},
+                 Capability{cap::FsWrite{"work", "", std::uint64_t{5}, std::nullopt}}});  // exhausted, same as E3-Q2
+            EffectContext ctx{};
+            ctx.capabilities = &caps;
+
+            auto mv_out = quota_shell.run(ExecRequest{"shell", "mv under_quota moved_dir"}, state, ctx);
+            AE_CHECK(mv_out.has_value(), "E3-Q4: mv succeeds under an exhausted quota (rename adds no usage)");
+
+            auto cp_denied = quota_shell.run(ExecRequest{"shell", "cp cp_src.txt cp_dst.txt"}, state, ctx);
+            AE_CHECK(cp_denied.has_value() && cp_denied->klass == exec_outcome_class::policy_violation &&
+                         cp_denied->stderr_text == "No space left on device",
+                     "E3-Q4: cp is denied under the same exhausted quota that mv is exempt from");
+            AE_CHECK(!std::filesystem::exists(quota_scratch + "/cp_dst.txt"),
+                     "E3-Q4: the denied cp never reached the filesystem");
+        }
+
+        // E3-Q5: FsRead's twin false-denial fix -- a size_cap_bytes-capped read grant is usable at
+        // all (no live enforcement is paired with it -- a read never grows mount usage).
+        {
+            ExecState state{};
+            CapabilitySet caps = full_caps();
+            EffectContext ctx{};
+            ctx.capabilities = &caps;
+            auto write_out = quota_shell.run(ExecRequest{"shell", "echo hi > readable.txt"}, state, ctx);
+            AE_CHECK(write_out.has_value(), "E3-Q5: setup -- write a small file to read back");
+        }
+        {
+            ExecState state{};
+            CapabilitySet caps =
+                CapabilitySet::grant_root({Capability{cap::FsRead{"work", "", std::uint64_t{100}}}});
+            EffectContext ctx{};
+            ctx.capabilities = &caps;
+            auto cat_out = quota_shell.run(ExecRequest{"shell", "cat readable.txt"}, state, ctx);
+            AE_CHECK(cat_out.has_value() && cat_out->stdout_text.find("hi") != std::string::npos,
+                     "E3-Q5: cat succeeds under a size_cap_bytes-capped FsRead grant");
+        }
+
+        std::filesystem::remove_all(quota_scratch);
+    }
+
     std::filesystem::remove_all(scratch);
 
     if (g_failures != 0) {
