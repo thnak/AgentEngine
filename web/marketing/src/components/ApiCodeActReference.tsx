@@ -50,6 +50,33 @@ export function ApiCodeActReference() {
 
         <RevealGroup>
           <RevealItem>
+            <div className="flow glass">
+              <div className="flow-node is-purple">
+                <div className="flow-node-title">Model writes ordinary Python</div>
+                <div className="flow-node-sub">agent.tools.word_count("some text") — inside a real execute_code call</div>
+              </div>
+              <div className="flow-arrow">the generated function calls _ae_internal.call_tool(...)</div>
+              <div className="flow-node">
+                <div className="flow-node-title">JSON crosses the C++/Python boundary</div>
+                <div className="flow-node-sub">the SAME capability-gated invoke_tool() pipeline every model-declared tool call goes through</div>
+              </div>
+              <div className="flow-arrow">json.loads() + wrapped, same interpreter call</div>
+              <div className="flow-node is-teal">
+                <div className="flow-node-title">_AeReply</div>
+                <div className="flow-node-sub">reply.hits, not reply["hits"] — an object, not raw JSON text</div>
+              </div>
+            </div>
+          </RevealItem>
+          <RevealItem>
+            <div className="flow-loop-note" style={{ marginTop: 14, marginBottom: 48 }}>
+              No second round trip through the model just to parse or reformat a reply — the whole
+              loop above happens once, inside the sandbox.
+            </div>
+          </RevealItem>
+        </RevealGroup>
+
+        <RevealGroup>
+          <RevealItem>
             <div className="section-head anchor-target" style={{ marginBottom: 22 }} id="codeact-modules">
               <span className="eyebrow">trust/agent_library_manifest.hpp — §5's own registry</span>
               <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>
