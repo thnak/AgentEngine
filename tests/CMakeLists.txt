@@ -237,6 +237,14 @@ add_executable(test_context_assembly test_context_assembly.cpp)
 target_link_libraries(test_context_assembly PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_context_assembly COMMAND test_context_assembly)
 
+# ---- ComposedContextProvider<Ms...> (core/composed_context_provider.hpp) -- generalizes
+# history_and_skills_provider.hpp's fixed two-provider HistoryAndSkillsProvider<H,S> to an arbitrary
+# Ms... pack via the SAME assemble_context() B3 already proved, and wires it into rt::AgentSession's
+# single provider template slot end to end (N == 3 providers, deliberately > 2).
+add_executable(test_composed_context_provider test_composed_context_provider.cpp)
+target_link_libraries(test_composed_context_provider PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_composed_context_provider COMMAND test_composed_context_provider)
+
 # ---- Skills (009 §8), Phase 1: SKILL.md parser (§8a) -- pure text-in/value-out, no VFS dependency --
 add_executable(test_skill_parser test_skill_parser.cpp)
 target_link_libraries(test_skill_parser PRIVATE agentengine::core agentengine_warnings)
@@ -1167,8 +1175,10 @@ add_test(NAME test_json_value COMMAND test_json_value)
 
 # ---- wasmtime C API smoke proof (M2 Phase D task D1, decision 5) -------------------------------
 # Only built when AGENTENGINE_WITH_WASM is explicitly turned ON (root CMakeLists.txt) -- proves the
-# vendored dependency itself links and runs a real WebAssembly module; no SandboxBackend exists yet
-# (see src/backends/wasm/README.md and this test file's own header).
+# vendored dependency itself links and runs a real WebAssembly module, independent of the real
+# SandboxBackend built further down (D3, decisions/ADR-010-*.md) and its tool-pipeline bridge
+# (decisions/ADR-040-*.md) -- this smoke test predates both and is kept as the narrowest possible
+# "does the dependency itself work" check.
 if(AGENTENGINE_WITH_WASM)
   add_executable(test_wasmtime_smoke test_wasmtime_smoke.cpp)
   target_link_libraries(test_wasmtime_smoke PRIVATE agentengine::wasmtime_vendor)
@@ -1218,6 +1228,25 @@ if(AGENTENGINE_WITH_WASM)
   set_tests_properties(test_wasm_backend PROPERTIES SKIP_RETURN_CODE 77)
   if(WIN32)
     set_tests_properties(test_wasm_backend PROPERTIES
+      ENVIRONMENT "PATH=${AGENTENGINE_WASMTIME_DLL_DIR};$ENV{PATH}")
+  endif()
+
+  # ---- wasm tool-pipeline bridge proof (decisions/ADR-040-wasm-tool-pipeline-bridge.md) ----------
+  # Wires WasmBackend-discovered tools into the real core/tool_pipeline.hpp ToolTable/invoke_tool --
+  # same fixture/toolchain-availability posture as test_wasm_backend above (SKIP, not fail, when
+  # cargo-component is unavailable); its own pure-logic wasm_tool_result_to_json() checks still run
+  # regardless, see this test file's own header comment.
+  add_executable(test_wasm_tool_bridge test_wasm_tool_bridge.cpp)
+  target_link_libraries(test_wasm_tool_bridge PRIVATE agentengine::wasm_backend)
+  target_compile_definitions(test_wasm_tool_bridge PRIVATE
+    AE_WASM_FIXTURE_PATH="${AE_WASM_FIXTURE_WASM}")
+  if(TARGET ae_wasm_fixture)
+    add_dependencies(test_wasm_tool_bridge ae_wasm_fixture)
+  endif()
+  add_test(NAME test_wasm_tool_bridge COMMAND test_wasm_tool_bridge)
+  set_tests_properties(test_wasm_tool_bridge PROPERTIES SKIP_RETURN_CODE 77)
+  if(WIN32)
+    set_tests_properties(test_wasm_tool_bridge PROPERTIES
       ENVIRONMENT "PATH=${AGENTENGINE_WASMTIME_DLL_DIR};$ENV{PATH}")
   endif()
 endif()

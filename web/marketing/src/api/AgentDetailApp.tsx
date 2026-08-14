@@ -1,28 +1,24 @@
+import { ApiAgentReference } from "../components/ApiAgentReference";
 import { ApiAuthoringSample } from "../components/ApiAuthoringSample";
 import { ApiDetailLayout } from "../components/ApiDetailLayout";
-import { ApiSection } from "../components/ApiSection";
-import { authoringEntries } from "../data/apiContent";
+
+const sections = {
+  en: [
+    { id: "agent-crtp", label: "Agent<Derived, Policies...>" },
+    { id: "register-agent", label: "register_agent<A>()" },
+    { id: "authoring-sample", label: "Worked example" },
+  ],
+  vi: [
+    { id: "agent-crtp", label: "Agent<Derived, Policies...>" },
+    { id: "register-agent", label: "register_agent<A>()" },
+    { id: "authoring-sample", label: "Ví dụ minh họa" },
+  ],
+};
 
 function AgentDetailApp() {
   return (
-    <ApiDetailLayout
-      active="agent"
-      sections={[
-        ...authoringEntries.map((e) => ({ id: e.id, label: e.tag })),
-        { id: "authoring-sample", label: "Worked example" },
-      ]}
-    >
-      <ApiSection
-        id="agent"
-        eyebrow="C++ CRTP authoring surface — 002"
-        heading={
-          <>
-            Agents are <span className="grad-text">compile-time policy sets</span>
-          </>
-        }
-        description="No runtime configuration object, no virtual dispatch — an agent's whole policy set is template parameters, compiled and validated once by register_agent<A>()."
-        entries={authoringEntries}
-      />
+    <ApiDetailLayout active="agent" sections={sections}>
+      <ApiAgentReference />
       <ApiAuthoringSample />
     </ApiDetailLayout>
   );

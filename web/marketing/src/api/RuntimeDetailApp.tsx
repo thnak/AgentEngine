@@ -1,21 +1,16 @@
 import { ApiDetailLayout } from "../components/ApiDetailLayout";
-import { ApiSection } from "../components/ApiSection";
+import { ApiRuntimeReference } from "../components/ApiRuntimeReference";
 import { runtimeEntries } from "../data/apiContent";
+
+const sections = {
+  en: runtimeEntries.en.map((e) => ({ id: e.id, label: e.tag })),
+  vi: runtimeEntries.vi.map((e) => ({ id: e.id, label: e.tag })),
+};
 
 function RuntimeDetailApp() {
   return (
-    <ApiDetailLayout active="runtime" sections={runtimeEntries.map((e) => ({ id: e.id, label: e.tag }))}>
-      <ApiSection
-        id="runtime"
-        eyebrow="Agent core — L2"
-        heading={
-          <>
-            A real runtime, <span className="grad-text">real provider backends</span>
-          </>
-        }
-        description="AgentSession runs on AgentEngine's own agentengine::rt:: runtime with sixteen-plus tests behind it, not a facade — and the ChatClient it talks to is a live Anthropic or OpenAI backend, not only a mock."
-        entries={runtimeEntries}
-      />
+    <ApiDetailLayout active="runtime" sections={sections}>
+      <ApiRuntimeReference />
     </ApiDetailLayout>
   );
 }
