@@ -203,9 +203,10 @@ signature/behavior at all.
 
 ## Amendment 2 (2026-08-14): the `/conflicts` mount, and a real reachability bug it caught
 
-**Status of this amendment: implemented and proven (§ below); awaiting the project owner's own
-explicit sign-off, separate from this ADR's original Judged verdict and the first Amendment above**
-(per this project's governance, `decisions/README.md`; `OpenQuestions.md` OQ-11).
+**Status of this amendment: Judged (2026-08-14, project owner sign-off)**, separate from this ADR's
+original Judged verdict and the first Amendment above (per this project's governance, `decisions/
+README.md`; `OpenQuestions.md` OQ-11). Re-verified at sign-off review: `tests/test_worktree_conflict_
+evidence.cpp` (M1-M9) still passes in full, unchanged since commit `ecfec15`.
 
 At the project owner's explicit direction, this ADR's own §6 residual — "does not design the
 `/conflicts` mount's own host-policy wiring" — is closed for the mount-CONSTRUCTION half: `conflicts_
