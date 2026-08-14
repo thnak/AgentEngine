@@ -1478,6 +1478,119 @@ export const workflowEdgeKinds: Record<Lang, WorkflowEdgeKind[]> = {
   ],
 };
 
+// 014 §3 -- the eight named patterns, verbatim graph shapes, plus a synthesized "when to reach
+// for this one" use case (the RFC states the shapes and the Group-chat-vs-Planner guidance; the
+// use-case phrasing below is this docs page's own gloss, not a spec quote).
+export interface WorkflowPattern {
+  id: string;
+  pattern: string;
+  shape: string;
+  useCase: string;
+}
+
+export const workflowPatterns: Record<Lang, WorkflowPattern[]> = {
+  en: [
+    {
+      id: "sequential",
+      pattern: "Sequential",
+      shape: "chain",
+      useCase: "A fixed pipeline where each step depends on the last -- e.g. research → draft → review.",
+    },
+    {
+      id: "concurrent",
+      pattern: "Concurrent",
+      shape: "fan_out + fan_in with an aggregator",
+      useCase: "Independent subtasks run at once and get merged -- e.g. summarizing five documents in parallel.",
+    },
+    {
+      id: "handoff",
+      pattern: "Handoff",
+      shape: "switch_case on a routing decision, control transfer",
+      useCase: "One hop: a triage executor routes to a specialist and steps out of the conversation.",
+    },
+    {
+      id: "group-chat",
+      pattern: "Group chat / debate",
+      shape: "a moderator executor cycling among participants, a caller-set round bound as the primary termination contract",
+      useCase: "The caller authors the routing and stopping condition explicitly -- a fixed-round panel debate.",
+    },
+    {
+      id: "planner",
+      pattern: "Planner (Magentic)",
+      shape: "the same cyclic-moderator shape as Group chat/debate, but the moderator maintains a task/progress ledger, picks the next participant, decides completion, and self-triggers a replan on stall",
+      useCase: 'Hand over a goal and let the moderator finish it -- "send it a goal and it finishes" is the defining case.',
+    },
+    {
+      id: "map-reduce",
+      pattern: "Map-reduce",
+      shape: "fan_out over a collection + fan_in reducer",
+      useCase: "Apply the same operation across a collection, then combine -- e.g. per-file analysis with a rollup summary.",
+    },
+    {
+      id: "router",
+      pattern: "Router",
+      shape: "switch_case on a classifier's typed output",
+      useCase: "Route to exactly one of several branches by a classifier's decision.",
+    },
+    {
+      id: "reflection",
+      pattern: "Reflection / critic",
+      shape: "a cycle with an explicit iteration bound",
+      useCase: "Generate → critique → revise, bounded so it can't loop forever.",
+    },
+  ],
+  vi: [
+    {
+      id: "sequential",
+      pattern: "Sequential",
+      shape: "chain",
+      useCase: "Một pipeline cố định, mỗi bước phụ thuộc vào bước trước — ví dụ: nghiên cứu → viết nháp → soát lại.",
+    },
+    {
+      id: "concurrent",
+      pattern: "Concurrent",
+      shape: "fan_out + fan_in với một bộ tổng hợp",
+      useCase: "Các tác vụ con độc lập chạy cùng lúc rồi được gộp lại — ví dụ: tóm tắt năm tài liệu song song.",
+    },
+    {
+      id: "handoff",
+      pattern: "Handoff",
+      shape: "switch_case theo một quyết định định tuyến, chuyển quyền điều khiển",
+      useCase: "Một bước chuyển duy nhất: một executor phân loại chuyển cuộc hội thoại cho một chuyên gia rồi rút lui.",
+    },
+    {
+      id: "group-chat",
+      pattern: "Group chat / debate",
+      shape: "một executor điều phối (moderator) xoay vòng giữa các thành viên, giới hạn số vòng do caller đặt là điều kiện dừng chính",
+      useCase: "Caller tự quyết định rõ ràng cách định tuyến và điều kiện dừng — một cuộc tranh luận hội đồng với số vòng cố định.",
+    },
+    {
+      id: "planner",
+      pattern: "Planner (Magentic)",
+      shape: "cùng hình dạng cyclic-moderator như Group chat/debate, nhưng moderator tự duy trì một task/progress ledger, tự chọn thành viên tiếp theo, tự quyết định khi nào hoàn tất, và tự kích hoạt replan khi bị đình trệ",
+      useCase: 'Giao một mục tiêu và để moderator tự hoàn thành nó — "giao một mục tiêu và nó tự hoàn tất" chính là trường hợp đặc trưng.',
+    },
+    {
+      id: "map-reduce",
+      pattern: "Map-reduce",
+      shape: "fan_out trên một tập hợp + một reducer fan_in",
+      useCase: "Áp dụng cùng một phép xử lý trên cả tập hợp, rồi gộp lại — ví dụ: phân tích từng file kèm một bản tóm tắt tổng hợp.",
+    },
+    {
+      id: "router",
+      pattern: "Router",
+      shape: "switch_case theo đầu ra có kiểu của một bộ phân loại",
+      useCase: "Định tuyến tới đúng một trong nhiều nhánh theo quyết định của bộ phân loại.",
+    },
+    {
+      id: "reflection",
+      pattern: "Reflection / critic",
+      shape: "một chu trình với giới hạn số lần lặp tường minh",
+      useCase: "Sinh → phê bình → sửa lại, có giới hạn để không lặp vô hạn.",
+    },
+  ],
+};
+
 export const workflowGraphSnippet = `// The graph AS DATA -- no execution, no actors, no scheduling.
 // include/agentengine/workflow/graph.hpp
 enum class edge_kind { direct, fan_out, fan_in, switch_case, multi_selection, chain };
@@ -1518,6 +1631,97 @@ struct Workflow {
     TerminationBound         bound;
 };`;
 
+// ---- Pattern-by-pattern code, each trimmed from a REAL runnable example or test -- not invented
+// for docs. Sequential/Concurrent/Router are the exact graphs examples/04, 09, and 10 run;
+// Reflection/critic is CY-1 from tests/test_rt_workflow_supervisor_patterns.cpp; Group chat/debate
+// generalizes the SAME cyclic switch_case shape CY-1 proves to more than one participant (noted as
+// such in the surrounding prose, not presented as a separate proven test).
+
+export const workflowSequentialSnippet = `// examples/04_first_workflow.cpp -- Sequential: a chain of two executors.
+Workflow wf;
+wf.id        = "uppercase-then-reverse";
+wf.executors = {Executor{"Uppercase", executor_kind::function, "Text", "Text"},
+                 Executor{"Reverse",   executor_kind::function, "Text", "Text"}};
+wf.edges.push_back(Edge{"Uppercase", "Reverse", edge_kind::chain, {}});
+wf.start = "Uppercase";
+wf.output_selection.push_back("Reverse");
+wf.bound.max_rounds = 4;
+
+std::vector<ExecutorBody> bodies = {uppercase, reverse_text};
+WorkflowSupervisor sup;
+sup.initialize(wf, bodies);
+WorkflowResult r = drive(sup.run_workflow(RunWorkflow{text_message("Hello, World!")}));
+// r.output == "!DLROW ,OLLEH" -- threaded through both nodes, in graph order, 2 rounds`;
+
+export const workflowConcurrentSnippet = `// examples/09_concurrent_workflow.cpp -- Concurrent: fan_out to N workers, fan_in to one aggregator.
+Workflow wf;
+wf.id        = "fan-out-fan-in";
+wf.executors = {node("src"), node("upper"), node("lower"), node("title"), node("agg")};
+for (char const* w : {"upper", "lower", "title"}) {
+    wf.edges.push_back(Edge{"src", w, edge_kind::fan_out, {}});
+    wf.edges.push_back(Edge{w, "agg", edge_kind::fan_in, {}});
+}
+wf.start = "src";
+wf.output_selection.push_back("agg");
+wf.bound.max_rounds = 8;
+
+WorkflowSupervisor sup;
+sup.initialize(wf, {source, worker("upper"), worker("lower"), worker("title"), aggregate});
+WorkflowResult r = drive(sup.run_workflow(RunWorkflow{text_message("hi")}));
+// aggregate() is called EXACTLY ONCE -- 3 fan_in edges merge into one delivery, not 3 separate calls`;
+
+export const workflowRouterSnippet = `// examples/10_conditional_routing.cpp -- Router: switch_case on a classifier's typed output.
+Workflow wf;
+wf.id        = "triage-router";
+wf.executors = {node("triage"), node("billing"), node("tech")};
+wf.edges.push_back(Edge{"triage", "billing", edge_kind::switch_case, "billing"});
+wf.edges.push_back(Edge{"triage", "tech",    edge_kind::switch_case, "tech"});
+wf.start = "triage";
+wf.output_selection = {"billing", "tech"};
+wf.bound.max_rounds = 8;
+
+// triage's body returns ExecutorOutcome{message, routes} -- routes names the ONE case it selects
+ExecutorBody triage = [](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
+    std::string const label = text_of(in).find("invoice") != std::string::npos ? "billing" : "tech";
+    return ExecutorOutcome{text_message(text_of(in) + " -> " + label), {label}};
+};
+// only the selected branch's invoke() is ever called -- the other declared case never runs`;
+
+export const workflowReflectionSnippet = `// tests/test_rt_workflow_supervisor_patterns.cpp (CY-1) -- Reflection/critic: a bounded cycle.
+Workflow wf;
+wf.id        = "writer-critic";
+wf.executors = {node("writer"), node("critic"), node("done")};
+wf.edges.push_back(Edge{"writer", "critic", edge_kind::direct,      {}});
+wf.edges.push_back(Edge{"critic", "writer", edge_kind::switch_case, "revise"});
+wf.edges.push_back(Edge{"critic", "done",   edge_kind::switch_case, "approve"});
+wf.start = "writer";
+wf.output_selection.push_back("done");
+wf.bound.max_rounds = 8;   // validate_workflow REQUIRES a bound -- an unbounded cycle does not run
+
+// critic's body: revise twice, then approve
+int revisions = 0;
+ExecutorBody critic = [&revisions](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
+    auto const label = (revisions++ < 2) ? "revise" : "approve";
+    return ExecutorOutcome{text_message(all_text_of(in) + ">critic"), {label}};
+};
+// converges at "done" once approved; a critic that never approves stops CLEANLY at bound.max_rounds
+// (workflow_status::bound_max_rounds -- not a crash, not a hang)`;
+
+export const workflowGroupChatSnippet = `// Same cyclic switch_case shape CY-1 proves above, generalized to more than one participant --
+// not a separately proven test, just the same primitives composed differently.
+Workflow wf;
+wf.id        = "panel-debate";
+wf.executors = {node("moderator"), node("alice"), node("bob"), node("carol")};
+for (char const* p : {"alice", "bob", "carol"}) {
+    wf.edges.push_back(Edge{"moderator", p, edge_kind::switch_case, p});
+    wf.edges.push_back(Edge{p, "moderator", edge_kind::direct, {}});
+}
+wf.start = "moderator";
+wf.output_selection.push_back("moderator");
+// the caller-set round bound is the PRIMARY termination contract for Group chat/debate --
+// not a safety valve around a moderator that decides completion itself (that's Planner, below).
+wf.bound.max_rounds = 12;`;
+
 export const workflowEntries: Record<Lang, ApiEntry[]> = {
   en: [
     {
@@ -1536,9 +1740,9 @@ export const workflowEntries: Record<Lang, ApiEntry[]> = {
       tag: "014 §3 — eight patterns, one graph vocabulary",
       title: "Sequential, Concurrent, Handoff, Router, and four more — configurations, not subsystems",
       body:
-        "§3's claim is that its eight named orchestration patterns are configurations of the graph, not eight separate things to build, and test_workflow_patterns.cpp is that claim's proof: every row is built from nothing but executors, the six edge kinds above, and a termination bound, then run for real on the superstep engine. A fan-in aggregator is checked on its INVOCATION COUNT (exactly one call, not one per inbound edge) because a merge that silently ran three times would still produce a plausible-looking answer. A router is run against two different inputs through the SAME graph, because one probe can't distinguish a working classifier from a node hardcoded to one branch. An executor that names a route label the graph never declared fails the run with workflow_status::routing_failed rather than being silently ignored (an I3 boundary: a route target is engine-checked structure, never treated as free-form model output to trust).",
-      cite: "tests/test_workflow_patterns.cpp",
-      href: gh("tests/test_workflow_patterns.cpp"),
+        "§3's claim is that its eight named orchestration patterns are configurations of the graph, not eight separate things to build, and test_rt_workflow_supervisor_patterns.cpp is that claim's proof: every row is built from nothing but executors, the six edge kinds above, and a termination bound, then run for real on the superstep engine. A fan-in aggregator is checked on its INVOCATION COUNT (exactly one call, not one per inbound edge) because a merge that silently ran three times would still produce a plausible-looking answer. A router is run against two different inputs through the SAME graph, because one probe can't distinguish a working classifier from a node hardcoded to one branch. An executor that names a route label the graph never declared fails the run with workflow_status::routing_failed rather than being silently ignored (an I3 boundary: a route target is engine-checked structure, never treated as free-form model output to trust).",
+      cite: "tests/test_rt_workflow_supervisor_patterns.cpp",
+      href: gh("tests/test_rt_workflow_supervisor_patterns.cpp"),
     },
     {
       id: "workflow-worktree-scoping",
@@ -1578,9 +1782,9 @@ export const workflowEntries: Record<Lang, ApiEntry[]> = {
       tag: "014 §3 — eight patterns, one graph vocabulary",
       title: "Sequential, Concurrent, Handoff, Router, và bốn mẫu khác — là các cấu hình, không phải các phân hệ riêng",
       body:
-        "Tuyên bố của §3 là tám mẫu điều phối được nêu tên chỉ là các cấu hình của đồ thị, không phải tám thứ riêng biệt cần xây dựng, và test_workflow_patterns.cpp chính là minh chứng cho tuyên bố đó: mỗi hàng chỉ được xây từ executor, sáu loại edge nêu trên, và một termination bound, rồi được chạy thật trên superstep engine. Một bộ tổng hợp fan-in được kiểm tra dựa trên SỐ LẦN GỌI (đúng một lần, không phải một lần cho mỗi cạnh đi vào) bởi vì một phép gộp âm thầm chạy ba lần vẫn có thể tạo ra một câu trả lời trông có vẻ hợp lý. Một router được chạy với hai đầu vào khác nhau trên CÙNG một đồ thị, vì chỉ một phép thử không thể phân biệt được một bộ phân loại đang hoạt động thật với một node bị hardcode chỉ đi theo một nhánh. Một executor nêu tên một nhãn route mà đồ thị chưa từng khai báo sẽ làm run thất bại với workflow_status::routing_failed thay vì bị âm thầm bỏ qua (một ranh giới của I3: đích của một route là cấu trúc được engine kiểm tra, không bao giờ bị coi là đầu ra tự do của model để tin tưởng).",
-      cite: "tests/test_workflow_patterns.cpp",
-      href: gh("tests/test_workflow_patterns.cpp"),
+        "Tuyên bố của §3 là tám mẫu điều phối được nêu tên chỉ là các cấu hình của đồ thị, không phải tám thứ riêng biệt cần xây dựng, và test_rt_workflow_supervisor_patterns.cpp chính là minh chứng cho tuyên bố đó: mỗi hàng chỉ được xây từ executor, sáu loại edge nêu trên, và một termination bound, rồi được chạy thật trên superstep engine. Một bộ tổng hợp fan-in được kiểm tra dựa trên SỐ LẦN GỌI (đúng một lần, không phải một lần cho mỗi cạnh đi vào) bởi vì một phép gộp âm thầm chạy ba lần vẫn có thể tạo ra một câu trả lời trông có vẻ hợp lý. Một router được chạy với hai đầu vào khác nhau trên CÙNG một đồ thị, vì chỉ một phép thử không thể phân biệt được một bộ phân loại đang hoạt động thật với một node bị hardcode chỉ đi theo một nhánh. Một executor nêu tên một nhãn route mà đồ thị chưa từng khai báo sẽ làm run thất bại với workflow_status::routing_failed thay vì bị âm thầm bỏ qua (một ranh giới của I3: đích của một route là cấu trúc được engine kiểm tra, không bao giờ bị coi là đầu ra tự do của model để tin tưởng).",
+      cite: "tests/test_rt_workflow_supervisor_patterns.cpp",
+      href: gh("tests/test_rt_workflow_supervisor_patterns.cpp"),
     },
     {
       id: "workflow-worktree-scoping",

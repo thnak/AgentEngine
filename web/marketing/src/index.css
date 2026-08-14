@@ -701,6 +701,181 @@ button {
   background: var(--panel);
 }
 
+/* ---------- Workflow: per-edge failure policy chips ---------- */
+
+.fail-policy-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.fail-policy-chip {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  min-width: 150px;
+  padding: 12px 16px;
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  border: 1px solid var(--border);
+}
+
+.fail-policy-chip code {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 0.85rem;
+  color: var(--accent-purple);
+}
+
+.fail-policy-chip span {
+  color: var(--text-dim);
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
+
+/* ---------- Workflow: one dedicated page per orchestration pattern ---------- */
+
+.pattern-switcher {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 20px 0 4px;
+}
+
+.pattern-switcher-link {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  padding: 7px 13px;
+  border-radius: 999px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  text-decoration: none;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+
+.pattern-switcher-link:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+.pattern-switcher-link.is-active {
+  color: var(--bg);
+  background: var(--gradient);
+  border-color: transparent;
+  font-weight: 700;
+}
+
+.proof-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 4px 0;
+  padding: 0;
+  list-style: none;
+}
+
+.proof-item {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  font-size: 0.9rem;
+  color: var(--text-dim);
+  line-height: 1.6;
+}
+
+.proof-item::before {
+  content: "\2713";
+  color: var(--accent-teal);
+  font-weight: 700;
+  flex: none;
+}
+
+.related-pattern-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.related-pattern-link {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1;
+  min-width: 200px;
+  padding: 12px 16px;
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  text-decoration: none;
+  transition: border-color 0.15s ease;
+}
+
+.related-pattern-link:hover {
+  border-color: var(--border-strong);
+}
+
+.related-pattern-link .name {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 0.88rem;
+  color: var(--text);
+}
+
+.related-pattern-link .note {
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  line-height: 1.4;
+}
+
+.pattern-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 16px;
+}
+
+.pattern-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 20px;
+  text-decoration: none;
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+
+.pattern-card:hover {
+  border-color: var(--border-strong);
+  transform: translateY(-2px);
+}
+
+.pattern-card-name {
+  font-weight: 650;
+  font-size: 1rem;
+  color: var(--text);
+}
+
+.pattern-card-shape {
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  color: var(--accent-teal);
+}
+
+.pattern-card-use {
+  font-size: 0.85rem;
+  color: var(--text-dim);
+  line-height: 1.5;
+  flex: 1;
+}
+
+.pattern-card-cta {
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  color: var(--text-faint);
+  margin-top: 4px;
+}
+
 /* ---------- Spec-driven ---------- */
 
 /* Side by side on the homepage (SpecDriven/GettingStarted), where both columns are genuinely
