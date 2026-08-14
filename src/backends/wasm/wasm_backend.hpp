@@ -13,10 +13,14 @@
 // instance pooling (008 SS6a's snapshot-reset problem is sidestepped, not solved, by instantiating
 // fresh per call -- ADR-010 SS3.5); `blob`/`tool-call` host imports are recognized in the WIT
 // contract but never linked (ADR-010 SS3.1) -- a component that imports either always fails to load.
-// Not wired into core/tool_pipeline.hpp's ToolTable/invoke_tool (that pipeline is native-tool-only in
-// M2, Phase E's own scope note says so explicitly) -- this backend is tested standalone (tests/
-// test_wasm_backend.cpp), the same posture C1-C6/D1/D2 already established for backends proved ahead
-// of their eventual caller.
+// Wired into core/tool_pipeline.hpp's ToolTable/invoke_tool via wasm_tool_bridge.hpp
+// (decisions/ADR-040-wasm-tool-pipeline-bridge.md) -- that bridge calls create()/load_component()/
+// list_tools()/invoke_tool() directly (ADR-010's own §9 point: "any future SandboxBackend consumer
+// written against just the three concept methods will not see plugin loading at all, by design"),
+// never the generic SandboxBackend::exec() adapter below. This backend's own internals (import
+// verification, capability-kind confusion, wall_ms kill) stay proven standalone (tests/
+// test_wasm_backend.cpp); the bridge's own tests (tests/test_wasm_tool_bridge.cpp) prove only the
+// new seam, not re-prove this file's internals.
 
 #include <cstdint>
 #include <memory>

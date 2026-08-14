@@ -183,15 +183,16 @@ endif()
 # ---- wasmtime C API import (src/backends/wasm/) -- Windows + Linux -----------------------------
 # Milestone 2 Phase D task D1 (docs/planning/milestone-2-tools-capabilities-sandbox-breakdown.md,
 # decision 5): wasmtime 47.0.3 as the `wasm` SandboxBackend's one CONVENTIONS.md tier-2 seam-backend
-# heavy dependency (009's plugin ABI). This block ONLY imports the dependency and proves it links
-# and runs (tests/test_wasmtime_smoke.cpp, gated the same way below) -- no SandboxBackend
-# implementation exists under src/backends/wasm/ yet (still README-only by design: that's D3,
-# security-critical, goes through design->red-team->prove->judge per CLAUDE.md before it is real
-# code, same posture as job_object_limits.hpp/cgroup_limits.hpp before ADR-004's build-and-measure
-# pass). Off by default, matching AGENTENGINE_BUILD_PYTHON_RUNNER's own posture for the other
-# tier-2 heavy dependency this project has.
+# heavy dependency (009's plugin ABI). This block imports the dependency (tests/
+# test_wasmtime_smoke.cpp, gated the same way below) and, when this option is on, builds the real
+# `SandboxBackend` (`agentengine::wasm_backend`, D3, decisions/ADR-010-*.md) plus its tool-pipeline
+# bridge (decisions/ADR-040-wasm-tool-pipeline-bridge.md) -- each landed only after its own
+# design->red-team->prove->judge pass per CLAUDE.md, same posture as job_object_limits.hpp/
+# cgroup_limits.hpp before ADR-004's build-and-measure pass. Off by default, matching
+# AGENTENGINE_BUILD_PYTHON_RUNNER's own posture for the other tier-2 heavy dependency this project
+# has.
 option(AGENTENGINE_WITH_WASM
-  "Import the wasmtime C API (009's plugin ABI dependency) -- no SandboxBackend implementation yet, see D3"
+  "Import the wasmtime C API and build the real wasm SandboxBackend + tool-pipeline bridge (009's plugin ABI, ADR-010/ADR-040)"
   OFF)
 
 if(AGENTENGINE_WITH_WASM)

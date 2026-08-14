@@ -2,9 +2,10 @@
 // Implements the CodeAct tool-bridge union: `agent.tools` (026 §4, native_jail's
 // agent_tools_codegen.hpp) should expose the UNION of the agent's own declared tools, tools
 // unlocked by currently mounted skills (core/skill_tool_scoping.hpp's own model-facing/invocable
-// scoping, extended here to the CodeAct bridge), and tools discovered from a connected MCP
-// server (protocol/mcp/mcp_tool_bridge.hpp) -- not any one of those alone. Pure logic, no CPython
-// dependency, matching native_jail/agent_tools_codegen.hpp's own "stay Python-free so it's
+// scoping, extended here to the CodeAct bridge), tools discovered from a connected MCP
+// server (protocol/mcp/mcp_tool_bridge.hpp), and tools discovered from a loaded wasm plugin
+// (backends/wasm/wasm_tool_bridge.hpp, ADR-040) -- not any one of those alone. Pure logic, no
+// CPython dependency, matching native_jail/agent_tools_codegen.hpp's own "stay Python-free so it's
 // unit-testable without an embedded interpreter" precedent.
 
 #include <string>
@@ -15,14 +16,15 @@
 
 namespace agentengine {
 
-// A tool name declared by more than one of the three sources is a hard error -- reject rather
+// A tool name declared by more than one of the four sources is a hard error -- reject rather
 // than guess, matching `SkillsProvider`'s own cross-source anti-shadowing precedent
 // (`skill_provider.hpp`'s `skill.name_collision_across_sources`) and `register_agent`'s own
 // `agent.tool_name_collision`: never a silent precedence order between an agent's own tool, a
-// skill-unlocked one, and an MCP-discovered one of the same name.
+// skill-unlocked one, an MCP-discovered one, or a wasm-plugin one of the same name.
 [[nodiscard]] inline result<ToolTable> union_codeact_tools(
     ToolTable const& agent_tools, ToolTable const& skill_unlocked_tools,
-    std::vector<ToolDescriptor> const& mcp_tools = {}) {
+    std::vector<ToolDescriptor> const& mcp_tools = {},
+    std::vector<ToolDescriptor> const& wasm_tools = {}) {
     struct Source {
         std::string_view label;
         std::vector<ToolDescriptor> const& descriptors;
@@ -31,6 +33,7 @@ namespace agentengine {
         {"the agent's own tools", agent_tools.descriptors()},
         {"a mounted skill's allowed-tools", skill_unlocked_tools.descriptors()},
         {"a connected MCP server", mcp_tools},
+        {"a loaded wasm plugin", wasm_tools},
     };
 
     std::vector<ToolDescriptor> combined;
