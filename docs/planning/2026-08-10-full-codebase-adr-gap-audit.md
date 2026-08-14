@@ -9,8 +9,30 @@ unedited except this header" convention):** two real-code events since this run 
 status. Neither was re-derived from scratch here — both are cross-checked against the actual ADRs
 that landed, matching this doc's own evidence discipline.
 
-**Update (2026-08-14, status only, same convention):** five real-code events and one design-only
-(no-code) event.
+**Update (2026-08-14, status only, same convention):** five real-code events and two design-only
+(no-code) events.
+
+- **Gap 4 (no tool/capability name-keyed registry) is DESIGNED, not implemented — deliberately,
+  matching this pass's own gap-10 precedent.**
+  `docs/planning/tool-capability-registry-design-draft.md` confirms 006/015 really do just assume a
+  registry exists (the audit's "placeholder text with no real content" holds), and designs a
+  `ToolRegistry` reusing FOUR pieces of already-proven machinery rather than inventing new ones:
+  `ChatClientRegistry`'s exact registration shape, `check_capability_ceiling()`'s per-item
+  `.contains()` validation pattern (applied one layer earlier, against a provenance-appropriate outer
+  grant instead of always the agent's own), `ToolDescriptor`'s already-existing per-tool
+  `capability_ceiling` field, and `check_tool_name_collision`'s fail-closed-on-duplicate shape.
+  Resolves I2 capability-ceiling binding by never trusting a non-native provider's self-reported
+  ceiling at face value — it must validate against that provider's own already-host-decided outer
+  grant (WASM's ADR-010 `requested_capabilities`, or the MCP/A2A equivalent), same rule for all three
+  non-native provenances. Resolves I3 resolution timing (document-compile-time, fail-fast, matching
+  002 §6) and namespace squatting (host-curated-only registration, never auto-discovered — the
+  registry structurally cannot be squatted by something nobody explicitly registered). Directly
+  unblocks gap #5's remaining name-keyed half (now a thin `from_names()` wrapper around the
+  already-real `from_descriptors()`). Self-red-team named a real diagnostics requirement (a
+  rejected-at-registration tool must be distinguishable from "never existed") and explicitly
+  out-of-scope items (`spec.capabilities` YAML parsing, live re-resolution on MCP/WASM change).
+  **Not implemented**: this is design + red-team only, no code, per explicit project-owner
+  direction — a future ADR would need to build and prove this for real.
 
 - **Gap 2 (AgentMetadata/Workflow missing description/version) is CLOSED.**
   `decisions/ADR-044-agent-workflow-description-version.md` (Proposed) confirms this is not new
@@ -121,9 +143,11 @@ that landed, matching this doc's own evidence discipline.
   re-derives it from current code (`a2a/server.hpp`'s own comment: "no principal/authorization
   boundary in this transport-agnostic dispatcher yet") and names it as an explicit, not-yet-closed
   residual, not a silently dropped one.
-- **The other 14 gaps below were NOT re-verified this pass** (gap 10 above was re-verified and
-  designed against, but stays open — not counted as re-verified-and-closed like 2/8/11/12/15/16/21/23;
-  gap 21 itself is only partially closed, see its own row below). They still reflect the 2026-08-10
+- **The other 13 gaps below were NOT re-verified this pass** (gaps 4 and 10 above were re-verified
+  and designed against, but stay open — not counted as re-verified-and-closed like
+  2/8/11/12/15/16/21/23; gap 21 itself is only partially closed, and gap 5 is corrected+designed
+  alongside gap 4 without being independently closed, see their own rows above). They still reflect
+  the 2026-08-10
   snapshot. ADR-037 (Quark removal, 2026-08-13) touched large parts of the tree these gaps cite by
   file:line — the underlying LOGIC most of these findings describe (capability/taint/sandbox/memory
   behavior) is independent of the actor-engine substrate ADR-037 replaced, so the findings themselves
@@ -173,8 +197,8 @@ needs the full reasoning behind a specific line item below, not just the one-lin
 | 23 | CLAUDE.md/README claim Milestones 7-9 "have not started" though M7 is substantially built | **High** | ~~needs_adr~~ **[2026-08-13: CLOSED, ADR-026 Judged]** | Docs corrected, lint (`tools/milestone_status_lint.py`) shipped and wired into CI as recommended. |
 | 2 | AgentMetadata/Workflow have no description/version fields | Medium | ~~needs_adr~~ **[2026-08-14: CLOSED, ADR-044 Proposed]** | Optional fields wired through 4 real call sites (the "5" was an overcount); the `Tool<>` naming overlap is real but not a compile collision (unrelated CRTP bases) — named explicitly rather than "closed"; I6 equivalence guarantee stated honestly as before (still example-proven, not structural). |
 | 3 | No generic JSON Schema 2020-12 validator | Medium | needs_adr | Build `core/json_schema_validator.hpp` with the proposed keyword subset/budgets — but wire it at `invoke_tool()`'s InvokeFn construction site (not the MCP dispatcher), add the missing outbound client-side strict check, and close a regex-DoS/`$ref`-cycle budget gap. |
-| 4 | No tool/capability name-keyed registry | Medium | needs_adr | The submitted proposal was placeholder text with no real content — a real design must resolve I2 capability-ceiling binding, I3 resolution timing, namespace squatting, and WASM-ABI conformance from scratch. |
-| 5 | ToolTable has zero runtime construction API (name-keyed half) | Medium | needs_adr | Add a `ToolRegistry` wired through `compile_agent_document` — but the proposed nullptr-fail-closed policy inverts an existing convention and breaks a currently-passing test (015 §2's own worked example). |
+| 4 | No tool/capability name-keyed registry | Medium | needs_adr **[2026-08-14: DESIGNED, not implemented]** | ~~The submitted proposal was placeholder text with no real content...~~ — `docs/planning/tool-capability-registry-design-draft.md` reuses `ChatClientRegistry`'s shape + `check_capability_ceiling()`'s validation pattern rather than inventing from scratch; resolves I2/I3/squatting as designed, self-red-teamed. Not built (no Linux-style blocker here — just scoped as document-only per project-owner direction). |
+| 5 | ToolTable has zero runtime construction API (name-keyed half) | Medium | needs_adr **[2026-08-14: corrected + designed, not implemented]** | ~~ToolTable has zero runtime construction API~~ was already stale before this pass — the descriptor-keyed half (`from_descriptors()`) landed 2026-08-10; only the name-keyed half was ever really open. The gap-4 design draft's own §2/§3 explicitly checked and preserved the exact nullptr-vs-supplied-registry distinction this row warned about, so the currently-passing 015 §2 worked-example test stays green under the new design. |
 | 7 | M7 Phase G gate 006 §6b G6 (`schedule_wakeup`) is unprovable as written | Medium | needs_adr | Give `schedule_wakeup` a real `StandingEffect` producer — but must enforce `Schedule<max_horizon>` at arm time (currently unbounded, a live I2 gap) and name the missing `ReminderService`-access seam. |
 | 9 | 027's canonical name `UsageDetails` has drifted to `Usage` in code | Medium | needs_adr | A mechanical rename only works once 003 §6 and 004 (which normatively say `Usage`, not `UsageDetails`) are reconciled too — otherwise it trades one spec/code drift for another. |
 | 11 | Windows native-jail leaks curated host files via inherited AppContainer ACEs | Medium | ~~needs_adr~~ **[2026-08-14: CLOSED, ADR-041 Proposed]** | ~~The deny-only-SID fix is blocked pending an empirical spike: the proposed launch APIs (`CreateProcessAsUser`/`WithTokenW`) need privileges a standard non-admin deployment account likely doesn't hold.~~ — this blocker is a misattribution (that API isn't used anywhere in this codebase); the real fix (interpreter-level `open()` mediation as primary boundary) already shipped and is already Judged, and the leak's boundedness is already proven by an existing, passing test. |
