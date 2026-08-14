@@ -72,6 +72,44 @@
 // only ever drives `run_workflow()`/`continue_workflow()` and reads `to_record()`/
 // `restore_from_record()`, all of which Slice 2 already built.
 //
+// Merge-on-join hook (set_merge_on_join_hook()/merge_on_join_hook_) -- ADDED closing decisions/
+// ADR-055-conflict-evidence-materialization.md's own §6 residual ("does not build merge-on-join
+// wiring itself"). 025-Worktree-and-Virtual-Filesystem.md §4: "A `branch` sub-worktree merges back
+// when its agent completes" -- a per-EXECUTOR-completion event, not tied to `edge_kind::fan_in`
+// (that is a message-ROUTING join, a different, easily-confused concept this file already implements
+// via `route_from()`; 025 §4's own merge-on-join has never been about how a reply gets routed).
+// Fired from the SAME per-executor fold loop that already runs `record_partial()`/checks `is_output_
+// selected()` for each `exec_deliveries[i]` (`execute()`, right after `rounds_` increments) -- for
+// every executor whose `graph_.executors[idx].worktree_mode == sharing_mode::branch` AND whose reply
+// this round was `ok` (a failed/retried-out job never "completes" in 025 §4's sense). This file still
+// holds NO worktree.hpp type and NO object_store/ref_store reference of its own -- the hook receives
+// only the executor's own `id` string; the HOST (which already called `worktree_scoping.hpp`'s
+// `mint_executor_worktrees()` before ever driving this supervisor, and so already has every
+// `ExecutorWorktreeGrant` in hand, keyed by the SAME executor id) looks up its own grant and performs
+// the real `merge_branch_into_parent()`/(on conflict) `materialize_merge_conflicts()` calls against
+// its own stores -- the identical "caller-injected callback (I2), no ambient authority" shape
+// `checkpoint_hook_` above already established, extended to a second, independent concern riding a
+// nearby (not identical) boundary.
+//
+// A cyclic graph can revisit the SAME executor id across multiple rounds (014 §9 Q2; `mint_executor_
+// worktrees()` mints exactly ONE `SubWorktree` per executor id for the whole run, not per visit) --
+// this file does NOT attempt to detect "is this the LAST time this executor will ever run" before
+// deciding to merge, which would need unsound-to-do-cheaply reachability analysis (the same reason
+// ADR-032 §4 gave for why `branch` defaults unconditionally rather than per-provably-safe-node). The
+// design instead merges on EVERY completion, unconditionally: a branch's own filesystem work folds
+// back into its parent after each round it genuinely finishes, keeping divergence windows as small as
+// possible rather than accumulating them across revisits -- a real, deliberate choice (not a punt),
+// consistent with 025 §4's own literal wording ("when its agent completes") read per-completion-event
+// rather than per-node-forever.
+//
+// A merge failure (the hook returns a real `error`, matching 025 §4's own "never resolved by
+// guessing... a human resolves it" — conflicts are NOT retried automatically) is treated exactly like
+// an existing fatal per-round outcome (`routing_failed`/`executor_failed`): `state_.failed_executor`
+// is set to the executor id, any same-round `request_port` deliveries are recorded as `unopened_ports`
+// (the identical treatment the routing-failure `broke` path already gives them), and the run finishes
+// with the new `workflow_status::merge_conflict` rather than continuing into a round built on top of
+// an un-merged, possibly-conflicting branch.
+//
 // THE ONE GENUINELY HARD DESIGN QUESTION: decision 5 in the original's own file banner ("Fan-out is
 // ISSUE-ALL-THEN-COLLECT... the supervisor issues every ask for round N before awaiting any of them...
 // then collects the futures in FIXED INDEX ORDER") got its REAL concurrency from each executor being a
@@ -192,6 +230,11 @@ enum class workflow_status {
     bound_deadline,
     executor_failed,
     routing_failed,
+    // ADR-055 follow-up (see file banner's "Merge-on-join hook" paragraph): a branch-mode executor's
+    // merge-on-join failed (a genuine conflict, or the host's own store I/O failure) -- 025 §4's own
+    // "never resolved by guessing" rule means this is a terminal outcome, never auto-retried, the
+    // same shape `executor_failed`/`routing_failed` already are.
+    merge_conflict,
     invalid,
 };
 
@@ -510,6 +553,13 @@ public:
     using CheckpointHook = std::function<void(std::uint32_t round, RunStateRecord const&)>;
     void set_checkpoint_hook(CheckpointHook hook) { checkpoint_hook_ = std::move(hook); }
 
+    // ADR-055 follow-up -- see file banner's "Merge-on-join hook" paragraph for the full design.
+    // Fired once per branch-mode executor, immediately after ITS OWN reply is folded successfully
+    // this round. `result<void>{}` means "merged cleanly, or nothing needed merging"; a real `error`
+    // is a fatal, non-retried outcome for the whole run (`workflow_status::merge_conflict`).
+    using MergeOnJoinHook = std::function<agentengine::result<void>(std::string const& executor_id)>;
+    void set_merge_on_join_hook(MergeOnJoinHook hook) { merge_on_join_hook_ = std::move(hook); }
+
     // 014 §7's live-view bullet. Constructs a fresh, directly-connected producer/consumer pair
     // (`agentengine::make_stream`, core/stream.hpp) over `WorkflowLiveEvent`, keeps the producer, and
     // hands the caller the consumer -- see file banner for exactly where in `execute()` it fires from.
@@ -777,13 +827,33 @@ private:
 
             ++rounds_;
 
+            bool merge_failed = false;
             for (std::size_t i = 0; i < exec_deliveries.size(); ++i) {
                 if (!replies[i].ok) continue;
-                record_partial(state_.partial, exec_deliveries[i].executor_index, rounds_ - 1,
-                               replies[i].payload);
-                if (is_output_selected(exec_deliveries[i].executor_index)) {
+                std::size_t const idx = exec_deliveries[i].executor_index;
+                record_partial(state_.partial, idx, rounds_ - 1, replies[i].payload);
+                if (is_output_selected(idx)) {
                     state_.selected_output = replies[i].payload;
                 }
+                // 025 §4 / ADR-055 follow-up -- see file banner's "Merge-on-join hook" paragraph.
+                // `!merge_failed` stops attempting further same-round merges once one has already
+                // failed (the round is terminating regardless; matches the routing loop's own
+                // break-on-first-failure convention below).
+                if (merge_on_join_hook_ && !merge_failed &&
+                    graph_.executors[idx].worktree_mode == agentengine::sharing_mode::branch) {
+                    agentengine::result<void> merged = merge_on_join_hook_(graph_.executors[idx].id);
+                    if (!merged) {
+                        state_.failed_executor = graph_.executors[idx].id;
+                        merge_failed = true;
+                    }
+                }
+            }
+            if (merge_failed) {
+                status = workflow_status::merge_conflict;
+                for (auto const& d : port_deliveries) {
+                    state_.unopened_ports.push_back(graph_.executors[d.executor_index].id);
+                }
+                break;
             }
 
             std::vector<Delivery> next;
@@ -1024,6 +1094,11 @@ private:
     // 014 §5 checkpoint hook -- see file banner's "Checkpoint hook" paragraph. nullptr by default,
     // matching the original's own "Phase F: nullptr by default" comment.
     CheckpointHook checkpoint_hook_;
+    // ADR-055 follow-up -- see file banner's "Merge-on-join hook" paragraph. nullptr by default: a
+    // supervisor with no hook set behaves EXACTLY as before this change (every `branch`-mode executor
+    // simply never gets an on-completion callback, matching this codebase's own "additive, existing
+    // callers unaffected" convention for every optional hook in this class).
+    MergeOnJoinHook merge_on_join_hook_;
 };
 
 // Save `supervisor`'s current run under its own run_id() -- see file banner and snapshot_record()'s

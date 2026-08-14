@@ -14,12 +14,22 @@
 // that wiring has no real caller yet to design against, the same "prove the mechanism, wire it for
 // real later" split ADR-028 already used for session-scoped stateful tools. It does NOT touch
 // `agent`- or `sub_workflow`-kind executors (`check_workflow_executable`, graph.hpp, still rejects
-// both -- they are not built). It does NOT implement merge-on-join (025 §4) for a `branch`
-// executor's worktree -- WHEN a branch folds back into its parent is a separate question this file
-// does not answer.
+// both -- they are not built).
+//
+// Merge-on-join (025 §4) -- CLOSED for the mechanical wiring half (decisions/ADR-055-conflict-
+// evidence-materialization.md's own §6 residual, "merge-on-join wiring itself"): `make_merge_on_join_
+// hook()` below builds a real callable matching `rt::WorkflowSupervisor::MergeOnJoinHook`'s own
+// signature (a plain `std::function<result<void>(std::string const&)>` -- this file names no
+// `rt::workflow_supervisor.hpp` type at all, deliberately, to keep `workflow/` from depending on
+// `rt/`; a structural signature match is all `set_merge_on_join_hook()` needs). The "WHEN" question
+// itself is answered by `rt::WorkflowSupervisor::execute()`'s own per-executor-completion firing
+// point (025 §4: "merges back when its agent completes") -- this file supplies the "HOW", given an
+// executor id the supervisor already decided just completed.
 
+#include <functional>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "agentengine/core/error.hpp"
@@ -200,6 +210,82 @@ template <rt::AppendLogStore RS>
         out.push_back(detail::grant_for(sub, ex.id));
     }
     return out;
+}
+
+// Builds a real `rt::WorkflowSupervisor::MergeOnJoinHook`-compatible callable -- 025 §4's "merges
+// back when its agent completes," mechanically wired (ADR-055 §6's own residual, closed here).
+// `grants` must be index-parallel to `wf.executors`, the SAME convention `mint_executor_worktrees`/
+// `resume_executor_worktrees` already produce and this function accepts directly. `ours_agent_id` is
+// the PARENT side's own identity for every merge this hook ever performs (`materialize_merge_
+// conflicts`'s own required, explicit parameter -- not knowable from the merge inputs alone, ADR-055
+// §3(c)) -- ONE identity for the whole run's own root, matching 025 §4's "the run's supervising agent
+// ... resolves it" framing (the parent side of every branch-into-parent merge under one run IS that
+// run's own supervising identity, never a per-executor-varying value).
+//
+// Only `branch`-mode executors are indexed -- the hook returns a real `contract` error if the
+// supervisor ever calls it for an id this file didn't grant a branch for (defense in depth: `rt::
+// WorkflowSupervisor::execute()` already only fires this hook for `worktree_mode == sharing_mode::
+// branch` executors, so reaching this path would mean the caller wired mismatched `wf`/`grants`, a
+// real caller bug worth failing closed on rather than silently no-op'ing).
+//
+// Uses `retry_merge_branch_into_parent` (not the bare, single-attempt `merge_branch_into_parent`) --
+// a `shared`-mode sibling executor writes directly to this SAME parent ref in real time, so the
+// stale-parent race `retry_merge_branch_into_parent`'s own design already anticipates is a genuine,
+// reachable case here, not a hypothetical one. `max_attempts = 3` is a reasoned default (matching
+// this codebase's own common small-retry-budget convention elsewhere), not evidence-tuned.
+//
+// On a genuine conflict (`outcome->conflicts` non-empty): evidence is durably materialized via
+// `materialize_merge_conflicts` BEFORE this function returns its own error -- 025 §4's own "both
+// versions retained... a human resolves it" is satisfied even though the run itself terminates
+// (`rt::WorkflowSupervisor::execute()` turns a returned error into `workflow_status::merge_conflict`,
+// never a silent drop).
+template <WorktreeObjectStore OS, rt::AppendLogStore RS>
+[[nodiscard]] std::function<result<void>(std::string const&)> make_merge_on_join_hook(
+    OS& object_store, RS& ref_store, std::string run_parent_ref_name, std::string ours_agent_id,
+    Workflow const& wf, std::vector<ExecutorWorktreeGrant> const& grants) {
+    std::unordered_map<std::string, SubWorktree> by_id;
+    for (std::size_t i = 0; i < wf.executors.size() && i < grants.size(); ++i) {
+        if (wf.executors[i].worktree_mode == sharing_mode::branch) {
+            by_id.emplace(wf.executors[i].id, grants[i].sub);
+        }
+    }
+
+    return [&object_store, &ref_store, run_parent_ref_name = std::move(run_parent_ref_name),
+            ours_agent_id = std::move(ours_agent_id),
+            by_id = std::move(by_id)](std::string const& executor_id) -> result<void> {
+        auto it = by_id.find(executor_id);
+        if (it == by_id.end()) {
+            return std::unexpected(error{
+                failure_class::contract,
+                "merge-on-join hook called for '" + executor_id +
+                    "', which has no known branch-mode grant -- mismatched wf/grants wiring",
+                "worktree_scoping.merge_hook_unknown_executor"});
+        }
+        SubWorktree const& branch = it->second;
+
+        auto parent = read_ref(ref_store, run_parent_ref_name);
+        if (!parent) return std::unexpected(parent.error());
+        if (!parent->has_value()) {
+            return std::unexpected(error{failure_class::contract,
+                                          "merge-on-join: parent ref '" + run_parent_ref_name +
+                                              "' has never been committed",
+                                          "worktree_scoping.merge_hook_parent_missing"});
+        }
+
+        auto outcome = retry_merge_branch_into_parent(object_store, ref_store, branch, **parent, 3);
+        if (!outcome) return std::unexpected(outcome.error());
+        if (outcome->ok()) return {};
+
+        auto materialized = materialize_merge_conflicts(object_store, ref_store, run_parent_ref_name,
+                                                          ours_agent_id, branch, outcome->conflicts);
+        if (!materialized) return std::unexpected(materialized.error());
+        return std::unexpected(error{
+            failure_class::policy,
+            "merge-on-join produced " + std::to_string(outcome->conflicts.size()) +
+                " conflict(s) for executor '" + executor_id + "'; evidence materialized at '" +
+                conflicts_ref_name(run_parent_ref_name) + "'",
+            "worktree_scoping.merge_conflict"});
+    };
 }
 
 }  // namespace agentengine::workflow

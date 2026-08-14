@@ -119,12 +119,7 @@ Full suite: green (this pass), zero regressions.
 
 ## 6. What this ADR does not claim
 
-- **Does not build merge-on-join wiring itself.** `merge_branch_into_parent()` still has zero
-  production call sites in this codebase (confirmed by grep, unchanged by this ADR) —
-  `workflow/worktree_scoping.hpp`'s own top comment already states explicitly that it does NOT
-  implement merge-on-join (025 §4) for a `branch` executor's worktree; WHEN a branch folds back into its
-  parent remains a separate, not-yet-answered question. This ADR designs what happens to conflict
-  evidence ONCE a real merge-on-join call site exists to produce it — it does not build that call site.
+- **~~Does not build merge-on-join wiring itself.~~ [2026-08-14: CLOSED — see the Amendment below.]**
 - **Does not design the `/conflicts` mount's own host-policy wiring** — which run/session gets one, and
   when, matches `Mount`'s own "constructed only by host policy" framing, a separate, later decision.
 - **Does not solve retention/pruning for the accumulating conflicts Ref** — named explicitly in §4, not
@@ -132,3 +127,72 @@ Full suite: green (this pass), zero regressions.
 - **Does not change `merge_branch_into_parent()`'s own signature or behavior at all** — `test_worktree_
   merge.cpp`'s existing B2-R1/R2/R3 checks are unmodified and still pass, unaffected by this ADR's
   purely additive new function.
+
+## Amendment (2026-08-14): real merge-on-join wiring
+
+**Status of this amendment: implemented and proven (§ below); awaiting the project owner's own
+explicit sign-off, separate from this ADR's original Judged verdict above** (per this project's
+governance, `decisions/README.md`; `OpenQuestions.md` OQ-11).
+
+At the project owner's explicit direction, this ADR's own §6 residual is closed: a `branch`-mode
+workflow executor's worktree now genuinely folds back into its parent, mechanically wired end to end,
+for the first time in this codebase — before this amendment, `merge_branch_into_parent()` (and this
+ADR's own `materialize_merge_conflicts()`) had zero production call sites; the worktree-scoping and
+workflow-execution subsystems were proven in complete isolation from each other.
+
+**The "WHEN" question, answered by the RFC itself, confirmed by direct re-reading before designing
+anything**: `025-Worktree-and-Virtual-Filesystem.md` §4, verbatim: *"A `branch` sub-worktree merges
+back when its agent completes."* — a per-EXECUTOR-completion event, not tied to `edge_kind::fan_in`
+(a message-ROUTING join, a different, easily-confused concept `route_from()` already implements; 025
+§4's own merge-on-join has never been about how a reply gets routed onward).
+
+**The design**:
+- `rt::WorkflowSupervisor` (`agent_session.hpp`'s sibling, `workflow_supervisor.hpp`) gains a
+  `MergeOnJoinHook` (`std::function<result<void>(std::string const& executor_id)>`), the identical
+  "caller-injected callback (I2), no ambient authority" shape `checkpoint_hook_` already established —
+  fired from the SAME per-executor fold loop that already runs `record_partial()`, for every executor
+  whose `worktree_mode == sharing_mode::branch` and whose reply this round was `ok`. `WorkflowSupervisor`
+  itself still holds NO `worktree.hpp` type and NO store reference — it passes only the executor's own
+  `id` string.
+- A cyclic graph can revisit the same executor id across rounds (`mint_executor_worktrees()` mints
+  exactly ONE `SubWorktree` per executor id for the whole run, not per visit); rather than trying to
+  detect "is this the LAST time this executor runs" — unsound to do cheaply, the identical reason
+  ADR-032 §4 gave for why `branch` defaults unconditionally — the hook fires on EVERY completion,
+  merging back after each round the executor finishes, keeping divergence windows small rather than
+  accumulating them.
+- A new `workflow_status::merge_conflict` outcome, and `state_.failed_executor` naming the executor —
+  the identical shape `executor_failed`/`routing_failed` already use — for when the hook returns a real
+  error (025 §4: "never resolved by guessing... a human resolves it," never auto-retried).
+- `workflow/worktree_scoping.hpp` gains `make_merge_on_join_hook(object_store, ref_store,
+  run_parent_ref_name, ours_agent_id, wf, grants)` — the "HOW," given `mint_executor_worktrees()`'s
+  own already-produced grants (index-parallel to `wf.executors`, the established convention). Builds a
+  real `std::function` matching `MergeOnJoinHook`'s signature structurally — this file names no
+  `rt::workflow_supervisor.hpp` type at all, keeping `workflow/` from depending on `rt/`. Internally:
+  `retry_merge_branch_into_parent` (not the bare single-attempt form — a concurrently-writing `shared`
+  sibling makes the stale-parent race a genuinely reachable case here, not hypothetical), and on a real
+  conflict, this ADR's own `materialize_merge_conflicts()` before returning the error — evidence is
+  durably retained even though the run itself terminates.
+
+**Evidence**: `tests/test_rt_workflow_supervisor_merge_on_join.cpp` (J1-J3, new) — the first test in
+this codebase to drive a `branch`-mode executor through `WorkflowSupervisor` to completion:
+- **J1** — happy path: a single branch executor's own write folds back into the parent, proven by
+  re-reading the parent ref directly afterward, with NO manual `merge_branch_into_parent` call
+  anywhere in the test — the supervisor itself did it.
+- **J2** — conflict path: a `shared`-mode sibling writes directly to the parent in the SAME round a
+  branch executor edits the identical file differently; the run terminates with `merge_conflict`,
+  `failed_executor` names the branch, the parent keeps the shared writer's own edit completely
+  untouched (never last-writer-wins), and real conflict evidence is durably materialized with both
+  sides present.
+- **J3** — two independent branch executors completing in the same round both merge cleanly through
+  the same hook, proving it isn't a single-branch-per-round assumption.
+
+Full suite: green (this pass), zero regressions — every pre-existing `WorkflowSupervisor`/worktree-
+scoping test (`test_rt_workflow_supervisor.cpp`, `test_workflow_worktree_scoping.cpp`,
+`test_rt_workflow_supervisor_patterns.cpp`) re-verified passing unchanged.
+
+**What this amendment does not claim**: does not solve the resume-side residual ADR-032 §5 already
+named (`SubWorktree::base_digest` isn't durably reconstructed for a resumed branch, so a resumed run's
+merge-on-join would need that ancestor re-supplied by a future checkpoint-schema change — unrelated to
+and unchanged by this amendment); does not design the `/conflicts` mount's own host-policy wiring or
+retention/pruning (both still open, §6 above); does not change `merge_branch_into_parent()`'s own
+signature/behavior at all.

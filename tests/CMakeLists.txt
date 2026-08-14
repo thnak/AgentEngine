@@ -1696,6 +1696,16 @@ if(WIN32)
   add_test(NAME test_workflow_worktree_scoping COMMAND test_workflow_worktree_scoping)
 endif()
 
+# ---- Merge-on-join wiring (025 §4, ADR-055 §6 follow-up) -- bridges worktree_scoping.hpp's
+# make_merge_on_join_hook() with rt::WorkflowSupervisor's new MergeOnJoinHook for real, driving a
+# branch-mode executor through the supervisor to completion for the first time in this codebase.
+if(WIN32)
+  add_executable(test_rt_workflow_supervisor_merge_on_join test_rt_workflow_supervisor_merge_on_join.cpp)
+  target_link_libraries(test_rt_workflow_supervisor_merge_on_join PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_rt_workflow_supervisor_merge_on_join COMMAND test_rt_workflow_supervisor_merge_on_join)
+endif()
+
 # ---- Branch-merge concurrency proof (025 §9 G3, Milestone 3 Phase B4) ---------------------------
 # Builds real Blob/Tree fixtures via put_blob/put_tree, same real-crypto dependency as A1/B1/B2/B3.
 # Hundreds of simulated-interleaving trials, each doing real SHA-256 work -- bounded (decision 7),
