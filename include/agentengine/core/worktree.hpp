@@ -729,6 +729,28 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
 // trees already live in, so a `TreeEntry` pointing at an existing digest IS the "both versions
 // retained" requirement -- no data duplication, and correct regardless of whether a conflicting entry
 // is itself a blob or (a blob-vs-tree type fork) a tree, since `is_tree` is carried through unchanged.
+//
+// Forward-declared here (defined later in this file, in the mount-write section that also needs
+// them): `detail::ensure_empty_tree`/`detail::set_entry_at_path` build a REAL nested `Tree` one path
+// at a time, the identical mechanism `mount_write()` (below) already uses -- required so this
+// function's own output is reachable through `mount_read()`/`mount_write()`'s ordinary segment-
+// walking, not a flat entry whose OWN name happens to contain '/' (found by testing: `MergeConflict::
+// path` is documented as slash-joined for a nested conflict, and `SubWorktree::name` -- a workflow
+// executor's own branch identity -- routinely contains '/' via `workflow_scoping.hpp`'s own
+// `parent + "/agents/" + id` convention; a flat `TreeEntry` named e.g. "a/b/c.txt.session:s-20/agents/
+// writer" is a valid map key but NOT a path `mount_read()`'s segment-by-segment walk can ever reach --
+// a real reachability gap the original flat-tree design had, surfaced only once something actually
+// tried to read materialized evidence back through the ordinary guest-facing path, ADR-055's own
+// `/conflicts`-mount amendment).
+namespace detail {
+template <WorktreeObjectStore S>
+[[nodiscard]] result<Digest> ensure_empty_tree(S& store);
+template <WorktreeObjectStore S>
+[[nodiscard]] result<Digest> set_entry_at_path(S& store, Digest const& tree_digest,
+                                                std::span<std::string const> segments,
+                                                Digest const& leaf_digest, bool leaf_is_tree);
+}  // namespace detail
+
 template <WorktreeObjectStore OS, rt::AppendLogStore RS>
 [[nodiscard]] result<void> materialize_merge_conflicts(OS& object_store, RS& ref_store,
                                                          std::string const& parent_ref_name,
@@ -740,38 +762,64 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
     std::string const ref_name = conflicts_ref_name(parent_ref_name);
 
     // Seeded from whatever this parent's conflicts Ref already holds (possibly nothing, on the first
-    // failed merge against this parent) -- new entries are upserted by name, so a REPEAT conflict at
-    // the identical <path>.<agent> key simply replaces its own prior evidence; distinct keys never
-    // collide (both an add/add fork's ours AND theirs entries, and every earlier failed attempt's own
-    // entries, coexist in the same tree).
-    std::unordered_map<std::string, TreeEntry> entries_by_name;
+    // failed merge against this parent) -- `set_entry_at_path` below only ever touches the ONE path
+    // being set at a time, so every other existing entry/subtree (both an add/add fork's ours AND
+    // theirs entries, and every earlier failed attempt's own entries) survives untouched; a REPEAT
+    // conflict at the identical <path>.<agent> leaf simply replaces its own prior evidence there.
+    Digest root_digest;
     auto existing = read_ref(ref_store, ref_name);
     if (!existing) return std::unexpected(existing.error());
     if (existing->has_value()) {
-        auto existing_tree = object_store.get_tree((*existing)->tree_digest);
-        if (!existing_tree) return std::unexpected(existing_tree.error());
-        for (TreeEntry const& e : existing_tree->entries) entries_by_name[e.name] = e;
+        root_digest = (*existing)->tree_digest;
+    } else {
+        auto empty = detail::ensure_empty_tree(object_store);
+        if (!empty) return std::unexpected(empty.error());
+        root_digest = *empty;
     }
+
+    auto apply_one = [&](std::string const& conflict_path, std::string const& agent_id,
+                          TreeEntry const& side) -> result<void> {
+        // The agent id is an IDENTIFIER, not itself a navigable path -- sanitized so a '/' inside it
+        // (routine for a workflow executor's own branch name) becomes part of the LEAF's own name,
+        // never mistaken for a directory separator by set_entry_at_path below.
+        std::string sanitized_agent = agent_id;
+        std::replace(sanitized_agent.begin(), sanitized_agent.end(), '/', '_');
+
+        // `conflict_path` itself may be slash-joined (MergeConflict::path's own documented shape) --
+        // split it so real directory levels become real nested Tree structure, mirroring the
+        // conflicting file's own original location under /conflicts, exactly like mount_write() does
+        // for an ordinary write.
+        std::vector<std::string> segments;
+        std::size_t start = 0;
+        for (;;) {
+            std::size_t const slash = conflict_path.find('/', start);
+            if (slash == std::string::npos) {
+                segments.push_back(conflict_path.substr(start) + "." + sanitized_agent);
+                break;
+            }
+            segments.push_back(conflict_path.substr(start, slash - start));
+            start = slash + 1;
+        }
+
+        auto new_root =
+            detail::set_entry_at_path(object_store, root_digest, segments, side.digest, side.is_tree);
+        if (!new_root) return std::unexpected(new_root.error());
+        root_digest = *new_root;
+        return {};
+    };
 
     for (MergeConflict const& c : conflicts) {
         if (c.ours.has_value()) {
-            std::string name        = c.path + "." + ours_agent_id;
-            entries_by_name[name]   = TreeEntry{name, c.ours->digest, c.ours->is_tree};
+            auto r = apply_one(c.path, ours_agent_id, *c.ours);
+            if (!r) return r;
         }
         if (c.theirs.has_value()) {
-            std::string name        = c.path + "." + branch.name;
-            entries_by_name[name]   = TreeEntry{name, c.theirs->digest, c.theirs->is_tree};
+            auto r = apply_one(c.path, branch.name, *c.theirs);
+            if (!r) return r;
         }
     }
 
-    std::vector<TreeEntry> entries;
-    entries.reserve(entries_by_name.size());
-    for (auto& [name, entry] : entries_by_name) entries.push_back(std::move(entry));
-
-    auto tree_digest = object_store.put_tree(Tree{std::move(entries)});
-    if (!tree_digest) return std::unexpected(tree_digest.error());
-
-    auto committed = commit_ref(ref_store, ref_name, *tree_digest);
+    auto committed = commit_ref(ref_store, ref_name, root_digest);
     if (!committed) return std::unexpected(committed.error());
     return {};
 }
@@ -1327,6 +1375,27 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
     }
 
     return commit_ref(ref_store, mount.ref_name, *new_root);
+}
+
+// ============================================================================================
+// `/conflicts` mount (025 §4: "the merge fails and is surfaced... the run's supervising agent or a
+// human resolves it") -- ADR-055 §6's own residual, closed here. Mirrors `memory.hpp`'s own
+// `memory_mount_id`/`memory_mount` split EXACTLY: this file only builds the guest-visible binding,
+// never a capability -- the same reason `memory_mount()` doesn't either (`Mount`'s own comment,
+// above: "constructed only by host policy," and a `Capability` is "only ever minted by
+// `CapabilitySet::grant_root`" -- two separate authorities, never fused into one function). WHICH
+// run/session's capability set actually gets a `cap::FsRead` for this `mount_id`, and WHEN (e.g.
+// only after a real `workflow_status::merge_conflict` outcome, vs. always present alongside `/work`)
+// stays a host policy decision this file does not make -- the identical scope ADR-055 §6 already
+// named, now answered with a real, reusable primitive instead of left unbuilt.
+// ============================================================================================
+
+[[nodiscard]] inline std::string conflicts_mount_id(std::string const& parent_ref_name) {
+    return "/conflicts/" + parent_ref_name;
+}
+
+[[nodiscard]] inline Mount conflicts_mount(std::string const& parent_ref_name) {
+    return Mount{conflicts_mount_id(parent_ref_name), conflicts_ref_name(parent_ref_name), ""};
 }
 
 } // namespace agentengine

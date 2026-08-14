@@ -18,6 +18,17 @@
 //         the first attempt's evidence survives, the second attempt's evidence is added alongside it,
 //         nothing is silently overwritten (unless the exact same <path>.<agent> key repeats).
 //   M6 -- an empty conflicts list is a no-op: no conflicts ref is created at all.
+//   M7 -- conflicts_mount_id()/conflicts_mount() (ADR-055's own /conflicts-mount amendment): the
+//         SAME parent always produces the same mount id/Mount; two different parents never collide.
+//   M8 -- end-to-end: real conflict evidence, read back through the ORDINARY mount_read() path (the
+//         same mechanism a human/supervising-agent host would use) -- proving 025 §4's "surfaced" is
+//         a genuinely reachable claim, not just a Ref that happens to exist with nothing to read it.
+//         Caught a real reachability bug in the process (fixed in the same pass, see worktree.hpp's
+//         own comment on materialize_merge_conflicts): a branch's own name routinely contains '/'
+//         (workflow executors), which the original flat-tree design baked verbatim into a single
+//         entry name mount_read()'s segment-walk could never reach.
+//   M9 -- a nested MergeConflict::path ("a/b/c.txt") becomes real nested Tree structure under
+//         /conflicts, mirroring the original file's own location, not a second flat-name bug.
 
 #include <iostream>
 #include <string>
@@ -49,6 +60,13 @@ Digest blob_of(InMemoryWorktreeObjectStore& store, std::string const& content) {
 
 Digest tree_of(InMemoryWorktreeObjectStore& store, std::vector<TreeEntry> entries) {
     return *store.put_tree(Tree{std::move(entries)});
+}
+
+std::string string_of(std::vector<std::byte> const& bytes) {
+    std::string s;
+    s.reserve(bytes.size());
+    for (auto b : bytes) s.push_back(static_cast<char>(b));
+    return s;
 }
 
 }  // namespace
@@ -106,13 +124,16 @@ int main() {
             TreeEntry const* theirs_entry = nullptr;
             for (auto const& e : tree->entries) {
                 if (e.name == "a.txt.planner") ours_entry = &e;
-                if (e.name == "a.txt.session:s-20/agents/writer") theirs_entry = &e;
+                // branch.name is "session:s-20/agents/writer" -- '/' is sanitized to '_' so the
+                // result stays a single, mount_read()-reachable leaf, never mistaken for a nested
+                // directory separator (the M8 reachability finding below).
+                if (e.name == "a.txt.session:s-20_agents_writer") theirs_entry = &e;
             }
             AE_CHECK(ours_entry != nullptr && ours_entry->digest == a_ours,
                      "M2: ours's content lands at <path>.<ours_agent_id>, the real content preserved");
             AE_CHECK(theirs_entry != nullptr && theirs_entry->digest == a_theirs,
-                     "M2: theirs's content lands at <path>.<branch's own name>, the real content "
-                     "preserved");
+                     "M2: theirs's content lands at <path>.<branch's own name, sanitized>, the real "
+                     "content preserved");
         }
 
         auto parent_reread = read_ref(ref_store, "session:s-20");
@@ -230,6 +251,96 @@ int main() {
         auto conflicts_ref = read_ref(ref_store, conflicts_ref_name("session:s-24"));
         AE_CHECK(conflicts_ref.has_value() && !conflicts_ref->has_value(),
                  "M6: no conflicts ref was ever created -- there was nothing to materialize");
+    }
+
+    // --- M7: conflicts_mount_id()/conflicts_mount() are deterministic and derived -------------------
+    {
+        AE_CHECK(conflicts_mount_id("session:s-30") == conflicts_mount_id("session:s-30"),
+                 "M7: the same parent name always produces the same mount id");
+        AE_CHECK(conflicts_mount_id("session:s-30") != conflicts_mount_id("session:s-31"),
+                 "M7: two different parents never collide on the same mount id");
+        Mount const m = conflicts_mount("session:s-30");
+        AE_CHECK(m.mount_id == conflicts_mount_id("session:s-30") &&
+                     m.ref_name == conflicts_ref_name("session:s-30") && m.subtree_path.empty(),
+                 "M7: the Mount binds the derived mount id to the derived conflicts ref, rooted at "
+                 "the ref's own root");
+    }
+
+    // --- M8: end-to-end -- real conflict evidence, read through the ORDINARY mount_read() path -----
+    {
+        InMemoryStore ref_store;
+        InMemoryWorktreeObjectStore obj_store;
+        SubWorktree branch;
+        branch.name = "session:s-32/agents/writer";
+
+        MergeConflict c;
+        c.path   = "a.txt";
+        c.ours   = TreeEntry{"a.txt", blob_of(obj_store, "ours-content"), false};
+        c.theirs = TreeEntry{"a.txt", blob_of(obj_store, "theirs-content"), false};
+
+        auto materialized =
+            materialize_merge_conflicts(obj_store, ref_store, "session:s-32", "planner", branch, {c});
+        AE_CHECK(materialized.has_value(), "M8 setup: real conflict evidence is materialized");
+
+        // The host builds the mount and grants read access -- exactly the two host-policy-owned
+        // steps neither conflicts_mount() nor anything else in this codebase performs automatically
+        // (mirroring memory_mount()'s own precedent: a primitive a host calls, never self-attaching).
+        Mount const mount = conflicts_mount("session:s-32");
+        cap::FsRead const granted{mount.mount_id, "", std::nullopt};
+
+        auto ours_bytes = mount_read(obj_store, ref_store, mount, granted, "a.txt.planner");
+        AE_CHECK(ours_bytes.has_value() && string_of(*ours_bytes) == "ours-content",
+                 "M8: ours's evidence is readable through the ordinary mount_read() path, byte-exact");
+
+        // branch.name's own '/' is sanitized to '_' by materialize_merge_conflicts() specifically so
+        // this stays a single reachable leaf, not a directory `mount_read()` would try to descend
+        // into -- an '/'-preserving guest path here would 404, not merely read the wrong thing.
+        auto theirs_bytes =
+            mount_read(obj_store, ref_store, mount, granted, "a.txt.session:s-32_agents_writer");
+        AE_CHECK(theirs_bytes.has_value() && string_of(*theirs_bytes) == "theirs-content",
+                 "M8: theirs's evidence is ALSO readable through the same mount -- both versions "
+                 "genuinely retained AND genuinely reachable, not just present in the store");
+
+        // A capability minted for a DIFFERENT mount_id is correctly refused -- the mount is not
+        // accidentally wide open to any FsRead grant that happens to pass by.
+        cap::FsRead const wrong_grant{"/some/other/mount", "", std::nullopt};
+        auto denied = mount_read(obj_store, ref_store, mount, wrong_grant, "a.txt.planner");
+        AE_CHECK(!denied.has_value() && denied.error().code == "worktree.mount_capability_mismatch",
+                 "M8: a capability minted for a different mount_id is rejected, not silently honored");
+    }
+
+    // --- M9: a NESTED conflict path (MergeConflict::path's own documented "a/b/c.txt" shape) --------
+    // --- becomes REAL nested Tree structure, mirroring the original file's own location, not a     --
+    // --- flat entry with an embedded '/'.                                                          ---
+    {
+        InMemoryStore ref_store;
+        InMemoryWorktreeObjectStore obj_store;
+        SubWorktree branch;
+        branch.name = "writer";
+
+        MergeConflict c;
+        c.path = "dir/sub/file.txt";
+        c.ours = TreeEntry{"file.txt", blob_of(obj_store, "nested-ours"), false};
+
+        auto materialized =
+            materialize_merge_conflicts(obj_store, ref_store, "session:s-33", "planner", branch, {c});
+        AE_CHECK(materialized.has_value(), "M9 setup: a nested-path conflict is materialized");
+
+        Mount const mount = conflicts_mount("session:s-33");
+        cap::FsRead const granted{mount.mount_id, "", std::nullopt};
+        auto bytes = mount_read(obj_store, ref_store, mount, granted, "dir/sub/file.txt.planner");
+        AE_CHECK(bytes.has_value() && string_of(*bytes) == "nested-ours",
+                 "M9: a nested conflict path is reachable via the SAME directory structure the "
+                 "original file had -- real nested Tree entries, not a flat name with '/' baked in");
+
+        auto conflicts_ref = read_ref(ref_store, conflicts_ref_name("session:s-33"));
+        if (conflicts_ref.has_value() && conflicts_ref->has_value()) {
+            auto root = obj_store.get_tree((*conflicts_ref)->tree_digest);
+            AE_CHECK(root.has_value() && root->entries.size() == 1 && root->entries[0].name == "dir" &&
+                          root->entries[0].is_tree,
+                     "M9: the conflicts ref's own ROOT has exactly one real subdirectory entry "
+                     "(\"dir\"), not a flat entry literally named \"dir/sub/file.txt.planner\"");
+        }
     }
 
     if (g_failures != 0) {

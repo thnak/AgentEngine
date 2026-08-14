@@ -119,9 +119,12 @@ Full suite: green (this pass), zero regressions.
 
 ## 6. What this ADR does not claim
 
-- **~~Does not build merge-on-join wiring itself.~~ [2026-08-14: CLOSED — see the Amendment below.]**
-- **Does not design the `/conflicts` mount's own host-policy wiring** — which run/session gets one, and
-  when, matches `Mount`'s own "constructed only by host policy" framing, a separate, later decision.
+- **~~Does not build merge-on-join wiring itself.~~ [2026-08-14: CLOSED — see the first Amendment
+  below.]**
+- **~~Does not design the `/conflicts` mount's own host-policy wiring~~ [2026-08-14: the MOUNT
+  CONSTRUCTION primitive is CLOSED — see the second Amendment below; WHICH run/session's capability
+  set actually gets granted access, and WHEN, remains a real host-policy decision this codebase still
+  does not make anywhere, unchanged.]**
 - **Does not solve retention/pruning for the accumulating conflicts Ref** — named explicitly in §4, not
   attempted.
 - **Does not change `merge_branch_into_parent()`'s own signature or behavior at all** — `test_worktree_
@@ -197,3 +200,68 @@ merge-on-join would need that ancestor re-supplied by a future checkpoint-schema
 and unchanged by this amendment); does not design the `/conflicts` mount's own host-policy wiring or
 retention/pruning (both still open, §6 above); does not change `merge_branch_into_parent()`'s own
 signature/behavior at all.
+
+## Amendment 2 (2026-08-14): the `/conflicts` mount, and a real reachability bug it caught
+
+**Status of this amendment: implemented and proven (§ below); awaiting the project owner's own
+explicit sign-off, separate from this ADR's original Judged verdict and the first Amendment above**
+(per this project's governance, `decisions/README.md`; `OpenQuestions.md` OQ-11).
+
+At the project owner's explicit direction, this ADR's own §6 residual — "does not design the
+`/conflicts` mount's own host-policy wiring" — is closed for the mount-CONSTRUCTION half: `conflicts_
+mount_id(parent_ref_name)`/`conflicts_mount(parent_ref_name)` (`core/worktree.hpp`, right after
+`mount_write()`) build a real, guest-visible `Mount` for a parent's own conflicts ref, mirroring
+`memory.hpp`'s own `memory_mount_id`/`memory_mount` split EXACTLY — a pure binding, never a
+capability, since `Mount`'s own comment already establishes both are "constructed only by host
+policy," two separate authorities this project never fuses into one function. WHICH run/session's
+capability set actually gets a `cap::FsRead` for this `mount_id`, and WHEN, stays a real host-policy
+decision — unchanged, the identical scope `memory_mount()` itself already leaves to its own callers.
+
+**A real, previously-undetected reachability bug, found by writing the FIRST test that ever read
+materialized conflict evidence back through the ordinary guest-facing `mount_read()` path** (nothing
+before this amendment did — M2's own checks introspected the object store directly via `get_tree()`,
+never through a `Mount`). `materialize_merge_conflicts()`'s original implementation built one FLAT,
+single-level `Tree` whose entry NAMES were the entire `"<path>.<agent>"` string, `/` and all. Two
+independent sources of `/` make this unreachable through `mount_read()`'s ordinary segment-by-segment
+walk:
+- `MergeConflict::path` is documented, and used elsewhere in this same file, as slash-joined for a
+  nested conflict ("a/b/c.txt") — any conflict below the merge root was already affected, independent
+  of anything else.
+- A workflow executor's own `SubWorktree::name` (the `branch.name` this function's own `theirs` side
+  uses as its identity) routinely contains `/` via `worktree_scoping.hpp`'s own `parent_ref_name +
+  "/agents/" + executor_id` convention — meaning `theirs`'s evidence for a workflow-driven merge
+  (exactly the case Amendment 1's own merge-on-join wiring produces) was silently unreachable through
+  `mount_read()` even for a perfectly ordinary, top-level file conflict.
+
+`materialize_merge_conflicts()` is fixed to build a REAL nested `Tree`, reusing this file's own
+`detail::set_entry_at_path()`/`detail::ensure_empty_tree()` (the identical mechanism `mount_write()`
+already uses for an ordinary write, forward-declared earlier in the file since they were originally
+defined later): `MergeConflict::path`'s own `/`-separated segments become real directory levels
+(mirroring the original file's own location under `/conflicts`), and the agent identifier (`ours_
+agent_id` or `branch.name`) has its own `/` sanitized to `_` before becoming the LEAF's suffix — an
+identifier is not itself a navigable path, and should never be mistaken for one.
+
+**Evidence**: `tests/test_worktree_conflict_evidence.cpp`, extended:
+- **M7** — `conflicts_mount_id()`/`conflicts_mount()` are deterministic and derived, mirroring M1's
+  own proof shape for `conflicts_ref_name()`.
+- **M8** — end to end: real conflict evidence (both `ours` and `theirs`, the latter's agent identity
+  containing `/`) is read back byte-exact through the ORDINARY `mount_read()` path — the actual
+  mechanism a human or supervising-agent host would use — and a capability minted for a different
+  `mount_id` is correctly refused. This is the check that caught the bug above: it failed on the
+  first implementation, not a hypothetical.
+- **M9** — a nested `MergeConflict::path` becomes real nested `Tree` structure, confirmed both by
+  reading it back through `mount_read()` and by inspecting the conflicts ref's own root directly (one
+  real subdirectory entry, never a flat entry literally named with an embedded `/`).
+
+`tests/test_rt_workflow_supervisor_merge_on_join.cpp`'s own J1-J3 (Amendment 1) re-verified passing
+unchanged — their own assertions only checked entry COUNTS, not exact names, so they were unaffected
+by the naming fix; re-run explicitly to confirm regardless.
+
+Full suite: green (this pass), zero regressions.
+
+**What this amendment does not claim**: does not decide which session/run's capability set gets
+`/conflicts` access, or when (named above, a real, separate host-policy decision); does not solve
+retention/pruning for the accumulating conflicts ref (§6, unchanged); does not change `mount_read()`/
+`mount_write()`/`set_entry_at_path()`'s own signatures or behavior — only `materialize_merge_
+conflicts()`'s internal tree-construction strategy changed, and its own external contract (inputs,
+success/failure semantics, "both versions retained") is identical to before this amendment.
