@@ -1,5 +1,7 @@
 import { SITE_BASE } from "../data/content";
 import { apiPages } from "../data/apiContent";
+import { useLang } from "../i18n/LanguageContext";
+import { ui } from "../i18n/ui";
 
 /** The API section's left rail: ONE unified list, "Overview" plus every part, shared by api.html
  * (the hub) and every /api/*.html detail page alike — the standard three-rail docs layout (Stripe/
@@ -8,11 +10,14 @@ import { apiPages } from "../data/apiContent";
  * right rail instead (see ApiToc). A horizontal pill strip stands in for this on narrow viewports
  * where there's no room for three columns. */
 export function ApiSidebar({ active }: { active?: string }) {
+  const { lang } = useLang();
+  const t = ui[lang];
+  const pages = apiPages[lang];
   return (
     <>
       <nav className="api-sidebar" aria-label="API reference">
         <div className="api-sidebar-group">
-          <span className="api-sidebar-label">API reference</span>
+          <span className="api-sidebar-label">{t.sidebarApiReference}</span>
           <ul className="api-sidebar-list">
             <li>
               <a
@@ -21,10 +26,10 @@ export function ApiSidebar({ active }: { active?: string }) {
                 aria-current={active === undefined ? "page" : undefined}
               >
                 <span className="api-sidebar-dot" aria-hidden="true" />
-                Overview
+                {t.sidebarOverview}
               </a>
             </li>
-            {apiPages.map((p) => (
+            {pages.map((p) => (
               <li key={p.id}>
                 <a
                   className="api-sidebar-link"
@@ -50,9 +55,9 @@ export function ApiSidebar({ active }: { active?: string }) {
             href={`${SITE_BASE}/api.html`}
             aria-current={active === undefined ? "page" : undefined}
           >
-            Overview
+            {t.sidebarOverview}
           </a>
-          {apiPages.map((p) => (
+          {pages.map((p) => (
             <a
               key={p.id}
               className="api-sidebar-mobile-link"

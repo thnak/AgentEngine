@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { useLang } from "../i18n/LanguageContext";
+import { ui } from "../i18n/ui";
 
 export interface ApiSidebarSection {
   id: string;
@@ -42,14 +44,16 @@ function useScrollSpy(ids: string[]): string | undefined {
  * position. Hidden below the three-rail breakpoint; there's no substitute UI on narrow viewports
  * — the browser's own in-page find/scroll takes over, same as those reference sites. */
 export function ApiToc({ sections }: { sections: ApiSidebarSection[] }) {
+  const { lang } = useLang();
+  const t = ui[lang];
   const ids = sections.map((s) => s.id);
   const activeId = useScrollSpy(ids);
 
   if (sections.length === 0) return null;
 
   return (
-    <nav className="api-toc" aria-label="On this page">
-      <span className="api-sidebar-label">On this page</span>
+    <nav className="api-toc" aria-label={t.tocOnThisPage}>
+      <span className="api-sidebar-label">{t.tocOnThisPage}</span>
       <ul className="api-toc-list">
         {sections.map((s) => (
           <li key={s.id}>

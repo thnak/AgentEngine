@@ -6,10 +6,11 @@ import { Invariants } from "./components/Invariants";
 import { Nav } from "./components/Nav";
 import { Pillars } from "./components/Pillars";
 import { SpecDriven } from "./components/SpecDriven";
+import { LanguageProvider } from "./i18n/LanguageContext";
 
 function App() {
   return (
-    <>
+    <LanguageProvider>
       <Nav />
       <main>
         <Hero />
@@ -20,7 +21,7 @@ function App() {
         <GettingStarted />
       </main>
       <Footer />
-    </>
+    </LanguageProvider>
   );
 }
 
