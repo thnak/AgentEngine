@@ -9,7 +9,7 @@ unedited except this header" convention):** two real-code events since this run 
 status. Neither was re-derived from scratch here — both are cross-checked against the actual ADRs
 that landed, matching this doc's own evidence discipline.
 
-**Update (2026-08-14, status only, same convention):** six real-code events and two design-only
+**Update (2026-08-14, status only, same convention):** eight real-code events and two design-only
 (no-code) events.
 
 - **Gap 3 (no generic JSON Schema validator) is CLOSED.**
@@ -133,6 +133,44 @@ that landed, matching this doc's own evidence discipline.
   `Internal_open`/`Internal_listdir` read branches is a mechanical pattern-match, not locally
   build/test-verified this session (`AGENTENGINE_BUILD_PYTHON_RUNNER=OFF` in this environment).
 
+- **Gap 17 (memory rendered identically regardless of provenance) is CLOSED.**
+  `decisions/ADR-046-memory-confidence-labels-and-system-message-separator.md` (Proposed) confirms
+  `MemoryProvider` rendered every item as bare `item.content` with no visible distinction between
+  `UserStated` and `ModelInferred`, even though 029 §3 calls `MemorySource` "a trust signal, not
+  decoration." Found and fixed this row's own named precondition first: `protocol/anthropic/
+  chat_client.hpp`'s `split_system_messages()` concatenated system-message text with ZERO separator
+  (confirmed directly in code — its own pre-existing test only "worked" via a fixture's incidental
+  leading space), which a bare label prefix would have made worse by bleeding into whatever text
+  followed it. Fixed both: a real `"\n\n"` separator between concatenated fragments, and a
+  provenance-derived confidence label prepended to every rendered item in BOTH places one reaches an
+  agent (default injection AND the `recall(query)` tool's reply — labeling only one path would have
+  left this row's own finding half-open). Also closed this row's own named forgery risk: `on_turn_
+  end()`'s `ModelInferred` extraction is itself model-generated text, so an item's content embedding
+  literal label text could impersonate a higher-trust item once concatenated — neutralized via a
+  marker-breaking transform applied before any real label is emitted, proven directly (the real
+  marker appears exactly once across two items' text, never twice, even against a hostile item whose
+  content contains the exact marker string). Does not touch `ContentItem::tainted`/`origin` (029 §6's
+  actual enforcement, unchanged) or gap #21's broader raw-`ContentItem::text` claim. Full suite green.
+- **Gap 18 (memory ranking additive, not the RFC's own product formula) is CLOSED.**
+  `decisions/ADR-047-memory-ranking-product-formula.md` (Proposed) confirms `rank_memory_items()`
+  computed `salience + keyword_overlap_score` — additive, and never using recency at all, contrary to
+  029 §5's literal "salience × recency × tag/keyword overlap." This row's own first-pass alternative
+  (a full commit-history scan per item) does not work against this codebase's real worktree model,
+  confirmed directly: a `Ref` carries no parent/history chain to scan. Fixed with a real, cheap
+  recency signal instead — `MemoryItem::write_seq`, stamped from the memory ref's own append-log
+  `SeqNo` (`rt::AppendLogStore::last_seq`, ADR-037) at write time, O(1), no scan. Self-red-team (before
+  any test ran, not caught by one) found a literal product over the RAW signals is actively broken
+  two ways this codebase genuinely hits: `keyword_overlap_score` is 0 on the ordinary turn (a raw
+  multiplicative 0 would zero out every item's score on most turns), and `MemoryProvider::on_turn_
+  end()` never sets `salience` on extracted items (a raw multiplicative salience factor would make
+  every such item permanently rank-zero) — both given small positive floors instead. A THIRD
+  self-red-team catch: an unnormalized raw `write_seq` used directly would eventually let mere
+  recency dominate the whole product regardless of relevance as the store grows — fixed by
+  normalizing against the current retrieval batch's own maximum, bounded to `[1,2]`. New test file
+  proves recency participates, is genuinely bounded (an old-but-far-more-salient item still beats a
+  barely-relevant newer one), and a zero-salience extracted item isn't structurally rank-zero. Every
+  pre-existing ranking-outcome assertion elsewhere in the suite re-verified unchanged under the new
+  formula. Full suite green.
 - **Gap 8 (naming-lint namespace bug) is CLOSED.** Its suggested title,
   `naming-lint-namespace-coverage-and-vocabulary-reconciliation`, matches
   `decisions/ADR-025-naming-lint-namespace-scope-and-027-vocabulary-diagram.md` (Judged) — confirmed
@@ -160,9 +198,9 @@ that landed, matching this doc's own evidence discipline.
   re-derives it from current code (`a2a/server.hpp`'s own comment: "no principal/authorization
   boundary in this transport-agnostic dispatcher yet") and names it as an explicit, not-yet-closed
   residual, not a silently dropped one.
-- **The other 12 gaps below were NOT re-verified this pass** (gaps 4 and 10 above were re-verified
+- **The other 10 gaps below were NOT re-verified this pass** (gaps 4 and 10 above were re-verified
   and designed against, but stay open — not counted as re-verified-and-closed like
-  2/3/8/11/12/15/16/21/23; gap 21 itself is only partially closed, and gap 5 is corrected+designed
+  2/3/8/11/12/15/16/17/18/21/23; gap 21 itself is only partially closed, and gap 5 is corrected+designed
   alongside gap 4 without being independently closed, see their own rows above). They still reflect
   the 2026-08-10
   snapshot. ADR-037 (Quark removal, 2026-08-13) touched large parts of the tree these gaps cite by
@@ -220,8 +258,8 @@ needs the full reasoning behind a specific line item below, not just the one-lin
 | 9 | 027's canonical name `UsageDetails` has drifted to `Usage` in code | Medium | needs_adr | A mechanical rename only works once 003 §6 and 004 (which normatively say `Usage`, not `UsageDetails`) are reconciled too — otherwise it trades one spec/code drift for another. |
 | 11 | Windows native-jail leaks curated host files via inherited AppContainer ACEs | Medium | ~~needs_adr~~ **[2026-08-14: CLOSED, ADR-041 Proposed]** | ~~The deny-only-SID fix is blocked pending an empirical spike: the proposed launch APIs (`CreateProcessAsUser`/`WithTokenW`) need privileges a standard non-admin deployment account likely doesn't hold.~~ — this blocker is a misattribution (that API isn't used anywhere in this codebase); the real fix (interpreter-level `open()` mediation as primary boundary) already shipped and is already Judged, and the leak's boundedness is already proven by an existing, passing test. |
 | 13 | Shell-dispatched registered Tools bypass the 006 §3 tool pipeline | Medium | needs_adr | Route shell tool calls through `bridge_tool_call` like Python's bridge already does — but fix a null-`tool_bridge` crash, stop collapsing capability/approval denials into continuable errors, and give `call_index` a real source. |
-| 17 | MemoryProvider renders ModelInferred and UserStated items identically | Medium | needs_adr | Add a confidence-label prefix — but must pair it with fixing Anthropic's zero-separator system-message concatenation (labels visually bleed together) and address a new label-forgery surface the fix itself introduces. |
-| 18 | Default memory ranking is additive, not salience×recency×keyword | Medium | needs_adr | Fix the formula to a literal product (sound) — but the proposed recency signal is non-monotonic on overwrite and adds a real O(item-count) traversal; use the Store's actual sequence number instead. |
+| 17 | MemoryProvider renders ModelInferred and UserStated items identically | Medium | ~~needs_adr~~ **[2026-08-14: CLOSED, ADR-046 Proposed]** | Confidence-label prefix shipped as recommended, paired with fixing Anthropic's zero-separator system-message concatenation first (confirmed real) — and the label-forgery surface the fix itself introduces is closed via a marker-neutralizing transform applied to retrieved content before any real label is emitted. |
+| 18 | Default memory ranking is additive, not salience×recency×keyword | Medium | ~~needs_adr~~ **[2026-08-14: CLOSED, ADR-047 Proposed]** | Fixed to a genuine product as recommended, using the Store's own actual SeqNo for recency (not a commit-history scan, confirmed unbuildable against this codebase's history-free `Ref` model) — but neither the product's raw factors nor an unnormalized raw SeqNo were usable directly; both needed non-degenerate transforms, self-red-teamed before any test ran. |
 | 20 | Cross-provider Reasoning-exclusion design (003 §8 Q2) never implemented | Medium | needs_adr | Wire `ChatClientId` provenance through — but a real production call site (`HistoryAndSkillsProvider`) was missed, and `FailoverChatClient`'s Primary-only identity would falsely flag ordinary failover as cross-provider. |
 | 21 | Content model never uses type-level `Tainted<T>` for text/structured fields | Medium | needs_adr **[2026-08-14: PARTIALLY CLOSED, ADR-042 Proposed — see gap 16]** | ~~Proposed accessors are additive and bypassable...~~ — ADR-042 gives `Tainted<T>` its first real field (`ContextContribution.instructions` only, needed by gap 16). The three named consumption boundaries (cli_chat.cpp, mcp/server.hpp, tool_bridge.hpp) still read raw `ContentItem` fields unchecked — this row's broader claim stays open, a full content-model migration is real, separately-scoped RFC-003-§2-level work. |
 | 22 | 014 §8 G3 (10³-seed scheduling shuffle test) never built, undisclosed | Medium | needs_adr | Write the missing test per the M6 breakdown's own already-designed architecture — but "the test exists" is falsely claimed in more than the two spots the architect named; all must be retracted together. |
@@ -246,7 +284,7 @@ All 23 confirmed gaps. Each carries a suggested title, but nearly all were indep
 - **Governance / documentation integrity:** `naming-lint-namespace-coverage-and-vocabulary-reconciliation` (8), `usage-usagedetails-canonical-name-reconciliation` (9), `milestone-status-doc-accuracy-and-drift-lint` (23)
 - **Sandbox / native-jail (highest consequence for I2):** `linux-native-jail-pivot-root-containment` (10), `windows-native-jail-appcontainer-token-hardening` (11), `shellrunner-fswrite-quota-gate-and-enforcement` (12), `shell-tool-dispatch-bridge-unification` (13)
 - **Session durability & content taint (I3/I4):** `agent-session-ack-durability-policy` (15), `context-instructions-taint-channel` (16), `content-item-taint-enforcement` (21)
-- **Memory subsystem:** `memory-confidence-labeling-and-system-message-separation` (17), `memory-ranking-recency-signal` (18)
+- **Memory subsystem:** ~~`memory-confidence-labeling-and-system-message-separation` (17)~~ **[2026-08-14: CLOSED, `decisions/ADR-046-memory-confidence-labels-and-system-message-separator.md`]**, ~~`memory-ranking-recency-signal` (18)~~ **[2026-08-14: CLOSED, `decisions/ADR-047-memory-ranking-product-formula.md`]**
 - **Model provider content fidelity:** `outbound-multimodal-capability-gate` (19, Phase 1 only — Phase 2 needs a second, later ADR once RFC 019's blob-store seam exists), `cross-provider-reasoning-exclusion` (20)
 
 ### What's deferred (named residuals, not silently dropped)
@@ -279,7 +317,7 @@ Pulled from the individual approaches — these are explicitly out-of-scope item
 
 5. ~~**Fix the durability/ack gap (15)**...~~ **DONE (2026-08-14, ADR-043).** The premise this item was scheduled behind was itself wrong — no Store type-erasure question needed resolving; the seam already existed as a deliberate `concept`.
 
-6. **Batch the remaining medium/low findings by subsystem** rather than one-by-one: of the original declarative-agent-surface group (2, 3, 4, 5, 6), only gap 6 remains fully open (2 and 3 closed; 4 designed; 5 rides on 4 landing as real code) — worth revisiting once gap 4's design is implemented, since gap 6's "full enforceability check" and gap 3's validator both feed it. The memory-subsystem group (17, 18) and the model-provider-fidelity group (19, 20) are each internally coupled the same way as this group originally was.
+6. **Batch the remaining medium/low findings by subsystem** rather than one-by-one: of the original declarative-agent-surface group (2, 3, 4, 5, 6), only gap 6 remains fully open (2 and 3 closed; 4 designed; 5 rides on 4 landing as real code) — worth revisiting once gap 4's design is implemented, since gap 6's "full enforceability check" and gap 3's validator both feed it. ~~The memory-subsystem group (17, 18)~~ **DONE (2026-08-14, ADR-046/ADR-047)** — both closed with real code, full suite green; only the model-provider-fidelity group (19, 20) remains as a coupled batch worth doing together.
 
 7. **Assign real ADR numbers before any of the above lands** — resolve the `ADR-025` collision across all 23 suggested titles by sequencing them (likely ADR-025 through ADR-047, in the priority order above) as part of scheduling this work, not as an afterthought at merge time.
 

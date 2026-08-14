@@ -129,8 +129,10 @@ int main() {
           "on_context() finds and ranks the stored memory item for this turn");
     if (injected.has_value() && !injected->messages.empty()) {
         Message const& m = injected->messages.front();
-        check(std::get<Text>(m.content.front().value).text == preference.content,
-              "the injected message is the relevant item ('dark mode'), by keyword overlap");
+        check(std::get<Text>(m.content.front().value).text.find(preference.content) != std::string::npos,
+              "the injected message is the relevant item ('dark mode'), by keyword overlap "
+              "(rendered text also carries a gap-17 confidence-label prefix ahead of the raw "
+              "content, hence a substring check rather than exact equality)");
         check(m.content.front().tainted && m.content.front().origin == content_origin::external,
               "injected memory is TAINTED external content (029 §6) -- never treated as a live "
               "user/system statement");

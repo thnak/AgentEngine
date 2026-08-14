@@ -184,9 +184,11 @@ int main() {
              "message count");
 
     AE_CHECK(!runs.empty() && !runs[0].messages.empty() &&
-                 text_of(runs[0].messages.front()) == tea.content,
+                 text_of(runs[0].messages.front()).find(tea.content) != std::string::npos,
              "setup sanity: the tea item, which overlaps the fixed turn's own text, actually ranks "
-             "first -- the determinism proof above isn't vacuous over an empty/unranked result");
+             "first -- the determinism proof above isn't vacuous over an empty/unranked result "
+             "(rendered text now also carries a gap-17 confidence-label prefix ahead of the raw "
+             "content, hence a substring check rather than exact equality)");
 
     AE_CHECK(summarizer.calls == 0,
              "H3-R2: across all " + std::to_string(kRepeats) + " retrieval calls, the declared "

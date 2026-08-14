@@ -98,10 +98,27 @@ int main() {
             text_message(role::system, " Be concise."),
         };
         SplitMessages split = split_system_messages(messages);
-        check(split.system_text == "You are a helpful assistant. Be concise.",
-              "E1-R1: multiple system messages concatenate, in order, into the top-level system text");
+        check(split.system_text == "You are a helpful assistant.\n\n Be concise.",
+              "E1-R1: multiple system messages concatenate, in order, into the top-level system "
+              "text, joined by a real separator (gap-audit finding 17) rather than running "
+              "directly together -- the original text's own leading space on the second fragment "
+              "is preserved untouched alongside it");
         check(split.rest.size() == 1 && split.rest[0]->role == role::user,
               "E1-R1: system messages are excluded from the remaining (translatable) message list");
+    }
+
+    // ---- E1: the separator actually prevents two fragments from reading as one continuous
+    // statement -- a case a bare concatenation would visibly mangle (029 §6/gap-audit finding 17) --
+    {
+        std::vector<Message> messages{
+            text_message(role::system, "the user prefers dark"),
+            text_message(role::system, "mode is not currently enabled"),
+        };
+        SplitMessages split = split_system_messages(messages);
+        check(split.system_text.find("dark\n\nmode") != std::string::npos,
+              "E1-R1b: a real separator sits between two independently-sourced system fragments -- "
+              "without it, \"...prefers dark\" + \"mode is not...\" would read as \"...prefers "
+              "darkmode is not...\", a real semantic corruption, not just a cosmetic one");
     }
 
     // ---- E1: role::tool has no Anthropic role -- translates to wire role "user" -------------------

@@ -130,7 +130,14 @@ using Resolver = std::function<result<sandbox::VerifiedEndpoint>(std::string_vie
 }
 
 // Splits `messages` into (system_text, non-system messages) -- see file banner (1). System text from
-// multiple role::system messages concatenates in order.
+// multiple role::system messages concatenates in order, joined by a real separator ("\n\n") between
+// any two non-empty fragments -- gap-audit finding 17: a bare concatenation left two independently-
+// sourced system texts (e.g. an agent's own instructions and an injected memory item, 029 §6) with no
+// boundary at all, so one fragment's trailing text and the next fragment's leading text could visually
+// (and, worse, to the model reading it) run together as if they were one continuous statement. The
+// separator is only inserted BETWEEN fragments (never as a leading/trailing pad), so a single system
+// message's own text is emitted byte-for-byte unchanged, preserving the one case this file's own
+// existing test already relied on a caller-supplied leading space for.
 struct SplitMessages {
     std::string system_text;
     std::vector<Message const*> rest;
@@ -138,10 +145,15 @@ struct SplitMessages {
 
 [[nodiscard]] inline SplitMessages split_system_messages(std::vector<Message> const& messages) {
     SplitMessages out;
+    auto append_fragment = [&out](std::string const& text) {
+        if (text.empty()) return;
+        if (!out.system_text.empty()) out.system_text += "\n\n";
+        out.system_text += text;
+    };
     for (Message const& m : messages) {
         if (m.role == role::system) {
             for (ContentItem const& item : m.content) {
-                if (auto const* t = std::get_if<Text>(&item.value)) out.system_text += t->text;
+                if (auto const* t = std::get_if<Text>(&item.value)) append_fragment(t->text);
             }
         } else {
             out.rest.push_back(&m);

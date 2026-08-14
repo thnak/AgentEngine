@@ -350,6 +350,17 @@ if(WIN32)
   add_test(NAME test_memory_retrieval_determinism COMMAND test_memory_retrieval_determinism)
 endif()
 
+# ---- ADR-047 (docs/planning/2026-08-10-full-codebase-adr-gap-audit.md gap 18) -----------------
+# Proves the real product ranking formula (salience x recency x keyword) directly against
+# memory_rank_score() -- recency actually participates, is bounded (not an unbounded raw SeqNo),
+# and a zero-salience freshly-extracted item is not permanently rank-zero.
+if(WIN32)
+  add_executable(test_memory_ranking_formula test_memory_ranking_formula.cpp)
+  target_link_libraries(test_memory_ranking_formula PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_memory_ranking_formula COMMAND test_memory_ranking_formula)
+endif()
+
 # ---- CapabilitySet enforcement mechanism (decisions/ADR-009-capability-set-enforcement-mechanism.md) --
 # Header-only (trust/capability.hpp), core-tier -- links only agentengine::core.
 add_executable(test_capability_enforcement test_capability_enforcement.cpp)

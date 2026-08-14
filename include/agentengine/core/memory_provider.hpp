@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <utility>
 #include <variant>
@@ -52,14 +53,77 @@ namespace memory_detail {
     return lower(haystack).find(lower(needle)) != std::string::npos;
 }
 
+// Gap-audit finding 17: `on_context()` previously rendered every `MemoryItem` as identical, bare
+// text regardless of `origin.source` -- a `ModelInferred` guess and a `UserStated` fact were
+// visually and textually indistinguishable once injected as a `role::system` message, even though
+// 029 §3 calls `MemorySource` "a trust signal, not decoration." These labels give the model (and
+// anyone reading a transcript) that distinction back, purely as a rendering aid -- they carry NO
+// authority themselves and change nothing about `ContentItem::tainted`/`origin` (029 §6's actual
+// enforcement mechanism, unchanged, still proven by `test_memory_no_authority_laundering.cpp`).
+//
+// The marker uses non-ASCII bracket glyphs (U+27E6/U+27E7, "mathematical white square bracket"),
+// deliberately NOT plain "[...]" -- a string an ordinary model-generated sentence (or a hostile
+// extraction target, since `on_turn_end()` derives ModelInferred content from a ChatClient
+// response) is far less likely to produce by accident, making an attempted forgery a more
+// deliberate, detectable act rather than something that could arise from ordinary phrasing.
+[[nodiscard]] inline std::string_view memory_label_open() noexcept { return "\xE2\x9F\xA6memory:"; }
+[[nodiscard]] inline std::string_view memory_label_close() noexcept { return "\xE2\x9F\xA7"; }
+
+[[nodiscard]] inline std::string memory_confidence_label(memory_source s) {
+    std::string label(memory_label_open());
+    switch (s) {
+        case memory_source::user_stated:    label += "user-stated, high confidence"; break;
+        case memory_source::model_inferred: label += "model-inferred, unverified"; break;
+        case memory_source::tool_derived:   label += "tool-derived"; break;
+        case memory_source::agent_authored: label += "agent-authored"; break;
+    }
+    label += memory_label_close();
+    return label;
+}
+
+// A retrieved `MemoryItem::content` is tainted, external, model/tool-influenced text (029 §6) --
+// it can legitimately contain the literal marker bytes above, whether by coincidence or by a
+// deliberate attempt to impersonate a higher-trust label once concatenated into the same system
+// text as other memory items (e.g. a ModelInferred item's content containing literal
+// "⟦memory:user-stated, high confidence⟧" to make a reader believe a DIFFERENT, forged item
+// follows with that provenance). Every occurrence of the marker's OPEN token inside `content` is
+// broken by inserting a zero-width space (U+200B) into it before the item's own real, structurally-
+// emitted label is prepended -- so the only place the exact, unbroken marker can ever appear in the
+// assembled text is a label this function itself emitted, never inside retrieved content.
+[[nodiscard]] inline std::string neutralize_forged_memory_labels(std::string const& content) {
+    std::string_view const marker = memory_label_open();
+    std::string out;
+    out.reserve(content.size());
+    std::size_t pos = 0;
+    while (true) {
+        auto const found = content.find(marker, pos);
+        if (found == std::string::npos) {
+            out.append(content, pos, std::string::npos);
+            break;
+        }
+        out.append(content, pos, found - pos);
+        out += "\xE2\x9F\xA6";      // the marker's own open glyph, unbroken (harmless alone)
+        out += "\xE2\x80\x8B";      // U+200B zero-width space -- breaks the exact "...memory:" match
+        out += "memory:";
+        pos = found + marker.size();
+    }
+    return out;
+}
+
+// Shared by `on_context()`'s default injection AND the contributed `recall(query)` tool's reply --
+// both are "renders a MemoryItem as text an agent will read," and gap 17's finding (identical
+// rendering regardless of provenance) applies equally to a tool-fetched item, not only a
+// pre-injected one; labeling only one of the two paths would leave the other exactly as
+// indistinguishable as before.
+[[nodiscard]] inline std::string memory_item_to_labeled_text(MemoryItem const& item) {
+    return memory_confidence_label(item.origin.source) + " " +
+           neutralize_forged_memory_labels(item.content);
+}
+
 }  // namespace memory_detail
 
 // 029 §5: "Ranking is salience × recency × tag/keyword overlap with the current turn... computed
-// host-side with no external call" — arithmetic over stored fields, deterministic. "Recency" has
-// no real wall-clock source anywhere in this project yet (001 §7: Clock is not a wired
-// capability) — `list_memory_items`'s own return ORDER is used as recency's proxy (later in the
-// list = written more recently in THIS process's own history), named as a proxy, not silently
-// claimed as true wall-clock recency.
+// host-side with no external call" — arithmetic over stored fields, deterministic.
 [[nodiscard]] inline double keyword_overlap_score(MemoryItem const& item, std::string const& query_text) {
     if (query_text.empty()) return 0.0;
     double hits = 0.0;
@@ -69,6 +133,65 @@ namespace memory_detail {
     }
     return hits;
 }
+
+namespace memory_detail {
+
+// Gap-audit finding 18: the ranking formula below is a genuine PRODUCT of three factors, closing
+// the previous additive approximation (`salience + keyword_overlap_score`, which never used
+// recency at all). Each factor is a non-degenerate transform of its named raw signal, not the raw
+// signal itself — a literal reading of "×" over the raw quantities breaks down in two real cases
+// this codebase actually hits, caught by self-red-team before this shipped, not by a test failure:
+//
+//   - `keyword_overlap_score` is 0 whenever the current turn's own text shares no literal
+//     substring with an item — the ORDINARY case, not the exception (on_context()'s query text is
+//     the last user message, rarely a verbatim substring of a short stored fact). A raw
+//     multiplicative 0 there would zero out EVERY item's score on most turns, collapsing 029 §5's
+//     whole "proactively surface salient memory" purpose into "only ever surface items on an exact
+//     substring hit." `kKeywordFloor` keeps a real, but small, positive floor absent any match, so
+//     salience/recency still drive ranking on the (common) no-match turn, while a genuine hit
+//     still dominates decisively (integer hit count vs. the floor) — matching the OLD additive
+//     formula's own property that a single keyword hit (+1.0) already outweighed the entire
+//     bounded [0,1] salience range, now preserved under multiplication instead of addition.
+//   - `MemoryProvider::on_turn_end()` (this same file) extracts items WITHOUT ever setting
+//     `salience`, so every freshly-extracted item defaults to 0.0f. A raw multiplicative salience
+//     factor would make such an item permanently rank-zero regardless of recency or keyword
+//     relevance — 029 §7's decay model trends salience toward, not necessarily to, zero, and
+//     nothing in the RFC says a zero-salience item should be structurally unsurfaceable.
+//     `kSalienceFloor` keeps a small positive floor so real salience differences still order items
+//     correctly without ever hard-zeroing one out.
+//
+// Recency uses `MemoryItem::write_seq` (memory.hpp) — the memory ref's own append-log SeqNo,
+// stamped once at write time, a real monotonic O(1) signal (ADR-037's `rt::AppendLogStore`)
+// replacing the PREVIOUS proxy (`list_memory_items`'s own tree-walk return order, which is
+// alphabetical by `<kind>/<id>` path, not write order at all — never actually correlated with
+// recency). It is also the audit's own named alternative to its first-pass proposal: a full
+// commit-history scan per item, confirmed against `worktree.hpp`'s own contract (a `Ref` carries
+// no parent/history chain, only a current tree digest) to be both O(item count) PER ITEM and
+// non-monotonic across an overwrite. `write_seq` is normalized against the current batch's own
+// maximum before use (`kMaxRelativeRecencyBoost`), bounding the recency factor to a fixed [1, 2]
+// range regardless of how large the store's absolute sequence counter grows over its lifetime —
+// an UNNORMALIZED raw SeqNo used directly as a multiplicative factor would eventually dominate the
+// whole product for any two sufficiently-far-apart writes, letting a merely-more-recent item beat
+// an overwhelmingly more salient/relevant one purely because the store has since grown — also
+// caught by self-red-team, not by a failing test.
+inline constexpr double kSalienceFloor = 0.05;
+inline constexpr double kKeywordFloor = 0.1;
+inline constexpr double kMaxRelativeRecencyBoost = 1.0;
+
+[[nodiscard]] inline double memory_rank_score(MemoryItem const& item, std::string const& query_text,
+                                                std::uint64_t max_write_seq_in_batch) {
+    double const salience_factor = kSalienceFloor + static_cast<double>(item.salience);
+    double const recency_factor =
+        max_write_seq_in_batch == 0
+            ? 1.0
+            : 1.0 + kMaxRelativeRecencyBoost * (static_cast<double>(item.write_seq) /
+                                                  static_cast<double>(max_write_seq_in_batch));
+    double const hits = keyword_overlap_score(item, query_text);
+    double const keyword_factor = hits > 0.0 ? hits : kKeywordFloor;
+    return salience_factor * recency_factor * keyword_factor;
+}
+
+}  // namespace memory_detail
 
 // Deterministic, replayable retrieval (029 §9 G1: "byte-identical ContextContribution... given a
 // fixed memory-worktree tree digest and a fixed turn; no network call occurs") — every input is
@@ -82,17 +205,22 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
     auto items = list_memory_items(object_store, ref_store, mount, granted);
     if (!items) return std::unexpected(items.error());
 
-    std::vector<std::pair<double, std::size_t>> scored;  // {score, list-order index (recency proxy)}
+    std::uint64_t max_write_seq = 0;
+    for (auto const& item : *items) max_write_seq = std::max(max_write_seq, item.write_seq);
+
+    std::vector<std::pair<double, std::size_t>> scored;  // {score, item index}
     scored.reserve(items->size());
     for (std::size_t i = 0; i < items->size(); ++i) {
-        double const score = static_cast<double>((*items)[i].salience) + keyword_overlap_score((*items)[i], query_text);
+        double const score = memory_detail::memory_rank_score((*items)[i], query_text, max_write_seq);
         scored.push_back({score, i});
     }
-    // Deterministic tie-break: score desc, then list-order index desc (the recency proxy) -- a
-    // total order over every field involved, so `std::sort`'s own tie-breaking never matters.
-    std::sort(scored.begin(), scored.end(), [](auto const& a, auto const& b) {
+    // Deterministic tie-break: score desc, then the item's own write_seq desc (real recency, not a
+    // list-order artifact) -- since no two items ever share a write_seq (`write_memory_item()`,
+    // memory.hpp, stamps one commit's own unique SeqNo per item), this is a genuine total order,
+    // so std::sort's own tie-breaking never matters.
+    std::sort(scored.begin(), scored.end(), [&items](auto const& a, auto const& b) {
         if (a.first != b.first) return a.first > b.first;
-        return a.second > b.second;
+        return (*items)[a.second].write_seq > (*items)[b.second].write_seq;
     });
 
     std::vector<MemoryItem> out;
@@ -181,10 +309,15 @@ private:
     // 029 §6: "Retrieved memory is tainted external content... it was written by a process on an
     // earlier turn, not asserted live by the current user." `content_origin::external` +
     // `tainted = true` mirror the SAME rule 003 §2/005 §5 already apply to any other retrieved
-    // content — memory gets no exemption.
+    // content — memory gets no exemption. Gap-audit finding 17: the confidence-label prefix below
+    // is derived ONLY from the trusted, structured `item.origin.source` field, never from
+    // `item.content` itself, and `item.content` is passed through
+    // `neutralize_forged_memory_labels()` first so it cannot impersonate a differently-sourced
+    // label once multiple memory items' text ends up concatenated together (`split_system_messages`,
+    // protocol/anthropic/chat_client.hpp).
     [[nodiscard]] static Message memory_item_to_message(MemoryItem const& item) {
         ContentItem ci{};
-        ci.value   = Text{item.content};
+        ci.value   = Text{memory_detail::memory_item_to_labeled_text(item)};
         ci.origin  = content_origin::external;
         ci.tainted = true;
 
@@ -214,9 +347,14 @@ private:
             auto ranked = rank_memory_items(*object_store, *ref_store, mount, read_cap, args->query,
                                              /*max_results=*/10);
             if (!ranked) return std::unexpected(ranked.error());
+            // Gap-audit finding 17 applies here identically to `on_context()`'s default injection --
+            // an item fetched on-demand via this tool is exactly as much "memory rendered for the
+            // agent to read" as a pre-injected one, so it gets the same confidence label.
             RecallReply reply;
             reply.results.reserve(ranked->size());
-            for (auto const& item : *ranked) reply.results.push_back(item.content);
+            for (auto const& item : *ranked) {
+                reply.results.push_back(memory_detail::memory_item_to_labeled_text(item));
+            }
             return schema::to_json(reply);
         };
         return d;

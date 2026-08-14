@@ -10,6 +10,7 @@
 // unmodified, exactly the "new caller using the owner-string genericity M3 already built"
 // framing the M4 breakdown doc's own decision for this phase names.
 
+#include <cstdint>
 #include <optional>
 #include <span>
 #include <string>
@@ -43,6 +44,14 @@ struct MemoryItem {  // ae-naming-lint: allow MemoryItem — pre-existing M0 sca
     float                     salience = 0.0f;
     MemoryOrigin              origin;
     std::optional<std::string> expires_at;  // ISO-8601; elided Timestamp type
+    // Gap-audit finding 18: stamped by `write_memory_item()` from the memory ref's own append-log
+    // SeqNo (`rt::AppendLogStore::last_seq`, ADR-037) at the moment this item's write durably
+    // commits — a real, monotonic, O(1)-to-read total order over every write to this principal's
+    // memory worktree, used by `rank_memory_items()` (memory_provider.hpp) as the "recency" term
+    // in 029 §5's ranking formula. 0 for any record written before this field existed (JSON decode
+    // default, see `memory_item_from_json`) — `rank_memory_items()` treats an all-zero batch as
+    // "no recency signal available" rather than dividing by zero or silently misranking it.
+    std::uint64_t              write_seq = 0;
 };
 
 // ================================================================================================
@@ -186,6 +195,7 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
     obj.emplace_back("origin_principal_tenant_id", json::Value::make_string(item.origin.principal.tenant_id));
     obj.emplace_back("expires_at", item.expires_at ? json::Value::make_string(*item.expires_at)
                                                      : json::Value::make_null());
+    obj.emplace_back("write_seq", json::Value::make_number(static_cast<double>(item.write_seq)));
     return json::Value::make_object(std::move(obj));
 }
 
@@ -251,6 +261,12 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
         item.expires_at = expires->as_string();
     }
 
+    // Absent on any record written before this field existed -- defaults to 0, this field's own
+    // "no recency signal available" convention (see its doc comment on `MemoryItem` above).
+    if (auto const* seq = v.find("write_seq"); seq != nullptr && seq->is_number()) {
+        item.write_seq = static_cast<std::uint64_t>(seq->as_number());
+    }
+
     return item;
 }
 
@@ -268,6 +284,17 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
     auto digest = compute_digest(content_bytes);
     if (!digest) return std::unexpected(digest.error());
     item.id = *digest;
+
+    // Gap-audit finding 18: `write_seq` is PREDICTED, not read back after the fact -- `mount_write`
+    // below performs exactly one `commit_ref` internally (worktree.hpp), which is the NEXT append
+    // to this ref's own log, so reading the current tail here and adding 1 gives that upcoming
+    // commit's own SeqNo without a second round-trip (and second commit) to correct it afterward,
+    // which would double this function's write cost. Named residual: this assumes no OTHER writer
+    // commits to the SAME ref between this read and `mount_write`'s own commit below -- true for
+    // every caller in this codebase today (one principal's memory worktree, written sequentially by
+    // that principal's own turn loop), not a structurally enforced guarantee against a future
+    // concurrent writer to the same principal's memory.
+    item.write_seq = ref_store.last_seq(ref_log_id(mount.ref_name)) + 1;
 
     std::string const record = json::dump(memory_item_to_json(item));
     auto record_bytes = std::as_bytes(std::span{record.data(), record.size()});
