@@ -305,6 +305,16 @@ export const runtimeEntries: ApiEntry[] = [
     href: gh("include/agentengine/rt/agent_session.hpp"),
   },
   {
+    id: "context-providers",
+    status: "real",
+    tag: "ContextProvider · assemble_context() · ComposedContextProvider<Ms...>",
+    title: "Context providers — everything that builds the request before the model sees it",
+    body:
+      "Every turn, AgentSession builds a SessionContext{session_id, principal, history} and hands it to whatever occupies its single HistoryProviderT slot: any type conforming to ContextProvider, i.e. on_context(SessionContext&, EffectContext&) -> task<result<ContextContribution>> plus on_turn_end(TurnView, EffectContext&) -> task<std::monostate>. ContextContribution mirrors MAF's AIContext shape deliberately — instructions, messages, AND tools (a provider can contribute a real, invokable tool, e.g. MemoryProvider's recall(query), not just text). Real conformers: HistoryProvider<Window<N>> / HistoryProvider<Summarize<N,SummarizerT>> (005 §4 compaction), SkillsProvider (009 §8), MemoryProvider (029). Multiple providers compose through assemble_context() — N ordered ContextProviderDescriptors, each with its own declared token budget, oldest-messages-dropped-first on overflow, every drop recorded. One deliberate, judged divergence from MAF (OQ-18, 2026-08-11): assemble_context runs contributors as independent fan-out, never a sequential pipeline — each provider sees only SessionContext, never a prior provider's already-merged output, because this codebase has no per-message provenance stamp for a later provider to react to safely. To get more than one contributor into AgentSession's one provider slot, wrap them: HistoryAndSkillsProvider<H,S> for exactly two (skills-advertisement-before-history is the proven wire order), or the generic ComposedContextProvider<Ms...> for any N, both real ContextProvider conformers themselves that call assemble_context internally. The combined ContextContribution folds straight into ChatRequest{messages, tools}; on_turn_end then fires with a TurnView of exactly this turn's added messages, the seam MemoryProvider's write path uses to extract and persist a MemoryItem via a declared ChatClient.",
+    cite: "include/agentengine/core/context_assembly.hpp",
+    href: gh("include/agentengine/core/context_assembly.hpp"),
+  },
+  {
     id: "session-scoped-stateful-tools",
     status: "real",
     tag: "make_tool_descriptor_with_invoke<ToolT>(InvokeFn)",

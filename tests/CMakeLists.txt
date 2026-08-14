@@ -237,6 +237,14 @@ add_executable(test_context_assembly test_context_assembly.cpp)
 target_link_libraries(test_context_assembly PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_context_assembly COMMAND test_context_assembly)
 
+# ---- ComposedContextProvider<Ms...> (core/composed_context_provider.hpp) -- generalizes
+# history_and_skills_provider.hpp's fixed two-provider HistoryAndSkillsProvider<H,S> to an arbitrary
+# Ms... pack via the SAME assemble_context() B3 already proved, and wires it into rt::AgentSession's
+# single provider template slot end to end (N == 3 providers, deliberately > 2).
+add_executable(test_composed_context_provider test_composed_context_provider.cpp)
+target_link_libraries(test_composed_context_provider PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_composed_context_provider COMMAND test_composed_context_provider)
+
 # ---- Skills (009 §8), Phase 1: SKILL.md parser (§8a) -- pure text-in/value-out, no VFS dependency --
 add_executable(test_skill_parser test_skill_parser.cpp)
 target_link_libraries(test_skill_parser PRIVATE agentengine::core agentengine_warnings)
