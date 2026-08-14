@@ -1,11 +1,11 @@
 # ADR-055 — Conflict evidence materialization at `/conflicts/<path>.<agent>`
 
-**Status:** Proposed (2026-08-14). Designed (inherited from
+**Status:** Judged (2026-08-14, project owner sign-off). Designed (inherited from
 `docs/planning/conflict-evidence-materialization-design-draft.md`'s own already-self-red-teamed
 sketch, unchanged except one field-naming correction found while implementing it — see §2),
-implemented, and proven (real code + tests, §4); awaiting the project owner's explicit "Judged"
-sign-off per this project's governance (`decisions/README.md`; `OpenQuestions.md` OQ-11 — only the
-project owner marks an ADR "Judged").
+implemented, and proven (real code + tests, §4). Re-verified at sign-off review:
+`tests/test_worktree_conflict_evidence.cpp` (M1-M6) still passes in full, unchanged since commit
+`51083eb`.
 
 **Relates to:** `docs/planning/2026-08-10-full-codebase-adr-gap-audit.md` gap #14 (the finding this ADR
 closes). `docs/planning/conflict-evidence-materialization-design-draft.md` (the design this implements).

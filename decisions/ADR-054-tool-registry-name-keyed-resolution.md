@@ -1,10 +1,10 @@
 # ADR-054 — `ToolRegistry`, a host-curated name-keyed tool resolution seam
 
-**Status:** Proposed (2026-08-14). Designed (inherited from
+**Status:** Judged (2026-08-14, project owner sign-off). Designed (inherited from
 `docs/planning/tool-capability-registry-design-draft.md`'s own already-self-red-teamed sketch),
-implemented, and proven (real code + tests, §4); awaiting the project owner's explicit "Judged"
-sign-off per this project's governance (`decisions/README.md`; `OpenQuestions.md` OQ-11 — only the
-project owner marks an ADR "Judged").
+implemented, and proven (real code + tests, §4). Re-verified at sign-off review:
+`tests/test_tool_registry.cpp` (T1-T8) and `tests/test_agent_yaml_compiler.cpp` (F-6) both still pass
+in full, unchanged since commit `51083eb`.
 
 **Relates to:** `docs/planning/2026-08-10-full-codebase-adr-gap-audit.md` gap #4 (the finding this ADR
 closes) and gap #5's name-keyed `ToolTable`-construction half, which this ADR also closes as a direct

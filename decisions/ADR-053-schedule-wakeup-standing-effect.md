@@ -1,10 +1,10 @@
 # ADR-053 — `schedule_wakeup`, the third real `StandingEffect` producer
 
-**Status:** Proposed (2026-08-14). Designed (inherited from
+**Status:** Judged (2026-08-14, project owner sign-off). Designed (inherited from
 `docs/planning/schedule-wakeup-standing-effect-design-draft.md`'s own already-red-teamed sketch, this
-ADR's §2 corrects one part of it against real code), implemented, and proven (real code + tests, §4);
-awaiting the project owner's explicit "Judged" sign-off per this project's governance
-(`decisions/README.md`; `OpenQuestions.md` OQ-11 — only the project owner marks an ADR "Judged").
+ADR's §2 corrects one part of it against real code), implemented, and proven (real code + tests, §4).
+Re-verified at sign-off review: `tests/test_rt_agent_session_schedule_wakeup.cpp` still passes in full
+(S1-S6), unchanged since commit `51083eb`.
 
 **Relates to:** `docs/planning/2026-08-10-full-codebase-adr-gap-audit.md` gap #7 (the finding this ADR
 closes). `docs/planning/schedule-wakeup-standing-effect-design-draft.md` (the design this implements,
