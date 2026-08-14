@@ -549,17 +549,18 @@ button {
 
 /* ---------- Spec-driven ---------- */
 
+/* Width-driven, not viewport-driven: a flat "stack under 900px viewport" rule looks right on the
+ * homepage's full-width .container but is wrong inside the docs three-rail layout, where
+ * .api-content's own column is already 400-600px narrower than the viewport (260px sidebar +
+ * 220px TOC + gaps/padding) -- that made this stack on ordinary desktop widths (e.g. a 1440px
+ * window) even though .api-content had plenty of room for two columns. auto-fit/minmax reads the
+ * column's OWN available width instead, so it collapses only when the space genuinely doesn't fit
+ * two ~320px columns, in either context, with no separate media query needed. */
 .spec-layout {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
   gap: 56px;
   align-items: start;
-}
-
-@media (max-width: 900px) {
-  .spec-layout {
-    grid-template-columns: 1fr;
-  }
 }
 
 .spec-flow {
