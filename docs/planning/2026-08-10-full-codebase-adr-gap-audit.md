@@ -9,7 +9,7 @@ unedited except this header" convention):** two real-code events since this run 
 status. Neither was re-derived from scratch here — both are cross-checked against the actual ADRs
 that landed, matching this doc's own evidence discipline.
 
-**Update (2026-08-14, status only, same convention):** thirteen real-code events and two design-only
+**Update (2026-08-14, status only, same convention):** thirteen real-code events and four design-only
 (no-code) events.
 
 - **Gap 3 (no generic JSON Schema validator) is CLOSED.**
@@ -231,6 +231,37 @@ that landed, matching this doc's own evidence discipline.
   200-seed subset) so the positive 1000-seed pass is a demonstrated real check, not a vacuous one.
   One `WorkflowSupervisor` built once, re-run sequentially across every seed, matching the M6 doc's
   own machine-safety design. Full suite green (~19s added, an accepted, already-anticipated cost).
+- **Gap 7 (`schedule_wakeup` has no real `StandingEffect` producer) is DESIGNED, not implemented —
+  deliberately, matching this pass's own gap-4/gap-10 precedent, and it turned out to be a bigger
+  gap than the row itself assumed.**
+  `docs/planning/schedule-wakeup-standing-effect-design-draft.md` confirms the audit's own recommended
+  approach ("give it a real producer, enforce `Schedule<max_horizon>`, name the missing
+  `ReminderService`-access seam") assumed a working underlying mechanism (Quark's `ReminderService`)
+  that ADR-037 has since removed entirely — `rt::AgentSession`'s own top comment already says so, and
+  a targeted survey of every file under `include/agentengine/rt/` confirms `rt::` has ZERO timer/
+  delay/scheduled-callback primitive anywhere today. Designs `fire_at` on `StandingEffect`, a
+  `Schedule<max_horizon_ms>` CRTP policy tag (closing the "currently unbounded" I2 concern
+  structurally, not conventionally), and a host-polled `due_standing_effects(now)` introspection
+  seam — deliberately NOT a self-firing background timer, which self-red-team found would reintroduce
+  the exact "ambient, engine-owned background activity" shape ADR-037 removed, plus a real
+  use-after-free class ADR-035's own middleware finding already caught once. Not built: this is real,
+  substantial new infrastructure (`rt::`'s first timer primitive), scoped as design-only per this
+  session's own established precedent for work this size.
+- **Gap 14 (025 §4 conflict-surfacing unimplemented) is DESIGNED, not implemented — deliberately,
+  and it too turned out to be a bigger gap than the row itself assumed.**
+  `docs/planning/conflict-evidence-materialization-design-draft.md` confirms `merge_branch_into_
+  parent()`'s existing "never touches the parent Ref on failure" invariant is already safe (re-
+  verified directly) — the audit's own worry describes a risk for a NAIVE future fix, not a bug that
+  exists now. What re-grounding additionally found: `merge_branch_into_parent()` has ZERO production
+  call sites anywhere (`workflow/worktree_scoping.hpp`'s own comment already discloses merge-on-join
+  isn't wired at all yet), and there is no "session root tree" `/conflicts` could live under — every
+  real mount in this codebase points at its own independent Ref, confirmed against `memory.hpp`/
+  `skill_provider.hpp`/`worktree_scoping.hpp`'s own mount-construction code. Designs a
+  `conflicts_ref_name(...)` helper modeled directly on `memory_ref_name(Principal const&)`'s own
+  pattern, and a `materialize_merge_conflicts(...)` function called by the (not-yet-existing)
+  merge-on-join caller — closing the audit's own "misattributes ours/theirs" note by requiring the
+  parent-side identity as an explicit, required caller parameter, never inferred. Not built: the real
+  precondition (merge-on-join wiring itself) doesn't exist yet either, scoped as design-only.
 - **Gap 8 (naming-lint namespace bug) is CLOSED.** Its suggested title,
   `naming-lint-namespace-coverage-and-vocabulary-reconciliation`, matches
   `decisions/ADR-025-naming-lint-namespace-scope-and-027-vocabulary-diagram.md` (Judged) — confirmed
@@ -258,18 +289,22 @@ that landed, matching this doc's own evidence discipline.
   re-derives it from current code (`a2a/server.hpp`'s own comment: "no principal/authorization
   boundary in this transport-agnostic dispatcher yet") and names it as an explicit, not-yet-closed
   residual, not a silently dropped one.
-- **The other 5 gaps below were NOT re-verified this pass** (gaps 4 and 10 above were re-verified
-  and designed against, but stay open — not counted as re-verified-and-closed like
-  2/3/8/9/11/12/13/15/16/17/18/19/20/21/22/23; gap 21 itself is only partially closed, and gap 5 is
-  corrected+designed alongside gap 4 without being independently closed, see their own rows above).
-  They still reflect the 2026-08-10
-  snapshot. ADR-037 (Quark removal, 2026-08-13) touched large parts of the tree these gaps cite by
-  file:line — the underlying LOGIC most of these findings describe (capability/taint/sandbox/memory
-  behavior) is independent of the actor-engine substrate ADR-037 replaced, so the findings themselves
-  are not expected to have been invalidated by it, but exact file:line citations in the full per-gap
-  transcripts may no longer resolve to the same lines, or even the same file (e.g. anything under the
-  old `core/agent_session.hpp`, deleted by ADR-037, now lives under `rt/agent_session.hpp`). Re-verify
-  citations before acting on any of the remaining 21, don't assume they still resolve as written.
+- **Every one of the original 23 findings has now been re-verified against current code at least
+  once.** Closed-and-real-code: 2/3/8/9/11/12/13/15/16/17/18/19/20/22/23 (15 gaps; gap 21 only
+  partially). Designed, not implemented (deliberately, matching this pass's own scoping
+  discipline for work too large or too precondition-blocked for a single pass): 4/6/7/10/14 (gap 6
+  corrected+riding on gap 4 rather than independently designed; gap 5 corrected+designed alongside
+  gap 4). Redirected: 1 (ADR-039 supersedes its own recommended approach). ADR-037 (Quark removal,
+  2026-08-13) touched large parts of the tree these findings originally cited by file:line — the
+  underlying LOGIC most of them describe (capability/taint/sandbox/memory behavior) was independent
+  of the actor-engine substrate ADR-037 replaced, so re-verifying each one against current code (done
+  now, for all 23) mostly confirmed the findings themselves rather than invalidating them; where a
+  citation had drifted (e.g. anything under the old `core/agent_session.hpp`, deleted by ADR-037, now
+  living under `rt/agent_session.hpp`) or a claimed blocker turned out to be stale/wrong, each closing
+  ADR or design draft above names the correction directly rather than silently re-deriving it. The two
+  still-design-only items (7, 14) and the one still-blocked item (6) are the only rows this document's
+  own findings don't yet have real code behind — each names its own real precondition, not a stale
+  citation, as the reason.
 
 Produced by a 5-stage multi-agent workflow: 9 discovery agents swept the codebase by
 milestone/RFC cluster plus a dedicated ADR-conformance sweep and a roadmap-claims-vs-reality
@@ -314,7 +349,7 @@ needs the full reasoning behind a specific line item below, not just the one-lin
 | 3 | No generic JSON Schema 2020-12 validator | Medium | ~~needs_adr~~ **[2026-08-14: CLOSED, ADR-045 Proposed]** | Built `core/json_schema_validator.hpp` with a scoped keyword subset/budgets as recommended — but NOT wired to `invoke_tool()` (native tools already have stronger type-directed checking; the real consumer is the not-yet-built non-native tool-invocation path, gap #4) and NOT an "outbound client-side strict check" (011 §13 Q3 already resolved that's never meant to be a hard reject). Regex-DoS closed by never implementing `pattern`/regex at all — no existing bug, since this codebase has zero `std::regex` usage anywhere; `$ref`-cycle budget real and tested. |
 | 4 | No tool/capability name-keyed registry | Medium | needs_adr **[2026-08-14: DESIGNED, not implemented]** | ~~The submitted proposal was placeholder text with no real content...~~ — `docs/planning/tool-capability-registry-design-draft.md` reuses `ChatClientRegistry`'s shape + `check_capability_ceiling()`'s validation pattern rather than inventing from scratch; resolves I2/I3/squatting as designed, self-red-teamed. Not built (no Linux-style blocker here — just scoped as document-only per project-owner direction). |
 | 5 | ToolTable has zero runtime construction API (name-keyed half) | Medium | needs_adr **[2026-08-14: corrected + designed, not implemented]** | ~~ToolTable has zero runtime construction API~~ was already stale before this pass — the descriptor-keyed half (`from_descriptors()`) landed 2026-08-10; only the name-keyed half was ever really open. The gap-4 design draft's own §2/§3 explicitly checked and preserved the exact nullptr-vs-supplied-registry distinction this row warned about, so the currently-passing 015 §2 worked-example test stays green under the new design. |
-| 7 | M7 Phase G gate 006 §6b G6 (`schedule_wakeup`) is unprovable as written | Medium | needs_adr | Give `schedule_wakeup` a real `StandingEffect` producer — but must enforce `Schedule<max_horizon>` at arm time (currently unbounded, a live I2 gap) and name the missing `ReminderService`-access seam. |
+| 7 | M7 Phase G gate 006 §6b G6 (`schedule_wakeup`) is unprovable as written | Medium | needs_adr **[2026-08-14: DESIGNED, not implemented — see planning doc below]** | ~~Give schedule_wakeup a real StandingEffect producer... enforce Schedule<max_horizon>... name the missing ReminderService-access seam.~~ — bigger than assumed: ADR-037 removed the underlying `ReminderService` mechanism entirely, confirmed `rt::` has ZERO timer primitive of any kind today; `docs/planning/schedule-wakeup-standing-effect-design-draft.md` designs `fire_at`/`Schedule<max_horizon_ms>`/a host-polled `due_standing_effects()` seam instead of a self-firing timer (rejected: would reintroduce the exact ambient-background-activity shape ADR-037 removed). Not built: `rt::`'s first real timer primitive, genuinely substantial new infrastructure. |
 | 9 | 027's canonical name `UsageDetails` has drifted to `Usage` in code | Medium | ~~needs_adr~~ **[2026-08-14: CLOSED, ADR-050 Proposed]** | ~~A mechanical rename only works once 003 §6 and 004... are reconciled too~~ — they already are, in the CODE's favor: both normatively say `Usage`, confirmed directly, so 027's own table row was corrected instead (one row, no code renamed) — the drift ran the opposite direction from this row's own framing. |
 | 11 | Windows native-jail leaks curated host files via inherited AppContainer ACEs | Medium | ~~needs_adr~~ **[2026-08-14: CLOSED, ADR-041 Proposed]** | ~~The deny-only-SID fix is blocked pending an empirical spike: the proposed launch APIs (`CreateProcessAsUser`/`WithTokenW`) need privileges a standard non-admin deployment account likely doesn't hold.~~ — this blocker is a misattribution (that API isn't used anywhere in this codebase); the real fix (interpreter-level `open()` mediation as primary boundary) already shipped and is already Judged, and the leak's boundedness is already proven by an existing, passing test. |
 | 13 | Shell-dispatched registered Tools bypass the 006 §3 tool pipeline | Medium | ~~needs_adr~~ **[2026-08-14: CLOSED, ADR-052 Proposed]** | ~~Route shell tool calls through bridge_tool_call... fix a null-tool_bridge crash, stop collapsing capability/approval denials... give call_index a real source.~~ — none of that code exists to fix: the bypass lives entirely in `shell_dispatch.cpp`, a confirmed-unreachable spike (`RegisteredTool`'s own comment already discloses it's a test stub, not a real pipeline), and the REAL shell path dispatches no Tools by name at all yet. Closed via warning comments at the two places a future real integration would look, not by building unscoped new dispatch machinery. |
@@ -324,7 +359,7 @@ needs the full reasoning behind a specific line item below, not just the one-lin
 | 21 | Content model never uses type-level `Tainted<T>` for text/structured fields | Medium | needs_adr **[2026-08-14: PARTIALLY CLOSED, ADR-042 Proposed — see gap 16]** | ~~Proposed accessors are additive and bypassable...~~ — ADR-042 gives `Tainted<T>` its first real field (`ContextContribution.instructions` only, needed by gap 16). The three named consumption boundaries (cli_chat.cpp, mcp/server.hpp, tool_bridge.hpp) still read raw `ContentItem` fields unchecked — this row's broader claim stays open, a full content-model migration is real, separately-scoped RFC-003-§2-level work. |
 | 22 | 014 §8 G3 (10³-seed scheduling shuffle test) never built, undisclosed | Medium | ~~needs_adr~~ **[2026-08-14: CLOSED, ADR-051 Proposed]** | Written per the M6 breakdown's own already-designed architecture, as recommended (one Engine, 1000 seeds, re-run sequentially) — no shipped doc anywhere was found to actually claim this test existed (the audit's own "falsely claimed" framing describes its own internal architect/red-team exchange, not this repository), but a real, narrower, related documentation gap WAS found and fixed: the M6 breakdown's own Phase J completion section silently dropped G3 between "delivered" and "explicitly deferred" rather than naming it in either. |
 | 6 | `output_schema $ref` never resolved by the declarative compiler | Low | needs_adr **[2026-08-14: re-verified, still open — see priority note below]** | Add an opt-in `SchemaRefResolver` — but must extract the *full* enforceability check (not half), reuse ~~`worktree.hpp`'s~~ **`worktree_mount_fs.hpp`'s** (this row's own citation was wrong — `worktree.hpp` has no path-validation logic) tested path validator for Windows-safe traversal checks, and not overstate unbuilt digest/signing infrastructure as a safety net. |
-| 14 | 025 §4 conflict-surfacing (`/conflicts/<path>.<agent>`) unimplemented | Low | needs_adr | Materializing evidence into the parent Ref via `commit_ref` directly contradicts an already-passing test ("parent Ref unchanged on failed merge") and misattributes ours/theirs — needs a different storage location and a real committer-identity source. |
+| 14 | 025 §4 conflict-surfacing (`/conflicts/<path>.<agent>`) unimplemented | Low | needs_adr **[2026-08-14: DESIGNED, not implemented — see planning doc below]** | Confirmed the cited "already-passing test" concern is real to guard against, not an existing bug — `merge_branch_into_parent()` already never touches the parent Ref on failure. Bigger than assumed: that function has ZERO production call sites (merge-on-join itself isn't wired anywhere yet, confirmed against `worktree_scoping.hpp`'s own comment), and there is no session-root tree for `/conflicts` to live under — every real mount is its own independent Ref. `docs/planning/conflict-evidence-materialization-design-draft.md` designs a `conflicts_ref_name(...)` helper (modeled on `memory_ref_name`) and a separate `materialize_merge_conflicts()` call, with the parent-side committer identity as a required explicit parameter, never inferred. Not built: the real precondition (merge-on-join wiring) doesn't exist yet either. |
 
 ---
 
@@ -377,7 +412,7 @@ Pulled from the individual approaches — these are explicitly out-of-scope item
 
 5. ~~**Fix the durability/ack gap (15)**...~~ **DONE (2026-08-14, ADR-043).** The premise this item was scheduled behind was itself wrong — no Store type-erasure question needed resolving; the seam already existed as a deliberate `concept`.
 
-6. **Batch the remaining medium/low findings by subsystem** rather than one-by-one: of the original declarative-agent-surface group (2, 3, 4, 5, 6), only gap 6 remains fully open (2 and 3 closed; 4 designed; 5 rides on 4 landing as real code) — worth revisiting once gap 4's design is implemented, since gap 6's "full enforceability check" and gap 3's validator both feed it. ~~The memory-subsystem group (17, 18)~~ **DONE (2026-08-14, ADR-046/ADR-047)** — both closed with real code, full suite green. ~~The model-provider-fidelity group (19, 20)~~ **DONE (2026-08-14, ADR-048/ADR-049)** — both closed with real code, full suite green. ~~Gaps 9, 13, and 22~~ **DONE (2026-08-14, ADR-050/ADR-051/ADR-052)** — each turned out, on re-grounding, to be a documentation/scope correction rather than the live bug its own row implied (9: 027's table was the drifted party, not the code; 13: the bypass is confirmed-unreachable spike code; 22: the test's own absence was undisclosed, now built for real). Every originally-identified subsystem batch is now either closed or (gap 6) blocked on a named, separate precondition; what remains is two genuinely independent items with no natural batching (7, 14).
+6. **Batch the remaining medium/low findings by subsystem** rather than one-by-one: of the original declarative-agent-surface group (2, 3, 4, 5, 6), only gap 6 remains fully open (2 and 3 closed; 4 designed; 5 rides on 4 landing as real code) — worth revisiting once gap 4's design is implemented, since gap 6's "full enforceability check" and gap 3's validator both feed it. ~~The memory-subsystem group (17, 18)~~ **DONE (2026-08-14, ADR-046/ADR-047)** — both closed with real code, full suite green. ~~The model-provider-fidelity group (19, 20)~~ **DONE (2026-08-14, ADR-048/ADR-049)** — both closed with real code, full suite green. ~~Gaps 9, 13, and 22~~ **DONE (2026-08-14, ADR-050/ADR-051/ADR-052)** — each turned out, on re-grounding, to be a documentation/scope correction rather than the live bug its own row implied (9: 027's table was the drifted party, not the code; 13: the bypass is confirmed-unreachable spike code; 22: the test's own absence was undisclosed, now built for real). ~~Every originally-identified subsystem batch is now either closed or (gap 6) blocked on a named, separate precondition; what remains is two genuinely independent items with no natural batching (7, 14).~~ **DONE (2026-08-14)** — gaps 7 and 14 are each DESIGNED (not implemented, deliberately: both turned out, on re-grounding, to depend on a real precondition that doesn't exist yet either — 7 needs `rt::`'s first-ever timer primitive since ADR-037 removed the mechanism the audit assumed still worked; 14 needs merge-on-join wiring that was never built in the first place). Every one of the 23 original findings has now been re-verified against current code and either closed with real code, redirected, or designed with its own real blocking precondition named — none remain unexamined.
 
 7. **Assign real ADR numbers before any of the above lands** — resolve the `ADR-025` collision across all 23 suggested titles by sequencing them (likely ADR-025 through ADR-047, in the priority order above) as part of scheduling this work, not as an afterthought at merge time.
 
