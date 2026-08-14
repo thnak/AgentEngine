@@ -19,8 +19,8 @@ export interface ApiPage {
 }
 
 // The API section's own page system: one hub (api.html) plus one detail page per part, all
-// sharing ApiSubNav for cross-navigation. Order here is the order they appear in both the hub
-// grid and the sub-nav strip.
+// sharing ApiDetailLayout's ApiSidebar for cross-navigation. Order here is the order they appear
+// in both the hub grid and the sidebar list.
 export const apiPages: ApiPage[] = [
   {
     id: "agent",
