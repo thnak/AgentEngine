@@ -106,6 +106,28 @@ export interface ApiEntry {
   href: string;
 }
 
+// ---- Agent page: illustrated walkthrough data -----------------------------------------------
+
+export interface RegisterAgentStep {
+  index: string;
+  title: string;
+  body: string;
+}
+
+// register_agent<A>()'s real, ordered compiler::run() checks (agent_registry.hpp), narrated
+// honestly: some are real enforcement today, some are always-pass stubs waiting on machinery
+// (a per-deployment backend registry, a per-tool sandbox policy tag) that doesn't exist yet.
+export const registerAgentSteps: RegisterAgentStep[] = [
+  { index: "1", title: "chat_client_id", body: "ChatClientId<Id> has no default -- undeclared fails closed with agent.chat_client_id_missing before anything else runs." },
+  { index: "2", title: "chat_client_id credentials", body: "Real only when a ChatClientRegistry is passed to register_agent<A>() -- agent.chat_client_id_unregistered. Not evaluated at all otherwise, an honest gap, not a silent pass." },
+  { index: "3", title: "tool_name_collision", body: "Every name across the agent's declared Tools<Ts...> must be unique -- agent.tool_name_collision." },
+  { index: "4", title: "capability_ceiling", body: "Every tool's OWN declared capabilities must be covered by the agent's own ceiling -- agent.capability_ceiling_exceeded." },
+  { index: "5", title: "sandbox_profile + tool_sandbox_profile_compatibility", body: "Both ALWAYS-PASS stubs today. The first needs a per-deployment backend registry that doesn't exist yet (SandboxProfile<Strict>'s own resolution logic is real and tested on its own -- see the Trust & Sandbox page -- just not wired to this check). The second needs a per-tool sandbox policy tag Tool<...> has no analog of yet." },
+  { index: "6", title: "output_schema_enforceable", body: "Real when OutputSchema<T> is declared AND a registry is passed -- compiles the schema and checks enforceability against the bound chat client's own real capabilities." },
+  { index: "7", title: "handoff_cycle", body: "An always-pass stub. Milestone 6 shipped a real 014 workflow graph, but this check was never wired to it -- open work, named honestly rather than silently assumed complete." },
+  { index: "8", title: "stateless_session_state", body: "Real: when Stateless<N> is declared, checked against std::is_empty_v<Derived> -- agent.stateless_session_state." },
+];
+
 export const authoringEntries: ApiEntry[] = [
   {
     id: "agent-crtp",
