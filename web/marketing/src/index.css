@@ -661,6 +661,186 @@ button {
   color: var(--accent-teal);
 }
 
+/* ---------- Flow diagrams (API reference detail pages) ---------- */
+
+.flow {
+  display: flex;
+  flex-direction: column;
+  padding: 22px;
+}
+
+.flow-node {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--panel);
+  padding: 14px 18px;
+}
+
+.flow-node-title {
+  font-family: var(--font-mono);
+  font-size: 0.86rem;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.flow-node-sub {
+  margin-top: 4px;
+  font-size: 0.82rem;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+
+.flow-node.is-purple {
+  border-color: var(--accent-purple);
+}
+
+.flow-node.is-teal {
+  border-color: var(--accent-teal);
+}
+
+.flow-node.is-pink {
+  border-color: var(--accent-pink);
+}
+
+.flow-arrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0 6px 4px;
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  color: var(--text-faint);
+}
+
+.flow-arrow::before {
+  content: "\2193";
+  color: var(--text-faint);
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.flow-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 14px;
+}
+
+.flow-branch {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+@media (max-width: 640px) {
+  .flow-branch {
+    grid-template-columns: 1fr;
+  }
+}
+
+.flow-branch-label {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 8px;
+}
+
+.flow-branch-label.is-yes {
+  color: var(--accent-teal);
+}
+
+.flow-branch-label.is-no {
+  color: var(--accent-pink);
+}
+
+.flow-loop-note {
+  margin-top: 14px;
+  padding: 10px 16px;
+  border-radius: var(--radius-sm);
+  border: 1px dashed var(--border-strong);
+  font-size: 0.78rem;
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  line-height: 1.6;
+}
+
+/* ---------- Onion diagrams (nested before/after decorator chains) ---------- */
+
+.onion-layer {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 16px;
+  background: var(--panel);
+}
+
+.onion-label {
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  color: var(--accent-purple);
+}
+
+.onion-label.after {
+  color: var(--accent-teal);
+  margin-top: 12px;
+}
+
+.onion-core {
+  margin-top: 14px;
+  padding: 14px;
+  border-radius: var(--radius-sm);
+  background: var(--panel-strong);
+  border: 1px dashed var(--border-strong);
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--text);
+  text-align: center;
+}
+
+/* ---------- Two-column compare (before/after a design change) ---------- */
+
+.compare-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+}
+
+@media (max-width: 640px) {
+  .compare-cols {
+    grid-template-columns: 1fr;
+  }
+}
+
+.compare-col {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 16px 18px;
+  background: var(--panel);
+}
+
+.compare-col.is-before {
+  border-color: var(--accent-pink);
+}
+
+.compare-col.is-after {
+  border-color: var(--accent-teal);
+}
+
+.compare-col-label {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 10px;
+}
+
+.compare-col.is-before .compare-col-label {
+  color: var(--accent-pink);
+}
+
+.compare-col.is-after .compare-col-label {
+  color: var(--accent-teal);
+}
+
 /* ---------- Getting Started ---------- */
 
 .gs-cmd {

@@ -356,6 +356,151 @@ export const runtimeEntries: ApiEntry[] = [
   },
 ];
 
+// ---- Runtime page: illustrated walkthrough data (diagrams, worked examples) ---------------------
+// Everything below backs the illustrated sections in components/ApiRuntimeReference.tsx. Same rule
+// as this file's own top comment: every step/snippet is grounded in real code, cited.
+
+export interface RuntimeLoopStep {
+  index: string;
+  title: string;
+  body: string;
+}
+
+// One start_run() call resolves a WHOLE multi-round tool conversation internally (ADR-027) -- this
+// is that loop's own real control flow, agent_session.hpp's run_rounds(), narrated step by step.
+export const runtimeTurnLoopSteps: RuntimeLoopStep[] = [
+  {
+    index: "01",
+    title: "A caller sends ONE message",
+    body: "start_run(StartRun{input, caller}) — a single Message, e.g. “what's the weather in Boston?”. Everything after this is internal to that one call; the caller does not drive a loop of their own.",
+  },
+  {
+    index: "02",
+    title: "Admission check",
+    body: "If a caller identity was passed, principal_admitted_for() checks it against the session's own principal — before anything else runs, including before the ChatClient is ever reached. A mismatch fails closed with run.admission_denied.",
+  },
+  {
+    index: "03",
+    title: "Build the request",
+    body: "SessionContext{session_id, principal, history} goes to whatever ContextProvider occupies the session's provider slot; its on_context() returns a ContextContribution{instructions, messages, tools} which folds into ChatRequest{messages, tools}. See the Context providers section below for exactly how that step works.",
+  },
+  {
+    index: "04",
+    title: "Call the model",
+    body: "The ChatRequest goes to ChatClientT (or a ModelCallGateway/MiddlewareModelCallGateway wrapping one) — a real network call to Anthropic/OpenAI, or a deterministic replay. The response is one Message plus real token Usage.",
+  },
+  {
+    index: "05",
+    title: "Did the model ask for tool calls?",
+    body: "tool_calls_of(response.message) — a text_derived call (reconstructed from plain text rather than a real vendor field) is denied by the declassification gate regardless of the target tool's own approval_mode; that's the confused-deputy case ADR-023 closed.",
+  },
+];
+
+export const runtimeConvergeStep: RuntimeLoopStep = {
+  index: "NO",
+  title: "Converge",
+  body: "The response is appended to history() as-is. start_run() returns AgentResponse{message, usage} to the caller. This one exchange is now durably part of the session's own conversation.",
+};
+
+export const runtimeToolRoundStep: RuntimeLoopStep = {
+  index: "YES",
+  title: "Run a tool round",
+  body: "Each call is capability/approval-checked and invoked through the real 006 §3 pipeline (invoke_tool()); a denied call never invokes. Results fold back into history() as a tool-results message, and the loop returns to step 03 with the tool outcomes now part of the conversation the next model call sees.",
+};
+
+export const composedProviderExampleSnippet = `// core/composed_context_provider.hpp -- N real ContextProviders in AgentSession's ONE provider slot
+using Providers = ComposedContextProvider<HistoryProvider<Window<0>>,   // 1st: recent conversation
+                                           SkillsProvider,               // 2nd: mounted-skill adverts
+                                           MemoryProvider>;              // 3rd: recall(query) tool
+
+using Session = agentengine::rt::AgentSession<AnthropicChatClient<InMemorySecretStore>,
+                                               NoSessionState, Providers>;
+
+Session session;
+session.initialize("s-1", Principal{"p-1", ""});
+session.emplace_chat_client(secret_store);
+// Providers{} default-constructs all three -- every ContextProvider here IS default-constructible,
+// the same constraint AgentSession's plain value-member provider slot always required
+// (history_and_skills_provider.hpp's own file-top comment).
+
+// Every turn, all 3 run independently (fan-out, never a pipeline -- OQ-18) and their
+// ContextContributions concatenate in DECLARED order: history's survivors, then skills'
+// advertisement, then memory's recalled notes + its recall(query) tool.`;
+
+export const approvalExampleSnippet = `// examples/05_human_approval.cpp (trimmed) -- ADR-029
+struct SendMessageTool
+    : Tool<SendMessageTool, Capabilities<>, EffectClass<effect_class::pure>,
+           Approval<approval_mode::always_require>> {
+    static constexpr std::string_view name = "send_message";
+    static result<Reply> invoke(Args, EffectContext&) { /* ... sends it ... */ }
+};
+
+Session session;
+session.set_suspend_for_approval(true);   // no decider configured -> genuinely suspend, don't hang
+
+auto r1 = drive(session.start_run(StartRun{user_message("Message the team we're shipping.")}));
+// r1 has NO value -- start_run() fails closed. send_message was NOT invoked. A real Interaction
+// is open: session.has_open_interactions() == true.
+
+// ... later, once a human actually looks at it (a CLI prompt, a web console) ...
+std::string const id = session.open_interactions().front().interaction_id;
+auto r2 = drive(session.resolve_interaction(ResolveInteraction{id, /*approved=*/true, std::nullopt}));
+// r2 converges: send_message's invoke() ran for real, through the ordinary capability-checked
+// pipeline -- and it's still the SAME run_id as r1, never a new run (I4).`;
+
+export const middlewareExampleSnippet = `// Shape matches include/agentengine/core/middleware.hpp + tests/test_middleware_model_call_gateway.cpp
+struct LoggingMiddleware {
+    static constexpr std::string_view name = "logging";     // 002 §5: attribution needs a real name
+    ae::task<std::monostate> after_model(ModelCallContext& c) {
+        if (c.response) std::fprintf(stderr, "[logging] model replied\\n");
+        co_return std::monostate{};
+    }
+};
+
+struct BudgetGuardMiddleware {
+    static constexpr std::string_view name = "budget_guard";
+    ae::task<std::monostate> before_model(ModelCallContext& c) {
+        if (over_budget()) c.failure = ae::error{ae::failure_class::policy, "over budget",
+                                                   "demo.over_budget"};   // real backend never called
+        co_return std::monostate{};
+    }
+};
+
+// Registration order 0 == OUTERMOST: LoggingMiddleware's before_model runs first, after_model last.
+using Gateway = ModelCallGateway<AnthropicChatClient<InMemorySecretStore>>;      // retry + breaker
+using Guarded = MiddlewareModelCallGateway<Gateway, LoggingMiddleware, BudgetGuardMiddleware>;
+Guarded gateway{Gateway{live_client, {}}, LoggingMiddleware{}, BudgetGuardMiddleware{}};`;
+
+export const chatClientSwapSnippet = `// All three satisfy the SAME ChatClient concept (004 §1):
+//   { capabilities() }        -> ChatClientCapabilities
+//   { chat_stream(req, ctx) } -> stream<ChatResponseUpdate>
+AnthropicChatClient<InMemorySecretStore> live{secret_store};    // protocol/anthropic/chat_client.hpp
+OpenAIChatClient<InMemorySecretStore>    live2{secret_store};   // protocol/openai/chat_client.hpp
+ReplayChatClient                         replayed{recorded_run};// core/replay_chat_client.hpp -- I5
+
+// Swap any of these into AgentSession's first template slot -- nothing else in agent code changes:
+using Session = agentengine::rt::AgentSession<AnthropicChatClient<InMemorySecretStore>>;
+using ReplaySession = agentengine::rt::AgentSession<ReplayChatClient>;   // deterministic, offline`;
+
+export const statefulToolExampleSnippet = `// core/tool_pipeline.hpp -- make_tool_descriptor_with_invoke<ToolT>()
+class CounterHistoryProvider {
+public:
+    int counter = 0;   // session-scoped state -- one instance per AgentSession, not a process global
+
+    ToolDescriptor tool_descriptor() {
+        return make_tool_descriptor_with_invoke<CounterTool>(
+            [this](CounterArgs args, EffectContext&) -> result<CounterReply> {
+                counter += args.delta;             // closes over THIS session's own state
+                return CounterReply{counter};
+            });
+    }
+    // ... on_context()/on_turn_end() as any other ContextProvider ...
+};
+// captures_session_state = true is set automatically -- background_task() refuses to background
+// this descriptor outright: a detached thread holding a reference into session state, unsynchronized
+// against fork_from()/clear_in_process_state(), is a real dangling-reference hazard, closed
+// structurally rather than left as a documented-only rule (ADR-030).`;
+
 export const pluginEntries: ApiEntry[] = [
   {
     id: "wasm-plugin-abi",
