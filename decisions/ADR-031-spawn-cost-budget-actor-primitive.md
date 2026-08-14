@@ -1,10 +1,20 @@
 # ADR-031 — `SpawnCostBudgetActor`: the actor-serialized spawn-cost pool primitive
 
-**Status:** Proposed (2026-08-11). Designed (inherited from `026-Agent-Facing-Runtime-Surface.md`
-§9 Q1's own already-red-teamed sketch — see below), implemented, and proven (real code +
-deterministic + real-concurrency tests, §4); awaiting the project owner's explicit "Judged"
-sign-off per this project's governance (`decisions/README.md`; `OpenQuestions.md` OQ-11's
-resolution that the project owner is the ADR judge).
+**Status:** Judged (2026-08-14, project owner sign-off). Designed (inherited from `026-Agent-
+Facing-Runtime-Surface.md` §9 Q1's own already-red-teamed sketch — see below), implemented, and
+proven (real code + deterministic + real-concurrency tests, §4).
+
+**Update (2026-08-14, at sign-off review — behavioral claims unaffected, code location corrected):**
+`decisions/ADR-037-remove-quark-as-core-runtime.md` (executed 2026-08-13, three days after this ADR
+landed) removed Quark entirely — the `quark::Actor<SpawnCostBudgetActor, quark::Sequential>` type
+§2/§6 describe below no longer exists. It was ported to `include/agentengine/rt/spawn_cost_
+budget.hpp` as `agentengine::rt::SpawnCostBudget`, re-expressed over `rt::AsyncMutex` instead of
+Quark's `Sequential` dispatch — that file's own top comment states directly this is "unchanged
+here, just re-expressed." Re-verified at sign-off: `tests/test_rt_spawn_cost_budget.cpp` (the
+ported T1/T2 claims below) passes in full, including T2's real-concurrency double-spend proof. §2
+and §6 below are kept as written (the historical record of what was actually designed/reviewed) —
+read `Actor<..., Sequential>`/`trust/spawn_cost_budget.hpp` as historical, current code lives at
+the path named in this note.
 
 **Relates to:** `decisions/ADR-006-agent-spawn-depth-budget-bound.md` (the depth half of the same
 "depth and budget bounds" question — this ADR is the cost half, deliberately kept a SEPARATE type

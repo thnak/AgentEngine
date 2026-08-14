@@ -1,10 +1,12 @@
 # ADR-039 — Inbound transport: host-pluggable protocol handlers, not a first-party listener
 
-**Status:** Proposed (2026-08-13). Designed, red-teamed (independent adversarial pass, real code
-citations), and partially proven (the one small, closable mechanism the red-team found missing —
-`trust::principal_from_bearer_claims()` — is real, tested code); awaiting the project owner's
-explicit "Judged" sign-off per this project's governance (`decisions/README.md`; `OpenQuestions.md`
-OQ-11's resolution that the project owner is the ADR judge).
+**Status:** Judged (2026-08-14, project owner sign-off). Designed, red-teamed (independent
+adversarial pass, real code citations), and partially proven (the one small, closable mechanism the
+red-team found missing — `trust::principal_from_bearer_claims()` — is real, tested code). Re-verified
+at sign-off review: `test_principal_from_bearer_claims.cpp` still passes in full (9/9), and
+`a2a/server.hpp`'s own "no principal/authorization boundary" comment (§3d's named, still-open
+residual) is still present in current code — honestly still open, not silently fixed or silently
+forgotten since this ADR landed.
 
 **Supersedes:** `decisions/ADR-021-inbound-protocol-trust-boundary.md` §3–§8 (its Design A/B/C
 decision and the "AgentEngine owns TLS/auth termination first-party" strategic direction) and

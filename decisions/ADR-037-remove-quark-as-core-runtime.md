@@ -1,13 +1,13 @@
 # ADR-037 — Remove Quark as AgentEngine's core runtime; become a plain C++ SDK
 
-**Status:** Proposed — Phases 1-5 (§7) are now EXECUTED (2026-08-13), not just designed. Every
-`quark::` production dependency named in §8's file list (and several found only during execution,
-notably `quark::pal`'s socket primitives — see the completion note after §8) has been ported to
-`agentengine::rt::`/vendored standalone, the `third_party/quark` submodule itself has been removed
-from the tree, and the whole suite has been re-verified green from a genuinely from-scratch build
-(no cached state that could paper over a dangling reference). Per this project's own governance
-(`decisions/README.md`; `OpenQuestions.md` OQ-11), only the project owner can mark an ADR "Judged" —
-this document records the work as done, not as self-certified accepted.
+**Status:** Judged (2026-08-14, project owner sign-off). Phases 1-5 (§7) were EXECUTED (2026-08-13),
+not just designed. Every `quark::` production dependency named in §8's file list (and several found
+only during execution, notably `quark::pal`'s socket primitives — see the completion note after §8)
+was ported to `agentengine::rt::`/vendored standalone, the `third_party/quark` submodule itself was
+removed from the tree, and the whole suite was re-verified green from a genuinely from-scratch build
+(no cached state that could paper over a dangling reference). Re-verified again at sign-off review
+(2026-08-14): full suite green, every ADR built on top of this migration this session (040-052) is
+itself real, tested code — this migration's own foundation held under everything since.
 
 **Relates to:** `AgentEngineSpecification.md` (the "Quark mapping" section this ADR proposes to
 retire — see §8); every ADR from 001 through 036 (their BEHAVIORAL claims — what a session/workflow
@@ -247,8 +247,11 @@ silently smoothed over:
   done** — see that document's own §7, which now describes the `agentengine::rt::` substrate instead
   of the retired Quark mapping.
 - **One real residual surfaced during Phase 5's own from-scratch verification, deliberately left
-  untouched**: the root `CMakeLists.txt`'s vendored CA-bundle `EXPECTED_HASH` pin
-  (`file(DOWNLOAD "https://curl.se/ca/cacert.pem" ...)`) no longer matches what curl.se currently
-  serves — almost certainly legitimate upstream CA-bundle rotation, not tampering, but a
-  security-relevant trust anchor is not this ADR's call to update unilaterally. Flagged for the
-  project owner, not silently "fixed" as a side effect of an unrelated commit.
+  untouched at the time**: the root `CMakeLists.txt`'s vendored CA-bundle `EXPECTED_HASH` pin
+  (`file(DOWNLOAD "https://curl.se/ca/cacert.pem" ...)`) no longer matched what curl.se currently
+  served — almost certainly legitimate upstream CA-bundle rotation, not tampering, but a
+  security-relevant trust anchor was not this ADR's call to update unilaterally. Flagged for the
+  project owner rather than silently "fixed" as a side effect of an unrelated commit. **Resolved
+  2026-08-13, commit `3962fa2`** ("Refresh the vendored CA bundle pin (curl.se rotated content
+  since 2026-07-16)") — the project owner's own follow-up, re-verified 174/174 green at the time;
+  no longer an open residual as of this ADR's sign-off.

@@ -1,9 +1,10 @@
 # ADR-032 — Workflow executor worktree scoping (014 §1 ↔ 025 §3)
 
-**Status:** Proposed (2026-08-11). Designed, red-teamed (independent pass via the `Agent` tool,
-findings in §3), implemented, and proven (real code + tests, §4); awaiting the project owner's
-explicit "Judged" sign-off per this project's governance (`decisions/README.md`; `OpenQuestions.md`
-OQ-11's resolution that the project owner is the ADR judge).
+**Status:** Judged (2026-08-14, project owner sign-off). Designed, red-teamed (independent pass via
+the `Agent` tool, findings in §3), implemented, and proven (real code + tests, §4). Re-verified at
+sign-off review: `tests/test_workflow_worktree_scoping.cpp` still passes in full (M1-M11), unaffected
+by ADR-037's later Quark removal (this ADR's own subsystem — sub-worktree/`sharing_mode` — never
+depended on the actor engine).
 
 **Relates to:** `014-Workflow-and-Orchestration.md` §1 (the gap this ADR closes, quoted below);
 `025-Worktree-and-Virtual-Filesystem.md` §3 (the sub-worktree/`sharing_mode` primitive this ADR

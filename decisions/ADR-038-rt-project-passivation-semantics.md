@@ -1,9 +1,8 @@
 # ADR-038 — `rt::` Project-level passivation: what survives when there is no actor to evict
 
-**Status:** Proposed (2026-08-13). Designed, implemented, and proven (real code + deterministic
-tests, §4); awaiting the project owner's explicit "Judged" sign-off per this project's governance
-(`decisions/README.md`; `OpenQuestions.md` OQ-11's resolution that the project owner is the ADR
-judge).
+**Status:** Judged (2026-08-14, project owner sign-off). Designed, implemented, and proven (real
+code + deterministic tests, §4). Re-verified at sign-off review: `test_rt_project_supervisor.cpp`/
+`test_rt_project_manifest.cpp`/`test_rt_project_scale_isolation.cpp` all still pass in full.
 
 **Relates to:** `decisions/ADR-037-remove-quark-as-core-runtime.md` (the umbrella "remove Quark"
 initiative this ADR is one subsystem decision within — ADR-037 §3 names project-level passivation as
