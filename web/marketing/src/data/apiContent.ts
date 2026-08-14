@@ -69,6 +69,14 @@ export const apiPages: Record<Lang, ApiPage[]> = {
       status: "real",
     },
     {
+      id: "worktree",
+      label: "Worktree & Virtual Filesystem",
+      href: `${SITE_BASE}/api/worktree.html`,
+      eyebrow: "025 — Worktree and Virtual Filesystem",
+      description: "The content-addressed Blob/Tree/Ref object store behind every mount — durable, shareable, and independent of whichever sandbox happens to be attached.",
+      status: "real",
+    },
+    {
       id: "runtime",
       label: "AgentSession & ChatClient",
       href: `${SITE_BASE}/api/runtime.html`,
@@ -140,6 +148,14 @@ export const apiPages: Record<Lang, ApiPage[]> = {
       href: `${SITE_BASE}/api/trust-sandbox.html`,
       eyebrow: "007/008 — Trust & Isolation (L1)",
       description: "Các thẻ khai báo (declaration tag) kiểm soát mọi effect, và các sandbox backend thực sự thực thi chúng.",
+      status: "real",
+    },
+    {
+      id: "worktree",
+      label: "Worktree & Virtual Filesystem",
+      href: `${SITE_BASE}/api/worktree.html`,
+      eyebrow: "025 — Worktree and Virtual Filesystem",
+      description: "Kho đối tượng Blob/Tree/Ref theo nội dung (content-addressed) đứng sau mọi mount — bền vững, chia sẻ được, và độc lập với bất kỳ sandbox nào đang gắn vào.",
       status: "real",
     },
     {
@@ -1932,6 +1948,242 @@ export const protocolEntries: Record<Lang, ProtocolEntry[]> = {
   ],
 };
 
+// ---- Worktree page: illustrated walkthrough data --------------------------------------------
+
+export const worktreeDirectoryTree = `session:s-42                     # root worktree, the session's disk
+  /work                          shared working area
+  /input                         read-only inputs mounted by the host
+  /out                           artifacts collected into the conversation
+  /agents/researcher             sub-worktree (branch or shared)
+  /agents/writer                 sub-worktree
+  /skills/<name>                 loaded skill packages, read-only (009 §8)
+  /knowledge/<corpus>            operator-populated document corpus, read-only`;
+
+export interface WorktreeSharingModeRow {
+  mode: string;
+  semantics: string;
+  use: string;
+}
+
+// 025 §3's four sharing modes, verbatim semantics — real, tested (worktree.hpp's create_sub_worktree/
+// read_sub_worktree/write_sub_worktree, tests/test_worktree_sub_worktree.cpp).
+export const worktreeSharingModes: Record<Lang, WorktreeSharingModeRow[]> = {
+  en: [
+    { mode: "shared", semantics: "Same mutable tree (Ref) as the parent — writes are immediately visible to siblings.", use: "Collaborating agents working one artifact set" },
+    { mode: "branch (default for concurrent)", semantics: "Copy-on-write from the parent's current tree; changes are private until a three-way merge on join.", use: "Parallel agents that must not corrupt each other" },
+    { mode: "readonly", semantics: "A pinned tree digest, not a Ref at all — writes rejected before the store is ever touched.", use: "Reviewers, critics, evaluators" },
+    { mode: "scratch", semantics: "A fresh, independent Ref seeded at the empty tree digest — never copies the parent.", use: "Throwaway computation" },
+  ],
+  vi: [
+    { mode: "shared", semantics: "Cùng một cây mutable (Ref) với parent — ghi được thấy ngay lập tức bởi các sibling.", use: "Các agent cộng tác trên cùng một tập artifact" },
+    { mode: "branch (mặc định khi chạy đồng thời)", semantics: "Copy-on-write từ cây hiện tại của parent; thay đổi riêng tư cho tới khi merge ba-chiều lúc join.", use: "Các agent song song không được phép làm hỏng công việc của nhau" },
+    { mode: "readonly", semantics: "Một digest cây được ghim cố định, không phải một Ref — ghi bị từ chối trước khi store bị chạm tới.", use: "Người review, phê bình, đánh giá" },
+    { mode: "scratch", semantics: "Một Ref mới, độc lập, khởi tạo tại digest cây rỗng — không bao giờ sao chép từ parent.", use: "Tính toán dùng-rồi-bỏ" },
+  ],
+};
+
+export const worktreeObjectModelSnippet = `// include/agentengine/core/worktree.hpp -- 025 §2's digest+store+tree contract, verbatim (trimmed)
+using Digest = std::string;  // hex-encoded SHA-256, 64 lowercase hex chars
+
+struct TreeEntry { std::string name; Digest digest; bool is_tree = false; };
+struct Tree       { std::vector<TreeEntry> entries; };  // MUST be sorted by name before hashing
+struct Ref         { std::string name; Digest tree_digest; };  // e.g. "session:s-42"
+
+// A concept, not a base class -- matches SandboxBackend/Runner/ChatClient's own shape.
+template <class S>
+concept WorktreeObjectStore = requires(S& s, std::span<std::byte const> bytes,
+                                        Digest const& digest, Tree tree) {
+    { s.put_blob(bytes) } -> std::same_as<result<Digest>>;
+    { s.get_blob(digest) } -> std::same_as<result<std::vector<std::byte>>>;
+    { s.put_tree(tree) }   -> std::same_as<result<Digest>>;
+    { s.get_tree(digest) } -> std::same_as<result<Tree>>;
+};
+
+// InMemoryWorktreeObjectStore is the one real conformer today -- dedup and diff-by-digest-
+// comparison proven directly (blob_count()/tree_count() watched not to grow on a duplicate put).
+// A durable pal::file_io-backed adapter is a named, tracked follow-up, not built yet.`;
+
+export const worktreeSubWorktreeSnippet = `// include/agentengine/core/worktree.hpp -- SubWorktree + create_sub_worktree (trimmed)
+struct SubWorktree {
+    std::string  name;
+    std::string  backing_ref_name;  // the Ref actually read/written through; empty iff readonly
+    sharing_mode mode = sharing_mode::branch;
+    Digest       pinned_digest;     // meaningful only when mode == readonly
+    Digest       base_digest;       // meaningful only when mode == branch: the merge ancestor
+};
+
+// The caller always supplies \`mode\` explicitly -- 025 §3's "default chosen by concurrency, not
+// by taste" is a SCHEDULING-layer decision this header deliberately does not infer.
+template <rt::AppendLogStore S>
+result<SubWorktree> create_sub_worktree(S& store, Ref const& parent,
+                                         std::string child_name, sharing_mode mode) {
+    switch (mode) {
+        case sharing_mode::shared:   return SubWorktree{child_name, parent.name, mode, {}, {}};
+        case sharing_mode::branch:   /* commits a new Ref seeded at parent's tree_digest,
+                                         captures base_digest for the later three-way merge */;
+        case sharing_mode::scratch:  /* commits a new Ref at empty_tree_digest() */;
+        case sharing_mode::readonly: return SubWorktree{child_name, {}, mode, parent.tree_digest, {}};
+    }
+}`;
+
+export const worktreeMergeSnippet = `// include/agentengine/core/worktree.hpp -- three-way merge on branch join, 025 §4 (trimmed)
+struct MergeConflict {
+    std::string              path;    // slash-joined from the merge root, e.g. "a/b/c.txt"
+    std::optional<TreeEntry> base, ours, theirs;  // absent = did not exist on that side
+};
+struct MergeResult {
+    Digest                     merged_tree_digest;  // valid only when conflicts.empty()
+    std::vector<MergeConflict> conflicts;
+    bool ok() const { return conflicts.empty(); }
+};
+
+// Recurses into subtrees so a change two levels deep in one branch and an unrelated change two
+// levels deep in the parent never conflict at a shared ancestor directory -- matching "disjoint
+// changes merge automatically" literally, not just at the top level. Reports EVERY conflict in
+// one pass, never stops at the first. Never resolved by guessing or last-writer-wins (025 §4).
+template <WorktreeObjectStore S>
+result<MergeResult> merge_subtrees(S& store, std::optional<Digest> const& base_digest,
+                                    Digest const& ours_digest, Digest const& theirs_digest,
+                                    std::string const& path_prefix);`;
+
+export const worktreeMountSnippet = `// include/agentengine/core/worktree.hpp -- Mount + mount_read, 025 §5 (trimmed)
+struct Mount { std::string mount_id; std::string ref_name; std::string subtree_path; };
+
+// Two checks before any store access at all (007 §3 -- the capability grant IS the authority,
+// checked before the effect): granted.mount_id must name exactly THIS mount, and
+// granted.path_prefix (path_prefix_covers -- the SAME primitive CapabilitySet::contains uses,
+// not a second path-matching routine) must cover guest_path. size_cap_bytes is enforced after
+// the read (only knowable once the blob is fetched).
+template <WorktreeObjectStore OS, rt::AppendLogStore RS>
+result<std::vector<std::byte>> mount_read(OS& object_store, RS& ref_store, Mount const& mount,
+                                           cap::FsRead const& granted, std::string const& guest_path);
+
+// mount_write's granted.quota_bytes/file_count_cap ARE enforced (Phase C3): the candidate tree
+// is built first, usage is recomputed scoped to mount.subtree_path, and the Ref commits ONLY if
+// both caps hold -- the guest never observes a Ref move followed by a retroactive quota failure.
+// Rejection message matches 026 §3's mapping table verbatim: "No space left on device."`;
+
+export const worktreeTurnCommitSnippet = `// include/agentengine/core/worktree.hpp -- turn-boundary commit + rewind, 025 §6/§9 G5 (trimmed)
+struct TurnCommit { Ref ref; rt::SeqNo turn; };
+
+template <rt::AppendLogStore StoreT>
+result<TurnCommit> commit_turn(StoreT& store, std::string name, Digest tree_digest);
+
+// rewind is ASSIGNMENT, never a history edit: re-commits the OLD digest as a new current head,
+// so the rewind itself becomes one more ordinary retained entry -- a second rewind can always
+// recover the exact state that existed just before the first one.
+template <rt::AppendLogStore StoreT>
+result<TurnCommit> rewind_to_turn(StoreT& store, std::string name, rt::SeqNo turn);`;
+
+// Cross-cutting real pieces, doc-entry cards (mirrors skillSourceEntries's shape).
+export const worktreeEntries: Record<Lang, ApiEntry[]> = {
+  en: [
+    {
+      id: "object-store",
+      status: "real",
+      tag: "InMemoryWorktreeObjectStore — worktree.hpp",
+      title: "One real conformer, dedup and diffing proven directly",
+      body: "put_blob/put_tree dedup for real (blob_count()/tree_count() are watched not to grow on a duplicate put, not inferred from digest equality). Ref history rides agentengine::rt::AppendLogStore (historical: Quark's Store seam; ADR-037 replaced it), not this object store — no new storage engine. A durable, crash-persistent pal::file_io-backed adapter is a named, tracked follow-up, not built yet: today's store does not survive process exit on its own (Ref history does, through AppendLogStore).",
+      cite: "include/agentengine/core/worktree.hpp",
+      href: gh("include/agentengine/core/worktree.hpp"),
+    },
+    {
+      id: "path-escape",
+      status: "real",
+      tag: "worktree_mount_fs.hpp — ADR-014, Windows",
+      title: "The real OS-level defense sits one layer below the tree model",
+      body: "worktree.hpp's own mount_read/mount_write (above) check capability scope and quota against the content-addressed tree — deliberately NOT the OS-level path-escape defense. That's a separate layer: open_within_mount_root turns a guest-relative path into an already-verified-safe Win32 HANDLE, rejecting .., absolute redirects, symlinks/junctions/reparse points crossing the boundary, ADS, \\\\?\\ prefixes, unicode-normalization tricks, and TOCTOU re-resolution — tested against a full corpus with a positive control per attack class. Windows only today; no Linux implementation yet (021 §2's platform priority ordering).",
+      cite: "include/agentengine/core/worktree_mount_fs.hpp",
+      href: gh("include/agentengine/core/worktree_mount_fs.hpp"),
+    },
+    {
+      id: "mount-sync",
+      status: "real",
+      tag: "worktree_mount_sync.hpp — native_jail",
+      title: "\"The agent saves a file, the user receives an artifact\" — proven against real files",
+      body: "materialize_mount/harvest_mount sync a Tree onto and from a REAL host directory (MediatedPythonConfig::mount_roots), through the real MediatedFileSystemAdapter and real capability checks — not a mock filesystem. This is the mechanism 025 §7 describes as the payoff: a sandboxed guest sees ordinary files; the host-side sync is what turns a written /out file into a conversation artifact.",
+      cite: "src/backends/native_jail/worktree_mount_sync.hpp",
+      href: gh("src/backends/native_jail/worktree_mount_sync.hpp"),
+    },
+    {
+      id: "workflow-grant",
+      status: "real",
+      tag: "worktree_scoping.hpp — ADR-032",
+      title: "Every workflow executor gets its own worktree grant, minted or resumed",
+      body: "ExecutorWorktreeGrant{sub, mount, read, write} — mint_executor_worktrees()/resume_executor_worktrees() are real and tested, but this is policy-and-minting ONLY: not yet wired into FunctionExecutor's own EffectContext inside WorkflowSupervisor's real construction path (no production host builds a FunctionExecutor fleet today, confirmed by grep). readonly executors can't resume (a pinned digest isn't durably persisted); branch executors lose their merge ancestor on resume too — both named residuals, not bugs.",
+      cite: "include/agentengine/workflow/worktree_scoping.hpp",
+      href: gh("decisions/ADR-032-workflow-executor-worktree-scoping.md"),
+    },
+  ],
+  vi: [
+    {
+      id: "object-store",
+      status: "real",
+      tag: "InMemoryWorktreeObjectStore — worktree.hpp",
+      title: "Một conformer thật, dedup và diff được chứng minh trực tiếp",
+      body: "put_blob/put_tree dedup thật sự (blob_count()/tree_count() được theo dõi để không tăng khi put trùng lặp, không suy ra từ việc digest bằng nhau). Lịch sử Ref chạy trên agentengine::rt::AppendLogStore (lịch sử: seam Store của Quark; ADR-037 đã thay thế nó) — không dùng object store này, không có storage engine mới. Một adapter bền vững, sống sót qua crash, dựa trên pal::file_io là việc theo dõi tiếp theo, chưa được xây: store hôm nay không tự sống sót qua việc process thoát (lịch sử Ref thì có, qua AppendLogStore).",
+      cite: "include/agentengine/core/worktree.hpp",
+      href: gh("include/agentengine/core/worktree.hpp"),
+    },
+    {
+      id: "path-escape",
+      status: "real",
+      tag: "worktree_mount_fs.hpp — ADR-014, Windows",
+      title: "Lớp phòng thủ OS thật nằm bên dưới mô hình cây một tầng",
+      body: "mount_read/mount_write của worktree.hpp (ở trên) kiểm tra phạm vi capability và quota so với cây theo nội dung — cố ý KHÔNG phải lớp phòng thủ path-escape ở cấp OS. Đó là một lớp riêng: open_within_mount_root biến một đường dẫn tương đối từ guest thành một Win32 HANDLE đã được xác minh an toàn, từ chối .., chuyển hướng tuyệt đối, symlink/junction/reparse point vượt ranh giới, ADS, tiền tố \\\\?\\, các thủ thuật chuẩn hóa unicode, và TOCTOU re-resolution — được kiểm thử với một corpus đầy đủ cùng positive control cho từng lớp tấn công. Hiện chỉ có Windows; chưa có bản Linux (thứ tự ưu tiên nền tảng của 021 §2).",
+      cite: "include/agentengine/core/worktree_mount_fs.hpp",
+      href: gh("include/agentengine/core/worktree_mount_fs.hpp"),
+    },
+    {
+      id: "mount-sync",
+      status: "real",
+      tag: "worktree_mount_sync.hpp — native_jail",
+      title: '"Agent lưu một file, người dùng nhận một artifact" — được chứng minh trên file thật',
+      body: "materialize_mount/harvest_mount đồng bộ một Tree lên và từ một thư mục host THẬT (MediatedPythonConfig::mount_roots), qua MediatedFileSystemAdapter thật và các kiểm tra capability thật — không phải filesystem giả lập. Đây chính là cơ chế mà 025 §7 mô tả là phần thưởng: một guest bị sandbox nhìn thấy các file bình thường; đồng bộ phía host là thứ biến một file được ghi ở /out thành một artifact trong cuộc hội thoại.",
+      cite: "src/backends/native_jail/worktree_mount_sync.hpp",
+      href: gh("src/backends/native_jail/worktree_mount_sync.hpp"),
+    },
+    {
+      id: "workflow-grant",
+      status: "real",
+      tag: "worktree_scoping.hpp — ADR-032",
+      title: "Mỗi executor workflow đều nhận cấp phát worktree riêng, được tạo mới hoặc khôi phục",
+      body: "ExecutorWorktreeGrant{sub, mount, read, write} — mint_executor_worktrees()/resume_executor_worktrees() có thật và đã kiểm thử, nhưng đây CHỈ là policy và cấp phát: chưa được đấu nối vào EffectContext riêng của FunctionExecutor bên trong đường xây dựng thật của WorkflowSupervisor (chưa có host production nào xây một fleet FunctionExecutor hôm nay, đã xác nhận bằng grep). Executor readonly không thể resume (digest ghim không được lưu bền vững); executor branch cũng mất merge ancestor khi resume — cả hai đều là tồn đọng có tên, không phải lỗi.",
+      cite: "include/agentengine/workflow/worktree_scoping.hpp",
+      href: gh("decisions/ADR-032-workflow-executor-worktree-scoping.md"),
+    },
+  ],
+};
+
+export interface WorktreeGateRow {
+  gate: string;
+  claim: string;
+  verdict: string;
+}
+
+// 025 §9's own gates, graded honestly against real test evidence -- never blurring "a Reviewed
+// RFC describes this" with "real and tested" (apiContent.ts's own file-top rule).
+export const worktreeGates: Record<Lang, WorktreeGateRow[]> = {
+  en: [
+    { gate: "G1 — durability", claim: "Survives sandbox destruction, process restart, and node migration, byte-identical.", verdict: "Partial. Restart/restore via digest-fetch is real and tested. Node migration is out of scope entirely — ADR-037 removed Quark's cluster layer, so there is no node to migrate to yet." },
+    { gate: "G2 — isolation", claim: "The path-escape corpus fails to read/write outside a mount, every platform.", verdict: "Real, Windows only. Full attack-class corpus with positive controls (ADR-014). Linux not built yet (021 §2 sequencing)." },
+    { gate: "G3 — concurrency", claim: "N concurrent branch agents, deterministic merge, no lost update over 10⁴ randomized interleavings.", verdict: "Real mechanism and real test, at reduced scale: 5 simulated agents over 500 randomized single-threaded interleavings — a machine-safety choice (real OS threads racing the reference store would themselves be UB), deliberately below the RFC's own 10⁴, not attempting to hit that bar this milestone." },
+    { gate: "G4 — cost", claim: "Turn-boundary commit p99 within budget; dedup storage overhead bounded.", verdict: "Not measured yet. 023's own performance budgets stay provisional project-wide until a later milestone." },
+    { gate: "G5 — rewind", claim: "Restoring an arbitrary retained turn digest reproduces that turn's tree exactly.", verdict: "Real, tested — including that rewind is non-destructive assignment: a second rewind recovers the exact pre-rewind state." },
+    { gate: "G6 — redaction", claim: "Deleting content removes it from live trees, checkpoints, and unreferenced objects.", verdict: "Design only. No retention/GC/redaction implementation exists yet." },
+    { gate: "G7 — conflict drafting & shared staleness", claim: "A model-drafted merge proposal never auto-applies; a shared sub-worktree surfaces staleness on next read.", verdict: "Shared-staleness half is real and tested. The model-assisted-drafting half (draft, never auto-commit) is design only — no drafting mechanism exists yet." },
+  ],
+  vi: [
+    { gate: "G1 — bền vững", claim: "Sống sót qua việc sandbox bị hủy, process restart, và node migration, giống hệt từng byte.", verdict: "Một phần. Restart/restore qua digest-fetch có thật và đã kiểm thử. Node migration nằm ngoài phạm vi hoàn toàn — ADR-037 đã gỡ bỏ tầng cluster của Quark, nên chưa có node nào để migrate tới." },
+    { gate: "G2 — cách ly", claim: "Corpus path-escape không thể đọc/ghi ra ngoài một mount, trên mọi nền tảng.", verdict: "Có thật, chỉ Windows. Corpus tấn công đầy đủ cùng positive control (ADR-014). Chưa có bản Linux (thứ tự ưu tiên của 021 §2)." },
+    { gate: "G3 — tương tranh", claim: "N agent branch chạy đồng thời, kết quả merge tất định, không mất update qua 10⁴ lần xen kẽ ngẫu nhiên.", verdict: "Cơ chế và test đều có thật, ở quy mô nhỏ hơn: 5 agent mô phỏng qua 500 lần xen kẽ ngẫu nhiên đơn luồng — một lựa chọn an toàn máy (luồng OS thật đua nhau trên store tham chiếu tự nó đã là UB), cố ý thấp hơn con số 10⁴ của RFC, không cố đạt tới mức đó ở milestone này." },
+    { gate: "G4 — chi phí", claim: "p99 của commit theo turn nằm trong ngân sách; overhead lưu trữ nhờ dedup bị giới hạn.", verdict: "Chưa đo. Ngân sách hiệu năng riêng của 023 vẫn còn tạm thời trên toàn dự án cho tới một milestone sau." },
+    { gate: "G5 — tua lại (rewind)", claim: "Khôi phục một digest turn đã lưu tái tạo đúng cây của turn đó.", verdict: "Có thật, đã kiểm thử — kể cả việc rewind là gán (assignment) không phá hủy: lần rewind thứ hai khôi phục đúng trạng thái trước lần rewind đầu." },
+    { gate: "G6 — xóa dữ liệu (redaction)", claim: "Xóa nội dung loại bỏ nó khỏi cây đang sống, checkpoint, và các object không còn tham chiếu.", verdict: "Chỉ ở dạng thiết kế. Chưa có triển khai retention/GC/redaction nào." },
+    { gate: "G7 — soạn thảo xung đột & cảnh báo cũ khi shared", claim: "Đề xuất merge do model soạn không bao giờ tự áp dụng; một sub-worktree shared báo hiệu dữ liệu cũ ở lần đọc kế tiếp.", verdict: "Nửa cảnh báo dữ liệu cũ khi shared có thật và đã kiểm thử. Nửa soạn thảo có sự hỗ trợ của model (soạn, không bao giờ tự commit) chỉ ở dạng thiết kế — chưa có cơ chế soạn thảo nào." },
+  ],
+};
+
 export interface RfcLink {
   label: string;
   href: string;
@@ -1950,4 +2202,5 @@ export const apiRfcLinks: RfcLink[] = [
   { label: "013 — UI and Streaming Surfaces", href: gh("013-UI-and-Streaming-Surfaces.md"), status: "real" },
   { label: "014 — Workflow and Orchestration", href: gh("014-Workflow-and-Orchestration.md"), status: "real" },
   { label: "015 — Declarative Agent Format", href: gh("015-Declarative-Agent-Format.md"), status: "real" },
+  { label: "025 — Worktree and Virtual Filesystem", href: gh("025-Worktree-and-Virtual-Filesystem.md"), status: "real" },
 ];
