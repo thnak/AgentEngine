@@ -195,6 +195,16 @@ namespace message_codec_detail {
 
 }  // namespace message_codec_detail
 
+// Gap-15 fix (2026-08-14): the recursive/internal calls below to content_item_to_json/
+// role_to_wire_string/origin_to_wire_string are explicitly `agentengine::rt::`-qualified, not bare --
+// their arguments (ContentItem/role/content_origin) live directly in namespace `agentengine`, so an
+// unqualified call is subject to ADL into that namespace, where core/chat_recording.hpp's own,
+// separately-maintained, identically-named/identically-shaped functions also live (this file's own
+// top comment already explains why they're a deliberate duplicate, not a shared #include). Surfaced
+// as a real "ambiguous call" compile error the first time a single translation unit included both
+// this file and chat_recording.hpp (rt/agent_session.hpp gained this include for gap 15; some test
+// files already included chat_recording.hpp directly) -- fully qualifying removes the ambiguity
+// without changing behavior (both implementations are the same logic).
 [[nodiscard]] inline agentengine::json::Value content_item_to_json(agentengine::ContentItem const& item) {
     using agentengine::Text;
     using agentengine::Reasoning;
@@ -246,7 +256,7 @@ namespace message_codec_detail {
         obj.emplace_back("call_id", agentengine::json::Value::make_string(tr->call_id));
         std::vector<agentengine::json::Value> content;
         content.reserve(tr->content.size());
-        for (auto const& child : tr->content) content.push_back(content_item_to_json(child));
+        for (auto const& child : tr->content) content.push_back(agentengine::rt::content_item_to_json(child));
         obj.emplace_back("content", agentengine::json::Value::make_array(std::move(content)));
         obj.emplace_back("is_error", agentengine::json::Value::make_bool(tr->is_error));
     } else if (auto const* c = std::get_if<Citation>(&item.value)) {
@@ -265,7 +275,8 @@ namespace message_codec_detail {
     }
 
     obj.emplace_back("origin",
-                     agentengine::json::Value::make_string(std::string(origin_to_wire_string(item.origin))));
+                     agentengine::json::Value::make_string(
+                         std::string(agentengine::rt::origin_to_wire_string(item.origin))));
     obj.emplace_back("tainted", agentengine::json::Value::make_bool(item.tainted));
     return agentengine::json::Value::make_object(std::move(obj));
 }
@@ -381,11 +392,12 @@ namespace message_codec_detail {
 
 [[nodiscard]] inline agentengine::json::Value message_to_json(agentengine::Message const& m) {
     std::vector<std::pair<std::string, agentengine::json::Value>> obj;
-    obj.emplace_back("role", agentengine::json::Value::make_string(std::string(role_to_wire_string(m.role))));
+    obj.emplace_back(
+        "role", agentengine::json::Value::make_string(std::string(agentengine::rt::role_to_wire_string(m.role))));
     obj.emplace_back("message_id", agentengine::json::Value::make_string(m.message_id));
     std::vector<agentengine::json::Value> content;
     content.reserve(m.content.size());
-    for (auto const& item : m.content) content.push_back(content_item_to_json(item));
+    for (auto const& item : m.content) content.push_back(agentengine::rt::content_item_to_json(item));
     obj.emplace_back("content", agentengine::json::Value::make_array(std::move(content)));
     return agentengine::json::Value::make_object(std::move(obj));
 }

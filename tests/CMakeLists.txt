@@ -762,6 +762,12 @@ add_executable(test_rt_agent_session_instructions test_rt_agent_session_instruct
 target_link_libraries(test_rt_agent_session_instructions PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_agent_session_instructions COMMAND test_rt_agent_session_instructions)
 
+# ---- Gap-15 fix (2026-08-14, decisions/ADR-043-*.md) -- start_run_with_ack_policy()'s
+# at_most_once/require_durable sequencing, and the turn-delta durable write/read round trip.
+add_executable(test_rt_agent_session_ack_policy test_rt_agent_session_ack_policy.cpp)
+target_link_libraries(test_rt_agent_session_ack_policy PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_agent_session_ack_policy COMMAND test_rt_agent_session_ack_policy)
+
 # ---- ADR-037 Phase 2, Slice 1 -- five real behavioral claims ported from the old, Quark-actor-based
 # test_agent_session_state/test_agent_session_history_window/test_agent_session_fork/
 # test_agent_session_redact/test_agent_session_interaction onto agentengine::rt::AgentSession

@@ -176,6 +176,7 @@
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/rt/async_mutex.hpp"
 #include "agentengine/rt/interaction_codec.hpp"
+#include "agentengine/rt/message_codec.hpp"
 #include "agentengine/rt/session_store.hpp"
 #include "agentengine/rt/task.hpp"
 #include "agentengine/trust/principal.hpp"
@@ -1119,6 +1120,203 @@ template <SessionStore StoreT>
     if (!rec) return std::unexpected(rec.error());
     if (rec->deleted) return std::optional<AgentSessionRecord>{};
     return std::optional<AgentSessionRecord>{std::move(*rec)};
+}
+
+// Gap-15 fix (2026-08-14, decisions/ADR-043-*.md): 005 §2's exact policy vocabulary
+// ("acknowledged... only after its effects and history delta are durable, or the session declares
+// an at_most_once_ack durability policy"). `at_most_once` is today's only real behavior (a bare
+// start_run()/resolve_interaction() call, unchanged) -- `require_durable` is new, wired ONLY through
+// the two *_with_ack_policy() free functions below, never inside AgentSession's own methods
+// (checkpoint_if_due's own comment three declarations up: "AgentSession has no ambient Store access,
+// I2" -- this policy switch honors that same boundary rather than giving AgentSession a
+// self-referencing Store hook).
+enum class ack_policy : std::uint8_t { at_most_once, require_durable };
+
+// 005 §2's "history delta" specifically -- the messages ONE turn added, not the whole conversation.
+// AgentSessionRecord's own comment already names full-history serialization as a separate, larger,
+// not-yet-built gap; this is deliberately narrower and, unlike that, tractable today: reuses
+// rt/message_codec.hpp's already-proven Message<->JSON codec (built for WorkflowSupervisor's own
+// checkpoint record, ADR-037 Phase 3 Slice 2) rather than inventing a second one.
+struct TurnDeltaRecord {
+    std::string session_id;
+    std::uint64_t turn_index = 0;
+    std::vector<Message> messages;
+};
+
+[[nodiscard]] inline json::Value turn_delta_record_to_json(TurnDeltaRecord const& rec) {
+    std::vector<json::Value> messages;
+    messages.reserve(rec.messages.size());
+    // Explicitly qualified, not bare -- the message_codec.hpp file banner comment above (near
+    // #include "agentengine/rt/message_codec.hpp") explains the ADL hazard: Message lives in
+    // namespace agentengine directly, so an unqualified call is ambiguous in any TU that also
+    // includes core/chat_recording.hpp's own, separately-maintained same-named function.
+    for (Message const& m : rec.messages) messages.push_back(agentengine::rt::message_to_json(m));
+    return json::Value::make_object({
+        {"session_id", json::Value::make_string(rec.session_id)},
+        {"turn_index", json::Value::make_number(static_cast<double>(rec.turn_index))},
+        {"messages", json::Value::make_array(std::move(messages))},
+    });
+}
+
+[[nodiscard]] inline result<TurnDeltaRecord> turn_delta_record_from_json(json::Value const& v) {
+    json::Value const* session_id = v.find("session_id");
+    json::Value const* turn_index = v.find("turn_index");
+    json::Value const* messages   = v.find("messages");
+    if (session_id == nullptr || !session_id->is_string() || turn_index == nullptr ||
+        !turn_index->is_number() || messages == nullptr || !messages->is_array()) {
+        return std::unexpected(error{failure_class::contract, "malformed TurnDeltaRecord",
+                                      "rt.agent_session.turn_delta.malformed"});
+    }
+    TurnDeltaRecord rec;
+    rec.session_id = session_id->as_string();
+    rec.turn_index = static_cast<std::uint64_t>(turn_index->as_number());
+    rec.messages.reserve(messages->as_array().size());
+    for (json::Value const& item : messages->as_array()) {
+        result<Message> parsed = message_from_json(item);
+        if (!parsed) return std::unexpected(parsed.error());
+        rec.messages.push_back(std::move(*parsed));
+    }
+    return rec;
+}
+
+[[nodiscard]] inline std::vector<std::byte> encode_turn_delta_record(TurnDeltaRecord const& rec) {
+    std::string const text = json::dump(turn_delta_record_to_json(rec));
+    std::vector<std::byte> bytes;
+    bytes.reserve(text.size());
+    for (char c : text) bytes.push_back(static_cast<std::byte>(c));
+    return bytes;
+}
+
+[[nodiscard]] inline result<TurnDeltaRecord> decode_turn_delta_record(std::vector<std::byte> const& bytes) {
+    std::string text;
+    text.reserve(bytes.size());
+    for (std::byte b : bytes) text.push_back(static_cast<char>(b));
+    result<json::Value> parsed = json::parse(text);
+    if (!parsed) return std::unexpected(parsed.error());
+    return turn_delta_record_from_json(*parsed);
+}
+
+// The key one turn's delta is stored under -- distinct from AgentSessionRecord's own key
+// (session_id alone), namespaced per turn so a later restore can find exactly the delta a specific
+// turn_index wrote, and so consecutive turns don't overwrite each other's durable record.
+[[nodiscard]] inline std::string turn_delta_store_key(std::string const& session_id,
+                                                        std::uint64_t turn_index) {
+    return session_id + ":turn:" + std::to_string(turn_index);
+}
+
+// Durably writes `turn_index`'s own history delta to the SAME SessionStore instance
+// `save_agent_session_snapshot()` already writes to, under a per-turn key. `delta` must be exactly
+// the messages ONE turn added -- `start_run_with_ack_policy()`/`resolve_interaction_with_ack_policy()`
+// below are the only real callers.
+template <SessionStore StoreT>
+[[nodiscard]] inline task<result<void>> save_turn_delta(StoreT& store, std::string const& session_id,
+                                                          std::uint64_t turn_index,
+                                                          std::span<Message const> delta) {
+    TurnDeltaRecord rec{session_id, turn_index, std::vector<Message>(delta.begin(), delta.end())};
+    co_return store.save(turn_delta_store_key(session_id, turn_index), encode_turn_delta_record(rec));
+}
+
+// Symmetric reader, for a future restore path to consume -- not itself wired into
+// load_agent_session_snapshot() (rehydrating history_ on restart is a separate, larger question this
+// ADR does not answer; see the ADR's own "what this does not claim").
+template <SessionStore StoreT>
+[[nodiscard]] inline result<std::optional<TurnDeltaRecord>> load_turn_delta(
+    StoreT const& store, std::string const& session_id, std::uint64_t turn_index) {
+    std::string const key = turn_delta_store_key(session_id, turn_index);
+    if (!store.exists(key)) return std::optional<TurnDeltaRecord>{};
+    result<std::vector<std::byte>> bytes = store.load(key);
+    if (!bytes) return std::unexpected(bytes.error());
+    result<TurnDeltaRecord> rec = decode_turn_delta_record(*bytes);
+    if (!rec) return std::unexpected(rec.error());
+    return std::optional<TurnDeltaRecord>{std::move(*rec)};
+}
+
+// 005 §2's ack-durability contract, honored WITHOUT giving AgentSession ambient Store access (I2,
+// matching checkpoint_if_due's own comment above): the CALLER supplies both the session and the
+// store, this function just sequences them correctly. For `at_most_once` (today's only real
+// behavior, unchanged), behaves exactly like calling `session.start_run()` directly. For
+// `require_durable`, the turn's own history delta AND the session's bookkeeping record must both
+// durably write before the caller sees a successful response -- if either fails, the caller gets an
+// error, never a false "acknowledged" success (005 §2's own named failure mode: "silently
+// acknowledging before durability... loses a user's conversation on a crash").
+//
+// NAMED RESIDUAL, not fixed here: the delta capture below (history().size() before/after) is correct
+// for the single-caller-at-a-time usage 005 §2's own G2 gate describes (sequential turn-taking on
+// one session), but is NOT safe against a second, concurrently-overlapping start_run() call on the
+// SAME session instance racing between this wrapper's own call returning and its subsequent
+// history() read -- I1's FIFO session_mutex_ serializes each individual start_run()/
+// resolve_interaction() call, but does not extend that critical section to this wrapper's own
+// post-hoc read. Closing that fully would mean capturing the delta INSIDE run_rounds()'s own locked
+// region -- a run_rounds() change this pass deliberately avoids, matching the audit's own "the
+// proposed insertion point breaks a tested invariant" caution (that concern was about inserting a
+// durability wait relative to run_finished's emission; this residual is a different, narrower one
+// about the delta-capture window specifically). Real, scoped follow-up work, not silently accepted.
+template <class ChatClientT, class StateT, class HistoryProviderT, SessionStore StoreT>
+[[nodiscard]] task<result<AgentResponse>> start_run_with_ack_policy(
+    AgentSession<ChatClientT, StateT, HistoryProviderT>& session, StartRun request, ack_policy policy,
+    StoreT& store) {
+    std::size_t const history_before = session.history().size();
+    result<AgentResponse> response = co_await session.start_run(std::move(request));
+    if (!response) co_return response;  // a failed run was never a turn to ack in the first place
+    if (policy == ack_policy::require_durable) {
+        std::span<Message const> const delta(session.history().data() + history_before,
+                                              session.history().size() - history_before);
+        std::uint64_t const turn_index = session.to_record().turn_index;
+        result<void> delta_saved = co_await save_turn_delta(store, session.session_id(), turn_index, delta);
+        if (!delta_saved) {
+            co_return std::unexpected(
+                error{failure_class::resource,
+                      "turn completed but the required durable history-delta write failed: " +
+                          delta_saved.error().message,
+                      "run.durable_ack_failed"});
+        }
+        result<void> snapshot_saved = co_await save_agent_session_snapshot(session, store);
+        if (!snapshot_saved) {
+            co_return std::unexpected(
+                error{failure_class::resource,
+                      "turn completed and its history delta is durable, but the session bookkeeping "
+                      "write failed: " +
+                          snapshot_saved.error().message,
+                      "run.durable_ack_failed"});
+        }
+    }
+    co_return response;
+}
+
+// Same contract as start_run_with_ack_policy() above, for the OTHER real caller-facing entry point
+// that can complete a turn (a suspended interaction resuming after human approval, 001 §2) -- 005 §2's
+// "acknowledged to the caller" applies equally to both; this is not a second, independently-reasoned
+// mechanism, just the identical sequencing applied to resolve_interaction()'s own result shape.
+template <class ChatClientT, class StateT, class HistoryProviderT, SessionStore StoreT>
+[[nodiscard]] task<result<AgentResponse>> resolve_interaction_with_ack_policy(
+    AgentSession<ChatClientT, StateT, HistoryProviderT>& session, ResolveInteraction request,
+    ack_policy policy, StoreT& store) {
+    std::size_t const history_before = session.history().size();
+    result<AgentResponse> response = co_await session.resolve_interaction(std::move(request));
+    if (!response) co_return response;
+    if (policy == ack_policy::require_durable) {
+        std::span<Message const> const delta(session.history().data() + history_before,
+                                              session.history().size() - history_before);
+        std::uint64_t const turn_index = session.to_record().turn_index;
+        result<void> delta_saved = co_await save_turn_delta(store, session.session_id(), turn_index, delta);
+        if (!delta_saved) {
+            co_return std::unexpected(
+                error{failure_class::resource,
+                      "turn completed but the required durable history-delta write failed: " +
+                          delta_saved.error().message,
+                      "run.durable_ack_failed"});
+        }
+        result<void> snapshot_saved = co_await save_agent_session_snapshot(session, store);
+        if (!snapshot_saved) {
+            co_return std::unexpected(
+                error{failure_class::resource,
+                      "turn completed and its history delta is durable, but the session bookkeeping "
+                      "write failed: " +
+                          snapshot_saved.error().message,
+                      "run.durable_ack_failed"});
+        }
+    }
+    co_return response;
 }
 
 // Same cadence-policy shape as the Quark original's CheckpointCadence<N> -- a pure function of how
