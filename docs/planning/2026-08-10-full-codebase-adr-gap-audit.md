@@ -9,8 +9,25 @@ unedited except this header" convention):** two real-code events since this run 
 status. Neither was re-derived from scratch here — both are cross-checked against the actual ADRs
 that landed, matching this doc's own evidence discipline.
 
-**Update (2026-08-14, status only, same convention):** five real-code events and two design-only
+**Update (2026-08-14, status only, same convention):** six real-code events and two design-only
 (no-code) events.
+
+- **Gap 3 (no generic JSON Schema validator) is CLOSED.**
+  `decisions/ADR-045-json-schema-validator-subset.md` confirms no runtime instance-against-a-
+  schema-document validator existed (only schema-generation-from-C++-type machinery). Ships a
+  deliberately scoped subset (`core/json_schema_validator.hpp`) satisfying both named gates (006 §8
+  G2's structured-violation requirement, 015 §7 G2's cyclic-$ref-rejection requirement) — never
+  implementing `pattern`/regex at all, structurally avoiding the audit's own named "regex-DoS budget
+  gap" risk category rather than trying to bound a regex engine (confirmed: this codebase has zero
+  `std::regex` usage anywhere, so this was never fixing a live bug, just correctly declining to
+  introduce the risk in the first place). Real, reachable value scoped honestly: native tools already
+  have stronger type-directed argument checking; this validator's actual consumer is the non-native
+  tool-invocation path gap #4's own registry design targets, which isn't built yet — no production
+  call site is wired, named explicitly as real follow-on work, not silently claimed done. Self-red-team
+  caught two real bugs via testing, not just inspection: a resource budget that didn't actually bound
+  total work for a huge-but-valid instance, and a latch-ordering bug where the "budget exceeded" flag
+  silently blocked the violation reporting it (the test failed first, then got fixed). 22-check new
+  test file, full suite green.
 
 - **Gap 4 (no tool/capability name-keyed registry) is DESIGNED, not implemented — deliberately,
   matching this pass's own gap-10 precedent.**
@@ -143,9 +160,9 @@ that landed, matching this doc's own evidence discipline.
   re-derives it from current code (`a2a/server.hpp`'s own comment: "no principal/authorization
   boundary in this transport-agnostic dispatcher yet") and names it as an explicit, not-yet-closed
   residual, not a silently dropped one.
-- **The other 13 gaps below were NOT re-verified this pass** (gaps 4 and 10 above were re-verified
+- **The other 12 gaps below were NOT re-verified this pass** (gaps 4 and 10 above were re-verified
   and designed against, but stay open — not counted as re-verified-and-closed like
-  2/8/11/12/15/16/21/23; gap 21 itself is only partially closed, and gap 5 is corrected+designed
+  2/3/8/11/12/15/16/21/23; gap 21 itself is only partially closed, and gap 5 is corrected+designed
   alongside gap 4 without being independently closed, see their own rows above). They still reflect
   the 2026-08-10
   snapshot. ADR-037 (Quark removal, 2026-08-13) touched large parts of the tree these gaps cite by
@@ -196,7 +213,7 @@ needs the full reasoning behind a specific line item below, not just the one-lin
 | 19 | Image/Audio/Video/File (and Anthropic Reasoning) content silently dropped outbound despite declared capability bits | **High** | needs_adr | Split into Phase 1 (fail-closed capability gate + symmetric drop-signal, implementable now) and Phase 2 (real wire encoding), which is blocked on RFC 019's blob-store seam — which does not exist anywhere in the tree. |
 | 23 | CLAUDE.md/README claim Milestones 7-9 "have not started" though M7 is substantially built | **High** | ~~needs_adr~~ **[2026-08-13: CLOSED, ADR-026 Judged]** | Docs corrected, lint (`tools/milestone_status_lint.py`) shipped and wired into CI as recommended. |
 | 2 | AgentMetadata/Workflow have no description/version fields | Medium | ~~needs_adr~~ **[2026-08-14: CLOSED, ADR-044 Proposed]** | Optional fields wired through 4 real call sites (the "5" was an overcount); the `Tool<>` naming overlap is real but not a compile collision (unrelated CRTP bases) — named explicitly rather than "closed"; I6 equivalence guarantee stated honestly as before (still example-proven, not structural). |
-| 3 | No generic JSON Schema 2020-12 validator | Medium | needs_adr | Build `core/json_schema_validator.hpp` with the proposed keyword subset/budgets — but wire it at `invoke_tool()`'s InvokeFn construction site (not the MCP dispatcher), add the missing outbound client-side strict check, and close a regex-DoS/`$ref`-cycle budget gap. |
+| 3 | No generic JSON Schema 2020-12 validator | Medium | ~~needs_adr~~ **[2026-08-14: CLOSED, ADR-045 Proposed]** | Built `core/json_schema_validator.hpp` with a scoped keyword subset/budgets as recommended — but NOT wired to `invoke_tool()` (native tools already have stronger type-directed checking; the real consumer is the not-yet-built non-native tool-invocation path, gap #4) and NOT an "outbound client-side strict check" (011 §13 Q3 already resolved that's never meant to be a hard reject). Regex-DoS closed by never implementing `pattern`/regex at all — no existing bug, since this codebase has zero `std::regex` usage anywhere; `$ref`-cycle budget real and tested. |
 | 4 | No tool/capability name-keyed registry | Medium | needs_adr **[2026-08-14: DESIGNED, not implemented]** | ~~The submitted proposal was placeholder text with no real content...~~ — `docs/planning/tool-capability-registry-design-draft.md` reuses `ChatClientRegistry`'s shape + `check_capability_ceiling()`'s validation pattern rather than inventing from scratch; resolves I2/I3/squatting as designed, self-red-teamed. Not built (no Linux-style blocker here — just scoped as document-only per project-owner direction). |
 | 5 | ToolTable has zero runtime construction API (name-keyed half) | Medium | needs_adr **[2026-08-14: corrected + designed, not implemented]** | ~~ToolTable has zero runtime construction API~~ was already stale before this pass — the descriptor-keyed half (`from_descriptors()`) landed 2026-08-10; only the name-keyed half was ever really open. The gap-4 design draft's own §2/§3 explicitly checked and preserved the exact nullptr-vs-supplied-registry distinction this row warned about, so the currently-passing 015 §2 worked-example test stays green under the new design. |
 | 7 | M7 Phase G gate 006 §6b G6 (`schedule_wakeup`) is unprovable as written | Medium | needs_adr | Give `schedule_wakeup` a real `StandingEffect` producer — but must enforce `Schedule<max_horizon>` at arm time (currently unbounded, a live I2 gap) and name the missing `ReminderService`-access seam. |
@@ -262,7 +279,7 @@ Pulled from the individual approaches — these are explicitly out-of-scope item
 
 5. ~~**Fix the durability/ack gap (15)**...~~ **DONE (2026-08-14, ADR-043).** The premise this item was scheduled behind was itself wrong — no Store type-erasure question needed resolving; the seam already existed as a deliberate `concept`.
 
-6. **Batch the remaining medium/low findings by subsystem** rather than one-by-one: the declarative-agent-surface group (3, 4, 5, 6 — 2 is now closed, see its own row) shares a single registry/validator design space and should go through one coordinated ADR sequence rather than four independent ones; the memory-subsystem group (17, 18) and the model-provider-fidelity group (19, 20) are each internally coupled the same way.
+6. **Batch the remaining medium/low findings by subsystem** rather than one-by-one: of the original declarative-agent-surface group (2, 3, 4, 5, 6), only gap 6 remains fully open (2 and 3 closed; 4 designed; 5 rides on 4 landing as real code) — worth revisiting once gap 4's design is implemented, since gap 6's "full enforceability check" and gap 3's validator both feed it. The memory-subsystem group (17, 18) and the model-provider-fidelity group (19, 20) are each internally coupled the same way as this group originally was.
 
 7. **Assign real ADR numbers before any of the above lands** — resolve the `ADR-025` collision across all 23 suggested titles by sequencing them (likely ADR-025 through ADR-047, in the priority order above) as part of scheduling this work, not as an afterthought at merge time.
 

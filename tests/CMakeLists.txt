@@ -615,6 +615,13 @@ if(AGENTENGINE_WITH_HTTPS)
   add_test(NAME test_json_schema_described COMMAND test_json_schema_described)
 endif()
 
+# ---- Gap-3 fix (2026-08-14, decisions/ADR-045-*.md) -- core/json_schema_validator.hpp, proving
+# 006 §8 G2 (schema violation -> structured error) and 015 §7 G2 (cyclic $ref rejected). No HTTPS
+# dependency (unlike its neighbors above) -- deliberately outside that conditional block.
+add_executable(test_json_schema_validator test_json_schema_validator.cpp)
+target_link_libraries(test_json_schema_validator PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_json_schema_validator COMMAND test_json_schema_validator)
+
 # ---- RecordedChatClient fixture player (test-only) ---------------------------------------------
 # Proves the ChatClient concept and ChatRequest/ChatResponse vocabulary are usable end-to-end
 # against hand-authored JSON fixtures, without a real network call or API key (CLAUDE.md task
