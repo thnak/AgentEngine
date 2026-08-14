@@ -590,6 +590,64 @@ public:
 // against fork_from()/clear_in_process_state(), is a real dangling-reference hazard, closed
 // structurally rather than left as a documented-only rule (ADR-030).`;
 
+// ---- Plugins page: illustrated walkthrough data ---------------------------------------------------
+
+export const pluginWitWorldSnippet = `// wit/ae-tool.wit -- package ae:tool@1.0.0
+interface capability {
+    resource capability-handle;   // a WIT resource, not a string/int -- can only be constructed
+}                                  // host-side, transferred into a call, never fabricated by the
+                                   // guest. The literal ABI-level shape of I2, not just consistent
+                                   // with it.
+
+interface fs {                    // gated by FsRead/FsWrite -- one of five capability-gated
+    use capability.{capability-handle};                    // interfaces (fs/http/secrets/clock/random)
+    fs-read: func(cap: borrow<capability-handle>, path: string) -> result<list<u8>, fs-error>;
+}
+
+interface base {                  // always linked, UNGATED -- no capability request needed
+    log: func(level: log-level, message: string);
+}
+
+interface guest {                 // what a component EXPORTS
+    list-tools: func() -> list<tool-descriptor>;      // 009 §4's load-time discovery step
+    invoke: func(request: invoke-request) -> tool-result;  // 006 §3 step 8, exactly --
+}                                                            // steps 1-6 already ran host-side
+
+world tool {
+    import base; import fs; import http; import secrets; import clock; import random;
+    // blob and tool-call are DECLARED but not imported -- a component referencing either fails
+    // Wasmtime's own component-type check before this host's manifest logic ever runs.
+    export guest;
+}`;
+
+export interface PluginHostStep {
+  index: string;
+  title: string;
+  body: string;
+}
+
+// The real host-side component lifecycle, WasmBackend (src/backends/wasm/wasm_backend.hpp),
+// narrated from its own method-by-method comments.
+export const pluginHostSteps: PluginHostStep[] = [
+  { index: "1", title: "create()", body: "Allocates the handle's private Instance, records SandboxSpec/limits. Deliberately thin -- no component is compiled yet." },
+  { index: "2", title: "load_component()", body: "Compiles component_bytes, enumerates its ACTUAL imports, and fails closed -- never reaching instantiate -- if any imported interface falls outside manifest.requested_capabilities intersected with the handle's granted capabilities. \"The manifest declares, the operator grants\" (009 §3) is enforced right here, mechanically." },
+  { index: "3", title: "list_tools()", body: "Calls the now-verified component's guest.list-tools export once -- 009 §4's load-time discovery. Requires load_component() to have already succeeded." },
+  { index: "4", title: "invoke_tool()", body: "Per call: binds exactly the capabilities this component's manifest was granted (never the operator's whole set), builds a fresh store+linker+instance (no pooling), calls guest.invoke, and unconditionally revokes every bound capability before returning -- success or failure alike. Mirrors 006 §3 step 10." },
+];
+
+export const pluginManifestSnippet = `// include/agentengine/plugin/plugin.hpp -- 009 §3: "the manifest declares, the operator grants"
+struct PluginManifest {
+    std::string              id;
+    std::string              version;                    // semver
+    plugin_world              world;                       // tool | skill | provider | memory | filter | codec
+    std::vector<Capability>   requested_capabilities;       // a REQUEST, not a grant
+    std::uint64_t             memory_bytes_limit = 0;
+    std::uint64_t             wall_ms_limit = 0;
+};
+// This header has NO load/verify/instantiate logic -- that's WasmBackend's job (the real host).
+// A manifest requesting more than the operator's own CapabilitySet grants fails load_component()
+// closed, the same attenuation-only rule 007 §3 applies everywhere else in this engine.`;
+
 export const pluginEntries: ApiEntry[] = [
   {
     id: "wasm-plugin-abi",
