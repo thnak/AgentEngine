@@ -54,7 +54,27 @@ jobs:
         run: cmake --build build --config Release -j 4
 
       - name: Test
-        run: ctest --test-dir build -C Release -j 4 --output-on-failure --timeout 180
+        shell: pwsh
+        run: |
+          # MSVC's ASan links against clang_rt.asan_dynamic-x86_64.dll (it is a /MD-only feature),
+          # and this job never enters a VS dev shell -- CMake finds the toolchain by itself for
+          # Configure/Build, but the Test step inherits no MSVC PATH. So every ASan-instrumented
+          # test binary failed to start with 0xC0000135 (DLL not found).
+          #
+          # That is why the ASan leg reported ZERO passes out of 169 while appearing to "hang":
+          # a launch failure on the runner does not exit promptly the way it does locally, so ctest
+          # sat waiting on processes that were never going to run. It was never a deadlock in the
+          # examples -- example_04 only looked special because it is the one example carrying a
+          # TIMEOUT property, so it was the only one CTest could cut off and report.
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          if (Test-Path $vswhere) {
+            $vs = & $vswhere -latest -property installationPath
+            $dll = Get-ChildItem "$vs\VC\Tools\MSVC" -Recurse -Filter "clang_rt.asan_dynamic-x86_64.dll" -ErrorAction SilentlyContinue |
+                   Where-Object { $_.DirectoryName -like '*Hostx64*x64*' } | Select-Object -First 1
+            if ($dll) { $env:PATH = "$($dll.DirectoryName);$env:PATH"; Write-Host "ASan runtime: $($dll.DirectoryName)" }
+            else { Write-Host "WARNING: clang_rt.asan_dynamic-x86_64.dll not found under $vs" }
+          }
+          ctest --test-dir build -C Release -j 4 --output-on-failure --timeout 180
 
   windows-clang-cl:
     name: Windows / clang-cl / ${{ matrix.build_type }}
