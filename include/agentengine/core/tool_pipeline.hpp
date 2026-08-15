@@ -298,6 +298,21 @@ struct ToolInvocationAudit {
     std::size_t result_bytes = 0;
     std::chrono::steady_clock::duration duration{};
     IdempotencyKey idempotency_key;
+
+    // ADR-023 §7 R26: this record carried no identity at all, while 007 §8 requires the principal
+    // AND the delegation chain on every audit record, and I4 ("every effect is attributable") rests
+    // on it. It was survivable only while one server object served one principal; the moment two
+    // principals share a dispatcher -- which is exactly what an inbound protocol surface makes
+    // normal -- an audit trail without identity cannot attribute anything. Copied from
+    // `EffectContext::principal`, so it is whatever the pipeline actually executed as, never a
+    // separately-passed claim that could disagree with it.
+    //
+    // `on_behalf_of` is 007 §2's delegation link. It is the IMMEDIATE parent only, not the full
+    // chain -- `Principal` itself carries only that much (trust/principal.hpp's own comment), so
+    // recording more here would be inventing precision the identity type does not have.
+    std::string principal_id;
+    std::string principal_tenant_id;
+    std::string principal_on_behalf_of;
 };
 
 namespace tool_pipeline_detail {
@@ -379,6 +394,10 @@ namespace tool_pipeline_detail {
             audit_out->result_bytes = bytes;
             audit_out->duration = std::chrono::steady_clock::now() - started;
             audit_out->idempotency_key = idempotency_key;
+            // ADR-023 §7 R26 / 007 §8. Taken from `ctx`, the identity the call actually ran under.
+            audit_out->principal_id            = ctx.principal.id;
+            audit_out->principal_tenant_id     = ctx.principal.tenant_id;
+            audit_out->principal_on_behalf_of  = ctx.principal.on_behalf_of;
         }
         return result;
     };

@@ -56,8 +56,6 @@
 #include <functional>
 #include <mutex>
 #include <optional>
-#include <random>
-#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -66,6 +64,7 @@
 #include "agentengine/protocol/a2a/mapping.hpp"
 #include "agentengine/protocol/a2a/types.hpp"
 #include "agentengine/rt/agent_session.hpp"
+#include "agentengine/trust/secure_random.hpp"
 
 namespace agentengine::a2a {
 
@@ -87,17 +86,15 @@ using RunStarter = std::function<result<RunOutcome>(agentengine::rt::StartRun)>;
 
 namespace server_detail {
 
-// The same "sufficient entropy, not a predictable counter" idiom `protocol/mcp/server.hpp`'s own
-// `generate_task_id()` establishes for the identical reason (§12's own bearer-token-shaped hazard,
-// cited there for MCP task ids -- A2A task ids carry the same risk, reproduced rather than shared
-// through an unrelated MCP-specific header for one function).
-[[nodiscard]] inline std::string generate_task_id() {
-    std::random_device rd;
-    std::mt19937_64     gen(rd());
-    std::uniform_int_distribution<std::uint64_t> dist;
-    std::ostringstream oss;
-    oss << std::hex << dist(gen) << dist(gen);
-    return oss.str();
+// ADR-023 §7 R3: was a `std::random_device`-seeded `std::mt19937_64`, which is not a CSPRNG and is
+// state-recoverable from its own output. Now a real system CSPRNG (trust/secure_random.hpp), which
+// is also where `protocol/mcp/server.hpp`'s own generator now goes -- one implementation, not the
+// two independently-written copies that previously shared only a comment.
+//
+// Fails closed: a handle that cannot be generated securely is not generated at all. The `result`
+// propagates to `send_message()`'s caller rather than falling back to a weaker source.
+[[nodiscard]] inline result<std::string> generate_task_id() {
+    return trust::secure_random_hex(16);
 }
 
 }  // namespace server_detail
@@ -109,17 +106,34 @@ public:
 
     // §A.2 `SendMessage`. Blocking mode only (see file-top comment) -- there is no `returnImmediately`
     // parameter to honour differently, since this dispatcher has exactly one dispatch shape today.
-    [[nodiscard]] result<Task> send_message(Message const& inbound) {
+    //
+    // ADR-023 §7 R1/R2: `caller` is now REQUIRED, not optional. Two defects made it so:
+    //   - R2: `StartRun::caller` defaults to `std::nullopt`, and `AgentSession::handle()` SKIPS the
+    //     018 §2 admission check entirely when it is unset (agent_session.hpp's own comment at the
+    //     `has_value()` branch). This dispatcher previously built `StartRun{std::move(input)}` with
+    //     `caller` unset, so every inbound A2A message ran with admission bypassed, on any session,
+    //     cross-tenant included. The `nullopt`-skips default is a deliberate back-compat affordance
+    //     for the ~44 pre-existing in-process `StartRun{message}` test call sites (`StartRun`'s own
+    //     comment) and stays legitimate for them; what was never legitimate is a PROTOCOL surface
+    //     relying on it. A remote caller is exactly the case 018 §2 exists for, so the parameter is
+    //     mandatory here and there is no defaulted overload to fall back into.
+    //   - R1: the task store is now keyed per-principal (see `owner_` on `StoredTask`), which needs
+    //     the establishing principal at creation time.
+    [[nodiscard]] result<Task> send_message(Message const& inbound, agentengine::rt::SessionCaller const& caller) {
         agentengine::Message input = from_a2a_message(inbound);
-        result<RunOutcome> outcome = starter_(agentengine::rt::StartRun{std::move(input)});
+        agentengine::rt::StartRun start{std::move(input)};
+        start.caller = caller;
+        result<RunOutcome> outcome = starter_(std::move(start));
 
         std::lock_guard<std::mutex> lock(mutex_);
         if (!outcome) {
             // No run was ever minted (see file-top comment) -- this dispatcher mints its OWN id for
             // this one case; `Task.id` is therefore NOT a `run_id` here, the honest exception to §1's
             // usual identity, not a silently invented one.
+            result<std::string> minted = server_detail::generate_task_id();
+            if (!minted) return std::unexpected(minted.error());
             Task t;
-            t.id             = server_detail::generate_task_id();
+            t.id             = *minted;
             t.context_id     = context_id_;
             t.status.state   = task_state::failed;
             Message failure_msg;
@@ -131,7 +145,7 @@ public:
             p.value = TextPart{outcome.error().message};
             failure_msg.parts.push_back(std::move(p));
             t.status.message = failure_msg;
-            tasks_.emplace(t.id, t);
+            tasks_.emplace(t.id, StoredTask{t, caller});
             return t;
         }
 
@@ -142,34 +156,61 @@ public:
         t.status.message = to_a2a_message(outcome->response.message, t.id, context_id_);
         t.history.push_back(inbound_with_task_id(inbound, t.id, context_id_));
         t.history.push_back(*t.status.message);
-        tasks_.emplace(t.id, t);
+        tasks_.emplace(t.id, StoredTask{t, caller});
         return t;
     }
 
-    // §A.2 `GetTask`. §4's own "never distinguish not-found from not-authorized" rule does not apply
-    // here -- there is no principal/authorization boundary in this transport-agnostic dispatcher yet
-    // (the same "authorization is transport work" layering `McpServer`/`McpClient` already name), so
-    // an unknown taskId is simply not-found.
-    [[nodiscard]] result<Task> get_task(std::string const& task_id) const {
+    // §A.2 `GetTask`.
+    //
+    // ADR-023 §7 R1. This method previously took a bare `task_id` and did a plain `tasks_.find()`
+    // with no principal at all, and its own comment waved §4's rule away on the grounds that "there
+    // is no principal/authorization boundary in this transport-agnostic dispatcher yet." That
+    // reasoning does not hold: `Task::history` carries both the caller's inbound message and the
+    // agent's full response, and `Task.id` is `run_id` (§1) which `AgentSession` mints as
+    // `session_id + ":run:" + counter` (agent_session.hpp) -- a STRUCTURED, enumerable value. The
+    // combination was an unauthenticated cross-principal read of entire conversations: 011 §8a's
+    // MUST ("we MUST NOT treat possession of a server-minted handle (or a task id) as
+    // authenticating anyone... bound server-side as `<user_id>:<handle>`") and 018 §7 G4's
+    // release-blocking cross-tenant-leak class, both directly.
+    //
+    // Now: every stored task carries the principal that created it, and a caller who is not that
+    // principal gets the BYTE-IDENTICAL error an entirely unknown id produces -- §4's own "never
+    // distinguish not-found from not-authorized" rule, which does apply here and always did. The
+    // error text deliberately does NOT echo `task_id` back (it previously did): under a host-owned
+    // transport a credential can ride a path or an id (ADR-023 §7 R15), and an error string is a
+    // logging/telemetry surface 018 §4 forbids credentials from reaching.
+    //
+    // Residual, named not silently carried: `Task.id`'s enumerability itself is NOT fixed here.
+    // 012 §1 and §5 state the `task_id`-IS-`run_id` identity at spec level ("`task_id` already **is**
+    // `run_id` (§1)", 012 §5), and `run_id` must stay deterministic per 001 §7/I5, so decoupling
+    // them is a spec change requiring an ADR -- ADR-023's own decision, not a drive-by edit here.
+    // With principal binding in place, enumerability is defense-in-depth rather than the control.
+    [[nodiscard]] result<Task> get_task(std::string const& task_id,
+                                        agentengine::rt::SessionCaller const& caller) const {
         std::lock_guard<std::mutex> lock(mutex_);
         auto it = tasks_.find(task_id);
-        if (it == tasks_.end()) {
-            return std::unexpected(
-                error{failure_class::contract, "unknown taskId: " + task_id, "a2a.unknown_task"});
+        if (it == tasks_.end() || !owned_by(it->second, caller)) {
+            return std::unexpected(unknown_task_error());
         }
-        return it->second;
+        return it->second.task;
     }
 
     // §A.2 `CancelTask`. §2.3: "further messages to a terminal task are rejected... the task is
     // immutable." Every task this dispatcher can produce is ALREADY terminal by the time it is
     // observable (file-top comment) -- so this always rejects, faithfully proving "terminal is
     // terminal" rather than fabricating a CANCELED transition this implementation cannot really do.
-    [[nodiscard]] result<Task> cancel_task(std::string const& task_id) const {
+    //
+    // ADR-023 §7 R1, same fix and same reasoning as `get_task` above. The ordering matters and is
+    // deliberate: the ownership check runs BEFORE the terminal-state rejection, so a non-owner
+    // cannot distinguish "this task exists but is terminal" (`a2a.unsupported_operation`) from
+    // "no such task" (`a2a.unknown_task`) -- returning the terminal error to a stranger would leak
+    // existence, which is exactly what §4's rule forbids.
+    [[nodiscard]] result<Task> cancel_task(std::string const& task_id,
+                                            agentengine::rt::SessionCaller const& caller) const {
         std::lock_guard<std::mutex> lock(mutex_);
         auto it = tasks_.find(task_id);
-        if (it == tasks_.end()) {
-            return std::unexpected(
-                error{failure_class::contract, "unknown taskId: " + task_id, "a2a.unknown_task"});
+        if (it == tasks_.end() || !owned_by(it->second, caller)) {
+            return std::unexpected(unknown_task_error());
         }
         return std::unexpected(error{failure_class::policy,
                                       "task is already terminal; CancelTask on a terminal task is "
@@ -185,10 +226,37 @@ private:
         return m;
     }
 
-    RunStarter                                  starter_;
-    std::string                                 context_id_;
-    mutable std::mutex                          mutex_;
-    mutable std::unordered_map<std::string, Task> tasks_;
+    // ADR-023 §7 R1: 011 §8a's "bound server-side as `<user_id>:<handle>`". Represented as an owner
+    // field rather than by mangling the id, so the wire-visible `Task.id` stays exactly what §1 says
+    // it is while the binding is enforced on lookup. Storing the owner also keeps the binding
+    // durable across whatever future store replaces this in-process map (ADR-023 §7 R18).
+    struct StoredTask {
+        Task          task;
+        agentengine::rt::SessionCaller owner;
+    };
+
+    // 018 §6: identity is `{id, tenant_id}`, and a cross-tenant id collision is NOT ownership --
+    // the same rule `principal_admitted_for` (trust/principal.hpp) enforces for sessions, applied
+    // here rather than re-derived. Deliberately an exact match: `SessionCaller` cannot express
+    // `on_behalf_of` by construction (agent_session.hpp's own comment), so there is no delegation
+    // case to widen for, and inventing one here would be strictly more permissive than the session
+    // admission rule this mirrors.
+    [[nodiscard]] static bool owned_by(StoredTask const& stored, agentengine::rt::SessionCaller const& caller) {
+        return stored.owner.id == caller.id && stored.owner.tenant_id == caller.tenant_id;
+    }
+
+    // One error value for both "no such task" and "not yours", constructed identically so the two
+    // are indistinguishable to a caller (§4). Deliberately echoes nothing back from the request --
+    // see `get_task`'s own comment on why the previous `"unknown taskId: " + task_id` was itself a
+    // problem.
+    [[nodiscard]] static error unknown_task_error() {
+        return error{failure_class::contract, "unknown taskId", "a2a.unknown_task"};
+    }
+
+    RunStarter                                        starter_;
+    std::string                                       context_id_;
+    mutable std::mutex                                mutex_;
+    mutable std::unordered_map<std::string, StoredTask> tasks_;
 };
 
 }  // namespace agentengine::a2a

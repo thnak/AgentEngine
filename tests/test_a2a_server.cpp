@@ -135,7 +135,13 @@ int main() {
     Harness<CannedChatClient> h{"s-a2a"};
     a2a::A2aServer server(h.starter(), "ctx-1");
 
-    auto sent = server.send_message(text_message("hello"));
+    // ADR-023 §7 R2: `send_message` now REQUIRES the caller, and it is checked for real -- the
+    // session above is initialized owning `Principal{"p-owner", ""}`, so this caller must match
+    // it or 018 §2 admission denies the run. Previously this dispatcher passed no caller at all
+    // and `AgentSession::handle()` skipped admission entirely.
+    ae::SessionCaller const kOwner{"p-owner", ""};
+
+    auto sent = server.send_message(text_message("hello"), kOwner);
     check(sent.has_value(), "D3-1: send_message() against a real AgentSession succeeds");
     std::string task_id;
     if (sent.has_value()) {
@@ -161,7 +167,7 @@ int main() {
 
     // --- D3-4: GetTask on that same id returns the identical Task -----------------------------------
     {
-        auto fetched = server.get_task(task_id);
+        auto fetched = server.get_task(task_id, kOwner);
         check(fetched.has_value() && fetched->id == task_id &&
                   fetched->status.state == a2a::task_state::completed,
               "D3-4: GetTask retrieves the exact same completed Task by its real run_id");
@@ -169,26 +175,26 @@ int main() {
 
     // --- D3-5: GetTask on an unknown id is rejected --------------------------------------------------
     {
-        auto missing = server.get_task("no-such-task");
+        auto missing = server.get_task("no-such-task", kOwner);
         check(!missing.has_value(), "D3-5: GetTask on an unknown taskId is rejected");
     }
 
     // --- D3-6: CancelTask on an (already-terminal) task is rejected -- "terminal is terminal" (§2.3),-
     // --- never fabricating a CANCELED transition this synchronous dispatch cannot really produce.  ---
     {
-        auto cancelled = server.cancel_task(task_id);
+        auto cancelled = server.cancel_task(task_id, kOwner);
         check(!cancelled.has_value(),
               "D3-6: CancelTask on an already-completed task is rejected, faithfully, not silently "
               "accepted");
         // Confirm it is STILL retrievable and STILL completed -- rejection didn't corrupt state.
-        auto still_there = server.get_task(task_id);
+        auto still_there = server.get_task(task_id, kOwner);
         check(still_there.has_value() && still_there->status.state == a2a::task_state::completed,
               "D3-6: the task is unaffected by the rejected cancel attempt");
     }
 
     // --- D3-7: CancelTask on an unknown id is rejected too, distinctly from the terminal-task case --
     {
-        auto cancel_missing = server.cancel_task("no-such-task");
+        auto cancel_missing = server.cancel_task("no-such-task", kOwner);
         check(!cancel_missing.has_value(), "D3-7: CancelTask on an unknown taskId is rejected");
         if (!cancel_missing.has_value()) {
             check(cancel_missing.error().code == "a2a.unknown_task",
@@ -203,7 +209,7 @@ int main() {
     {
         Harness<FailingChatClient> hf{"s-a2a-fail"};
         a2a::A2aServer failing_server(hf.starter(), "ctx-2");
-        auto failed = failing_server.send_message(text_message("this will fail"));
+        auto failed = failing_server.send_message(text_message("this will fail"), kOwner);
         check(failed.has_value(),
               "D3-8: even a run that never completes still produces a real Task -- SendMessage "
               "itself does not fail, the TASK reports the failure");
@@ -211,7 +217,7 @@ int main() {
             check(failed->status.state == a2a::task_state::failed,
                   "D3-8: TASK_STATE_FAILED for a run whose Ask never resolved");
             check(!failed->id.empty(), "D3-8: the dispatcher minted its own real (non-run) task id");
-            auto refetched = failing_server.get_task(failed->id);
+            auto refetched = failing_server.get_task(failed->id, kOwner);
             check(refetched.has_value() && refetched->status.state == a2a::task_state::failed,
                   "D3-8: the FAILED task is retrievable by its own minted id, exactly like a "
                   "COMPLETED one would be");

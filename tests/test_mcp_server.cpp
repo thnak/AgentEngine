@@ -71,11 +71,13 @@ int main() {
     auto const table = ae::ToolTable::from_tools<EchoTool, AlwaysFailsTool>();
     ae::CapabilitySet const held;  // neither tool declares a Capabilities<...> ceiling
     mcp::McpServer server(table, held, ae::ApprovalDecider{}, "agentengine-test-server");
+    // ADR-023 §7 R3: `dispatch()` now requires the principal the request established.
+    ae::Principal const kCaller = ae::make_local_cli_principal("test-caller", "test-tenant");
 
     // --- C2-1: server/discover -----------------------------------------------------------------------
     {
         mcp::JsonRpcRequest req{mcp::RpcId{std::string{"r1"}}, "server/discover", json::Value{}};
-        mcp::JsonRpcResponse resp = server.dispatch(req);
+        mcp::JsonRpcResponse resp = server.dispatch(req, kCaller);
         check(resp.result.has_value() && !resp.error.has_value(), "C2-1: server/discover succeeds");
         if (resp.result.has_value()) {
             auto const* ver = resp.result->find("protocolVersion");
@@ -91,7 +93,7 @@ int main() {
     // --- C2-2: tools/list returns both real tools, in registration order, with real schemas --------
     {
         mcp::JsonRpcRequest req{mcp::RpcId{std::string{"r2"}}, "tools/list", json::Value{}};
-        mcp::JsonRpcResponse resp = server.dispatch(req);
+        mcp::JsonRpcResponse resp = server.dispatch(req, kCaller);
         check(resp.result.has_value(), "C2-2: tools/list succeeds");
         if (resp.result.has_value()) {
             auto const* tools = resp.result->find("tools");
@@ -117,7 +119,7 @@ int main() {
             json::Value::make_object(
                 {{"name", json::Value::make_string("echo")},
                  {"arguments", json::Value::make_object({{"text", json::Value::make_string("hi")}})}})};
-        mcp::JsonRpcResponse resp = server.dispatch(req);
+        mcp::JsonRpcResponse resp = server.dispatch(req, kCaller);
         check(resp.result.has_value() && !resp.error.has_value(),
               "C2-3: a successful tools/call is a JSON-RPC result, never a JSON-RPC error");
         if (resp.result.has_value()) {
@@ -139,7 +141,7 @@ int main() {
             mcp::RpcId{std::string{"r4"}}, "tools/call",
             json::Value::make_object({{"name", json::Value::make_string("always_fails")},
                                        {"arguments", json::Value::make_object({{"noop", json::Value::make_bool(true)}})}})};
-        mcp::JsonRpcResponse resp = server.dispatch(req);
+        mcp::JsonRpcResponse resp = server.dispatch(req, kCaller);
         check(resp.result.has_value() && !resp.error.has_value(),
               "C2-4: an execution failure is STILL a JSON-RPC result, not a JSON-RPC error");
         if (resp.result.has_value()) {
@@ -153,7 +155,7 @@ int main() {
     {
         mcp::JsonRpcRequest req{mcp::RpcId{std::string{"r5"}}, "tools/call",
                                  json::Value::make_object({{"name", json::Value::make_string("nope")}})};
-        mcp::JsonRpcResponse resp = server.dispatch(req);
+        mcp::JsonRpcResponse resp = server.dispatch(req, kCaller);
         check(!resp.result.has_value() && resp.error.has_value(),
               "C2-5: an unknown tool is a JSON-RPC error, never a result with isError:true");
         if (resp.error.has_value()) {
@@ -165,7 +167,7 @@ int main() {
     // --- C2-6: tools/call with a missing "name" is InvalidParams ------------------------------------
     {
         mcp::JsonRpcRequest req{mcp::RpcId{std::string{"r6"}}, "tools/call", json::Value::make_object({})};
-        mcp::JsonRpcResponse resp = server.dispatch(req);
+        mcp::JsonRpcResponse resp = server.dispatch(req, kCaller);
         check(!resp.result.has_value() && resp.error.has_value(),
               "C2-6: tools/call with no \"name\" is rejected");
         if (resp.error.has_value()) {
@@ -177,7 +179,7 @@ int main() {
     // --- C2-7: an unrecognized method is MethodNotFound, never silently ignored --------------------
     {
         mcp::JsonRpcRequest req{mcp::RpcId{std::string{"r7"}}, "resources/list", json::Value{}};
-        mcp::JsonRpcResponse resp = server.dispatch(req);
+        mcp::JsonRpcResponse resp = server.dispatch(req, kCaller);
         check(!resp.result.has_value() && resp.error.has_value(),
               "C2-7: an unimplemented method is rejected, not silently no-op'd");
         if (resp.error.has_value()) {

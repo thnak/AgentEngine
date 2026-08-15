@@ -121,9 +121,23 @@ int main() {
     a2a::A2aServer server(h.starter(), "ctx-remote");
 
     a2a::RemoteAgentTransport transport;
-    transport.send_message = [&server](a2a::Message const& m) { return server.send_message(m); };
-    transport.get_task     = [&server](std::string const& id) { return server.get_task(id); };
-    transport.cancel_task  = [&server](std::string const& id) { return server.cancel_task(id); };
+    // ADR-023 §7 R1/R2: the transport is what establishes the caller, and every server verb now
+    // requires it -- `send_message` so the run gets a real 018 §2 admission check instead of the
+    // `nullopt`-skips-admission default, `get_task`/`cancel_task` so the lookup is principal-bound.
+    // Must match the session's own owning principal (`initialize(..., Principal{"p-owner", ""})`
+    // above) or 018 §2 admission denies the run -- which it now really does, rather than being
+    // skipped. A deliberately mismatched caller is proven to be denied in
+    // test_task_principal_binding.cpp; here the point is the ordinary authorized path.
+    ae::SessionCaller const kCaller{"p-owner", ""};
+    transport.send_message = [&server, &kCaller](a2a::Message const& m) {
+        return server.send_message(m, kCaller);
+    };
+    transport.get_task     = [&server, &kCaller](std::string const& id) {
+        return server.get_task(id, kCaller);
+    };
+    transport.cancel_task  = [&server, &kCaller](std::string const& id) {
+        return server.cancel_task(id, kCaller);
+    };
 
     // --- D4-1/2/3: happy-path client passthrough against a REAL server ------------------------------
     {

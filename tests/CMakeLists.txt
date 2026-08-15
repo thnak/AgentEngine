@@ -1091,6 +1091,13 @@ add_executable(test_mcp_tasks_extension test_mcp_tasks_extension.cpp)
 target_link_libraries(test_mcp_tasks_extension PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_mcp_tasks_extension COMMAND test_mcp_tasks_extension)
 
+# ADR-023 §7 R1/R2/R3: server-minted task handles are principal-bound, not-authorized is
+# indistinguishable from not-found, and the A2A path really applies 018 §2 admission. Every negative
+# case carries its own positive control (decisions/README.md's rule for security claims).
+add_executable(test_task_principal_binding test_task_principal_binding.cpp)
+target_link_libraries(test_task_principal_binding PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_task_principal_binding COMMAND test_task_principal_binding)
+
 # ---- Milestone 7 Phase D1 -- 012 §0/§A.4's A2A v1.0 wire object model (protocol\a2a\types.hpp):
 # Part/Message/Artifact/TaskStatus/Task round-trip, the removed `kind` discriminator, full
 # SCREAMING_SNAKE enum serialization, and unknown-Part-kind forward compatibility -----------------

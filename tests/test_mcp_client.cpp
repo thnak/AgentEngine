@@ -93,7 +93,13 @@ int main() {
     auto const table = ae::ToolTable::from_tools<EchoTool, AlwaysFailsTool>();
     ae::CapabilitySet const held;
     mcp::McpServer server(table, held, ae::ApprovalDecider{}, "agentengine-test-server");
-    mcp::RequestSender to_real_server = [&server](mcp::JsonRpcRequest const& req) { return server.dispatch(req); };
+    // ADR-023 §7 R3: the transport supplies the principal the request established. Here the
+    // in-process test harness IS the transport, so it names one explicitly rather than relying
+    // on a default -- there is deliberately no defaulted overload to fall into.
+    ae::Principal const kCaller = ae::make_local_cli_principal("test-caller", "test-tenant");
+    mcp::RequestSender to_real_server = [&server, &kCaller](mcp::JsonRpcRequest const& req) {
+        return server.dispatch(req, kCaller);
+    };
 
     // --- C3-1/2/3/4: happy-path client behaviour against a REAL server ------------------------------
     {
