@@ -25,6 +25,7 @@
 
 namespace agentengine {
 
+// ae-naming-lint: allow MountedSkillsState — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class MountedSkillsState {
 public:
     // Idempotent: mounting an already-mounted skill is a no-op, never an error -- the agent may

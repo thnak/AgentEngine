@@ -181,6 +181,7 @@ namespace agentengine::rt {
 
 // -- Reused shapes (see file banner: hand-reproduced, not #include-d from workflow/executor.hpp) ---
 
+// ae-naming-lint: allow ExecutorOutcome — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct ExecutorOutcome {
     agentengine::Message     payload;
     std::vector<std::string> routes;
@@ -191,9 +192,11 @@ struct ExecutorOutcome {
         : payload(std::move(m)), routes(std::move(r)) {}
 };
 
+// ae-naming-lint: allow ExecutorBody — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 using ExecutorBody =
     std::function<agentengine::result<ExecutorOutcome>(agentengine::Message const&, agentengine::EffectContext&)>;
 
+// ae-naming-lint: allow ExecuteReply — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct ExecuteReply {
     agentengine::Message     payload;
     std::vector<std::string> routes;
@@ -223,6 +226,7 @@ struct ExecuteReply {
 
 // -- Ported verbatim from workflow/supervisor.hpp (pure data, zero Quark dependency there either) --
 
+// ae-naming-lint: allow workflow_status — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 enum class workflow_status {
     completed,
     suspended,
@@ -242,8 +246,10 @@ struct RunWorkflow {
     agentengine::Message input;
 };
 
+// ae-naming-lint: allow ContinueWorkflow — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct ContinueWorkflow {};
 
+// ae-naming-lint: allow ResumeWorkflow — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct ResumeWorkflow {
     std::string           interaction_id;
     agentengine::Message  response;
@@ -256,6 +262,7 @@ struct ExecutorOutput {
     agentengine::Message  payload;
 };
 
+// ae-naming-lint: allow WorkflowResult — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct WorkflowResult {
     workflow_status status = workflow_status::invalid;
     std::uint32_t   rounds = 0;
@@ -268,17 +275,20 @@ struct WorkflowResult {
 
 // -- Slice 2: the checkpoint record + its JSON codec (see file banner) -----------------------------
 
+// ae-naming-lint: allow DeliveryRecord — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct DeliveryRecord {
     std::uint64_t         executor_index = 0;
     agentengine::Message  payload;
 };
 
+// ae-naming-lint: allow ExecutorOutputRecord — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct ExecutorOutputRecord {
     std::string           executor_id;
     std::uint32_t         round = 0;
     agentengine::Message  payload;
 };
 
+// ae-naming-lint: allow OpenPortRecord — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct OpenPortRecord {
     agentengine::Interaction interaction;
     std::uint64_t             executor_index = 0;
@@ -287,6 +297,7 @@ struct OpenPortRecord {
     bool                       resolved = false;
 };
 
+// ae-naming-lint: allow RunStateRecord — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct RunStateRecord {
     std::uint64_t  run_counter = 0;
     std::string    run_id;
@@ -513,6 +524,7 @@ struct RunStateRecord {
     return run_state_record_from_json(*parsed);
 }
 
+// ae-naming-lint: allow WorkflowSupervisor — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class WorkflowSupervisor {
 public:
     // `bodies`/`contexts` are parallel to `graph.executors` by INDEX -- the same convention the

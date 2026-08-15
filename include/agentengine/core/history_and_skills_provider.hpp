@@ -29,6 +29,7 @@ namespace agentengine {
 // unfixed here because nothing needed a non-default-constructible `HistoryProviderT` before this).
 template <class HistoryProviderT, class SkillsProviderT>
     requires ContextProvider<HistoryProviderT> && ContextProvider<SkillsProviderT>
+// ae-naming-lint: allow HistoryAndSkillsProvider — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class HistoryAndSkillsProvider {
 public:
     HistoryAndSkillsProvider()

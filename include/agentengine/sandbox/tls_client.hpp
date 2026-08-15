@@ -34,6 +34,7 @@ namespace agentengine::sandbox {
 // `send`/`recv` block internally (matching net_egress_proxy.cpp's own `send_all`/read-loop posture
 // for plain HTTP) rather than returning would-block to the caller -- the caller's read loop looks
 // identical whether it is reading through this or a raw socket.
+// ae-naming-lint: allow TlsClientSession — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class TlsClientSession {
 public:
     // Performs the full TLS handshake before returning: system-CA-style validation against the

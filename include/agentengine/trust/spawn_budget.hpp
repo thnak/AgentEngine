@@ -27,6 +27,7 @@ namespace agentengine::trust {
 // A depth budget for a chain of agent.spawn calls. Strictly decreasing (007 §3 rule 2: attenuation
 // only, never a superset) -- every attenuation consumes exactly one level, and the type has no
 // operation that increases remaining_depth() or resets it.
+// ae-naming-lint: allow SpawnBudget — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class SpawnBudget {
 public:
     // Only the host calls this -- typically once per top-level run, seeded from policy (023

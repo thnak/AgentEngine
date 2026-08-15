@@ -45,9 +45,11 @@
 
 namespace agentengine::rt {
 
+// ae-naming-lint: allow effect_journal_phase — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 enum class effect_journal_phase { intent, outcome };
 
 // All scalars/strings -- no variant, no serialization gap, same as the original.
+// ae-naming-lint: allow EffectJournalEntry — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct EffectJournalEntry {
     std::string           idempotency_key;  // IdempotencyKey::to_string() -- the dedup identity
     std::string           tool_name;

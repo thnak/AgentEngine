@@ -240,21 +240,25 @@ namespace agentengine::rt {
 // core/agent_session.hpp one, deliberately -- Slice 1 does not depend on that header at all, keeping
 // this file's own Quark-free claim easy to verify by inspection (no transitive include of anything
 // that pulls quark/*).
+// ae-naming-lint: allow NoSessionState — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct NoSessionState {};
 
 // Same narrowed, wire-shape-motivated-but-still-correct admission identity as
 // agentengine::SessionCaller -- see file banner for why this slice keeps the shape even though the
 // byte-budget that originally forced it no longer applies.
+// ae-naming-lint: allow SessionCaller — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct SessionCaller {
     std::string id;
     std::string tenant_id;
 };
 
+// ae-naming-lint: allow StartRun — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct StartRun {
     Message input;
     std::optional<SessionCaller> caller = std::nullopt;
 };
 
+// ae-naming-lint: allow ResolveInteraction — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct ResolveInteraction {
     std::string interaction_id;
     bool        approved = false;
@@ -286,6 +290,7 @@ struct AgentResponse {
 // ADDITION" paragraph for the full delivery-path design. Deliberately NOT the original's Quark
 // message type (no Ask/tell shape here -- this is plain data pushed into a BackgroundCompletionQueue,
 // never routed through anything actor-shaped).
+// ae-naming-lint: allow BackgroundTaskDone — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct BackgroundTaskDone {
     std::string handle_id;
     std::string call_id;
@@ -298,6 +303,7 @@ struct BackgroundTaskDone {
 // touches must be acquirable synchronously. Held behind a shared_ptr on AgentSession specifically so
 // a worker's completion closure can capture a weak_ptr instead of a reference into the (possibly by
 // then destroyed) AgentSession itself -- see file banner for the full lifetime rationale.
+// ae-naming-lint: allow BackgroundCompletionQueue — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct BackgroundCompletionQueue {
     std::mutex                     m;
     std::deque<BackgroundTaskDone> pending;
@@ -313,12 +319,14 @@ struct BackgroundCompletionQueue {
 // get to assert what time it currently is; the glue below (`run_rounds()`) reads real wall-clock time
 // once, at the actual moment of invocation, the same "recorded seam" any other host-triggered call in
 // this codebase reads real time at -- the model supplies only WHAT it wants (`delay_ms`, `label`).
+// ae-naming-lint: allow ScheduleWakeupArgs — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct ScheduleWakeupArgs {
     std::uint64_t delay_ms = 0;
     std::string   label;
 };
 AE_JSON_SCHEMA(ScheduleWakeupArgs, delay_ms, label)
 
+// ae-naming-lint: allow ScheduleWakeupReply — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct ScheduleWakeupReply {
     std::string handle_id;
 };
@@ -340,6 +348,7 @@ AE_JSON_SCHEMA(ScheduleWakeupReply, handle_id)
 // rather than a static `ToolDescriptor::capability_ceiling` entry, not this tool's own compile-time
 // declared ceiling (which a generic `invoke_tool()` step-4/7 bind could only check for bare
 // existence, never the live count `schedule_wakeup()` itself already checks correctly).
+// ae-naming-lint: allow ScheduleWakeupTool — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct ScheduleWakeupTool : agentengine::Tool<ScheduleWakeupTool> {
     static constexpr std::string_view name = "schedule_wakeup";
     static constexpr std::string_view description =
@@ -369,6 +378,7 @@ struct ScheduleWakeupTool : agentengine::Tool<ScheduleWakeupTool> {
 // minting a new interaction_id per question"). Deliberately NOT durably checkpointed (no codec, no
 // field in `AgentSessionRecord`) -- the same "not yet solved" scope `Interaction::
 // expires_at_ns` already carries project-wide (ADR-029 §6), not a new gap this ADR introduces.
+// ae-naming-lint: allow PendingCodeActAsk — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct PendingCodeActAsk {
     std::string              source;
     std::string              language;
@@ -386,6 +396,7 @@ struct PendingCodeActAsk {
 // serialization yet" gap the original named). `to_record()`/`restore_from_record()` (AgentSession
 // member functions, below) are the only two places that cross between the in-process type and this
 // shape, so the field list can't drift between them silently.
+// ae-naming-lint: allow AgentSessionRecord — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct AgentSessionRecord {
     std::string session_id;
     std::string principal_id;
@@ -1729,6 +1740,7 @@ template <SessionStore StoreT>
 // (checkpoint_if_due's own comment three declarations up: "AgentSession has no ambient Store access,
 // I2" -- this policy switch honors that same boundary rather than giving AgentSession a
 // self-referencing Store hook).
+// ae-naming-lint: allow ack_policy — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 enum class ack_policy : std::uint8_t { at_most_once, require_durable };
 
 // 005 §2's "history delta" specifically -- the messages ONE turn added, not the whole conversation.
@@ -1736,6 +1748,7 @@ enum class ack_policy : std::uint8_t { at_most_once, require_durable };
 // not-yet-built gap; this is deliberately narrower and, unlike that, tractable today: reuses
 // rt/message_codec.hpp's already-proven Message<->JSON codec (built for WorkflowSupervisor's own
 // checkpoint record, ADR-037 Phase 3 Slice 2) rather than inventing a second one.
+// ae-naming-lint: allow TurnDeltaRecord — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct TurnDeltaRecord {
     std::string session_id;
     std::uint64_t turn_index = 0;
@@ -1923,6 +1936,7 @@ template <class ChatClientT, class StateT, class HistoryProviderT, SessionStore 
 // ported unchanged.
 template <std::uint32_t EveryNTurns>
     requires(EveryNTurns >= 1)
+// ae-naming-lint: allow CheckpointCadence — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct CheckpointCadence {
     [[nodiscard]] static constexpr bool due(std::uint64_t turns_since_last_checkpoint) noexcept {
         return turns_since_last_checkpoint >= EveryNTurns;
@@ -1947,6 +1961,7 @@ template <class CadenceT, class ChatClientT, class StateT, class HistoryProvider
 // Same "hard removal, with a completion receipt" shape as the Quark original -- a receipt naming
 // which of the two halves (durable tombstone, in-process clear) actually happened, since either can
 // independently fail.
+// ae-naming-lint: allow SessionDeletionReceipt — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct SessionDeletionReceipt {
     std::string session_id;
     bool        durable_record_removed = false;

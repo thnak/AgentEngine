@@ -31,11 +31,13 @@
 
 namespace agentengine {
 
+// ae-naming-lint: allow RecallArgs — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct RecallArgs {
     std::string query;
 };
 AE_JSON_SCHEMA(RecallArgs, query)
 
+// ae-naming-lint: allow RecallReply — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct RecallReply {
     std::vector<std::string> results;
 };

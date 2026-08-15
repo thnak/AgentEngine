@@ -64,6 +64,7 @@ inline void secure_zero(void* p, std::size_t n) noexcept {
 // a secret would multiply the number of live plaintext copies (and each would have to be zeroized),
 // so the type simply forbids it. There is intentionally NO `std::string` conversion and NO
 // `operator<<`.
+// ae-naming-lint: allow Secret — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class Secret {
 public:
     Secret() = default;
@@ -115,6 +116,7 @@ private:
 // The SecretSource seam (020 §4). Resolution happens at startup, off the hot path; a miss is a
 // `result` error (`failure_class::contract`, code `secret.not_found`), never a throw. Adapters
 // (env/file here; OS keystores DEFERRED) all model this one interface.
+// ae-naming-lint: allow SecretSource — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class SecretSource {
 public:
     virtual ~SecretSource() = default;
@@ -193,6 +195,7 @@ private:
 // manifests (009 §3). Resolving one requires the caller's EffectContext to carry a granted
 // cap::Secret naming this ref (007 §3) -- every SecretStore backend below checks this at the point
 // of use, never earlier.
+// ae-naming-lint: allow SecretRef — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct SecretRef {
     std::string name;
 };
@@ -207,6 +210,7 @@ struct SecretRef {
 // needing text (a provider API key going into an HTTP header, 004 §1) uses at the actual point of
 // use, matching 018 §4's "resolved... at the point of use" rule and letting a grep for
 // "reveal_text(" find every such call site.
+// ae-naming-lint: allow SecretLease — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class SecretLease {
 public:
     SecretLease(SecretRef ref, Secret bytes) : ref_(std::move(ref)), bytes_(std::move(bytes)) {}
@@ -273,6 +277,7 @@ namespace secret_detail {
 // is -- resolution has no I/O to suspend on (env lookup, a small file read), matching
 // `SecretSource::get()`'s own synchronous shape.
 template <class T>
+// ae-naming-lint: allow SecretStore — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 concept SecretStore = requires(T store, SecretRef const& ref, EffectContext& ctx) {
     { store.resolve(ref, ctx) } -> std::same_as<result<SecretLease>>;
 };
@@ -281,6 +286,7 @@ concept SecretStore = requires(T store, SecretRef const& ref, EffectContext& ctx
 // (`EnvSecretSource`/`FileSecretSource` today; an OS keystore adapter later, per 020 §4's own
 // "DEFERRED adapters" note -- this type needs no change when one lands, only a new `SecretSource`
 // implementation to construct it with).
+// ae-naming-lint: allow AgentEngineSecretStore — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class AgentEngineSecretStore {
 public:
     explicit AgentEngineSecretStore(std::unique_ptr<SecretSource> source) : source_(std::move(source)) {}
@@ -298,6 +304,7 @@ static_assert(SecretStore<AgentEngineSecretStore>);
 // rotation-without-restart proof (018 §3, decision 4) needs a store whose value can change between
 // two resolve() calls with no filesystem/environment mutation involved. Production code constructs
 // `AgentEngineSecretStore` over `EnvSecretSource`/`FileSecretSource`, never this.
+// ae-naming-lint: allow InMemorySecretStore — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class InMemorySecretStore {
 public:
     void set(std::string name, std::string value) { values_[std::move(name)] = std::move(value); }

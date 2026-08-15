@@ -63,6 +63,7 @@ namespace agentengine::rt {
 // this alias is introduced here rather than inventing a parallel wrapper type with its own
 // constructors/comparisons for no behavioral benefit. Callers on both sides of the seam (a real
 // `AgentSession` and every conformer below) pass the exact same `std::string` a session already has.
+// ae-naming-lint: allow SessionId — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 using SessionId = std::string;
 
 // The interface itself. Every method is required to report failure through `result<T>` (never throw
@@ -96,6 +97,7 @@ concept SessionStore = requires(T& store, T const& const_store, SessionId const&
 // proposition is "obviously correct, not fast" -- `save`/`load`/`exists`/`remove` are all O(1)
 // map operations, so contention is not a real concern here even under real concurrent use.
 // ------------------------------------------------------------------------------------------------
+// ae-naming-lint: allow InMemorySessionStore — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class InMemorySessionStore {
 public:
     [[nodiscard]] result<void> save(SessionId const& id, std::vector<std::byte> bytes) {
@@ -181,6 +183,7 @@ static_assert(SessionStore<InMemorySessionStore>,
 // passing a raw file path where an id was expected), not as the ONLY line of defense against a
 // hostile session id.
 // ------------------------------------------------------------------------------------------------
+// ae-naming-lint: allow FileSessionStore — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class FileSessionStore {
 public:
     // Creates `root` if it does not already exist (best-effort -- if creation fails here, every

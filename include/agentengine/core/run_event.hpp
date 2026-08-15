@@ -151,6 +151,7 @@ struct CodeActAskRequested {
 
 }  // namespace run_event_payload
 
+// ae-naming-lint: allow RunEventPayload — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 using RunEventPayload = std::variant<run_event_payload::Empty, run_event_payload::RunFailed,
                                       run_event_payload::Turn, run_event_payload::ModelDelta,
                                       run_event_payload::ToolCallStarted, run_event_payload::ToolCallDelta,

@@ -119,6 +119,7 @@ inline void run_replay_worker(std::vector<RecordedChunk> chunks, std::string str
 // banner). Never a template -- there is exactly one shape of "replay this recording," unlike
 // `ModelCallGateway<Primary, Fallback...>` (core/model_call_gateway.hpp), which wraps an arbitrary
 // set of backends.
+// ae-naming-lint: allow ReplayChatClient — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class ReplayChatClient {
 public:
     // Injectable inter-chunk sleep source -- default real (`replay_chat_client_detail::real_sleep`

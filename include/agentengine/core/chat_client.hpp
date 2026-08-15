@@ -192,6 +192,7 @@ concept ChatClient = requires(T client, ChatRequest request, EffectContext& ctx)
 // successor, there was no deprecation-then-migration cost to justify keeping the three `chat()`-only
 // wrappers around.
 template <class T>
+// ae-naming-lint: allow LegacyChatClient — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 concept LegacyChatClient = requires(T client, ChatRequest request, EffectContext& ctx) {
     { client.capabilities() } -> std::same_as<ChatClientCapabilities>;
     { client.chat(request, ctx) } -> std::same_as<task<result<ChatResponse>>>;
@@ -207,6 +208,7 @@ concept LegacyChatClient = requires(T client, ChatRequest request, EffectContext
 // reasoning). `AgentSession::run_model_call()` picks between the two shapes with `if constexpr`; a
 // raw single backend (the common case, every pre-ADR-036 conformer) is completely unaffected.
 template <class T>
+// ae-naming-lint: allow ModelCallGatewayLike — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 concept ModelCallGatewayLike = requires(T gateway, ChatRequest request, EffectContext& ctx) {
     { gateway.capabilities() } -> std::same_as<ChatClientCapabilities>;
     { gateway.call(request, ctx) } -> std::same_as<task<result<ChatResponse>>>;
@@ -223,6 +225,7 @@ concept ModelCallGatewayLike = requires(T gateway, ChatRequest request, EffectCo
 // `AgentSession::run_rounds()`'s own `if constexpr` gate on this concept degrades to "unchanged
 // behavior," never a compile error and never a silently-wrong filter.
 template <class T>
+// ae-naming-lint: allow HasProducerChatClientId — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 concept HasProducerChatClientId = requires(T const& t) {
     { t.producer_chat_client_id() } -> std::convertible_to<std::string>;
 };
@@ -334,6 +337,7 @@ namespace chat_client_detail {
 // (`check_chat_client_credentials`/`check_output_schema_enforceable`) needs to check against — not
 // a bound, callable instance itself (an eventual Engine's registry would also own that instance's
 // lifetime; no `Engine` type exists yet to do so, so this stays capability-only until one does).
+// ae-naming-lint: allow ChatClientRegistry — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class ChatClientRegistry {
 public:
     void register_client(std::string chat_client_id, ChatClientCapabilities caps) {

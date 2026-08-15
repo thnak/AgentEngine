@@ -52,9 +52,11 @@
 namespace agentengine::pal {
 
 #if defined(_WIN32)
+// ae-naming-lint: allow fd_t — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 using fd_t = SOCKET;
 inline fd_t const invalid_fd = INVALID_SOCKET;
 #else
+// ae-naming-lint: allow fd_t — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 using fd_t = int;
 inline constexpr fd_t invalid_fd = -1;
 #endif

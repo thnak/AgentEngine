@@ -71,11 +71,13 @@ namespace agentengine::rt {
 // boundary (`agentengine::project_status`, project.hpp) -- same reasoning `ProjectMember` already
 // established in project_archive.hpp: including project.hpp would drag in `quark/core/event_log.hpp`
 // et al., defeating the point of this file staying Quark-free.
+// ae-naming-lint: allow project_status — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 enum class project_status { active, paused, archived };
 
 // 030 §2's `Project` struct, minus the archived tail (project_archive.hpp owns that separately, same
 // split the Quark original enforced and the SAME reasoning: §7 G4 forbids the archived tail from
 // living inside a record that gets rewritten wholesale on every mutation).
+// ae-naming-lint: allow ProjectRecord — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct ProjectRecord {
     std::string                project_id;
     std::string                principal_id;

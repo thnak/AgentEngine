@@ -32,6 +32,7 @@
 
 namespace agentengine {
 
+// ae-naming-lint: allow DrainedChatStream — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct DrainedChatStream {
     Message accumulated;
     std::optional<Usage> usage;

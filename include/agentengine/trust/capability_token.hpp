@@ -32,10 +32,12 @@ namespace agentengine::trust {
 
 inline constexpr std::size_t kMacBytes = 32; // HMAC-SHA256 output size
 
+// ae-naming-lint: allow Mac — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 using Mac = std::array<std::uint8_t, kMacBytes>;
 
 // The root secret a single minting host holds. Generated once per session/run (ADR-005 §3.1);
 // never serialized, never transmitted -- possession of a token never implies possession of this.
+// ae-naming-lint: allow SecretKey — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct SecretKey {
     std::array<std::uint8_t, 32> bytes{};
 };
@@ -46,9 +48,11 @@ result<SecretKey> generate_secret_key();
 // restriction, evaluated with logical AND against every other caveat and against the root grant --
 // there is no caveat that widens. Deliberately minimal set for this ADR's small-prove scope
 // (ADR-005 §2); a real deployment's caveat vocabulary is a superset, not a different mechanism.
+// ae-naming-lint: allow ExpiresAt — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct ExpiresAt {
     std::chrono::system_clock::time_point time;
 };
+// ae-naming-lint: allow PathPrefix — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct PathPrefix {
     // Must already be canonicalized by the caller (021 §4: "paths are a type, not a string") --
     // this caveat does its own prefix check only, and does not itself canonicalize. Out of scope
@@ -57,8 +61,10 @@ struct PathPrefix {
     std::string prefix;
 };
 
+// ae-naming-lint: allow Caveat — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 using Caveat = std::variant<ExpiresAt, PathPrefix>;
 
+// ae-naming-lint: allow CapabilityToken — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct CapabilityToken {
     capability_kind kind;
     std::string param;           // e.g. a mount id -- opaque, kind-specific (007 §3)
@@ -68,6 +74,7 @@ struct CapabilityToken {
 
 // What a party evaluating a token is actually trying to do -- the "requested effect" checked
 // against the token's kind and every caveat.
+// ae-naming-lint: allow EvaluationRequest — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct EvaluationRequest {
     capability_kind kind;
     std::string path;                              // checked against every PathPrefix caveat

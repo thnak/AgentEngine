@@ -38,23 +38,27 @@
 
 namespace agentengine::rt {
 
+// ae-naming-lint: allow CreateProject — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct CreateProject {
     std::string project_id;
     std::string principal_id;
     std::string principal_tenant_id;
 };
 
+// ae-naming-lint: allow CreateProjectResult — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct CreateProjectResult {
     bool ok = false;
     std::string error_code;  // "project.duplicate_id" -- fails closed rather than silently
                               // overwriting a caller's earlier Project, same as the original.
 };
 
+// ae-naming-lint: allow ListProjects — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct ListProjects {
     std::string principal_id;
     std::string principal_tenant_id;
 };
 
+// ae-naming-lint: allow ListProjectsResult — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct ListProjectsResult {
     std::vector<std::string> project_ids;
 };
@@ -62,6 +66,7 @@ struct ListProjectsResult {
 // The registry's own record shape -- same fields as the original's ProjectRegistryEntry, kept here
 // rather than reused across the Quark boundary (that type is QUARK_SERIALIZE-tagged) so this file
 // stays fully Quark-free.
+// ae-naming-lint: allow ProjectRegistryEntry — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct ProjectRegistryEntry {
     std::string project_id;
     std::string principal_id;
@@ -70,6 +75,7 @@ struct ProjectRegistryEntry {
     friend bool operator==(ProjectRegistryEntry const&, ProjectRegistryEntry const&) = default;
 };
 
+// ae-naming-lint: allow ProjectRegistry — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class ProjectRegistry {
 public:
     // I1-shaped: create_project's own check-and-insert (is this id already known?) must be one

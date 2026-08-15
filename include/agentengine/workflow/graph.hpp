@@ -65,6 +65,7 @@ struct message_type;  // ae-naming-lint: allow message_type — the trait behind
 
 // True iff `T` has a declared portable name.
 template <class T>
+// ae-naming-lint: allow DeclaredMessage — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 concept DeclaredMessage = requires { message_type<T>::name; };
 
 template <DeclaredMessage T>
@@ -86,6 +87,7 @@ enum class edge_kind {
 };
 
 // `Executor = an agent | a function | a sub-workflow | a request port` (014 §1), verbatim.
+// ae-naming-lint: allow executor_kind — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 enum class executor_kind { agent, function, sub_workflow, request_port };
 
 // -- The description (014 §1's `Workflow = { executors[], edges[], start, output_selection, ... }`)
@@ -134,6 +136,7 @@ enum class edge_failure_policy {
 // The policy as declared on one edge. `attempts` and `fallback` are each meaningful for exactly one
 // kind, and the validator rejects them elsewhere rather than ignoring them at runtime -- the same
 // discipline `case_label` already gets.
+// ae-naming-lint: allow EdgeFailurePolicy — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct EdgeFailurePolicy {
     edge_failure_policy kind = edge_failure_policy::fail;
     // `retry` only: ADDITIONAL invocations after the first. `retry` with 0 would be a no-op spelled
@@ -474,6 +477,7 @@ struct TypedExecutor {  // ae-naming-lint: allow TypedExecutor — the C++-form 
     }
 };
 
+// ae-naming-lint: allow WorkflowBuilder — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class WorkflowBuilder {
 public:
     explicit WorkflowBuilder(std::string workflow_id) { wf_.id = std::move(workflow_id); }

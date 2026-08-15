@@ -31,12 +31,14 @@ namespace agentengine::rt {
 // breaker itself produces -- Quark's `quark::Admit` also has `Delay` for its token-bucket/fair-share
 // limiters, which this breaker never returns (the whole point of a circuit breaker is fail-fast, not
 // bounded smoothing), so `Delay` is not reproduced here.
+// ae-naming-lint: allow Admit — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 enum class Admit : std::uint8_t { Accept = 0, Shed = 1 };
 
 // Per (caller, logical target) circuit breaker. Closed -> Open (fail fast) -> Half-Open (a SINGLE
 // probe) -> Closed on success / Open on failure. Trips after `fail_threshold` CONSECUTIVE failures;
 // stays Open for `open_ns` (the cooldown), then admits exactly one half-open probe. O(1), no heap
 // allocation, single-writer -- identical shape to `quark::CircuitBreaker`.
+// ae-naming-lint: allow CircuitBreaker — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class CircuitBreaker {
 public:
     enum class State : std::uint8_t { Closed = 0, Open = 1, HalfOpen = 2 };

@@ -27,6 +27,7 @@
 namespace agentengine {
 
 template <class T = void>
+// ae-naming-lint: allow task — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 using task = agentengine::rt::task<T>;
 
 }  // namespace agentengine

@@ -71,6 +71,7 @@
 
 namespace agentengine::rt {
 
+// ae-naming-lint: allow AsyncMutex — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class AsyncMutex {
 public:
     // RAII ownership token, move-only. Held for the duration of a critical section; releasing (on

@@ -52,6 +52,7 @@ namespace agentengine::trust {
 // can be built either from a real `AgentMetadata` (round-tripping the actual compiler's output) or
 // by hand (to construct a pairing the real compiler would reject, and independently prove this
 // enumerator reaches the same conclusion) -- both are legitimate reference-policy-set entries.
+// ae-naming-lint: allow ReachabilityAgent — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct ReachabilityAgent {
     std::string agent_name;
     std::vector<Capability> capability_ceiling;
@@ -62,6 +63,7 @@ struct ReachabilityAgent {
 // for a request tagged `tainted`. `requirement` is the exact tool-declared Capability this cell
 // checked (kept for the report -- an operator reading "net_out DENIED for tool X" needs to see which
 // host/allowlist shape was actually being asked for, not just the kind).
+// ae-naming-lint: allow ReachabilityCell — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct ReachabilityCell {
     std::string agent_name;
     std::string tool_name;
@@ -73,6 +75,7 @@ struct ReachabilityCell {
 
 // A hand-computed expectation for one {agent, tool, kind} cell. Taint-invariant by the finding this
 // header's own top comment proves -- one oracle entry covers both taint states for that cell.
+// ae-naming-lint: allow ReachabilityOracleEntry — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct ReachabilityOracleEntry {
     std::string agent_name;
     std::string tool_name;
@@ -80,6 +83,7 @@ struct ReachabilityOracleEntry {
     bool expected_granted = false;
 };
 
+// ae-naming-lint: allow finding_kind — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 enum class finding_kind {
     oracle_mismatch,      // a cell's reached decision disagrees with the hand-computed oracle
     taint_variant,        // a cell's decision differs between tainted=false and tainted=true
@@ -122,6 +126,7 @@ enum class finding_kind {
     return "unknown";
 }
 
+// ae-naming-lint: allow ReachabilityFinding — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct ReachabilityFinding {
     finding_kind kind;
     std::string agent_name;
@@ -130,6 +135,7 @@ struct ReachabilityFinding {
     std::string detail;
 };
 
+// ae-naming-lint: allow ReachabilityReport — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct ReachabilityReport {
     std::vector<ReachabilityCell> cells;
     std::vector<ReachabilityFinding> findings;

@@ -32,6 +32,7 @@ namespace agentengine {
 // both follow directly from that, same as the two-provider original.
 template <class... Ms>
     requires (sizeof...(Ms) >= 1) && (ContextProvider<Ms> && ...)
+// ae-naming-lint: allow ComposedContextProvider — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class ComposedContextProvider {
 public:
     // Default-constructible only when every Ms is -- the same AgentSession-slot constraint

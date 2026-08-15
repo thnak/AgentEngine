@@ -49,9 +49,11 @@
 
 namespace agentengine::rt {
 
+// ae-naming-lint: allow LogId — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 using LogId = std::string;
 // Matches quark::SeqNo's own convention: 0 means "this log has no entries yet"; the first appended
 // entry gets seq 1, strictly increasing thereafter, never reused even across a store restart.
+// ae-naming-lint: allow SeqNo — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 using SeqNo = std::uint64_t;
 
 // The interface. Every method reports failure through `result<T>` (no exceptions for control flow,
@@ -61,6 +63,7 @@ using SeqNo = std::uint64_t;
 // to check on every read. A caller that needs to tell "definitely empty" from "storage unreachable"
 // calls `read_from(id, 0)` instead and inspects its `error`.
 template <class T>
+// ae-naming-lint: allow AppendLogStore — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 concept AppendLogStore = requires(T& store, T const& const_store, LogId const& id,
                                    std::vector<std::byte> bytes, SeqNo from) {
     { store.append(id, std::move(bytes)) } -> std::same_as<result<SeqNo>>;
@@ -72,6 +75,7 @@ concept AppendLogStore = requires(T& store, T const& const_store, LogId const& i
 // InMemoryAppendLogStore -- reference conformer for tests, matching InMemorySessionStore's own
 // single-mutex-over-the-whole-map shape and its same "obviously correct, not fast" value proposition.
 // ------------------------------------------------------------------------------------------------
+// ae-naming-lint: allow InMemoryAppendLogStore — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class InMemoryAppendLogStore {
 public:
     [[nodiscard]] result<SeqNo> append(LogId const& id, std::vector<std::byte> bytes) {
@@ -135,6 +139,7 @@ static_assert(AppendLogStore<InMemoryAppendLogStore>,
 // FileSessionStore's own `path_for()` -- a LogId is assumed host-controlled (I2/I3), this is a cheap
 // defense against an accidental bug, not the only line of defense against a hostile id.
 // ------------------------------------------------------------------------------------------------
+// ae-naming-lint: allow FileAppendLogStore — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class FileAppendLogStore {
 public:
     explicit FileAppendLogStore(std::filesystem::path root) : root_(std::move(root)) {

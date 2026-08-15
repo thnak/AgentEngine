@@ -21,6 +21,7 @@ namespace agentengine {
 // narrowing. `kind` is kept here because it is meaningful even for the two surfaces this milestone
 // builds: Embedded is always `service`, Local CLI is always `human`, a delegated call is always
 // `agent`, and 018 §1's "Anonymous is a principal, not a bypass" rule needs a real value to hold.
+// ae-naming-lint: allow principal_kind — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 enum class principal_kind : std::uint8_t { human, service, agent, anonymous };
 
 struct Principal {

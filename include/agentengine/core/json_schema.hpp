@@ -128,9 +128,11 @@ namespace agentengine::schema {
 // Tag-dispatch target for ADL lookup of a type's AE_JSON_SCHEMA-generated description -- avoids
 // requiring an instance of Type (some Args/Reply types may not be default-constructible).
 template <class T>
+// ae-naming-lint: allow type_tag — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct type_tag {};
 
 // Accumulates one object schema's "properties"/"required" as it's built field by field.
+// ae-naming-lint: allow ObjectBuilder — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class ObjectBuilder {
 public:
     void add_field(std::string_view name, std::string const& type_fragment, bool required) {

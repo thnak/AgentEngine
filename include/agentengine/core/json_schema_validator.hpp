@@ -37,6 +37,7 @@
 
 namespace agentengine::schema {
 
+// ae-naming-lint: allow ValidationBudget — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct ValidationBudget {
     std::uint32_t max_depth = 64;        // schema+instance co-descent bound (also the sole guard
                                           // against a runaway walk of validate_instance() -- see that
@@ -54,6 +55,7 @@ struct ValidationBudget {
     std::uint64_t max_nodes_visited = 100'000;
 };
 
+// ae-naming-lint: allow ValidationViolation — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct ValidationViolation {
     std::string instance_path;  // JSON-Pointer-shaped location in the INSTANCE, e.g. "/items/2/name"
     std::string schema_path;    // JSON-Pointer-shaped location in the SCHEMA that was violated

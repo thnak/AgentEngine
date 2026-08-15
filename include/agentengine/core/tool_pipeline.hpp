@@ -49,6 +49,7 @@ namespace agentengine {
 // One entry in the immutable per-run tool table (006 §6: "resolved at run start into an immutable
 // per-run tool table"). Type-erased: `invoke` closes over ToolT's real Args/Reply types so the
 // pipeline itself never needs to be a template.
+// ae-naming-lint: allow ToolDescriptor — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct ToolDescriptor {
     std::string name;
     std::string description;
@@ -154,11 +155,13 @@ template <class ToolT, class InvokeFn>
 // one direction. `ToolTable::from_names()` below is declared here (next to `from_tools`/
 // `from_descriptors`, where a caller would look for it) and DEFINED out-of-line in
 // core/tool_registry.hpp -- a caller of `from_names()` must include that header, not just this one.
+// ae-naming-lint: allow ToolRegistry — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class ToolRegistry;
 
 // 006 §6: static tools are resolved once into an immutable table at run start -- a mid-run change
 // to what's registered cannot alter what a run is allowed to call. Linear lookup: tool counts in
 // this milestone's scope are single digits, not a hot path.
+// ae-naming-lint: allow ToolTable — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class ToolTable {
 public:
     template <class... ToolTs>
@@ -203,6 +206,7 @@ private:
     std::vector<ToolDescriptor> descriptors_;
 };
 
+// ae-naming-lint: allow ToolCallRequest — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct ToolCallRequest {
     std::string call_id;
     std::string tool_name;
@@ -238,6 +242,7 @@ struct ToolCallRequest {
     return h;
 }
 
+// ae-naming-lint: allow IdempotencyKey — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct IdempotencyKey {
     std::string   run_id;
     std::uint64_t turn_index = 0;
@@ -290,12 +295,14 @@ struct IdempotencyKey {
 // host/human-supplied callable, never invented ambiently inside the pipeline. Receives the
 // canonical JSON of the exact arguments about to execute (006 §4: "approval is bound to the exact
 // call").
+// ae-naming-lint: allow ApprovalDecider — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 using ApprovalDecider = std::function<bool(std::string_view tool_name, std::string const& canonical_args_json)>;
 
 // Step 10's minimal audit record (016/013's full span shape is out of scope for M2, see file-top
 // comment). Phase F1 adds the call's own idempotency key -- computed unconditionally (it costs one
 // digest of bytes already being canonicalized for step 5's approval check) so ANY caller journaling
 // effects (F2) has it without re-deriving it from the request a second time.
+// ae-naming-lint: allow ToolInvocationAudit — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct ToolInvocationAudit {
     std::string call_id;
     std::string tool_name;
@@ -525,6 +532,7 @@ namespace tool_pipeline_detail {
 // means is entirely the caller's job -- `AgentSession::start_background_task()` (agent_session.hpp)
 // wires this to a self-`tell()`, mirroring `TimerWake`'s own established "host arms the callback"
 // shape (`test_agent_session_timer_wake.cpp`'s own precedent), not a mechanism this function invents.
+// ae-naming-lint: allow BackgroundTaskCompletion — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 using BackgroundTaskCompletion = std::function<void(ToolResult, ToolInvocationAudit)>;
 
 [[nodiscard]] inline result<void> background_task(ToolTable const& table, CapabilitySet const& held,

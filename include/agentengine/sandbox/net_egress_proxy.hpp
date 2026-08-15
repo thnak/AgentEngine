@@ -26,6 +26,7 @@ namespace agentengine::sandbox {
 // could happen between validation and connect (ADR-011 claim C6). IPv4-only, matching the vendored
 // PAL's own current locator (`third_party/quark/pal/*/net.hpp`); an IPv6-only host is a resolution
 // failure, not a silently narrower blocklist (ADR-011 §3, research note §5).
+// ae-naming-lint: allow VerifiedEndpoint — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct VerifiedEndpoint {
     std::uint32_t ipv4_host_order = 0;
     std::uint16_t port = 0;
@@ -35,6 +36,7 @@ struct VerifiedEndpoint {
 // wit/ae-tool.wit) -- host/port/scheme are never here, they come from the granted `cap::NetOut`
 // (006's own design choice: "the guest supplies only the part of a call the host must still
 // validate per-call... never the grant's own parameters").
+// ae-naming-lint: allow NetEgressRequest — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct NetEgressRequest {
     std::string method;
     std::string path;
@@ -42,12 +44,14 @@ struct NetEgressRequest {
     std::string body;
 };
 
+// ae-naming-lint: allow NetEgressResponse — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct NetEgressResponse {
     std::uint16_t status = 0;
     std::vector<std::pair<std::string, std::string>> headers;
     std::string body;
 };
 
+// ae-naming-lint: allow NetEgressTraits — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct NetEgressTraits {
     std::string_view name;
     bool supports_https = false;
@@ -172,6 +176,7 @@ inline constexpr std::uint64_t kHardResponseCeilingBytes = 16u * 1024u * 1024u;
 // SSRF appliance, an mTLS-terminating gateway) is usable with no engine change, per 008 §10 Q3's
 // resolution ("stays a seam underneath... for a deployer who wants to substitute").
 template <class T>
+// ae-naming-lint: allow NetEgressBackend — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 concept NetEgressBackend = requires(T backend, cap::NetOut const& granted, NetEgressRequest const& req) {
     { T::traits } -> std::convertible_to<NetEgressTraits const&>;
     { backend.fetch(req, granted) } -> std::same_as<result<NetEgressResponse>>;
@@ -181,6 +186,7 @@ concept NetEgressBackend = requires(T backend, cap::NetOut const& granted, NetEg
 // (C1) -> scheme gate (C3) -> CRLF gate (C9) -> method-restriction gate (C7) -> `resolve_and_validate`
 // (C4/C5/C6) -> `perform_http_exchange` (C2/C8/C10). See ADR-011 §3 for why each gate runs before any
 // network activity.
+// ae-naming-lint: allow HostEgressProxy — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct HostEgressProxy {
 #ifdef AGENTENGINE_WITH_HTTPS
     static constexpr NetEgressTraits traits{"host-egress-proxy", true};

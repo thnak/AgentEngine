@@ -31,6 +31,7 @@ namespace agentengine {
 // One file inside a skill's bundle, `SKILL.md` itself included -- `relative_path` is POSIX-style
 // (forward slashes), relative to the skill's own directory root (e.g. "SKILL.md",
 // "references/api.md"), exactly the segment shape `worktree.hpp`'s `split_mount_path` expects.
+// ae-naming-lint: allow SkillBundleFile — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct SkillBundleFile {
     std::string relative_path;
     std::vector<std::byte> bytes;
@@ -40,18 +41,21 @@ struct SkillBundleFile {
 // (skill_provider.hpp) needs to assemble a worktree Tree for it. `files` is expected to include
 // `SKILL.md` itself, so a mounted skill's own manifest is readable back out exactly like any other
 // bundled file (026 §6's "ordinary file operations" -- no special-cased manifest access).
+// ae-naming-lint: allow SkillSourceResult — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct SkillSourceResult {
     Skill skill;
     std::vector<SkillBundleFile> files;
 };
 
 template <class T>
+// ae-naming-lint: allow SkillSource — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 concept SkillSource = requires(T& s) {
     { s.origin_id() } -> std::convertible_to<std::string_view>;
     { s.load_skills() } -> std::same_as<result<std::vector<SkillSourceResult>>>;
 };
 
 // The type-erased, runtime-configurable table entry -- `SkillsProvider`'s own input list.
+// ae-naming-lint: allow SkillSourceDescriptor — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct SkillSourceDescriptor {
     std::string origin_id;
     std::function<result<std::vector<SkillSourceResult>>()> load_skills;
@@ -72,6 +76,7 @@ template <class SourceT>
 // own pattern), no disk I/O at all. `load_skills()` returns a copy of what was constructed with,
 // every call -- cheap and side-effect-free, matching `SkillsProvider`'s own "resolve-once" caller-
 // side expectation without needing this class to track state itself.
+// ae-naming-lint: allow InlineSkillSource — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class InlineSkillSource {
 public:
     InlineSkillSource(std::string origin_id, std::vector<SkillSourceResult> skills)
@@ -127,6 +132,7 @@ namespace skill_source_detail {
 // skill content); a subdirectory WITH an invalid `SKILL.md` fails the whole `load_skills()` call --
 // all-or-nothing, matching §8a's "rejects rather than guessing" (a caller must never silently run
 // with half a source it believed loaded cleanly).
+// ae-naming-lint: allow DiskSkillSource — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class DiskSkillSource {
 public:
     DiskSkillSource(std::string origin_id, std::filesystem::path root)
