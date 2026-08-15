@@ -24,9 +24,15 @@ pass added 18 more (§9h), including that **the design space itself was wrong**:
 role needs no socket, TLS, HTTP framing, or fixture host, and yields an honestly engine-attributable
 conformance run — an option neither §3 nor §8 considered (T0).
 
-**33 findings against §8. A third design iteration is required before any prove phase** — §9i states
-the six constraints it must start from. One measured result survives and is reusable: claim 6, at 104
-bytes against a 192-byte ceiling (§8.1).
+33 findings against §8. **§10 is the third iteration**, and its substantive move is not a better
+answer to §8's question but the finding that §8's question was gating more than it needed to:
+`conformance client --command` **spawns our binary**, so 011 §10 G2 needs no listener, no host, no
+fixture, and no attribution apparatus — it is fully engine-attributable today, and the M7 Phase G
+audit was wrong to list it as listener-blocked. §10 therefore tiers the work, commits only to Tier 1
+(MCP client role over stdio), and defers all 33 findings to Tier 3 where they actually bite.
+
+Two measured/verified results survive and are reusable: claim 6 at 104 bytes against a 192-byte
+ceiling (§8.1), and §10.0's corrections to two of §9's own findings.
 
 ## 0. What changed, and why this ADR exists
 
@@ -1536,10 +1542,168 @@ Constraints for a third iteration, superseding §9g's four:
 5. **Every spec citation is grepped before it is written.**
 6. **Every claim gets its positive control**, and security claims get the ADR-015 teeth arm (T11, T15).
 
-## 10. Prove phase
+## 10. Third design iteration (2026-08-15)
 
-*(not yet run — blocked on a third design iteration per §9g)*
+Written under §9i's six constraints. Every spec citation below was grepped before it was written
+(constraint 5), and that immediately produced two corrections to §9's own findings — recorded first,
+because building on an unchecked red-team finding would repeat the error the constraint exists to
+prevent.
 
-## 11. Decision
+### 10.0 Corrections to §9's findings
 
-*(not yet judged — §9g requires a third design iteration first)*
+**T0 overclaimed, and the overclaim is load-bearing.** T0 asserted that an engine-owned stdio server
+"yields an honestly engine-attributable conformance run." Checked: 011 §10's documented invocation is
+`conformance server --url http://localhost:3000/mcp` (`011-MCP-Conformance.md:327`), and this
+project's own dated research tabulates that command against **"our HTTP server"**
+(`docs/research/2026-mcp-ecosystem.md:220`). **There is no evidence anywhere in this repo that
+`conformance server` can drive a stdio server.** T0's *insight* stands — stdio is engine-ownable,
+needs no socket/TLS/HTTP framing/fixture, and was absent from both §3's and §8's option sets. T0's
+*conformance claim* is unverified and probably false for the server suite as documented. Treated
+below as a real product surface whose gate status is an open research item, not as a gate.
+
+**T7 is partly wrong, and the correction adds an obligation rather than removing one.** T7 reported
+`405` as having "zero occurrences" — true of 011 and 012, which is what it grepped, but the
+obligation exists in the detail source those files cite: *"Legacy traffic: GET/DELETE → `405`;
+`Mcp-Session-Id` → ignore, never mint or echo; `Last-Event-ID` → ignore, streams are not resumable"*
+(`docs/research/2026-mcp-protocol-detail.md:260-261`). So `405` is real and must be in the response
+contract. `202` I could not find in any spec or research file; that half of T7 stands. T7's direction
+— that §8.3's list came from generic HTTP rather than from the specs — is correct regardless.
+
+### 10.1 The reordering: attributable-first, and the anchor is the *client* role
+
+Constraint 1 said start from stdio. Grepping the tooling shows something better one step over.
+The two invocations are asymmetric (`011:327-328`):
+
+```
+conformance server --url http://localhost:3000/mcp --suite all
+conformance client --command "./agentengine-mcp-client" --spec-version 2026-07-28 --suite all
+```
+
+**The client suite spawns our binary.** It needs no listener, no host adapter, no fixture, no HTTP,
+and none of §8.5's attribution apparatus — the harness drives us, so every pass or failure is
+engine-attributable by construction. And the seam already exists: `McpClient` takes a
+`RequestSender = std::function<JsonRpcResponse(JsonRpcRequest const&)>`
+(`protocol/mcp/client.hpp:48`, real since Phase C3), so the only new work is a stdio transport behind
+that callable plus a small executable — and the project already builds executables under `tools/`
+(`CMakeLists.txt:61`).
+
+**This closes 011 §10 G2, which the M7 Phase G audit lists as BLOCKED.** That audit attributed the
+block to "no real HTTP transport/listener" *and* "no official conformance tool integration"; the
+first half is wrong for G2 specifically. G2 never needed a listener.
+
+So the design is tiered, in dependency order, and iteration 3 commits only to Tier 1's design:
+
+| Tier | Scope | Host contract needed | Gate |
+|---|---|---|---|
+| **1** | **MCP client role over stdio** | **None** | **011 §10 G2 — fully attributable** |
+| 2 | MCP server role over stdio | None (engine owns the transport) | G1 status is an open research item (§10.0) |
+| 3 | Server role, host-fronted HTTP | The whole §8 problem | G1/G3/G4/G8/G9, attribution-split per §8.5 |
+
+Tier 3 is where all 33 findings live. Tiering does not answer them — it stops them blocking work that
+does not depend on them, and makes the eventual HTTP design a delta against two working tiers instead
+of the entire surface at once. **This is the substantive change in iteration 3**: not a better answer
+to §8's question, but the observation that §8's question was gating strictly more than it needed to.
+
+### 10.2 Principal provenance, enumerated by construction (constraint 3)
+
+§8.1a's three-value enum was wrong by omission, and the omissions are what S1, S10, T2 and S9 each
+found from different directions. The real set, each verified against the source that produces it:
+
+| Provenance | Producer | Verified at |
+|---|---|---|
+| `anonymous` | no credential presented | `trust/principal.hpp:70` |
+| `credential_verified` | engine validated a credential it did not mint on request | ADR-021's mechanism |
+| `host_asserted` | an in-process host said so | `trust/principal.hpp:49` |
+| `operator_configured` | a trigger config names the principal it runs as | `020:139-141`, gated by 020 §7 G6 |
+| `derived` | `derive_on_behalf_of` | `trust/principal.hpp:90` |
+| `restored` | rebuilt from a checkpoint | `core/agent_session.hpp:784` |
+
+**The rule that replaces §8.1a's**, and the one that kills S1: *provenance describes the origin of the
+**identity**, never the last hop that carried it.* A credential the engine mints during an exchange
+therefore **carries the provenance of the identity it was minted for**, so presenting it back yields
+`host_asserted` — not `credential_verified`. That is the whole of S1's attack, closed by making
+provenance a property that survives the round trip rather than one that resets at each verification.
+
+Admissibility is then **per-surface and per-source, declared by the operator** — not a single
+"must be `credential_verified`" test. That is what makes `operator_configured` (T2) and `derived`
+(S10) expressible at all, and it is the honest shape: 020 §3b's triggered run and a delegated
+sub-agent are both legitimate and neither presents a credential.
+
+`restored` (S9) is the case that must fail closed: since `AgentSessionRecord` round-trips only
+id/tenant (`core/agent_session.hpp:776-784`), a restored principal cannot claim any stronger
+provenance than the record proves, and the operator declares which surfaces `restored` may reach.
+This makes S9's dilemma a stated policy instead of a fabrication or a silent downgrade.
+
+### 10.3 Withdrawals
+
+- **Design G as specified is withdrawn** (S1). Its *shape* survives only under §10.2's carried-provenance
+  rule, and is deferred to Tier 3 where it is actually needed.
+- **`AuthorityRef` as specified is withdrawn** (S3, T3). If a per-request authority handle is needed at
+  Tier 3, it either uses ADR-005's already-judged `CapabilityRegistry` or justifies not doing so; it
+  does not get re-derived with dense guessable integers. §8.1's measured 104-byte result (§8.1) remains
+  valid and reusable for whatever handle replaces it.
+- **The absolute "engine determines every status" rule is withdrawn** (T6, T11). Replaced by: *the
+  engine determines every status it can reach; the statuses it structurally cannot reach are
+  enumerated, and that enumeration seeds §8.5's host-obligation list.* `405` (§10.0) joins the
+  reachable set.
+- **Claims 8 and 9 are withdrawn** (T1). 013 §7 Q2 chose `EvictAfter<N>` and states *"`Block` is not
+  required for this need"* (`013:290-295`); claims written against that resolution replace claims
+  written against its opposite. Per-seam policy naming is deferred to Tier 3 with the seam list from
+  T1 as its starting point.
+
+### 10.4 Tier 1, specified
+
+What it is: a `tools/agentengine_mcp_client.cpp` executable that wires `McpClient` to a stdio
+transport and is driven by `conformance client --command`.
+
+Real, checkable stdio obligations, from the detail source
+(`docs/research/2026-mcp-protocol-detail.md:268-271`):
+
+- newline-delimited framing, **no embedded newlines**;
+- **MUST NOT** write non-MCP output to stdout;
+- stderr is free-form, and a client **SHOULD NOT** treat stderr output as indicating an error;
+- **SHOULD** exit when stdin closes — *"the primary graceful-shutdown signal and the only portable
+  one"*;
+- on stdio the client **MUST** send `notifications/cancelled` (`:263-265`), unlike HTTP where
+  disconnect is the signal.
+
+None of these needs a socket, TLS, a fixture host, or a chunked parser. All are engine-owned.
+
+**One thing Tier 1 does NOT settle, flagged rather than assumed:** the exact pipe direction the
+harness expects when it spawns a client under test (whether our binary writes requests to its own
+stdout, or the harness presents a server another way) is **not established by anything in this repo**.
+011 §10 documents only the invocation. That is a dated-research item under CLAUDE.md's own rule, and
+Tier 1's first task — before any code — is establishing it against the real tool.
+
+### 10b. Falsifiable claims — Tier 1 only
+
+Deliberately scoped to Tier 1. Writing Tier 3 claims now would repeat §8b's error of specifying
+against an unbuilt surface. Every row carries a positive control, and every security-relevant row
+carries an ADR-015 teeth arm (constraint 6).
+
+| # | Claim | Disproving experiment | Positive control / teeth |
+|---|---|---|---|
+| 1 | `conformance client` runs against our binary and produces a published percentage per suite (`core`, `extensions`, `backcompat`, `auth`) | Run it; a non-zero exit outside the justified baseline disproves | Control: the harness reports at least one PASS, proving it is really exercising us and not failing at spawn |
+| 2 | Every check the percentage counts is engine-attributable — there is no fixture in the loop | Inspect the invocation: the harness spawns our binary directly | Teeth: break one `McpClient` behaviour (e.g. `isError` surfacing, `client.hpp`) and the number must drop by ≥1 |
+| 3 | The stdio framing is correct: no embedded newlines, and **no non-MCP byte ever reaches stdout** | Capture stdout over a full suite run; every line parses as one JSON-RPC message | Control: a deliberate `printf` to stdout is detected by the same capture, proving the check can fail |
+| 4 | The process exits on stdin close, within a bounded interval | Close stdin mid-session; assert exit | Control: with stdin open the process stays alive past the same interval |
+| 5 | stderr output does not cause the client to report an error | Emit diagnostics on stderr during a session; the suite still passes | Control: a real protocol error still surfaces as an error |
+| 6 | `notifications/cancelled` is sent on stdio cancellation (`:263-265`) | Cancel a request; assert the notification on the wire | Control: an uncancelled request produces no such notification |
+| 7 | The transport is a `RequestSender` and nothing else — no ambient state, no second path into `McpClient` | `try_compile()`/inspection: `McpClient`'s only inbound seam remains `client.hpp:48` | Control: the real transport satisfies it |
+
+### 10c. What iteration 3 does not resolve
+
+- **All 33 findings against §8** remain open for Tier 3. They are deferred, not answered.
+- **Tier 2's gate status** — whether `conformance server` can drive stdio (§10.0). Research item.
+- **Tier 1's pipe direction** (§10.4). Research item, and the first task.
+- **§10.2's admissibility policy** needs a declaration surface the operator writes; that is 007 §5's
+  rule language, which this project has repeatedly named as deferred and which iteration 3 does not
+  build either.
+
+## 11. Prove phase
+
+*(not yet run — Tier 1's claims in §10b are what it runs against first)*
+
+## 12. Decision
+
+*(not yet judged — Tier 1 must be proven first; Tier 3 needs the 33 open findings answered)*
