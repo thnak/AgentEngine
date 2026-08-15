@@ -19,10 +19,14 @@ defeated: G launders a host-chosen identity into `verified_by_engine` (S1), and 
 rests on a **fabricated citation** — 020 §3a specifies no identity contract, and
 `make_embedded_principal` appears in no spec file at all (S2). The core device is unsound as
 specified: `AuthorityRef` is a guessable plain aggregate reinventing ADR-005 Design B (S3), and
-`live()` is checked at event boundaries while effects run unbounded on detached threads (S4). **A
-third design iteration is required before any prove phase** — §9g states the constraints it must
-start from. One measured result survives and is reusable: claim 6, at 104 bytes against a 192-byte
-ceiling (§8.1).
+`live()` is checked at event boundaries while effects run unbounded on detached threads (S4). A second
+pass added 18 more (§9h), including that **the design space itself was wrong**: 011 §7's stdio server
+role needs no socket, TLS, HTTP framing, or fixture host, and yields an honestly engine-attributable
+conformance run — an option neither §3 nor §8 considered (T0).
+
+**33 findings against §8. A third design iteration is required before any prove phase** — §9i states
+the six constraints it must start from. One measured result survives and is reusable: claim 6, at 104
+bytes against a 192-byte ceiling (§8.1).
 
 ## 0. What changed, and why this ADR exists
 
@@ -1353,8 +1357,184 @@ constraints rather than from §8's designs:
 4. **Identity must survive a checkpoint.** Provenance that cannot be serialized safely is provenance
    that ends at the first suspend.
 
-The second pass (other contracts, claims table, spec amendments) is still running; its findings will
-be appended here before the third iteration begins.
+### 9h. Second pass — contracts, claims table, spec amendments (18 further findings)
+
+The second independent pass, on the lens §9a-§9f did not cover. Verified by hand as above. It found
+the option §8 never considered, so that goes first.
+
+**T0 — the cheapest option on the board was omitted from the design space entirely.** 011 §7's
+transport clause has a second sentence this ADR never engages: *"**stdio** remains for local servers,
+with `server/discover` usable as the backward-compatibility probe"* (`011-MCP-Conformance.md:227-228`,
+verified). **An stdio server role needs no socket, no TLS, no HTTP framing, no fixture host, and no
+chunked-encoding parser** — the artifact R19 says the fixture must contain and which exists nowhere in
+this tree. It is the one inbound transport the project-owner direction does not forbid the engine from
+owning outright, and owning it makes a genuinely *engine-attributable* conformance run possible for a
+real subset **without any of §8.5's attribution apparatus at all**. §8.6 rewrites 011 §7 without
+noticing that half of it survives the re-scope untouched. This is not a repair to §8; it is a design
+option that should have been in §3 and §8 and was in neither.
+
+**T1 (CONCEPT-FLAW) — claim 8 contradicts the very resolution §8.3 cites as its authority.** §8.3 says
+013 §7 Q2 "already resolved *how*" and drops the load-bearing half. Verified: Q2 resolved specifically
+on **`EvictAfter<N>` — bounded buffer, then evict with an explicit gap signal — and states "`Block` is
+not required for this need"** (`013:290-295`), because A2A's ordering MUST applies only to *currently
+attached* subscribers and §2.4 disclaims gap-free delivery on reconnect. Under `EvictAfter<N>` two
+subscribers draining at different rates receive **different event sets by design**. Claim 8 asserts
+"identical events in identical order" — **falsified by the resolved design it is meant to test.**
+Claim 9 compounds it by demanding lossless + ordered + bounded memory + bounded blocking
+simultaneously against an adversarial consumer; those four cannot hold together, and the only escape
+is dropping with a gap signal, which claim 8 forbids. 020 §7 G5 demands a third, incompatible policy
+(unbounded block), and is not among the twelve amendments.
+
+**T2 (CONCEPT-FLAW) — claim 23 is falsified by a fourth principal source that is already
+spec-mandated and gated.** 020 §3b: *"the trigger config names the principal it runs as, resolved at
+admission (018) like any other run"* (`020:139-141`, verified), gated by 020 §7 G6. An
+operator-configured principal is neither `verified_by_engine`, nor `anonymous`, nor reachable through
+G's exchange — **§8.1a's enum has no member for it**, and §8.1a's rule would refuse every triggered
+run. Worse, 020 §3b exists precisely to stop what this ADR does: *"verification (018) gates the call
+rather than being left for each deployment to reinvent — or skip"* (`020:142-144`). Neither 020 §3b,
+020 §7 G6, nor 019 §2's external-event wake row appears in §8.6, §8.5's obligation list, or §8c.
+
+**T3 — `AuthorityRef` findings independently reproduced.** The second pass reached S3's conclusion by
+its own route, adding that `AuthorityTable` is *never specified anywhere in §8* — not its lifetime,
+lookup, thread-safety, slot recycling, or wraparound — and that a per-request insert plus per-effect
+lookup under one mutex is R12's lock relocated to a hotter path, which claim 17 does not measure.
+
+**T4 (CONCEPT-FLAW) — §8.6's 019 §3 amendment has two horns and both break a proven gate.** Digest the
+whole `Principal` and a resumed run reconstructs a *different* key (the record round-trips only
+id/tenant and §8.1a adds non-defaultable provenance), failing 019 §7 G1/G2/G6 and 011 §10 G4. Digest
+only `{id, tenant_id}` and provenance-distinct principals share a journal key, reopening R4 along the
+axis this ADR introduced. **And the amendment fixes the wrong half**: `IdempotencyKey::to_string()` is
+a raw colon concatenation (`core/tool_pipeline.hpp:155-158`), so adding attacker-influenceable string
+fields is a delimiter-injection collision — `{tenant:"a:b", id:"c"}` and `{tenant:"a", id:"b:c"}`
+collide. Upgrading the digest does nothing about the concatenation. §7d recorded that ADR-021's
+length-prefixed encoding is exactly what made this class structurally impossible; the lesson is not
+applied one file over. **§8b has no durability claim at all.**
+
+**T5 (CONCEPT-FLAW) — the 012 §1/§5 decoupling is four times larger than the amendment states.**
+`task_id`-IS-`run_id` is load-bearing in 012 §2.3's push-notification dedup (`012:83-86`), 012 §8 G4
+(`012:229`), **012 §5a's OQ-4 resolution** (`012:196-198` — decoupling reopens a *resolved* open
+question), and 013 §2.2 (`013:169-170`). None is in §8.6. Also: 011 §8a requires handles be
+"high-entropy, **expiring**, and bound" — **expiry appears nowhere in the twelve amendments or in
+§8b**, and claim 20 is marked "already proven" while covering only the binding third of a three-part
+MUST.
+
+**T6 (CONCEPT-FLAW) — §8.3's `ResponseStream` arm carries no status and no headers, disproving claim
+10 by inspection of §8.3's own type.** `OutboundResponse` has `{status, headers, body}`;
+`ResponseStream` has neither — so on the streaming arm the host must invent the status line and
+`Content-Type: text/event-stream`, which claim 10 names explicitly as engine-determined. And HTTP
+commits status before body, so an expiry detected mid-stream cannot be expressed as the 401 the engine
+"determines"; neither 011 nor 012 has any trailer clause.
+
+**T7 (CONCEPT-FLAW) — §8.3 enumerates response obligations that do not exist in the specs and omits
+the ones that do.** Grepped: `202` and `405` have **zero occurrences** as status codes in 011 or 012;
+content negotiation / `Accept` / `Content-Type` likewise zero. Meanwhile the real MUSTs are absent
+from §8.3 and claim 10 — `Mcp-Method`/`Mcp-Name` on POST (`011:225-227`), `x-mcp-header` violation
+excluding the tool from `tools/list` (`011:81-85`), `serverInfo` in each result's `_meta`
+(`011:47-48`), no `notifications/message` without `logLevel` (`011:44`), `A2A-Version` +
+`VersionNotSupportedError` (`012:15-19`), `A2A-Extensions` (`012:166-169`), RFC 9111 card caching
+(`012:161-162`). **I enumerated from generic HTTP knowledge rather than from the specs** — the same
+error class as S2, and claim 10's "find one counterexample" phrasing means an implementation getting
+every real header MUST wrong scores green.
+
+**T8 (CONCEPT-FLAW) — `EndpointId` is an asserted host fact that is authorization-relevant, so Design
+F has a trusting arm after all; it is just not called a principal.** It is a public aggregate whose
+`EndpointId{}` is index 0. Its containment depends on audiences being distinct per endpoint, which
+nothing requires — two mounts of one logical resource, one public and one admin, is a plausible
+config where a lying index is entirely uncontained. It also creates a second, unsynchronized copy of
+the routing table with no drift detection, and it carries no origin allowlist, so §8.6's "Origin
+validation and its 403 stay in-engine" has **no input**. Claims 11/12 test behaviour given a *correct*
+index; neither tests what stops a wrong one.
+
+**T9 — the single-dispatch-source rule is undefined for `target`, and silent on absence, which is the
+bypass.** No clause maps a path to a JSON-RPC method and none can, since the host chose the mount.
+More importantly, 011 §7 makes the headers **mandatory**, so a rule keyed on *disagreement* is
+satisfied by a host that routes on the hints then strips them — the cheapest adapter to write, and
+R9's attack restored in full.
+
+**T10 — `ae::stream<ResponseChunk>` is the wrong carrier, and §8.3's own R22 fix needs a primitive
+that cannot be added without patching Quark.** The consumer is poll-only with no readiness signal
+(`stream.hpp:139-144`; the wake word wakes only the producer), so a host driving an idle
+`subscriptions/listen` stream busy-polls — `stream.hpp:38-40` concedes the contract. The bounded-block
+deadline §8.3 states as a parameter requires either a Quark change (forbidden by a locked decision) or
+abandoning Quark's proven lost-wakeup ordering. The response arena has no owner in `HandlerResult`,
+and §8.3's R24 ownership fix is inbound-only. Plus one heap allocation per SSE frame.
+
+**T11 — §8.5's obligation list has no closure criterion, and its two-number split is weaker than the
+mechanism 011 §10 already adopts.** 011 §10 commits to the official suite's expected-failures baseline
+where *"a baselined-but-now-passing check also exits non-zero, so the baseline cannot rot silently…
+we adopt it as-is rather than writing our own harness"* (`011:336-339`). §8.5 proposes exactly a
+bespoke harness with a hand-maintained label per scenario and an **author-chosen denominator**.
+Claim 24's control is vacuous both ways: dropping the Origin 403 cannot be a fixture mutation (§8.6
+puts it in-engine), and binding `0.0.0.0` only moves a number that by the labelling never counted
+`dns-rebinding`. It is also negative-only — **ADR-015's precedent, which §7a applied correctly, demands
+the converse arm: neuter an engine-side check and the number MUST drop.**
+
+**T12 — claim 7 passes against a stream that never terminates.** Liveness re-checked *only at emission
+boundaries* means an idle stream is never checked, so an implementation that never terminates one
+satisfies "no event N+1" **vacuously**. 011 §3.3's `subscriptions/listen` is exactly that: a
+long-lived, idle-by-nature channel, unbuilt, unmodelled by §8, absent from §8.6 — and the longest-lived
+authority holder in the protocol.
+
+**T13 — §8.6's 013 §6 G2 row is a weakening presented as a restatement.** G2 is end-to-end to *the
+provider read*; §8.3's deadline deliberately severs that chain, after which the engine must drop
+(contradicting 012 §2.3) or buffer (contradicting 013 §1). 013 §2.2 names the unrecoverable case: a
+push abandoned between a snapshot and its interrupt-bearing `RUN_FINISHED` is *"unrecoverable, because
+the run is over"* (`013:143-145`).
+
+**T14 — `McpProgressProjector`, which §8.3 promotes onto the inbound path, has unbounded
+attacker-keyed state.** Verified: `progress_by_token_[p.call_id]` on a `std::unordered_map` with **no
+erase anywhere** (`protocol/mcp/progress.hpp:59-66`), keyed on `call_id` = the **caller-chosen**
+JSON-RPC request id. A caller supplying a fresh long id per request grows engine memory without bound,
+upstream of any I8 budget. It also emits a progress notification for *every* delta with no opt-in
+check, while 011 §2 sets the opposite discipline for the sibling channel. Same shape as §7a: a latent
+defect this ADR would make live.
+
+**T15 — §8b violates its own stated positive-control rule in seven rows** (1, 4, 12, 13, 16, 21, 24).
+Claim 12 passes against an engine that refuses admin methods everywhere; claim 13 passes against one
+that rejects every request; claim 16's canary scan proves nothing without a planted-secret arm. **This
+is the exact defect class §7e found in the table this one replaced, at roughly one row in four.**
+
+**T16 — two of the twelve amendments contradict each other.** Row 11 reopens 020 §8 Q2 *because* 020
+§4's separate-listener premise is destroyed; row 10 claims 020 §4 is "re-expressed as
+`EndpointId::surface`, engine-enforced." Both cannot hold — and row 10 is a weakening anyway, since
+020 §4's property is *"never on the same listener"* while `EndpointId::surface` only refuses admin
+methods on requests the host *labels* public. Row 9 omits 020 §7 G2's verbatim "all five". Row 4
+conflates 011 §10 G3 with the suite's `stateless` scenario, and omits that 020 §5's `session_id`
+placement already offers a third option. Rows 11 and 12 are not edits at all, so the real count is
+ten. **And §8c does not list 020 §8 Q2** — the ADR commits to reopening a resolved decision and then
+does not track it as open.
+
+### 9i. Consolidated status
+
+Across two rounds, **33 findings against §8**. The recommended design is defeated (S1, S2), the core
+device is unsound (S3-S8, T3), the identity model has a storage hole (S9), an unassignable delegation
+case (S10) and a missing fourth principal source (T2), the claims table reproduces the defect class it
+was written to fix (T15), the amendment set is internally contradictory (T16), and the response
+contract disproves its own claim by inspection (T6).
+
+Two findings are worth more than the rest combined, in opposite directions:
+
+- **T0 (stdio)** — the design space was wrong, not just the design. An engine-owned stdio server needs
+  none of the apparatus §8.5 invents, and yields an honestly engine-attributable conformance number.
+- **S2 / T7** — twice now I have asserted what a spec says rather than reading it (020 §3a's identity
+  contract; the 011/012 response obligations). Both were load-bearing. The rule in CLAUDE.md exists
+  for exactly this, and the third iteration should treat every spec citation as requiring a grep
+  before it is written, not after it is challenged.
+
+Constraints for a third iteration, superseding §9g's four:
+
+1. **Start from stdio.** Establish what a real, engine-owned, fully-attributable conformance run looks
+   like before designing the host-fronted HTTP case, so the HTTP design is a delta against something
+   proven rather than the whole surface at once.
+2. **Anything the host names, the host controls** — `EndpointId` included (T8). Label it, do not
+   disguise it.
+3. **Enumerate the principal sources by construction**, not behaviourally: credential-verified,
+   host-asserted, operator-configured (T2), delegated (S10), restored-from-checkpoint (S9). A census
+   over `trust/`'s factory set, not an "attempt another route" test.
+4. **Pick one stream policy per seam and name it** — 013 §7 Q2 already chose `EvictAfter<N>`; claims 8
+   and 9 must be rewritten to that, not against it (T1).
+5. **Every spec citation is grepped before it is written.**
+6. **Every claim gets its positive control**, and security claims get the ADR-015 teeth arm (T11, T15).
 
 ## 10. Prove phase
 
