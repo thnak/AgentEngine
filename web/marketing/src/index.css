@@ -1756,3 +1756,139 @@ button {
     border: 1px solid var(--border-strong);
   }
 }
+
+/* --- Diagrams -------------------------------------------------------------
+   Hand-authored inline SVG, no charting dependency: these pages ship as static
+   assets and every diagram has to survive with zero network access. Colours come
+   from the same tokens the rest of the page uses, so a palette change moves the
+   diagrams with it. */
+
+.diagram {
+  margin-top: 28px;
+  padding: 20px 18px;
+  border-radius: var(--radius-lg);
+  overflow-x: auto;
+}
+
+.diagram svg {
+  display: block;
+  width: 100%;
+  min-width: 760px;
+  height: auto;
+}
+
+.diagram-caption {
+  margin: 16px 4px 0;
+  color: var(--text-faint);
+  font-size: 0.82rem;
+  line-height: 1.6;
+}
+
+.diagram-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  margin: 14px 4px 0;
+  color: var(--text-dim);
+  font-size: 0.8rem;
+}
+
+.diagram-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.diagram-legend i {
+  display: inline-block;
+  width: 16px;
+  height: 0;
+  border-top-width: 2px;
+  border-top-style: solid;
+  font-style: normal;
+}
+
+/* SVG text roles — kept here rather than inline so every diagram reads the same. */
+.dg-label {
+  fill: var(--text);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.dg-sub {
+  fill: var(--text-dim);
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+}
+
+.dg-mono {
+  fill: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.dg-faint {
+  fill: var(--text-faint);
+  font-family: var(--font-sans);
+  font-size: 11px;
+}
+
+.dg-box {
+  fill: var(--panel);
+  stroke: var(--border);
+}
+
+.dg-box-strong {
+  fill: var(--panel-strong);
+  stroke: var(--border-strong);
+}
+
+.dg-line {
+  stroke: var(--border-strong);
+  fill: none;
+}
+
+.dg-lifeline {
+  stroke: var(--border);
+  stroke-dasharray: 4 6;
+}
+
+/* A stage table: the same data at each hop of a flow, one row per hop. */
+.flow-stage {
+  display: grid;
+  grid-template-columns: 44px 1fr;
+  gap: 18px;
+  padding: 18px 0;
+  border-top: 1px solid var(--border);
+}
+
+.flow-stage:first-child {
+  border-top: none;
+}
+
+.flow-stage-index {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  color: var(--accent-teal);
+  padding-top: 2px;
+}
+
+.flow-stage h4 {
+  margin: 0 0 6px;
+  font-size: 1rem;
+}
+
+.flow-stage p {
+  margin: 0 0 12px;
+  color: var(--text-dim);
+  font-size: 0.9rem;
+  line-height: 1.65;
+}
+
+@media (max-width: 640px) {
+  .flow-stage {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+}

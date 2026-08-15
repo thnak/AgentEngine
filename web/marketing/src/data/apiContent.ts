@@ -85,6 +85,30 @@ export const apiPages: Record<Lang, ApiPage[]> = {
       status: "real",
     },
     {
+      id: "providers",
+      label: "Model providers",
+      href: `${SITE_BASE}/api/providers.html`,
+      eyebrow: "004 — Model Provider Plane",
+      description: "Every shipped ChatClient conformer and wrapper, the capabilities each declares, and how a credential reaches the wire without ever being held.",
+      status: "real",
+    },
+    {
+      id: "memory",
+      label: "Memory",
+      href: `${SITE_BASE}/api/memory.html`,
+      eyebrow: "029 — Memory System",
+      description: "Content-addressed MemoryItems, provenance as a trust signal, worktree-backed storage, and the properties memory had to prove.",
+      status: "real",
+    },
+    {
+      id: "durability",
+      label: "Durability",
+      href: `${SITE_BASE}/api/durability.html`,
+      eyebrow: "019 — Durability and Long-Running Agents",
+      description: "Checkpoints and resume, suspension wakes, poison runs, and the idempotency key that survives a restart.",
+      status: "real",
+    },
+    {
       id: "plugins",
       label: "WASM Plugin ABI",
       href: `${SITE_BASE}/api/plugins.html`,
@@ -164,6 +188,30 @@ export const apiPages: Record<Lang, ApiPage[]> = {
       href: `${SITE_BASE}/api/runtime.html`,
       eyebrow: "Lõi Agent (L2)",
       description: "Runtime agentengine::rt:: riêng của AgentEngine mà một session thực sự chạy trên đó, cùng các backend provider Anthropic/OpenAI/Replay thật đứng phía sau.",
+      status: "real",
+    },
+    {
+      id: "providers",
+      label: "Nhà cung cấp model",
+      href: `${SITE_BASE}/api/providers.html`,
+      eyebrow: "004 — Model Provider Plane",
+      description: "Mọi ChatClient conformer và wrapper đã có, năng lực mà mỗi cái khai báo, và cách một credential đi tới dây mà không bao giờ bị giữ lại.",
+      status: "real",
+    },
+    {
+      id: "memory",
+      label: "Bộ nhớ",
+      href: `${SITE_BASE}/api/memory.html`,
+      eyebrow: "029 — Memory System",
+      description: "MemoryItem định địa chỉ theo nội dung, nguồn gốc như một tín hiệu tin cậy, lưu trữ trên worktree, và những tính chất mà bộ nhớ phải chứng minh.",
+      status: "real",
+    },
+    {
+      id: "durability",
+      label: "Độ bền",
+      href: `${SITE_BASE}/api/durability.html`,
+      eyebrow: "019 — Durability and Long-Running Agents",
+      description: "Checkpoint và khôi phục, các điều kiện đánh thức khi treo, poison run, và khoá idempotency sống sót qua một lần khởi động lại.",
       status: "real",
     },
     {
@@ -652,7 +700,7 @@ export const runtimeEntries: Record<Lang, ApiEntry[]> = {
       tag: "AgentSession<ChatClientT, StateT, HistoryProviderT>",
       title: "AgentSession — running on AgentEngine's own runtime, with a real internal tool-call loop",
       body:
-        "agentengine::rt::AgentSession<ChatClientT, StateT, HistoryProviderT>, proven end-to-end since the M1 walking skeleton: start_run(StartRun{...}) grows history() by a real user+assistant turn pair with real reply text and token usage. As of ADR-027, one start_run() call resolves a WHOLE multi-round tool conversation internally — the ChatClient is called again and again, tool calls are extracted, capability/approval-checked, and invoked through the real 006 §3 pipeline, and results are fed back — all inside start_run(), never a caller-driven loop. A text_derived ToolCall (reconstructed from model text rather than a real vendor tool-call field) is denied by the declassification gate regardless of the target tool's own approval_mode — the confused-deputy case ADR-023 named. Fails closed on every unresolved branch: a denied call never invokes, and exhausting max_turns_ without convergence never hangs, it simply returns a failed result. Dozens of further test files cover checkpoint, fork, delegation, redact, isolation, poison-run handling, suspend/resume, token budgets, background tasks, timers, and skill mounting end-to-end. (Historical: originally a quark::Actor<AgentSession<...>, quark::Sequential>, addressed via ask<AgentResponse>(); ADR-037 ported it onto this rt:: runtime, same behavioral guarantees, no actor/mailbox mechanism underneath.)",
+        "agentengine::rt::AgentSession<ChatClientT, StateT, HistoryProviderT>, proven end-to-end since the M1 walking skeleton: start_run(StartRun{...}) grows history() by a real user+assistant turn pair with real reply text and token usage. As of ADR-027, one start_run() call resolves a WHOLE multi-round tool conversation internally — the ChatClient is called again and again, tool calls are extracted, capability/approval-checked, and invoked through the real 006 §3 pipeline, and results are fed back — all inside start_run(), never a caller-driven loop. A text_derived ToolCall (reconstructed from model text rather than a real vendor tool-call field) is denied by the declassification gate regardless of the target tool's own approval_mode — the confused-deputy case ADR-023 named. Fails closed on every unresolved branch: a denied call never invokes, and exhausting max_turns_ without convergence never hangs, it simply returns a failed result. Dozens of further test files cover checkpoint, fork, delegation, redact, isolation, poison-run handling, suspend/resume, token budgets, background tasks, host-polled scheduled wakeups, and skill mounting end-to-end. (Historical: originally a quark::Actor<AgentSession<...>, quark::Sequential>, addressed via ask<AgentResponse>(); ADR-037 ported it onto this rt:: runtime, same behavioral guarantees, no actor/mailbox mechanism underneath.)",
       cite: "include/agentengine/rt/agent_session.hpp:323",
       href: gh("include/agentengine/rt/agent_session.hpp"),
     },
@@ -683,7 +731,7 @@ export const runtimeEntries: Record<Lang, ApiEntry[]> = {
       title: "Suspending a run for a real human approval, not just a synchronous decider",
       body:
         "A tool declared Approval<approval_mode::always_require> normally needs a synchronous approval_decider_ configured on the session. ADR-029 adds the alternative: with suspend_for_approval_ set and no decider configured, the WHOLE StartRun ask genuinely suspends — it never resolves — and a real Interaction opens (interaction_reason::approval), with input_required/approval_requested events on the run's event stream. A later ResolveInteraction{interaction_id, approved} ask resumes the SAME run (never a new run_id — 001's attributability invariant, I4): approved=true invokes the pending call for real through the ordinary capability-checked pipeline; approved=false folds a denial into history as an ordinary tool error. A second StartRun sent while an interaction is open is rejected outright, and a ResolveInteraction from a caller that doesn't match the session's owning principal is denied at admission before the interaction lookup even runs.",
-      cite: "include/agentengine/core/agent_session.hpp",
+      cite: "include/agentengine/rt/agent_session.hpp:1488",
       href: gh("decisions/ADR-029-suspend-for-human-approval.md"),
     },
     {
@@ -714,7 +762,7 @@ export const runtimeEntries: Record<Lang, ApiEntry[]> = {
       tag: "AgentSession<ChatClientT, StateT, HistoryProviderT>",
       title: "AgentSession — chạy trên chính runtime của AgentEngine, với một vòng lặp gọi tool nội bộ có thật",
       body:
-        "agentengine::rt::AgentSession<ChatClientT, StateT, HistoryProviderT>, đã được chứng minh đầu-cuối kể từ M1 walking skeleton: start_run(StartRun{...}) mở rộng history() bằng một cặp lượt user+assistant thật, với văn bản trả lời thật và số liệu token usage thật. Kể từ ADR-027, MỘT lệnh gọi start_run() tự giải quyết TOÀN BỘ một cuộc hội thoại nhiều vòng gọi tool ở bên trong — ChatClient được gọi lặp đi lặp lại, các lệnh gọi tool được trích xuất, kiểm tra capability/approval, và được gọi thực thi qua pipeline thật 006 §3, rồi kết quả được đưa trở lại — tất cả nằm bên trong start_run(), không bao giờ là một vòng lặp do caller tự điều khiển. Một ToolCall thuộc loại text_derived (được tái dựng từ văn bản của model thay vì một trường tool-call thật từ nhà cung cấp) bị cổng giải mật (declassification gate) từ chối bất kể approval_mode của tool đích là gì — đây chính là trường hợp confused-deputy mà ADR-023 đã nêu tên. Từ chối đóng (fail closed) trên mọi nhánh chưa được giải quyết: một lệnh gọi bị từ chối không bao giờ được thực thi, và việc dùng hết max_turns_ mà không hội tụ không bao giờ làm treo hệ thống — nó chỉ đơn giản trả về một kết quả thất bại. Hàng chục file test khác bao phủ đầu-cuối các trường hợp checkpoint, fork, ủy quyền (delegation), redact, cách ly (isolation), xử lý poison-run, suspend/resume, ngân sách token, tác vụ nền, timer, và mount skill. (Lịch sử: ban đầu đây là một quark::Actor<AgentSession<...>, quark::Sequential>, được gọi thông qua ask<AgentResponse>(); ADR-037 đã chuyển nó sang chạy trên runtime rt:: này, giữ nguyên các đảm bảo về hành vi, không còn cơ chế actor/mailbox bên dưới.)",
+        "agentengine::rt::AgentSession<ChatClientT, StateT, HistoryProviderT>, đã được chứng minh đầu-cuối kể từ M1 walking skeleton: start_run(StartRun{...}) mở rộng history() bằng một cặp lượt user+assistant thật, với văn bản trả lời thật và số liệu token usage thật. Kể từ ADR-027, MỘT lệnh gọi start_run() tự giải quyết TOÀN BỘ một cuộc hội thoại nhiều vòng gọi tool ở bên trong — ChatClient được gọi lặp đi lặp lại, các lệnh gọi tool được trích xuất, kiểm tra capability/approval, và được gọi thực thi qua pipeline thật 006 §3, rồi kết quả được đưa trở lại — tất cả nằm bên trong start_run(), không bao giờ là một vòng lặp do caller tự điều khiển. Một ToolCall thuộc loại text_derived (được tái dựng từ văn bản của model thay vì một trường tool-call thật từ nhà cung cấp) bị cổng giải mật (declassification gate) từ chối bất kể approval_mode của tool đích là gì — đây chính là trường hợp confused-deputy mà ADR-023 đã nêu tên. Từ chối đóng (fail closed) trên mọi nhánh chưa được giải quyết: một lệnh gọi bị từ chối không bao giờ được thực thi, và việc dùng hết max_turns_ mà không hội tụ không bao giờ làm treo hệ thống — nó chỉ đơn giản trả về một kết quả thất bại. Hàng chục file test khác bao phủ đầu-cuối các trường hợp checkpoint, fork, ủy quyền (delegation), redact, cách ly (isolation), xử lý poison-run, suspend/resume, ngân sách token, tác vụ nền, đánh thức theo lịch do host poll, và mount skill. (Lịch sử: ban đầu đây là một quark::Actor<AgentSession<...>, quark::Sequential>, được gọi thông qua ask<AgentResponse>(); ADR-037 đã chuyển nó sang chạy trên runtime rt:: này, giữ nguyên các đảm bảo về hành vi, không còn cơ chế actor/mailbox bên dưới.)",
       cite: "include/agentengine/rt/agent_session.hpp:323",
       href: gh("include/agentengine/rt/agent_session.hpp"),
     },
@@ -745,7 +793,7 @@ export const runtimeEntries: Record<Lang, ApiEntry[]> = {
       title: "Tạm dừng một run để chờ phê duyệt thật từ con người, không chỉ là một decider đồng bộ",
       body:
         "Một tool được khai báo Approval<approval_mode::always_require> thông thường cần một approval_decider_ đồng bộ được cấu hình trên session. ADR-029 bổ sung một lựa chọn khác: khi suspend_for_approval_ được thiết lập và không có decider nào được cấu hình, TOÀN BỘ yêu cầu StartRun sẽ thực sự tạm dừng — nó không bao giờ được giải quyết — và một Interaction thật được mở ra (interaction_reason::approval), kèm các sự kiện input_required/approval_requested trên luồng sự kiện của run. Một yêu cầu ResolveInteraction{interaction_id, approved} sau đó sẽ khôi phục lại CHÍNH run đó (không bao giờ tạo run_id mới — theo invariant về khả năng quy trách nhiệm I4 của 001): approved=true sẽ gọi thực thi thật lệnh gọi đang chờ, thông qua pipeline kiểm tra capability thông thường; approved=false gộp một sự từ chối vào history như một lỗi tool bình thường. Một StartRun thứ hai gửi tới trong lúc một interaction đang mở sẽ bị từ chối thẳng, và một ResolveInteraction từ một caller không khớp với principal sở hữu session sẽ bị từ chối ngay ở bước tiếp nhận, trước cả khi việc tra cứu interaction diễn ra.",
-      cite: "include/agentengine/core/agent_session.hpp",
+      cite: "include/agentengine/rt/agent_session.hpp:1488",
       href: gh("decisions/ADR-029-suspend-for-human-approval.md"),
     },
     {
@@ -868,8 +916,7 @@ export const runtimeToolRoundStep: Record<Lang, RuntimeLoopStep> = {
 
 export const composedProviderExampleSnippet = `// core/composed_context_provider.hpp -- N real ContextProviders in AgentSession's ONE provider slot
 using Providers = ComposedContextProvider<HistoryProvider<Window<0>>,   // 1st: recent conversation
-                                           SkillsProvider,               // 2nd: mounted-skill adverts
-                                           MemoryProvider>;              // 3rd: recall(query) tool
+                                           SkillsProvider>;              // 2nd: mounted-skill adverts
 
 using Session = agentengine::rt::AgentSession<AnthropicChatClient<InMemorySecretStore>,
                                                NoSessionState, Providers>;
@@ -877,13 +924,20 @@ using Session = agentengine::rt::AgentSession<AnthropicChatClient<InMemorySecret
 Session session;
 session.initialize("s-1", Principal{"p-1", ""});
 session.emplace_chat_client(secret_store);
-// Providers{} default-constructs all three -- every ContextProvider here IS default-constructible,
-// the same constraint AgentSession's plain value-member provider slot always required
-// (history_and_skills_provider.hpp's own file-top comment).
+// Providers{} default-constructs both -- ComposedContextProvider's default constructor is
+// CONSTRAINED on every Ms being default_initializable, because AgentSession's provider slot is a
+// plain value member with no emplace/accessor pair to configure it after construction.
 
-// Every turn, all 3 run independently (fan-out, never a pipeline -- OQ-18) and their
-// ContextContributions concatenate in DECLARED order: history's survivors, then skills'
-// advertisement, then memory's recalled notes + its recall(query) tool.`;
+// Which is exactly why MemoryProvider is absent from that list. MemoryProvider<SummarizerT, OS, RS>
+// takes two store references, a Mount, a bound cap::FsRead + cap::FsWrite and a summarizer -- it is
+// not default-constructible, so it cannot occupy this slot as written. It is real and tested; it is
+// composed through the standalone assemble_context() instead (examples/08_memory.cpp says so in its
+// own header, and memory_provider.hpp's file-top comment names the gap: "deliberately NOT wired into
+// AgentSession's own template parameter list").
+
+// Every turn, the declared providers run independently (fan-out, never a pipeline -- OQ-18) and
+// their ContextContributions concatenate in DECLARED order: history's survivors, then skills'
+// advertisement.`;
 
 export const approvalExampleSnippet = `// examples/05_human_approval.cpp (trimmed) -- ADR-029
 struct SendMessageTool
