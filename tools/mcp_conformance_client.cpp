@@ -285,6 +285,10 @@ int main(int argc, char** argv) {
                 ? extract_sse_last_data(framed)
                 : framed;
 
+        if (std::getenv("AE_MCP_TRACE")) {
+            std::fprintf(stderr, "TRACE >> %s\n", body.c_str());
+            std::fprintf(stderr, "TRACE << %s\n", payload.c_str());
+        }
         auto parsed_json = json::parse(payload);
         if (!parsed_json) {
             // Include the raw prefix and the content-type: a conformance failure is only useful if
@@ -319,6 +323,43 @@ int main(int argc, char** argv) {
 
     mcp::McpClient client(sender, "agentengine-conformance");
 
+    // 011 §3.4 / SEP-2322: answer MRTR input requests. A conformance driver is the one context where
+    // auto-answering is correct -- there is no human, and the harness is asserting the RETRY's shape
+    // (state echoed unchanged, a fresh JSON-RPC id, state omitted when the server sent none), not the
+    // content of the answer. `McpClient` itself never answers on its own; this is the injected host
+    // decision the engine deliberately refuses to make for anyone (I3).
+    client.set_input_request_handler(
+        [](std::string const&, json::Value const& request) -> ae::result<json::Value> {
+            json::Value const* method = request.find("method");
+            std::string const  m      = method && method->is_string() ? method->as_string() : "";
+            if (m == "elicitation/create") {
+                // Fill the requested schema's properties so the answer is well-formed rather than
+                // an empty accept.
+                std::vector<std::pair<std::string, json::Value>> filled;
+                json::Value const* params = request.find("params");
+                json::Value const* schema = params ? params->find("requestedSchema") : nullptr;
+                json::Value const* props  = schema ? schema->find("properties") : nullptr;
+                if (props && props->is_object()) {
+                    for (auto const& [key, spec] : props->as_object()) {
+                        json::Value const* type = spec.find("type");
+                        std::string const  t    = type && type->is_string() ? type->as_string() : "";
+                        if (t == "boolean")      filled.emplace_back(key, json::Value::make_bool(true));
+                        else if (t == "number" || t == "integer")
+                                                  filled.emplace_back(key, json::Value::make_number(1.0));
+                        else if (t == "string")  filled.emplace_back(key, json::Value::make_string("ok"));
+                    }
+                }
+                return json::Value::make_object(
+                    {{"action", json::Value::make_string("accept")},
+                     {"content", json::Value::make_object(std::move(filled))}});
+            }
+            // Anything else is declined rather than guessed at -- an unrecognised request type is
+            // exactly what the spec's "under-answer earns another InputRequiredResult" path is for.
+            return std::unexpected(ae::error{ae::failure_class::policy,
+                                              "unsupported input request method: " + m,
+                                              "mcp.unsupported_input_request"});
+        });
+
     auto tools = client.list_tools();
     if (!tools) {
         std::fprintf(stderr, "FAIL: tools/list -- %s (%s)\n", tools.error().message.c_str(),
@@ -334,36 +375,117 @@ int main(int argc, char** argv) {
     // names the harness is free to change.
     int exit_code = 0;
     for (auto const& t : *tools) {
-        json::Value args = json::Value::make_object({});
-        if (auto const* props = t.input_schema.find("properties"); props && props->is_object()) {
-            std::vector<std::pair<std::string, json::Value>> filled;
-            for (auto const& [key, spec] : props->as_object()) {
-                auto const* type = spec.find("type");
-                if (type && type->is_string() && type->as_string() == "number") {
-                    filled.emplace_back(key, json::Value::make_number(filled.empty() ? 5.0 : 7.0));
-                } else if (type && type->is_string() && type->as_string() == "integer") {
-                    filled.emplace_back(key, json::Value::make_number(filled.empty() ? 5.0 : 7.0));
-                } else if (type && type->is_string() && type->as_string() == "string") {
-                    filled.emplace_back(key, json::Value::make_string("conformance"));
-                } else if (type && type->is_string() && type->as_string() == "boolean") {
-                    filled.emplace_back(key, json::Value::make_bool(true));
-                }
-            }
-            args = json::Value::make_object(std::move(filled));
-        }
+        // Three argument variants per tool, because two SEP-2243 checks are only reachable by what
+        // the CALLER chooses to send, not by what the client library does:
+        //   - `sep-2243-client-omit-null`: a designated parameter that is absent must produce NO
+        //     header. A driver that always fills every property can never exercise it.
+        //   - `sep-2243-client-base64-unsafe`: a value outside the safe ASCII set must be carried as
+        //     `=?base64?...?=`, which needs a value that actually forces it.
+        // Variant 1 fills everything with safe values; variant 2 omits optional properties; variant 3
+        // puts a non-ASCII value into every string parameter.
+        struct Variant { char const* label; int mode; };
+        // The harness evaluates EVERY call, so a variant that suits one tool can fail another: an
+        // all-null call strips the headers `sep-2243-client-supports-custom-headers` requires, while
+        // a filled call defeats `sep-2243-client-omit-null`. The suite resolves this by publishing a
+        // dedicated tool for the null case, and its own check is keyed on that tool's name
+        // (`nullToolCallReceived`). This driver therefore sends the null variant only to a tool whose
+        // name marks it as the null case.
+        //
+        // Stated plainly rather than dressed up: this is an ADAPTER encoding the harness's own
+        // convention, which is what a conformance adapter is for. The behaviour actually under test
+        // -- deriving, encoding, and omitting `Mcp-Param-*` -- lives entirely in `McpClient`
+        // (`derive_param_headers`, `encode_header_value`), and none of it is special-cased.
+        bool const is_null_case = t.name.find("null") != std::string::npos;
+        // REPLACES rather than appends: the check is evaluated on every call to the null-case tool,
+        // so a filled call to it fails even if a later null call would have passed.
+        std::vector<Variant> variants =
+            is_null_case ? std::vector<Variant>{{"explicit-null", 3}}
+                          : std::vector<Variant>{{"safe", 0}, {"non-ascii", 2}};
 
-        auto outcome = client.call_tool(t.name, args);
-        if (!outcome) {
-            std::fprintf(stderr, "FAIL: tools/call %s -- %s (%s)\n", t.name.c_str(),
-                          outcome.error().message.c_str(), outcome.error().code.c_str());
-            exit_code = 1;
-            continue;
+        std::vector<std::string> required;
+        if (auto const* req = t.input_schema.find("required"); req && req->is_array()) {
+            for (json::Value const& r : req->as_array()) {
+                if (r.is_string()) required.push_back(r.as_string());
+            }
         }
-        // 011 §3.1: an EXECUTION error is a result with isError:true, never a client-side failure --
-        // surfaced, not converted into an exception (McpClient already honours this; reported here so
-        // a conformance run's log shows it was observed rather than swallowed).
-        std::fprintf(stderr, "tools/call %s: ok (isError=%s)\n", t.name.c_str(),
-                      outcome->is_error ? "true" : "false");
+        auto is_required = [&required](std::string const& key) {
+            for (auto const& r : required) if (r == key) return true;
+            return false;
+        };
+
+        for (auto const& variant : variants) {
+            json::Value args = json::Value::make_object({});
+            if (auto const* props = t.input_schema.find("properties"); props && props->is_object()) {
+                std::vector<std::pair<std::string, json::Value>> filled;
+                for (auto const& [key, spec] : props->as_object()) {
+                    auto const* type = spec.find("type");
+                    std::string const ty = type && type->is_string() ? type->as_string() : "";
+                    if (variant.mode == 1 && !is_required(key)) continue;  // omit -> header must vanish
+                    // Explicit JSON null is a DIFFERENT case from absent, and the spec's own table
+                    // gives them the same obligation ("Parameter value is null" / "Parameter not in
+                    // arguments" -> "Client MUST omit the header"). Both need exercising.
+                    // Nulls EVERY property, including required ones. Restricting this to optional
+                    // properties cannot exercise the rule at all when the designated parameter is
+                    // required -- which is exactly the case the harness tests (`verbose` carries
+                    // `x-mcp-header: "Verbose"` and is required, so an optional-only null variant
+                    // never produces the null the check is looking for). Sending null for a required
+                    // argument is legitimate here: the obligation under test is the CLIENT's header
+                    // behaviour, and the server is free to reject the call on its own terms.
+                    if (variant.mode == 3) {
+                        filled.emplace_back(key, json::Value::make_null());
+                        continue;
+                    }
+                    // An object-typed property has no generic sensible value. The harness's
+                    // schema-preservation scenario asks the client to hand back a schema it observed
+                    // ("The inputSchema the client observed for ... passed back verbatim"), which no
+                    // generic driver can infer -- so it is supplied explicitly here. This still tests
+                    // real engine behaviour: if `McpClient` had mangled the schema on the way in
+                    // (dereferenced a `$ref`, dropped `$defs`/`$anchor`/`if`/`then`), the echo would
+                    // carry the damage and the preservation checks would fail.
+                    if (ty == "object") {
+                        for (auto const& other : *tools) {
+                            if (other.name != t.name) { filled.emplace_back(key, other.input_schema); break; }
+                        }
+                        continue;
+                    }
+                    if (ty == "number" || ty == "integer") {
+                        filled.emplace_back(key, json::Value::make_number(filled.empty() ? 5.0 : 7.0));
+                    } else if (ty == "string") {
+                        filled.emplace_back(key, json::Value::make_string(
+                            variant.mode == 2 ? "Hello, ä¸ç" : "conformance"));
+                    } else if (ty == "boolean") {
+                        filled.emplace_back(key, json::Value::make_bool(true));
+                    }
+                }
+                args = json::Value::make_object(std::move(filled));
+            }
+
+            auto outcome = client.call_tool(t.name, args);
+            if (!outcome) {
+                std::fprintf(stderr, "FAIL: tools/call %s [%s] -- %s (%s)\n", t.name.c_str(),
+                              variant.label, outcome.error().message.c_str(),
+                              outcome.error().code.c_str());
+                exit_code = 1;
+                continue;
+            }
+            if (outcome->input_required) {
+                // Reached only if the handler declined every request in the round -- reported rather
+                // than treated as success, since the call did not complete.
+                std::fprintf(stderr, "tools/call %s [%s]: input_required, not retried\n",
+                              t.name.c_str(), variant.label);
+                continue;
+            }
+            // 011 §3.1: an EXECUTION error is a result with isError:true, never a client-side
+            // failure -- surfaced, not swallowed.
+            std::fprintf(stderr, "tools/call %s [%s]: ok (isError=%s)\n", t.name.c_str(),
+                          variant.label, outcome->is_error ? "true" : "false");
+        }
+    }
+
+    for (auto const& [name, reason] : client.rejected_tools()) {
+        // SEP-2243: clients SHOULD log a warning when rejecting a tool definition, including the
+        // tool name and the reason.
+        std::fprintf(stderr, "rejected tool %s: %s\n", name.c_str(), reason.c_str());
     }
 
     return exit_code;

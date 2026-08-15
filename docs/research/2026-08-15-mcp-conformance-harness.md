@@ -215,7 +215,8 @@ knows, `RequestSenderWithHeaders` was added as an **additive** second sender sha
 
 ### 8. Chunked transfer-encoding — a real client-role gap, predicted then hit
 
-The mock answers `tools/list` with `Transfer-Encoding: chunked` (`b42
+The mock answers `tools/list` with `Transfer-Encoding: chunked` (`b42
+
 {"jsonrpc"…`).
 `perform_http_exchange` is *"Content-Length-framed only — no chunked transfer-encoding support this
 milestone, a documented cut since this proxy's own test server never emits it"*. The cut is real: a
@@ -252,6 +253,65 @@ Remaining known gaps: `sep-2322-client-request-state` (MRTR — the client must 
 carrying `inputResponses`, which needs the `InputRequiredResult` handling 011 §3.4 describes and
 `McpClient` does not implement) and one check each in `http-custom-headers` and
 `json-schema-2020-12-preservation`.
+
+## Third pass: MRTR, and a clean sweep of the non-auth suite
+
+### 9. SEP-2322 / MRTR was unimplemented — `resultType` was never read at all
+
+`McpClient::call_tool` ignored `resultType` entirely, so an `InputRequiredResult` was reported to the
+caller as an ordinary successful completion. Implemented per 011 §3.4 and the spec's own rules:
+
+- The retry is a **retry of the original request** carrying `inputResponses`, never a new method.
+- **Every round mints a fresh JSON-RPC id** — "the `id` MUST differ between the original request and
+  the retry".
+- `requestState` is copied **opaquely** ("clients MUST NOT inspect, parse, or modify" it) and
+  **omitted entirely when the server sent none**.
+- A missing `resultType` is treated as `complete`, per the earlier-revision rule.
+- `inputRequests`/`requestState` live in call-local state and are never stored on the client, so an
+  unrelated call made between rounds structurally cannot pick them up — which is what the suite's
+  `test_mrtr_unrelated` tool checks.
+
+Answering an input request is a **host** decision, so it is an injected `InputRequestHandler`, never
+defaulted to something that answers: 011 §3.4 is explicit that "an MRTR input request is a server
+asking our host for something", and the engine must not invent user input on the host's behalf (I3).
+With no handler, `call_tool` returns `input_required` **surfaced rather than swallowed**, because
+"servers MUST NOT assume the client will fulfil or retry" makes not-retrying a legitimate outcome.
+
+### 10. Two checks were unreachable without the right driver behaviour
+
+Neither was an engine defect; both were calls the driver never made.
+
+- **`sep-2243-client-omit-null`** is keyed on a *separate* tool, `test_custom_headers_null`, and the
+  harness evaluates **every** call — so any filled call to that tool fails the check regardless of a
+  later null one. The driver now sends only the null variant to it.
+- **`json-schema-2020-12-client-echo-completed`** needs the client to hand back a schema it observed,
+  via a `json_schema_echo` tool. A generic filler skips object-typed properties, so the echo never
+  happened. This still tests real engine behaviour: had `McpClient` mangled the schema on the way in
+  (dereferenced a `$ref`, dropped `$defs`/`$anchor`/`if`/`then`/`additionalProperties`), the echo
+  would carry the damage. It passes, so the schema survives verbatim.
+
+### Final: every non-auth client scenario passes
+
+| Scenario | Checks |
+|---|---|
+| `tools_call` | 2/2 |
+| `request-metadata` | 4/4 |
+| `sep-2322-client-request-state` | 10/10 |
+| `http-standard-headers` | 3/3 |
+| `http-custom-headers` | 35/35 |
+| `http-invalid-tool-headers` | 11/11 |
+| `json-schema-ref-no-deref` | 1/1 |
+| `json-schema-2020-12-preservation` | 9/9 |
+| **Total** | **75/75 (100%)** |
+
+Progression across the three passes: **22/32 → 42/48 → 75/75**. Denominators move because failures
+short-circuit a scenario before its later checks run — which is itself worth stating whenever a
+conformance percentage is published, since a *smaller* denominator can mean worse conformance, not
+better.
+
+`auth/*` (18 scenarios) remains unrun: it needs a live authorization server and full OAuth 2.1
+authorization-code/PKCE, which ADR-021 §3 explicitly scoped out. **A published 011 §10 G2 percentage
+must therefore state its suite coverage, not just its ratio.**
 
 ## Sources
 

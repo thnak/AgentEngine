@@ -57,7 +57,24 @@ struct McpToolInfo {
 struct McpToolCallOutcome {
     bool        is_error = false;
     json::Value content;  // the raw "content" array, §3.1's own shape
+    // 011 §3.4 / SEP-2322 (MRTR): true when the server answered `resultType: "input_required"` and
+    // this client did not retry -- either because no `InputRequestHandler` was set, or because the
+    // handler declined. Surfaced rather than swallowed: the spec is explicit that "servers MUST NOT
+    // assume the client will fulfil or retry", so not-retrying is a legitimate outcome a caller has
+    // to be able to see, not an error.
+    bool        input_required = false;
+    json::Value input_requests;  // the raw `inputRequests` object, valid iff `input_required`
 };
+
+// 011 §3.4: "an MRTR input request is a server asking our host for something." Answering it means
+// producing elicitation/sampling/roots data, which is a HOST decision -- a peer server must not be
+// able to obtain data or authority by asking, and the engine must never invent user input on the
+// host's behalf (I3). So this is injected, never defaulted to something that answers: with no
+// handler set, an `input_required` result is returned to the caller unretried.
+//
+// Returns the `InputResponse` value for one server-assigned key, or an error to decline it.
+using InputRequestHandler =
+    std::function<result<json::Value>(std::string const& request_key, json::Value const& request)>;
 
 // Phase C4: mirrors `server.hpp`'s own `kMcpTasksExtension` -- kept as a client-local literal rather
 // than a shared constant, since server.hpp is server-role-only and this file has no dependency on it.
@@ -345,6 +362,10 @@ public:
     // forever," which a naive `ttl == 0 -> no expiry` reading would silently produce.
     void set_ttl(std::chrono::milliseconds ttl) noexcept { ttl_ = ttl; }
 
+    // 011 §3.4: opting in to answering MRTR input requests. Without this, `call_tool` returns an
+    // `input_required` outcome rather than retrying.
+    void set_input_request_handler(InputRequestHandler h) { input_handler_ = std::move(h); }
+
     [[nodiscard]] result<std::vector<McpToolInfo>> list_tools(std::string const& cursor = "") {
         // §3.1: "Cache key = method + the parameters that affect the result." An empty-string
         // cursor is still a real, distinct parameter value (§3.1's own "not end-of-results" rule) --
@@ -418,16 +439,65 @@ public:
         // rather than re-fetched -- the schema this client validated is the one it mirrors from, so a
         // server that changes the schema underneath is a rug pull (§8), not a silent header change.
         auto const param_headers = param_headers_for(name, arguments);
-        JsonRpcRequest req{RpcId{next_id()}, "tools/call",
-                            with_request_meta(json::Value::make_object(
-                                {{"name", json::Value::make_string(name)},
-                                 {"arguments", std::move(arguments)}}))};
-        JsonRpcResponse resp = send(req, param_headers);
-        if (resp.error.has_value()) {
-            // A PROTOCOL error (unknown tool, malformed request) -- 011 §3.1's own split, the
-            // client-side half symmetric with `McpServer`'s own server-side proof (server.hpp).
-            return std::unexpected(error{failure_class::contract, resp.error->message, "mcp.rpc_error"});
+        json::Value base_params = json::Value::make_object(
+            {{"name", json::Value::make_string(name)}, {"arguments", std::move(arguments)}});
+
+        // 011 §3.4 / SEP-2322's MRTR loop. Each round is a RETRY OF THE ORIGINAL REQUEST carrying
+        // `inputResponses`, never a new method -- and every round mints a fresh id, because "the
+        // JSON-RPC `id` MUST differ between the original request and the retry."
+        //
+        // `inputRequests`/`requestState` are held in locals for the duration of one call and never
+        // stored on the client: the spec says they "affect only that retry and MUST NOT be reused on
+        // any parallel request", so an unrelated call made between rounds structurally cannot pick
+        // them up.
+        json::Value                params = with_request_meta(base_params);
+        JsonRpcResponse            resp;
+        constexpr int              kMaxMrtrRounds = 8;  // bounded: a server that keeps asking must not spin us forever
+        for (int round = 0;; ++round) {
+            JsonRpcRequest req{RpcId{next_id()}, "tools/call", params};
+            resp = send(req, param_headers);
+            if (resp.error.has_value()) {
+                // A PROTOCOL error (unknown tool, malformed request) -- 011 §3.1's own split, the
+                // client-side half symmetric with `McpServer`'s own server-side proof (server.hpp).
+                return std::unexpected(error{failure_class::contract, resp.error->message, "mcp.rpc_error"});
+            }
+
+            json::Value const* result_type = resp.result->find("resultType");
+            // §3.4: "results from earlier-revision servers that omit it MUST be treated as complete."
+            bool const is_input_required =
+                result_type && result_type->is_string() && result_type->as_string() == "input_required";
+            if (!is_input_required) break;
+
+            json::Value const* input_requests = resp.result->find("inputRequests");
+            json::Value const* request_state  = resp.result->find("requestState");
+
+            if (!input_handler_ || round >= kMaxMrtrRounds) {
+                McpToolCallOutcome out;
+                out.input_required = true;
+                out.input_requests = input_requests ? *input_requests : json::Value::make_object({});
+                return out;  // surfaced, not an error -- the server may not assume we retry
+            }
+
+            // Answer each server-assigned key. A key the handler declines is simply left out: §9's
+            // own rule is that under-answering earns another `InputRequiredResult`, not an error, so
+            // partial answers are a legitimate move rather than a failure to report.
+            std::vector<std::pair<std::string, json::Value>> responses;
+            if (input_requests && input_requests->is_object()) {
+                for (auto const& [key, request] : input_requests->as_object()) {
+                    if (auto answered = input_handler_(key, request)) {
+                        responses.emplace_back(key, std::move(*answered));
+                    }
+                }
+            }
+
+            auto next_fields = base_params.as_object();  // rebuild from the ORIGINAL params each round
+            next_fields.emplace_back("inputResponses", json::Value::make_object(std::move(responses)));
+            // "Clients MUST NOT inspect, parse, or modify `requestState`; if absent in the result,
+            // the client MUST NOT include one in the retry." Copied opaquely, and only if present.
+            if (request_state) next_fields.emplace_back("requestState", *request_state);
+            params = with_request_meta(json::Value::make_object(std::move(next_fields)));
         }
+
         json::Value const* is_error = resp.result->find("isError");
         json::Value const* content  = resp.result->find("content");
         McpToolCallOutcome outcome;
@@ -589,6 +659,7 @@ private:
 
     RequestSender              sender_;
     RequestSenderWithHeaders   sender_with_headers_;
+    InputRequestHandler        input_handler_;
     std::vector<std::pair<std::string, std::string>> rejected_tools_;
     std::string                client_name_;
     std::uint64_t               next_id_ = 0;
