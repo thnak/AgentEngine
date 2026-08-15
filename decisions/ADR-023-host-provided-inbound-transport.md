@@ -1,10 +1,19 @@
 # ADR-023 — Host-provided inbound transport: who authenticates an inbound MCP/A2A/AG-UI request?
 
-**Status:** Red-teamed (2026-08-15), not yet proven or judged. Supersedes ADR-022 in effect (the
-reactor question is moot if no first-party listener is ever built) and re-scopes ADR-021. Two
-independent adversarial passes returned 27 findings (§7), four of which are **live security defects
-in shipped M7 code** rather than design problems — currently latent only because no inbound transport
-exists to reach them, which is precisely what this ADR proposes to add.
+**Status:** Design, second iteration (2026-08-15) — red-teamed once, not yet proven or judged.
+Supersedes ADR-022 in effect (the reactor question is moot if no first-party listener is ever built)
+and re-scopes ADR-021.
+
+Two independent adversarial passes returned 27 findings (§7), four of which were **live security
+defects in shipped M7 code** rather than design problems — latent only because no inbound transport
+existed to reach them, which is precisely what this ADR proposes to add. Those four are now fixed and
+proven (§7a, `tests/test_task_principal_binding.cpp`), except for two halves that need spec
+amendments this ADR owes.
+
+§3/§4 are the first design iteration, superseded by **§8** and kept as record. §8 is where the
+current design lives: it reframes the boundary as four contracts rather than one, withdraws Design C,
+introduces `RequestAuthority`/`AuthorityRef` as the device that answers R7/R15/R16/R17/R27 together,
+and replaces the claims table.
 
 ## 0. What changed, and why this ADR exists
 
@@ -117,7 +126,14 @@ the gRPC binding to a deployment-side proxy on exactly this reasoning; the `remo
 locked decision reasons identically ("push to infrastructure that already provides the property");
 and CONVENTIONS' heavy-dependency rule already argues against vendoring an HTTP server.
 
-## 3. Competing designs
+## 3. Competing designs — FIRST ITERATION, superseded by §8
+
+**Superseded by §8 (2026-08-15), kept because the reasoning that was wrong is part of the record**
+(decisions/README.md). §7's red-team found this framing under-specified: it treats the re-scope as a
+single question ("who establishes the `Principal`") when the host/engine boundary is four contracts,
+and it defines a request type with no response type at all (R14). Designs A-D below are still the
+honest starting point and §8 is written as a delta against them, not a replacement that pretends they
+never existed.
 
 All four share the same transport-fact carrier — the host's observations, which are **evidence, never
 authority**:
@@ -213,7 +229,10 @@ one API over both is what erases the distinction the table is making.
 Cost: two entry points is more surface, and the failure mode is a host that reaches for the trusting
 type because it compiles with less ceremony — which is Design B's hazard wearing a type.
 
-## 4. Falsifiable claims
+## 4. Falsifiable claims — FIRST ITERATION, superseded by §8b
+
+**Superseded by §8b.** §7e records which of these were disproven or shown insufficient as written
+(claims 3, 4, 5, 8, 9, 10) and why. Kept for the same reason §3 is.
 
 | # | Design | Claim | Disproving experiment |
 |---|---|---|---|
@@ -684,10 +703,383 @@ scope, R10). The table needs roughly a dozen new claims before any design here i
 enumerated per-finding above rather than restated, and writing them is the first task of the prove
 phase, not a judged outcome.
 
-## 8. Prove phase
+## 8. Second design iteration (2026-08-15)
 
-*(not yet run)*
+### 8.0 The reframe the red-team forced
 
-## 9. Decision
+§3 asked one question. §7 shows the host/engine boundary is **four contracts**, and answering only
+the first leaves the other three unassigned — which is how a design that looked complete could omit
+the response type entirely (R14):
+
+1. **Request admission** — credentials in, an authenticated identity out.
+2. **Response emission** — every status and header a conformance clause names (401 + `WWW-Authenticate`,
+   403 on bad `Origin`, 405, 202, content negotiation), plus MCP's request-scoped notification channel.
+3. **Stream lifecycle** — open, backpressure, multi-subscriber fan-out, and **termination when the
+   authority behind the stream stops being valid**.
+4. **Authority lifetime** — per-request, *owned*, revocable, and small enough to cross Quark's
+   192-byte actor boundary.
+
+Iteration 1 specified (1) partially and nothing else. Iteration 2 specifies all four, because §7
+demonstrates they are not separable: R15 (mid-stream revocation), R16 (borrowed-pointer UAF), R17
+(the 192-byte ceiling) and R27 (three more construction-time authorities) are all the same missing
+object seen from four directions.
+
+### 8.1 The load-bearing device: `RequestAuthority` + `AuthorityRef`
+
+One structure answers R7, R15, R16, R17 and R27 together. This is the substantive change in
+iteration 2; the design choices in §8.2 are then choices about *how it is populated*.
+
+```cpp
+// Owned, reference-counted, revocable. Never crosses the actor boundary by value.
+class RequestAuthority {
+public:
+    Principal      const& principal()    const noexcept;
+    CapabilitySet  const& capabilities() const noexcept;   // OWNED, not borrowed
+    ApprovalDecider const& approve()     const noexcept;
+    // R15: the liveness question a long-lived stream must be able to re-ask.
+    [[nodiscard]] bool live(std::chrono::system_clock::time_point now) const noexcept;
+private:
+    Principal            principal_;      // private-constructed, carries provenance (§8.1a)
+    CapabilitySet        capabilities_;
+    ApprovalDecider      approve_;
+    std::chrono::system_clock::time_point expiry_;  // from the verified credential's own `exp`
+    std::atomic<bool>    revoked_;
+    friend class AuthorityTable;                     // the only producer
+};
+
+// 16 bytes. This — not a Principal — is what crosses `StartRun`.
+struct AuthorityRef { std::uint64_t slot; std::uint64_t generation; };
+```
+
+- **R16 (use-after-free)** — `EffectContext` holds `std::shared_ptr<const RequestAuthority>` instead
+  of a borrowed `CapabilitySet const*`. `background_task()` already copies `EffectContext` into a
+  detached thread on the documented "the host owns it and must outlive the session" contract
+  (`core/tool_pipeline.hpp:355-360`); that contract holds only while authority is per-connection, and
+  a refcounted owner makes it hold unconditionally. This is the difference between per-request
+  authority being safe and being a dangling read.
+- **R17 (192-byte ceiling)** — `quark::Ask<StartRun, AgentResponse>` measured 208 bytes with a full
+  `optional<Principal>` embedded, against `MessagePool::kMaxPayload` of 192, and Quark may not be
+  patched in-tree. A 16-byte `AuthorityRef` fits with room to spare, and §2's blocked plan to grow
+  `Principal` with `claims`/`issuer`/`expiry` is replaced by putting those on the authority record
+  the ref resolves to. The two-string `SessionCaller` stand-in can then retire.
+- **R27 (three more construction-time authorities)** — `held_`, `approve_`, and the principal all
+  resolve from one per-request record, so there is one thing to make per-request rather than three to
+  remember.
+- **R15 (mid-stream revocation)** — a stream holds the `shared_ptr` and re-checks `live()` at each
+  emission boundary, terminating with a distinct terminal event when it goes false.
+
+**Honest note on R15 and ADR-009.** ADR-009 explicitly *rejected* a whole-set epoch counter on
+`CapabilitySet` (`ADR-009:66-77`), and this is adjacent enough that it must not be waved through:
+what is proposed here is **not** that. ADR-009's question was whether an already-issued in-process
+capability handle can be invalidated mid-call; this is a liveness flag on a per-*request* authority
+record, re-read at stream-emission boundaries only. The mechanisms differ in granularity and in what
+they promise. That said, "adjacent but different" is exactly the kind of claim that should be
+checked by someone who did not write it — **this needs ADR-009's own re-examination before the prove
+phase treats it as settled**, and it is listed as such in §8c.
+
+#### 8.1a `Principal` gets private construction and provenance (R7)
+
+R7's finding is that Design D typed the *request* while the laundering happens on the `Principal` one
+line later: it is a plain aggregate with public `id`/`tenant_id`, default construction, and copy
+assignment (`trust/principal.hpp:26-46`), so provenance evaporates the instant either arm returns.
+007 §3 property 4 already requires private construction for *capabilities*; identity gets the same
+discipline:
+
+```cpp
+enum class principal_provenance : std::uint8_t {
+    anonymous,          // no credential presented; 018 §1's "Anonymous is a principal, not a bypass"
+    verified_by_engine, // derived from a credential this engine itself validated
+    asserted_by_host,   // an in-process host said so (§8.2's Design F confines where this is reachable)
+};
+```
+
+`Principal` becomes privately constructed, with the existing named factories in `trust/` as the only
+producers, and `provenance` is non-defaultable. Any surface under an 011 §8a MUST refuses a principal
+whose provenance is not `verified_by_engine`. The value carries its own origin, so no downstream API
+can be fooled by one that looks right.
+
+This also closes R13's residue structurally: an anonymous principal is a distinct provenance rather
+than "the one with `id == "anonymous"`", and a default-constructed `Principal` stops existing.
+
+### 8.2 Competing designs, second iteration
+
+**Design C is withdrawn.** R11 removed its only remaining justification. In-process, a signed
+assertion is futile (a host that can call the API can read the signing key from its own memory);
+out-of-process, 007 §1's "the host process is trusted" does not transfer to a peer process reached
+over IPC, and the scheme has no key-rotation story (`BearerSecretKey` is a bare 32-byte struct with
+no key id or acceptance window, so 018 §3's "rotation without restart" is unreachable) and no
+attribution value (symmetric HMAC — the engine can mint what the sidecar mints). Withdrawn rather
+than carried as a weak third option.
+
+#### Design E — One API, provenance on the type
+
+A single `authenticate()` family over one request type; the trusting and verifying paths both produce
+a `Principal`, distinguished by provenance (§8.1a) rather than by the request type. MUST-bearing
+surfaces refuse `asserted_by_host`.
+
+Steelman: one code path, one place to audit, and provenance travels with the value rather than with
+the call site — which is the half of D that R7 showed actually matters.
+
+Cost: an in-process embedded host and a remote HTTP caller flow through the same entry point, so
+"can this deployment assert an identity?" is a runtime property of the value rather than a
+structural property of the deployment. It is checkable, but it is convention-shaped where §8.1a's
+own precedent (ADR-009, ADR-022) prefers construction-shaped.
+
+#### Design F — Two disjoint APIs; the protocol surface has no trusting arm at all
+
+The insight R7 points at but iteration 1 missed: **the trusting posture already has its own API, and
+it is not this one.** 020 §3a is explicit — for an embedded in-process host, *"No protocol surface
+(011/012/013 §2) sits between host and engine here: the host is in the same process as the `Run`, so
+it consumes 013 §1's event stream directly, in its native struct form"*, via
+`ask_stream<RunEvent>(StartRun{...})`. That contract is already specified and already has
+`make_embedded_principal()` behind it.
+
+So: the protocol-endpoint API accepts **credentials only**. There is no `TrustedHostRequest`, no
+asserted-principal field, and therefore no laundering path — not because a check forbids it but
+because the type does not exist. An embedded host that wants to assert identity uses 020 §3a's
+in-process contract, which is a different API returning a different thing.
+
+Steelman: this is the construction-level guarantee ADR-022 said this project prefers, achieved by
+*removing* surface rather than adding a gate. It also stops D's ergonomic hazard at the root — R7's
+"the unsafe path is strictly cheaper to write" cannot happen when the unsafe path is not writable
+through this API at all. And it matches 018 §1's table honestly: the Embedded row and the HTTP/MCP/A2A
+rows are different rows *because they are different surfaces*, which is what iteration 1 blurred.
+
+Cost: a host that terminates its own auth (OIDC, session cookie, mTLS at its edge) and wants to front
+the *protocol* surface must express identity as a credential the engine validates. That is exactly
+R5's friction, and Design G is the answer to it rather than a reason to reject F.
+
+#### Design G — Engine-issued session credential (the bridge for already-authenticated hosts)
+
+The friction §1 warned about is real: making a correctly-authenticated host re-mint a token per HTTP
+request is what gets a control bypassed. G removes it without giving the protocol surface a trusting
+arm.
+
+The host authenticates its user however it already does, then performs **one** identity exchange over
+the in-process seam (Design F's 020 §3a contract, where the host is legitimately trusted), receiving
+an **engine-minted, engine-audienced, short-lived credential** bound to that session. Every subsequent
+protocol request carries that credential and is validated normally, with no special case.
+
+Why this is materially better than per-request assertion:
+
+- **The trust surface shrinks from every request to one call.** A compromised in-process host can
+  still exchange for an identity it should not have — that is unavoidable and 007 §1 already says so
+  — but it does it through one narrow, auditable entry point rather than on every request, and each
+  exchange is a recordable event under 007 §8. Blast radius and detectability both improve.
+- **R8 (audience) dissolves for this path**: the credential's audience is the engine's own, minted by
+  the engine, never derived from anything the host supplies.
+- **R10 (token passthrough) dissolves**: the engine never holds the user's upstream credential at
+  all. The host's OIDC token stays in the host. 018 §1's "no token passthrough" MUST becomes
+  structurally satisfied instead of conventionally observed.
+- **R5 (single-use tokens) is answerable**: an engine-minted session credential is explicitly a
+  reusable access token with a short `exp`, and one-shot `jti` semantics are reserved for genuine
+  one-shot assertions (§8.4).
+
+Cost: a second credential type and its lifecycle (issue, renew, revoke), and the exchange seam is a
+new privileged entry point that needs its own negative corpus.
+
+**F and G compose; E is the alternative.** The recommendation going into the prove phase is **F as
+the boundary shape, G as the bridge**, with E kept as the comparison that must be beaten on evidence
+rather than dismissed.
+
+### 8.3 The other three contracts, specified
+
+#### Response emission (R14)
+
+```cpp
+struct OutboundResponse {
+    std::uint16_t status;                 // engine-determined, always
+    HeaderList    headers;                // incl. WWW-Authenticate, Content-Type
+    std::vector<std::byte> body;
+};
+```
+
+The rule: **every status and header a conformance clause names is determined by engine code.** The
+host writes bytes and chooses nothing. This is what makes §2a's "Origin validation stays in-engine"
+true rather than half-true — the check *and* its 403 both belong to the engine.
+
+For MCP's request-scoped notification channel (011 §3.3: progress notifications *"flow on the
+response stream of the request they belong to"*), a single response value is insufficient — that is
+why `McpProgressProjector` currently has nowhere to send its output. So a handler returns either a
+complete `OutboundResponse` or a `ResponseStream`:
+
+```cpp
+using ResponseStream = ae::stream<ResponseChunk>;   // core/stream.hpp, already credit-controlled
+using HandlerResult  = std::variant<OutboundResponse, ResponseStream>;
+```
+
+#### Stream lifecycle (R15, R22, R23)
+
+- **Termination on authority loss** — §8.1's `live()` check at each emission boundary.
+- **R22, the discarded push outcome** — `emit_run_event_for()` currently does
+  `(void)run_event_producer_.push(...)` (`core/agent_session.hpp:849-855`), silently ignoring
+  `Terminated` and emitting into a dead ring forever. The outcome must be handled and end the run's
+  emission. With R15 this is also the concrete mechanism by which a disconnected client's run stops
+  consuming authority it no longer has a reader for.
+- **R22, the pinned worker** — `push()` blocks losslessly (`core/stream.hpp:84-89`) inside a
+  `quark::task<>` on a Quark worker, so a host that stops draining stalls a scheduler thread. The
+  boundary needs a bounded-block variant with a deadline, so a slow or hostile HTTP client is not a
+  lever on the shared scheduler.
+- **R23, multi-subscriber** — `enable_event_stream()` overwrites a single producer member
+  (`core/agent_session.hpp:528-533`), so a second subscriber silently kills the first, while 012 §2.3
+  makes identical ordered broadcast to every stream a MUST. 013 §7 Q2 already resolved *how* (ordinary
+  AgentEngine-owned ordered fan-out); it simply is not built, and a host-owned transport makes N
+  connections to one run the normal case rather than an edge case.
+
+#### Endpoint identity: audience and admin separation (R8, R21)
+
+Both findings need the same missing thing — the engine has no idea *where* a request arrived — and
+one construct answers both:
+
+```cpp
+enum class endpoint_surface : std::uint8_t { public_api, admin };
+
+// An INDEX into operator-supplied configuration, not a value the host invents.
+struct EndpointId { std::uint32_t index; };
+```
+
+The operator configures N endpoints at engine construction, each with its own audience and surface
+kind. The host declares which endpoint a request arrived on; the engine looks up the audience *from
+its own configuration*. **The host selects among operator-approved endpoints; it never supplies an
+audience value.** That is what keeps R8's audience validation from becoming a tautology while still
+letting an engine serve several logical resources.
+
+The same construct makes 020 §4 engine-enforceable again (R21): the engine refuses admin methods on
+an endpoint whose surface is `public_api`. Without it, "the admin API is never on the same listener as
+the public surfaces" degrades to advice a host may ignore.
+
+#### One dispatch source (R9)
+
+The engine derives the operation from **exactly one** source — the JSON-RPC body — and **rejects**,
+never silently prefers, any request whose transport-level hints (`target`, `Mcp-Method`, `Mcp-Name`)
+disagree with it. This closes the in-process analogue of request smuggling: a host that routes
+`/mcp/readonly` on `Mcp-Method: tools/list` while the engine executes a `tools/call` from the body.
+
+#### Ownership at the boundary (R24)
+
+`InboundRequest`'s fields become owning, or the body is copied once at the boundary and parsed
+exclusively from the copy. Two reasons, and the second is the one that generalises: a `span` into
+host memory makes the digest/parse seam unverifiable by construction, and any view reaching a
+background task, a stream, or an audit record dangles the moment the host's request scope ends —
+after a call that looked synchronous.
+
+### 8.4 Credential handling, corrected (R5, R6, R10, R12)
+
+- **A decoder must exist and be fuzzed (R6).** There is no `Authorization: Bearer <string>` parser
+  anywhere; `BearerToken` holds already-parsed claims and has zero consumers outside its own test.
+  The highest-risk step in the chain — attacker-controlled bytes with attacker-controlled `u32`
+  length prefixes — is unbuilt. It gets a libFuzzer harness on ADR-015's established pattern.
+- **Replay semantics split by credential kind (R5).** A reusable **access token** (what 018 §1's HTTP
+  row means) is valid for many requests within its `exp`; `ReplayGuard` must not burn it. A
+  **one-shot assertion** keeps `jti`-single-use. Conflating them is what made ADR-021's proven
+  mechanism incompatible with ADR-021 §8's own per-request constraint. Stated plainly rather than
+  papered over: a bearer token is replayable by anyone who captures it, which is inherent to bearer
+  credentials and is why transport confidentiality is a hard requirement, not why a replay guard
+  should be bolted onto the access-token path.
+- **The credential is unreachable from dispatch (R10).** `Authorization` is extracted at the boundary
+  into a move-only, unprintable `Credential` consumed by the authenticator; the `HeaderView` handed
+  onward does not contain it. Design A's structural weakness — being the only design that hands the
+  engine a live upstream-usable credential in the same process as every outbound client — is fixed by
+  making passthrough not compile rather than not happen. Under Design G it does not arise at all.
+- **Verification is O(1) amortized (R12).** `ReplayGuard::check_and_record` walks and prunes the whole
+  map under one global mutex on every call. Now that it applies only to assertions the pressure is
+  lower, but the structure is still wrong and is measured at N≈10⁵ rather than N≈0.
+
+### 8.5 Conformance honesty and the gate apparatus (R19, R20, R21)
+
+§6's fixture-host plan survives, with three corrections §7 makes unavoidable:
+
+1. **Two numbers, not one.** 011 §10's *"A claim of MCP support means a number from this tool"*
+   cannot survive unamended when the engine no longer implements localhost binding, the Origin 403,
+   OAuth resource-server framing, admin-listener separation, or any connection limit. The project's
+   own precedent is exact and already adopted elsewhere: 012 §9 Q1 resolved gRPC with *"We do not
+   claim gRPC conformance ourselves... honestly outside what our own TCK run can prove (021 §1's 'no
+   claim' discipline)."* Applied here: publish an **engine-attributable conformance number** plus a
+   **numbered, normative host-obligation list**, and state that a deployment's conformance is the
+   former conditional on discharging the latter.
+2. **Scenarios are attributed.** Each conformance scenario is labelled engine-determined or
+   fixture-determined, and only the former counts toward the published number. The check that this is
+   honest: mutate the fixture (bind `0.0.0.0`, drop the Origin 403) and the number must not move.
+3. **The fixture's status is decided, not asserted.** "Not shipped surface" has no mechanism behind it
+   — `agentengine_core` is an INTERFACE target with no `install()` rules, so adopters consume this
+   repo as source and will copy whatever the fixture does. Either it is a supported reference host
+   with the obligations that implies, or the obligation list is normative enough that copying the
+   fixture is unnecessary. 020 §7 G2 forces the question anyway, since with the Standalone row void
+   the fixture is the only thing that can play "standalone server."
+
+### 8.6 Spec amendments this iteration commits to
+
+§2a's table, extended with what §7 added. Each is an edit the decision phase owes, not a maybe:
+
+| Spec | Change |
+|---|---|
+| 011 §7 | Engine implements Streamable HTTP *semantics* over a host-provided transport |
+| 011 §8a | Origin validation **and its 403** stay in-engine; localhost binding becomes host obligation #1 |
+| 011 §10 | Split into engine-attributable number + normative host-obligation list (§8.5) |
+| 011 §10 G3 | Statelessness claimed only for the core suite, or the task store is externalized (R18) |
+| 012 §1/§5 | `task_id` IS `run_id` — must be decoupled so the public handle is not the deterministic internal one (R1's unfixed half) |
+| 012 §8 G1 | Same two-number split as 011 §10 |
+| 013 §6 G2 | Restate as an engine-side property at the stream seam + a host obligation (R22) |
+| 019 §3 | `IdempotencyKey` gains a principal/tenant dimension; digest becomes cryptographic where it keys a security decision (R4's unfixed half) |
+| 020 §3 | Standalone row becomes "engine + host adapter", or the table drops to four shapes (R21) |
+| 020 §4 | Admin separation re-expressed as `EndpointId::surface`, engine-enforced (§8.3) |
+| 020 §8 Q2 | **Reopened** — both premises of its "in-process, same binary" resolution are destroyed by this ADR (R21) |
+| 007 §1 | No change needed under Design F/G, *because* Design C is withdrawn — worth recording as a reason the withdrawal was cheap |
+
+### 8b. Falsifiable claims, second iteration
+
+Replaces §4. Claims marked **(carried)** survive from iteration 1 unchanged; the rest are new or
+repaired. Every security claim's disproving experiment includes a positive control, per
+decisions/README.md.
+
+| # | Target | Claim | Disproving experiment |
+|---|---|---|---|
+| 1 | F | No code path through the protocol-endpoint API produces a `Principal` whose `id`/`tenant_id` was chosen by the caller rather than derived from a credential this engine verified | Negative suite over every channel: `X-Principal`-shaped headers, `target` path segments, `TransportFacts.sni`, MCP `requestState`, an A2A task id used as a lookup key. Plus a `try_compile()` gate that no asserted-principal type is constructible through this API at all |
+| 2 | all | **Positive control**: a valid credential yields the correct principal and a *successful* `tools/call` | Green path returns a real result — the path can succeed, so its rejections mean something |
+| 3 | §8.1a | `Principal` is constructible only by `trust/` factories, and provenance is non-defaultable | `try_compile()`: `Principal p{"admin","t"};` and `p.id = "admin";` both fail outside `trust/`; no factory yields a default provenance |
+| 4 | §8.1a | A surface under an 011 §8a MUST refuses a principal whose provenance is not `verified_by_engine` | Attempt `tools/call` on a protocol endpoint with an `asserted_by_host` principal; must be refused |
+| 5 | §8.1 | **Repairs claim 3.** Authority is per-request AND memory-safe under overlap: a backgrounded call and an open stream started under request A keep exactly A's authority after A's frame returns and request B has run under a different principal | Overlapping (not sequential) requests under ASan/TSan. The old claim passed against a dangling implementation because two sequential requests never overlap |
+| 6 | §8.1 | `AuthorityRef` crosses the actor boundary within budget | `static_assert(sizeof(quark::Ask<StartRun, AgentResponse>) <= quark::detail::MessagePool::kMaxPayload)` |
+| 7 | §8.1/R15 | A stream open when its authority is revoked or expires emits no further event after a bounded interval, and terminates with a distinct terminal event | Open a stream under a credential with `exp = now + 1s`; assert termination and no event N+1. **Currently unwritable — there is no revoke** |
+| 8 | R23 | Two concurrent subscribers to one run receive identical events in identical order, and closing one does not affect the other (012 §2.3) | Two subscribers, one run; currently disproved by construction |
+| 9 | R22 | A `push()` returning `Terminated` ends the run's emission and is observable; and no host behaviour at the stream seam causes unbounded engine-owned memory growth or occupies a Quark worker beyond a bounded interval | Non-draining host fixture; measure engine memory and worker occupancy. Disproved today by the `(void)push` |
+| 10 | R14 | Every conformance-relevant response condition (401/403/405/202, `WWW-Authenticate`, `Content-Type`) is fully determined by engine code | Find one conformance scenario whose pass/fail depends on a host-chosen status. Plus: a `tools/call` emitting progress produces N notification frames and one result frame through one engine-returned carrier |
+| 11 | R8/§8.3 | `expected_aud` is operator configuration indexed by `EndpointId`, never a value read from the request; an engine serving N mounts requires N configured audiences | Two endpoints, distinct audiences; a token for endpoint 1 presented at endpoint 2 is rejected. If the API cannot express this, disproven by inspection |
+| 12 | R21/§8.3 | An admin method is unreachable on an endpoint whose surface is `public_api` | Dispatch every admin method against a public endpoint; all refused |
+| 13 | R9 | Dispatch derives the operation from one source, and any disagreement between `target`/`Mcp-Method`/`Mcp-Name` and the body is a **rejection**, never a silent preference | Differential suite pairing each transport hint with a conflicting body |
+| 14 | R5 | The **same** valid unexpired access token authenticates N ≥ 2 successive requests, each yielding the same principal | Present one token twice. Fails today — `check_and_record` burns it on first use |
+| 15 | R6 | A wire-format decoder exists in-engine, is fuzzed against truncated / oversized / length-prefix-overflow input, and nothing outside `trust/` constructs `BearerTokenClaims` | libFuzzer harness (ADR-015's pattern) + a grep gate |
+| 16 | R10 | The `Authorization` value is unreachable from dispatch: passthrough does not compile | `try_compile()` negative, plus 018 §7 G2's canary-secret scan over an outbound-capture fixture |
+| 17 | R12 | Verification latency is O(1) amortized in outstanding un-expired credentials | p99 at N = 0 vs N = 10⁵, ≥8 concurrent verifier threads. **Repairs claim 9**, which measured N ≈ 0 |
+| 18 | R24 | The bytes verified and the bytes parsed are the same object, and nothing derived from `InboundRequest` outlives the call unless owned | Hostile host fixture that mutates its buffer after `authenticate()` returns and scribbles/frees on return, under ASan, with a background task and a stream in flight |
+| 19 | R25 | **Splits claim 5.** (a) `TransportFacts` never influences identity or capability derivation; (b) its non-identity uses are exactly enumerated; (c) `tls_terminated_by_host == false` on a credential-bearing request is a rejection in production configuration | (a) adversarially varied facts, identical authorization outcome; (c) present a credential with the flag false, assert rejection |
+| 20 | R1/R6-family | Every server-minted handle is bound to its establishing principal, and a cross-principal read is indistinguishable from not-found | **Already proven** — `tests/test_task_principal_binding.cpp`, 19 checks, harness teeth verified |
+| 21 | R13 | An anonymous principal's `tenant_id` is never taken from the request | Send unauthenticated requests asserting a victim tenant through every channel; derived tenant unchanged |
+| 22 | R26 | Every audit record carries `{principal.id, tenant_id, on_behalf_of}`, and 007 §9 G5's reconciliation re-runs with two concurrent principals | **Partly proven** — the fields exist; the two-principal reconciliation is not yet run |
+| 23 | G | The identity-exchange seam is the only path to an `asserted_by_host` principal, it is recorded as an auditable event, and the issued credential's audience is engine-minted | Attempt to reach an asserted principal by any other route; assert an audit record per exchange |
+| 24 | R19/R20 | Every scenario counted toward the published conformance number is engine-determined | Mutate the fixture (bind `0.0.0.0`, drop the Origin 403); the number must not move |
+
+### 8c. What iteration 2 does NOT resolve
+
+Named so the prove phase starts from an honest list rather than discovering these a third time:
+
+- **ADR-009 re-examination (§8.1)** — whether `RequestAuthority::live()` is genuinely a different
+  mechanism from the epoch counter ADR-009 rejected, checked by someone who did not write §8.1.
+- **R18 / 011 §10 G3** — whether the task store is externalized behind a seam or statelessness is
+  claimed only for the core suite. §8.6 lists both options because the choice is a real trade, not an
+  oversight.
+- **R11's residue** — Design C's withdrawal means 007 §1 needs no amendment *today*. If an
+  out-of-process trusted host is ever wanted, that amendment comes back and this ADR does not
+  pre-authorize it.
+- **The remote-agent-as-tool binding** and **binary protobuf framing**, both named absent since M7
+  Phase D4/E3 and untouched here.
+- **Whether Design F's cost is acceptable to real adopters** — G is a designed answer, not a measured
+  one. Claim 23 tests that it works, not that anybody prefers it.
+
+## 9. Prove phase
+
+*(not yet run — §8b's claims are what it must run against)*
+
+## 10. Decision
 
 *(not yet judged)*
