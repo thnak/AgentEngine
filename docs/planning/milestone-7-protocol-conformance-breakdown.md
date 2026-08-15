@@ -819,6 +819,87 @@ current test files directly for what they actually run against today.
   the honest accounting the roadmap needs before deciding what real work closes the gap, rather than a
   claim that it already has.
 
+- **Phase H** — the inbound-transport question, and the conformance gates it was thought to block.
+
+  Opened after Phase G's audit named a real listener as "the single largest unblock." Project-owner
+  direction (2026-08-15) removed the premise: **AgentEngine will not implement HTTP networking**;
+  consumer code owns the socket and hands the engine parsed requests, MAF-style. That is a trust-
+  boundary change, so it went to an ADR rather than straight to code —
+  `decisions/ADR-023-host-provided-inbound-transport.md`.
+
+  **Outcome (2026-08-15): four live security defects fixed, 33 red-team findings against the design,
+  three design iterations, and 011 §10 G2 producing a real conformance number.** Ordered by what a
+  reader needs first.
+
+  **H1 — four shipped security defects, fixed and proven** (`0ec26b6`). ADR-023's first red-team round
+  found these in M7 Phase C/D code, not in the design. All four were re-verified by hand before being
+  acted on:
+  - **A2A `GetTask`/`CancelTask` had no principal check**, and `Task.id` is `run_id`, which
+    `AgentSession` mints as `session_id + ":run:" + counter` — structured and enumerable. `Task::history`
+    carries both sides of the conversation. Knowing or guessing a session id was an unauthenticated
+    cross-principal read of entire conversations (011 §8a's MUST; 018 §7 G4's release-blocking class).
+  - **Every inbound A2A message bypassed 018 §2 admission**: `StartRun::caller` defaults to `nullopt`,
+    `nullopt` *skips* the check, and `A2aServer` never set it.
+  - **MCP's task store had the same missing check**, with ids from `mt19937_64` (not a CSPRNG).
+  - **`EffectContext` was default-constructed** on both MCP dispatch paths, so every inbound call ran
+    as an empty `Principal{}` and produced audit records with no identity (007 §8 requires it).
+
+  Fixed with per-principal binding, ownership checked *before* task state (so a stranger cannot learn a
+  task exists from a state-specific error), byte-identical not-found responses (012 §4), a new
+  header-only `trust/secure_random.hpp` (BCrypt/`getrandom`, fails closed), and identity on
+  `ToolInvocationAudit`. `tests/test_task_principal_binding.cpp` — 19 checks, every negative paired
+  with a positive control. **Harness teeth verified** per ADR-015's precedent: neutering the ownership
+  predicate turns 5 checks red while every positive control stays green.
+
+  Two halves were deliberately NOT fixed because each needs a spec change: `Task.id`'s enumerability
+  (012 §1/§5 assert `task_id` IS `run_id`, and `run_id` must stay deterministic per 001 §7/I5) and
+  `IdempotencyKey`'s shape (019 §3 specifies the tuple). Both recorded in ADR-023 §7a.
+
+  **H2 — the design did not survive contact** (`3ab0808`, `fe5047c`, `5b262c9`, `e329a7c`, `d7c174e`).
+  Three iterations, two independent red-team rounds, **33 findings against iteration 2 alone**. Two
+  are worth carrying forward:
+  - Iteration 2's recommended design (F+G) was defeated: the exchange seam launders a host-chosen
+    identity into `verified_by_engine`, and Design F's premise rested on a **fabricated citation** —
+    020 §3a specifies no identity contract, and `make_embedded_principal` appears in no spec file.
+  - `AuthorityRef` reinvented ADR-005 Design B with a guessable handle, and `live()` was checked at
+    event boundaries while effects run unbounded on detached threads.
+
+  One measured result survives and is reusable: a 16-byte authority handle puts
+  `Ask<StartRun, AgentResponse>` at **104 bytes against `kMaxPayload`'s 192**, with the 208-byte
+  control reproducing `agent_session.hpp:92-97`'s own cited figure.
+
+  **H3 — Tier 1: 011 §10 G2 is not listener-blocked, and now produces a number** (`e71ec15`,
+  `96583b1`, `f80a268`). The harness's two roles are asymmetric: `conformance server` needs a `--url`,
+  but **`conformance client --command` spawns our binary**. So G2 needs no listener, no host adapter,
+  no fixture, and no attribution apparatus. **The Phase G audit was wrong to list G2 as
+  listener-blocked; only G1 is.**
+
+  `tools/mcp_conformance_client.cpp` wires `McpClient`'s existing `RequestSender` seam to ADR-011's
+  `perform_http_exchange` via ADR-016's host-initiated resolver. Running the real suite found four
+  more genuine defects, each fixed: **`_meta` was missing entirely** (011 §2 specifies it; Phase C1
+  deferred it and C3 never added it, so *no* outbound request was schema-valid for this revision),
+  `clientCapabilities.extensions` shape, and **SEP-2243 `x-mcp-header` entirely unimplemented** —
+  which 011 §8b itself calls "a mandatory client-side surface... easy to miss".
+
+  **Conformance, client role, spec `2026-07-28`: 42/48 (88%), six scenarios clean.** Full detail,
+  including the tool-version and RFC-mismatch findings, in
+  `docs/research/2026-08-15-mcp-conformance-harness.md`.
+
+  **Open, and load-bearing for whoever picks this up:**
+  - **All 33 findings remain open for Tier 3** (host-fronted HTTP). Research confirmed Tier 3 is the
+    *only* path to G1 — the suite is URL-only for both roles, so stdio yields no gate.
+  - **`perform_http_exchange` cannot talk to a chunking MCP server.** It is Content-Length-only by a
+    documented cut; the conformance binary decodes chunked locally. Fixing it properly is an ADR-011
+    amendment (its byte cap is enforced *during* the read loop, claim C8).
+  - **011 §10's own gate is unrunnable as written**: `latest` (0.1.16) does not know `2026-07-28`;
+    only `0.2.0-alpha.11` does. The RFC requires a percentage "pinned to a conformance release" and
+    the only qualifying version is a prerelease.
+  - **011 needs corrections**: §7 omits the required `MCP-Protocol-Version` header; §10's scenario
+    list names `mrtr-client` (does not exist) and `json-schema-ref-deref` (really
+    `json-schema-ref-**no**-deref` — a semantic inversion that would lead an implementer to build the
+    opposite behaviour).
+  - `sep-2322-client-request-state` (2/5) needs MRTR — the client retrying with `inputResponses`.
+
 Each phase follows the established M6 discipline: implement → build (PowerShell + `vcvarsall`) →
 test → full-suite regression → update this doc's own phase "Outcome:" → one commit, narrative body,
 no co-author trailer.
