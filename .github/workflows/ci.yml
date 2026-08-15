@@ -109,25 +109,34 @@ jobs:
         run: |
           $env:CC = "clang-cl"
           $env:CXX = "clang-cl"
-          $flags = ""
-          if ("${{ matrix.build_type }}" -eq "ASanUBSan") { $flags = "-fsanitize=address,undefined" }
-          # CMAKE_MSVC_RUNTIME_LIBRARY is pinned to the RELEASE dynamic CRT explicitly. CMake's
-          # default for it is MultiThreaded$<$<CONFIG:Debug>:Debug>DLL, and that generator expression
-          # evaluates to the DEBUG CRT (-MDd) inside the compiler-ABI try-compile, which runs before
-          # CMAKE_BUILD_TYPE is in effect. clang-cl then rejects the combination outright --
-          # "invalid argument '-MDd' not allowed with '-fsanitize=address'" -- so the ASanUBSan leg
-          # died at "Detecting CXX compiler ABI info", before compiling a single project file.
-          # The Release leg was unaffected only because it passes no sanitizer flag.
-          # The sanitizer flag has to reach the LINKER as well, not just the compiler.
-          # CMake drives Ninja + clang-cl through lld-link directly, which knows nothing about
-          # -fsanitize, so pinning only CMAKE_CXX_FLAGS got past the CRT conflict and then failed
-          # with "lld-link: error: undefined symbol: __asan_init" -- the instrumentation was
-          # compiled in with no runtime to satisfy it.
-          $linkflags = ""
-          if ("${{ matrix.build_type }}" -eq "ASanUBSan") { $linkflags = "$flags" }
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release `
-            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL -DCMAKE_CXX_FLAGS="$flags" `
-            -DCMAKE_EXE_LINKER_FLAGS="$linkflags" -DCMAKE_SHARED_LINKER_FLAGS="$linkflags"
+          # The two legs of this matrix need genuinely different link setups, so they are
+          # configured separately rather than through one command with a flag variable.
+          #
+          # Release keeps the clang-cl frontend, which is the point of this job: MSVC-compatible
+          # parsing of the whole codebase.
+          #
+          # ASanUBSan cannot use clang-cl here. CMake drives Ninja + clang-cl through lld-link, and
+          # lld-link does not understand -fsanitize -- it says so directly ("ignoring unknown
+          # argument '-fsanitize=address,undefined'") and then fails with "undefined symbol:
+          # __asan_init", because the instrumentation is compiled in with no runtime linked. Passing
+          # the flag through CMAKE_EXE_LINKER_FLAGS does not help for the same reason: it reaches
+          # lld-link, which ignores it again.
+          #
+          # So the sanitizer leg uses the clang++ DRIVER with the static CRT -- exactly the recipe
+          # the ShellRunner fuzz job in this same workflow already uses successfully on this same
+          # runner image. The driver understands -fsanitize and links the ASan/UBSan runtimes
+          # itself. Stated plainly: this narrows what the leg exercises from the clang-cl frontend
+          # to the clang++ one. That is a real reduction, accepted because the Release leg above
+          # still covers clang-cl parsing, and a sanitizer job that cannot link covers nothing.
+          if ("${{ matrix.build_type }}" -eq "ASanUBSan") {
+            cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo `
+              -DCMAKE_CXX_COMPILER=clang++ `
+              -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded `
+              -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=undefined -D_DISABLE_STRING_ANNOTATION -D_DISABLE_VECTOR_ANNOTATION -g -O1"
+          } else {
+            cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release `
+              -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL
+          }
 
       - name: Build
         run: cmake --build build -j 4
