@@ -10,10 +10,19 @@ existed to reach them, which is precisely what this ADR proposes to add. Those f
 proven (§7a, `tests/test_task_principal_binding.cpp`), except for two halves that need spec
 amendments this ADR owes.
 
-§3/§4 are the first design iteration, superseded by **§8** and kept as record. §8 is where the
-current design lives: it reframes the boundary as four contracts rather than one, withdraws Design C,
-introduces `RequestAuthority`/`AuthorityRef` as the device that answers R7/R15/R16/R17/R27 together,
-and replaces the claims table.
+§3/§4 are the first design iteration, superseded by **§8** and kept as record. §8 reframes the
+boundary as four contracts rather than one, withdraws Design C, introduces
+`RequestAuthority`/`AuthorityRef`, and replaces the claims table.
+
+**§8 was then red-teamed in turn (§9) and did not survive.** Its recommended design (F + G) is
+defeated: G launders a host-chosen identity into `verified_by_engine` (S1), and F's central premise
+rests on a **fabricated citation** — 020 §3a specifies no identity contract, and
+`make_embedded_principal` appears in no spec file at all (S2). The core device is unsound as
+specified: `AuthorityRef` is a guessable plain aggregate reinventing ADR-005 Design B (S3), and
+`live()` is checked at event boundaries while effects run unbounded on detached threads (S4). **A
+third design iteration is required before any prove phase** — §9g states the constraints it must
+start from. One measured result survives and is reusable: claim 6, at 104 bytes against a 192-byte
+ceiling (§8.1).
 
 ## 0. What changed, and why this ADR exists
 
@@ -1094,10 +1103,263 @@ Named so the prove phase starts from an honest list rather than discovering thes
 - **Whether Design F's cost is acceptable to real adopters** — G is a designed answer, not a measured
   one. Claim 23 tests that it works, not that anybody prefers it.
 
-## 9. Prove phase
+## 9. Second red-team round — against §8
 
-*(not yet run — §8b's claims are what it must run against)*
+An independent adversarial pass (fresh context, targeted at §8 only, explicitly told not to
+re-report R1-R27) returned 15 findings. A second pass on the remaining contracts is recorded in §9g.
+Every code-level finding below was **re-verified by hand** before being recorded.
 
-## 10. Decision
+**Verdict up front: §8's recommended design (F + G) is defeated, and one of its supporting citations
+was fabricated.** This section does not soften either.
 
-*(not yet judged)*
+### 9a. The recommendation collapses
+
+**S1 (CONCEPT-FLAW) — Design G launders a host-chosen identity into `verified_by_engine`, and §8b
+claims 4 and 23 cannot both be true.** The attack is three steps: a host authenticates nobody, calls
+G's exchange seam asking for `sub = "alice", tenant = "acme"`, and receives an engine-minted,
+engine-audienced credential. It presents that credential on the protocol endpoint. The engine
+validates **its own** signature, succeeds, and derives a `Principal` — which by §8.1a's own
+definition ("derived from a credential this engine itself validated") is `verified_by_engine`. So the
+MUST-bearing surface accepts an identity whose `id`/`tenant_id` the host chose freely, and claim 1 is
+false through the design's own recommended path.
+
+The other branch is no better: if G's credential instead yields `asserted_by_host`, claim 4 refuses
+it at every 011 §8a surface and G does nothing about the friction it exists to remove. **`verified_by_engine`
+does not mean what §8.1a's text promises — it means *the bytes verified*, never *the identity
+verified*.** And claim 23 ("the exchange seam is the only path to an `asserted_by_host` principal")
+is backwards: G's output is a credential, and credentials are the `verified_by_engine` producer.
+
+This is R5's critique of Design A reproduced exactly — *"the host would then need the signing key, at
+which point it can mint any `sub`/`tenant_id` and Design A is Design B with extra steps."* G does not
+need the signing key because the engine mints on the host's word instead. Same outcome, one
+indirection. **Design G as specified is Design B with a ceremony.**
+
+**S2 (CONCEPT-FLAW) — Design F's central premise is not what 020 §3a says, and the citation was
+fabricated.** §8.2 states that 020 §3a's contract *"is already specified and already has
+`make_embedded_principal()` behind it."* Verified by grep: `make_embedded_principal` appears in **no
+spec file at all** — the only occurrences in the repo are this ADR itself and one milestone
+breakdown. And 020 §3a (lines 53-118) contains **zero** occurrences of "principal", "identity", or
+"auth": it specifies bring-up, run start and drain, threading ownership, secondary observers, and ABI
+scope, and says nothing whatever about identity. The nearest thing 020 says is §3b's *opposite* rule
+— "A webhook trigger authenticates before `StartRun` is ever called."
+
+I supplied the missing half of that contract and attributed it to 020. That is the same class of
+error as §2's bearer-token claim, against the same standing rule (CLAUDE.md: *"Do not assert what a
+protocol does from memory"*), and it is load-bearing rather than incidental: F's entire advantage over
+E was that the trusting API *already exists elsewhere*.
+
+**And the disjointness does not exist structurally either.** Both surfaces funnel into
+`quark::Ask<StartRun, AgentResponse>` on the same `AgentSession` actor, and §8.1 puts `AuthorityRef`
+*on `StartRun`* — so the two "disjoint" APIs share the identity-carrying message type, and Quark
+messages carry no origin. Worse, the place a host actually asserts identity today is
+`AgentSession::initialize(session_id, Principal, ...)` (`core/agent_session.hpp:555-560`) plus
+`set_capabilities()` (`:587`) — ordinary public methods on the same class the protocol dispatcher
+drives. **F's load-bearing sentence — "not because a check forbids it but because the type does not
+exist" — is false.** The trusting type exists, is linked into the same process, and is one method
+call away from any adapter an adopter writes. F is Design E with the check relocated, which is
+exactly what E was docked for.
+
+### 9b. The core device
+
+**S3 (CONCEPT-FLAW) — `AuthorityRef` is a forgeable, guessable plain aggregate, and it is ADR-005
+Design B rebuilt without citation.** `struct AuthorityRef { std::uint64_t slot; std::uint64_t
+generation; };` has public members, aggregate initialization, and no private construction — **the
+exact shape §8.1a condemns `Principal` for.** Any code reaching the resolution seam writes
+`AuthorityRef{0, 1}` and receives an authority containing somebody's `Principal`, `CapabilitySet`,
+*and* `ApprovalDecider`. Forging a `Principal` bought an identity; forging an `AuthorityRef` buys
+identity plus capabilities plus the approval decider — strictly more than the thing §8.1a hardened.
+
+And it is trivially guessable: dense small integers, first authority at slot 0 generation 1. §7a's own
+R3 remediation replaced two `mt19937_64` generators with a CSPRNG *precisely because* "a predictable
+server-minted handle is exactly the hazard 011 §8a's own text calls out" — **this ADR introduces a
+100%-predictable handle for a more sensitive object than a task id, in the same document that fixed
+the weaker case.**
+
+Separately: opaque reference + host-side registry + immediate revocation **is ADR-005 §3 Design B
+verbatim**, including its accepted conclusion that capabilities needing immediate revocation should
+use it. §8.1 re-derives it with a weaker handle (dense integers vs 128 random bits), no lookup
+contract, and none of ADR-005 §9's named residuals. `CapabilityRegistry` should either be the
+mechanism or be explicitly rejected.
+
+**I2 exposure**: an `AuthorityRef` is a *name*, not a handle — converting it to authority requires
+reaching a table. Either the table is a singleton (textbook ambient authority; I2 dead) or it is
+passed explicitly everywhere the ref goes, including into `background_task()`'s detached thread — in
+which case R16's lifetime argument reappears one level up, unaddressed. §8.1 never names the table's
+owner, lifetime, thread-safety, slot-recycling policy, or wraparound behavior.
+
+**S4 (CONCEPT-FLAW) — `live()` is checked where effects do not happen, and the `shared_ptr` makes
+this worse rather than better.** Emission boundaries are *events*, not *effects*. Verified against
+the code: `background_task()` runs step 8 as one blocking `tool->invoke(request.arguments, ctx)` on a
+detached `std::thread` (`core/tool_pipeline.hpp:443-449`) with no emission boundary and no join
+handle — and the function's own comment states *"006 §6b names no cancellation mechanism for IN-FLIGHT
+native `invoke()` work"* (`:368-370`). An authority revoked at t=0 does not stop that thread at
+t+10min. **There is no bound on post-revocation effects, and the design has no place to put one.**
+
+The refcount actively hurts: under the old borrowed pointer a revoked authority would at least have
+produced a sanitizer-findable crash. Refcounting converts a *detectable* use-after-free into an
+*undetectable* use-after-revocation — the thread holds the authority alive and keeps using it,
+forever, correctly typed.
+
+**The ADR-009 re-examination §8c asked for, answered — and it found something sharper than
+re-litigation.** On the narrow question the "adjacent but different" claim survives: ADR-009 rejected
+the epoch counter for insufficiency at per-call granularity, and `live()` is a coarser flag for a
+different question. But `revoked_` is **structurally disconnected from the mechanism ADR-009
+accepted**: `capabilities()` returns `CapabilitySet const&`, `bind()` mints a `BoundCapability` over
+a fresh `InvocationTicket`, and `revoke()` flips *that ticket* — nothing connects
+`RequestAuthority::revoked_` to any ticket. Flipping it leaves every already-bound handle live, which
+is precisely the failure ADR-009 rejected Design B for, reproduced with the epoch moving and the
+handle passing anyway. The correct verdict is not "different, therefore fine" but **"different in the
+direction that matters: `live()` revokes nothing the effect path consults."** `live()` is also merely
+advisory — `capabilities()` has no liveness precondition and nothing forces a caller to ask, which is
+convention-shaped enforcement in the one place §8.2's own steelman insists on construction-shaped.
+
+**S5 (CONCEPT-FLAW) — revocation has no authorization model and evaporates at the next request.**
+Nothing says who may revoke, or whether the request is checked against the target's principal or
+tenant. Combined with S3's guessable ref, an authenticated low-privilege caller enumerates slots and
+revokes every other principal's in-flight authority — a total availability attack, cross-tenant,
+costing one integer per victim. And because authority is per-*request*, the next request re-presents
+the same unexpired credential and gets a **fresh** record with `revoked_ == false`: "revoked" means
+"this one request's record is dead", not "this principal's authority is withdrawn." Making it stick
+needs a revocation list keyed by credential — ADR-005 Design B again. For G's minted credential
+specifically, **ADR-005 §7/§8 already proved revocation is unavailable**: *"nothing about possessing
+a `SecretKey` lets a host 'unmint' a token already handed out"* (claim B3, verdict CORRECT). §8.2's
+cost line for G lists "issue, renew, revoke" as if revoke were a design task; it is not available for
+that credential shape.
+
+**S6 (CONCEPT-FLAW) — `AuthorityRef` does not survive a restart, and resolves to the *wrong*
+principal.** §8.1 moved identity onto an in-process record keyed by dense slot+generation counters
+that restart from zero. A run suspended under 019 and resumed in a new process holds
+`AuthorityRef{3, 1}`, which **resolves successfully — to a different principal's authority.** Silent
+cross-tenant misattribution with a non-erroring lookup. A 128-bit random ref would make this a clean
+not-found. Compounding it, §8.1 put `Principal` + claims/issuer/expiry + `ApprovalDecider` (a
+`std::function`, inherently unserializable) onto the record — and `AgentSessionRecord` already cannot
+serialize a `CapabilitySet` (its own comment, `core/agent_session.hpp:222-233`). **The durability gap
+got strictly bigger and §8.6 lists no 019 amendment for it.**
+
+**S7 (CONCEPT-FLAW) — per-request authority collides with the admission rule that is actually
+built.** `AgentSession::handle()` sets `effect_context_.principal = principal_` — the session's
+*owning* principal, fixed at `initialize()` — unconditionally, after the admission check
+(`core/agent_session.hpp:310`). So the identity reaching every effect, every outbound
+`ChatClient::chat()`, and every audit record is the session owner's, **not the requester's**. Adding
+an `AuthorityRef` to `StartRun` without deleting that line gives one run two identities and lets the
+wrong one win, silently, since both are well-formed. §8.1's claim to answer R27 was stated against
+`held_`/`approve_`/`EffectContext` and never reaches `AgentSession::principal_` — the fourth
+construction-time authority, and the one that actually wins.
+
+Sharper still: admission degrades to **exact id+tenant match** for `SessionCaller` by documented
+design. Under a host-fronted surface, N callers against one conversation session is the normal shape,
+and every caller who is not the session owner is denied. The design must choose between one session
+per request (destroying the conversation continuity A2A `contextId` and MCP sessions exist for) and
+relaxing 018 §2. §8 raises neither.
+
+**S8 (IMPL→CONCEPT) — `live(now)` puts an unrecorded wall-clock read on the hottest path, against
+I5.** Someone must produce `now` per emitted event. `run_id` is minted from a counter specifically
+because *"an unrecorded wall-clock read here would be exactly the kind of untracked nondeterminism I5
+forbids"* (`core/agent_session.hpp:290-293`). Clock access is also a capability (`cap::Clock`), so an
+engine-internal `system_clock::now()` per event is unmediated clock authority. A replayed run would
+terminate at a different event index, breaking 019's rewind-then-reexecute. The clocks also disagree:
+`expiry_` would be `system_clock` while `EffectContext::deadline` is `steady_clock` — and
+`system_clock` is settable, so an NTP step backward extends every authority's life and forward kills
+every live stream at once.
+
+### 9c. The identity model
+
+**S9 (CONCEPT-FLAW) — provenance is unforgeable in C++ and forgeable in storage.** Private
+construction guards call sites, not bytes. Verified: `restore_from_record()` rebuilds identity with
+**aggregate initialization** — `principal_ = Principal{rec.principal_id, rec.principal_tenant_id};`
+(`core/agent_session.hpp:784`). Under §8.1a that line does not compile, and every way of making it
+compile is a hole: persist provenance and anyone who can write the store mints `verified_by_engine`;
+don't persist it and the restore path must fabricate one — `verified_by_engine` is a forgery factory,
+while `anonymous` means **a 019-suspended run resumed after restart can no longer use any surface
+under an 011 §8a MUST**, i.e. authenticated long-running work cannot survive a checkpoint. §8.1a's
+"the value carries its own origin" holds only for values that never leave the process, and this one
+already does.
+
+**S10 (CONCEPT-FLAW) — `derive_on_behalf_of` has no valid provenance value.** It is a `trust/`
+factory taking a caller-chosen `derived_id`, and none of the three enum values describes a delegated
+identity. Inherit the parent's → anyone holding a `verified_by_engine` principal mints one with an
+arbitrary id (`derive_on_behalf_of(alice, "admin")`), so claims 1 and 4 fall through a factory claim 3
+explicitly blesses. Assign `verified_by_engine` → same hole, plus a provenance-*upgrade* primitive
+reachable from an `asserted_by_host` parent. Assign `asserted_by_host` → every sub-agent and delegated
+call is refused at every MUST surface, breaking 007 §2 and 012 §4 outright. This is live code, not
+hypothetical: sessions are initialized with derived principals today.
+
+### 9d. Internal inconsistencies
+
+**S11 — §8.2 withdrew Design C for a defect Design G then adopts.** C's withdrawal cites "no
+key-rotation story (`BearerSecretKey` is a bare 32-byte struct with no key id or acceptance window)".
+Verified: zero occurrences of `kid`/`key_id`/acceptance/rotation in `trust/bearer_token.hpp`. G mints
+engine-issued credentials with the same and only primitive, so it **inherits the identical defect** —
+rotating the signing key invalidates every outstanding session credential at once, breaking in-flight
+calls, which is exactly what 018 §3 forbids. A design that kills C on grounds X and adopts G with
+property X has not evaluated G. §8.6 lists no 018 §3 amendment.
+
+**S12 — §8.4's replay split has nowhere to carry the discriminator.** `BearerTokenClaims` has no kind
+field. Put the kind *in the token* and the verifier reads a selector from the credential to decide how
+the credential is checked — structurally the algorithm-confusion class, against a rule
+`bearer_token.hpp` itself declares BINDING. Put it in *endpoint config* and replay semantics depend on
+where a credential is presented, so a captured one-shot assertion replayed at an access-token endpoint
+is never checked. **And claim 14 is a control-removal claim with no paired negative**: the most likely
+implementation (delete the one `check_and_record` call site) passes claim 14 with flying colors while
+silently deleting ADR-021's fourth proven finding.
+
+**S13 — the compensating control §8.4 offers is a boolean the host sets.** §8.4 justifies making
+access tokens replayable on the grounds that "transport confidentiality is a hard requirement" — but
+the engine has no socket, so its only signal is `TransportFacts::tls_terminated_by_host`, a bool
+supplied by the same party that supplies the credential. That is R8's audience tautology reappearing
+for confidentiality, in a section whose purpose was fixing R8-adjacent problems. Claim 19(c) is also
+qualified "in production configuration" — defeated by deployment posture, in a document arguing
+construction beats configuration.
+
+### 9e. Claim insufficiencies
+
+**S14 — claims 5 and 6 pass against implementations where the device is decorative.** Claim 5 is
+satisfied by an implementation where the `shared_ptr` rides along in `EffectContext` for audit while
+every capability check still consults the server-wide `held_` — because the pipeline authorizes from
+*separate parameters* (`invoke_tool(table_, held_, call, ctx, approve_)`), not from `EffectContext`.
+It tests lifetime, not provenance of the authorization decision — the same miss §7e recorded for old
+claim 3. Claim 6's `static_assert` measures the query type while the source note it answers says 208
+was "already over budget **before `Responder<R>`'s own overhead**" — so it can pass while the real
+pooled message overflows. *(This qualifies the measurement recorded in §8.1: the 104-byte figure is
+real and the margin is large, but the assert as written must be against the actual pooled payload.)*
+
+### 9f. What held up
+
+Recorded so the next iteration does not over-correct:
+
+- **§8.0's reframe** (four contracts, not one question) survived both lenses.
+- **§8.3's `EndpointId`-as-index** is the right shape and claim 11 tests it properly — making the host
+  *select among* operator-approved endpoints rather than supply a value is a genuine answer to R8/R21.
+- **The `live()`-vs-ADR-009 narrow question** comes back clean: it is not the mechanism ADR-009
+  rejected. The problem is the opposite one (S4).
+- **Claim 6's measurement** stands at 104 vs 192 with the control reproducing the codebase's own
+  208-byte figure; only the assert's framing needs repair (S14).
+
+### 9g. Status
+
+**§8 is not ready for a prove phase.** Its recommended design is defeated (S1, S2), its central device
+is unsound as specified (S3-S8), and its identity model has a storage-layer hole (S9) and an
+unassignable case (S10). A third design iteration is required, and it should start from these
+constraints rather than from §8's designs:
+
+1. **Anything the host names, the host controls.** Both G's exchange and B's assertion reduce to the
+   same thing; the only real question is whether that is acceptable *and labelled*, not whether
+   ceremony disguises it.
+2. **A handle is a credential.** If `AuthorityRef` survives at all it needs CSPRNG entropy, private
+   construction, and an owner — or `CapabilityRegistry` (ADR-005 Design B) is used directly.
+3. **Revocation must reach the effect path or not be claimed.** Given the detached-thread reality,
+   the honest options are binding revocation to `InvocationTicket`, or stating that in-flight native
+   effects are un-revocable and credential lifetime is the only bound.
+4. **Identity must survive a checkpoint.** Provenance that cannot be serialized safely is provenance
+   that ends at the first suspend.
+
+The second pass (other contracts, claims table, spec amendments) is still running; its findings will
+be appended here before the third iteration begins.
+
+## 10. Prove phase
+
+*(not yet run — blocked on a third design iteration per §9g)*
+
+## 11. Decision
+
+*(not yet judged — §9g requires a third design iteration first)*
