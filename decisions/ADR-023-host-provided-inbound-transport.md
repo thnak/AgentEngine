@@ -1651,29 +1651,50 @@ This makes S9's dilemma a stated policy instead of a fabrication or a silent dow
   written against its opposite. Per-seam policy naming is deferred to Tier 3 with the seam list from
   T1 as its starting point.
 
-### 10.4 Tier 1, specified
+### 10.4 Tier 1, specified — CORRECTED by primary-source research
 
-What it is: a `tools/agentengine_mcp_client.cpp` executable that wires `McpClient` to a stdio
-transport and is driven by `conformance client --command`.
+§10.4 originally specified Tier 1 as "a stdio transport behind `McpClient`'s `RequestSender`" and
+flagged the harness's pipe direction as the one thing it did not know, requiring research before any
+code. **That research was done and it falsified the transport choice**
+(`docs/research/2026-08-15-mcp-conformance-harness.md`, primary source fetched from the tool's own
+repository). The original text is replaced rather than annotated, because it described work that
+would have been wasted.
 
-Real, checkable stdio obligations, from the detail source
-(`docs/research/2026-mcp-protocol-detail.md:268-271`):
+**What the harness actually does.** It starts a test server for the scenario, spawns the client under
+test as a subprocess, **appends the server's URL as an argument**, and sets `MCP_CONFORMANCE_SCENARIO`
+in the environment. The client then connects **outbound over HTTP** to that URL. It does not speak MCP
+over its own stdin/stdout. And the suite is **URL-based only for both roles — no stdio transport
+anywhere.**
 
-- newline-delimited framing, **no embedded newlines**;
-- **MUST NOT** write non-MCP output to stdout;
-- stderr is free-form, and a client **SHOULD NOT** treat stderr output as indicating an error;
-- **SHOULD** exit when stdin closes — *"the primary graceful-shutdown signal and the only portable
-  one"*;
-- on stdio the client **MUST** send `notifications/cancelled` (`:263-265`), unlike HTTP where
-  disconnect is the signal.
+**Tier 1 gets cheaper, because the structural claim was about the absence of a listener, not about
+stdio.** §10.1's actual claim — no listener, no host adapter, no fixture, no attribution apparatus —
+is unaffected, and AgentEngine already owns a proven outbound HTTP path, so Tier 1 needs **no new
+transport at all**:
 
-None of these needs a socket, TLS, a fixture host, or a chunked parser. All are engine-owned.
+| Piece | Status |
+|---|---|
+| Outbound plain-HTTP exchange (ADR-011, proven) | `sandbox/net_egress_proxy.hpp` |
+| Not gated on `AGENTENGINE_WITH_HTTPS` — the plaintext branch "has no such gate" | `sandbox/provider_http_client.hpp:27-31` |
+| The seam to wire it into | `protocol/mcp/client.hpp:48` |
+| Executable-target precedent | `CMakeLists.txt:61` |
 
-**One thing Tier 1 does NOT settle, flagged rather than assumed:** the exact pipe direction the
-harness expects when it spawns a client under test (whether our binary writes requests to its own
-stdout, or the harness presents a server another way) is **not established by anything in this repo**.
-011 §10 documents only the invocation. That is a dated-research item under CLAUDE.md's own rule, and
-Tier 1's first task — before any code — is establishing it against the real tool.
+So Tier 1 is: `tools/agentengine_mcp_client.cpp`, reading the URL from argv and the scenario from the
+environment, wiring `perform_http_exchange` into a `RequestSender`, driven by `conformance client`.
+
+**One real obstacle, which doubles as a positive control.** The harness's URL is loopback, and
+`is_blocked_address()` blocks 127.0.0.0/8 by design as ADR-011's anti-SSRF control
+(`sandbox/net_egress_proxy.hpp:65-68`). Reaching it needs an **explicit** egress address policy — which
+already exists and is already judged (ADR-016, whose own G2 gate is "the provider path reaches a
+private/loopback address"). A Tier 1 run therefore proves both that the policy permits the intended
+destination and, with the policy removed, that the SSRF block is real.
+
+**§10.0's open question is now closed, and the answer removes Tier 2's gate.** `conformance server` is
+URL-only, so **011 §10 G1 has no stdio escape hatch**: it genuinely requires an HTTP endpoint, i.e.
+Tier 3. Stdio remains a real product surface (011 §7: *"stdio remains for local servers"*) but yields
+**no conformance gate**, so Tier 2 is deprioritised to product work. T0's insight was right — stdio
+was absent from the design space — and T0's conformance claim is now definitively dead. The M7 Phase G
+audit's characterisation of **G1** as listener-blocked is correct; only its treatment of **G2** was
+wrong.
 
 ### 10b. Falsifiable claims — Tier 1 only
 
@@ -1683,19 +1704,22 @@ carries an ADR-015 teeth arm (constraint 6).
 
 | # | Claim | Disproving experiment | Positive control / teeth |
 |---|---|---|---|
-| 1 | `conformance client` runs against our binary and produces a published percentage per suite (`core`, `extensions`, `backcompat`, `auth`) | Run it; a non-zero exit outside the justified baseline disproves | Control: the harness reports at least one PASS, proving it is really exercising us and not failing at spawn |
-| 2 | Every check the percentage counts is engine-attributable — there is no fixture in the loop | Inspect the invocation: the harness spawns our binary directly | Teeth: break one `McpClient` behaviour (e.g. `isError` surfacing, `client.hpp`) and the number must drop by ≥1 |
-| 3 | The stdio framing is correct: no embedded newlines, and **no non-MCP byte ever reaches stdout** | Capture stdout over a full suite run; every line parses as one JSON-RPC message | Control: a deliberate `printf` to stdout is detected by the same capture, proving the check can fail |
-| 4 | The process exits on stdin close, within a bounded interval | Close stdin mid-session; assert exit | Control: with stdin open the process stays alive past the same interval |
-| 5 | stderr output does not cause the client to report an error | Emit diagnostics on stderr during a session; the suite still passes | Control: a real protocol error still surfaces as an error |
-| 6 | `notifications/cancelled` is sent on stdio cancellation (`:263-265`) | Cancel a request; assert the notification on the wire | Control: an uncancelled request produces no such notification |
-| 7 | The transport is a `RequestSender` and nothing else — no ambient state, no second path into `McpClient` | `try_compile()`/inspection: `McpClient`'s only inbound seam remains `client.hpp:48` | Control: the real transport satisfies it |
+| 1 | `conformance client` runs against our binary and produces a published percentage per suite (`core`, `extensions`, `backcompat`, `auth`), pinned to a conformance release | Run it; a non-zero exit outside the justified baseline disproves | Control: the harness reports at least one PASS, proving it is really exercising us rather than failing at spawn |
+| 2 | Every check the percentage counts is engine-attributable — no fixture in the loop | Inspect the invocation: the harness starts its own server and spawns our binary | **Teeth:** break one `McpClient` behaviour (e.g. `isError` surfacing, `client.hpp`) and the number must drop by ≥1 |
+| 3 | The binary consumes the harness's contract correctly: server URL from the appended argv, scenario from `MCP_CONFORMANCE_SCENARIO` | Supply neither; the binary must fail loudly rather than default to a guessed endpoint | Control: with both supplied, a session completes |
+| 4 | Reaching the harness requires an **explicit** egress address policy; loopback is not reachable by default | Run with the ADR-016 policy removed; the run must fail on an address-policy error, not silently succeed | **Teeth + control in one:** this is ADR-011's SSRF block proving it is real, and ADR-016's policy proving it is sufficient |
+| 5 | The transport is a `RequestSender` and nothing else — no ambient state, no second path into `McpClient` | Inspection/`try_compile()`: `McpClient`'s only inbound seam remains `client.hpp:48` | Control: the real transport satisfies it |
+| 6 | No credential or secret reaches stdout/stderr over a full suite run (018 §4) | Capture both streams; scan for a planted canary | **Teeth:** plant the canary in a header value and confirm the same scan trips, per ADR-015's precedent |
 
 ### 10c. What iteration 3 does not resolve
 
-- **All 33 findings against §8** remain open for Tier 3. They are deferred, not answered.
-- **Tier 2's gate status** — whether `conformance server` can drive stdio (§10.0). Research item.
-- **Tier 1's pipe direction** (§10.4). Research item, and the first task.
+- **All 33 findings against §8** remain open for Tier 3. They are deferred, not answered — and the
+  research in §10.4 confirms Tier 3 is the *only* path to 011 §10 G1, so they must eventually be
+  answered rather than tiered around.
+- ~~**Tier 2's gate status**~~ **Closed** by `docs/research/2026-08-15-mcp-conformance-harness.md`:
+  the suite is URL-only, so a stdio server role yields no gate. Tier 2 is product work, deprioritised.
+- ~~**Tier 1's pipe direction**~~ **Closed** by the same research — and it falsified §10.4's original
+  stdio design, which is why it was the first task rather than an implementation detail.
 - **§10.2's admissibility policy** needs a declaration surface the operator writes; that is 007 §5's
   rule language, which this project has repeatedly named as deferred and which iteration 3 does not
   build either.
