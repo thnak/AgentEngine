@@ -174,7 +174,14 @@ int main() {
         auto const server_table = ae::ToolTable::from_tools<McpEchoTool, McpAlwaysFailsTool>();
         ae::CapabilitySet const held;
         mcp::McpServer server(server_table, held, ae::ApprovalDecider{}, "codeact-union-test-server");
-        mcp::RequestSender sender = [&server](mcp::JsonRpcRequest const& req) { return server.dispatch(req); };
+        // ADR-061 §7 R3: `dispatch()` now requires the principal the request established, so the
+        // task store can be bound to it. Named explicitly rather than defaulted -- there is
+        // deliberately no defaulted overload, since a default is what made the A2A admission path
+        // fail open.
+        ae::Principal const kCaller = ae::make_local_cli_principal("codeact-union-test", "test-tenant");
+        mcp::RequestSender sender = [&server, &kCaller](mcp::JsonRpcRequest const& req) {
+            return server.dispatch(req, kCaller);
+        };
         auto client = std::make_shared<mcp::McpClient>(sender, "codeact-union-test-client");
 
         auto descriptors = mcp::mcp_tools_as_descriptors(client);

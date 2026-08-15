@@ -139,7 +139,7 @@ int main() {
     // session above is initialized owning `Principal{"p-owner", ""}`, so this caller must match
     // it or 018 §2 admission denies the run. Previously this dispatcher passed no caller at all
     // and `AgentSession::handle()` skipped admission entirely.
-    ae::SessionCaller const kOwner{"p-owner", ""};
+    ae::rt::SessionCaller const kOwner{"p-owner", ""};
 
     auto sent = server.send_message(text_message("hello"), kOwner);
     check(sent.has_value(), "D3-1: send_message() against a real AgentSession succeeds");

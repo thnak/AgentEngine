@@ -1,5 +1,16 @@
 # ADR-061 — Host-provided inbound transport: who authenticates an inbound MCP/A2A/AG-UI request?
 
+> **Porting note (2026-08-15). R17 and §8b claim 6 are MOOT on this line.** This ADR was written on
+> a parallel history where Quark was still the actor engine. **ADR-037 removed the Quark submodule
+> entirely** (`agentengine::pal` + `agentengine::rt` replace it), so `quark::Ask<StartRun,
+> AgentResponse>` and `MessagePool::kMaxPayload` no longer exist here. The 192-byte ceiling that R17
+> raised, and the 104-vs-192 measurement §8.1 records against it, describe a constraint this codebase
+> no longer has. Both are kept as the honest record of why `AuthorityRef` was shaped that way, and
+> because the measurement's *method* (measure the boundary before designing around it) still applies
+> — but **the constraint itself must be re-derived against `rt::` before any Tier 3 design leans on
+> it.** Nothing else in this ADR depends on Quark: the security findings (§7a), the conformance
+> results, and every other red-team finding are transport- and runtime-independent.
+
 **Status:** Design, second iteration (2026-08-15) — red-teamed once, not yet proven or judged.
 Supersedes ADR-022 in effect (the reactor question is moot if no first-party listener is ever built)
 and re-scopes ADR-021.
@@ -1076,7 +1087,7 @@ decisions/README.md.
 | 3 | §8.1a | `Principal` is constructible only by `trust/` factories, and provenance is non-defaultable | `try_compile()`: `Principal p{"admin","t"};` and `p.id = "admin";` both fail outside `trust/`; no factory yields a default provenance |
 | 4 | §8.1a | A surface under an 011 §8a MUST refuses a principal whose provenance is not `verified_by_engine` | Attempt `tools/call` on a protocol endpoint with an `asserted_by_host` principal; must be refused |
 | 5 | §8.1 | **Repairs claim 3.** Authority is per-request AND memory-safe under overlap: a backgrounded call and an open stream started under request A keep exactly A's authority after A's frame returns and request B has run under a different principal | Overlapping (not sequential) requests under ASan/TSan. The old claim passed against a dangling implementation because two sequential requests never overlap |
-| 6 | §8.1 | `AuthorityRef` crosses the actor boundary within budget | `static_assert(sizeof(quark::Ask<StartRun, AgentResponse>) <= quark::detail::MessagePool::kMaxPayload)`. **CORRECT — measured in the design phase (§8.1): 104 vs 192, an 88-byte margin, with the 208-byte control reproducing the codebase's own cited figure** |
+| 6 | §8.1 | ~~`AuthorityRef` crosses the actor boundary within budget~~ **MOOT post-ADR-037 — see the porting note at the top; there is no Quark message pool on this line** | `static_assert(sizeof(quark::Ask<StartRun, AgentResponse>) <= quark::detail::MessagePool::kMaxPayload)`. **CORRECT — measured in the design phase (§8.1): 104 vs 192, an 88-byte margin, with the 208-byte control reproducing the codebase's own cited figure** |
 | 7 | §8.1/R15 | A stream open when its authority is revoked or expires emits no further event after a bounded interval, and terminates with a distinct terminal event | Open a stream under a credential with `exp = now + 1s`; assert termination and no event N+1. **Currently unwritable — there is no revoke** |
 | 8 | R23 | Two concurrent subscribers to one run receive identical events in identical order, and closing one does not affect the other (012 §2.3) | Two subscribers, one run; currently disproved by construction |
 | 9 | R22 | A `push()` returning `Terminated` ends the run's emission and is observable; and no host behaviour at the stream seam causes unbounded engine-owned memory growth or occupies a Quark worker beyond a bounded interval | Non-draining host fixture; measure engine memory and worker occupancy. Disproved today by the `(void)push` |

@@ -128,7 +128,7 @@ int main() {
     // above) or 018 §2 admission denies the run -- which it now really does, rather than being
     // skipped. A deliberately mismatched caller is proven to be denied in
     // test_task_principal_binding.cpp; here the point is the ordinary authorized path.
-    ae::SessionCaller const kCaller{"p-owner", ""};
+    ae::rt::SessionCaller const kCaller{"p-owner", ""};
     transport.send_message = [&server, &kCaller](a2a::Message const& m) {
         return server.send_message(m, kCaller);
     };

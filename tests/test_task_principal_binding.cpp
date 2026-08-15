@@ -205,7 +205,7 @@ int main() {
         // A `RunStarter` standing in for a session owning `p-owner`, applying the exact predicate
         // `AgentSession::handle()` applies -- reused rather than re-derived, so it cannot drift.
         ae::Principal const session_owner{"p-owner", ""};
-        auto starter = [session_owner](ae::StartRun req) -> ae::result<a2a::RunOutcome> {
+        auto starter = [session_owner](ae::rt::StartRun req) -> ae::result<a2a::RunOutcome> {
             // R2's whole point: `caller` is now always present on the protocol path, so this branch
             // is reachable and meaningful. Previously `A2aServer` sent none and the real
             // `AgentSession` skipped admission entirely.
@@ -218,7 +218,7 @@ int main() {
                 return std::unexpected(
                     ae::error{ae::failure_class::policy, "admission denied", "test.admission_denied"});
             }
-            return a2a::RunOutcome{"s-bind:run:1", ae::AgentResponse{}};
+            return a2a::RunOutcome{"s-bind:run:1", ae::rt::AgentResponse{}};
         };
 
         a2a::A2aServer server(starter, "ctx-bind");
@@ -230,8 +230,8 @@ int main() {
         p.value = a2a::TextPart{"hello"};
         inbound.parts.push_back(std::move(p));
 
-        ae::SessionCaller const owner{"p-owner", ""};
-        ae::SessionCaller const stranger{"mallory", ""};
+        ae::rt::SessionCaller const owner{"p-owner", ""};
+        ae::rt::SessionCaller const stranger{"mallory", ""};
 
         // --- POSITIVE CONTROL: the owner's message really is admitted and produces a task.
         auto owned = server.send_message(inbound, owner);
