@@ -102,6 +102,210 @@ struct CacheEntry {
     std::string                           digest;
 };
 
+// ---- SEP-2243 `x-mcp-header`: custom headers from tool parameters ------------------------------
+// 011 §8b calls this "a mandatory client-side surface on Streamable HTTP, and it is easy to miss."
+// Spec: /specification/draft/basic/transports/streamable-http#custom-headers-from-tool-parameters,
+// fetched 2026-08-15 (docs/research/2026-08-15-mcp-conformance-harness.md). Two obligations, and the
+// codebase had neither:
+//   1. VALIDATE every annotation; a violation means EXCLUDING that tool from `tools/list`'s result,
+//      not warning -- so one malformed tool cannot deny the caller every other tool.
+//   2. MIRROR designated argument values into `Mcp-Param-{Name}` headers on `tools/call`.
+
+// RFC 9110 §5.1 `tchar`.
+[[nodiscard]] inline bool is_http_tchar(char c) noexcept {
+    if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) return true;
+    switch (c) {
+        case '!': case '#': case '$': case '%': case '&': case '\'': case '*':
+        case '+': case '-': case '.': case '^': case '_': case '`': case '|': case '~':
+            return true;
+        default:
+            return false;
+    }
+}
+
+[[nodiscard]] inline std::string base64_encode(std::string_view in) {
+    static constexpr char kAlphabet[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    out.reserve(((in.size() + 2) / 3) * 4);
+    std::size_t i = 0;
+    for (; i + 2 < in.size(); i += 3) {
+        std::uint32_t const n = (static_cast<unsigned char>(in[i]) << 16) |
+                                 (static_cast<unsigned char>(in[i + 1]) << 8) |
+                                 static_cast<unsigned char>(in[i + 2]);
+        out.push_back(kAlphabet[(n >> 18) & 0x3F]);
+        out.push_back(kAlphabet[(n >> 12) & 0x3F]);
+        out.push_back(kAlphabet[(n >> 6) & 0x3F]);
+        out.push_back(kAlphabet[n & 0x3F]);
+    }
+    if (i + 1 == in.size()) {
+        std::uint32_t const n = static_cast<unsigned char>(in[i]) << 16;
+        out.push_back(kAlphabet[(n >> 18) & 0x3F]);
+        out.push_back(kAlphabet[(n >> 12) & 0x3F]);
+        out.push_back('=');
+        out.push_back('=');
+    } else if (i + 2 == in.size()) {
+        std::uint32_t const n = (static_cast<unsigned char>(in[i]) << 16) |
+                                 (static_cast<unsigned char>(in[i + 1]) << 8);
+        out.push_back(kAlphabet[(n >> 18) & 0x3F]);
+        out.push_back(kAlphabet[(n >> 12) & 0x3F]);
+        out.push_back(kAlphabet[(n >> 6) & 0x3F]);
+        out.push_back('=');
+    }
+    return out;
+}
+
+inline constexpr std::string_view kBase64SentinelPrefix = "=?base64?";
+inline constexpr std::string_view kBase64SentinelSuffix = "?=";
+
+// "HTTP header field values must consist of visible ASCII characters (0x21-0x7E), space (0x20), and
+// horizontal tab (0x09). When a value cannot be safely represented as a plain ASCII header value
+// (e.g., it contains non-ASCII characters, control characters, or has leading/trailing whitespace),
+// clients MUST use Base64 encoding" -- plus the ambiguity rule: a plain value that itself matches
+// the sentinel pattern MUST also be encoded.
+[[nodiscard]] inline bool needs_base64(std::string_view v) noexcept {
+    if (v.empty()) return false;
+    if (v.front() == ' ' || v.front() == '\t' || v.back() == ' ' || v.back() == '\t') return true;
+    for (char c : v) {
+        auto const u = static_cast<unsigned char>(c);
+        if (u == 0x20 || u == 0x09) continue;
+        if (u < 0x21 || u > 0x7E) return true;
+    }
+    if (v.size() >= kBase64SentinelPrefix.size() + kBase64SentinelSuffix.size() &&
+        v.substr(0, kBase64SentinelPrefix.size()) == kBase64SentinelPrefix &&
+        v.substr(v.size() - kBase64SentinelSuffix.size()) == kBase64SentinelSuffix) {
+        return true;
+    }
+    return false;
+}
+
+[[nodiscard]] inline std::string encode_header_value(std::string_view raw) {
+    if (!needs_base64(raw)) return std::string(raw);
+    return std::string(kBase64SentinelPrefix) + base64_encode(raw) +
+           std::string(kBase64SentinelSuffix);
+}
+
+struct HeaderAnnotation {
+    std::vector<std::string> path;         // the exact chain of `properties` keys
+    std::string              header_name;  // the `x-mcp-header` value
+    std::string              type;         // declared JSON type of the annotated property
+    bool                     reachable = true;  // false if reached through a forbidden keyword
+};
+
+// Walks the WHOLE schema, not just the statically reachable part: an annotation sitting under
+// `items`/`oneOf`/`$ref`/etc. does not merely get ignored, it invalidates the tool, so it must be
+// found in order to be rejected.
+inline void collect_header_annotations(json::Value const& node, std::vector<std::string>& path,
+                                        bool reachable, std::vector<HeaderAnnotation>& out) {
+    if (!node.is_object()) return;
+
+    if (json::Value const* h = node.find("x-mcp-header")) {
+        HeaderAnnotation a;
+        a.path      = path;
+        a.reachable = reachable;
+        a.header_name = h->is_string() ? h->as_string() : std::string{};
+        if (json::Value const* t = node.find("type"); t && t->is_string()) a.type = t->as_string();
+        // A non-string annotation is a violation too; recorded with an empty name so the
+        // not-empty/charset checks reject it rather than it slipping through unseen.
+        out.push_back(std::move(a));
+    }
+
+    for (auto const& [key, child] : node.as_object()) {
+        if (key == "properties" && child.is_object()) {
+            for (auto const& [prop_name, prop_schema] : child.as_object()) {
+                path.push_back(prop_name);
+                collect_header_annotations(prop_schema, path, reachable, out);
+                path.pop_back();
+            }
+            continue;
+        }
+        // Every other keyword breaks static reachability: `items` and other array keywords,
+        // `oneOf`/`anyOf`/`allOf`/`not`, `if`/`then`/`else`, `$ref`. Descend anyway -- with
+        // `reachable=false` -- precisely so an annotation hiding there is found and rejected.
+        if (child.is_object()) {
+            collect_header_annotations(child, path, false, out);
+        } else if (child.is_array()) {
+            for (json::Value const& item : child.as_array()) {
+                collect_header_annotations(item, path, false, out);
+            }
+        }
+    }
+}
+
+// Returns an empty string if the schema's annotations are all valid, else the reason the tool must
+// be excluded from `tools/list` (SHOULD-logged by the caller, per the spec's own guidance).
+[[nodiscard]] inline std::string x_mcp_header_violation(json::Value const& input_schema) {
+    std::vector<HeaderAnnotation> found;
+    std::vector<std::string>      path;
+    collect_header_annotations(input_schema, path, /*reachable=*/true, found);
+
+    std::vector<std::string> seen_lower;
+    for (auto const& a : found) {
+        if (!a.reachable) {
+            return "x-mcp-header is not statically reachable through `properties` chains only";
+        }
+        if (a.header_name.empty()) return "x-mcp-header must not be empty";
+        for (char c : a.header_name) {
+            auto const u = static_cast<unsigned char>(c);
+            if (u < 0x20 || u == 0x7F) return "x-mcp-header contains a control character";
+            if (!is_http_tchar(c)) return "x-mcp-header is not valid HTTP token syntax";
+        }
+        // integer | string | boolean only -- `number` is explicitly NOT permitted.
+        if (a.type != "integer" && a.type != "string" && a.type != "boolean") {
+            return "x-mcp-header is only permitted on integer, string, or boolean properties";
+        }
+        std::string lower;
+        lower.reserve(a.header_name.size());
+        for (char c : a.header_name) {
+            lower.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+        }
+        for (auto const& prev : seen_lower) {
+            if (prev == lower) return "x-mcp-header values must be case-insensitively unique";
+        }
+        seen_lower.push_back(std::move(lower));
+    }
+    return {};
+}
+
+// "Header extraction is defined as reading the instance value at the exact property path of the
+// annotated property... If no value is present at that path in the call arguments, the header is
+// omitted." Null is omitted for the same reason -- the spec's own table: "Parameter value is null ->
+// Client MUST omit the header."
+[[nodiscard]] inline std::vector<std::pair<std::string, std::string>> derive_param_headers(
+    json::Value const& input_schema, json::Value const& arguments) {
+    std::vector<HeaderAnnotation> found;
+    std::vector<std::string>      path;
+    collect_header_annotations(input_schema, path, /*reachable=*/true, found);
+
+    std::vector<std::pair<std::string, std::string>> headers;
+    for (auto const& a : found) {
+        json::Value const* cursor = &arguments;
+        bool               ok     = true;
+        for (auto const& step : a.path) {
+            if (!cursor->is_object()) { ok = false; break; }
+            cursor = cursor->find(step);
+            if (!cursor) { ok = false; break; }
+        }
+        if (!ok || cursor == nullptr || cursor->is_null()) continue;  // omit, per the spec's table
+
+        std::string raw;
+        if (cursor->is_string()) {
+            raw = cursor->as_string();
+        } else if (cursor->is_bool()) {
+            raw = cursor->as_bool() ? "true" : "false";
+        } else if (cursor->is_number()) {
+            // Declared `integer`, so a decimal representation with no fractional part.
+            double const   n = cursor->as_number();
+            long long const as_int = static_cast<long long>(n);
+            raw = std::to_string(as_int);
+        } else {
+            continue;
+        }
+        headers.emplace_back("Mcp-Param-" + a.header_name, encode_header_value(raw));
+    }
+    return headers;
+}
+
 }  // namespace client_detail
 
 // 011 §12/§13 Q1: "as a server, 2026-07-28-only" -- the same fixed literal on the client side, and
@@ -109,10 +313,32 @@ struct CacheEntry {
 // each call site (server.hpp:220 still has its own copy for its own `server/discover` result).
 inline constexpr std::string_view kMcpProtocolVersion = "2026-07-28";
 
+// SEP-2243's `Mcp-Param-{Name}` headers are derived from the TOOL SCHEMA, which only `McpClient`
+// knows -- a bare `RequestSender` cannot compute them. Rather than move schema knowledge into the
+// transport (wrong layer) this adds an optional headers-carrying sender.
+//
+// Additive on purpose, matching this codebase's own established precedent for exactly this situation
+// (`StartRun::caller`, `ChatClientRegistry const*`): every existing `RequestSender` call site keeps
+// compiling and behaving identically, and only a transport that actually speaks Streamable HTTP need
+// opt in. That mirrors the spec's own layering -- "Clients using other transports (e.g., stdio) MAY
+// ignore `x-mcp-header` annotations entirely."
+using RequestSenderWithHeaders = std::function<JsonRpcResponse(
+    JsonRpcRequest const&, std::vector<std::pair<std::string, std::string>> const&)>;
+
 class McpClient {
 public:
     McpClient(RequestSender sender, std::string client_name)
         : sender_(std::move(sender)), client_name_(std::move(client_name)) {}
+
+    McpClient(RequestSenderWithHeaders sender, std::string client_name)
+        : sender_with_headers_(std::move(sender)), client_name_(std::move(client_name)) {}
+
+    // Tools excluded from `tools/list` for an `x-mcp-header` violation, with the reason. The spec
+    // says clients SHOULD log this; surfacing it rather than logging internally keeps the decision
+    // about where diagnostics go with the host (026 §3's own "actionable, host-owned" discipline).
+    [[nodiscard]] std::vector<std::pair<std::string, std::string>> const& rejected_tools() const noexcept {
+        return rejected_tools_;
+    }
 
     // §3.1: "ttlMs absent or negative -> treat as 0. TTL is not a polling interval." `ttl.count() <= 0`
     // therefore means "never serve from cache," the honest reading of that rule -- not "cache
@@ -135,7 +361,7 @@ public:
         JsonRpcRequest req{RpcId{next_id()}, "tools/list",
                             with_request_meta(json::Value::make_object(
                                 {{"cursor", json::Value::make_string(cursor)}}))};
-        JsonRpcResponse resp = sender_(req);
+        JsonRpcResponse resp = send(req);
         if (resp.error.has_value()) {
             return std::unexpected(error{failure_class::contract, resp.error->message, "mcp.rpc_error"});
         }
@@ -157,6 +383,19 @@ public:
                                               "a tools/list entry is missing \"name\"",
                                               "mcp.malformed_tool_entry"});
             }
+            // SEP-2243: "Clients using the Streamable HTTP transport MUST reject tool definitions
+            // where any `x-mcp-header` value violates these constraints. Rejection means the client
+            // MUST exclude the invalid tool from the result of `tools/list`." Deliberately an
+            // EXCLUSION, not a `std::unexpected`: the spec's own reason is that "a single malformed
+            // tool definition does not prevent other valid tools from being used." The reason is
+            // retained (SHOULD-log) rather than discarded, so a caller can report it.
+            if (input) {
+                std::string const violation = client_detail::x_mcp_header_violation(*input);
+                if (!violation.empty()) {
+                    rejected_tools_.emplace_back(name->as_string(), violation);
+                    continue;
+                }
+            }
             tools.push_back(McpToolInfo{
                 name->as_string(), description && description->is_string() ? description->as_string() : std::string{},
                 input ? *input : json::Value{}, output ? *output : json::Value{}});
@@ -174,11 +413,16 @@ public:
     }
 
     [[nodiscard]] result<McpToolCallOutcome> call_tool(std::string const& name, json::Value arguments) {
+        // SEP-2243 client behaviour step 3/4/5: derive `Mcp-Param-{Name}` from the tool's OWN
+        // schema before the arguments are moved into the request. Derived from the cached listing
+        // rather than re-fetched -- the schema this client validated is the one it mirrors from, so a
+        // server that changes the schema underneath is a rug pull (§8), not a silent header change.
+        auto const param_headers = param_headers_for(name, arguments);
         JsonRpcRequest req{RpcId{next_id()}, "tools/call",
                             with_request_meta(json::Value::make_object(
                                 {{"name", json::Value::make_string(name)},
                                  {"arguments", std::move(arguments)}}))};
-        JsonRpcResponse resp = sender_(req);
+        JsonRpcResponse resp = send(req, param_headers);
         if (resp.error.has_value()) {
             // A PROTOCOL error (unknown tool, malformed request) -- 011 §3.1's own split, the
             // client-side half symmetric with `McpServer`'s own server-side proof (server.hpp).
@@ -209,7 +453,7 @@ public:
                  {"arguments", std::move(arguments)},
                  {"extensions",
                   json::Value::make_array({json::Value::make_string(std::string(kMcpTasksExtensionClient))})}})};
-        JsonRpcResponse resp = sender_(req);
+        JsonRpcResponse resp = send(req);
         if (resp.error.has_value()) {
             return std::unexpected(error{failure_class::contract, resp.error->message, "mcp.rpc_error"});
         }
@@ -233,7 +477,7 @@ public:
     [[nodiscard]] result<McpTaskPoll> get_task(std::string const& task_id) {
         JsonRpcRequest req{RpcId{next_id()}, "tasks/get",
                             json::Value::make_object({{"taskId", json::Value::make_string(task_id)}})};
-        JsonRpcResponse resp = sender_(req);
+        JsonRpcResponse resp = send(req);
         if (resp.error.has_value()) {
             return std::unexpected(error{failure_class::contract, resp.error->message, "mcp.rpc_error"});
         }
@@ -263,7 +507,7 @@ public:
     [[nodiscard]] result<void> cancel_task(std::string const& task_id) {
         JsonRpcRequest req{RpcId{next_id()}, "tasks/cancel",
                             json::Value::make_object({{"taskId", json::Value::make_string(task_id)}})};
-        JsonRpcResponse resp = sender_(req);
+        JsonRpcResponse resp = send(req);
         if (resp.error.has_value()) {
             return std::unexpected(error{failure_class::contract, resp.error->message, "mcp.rpc_error"});
         }
@@ -272,6 +516,32 @@ public:
 
 private:
     [[nodiscard]] std::string next_id() { return client_name_ + ":" + std::to_string(++next_id_); }
+
+    // Looks the tool up in whatever listing this client has already cached. A tool never listed
+    // yields no headers, which is the correct conservative answer: the client cannot know which
+    // parameters a server designates without having seen the schema, and inventing headers from an
+    // unseen schema is exactly the header/body mismatch `-32020` exists to catch.
+    [[nodiscard]] std::vector<std::pair<std::string, std::string>> param_headers_for(
+        std::string const& tool_name, json::Value const& arguments) const {
+        for (auto const& [key, entry] : cache_) {
+            (void)key;
+            for (auto const& t : entry.tools) {
+                if (t.name == tool_name) {
+                    return client_detail::derive_param_headers(t.input_schema, arguments);
+                }
+            }
+        }
+        return {};
+    }
+
+    // One place both sender shapes funnel through, so no call site has to know which one the client
+    // was constructed with. Headers are ignored by the plain sender -- correct per the spec's own
+    // "other transports MAY ignore x-mcp-header annotations entirely".
+    [[nodiscard]] JsonRpcResponse send(JsonRpcRequest const& req,
+                                        std::vector<std::pair<std::string, std::string>> headers = {}) {
+        if (sender_with_headers_) return sender_with_headers_(req, headers);
+        return sender_(req);
+    }
 
     // 011 §2's per-request `_meta`, which every outbound request carries. Added after the official
     // `@modelcontextprotocol/conformance` suite (0.2.0-alpha.11, spec 2026-07-28) rejected our
@@ -318,6 +588,8 @@ private:
     }
 
     RequestSender              sender_;
+    RequestSenderWithHeaders   sender_with_headers_;
+    std::vector<std::pair<std::string, std::string>> rejected_tools_;
     std::string                client_name_;
     std::uint64_t               next_id_ = 0;
     std::chrono::milliseconds   ttl_{0};

@@ -115,6 +115,50 @@ struct ParsedUrl {
     return collected;
 }
 
+// `perform_http_exchange` is "Content-Length-framed only -- no chunked transfer-encoding support this
+// milestone, a documented cut since this proxy's own test server never emits it"
+// (sandbox/net_egress_proxy.hpp). The conformance harness's mock DOES emit chunked
+// (`b42\r\n{"jsonrpc"...`), so a real MCP server can too, and the cut is a genuine client-role
+// conformance gap -- predicted by ADR-023 §9h's R19 and hit empirically here.
+//
+// Decoded HERE rather than inside the egress proxy on purpose: that function is ADR-011-judged code
+// whose byte cap is enforced DURING the read loop (claim C8), and widening its framing would require
+// re-running that proof. Decoding the already-capped buffer afterwards changes none of its proven
+// properties. Adding real chunked support to the engine's own HTTP client is a named follow-up
+// against ADR-011, not a drive-by edit.
+//
+// Returns std::nullopt if the body is not well-formed chunked, so a caller can fall back rather than
+// silently truncate.
+[[nodiscard]] std::optional<std::string> decode_chunked(std::string const& body) {
+    std::string out;
+    std::size_t pos = 0;
+    while (pos < body.size()) {
+        std::size_t const eol = body.find("\r\n", pos);
+        if (eol == std::string::npos) return std::nullopt;
+        std::string_view size_line{body.data() + pos, eol - pos};
+        if (auto const semi = size_line.find(';'); semi != std::string_view::npos) {
+            size_line = size_line.substr(0, semi);  // strip chunk extensions
+        }
+        if (size_line.empty()) return std::nullopt;
+        std::size_t chunk = 0;
+        for (char c : size_line) {
+            std::size_t digit = 0;
+            if (c >= '0' && c <= '9')      digit = static_cast<std::size_t>(c - '0');
+            else if (c >= 'a' && c <= 'f') digit = static_cast<std::size_t>(c - 'a' + 10);
+            else if (c >= 'A' && c <= 'F') digit = static_cast<std::size_t>(c - 'A' + 10);
+            else return std::nullopt;
+            chunk = chunk * 16 + digit;
+        }
+        pos = eol + 2;
+        if (chunk == 0) return out;              // terminal chunk; trailers ignored
+        if (pos + chunk > body.size()) return std::nullopt;
+        out.append(body, pos, chunk);
+        pos += chunk;
+        if (body.compare(pos, 2, "\r\n") == 0) pos += 2;
+    }
+    return out;
+}
+
 [[nodiscard]] bool header_contains(std::vector<std::pair<std::string, std::string>> const& headers,
                                     std::string_view name, std::string_view needle) {
     for (auto const& [k, v] : headers) {
@@ -177,7 +221,10 @@ int main(int argc, char** argv) {
     std::string const host_header =
         parsed->host + ":" + std::to_string(static_cast<unsigned>(parsed->port));
 
-    mcp::RequestSender sender = [&](mcp::JsonRpcRequest const& req) -> mcp::JsonRpcResponse {
+    mcp::RequestSenderWithHeaders sender =
+        [&](mcp::JsonRpcRequest const& req,
+            std::vector<std::pair<std::string, std::string>> const& extra_headers)
+        -> mcp::JsonRpcResponse {
         json::Value const body_json = mcp::to_json(req);
         std::string const body      = json::dump(body_json);
 
@@ -191,8 +238,16 @@ int main(int argc, char** argv) {
         http_req.headers.emplace_back("Accept", "application/json, text/event-stream");
         http_req.headers.emplace_back("Mcp-Method", req.method);  // 011 §7 MUST
         if (auto name = mcp_name_for(req)) {
-            http_req.headers.emplace_back("Mcp-Name", *name);      // 011 §7 MUST, where applicable
+            // "The same encoding rule applies to the `Mcp-Name` header value. Tool and prompt names
+            // are only SHOULD-constrained to header-safe characters, so a name (or resource URI)
+            // outside the safe set is carried as `=?base64?...?=`."
+            http_req.headers.emplace_back("Mcp-Name",
+                                           mcp::client_detail::encode_header_value(*name));
         }
+        // SEP-2243's `Mcp-Param-{Name}` set, derived by `McpClient` from the tool's own schema --
+        // the transport carries them but does not compute them, since only the client knows which
+        // parameters the server designated.
+        for (auto const& [k, v] : extra_headers) http_req.headers.emplace_back(k, v);
         // Required by the Streamable HTTP transport, and NOT listed in 011 §7 -- which names only
         // `Mcp-Method`/`Mcp-Name`. Found by the official suite, whose mock answered
         // `-32020 "Missing MCP-Protocol-Version header"` with HTTP 400. Recorded in
@@ -220,16 +275,36 @@ int main(int argc, char** argv) {
                                    json::Value{}});
         }
 
+        // Un-chunk first if needed, then apply SSE framing to whatever the body really is.
+        std::string framed = http_resp->body;
+        if (header_contains(http_resp->headers, "transfer-encoding", "chunked")) {
+            if (auto decoded = decode_chunked(framed)) framed = std::move(*decoded);
+        }
         std::string const payload =
             header_contains(http_resp->headers, "content-type", "text/event-stream")
-                ? extract_sse_last_data(http_resp->body)
-                : http_resp->body;
+                ? extract_sse_last_data(framed)
+                : framed;
 
         auto parsed_json = json::parse(payload);
         if (!parsed_json) {
+            // Include the raw prefix and the content-type: a conformance failure is only useful if
+            // it says what actually arrived.
+            std::string ctype = "<none>";
+            for (auto const& [k, v] : http_resp->headers) {
+                if (k.size() == 12) {
+                    bool same = true;
+                    char const* want = "content-type";
+                    for (std::size_t i = 0; i < 12; ++i) {
+                        if (std::tolower(static_cast<unsigned char>(k[i])) != want[i]) { same = false; break; }
+                    }
+                    if (same) ctype = v;
+                }
+            }
             return mcp::JsonRpcResponse::make_error(
                 req.id, mcp::JsonRpcError{mcp::kRpcInternalError,
-                                           "response body is not JSON: " + parsed_json.error().message,
+                                           "response body is not JSON: " + parsed_json.error().message +
+                                               " content-type=" + ctype +
+                                               " raw[0:160]=" + http_resp->body.substr(0, 160),
                                            json::Value{}});
         }
         auto response = mcp::parse_response(*parsed_json);

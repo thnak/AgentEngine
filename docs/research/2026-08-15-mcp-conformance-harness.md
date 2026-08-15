@@ -195,6 +195,64 @@ OAuth 2.1 flows against an authorization server, which ADR-021 §3 explicitly sc
 check is attributable to engine code: the harness runs its own server and spawns our binary, so there
 is no fixture whose behaviour could be confused for ours.
 
+## Second pass, after implementing SEP-2243 and chunked decoding
+
+Three further gaps were found and closed. Numbers below are the same command set, same tool version.
+
+### 7. `x-mcp-header` (SEP-2243) was entirely unimplemented
+
+011 §8b calls it *"a mandatory client-side surface on Streamable HTTP, and it is easy to miss"* — and
+it was missed. Both halves were absent: the **validation** half (a tool whose annotation violates the
+constraints **MUST** be excluded from `tools/list`, so one malformed tool cannot deny a caller every
+other tool) and the **mirroring** half (`Mcp-Param-{Name}` headers derived from annotated argument
+values, with the `=?base64?…?=` sentinel encoding for values not safely representable in ASCII).
+
+Now implemented in `protocol/mcp/client.hpp` (`x_mcp_header_violation`, `derive_param_headers`,
+`encode_header_value`). Because the headers derive from the tool **schema**, which only `McpClient`
+knows, `RequestSenderWithHeaders` was added as an **additive** second sender shape — every existing
+`RequestSender` call site compiles and behaves identically, matching the spec's own layering
+(*"Clients using other transports (e.g., stdio) MAY ignore `x-mcp-header` annotations entirely"*).
+
+### 8. Chunked transfer-encoding — a real client-role gap, predicted then hit
+
+The mock answers `tools/list` with `Transfer-Encoding: chunked` (`b42
+{"jsonrpc"…`).
+`perform_http_exchange` is *"Content-Length-framed only — no chunked transfer-encoding support this
+milestone, a documented cut since this proxy's own test server never emits it"*. The cut is real: a
+conformant MCP server may chunk, so **the engine's own HTTP client cannot currently talk to one**.
+
+ADR-023 §9h's R19 predicted exactly this (*"chunked transfer-encoding, which does not exist anywhere
+in this codebase"*) as a reason the Tier-3 fixture would be expensive; it turns out to bite Tier 1
+first.
+
+Decoded in the conformance binary's transport layer for now, deliberately **not** inside
+`perform_http_exchange`: that function is ADR-011-judged code whose byte cap is enforced *during* the
+read loop (claim C8), and widening its framing would require re-running that proof. **Adding chunked
+support to the engine's own HTTP client is a named follow-up against ADR-011**, not a drive-by edit.
+
+### Numbers after
+
+| Scenario | Before | After |
+|---|---|---|
+| `http-custom-headers` | 0/5 | **17/19** |
+| `http-invalid-tool-headers` | 10/11 | **11/11** |
+| `http-standard-headers` | 1/1 | **3/3** |
+| `tools_call` | 2/2 | **2/2** |
+| `request-metadata` | 4/4 | **4/4** |
+| `json-schema-ref-no-deref` | 1/1 | **1/1** |
+| `json-schema-2020-12-preservation` | 2/3 | 2/3 |
+| `sep-2322-client-request-state` | 2/5 | 2/5 |
+| **Total** | **22/32 (69%)** | **42/48 (88%)** |
+
+Six scenarios now pass completely. Check *counts* rose because earlier failures short-circuited
+scenarios before their later checks could run — a reminder that a conformance denominator is only
+meaningful once the run gets far enough to reach every check.
+
+Remaining known gaps: `sep-2322-client-request-state` (MRTR — the client must retry a request
+carrying `inputResponses`, which needs the `InputRequiredResult` handling 011 §3.4 describes and
+`McpClient` does not implement) and one check each in `http-custom-headers` and
+`json-schema-2020-12-preservation`.
+
 ## Sources
 
 - [modelcontextprotocol/conformance](https://github.com/modelcontextprotocol/conformance) — primary,
