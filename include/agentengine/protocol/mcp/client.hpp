@@ -104,6 +104,11 @@ struct CacheEntry {
 
 }  // namespace client_detail
 
+// 011 §12/§13 Q1: "as a server, 2026-07-28-only" -- the same fixed literal on the client side, and
+// the value `_meta`'s required `protocolVersion` key carries. Named once here rather than repeated at
+// each call site (server.hpp:220 still has its own copy for its own `server/discover` result).
+inline constexpr std::string_view kMcpProtocolVersion = "2026-07-28";
+
 class McpClient {
 public:
     McpClient(RequestSender sender, std::string client_name)
@@ -128,7 +133,8 @@ public:
         }
 
         JsonRpcRequest req{RpcId{next_id()}, "tools/list",
-                            json::Value::make_object({{"cursor", json::Value::make_string(cursor)}})};
+                            with_request_meta(json::Value::make_object(
+                                {{"cursor", json::Value::make_string(cursor)}}))};
         JsonRpcResponse resp = sender_(req);
         if (resp.error.has_value()) {
             return std::unexpected(error{failure_class::contract, resp.error->message, "mcp.rpc_error"});
@@ -169,8 +175,9 @@ public:
 
     [[nodiscard]] result<McpToolCallOutcome> call_tool(std::string const& name, json::Value arguments) {
         JsonRpcRequest req{RpcId{next_id()}, "tools/call",
-                            json::Value::make_object({{"name", json::Value::make_string(name)},
-                                                       {"arguments", std::move(arguments)}})};
+                            with_request_meta(json::Value::make_object(
+                                {{"name", json::Value::make_string(name)},
+                                 {"arguments", std::move(arguments)}}))};
         JsonRpcResponse resp = sender_(req);
         if (resp.error.has_value()) {
             // A PROTOCOL error (unknown tool, malformed request) -- 011 §3.1's own split, the
@@ -265,6 +272,50 @@ public:
 
 private:
     [[nodiscard]] std::string next_id() { return client_name_ + ":" + std::to_string(++next_id_); }
+
+    // 011 §2's per-request `_meta`, which every outbound request carries. Added after the official
+    // `@modelcontextprotocol/conformance` suite (0.2.0-alpha.11, spec 2026-07-28) rejected our
+    // `tools/list` with `ListToolsRequest/params: must have required property '_meta'` and the mock
+    // answered HTTP 400 -- exactly the behaviour the spec detail documents for a request missing a
+    // required field ("malformed: -32602, and on HTTP 400 Bad Request",
+    // docs/research/2026-mcp-protocol-detail.md:230). Phase C1 deliberately built a generic JSON-RPC
+    // envelope with "no `_meta` (011 §2)" and Phase C3 never added it, so no outbound request this
+    // client produced was schema-valid for this revision. Recorded in
+    // docs/research/2026-08-15-mcp-conformance-harness.md.
+    //
+    // Required keys are `protocolVersion` and `clientCapabilities`; `clientInfo` is SHOULD and sent
+    // (the research note flags that SEP-2575 marks it required while the spec page marks it optional,
+    // and that the spec page governs -- sending it satisfies both readings). `logLevel` is
+    // deliberately NOT sent: a server "MUST NOT emit notifications/message for a request that omitted
+    // it" (011 §2), and this client has no notification sink, so omitting it is the correct request
+    // rather than a gap. `traceparent`/`tracestate` are 016's job and are not invented here.
+    [[nodiscard]] json::Value with_request_meta(json::Value params) const {
+        json::Value meta = json::Value::make_object(
+            {{"io.modelcontextprotocol/protocolVersion",
+              json::Value::make_string(std::string(kMcpProtocolVersion))},
+             // Declared capabilities. `extensions` is present and empty rather than absent: §3.6's
+             // "never assumed enabled on either side" cuts both ways, and an explicit empty value is
+             // the honest statement that this client opts into none by default. `call_tool_as_task`
+             // adds the tasks extension per-request, which is where that opt-in belongs (§12).
+             //
+             // An OBJECT, not an array -- keyed by extension identifier. Corrected against the
+             // official schema, which rejected an array with
+             // `_meta/io.modelcontextprotocol~1clientCapabilities/extensions: must be object`. 011 §2
+             // says only "our declared capabilities, including `extensions`" and does not give the
+             // shape, so this was an assumption the suite caught; recorded rather than quietly fixed.
+             {"io.modelcontextprotocol/clientCapabilities",
+              json::Value::make_object({{"extensions", json::Value::make_object({})}})},
+             {"io.modelcontextprotocol/clientInfo",
+              json::Value::make_object({{"name", json::Value::make_string(client_name_)},
+                                         {"version", json::Value::make_string("0.1.0")}})}});
+
+        if (!params.is_object()) {
+            return json::Value::make_object({{"_meta", std::move(meta)}});
+        }
+        auto fields = params.as_object();  // copy: `Value`'s accessor is const-ref
+        fields.emplace_back("_meta", std::move(meta));
+        return json::Value::make_object(std::move(fields));
+    }
 
     RequestSender              sender_;
     std::string                client_name_;

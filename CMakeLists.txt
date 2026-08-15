@@ -59,6 +59,16 @@ add_library(agentengine::net_egress_proxy ALIAS agentengine_net_egress_proxy)
 add_executable(agentengine_policy_reachability tools/policy_reachability.cpp)
 target_link_libraries(agentengine_policy_reachability PRIVATE agentengine::core agentengine_warnings)
 
+# ---- MCP conformance client (tools/) -- ADR-023 §10 Tier 1, 011 §10 G2 --------------------------
+# The binary `conformance client --command` spawns. See tools/mcp_conformance_client.cpp's own top
+# comment for why the CLIENT role needs no listener and no fixture, and
+# docs/research/2026-08-15-mcp-conformance-harness.md for the empirically confirmed harness contract.
+# Links the real egress proxy (ADR-011/ADR-016) rather than a test double -- the point of this target
+# is that the conformance number it produces is attributable to engine code.
+add_executable(agentengine_mcp_conformance_client tools/mcp_conformance_client.cpp)
+target_link_libraries(agentengine_mcp_conformance_client
+  PRIVATE agentengine::core agentengine::net_egress_proxy agentengine_warnings)
+
 # ---- native_jail ShellRunner backend (src/backends/native_jail/) --------------
 # Implements decisions/ADR-001-shellrunner-grammar-and-dispatch.md — Design A: the
 # recursive-descent parser, the pmr-backed AST, the tree-walking evaluator, the fixed builtin
