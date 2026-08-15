@@ -96,5 +96,8 @@ be able to take the machine with it.
 
 ## Git
 
-Local repository, no remote. **Commit messages carry no co-author trailer** (explicit project
-owner instruction).
+**`origin` is a real remote** — <https://github.com/thnak/AgentEngine> — so `git push` has a target
+and pushing is a genuine, outward-facing action. This line previously read "Local repository, no
+remote", which stopped being true once the project was published; a session that trusts it will
+reach for the wrong default when asked to push. **Commit messages carry no co-author trailer**
+(explicit project owner instruction).
