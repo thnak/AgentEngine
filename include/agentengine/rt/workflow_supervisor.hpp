@@ -266,11 +266,11 @@ struct ExecutorOutput {
 struct WorkflowResult {
     workflow_status status = workflow_status::invalid;
     std::uint32_t   rounds = 0;
-    agentengine::Message output;
-    std::vector<ExecutorOutput> partial;
-    std::string     failed_executor;
-    std::vector<agentengine::Interaction> open_interactions;
-    std::vector<std::string> unopened_ports;
+    agentengine::Message output{};
+    std::vector<ExecutorOutput> partial{};
+    std::string     failed_executor{};
+    std::vector<agentengine::Interaction> open_interactions{};
+    std::vector<std::string> unopened_ports{};
 };
 
 // -- Slice 2: the checkpoint record + its JSON codec (see file banner) -----------------------------

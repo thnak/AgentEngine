@@ -45,6 +45,7 @@
 
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/error.hpp"
+#include "agentengine/pal/env.hpp"
 #include "agentengine/trust/capability.hpp"
 
 namespace agentengine {
@@ -141,22 +142,19 @@ public:
         var.reserve(prefix_.size() + name.size());
         var.append(prefix_);
         var.append(name);
-        // std::getenv is the portable, std-only choice here; MSVC's C4996 nudges toward the
-        // non-standard _dupenv_s, which we don't want. Not a thread-safety concern for us: single
-        // read, copied into `Secret` immediately, no concurrent setenv in-process.
-#if defined(_MSC_VER)
-#pragma warning(push)
-#pragma warning(disable : 4996)
-#endif
-        char const* v = std::getenv(var.c_str());
-#if defined(_MSC_VER)
-#pragma warning(pop)
-#endif
-        if (v == nullptr) {
+        // pal::env_var is the portable read: `std::getenv` directly would draw MSVC's C4996
+        // (it prefers the non-standard _dupenv_s), and this file used to answer that with a
+        // local #pragma warning(disable : 4996) -- a suppression, which this project does not
+        // allow. The PAL resolves it by CALLING _dupenv_s on MSVC, so nothing is silenced.
+        // Still not a thread-safety concern: single read, copied into `Secret` immediately, no
+        // concurrent setenv in-process -- and the PAL now returns an owned copy rather than a
+        // pointer into environment storage, so the copy is no longer racing a later getenv.
+        auto const v = ::agentengine::pal::env_var(var);
+        if (!v) {
             return std::unexpected(error{failure_class::contract, "secret not in environment: " + var,
                                           "secret.not_found"});
         }
-        return make_secret(std::string_view(v));
+        return make_secret(std::string_view(*v));
     }
 
 private:

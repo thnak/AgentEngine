@@ -45,6 +45,7 @@
 #include <windows.h>
 
 #include "agentengine/core/effect_context.hpp"
+#include "agentengine/pal/env.hpp"
 #include "agentengine/sandbox/runner.hpp"
 #include "agentengine/trust/capability.hpp"
 #include "backends/native_jail/mediated_python_runner.hpp"
@@ -98,7 +99,7 @@ bool create_junction(std::wstring const& link, std::wstring const& target) {
 }  // namespace
 
 int main() {
-    std::string const base = std::string(std::getenv("TEMP") ? std::getenv("TEMP") : "C:/Windows/Temp");
+    std::string const base = ::agentengine::pal::env_var("TEMP").value_or("C:/Windows/Temp");
     std::string const scratch = base + "/ae_e4_py_mount";
     std::string const outside = base + "/ae_e4_py_outside";
     std::filesystem::remove_all(scratch);

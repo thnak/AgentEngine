@@ -67,7 +67,7 @@ public:
     // own function only ever invokes `on_context`) -- forwarded manually here to every wrapped
     // provider, the same reason `history_and_skills_provider.hpp` forwards it for its own two.
     task<std::monostate> on_turn_end(TurnView turn, EffectContext& ctx) {
-        for (auto& contributor : contributors_) co_await contributor.on_turn_end(turn, ctx);
+        for (auto& contributor : contributors_) (void)co_await contributor.on_turn_end(turn, ctx);
         co_return std::monostate{};
     }
 

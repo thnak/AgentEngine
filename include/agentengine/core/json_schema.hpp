@@ -461,6 +461,10 @@ result<T> from_json(json::Value const& v) {
 // AE_JSON_SCHEMA introduces a local `using AeJsonSchemaSelf = Type;` alias before expanding the
 // per-field macro; `AeJsonSchemaSelf` is then resolved by ordinary C++ name lookup at compile time
 // (not by the preprocessor), which does see the alias declared earlier in the same function body.
+// Only two of the three generated functions declare it. ae_to_json does not: AE_JSON_TO_FIELD_
+// reaches through `self.member` and never names the alias, so declaring one there produced a dead
+// local typedef -- gcc's -Wunused-local-typedefs, once per AE_JSON_SCHEMA-annotated type (67 of
+// them). The declaration was deleted rather than annotated: it had no reader to begin with.
 #define AE_JSON_SCHEMA_FIELD_(member)                                                        \
     ob.add_field(                                                                            \
         #member,                                                                             \
@@ -485,7 +489,6 @@ result<T> from_json(json::Value const& v) {
         return ob.build();                                                                   \
     }                                                                                        \
     inline ::agentengine::json::Value ae_to_json(Type const& self) {                         \
-        using AeJsonSchemaSelf = Type;                                                       \
         ::agentengine::schema::ToJsonBuilder ae_tb;                                          \
         AE_FOR_EACH(AE_JSON_TO_FIELD_, __VA_ARGS__)                                       \
         return ae_tb.build();                                                                \

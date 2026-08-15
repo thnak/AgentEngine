@@ -77,7 +77,7 @@ public:
     // its source -- it only ever invokes `on_context`) -- forwarded manually here to both wrapped
     // providers, or the hook would be silently dropped for both.
     task<std::monostate> on_turn_end(TurnView turn, EffectContext& ctx) {
-        for (auto& contributor : contributors_) co_await contributor.on_turn_end(turn, ctx);
+        for (auto& contributor : contributors_) (void)co_await contributor.on_turn_end(turn, ctx);
         co_return std::monostate{};
     }
 

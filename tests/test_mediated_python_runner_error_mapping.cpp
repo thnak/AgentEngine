@@ -21,6 +21,7 @@
 
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
+#include "agentengine/pal/env.hpp"
 #include "agentengine/trust/capability.hpp"
 #include "backends/native_jail/mediated_python_runner.hpp"
 #include "backends/native_jail/tool_bridge.hpp"
@@ -68,7 +69,7 @@ struct BlockedNetTool : Tool<BlockedNetTool, Capabilities<cap::decl::Entropy>> {
 }  // namespace
 
 int main() {
-    std::string const base = std::string(std::getenv("TEMP") ? std::getenv("TEMP") : "C:/Windows/Temp") +
+    std::string const base = ::agentengine::pal::env_var("TEMP").value_or("C:/Windows/Temp") +
                               "/ae_g4_error_mapping_test";
     std::filesystem::path work_dir = std::filesystem::path(base) / "work";
     std::filesystem::path quota_dir = std::filesystem::path(base) / "quota";

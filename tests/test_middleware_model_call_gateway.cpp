@@ -20,6 +20,7 @@
 // while a genuine, untouched backend-returned `ToolCall` must NOT be punished by the same
 // mechanism (a positive control, not just a denial test).
 
+#include <coroutine>
 #include <cstdio>
 #include <memory>
 #include <string>
@@ -189,9 +190,24 @@ struct DenyMiddleware {
 // letting a raw C++ exception escape `call()` (T9).
 struct ThrowingMiddleware {
     static constexpr std::string_view name = "throwing";
+    // The body needs at least one coroutine keyword -- without one this is an ordinary function that
+    // merely NAMES `task<std::monostate>` as its return type and never builds one, which would change
+    // what the test proves (a throw at call time rather than at resume time). It used to get that
+    // keyword from a trailing `co_return` placed after the `throw`, i.e. a statement that is by
+    // construction unreachable, which is exactly what MSVC's C4702 reports and it is right.
+    //
+    // Dropping the `co_return` and supplying the keyword with a leading `co_await
+    // std::suspend_never{}` instead does not work: MSVC then reports C4033 ("must return a value")
+    // for a promise_type that has return_value and no reachable return. So the co_return stays and
+    // the THROW becomes conditional on an ordinary non-constexpr member, which no compiler can fold
+    // away across the call. Both statements are now reachable, C4702 has nothing to report, and the
+    // observable behaviour is unchanged: `throw_on_call` is never assigned anywhere, so every
+    // instance throws on first resume exactly as before. Fixed at the site; nothing suppressed.
+    bool throw_on_call = true;
+
     task<std::monostate> before_model(ModelCallContext&) {
-        throw std::runtime_error("synthetic middleware bug");
-        co_return std::monostate{};  // unreachable, silences a "no return" warning
+        if (throw_on_call) throw std::runtime_error("synthetic middleware bug");
+        co_return std::monostate{};
     }
 };
 

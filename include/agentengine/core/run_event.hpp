@@ -119,13 +119,13 @@ struct InteractionRef {
 // is a genuine field addition, not a break of any real wire contract yet exercised.
 struct ApprovalRequested {
     std::string call_id;
-    std::string interaction_id;
+    std::string interaction_id{};
 };
 
 struct ApprovalResolved {
     std::string call_id;
     bool        approved = false;
-    std::string interaction_id;
+    std::string interaction_id{};
 };
 
 struct Warning {

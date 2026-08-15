@@ -168,7 +168,7 @@ struct Edge {
     //
     // The default is `fail`, deliberately the strict one: a graph whose author has not thought about
     // failure stops and says so rather than continuing with a hole in its data.
-    EdgeFailurePolicy on_failure;
+    EdgeFailurePolicy on_failure{};
 
     friend bool operator==(Edge const&, Edge const&) = default;
 };

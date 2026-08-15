@@ -32,6 +32,7 @@
 
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/tool_call_extraction.hpp"
+#include "agentengine/pal/env.hpp"
 #include "agentengine/protocol/openai/chat_client.hpp"
 #include "agentengine/rt/workflow_supervisor.hpp"
 #include "agentengine/trust/principal.hpp"
@@ -116,15 +117,15 @@ using RealClient = openai::OpenAIChatClient<InMemorySecretStore>;
 [[nodiscard]] Executor node_desc(char const* id) { return Executor{id, executor_kind::function, "T", "T"}; }
 
 [[nodiscard]] std::string env_or(char const* name, char const* fallback) {
-    char const* v = std::getenv(name);
-    return (v && *v) ? std::string(v) : std::string(fallback);
+    auto const v = ::agentengine::pal::env_var(name);
+    return (v && !v->empty()) ? *v : std::string(fallback);
 }
 
 }  // namespace
 
 int main() {
-    char const* key_env = std::getenv("AGENTENGINE_OPENROUTER_API_KEY");
-    if (!key_env || !*key_env) {
+    auto const key_env = ::agentengine::pal::env_var("AGENTENGINE_OPENROUTER_API_KEY");
+    if (!key_env || key_env->empty()) {
         std::fprintf(stderr,
                      "example_16_group_chat_live: SKIPPED -- AGENTENGINE_OPENROUTER_API_KEY is not "
                      "set.\n  Run tools/run-live-provider-tests.ps1, or set the variable yourself, "
@@ -138,7 +139,7 @@ int main() {
 
     constexpr char const* kSecretName = "openrouter-api-key";
     InMemorySecretStore   store;
-    store.set(kSecretName, key_env);
+    store.set(kSecretName, *key_env);
     CapabilitySet const held = CapabilitySet::grant_root({cap::Secret{kSecretName, std::chrono::seconds{0}}});
 
     ChatClientCapabilities caps;

@@ -56,10 +56,10 @@ enum class field_mode { none, whole, marker, json_field };
 struct field_spec {
     field_source source = field_source::body;
     field_mode   mode   = field_mode::none;
-    std::string_view marker;
+    std::string_view marker{};
     std::array<std::string_view, 4> stop_at{};  // empty entries ignored
-    std::string_view strip_prefix;               // e.g. Harmony's "functions." recipient prefix
-    std::string_view json_path;                  // top-level key name, when mode == json_field
+    std::string_view strip_prefix{};               // e.g. Harmony's "functions." recipient prefix
+    std::string_view json_path{};                  // top-level key name, when mode == json_field
 };
 
 // ae-naming-lint: allow terminator_spec — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
@@ -88,10 +88,10 @@ struct format_spec {
     std::string_view body_open;  // empty => no separate header segment
     std::array<terminator_spec, 3> terminators{};
     channel_kind fixed_channel = channel_kind::unknown;
-    field_spec   channel_field;
-    field_spec   recipient_field;
-    field_spec   arguments_field;
-    field_spec   constraint_field;
+    field_spec   channel_field{};
+    field_spec   recipient_field{};
+    field_spec   arguments_field{};
+    field_spec   constraint_field{};
     std::string_view default_arg_type = "json";
 };
 
@@ -286,7 +286,7 @@ struct decode_result {
     // diagnostic `Text` item in `items` above (every candidate has a matching diagnostic; not every
     // diagnostic has a matching candidate, e.g. recipient extraction failed but the block still
     // parsed as tool-call-shaped).
-    std::vector<DetectedToolCallCandidate> candidates;
+    std::vector<DetectedToolCallCandidate> candidates{};
     // True when suspicious tokens were seen (sniff hit) but the content could not be safely,
     // completely segmented (a dangling/truncated block, or a channel this table can't classify) --
     // ADR §4a finding 2's fail-closed behavior. `items` then holds exactly one untouched `Text`

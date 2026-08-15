@@ -347,7 +347,7 @@ private:
     // banner's "single-consumer" note -- is never accidentally cleared by the wrong owner).
     struct next_awaiter {
         channel_consumer* self;
-        std::optional<T> value;
+        std::optional<T> value{};
         bool have_value = false;
         bool parked = false;
         std::coroutine_handle<> handle_{};

@@ -71,9 +71,6 @@ void check(bool cond, char const* what) {
         std::fprintf(stderr, "  ok: %s\n", what);
     }
 }
-void note(char const* label, std::string const& value) {
-    std::fprintf(stderr, "  .. %s = %s\n", label, value.c_str());
-}
 
 // Same rationale as test_rt_workflow_supervisor.cpp's own drive<T>(): every entry point's only
 // suspension points are run_mutex_'s uncontended fast path and a nested co_await execute(), whose own
@@ -253,9 +250,9 @@ int main() {
     // ---- E3 (OQ-4 flagship): two ports open concurrently in different fan-out branches of the ----
     // ---- SAME round; resolving one leaves the other open; resolving both merges via fan_in.    ----
     //
-    //          /-> portA -\
+    //          .-> portA -.
     //   fan --              >-> merge
-    //          \-> portB -/
+    //          '-> portB -'
     {
         Workflow wf;
         wf.id        = "e3-two-concurrent-ports";

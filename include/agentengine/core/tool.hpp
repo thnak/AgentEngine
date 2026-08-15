@@ -126,11 +126,10 @@ struct Tool {
     // "no restriction."
     [[nodiscard]] static std::vector<Capability> declared_capabilities() {
         std::vector<Capability> result;
-        auto append_one = [&result]<class P>() {
-            auto caps = tool_detail::policy_capabilities<P>::get();
+        ([&result] {
+            auto caps = tool_detail::policy_capabilities<Policies>::get();
             result.insert(result.end(), caps.begin(), caps.end());
-        };
-        (append_one.template operator()<Policies>(), ...);
+        }(), ...);
         return result;
     }
 
@@ -138,10 +137,9 @@ struct Tool {
     // silent one: a tool author who wants approval gating must say so (§4's vocabulary is opt-in).
     [[nodiscard]] static approval_mode declared_approval() {
         approval_mode mode = approval_mode::never_require;
-        auto consider = [&mode]<class P>() {
-            if (auto m = tool_detail::policy_approval<P>::get(); m.has_value()) mode = *m;
-        };
-        (consider.template operator()<Policies>(), ...);
+        ([&mode] {
+            if (auto m = tool_detail::policy_approval<Policies>::get(); m.has_value()) mode = *m;
+        }(), ...);
         return mode;
     }
 
@@ -153,10 +151,9 @@ struct Tool {
     // damage, until the author explicitly says otherwise.
     [[nodiscard]] static effect_class declared_effect_class() {
         effect_class cls = effect_class::at_most_once;
-        auto consider = [&cls]<class P>() {
-            if (auto c = tool_detail::policy_effect_class<P>::get(); c.has_value()) cls = *c;
-        };
-        (consider.template operator()<Policies>(), ...);
+        ([&cls] {
+            if (auto c = tool_detail::policy_effect_class<Policies>::get(); c.has_value()) cls = *c;
+        }(), ...);
         return cls;
     }
 
@@ -165,10 +162,9 @@ struct Tool {
     // shape `declared_approval()` already has for approval gating.
     [[nodiscard]] static bool declared_backgroundable() {
         bool backgroundable = false;
-        auto consider = [&backgroundable]<class P>() {
-            if (tool_detail::policy_backgroundable<P>::get()) backgroundable = true;
-        };
-        (consider.template operator()<Policies>(), ...);
+        ([&backgroundable] {
+            if (tool_detail::policy_backgroundable<Policies>::get()) backgroundable = true;
+        }(), ...);
         return backgroundable;
     }
 };

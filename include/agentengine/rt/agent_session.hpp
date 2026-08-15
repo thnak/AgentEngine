@@ -710,7 +710,7 @@ public:
                     make_denial_result(call.call_id, "denied by operator", "tool.approval_denied"));
             }
             history_.push_back(tool_results_message(std::move(results)));
-            co_await history_provider_.on_turn_end(
+            (void)co_await history_provider_.on_turn_end(
                 TurnView{std::span<Message const>{history_.data() + response_msg_index,
                                                     history_.size() - response_msg_index}},
                 effect_context_);
@@ -760,7 +760,7 @@ public:
             results.push_back(std::move(result));
         }
         history_.push_back(tool_results_message(std::move(results)));
-        co_await history_provider_.on_turn_end(
+        (void)co_await history_provider_.on_turn_end(
             TurnView{std::span<Message const>{history_.data() + response_msg_index,
                                                 history_.size() - response_msg_index}},
             effect_context_);
@@ -1327,7 +1327,7 @@ private:
         std::vector<ToolResult> results;
         results.push_back(std::move(tool_result));
         history_.push_back(tool_results_message(std::move(results)));
-        co_await history_provider_.on_turn_end(
+        (void)co_await history_provider_.on_turn_end(
             TurnView{std::span<Message const>{history_.data() + response_msg_index,
                                                 history_.size() - response_msg_index}},
             effect_context_);
@@ -1451,7 +1451,7 @@ private:
 
             std::vector<ToolCall> const calls = tool_calls_of(response->message);
             if (calls.empty()) {
-                co_await history_provider_.on_turn_end(
+                (void)co_await history_provider_.on_turn_end(
                     TurnView{std::span<Message const>{history_.data() + response_msg_index, 1}},
                     effect_context_);
                 emit_run_event(run_event_kind::turn_finished,
@@ -1611,7 +1611,7 @@ private:
             }
 
             history_.push_back(tool_results_message(std::move(results)));
-            co_await history_provider_.on_turn_end(
+            (void)co_await history_provider_.on_turn_end(
                 TurnView{std::span<Message const>{history_.data() + response_msg_index,
                                                     history_.size() - response_msg_index}},
                 effect_context_);

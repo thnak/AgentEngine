@@ -71,13 +71,13 @@ struct ChatRequest {  // ae-naming-lint: allow ChatRequest — pre-existing M0 s
     std::vector<Message> messages;
     // 006's real per-run tool table entry — the exact type ContextContribution.tools already reuses
     // (core/context_provider.hpp's own top comment), not a second, provider-facing declaration shape.
-    std::vector<ToolDescriptor> tools;
+    std::vector<ToolDescriptor> tools{};
     // 003 §4's OutputSchema<T> contract, compiled to its JSON Schema text (schema::json_schema_of<T>,
     // the same mechanism ToolDescriptor::args_schema_json already uses) — nullopt when the agent
     // declared no OutputSchema<T>. Which of §4's three enforcement strategies (native/tool-shaped/
     // parse-and-repair) applies is a backend-side decision against ChatClientCapabilities
     // (agent_registry.hpp's select_output_schema_strategy, Phase B5), not carried here.
-    std::optional<std::string> output_schema_json;
+    std::optional<std::string> output_schema_json{};
     // sampling parameters: elided (see file-top comment).
     // Milestone 5 Phase F1 (004 §4: "a retried call carries a stable idempotency key so a provider
     // that supports it does not double-charge or double-execute"). Set once by a retrying wrapper
@@ -88,7 +88,7 @@ struct ChatRequest {  // ae-naming-lint: allow ChatRequest — pre-existing M0 s
     // idempotency header for Chat Completions/Messages as of this research (checked directly in
     // source, not assumed), so no backend wires this into a request header yet -- it exists so one
     // can, without another field-ordering migration, the moment a verified provider mechanism exists.
-    std::optional<std::string> idempotency_key;
+    std::optional<std::string> idempotency_key{};
     // 004 §2's 2026-08-07 amendment (ADR-020). APPENDED LAST, never inserted earlier -- the same
     // field-ordering discipline `Usage::cache_write_tokens` learned the hard way (003 §6's own dated
     // amendment): inserting a field mid-struct silently breaks every positional aggregate
@@ -96,7 +96,7 @@ struct ChatRequest {  // ae-naming-lint: allow ChatRequest — pre-existing M0 s
     // pre-existing caller and both backends behave bit-for-bit as before.
     // (Qualified: the member name deliberately matches the enum's, so the type must be spelled with
     // its namespace here -- the member would otherwise hide the type inside the class scope.)
-    std::optional<agentengine::reasoning_effort> reasoning_effort;
+    std::optional<agentengine::reasoning_effort> reasoning_effort{};
 };
 
 struct ChatResponse {
@@ -110,7 +110,7 @@ struct ChatResponse {
     // silently substitute a backend) and for correlating cache-hit behavior with which concrete backend
     // served a call. Empty string when a backend doesn't report one (never fabricated from the request's
     // own `model` field -- that's what was ASKED for, not what answered).
-    std::string model;
+    std::string model{};
     // Milestone 5 Phase F3 (004 §4: "Failover... must appear in the trace and in the response
     // metadata"). 0 = the primary backend answered; N>0 = the Nth fallback in a `FailoverChatClient`'s
     // configured order answered instead, after the primary (and any earlier fallback) failed. Full

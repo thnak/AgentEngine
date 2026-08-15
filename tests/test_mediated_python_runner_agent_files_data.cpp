@@ -21,6 +21,7 @@
 
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
+#include "agentengine/pal/env.hpp"
 #include "agentengine/trust/agent_library_manifest.hpp"
 #include "agentengine/trust/capability.hpp"
 #include "backends/native_jail/mediated_python_runner.hpp"
@@ -73,7 +74,7 @@ struct EchoTool : Tool<EchoTool, Capabilities<cap::decl::Entropy>> {
 }  // namespace
 
 int main() {
-    std::string const base = std::string(std::getenv("TEMP") ? std::getenv("TEMP") : "C:/Windows/Temp") +
+    std::string const base = ::agentengine::pal::env_var("TEMP").value_or("C:/Windows/Temp") +
                               "/ae_g2_files_data_test";
     std::filesystem::path input_dir = std::filesystem::path(base) / "input";
     std::filesystem::path work_dir = std::filesystem::path(base) / "work";
