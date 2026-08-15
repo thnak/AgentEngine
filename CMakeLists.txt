@@ -22,6 +22,20 @@ if(WIN32)
   add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN)
 endif()
 
+# C++ exceptions must be ON for every MSVC-like frontend, stated here rather than inherited.
+# `src/backends/native_jail/shell_parser.cpp` really does `catch (std::bad_alloc const&)` -- that is
+# how ADR-001's arena-exhaustion path reports `shell.arena_exhausted` instead of terminating -- so a
+# build without exceptions is not a valid configuration of this project, it is a broken one.
+#
+# It was inherited before, and only by accident: the Visual Studio generator injects /EHsc into its
+# own default flags, so the MSVC leg compiled. Ninja + clang-cl gets no such default and failed with
+# "cannot use 'try' with exceptions disabled". `MSVC` is true for clang-cl as well (CMake sets it for
+# any MSVC-like frontend), so one guard covers both, and stating it here makes the property
+# generator-independent rather than a property of which generator CI happens to use.
+if(MSVC)
+  add_compile_options(/EHsc)
+endif()
+
 # ---- Core vocabulary (header-only for now; no .cpp under include/agentengine) --
 add_library(agentengine_core INTERFACE)
 target_include_directories(agentengine_core INTERFACE

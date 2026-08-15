@@ -72,7 +72,13 @@ struct ToolDescriptor {
     // conservative default `declared_effect_class()` itself uses, so a hand-built `ToolDescriptor`
     // that predates this field (not going through `make_tool_descriptor<T>()` below) fails CLOSED
     // against auto-declassification rather than silently qualifying.
-    effect_class effect_class = effect_class::at_most_once;
+    // The type name is written QUALIFIED, deliberately. A member named `effect_class` whose type is
+    // also spelled `effect_class` makes the unqualified name mean the type before the declaration and
+    // the member after it -- which [basic.scope.class] makes ill-formed, and GCC 14 rejects outright
+    // (`-Wchanges-meaning`), while MSVC and clang accept it. Qualifying both uses means the
+    // unqualified name never denotes the type inside this class, so there is no change of meaning.
+    // The member name is kept as-is: `d.effect_class` is the reading call sites already use.
+    agentengine::effect_class effect_class = agentengine::effect_class::at_most_once;
 
     // Session-scoped-stateful-tools mechanism (ADR-028): `true` only for a descriptor built via
     // `make_tool_descriptor_with_invoke<ToolT>()` below, whose `invoke` closure captures a
