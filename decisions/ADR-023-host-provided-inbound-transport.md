@@ -762,6 +762,24 @@ struct AuthorityRef { std::uint64_t slot; std::uint64_t generation; };
   patched in-tree. A 16-byte `AuthorityRef` fits with room to spare, and §2's blocked plan to grow
   `Principal` with `claims`/`issuer`/`expiry` is replaced by putting those on the authority record
   the ref resolves to. The two-string `SessionCaller` stand-in can then retire.
+
+  **Measured, not asserted (2026-08-15, MSVC x64, `/std:c++latest`)** — §8b claim 6 run during the
+  design phase rather than deferred, because the whole device collapses if the number is wrong:
+
+  | Shape | `sizeof` |
+  |---|---|
+  | `quark::detail::MessagePool::kMaxPayload` | **192** |
+  | `Ask<StartRun, AgentResponse>` — today, two-string `SessionCaller` | 160 |
+  | `Ask<StartRunWithPrincipal, AgentResponse>` — control, full `optional<Principal>` | **208** ✗ |
+  | `Ask<StartRunWithRef, AgentResponse>` — proposed, 16-byte `AuthorityRef` | **104** ✓ |
+
+  Two things worth recording. The control reproduces **exactly** the 208 bytes
+  `core/agent_session.hpp:92-97` cites from its own earlier measurement, which independently
+  confirms that comment rather than taking it on trust — the reason `SessionCaller` exists at all.
+  And the proposed shape is not merely under the ceiling, it is **56 bytes smaller than what crosses
+  the boundary today** (`Principal` alone is 112 bytes; `SessionCaller` is 64), so replacing the
+  stand-in with a real authority handle *reduces* message-pool pressure while carrying strictly more
+  identity. Claim 6 is therefore CORRECT with an 88-byte margin, not merely satisfied.
 - **R27 (three more construction-time authorities)** — `held_`, `approve_`, and the principal all
   resolve from one per-request record, so there is one thing to make per-request rather than three to
   remember.
@@ -1039,7 +1057,7 @@ decisions/README.md.
 | 3 | §8.1a | `Principal` is constructible only by `trust/` factories, and provenance is non-defaultable | `try_compile()`: `Principal p{"admin","t"};` and `p.id = "admin";` both fail outside `trust/`; no factory yields a default provenance |
 | 4 | §8.1a | A surface under an 011 §8a MUST refuses a principal whose provenance is not `verified_by_engine` | Attempt `tools/call` on a protocol endpoint with an `asserted_by_host` principal; must be refused |
 | 5 | §8.1 | **Repairs claim 3.** Authority is per-request AND memory-safe under overlap: a backgrounded call and an open stream started under request A keep exactly A's authority after A's frame returns and request B has run under a different principal | Overlapping (not sequential) requests under ASan/TSan. The old claim passed against a dangling implementation because two sequential requests never overlap |
-| 6 | §8.1 | `AuthorityRef` crosses the actor boundary within budget | `static_assert(sizeof(quark::Ask<StartRun, AgentResponse>) <= quark::detail::MessagePool::kMaxPayload)` |
+| 6 | §8.1 | `AuthorityRef` crosses the actor boundary within budget | `static_assert(sizeof(quark::Ask<StartRun, AgentResponse>) <= quark::detail::MessagePool::kMaxPayload)`. **CORRECT — measured in the design phase (§8.1): 104 vs 192, an 88-byte margin, with the 208-byte control reproducing the codebase's own cited figure** |
 | 7 | §8.1/R15 | A stream open when its authority is revoked or expires emits no further event after a bounded interval, and terminates with a distinct terminal event | Open a stream under a credential with `exp = now + 1s`; assert termination and no event N+1. **Currently unwritable — there is no revoke** |
 | 8 | R23 | Two concurrent subscribers to one run receive identical events in identical order, and closing one does not affect the other (012 §2.3) | Two subscribers, one run; currently disproved by construction |
 | 9 | R22 | A `push()` returning `Terminated` ends the run's emission and is observable; and no host behaviour at the stream seam causes unbounded engine-owned memory growth or occupies a Quark worker beyond a bounded interval | Non-draining host fixture; measure engine memory and worker occupancy. Disproved today by the `(void)push` |
