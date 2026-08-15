@@ -5,6 +5,15 @@
 // in 004-Model-Provider-Plane.md §6, not an implementation of it). Adding a scenario means adding a
 // fixture under tests/fixtures/chat_client/, not writing more C++ (CLAUDE.md task brief).
 
+// Positive control for tests/CMakeLists.txt's `/UNDEBUG`-`-UNDEBUG` block. This file, and the twelve
+// others listed there, check exclusively through assert(); under Release's -DNDEBUG every one of
+// those expands to nothing and the whole suite passes without evaluating a single condition. One
+// witness TU is enough to prove the directory-scoped undefine reached tests/ -- and it fails loudly
+// and immediately if that call is ever moved after the add_executable()s it is meant to precede.
+#ifdef NDEBUG
+#error "NDEBUG is defined in a tests/ translation unit: every assert() here would be a no-op, so this suite would pass without checking anything. See the /UNDEBUG block in tests/CMakeLists.txt."
+#endif
+
 #include <cassert>
 #include <filesystem>
 #include <string>

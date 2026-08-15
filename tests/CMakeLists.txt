@@ -218,6 +218,38 @@ if(WIN32)
     "real one-argument signatures compile)")
 endif()
 
+# ---- Keep assert() live in every configuration, Release included --------------------------------
+# 13 files here (195 assert() calls) use bare <cassert> rather than the AE_CHECK/g_failures harness:
+# smoke_vocabulary, test_job_object_limits, test_native_jail_runner_stubs, test_python_audit_hook,
+# test_python_caller_gated_{benchmark,import}, test_python_embed_smoke, test_python_layer0_sweep,
+# test_python_meta_path_finder, test_python_numpy_pandas_import,
+# test_python_trusted_loader_proxy_heap_type_negative_control, test_real_filesystem_adapter,
+# test_recorded_chat_client.
+#
+# CMake's Release/RelWithDebInfo flags carry -DNDEBUG, which turns every one of those into a no-op --
+# so the CI jobs that build Release (Windows/MSVC, Windows/clang-cl, Linux/gcc-14) were running
+# bodies that cannot fail. That is the exact thing CLAUDE.md forbids ("a test that cannot fail proves
+# nothing"), and it covered real security proofs: the caller-gated import gate (45 asserts), the
+# audit hook, the Job-object limits, and a file whose name is literally
+# ..._negative_control.cpp. gcc's -Wunused-variable is what exposed it -- four locals in
+# test_recorded_chat_client.cpp had no remaining reader once the asserts were preprocessed away.
+#
+# Dropping NDEBUG for tests/ only is the narrow fix: production targets keep their Release semantics
+# untouched, and the assertions become load-bearing everywhere they are built.
+#
+# The define is STRIPPED from this directory's config flags rather than countered with a
+# `/UNDEBUG`-`-UNDEBUG` compile option. Both undefine it, but appending the counter-flag makes cl
+# itself emit `command line warning D9025: overriding '/DNDEBUG' with '/UNDEBUG'` on every single
+# translation unit -- trading 195 dead assertions for a few thousand lines of new warning, when the
+# rule here is that warnings get fixed rather than accumulated. Editing the variables at directory
+# scope leaves no contradictory pair on the command line for cl to complain about.
+foreach(ae_cfg RELEASE RELWITHDEBINFO MINSIZEREL)
+  foreach(ae_lang C CXX)
+    string(REPLACE "/DNDEBUG" "" CMAKE_${ae_lang}_FLAGS_${ae_cfg} "${CMAKE_${ae_lang}_FLAGS_${ae_cfg}}")
+    string(REPLACE "-DNDEBUG" "" CMAKE_${ae_lang}_FLAGS_${ae_cfg} "${CMAKE_${ae_lang}_FLAGS_${ae_cfg}}")
+  endforeach()
+endforeach()
+
 add_executable(smoke_vocabulary smoke_vocabulary.cpp)
 target_link_libraries(smoke_vocabulary PRIVATE agentengine::core agentengine_warnings)
 
