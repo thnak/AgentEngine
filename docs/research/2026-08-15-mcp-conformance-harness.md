@@ -1,14 +1,14 @@
 # MCP conformance harness — how it actually drives an implementation under test
 
-**Date:** 2026-08-15 · **Researched for:** ADR-023 §10 (third design iteration), Tier 1
+**Date:** 2026-08-15 · **Researched for:** ADR-061 §10 (third design iteration), Tier 1
 · **Status:** primary-source verified
 
 ## Why this was researched
 
-ADR-023 §10.4 committed Tier 1 to "a stdio transport behind `McpClient`'s `RequestSender`", and named
+ADR-061 §10.4 committed Tier 1 to "a stdio transport behind `McpClient`'s `RequestSender`", and named
 the harness's pipe direction as the one thing it did **not** know — *"not established by anything in
 this repo"* — flagging it as a dated-research item before any code. This is that item. The answer
-falsifies §10.4's transport choice and confirms its structural claim, and it also settles ADR-023
+falsifies §10.4's transport choice and confirms its structural claim, and it also settles ADR-061
 §10.0's open question about stdio server-role testing.
 
 ## What the harness actually does
@@ -46,7 +46,7 @@ use `http://localhost:3000/mcp`; **no stdio transport is discussed anywhere in t
 
 ## Consequences for AgentEngine
 
-### 1. ADR-023 §10.4's stdio-client design is wrong and is withdrawn
+### 1. ADR-061 §10.4's stdio-client design is wrong and is withdrawn
 
 A client under test needs an **outbound HTTP client**, not a stdio transport. The stdio framing
 obligations §10.4 enumerated (newline-delimited, no non-MCP stdout, exit on stdin close) are real
@@ -55,7 +55,7 @@ are not what the client conformance suite exercises.
 
 ### 2. The Tier 1 structural claim survives, and gets cheaper
 
-ADR-023 §10.1's actual claim — that the client role needs **no listener, no host adapter, no fixture,
+ADR-061 §10.1's actual claim — that the client role needs **no listener, no host adapter, no fixture,
 and no attribution apparatus**, because the harness drives us — is unaffected and now stronger:
 AgentEngine already owns a proven outbound HTTP path, so Tier 1 needs no new transport at all.
 
@@ -81,18 +81,18 @@ policy permits the intended destination and — with the policy removed — that
 
 ### 4. 011 §10 G1 has no stdio escape hatch
 
-ADR-023 §10.0 left open whether `conformance server` could drive stdio, and treated Tier 2's gate
+ADR-061 §10.0 left open whether `conformance server` could drive stdio, and treated Tier 2's gate
 status as unresolved. It is now resolved: **it cannot.** The server suite is URL-based only, so
 011 §10 G1 genuinely requires an HTTP endpoint — either a first-party listener (ADR-021/ADR-022, which
-the project-owner direction rules out) or a host adapter (ADR-023 Tier 3). There is no cheaper path,
+the project-owner direction rules out) or a host adapter (ADR-061 Tier 3). There is no cheaper path,
 and the M7 Phase G audit's characterisation of G1 as listener-blocked is correct.
 
 Stdio remains a real *product* surface — 011 §7: *"**stdio** remains for local servers"* — but it
-yields **no conformance gate**, so ADR-023 §9h's T0 finding is now fully resolved: its insight
+yields **no conformance gate**, so ADR-061 §9h's T0 finding is now fully resolved: its insight
 (stdio was absent from the design space) was right, its conformance claim was wrong, and the
 conformance half is dead.
 
-## Net effect on ADR-023's tiering
+## Net effect on ADR-061's tiering
 
 | Tier | Before this research | After |
 |---|---|---|
@@ -191,7 +191,7 @@ Four scenarios pass completely. The `auth/*` scenarios (18 of them) were not run
 OAuth 2.1 flows against an authorization server, which ADR-021 §3 explicitly scoped out
 ("not a full OAuth 2.1 authorization-code/PKCE flow against a live external Authorization Server").
 
-**This is the number ADR-023 §10.1 predicted was reachable without a listener, and it is.** Every
+**This is the number ADR-061 §10.1 predicted was reachable without a listener, and it is.** Every
 check is attributable to engine code: the harness runs its own server and spawns our binary, so there
 is no fixture whose behaviour could be confused for ours.
 
@@ -222,7 +222,7 @@ The mock answers `tools/list` with `Transfer-Encoding: chunked` (`b42
 milestone, a documented cut since this proxy's own test server never emits it"*. The cut is real: a
 conformant MCP server may chunk, so **the engine's own HTTP client cannot currently talk to one**.
 
-ADR-023 §9h's R19 predicted exactly this (*"chunked transfer-encoding, which does not exist anywhere
+ADR-061 §9h's R19 predicted exactly this (*"chunked transfer-encoding, which does not exist anywhere
 in this codebase"*) as a reason the Tier-3 fixture would be expensive; it turns out to bite Tier 1
 first.
 

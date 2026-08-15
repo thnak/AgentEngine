@@ -121,7 +121,7 @@ int main() {
     a2a::A2aServer server(h.starter(), "ctx-remote");
 
     a2a::RemoteAgentTransport transport;
-    // ADR-023 §7 R1/R2: the transport is what establishes the caller, and every server verb now
+    // ADR-061 §7 R1/R2: the transport is what establishes the caller, and every server verb now
     // requires it -- `send_message` so the run gets a real 018 §2 admission check instead of the
     // `nullopt`-skips-admission default, `get_task`/`cancel_task` so the lookup is principal-bound.
     // Must match the session's own owning principal (`initialize(..., Principal{"p-owner", ""})`

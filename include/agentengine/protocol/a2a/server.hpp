@@ -86,7 +86,7 @@ using RunStarter = std::function<result<RunOutcome>(agentengine::rt::StartRun)>;
 
 namespace server_detail {
 
-// ADR-023 §7 R3: was a `std::random_device`-seeded `std::mt19937_64`, which is not a CSPRNG and is
+// ADR-061 §7 R3: was a `std::random_device`-seeded `std::mt19937_64`, which is not a CSPRNG and is
 // state-recoverable from its own output. Now a real system CSPRNG (trust/secure_random.hpp), which
 // is also where `protocol/mcp/server.hpp`'s own generator now goes -- one implementation, not the
 // two independently-written copies that previously shared only a comment.
@@ -107,7 +107,7 @@ public:
     // §A.2 `SendMessage`. Blocking mode only (see file-top comment) -- there is no `returnImmediately`
     // parameter to honour differently, since this dispatcher has exactly one dispatch shape today.
     //
-    // ADR-023 §7 R1/R2: `caller` is now REQUIRED, not optional. Two defects made it so:
+    // ADR-061 §7 R1/R2: `caller` is now REQUIRED, not optional. Two defects made it so:
     //   - R2: `StartRun::caller` defaults to `std::nullopt`, and `AgentSession::handle()` SKIPS the
     //     018 §2 admission check entirely when it is unset (agent_session.hpp's own comment at the
     //     `has_value()` branch). This dispatcher previously built `StartRun{std::move(input)}` with
@@ -162,7 +162,7 @@ public:
 
     // §A.2 `GetTask`.
     //
-    // ADR-023 §7 R1. This method previously took a bare `task_id` and did a plain `tasks_.find()`
+    // ADR-061 §7 R1. This method previously took a bare `task_id` and did a plain `tasks_.find()`
     // with no principal at all, and its own comment waved §4's rule away on the grounds that "there
     // is no principal/authorization boundary in this transport-agnostic dispatcher yet." That
     // reasoning does not hold: `Task::history` carries both the caller's inbound message and the
@@ -177,13 +177,13 @@ public:
     // principal gets the BYTE-IDENTICAL error an entirely unknown id produces -- §4's own "never
     // distinguish not-found from not-authorized" rule, which does apply here and always did. The
     // error text deliberately does NOT echo `task_id` back (it previously did): under a host-owned
-    // transport a credential can ride a path or an id (ADR-023 §7 R15), and an error string is a
+    // transport a credential can ride a path or an id (ADR-061 §7 R15), and an error string is a
     // logging/telemetry surface 018 §4 forbids credentials from reaching.
     //
     // Residual, named not silently carried: `Task.id`'s enumerability itself is NOT fixed here.
     // 012 §1 and §5 state the `task_id`-IS-`run_id` identity at spec level ("`task_id` already **is**
     // `run_id` (§1)", 012 §5), and `run_id` must stay deterministic per 001 §7/I5, so decoupling
-    // them is a spec change requiring an ADR -- ADR-023's own decision, not a drive-by edit here.
+    // them is a spec change requiring an ADR -- ADR-061's own decision, not a drive-by edit here.
     // With principal binding in place, enumerability is defense-in-depth rather than the control.
     [[nodiscard]] result<Task> get_task(std::string const& task_id,
                                         agentengine::rt::SessionCaller const& caller) const {
@@ -200,7 +200,7 @@ public:
     // observable (file-top comment) -- so this always rejects, faithfully proving "terminal is
     // terminal" rather than fabricating a CANCELED transition this implementation cannot really do.
     //
-    // ADR-023 §7 R1, same fix and same reasoning as `get_task` above. The ordering matters and is
+    // ADR-061 §7 R1, same fix and same reasoning as `get_task` above. The ordering matters and is
     // deliberate: the ownership check runs BEFORE the terminal-state rejection, so a non-owner
     // cannot distinguish "this task exists but is terminal" (`a2a.unsupported_operation`) from
     // "no such task" (`a2a.unknown_task`) -- returning the terminal error to a stranger would leak
@@ -226,10 +226,10 @@ private:
         return m;
     }
 
-    // ADR-023 §7 R1: 011 §8a's "bound server-side as `<user_id>:<handle>`". Represented as an owner
+    // ADR-061 §7 R1: 011 §8a's "bound server-side as `<user_id>:<handle>`". Represented as an owner
     // field rather than by mangling the id, so the wire-visible `Task.id` stays exactly what §1 says
     // it is while the binding is enforced on lookup. Storing the owner also keeps the binding
-    // durable across whatever future store replaces this in-process map (ADR-023 §7 R18).
+    // durable across whatever future store replaces this in-process map (ADR-061 §7 R18).
     struct StoredTask {
         Task          task;
         agentengine::rt::SessionCaller owner;

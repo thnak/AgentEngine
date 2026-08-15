@@ -1,4 +1,4 @@
-# ADR-023 — Host-provided inbound transport: who authenticates an inbound MCP/A2A/AG-UI request?
+# ADR-061 — Host-provided inbound transport: who authenticates an inbound MCP/A2A/AG-UI request?
 
 **Status:** Design, second iteration (2026-08-15) — red-teamed once, not yet proven or judged.
 Supersedes ADR-022 in effect (the reactor question is moot if no first-party listener is ever built)
@@ -364,7 +364,7 @@ constructible by hand.
 
 **Why these are latent today, and why that matters here.** Nothing outside the process can reach any
 of them, because there is no inbound transport. **The absence of a listener is currently the only
-thing enforcing these boundaries.** ADR-023 is the work that removes that protection. They are
+thing enforcing these boundaries.** ADR-061 is the work that removes that protection. They are
 therefore not "pre-existing issues to file separately" — they are prerequisites of whatever this ADR
 decides, and no design below is safe to ship ahead of them.
 

@@ -135,7 +135,7 @@ int main() {
     Harness<CannedChatClient> h{"s-a2a"};
     a2a::A2aServer server(h.starter(), "ctx-1");
 
-    // ADR-023 §7 R2: `send_message` now REQUIRES the caller, and it is checked for real -- the
+    // ADR-061 §7 R2: `send_message` now REQUIRES the caller, and it is checked for real -- the
     // session above is initialized owning `Principal{"p-owner", ""}`, so this caller must match
     // it or 018 §2 admission denies the run. Previously this dispatcher passed no caller at all
     // and `AgentSession::handle()` skipped admission entirely.

@@ -117,7 +117,7 @@ namespace server_detail {
 // §12: "servers MUST generate [task ids] with sufficient entropy" and §8a: "handles are
 // high-entropy".
 //
-// ADR-023 §7 R3: this was a `std::random_device`-seeded `std::mt19937_64`, whose own comment claimed
+// ADR-061 §7 R3: this was a `std::random_device`-seeded `std::mt19937_64`, whose own comment claimed
 // it satisfied §12 because it was "not a predictable counter." That bar is wrong -- MT19937 is not a
 // CSPRNG, and its internal state is fully recoverable from 312 consecutive 64-bit outputs (156 task
 // creations, at two draws each), after which every future task id is predictable. Now a real system
@@ -148,7 +148,7 @@ public:
     // Serves `server/discover`/`tools/list`/`tools/call`/`tasks/get`/`tasks/cancel` and nothing else --
     // an unrecognized method is `MethodNotFound`, never silently ignored.
     //
-    // ADR-023 §7 R3: `caller` is the principal this REQUEST established, supplied per call. It is
+    // ADR-061 §7 R3: `caller` is the principal this REQUEST established, supplied per call. It is
     // required, with no defaulted overload, because a default would reintroduce exactly the
     // fail-open R2 found on the A2A path (`StartRun::caller`'s `nullopt`-skips-admission default,
     // relied on by a protocol surface). 011 §4 states the rule this parameter exists to make
@@ -159,7 +159,7 @@ public:
     // the TASK STORE (§8a's "bound server-side as `<user_id>:<handle>`") and nothing else. It does
     // NOT yet select the capability set -- `held_` remains a construction-time member, so authority
     // is still per-server, which is ADR-021 §8's "per-request, never per-connection" constraint
-    // still unmet (ADR-023 §7 R16/R27). Fixing that is ADR-023's own decision, not a drive-by change
+    // still unmet (ADR-061 §7 R16/R27). Fixing that is ADR-061's own decision, not a drive-by change
     // here: it requires per-request OWNED authority, because `EffectContext::capabilities` is a
     // borrowed pointer whose safety argument ("the host owns it and must outlive the session")
     // holds only while authority is per-connection, and `background_task()` copies that context into
@@ -180,7 +180,7 @@ private:
     // `background_task()`'s own `on_complete` fires from the DETACHED worker thread (tool_pipeline.hpp),
     // never the thread that called `dispatch()`.
     //
-    // ADR-023 §7 R3: `owner` implements 011 §8a's binding requirement -- "handles are... bound
+    // ADR-061 §7 R3: `owner` implements 011 §8a's binding requirement -- "handles are... bound
     // server-side as `<user_id>:<handle>` where the user id comes from the verified token, never
     // from the client." Held as a field rather than mangled into the map key so the wire-visible
     // taskId is unchanged while the binding is enforced on every lookup.
@@ -196,7 +196,7 @@ private:
     // an empty id outright: `McpServer` used to default-construct `EffectContext`, so `Principal{}`
     // with an empty id is a real value that reaches this code, and treating two empty ids as "the
     // same principal" would make every unauthenticated caller the owner of every unauthenticated
-    // caller's tasks (ADR-023 §7 R13).
+    // caller's tasks (ADR-061 §7 R13).
     [[nodiscard]] static bool owned_by(TaskRecord const& rec, Principal const& caller) {
         if (caller.id.empty() || rec.owner.id.empty()) return false;
         return rec.owner.id == caller.id && rec.owner.tenant_id == caller.tenant_id;
@@ -287,7 +287,7 @@ private:
         // applies to what it RETURNS, applied here to what it RECEIVES from an MCP peer.
         ToolCallRequest call{req_id_to_call_id(req.id), name_field->as_string(), args_value,
                               /*arguments_tainted=*/true};
-        // ADR-023 §7 R4/R26: `ctx` was default-constructed here, so `ctx.principal` was an empty
+        // ADR-061 §7 R4/R26: `ctx` was default-constructed here, so `ctx.principal` was an empty
         // `Principal{}` and `ctx.run_id` was "" on every inbound call. Two consequences, both real:
         // 007 §8 requires the principal on every audit record and got none, and `IdempotencyKey`
         // ({run_id, turn_index, call_index, argument_digest}, tool_pipeline.hpp) collapsed to
@@ -324,7 +324,7 @@ private:
                                                              std::string const& tool_name,
                                                              json::Value const& args_value,
                                                              Principal const& caller) const {
-        // ADR-023 §7 R3: fails closed if the CSPRNG fails, rather than minting a weaker handle.
+        // ADR-061 §7 R3: fails closed if the CSPRNG fails, rather than minting a weaker handle.
         result<std::string> minted = server_detail::generate_task_id();
         if (!minted) {
             return JsonRpcResponse::make_error(
@@ -346,7 +346,7 @@ private:
 
         ToolCallRequest call{task_id, tool_name, args_value, /*arguments_tainted=*/true};
         EffectContext ctx;
-        ctx.principal = caller;  // ADR-023 §7 R4/R26, same reasoning as the synchronous path above.
+        ctx.principal = caller;  // ADR-061 §7 R4/R26, same reasoning as the synchronous path above.
         auto started = background_task(
             table_, held_, call, ctx, approve_, live_count,
             [this, task_id](ToolResult result, ToolInvocationAudit) {
@@ -377,7 +377,7 @@ private:
         return JsonRpcResponse::make_result(req.id, std::move(result));
     }
 
-    // ADR-023 §7 R3: the ownership check runs before ANY observable difference -- a non-owner gets
+    // ADR-061 §7 R3: the ownership check runs before ANY observable difference -- a non-owner gets
     // the identical response an unknown id produces, including for a task that exists and has a
     // result waiting. Returning anything else would leak existence, which §4 forbids.
     [[nodiscard]] JsonRpcResponse handle_tasks_get(JsonRpcRequest const& req,
@@ -408,7 +408,7 @@ private:
         return JsonRpcResponse::make_result(req.id, std::move(result));
     }
 
-    // ADR-023 §7 R3, same ordering rule as `handle_tasks_get`: ownership before the
+    // ADR-061 §7 R3, same ordering rule as `handle_tasks_get`: ownership before the
     // already-completed rejection, so a non-owner cannot distinguish "exists but finished" from
     // "no such task".
     [[nodiscard]] JsonRpcResponse handle_tasks_cancel(JsonRpcRequest const& req,

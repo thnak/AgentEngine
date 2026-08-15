@@ -3,12 +3,12 @@
 // entropy" and 011 §8a's "handles are high-entropy" clause, and 012-A2A-Conformance.md §4's
 // equivalent for A2A task ids.
 //
-// Closes ADR-023 §7's finding R3: both `protocol/mcp/server.hpp` and `protocol/a2a/server.hpp`
+// Closes ADR-061 §7's finding R3: both `protocol/mcp/server.hpp` and `protocol/a2a/server.hpp`
 // generated handles from a `std::random_device`-seeded `std::mt19937_64`. MT19937 is not a CSPRNG —
 // its internal state is fully recoverable from 312 consecutive 64-bit outputs (156 task creations at
 // two draws each), after which every future handle is predictable. A predictable server-minted
 // handle is exactly the hazard 011 §8a's own text calls out, and it is a *bearer* value: with
-// ADR-023 §7's R1 fix (principal-bound lookup) entropy is defense in depth rather than the sole
+// ADR-061 §7's R1 fix (principal-bound lookup) entropy is defense in depth rather than the sole
 // control, but the spec asks for both and mt19937 delivers neither.
 //
 // Header-only, deliberately. `agentengine::core` is an INTERFACE target and both protocol servers

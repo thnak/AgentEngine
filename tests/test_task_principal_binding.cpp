@@ -1,4 +1,4 @@
-// Proves decisions/ADR-023-host-provided-inbound-transport.md §7's R1/R2/R3 fixes: server-minted
+// Proves decisions/ADR-061-host-provided-inbound-transport.md §7's R1/R2/R3 fixes: server-minted
 // task handles are bound to the principal that created them (011 §8a), a non-owner cannot
 // distinguish someone else's task from one that never existed (012 §4), and an inbound A2A message
 // is subject to a real 018 §2 admission check rather than the `StartRun::caller == nullopt`
@@ -85,7 +85,7 @@ struct SlowBackgroundableTool : ae::Tool<SlowBackgroundableTool, ae::Backgrounda
 
 int main() {
     // ================================================================================
-    // Part 1 -- MCP: tasks/get and tasks/cancel are principal-bound (ADR-023 §7 R3).
+    // Part 1 -- MCP: tasks/get and tasks/cancel are principal-bound (ADR-061 §7 R3).
     // ================================================================================
     {
         auto const              table = ae::ToolTable::from_tools<SlowBackgroundableTool>();
@@ -159,7 +159,7 @@ int main() {
                   "-- it is never refused on ownership grounds");
         }
 
-        // --- ADR-023 §7 R13: `Principal{}` has an empty id, and two empty ids must NOT be the same
+        // --- ADR-061 §7 R13: `Principal{}` has an empty id, and two empty ids must NOT be the same
         // --- principal, or every unauthenticated caller would own every other one's tasks.
         {
             mcp::JsonRpcResponse anon_created = server.dispatch(task_call_request("c2"), ae::Principal{});
@@ -173,7 +173,7 @@ int main() {
             }
         }
 
-        // --- Handle entropy (ADR-023 §7 R3). Not a statistical test: it checks the structural
+        // --- Handle entropy (ADR-061 §7 R3). Not a statistical test: it checks the structural
         // --- properties that actually failed before -- ids derived from nothing caller-visible,
         // --- and not repeating.
         {
@@ -197,7 +197,7 @@ int main() {
 
     // ================================================================================
     // Part 2 -- A2A: admission is really checked, and GetTask is principal-bound
-    // (ADR-023 §7 R1/R2).
+    // (ADR-061 §7 R1/R2).
     // ================================================================================
     // Deliberately NOT re-testing the happy path (test_a2a_server.cpp already proves it end to end
     // against a real Engine); what this adds is the DENIAL half, which no test covered.
@@ -257,7 +257,7 @@ int main() {
             check(!stranger_fetch.has_value(),
                   "R1-NEG-1: a stranger cannot GetTask another principal's task -- with Task.id "
                   "being the structured, enumerable run_id, this was an unauthenticated read of "
-                  "the full conversation history before ADR-023 §7 R1");
+                  "the full conversation history before ADR-061 §7 R1");
 
             auto absent = server.get_task("no-such-task-at-all", stranger);
             check(!absent.has_value() && !stranger_fetch.has_value() &&
@@ -281,7 +281,7 @@ int main() {
                   "rejection, a DIFFERENT error than not-found");
         }
 
-        // --- 018 §4 / ADR-023 §7 R15: under a host-owned transport a credential can ride an id or
+        // --- 018 §4 / ADR-061 §7 R15: under a host-owned transport a credential can ride an id or
         // --- a path, and an error string is a logging/telemetry surface.
         {
             auto absent = server.get_task("SECRET-LOOKING-VALUE", owner);

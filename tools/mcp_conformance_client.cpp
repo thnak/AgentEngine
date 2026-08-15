@@ -1,4 +1,4 @@
-// Implements ADR-023 §10 Tier 1 (decisions/ADR-023-host-provided-inbound-transport.md): the MCP
+// Implements ADR-061 §10 Tier 1 (decisions/ADR-061-host-provided-inbound-transport.md): the MCP
 // CLIENT role driven by the official `@modelcontextprotocol/conformance` harness, which is 011 §10
 // G2's gate.
 //
@@ -6,7 +6,7 @@
 // `conformance server --url ...` requires an endpoint we would have to host; `conformance client
 // --command ...` SPAWNS THIS BINARY and appends the URL of a test server IT runs as the final
 // argument (empirically confirmed, see docs/research/2026-08-15-mcp-conformance-harness.md). So the
-// client role needs no listener, no host adapter, no fixture, and none of ADR-023 §8.5's
+// client role needs no listener, no host adapter, no fixture, and none of ADR-061 §8.5's
 // conformance-attribution apparatus -- every result is engine-attributable by construction, because
 // the harness drives us. That is why Tier 1 is buildable while Tier 3 (the host-fronted server role)
 // is still blocked on 33 open red-team findings.
@@ -19,7 +19,7 @@
 //     plaintext branch reuses perform_http_exchange, which has no such gate").
 //   - `resolve_host` (ADR-016) -- the HOST-INITIATED resolver, which does no blocked-range filtering.
 //
-// That last choice is load-bearing and is ADR-023 §10b claim 4. The harness serves on loopback, and
+// That last choice is load-bearing and is ADR-061 §10b claim 4. The harness serves on loopback, and
 // `resolve_and_validate` (the GUEST resolver) blocks 127.0.0.0/8 as ADR-011's anti-SSRF control. This
 // binary is not a guest path: the destination is supplied by the operator running the gate, on the
 // command line, never derived from model output (I3) and never guest-supplied -- exactly the case
@@ -49,7 +49,7 @@ namespace sb   = agentengine::sandbox;
 // The harness appends `http://<host>:<port>/<path>` as the last argument. Deliberately a strict,
 // scheme-checked parse rather than a permissive one: this binary is a conformance artifact, so a
 // malformed endpoint must fail loudly at startup rather than be silently coerced into something that
-// half-works and produces a misleading percentage (ADR-023 §10b claim 3).
+// half-works and produces a misleading percentage (ADR-061 §10b claim 3).
 struct ParsedUrl {
     std::string   host;
     std::uint16_t port = 0;
@@ -119,7 +119,7 @@ struct ParsedUrl {
 // milestone, a documented cut since this proxy's own test server never emits it"
 // (sandbox/net_egress_proxy.hpp). The conformance harness's mock DOES emit chunked
 // (`b42\r\n{"jsonrpc"...`), so a real MCP server can too, and the cut is a genuine client-role
-// conformance gap -- predicted by ADR-023 §9h's R19 and hit empirically here.
+// conformance gap -- predicted by ADR-061 §9h's R19 and hit empirically here.
 //
 // Decoded HERE rather than inside the egress proxy on purpose: that function is ADR-011-judged code
 // whose byte cap is enforced DURING the read loop (claim C8), and widening its framing would require
@@ -202,7 +202,7 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    // ADR-023 §10b claim 3: the scenario is contract, not decoration -- reported so a run's output
+    // ADR-061 §10b claim 3: the scenario is contract, not decoration -- reported so a run's output
     // shows which scenario the harness selected without having to correlate by timestamp.
     char const* scenario = std::getenv("MCP_CONFORMANCE_SCENARIO");
     std::fprintf(stderr, "agentengine-mcp-conformance-client: scenario=%s endpoint=%s\n",

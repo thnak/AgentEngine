@@ -825,13 +825,13 @@ current test files directly for what they actually run against today.
   direction (2026-08-15) removed the premise: **AgentEngine will not implement HTTP networking**;
   consumer code owns the socket and hands the engine parsed requests, MAF-style. That is a trust-
   boundary change, so it went to an ADR rather than straight to code —
-  `decisions/ADR-023-host-provided-inbound-transport.md`.
+  `decisions/ADR-061-host-provided-inbound-transport.md`.
 
   **Outcome (2026-08-15): four live security defects fixed, 33 red-team findings against the design,
   three design iterations, and 011 §10 G2 producing a real conformance number.** Ordered by what a
   reader needs first.
 
-  **H1 — four shipped security defects, fixed and proven** (`0ec26b6`). ADR-023's first red-team round
+  **H1 — four shipped security defects, fixed and proven** (`0ec26b6`). ADR-061's first red-team round
   found these in M7 Phase C/D code, not in the design. All four were re-verified by hand before being
   acted on:
   - **A2A `GetTask`/`CancelTask` had no principal check**, and `Task.id` is `run_id`, which
@@ -853,7 +853,7 @@ current test files directly for what they actually run against today.
 
   Two halves were deliberately NOT fixed because each needs a spec change: `Task.id`'s enumerability
   (012 §1/§5 assert `task_id` IS `run_id`, and `run_id` must stay deterministic per 001 §7/I5) and
-  `IdempotencyKey`'s shape (019 §3 specifies the tuple). Both recorded in ADR-023 §7a.
+  `IdempotencyKey`'s shape (019 §3 specifies the tuple). Both recorded in ADR-061 §7a.
 
   **H2 — the design did not survive contact** (`3ab0808`, `fe5047c`, `5b262c9`, `e329a7c`, `d7c174e`).
   Three iterations, two independent red-team rounds, **33 findings against iteration 2 alone**. Two
