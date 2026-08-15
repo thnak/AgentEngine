@@ -159,6 +159,22 @@ public:
                 return {RunFinishedInterrupt{thread_id_, ev.run_id, {interrupt}}};
             }
 
+            // Fires immediately AFTER the `input_required` above, carrying the one thing that event's
+            // `InteractionRef` payload cannot: the actual question text. run_event.hpp's own comment
+            // states the purpose -- "so a live consumer sees the actual prompt text without a second
+            // round trip" -- which is defeated if this projector drops it. CUSTOM in the `ae:`
+            // extension namespace for the same reason as `ae:state_changed`: §2.1's table has no
+            // native slot for a mid-run question, and the `interrupt` that ENDS the run was already
+            // emitted by `input_required`, so this carries payload only, never a second terminal event.
+            case run_event_kind::codeact_ask_requested: {
+                auto const& p = std::get<run_event_payload::CodeActAskRequested>(ev.payload);
+                return {CustomEvent{"ae:codeact_ask_requested",
+                                     json::Value::make_object(
+                                         {{"callId", json::Value::make_string(p.call_id)},
+                                          {"interactionId", json::Value::make_string(p.interaction_id)},
+                                          {"prompt", json::Value::make_string(p.prompt)}})}};
+            }
+
             case run_event_kind::input_resolved:
             case run_event_kind::auth_resolved:
             case run_event_kind::approval_resolved:

@@ -335,6 +335,34 @@ int main() {
                  "E2-17: policy_decision -> CustomEvent(\"ae:policy_decision\")");
     }
 
+    // --- E2-18: codeact_ask_requested -> CustomEvent carrying the prompt ----------------------------
+    // Regression guard for a real gap a -Wswitch warning exposed: this kind was emitted by
+    // AgentSession (two sites) but fell out of project()'s switch into `return {}`, so an AG-UI
+    // consumer never saw the question text run_event.hpp promises it "sees ... without a second round
+    // trip". The positive control is the payload check, not merely the arity: an empty CustomEvent
+    // would satisfy `size() == 1` while still dropping everything that makes the event useful.
+    {
+        auto out = projector.project(
+            ae::RunEvent{"run-ca", 1, ae::run_event_kind::codeact_ask_requested,
+                          ae::run_event_payload::CodeActAskRequested{"call-7", "int-9", "Which city?"}});
+        AE_CHECK(out.size() == 1 && std::holds_alternative<agui::CustomEvent>(out[0]),
+                 "E2-18: codeact_ask_requested projects to exactly one CustomEvent, never dropped");
+        if (out.size() == 1 && std::holds_alternative<agui::CustomEvent>(out[0])) {
+            auto const& ce = std::get<agui::CustomEvent>(out[0]);
+            AE_CHECK(ce.name == "ae:codeact_ask_requested",
+                     "E2-18: namespaced under ae:, no fabricated native AG-UI event type");
+            auto const* prompt = ce.value.find("prompt");
+            auto const* call   = ce.value.find("callId");
+            auto const* inter  = ce.value.find("interactionId");
+            AE_CHECK(prompt != nullptr && prompt->as_string() == "Which city?",
+                     "E2-18: the actual prompt text reaches the consumer -- the whole point of the event");
+            AE_CHECK(call != nullptr && call->as_string() == "call-7",
+                     "E2-18: callId is carried so the ask correlates to its tool call");
+            AE_CHECK(inter != nullptr && inter->as_string() == "int-9",
+                     "E2-18: interactionId is carried so the answer can be routed back");
+        }
+    }
+
     if (g_failures == 0) {
         std::cout << "test_rt_agui_projection: ALL PASS\n";
         return 0;
