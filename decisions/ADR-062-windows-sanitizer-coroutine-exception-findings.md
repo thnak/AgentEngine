@@ -1,9 +1,16 @@
 # ADR-062 — Are the Windows ASan/UBSan exception-`what()` findings real defects?
 
-**Status:** Proposed (2026-08-16, **revised same day after independent red-team**). Designed,
-red-teamed twice (§4 self, then an independent adversarial pass that produced 14 findings against
-the first draft), evidence executed (§5) with positive controls (§5.1). **Awaiting Judged — project
-owner sign-off.**
+**Status:** Proposed (2026-08-16, **revised twice the same day**: once after an independent red-team
+pass returned 14 findings, then again in **§9** after the experiments §7d proposed were actually
+run). **Awaiting Judged — project owner sign-off.**
+
+**The headline, which §1-§8 below do not yet know.** §9's experiments answer the question. A
+**12-line standard-C++ program with no coroutine and no AgentEngine header** — `throw` →
+`std::current_exception()` → `std::rethrow_exception()` → `catch (std::runtime_error const&)` →
+`e.what()` — takes an AddressSanitizer access violation under clang on Windows, and is clean under
+UBSan alone. **No AgentEngine code is implicated.** Read §1-§8 as the reasoning that got there,
+including two hypotheses of its own that the measurement killed; read §9 for what is actually true.
+§9.4 also withdraws §7b, this ADR's own most consequential recommendation.
 
 **Revision note, kept because the reasoning that was wrong is part of the record.** The first draft
 of this ADR was materially wrong in ways an independent red-team pass found and this version fixes:
@@ -283,3 +290,99 @@ descending order of information per line changed:
 - **`_DISABLE_STRING_ANNOTATION` / `_DISABLE_VECTOR_ANNOTATION` are in force**, so MSVC STL container
   overflow detection is off in this job — and finding 3 is inside a `std::string` concatenation.
   Whatever ASan would have said about that buffer, it was not asked.
+
+## 9. Addendum (2026-08-16, same day) — the experiments were run, and they settle it
+
+§7d listed four experiments and the first draft had declared them impossible. They were run on the
+`adr-062-experiment` branch (workflow `.github/workflows/adr-062-experiment.yml`, temporary,
+branch-only, never to be merged). Two rounds; round 1's reproducer legs failed on an error of mine
+(`clang++` is the GNU-style driver and rejects MSVC's `/MT`, so all six legs died with "no such file
+or directory: '/MT'"; the driver spelling is `-fms-runtime-lib=`). Round 2 fixed it.
+
+### 9.1 The three reporting tests, across CRT and sanitizer axes
+
+| CRT | sanitizers | `test_rt_task` | `test_rt_thread_pool` | `test_middleware_...` |
+|---|---|---|---|---|
+| MultiThreaded | **undefined only** | **0** | **0** | **0** |
+| MultiThreaded | address only | 1 | 1 | 1 |
+| MultiThreaded | both | 1 | 1 | 1 |
+| MultiThreaded | both, `-fno-sanitize=alignment` | 1 | 1 | 1 |
+| MultiThreadedDLL | address only | 1 | 1 | 1 |
+| MultiThreadedDLL | both | 1 | 1 | 1 |
+| MultiThreadedDLL | both, `-fno-sanitize=alignment` | 1 | 1 | 1 |
+
+(`MultiThreadedDLL / undefined` is absent because it dies at CONFIGURE on an unrelated `lld-link
+/failifmismatch` RuntimeLibrary error in a 007 §9 G2 `try_compile` control — an artifact of the flag
+combination, not a result.)
+
+**Two hypotheses die here.**
+
+- **The static-CRT hypothesis is refuted.** `MultiThreaded` and `MultiThreadedDLL` are identical in
+  every cell. §2's suspicion of MSVC STL's `exception_ptr` *under `/MT` specifically* was wrong.
+- **UBSan is not the agent.** Under **UBSan alone every test passes**. The misaligned pointer the
+  first draft spent five paragraphs analysing therefore *does not exist* in the program as compiled
+  without ASan. Disabling the alignment check does not help either: the ASan faults remain.
+
+### 9.2 The decisive one: a 12-line standard-C++ reproducer
+
+`tests/experiments/exception_ptr_upcast_repro.cpp` — `throw` → `std::current_exception()` →
+`std::rethrow_exception()` → `catch (std::runtime_error const&)` → `e.what()`. **No coroutine, no
+AgentEngine header, nothing from this project.**
+
+| leg | result |
+|---|---|
+| `MT / undefined` | **exit 0** — prints `what=boom`, `repro: clean` |
+| `MT / address` | **ASan access-violation, `exception_ptr_upcast_repro.cpp:31 in main`** |
+| `MT / both` | ASan access-violation |
+| `MD / address` | exit `-1073740791` = `0xC0000409` `STATUS_STACK_BUFFER_OVERRUN` |
+| `MD / both` | exit `-1073740791` |
+
+Line 31 is `std::printf("what=%s\n", e.what());` — precisely the upcast under test.
+
+**Twelve lines of standard C++ crash under clang's AddressSanitizer on Windows, and are clean under
+UBSan alone.** Nothing in AgentEngine is implicated in any way.
+
+### 9.3 Revised verdicts
+
+| # | Claim | Was | Now |
+|---|---|---|---|
+| C0 | §1's question: defect or artifact | INCONCLUSIVE | **ARTIFACT — toolchain.** §9.2 |
+| C2 | Reproduces on Linux under the same checkers | WRONG | **WRONG** (unchanged) |
+| C3 | H2, a *benign* Windows artifact | INCONCLUSIVE | **WRONG** — nothing benign about it; ASan induces a real fault (§5 E3 was right that a mere misreading cannot fault) |
+| C4 | H1, a real defect in our code, Windows-only | INCONCLUSIVE | **WRONG** — refuted by §9.2; no AgentEngine code is involved |
+| C5 | H3, sanitizer-induced corruption | INCONCLUSIVE | **CORRECT** — ASan's presence is necessary and sufficient |
+| C6/C7 | Linux harness teeth (ASan) / UBSan emission | CORRECT | unchanged |
+
+The hypothesis that turned out to be right (H3) is the one the first draft did not contain at all; it
+was added only because an independent red-team pass insisted the artifact story, as written, could
+not produce a hardware fault.
+
+### 9.4 What this changes about the decision
+
+§7a stands, now on evidence rather than absence of it: **no production code changes**, because no
+production code is implicated.
+
+**§7b does not stand.** It kept the job red pending an explanation, on the reasoning that a green
+badge over unexplained findings is worth less than a red one. The findings are now explained, and the
+explanation is that clang's ASan on this platform cannot run *any* program that round-trips an
+exception through `std::exception_ptr` — a category that includes essentially every error path in
+this codebase. Holding a required job red against a toolchain defect we do not own, indefinitely,
+buys nothing and steadily erodes the signal §8 already warned about.
+
+**Recommended, for owner decision (this ADR does not enact it):**
+1. Report upstream to LLVM with `exception_ptr_upcast_repro.cpp` as-is; record the issue number here.
+   **Not yet done, and worth stating plainly: this ADR has not checked whether it is already a known
+   LLVM bug.** That check comes before filing.
+2. Until upstream resolves, run the ASanUBSan job with **UBSan only** — measured clean at §9.1, so it
+   keeps real coverage instead of none, which is what the job had for its entire existence.
+3. Revisit when the toolchain moves. `choco install llvm` is unpinned in `ci.yml` (§2), so this can
+   change under us without notice — pinning it is a separate, and probably overdue, decision.
+
+### 9.5 Residual, honestly
+
+- **The mechanism inside ASan is not identified.** "ASan's presence is necessary and sufficient" is
+  measured; *why* is not. That is upstream's question, but it means this ADR cannot rule out a
+  narrower trigger that some AgentEngine pattern happens to hit more often.
+- **`MD / undefined` never built** in either round (§9.1's note), so the UBSan-only row is confirmed
+  on the static CRT only.
+- **The five `test_native_jail_*` failures are untouched** by all of this (§7c).
