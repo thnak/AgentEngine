@@ -24,6 +24,7 @@
 #include "agentengine/sandbox/sandbox.hpp"
 #include "agentengine/trust/capability.hpp"
 #include "agentengine/trust/principal.hpp"
+#include "support/crt_fail_fast.hpp"
 
 // ---- ChatClient concept (chat_client.hpp) — trivial conforming type -----------------------------
 
@@ -112,6 +113,7 @@ static_assert(!DemoAgent::instructions.empty());
 } // namespace
 
 int main() {
+    ::agentengine::test_support::fail_fast_on_windows();
     // -- EffectContext (core/effect_context.hpp) --
     ae::CapabilitySet caps{};
     ae::EffectContext ctx{};

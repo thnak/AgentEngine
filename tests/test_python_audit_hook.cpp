@@ -16,24 +16,17 @@
 #endif
 
 #include "backends/native_jail/python_lockdown.hpp"
+#include "support/crt_fail_fast.hpp"
 
 using agentengine::native_jail::PythonLockdownConfig;
 using agentengine::native_jail::PythonLockdownInterpreter;
 using agentengine::native_jail::PythonRunOutcome;
 
 namespace {
-void disable_crt_assert_dialog() {
-#if defined(_WIN32)
-    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
-    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
-#endif
-}
 } // namespace
 
 int main() {
-    disable_crt_assert_dialog();
+    ::agentengine::test_support::fail_fast_on_windows();
 
     PythonLockdownConfig cfg;
     cfg.python_home = AE_PYTHON_HOME;

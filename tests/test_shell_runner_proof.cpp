@@ -27,6 +27,7 @@
 #include "backends/native_jail/command_registry.hpp"
 #include "backends/native_jail/real_filesystem_adapter.hpp"
 #include "backends/native_jail/shell_runner.hpp"
+#include "support/crt_fail_fast.hpp"
 
 namespace fs = std::filesystem;
 using namespace agentengine;
@@ -382,6 +383,7 @@ void test_sh_s1_hostile_name_corpus() {
 } // namespace
 
 int main() {
+    ::agentengine::test_support::fail_fast_on_windows();
     test_sh_c1_execstate_sharing();
     test_sh_c3_no_retokenize();
     test_sh_c2_reserved_name_precedence();

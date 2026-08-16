@@ -37,6 +37,7 @@ constexpr bool kNdebugActive = false;
 #include "agentengine/trust/principal.hpp"
 #include "support/recorded_chat_client.hpp"
 #include "support/run_task_sync.hpp"
+#include "support/crt_fail_fast.hpp"
 
 #ifndef AE_TEST_FIXTURE_DIR
 #error "AE_TEST_FIXTURE_DIR must be defined by CMake to tests/fixtures/chat_client"
@@ -144,6 +145,7 @@ void test_missing_fixture_returns_error() {
 } // namespace
 
 int main() {
+    ::agentengine::test_support::fail_fast_on_windows();
     if (kNdebugActive) {
         std::cerr << "FAIL: NDEBUG is defined in this translation unit, so every assert() below is a "
                      "no-op and this test would pass without checking anything. Twelve sibling files "
