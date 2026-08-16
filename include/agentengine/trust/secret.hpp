@@ -35,6 +35,7 @@
 #include <cstring>
 #include <fstream>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -142,19 +143,26 @@ public:
         var.reserve(prefix_.size() + name.size());
         var.append(prefix_);
         var.append(name);
-        // pal::env_var is the portable read: `std::getenv` directly would draw MSVC's C4996
-        // (it prefers the non-standard _dupenv_s), and this file used to answer that with a
-        // local #pragma warning(disable : 4996) -- a suppression, which this project does not
-        // allow. The PAL resolves it by CALLING _dupenv_s on MSVC, so nothing is silenced.
-        // Still not a thread-safety concern: single read, copied into `Secret` immediately, no
-        // concurrent setenv in-process -- and the PAL now returns an owned copy rather than a
-        // pointer into environment storage, so the copy is no longer racing a later getenv.
-        auto const v = ::agentengine::pal::env_var(var);
-        if (!v) {
+        // `pal::env_var_consume`, NOT `pal::env_var`. Both read the environment portably (so MSVC's
+        // C4996 on `std::getenv` is answered by calling `_dupenv_s`, not by the
+        // `#pragma warning(disable : 4996)` this file used to carry -- a suppression this project
+        // does not allow). The difference is what they leave behind: `env_var` returns an owned
+        // `std::string`, so a secret read through it lands in a heap buffer that is freed WITHOUT
+        // being wiped -- two such buffers on MSVC, counting `_dupenv_s`'s own. That silently
+        // contradicts this file's whole premise (a zeroizing `Secret` with no `std::string`
+        // conversion), and it is what an earlier, warning-motivated migration to `env_var` did here.
+        //
+        // `env_var_consume` hands the bytes straight to `make_secret` and wipes any intermediate
+        // before freeing it; on POSIX there is no intermediate at all. Still not a thread-safety
+        // concern: single read, consumed immediately, no concurrent setenv in-process.
+        std::optional<Secret> found;
+        bool const present = ::agentengine::pal::env_var_consume(
+            var, [&found](std::string_view chars) { found = make_secret(chars); });
+        if (!present || !found) {
             return std::unexpected(error{failure_class::contract, "secret not in environment: " + var,
                                           "secret.not_found"});
         }
-        return make_secret(std::string_view(*v));
+        return std::move(*found);
     }
 
 private:
