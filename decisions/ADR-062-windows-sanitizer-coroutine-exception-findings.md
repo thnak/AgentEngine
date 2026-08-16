@@ -293,11 +293,22 @@ descending order of information per line changed:
 
 ## 9. Addendum (2026-08-16, same day) — the experiments were run, and they settle it
 
-§7d listed four experiments and the first draft had declared them impossible. They were run on the
-`adr-062-experiment` branch (workflow `.github/workflows/adr-062-experiment.yml`, temporary,
-branch-only, never to be merged). Two rounds; round 1's reproducer legs failed on an error of mine
-(`clang++` is the GNU-style driver and rejects MSVC's `/MT`, so all six legs died with "no such file
-or directory: '/MT'"; the driver spelling is `-fms-runtime-lib=`). Round 2 fixed it.
+§7d listed four experiments and the first draft had declared them impossible. They were run as a
+14-leg CI matrix over two rounds, on a scratch branch that has since been deleted.
+
+**Where the evidence lives now**, because an ADR citing evidence nobody can re-run is an assertion:
+
+- **The reproducer**: `tests/experiments/exception_ptr_upcast_repro.cpp`, with build-and-run
+  instructions for Windows and the Linux control in `tests/experiments/README.md`. Deliberately not
+  registered with CTest — its whole value is a hand-written command line with every flag visible.
+- **The full measurement record**, both rounds, all legs, plus the instrument errors:
+  `docs/research/2026-08-16-clang-windows-asan-exception-ptr.md`. Dated and cited per CLAUDE.md,
+  because this is a claim about a *toolchain*, not about AgentEngine.
+
+The scratch branch and its temporary workflow are gone; nothing here depends on them. Round 1's
+reproducer legs failed on an error of mine (`clang++` is the GNU-style driver and rejects MSVC's
+`/MT`, so all six legs died with "no such file or directory: '/MT'"; the spelling is
+`-fms-runtime-lib=`), which the research record keeps rather than tidying away. Round 2 fixed it.
 
 ### 9.1 The three reporting tests, across CRT and sanitizer axes
 
