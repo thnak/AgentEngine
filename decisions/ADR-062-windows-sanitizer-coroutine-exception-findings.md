@@ -1,8 +1,9 @@
 # ADR-062 — Are the Windows ASan/UBSan exception-`what()` findings real defects?
 
-**Status:** Proposed (2026-08-16, **revised twice the same day**: once after an independent red-team
-pass returned 14 findings, then again in **§9** after the experiments §7d proposed were actually
-run). **Awaiting Judged — project owner sign-off.**
+**Status:** Proposed (2026-08-16, **revised three times the same day**: after an independent
+red-team pass returned 14 findings; after the experiments §7d proposed were actually run (**§9**);
+and after the upstream check §9.4 promised was actually done (**§9.6**)). **Awaiting Judged —
+project owner sign-off.**
 
 **The headline, which §1-§8 below do not yet know.** §9's experiments answer the question. A
 **12-line standard-C++ program with no coroutine and no AgentEngine header** — `throw` →
@@ -11,6 +12,12 @@ run). **Awaiting Judged — project owner sign-off.**
 UBSan alone. **No AgentEngine code is implicated.** Read §1-§8 as the reasoning that got there,
 including two hypotheses of its own that the measurement killed; read §9 for what is actually true.
 §9.4 also withdraws §7b, this ADR's own most consequential recommendation.
+
+**And it is a known, already-fixed upstream bug (§9.6).** google/sanitizers#749, open since 2016;
+mitigated by llvm/llvm-project#159618, merged 2025-10-17, which names the mechanism: ASan
+instrumenting **catch-block parameters** on Windows. The fix shipped in LLVM 22.1.0 (2026-02-24);
+this CI runs **clang 20.1.8**. Nothing to file, and the remedy is a version pin rather than any
+change to this codebase.
 
 **Revision note, kept because the reasoning that was wrong is part of the record.** The first draft
 of this ADR was materially wrong in ways an independent red-team pass found and this version fixes:
@@ -381,6 +388,10 @@ this codebase. Holding a required job red against a toolchain defect we do not o
 buys nothing and steadily erodes the signal §8 already warned about.
 
 **Recommended, for owner decision (this ADR does not enact it):**
+**Superseded in part by §9.6** — the upstream check named in item 1 has since been done, and its
+answer replaces items 1 and 2. Kept as written because it is the recommendation this ADR made before
+looking.
+
 1. Report upstream to LLVM with `exception_ptr_upcast_repro.cpp` as-is; record the issue number here.
    **Not yet done, and worth stating plainly: this ADR has not checked whether it is already a known
    LLVM bug.** That check comes before filing.
@@ -389,11 +400,49 @@ buys nothing and steadily erodes the signal §8 already warned about.
 3. Revisit when the toolchain moves. `choco install llvm` is unpinned in `ci.yml` (§2), so this can
    change under us without notice — pinning it is a separate, and probably overdue, decision.
 
+### 9.6 The upstream check (2026-08-16) — known since 2016, fixed in 2025, and we are on an old clang
+
+§9.4 item 1 said the upstream check came before filing anything. It was done, and it changes the
+answer. Full record and citations in
+`docs/research/2026-08-16-clang-windows-asan-exception-ptr.md`.
+
+**Nothing to file.** This is a documented AddressSanitizer limitation on Windows, reported as
+**google/sanitizers#749** on 2016-12-04. The reporter's case is this ADR's reproducer minus the
+`exception_ptr` hop — `try { throw std::exception("test"); } catch (const std::exception& ex) {
+puts(ex.what()); }` → "ERROR: AddressSanitizer: access-violation on unknown address". Same
+diagnostic, same place, ten years earlier.
+
+**The mechanism is identified, closing §9.5's first residual.** **llvm/llvm-project#159618**, merged
+2025-10-17 as an explicit mitigation for #749, states it: *"ASan's instrumentation is incompatible
+with Window's assumptions for instantiating catch-block's parameters"*, fixed by no longer
+instrumenting catch-block parameters on Windows. So the corrupt pointer is **the catch-block
+parameter itself** — `e` in `catch (std::runtime_error const& e)` — not the exception object and not
+the `exception_ptr`. That accounts for every measurement in §9.1-§9.2 simultaneously: UBSan-only is
+clean because nothing instruments the parameter; the value reads as unrelated bytes because the
+parameter slot was never instantiated as ASan assumed; and the CRT axis is irrelevant because the
+incompatibility is in instrumentation, not in the runtime library.
+
+It also resolves C0 more sharply than §9.3 could: **false positive**. The program is correct; ASan's
+own instrumentation breaks it.
+
+**We are simply on a clang that predates the fix.** The job's own `clang++ --version` reports
+**20.1.8**. The fix reached `main` on 2025-10-17, after LLVM 21.1.0 branched, and shipped in
+**LLVM 22.1.0 (2026-02-24)**. `choco install llvm -y` is a no-op when the runner image already ships
+LLVM, so this job has been pinned to the image's version all along without anyone choosing it — which
+is exactly the risk §9.4 item 3 flagged, arriving from the opposite direction.
+
+**Revised recommendation, replacing §9.4 items 1-2, still for owner decision:**
+
+1. **Pin clang to 22.1+ in `ci.yml`** and re-run §9.1's matrix. If it comes back clean, the job goes
+   green with full ASan+UBSan coverage and this ADR closes outright. *Expected, not measured* — no
+   claim is made here that it works until it is run.
+2. **If pinning proves awkward**, fall back to §9.4 item 2 (UBSan-only), which stays measured-clean.
+3. **Do not file anything upstream.** Already reported and already fixed.
+
 ### 9.5 Residual, honestly
 
-- **The mechanism inside ASan is not identified.** "ASan's presence is necessary and sufficient" is
-  measured; *why* is not. That is upstream's question, but it means this ADR cannot rule out a
-  narrower trigger that some AgentEngine pattern happens to hit more often.
+- ~~**The mechanism inside ASan is not identified.**~~ **CLOSED by §9.6**: it is ASan instrumenting
+  the catch-block parameter, per llvm/llvm-project#159618. No AgentEngine pattern is involved.
 - **`MD / undefined` never built** in either round (§9.1's note), so the UBSan-only row is confirmed
   on the static CRT only.
 - **The five `test_native_jail_*` failures are untouched** by all of this (§7c).
