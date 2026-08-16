@@ -56,9 +56,26 @@ T run_task_sync(Awaitable&& awaitable) {
     using run_task_sync_detail::Driver;
 
     std::optional<T> out;
-    auto driver = [&]() -> Driver<T> {
+
+    // `body` MUST be a named local, not an immediately-invoked lambda. A lambda whose body contains
+    // co_await is a coroutine, and its frame keeps a `this` pointer to the CLOSURE object -- which,
+    // written as `[&]{...}()`, is a temporary destroyed at the end of that full-expression. Because
+    // DriverPromise::initial_suspend is suspend_always (above), the body has not run yet at that
+    // point: it first executes inside the `resume()` below, reaching through `this` into a closure
+    // whose storage is already dead, and through it to the captures `out` and `awaitable`.
+    //
+    // That is textbook stack-use-after-scope, and it was real, not theoretical. AddressSanitizer
+    // named it here ("stack-use-after-scope ... run_task_sync.hpp in operator()"), and 9 tests that
+    // use this harness segfaulted under g++ 15.2 at -O2 and -O3 while passing at -O0/-O1 and under
+    // -fno-inline -- the classic signature of an optimizer reusing a stack slot the program was not
+    // entitled to keep. gcc-14 and MSVC happening not to crash was luck, not correctness.
+    //
+    // Naming the closure gives it the enclosing function's lifetime, so it outlives both the resume
+    // and the destroy. Declared before `driver` so it is destroyed after it.
+    auto body   = [&]() -> Driver<T> {
         out = co_await std::forward<Awaitable>(awaitable);
-    }();
+    };
+    auto driver = body();
 
     driver.handle.resume();  // one external resume -- the whole (non-parking) chain runs inline here
 
