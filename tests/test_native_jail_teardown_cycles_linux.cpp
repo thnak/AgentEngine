@@ -56,6 +56,7 @@
 #include <vector>
 
 #include "backends/native_jail/linux_native_jail_backend.hpp"
+#include "support/error_detail.hpp"
 
 using namespace agentengine;
 using agentengine::native_jail::LinuxNativeJailBackend;
@@ -168,7 +169,8 @@ int main() {
     auto run_cycle = [&](int cycle_index) {
         auto handle = backend.create(spec, ctx);
         if (!handle.has_value()) {
-            std::cerr << "cycle " << cycle_index << ": create() failed\n";
+            std::cerr << "cycle " << cycle_index << ": create() failed: "
+                      << ::agentengine::test_support::describe(handle.error()) << "\n";
             ++g_failures;
             return;
         }

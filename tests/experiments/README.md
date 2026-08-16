@@ -52,3 +52,38 @@ clang++ -std=c++23 -g -O1 -fsanitize=address,undefined -fno-sanitize-recover=und
 ```
 
 Exit 0 with `repro: clean` means the platform is fine. A nonzero exit is the finding.
+
+## `wait_timeout_vs_qpc.cpp`
+
+Evidence for the wall-clock tolerance in `tests/test_job_object_limits.cpp`.
+
+`test_job_object_limits` asserted that a `WaitForSingleObject(h, 500)` measured with `steady_clock`
+reports at least 500 ms elapsed. It failed intermittently in CI on an **uninstrumented** MSVC
+Release build (runs `31925631415`, `31939239439`) — so ADR-062's sanitizer findings do not cover it,
+and the two candidate explanations were "`wait_or_kill()` kills children early" (a containment
+defect) and "the assertion asserts something Win32 does not guarantee".
+
+**Result (2026-08-16, MSVC 14.44, Windows 11, 60 waits on a 500 ms deadline):**
+
+| system timer resolution | elapsed − deadline (ms) | under-shoots |
+| --- | --- | --- |
+| 15.625 ms (default) | +1.154 … +14.155 | 0 / 60 |
+| 1 ms (`timeBeginPeriod(1)`) | **−0.007** … +0.849 | **3 / 60** |
+
+The timeout expires against the kernel's tick clock, not QPC. At default granularity the rounding-up
+slack hides the divergence; at 1 ms it does not, and ~5% of waits return early by QPC. Timer
+resolution is machine-global and any process can raise it, so unrelated software on the runner
+decided whether the assertion held — the "passes almost always" signature.
+
+The platform, not the product. The test now allows one tick of slack.
+
+### Re-running it
+
+```pwsh
+cl /nologo /O2 /EHsc /std:c++20 tests/experiments/wait_timeout_vs_qpc.cpp /Fe:wait_qpc.exe
+.\wait_qpc.exe 60
+```
+
+A negative `min` on the second row is the finding. Zero under-shoots on both rows means this machine
+never had its timer resolution raised during the run — re-run it with something like a browser or a
+media player open, which is precisely the point.

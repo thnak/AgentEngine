@@ -5,7 +5,24 @@
 #include <userenv.h>
 #include <aclapi.h>
 
+#include <cstdio>
+#include <string>
+
 namespace agentengine::native_jail {
+
+namespace {
+
+// std::to_string on an HRESULT renders DECIMAL. Both call sites below prefix their value with "0x",
+// so an 0x80070005 came out as "HRESULT 0x2147942405" -- a string that looks like a hex code, is not
+// one, and cannot be looked up. These messages exist to be read off a CI log for a failure nobody
+// can attach a debugger to, so the formatting is load-bearing, not cosmetic.
+std::string hex32(unsigned long v) {
+    char buf[11];
+    std::snprintf(buf, sizeof(buf), "0x%08lX", v);
+    return buf;
+}
+
+}  // namespace
 
 // A `win32_error()` helper reading GetLastError() used to sit here, uncalled (clang:
 // "unused function 'win32_error'"). Deleted rather than annotated: it had no correct call site to be
@@ -27,8 +44,8 @@ result<AppContainerProfile> AppContainerProfile::ensure(std::wstring const& name
     if (FAILED(hr) && HRESULT_CODE(hr) != ERROR_ALREADY_EXISTS) {
         return std::unexpected(ae::error{
             failure_class::fatal,
-            "CreateAppContainerProfile failed: HRESULT 0x" +
-                std::to_string(static_cast<unsigned long>(hr)),
+            "CreateAppContainerProfile failed: HRESULT " +
+                hex32(static_cast<unsigned long>(hr)),
             "app_container.create_profile_failed",
         });
     }
@@ -39,8 +56,8 @@ result<AppContainerProfile> AppContainerProfile::ensure(std::wstring const& name
     if (FAILED(hr)) {
         return std::unexpected(ae::error{
             failure_class::fatal,
-            "DeriveAppContainerSidFromAppContainerName failed: HRESULT 0x" +
-                std::to_string(static_cast<unsigned long>(hr)),
+            "DeriveAppContainerSidFromAppContainerName failed: HRESULT " +
+                hex32(static_cast<unsigned long>(hr)),
             "app_container.derive_sid_failed",
         });
     }

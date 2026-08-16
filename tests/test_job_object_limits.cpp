@@ -185,7 +185,45 @@ static bool test_wall_clock_kill_standalone() {
            static_cast<int>(outcome->kill_reason),
            static_cast<long long>(outcome->wall_elapsed.count()));
     assert(outcome->kill_reason == job_kill_reason::wall_clock_timeout);
-    assert(outcome->wall_elapsed >= deadline);
+    // NOT `>= deadline`. That spelling failed intermittently in CI (run 31925631415, Windows / MSVC /
+    // Release -- an UNinstrumented build, so ADR-062's sanitizer story does not explain it), and the
+    // reason is a real property of Win32 rather than a defect in wait_or_kill():
+    //
+    //   WaitForSingleObject's timeout is released against the kernel's tick clock, while
+    //   wait_or_kill() measures the interval with steady_clock (QPC). They are different clocks.
+    //
+    // Measured, not argued -- tests/experiments/wait_timeout_vs_qpc.cpp, 60 waits on a 500 ms
+    // deadline, MSVC Release:
+    //
+    //   system tick 15.625 ms (default) : elapsed - deadline in [+1.154, +14.155] ms, 0 under-shoots
+    //   system tick raised to 1 ms      : elapsed - deadline in [-0.007, +0.849] ms, 3 under-shoots
+    //
+    // At the default granularity the rounding slack is so much larger than the skew that the wait
+    // always overshoots and the tight assertion looks sound. Remove the slack and ~5% of waits return
+    // with QPC-measured elapsed just *under* the deadline. Timer resolution is a MACHINE-GLOBAL
+    // setting any process can raise (timeBeginPeriod), so an unrelated program -- another test in the
+    // same `ctest -j 4` batch, a browser, MSBuild -- decides whether this assertion holds. That is
+    // precisely the observed signature: same code, same compiler, passes almost always.
+    //
+    // And when it does fail, it fails by a hair. Reproduced locally under `ctest -j 4` (1 run in 12),
+    // the test's own printf above recorded:
+    //
+    //     spin under wall_ms=500: kill_reason=3 measured_wall_ms=499
+    //
+    // One millisecond. wait_or_kill()'s duration_cast truncates toward zero, so a true elapsed of
+    // 499.993 ms is reported as 499 -- both mechanisms push the same way, never the other. That 499
+    // is also what rules out the alternative reading: a genuinely premature kill on a 500 ms deadline
+    // would be early by hundreds of milliseconds, not by one.
+    //
+    // The tolerance is therefore deliberately much larger than the ~1 ms shortfall actually observed.
+    // The CI runners are virtual machines whose QPC/tick divergence has not been measured here, and
+    // being generous costs nothing: one tick still cannot mask the defect this line exists to catch,
+    // and the `< 3000` bound below pins the other side. The load-bearing claim -- that the wall-clock
+    // watcher is what killed the child -- is the assertion above this one, which is unchanged.
+    // (tests/test_rt_channel.cpp:261 already carries a tolerance on a timing assertion for the same
+    // class of reason; this matches that practice rather than inventing one.)
+    constexpr auto kTimerGranularitySlack = std::chrono::milliseconds(16);  // one 15.625 ms tick, rounded up
+    assert(outcome->wall_elapsed >= deadline - kTimerGranularitySlack);
     assert(outcome->wall_elapsed < std::chrono::milliseconds(3000) &&
            "wall-clock kill took far longer than the requested deadline");
 
