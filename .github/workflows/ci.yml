@@ -141,8 +141,34 @@ jobs:
       - name: Build
         run: cmake --build build -j 4
 
+      # The ASanUBSan leg needs clang's sanitizer runtime DLLs on PATH before ctest launches
+      # anything. Without them nothing runs: EVERY test in this job timed out at its full limit
+      # having produced ZERO output -- 0 passed, 41 timed out before the job cap killed it, and that
+      # included example_01_hello_agent, which cannot fail on its own merits. A binary whose DLL is
+      # missing never reaches main, and on a headless runner it stalls instead of reporting, so the
+      # signature is a hang rather than an error. This is the same defect, and the same fix, as the
+      # MSVC ASan job's own vswhere PATH step earlier in this file.
+      #
+      # `clang++ -print-resource-dir` is exactly how the ShellRunner fuzz job below -- same compiler,
+      # same -fsanitize flags, same static CRT, and passing -- locates them. Harmless on the Release
+      # leg, which links no sanitizer runtime, so this is not conditionalized.
+      #
+      # ASAN_OPTIONS/UBSAN_OPTIONS also mirror that job: LeakSanitizer has no Windows
+      # implementation, so detect_leaks=0 states that rather than leaving it to fail obscurely, and
+      # halt_on_error keeps a sanitizer finding a hard failure instead of a warning in a log.
       - name: Test
-        run: ctest --test-dir build -j 4 --output-on-failure --timeout 180
+        shell: pwsh
+        run: |
+          $rt = $(clang++ -print-resource-dir)
+          $env:PATH = "$rt\lib\windows;$env:PATH"
+          Write-Host "clang sanitizer runtime dir: $rt\lib\windows"
+          $env:ASAN_OPTIONS = "detect_leaks=0:halt_on_error=1"
+          $env:UBSAN_OPTIONS = "halt_on_error=1:print_stacktrace=1"
+          ctest --test-dir build -j 4 --output-on-failure --timeout 180
+          # Explicit, not incidental: this step became a pwsh block to set PATH, and a shell block
+          # that ends on a native command must still surface that command's exit code. Stated here
+          # rather than relying on the runner appending it, so a failing ctest can never read green.
+          if ($LASTEXITCODE -ne 0) { throw "ctest failed with exit code $LASTEXITCODE" }
 
   windows-shell-fuzz:
     # 010 SS9 G8 / decisions/ADR-015-shellrunner-grammar-parser-fuzzing.md: continuous, corpus-driven
