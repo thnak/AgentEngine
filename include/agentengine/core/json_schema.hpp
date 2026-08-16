@@ -481,19 +481,34 @@ result<T> from_json(json::Value const& v) {
         out.member = std::move(*ae_field_result);                                            \
     }
 
+// The three generated functions carry [[maybe_unused]], and unlike everywhere else in this cleanup
+// there is no restructure that removes the need for it -- the attribute IS the fix, applied at the
+// definition where the fact it states is true.
+//
+// Why they can go uncalled: these are ADL entry points, not internal helpers. A TU that names
+// `AE_JSON_SCHEMA(T, ...)` is publishing a codec for T; whether that TU then calls all three (or
+// any) depends on what it does with T. Tests routinely declare their types inside an anonymous
+// namespace, which gives the generated functions internal linkage, and clang then reports every
+// uncalled one -- 99 -Wunused-function plus 2 -Wunneeded-internal-declaration across tests/ and
+// examples/, none of them a defect. gcc and MSVC do not warn here at all.
+//
+// The alternatives are worse: -Wno-unused-function is a build-wide suppression this project does not
+// allow; moving every AE_JSON_SCHEMA out of its anonymous namespace would give test-local types
+// external linkage purely to satisfy a diagnostic; and manufacturing a fake call to each function
+// would be dead code written to quiet a compiler. [[maybe_unused]] says exactly the true thing.
 #define AE_JSON_SCHEMA(Type, ...)                                                            \
-    inline std::string ae_json_schema(::agentengine::schema::type_tag<Type>) {               \
+    [[maybe_unused]] inline std::string ae_json_schema(::agentengine::schema::type_tag<Type>) {               \
         using AeJsonSchemaSelf = Type;                                                       \
         ::agentengine::schema::ObjectBuilder ob;                                             \
         AE_FOR_EACH(AE_JSON_SCHEMA_FIELD_, __VA_ARGS__)                                   \
         return ob.build();                                                                   \
     }                                                                                        \
-    inline ::agentengine::json::Value ae_to_json(Type const& self) {                         \
+    [[maybe_unused]] inline ::agentengine::json::Value ae_to_json(Type const& self) {                         \
         ::agentengine::schema::ToJsonBuilder ae_tb;                                          \
         AE_FOR_EACH(AE_JSON_TO_FIELD_, __VA_ARGS__)                                       \
         return ae_tb.build();                                                                \
     }                                                                                        \
-    inline ::agentengine::result<Type> ae_from_json(::agentengine::json::Value const& value,  \
+    [[maybe_unused]] inline ::agentengine::result<Type> ae_from_json(::agentengine::json::Value const& value,  \
                                                       ::agentengine::schema::type_tag<Type>) { \
         using AeJsonSchemaSelf = Type;                                                       \
         if (!value.is_object()) {                                                            \

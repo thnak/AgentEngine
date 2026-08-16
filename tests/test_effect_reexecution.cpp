@@ -34,8 +34,8 @@ struct PureReply {
 AE_JSON_SCHEMA(PureReply, x)
 
 struct PureTool : agentengine::Tool<PureTool, agentengine::EffectClass<agentengine::effect_class::pure>> {
-    static constexpr std::string_view name = "pure_tool";
-    static constexpr std::string_view description = "A read-only, side-effect-free tool.";
+    [[maybe_unused]] static constexpr std::string_view name = "pure_tool";
+    [[maybe_unused]] static constexpr std::string_view description = "A read-only, side-effect-free tool.";
     using Args = PureArgs;
     using Reply = PureReply;
     static agentengine::result<Reply> invoke(Args a, agentengine::EffectContext&) { return Reply{a.x}; }
@@ -52,8 +52,8 @@ AE_JSON_SCHEMA(PaymentReply, charged)
 
 // Deliberately declares NO EffectClass -- proving the conservative default applies.
 struct UndeclaredTool : agentengine::Tool<UndeclaredTool> {
-    static constexpr std::string_view name = "undeclared_tool";
-    static constexpr std::string_view description = "A tool that forgot to classify itself.";
+    [[maybe_unused]] static constexpr std::string_view name = "undeclared_tool";
+    [[maybe_unused]] static constexpr std::string_view description = "A tool that forgot to classify itself.";
     using Args = PaymentArgs;
     using Reply = PaymentReply;
     static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) { return Reply{true}; }

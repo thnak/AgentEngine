@@ -7,18 +7,13 @@
 
 namespace agentengine::native_jail {
 
-namespace {
-
-std::unexpected<ae::error> win32_error(char const* what, failure_class klass, char const* code) {
-    DWORD last = GetLastError();
-    return std::unexpected(ae::error{
-        klass,
-        std::string(what) + " failed: Win32 error " + std::to_string(last),
-        code,
-    });
-}
-
-}  // namespace
+// A `win32_error()` helper reading GetLastError() used to sit here, uncalled (clang:
+// "unused function 'win32_error'"). Deleted rather than annotated: it had no correct call site to be
+// restored to. Every Win32 surface this file touches reports failure through its own return value --
+// CreateAppContainerProfile/DeriveAppContainerSidFromAppContainerName return an HRESULT, and the
+// Get/Set*SecurityInfoW/SetEntriesInAclW family returns a DWORD error code directly -- so none of
+// them sets thread-last-error for a caller to read, and every error path below already carries the
+// real code it was given.
 
 result<AppContainerProfile> AppContainerProfile::ensure(std::wstring const& name,
                                                           std::wstring const& display_name,
