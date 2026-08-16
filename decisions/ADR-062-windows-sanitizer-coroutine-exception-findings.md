@@ -433,11 +433,46 @@ is exactly the risk §9.4 item 3 flagged, arriving from the opposite direction.
 
 **Revised recommendation, replacing §9.4 items 1-2, still for owner decision:**
 
-1. **Pin clang to 22.1+ in `ci.yml`** and re-run §9.1's matrix. If it comes back clean, the job goes
-   green with full ASan+UBSan coverage and this ADR closes outright. *Expected, not measured* — no
-   claim is made here that it works until it is run.
+1. **Pin clang to 22.1+ in `ci.yml`** and re-run §9.1's matrix. ~~*Expected, not measured*~~ —
+   **MEASURED, §9.7.**
 2. **If pinning proves awkward**, fall back to §9.4 item 2 (UBSan-only), which stays measured-clean.
+   Not needed; the pin worked.
 3. **Do not file anything upstream.** Already reported and already fixed.
+
+### 9.7 Measured: clang 22.1.8 clears it completely
+
+Run `31925988586`, four legs, each running both the 12-line reproducer and the three tests that
+originally reported. Installed from LLVM's own pinned release asset
+(`LLVM-22.1.8-win64.exe`), with a version assertion that fails the leg if the major is below 22 —
+a run on an unfixed clang would prove nothing while looking like it proved something.
+
+```
+clang version 22.1.8 (https://github.com/llvm/llvm-project ca7933e47d3a3451d81e72ac174dcb5aa28b59d1)
+```
+
+| CRT | sanitizers | reproducer | `test_rt_task` | `test_rt_thread_pool` | `test_middleware_...` |
+|---|---|---|---|---|---|
+| MultiThreaded | address | **0** | **0** | **0** | **0** |
+| MultiThreaded | address+undefined | **0** | **0** | **0** | **0** |
+| MultiThreadedDLL | address | **0** | **0** | **0** | **0** |
+| MultiThreadedDLL | address+undefined | **0** | **0** | **0** | **0** |
+
+Every cell clean, reproducer printing `what=boom` / `repro: clean`. Compare §9.1, where every
+ASan-bearing cell failed on clang 20.1.8. This is the same code, the same flags, the same runner
+image — only the compiler version differs, which is as direct a confirmation of #159618 as this
+project can produce.
+
+**`ci.yml` now pins `AE_LLVM_VERSION: 22.1.8`** for both Windows LLVM-consuming jobs, installed from
+the release asset rather than `choco install llvm -y`. The choco form was never a pin at all: it
+no-ops when the runner image already ships LLVM, so these jobs ran the image's clang 20.1.8 with
+nobody choosing it — while a comment directly above claimed the opposite. A version assertion now
+fails loudly if that ever drifts back below 22.
+
+**Consequence for §7b, which §9.4 already withdrew:** the ASanUBSan job should now be able to run
+green with FULL ASan+UBSan coverage, rather than either staying red or falling back to UBSan-only.
+Whether the whole tree (not just the three tests measured here) is clean under clang 22 is a
+separate question the next CI run answers; a newer compiler may surface new warnings, and this ADR
+does not claim otherwise.
 
 ### 9.5 Residual, honestly
 

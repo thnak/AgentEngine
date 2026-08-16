@@ -26,6 +26,15 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # Pinned deliberately, and pinned to >= 22.1 deliberately. ADR-062 §9.6: clang's
+  # AddressSanitizer on Windows corrupts catch-block parameters (google/sanitizers#749),
+  # mitigated by llvm/llvm-project#159618 which first shipped in LLVM 22.1.0. On clang 20.1.8 --
+  # what these jobs silently used before this pin -- the ASanUBSan leg cannot run any program that
+  # catches an exception and calls what(). Measured clean on 22.1.8 across static/DLL CRT and
+  # ASan/ASan+UBSan.
+  AE_LLVM_VERSION: 22.1.8
+
 jobs:
   windows-msvc:
     name: Windows / MSVC / ${{ matrix.build_type }}
@@ -96,10 +105,31 @@ jobs:
       # (clang 20+) often enough that pinning our own install is more predictable than hoping the
       # runner image caught up. AgentEngineCompilerGuard.cmake fails configure with a clear message
       # if this ever regresses below the floor, instead of a confusing mid-build error.
-      - name: Install LLVM + Ninja
+      # `choco install llvm -y` was NOT a pin, despite the comment above having claimed one for as
+      # long as it existed: choco no-ops when the package is already present, and the windows-latest
+      # image ships LLVM. These jobs therefore ran whatever the image happened to carry -- clang
+      # 20.1.8 as of 2026-08-16 -- with nobody choosing it, which is how ADR-062's ASan defect went
+      # unnoticed. Installing LLVM's own release asset at a pinned version is an actual pin.
+      - name: Install LLVM ${{ env.AE_LLVM_VERSION }} (pinned) + Ninja
+        shell: pwsh
         run: |
-          choco install llvm -y
           choco install ninja -y
+          $v = "${{ env.AE_LLVM_VERSION }}"
+          $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$v/LLVM-$v-win64.exe"
+          Invoke-WebRequest -Uri $url -OutFile "$env:RUNNER_TEMP\llvm.exe"
+          Start-Process -FilePath "$env:RUNNER_TEMP\llvm.exe" -ArgumentList '/S' -Wait
+          echo "C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Verify the pinned clang is what we got
+        shell: pwsh
+        run: |
+          $env:PATH = "C:\Program Files\LLVM\bin;$env:PATH"
+          $ver = (clang++ --version | Select-Object -First 1)
+          Write-Host $ver
+          if ($ver -notmatch 'clang version (\d+)\.') { throw "cannot parse clang version from '$ver'" }
+          # 021 §5 floor is clang 20+; ADR-062 §9.6 raises the effective floor to 22 on Windows,
+          # because below it the sanitizer leg cannot execute exception-handling code at all.
+          if ([int]$Matches[1] -lt 22) { throw "clang $($Matches[1]) predates llvm/llvm-project#159618 -- see ADR-062 §9.6" }
 
       - name: Enter MSVC dev shell
         uses: ilammy/msvc-dev-cmd@v1
@@ -187,10 +217,31 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install LLVM + Ninja
+      # `choco install llvm -y` was NOT a pin, despite the comment above having claimed one for as
+      # long as it existed: choco no-ops when the package is already present, and the windows-latest
+      # image ships LLVM. These jobs therefore ran whatever the image happened to carry -- clang
+      # 20.1.8 as of 2026-08-16 -- with nobody choosing it, which is how ADR-062's ASan defect went
+      # unnoticed. Installing LLVM's own release asset at a pinned version is an actual pin.
+      - name: Install LLVM ${{ env.AE_LLVM_VERSION }} (pinned) + Ninja
+        shell: pwsh
         run: |
-          choco install llvm -y
           choco install ninja -y
+          $v = "${{ env.AE_LLVM_VERSION }}"
+          $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$v/LLVM-$v-win64.exe"
+          Invoke-WebRequest -Uri $url -OutFile "$env:RUNNER_TEMP\llvm.exe"
+          Start-Process -FilePath "$env:RUNNER_TEMP\llvm.exe" -ArgumentList '/S' -Wait
+          echo "C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Verify the pinned clang is what we got
+        shell: pwsh
+        run: |
+          $env:PATH = "C:\Program Files\LLVM\bin;$env:PATH"
+          $ver = (clang++ --version | Select-Object -First 1)
+          Write-Host $ver
+          if ($ver -notmatch 'clang version (\d+)\.') { throw "cannot parse clang version from '$ver'" }
+          # 021 §5 floor is clang 20+; ADR-062 §9.6 raises the effective floor to 22 on Windows,
+          # because below it the sanitizer leg cannot execute exception-handling code at all.
+          if ([int]$Matches[1] -lt 22) { throw "clang $($Matches[1]) predates llvm/llvm-project#159618 -- see ADR-062 §9.6" }
 
       - name: Enter MSVC dev shell
         uses: ilammy/msvc-dev-cmd@v1
