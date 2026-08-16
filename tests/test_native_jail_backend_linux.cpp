@@ -19,6 +19,7 @@
 #include <string>
 
 #include "backends/native_jail/linux_native_jail_backend.hpp"
+#include "support/error_detail.hpp"
 
 using namespace agentengine;
 using agentengine::native_jail::LinuxNativeJailBackend;
@@ -63,7 +64,8 @@ int main() {
     auto handle = backend.create(spec, ctx);
     AE_CHECK(handle.has_value(), "C2-Linux: create() succeeds given a real mount and ResourceLimits");
     if (!handle.has_value()) {
-        std::cerr << "create() failed, aborting remaining checks\n";
+        std::cerr << "create() failed, aborting remaining checks: "
+                  << ::agentengine::test_support::describe(handle.error()) << "\n";
         return 1;
     }
 

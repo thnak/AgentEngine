@@ -63,6 +63,7 @@
 #include "backends/native_jail/app_container_profile.hpp"
 #include "backends/native_jail/native_jail_backend.hpp"
 #include "support/crt_fail_fast.hpp"
+#include "support/error_detail.hpp"
 
 using namespace agentengine;
 using agentengine::native_jail::AppContainerProfile;
@@ -222,7 +223,8 @@ int main() {
     auto run_cycle = [&](int cycle_index) {
         auto handle = backend.create(spec, ctx);
         if (!handle.has_value()) {
-            std::cerr << "cycle " << cycle_index << ": create() failed\n";
+            std::cerr << "cycle " << cycle_index << ": create() failed: "
+                      << ::agentengine::test_support::describe(handle.error()) << "\n";
             ++g_failures;
             return;
         }
