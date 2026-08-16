@@ -141,6 +141,13 @@ public:
                 Interrupt interrupt;
                 interrupt.id     = p.interaction_id;
                 interrupt.reason = "input_required";
+                // If a `codeact_ask_requested` for this same interaction arrived first, its prompt
+                // rides out on THIS event, in §2.2's own native `Interrupt.message` slot. See that
+                // case below for why the prompt cannot be delivered as a separate later event.
+                if (auto it = pending_ask_prompt_.find(p.interaction_id); it != pending_ask_prompt_.end()) {
+                    interrupt.message = it->second;
+                    pending_ask_prompt_.erase(it);
+                }
                 return {RunFinishedInterrupt{thread_id_, ev.run_id, {interrupt}}};
             }
             case run_event_kind::auth_required: {
@@ -159,20 +166,28 @@ public:
                 return {RunFinishedInterrupt{thread_id_, ev.run_id, {interrupt}}};
             }
 
-            // Fires immediately AFTER the `input_required` above, carrying the one thing that event's
-            // `InteractionRef` payload cannot: the actual question text. run_event.hpp's own comment
-            // states the purpose -- "so a live consumer sees the actual prompt text without a second
-            // round trip" -- which is defeated if this projector drops it. CUSTOM in the `ae:`
-            // extension namespace for the same reason as `ae:state_changed`: §2.1's table has no
-            // native slot for a mid-run question, and the `interrupt` that ENDS the run was already
-            // emitted by `input_required`, so this carries payload only, never a second terminal event.
+            // Carries the one thing `input_required`'s `InteractionRef` payload cannot: the actual
+            // question text. run_event.hpp states the purpose -- "so a live consumer sees the actual
+            // prompt text without a second round trip" -- which this projector defeated by dropping
+            // the kind entirely (a -Wswitch warning was reporting exactly that).
+            //
+            // It projects to NOTHING of its own, deliberately. AgentSession emits it immediately
+            // BEFORE the paired `input_required`, whose projection is a terminal
+            // `RunFinishedInterrupt`; §2.1 says a run "ends with exactly one of RUN_FINISHED /
+            // RUN_ERROR", and §2.2 adds a hard ordering obligation -- whatever a resume will need
+            // must be emitted BEFORE the interrupt-bearing RUN_FINISHED, because "emitting it after
+            // is unrecoverable, the run is over". A separate CUSTOM event carrying the prompt is
+            // therefore wrong in BOTH directions: after the interrupt it is unreachable, and before
+            // it, it is a second event where §2.2's `Interrupt.message` is the native slot for
+            // exactly this. So the prompt is stashed here and rides out ON the interrupt above.
+            //
+            // Keyed by `interaction_id`, not `run_id`: ADR-057 §9 reuses one interaction id across a
+            // chained second/third `agent.ask()`, so a later prompt correctly overwrites an earlier
+            // one for the same suspension rather than accumulating.
             case run_event_kind::codeact_ask_requested: {
                 auto const& p = std::get<run_event_payload::CodeActAskRequested>(ev.payload);
-                return {CustomEvent{"ae:codeact_ask_requested",
-                                     json::Value::make_object(
-                                         {{"callId", json::Value::make_string(p.call_id)},
-                                          {"interactionId", json::Value::make_string(p.interaction_id)},
-                                          {"prompt", json::Value::make_string(p.prompt)}})}};
+                pending_ask_prompt_[p.interaction_id] = p.prompt;
+                return {};
             }
 
             case run_event_kind::input_resolved:
@@ -211,6 +226,11 @@ private:
 
     std::string                                  thread_id_;
     std::unordered_map<std::string, std::string> open_message_id_;  // run_id -> currently-open messageId
+    // interaction_id -> the agent.ask() prompt awaiting the paired `input_required` that carries it
+    // out on `Interrupt.message`. Erased on consumption; an entry only ever outlives its run if the
+    // caller feeds a `codeact_ask_requested` with no matching `input_required`, which AgentSession
+    // never emits.
+    std::unordered_map<std::string, std::string> pending_ask_prompt_;
     std::uint64_t                                 message_counter_ = 0;
 };
 

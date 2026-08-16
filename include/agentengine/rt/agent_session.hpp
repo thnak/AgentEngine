@@ -1306,10 +1306,13 @@ private:
                 if (auto const* e = std::get_if<Error>(&tool_result.content.front().value)) prompt = e->message;
             }
             rec_it->second.prompt = prompt;
-            emit_run_event(run_event_kind::input_required,
-                            run_event_payload::InteractionRef{interaction_id});
+            // 013 SS2.2 hard ordering obligation: the prompt a resume needs must precede the
+            // interrupt-bearing terminal event, so codeact_ask_requested is emitted FIRST and the
+            // AG-UI projector carries its text out on input_required's own Interrupt.message.
             emit_run_event(run_event_kind::codeact_ask_requested,
                             run_event_payload::CodeActAskRequested{req.call_id, interaction_id, prompt});
+            emit_run_event(run_event_kind::input_required,
+                            run_event_payload::InteractionRef{interaction_id});
             co_return std::unexpected(error{failure_class::contract,
                                              "round suspended awaiting an agent.ask() answer",
                                              kSuspendedForCodeActAsk});
@@ -1593,11 +1596,12 @@ private:
                     record.prompt = prompt;
                     pending_codeact_asks_[interaction.interaction_id] = std::move(record);
 
-                    emit_run_event(run_event_kind::input_required,
-                                    run_event_payload::InteractionRef{interaction.interaction_id});
+                    // 013 SS2.2 hard ordering obligation -- see the sibling site above.
                     emit_run_event(run_event_kind::codeact_ask_requested,
                                     run_event_payload::CodeActAskRequested{
                                         calls[i].call_id, interaction.interaction_id, prompt});
+                    emit_run_event(run_event_kind::input_required,
+                                    run_event_payload::InteractionRef{interaction.interaction_id});
 
                     // Suspended -- exactly the "never fold, never fabricate a response" shape the
                     // approval branch above already uses: no history mutation, a named sentinel error
