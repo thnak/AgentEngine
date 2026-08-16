@@ -49,6 +49,7 @@ namespace agentengine::rt {
 // Same fields as project/project.hpp's own ProjectMember, kept here rather than reused across the
 // Quark boundary (that type is QUARK_SERIALIZE-tagged) so this file stays fully Quark-free -- the
 // same reasoning project_registry.hpp's own ProjectRegistryEntry already established.
+// ae-naming-lint: allow ProjectMember — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct ProjectMember {
     std::string   session_id;
     std::string   parent_session_id;  // empty means this member IS the Project's root session

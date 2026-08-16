@@ -21,6 +21,7 @@
 #include <string>
 
 #include "agentengine/core/effect_context.hpp"
+#include "agentengine/pal/env.hpp"
 #include "agentengine/sandbox/runner.hpp"
 #include "agentengine/trust/capability.hpp"
 #include "backends/native_jail/mediated_command_registry.hpp"
@@ -59,7 +60,7 @@ CapabilitySet full_caps() {
 }  // namespace
 
 int main() {
-    std::string const scratch = std::string(std::getenv("TEMP") ? std::getenv("TEMP") : "C:/Windows/Temp") +
+    std::string const scratch = ::agentengine::pal::env_var("TEMP").value_or("C:/Windows/Temp") +
                                  "/ae_e3_mount";
     std::filesystem::remove_all(scratch);
     std::filesystem::create_directories(scratch);

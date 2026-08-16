@@ -35,13 +35,16 @@ namespace agentengine::rt {
 
 // Same shapes as the original -- no identity travels with the query; attribution of WHO is spending
 // is still the caller's own concern.
+// ae-naming-lint: allow ConsumeSpawnTokens — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct ConsumeSpawnTokens {
     std::uint64_t amount = 0;
 };
+// ae-naming-lint: allow SpawnTokenGrant — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct SpawnTokenGrant {
     std::uint64_t granted = 0;
 };
 
+// ae-naming-lint: allow SpawnCostBudget — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class SpawnCostBudget {
 public:
     // Configuration-time only, like the original -- call once, before any consume() call, never

@@ -150,7 +150,7 @@ struct ExecRequest {  // ae-naming-lint: allow ExecRequest — pre-existing M0 s
     // never implements `agent.ask()` (e.g. a shell runner) simply ignores this field, the same
     // "unused field, not a gap" convention `ExecOutcome::result_repr`'s own comment documents one
     // struct over.
-    std::vector<std::string> preseeded_answers;
+    std::vector<std::string> preseeded_answers{};
 };
 
 // ADR-057 §9 (Design B): `ask_pending` -- a script's `agent.ask()` call had no more preseeded

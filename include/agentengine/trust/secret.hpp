@@ -35,6 +35,7 @@
 #include <cstring>
 #include <fstream>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -45,6 +46,7 @@
 
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/error.hpp"
+#include "agentengine/pal/env.hpp"
 #include "agentengine/trust/capability.hpp"
 
 namespace agentengine {
@@ -64,6 +66,7 @@ inline void secure_zero(void* p, std::size_t n) noexcept {
 // a secret would multiply the number of live plaintext copies (and each would have to be zeroized),
 // so the type simply forbids it. There is intentionally NO `std::string` conversion and NO
 // `operator<<`.
+// ae-naming-lint: allow Secret — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class Secret {
 public:
     Secret() = default;
@@ -115,6 +118,7 @@ private:
 // The SecretSource seam (020 §4). Resolution happens at startup, off the hot path; a miss is a
 // `result` error (`failure_class::contract`, code `secret.not_found`), never a throw. Adapters
 // (env/file here; OS keystores DEFERRED) all model this one interface.
+// ae-naming-lint: allow SecretSource — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class SecretSource {
 public:
     virtual ~SecretSource() = default;
@@ -139,22 +143,26 @@ public:
         var.reserve(prefix_.size() + name.size());
         var.append(prefix_);
         var.append(name);
-        // std::getenv is the portable, std-only choice here; MSVC's C4996 nudges toward the
-        // non-standard _dupenv_s, which we don't want. Not a thread-safety concern for us: single
-        // read, copied into `Secret` immediately, no concurrent setenv in-process.
-#if defined(_MSC_VER)
-#pragma warning(push)
-#pragma warning(disable : 4996)
-#endif
-        char const* v = std::getenv(var.c_str());
-#if defined(_MSC_VER)
-#pragma warning(pop)
-#endif
-        if (v == nullptr) {
+        // `pal::env_var_consume`, NOT `pal::env_var`. Both read the environment portably (so MSVC's
+        // C4996 on `std::getenv` is answered by calling `_dupenv_s`, not by the
+        // `#pragma warning(disable : 4996)` this file used to carry -- a suppression this project
+        // does not allow). The difference is what they leave behind: `env_var` returns an owned
+        // `std::string`, so a secret read through it lands in a heap buffer that is freed WITHOUT
+        // being wiped -- two such buffers on MSVC, counting `_dupenv_s`'s own. That silently
+        // contradicts this file's whole premise (a zeroizing `Secret` with no `std::string`
+        // conversion), and it is what an earlier, warning-motivated migration to `env_var` did here.
+        //
+        // `env_var_consume` hands the bytes straight to `make_secret` and wipes any intermediate
+        // before freeing it; on POSIX there is no intermediate at all. Still not a thread-safety
+        // concern: single read, consumed immediately, no concurrent setenv in-process.
+        std::optional<Secret> found;
+        bool const present = ::agentengine::pal::env_var_consume(
+            var, [&found](std::string_view chars) { found = make_secret(chars); });
+        if (!present || !found) {
             return std::unexpected(error{failure_class::contract, "secret not in environment: " + var,
                                           "secret.not_found"});
         }
-        return make_secret(std::string_view(v));
+        return std::move(*found);
     }
 
 private:
@@ -193,6 +201,7 @@ private:
 // manifests (009 §3). Resolving one requires the caller's EffectContext to carry a granted
 // cap::Secret naming this ref (007 §3) -- every SecretStore backend below checks this at the point
 // of use, never earlier.
+// ae-naming-lint: allow SecretRef — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct SecretRef {
     std::string name;
 };
@@ -207,6 +216,7 @@ struct SecretRef {
 // needing text (a provider API key going into an HTTP header, 004 §1) uses at the actual point of
 // use, matching 018 §4's "resolved... at the point of use" rule and letting a grep for
 // "reveal_text(" find every such call site.
+// ae-naming-lint: allow SecretLease — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class SecretLease {
 public:
     SecretLease(SecretRef ref, Secret bytes) : ref_(std::move(ref)), bytes_(std::move(bytes)) {}
@@ -273,6 +283,7 @@ namespace secret_detail {
 // is -- resolution has no I/O to suspend on (env lookup, a small file read), matching
 // `SecretSource::get()`'s own synchronous shape.
 template <class T>
+// ae-naming-lint: allow SecretStore — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 concept SecretStore = requires(T store, SecretRef const& ref, EffectContext& ctx) {
     { store.resolve(ref, ctx) } -> std::same_as<result<SecretLease>>;
 };
@@ -281,6 +292,7 @@ concept SecretStore = requires(T store, SecretRef const& ref, EffectContext& ctx
 // (`EnvSecretSource`/`FileSecretSource` today; an OS keystore adapter later, per 020 §4's own
 // "DEFERRED adapters" note -- this type needs no change when one lands, only a new `SecretSource`
 // implementation to construct it with).
+// ae-naming-lint: allow AgentEngineSecretStore — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class AgentEngineSecretStore {
 public:
     explicit AgentEngineSecretStore(std::unique_ptr<SecretSource> source) : source_(std::move(source)) {}
@@ -298,6 +310,7 @@ static_assert(SecretStore<AgentEngineSecretStore>);
 // rotation-without-restart proof (018 §3, decision 4) needs a store whose value can change between
 // two resolve() calls with no filesystem/environment mutation involved. Production code constructs
 // `AgentEngineSecretStore` over `EnvSecretSource`/`FileSecretSource`, never this.
+// ae-naming-lint: allow InMemorySecretStore — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class InMemorySecretStore {
 public:
     void set(std::string name, std::string value) { values_[std::move(name)] = std::move(value); }

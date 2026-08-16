@@ -18,6 +18,7 @@
 #include <iostream>
 #include <memory_resource>
 #include <string>
+#include <vector>
 
 #include "agentengine/core/chat_client.hpp"
 #include "agentengine/core/content.hpp"
@@ -333,6 +334,81 @@ int main() {
         AE_CHECK(p.size() == 1 && std::holds_alternative<agui::CustomEvent>(p[0]) &&
                      std::get<agui::CustomEvent>(p[0]).name == "ae:policy_decision",
                  "E2-17: policy_decision -> CustomEvent(\"ae:policy_decision\")");
+    }
+
+    // --- E2-18: an agent.ask() suspension, projected as a SEQUENCE ----------------------------------
+    // Two properties, and the second is why this test feeds a sequence rather than one event at a
+    // time. A per-event test cannot see ordering, and ordering is where the first attempt at this fix
+    // went wrong: it projected `codeact_ask_requested` to its own CUSTOM event, which -- because
+    // AgentSession emitted it AFTER `input_required` -- landed after the terminal RunFinishedInterrupt.
+    // That trades "the prompt is dropped" for "the prompt is unreachable and the stream is malformed",
+    // against §2.1 ("a run ends with exactly one of RUN_FINISHED / RUN_ERROR") and §2.2's hard
+    // ordering obligation ("emitting it after is unrecoverable, because the run is over").
+    {
+        // The REAL emission order AgentSession produces, not a convenient one.
+        std::vector<agui::AgUiEvent> stream;
+        for (auto&& e : projector.project(
+                 ae::RunEvent{"run-ca", 1, ae::run_event_kind::run_started, ae::run_event_payload::Empty{}}))
+            stream.push_back(std::move(e));
+        for (auto&& e : projector.project(
+                 ae::RunEvent{"run-ca", 2, ae::run_event_kind::codeact_ask_requested,
+                               ae::run_event_payload::CodeActAskRequested{"call-7", "int-9", "Which city?"}}))
+            stream.push_back(std::move(e));
+        for (auto&& e : projector.project(
+                 ae::RunEvent{"run-ca", 3, ae::run_event_kind::input_required,
+                               ae::run_event_payload::InteractionRef{"int-9"}}))
+            stream.push_back(std::move(e));
+
+        auto is_terminal = [](agui::AgUiEvent const& e) {
+            return std::holds_alternative<agui::RunFinishedSuccess>(e) ||
+                    std::holds_alternative<agui::RunFinishedInterrupt>(e) ||
+                    std::holds_alternative<agui::RunError>(e);
+        };
+        std::size_t terminals = 0, after_terminal = 0;
+        bool seen_terminal = false;
+        for (auto const& e : stream) {
+            if (seen_terminal) ++after_terminal;
+            if (is_terminal(e)) { ++terminals; seen_terminal = true; }
+        }
+        AE_CHECK(terminals == 1,
+                 "E2-18: the suspension produces EXACTLY ONE terminal event (§2.1)");
+        AE_CHECK(after_terminal == 0,
+                 "E2-18: NOTHING is emitted after the terminal event -- §2.2, a run that is over "
+                 "cannot carry anything a resume needs");
+
+        // ... and the prompt still reaches the consumer, in §2.2's own native slot rather than a
+        // fabricated CUSTOM event. Without this check the two above would pass on a projector that
+        // simply dropped the prompt again, which is the bug this whole case exists for.
+        agui::RunFinishedInterrupt const* rfi = nullptr;
+        for (auto const& e : stream)
+            if (std::holds_alternative<agui::RunFinishedInterrupt>(e))
+                rfi = &std::get<agui::RunFinishedInterrupt>(e);
+        AE_CHECK(rfi != nullptr && rfi->interrupts.size() == 1,
+                 "E2-18: the terminal event carries exactly one interrupt");
+        if (rfi != nullptr && rfi->interrupts.size() == 1) {
+            AE_CHECK(rfi->interrupts[0].id == "int-9" && rfi->interrupts[0].reason == "input_required",
+                     "E2-18: the interrupt still identifies the interaction it suspends on");
+            AE_CHECK(rfi->interrupts[0].message.has_value() &&
+                          *rfi->interrupts[0].message == "Which city?",
+                     "E2-18: the agent.ask() prompt rides out ON the interrupt (Interrupt.message)");
+        }
+    }
+
+    // --- E2-19: an ordinary input_required carries no fabricated message (negative control) ---------
+    // E2-18 alone would pass on a projector that stuffed some string into every interrupt. This is
+    // the paired control: an input_required with no preceding codeact_ask_requested must leave
+    // `message` unset rather than inventing one or leaking a previous ask's text.
+    {
+        auto out = projector.project(ae::RunEvent{"run-plain", 1, ae::run_event_kind::input_required,
+                                                     ae::run_event_payload::InteractionRef{"int-plain"}});
+        AE_CHECK(out.size() == 1 && std::holds_alternative<agui::RunFinishedInterrupt>(out[0]),
+                 "E2-19: a plain input_required still ends the run with an interrupt");
+        if (out.size() == 1 && std::holds_alternative<agui::RunFinishedInterrupt>(out[0])) {
+            auto const& rfi = std::get<agui::RunFinishedInterrupt>(out[0]);
+            AE_CHECK(rfi.interrupts.size() == 1 && !rfi.interrupts[0].message.has_value(),
+                     "E2-19 (negative control): no preceding ask means no message -- never fabricated, "
+                     "never leaked from a prior interaction");
+        }
     }
 
     if (g_failures == 0) {

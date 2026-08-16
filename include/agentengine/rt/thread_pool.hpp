@@ -84,6 +84,7 @@ namespace agentengine::rt {
 // handle to race against a worker thread still resuming it; JobOutcome is a plain, thread-safely-
 // delivered value (via std::promise/std::future, which itself guarantees the happens-before edge
 // between the worker writing it and the caller reading it after wait()/get()).
+// ae-naming-lint: allow JobOutcome — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct JobOutcome {
     bool faulted = false;
     std::exception_ptr fault{};
@@ -100,6 +101,7 @@ struct JobOutcome {
 // invalidate every one of those captures; a pool is meant to be constructed once and held by reference
 // or through a stable owner (e.g. a unique_ptr), matching how a fixed thread pool is used everywhere
 // else in C++ (std::jthread itself is the same non-movable-while-running shape, one level down).
+// ae-naming-lint: allow ThreadPool — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class ThreadPool {
 public:
     // `worker_count == 0` (including the default) means "use default_worker_count()" -- a caller who

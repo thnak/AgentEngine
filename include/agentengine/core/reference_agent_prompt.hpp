@@ -21,16 +21,19 @@
 
 namespace agentengine {
 
+// ae-naming-lint: allow PromptToolSummary — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct PromptToolSummary {
     std::string name;
     std::string one_line_description;
 };
 
+// ae-naming-lint: allow PromptModuleSummary — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct PromptModuleSummary {
     std::string name;  // "tools", "files", "data", ... (trust::ModuleDescriptor::name)
     std::string one_line_purpose;
 };
 
+// ae-naming-lint: allow PromptSkillSummary — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct PromptSkillSummary {
     std::string name;
     std::string description;
@@ -38,6 +41,7 @@ struct PromptSkillSummary {
 
 // One §7 budget row's measured/allowed cost -- so a caller can report WHICH element blew its budget,
 // not just that the whole assembled prompt did.
+// ae-naming-lint: allow PromptBudgetLine — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct PromptBudgetLine {
     std::string element;  // "environment", "tool:<name>", "module:<name>", "skill:<name>"
     std::uint64_t tokens = 0;
@@ -45,6 +49,7 @@ struct PromptBudgetLine {
     [[nodiscard]] bool within_budget() const { return tokens <= budget_tokens; }
 };
 
+// ae-naming-lint: allow AssembledPrompt — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct AssembledPrompt {
     std::string system_prompt;
     std::vector<PromptBudgetLine> budget_lines;

@@ -40,6 +40,7 @@ namespace agentengine {
 // RAII wrapper around a real, already-verified-safe POSIX file descriptor -- the POSIX counterpart
 // to `SafeFileHandle` in worktree_mount_fs.hpp. Same deliberate omission: no "reopen this by path"
 // accessor, for the identical reason (see that header's comment on the Windows type).
+// ae-naming-lint: allow SafeFileHandlePosix — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class SafeFileHandlePosix {
 public:
     SafeFileHandlePosix() = default;

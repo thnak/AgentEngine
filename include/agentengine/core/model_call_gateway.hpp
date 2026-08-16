@@ -118,6 +118,7 @@ namespace model_call_gateway_detail {
 // purpose IS failover; here, "just retry+breaker, no failover" is a legitimate, common
 // configuration, so zero fallbacks is allowed).
 template <class Primary, class... Fallback>
+// ae-naming-lint: allow ModelCallGateway — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class ModelCallGateway {
     static_assert(ChatClient<Primary>,
                   "ModelCallGateway's Primary must satisfy the ChatClient concept (004 §1)");
@@ -303,6 +304,7 @@ private:
 // ordinary -- no "resume once and hope it never suspends" hack, no leaked-frame use-after-free risk
 // (the exact hazard that made the original wrapper-template streaming-parity attempt unsafe).
 template <class Inner, class... Ms>
+// ae-naming-lint: allow MiddlewareModelCallGateway — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class MiddlewareModelCallGateway {
     static_assert(ModelCallGatewayLike<Inner>,
                   "MiddlewareModelCallGateway's Inner must satisfy ModelCallGatewayLike -- wrap a "

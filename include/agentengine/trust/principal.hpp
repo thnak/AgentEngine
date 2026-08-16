@@ -21,6 +21,7 @@ namespace agentengine {
 // narrowing. `kind` is kept here because it is meaningful even for the two surfaces this milestone
 // builds: Embedded is always `service`, Local CLI is always `human`, a delegated call is always
 // `agent`, and 018 §1's "Anonymous is a principal, not a bypass" rule needs a real value to hold.
+// ae-naming-lint: allow principal_kind — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 enum class principal_kind : std::uint8_t { human, service, agent, anonymous };
 
 struct Principal {
@@ -35,13 +36,22 @@ struct Principal {
     // walking an audit surface this milestone doesn't build (018 §7 G4, named out of scope,
     // decision 9); `delegation_depth` below is what bounds chain length, independent of whether the
     // full chain is reconstructable after the fact.
-    std::string   on_behalf_of;
+    std::string   on_behalf_of{};
     std::uint32_t delegation_depth = 0;
 
     // Fields added after `id`/`tenant_id` with defaults, deliberately — every pre-existing
     // `Principal{id, tenant_id}` two-argument aggregate-init call site across `tests/` (and
     // `AgentSessionRecord::restore_from_record`, which does not persist these three fields yet,
     // same narrowing category as its own already-named gaps) keeps compiling unchanged.
+    //
+    // That is also why `on_behalf_of` carries an explicit `{}` rather than bare `std::string
+    // on_behalf_of;`. The two are identical for a prefix aggregate-init — the member is
+    // value-initialized either way — but -Wmissing-field-initializers (in -Wextra) fires on exactly
+    // the members that have no default member initializer, and only on those; verified against
+    // g++ 15.2 on both the positional and the designated form, which warn alike. Writing the
+    // default down is what makes the deliberate-prefix-init pattern above warning-clean, so the
+    // suppression this project does not allow is unnecessary. Keep the `{}` on any trailing member
+    // added here later.
     friend bool operator==(Principal const&, Principal const&) = default;
 };
 

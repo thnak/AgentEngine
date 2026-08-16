@@ -5,8 +5,28 @@
 // in 004-Model-Provider-Plane.md §6, not an implementation of it). Adding a scenario means adding a
 // fixture under tests/fixtures/chat_client/, not writing more C++ (CLAUDE.md task brief).
 
+// Witness for tests/CMakeLists.txt's NDEBUG-stripping block. This file, and the twelve others listed
+// there, check exclusively through assert(); under Release's -DNDEBUG every one of those expands to
+// nothing and the suite passes without evaluating a single condition.
+//
+// A RUNTIME failure, not `#error`. The first version of this guard was `#error`, which was wrong in a
+// way worth recording: NDEBUG can legitimately arrive from CXXFLAGS or -DCMAKE_CXX_FLAGS (the strip
+// now handles those too), and in that configuration `#error` does not report a vacuous test -- it
+// fails the compilation of the entire tests/ tree, taking 168 unrelated tests with it. A guard that
+// breaks the build instead of failing the thing it guards is worse than the bug.
+//
+// Reported from main() below via kNdebugActive so it surfaces as one failing test with a readable
+// message. See also the CMake block's own comment for why the define is stripped rather than
+// countered with /UNDEBUG.
+#ifdef NDEBUG
+constexpr bool kNdebugActive = true;
+#else
+constexpr bool kNdebugActive = false;
+#endif
+
 #include <cassert>
 #include <filesystem>
+#include <iostream>
 #include <string>
 #include <variant>
 
@@ -124,6 +144,13 @@ void test_missing_fixture_returns_error() {
 } // namespace
 
 int main() {
+    if (kNdebugActive) {
+        std::cerr << "FAIL: NDEBUG is defined in this translation unit, so every assert() below is a "
+                     "no-op and this test would pass without checking anything. Twelve sibling files "
+                     "under tests/ are in the same position. See the NDEBUG-stripping block in "
+                     "tests/CMakeLists.txt -- something is re-adding the define after it runs.\n";
+        return 1;
+    }
     test_simple_reply();
     test_tool_call();
     test_reasoning_and_text();

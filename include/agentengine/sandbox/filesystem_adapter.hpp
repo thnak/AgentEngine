@@ -27,6 +27,7 @@ struct DirEntry {  // ae-naming-lint: allow DirEntry — pre-existing M0 scaffol
 // fix) from `core/worktree_mount_fs.hpp`, which is Windows-only and depends on this header already;
 // this struct itself is plain data, so it belongs on the portable seam any adapter's `usage()` (below)
 // answers through, not on a platform-specific implementation file.
+// ae-naming-lint: allow MountUsage — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct MountUsage {
     std::uint64_t total_bytes = 0;
     std::uint32_t file_count  = 0;

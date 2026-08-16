@@ -38,6 +38,7 @@
 namespace agentengine::rt {
 
 template <class T = void>
+// ae-naming-lint: allow task — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class task;
 
 template <>
@@ -122,6 +123,7 @@ private:
 
 // --- task<T>, T != void: adds inline value storage to the void specialization's shape above. -----
 template <class T>
+// ae-naming-lint: allow task — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class task {
 public:
     struct promise_type {

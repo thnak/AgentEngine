@@ -43,6 +43,7 @@
 #include <vector>
 
 #include "agentengine/core/json_value.hpp"
+#include "agentengine/pal/env.hpp"
 #include "agentengine/protocol/anthropic/chat_client.hpp"
 #include "agentengine/protocol/openai/chat_client.hpp"
 #include "agentengine/trust/principal.hpp"
@@ -70,8 +71,8 @@ void note(char const* label, std::string const& value) {
 }
 
 [[nodiscard]] std::string env_or(char const* name, std::string fallback) {
-    char const* v = std::getenv(name);
-    return (v && *v) ? std::string(v) : std::move(fallback);
+    auto const v = ::agentengine::pal::env_var(name);
+    return (v && !v->empty()) ? *v : std::move(fallback);
 }
 
 // OpenRouter's default routing alias for the DeepSeek V4 Flash family. Deliberately an ALIAS, not a
@@ -205,8 +206,8 @@ constexpr char const* kCapitalSchema =
 }  // namespace
 
 int main() {
-    char const* key_env = std::getenv("AGENTENGINE_OPENROUTER_API_KEY");
-    if (!key_env || !*key_env) {
+    auto const key_env = ::agentengine::pal::env_var("AGENTENGINE_OPENROUTER_API_KEY");
+    if (!key_env || key_env->empty()) {
         // A SKIP, not a pass and not a failure: this test needs a real credential and real egress.
         // Reported as success so a default `ctest` run on a machine with neither stays green -- the
         // ctest label `live-network` is how a run that MEANS to exercise it selects it.
@@ -225,7 +226,7 @@ int main() {
     // resolution at the point of use inside chat()/chat_stream() (004 §1, 018 §4). Nothing below ever
     // holds the key text itself.
     InMemorySecretStore store;
-    store.set(kSecretName, key_env);
+    store.set(kSecretName, *key_env);
     CapabilitySet held = CapabilitySet::grant_root({cap::Secret{kSecretName, std::chrono::seconds{0}}});
     EffectContext ctx;
     ctx.principal = Principal{"live-e2e-principal", ""};

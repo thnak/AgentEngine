@@ -58,6 +58,11 @@ inline constexpr std::size_t kAbuseCorpusSize = sizeof(kAbuseCorpus) / sizeof(kA
         case exec_outcome_class::crash: return "crash";
         case exec_outcome_class::policy_violation: return "policy_violation";
         case exec_outcome_class::escape_attempt: return "escape_attempt";
+        // Not in kAbuseCorpus above (no hostile-child probe produces it), but this function is the
+        // corpus's only failure-report vocabulary: without the case, an exec that came back
+        // `ask_pending` was reported as "unknown", i.e. a real, named outcome rendered as a shrug in
+        // the one message a human reads when the corpus fails. clang's -Wswitch was reporting it.
+        case exec_outcome_class::ask_pending: return "ask_pending";
     }
     return "unknown";
 }

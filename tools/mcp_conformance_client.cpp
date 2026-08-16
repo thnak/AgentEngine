@@ -35,6 +35,7 @@
 #include <vector>
 
 #include "agentengine/core/json_value.hpp"
+#include "agentengine/pal/env.hpp"
 #include "agentengine/protocol/mcp/client.hpp"
 #include "agentengine/protocol/mcp/json_rpc.hpp"
 #include "agentengine/sandbox/net_egress_proxy.hpp"
@@ -204,9 +205,9 @@ int main(int argc, char** argv) {
 
     // ADR-061 §10b claim 3: the scenario is contract, not decoration -- reported so a run's output
     // shows which scenario the harness selected without having to correlate by timestamp.
-    char const* scenario = std::getenv("MCP_CONFORMANCE_SCENARIO");
+    auto const scenario = ::agentengine::pal::env_var("MCP_CONFORMANCE_SCENARIO");
     std::fprintf(stderr, "agentengine-mcp-conformance-client: scenario=%s endpoint=%s\n",
-                  scenario ? scenario : "<unset>", url_text.c_str());
+                  scenario ? scenario->c_str() : "<unset>", url_text.c_str());
 
     // ADR-016's HOST-INITIATED resolver -- see this file's own top comment for why this, and not
     // `resolve_and_validate`, is the correct and non-weakening choice here.
@@ -285,7 +286,7 @@ int main(int argc, char** argv) {
                 ? extract_sse_last_data(framed)
                 : framed;
 
-        if (std::getenv("AE_MCP_TRACE")) {
+        if (::agentengine::pal::env_var("AE_MCP_TRACE")) {
             std::fprintf(stderr, "TRACE >> %s\n", body.c_str());
             std::fprintf(stderr, "TRACE << %s\n", payload.c_str());
         }

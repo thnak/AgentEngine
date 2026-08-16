@@ -73,6 +73,7 @@ struct SessionContext {
 // added to history (in this milestone's own one-model-call-per-turn scope, the input plus the
 // response — never the whole history, which `SessionContext.history` already exposes to
 // `on_context` for providers that need the full record).
+// ae-naming-lint: allow TurnView — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct TurnView {
     std::span<Message const> turn_messages;
 };

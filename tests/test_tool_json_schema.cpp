@@ -59,7 +59,7 @@ struct SearchReply {
 AE_JSON_SCHEMA(SearchReply, hits, truncated)
 
 struct WebSearchTool : agentengine::Tool<WebSearchTool> {
-    static constexpr std::string_view name = "web_search";
+    [[maybe_unused]] static constexpr std::string_view name = "web_search";
     using Args = SearchArgs;
     using Reply = SearchReply;
 };

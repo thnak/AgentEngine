@@ -65,6 +65,7 @@ namespace agentengine::rt {
 // at a time, matching the Quark original's own unhurried "iterate the vector" shape (030 §4 does
 // not ask for concurrent passivation, and concurrent checkpoint I/O against possibly-shared stores
 // is exactly the kind of thing this project's own I1 discipline avoids by default).
+// ae-naming-lint: allow CheckpointHook — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 using CheckpointHook = std::function<task<result<void>>()>;
 
 // One checkpoint attempt's outcome, when it failed. checkpoint_members_and_workflows() collects
@@ -73,12 +74,14 @@ using CheckpointHook = std::function<task<result<void>>()>;
 // an operator pausing a Project with many members should learn about every member whose checkpoint
 // failed, not just the first, since skipping the REST of the checkpoints just because member #2
 // failed transiently would leave members #3..N's durable state stale for no good reason.
+// ae-naming-lint: allow CheckpointFailure — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct CheckpointFailure {
     std::size_t index = 0;      // position within its own kind's registration order
     bool        is_workflow = false;  // false: a member session's hook; true: a workflow's hook
     error       err;
 };
 
+// ae-naming-lint: allow CheckpointReport — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct CheckpointReport {
     std::vector<CheckpointFailure> failures;
     [[nodiscard]] bool all_ok() const noexcept { return failures.empty(); }
@@ -91,6 +94,7 @@ struct CheckpointReport {
 // non-templated -- the heterogeneity problem is absorbed entirely by CheckpointHook's type erasure,
 // not by this type becoming a template (matching the Quark original's own "non-templated, mirrors
 // WorkflowSupervisor's own shape" precedent).
+// ae-naming-lint: allow ProjectSupervisor — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class ProjectSupervisor {
 public:
     // `session`/`store` must outlive both this call and every subsequent

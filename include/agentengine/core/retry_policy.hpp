@@ -30,6 +30,7 @@
 namespace agentengine {
 
 // F1 (004 §4): "bounded exponential with jitter, respecting the remaining deadline."
+// ae-naming-lint: allow RetryPolicy — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct RetryPolicy {
     // Total attempts INCLUDING the first, real (non-shed) attempt. 1 == no retries at all.
     std::uint32_t max_attempts = 3;
@@ -45,6 +46,7 @@ struct RetryPolicy {
 
 // F2 (004 §4 / 022 §3): a plain runtime constructor struct, forwarded verbatim into a caller's own
 // `quark::CircuitBreaker` member.
+// ae-naming-lint: allow BreakerConfig — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct BreakerConfig {
     std::uint32_t fail_threshold = 5;
     std::chrono::milliseconds open_duration{30000};

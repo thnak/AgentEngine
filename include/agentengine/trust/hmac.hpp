@@ -19,6 +19,7 @@
 namespace agentengine::trust {
 
 inline constexpr std::size_t kHmacSha256Bytes = 32;
+// ae-naming-lint: allow HmacSha256 — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 using HmacSha256 = std::array<std::uint8_t, kHmacSha256Bytes>;
 
 // HMAC-SHA256(key, data) -> 32-byte MAC. One-shot: opens a fresh HMAC provider/hash object per call

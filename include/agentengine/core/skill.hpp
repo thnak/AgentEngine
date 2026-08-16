@@ -27,6 +27,7 @@ namespace agentengine {
 // lives in `metadata` like any other key; this type does not special-case it (009 §8a: "our loader
 // records the package digest as the real identity and treats metadata.version as a label" -- the
 // digest itself is the WORKTREE's concern, `skill_provider.hpp`, not this value type's).
+// ae-naming-lint: allow SkillMetadata — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct SkillMetadata {
     std::string name;                                       // required, validated below
     std::string description;                                 // required, validated below

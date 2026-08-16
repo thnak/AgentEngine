@@ -57,6 +57,7 @@ namespace agentengine::sandbox {
 // endpoint, and (c) a distinct named enumerator at the call site rather than a bool -- a reader of
 // the construction site can see which transport was chosen without consulting this header. 004 §3's
 // "capabilities are declared, not probed" rule applied to the transport itself.
+// ae-naming-lint: allow ProviderTransport — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 enum class ProviderTransport {
     tls,             // ADR-013's TlsClientSession: certificate verified against the vendored CA bundle
     plaintext_http,  // no TLS -- the credential header is readable on the wire (see above)

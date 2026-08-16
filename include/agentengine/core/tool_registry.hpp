@@ -39,10 +39,12 @@ namespace agentengine {
 
 // ae-naming-lint: allow tool_provenance -- new vocabulary from the gap-4 design draft; 027 has not
 // been updated to list it.
+// ae-naming-lint: allow tool_provenance — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 enum class tool_provenance { native, wasm_plugin, mcp_server, a2a_agent };
 
 // ae-naming-lint: allow ToolRegistry -- new vocabulary from the gap-4 design draft; 027 has not been
 // updated to list it.
+// ae-naming-lint: allow ToolRegistry — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class ToolRegistry {
 public:
     // Fails closed on a duplicate name -- the SAME "two declared tools share a name" shape

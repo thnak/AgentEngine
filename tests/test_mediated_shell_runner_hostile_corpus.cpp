@@ -27,6 +27,7 @@
 #include <string>
 
 #include "agentengine/core/effect_context.hpp"
+#include "agentengine/pal/env.hpp"
 #include "agentengine/sandbox/runner.hpp"
 #include "agentengine/trust/capability.hpp"
 #include "backends/native_jail/mediated_command_registry.hpp"
@@ -52,7 +53,7 @@ int g_failures = 0;
 }  // namespace
 
 int main() {
-    std::string const scratch = std::string(std::getenv("TEMP") ? std::getenv("TEMP") : "C:/Windows/Temp") +
+    std::string const scratch = ::agentengine::pal::env_var("TEMP").value_or("C:/Windows/Temp") +
                                  "/ae_e4_shell_mount";
     std::filesystem::remove_all(scratch);
     std::filesystem::create_directories(scratch);
@@ -183,7 +184,7 @@ int main() {
     // opaque, unchecked leaf segment. No test in this corpus exercised 'mkdir' before this fix.
     {
         std::string const temp_dir =
-            std::string(std::getenv("TEMP") ? std::getenv("TEMP") : "C:/Windows/Temp");
+            ::agentengine::pal::env_var("TEMP").value_or("C:/Windows/Temp");
         std::string const sibling_marker = temp_dir + "/ae_e4_mkdir_escape_marker";
         std::filesystem::remove_all(sibling_marker);  // clean slate regardless of prior runs
 
