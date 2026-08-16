@@ -17,6 +17,7 @@ import {
   reasoningRows,
   replaySnippet,
 } from "../data/providerContent";
+import { SITE_BASE } from "../data/content";
 import { useLang } from "../i18n/LanguageContext";
 import { ui } from "../i18n/ui";
 import { highlightCpp } from "../lib/highlightCpp";
@@ -189,6 +190,16 @@ const copy = {
         is stale.
       </>
     ),
+    s3ForwardNote: (
+      <>
+        Neither gateway type is wired to anything above by itself — this page stops at the
+        type. For the object built from these two, plugged straight into{" "}
+        <code>AgentSession</code>'s first template slot, see{" "}
+        <a href={`${SITE_BASE}/api/runtime.html#chat-clients`}>
+          AgentSession &amp; ChatClient — Chat clients
+        </a>.
+      </>
+    ),
 
     s4Eyebrow: "004 §1 / 018 §4 — resolution at the point of use",
 
@@ -357,6 +368,16 @@ const copy = {
         xóa hẳn. Nếu bạn thấy một trong ba cái tên đó trong một chú thích đầu tệp ở cây mã này —
         kể cả trong chính ghi chú của <code>chat_client.hpp</code> về{" "}
         <code>idempotency_key</code> — thì chú thích đó đã cũ.
+      </>
+    ),
+    s3ForwardNote: (
+      <>
+        Tự bản thân hai kiểu gateway này chưa được đấu nối vào đâu cả — trang này dừng lại ở
+        định nghĩa kiểu. Muốn xem đối tượng được xây từ cả hai, cắm thẳng vào vị trí tham số
+        template đầu tiên của <code>AgentSession</code>, xem{" "}
+        <a href={`${SITE_BASE}/api/runtime.html#chat-clients`}>
+          AgentSession &amp; ChatClient — Chat clients
+        </a>.
       </>
     ),
 
@@ -551,6 +572,9 @@ export function ApiProvidersReference() {
           </RevealItem>
           <RevealItem>
             <CodePanel filename="model_call_gateway.hpp">{highlightCpp(gatewaySnippet)}</CodePanel>
+          </RevealItem>
+          <RevealItem>
+            <p className="gs-note" style={{ marginTop: 20 }}>{t.s3ForwardNote}</p>
           </RevealItem>
           <RevealItem>
             <CiteLink id="conformers" />

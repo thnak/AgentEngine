@@ -3,12 +3,14 @@ import {
   chatClientSwapSnippet,
   composedProviderExampleSnippet,
   middlewareExampleSnippet,
+  minimalGatewaySnippet,
   runtimeConvergeStep,
   runtimeEntries,
   runtimeToolRoundStep,
   runtimeTurnLoopSteps,
   statefulToolExampleSnippet,
 } from "../data/apiContent";
+import { SITE_BASE } from "../data/content";
 import { useLang } from "../i18n/LanguageContext";
 import { ui } from "../i18n/ui";
 import { highlightCpp } from "../lib/highlightCpp";
@@ -176,7 +178,23 @@ const copy = {
       <>
         <code>Ms...</code>, in registration order, wrap step 04 above — position 0 is the
         OUTERMOST layer, matching a real nested decorator: its <code>before_model</code>{" "}
-        runs first, its <code>after_model</code> runs last.
+        runs first, its <code>after_model</code> runs last. The thing being wrapped,{" "}
+        <code>Inner</code>, is usually not a raw backend but a{" "}
+        <code>ModelCallGateway&lt;Primary, Fallback...&gt;</code> — retry, one circuit breaker
+        per backend, and failover, all in the object the code below builds as{" "}
+        <code>gateway</code>. The next section shows that same object hooked directly into{" "}
+        <code>AgentSession</code>.
+      </>
+    ),
+    s5RecoLabel: "Recommended default",
+    s5RecoBody: (
+      <>
+        Most agents don't need any of this — pass a raw <code>ChatClient</code> straight to{" "}
+        <code>AgentSession</code> (§6 below) and keep live <code>model_delta</code> streaming;
+        there's nothing to configure. Reach for <code>ModelCallGateway</code> only once you
+        need retry/circuit-breaking in production, and stop there unless you also need a
+        before/after hook — the one-backend, no-middleware shape below is the common case, and
+        every default is already tuned:
       </>
     ),
     onionM0Before: "M0.before_model — can rewrite the request, or short-circuit",
@@ -211,13 +229,28 @@ const copy = {
       <>
         Every backend below satisfies the exact same <code>ChatClient</code> concept —{" "}
         <code>capabilities()</code> + <code>chat_stream()</code> — the interface every tool
-        and agent is actually written against. Swap one for another, or wrap either in the
-        retry/middleware layering from the previous section, and nothing else changes.
+        and agent is actually written against. Swap one for another and nothing else changes.
+        <code>AgentSession</code>'s first template slot takes a second, different shape too:{" "}
+        <code>ModelCallGatewayLike</code> — <code>capabilities()</code> +{" "}
+        <code>call(request, ctx)</code>, satisfied by the{" "}
+        <code>ModelCallGateway</code>/<code>MiddlewareModelCallGateway</code> from the section
+        above, not by any raw backend. The code panel below plugs the exact <code>gateway</code>{" "}
+        object built two sections up into that same slot — see the full type definitions on the{" "}
+        <a href={`${SITE_BASE}/api/providers.html#conformers`}>model providers page</a>.
       </>
     ),
     anthropicSub: "POSTs /v1/messages · real streaming · prompt-cache TTL",
     openaiSub: "POSTs /v1/chat/completions · streams via a detached worker",
     replaySub: "Replays a recorded run deterministically, offline — the I5 seam",
+    s6Note: (
+      <>
+        <strong>Same slot, two different shapes.</strong> A raw backend keeps live,
+        token-by-token <code>model_delta</code> events; a gateway trades that away for
+        retry/failover/middleware, and says so with a one-time warning event the first time a
+        run actually routes through it — see <code>GatewaySession</code> in the code above.
+        Nothing else about the agent — tools, approval, context providers — changes either way.
+      </>
+    ),
   },
   vi: {
     eyebrow: "Lõi Agent — L2",
@@ -357,7 +390,24 @@ const copy = {
       <>
         <code>Ms...</code>, theo thứ tự đăng ký, bọc quanh bước 04 ở trên — vị trí 0 là lớp
         NGOÀI CÙNG, giống một decorator lồng nhau thật sự: <code>before_model</code> của nó
-        chạy trước tiên, <code>after_model</code> của nó chạy sau cùng.
+        chạy trước tiên, <code>after_model</code> của nó chạy sau cùng. Thứ bị bọc,{" "}
+        <code>Inner</code>, thường không phải một backend thô mà là một{" "}
+        <code>ModelCallGateway&lt;Primary, Fallback...&gt;</code> — thử lại, một circuit
+        breaker cho mỗi backend, và chuyển dự phòng, tất cả gộp trong đối tượng mà đoạn mã
+        dưới đây xây dựng thành <code>gateway</code>. Phần tiếp theo cho thấy chính đối tượng
+        đó được cắm thẳng vào <code>AgentSession</code>.
+      </>
+    ),
+    s5RecoLabel: "Mặc định khuyến nghị",
+    s5RecoBody: (
+      <>
+        Phần lớn agent không cần gì trong số này — cứ đưa thẳng một <code>ChatClient</code>{" "}
+        thô vào <code>AgentSession</code> (§6 bên dưới) và giữ streaming{" "}
+        <code>model_delta</code> sống; không có gì phải cấu hình. Chỉ tìm tới{" "}
+        <code>ModelCallGateway</code> khi thật sự cần retry/circuit-breaking cho production,
+        và dừng ở đó trừ khi bạn cũng cần một hook before/after — hình dạng một-backend,
+        không-middleware bên dưới là trường hợp phổ biến, và mọi giá trị mặc định đã được
+        tinh chỉnh sẵn:
       </>
     ),
     onionM0Before: "M0.before_model — có thể viết lại request, hoặc short-circuit",
@@ -394,13 +444,30 @@ const copy = {
       <>
         Mỗi backend bên dưới đều thỏa mãn đúng cùng một concept <code>ChatClient</code> —{" "}
         <code>capabilities()</code> + <code>chat_stream()</code> — interface mà mọi tool và
-        agent thực sự được viết dựa vào. Hoán đổi cái này sang cái khác, hoặc bọc bất kỳ cái
-        nào trong lớp retry/middleware ở phần trước, và không có gì khác thay đổi.
+        agent thực sự được viết dựa vào. Hoán đổi cái này sang cái khác, và không có gì khác
+        thay đổi. Vị trí tham số template đầu tiên của <code>AgentSession</code> còn nhận một
+        hình dạng thứ hai, khác hẳn: <code>ModelCallGatewayLike</code> —{" "}
+        <code>capabilities()</code> + <code>call(request, ctx)</code>, được thỏa mãn bởi{" "}
+        <code>ModelCallGateway</code>/<code>MiddlewareModelCallGateway</code> ở phần trên,
+        không phải bởi một backend thô nào. Đoạn mã bên dưới cắm chính đối tượng{" "}
+        <code>gateway</code> đã xây ở hai phần trước vào đúng vị trí đó — xem đầy đủ định
+        nghĩa kiểu tại{" "}
+        <a href={`${SITE_BASE}/api/providers.html#conformers`}>trang nhà cung cấp model</a>.
       </>
     ),
     anthropicSub: "Gửi POST tới /v1/messages · streaming thật · hỗ trợ prompt-cache TTL",
     openaiSub: "Gửi POST tới /v1/chat/completions · streaming qua một worker tách rời",
     replaySub: "Phát lại một run đã ghi một cách tất định, ngoại tuyến — ranh giới của I5",
+    s6Note: (
+      <>
+        <strong>Cùng một vị trí, hai hình dạng khác nhau.</strong> Một backend thô giữ được
+        các sự kiện <code>model_delta</code> theo từng token, sống trực tiếp; một gateway đánh
+        đổi điều đó để lấy retry/failover/middleware, và báo rõ điều đó bằng một sự kiện
+        warning một lần duy nhất ngay lần đầu một run thực sự đi qua nó — xem{" "}
+        <code>GatewaySession</code> trong đoạn mã trên. Không có gì khác của agent — tool,
+        approval, context provider — thay đổi ở cả hai cách.
+      </>
+    ),
   },
 } as const;
 
@@ -628,6 +695,17 @@ export function ApiRuntimeReference() {
           </RevealItem>
 
           <RevealItem>
+            <div className="gs-recommend">
+              <span className="gs-recommend-label">{t.s5RecoLabel}</span>
+              <p>{t.s5RecoBody}</p>
+            </div>
+          </RevealItem>
+
+          <RevealItem>
+            <CodePanel filename="model_call_gateway.hpp">{highlightCpp(minimalGatewaySnippet)}</CodePanel>
+          </RevealItem>
+
+          <RevealItem>
             <div className="onion-layer glass">
               <div className="onion-label">{t.onionM0Before}</div>
               <div className="onion-layer">
@@ -689,6 +767,10 @@ export function ApiRuntimeReference() {
 
           <RevealItem>
             <CodePanel filename="agent_session.hpp">{highlightCpp(chatClientSwapSnippet)}</CodePanel>
+          </RevealItem>
+
+          <RevealItem>
+            <p className="gs-note" style={{ marginTop: 20 }}>{t.s6Note}</p>
           </RevealItem>
 
           <RevealItem>

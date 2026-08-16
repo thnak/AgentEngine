@@ -3,6 +3,7 @@ import {
   workflowEdgeKinds,
   workflowEntries,
   workflowGraphSnippet,
+  workflowMinimalSnippet,
   workflowPatterns,
 } from "../data/apiContent";
 import { useLang } from "../i18n/LanguageContext";
@@ -76,6 +77,18 @@ const copy = {
     ),
     s2Eyebrow: "Running one",
     s2Heading: "The superstep engine, fan-in merging, routing, and worktree scoping",
+
+    graphShapeRecoLabel: "Recommended default",
+    graphShapeRecoBody: (
+      <>
+        Most of the struct below is defaults, not authoring burden: <code>Executor::kind</code>{" "}
+        defaults to <code>function</code>, <code>worktree_mode</code> defaults to{" "}
+        <code>branch</code>, <code>Edge::kind</code> defaults to <code>direct</code>, and{" "}
+        <code>on_failure</code> defaults to <code>fail</code>. A two-node chain only has to name
+        the executors' typed ports, wire one edge, and set a bound — <code>validate_workflow</code>{" "}
+        rejects a missing id, start, or bound, but nothing else here needs an explicit value.
+      </>
+    ),
 
     patternsEyebrow: "014 §3 — patterns, not subsystems",
     patternsHeading: "Eight named patterns, each a configuration of the same graph",
@@ -290,6 +303,19 @@ const copy = {
     ),
     s2Eyebrow: "Chạy một workflow",
     s2Heading: "Superstep engine, gộp fan-in, định tuyến, và giới hạn phạm vi worktree",
+
+    graphShapeRecoLabel: "Mặc định khuyến nghị",
+    graphShapeRecoBody: (
+      <>
+        Phần lớn struct bên dưới là giá trị mặc định, không phải gánh nặng phải khai báo:{" "}
+        <code>Executor::kind</code> mặc định là <code>function</code>,{" "}
+        <code>worktree_mode</code> mặc định là <code>branch</code>, <code>Edge::kind</code> mặc
+        định là <code>direct</code>, và <code>on_failure</code> mặc định là <code>fail</code>.
+        Một chuỗi hai node chỉ cần nêu tên các cổng có kiểu của executor, nối một edge, và đặt một
+        bound — <code>validate_workflow</code> từ chối khi thiếu id, start, hoặc bound, nhưng
+        không có gì khác ở đây cần một giá trị tường minh.
+      </>
+    ),
 
     patternsEyebrow: "014 §3 — các mẫu, không phải các phân hệ",
     patternsHeading: "Tám mẫu được nêu tên, mỗi mẫu là một cấu hình của cùng một đồ thị",
@@ -533,6 +559,15 @@ export function ApiWorkflowReference() {
                 <span className="eyebrow">{t.graphShapeEyebrow}</span>
                 <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>{t.graphShapeHeading}</h3>
               </div>
+            </RevealItem>
+            <RevealItem>
+              <div className="gs-recommend">
+                <span className="gs-recommend-label">{t.graphShapeRecoLabel}</span>
+                <p>{t.graphShapeRecoBody}</p>
+              </div>
+            </RevealItem>
+            <RevealItem>
+              <CodePanel filename="workflow/graph.hpp">{highlightCpp(workflowMinimalSnippet)}</CodePanel>
             </RevealItem>
             <RevealItem>
               <CodePanel filename="workflow/graph.hpp">{highlightCpp(workflowGraphSnippet)}</CodePanel>

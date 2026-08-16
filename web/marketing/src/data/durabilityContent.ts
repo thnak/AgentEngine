@@ -658,6 +658,12 @@ struct CheckpointCadence {
 InMemorySessionStore store;                       // or FileSessionStore{root}
 bool wrote = *co_await checkpoint_if_due<CheckpointCadence<3>>(session, store, turns);`;
 
+export const minimalCheckpointSnippet = `// Common case: checkpoint every turn, no cadence math, in-memory to start.
+InMemorySessionStore store;
+co_await checkpoint_if_due<CheckpointCadence<1>>(session, store, /*turns_since_last=*/1);
+// Same call once a restart needs to survive -- only the store type changes.
+// FileSessionStore store{root};`;
+
 export const deleteSnippet = `// rt/agent_session.hpp -- 005 §6's "hard removal, with a completion receipt".
 struct SessionDeletionReceipt {
     std::string session_id;

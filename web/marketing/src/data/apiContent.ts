@@ -332,6 +332,14 @@ export const authoringEntries: Record<Lang, ApiEntry[]> = {
   ],
 };
 
+export const minimalAgentSnippet = `// The common case: one chat client, one tool, everything else left at its 002 §3 table default --
+// MaxTurns<16>, unbounded TokenBudget, SandboxProfile<Strict> -- none need to be spelled out.
+struct MyAgent : Agent<MyAgent, ChatClientId<"anthropic:claude-opus-4">, Tools<SearchTool>> {
+    static constexpr std::string_view name = "my-agent";
+    static constexpr std::string_view instructions = "Answer questions using the search tool.";
+};
+auto meta = register_agent<MyAgent>();   // same 8 checks below -- most already pass on these defaults`;
+
 export interface FieldSpec {
   name: string;
   type: string;
@@ -441,6 +449,17 @@ export const toolStaticMembers: Record<Lang, FieldSpec[]> = {
     },
   ],
 };
+
+export const minimalToolSnippet = `// The common case: five required members, nothing else. declared_capabilities()/declared_approval()/
+// declared_effect_class() are already provided by Tool<Derived> itself (empty caps, never_require,
+// at_most_once) -- override them only by adding Capabilities<...>/Approval<...>/EffectClass<...>.
+struct WebSearchTool : agentengine::Tool<WebSearchTool> {
+    static constexpr std::string_view name = "web_search";
+    static constexpr std::string_view description = "Search the web and return top hits.";
+    using Args = SearchArgs;    // AE_JSON_SCHEMA(SearchArgs, query, max_results, after_cursor)
+    using Reply = SearchReply;  // AE_JSON_SCHEMA(SearchReply, hits, truncated)
+    static result<Reply> invoke(Args args, EffectContext& ctx) { /* ... */ }
+};`;
 
 export interface TypeMapping {
   cpp: string;
@@ -615,6 +634,13 @@ export const toolPipelineSteps: Record<Lang, PipelineStep[]> = {
     { index: "9", title: "Normalize (chuẩn hóa)", body: "Kết quả của chính tool (hoặc lỗi từ bất kỳ bước nào trước đó) trở thành một ToolResult duy nhất — hình dạng dữ liệu được gộp trở lại vào history() làm đầu vào tiếp theo cho model." },
   ],
 };
+
+export const minimalCapabilitiesSnippet = `// Most tools reach no privileged effect at all -- declare nothing.
+struct SummarizeTool : Tool<SummarizeTool> {
+    static constexpr std::string_view name = "summarize";
+    // No Capabilities<...> tag -- declared_capabilities() returns {} (007 §3's empty-by-default
+    // rule). register_agent<A>() has nothing to check for this tool against the agent's ceiling.
+};`;
 
 export const capabilityDenialExampleSnippet = `// examples/06_capabilities_and_denial.cpp (trimmed)
 struct WriteNoteTool
@@ -960,6 +986,14 @@ auto r2 = drive(session.resolve_interaction(ResolveInteraction{id, /*approved=*/
 // r2 converges: send_message's invoke() ran for real, through the ordinary capability-checked
 // pipeline -- and it's still the SAME run_id as r1, never a new run (I4).`;
 
+export const minimalGatewaySnippet = `// The common case: one backend, retry + circuit breaker, no failover, no middleware.
+// Every default is left as-is -- RetryPolicy{} and BreakerConfig{} are already tuned (:33-44).
+using Gateway = ModelCallGateway<AnthropicChatClient<InMemorySecretStore>>;
+Gateway gateway{std::move(primary), {}};                      // {} -- no fallback tier
+using Session = agentengine::rt::AgentSession<Gateway>;       // same slot as any raw backend (see below)
+// Need failover across a second vendor, or a before/after hook? Same object, more type
+// parameters -- the full composition is below, nothing here needs rewriting to get there.`;
+
 export const middlewareExampleSnippet = `// Shape matches include/agentengine/core/middleware.hpp + tests/test_middleware_model_call_gateway.cpp
 struct LoggingMiddleware {
     static constexpr std::string_view name = "logging";     // 002 §5: attribution needs a real name
@@ -992,7 +1026,16 @@ ReplayChatClient                         replayed{recorded_run};// core/replay_c
 
 // Swap any of these into AgentSession's first template slot -- nothing else in agent code changes:
 using Session = agentengine::rt::AgentSession<AnthropicChatClient<InMemorySecretStore>>;
-using ReplaySession = agentengine::rt::AgentSession<ReplayChatClient>;   // deterministic, offline`;
+using ReplaySession = agentengine::rt::AgentSession<ReplayChatClient>;   // deterministic, offline
+
+// AgentSession's first slot ALSO accepts anything satisfying ModelCallGatewayLike, not just
+// ChatClient (agent_session.hpp:470) -- so the very \`gateway\` object built two sections up
+// (api/providers.html#conformers has the full ModelCallGateway<...> type) plugs into the SAME
+// slot, no wrapper on top:
+using GatewaySession = agentengine::rt::AgentSession<Guarded>;   // Guarded = MiddlewareModelCallGateway<...>
+// run_model_call() picks this branch with \`if constexpr\` (:1155) -- one \`co_await gateway.call(...)\`
+// instead of a live chat_stream() drain. The trade is named, not silent: no model_delta fires for a
+// gateway-routed round, and the FIRST such round emits one run_event_kind::warning saying so (:615-619).`;
 
 export const statefulToolExampleSnippet = `// core/tool_pipeline.hpp -- make_tool_descriptor_with_invoke<ToolT>()
 class CounterHistoryProvider {
@@ -1105,6 +1148,14 @@ export const pluginEntries: Record<Lang, ApiEntry[]> = {
     },
   ],
 };
+
+export const minimalSkillSnippet = `---
+name: quick-note-format
+description: Formats short text into a consistent note structure. Use when saving an agent note.
+---
+
+# Quick Note Format
+Write notes as "## <title>" followed by 2-3 sentences of plain prose.`;
 
 export const skillFrontmatterFields: Record<Lang, FieldSpec[]> = {
   en: [
@@ -1660,6 +1711,15 @@ export const workflowPatterns: Record<Lang, WorkflowPattern[]> = {
     },
   ],
 };
+
+export const workflowMinimalSnippet = `// The common case: two executors, one edge, everything else left at its default.
+Workflow wf;
+wf.id        = "greet";
+wf.executors = {Executor{"A", executor_kind::function, "Text", "Text"},
+                 Executor{"B", executor_kind::function, "Text", "Text"}};
+wf.edges     = {Edge{"A", "B"}};      // kind defaults to direct, on_failure defaults to fail
+wf.start     = "A";
+wf.bound.max_rounds = 4;              // required -- validate_workflow rejects an unbounded graph`;
 
 export const workflowGraphSnippet = `// The graph AS DATA -- no execution, no actors, no scheduling.
 // include/agentengine/workflow/graph.hpp

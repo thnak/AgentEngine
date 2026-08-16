@@ -3,6 +3,7 @@ import {
   genericSkills,
   inlineSkillSourceExampleSnippet,
   inlineSkillSourceShapeSnippet,
+  minimalSkillSnippet,
   skillCollisionSnippet,
   skillFrontmatterFields,
   skillSourceConceptSnippet,
@@ -49,6 +50,16 @@ const copy = {
         the format of record — the identical layout Anthropic's own products and Microsoft
         Agent Framework already use. The format, sourcing, and mounting below are real and
         tested; the one piece still design-only is called out in its own section further down.
+      </>
+    ),
+    recoLabel: "Recommended default",
+    recoBody: (
+      <>
+        Only two frontmatter fields are required — <code>name</code> and{" "}
+        <code>description</code>; <code>parse_skill_md</code> rejects a document missing either
+        one with its own error code. <code>license</code>, <code>compatibility</code>,{" "}
+        <code>metadata</code>, and <code>allowed-tools</code> are all optional and can be left
+        out entirely. A minimal skill is just these two fields plus a Markdown body:
       </>
     ),
     treeNote: (
@@ -315,6 +326,16 @@ const copy = {
         Microsoft Agent Framework đã dùng. Định dạng, cách lấy nguồn, và cách mount bên dưới
         đều có thật và đã kiểm thử; phần duy nhất vẫn còn ở dạng thiết kế được nêu riêng ở
         phần bên dưới.
+      </>
+    ),
+    recoLabel: "Mặc định khuyến nghị",
+    recoBody: (
+      <>
+        Chỉ hai trường frontmatter là bắt buộc — <code>name</code> và <code>description</code>;{" "}
+        <code>parse_skill_md</code> từ chối một tài liệu thiếu một trong hai với mã lỗi riêng
+        của nó. <code>license</code>, <code>compatibility</code>, <code>metadata</code>, và{" "}
+        <code>allowed-tools</code> đều tùy chọn và có thể bỏ hẳn. Một skill tối giản chỉ cần
+        đúng hai trường này cộng với phần thân Markdown:
       </>
     ),
     treeNote: (
@@ -601,6 +622,18 @@ export function ApiSkillReference() {
           </span>
           <p style={{ marginTop: 16 }}>{t.intro}</p>
         </div>
+
+        <RevealGroup>
+          <RevealItem>
+            <div className="gs-recommend">
+              <span className="gs-recommend-label">{t.recoLabel}</span>
+              <p>{t.recoBody}</p>
+            </div>
+          </RevealItem>
+          <RevealItem>
+            <CodePanel filename="quick-note-format/SKILL.md">{minimalSkillSnippet}</CodePanel>
+          </RevealItem>
+        </RevealGroup>
 
         <RevealGroup className="spec-layout">
           <RevealGroup>

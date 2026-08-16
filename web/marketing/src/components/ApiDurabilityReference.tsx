@@ -17,6 +17,7 @@ import {
   effectClassRows,
   idempotencySnippet,
   journalSnippet,
+  minimalCheckpointSnippet,
   proofRows,
   standingEffectSnippet,
   wakeRows,
@@ -140,6 +141,17 @@ const copy = {
     colWhy: "Why",
     carriedYes: "carried",
     carriedNo: "not carried",
+    s1RecoLabel: "Recommended default",
+    s1RecoBody: (
+      <>
+        Most agents don't need to reason about cadence or pick a store up front.{" "}
+        <code>InMemorySessionStore</code> plus <code>CheckpointCadence&lt;1&gt;</code> — checkpoint
+        after every turn — is the common case; the cost is one extra write per turn, worth paying
+        until there's a measured reason to widen it. <code>checkpoint_if_due()</code> is the same
+        call whether the store is in-memory or <code>FileSessionStore</code>, so moving to a store
+        that survives a restart later is a type swap, not a rewrite.
+      </>
+    ),
     s1Note: (
       <>
         <strong>Two stores, two different durability stories.</strong>{" "}
@@ -362,6 +374,17 @@ const copy = {
     colWhy: "Vì sao",
     carriedYes: "có mang",
     carriedNo: "không mang",
+    s1RecoLabel: "Mặc định khuyến nghị",
+    s1RecoBody: (
+      <>
+        Phần lớn agent không cần cân nhắc nhịp checkpoint hay chọn store ngay từ đầu.{" "}
+        <code>InMemorySessionStore</code> cùng <code>CheckpointCadence&lt;1&gt;</code> — checkpoint
+        sau mỗi lượt — là trường hợp phổ biến; cái giá là thêm một lần ghi mỗi lượt, đáng trả cho
+        tới khi có lý do đo được để nới rộng nó. <code>checkpoint_if_due()</code> là cùng một lời
+        gọi dù store là in-memory hay <code>FileSessionStore</code>, nên chuyển sang một store sống
+        sót qua khởi động lại về sau chỉ là đổi kiểu, không phải viết lại.
+      </>
+    ),
     s1Note: (
       <>
         <strong>Hai store, hai câu chuyện bền vững khác nhau.</strong>{" "}
@@ -590,6 +613,19 @@ export function ApiDurabilityReference() {
                 <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>{t.s1Heading}</h3>
                 <p>{t.s1Body}</p>
               </div>
+            </RevealItem>
+
+            <RevealItem>
+              <div className="gs-recommend">
+                <span className="gs-recommend-label">{t.s1RecoLabel}</span>
+                <p>{t.s1RecoBody}</p>
+              </div>
+            </RevealItem>
+
+            <RevealItem>
+              <CodePanel filename="rt/agent_session.hpp">
+                {highlightCpp(minimalCheckpointSnippet)}
+              </CodePanel>
             </RevealItem>
 
             <RevealItem>

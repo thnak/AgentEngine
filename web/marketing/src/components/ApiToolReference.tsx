@@ -1,6 +1,7 @@
 import {
   gh,
   jsonSchemaTypeMapping,
+  minimalToolSnippet,
   toolDescriptorSnippet,
   toolSchemaOutput,
   toolSchemaSnippet,
@@ -26,6 +27,18 @@ const copy = {
         reachable only through the host's ten-step pipeline (006 §3, walked through on the
         Capabilities &amp; Sandbox page). Every row below is a real static member{" "}
         <code>Derived</code> must or may provide.
+      </>
+    ),
+    recoLabel: "Recommended default",
+    recoBody: (
+      <>
+        Only five members are required — <code>name</code>, <code>description</code>,{" "}
+        <code>Args</code>, <code>Reply</code>, and <code>invoke</code>. The three optional
+        accessors below are already provided by <code>Tool&lt;Derived&gt;</code> itself with
+        their conservative defaults (empty capabilities, <code>never_require</code> approval,{" "}
+        <code>at_most_once</code> effect class) — a minimal tool doesn't write them at all,
+        it only adds a <code>Capabilities&lt;...&gt;</code>/<code>Approval&lt;...&gt;</code>/
+        <code>EffectClass&lt;...&gt;</code> policy the day it needs to override one:
       </>
     ),
     flowSchemaSub: "field names + C++ types only — no description/title/enum (see below)",
@@ -91,6 +104,18 @@ const copy = {
         chỉ có thể chạm tới thông qua pipeline mười bước của host (006 §3, được đi qua chi
         tiết ở trang Capability &amp; Sandbox). Mỗi hàng bên dưới là một thành viên static
         thật mà <code>Derived</code> phải hoặc có thể cung cấp.
+      </>
+    ),
+    recoLabel: "Mặc định khuyến nghị",
+    recoBody: (
+      <>
+        Chỉ năm thành viên là bắt buộc — <code>name</code>, <code>description</code>,{" "}
+        <code>Args</code>, <code>Reply</code>, và <code>invoke</code>. Ba accessor tùy chọn bên
+        dưới đã được chính <code>Tool&lt;Derived&gt;</code> cung cấp sẵn với giá trị mặc định
+        thận trọng (capabilities rỗng, phê duyệt <code>never_require</code>, effect class{" "}
+        <code>at_most_once</code>) — một tool tối giản không cần viết chúng ra, chỉ thêm policy{" "}
+        <code>Capabilities&lt;...&gt;</code>/<code>Approval&lt;...&gt;</code>/
+        <code>EffectClass&lt;...&gt;</code> vào ngày nào đó cần ghi đè một trong số chúng:
       </>
     ),
     flowSchemaSub: "chỉ có tên trường + kiểu C++ — không có description/title/enum (xem bên dưới)",
@@ -163,6 +188,18 @@ export function ApiToolReference() {
           </h2>
           <p>{t.intro}</p>
         </div>
+
+        <RevealGroup>
+          <RevealItem>
+            <div className="gs-recommend">
+              <span className="gs-recommend-label">{t.recoLabel}</span>
+              <p>{t.recoBody}</p>
+            </div>
+          </RevealItem>
+          <RevealItem>
+            <CodePanel filename="web_search_tool.hpp">{highlightCpp(minimalToolSnippet)}</CodePanel>
+          </RevealItem>
+        </RevealGroup>
 
         <RevealGroup>
           <RevealItem>
