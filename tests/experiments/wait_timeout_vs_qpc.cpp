@@ -5,8 +5,10 @@
 // brackets a WaitForSingleObject with two steady_clock reads and reports the difference as
 // JobWaitOutcome::wall_elapsed. tests/test_job_object_limits.cpp then asserted
 // `wall_elapsed >= deadline` -- and that assertion failed intermittently in CI on an UNinstrumented
-// MSVC Release build (runs 31925631415 and 31939239439), which ADR-062's sanitizer findings do not
-// explain. Either wait_or_kill() is killing children early (a real containment defect), or the
+// MSVC Release build (runs 31925631415 and 31939239439), which the clang/ASan finding recorded in
+// docs/research/2026-08-16-clang-windows-asan-exception-ptr.md does not explain -- that one needs
+// instrumentation present, and this build has none. Either wait_or_kill() is killing children early
+// (a real containment defect), or the
 // assertion is asserting a guarantee Win32 does not make. This program decides which, without any
 // AgentEngine code in the picture.
 //

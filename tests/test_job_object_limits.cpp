@@ -186,7 +186,7 @@ static bool test_wall_clock_kill_standalone() {
            static_cast<long long>(outcome->wall_elapsed.count()));
     assert(outcome->kill_reason == job_kill_reason::wall_clock_timeout);
     // NOT `>= deadline`. That spelling failed intermittently in CI (run 31925631415, Windows / MSVC /
-    // Release -- an UNinstrumented build, so ADR-062's sanitizer story does not explain it), and the
+    // Release -- an UNinstrumented build, so the clang/ASan finding does not explain it), and the
     // reason is a real property of Win32 rather than a defect in wait_or_kill():
     //
     //   WaitForSingleObject's timeout is released against the kernel's tick clock, while

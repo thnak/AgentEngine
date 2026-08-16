@@ -15,7 +15,7 @@
 // then `abort()`, where Windows Error Reporting can put up a dialog. On a headless CI runner that
 // is not a failure report, it is a hang until the job timeout: the same
 // looks-like-slowness-but-is-actually-a-stuck-process signature as the ASan runtime-DLL bug in
-// ADR-062's precondition and the MSVC ASan PATH bug before it. A test suite whose failure mode is
+// the clang sanitizer-runtime PATH bug and the MSVC ASan PATH bug before it. A test suite whose failure mode is
 // "hang" teaches people to distrust the timeout, not the test.
 //
 // `_set_abort_behavior` and `SetErrorMode` are the halves that work in BOTH configurations, and are

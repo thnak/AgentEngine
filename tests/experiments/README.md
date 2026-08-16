@@ -12,7 +12,7 @@ is an assertion.
 
 ## `exception_ptr_upcast_repro.cpp`
 
-Evidence for **ADR-062 §9.2** and `docs/research/2026-08-16-clang-windows-asan-exception-ptr.md`.
+Evidence for `docs/research/2026-08-16-clang-windows-asan-exception-ptr.md`.
 
 Twelve lines of standard C++ — `throw` → `std::current_exception()` → `std::rethrow_exception()` →
 `catch (std::runtime_error const&)` → `e.what()`. No coroutine, no AgentEngine header, nothing from
@@ -59,7 +59,7 @@ Evidence for the wall-clock tolerance in `tests/test_job_object_limits.cpp`.
 
 `test_job_object_limits` asserted that a `WaitForSingleObject(h, 500)` measured with `steady_clock`
 reports at least 500 ms elapsed. It failed intermittently in CI on an **uninstrumented** MSVC
-Release build (runs `31925631415`, `31939239439`) — so ADR-062's sanitizer findings do not cover it,
+Release build (runs `31925631415`, `31939239439`) — so the clang/ASan finding does not cover it,
 and the two candidate explanations were "`wait_or_kill()` kills children early" (a containment
 defect) and "the assertion asserts something Win32 does not guarantee".
 

@@ -1,13 +1,15 @@
 # clang/Windows: AddressSanitizer faults on `what()` after an `std::exception_ptr` round-trip
 
 **Date:** 2026-08-16
-**Status of the claim:** measured directly on GitHub-hosted `windows-latest` runners, twice, with a
-standalone reproducer. **Not yet checked against upstream LLVM issues** — see "Open" below.
-**Consumed by:** `decisions/ADR-062-windows-sanitizer-coroutine-exception-findings.md` §9.
+**Status of the claim:** **Settled.** Measured directly on GitHub-hosted `windows-latest` runners
+across three rounds with a standalone reproducer; identified as a known upstream defect
+(google/sanitizers#749, mitigated by llvm/llvm-project#159618); and the remedy — pinning clang to
+22.1.8 — measured clean on every axis. No AgentEngine code is implicated.
+**Consumed by:** `.github/workflows/ci.yml` (the `AE_LLVM_VERSION` pin and its version assertion
+both cite this file), `tests/experiments/exception_ptr_upcast_repro.cpp`.
 
 CLAUDE.md requires external claims to be dated and cited rather than asserted from memory. This is
-an external claim — about a compiler and its runtime, not about AgentEngine — so it lives here, and
-ADR-062 cites it rather than restating it.
+an external claim — about a compiler and its runtime, not about AgentEngine — so it lives here.
 
 ## The claim
 
@@ -146,9 +148,40 @@ clang 20.1.8 on a 2026 runner is not what `choco install llvm` would fetch fresh
 package is already present. So the job has been silently pinned to the image's version all along --
 which is also why `ci.yml` not pinning clang (noted above) mattered more than it looked.
 
+## The remedy, measured: clang 22.1.8 clears it completely
+
+Run `31925988586`, four legs, each running both the 12-line reproducer and the three tests that
+originally reported. Installed from LLVM's own release asset (`LLVM-22.1.8-win64.exe`) rather than
+`choco install llvm`, with a version assertion that fails the leg if the major is below 22 — a run
+on an unfixed clang would prove nothing while looking like it proved something.
+
+```
+clang version 22.1.8 (https://github.com/llvm/llvm-project ca7933e47d3a3451d81e72ac174dcb5aa28b59d1)
+```
+
+| CRT | sanitizers | reproducer | `test_rt_task` | `test_rt_thread_pool` | `test_middleware_...` |
+|---|---|---|---|---|---|
+| MultiThreaded | address | **0** | **0** | **0** | **0** |
+| MultiThreaded | address+undefined | **0** | **0** | **0** | **0** |
+| MultiThreadedDLL | address | **0** | **0** | **0** | **0** |
+| MultiThreadedDLL | address+undefined | **0** | **0** | **0** | **0** |
+
+Every cell clean, the reproducer printing `what=boom` / `repro: clean`. Compare the clang 20.1.8
+matrix above, where every ASan-bearing cell failed. Same code, same flags, same runner image — only
+the compiler version differs, which is as direct a confirmation of llvm/llvm-project#159618 as this
+project can produce.
+
+`ci.yml` now pins `AE_LLVM_VERSION: 22.1.8` for both Windows LLVM-consuming jobs, installed from the
+release asset. The `choco install llvm -y` form was never a pin at all: it no-ops when the runner
+image already ships LLVM, so these jobs ran the image's clang 20.1.8 with nobody choosing it — while
+a comment directly above claimed the opposite. A version assertion now fails loudly if that drifts
+back below 22.
+
 ## Open
 
-1. **Verify that clang 22.1+ actually clears it**, by pinning the CI install and re-running the
-   matrix in this document. Expected clean; not yet measured, and this file does not claim it is.
-2. Whether the fix was backported to any 21.1.x point release -- unverified, and only worth knowing
-   if pinning to 22.1+ turns out to be awkward.
+1. Whether the fix was backported to any 21.1.x point release — unverified, and now only of
+   historical interest, since the pin to 22.1.8 is measured clean.
+2. Whether the whole tree is clean under clang 22, as opposed to the three tests measured here. A
+   newer compiler can surface new findings; this file does not claim otherwise.
+3. `MD / undefined` never built in either clang-20 round (see the note under Measurements), so the
+   UBSan-only row is confirmed on the static CRT only.
