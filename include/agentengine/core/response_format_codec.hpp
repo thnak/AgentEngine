@@ -84,8 +84,8 @@ enum class channel_kind { analysis, commentary, final_answer, unknown };
 struct format_spec {
     std::string_view name;
     std::array<std::string_view, 2> sniff{};  // cheap pre-check; ANY non-empty entry must be present
-    std::string_view block_open;
-    std::string_view body_open;  // empty => no separate header segment
+    std::string_view block_open{};
+    std::string_view body_open{};  // empty => no separate header segment
     std::array<terminator_spec, 3> terminators{};
     channel_kind fixed_channel = channel_kind::unknown;
     field_spec   channel_field{};

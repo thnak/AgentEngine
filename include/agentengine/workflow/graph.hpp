@@ -157,7 +157,7 @@ struct Edge {
     // switch_case and multi_selection only. A `switch_case` edge without one is unroutable; any
     // other kind carrying one is a mis-authored graph, and both are validation failures rather than
     // fields quietly ignored at runtime.
-    std::string case_label;
+    std::string case_label{};
     // 014 §6. DECLARED ON THE EDGE because §6 says "the edge's declared policy" -- but the thing it
     // decides (what happens when the SOURCE executor fails) is a property of the source, so the
     // validator requires every edge out of one executor to declare the SAME kind and the same retry

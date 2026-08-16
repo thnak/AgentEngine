@@ -243,12 +243,28 @@ endif()
 # translation unit -- trading 195 dead assertions for a few thousand lines of new warning, when the
 # rule here is that warnings get fixed rather than accumulated. Editing the variables at directory
 # scope leaves no contradictory pair on the command line for cl to complain about.
-foreach(ae_cfg RELEASE RELWITHDEBINFO MINSIZEREL)
-  foreach(ae_lang C CXX)
-    string(REPLACE "/DNDEBUG" "" CMAKE_${ae_lang}_FLAGS_${ae_cfg} "${CMAKE_${ae_lang}_FLAGS_${ae_cfg}}")
-    string(REPLACE "-DNDEBUG" "" CMAKE_${ae_lang}_FLAGS_${ae_cfg} "${CMAKE_${ae_lang}_FLAGS_${ae_cfg}}")
+# Three places NDEBUG can arrive from, and an earlier version of this block only handled the first:
+#   1. CMAKE_<LANG>_FLAGS_<CONFIG>          -- CMake's own Release/RelWithDebInfo/MinSizeRel defaults
+#   2. CMAKE_<LANG>_FLAGS                   -- seeded by the CXXFLAGS/CFLAGS environment variables and
+#                                              by -DCMAKE_CXX_FLAGS=..., both entirely ordinary in a
+#                                              packaging or toolchain-file build
+#   3. the directory COMPILE_DEFINITIONS property -- an add_compile_definitions(NDEBUG) above us
+# Missing (2) meant a perfectly standard configuration silently restored all 195 dead assertions,
+# which is precisely the failure this block exists to prevent, so all three are handled.
+foreach(ae_lang C CXX)
+  foreach(ae_flags_var CMAKE_${ae_lang}_FLAGS
+                        CMAKE_${ae_lang}_FLAGS_RELEASE
+                        CMAKE_${ae_lang}_FLAGS_RELWITHDEBINFO
+                        CMAKE_${ae_lang}_FLAGS_MINSIZEREL)
+    string(REPLACE "/DNDEBUG" "" ${ae_flags_var} "${${ae_flags_var}}")
+    string(REPLACE "-DNDEBUG" "" ${ae_flags_var} "${${ae_flags_var}}")
   endforeach()
 endforeach()
+get_directory_property(ae_dir_defs COMPILE_DEFINITIONS)
+if(ae_dir_defs)
+  list(REMOVE_ITEM ae_dir_defs NDEBUG)
+  set_directory_properties(PROPERTIES COMPILE_DEFINITIONS "${ae_dir_defs}")
+endif()
 
 add_executable(smoke_vocabulary smoke_vocabulary.cpp)
 target_link_libraries(smoke_vocabulary PRIVATE agentengine::core agentengine_warnings)
