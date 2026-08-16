@@ -1550,9 +1550,14 @@ endif()
 if(WIN32)
   # Deliberately hostile test-only helper process (tests/helpers/hostile_child.cpp) the Job Object
   # tests launch and try to contain -- never a product target, never linked into anything else.
-  # ws2_32: C5's probe_net mode uses raw Winsock.
-  add_executable(job_object_hostile_child helpers/hostile_child.cpp)
-  target_link_libraries(job_object_hostile_child PRIVATE ws2_32)
+  #
+  # Defined in its own directory scope (helpers/CMakeLists.txt) rather than here, because it must be
+  # built WITHOUT sanitizer instrumentation and CMAKE_CXX_FLAGS is global. An instrumented child
+  # imports the sanitizer runtime DLL from Program Files, which a zero-capability AppContainer has no
+  # ACL grant for -- so it never reaches main and six containment tests fail while create() succeeds.
+  # That subdirectory carries the full reasoning, including why granting the ACL would be the wrong
+  # fix.
+  add_subdirectory(helpers)
 
   add_executable(test_job_object_limits test_job_object_limits.cpp)
   target_link_libraries(test_job_object_limits PRIVATE
