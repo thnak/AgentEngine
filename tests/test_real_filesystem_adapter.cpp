@@ -21,6 +21,7 @@
 #endif
 
 #include "backends/native_jail/real_filesystem_adapter.hpp"
+#include "support/crt_fail_fast.hpp"
 
 namespace fs = std::filesystem;
 using agentengine::native_jail::RealFileSystemAdapter;
@@ -32,14 +33,6 @@ namespace {
 // CLAUDE.md's Machine Safety section rules out. Route assertion reports to stderr instead so a
 // real failure prints and the process exits, rather than hanging the dev box waiting for a click
 // that will never come.
-void disable_crt_assert_dialog() {
-#if defined(_WIN32)
-    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
-    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
-#endif
-}
 
 // `_getpid` (process.h) is the MSVC CRT spelling; POSIX has no leading underscore and lives in
 // unistd.h. Only used to make each test run's temp-root name unique, not a portability seam.
@@ -76,7 +69,7 @@ void expect_error_code(agentengine::result<std::filesystem::path> const& r, char
 } // namespace
 
 int main() {
-    disable_crt_assert_dialog();
+    ::agentengine::test_support::fail_fast_on_windows();
     fs::path root = make_temp_root();
     auto adapter_r = RealFileSystemAdapter::create(root);
     assert(adapter_r.has_value() && "adapter must construct against a real, existing directory");

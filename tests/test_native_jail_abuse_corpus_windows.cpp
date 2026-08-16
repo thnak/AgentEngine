@@ -29,6 +29,7 @@
 #endif
 
 #include "backends/native_jail/native_jail_backend.hpp"
+#include "support/crt_fail_fast.hpp"
 
 using namespace agentengine;
 using agentengine::native_jail::NativeJailBackend;
@@ -47,12 +48,6 @@ int g_failures = 0;
         }                                                                                          \
     } while (0)
 
-void disable_crt_assert_dialog() {
-    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
-    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
-}
 
 std::string quote(std::string const& s) { return "\"" + s + "\""; }
 
@@ -127,7 +122,7 @@ std::string run_raw_unsandboxed(std::string const& cmdline, DWORD grace_ms) {
 }  // namespace
 
 int main() {
-    disable_crt_assert_dialog();
+    ::agentengine::test_support::fail_fast_on_windows();
 
     std::filesystem::path work_dir =
         std::filesystem::temp_directory_path() / "ae_native_jail_abuse_corpus_test";

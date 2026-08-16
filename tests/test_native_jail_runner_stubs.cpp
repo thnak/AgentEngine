@@ -26,6 +26,7 @@
 
 #include "agentengine/sandbox/runner.hpp"
 #include "backends/native_jail/shell_runner.hpp"
+#include "support/crt_fail_fast.hpp"
 
 // PythonRunner's own Runner-concept static_assert now lives in
 // tests/test_python_embed_smoke.cpp, built only when AGENTENGINE_BUILD_PYTHON_RUNNER is ON (it
@@ -37,20 +38,12 @@ namespace {
 // See tests/test_real_filesystem_adapter.cpp's identical helper for why this matters: a failed
 // assert() under the MSVC CRT otherwise pops a blocking interactive dialog in a non-interactive
 // CTest run (CLAUDE.md Machine Safety).
-void disable_crt_assert_dialog() {
-#if defined(_WIN32)
-    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
-    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
-#endif
-}
 } // namespace
 
 static_assert(agentengine::Runner<agentengine::ShellRunner>,
               "ShellRunner must satisfy the Runner concept (010 §1a)");
 
 int main() {
-    disable_crt_assert_dialog();
+    ::agentengine::test_support::fail_fast_on_windows();
     return 0;
 }

@@ -21,6 +21,7 @@
 #endif
 
 #include "backends/native_jail/job_object_limits.hpp"
+#include "support/crt_fail_fast.hpp"
 
 using agentengine::ResourceLimits;
 using agentengine::native_jail::job_kill_reason;
@@ -29,14 +30,6 @@ using agentengine::native_jail::JobWaitOutcome;
 
 namespace {
 
-void disable_crt_assert_dialog() {
-#if defined(_WIN32)
-    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
-    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
-#endif
-}
 
 struct SuspendedChild {
     PROCESS_INFORMATION pi{};
@@ -349,7 +342,7 @@ static bool test_teardown_on_destroy() {
 }
 
 int main() {
-    disable_crt_assert_dialog();
+    ::agentengine::test_support::fail_fast_on_windows();
     bool ok = true;
     ok &= test_memory_limit();
     ok &= test_wall_clock_kill_standalone();
