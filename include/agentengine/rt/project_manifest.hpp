@@ -247,9 +247,21 @@ template <SessionStore StoreT>
 // fail-closed rule (archiving does not proceed past `paused` if a checkpoint failed).
 [[nodiscard]] inline task<std::pair<ProjectRecord, CheckpointReport>> archive_project(
     ProjectSupervisor& sup, ProjectRecord rec) {
-    auto [paused, report] = co_await pause_project(sup, std::move(rec));
-    if (report.all_ok()) paused.status = project_status::archived;
-    co_return std::pair<ProjectRecord, CheckpointReport>{std::move(paused), std::move(report)};
+    // Deliberately NOT `auto [paused, report] = co_await ...`. A structured binding introduces an
+    // unnamed object, and when its initializer is a co_await the object lives in the coroutine frame
+    // across the suspension point; g++ 15's dataflow then loses track of it and reports
+    // "'<anonymous>' may be used uninitialized" [-Wmaybe-uninitialized] against the closing brace.
+    // gcc-14 (the CI gate) does not emit it, so the diagnostic is new-compiler-only -- but
+    // CONVENTIONS.md says "g++ 14+", which includes 15, and this project does not silence warnings.
+    // Naming the object clears it (verified against g++ 15.2 at -O3, where the warning actually
+    // fires -- it is an optimizer diagnostic and cannot reproduce under -fsyntax-only).
+    //
+    // Strictly better code besides: the old form destructured the pair only to immediately rebuild
+    // an identical one on the co_return, so this also removes a whole pair construction. Behaviour
+    // is unchanged -- same members, same fail-closed rule, mutated in place and moved out.
+    std::pair<ProjectRecord, CheckpointReport> outcome = co_await pause_project(sup, std::move(rec));
+    if (outcome.second.all_ok()) outcome.first.status = project_status::archived;
+    co_return std::move(outcome);
 }
 
 }  // namespace agentengine::rt
