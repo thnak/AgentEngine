@@ -105,9 +105,50 @@ text — string bytes being read as an object pointer.
   mismatch detected for 'RuntimeLibrary'` inside a 007 §9 G2 `try_compile` control. An artifact of
   that flag combination, not a result about exceptions.
 
+## Upstream: known since 2016, and fixed in October 2025
+
+Checked 2026-08-16. **This is a long-standing, documented AddressSanitizer limitation on Windows,
+not a novel finding, and it has an upstream fix.** Nothing should be filed.
+
+- **google/sanitizers#749**, opened 2016-12-04, now closed: "Asan doesn't work with exceptions on
+  Windows". The reporter's case is this reproducer minus the `exception_ptr` hop --
+  `try { throw std::exception("test"); } catch (const std::exception& ex) { puts(ex.what()); }` --
+  producing "ERROR: AddressSanitizer: access-violation on unknown address". Same diagnostic, same
+  place, ten years earlier.
+
+- **llvm/llvm-project#159618**, merged into `main` 2025-10-17, explicitly a mitigation for #749.
+  It states the mechanism directly: **"ASan's instrumentation is incompatible with Window's
+  assumptions for instantiating catch-block's parameters"**, and the fix is to stop instrumenting
+  catch-block parameters on Windows -- "strictly better than today's status quo, where the runtime
+  generates false positives".
+
+**This identifies the mechanism**, which the measurements above deliberately left open. The corrupt
+pointer is the **catch-block parameter itself** (`e` in `catch (std::runtime_error const& e)`), not
+the exception object or the `exception_ptr`. That explains every observation at once: why UBSan
+alone is clean (no ASan instrumentation of the catch parameter, so nothing to be inconsistent with),
+why the value reads as unrelated bytes (an uninstantiated parameter slot), and why the static/DLL CRT
+choice is irrelevant (the incompatibility is in instrumentation, not in the CRT).
+
+It also settles the "real defect vs artifact" question in favour of a **false positive**: the
+program is correct; ASan's instrumentation of the catch parameter is what breaks it.
+
+### Which versions have the fix
+
+| | |
+|---|---|
+| Fix merged to LLVM `main` | 2025-10-17 |
+| LLVM 21.1.0 released | ~2025-09 — **before** the merge; backport to 21.1.x not verified |
+| LLVM 22.1.0 released | 2026-02-24 — **first stable release containing the fix** |
+| **What our CI actually ran** | **clang 20.1.8** (from the job's own `clang++ --version`) |
+
+clang 20.1.8 on a 2026 runner is not what `choco install llvm` would fetch fresh; the
+`windows-latest` image ships LLVM preinstalled and `choco install llvm -y` is a no-op when the
+package is already present. So the job has been silently pinned to the image's version all along --
+which is also why `ci.yml` not pinning clang (noted above) mattered more than it looked.
+
 ## Open
 
-1. **Check whether this is a known LLVM issue before filing anything.** Not done. It is the next
-   step, and ADR-062 §9.4 says so rather than implying an upstream report already exists.
-2. If unknown upstream, file with `exception_ptr_upcast_repro.cpp` verbatim.
-3. Re-measure when the toolchain moves; the unpinned clang makes that silent.
+1. **Verify that clang 22.1+ actually clears it**, by pinning the CI install and re-running the
+   matrix in this document. Expected clean; not yet measured, and this file does not claim it is.
+2. Whether the fix was backported to any 21.1.x point release -- unverified, and only worth knowing
+   if pinning to 22.1+ turns out to be awkward.
