@@ -87,3 +87,45 @@ cl /nologo /O2 /EHsc /std:c++20 tests/experiments/wait_timeout_vs_qpc.cpp /Fe:wa
 A negative `min` on the second row is the finding. Zero under-shoots on both rows means this machine
 never had its timer resolution raised during the run — re-run it with something like a browser or a
 media player open, which is precisely the point.
+
+## `appcontainer_profile_race.cpp`
+
+Evidence for `CrossProcessLock` in `src/backends/native_jail/app_container_profile.cpp`.
+
+`NativeJailBackend` uses one machine-global AppContainer profile name (`AgentEngine.NativeJail`), and
+`ctest -j 4` runs six Windows native-jail test binaries concurrently — six separate processes calling
+`CreateAppContainerProfile` on that one name. Intermittently (~1 run in 40–80) every `create()` in one
+test process failed while a concurrent one failed differently:
+
+```
+abuse_corpus_windows : CreateAppContainerProfile failed: HRESULT 0x8007000A  (ERROR_BAD_ENVIRONMENT)
+backend_windows      : CreateProcessW failed: Win32 error 2                  (ERROR_FILE_NOT_FOUND)
+```
+
+**Result (2026-08-16, MSVC 14.44, Windows 11):**
+
+| configuration | unexpected failures |
+| --- | --- |
+| 1 process × 50 iterations, no lock | 0 |
+| 8 processes × 300 iterations, no lock | **149–158 per process (~50%)**, worst `0x80070005` |
+| 8 processes × 300 iterations, `lock` | **0**, all 2400 calls |
+
+`CreateAppContainerProfile` is not safe to call concurrently on the same name, and the failures are
+*not* `ERROR_ALREADY_EXISTS`, so they bypass the idempotency path the class was built around.
+`DeriveAppContainerSidFromAppContainerName` measured 0 failures throughout and needs no protection.
+
+The third row is the same binary under the same contention with only a named mutex added — the
+control that makes "0 failures" mean something.
+
+### Re-running it
+
+```pwsh
+cl /nologo /O2 /EHsc /std:c++20 tests/experiments/appcontainer_profile_race.cpp `
+   /Fe:acrace.exe /link userenv.lib advapi32.lib
+
+# One process proves nothing here — the race needs concurrent processes.
+1..8 | ForEach-Object { Start-Process .\acrace.exe -ArgumentList "AgentEngine.RaceProbe",300 }
+1..8 | ForEach-Object { Start-Process .\acrace.exe -ArgumentList "AgentEngine.RaceProbe","300","lock" }
+```
+
+Exit code is the count of unexpected failures. Nonzero without `lock` and zero with it is the finding.

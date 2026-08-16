@@ -22,6 +22,63 @@ std::string hex32(unsigned long v) {
     return buf;
 }
 
+// Serializes CreateAppContainerProfile across PROCESSES, which is the scope the race actually has.
+//
+// An AppContainer profile is a machine-global, per-user resource: a directory under
+// %LOCALAPPDATA%\Packages\<name> plus registry state. CreateAppContainerProfile is NOT safe to call
+// concurrently on the same name from several processes -- it fails transiently while another
+// process is mid-creation, and the failures are not ERROR_ALREADY_EXISTS, so they do not hit the
+// idempotency path this class was built around.
+//
+// Measured, not argued -- tests/experiments/appcontainer_profile_race.cpp:
+//
+//   1 process  x  50 iterations : 0 unexpected failures
+//   8 processes x 300 iterations: ~150 of 300 per process fail (~50%), worst 0x80070005
+//                                 (ERROR_ACCESS_DENIED); CI has also produced 0x8007000A
+//                                 (ERROR_BAD_ENVIRONMENT)
+//
+// That is exactly the shape of the intermittent native-jail failures: `ctest -j 4` runs six Windows
+// jail test binaries concurrently, every one of them a separate process calling this with the same
+// L"AgentEngine.NativeJail". DeriveAppContainerSidFromAppContainerName, by contrast, measured 0
+// failures under the same contention and needs no protection.
+//
+// A plain (session-namespace) mutex name suffices: the contention is between sibling processes in
+// one session, and `Global\` would add a privilege requirement for no benefit. Profile names are
+// restricted to alphanumerics plus `.`/`-`/`_`, so embedding one in an object name is safe.
+//
+// Deliberately advisory: if the mutex cannot be created or waited on, creation proceeds unserialized
+// rather than failing. The lock is an optimization against a known race, not a correctness
+// precondition -- CreateAppContainerProfile's own result is still checked, and a caller that loses
+// the race now retries on its next create() instead of latching (see native_jail_backend.cpp's
+// shared_profile()).
+class CrossProcessLock {
+public:
+    explicit CrossProcessLock(std::wstring const& name) {
+        handle_ = CreateMutexW(nullptr, FALSE, name.c_str());
+        if (handle_ == nullptr) return;
+        // Profile creation is a sub-second operation; 30s is a generous bound that still cannot
+        // wedge a test run. WAIT_ABANDONED means a holder died mid-creation -- we own it now, and
+        // the state it left behind is exactly what ERROR_ALREADY_EXISTS handling is for.
+        DWORD rc = WaitForSingleObject(handle_, 30'000);
+        held_ = (rc == WAIT_OBJECT_0 || rc == WAIT_ABANDONED);
+    }
+
+    ~CrossProcessLock() {
+        if (handle_ == nullptr) return;
+        if (held_) ReleaseMutex(handle_);
+        CloseHandle(handle_);
+    }
+
+    CrossProcessLock(CrossProcessLock const&) = delete;
+    CrossProcessLock& operator=(CrossProcessLock const&) = delete;
+    CrossProcessLock(CrossProcessLock&&) = delete;
+    CrossProcessLock& operator=(CrossProcessLock&&) = delete;
+
+private:
+    HANDLE handle_ = nullptr;
+    bool held_ = false;
+};
+
 }  // namespace
 
 // A `win32_error()` helper reading GetLastError() used to sit here, uncalled (clang:
@@ -35,9 +92,15 @@ std::string hex32(unsigned long v) {
 result<AppContainerProfile> AppContainerProfile::ensure(std::wstring const& name,
                                                           std::wstring const& display_name,
                                                           std::wstring const& description) {
+    // Held only across the create call -- see CrossProcessLock's comment for the measurement that
+    // makes this necessary. Derive, below, is contention-safe and stays outside the lock.
     PSID created_sid = nullptr;
-    HRESULT hr = CreateAppContainerProfile(name.c_str(), display_name.c_str(), description.c_str(),
-                                            nullptr, 0, &created_sid);
+    HRESULT hr = S_OK;
+    {
+        CrossProcessLock creation_lock(L"AgentEngine.AppContainerProfileCreate." + name);
+        hr = CreateAppContainerProfile(name.c_str(), display_name.c_str(), description.c_str(),
+                                        nullptr, 0, &created_sid);
+    }
     // ERROR_ALREADY_EXISTS is success (ADR-004 §3: one profile, reused across sessions) -- fall
     // through to DeriveAppContainerSidFromAppContainerName either way rather than trusting
     // `created_sid`, which CreateAppContainerProfile leaves unset on the already-exists path.
