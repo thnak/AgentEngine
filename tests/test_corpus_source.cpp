@@ -49,6 +49,10 @@ int g_failures = 0;
 // the metric §3 claim 2's disproof test compares against "the mutated file's own chunk count".
 class MockEmbedder {
 public:
+    // ADR-064 §3 Design B's required trait: this mock never awaits anything (co_return only), so
+    // driving it via rt::drive_leaf_task() is sound.
+    static constexpr bool synchronous_leaf = true;
+
     [[nodiscard]] ae::EmbedderCapabilities capabilities() const { return caps; }
 
     ae::task<ae::result<std::vector<std::vector<float>>>> embed_batch(std::vector<std::string> const& texts,

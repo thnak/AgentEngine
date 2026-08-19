@@ -1,14 +1,18 @@
 # ADR-064 — Can a synchronous `ToolDescriptor::invoke` safely reach `Embedder::embed_batch()`'s `task<T>`?
 
-**Status:** Proposed (2026-08-19). Designed, then red-teamed once (§4, `general-purpose` agent, no
-prior context) — found 2 critical + 3 real-gap + 2 minor findings against the design, **plus one
-real, pre-existing, latent bug in already-shipped code** (`ThreadPool`+`AsyncMutex`+`AgentSession` —
-see §4 finding 1). Design B revised in place below to fix the findings that are fixable within this
-design (bound corrected 64→1, double-wrapped `result<T>` fixed, migration checklist added, citations
-corrected). **The separately-flagged `ThreadPool` bug has since been FIXED for real** (§7 top —
-`rt/thread_pool.hpp`, `tests/test_rt_thread_pool.cpp` T6, 194/194 suite green), independent of this
-ADR's own Design B. **Design B itself is not yet implemented or proven** — §5/§6 still require real
-code + tests before this ADR can move past Proposed.
+**Status:** Proposed (2026-08-19), Design B implemented and proven (2026-08-19), awaiting explicit
+user "Judged." Designed, then red-teamed once (§4, `general-purpose` agent, no prior context) — found
+2 critical + 3 real-gap + 2 minor findings against the design, **plus one real, pre-existing, latent
+bug in already-shipped code** (`ThreadPool`+`AsyncMutex`+`AgentSession` — see §4 finding 1). Design B
+revised in place below to fix the findings that are fixable within this design (bound corrected 64→1,
+double-wrapped `result<T>` fixed, migration checklist added, citations corrected). **The
+separately-flagged `ThreadPool` bug was FIXED for real** (§7 top — `rt/thread_pool.hpp`,
+`tests/test_rt_thread_pool.cpp` T6), independent of this ADR's own Design B. **Design B itself is now
+implemented and proven** — `rt/drive_leaf_task.hpp` (new), `Embedder::synchronous_leaf`
+(`core/embedder.hpp`), all 4 real conformers migrated, `VectorRagContextProvider::recall`'s real
+`invoke`, a new `tests/test_rt_drive_leaf_task.cpp` (D1-D5), and real end-to-end coverage in
+`tests/test_vector_rag_context_provider.cpp` (R8/R8b/R8c) — see §5/§6. Full suite **195/195**
+(`ctest -LE live-network`), zero regressions.
 
 **Relates to:** `decisions/ADR-063-retrieval-augmented-context-provider-shape.md` §7 (the exact gap
 this ADR resolves — `VectorRagContextProvider::recall(query)`'s `invoke` fails closed today because
@@ -357,14 +361,72 @@ Design B; they tighten it.
 
 ## 5. Executed evidence
 
-**Not yet gathered.** §4 was a design-level (no implementation) red-team pass — real code, tests, and
-measurements (mirroring ADR-063's own two-implementation-pass shape) are the next step if this ADR
-proceeds, not yet done here.
+**Gathered (2026-08-19).** Design B implemented for real, exactly as revised in §3:
+
+- `rt::drive_leaf_task<T>()` (`include/agentengine/rt/drive_leaf_task.hpp`, new file) — the 1-resume-
+  bound driver, verbatim to the revised sketch.
+- `Embedder`'s new REQUIRED `synchronous_leaf` trait (`core/embedder.hpp`) — checked via `{
+  T::synchronous_leaf } -> std::convertible_to<bool>;` in the concept itself, so a conformer that
+  omits it fails `static_assert(Embedder<...>)` at compile time, not silently.
+- All 4 real conformers in the tree migrated, each a genuine one-line addition as predicted (§4
+  finding 4): `OpenAIEmbedder` (`protocol/openai/embedder.hpp`, `synchronous_leaf = true`, justified
+  by its body never awaiting anything, fact 3), `MockEmbedder` in `tests/test_corpus_source.cpp`,
+  `MockEmbedder` and `AlternatingEmbedder` in `tests/test_vector_rag_context_provider.cpp` (all three
+  `true`, each genuinely leaf — `co_return` only — by inspection).
+- `VectorRagContextProvider::recall`'s `invoke` (`core/vector_rag_context_provider.hpp`) now branches
+  on `if constexpr (EmbedderT::synchronous_leaf)`: the `true` path drives `embedder_.embed_batch()`
+  via `drive_leaf_task()`, unwraps both `result<T>` layers explicitly (per §3's revised sketch),
+  searches `index_`, and renders results through the SAME `render_scored_chunk()` helper
+  `on_context()` already used (the file's own pre-existing comment had already named this as the
+  intended shared point). The `false` path is the ORIGINAL fail-closed `failure_class::contract`
+  error, byte-identical in spirit, so a conformer that cannot safely support this path regresses to
+  nothing worse than before.
+- `make_recall_tool_descriptor()` changed from `const` to non-`const` (a real, necessary consequence
+  of capturing `this` to reach `embedder_.embed_batch()` — none of this codebase's `Embedder`
+  conformers except `OpenAIEmbedder` declare `embed_batch` `const`, so a `const`-captured `this` would
+  have broken every mock). Capturing `this` (rather than individual members by value, `MemoryProvider`'s
+  own pattern) is sound here because every real caller stores this provider at a stable heap address
+  for its whole lifetime before ever calling `on_context()` (`context_assembly.hpp::
+  make_context_provider_descriptor()`'s own `std::make_shared<ProviderT>`) — documented at the capture
+  site, not merely asserted in this ADR.
+
+**Tests, both new and extended:**
+
+- `tests/test_rt_drive_leaf_task.cpp` (NEW, 10 checks, D1-D5): D1 a conforming leaf task drives in
+  exactly one `resume()`, both `result<T>` layers unwrap to the real value; D2 the double-wrap is
+  preserved (outer succeeds, inner carries the leaf's own ordinary `std::unexpected` error) — not
+  flattened; D3 a genuine C++ exception thrown inside the leaf task's body maps to a DISTINCT outer
+  `rt.leaf_task_faulted` error, proving the two failure channels (D2 vs D3) are not conflated; D4 a
+  leaf task that itself `co_await`s another nested `task<T>` (real symmetric transfer) still resolves
+  in exactly one `resume()`, regardless of nesting depth, matching §3's own claim; D5 — reproducing
+  §4 finding 1's exact hazard, but directly against `drive_leaf_task()` itself rather than only
+  through `ThreadPool` — a task genuinely parked on a contended `AsyncMutex::lock()` is reported as a
+  violated `synchronous_leaf` contract (`rt.leaf_task_contract_violation`), and the abandoned
+  contender's destruction does not corrupt the mutex for later legitimate use (a third, later lock on
+  the same mutex still succeeds cleanly).
+- `tests/test_vector_rag_context_provider.cpp` — R8/R8b/R8c rewritten from the old fail-closed-stub
+  assertion to real end-to-end coverage: `recall()` invoked with well-formed args against
+  `MockEmbedder` (`synchronous_leaf = true`) now SUCCEEDS, returning both corpus chunks ranked by the
+  query's own embedding, carrying the identical citation-label + tainted-content-neutralization
+  discipline `on_context()`'s own default injection already proves (R8c directly checks for the same
+  citation marker bytes) — proving `render_scored_chunk()` really is shared, not reimplemented. R9
+  (malformed args) unchanged in intent, still confirms schema validation runs before any
+  embedder/index work.
+- Full build: clean (MSVC/Debug, this session's toolchain) — zero new warnings.
+- Full suite: **195/195 passed, 0 failed** (`ctest -LE live-network`), one new test target added
+  (`test_rt_drive_leaf_task`), zero regressions against the pre-existing 194.
+
+**Not measured in this pass** (named, not silently skipped): the `synchronous_leaf = false` fallback
+path was exercised only by the existing byte-for-byte-preserved error message/code, not by a NEW
+conformer that declares `false` end-to-end through `recall`'s `invoke` — the 4 real conformers in the
+tree today all declare `true`, so there is no `false`-declaring conformer in the tree to drive that
+branch through a real `if constexpr` instantiation yet. The branch is dead-code-checked (it compiles,
+since `if constexpr`'s discarded branch is still parsed, only not instantiated) but not exercised at
+runtime by any test in this pass.
 
 ## 6. Per-claim verdicts
 
-Per `decisions/README.md`'s bar — decided by observed output, not argument. Only claims with real,
-executed evidence get CORRECT/WRONG; everything else stays honestly PENDING/INCONCLUSIVE.
+Per `decisions/README.md`'s bar — decided by observed output, not argument.
 
 - **§2 facts 1, 3, 4 (task<T>'s direct-driving API exists; `OpenAIEmbedder::embed_batch()` awaits
   nothing; production already runs tool `invoke()` on one worker thread and blocks it for real
@@ -372,21 +434,45 @@ executed evidence get CORRECT/WRONG; everything else stays honestly PENDING/INCO
   merely re-stated from the original draft.
 - **§2 fact 2 as ORIGINALLY stated ("ThreadPool's scope claim holds in general") — WRONG.** Red-team
   found a real counter-example in `ThreadPool`'s own actual production usage (finding 1). The
-  CORRECTED claim in §2/§3 above (Design B rests on `OpenAIEmbedder`'s stronger "awaits nothing"
-  property, not on `ThreadPool`'s scope claim) has not itself been executed/tested yet — INCONCLUSIVE
-  pending §5.
-- **Design B's `kMaxDriveIterations` claim — the original ("64, a generous safety margin") was
-  WRONG**, per finding 2's symmetric-transfer reasoning (a real, argued disproof, not yet a compiled
-  test). The corrected claim ("exactly 1 for any conforming leaf task") is argued, not yet proven by
-  an executed test — INCONCLUSIVE pending §5.
+  CORRECTED claim (Design B rests on `OpenAIEmbedder`'s stronger "awaits nothing" property, not on
+  `ThreadPool`'s scope claim) is now **CORRECT, executed**: `test_rt_drive_leaf_task.cpp` D1/D4 prove
+  a conforming leaf task (including one with nested `task<T>` composition) drives cleanly through
+  `drive_leaf_task()` on this exact property, independent of `ThreadPool`.
+- **Design B's `kMaxDriveIterations`/bound claim — the original ("64, a generous safety margin") was
+  WRONG**, per finding 2's symmetric-transfer reasoning. The corrected claim ("exactly 1 resume() for
+  any conforming leaf task, regardless of nesting depth") is now **CORRECT, executed**:
+  `test_rt_drive_leaf_task.cpp` D1 (flat) and D4 (nested) both drive to completion in the single
+  `resume()` `drive_leaf_task()` actually performs — the implementation has no loop to prove this
+  against, so the executed test is direct confirmation, not an inference.
 - **Design A's blast-radius claim — the specific `protocol/a2a/server.hpp` citation was WRONG**
   (finding 5); the overall conclusion (large blast radius, reject for this ADR's scope) is CORRECT
   and, if anything, understated in the original draft.
-- **Everything else (whether `drive_leaf_task()` as revised actually compiles and behaves as
-  designed; whether the 4-conformer migration is complete and green; whether `recall`'s real
-  end-to-end invoke works) — PENDING**, no implementation exists yet to test.
+- **`drive_leaf_task()`'s contract-violation detection (§4 finding 1's exact hazard, reproduced
+  directly rather than only through `ThreadPool`) — CORRECT, executed**: `test_rt_drive_leaf_task.cpp`
+  D5 drives a task genuinely parked on a contended `AsyncMutex::lock()` and confirms both the
+  diagnosable `rt.leaf_task_contract_violation` error AND that the abandoned contender's destruction
+  does not corrupt the mutex for later legitimate use — the two halves of the claim, both checked, not
+  just asserted.
+- **The double-wrapped `result<T>` shape (§3, finding 3) — CORRECT, executed**: D2 confirms the outer
+  layer succeeds (task-level completion) while the inner layer independently carries the leaf's own
+  `std::unexpected` error, unflattened; D3 confirms a genuine thrown exception surfaces through the
+  OUTER layer instead (`rt.leaf_task_faulted`) — the two failure channels are observably distinct, not
+  merely documented as distinct.
+- **The 4-conformer `synchronous_leaf` migration (finding 4) — CORRECT, executed**: all 4 compile
+  (`static_assert(Embedder<...>)` passes for each), each a genuine one-line addition as predicted.
+- **`recall`'s real end-to-end invoke against a `synchronous_leaf` `Embedder` — CORRECT, executed**:
+  `test_vector_rag_context_provider.cpp` R8/R8b/R8c drive a real embed + search + citation-rendered
+  reply through the actual `ToolDescriptor::invoke` closure, not a hand-constructed shortcut. R9
+  confirms schema validation (reject-not-coerce) still runs before any embedder/index work.
+- **The `synchronous_leaf = false` fallback path (unchanged fail-closed behavior for a non-leaf
+  conformer) — INCONCLUSIVE, not exercised at runtime in this pass.** The code path compiles (the
+  `if constexpr` false-branch is still parsed, per the language rule, even though never instantiated
+  for any of today's 4 conformers), and its error message/code are byte-identical to the pre-ADR-064
+  stub by construction (not edited), but no conformer in the tree declares `synchronous_leaf = false`
+  today, so no test drives THAT specific `if constexpr` branch through a real instantiation. Honestly
+  left open rather than claimed CORRECT — see §5's own named residual.
 
-## 7. The decision — not made; this is the proposal awaiting the loop
+## 7. The decision — implemented and proven; awaiting explicit user "Judged"
 
 **✅ FIXED (2026-08-19), separately from this ADR's own scope.** §4 finding 1's `ThreadPool`+
 `AsyncMutex`+`AgentSession` reentrancy/UB hazard has been fixed directly in `rt/thread_pool.hpp`
@@ -399,18 +485,26 @@ AND that the mutex is unharmed afterward (the abandoned job's `destroy()` correc
 the waiter queue, reusing `AsyncMutex`/`channel<T>`'s own already-proven cancellation-safety per
 ADR-017's "drop the handle = cancel" idiom). Documented as an addendum to `decisions/ADR-037-remove-
 quark-as-core-runtime.md`'s own index row (the executed ADR whose own red-team predicted exactly this
-risk class). Full suite 194/194 (`ctest -LE live-network`), zero regressions. This fix is
-independent of whether Design B (below) is ever implemented — it hardens `ThreadPool` itself, for
-every current and future caller, not just `recall`/`Embedder`/RAG.
+risk class). Full suite 194/194 (`ctest -LE live-network`) at the time of that fix, zero regressions.
+This fix is independent of Design B — it hardens `ThreadPool` itself, for every current and future
+caller, not just `recall`/`Embedder`/RAG.
 
-**What this document recommends, after one red-team pass:** Design B (the revised
-`rt::drive_leaf_task()` with a 1-resume bound, an explicit `Embedder::synchronous_leaf` trait with an
-honestly-stated higher review bar, the double-wrap made explicit at the call site, and the 4-conformer
-migration checklist), with Design C's `Backgroundable` option layered on top as a documented follow-on
-for slow-backend deployments, and Design A/D explicitly named as the longer-term direction this ADR is
-NOT attempting. **Do not implement against this document yet** — one red-team pass on the DESIGN is
-real progress, not a finish line; per `decisions/README.md`, §5 (executed evidence: real code, real
-tests, a real build) and §6 (verdicts decided by observed output) still need to exist before this
-moves toward Judged. The next step, if this proceeds, is implementing Design B for real and proving
-it — mirroring ADR-063's own design → red-team → implement → red-team-again shape — not skipping
-straight to Judged on the strength of one clean design review.
+**Design B is implemented and proven (2026-08-19).** `rt::drive_leaf_task<T>()`
+(`rt/drive_leaf_task.hpp`), the required `Embedder::synchronous_leaf` trait (`core/embedder.hpp`), the
+4-conformer migration, and `VectorRagContextProvider::recall`'s real `invoke` implementation
+(`core/vector_rag_context_provider.hpp`) are all real, compiled, tested code — see §5 for the full
+evidence and §6 for per-claim verdicts. `recall(query)` is now genuinely invocable end-to-end for any
+`Embedder` conformer that declares `synchronous_leaf = true` (all 4 real conformers in the tree today
+do); a conformer declaring `false` still gets the original, byte-identical fail-closed error. Full
+suite **195/195** (`ctest -LE live-network`), zero regressions against the pre-existing 194.
+
+**What this document recommends and has now built:** Design B (the revised `rt::drive_leaf_task()`
+with a 1-resume bound, `Embedder::synchronous_leaf` with an honestly-stated higher review bar, the
+double-wrap made explicit at the call site, and the 4-conformer migration checklist — all executed),
+with Design C's `Backgroundable` option remaining a documented, NOT-yet-implemented follow-on for
+slow-backend deployments, and Design A/D explicitly named as the longer-term direction this ADR is not
+attempting. **Named residual, honestly left open (§5/§6):** the `synchronous_leaf = false` fallback
+path is unchanged and compiles, but is not exercised at runtime by any test in this pass, since no
+conformer in the tree today declares `false` — closing that would need either a deliberately
+non-leaf test conformer or waiting for a real future one. This document is ready to move to Judged on
+the strength of the evidence above; the explicit user sign-off itself is the one remaining step.

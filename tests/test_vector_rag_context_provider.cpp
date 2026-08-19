@@ -56,6 +56,10 @@ int g_failures = 0;
 // this task's scope), so this mock only ever needs to answer for QUERY text, never chunk text.
 class MockEmbedder {
 public:
+    // ADR-064 §3 Design B's required trait: this mock never awaits anything (co_return only), so
+    // driving it via rt::drive_leaf_task() is sound.
+    static constexpr bool synchronous_leaf = true;
+
     [[nodiscard]] ae::EmbedderCapabilities capabilities() const { return {3, 100}; }
 
     ae::task<ae::result<std::vector<std::vector<float>>>> embed_batch(std::vector<std::string> const& texts,
@@ -153,6 +157,10 @@ ae::result<ae::Digest> write_chunk(ae::InMemoryWorktreeObjectStore& object_store
 // calls -- exactly the "unwrapped Embedder breaks replay" tradeoff §2.2A accepts explicitly.
 class AlternatingEmbedder {
 public:
+    // ADR-064 §3 Design B's required trait: this mock never awaits anything (co_return only), so
+    // driving it via rt::drive_leaf_task() is sound.
+    static constexpr bool synchronous_leaf = true;
+
     [[nodiscard]] ae::EmbedderCapabilities capabilities() const { return {3, 100}; }
 
     ae::task<ae::result<std::vector<std::vector<float>>>> embed_batch(std::vector<std::string> const& texts,
@@ -261,26 +269,40 @@ int main() {
         AE_CHECK(out.has_value() && out->tools.size() == 1 && out->tools.front().name == "recall",
                  "R7: a recall(query)-shaped tool is contributed alongside default injection");
 
-        // --- The recall tool's own invoke: contributed, but fails closed on the documented async gap
+        // --- The recall tool's own invoke: ADR-064 Design B, driven synchronously via
+        // rt::drive_leaf_task() since MockEmbedder declares synchronous_leaf = true ------------------
         {
+            embedder.vectors["dark mode"] = {1.0f, 0.0f, 0.0f};  // distinct from on_context()'s own
+                                                                    // scripted query text above
+
             auto args = ae::json::parse(R"({"query":"dark mode"})");
             AE_CHECK(args.has_value(), "setup: recall args parse");
             ae::EffectContext tool_ctx{};
+            tool_ctx.principal = principal;
             auto reply = out->tools.front().invoke(*args, tool_ctx);
-            AE_CHECK(!reply.has_value() &&
-                         reply.error().code == "vector_rag_context_provider.recall_tool_requires_async_invoke",
-                     "R8: invoking recall() with well-formed args fails closed with the documented, "
-                     "stable error code for the sync-invoke/async-embedder gap -- never a hang, never "
-                     "a silently wrong (empty/stale) answer");
+            AE_CHECK(reply.has_value(),
+                     "R8: invoking recall() with well-formed args against a synchronous_leaf Embedder "
+                     "succeeds -- real end-to-end drive_leaf_task()-driven embed + search, not the "
+                     "old fail-closed stub");
+            auto parsed_reply = reply.has_value() ? ae::schema::from_json<ae::RagRecallReply>(*reply)
+                                                    : ae::result<ae::RagRecallReply>{};
+            AE_CHECK(parsed_reply.has_value() && parsed_reply->results.size() == 2,
+                     "R8b: recall() returns both corpus chunks (k=10 exceeds the 2-chunk corpus size, "
+                     "so index_->search() returns everything it has, ranked)");
+            AE_CHECK(parsed_reply.has_value() && !parsed_reply->results.empty() &&
+                         parsed_reply->results.front().find(
+                             "\xE2\x9F\xA6rag:docs/settings.md:10-12\xE2\x9F\xA7") != std::string::npos &&
+                         parsed_reply->results.front().find("Dark mode can be enabled") != std::string::npos,
+                     "R8c: the returned result carries the same citation label + chunk text discipline "
+                     "as on_context()'s own default injection (render_scored_chunk() is genuinely "
+                     "shared between both paths, not reimplemented)");
 
             auto bad_args = ae::json::parse(R"({})");
             AE_CHECK(bad_args.has_value(), "setup: malformed recall args parse (missing 'query') as JSON");
             auto bad_reply = out->tools.front().invoke(*bad_args, tool_ctx);
-            AE_CHECK(!bad_reply.has_value() &&
-                         bad_reply.error().code != "vector_rag_context_provider.recall_tool_requires_async_invoke",
-                     "R9: args are validated (reject-not-coerce) BEFORE the async-gap error -- a "
-                     "genuinely malformed call gets its own distinct schema error, not one that masks "
-                     "it as the unrelated async-invoke gap");
+            AE_CHECK(!bad_reply.has_value(),
+                     "R9: args are validated (reject-not-coerce) before ANY embedder/index work -- a "
+                     "genuinely malformed call gets its own distinct schema error");
         }
 
         // --- Embedder failure on the primary retrieval path propagates as a real error -----------

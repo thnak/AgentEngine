@@ -31,11 +31,20 @@ struct EmbedderCapabilities {
     std::uint32_t max_batch_size = 0;
 };
 
+// `synchronous_leaf` (ADR-064 §3 Design B) -- REQUIRED, declared, never inferred, matching this
+// project's own posture for `Capabilities<...>`/`EffectClass<...>`: a conformer must actively
+// assert "my `embed_batch()` never awaits anything but nested `task<T>`/`task<void>`" before
+// `rt::drive_leaf_task()` (rt/drive_leaf_task.hpp) may be used to drive it synchronously from a
+// `ToolDescriptor::invoke` closure (synchronous-only, tool_pipeline.hpp). This bar is materially
+// HIGHER than those other declared traits: a wrong declaration here fails via undefined behavior
+// (resuming a not-actually-ready coroutine handle), not a soft, contained error -- re-audit it any
+// time the conformer's `embed_batch()` body changes.
 template <class T>
 // ae-naming-lint: allow Embedder — ADR-063: new vocabulary, not yet in 027 §2-4's tables.
 concept Embedder = requires(T e, std::vector<std::string> const& texts, EffectContext& ctx) {
     { e.capabilities() } -> std::same_as<EmbedderCapabilities>;
     { e.embed_batch(texts, ctx) } -> std::same_as<task<result<std::vector<std::vector<float>>>>>;
+    { T::synchronous_leaf } -> std::convertible_to<bool>;
 };
 
 }  // namespace agentengine

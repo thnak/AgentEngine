@@ -37,9 +37,11 @@ violation the moment this provider is wired into a live `AgentSession` (now fixe
 the last genuine `role::user` message).
 **Not yet judged** — do not cite this as a settled decision; cite it as the question, the
 current best-argued (and now substantially proven) answer, and the specific list of what still
-isn't proven. The recommended next step before anyone calls this Judged is still the
-`recall(query)` sync-invoke/async-embedder gap (§7) — a cross-cutting, project-wide decision this
-ADR alone cannot settle — plus executed evidence for claims 1 and 3.
+isn't proven. The `recall(query)` sync-invoke/async-embedder gap (§7) is now CLOSED — see
+`decisions/ADR-064-recall-tool-sync-invoke-vs-async-embedder.md` (Design B implemented and proven,
+2026-08-19) — and executed evidence for claims 1 and 3 has since been gathered too (claim 3 CORRECT,
+claim 1 INCONCLUSIVE with real numbers, no RFC 023 budget row to compare against). Both items this
+paragraph originally named as blocking Judged are now resolved.
 
 **Relates to:** `005-Sessions-State-and-Memory.md` §5 (`ContextProvider`), `029-Memory-System.md`
 (the sibling "kind" this generalizes — 029 is keyword/salience/recency, deterministic, no network
@@ -614,14 +616,15 @@ project rebuild + `ctest -LE live-network`: 193/193 green):**
   **A real, previously-unnamed gap surfaced while building this file** (not in §4's original red-team
   pass — recorded honestly here, not folded into an existing finding it isn't): `ToolDescriptor::
   invoke` (`tool_pipeline.hpp`) is synchronous-only, but `recall(query)` needs `Embedder::
-  embed_batch()`, a genuine `ae::rt::task<T>` coroutine, and this codebase has no sound way to drive
+  embed_batch()`, a genuine `ae::rt::task<T>` coroutine, and this codebase had no sound way to drive
   `ae::rt::task<T>` to completion from a synchronous call site outside a test-only helper that
-  explicitly disclaims production use. `VectorRagContextProvider` still CONTRIBUTES the `recall` tool
-  (real name/schema, args validated first) but its `invoke` fails closed with a documented, stable
-  `vector_rag_context_provider.recall_tool_requires_async_invoke` error rather than cloning the
-  test-only trick into production (a real hang risk against any network-backed `Embedder`) or silently
-  omitting the tool. Closing this for real needs a project-wide async `ToolDescriptor::invoke` path —
-  out of scope for one provider class to decide unilaterally. See §7's new residual for this.
+  explicitly disclaims production use. **CLOSED (2026-08-19) by `decisions/ADR-064-recall-tool-sync-
+  invoke-vs-async-embedder.md`**: `rt::drive_leaf_task()` + the required `Embedder::synchronous_leaf`
+  trait now let `recall`'s `invoke` genuinely drive `embedder_.embed_batch()` for any conformer that
+  declares itself leaf (all 4 real conformers in the tree do, including `OpenAIEmbedder`) — a
+  conformer declaring `false` still gets the original fail-closed
+  `vector_rag_context_provider.recall_tool_requires_synchronous_leaf_embedder` error, unchanged in
+  spirit. See ADR-064 §5/§6 for the full executed evidence.
 
 **Still not implemented — genuinely out of scope for this pass, not silently dropped**: any
 `VectorIndex` persistence across a process restart (finding 1 — `BruteForceCosineIndex` is
@@ -858,18 +861,19 @@ copy-at-mount folder retrieval with citation metadata rather than live re-reads.
   and proven end-to-end (`C6-R1`–`C6-R3`). **Still open, NOT closed by this**: mount-level content
   trust (who may add files to a mounted corpus root) — named explicitly in §2.6b as a separate
   question, unaddressed by any code written so far.
-- **(NEW, found during implementation 2026-08-19, not in the original §4 red-team pass)
-  `recall(query)`'s sync-invoke/async-embedder mismatch.** `ToolDescriptor::invoke`
-  (`core/tool_pipeline.hpp`) is synchronous-only; `VectorRagContextProvider`'s `recall(query)` needs
+- **(NEW, found during implementation 2026-08-19, not in the original §4 red-team pass — CLOSED
+  2026-08-19)** `recall(query)`'s sync-invoke/async-embedder mismatch. `ToolDescriptor::invoke`
+  (`core/tool_pipeline.hpp`) is synchronous-only; `VectorRagContextProvider`'s `recall(query)` needed
   `Embedder::embed_batch()`, a genuine `ae::rt::task<T>` coroutine with no sound synchronous
   "drive to completion" path anywhere in this codebase outside a test-only helper that explicitly
-  disclaims production use. Current behavior: the tool is still contributed (real name/schema, args
-  validated first) but its `invoke` fails closed with a documented, stable error code rather than
-  either cloning the unsound test trick into production or silently omitting the tool. This is a
-  genuinely new, cross-cutting gap this ADR's own scope cannot close alone — the fix is a project-wide
-  async `ToolDescriptor::invoke` path, a separate decision. **Recommended as the next red-team target**
-  before any Judged sign-off, since it is real, load-bearing attack surface the original red-team pass
-  never saw (the code that exposes it didn't exist yet).
+  disclaims production use. **Resolved by `decisions/ADR-064-recall-tool-sync-invoke-vs-async-
+  embedder.md`, Design B**: a narrow, opt-in `rt::drive_leaf_task<T>()` plus a required
+  `Embedder::synchronous_leaf` declaration a conformer must actively assert before `recall`'s `invoke`
+  will drive it — NOT a project-wide `ToolDescriptor::invoke` signature change. `recall` is now
+  genuinely invocable end-to-end for any `synchronous_leaf = true` conformer (all 4 real conformers in
+  the tree, including `OpenAIEmbedder`); a conformer declaring `false` still fails closed with the
+  original error, unchanged. Real, executed evidence in ADR-064 §5/§6, including a new
+  `tests/test_rt_drive_leaf_task.cpp` and real end-to-end recall coverage.
 - **(from §4 red-team) The concurrent-writer race, now more precisely understood as a lost-update on
   `commit_ref()`'s missing compare-and-set** (not mere staleness) for any corpus with more than one
   writer — worse than Memory's own accepted single-writer assumption if RAG corpora turn out to be
@@ -933,14 +937,14 @@ copy-at-mount folder retrieval with citation metadata rather than live re-reads.
 done — see §5/§6). A first red-team pass against the NEW code has now run (2026-08-19, §5's "Red-team
 pass 2" subsection) and its 5 findings are fixed and tested — but per this project's own culture, one
 clean red-team pass is evidence, not a guarantee nothing else is there; a further pass remains
-prudent before Judged, particularly once `recall(query)`'s sync-invoke/async-embedder gap has an
-actual fix to review (a project-wide `ToolDescriptor::invoke` decision, not something this ADR can
-settle alone). Claims 2, 3, 4, 5, 6 and finding 7 are now closed with real executed evidence; claim 1
-now has real measured numbers but stays INCONCLUSIVE pending a dedicated RFC 023 budget row (a
+prudent before Judged. `recall(query)`'s sync-invoke/async-embedder gap now has an actual, reviewed,
+tested fix (`decisions/ADR-064-recall-tool-sync-invoke-vs-async-embedder.md`, Design B, implemented
+and proven 2026-08-19). Claims 2, 3, 4, 5, 6 and finding 7 are now closed with real executed evidence;
+claim 1 now has real measured numbers but stays INCONCLUSIVE pending a dedicated RFC 023 budget row (a
 separate, cross-cutting spec change, not this ADR's own call to make unilaterally); claim 7 (Vulkan)
-is deliberately deferred, not a gap. What remains before Judged: a real decision on the async-invoke
-gap, and — since claim 1 turned up a real, measured finding (the closest existing 023 budget analog
-is already exceeded at realistic corpus sizes) — a decision on whether the ANN/GPU seam backend gate
-(§2.3B) should move up the roadmap rather than stay speculative. Per `decisions/README.md`, this file
-gets superseded (not silently edited into a false "Judged" status) once that happens, or removed per
-that same README if a future pass concludes this shape does not survive red-team.
+is deliberately deferred, not a gap. What remains before Judged: since claim 1 turned up a real,
+measured finding (the closest existing 023 budget analog is already exceeded at realistic corpus
+sizes), a decision on whether the ANN/GPU seam backend gate (§2.3B) should move up the roadmap rather
+than stay speculative. Per `decisions/README.md`, this file gets superseded (not silently edited into
+a false "Judged" status) once that happens, or removed per that same README if a future pass concludes
+this shape does not survive red-team.

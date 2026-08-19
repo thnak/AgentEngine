@@ -20,25 +20,23 @@
 // would silently diverge from whatever a real ingestion step populated elsewhere.
 //
 // **A real, named implementation gap found while building this file, not previously listed in
-// ADR-063 §4/§7's own residual lists**: `ToolDescriptor::invoke` (core/tool_pipeline.hpp) is
+// ADR-063 §4/§7's own residual lists -- RESOLVED by decisions/ADR-064-recall-tool-sync-invoke-vs-
+// async-embedder.md, Design B (2026-08-19).** `ToolDescriptor::invoke` (core/tool_pipeline.hpp) is
 // `std::function<result<json::Value>(json::Value const&, EffectContext&)>` -- synchronous only (an
 // M2-era decision, never revisited). `MemoryProvider::make_recall_tool_descriptor()`'s own `invoke`
 // never needed to be async because `rank_memory_items()` is a pure function of already-stored data
 // (029 §5: "default retrieval needs no model call at all"). This provider's `recall(query)` has no
 // equivalent option -- ranking a fresh query requires embedding it first via `embedder_.embed_batch()`,
 // a genuine `ae::task<result<...>>` coroutine (a real network call for any production `Embedder`
-// conformer), and `ae::rt::task<T>` has no synchronous "drive to completion" API by design
-// (core/task.hpp, rt/task.hpp's own banner comment) -- the only driver that exists anywhere in this
-// tree is `tests/support/run_task_sync.hpp`, whose own header comment states outright it must never
-// be used outside a test because a genuinely parking awaited task would simply hang it forever.
-// Cloning that trick into this file's production `invoke` lambda would be silently unsound against
-// any real, network-backed `Embedder` -- exactly the class of bug CONVENTIONS.md calls a release
-// blocker, not a shortcut worth taking to make a demo pass. The `recall` tool below is still
-// CONTRIBUTED (its name/schema are real and ready), but its `invoke` fails closed with a clearly
-// diagnosable `failure_class::contract` error instead -- see `make_recall_tool_descriptor()`'s own
-// comment for the full reasoning. Closing this for real needs a genuinely async
-// `ToolDescriptor::invoke` path, a cross-cutting, project-wide decision well outside what this one
-// provider class can settle unilaterally.
+// conformer). ADR-064 closes this WITHOUT widening `ToolDescriptor::invoke`'s signature (rejected as
+// Design A, 25+ call sites, its own separate cross-cutting decision): `rt::drive_leaf_task()`
+// (rt/drive_leaf_task.hpp) drives `embedder_.embed_batch()` synchronously, gated by the `Embedder`
+// concept's REQUIRED `synchronous_leaf` trait (core/embedder.hpp) -- a conformer must declare it
+// `true` (an explicit, reviewed claim that its `embed_batch()` body never awaits anything but nested
+// `task<T>`/`task<void>`) before `recall`'s `invoke` will use this path. `OpenAIEmbedder` declares
+// `true` today. A conformer declaring `false` still gets the ORIGINAL fail-closed
+// `failure_class::contract` error (unchanged, no regression) -- see `make_recall_tool_descriptor()`'s
+// own comment below for both paths.
 
 #include <cstddef>
 #include <span>
@@ -58,6 +56,7 @@
 #include "agentengine/core/vector_index.hpp"
 #include "agentengine/core/worktree.hpp"
 #include "agentengine/rt/append_log_store.hpp"
+#include "agentengine/rt/drive_leaf_task.hpp"
 
 namespace agentengine {
 
@@ -214,15 +213,9 @@ private:
         return {};
     }
 
-    // Shared by `on_context()`'s default injection path -- the one place this provider currently
-    // renders a `ScoredId` into labeled text (the contributed `recall` tool's own `invoke` cannot
-    // reach this yet; see `make_recall_tool_descriptor()`'s comment for why, and this file's own
-    // top-of-file comment for the full async-invoke gap this is downstream of). Kept as its own
-    // method regardless of only having one live caller today: the moment a real async
-    // `ToolDescriptor::invoke` path exists, `recall`'s own implementation becomes a call to this
-    // SAME helper, exactly matching how `MemoryProvider` shares `memory_item_to_labeled_text`-shaped
-    // logic between its two paths -- this method is written to be that shared point from day one,
-    // not restructured later.
+    // Shared by `on_context()`'s default injection path AND (ADR-064, when `EmbedderT::
+    // synchronous_leaf` is true) the contributed `recall` tool's own `invoke` -- exactly matching
+    // how `MemoryProvider` shares `memory_item_to_labeled_text`-shaped logic between its two paths.
     [[nodiscard]] result<std::string> render_scored_chunk(ScoredId const& scored) const {
         auto record = read_corpus_chunk_record(*object_store_, *ref_store_, mount_, read_cap_, scored.id);
         if (!record) return std::unexpected(record.error());
@@ -278,7 +271,19 @@ private:
         return m;
     }
 
-    [[nodiscard]] ToolDescriptor make_recall_tool_descriptor() const {
+    // NOT `const` -- deliberately: the `synchronous_leaf` path below calls `this->embedder_.
+    // embed_batch(...)`, and none of this codebase's real `Embedder` conformers declare `embed_batch`
+    // `const` except `OpenAIEmbedder` (the two test mocks mutate their own call counters/scripted
+    // state inside it) -- capturing `this` from a `const` method here would force `embedder_` to be
+    // accessed through a `const&`, breaking every non-const conformer. The lambda below captures
+    // `this` (not individual members by value, unlike `MemoryProvider::make_recall_tool_descriptor()`)
+    // because it needs `embedder_.embed_batch()`, `index_->search()`, AND `render_scored_chunk()` --
+    // sound because every real caller stores this provider by a stable heap address for its whole
+    // lifetime before ever calling `on_context()` (`context_assembly.hpp::make_context_provider_
+    // descriptor()`'s own `std::make_shared<ProviderT>`), so the captured `this` outlives every
+    // `ToolDescriptor` it produces, same lifetime relationship `index_`'s own raw pointer already
+    // relies on.
+    [[nodiscard]] ToolDescriptor make_recall_tool_descriptor() {
         ToolDescriptor d;
         d.name              = "recall";
         d.description       = "Search the retrieval corpus for chunks matching a query.";
@@ -286,31 +291,65 @@ private:
         d.args_schema_json  = schema::json_schema_of<RagRecallArgs>();
         d.reply_schema_json = schema::json_schema_of<RagRecallReply>();
 
-        // See this file's own top-of-file comment for the full reasoning: ranking a fresh query
-        // against `index_` requires embedding it first via `embedder_.embed_batch()`, a genuine
-        // `ae::task<result<...>>` coroutine -- but `ToolDescriptor::invoke` (tool_pipeline.hpp) is
-        // synchronous-only, and `ae::rt::task<T>` has no sound synchronous "drive to completion" API
-        // anywhere in this codebase outside a test-only helper that explicitly disclaims production
-        // use. DECISION for this pass: fail closed with a clearly diagnosable
-        // `failure_class::contract` error rather than either (a) clone the test-only "resume once and
-        // hope it doesn't genuinely park" trick into production code, which would be silently unsound
-        // (a real hang) against any real, network-backed `Embedder`, or (b) quietly omit the tool
-        // entirely, which would hide that this gap exists at all. The tool is still CONTRIBUTED --
-        // its name/schema are real, so a caller/model can see `recall` is documented to exist and
-        // what its shape is -- it simply cannot be INVOKED successfully yet. Args are still validated
-        // first (reject-not-coerce, 006 §3 step 2) so a malformed call gets a schema error rather than
-        // this gap's own error masking a genuinely separate contract violation.
-        d.invoke = [](json::Value const& args_value, EffectContext&) -> result<json::Value> {
+        // ADR-064 Design B: args are validated FIRST (reject-not-coerce, 006 §3 step 2) regardless of
+        // which branch below runs, so a malformed call always gets its own schema error rather than
+        // either branch's error masking a genuinely separate contract violation.
+        d.invoke = [this](json::Value const& args_value, EffectContext& ctx) -> result<json::Value> {
             auto args = schema::from_json<RagRecallArgs>(args_value);
             if (!args) return std::unexpected(args.error());
-            return std::unexpected(error{
-                failure_class::contract,
-                "recall(query) cannot be invoked yet: it requires an async Embedder::embed_batch() "
-                "call, but ToolDescriptor::invoke (tool_pipeline.hpp) is synchronous-only and this "
-                "codebase has no safe way to drive an ae::task<T> to completion from a synchronous "
-                "call site outside a test. Use VectorRagContextProvider::on_context()'s default "
-                "injection instead until a real async tool-invoke path exists.",
-                "vector_rag_context_provider.recall_tool_requires_async_invoke"});
+
+            if constexpr (EmbedderT::synchronous_leaf) {
+                // `rt::drive_leaf_task()` is sound here ONLY because `EmbedderT::synchronous_leaf ==
+                // true` is an explicit, reviewed claim (core/embedder.hpp) that `embed_batch()` never
+                // awaits anything but nested `task<T>`/`task<void>` -- see rt/drive_leaf_task.hpp's
+                // own top comment for the full contract and its double-wrapped `result<T>` shape,
+                // both layers unwrapped explicitly below (OUTER: task-level fault or a violated
+                // contract; INNER: the ordinary provider error channel -- a failed HTTP call, a bad
+                // response -- the common failure case).
+                std::vector<std::string> const query_batch{args->query};
+                auto driven = rt::drive_leaf_task(embedder_.embed_batch(query_batch, ctx));
+                if (!driven) return std::unexpected(driven.error());
+                auto& embedded = *driven;
+                if (!embedded) return std::unexpected(embedded.error());
+                if (embedded->empty()) {
+                    return std::unexpected(
+                        error{failure_class::contract,
+                              "Embedder::embed_batch returned zero vectors for a one-text query batch",
+                              "vector_rag_context_provider.embed_batch_empty_result"});
+                }
+
+                std::vector<float> const& query_vector = embedded->front();
+                // 10, matching MemoryProvider::make_recall_tool_descriptor()'s own on-demand
+                // max_results literal -- deliberately independent of max_injected_ (that constructor
+                // parameter sizes DEFAULT injection, a different concern from an on-demand query).
+                auto scored = index_->search(
+                    std::span<float const>(query_vector.data(), query_vector.size()), /*k=*/10);
+                if (!scored) return std::unexpected(scored.error());
+
+                // Same best-effort posture as on_context() (see that method's own comment): a stale
+                // index entry (backing record/blob since removed) skips, rather than failing the
+                // whole on-demand query over one miss.
+                RagRecallReply reply;
+                reply.results.reserve(scored->size());
+                for (ScoredId const& s : *scored) {
+                    auto rendered = render_scored_chunk(s);
+                    if (!rendered) continue;
+                    reply.results.push_back(*rendered);
+                }
+                return schema::to_json(reply);
+            } else {
+                // Unchanged fail-closed path (no regression) for any Embedder conformer that declares
+                // `synchronous_leaf = false` -- see this file's own top-of-file comment.
+                return std::unexpected(error{
+                    failure_class::contract,
+                    "recall(query) cannot be invoked: this Embedder conformer declares "
+                    "synchronous_leaf = false, so it is unsafe to drive its embed_batch() task "
+                    "synchronously from this tool's invoke (decisions/ADR-064). Use "
+                    "VectorRagContextProvider::on_context()'s default injection instead, or compose "
+                    "an Embedder whose embed_batch() body never awaits anything but nested "
+                    "task<T>/task<void> and declares synchronous_leaf = true.",
+                    "vector_rag_context_provider.recall_tool_requires_synchronous_leaf_embedder"});
+            }
         };
         return d;
     }

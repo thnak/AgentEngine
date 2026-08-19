@@ -898,6 +898,12 @@ add_executable(test_rt_async_mutex test_rt_async_mutex.cpp)
 target_link_libraries(test_rt_async_mutex PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_async_mutex COMMAND test_rt_async_mutex)
 
+# ---- ADR-064 Design B -- agentengine::rt::drive_leaf_task<T>(), the narrow "leaf task" driver
+# VectorRagContextProvider::recall's invoke uses (include/agentengine/rt/drive_leaf_task.hpp).
+add_executable(test_rt_drive_leaf_task test_rt_drive_leaf_task.cpp)
+target_link_libraries(test_rt_drive_leaf_task PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_drive_leaf_task COMMAND test_rt_drive_leaf_task)
+
 # ---- ADR-037 Phase 2, Slice 1 -- agentengine::rt::AgentSession, the Quark-actor-free replacement
 # for agentengine::AgentSession's core turn loop.
 add_executable(test_rt_agent_session test_rt_agent_session.cpp)
