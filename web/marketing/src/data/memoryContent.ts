@@ -670,6 +670,13 @@ Message memory_item_to_message(MemoryItem const& item) {
 // hostile item cannot impersonate a higher-trust label once several items' text is concatenated
 // into one system block.`;
 
+export const memoryProviderDefaultSnippet = `// Common case: default in-memory store types, an existing ChatClient as the summarizer,
+// max_injected left at its default (3) -- no custom store backend, no dedicated extraction model.
+using Provider = MemoryProvider<AnthropicChatClient<InMemorySecretStore>,
+                                 InMemoryWorktreeObjectStore, rt::InMemoryAppendLogStore>;
+ensure_memory_worktree(object_store, ref_store, principal);
+Provider provider{object_store, ref_store, memory_mount(principal), read_cap, write_cap, summarizer};`;
+
 export const memoryProviderWiringSnippet = `// examples/08_memory.cpp (trimmed) -- the real, tested shape
 InMemoryWorktreeObjectStore object_store;
 rt::InMemoryAppendLogStore   ref_store;

@@ -4,6 +4,7 @@ import {
   capabilityEnforcementSteps,
   customBackendConceptSnippet,
   gh,
+  minimalCapabilitiesSnippet,
   nativeJailProcessLaunchSnippet,
   remoteCallbackAuthSnippet,
   remoteCallbackAuthSteps,
@@ -96,6 +97,17 @@ const copy = {
         <code>FsWrite&lt;"work"&gt;</code>. Declaring that changes nothing about whether the
         tool can actually run — the only thing that authorizes a call is what the{" "}
         <em>session</em> was explicitly handed.
+      </>
+    ),
+    s1RecoLabel: "Recommended default",
+    s1RecoBody: (
+      <>
+        Before reaching for <code>Capabilities&lt;...&gt;</code> at all: most tools touch no
+        privileged effect and declare NOTHING here, matching 007 §3's empty-by-default rule —{" "}
+        <code>declared_capabilities()</code> already returns an empty ceiling unless overridden.
+        Add exactly the <code>cap::decl::*</code> tag matching the one effect a tool actually
+        reaches (a single <code>FsWrite&lt;"work"&gt;</code>, say) — never a broader set "in
+        case it's needed later":
       </>
     ),
     declaresLabel: "What the tool declares",
@@ -427,6 +439,17 @@ const copy = {
         <code>FsWrite&lt;"work"&gt;</code>. Việc khai báo đó không thay đổi gì về việc tool có
         thực sự chạy được hay không — thứ duy nhất ủy quyền cho một lệnh gọi là những gì{" "}
         <em>session</em> được trao một cách tường minh.
+      </>
+    ),
+    s1RecoLabel: "Mặc định khuyến nghị",
+    s1RecoBody: (
+      <>
+        Trước khi dùng tới <code>Capabilities&lt;...&gt;</code>: hầu hết tool không chạm tới
+        effect đặc quyền nào cả và KHÔNG khai báo gì ở đây, đúng theo quy tắc mặc định-rỗng của
+        007 §3 — <code>declared_capabilities()</code> đã trả về một ceiling rỗng trừ khi được
+        ghi đè. Chỉ thêm đúng thẻ <code>cap::decl::*</code> khớp với effect duy nhất mà tool
+        thực sự chạm tới (ví dụ một <code>FsWrite&lt;"work"&gt;</code> duy nhất) — không bao
+        giờ khai báo rộng hơn "phòng khi sau này cần":
       </>
     ),
     declaresLabel: "Những gì tool khai báo",
@@ -775,6 +798,17 @@ export function ApiTrustSandboxReference() {
               <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>{t.s1Heading}</h3>
               <p>{t.s1Body}</p>
             </div>
+          </RevealItem>
+
+          <RevealItem>
+            <div className="gs-recommend">
+              <span className="gs-recommend-label">{t.s1RecoLabel}</span>
+              <p>{t.s1RecoBody}</p>
+            </div>
+          </RevealItem>
+
+          <RevealItem>
+            <CodePanel filename="summarize_tool.hpp">{highlightCpp(minimalCapabilitiesSnippet)}</CodePanel>
           </RevealItem>
 
           <RevealItem>

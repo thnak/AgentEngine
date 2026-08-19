@@ -1210,6 +1210,38 @@ button {
   color: var(--text);
 }
 
+/* "Recommended" callout: the minimal-friction path, shown before the full reference below it.
+   Teal (matches status-real) rather than gs-note's pink, so it reads as "start here", not "warning". */
+.gs-recommend {
+  margin-top: 24px;
+  padding: 18px 20px;
+  border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in srgb, var(--accent-teal) 35%, transparent);
+  border-left: 3px solid var(--accent-teal);
+  background: color-mix(in srgb, var(--accent-teal) 6%, var(--panel));
+}
+
+.gs-recommend-label {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent-teal);
+  margin-bottom: 8px;
+}
+
+.gs-recommend p {
+  font-size: 0.9rem;
+  line-height: 1.6;
+  color: var(--text-dim);
+  margin: 0;
+}
+
+.gs-recommend code {
+  color: var(--text);
+}
+
 .gs-next {
   margin-top: 48px;
   padding: 28px 28px 24px;

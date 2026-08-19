@@ -1,6 +1,8 @@
-import { authoringEntries, registerAgentSteps } from "../data/apiContent";
+import { authoringEntries, minimalAgentSnippet, registerAgentSteps } from "../data/apiContent";
 import { useLang } from "../i18n/LanguageContext";
 import { ui } from "../i18n/ui";
+import { highlightCpp } from "../lib/highlightCpp";
+import { CodePanel } from "./CodePanel";
 import { RevealGroup, RevealItem } from "./Reveal";
 import type { Lang } from "../i18n/LanguageContext";
 
@@ -63,6 +65,18 @@ const copy = {
         <code>register_agent&lt;A&gt;()</code>.
       </>
     ),
+    s1RecoLabel: "Recommended default",
+    s1RecoBody: (
+      <>
+        Only <code>ChatClientId&lt;Id&gt;</code> is required — it has no default, and an agent
+        that omits it fails <code>register_agent&lt;A&gt;()</code> before anything else runs.
+        Everything else in the list to the left already has a sane default: <code>MaxTurns</code>{" "}
+        is 16, <code>TokenBudget</code> is unbounded, <code>SandboxProfile</code> resolves to{" "}
+        <code>Strict</code>, and <code>Capabilities</code> is empty. Most agents write only{" "}
+        <code>ChatClientId&lt;Id&gt;</code> plus <code>Tools&lt;Ts...&gt;</code> and leave the
+        rest unstated:
+      </>
+    ),
     section2Eyebrow: "core/agent_registry.hpp — compiler::run()",
     section2Heading: (
       <>
@@ -123,6 +137,19 @@ const copy = {
         được đọc một lần bởi <code>register_agent&lt;A&gt;()</code>.
       </>
     ),
+    s1RecoLabel: "Mặc định khuyến nghị",
+    s1RecoBody: (
+      <>
+        Chỉ <code>ChatClientId&lt;Id&gt;</code> là bắt buộc — nó không có giá trị mặc định, và
+        một agent bỏ qua nó sẽ khiến <code>register_agent&lt;A&gt;()</code> thất bại trước khi
+        bất kỳ điều gì khác chạy. Mọi thứ còn lại trong danh sách bên trái đều đã có một giá trị
+        mặc định hợp lý: <code>MaxTurns</code> là 16, <code>TokenBudget</code> không giới hạn,{" "}
+        <code>SandboxProfile</code> phân giải về <code>Strict</code>, và{" "}
+        <code>Capabilities</code> rỗng. Hầu hết agent chỉ cần viết{" "}
+        <code>ChatClientId&lt;Id&gt;</code> cùng <code>Tools&lt;Ts...&gt;</code> và để phần còn
+        lại ở trạng thái mặc định:
+      </>
+    ),
     section2Eyebrow: "core/agent_registry.hpp — compiler::run()",
     section2Heading: (
       <>
@@ -175,6 +202,17 @@ export function ApiAgentReference() {
               <span className="eyebrow">{t.section1Eyebrow}</span>
               <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>{t.section1Heading}</h3>
             </div>
+          </RevealItem>
+
+          <RevealItem>
+            <div className="gs-recommend">
+              <span className="gs-recommend-label">{t.s1RecoLabel}</span>
+              <p>{t.s1RecoBody}</p>
+            </div>
+          </RevealItem>
+
+          <RevealItem>
+            <CodePanel filename="core/agent.hpp">{highlightCpp(minimalAgentSnippet)}</CodePanel>
           </RevealItem>
 
           <RevealItem>

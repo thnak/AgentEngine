@@ -6,6 +6,7 @@ import {
   memoryInjectionSnippet,
   memoryItemSnippet,
   memoryProofRows,
+  memoryProviderDefaultSnippet,
   memoryProviderWiringSnippet,
   memoryRankSnippet,
   memorySourceRows,
@@ -168,6 +169,19 @@ const copy = {
         summarizer through <code>chat_stream()</code>, drains it, and — if there is real text —
         writes one <code>MemoryItem</code>. Best-effort by design: a failed stream or an empty
         response returns quietly rather than retroactively failing a turn that already succeeded.
+      </>
+    ),
+    s4RecoLabel: "Recommended default",
+    s4RecoBody: (
+      <>
+        Most call sites need none of <code>MemoryProvider</code>'s three template parameters to be
+        anything unusual. The default in-memory worktree store types (
+        <code>InMemoryWorktreeObjectStore</code>, <code>rt::InMemoryAppendLogStore</code>) are
+        enough until durability across process restarts is actually required, the session's own{" "}
+        <code>ChatClient</code> doubles as the summarizer with no dedicated extraction model, and{" "}
+        <code>max_injected</code> is left at its default of 3. A custom store backend, a dedicated
+        summarizer, or a non-default injection count are all real options — just not ones the
+        common case needs.
       </>
     ),
     s4Note: (
@@ -358,6 +372,19 @@ const copy = {
         <code>chat_stream()</code>, rút cạn luồng, và — nếu có văn bản thật — ghi một{" "}
         <code>MemoryItem</code>. Cố ý chỉ ở mức nỗ lực tối đa: một luồng lỗi hay một phản hồi rỗng
         sẽ lặng lẽ trả về, thay vì đánh hỏng ngược một lượt vốn đã thành công.
+      </>
+    ),
+    s4RecoLabel: "Mặc định khuyến nghị",
+    s4RecoBody: (
+      <>
+        Phần lớn nơi gọi không cần điều gì bất thường ở cả ba tham số template của{" "}
+        <code>MemoryProvider</code>. Các kiểu store worktree trong bộ nhớ mặc định (
+        <code>InMemoryWorktreeObjectStore</code>, <code>rt::InMemoryAppendLogStore</code>) là đủ
+        dùng cho tới khi thực sự cần độ bền qua các lần khởi động lại tiến trình,{" "}
+        <code>ChatClient</code> sẵn có của session cũng đóng luôn vai trò summarizer mà không cần
+        một model trích xuất riêng, và <code>max_injected</code> được giữ ở giá trị mặc định là 3.
+        Một store backend tùy chỉnh, một summarizer riêng, hay một số lượng tiêm khác mặc định đều
+        là những lựa chọn có thật — chỉ là không phải thứ trường hợp phổ biến cần tới.
       </>
     ),
     s4Note: (
@@ -582,6 +609,19 @@ export function ApiMemoryReference() {
               <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>{t.s4Heading}</h3>
               <p>{t.s4Body}</p>
             </div>
+          </RevealItem>
+
+          <RevealItem>
+            <div className="gs-recommend">
+              <span className="gs-recommend-label">{t.s4RecoLabel}</span>
+              <p>{t.s4RecoBody}</p>
+            </div>
+          </RevealItem>
+
+          <RevealItem>
+            <CodePanel filename="core/memory_provider.hpp">
+              {highlightCpp(memoryProviderDefaultSnippet)}
+            </CodePanel>
           </RevealItem>
 
           <RevealItem>
