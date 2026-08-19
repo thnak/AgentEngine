@@ -16,6 +16,7 @@
 #include <cmath>
 #include <concepts>
 #include <cstddef>
+#include <shared_mutex>
 #include <span>
 #include <string>
 #include <unordered_map>
@@ -53,11 +54,25 @@ concept VectorIndex =
 // O(n*d) per query, correct by construction, not tuned. ADR-063 §3 claim 1 is the (as yet unset)
 // latency bound a future bench must check before this can be called sufficient for any specific
 // deployment's corpus size — this class makes no claim about that bound itself.
+//
+// THREAD-SAFETY (ADR-064 §6's named residual, closed 2026-08-19): `VectorRagContextProvider` takes
+// its index by REFERENCE specifically so it can be shared across provider instances (this class's
+// own original design intent, `vector_rag_context_provider.hpp`'s constructor comment); a future
+// `CorpusSource` ingestion step (ADR-063 §2.4A, not yet built) writing to a shared index while a
+// live session's `recall()` concurrently reads it was a genuine, if not-yet-reachable, data race —
+// this class had no internal synchronization at all. Fixed here, not left as a caller obligation:
+// a `std::shared_mutex` guards every access -- `add_batch()` takes a unique (writer) lock,
+// `search()`/`contains()`/`size()` take a shared (reader) lock, so any number of concurrent readers
+// may proceed together, but a writer excludes everyone. This is a real, permanent fix (not merely a
+// "currently unreachable" residual note) — correct today for the pure-read-concurrency case R15
+// (`tests/test_vector_rag_context_provider.cpp`) already proves, AND now also correct once a real
+// concurrent-writer ingestion path exists, without needing to revisit this file again.
 // ae-naming-lint: allow BruteForceCosineIndex — ADR-063: new vocabulary, not yet in 027 §2-4's tables.
 class BruteForceCosineIndex {
 public:
     [[nodiscard]] result<void> add_batch(std::vector<std::string> const& ids,
                                           std::vector<std::vector<float>> const& vectors) {
+        std::unique_lock lock(mutex_);
         if (ids.size() != vectors.size()) {
             return std::unexpected(error{failure_class::contract,
                                           "ids and vectors must have the same length",
@@ -100,6 +115,7 @@ public:
 
     [[nodiscard]] result<std::vector<ScoredId>> search(std::span<float const> query,
                                                          std::size_t k) const {
+        std::shared_lock lock(mutex_);
         // Same reject-not-coerce reasoning as add_batch()'s dimension check above, applied to the
         // query side (red-team, 2026-08-19) -- a mismatched-width query would otherwise silently
         // score against only a truncated prefix of every stored vector.
@@ -123,9 +139,15 @@ public:
         return scored;
     }
 
-    [[nodiscard]] bool contains(std::string const& id) const { return entries_.contains(id); }
+    [[nodiscard]] bool contains(std::string const& id) const {
+        std::shared_lock lock(mutex_);
+        return entries_.contains(id);
+    }
 
-    [[nodiscard]] std::size_t size() const { return entries_.size(); }
+    [[nodiscard]] std::size_t size() const {
+        std::shared_lock lock(mutex_);
+        return entries_.size();
+    }
 
 private:
     // Unreachable in practice once add_batch()/search() both enforce dimension_ above -- kept as
@@ -143,6 +165,7 @@ private:
         return static_cast<float>(dot / (std::sqrt(na) * std::sqrt(nb)));
     }
 
+    mutable std::shared_mutex                            mutex_;
     std::unordered_map<std::string, std::vector<float>> entries_;
     std::vector<std::string>                             order_;
     std::size_t                                          dimension_ = 0;

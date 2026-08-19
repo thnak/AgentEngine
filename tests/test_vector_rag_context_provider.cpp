@@ -197,6 +197,34 @@ std::vector<float> stateless_vector_for(std::string const& text) {
             static_cast<float>((h / 997 / 991) % 883)};
 }
 
+// R16 (ADR-064 §6/§7's own named residual): a real conformer that declares synchronous_leaf =
+// false -- ALL 4 real conformers in the tree (OpenAIEmbedder + this file's other 3 mocks) declare
+// `true`, so nothing exercises VectorRagContextProvider::recall's `if constexpr` FALSE branch
+// through an actual template instantiation without this dedicated class. The embed_batch() body
+// below is otherwise irrelevant to what this class exists to test -- synchronous_leaf gates
+// recall's invoke at COMPILE time (which branch gets instantiated), not by inspecting runtime
+// behavior, so this body just needs to keep on_context()'s own (unrelated, ordinary co_await) path
+// working normally.
+class NonLeafEmbedder {
+public:
+    static constexpr bool synchronous_leaf = false;
+
+    [[nodiscard]] ae::EmbedderCapabilities capabilities() const { return {3, 100}; }
+
+    ae::task<ae::result<std::vector<std::vector<float>>>> embed_batch(std::vector<std::string> const& texts,
+                                                                        ae::EffectContext&) const {
+        std::vector<std::vector<float>> out(texts.size(), std::vector<float>{0.0f, 0.0f, 0.0f});
+        co_return out;
+    }
+};
+static_assert(ae::Embedder<NonLeafEmbedder>,
+              "NonLeafEmbedder must satisfy the Embedder concept (ADR-063 §2.2) despite declaring "
+              "synchronous_leaf = false");
+
+using NonLeafProvider =
+    ae::VectorRagContextProvider<NonLeafEmbedder, ae::BruteForceCosineIndex,
+                                  ae::InMemoryWorktreeObjectStore, ae::rt::InMemoryAppendLogStore>;
+
 // R15 (red-team pass 2's own named-but-not-closed concurrent-recall() residual): a genuinely
 // STATELESS Embedder -- zero mutable member state, unlike this file's other mocks (MockEmbedder's
 // `fail_next` toggles on read; AlternatingEmbedder's `call_count` mutates every call), which are
@@ -890,6 +918,55 @@ int main() {
                  "against the SAME provider instance all succeed with the correct, real result -- no "
                  "crash, no corrupted/partial read, no observable race between concurrent embed_batch()/"
                  "index search()/blob-read calls");
+    }
+
+    // ============================================================================================
+    // R16 (ADR-064 §6/§7's own named residual, closed here): recall's invoke against a REAL
+    // conformer that declares synchronous_leaf = false -- exercises the `if constexpr` FALSE branch
+    // through an actual template instantiation for the first time in this tree (all 4 real
+    // conformers declare `true`). Proves the fail-closed fallback still behaves exactly as
+    // originally designed, not merely that it compiles.
+    // ============================================================================================
+    {
+        ae::InMemoryWorktreeObjectStore object_store;
+        ae::rt::InMemoryAppendLogStore  ref_store;
+        ae::Principal const principal{"p-r16", "tenant-r16"};
+
+        ae::Mount const mount = ae::rag_corpus_mount(ae::corpus_scope::per_principal, principal, "docs");
+        AE_CHECK(bootstrap_corpus_worktree(object_store, ref_store, mount).has_value(),
+                 "R16 setup: the corpus worktree bootstraps");
+
+        ae::cap::FsRead const read_cap{mount.mount_id, "", std::nullopt};
+        ae::BruteForceCosineIndex index;
+        NonLeafEmbedder embedder;
+
+        NonLeafProvider provider{object_store, ref_store, mount, read_cap, embedder, index,
+                                  /*max_injected=*/3};
+
+        std::vector<ae::Message> history{make_msg(ae::role::user, "anything", "m-r16")};
+        ae::EffectContext ctx{};
+        ctx.principal = principal;
+        ae::SessionContext session_ctx{"s-r16", principal, history};
+
+        // on_context()'s own default-injection path is unaffected by synchronous_leaf -- it always
+        // used the ordinary co_await path, never drive_leaf_task(). Confirms this before testing
+        // recall's own, DIFFERENT path below, so a failure here couldn't be mistaken for R16's own
+        // point.
+        auto out = ae::test_support::run_task_sync<ae::result<ae::ContextContribution>>(
+            provider.on_context(session_ctx, ctx));
+        AE_CHECK(out.has_value() && out->tools.size() == 1,
+                 "R16 setup: on_context() still contributes recall regardless of synchronous_leaf");
+
+        auto args = ae::json::parse(R"({"query":"anything"})");
+        AE_CHECK(args.has_value(), "R16 setup: recall args parse");
+        ae::EffectContext tool_ctx{};
+        auto reply = out.has_value() ? out->tools.front().invoke(*args, tool_ctx) : ae::result<ae::json::Value>{};
+        AE_CHECK(!reply.has_value() &&
+                     reply.error().code ==
+                         "vector_rag_context_provider.recall_tool_requires_synchronous_leaf_embedder",
+                 "R16: recall's invoke against a synchronous_leaf = false conformer fails closed with "
+                 "the documented, stable error code -- the fail-closed fallback, reached by a real "
+                 "test for the first time, behaves exactly as designed, not merely compiles");
     }
 
     bool const ok = g_failures == total_failures_before;

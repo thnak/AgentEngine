@@ -4,8 +4,11 @@
 // tie-break defined for top-K on equal/near-equal scores") -- score desc, then id asc, mirroring
 // `rank_memory_items()`'s own score-desc-then-tie-break-field-desc shape (memory_provider.hpp).
 
+#include <atomic>
 #include <iostream>
 #include <span>
+#include <string>
+#include <thread>
 #include <vector>
 
 #include "agentengine/core/vector_index.hpp"
@@ -140,6 +143,71 @@ int main() {
         float const right_dim_query[3] = {1.0f, 0.0f, 0.0f};
         auto ok_search = index.search(std::span<float const>(right_dim_query, 3), /*k=*/1);
         AE_CHECK(ok_search.has_value(), "search() still succeeds normally with a correctly-dimensioned query");
+    }
+
+    // --- Thread-safety under real concurrent read+write (ADR-064 §6's named residual, closed
+    // 2026-08-19): a genuine writer thread interleaved with genuine reader threads -- a strictly
+    // harder scenario than test_vector_rag_context_provider.cpp's R15, which only proves
+    // concurrent READS are safe with no writer present. -----------------------------------------
+    {
+        ae::BruteForceCosineIndex index;
+        constexpr int kWriterBatches = 200;
+        constexpr int kReaderThreads = 4;
+
+        std::atomic<bool> stop{false};
+        std::atomic<int>  reader_iterations{0};
+        std::atomic<bool> reader_saw_bad_state{false};
+
+        std::vector<std::thread> readers;
+        readers.reserve(kReaderThreads);
+        for (int r = 0; r < kReaderThreads; ++r) {
+            readers.emplace_back([&]() {
+                float const query[2] = {1.0f, 0.0f};
+                while (!stop.load(std::memory_order_acquire)) {
+                    auto result = index.search(std::span<float const>(query, 2), /*k=*/1'000'000);
+                    if (!result.has_value()) {
+                        // Every entry the writer below ever adds is 2-dim, so a dimension error
+                        // here would be a genuine bug, not an expected outcome.
+                        reader_saw_bad_state.store(true, std::memory_order_release);
+                    } else {
+                        // Every id search() returns must still be present via contains() -- this
+                        // index never removes entries, so a torn/corrupted read under contention
+                        // (a returned id search() saw but that isn't genuinely committed) would
+                        // surface here as a real, observable inconsistency.
+                        for (auto const& s : *result) {
+                            if (!index.contains(s.id)) {
+                                reader_saw_bad_state.store(true, std::memory_order_release);
+                            }
+                        }
+                    }
+                    reader_iterations.fetch_add(1, std::memory_order_relaxed);
+                }
+            });
+        }
+
+        std::thread writer([&]() {
+            for (int i = 0; i < kWriterBatches; ++i) {
+                std::string const id = "w" + std::to_string(i);
+                auto added = index.add_batch({id}, {{1.0f, 0.0f}});
+                if (!added.has_value()) reader_saw_bad_state.store(true, std::memory_order_release);
+            }
+            stop.store(true, std::memory_order_release);
+        });
+
+        writer.join();
+        for (auto& t : readers) t.join();
+
+        AE_CHECK(!reader_saw_bad_state.load(),
+                 "concurrent readers never observe a corrupted/torn read (a returned id that "
+                 "search() reports but contains() then denies, or a spurious dimension error) "
+                 "while a writer concurrently calls add_batch() -- real concurrent read+write "
+                 "safety, not just read-only concurrency");
+        AE_CHECK(index.size() == static_cast<std::size_t>(kWriterBatches),
+                 "every one of the writer's add_batch() calls actually landed -- no silently lost "
+                 "write under contention");
+        AE_CHECK(reader_iterations.load() > 0,
+                 "setup: readers actually ran concurrently with the writer, not merely sequenced "
+                 "entirely before or after it");
     }
 
     std::cout << (g_failures == 0 ? "test_vector_index: OK\n" : "test_vector_index: FAIL\n");

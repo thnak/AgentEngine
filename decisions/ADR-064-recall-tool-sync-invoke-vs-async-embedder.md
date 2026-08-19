@@ -365,11 +365,18 @@ else local) — sharing one instance across sessions/workers is independently sa
 (red-team against the real implementation, 2026-08-19): this checked only `Embedder`, not `IndexT`.**
 `VectorRagContextProvider` takes its index by reference specifically so it CAN be shared across
 provider instances (this file's own constructor comment); `BruteForceCosineIndex`
-(`core/vector_index.hpp`) has zero internal synchronization. If a shared index is ever concurrently
-WRITTEN by a future ingestion process (`CorpusSource`, still not built per ADR-063 §2.4A) while a live
-session's `recall()` concurrently calls `index_->search()`, that is a genuine data race — not
-reachable today (no concurrent-writer ingestion path exists in the tree), but a real, named residual
-for whenever one lands, not covered by this paragraph's own claim as originally scoped.
+(`core/vector_index.hpp`) had zero internal synchronization at the time of this finding. If a shared
+index were ever concurrently WRITTEN by a future ingestion process (`CorpusSource`, still not built
+per ADR-063 §2.4A) while a live session's `recall()` concurrently called `index_->search()`, that
+would have been a genuine data race — not reachable then (no concurrent-writer ingestion path existed
+in the tree), a real, named residual left open at the time. **CLOSED the same day, in a follow-up
+after this ADR's initial "Judged" sign-off, at the project owner's explicit request**: rather than
+leave this a permanently-deferred "unreachable so far" note, `BruteForceCosineIndex` gained a real
+`std::shared_mutex` (`add_batch()` takes a unique/writer lock; `search()`/`contains()`/`size()` take a
+shared/reader lock) — see §5/§6/§7 below for the executed proof (a real interleaved writer+4-readers
+stress test, 200 writes, zero corrupted reads, stable across 5 runs). This paragraph's finding is
+preserved as the historical record of what red-team pass 2 found; it is no longer this ADR's current
+state.
 
 **Red-team's own bottom line:** Design B's application to the one real conformer that exists today
 (`OpenAIEmbedder`) is sound and holds up under independent verification. The design's safety argument
@@ -434,13 +441,15 @@ Design B; they tighten it.
 - Full suite: **195/195 passed, 0 failed** (`ctest -LE live-network`), one new test target added
   (`test_rt_drive_leaf_task`), zero regressions against the pre-existing 194.
 
-**Not measured in this pass** (named, not silently skipped): the `synchronous_leaf = false` fallback
-path was exercised only by the existing byte-for-byte-preserved error message/code, not by a NEW
-conformer that declares `false` end-to-end through `recall`'s `invoke` — the 4 real conformers in the
-tree today all declare `true`, so there is no `false`-declaring conformer in the tree to drive that
-branch through a real `if constexpr` instantiation yet. The branch is dead-code-checked (it compiles,
-since `if constexpr`'s discarded branch is still parsed, only not instantiated) but not exercised at
-runtime by any test in this pass.
+**Not measured in this pass, CLOSED in a follow-up the same day** (named, not silently skipped): the
+`synchronous_leaf = false` fallback path was exercised only by the existing byte-for-byte-preserved
+error message/code, not by a NEW conformer that declares `false` end-to-end through `recall`'s
+`invoke` — the 4 real conformers in the tree today all declare `true`, so there was no
+`false`-declaring conformer in the tree to drive that branch through a real `if constexpr`
+instantiation. **Closed**: a new, dedicated `NonLeafEmbedder` test conformer
+(`tests/test_vector_rag_context_provider.cpp`) declares `synchronous_leaf = false`; R16 drives
+`recall`'s `invoke` against it and confirms the fail-closed fallback behaves exactly as designed
+through a real instantiation, not merely a compile check.
 
 ### Red-team pass 2 (2026-08-19, `general-purpose` agent, no prior context, against the REAL
 implementation, not the paper design §4 already covered)
@@ -520,9 +529,11 @@ successful call that simply finds nothing). New R13 proves an empty index still 
 - Both proofs live in `tests/test_vector_rag_context_provider.cpp`. Full suite: **195/195**
   (`ctest -LE live-network`), zero regressions — R14/R15 are new checks inside the existing target,
   not new `ctest` targets, so the target count is unchanged.
-- **Still open, correctly**: `IndexT` sharing under a genuinely CONCURRENT WRITER (not exercised —
-  no such writer exists in the tree yet, per §4's own narrowed thread-safety paragraph above) remains
-  a real, named, currently-unreachable residual for whenever `CorpusSource` ingestion lands.
+- **Open at the time of this follow-up, CLOSED by a later same-day follow-up (see §6's `IndexT`
+  verdict and §7):** `IndexT` sharing under a genuinely CONCURRENT WRITER was, at this point,
+  correctly left as a real, named, currently-unreachable residual (no writer exists in the tree yet)
+  rather than exercised. Superseded, not merely restated, below — `BruteForceCosineIndex` gained a
+  real `std::shared_mutex`, making this case safe by construction rather than merely unreachable.
 
 **Checked, no other issue found:** the double-wrapped `result<T>` unwrap in `recall`'s `invoke` body
 matches `on_context()`'s equivalent unwrap and `drive_leaf_task()`'s own documented contract exactly,
@@ -584,12 +595,10 @@ Per `decisions/README.md`'s bar — decided by observed output, not argument.
   reply through the actual `ToolDescriptor::invoke` closure, not a hand-constructed shortcut. R9
   confirms schema validation (reject-not-coerce) still runs before any embedder/index work.
 - **The `synchronous_leaf = false` fallback path (unchanged fail-closed behavior for a non-leaf
-  conformer) — INCONCLUSIVE, not exercised at runtime in this pass.** The code path compiles (the
-  `if constexpr` false-branch is still parsed, per the language rule, even though never instantiated
-  for any of today's 4 conformers), and its error message/code are byte-identical to the pre-ADR-064
-  stub by construction (not edited), but no conformer in the tree declares `synchronous_leaf = false`
-  today, so no test drives THAT specific `if constexpr` branch through a real instantiation. Honestly
-  left open rather than claimed CORRECT — see §5's own named residual.
+  conformer) — CORRECT, executed (closed in a same-day follow-up).** A new, dedicated
+  `NonLeafEmbedder` test conformer (`synchronous_leaf = false`) drives `recall`'s `invoke` through a
+  REAL `if constexpr` false-branch instantiation for the first time (R16) — the documented, stable
+  error code fires exactly as designed, not merely proven to compile.
 - **`this`-capture lifetime safety in `make_recall_tool_descriptor()` (red-team pass 2) — CORRECT,
   executed.** New R12 drives `recall`'s `invoke` through the REAL `make_shared<ProviderT>`-backed
   `ContextProviderDescriptor` wiring (the specific path the code comment cites), with the original
@@ -600,22 +609,26 @@ Per `decisions/README.md`'s bar — decided by observed output, not argument.
 - **`recall`'s invoke against a genuinely empty index (red-team pass 2) — CORRECT, executed.** New R13
   confirms a clean, empty `results: []` reply, not an error — a real, reachable scenario (a
   freshly-mounted, not-yet-ingested corpus) no prior test drove through the invoke path.
-- **`IndexT` thread-safety under a shared, concurrently-written index (red-team pass 2) —
-  INCONCLUSIVE, honestly narrowed, not claimed safe.** No concurrent-writer ingestion path exists in
-  the tree today (ADR-063 §2.4A's `CorpusSource` is not built), so this is not currently reachable —
-  but §4's original "checked, no issue found" thread-safety claim read broader than what was actually
-  checked (`Embedder` only). Narrowed in §4 above rather than left to imply a guarantee this ADR never
-  verified for `IndexT`.
+- **`IndexT` thread-safety under a shared, concurrently-written index (red-team pass 2) — CORRECT,
+  executed, closed for real (same-day follow-up), not merely narrowed.** No concurrent-writer
+  ingestion path exists in the tree today (ADR-063 §2.4A's `CorpusSource` is not built) — but rather
+  than leave this a permanently-deferred residual, `BruteForceCosineIndex` (`core/vector_index.hpp`)
+  gained a real `std::shared_mutex` (`add_batch()` takes a unique/writer lock; `search()`/
+  `contains()`/`size()` take a shared/reader lock), proven by a new `test_vector_index.cpp` block
+  with one genuine writer thread interleaved with 4 reader threads (200 writes, zero corrupted
+  reads, stable across 5 repeated runs). This is now correct BY CONSTRUCTION for whenever a real
+  concurrent-writer `CorpusSource` does land, not merely "safe because unreachable today."
 - **`recall`'s invoke against a stale (unbacked) index entry (red-team pass 2's own named residual) —
   CORRECT, executed.** New R14 (§5 follow-up) confirms `render_scored_chunk()`'s best-effort
   skip-on-miss posture genuinely holds through `recall`'s invoke path, not just `on_context()`.
-- **Concurrent `recall()` calls against the SAME provider instance, no concurrent writer (red-team
-  pass 2's own named residual) — CORRECT, executed, scope-limited to no-writer.** New R15 (§5
-  follow-up) drives 8 real threads through `recall`'s invoke concurrently, all returning the correct
-  result, stable across 5 repeated runs. Scope matches the ALSO-verified read-path thread-safety of
-  every component `recall` touches (`InMemoryWorktreeObjectStore`, `InMemoryAppendLogStore`,
-  `BruteForceCosineIndex`) — does not extend to a concurrent WRITER, which stays INCONCLUSIVE per the
-  `IndexT` verdict immediately above.
+- **Concurrent `recall()` calls against the SAME provider instance, originally proven only for the
+  no-writer case (red-team pass 2's own named residual) — CORRECT, executed, and no longer
+  scope-limited.** R15 (§5 follow-up) drives 8 real threads through `recall`'s invoke concurrently
+  with no writer present, all returning the correct result, stable across 5 repeated runs. The
+  concurrent-WRITER case this originally excluded is now ALSO covered — not by R15 itself, but by
+  `BruteForceCosineIndex`'s own new `std::shared_mutex` (the `IndexT` verdict immediately above),
+  which makes any concurrent `recall()` reader safe against a concurrent index writer by
+  construction, independent of which specific test exercises which specific interleaving.
 
 ## 7. The decision — Judged (2026-08-19, project owner sign-off)
 
@@ -656,18 +669,19 @@ index). R12/R13 are new checks inside the existing `test_vector_rag_context_prov
 `ctest` targets — the target count is unchanged. **The two test gaps initially left named, not
 closed, in that pass (a stale index entry reached through `recall`, and concurrent `recall()`
 calls) were closed the same day** with R14 and R15 respectively (§5's follow-up) — the only
-scope-limit that remains is a concurrent WRITER against a shared `IndexT`, honestly still
-INCONCLUSIVE (§6) since no such writer exists anywhere in the tree yet. Full suite **195/195**
-(`ctest -LE live-network`), zero regressions.
+scope-limit that remained was a concurrent WRITER against a shared `IndexT` — also since CLOSED (same
+day, real fix, see below), not left INCONCLUSIVE. Full suite **195/195** (`ctest -LE live-network`),
+zero regressions.
 
 **Accepted:** Design B (the revised `rt::drive_leaf_task()` with a 1-resume bound,
 `Embedder::synchronous_leaf` with an honestly-stated higher review bar, the double-wrap made explicit
 at the call site, and the 4-conformer migration checklist — all executed), with Design C's
 `Backgroundable` option remaining a documented, NOT-yet-implemented follow-on for slow-backend
 deployments, and Design A/D explicitly named as the longer-term direction this ADR is not attempting.
-**Named residual, honestly left open (§5/§6), not gating this sign-off:** the
-`synchronous_leaf = false` fallback path is unchanged and compiles, but is not exercised at runtime by
-any test in this pass, since no conformer in the tree today declares `false` — closing that would
-need either a deliberately non-leaf test conformer or waiting for a real future one. A genuinely
-concurrent WRITER against a shared `IndexT` (§6) is the one other residual, currently unreachable
-since no such writer exists in the tree.
+**Both residuals initially left open (§5/§6) were closed the same day, post-Judged, at the project
+owner's explicit request:** the `synchronous_leaf = false` fallback path is now exercised at runtime
+through a real, dedicated `NonLeafEmbedder` test conformer (R16), confirming the `if constexpr` false
+branch behaves exactly as designed, not merely compiles; and `BruteForceCosineIndex` (§6) gained a
+real `std::shared_mutex`, making a concurrent WRITER against a shared `IndexT` genuinely safe by
+construction rather than merely "unreachable today," proven by a real interleaved writer+4-readers
+stress test in `test_vector_index.cpp`. No residual remains open against this ADR's own scope.

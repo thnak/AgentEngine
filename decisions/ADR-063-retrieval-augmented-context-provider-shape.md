@@ -15,11 +15,12 @@ credential (all 5 assertion groups pass) and is also CORRECT. **Claim 3 has sinc
 real and is CORRECT** (a scripted embedder returning two different vectors for the same query text
 produces two different `ContextContribution`s across two `on_context()` calls). **Claim 1 has since
 been benchmarked for real** (`tests/test_vector_index_benchmark.cpp`, Release/clang numbers: ~248
-µs/~1.45 ms/~7.6 ms per `search()` call at n=200/1000/5000, dim 1536) — verdict is INCONCLUSIVE, not
-CORRECT, since RFC 023 names no dedicated budget row to compare against yet, but the numbers already
-exceed the closest existing analog at realistic corpus sizes, a real finding worth acting on. Only
-claim 7 (Vulkan, deliberately deferred per §2.3B — not a gap) remains outside a CORRECT/INCONCLUSIVE
-verdict.
+µs/~1.45 ms/~7.6 ms per `search()` call at n=200/1000/5000, dim 1536), **and RFC 023 §3 now names a
+real budget row** (added 2026-08-19, project owner's own choice: `≤ 500 µs, Goal`, matching the
+existing "Context assembly" analog exactly) — n=200 is a genuine PASS, n=1000/5000 are genuine
+Goal-tier MISSES (warn, not hard-fail, per 023 §6), a real finding this ADR now names as a decided,
+accepted residual rather than an open question. Only claim 7 (Vulkan, deliberately deferred per
+§2.3B — not a gap) remains outside a CORRECT/pass-or-accepted-miss verdict.
 **A second, independent red-team pass against the NEW (implementation) code ran 2026-08-19**
 (`general-purpose` agent, again no prior context on this document — matching §4's own methodology),
 specifically hunting for what the design-level §4 pass could not have found. It reported **1
@@ -39,12 +40,14 @@ the last genuine `role::user` message).
 evidence above. The `recall(query)` sync-invoke/async-embedder gap (§7), the one item this paragraph
 previously named as blocking Judged, is CLOSED — see
 `decisions/ADR-064-recall-tool-sync-invoke-vs-async-embedder.md` (Design B implemented and proven,
-2026-08-19, also Judged the same day). Claim 3 is CORRECT with real executed evidence; claim 1 stays
-honestly INCONCLUSIVE (real measured numbers exist, but RFC 023 names no dedicated budget row to
-compare against yet) — accepted as a residual, not a blocker, the same posture ADR-005 §7 already set
-precedent for (a Judged ADR with one named INCONCLUSIVE claim, not every claim required to resolve
-CORRECT before sign-off). What remains open, not gating this sign-off: whether the ANN/GPU seam
-backend gate (§2.3B) should move up the roadmap given claim 1's real finding, `GraphRagContextProvider`
+2026-08-19, also Judged the same day). Claim 3 is CORRECT with real executed evidence; claim 1 now
+has a real RFC 023 budget row (§3, `≤ 500 µs`, `Goal`) to compare against — a genuine PASS at n=200,
+genuine Goal-tier MISSES at n=1000/5000, accepted as a named, decided residual (a Goal miss warns and
+needs a written justification per 023 §6, it does not block Judged) rather than an open question, the
+same posture ADR-005 §7 already set precedent for (a Judged ADR may carry one named, accepted
+residual claim, not every claim required to resolve as a clean pass before sign-off). What remains
+open, not gating this sign-off: whether the ANN/GPU seam backend gate (§2.3B) should move up the
+roadmap given claim 1's now-confirmed Goal-tier miss beyond small corpora, `GraphRagContextProvider`
 (§2.1b, named/cost-scoped, not designed), and the other named residuals in §7 below.
 
 **Relates to:** `005-Sessions-State-and-Memory.md` §5 (`ContextProvider`), `029-Memory-System.md`
@@ -803,25 +806,28 @@ evidence get a verdict; the rest stay PENDING, not guessed at.
   chunk B on call 2), solely because the embedding itself changed. This is distinct from `R10` (which
   proves an embedder FAILURE propagates, not a determinism break) — do not conflate the two, they
   were kept as separate tests specifically so neither could be cited as proving the other.
-- **Claim 1 (§2.3A, brute-force latency) — evidence now exists; verdict is INCONCLUSIVE, not
-  CORRECT, pending a real budget target.** `tests/test_vector_index_benchmark.cpp` (new, 2026-08-19)
-  measures `BruteForceCosineIndex::search(k=5)` at dim=1536 (text-embedding-3-small's real
-  dimension) across the hypothesized corpus-size range. Numbers under a Debug/MSVC build are not
-  representative (`/Od`, ~5 ms/call even at n=200 — an artifact of no optimization, not of the
-  algorithm); rebuilt and measured under `build-clang-release` (Release, clang) for real numbers:
-  **n=200 → ~248 µs/call, n=1000 → ~1.45 ms/call, n=5000 → ~7.6 ms/call** (single-threaded, one
-  reference machine, not yet a 023 §7 G1-baselined reference machine — a caveat worth restating, not
-  a reason to withhold the number). RFC `023-Performance-Targets-and-Budgets.md` names no dedicated
-  budget row for vector-index search specifically; the closest existing analog, "Context assembly:
-  assemble a 50-message context, p99 ≤ 500 µs (Goal)," is already exceeded at n=1000 and clearly
-  exceeded at n=5000 — both comfortably inside claim 1's own hypothesized "low hundreds to low
-  thousands" range. This is a real, honest finding, not a fabricated pass/fail: `BruteForceCosineIndex`
-  itself already says "correct by construction, not tuned" (`vector_index.hpp`'s own comment) and
-  §2.3B already names ANN/GPU as opt-in seam backends "gated on a real bench against this default
-  proving it is the actual bottleneck" — this bench is that proof, earlier than "if it turns out to
-  be a bottleneck" implied. **Recommended follow-up, out of this ADR's own scope to do unilaterally**:
-  a dedicated budget row for RAG/vector-index retrieval in RFC 023 §3, and revisiting whether the
-  ANN backend gate should move up the roadmap rather than stay speculative.
+- **Claim 1 (§2.3A, brute-force latency) — RESOLVED 2026-08-19 with a real budget target; verdict is
+  now a real, measured Goal-tier pass at small corpus sizes and an honest Goal-tier MISS beyond
+  that, not an open INCONCLUSIVE.** `tests/test_vector_index_benchmark.cpp` (2026-08-19) measures
+  `BruteForceCosineIndex::search(k=5)` at dim=1536 (text-embedding-3-small's real dimension) across
+  the hypothesized corpus-size range. Numbers under a Debug/MSVC build are not representative
+  (`/Od`, ~5 ms/call even at n=200 — an artifact of no optimization, not of the algorithm); rebuilt
+  and measured under `build-clang-release` (Release, clang) for real numbers: **n=200 → ~248 µs/call,
+  n=1000 → ~1.45 ms/call, n=5000 → ~7.6 ms/call** (single-threaded, one reference machine, not yet a
+  023 §7 G1-baselined reference machine — a caveat worth restating, not a reason to withhold the
+  number). **RFC `023-Performance-Targets-and-Budgets.md` §3 now names a dedicated budget row**
+  (added 2026-08-19, project owner's own choice: matches "Context assembly"'s existing analog
+  exactly — `RAG retrieval | VectorIndex::search(k), p99, ~200-chunk corpus, dim 1536 | ≤ 500 µs |
+  Goal`): **n=200 (~248 µs) is a genuine Goal-tier PASS**, comfortably under budget; **n=1000
+  (~1.45 ms) and n=5000 (~7.6 ms) are genuine Goal-tier MISSES** — per 023 §6, a Goal miss warns and
+  requires a written justification, it does not hard-fail the gate. The written justification is
+  this paragraph plus §2.3B's own existing design: `BruteForceCosineIndex` already says "correct by
+  construction, not tuned" (`vector_index.hpp`'s own comment), and §2.3B already names ANN/GPU as
+  opt-in seam backends "gated on a real bench against this default proving it is the actual
+  bottleneck" — this bench IS that proof, for any deployment expecting a corpus beyond roughly
+  low-hundreds of chunks. **Recommended follow-up, out of this ADR's own scope to do unilaterally**:
+  revisiting whether the ANN backend gate (§2.3B) should move up the roadmap now that a real budget
+  confirms brute-force needs help past small corpora, rather than staying speculative.
 - **Claim 7 (Vulkan) is explicitly deferred per §2.3B** — not a gap, a deliberate scope decision.
 
 ## 7. The decision — not yet made; this is the proposal awaiting judgment
@@ -942,12 +948,14 @@ copy-at-mount folder retrieval with citation metadata rather than live re-reads.
 its 5 findings are fixed and tested. `recall(query)`'s sync-invoke/async-embedder gap now has an
 actual, reviewed, tested fix (`decisions/ADR-064-recall-tool-sync-invoke-vs-async-embedder.md`,
 Design B, implemented, proven, and independently red-teamed a second time, also Judged 2026-08-19).
-Claims 2, 3, 4, 5, 6 and finding 7 are closed with real executed evidence; claim 1 has real measured
-numbers but stays INCONCLUSIVE, accepted as a residual rather than a blocker (no dedicated RFC 023
-budget row exists yet to compare against — a separate, cross-cutting spec change, not this ADR's own
-call to make unilaterally); claim 7 (Vulkan) is deliberately deferred, not a gap. Named residual, not
-gating this sign-off: since claim 1 turned up a real, measured finding (the closest existing 023
-budget analog is already exceeded at realistic corpus sizes), whether the ANN/GPU seam backend gate
-(§2.3B) should move up the roadmap rather than stay speculative remains an open follow-on question.
+Claims 2, 3, 4, 5, 6 and finding 7 are closed with real executed evidence; claim 1 now has both real
+measured numbers AND a real RFC `023-Performance-Targets-and-Budgets.md` §3 budget row to compare
+against (added 2026-08-19, project owner's own choice: `≤ 500 µs, Goal`, matching "Context assembly"'s
+existing row) — n=200 PASSES, n=1000/5000 are genuine Goal-tier MISSES, accepted as a decided,
+named residual rather than a blocker (per 023 §6 a Goal miss warns and needs a written justification,
+it does not hard-fail); claim 7 (Vulkan) is deliberately deferred, not a gap. Named residual, not
+gating this sign-off: now that claim 1 has a confirmed Goal-tier miss beyond small corpora, whether
+the ANN/GPU seam backend gate (§2.3B) should move up the roadmap rather than stay speculative remains
+an open follow-on question.
 Per `decisions/README.md`, this file would be superseded (not silently edited into a stale status),
 not this "Judged" status quietly reverted, if a future pass finds this shape does not hold up.
