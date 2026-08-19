@@ -483,81 +483,19 @@ namespace detail {
 // now calls the shared implementation instead of a private copy of it (one implementation, not two
 // that could drift).
 
-// D2: `Transfer-Encoding: chunked` framing (RFC 9112 §7.1) -- decoded independently of the network
-// read loop (pure string parsing over an already-fully-received body), so this is testable without a
-// live server. Trailers after the terminal 0-size chunk are ignored (this project has no use for
-// them).
-[[nodiscard]] inline result<std::string> decode_chunked_body(std::string_view body) {
-    std::string out;
-    std::size_t pos = 0;
-    while (pos < body.size()) {
-        auto const line_end = body.find("\r\n", pos);
-        if (line_end == std::string_view::npos) {
-            return std::unexpected(
-                error{failure_class::contract, "truncated chunked body: no chunk-size line terminator",
-                      "openai.chunked_malformed"});
-        }
-        std::string_view size_line = body.substr(pos, line_end - pos);
-        if (auto const semi = size_line.find(';'); semi != std::string_view::npos) {
-            size_line = size_line.substr(0, semi);  // chunk extensions, ignored
-        }
-        std::size_t chunk_size = 0;
-        auto const conv =
-            std::from_chars(size_line.data(), size_line.data() + size_line.size(), chunk_size, 16);
-        if (conv.ec != std::errc{}) {
-            return std::unexpected(
-                error{failure_class::contract, "malformed chunk size", "openai.chunked_malformed"});
-        }
-        pos = line_end + 2;
-        if (chunk_size == 0) break;  // terminal chunk
-        if (pos + chunk_size > body.size()) {
-            return std::unexpected(
-                error{failure_class::contract, "truncated chunk body", "openai.chunked_malformed"});
-        }
-        out.append(body.substr(pos, chunk_size));
-        pos += chunk_size;
-        if (body.substr(pos, 2) != "\r\n") {
-            return std::unexpected(error{failure_class::contract, "missing CRLF after chunk data",
-                                          "openai.chunked_malformed"});
-        }
-        pos += 2;
-    }
-    return out;
-}
-
-[[nodiscard]] inline bool header_name_equals_ci(std::string const& a, std::string_view b) noexcept {
-    if (a.size() != b.size()) return false;
-    for (std::size_t i = 0; i < a.size(); ++i) {
-        if (std::tolower(static_cast<unsigned char>(a[i])) != std::tolower(static_cast<unsigned char>(b[i]))) {
-            return false;
-        }
-    }
-    return true;
-}
-
-[[nodiscard]] inline bool response_is_chunked(sandbox::NetEgressResponse const& resp) {
-    for (auto const& [k, v] : resp.headers) {
-        if (header_name_equals_ci(k, "transfer-encoding") && v.find("chunked") != std::string::npos) {
-            return true;
-        }
-    }
-    return false;
-}
-
-// Real-server finding, not a hypothetical: `perform_https_exchange` (Phase C) has no chunked-transfer
-// awareness in its read loop at all -- for a `Transfer-Encoding: chunked` response it simply reads
-// until the peer closes the connection (the only exit condition available when there is no
-// Content-Length header) and returns the RAW, still chunk-framed bytes as `NetEgressResponse::body`.
-// A real OpenAI-compatible endpoint (confirmed live against OpenRouter, `api.openrouter.ai`) sends
-// `Transfer-Encoding: chunked` on the ORDINARY non-streaming `chat()` response too, not only on SSE --
-// chat_stream()'s own decode-if-chunked step already handled this correctly; chat() originally did
-// not (json::parse was called directly on the raw chunk-framed body and failed with a confusing
-// "expected a digit" parse error on the literal hex chunk-size lines). Every response body this
-// backend reads must be decoded through this helper before `json::parse`, streaming or not.
-[[nodiscard]] inline result<std::string> decoded_response_body(sandbox::NetEgressResponse const& resp) {
-    if (!response_is_chunked(resp)) return resp.body;
-    return decode_chunked_body(resp.body);
-}
+// D2: `Transfer-Encoding: chunked` framing (RFC 9112 §7.1) on the ORDINARY non-streaming `chat()`
+// response (confirmed live against a real OpenAI-compatible endpoint, OpenRouter's `api.openrouter.ai`
+// -- not only SSE sends it) used to need decoding HERE, because `perform_https_exchange` (Phase C)
+// returned the raw, still chunk-framed bytes verbatim. As of 2026-08-19 that gap is closed at the
+// transport layer instead (`net_egress_proxy.cpp`'s `dechunk_response_body_if_needed`, decisions/
+// ADR-011-first-party-egress-proxy.md's addendum) -- `resp->body` below is already plain by the time
+// `chat()` sees it, for every caller of the buffered (non-streaming) exchange functions. The
+// per-provider decode duplicated here and in protocol/anthropic/chat_client.hpp was retired rather than
+// kept as a second, now-redundant decode step: running it twice on an already-dechunked JSON body
+// misparses the JSON as chunk framing and fails closed (found the hard way, fixed same day). The
+// STREAMING path (`chat_stream()` / `run_stream_worker` below) is unaffected -- it uses the separate
+// incremental `sandbox::ChunkedBodyDecoder` (`StreamingUpdateAccumulator`), which the transport-layer
+// fix deliberately does not touch (see that function's own comment for why).
 
 // SSE framing (only `data:` lines matter for an OpenAI-compatible stream -- `event:`/`id:`/`:comment`
 // lines, if any, are ignored). Every OpenAI event fits on one line (compact single-line JSON), so no
@@ -950,12 +888,10 @@ public:
                                                                 resolver_, ca_bundle_pem_override_,
                                                                 transport_);
         if (!resp) co_return std::unexpected(resp.error());
-        auto decoded_body = detail::decoded_response_body(*resp);
-        if (!decoded_body) co_return std::unexpected(decoded_body.error());
         if (resp->status < 200 || resp->status >= 300) {
-            co_return std::unexpected(detail::map_http_status_error(resp->status, *decoded_body));
+            co_return std::unexpected(detail::map_http_status_error(resp->status, resp->body));
         }
-        auto parsed = json::parse(*decoded_body);
+        auto parsed = json::parse(resp->body);
         if (!parsed) co_return std::unexpected(parsed.error());
         auto response = detail::parse_chat_completion_response(*parsed);
         if (!response) co_return std::unexpected(response.error());

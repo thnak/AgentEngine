@@ -637,78 +637,19 @@ inline void accumulate_message_delta_usage(AnthropicUsageSnapshot& snapshot, jso
     }
 }
 
-// D2-equivalent chunked-transfer decoding -- identical logic to Phase D's OpenAI backend (RFC 9112
-// §7.1 framing is vendor-agnostic), duplicated rather than shared across protocol/{openai,anthropic}
-// per this project's own "a second, independent copy rather than a shared header" precedent
-// (test_provider_http_client.cpp's top comment, applied here to production translation code instead
-// of test harness code -- same reasoning: protocol/openai and protocol/anthropic are meant to stay
-// independently readable, never cross-including each other's internals).
-[[nodiscard]] inline result<std::string> decode_chunked_body(std::string_view body) {
-    std::string out;
-    std::size_t pos = 0;
-    while (pos < body.size()) {
-        auto const line_end = body.find("\r\n", pos);
-        if (line_end == std::string_view::npos) {
-            return std::unexpected(
-                error{failure_class::contract, "truncated chunked body: no chunk-size line terminator",
-                      "anthropic.chunked_malformed"});
-        }
-        std::string_view size_line = body.substr(pos, line_end - pos);
-        if (auto const semi = size_line.find(';'); semi != std::string_view::npos) {
-            size_line = size_line.substr(0, semi);
-        }
-        std::size_t chunk_size = 0;
-        auto const conv =
-            std::from_chars(size_line.data(), size_line.data() + size_line.size(), chunk_size, 16);
-        if (conv.ec != std::errc{}) {
-            return std::unexpected(
-                error{failure_class::contract, "malformed chunk size", "anthropic.chunked_malformed"});
-        }
-        pos = line_end + 2;
-        if (chunk_size == 0) break;
-        if (pos + chunk_size > body.size()) {
-            return std::unexpected(
-                error{failure_class::contract, "truncated chunk body", "anthropic.chunked_malformed"});
-        }
-        out.append(body.substr(pos, chunk_size));
-        pos += chunk_size;
-        if (body.substr(pos, 2) != "\r\n") {
-            return std::unexpected(error{failure_class::contract, "missing CRLF after chunk data",
-                                          "anthropic.chunked_malformed"});
-        }
-        pos += 2;
-    }
-    return out;
-}
-
-[[nodiscard]] inline bool header_name_equals_ci(std::string const& a, std::string_view b) noexcept {
-    if (a.size() != b.size()) return false;
-    for (std::size_t i = 0; i < a.size(); ++i) {
-        if (std::tolower(static_cast<unsigned char>(a[i])) != std::tolower(static_cast<unsigned char>(b[i]))) {
-            return false;
-        }
-    }
-    return true;
-}
-
-[[nodiscard]] inline bool response_is_chunked(sandbox::NetEgressResponse const& resp) {
-    for (auto const& [k, v] : resp.headers) {
-        if (header_name_equals_ci(k, "transfer-encoding") && v.find("chunked") != std::string::npos) {
-            return true;
-        }
-    }
-    return false;
-}
-
-// Real-server finding from Phase D's own live verification (a genuine OpenAI-compatible endpoint
-// sends `Transfer-Encoding: chunked` on ordinary, non-streaming responses too, not only on SSE), fixed
-// identically here rather than rediscovered: every response body this backend reads must be decoded
-// through this helper before `json::parse`, streaming or not -- `perform_https_exchange` (Phase C)
-// returns the raw, still chunk-framed bytes verbatim when there is no Content-Length header.
-[[nodiscard]] inline result<std::string> decoded_response_body(sandbox::NetEgressResponse const& resp) {
-    if (!response_is_chunked(resp)) return resp.body;
-    return decode_chunked_body(resp.body);
-}
+// D2-equivalent chunked-transfer decoding on the ORDINARY non-streaming `chat()` response used to be
+// needed HERE (RFC 9112 §7.1 framing; a real OpenAI-compatible endpoint sends `Transfer-Encoding:
+// chunked` on non-streaming responses too, not only SSE, and the same is assumed true of Anthropic-
+// compatible endpoints), duplicated rather than shared with protocol/openai/chat_client.hpp per this
+// project's own "a second, independent copy rather than a shared header" precedent. As of 2026-08-19
+// that gap is closed at the transport layer instead (`net_egress_proxy.cpp`'s
+// `dechunk_response_body_if_needed`, decisions/ADR-011-first-party-egress-proxy.md's addendum) --
+// `resp->body` below is already plain by the time `chat()` sees it. Running the old per-provider decode
+// a second time on an already-dechunked JSON body misparses it as chunk framing and fails closed
+// (found the hard way, fixed same day as protocol/openai's identical retirement). The STREAMING path
+// (`chat_stream()` / `run_stream_worker` below, `sandbox::perform_provider_streaming_exchange`) is
+// unaffected -- it uses the separate incremental `sandbox::ChunkedBodyDecoder`, which the
+// transport-layer fix deliberately does not touch.
 
 // Anthropic's SSE uses NAMED events (an `event: <type>` line paired with the following `data: {...}`
 // line) -- structurally different from OpenAI's single always-"data:"-only shape (Phase D's own
@@ -1137,12 +1078,10 @@ public:
                                                                 resolver_, ca_bundle_pem_override_,
                                                                 transport_);
         if (!resp) co_return std::unexpected(resp.error());
-        auto decoded_body = detail::decoded_response_body(*resp);
-        if (!decoded_body) co_return std::unexpected(decoded_body.error());
         if (resp->status < 200 || resp->status >= 300) {
-            co_return std::unexpected(detail::map_http_status_error(resp->status, *decoded_body));
+            co_return std::unexpected(detail::map_http_status_error(resp->status, resp->body));
         }
-        auto parsed = json::parse(*decoded_body);
+        auto parsed = json::parse(resp->body);
         if (!parsed) co_return std::unexpected(parsed.error());
         co_return detail::parse_message_response(*parsed, producer_chat_client_id());
     }

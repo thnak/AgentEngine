@@ -226,8 +226,13 @@ for another resource is rejected — this is the confused-deputy control.
 ## 7. Transport
 
 **Streamable HTTP** is the transport. Requests **MUST** carry the standard MCP request headers
-(`Mcp-Method`, `Mcp-Name`) on POST, with custom headers from tool parameters supported via
-`x-mcp-header`. **stdio** remains for local servers, with `server/discover` usable as the
+(`MCP-Protocol-Version` on every POST; `Mcp-Method`; `Mcp-Name` on `tools/call`/`resources/read`/
+`prompts/get`), with custom headers from tool parameters supported via `x-mcp-header`. A missing
+`MCP-Protocol-Version` is a real conformance failure, not an oversight in this text: the official
+suite's mock server rejects its absence with `400` + `-32020` — found the hard way (this line
+originally omitted the header entirely; `docs/research/2026-08-15-mcp-conformance-harness.md` §6),
+corrected here after the real transport code (`tools/mcp_conformance_client.cpp`) already sent it
+correctly. **stdio** remains for local servers, with `server/discover` usable as the
 backward-compatibility probe.
 
 **Local stdio servers are subprocesses**, and spawning one is an `Exec` capability (007 §3) with the
@@ -334,7 +339,14 @@ conformance client --command "./agentengine-mcp-client" --spec-version 2026-07-2
 Its scenario list maps almost one-to-one onto the hard parts of this RFC — server: `stateless`,
 `input-required-result`, `caching`, `http-standard-headers`, `json-schema-2020-12`, `tools`,
 `resources`, `prompts`, `lifecycle`, `dns-rebinding`, `tasks/`, `negative-mrtr`; client:
-`mrtr-client`, `request-metadata`, `json-schema-ref-deref`, `http-custom-headers`, `auth/`.
+`tools_call`, `request-metadata`, `http-standard-headers`, `json-schema-ref-no-deref`,
+`http-invalid-tool-headers`, `json-schema-2020-12-preservation`, `sep-2322-client-request-state`,
+`http-custom-headers`, `auth/`. (Corrected 2026-08-19 against the real `2026-07-28` client suite,
+`docs/research/2026-08-15-mcp-conformance-harness.md` §2: the prior list named a `mrtr-client`
+scenario that does not exist in any spec version, and named `json-schema-ref-deref` for what the
+suite actually calls `json-schema-ref-no-deref` — a semantic inversion an implementer working from
+this RFC alone would have built backwards, since the suite tests that a client does **not**
+dereference `$ref`.)
 
 **Baseline discipline:** the suite supports an expected-failures baseline where an unbaselined
 failure exits non-zero *and a baselined-but-now-passing check also exits non-zero*, so the baseline
