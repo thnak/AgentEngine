@@ -1,7 +1,7 @@
 # ADR-064 — Can a synchronous `ToolDescriptor::invoke` safely reach `Embedder::embed_batch()`'s `task<T>`?
 
-**Status:** Proposed (2026-08-19), Design B implemented and proven (2026-08-19), awaiting explicit
-user "Judged." Designed, then red-teamed once (§4, `general-purpose` agent, no prior context) — found
+**Status:** Judged (2026-08-19, project owner sign-off). Design B implemented and proven (2026-08-19).
+Designed, then red-teamed once (§4, `general-purpose` agent, no prior context) — found
 2 critical + 3 real-gap + 2 minor findings against the design, **plus one real, pre-existing, latent
 bug in already-shipped code** (`ThreadPool`+`AsyncMutex`+`AgentSession` — see §4 finding 1). Design B
 revised in place below to fix the findings that are fixable within this design (bound corrected 64→1,
@@ -617,7 +617,7 @@ Per `decisions/README.md`'s bar — decided by observed output, not argument.
   `BruteForceCosineIndex`) — does not extend to a concurrent WRITER, which stays INCONCLUSIVE per the
   `IndexT` verdict immediately above.
 
-## 7. The decision — implemented and proven; awaiting explicit user "Judged"
+## 7. The decision — Judged (2026-08-19, project owner sign-off)
 
 **✅ FIXED (2026-08-19), separately from this ADR's own scope.** §4 finding 1's `ThreadPool`+
 `AsyncMutex`+`AgentSession` reentrancy/UB hazard has been fixed directly in `rt/thread_pool.hpp`
@@ -660,13 +660,14 @@ scope-limit that remains is a concurrent WRITER against a shared `IndexT`, hones
 INCONCLUSIVE (§6) since no such writer exists anywhere in the tree yet. Full suite **195/195**
 (`ctest -LE live-network`), zero regressions.
 
-**What this document recommends and has now built:** Design B (the revised `rt::drive_leaf_task()`
-with a 1-resume bound, `Embedder::synchronous_leaf` with an honestly-stated higher review bar, the
-double-wrap made explicit at the call site, and the 4-conformer migration checklist — all executed),
-with Design C's `Backgroundable` option remaining a documented, NOT-yet-implemented follow-on for
-slow-backend deployments, and Design A/D explicitly named as the longer-term direction this ADR is not
-attempting. **Named residual, honestly left open (§5/§6):** the `synchronous_leaf = false` fallback
-path is unchanged and compiles, but is not exercised at runtime by any test in this pass, since no
-conformer in the tree today declares `false` — closing that would need either a deliberately
-non-leaf test conformer or waiting for a real future one. This document is ready to move to Judged on
-the strength of the evidence above; the explicit user sign-off itself is the one remaining step.
+**Accepted:** Design B (the revised `rt::drive_leaf_task()` with a 1-resume bound,
+`Embedder::synchronous_leaf` with an honestly-stated higher review bar, the double-wrap made explicit
+at the call site, and the 4-conformer migration checklist — all executed), with Design C's
+`Backgroundable` option remaining a documented, NOT-yet-implemented follow-on for slow-backend
+deployments, and Design A/D explicitly named as the longer-term direction this ADR is not attempting.
+**Named residual, honestly left open (§5/§6), not gating this sign-off:** the
+`synchronous_leaf = false` fallback path is unchanged and compiles, but is not exercised at runtime by
+any test in this pass, since no conformer in the tree today declares `false` — closing that would
+need either a deliberately non-leaf test conformer or waiting for a real future one. A genuinely
+concurrent WRITER against a shared `IndexT` (§6) is the one other residual, currently unreachable
+since no such writer exists in the tree.

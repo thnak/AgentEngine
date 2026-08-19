@@ -1,6 +1,6 @@
 # ADR-063 — Shape of a retrieval-augmented (RAG) `ContextProvider` and its storage seam
 
-**Status:** Proposed (2026-08-19). Designed and independently red-teamed (§4, `general-purpose`
+**Status:** Judged (2026-08-19, project owner sign-off). Designed and independently red-teamed (§4, `general-purpose`
 agent pass with no prior context on this document, found 4 critical + 6 real-gap findings). Two
 implementation passes the same day (§5): first a foundation layer (`provenance_marker.hpp`,
 `embedder.hpp`, `vector_index.hpp`, `corpus_scope.hpp`, `corpus_chunk.hpp` + tests), then a
@@ -35,13 +35,17 @@ unconditionally, which is reachable as the ASSISTANT's own message during a tool
 letting model output become the embedder's real network payload and steer retrieval, a direct I3
 violation the moment this provider is wired into a live `AgentSession` (now fixed: walks backward to
 the last genuine `role::user` message).
-**Not yet judged** — do not cite this as a settled decision; cite it as the question, the
-current best-argued (and now substantially proven) answer, and the specific list of what still
-isn't proven. The `recall(query)` sync-invoke/async-embedder gap (§7) is now CLOSED — see
+**Judged (2026-08-19)** — this design is now a settled decision, accepted by the project owner on the
+evidence above. The `recall(query)` sync-invoke/async-embedder gap (§7), the one item this paragraph
+previously named as blocking Judged, is CLOSED — see
 `decisions/ADR-064-recall-tool-sync-invoke-vs-async-embedder.md` (Design B implemented and proven,
-2026-08-19) — and executed evidence for claims 1 and 3 has since been gathered too (claim 3 CORRECT,
-claim 1 INCONCLUSIVE with real numbers, no RFC 023 budget row to compare against). Both items this
-paragraph originally named as blocking Judged are now resolved.
+2026-08-19, also Judged the same day). Claim 3 is CORRECT with real executed evidence; claim 1 stays
+honestly INCONCLUSIVE (real measured numbers exist, but RFC 023 names no dedicated budget row to
+compare against yet) — accepted as a residual, not a blocker, the same posture ADR-005 §7 already set
+precedent for (a Judged ADR with one named INCONCLUSIVE claim, not every claim required to resolve
+CORRECT before sign-off). What remains open, not gating this sign-off: whether the ANN/GPU seam
+backend gate (§2.3B) should move up the roadmap given claim 1's real finding, `GraphRagContextProvider`
+(§2.1b, named/cost-scoped, not designed), and the other named residuals in §7 below.
 
 **Relates to:** `005-Sessions-State-and-Memory.md` §5 (`ContextProvider`), `029-Memory-System.md`
 (the sibling "kind" this generalizes — 029 is keyword/salience/recency, deterministic, no network
@@ -933,18 +937,17 @@ copy-at-mount folder retrieval with citation metadata rather than live re-reads.
   now actually been RUN against real `openrouter.ai` with a real credential — all 5 assertion groups
   pass (see §5's Second-pass evidence for detail). Claim 4 is CORRECT, not PENDING.
 
-**Gate before this can move to Judged:** real implementation of §2's chosen shapes (now substantially
-done — see §5/§6). A first red-team pass against the NEW code has now run (2026-08-19, §5's "Red-team
-pass 2" subsection) and its 5 findings are fixed and tested — but per this project's own culture, one
-clean red-team pass is evidence, not a guarantee nothing else is there; a further pass remains
-prudent before Judged. `recall(query)`'s sync-invoke/async-embedder gap now has an actual, reviewed,
-tested fix (`decisions/ADR-064-recall-tool-sync-invoke-vs-async-embedder.md`, Design B, implemented
-and proven 2026-08-19). Claims 2, 3, 4, 5, 6 and finding 7 are now closed with real executed evidence;
-claim 1 now has real measured numbers but stays INCONCLUSIVE pending a dedicated RFC 023 budget row (a
-separate, cross-cutting spec change, not this ADR's own call to make unilaterally); claim 7 (Vulkan)
-is deliberately deferred, not a gap. What remains before Judged: since claim 1 turned up a real,
-measured finding (the closest existing 023 budget analog is already exceeded at realistic corpus
-sizes), a decision on whether the ANN/GPU seam backend gate (§2.3B) should move up the roadmap rather
-than stay speculative. Per `decisions/README.md`, this file gets superseded (not silently edited into
-a false "Judged" status) once that happens, or removed per that same README if a future pass concludes
-this shape does not survive red-team.
+**Judged (2026-08-19, project owner sign-off).** Real implementation of §2's chosen shapes is done
+(§5/§6). A red-team pass against the NEW code ran (2026-08-19, §5's "Red-team pass 2" subsection) and
+its 5 findings are fixed and tested. `recall(query)`'s sync-invoke/async-embedder gap now has an
+actual, reviewed, tested fix (`decisions/ADR-064-recall-tool-sync-invoke-vs-async-embedder.md`,
+Design B, implemented, proven, and independently red-teamed a second time, also Judged 2026-08-19).
+Claims 2, 3, 4, 5, 6 and finding 7 are closed with real executed evidence; claim 1 has real measured
+numbers but stays INCONCLUSIVE, accepted as a residual rather than a blocker (no dedicated RFC 023
+budget row exists yet to compare against — a separate, cross-cutting spec change, not this ADR's own
+call to make unilaterally); claim 7 (Vulkan) is deliberately deferred, not a gap. Named residual, not
+gating this sign-off: since claim 1 turned up a real, measured finding (the closest existing 023
+budget analog is already exceeded at realistic corpus sizes), whether the ANN/GPU seam backend gate
+(§2.3B) should move up the roadmap rather than stay speculative remains an open follow-on question.
+Per `decisions/README.md`, this file would be superseded (not silently edited into a stale status),
+not this "Judged" status quietly reverted, if a future pass finds this shape does not hold up.
