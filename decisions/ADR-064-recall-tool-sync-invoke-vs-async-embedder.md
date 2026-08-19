@@ -16,8 +16,13 @@ against this real implementation (§5's own subsection) found no blocking defect
 `resume()`/try-catch asymmetry fixed, one comment's own justification corrected (and now backed by a
 new test, R12, driving `recall` through the actual `shared_ptr`-backed wiring), one overclaimed
 thread-safety line narrowed (`IndexT` sharing named as a real-but-unreachable residual), and one more
-real scenario covered (R13: `recall` against an empty index). Full suite **195/195**
-(`ctest -LE live-network`), zero regressions.
+real scenario covered (R13: `recall` against an empty index). **Both of red-team pass 2's own
+initially-named-but-not-closed test gaps were closed the same day**: R14 (a stale, unbacked index
+entry reached through `recall`'s invoke is silently skipped, not a whole-call failure) and R15 (8
+real threads calling `recall`'s invoke concurrently against the SAME provider instance all succeed
+correctly, stable across 5 repeated runs — scope-limited to no concurrent WRITER, which remains a
+real, named, currently-unreachable residual). Full suite **195/195** (`ctest -LE live-network`), zero
+regressions.
 
 **Relates to:** `decisions/ADR-063-retrieval-augmented-context-provider-shape.md` §7 (the exact gap
 this ADR resolves — `VectorRagContextProvider::recall(query)`'s `invoke` fails closed today because
@@ -490,15 +495,34 @@ the time `recall`'s `invoke` runs) rather than pointing at a stale address.
 successful call that simply finds nothing). New R13 proves an empty index still returns a clean, empty
 `results: []` reply through `recall`'s real invoke path, not an error.
 
-**NAMED, NOT CLOSED — two test gaps remain, judged acceptable to leave open rather than close in this
-pass:** (1) no test drives `recall`'s invoke against a STALE index entry (a chunk id present in the
-index whose backing record/blob was since removed) — `on_context()`'s own equivalent skip-on-miss
-logic (§this file's design) is inherited unchanged by `recall`'s copy of the same logic, and remains
-untested either way, a pre-existing gap this ADR's own scope did not introduce. (2) no test exercises
-CONCURRENT `recall()` calls (single- or cross-session) — matches this ADR's own §4 "checked, no issue
-found" reasoning (I1's `session_mutex_` serializes within one session; `OpenAIEmbedder` has no shared
-mutable state), but that reasoning has not been backed by an executed concurrent test. Both named here
-rather than silently assumed safe, per this project's own "residuals named, not solved" convention.
+**Follow-up (2026-08-19, same day): both named gaps above CLOSED with real tests.**
+
+- **Stale index entry, closed by R14.** A chunk id added directly to the index with NO matching
+  `CorpusChunkRecord`/blob ever written (the same end state a re-mount that dropped a chunk without
+  reconciling the index would leave — ADR-063 §7's named lifecycle gap), alongside one real, present
+  chunk. `recall`'s invoke still succeeds, returning exactly the one real chunk and silently skipping
+  the stale entry — `render_scored_chunk()`'s best-effort skip-on-miss posture (`on_context()`'s own
+  design) genuinely holds through the `recall` invoke path too, not just `on_context()`, now proven,
+  not merely inherited by construction.
+- **Concurrent `recall()` calls, closed by R15.** Before writing this test, independently verified
+  (not assumed) that every read path `recall`'s invoke touches under contention — `InMemoryWorktree
+  ObjectStore::get_blob()`/`get_tree()` (plain `unordered_map` lookups, no mutex, no mutable cache),
+  `InMemoryAppendLogStore`'s own read path (already internally `mutex`-guarded — safe even against a
+  concurrent WRITER, not just readers), and `BruteForceCosineIndex::search()` (pure read, no internal
+  mutable state) — are each safe for concurrent reads with no writer present, which is exactly this
+  scenario (no ingestion path exists in the tree today, so no writer is ever actually concurrent with
+  `recall()` in production either). R15 then drives 8 real `std::thread`s calling `recall`'s invoke
+  concurrently against the SAME `VectorRagContextProvider` instance, using a purpose-built
+  `StatelessEmbedder` (zero mutable member state — this file's other mocks deliberately mutate their
+  own state for scripted single-threaded determinism and would race on THEIR OWN state if driven
+  concurrently, which would test the wrong thing). All 8 threads return the correct result; stable
+  across 5 repeated runs (no observed flake).
+- Both proofs live in `tests/test_vector_rag_context_provider.cpp`. Full suite: **195/195**
+  (`ctest -LE live-network`), zero regressions — R14/R15 are new checks inside the existing target,
+  not new `ctest` targets, so the target count is unchanged.
+- **Still open, correctly**: `IndexT` sharing under a genuinely CONCURRENT WRITER (not exercised —
+  no such writer exists in the tree yet, per §4's own narrowed thread-safety paragraph above) remains
+  a real, named, currently-unreachable residual for whenever `CorpusSource` ingestion lands.
 
 **Checked, no other issue found:** the double-wrapped `result<T>` unwrap in `recall`'s `invoke` body
 matches `on_context()`'s equivalent unwrap and `drive_leaf_task()`'s own documented contract exactly,
@@ -582,6 +606,16 @@ Per `decisions/README.md`'s bar — decided by observed output, not argument.
   but §4's original "checked, no issue found" thread-safety claim read broader than what was actually
   checked (`Embedder` only). Narrowed in §4 above rather than left to imply a guarantee this ADR never
   verified for `IndexT`.
+- **`recall`'s invoke against a stale (unbacked) index entry (red-team pass 2's own named residual) —
+  CORRECT, executed.** New R14 (§5 follow-up) confirms `render_scored_chunk()`'s best-effort
+  skip-on-miss posture genuinely holds through `recall`'s invoke path, not just `on_context()`.
+- **Concurrent `recall()` calls against the SAME provider instance, no concurrent writer (red-team
+  pass 2's own named residual) — CORRECT, executed, scope-limited to no-writer.** New R15 (§5
+  follow-up) drives 8 real threads through `recall`'s invoke concurrently, all returning the correct
+  result, stable across 5 repeated runs. Scope matches the ALSO-verified read-path thread-safety of
+  every component `recall` touches (`InMemoryWorktreeObjectStore`, `InMemoryAppendLogStore`,
+  `BruteForceCosineIndex`) — does not extend to a concurrent WRITER, which stays INCONCLUSIVE per the
+  `IndexT` verdict immediately above.
 
 ## 7. The decision — implemented and proven; awaiting explicit user "Judged"
 
@@ -619,9 +653,12 @@ overclaim was narrowed (§4's original blanket thread-safety line covered `Embed
 — narrowed to name a real-but-currently-unreachable `IndexT` concurrent-write residual explicitly);
 and one more real, reachable scenario gained test coverage (R13: `recall` against a genuinely empty
 index). R12/R13 are new checks inside the existing `test_vector_rag_context_provider` target, not new
-`ctest` targets — the target count is unchanged. Two test gaps remain named, not closed (a stale index
-entry reached through `recall` — a pre-existing gap this ADR didn't introduce — and concurrent
-`recall()` calls). Full suite **195/195** (`ctest -LE live-network`), zero regressions.
+`ctest` targets — the target count is unchanged. **The two test gaps initially left named, not
+closed, in that pass (a stale index entry reached through `recall`, and concurrent `recall()`
+calls) were closed the same day** with R14 and R15 respectively (§5's follow-up) — the only
+scope-limit that remains is a concurrent WRITER against a shared `IndexT`, honestly still
+INCONCLUSIVE (§6) since no such writer exists anywhere in the tree yet. Full suite **195/195**
+(`ctest -LE live-network`), zero regressions.
 
 **What this document recommends and has now built:** Design B (the revised `rt::drive_leaf_task()`
 with a 1-resume bound, `Embedder::synchronous_leaf` with an honestly-stated higher review bar, the

@@ -20,6 +20,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <variant>
 #include <vector>
@@ -184,6 +185,46 @@ static_assert(ae::Embedder<AlternatingEmbedder>,
 
 using AlternatingProvider =
     ae::VectorRagContextProvider<AlternatingEmbedder, ae::BruteForceCosineIndex,
+                                  ae::InMemoryWorktreeObjectStore, ae::rt::InMemoryAppendLogStore>;
+
+// Shared by StatelessEmbedder::embed_batch() AND directly by R15's own test setup, so the corpus
+// chunk's stored index vector is guaranteed to match exactly what embedding that same text would
+// produce -- deterministic ranking without needing to drive embed_batch() just to compute a setup
+// vector.
+std::vector<float> stateless_vector_for(std::string const& text) {
+    std::size_t const h = std::hash<std::string>{}(text);
+    return {static_cast<float>(h % 997), static_cast<float>((h / 997) % 991),
+            static_cast<float>((h / 997 / 991) % 883)};
+}
+
+// R15 (red-team pass 2's own named-but-not-closed concurrent-recall() residual): a genuinely
+// STATELESS Embedder -- zero mutable member state, unlike this file's other mocks (MockEmbedder's
+// `fail_next` toggles on read; AlternatingEmbedder's `call_count` mutates every call), which are
+// deliberately scripted for single-threaded determinism and would themselves race if driven
+// concurrently. A real concurrent-recall() test needs a conformer whose OWN internal shape doesn't
+// introduce a race that isn't actually about drive_leaf_task()/VectorRagContextProvider at all.
+class StatelessEmbedder {
+public:
+    // ADR-064 §3 Design B's required trait: embed_batch() never awaits anything (co_return only) and
+    // touches no member state, so driving it via rt::drive_leaf_task() from multiple threads
+    // concurrently is sound.
+    static constexpr bool synchronous_leaf = true;
+
+    [[nodiscard]] ae::EmbedderCapabilities capabilities() const { return {3, 100}; }
+
+    ae::task<ae::result<std::vector<std::vector<float>>>> embed_batch(std::vector<std::string> const& texts,
+                                                                        ae::EffectContext&) const {
+        std::vector<std::vector<float>> out;
+        out.reserve(texts.size());
+        for (auto const& t : texts) out.push_back(stateless_vector_for(t));
+        co_return out;
+    }
+};
+static_assert(ae::Embedder<StatelessEmbedder>,
+              "StatelessEmbedder must satisfy the Embedder concept (ADR-063 §2.2)");
+
+using StatelessProvider =
+    ae::VectorRagContextProvider<StatelessEmbedder, ae::BruteForceCosineIndex,
                                   ae::InMemoryWorktreeObjectStore, ae::rt::InMemoryAppendLogStore>;
 
 std::size_t count_occurrences(std::string const& haystack, std::string const& needle) {
@@ -701,6 +742,154 @@ int main() {
         AE_CHECK(parsed_reply.has_value() && parsed_reply->results.empty(),
                  "R13: recall() returns an empty results list, not an error or stale data, when the "
                  "corpus/index is genuinely empty");
+    }
+
+    // ============================================================================================
+    // R14 (red-team pass 2's own named-but-not-closed residual, closed here): recall's invoke when
+    // the index holds an id with NO backing CorpusChunkRecord/blob (a re-mount or corpus edit that
+    // dropped a chunk from storage without reconciling the separately-owned index -- ADR-063 §7's
+    // named lifecycle gap). on_context()'s own render_scored_chunk() loop already documents a
+    // best-effort skip-on-miss posture for exactly this case; recall's invoke reuses the SAME helper,
+    // so this proves that posture actually holds through the invoke path too, not just on_context().
+    // ============================================================================================
+    {
+        ae::InMemoryWorktreeObjectStore object_store;
+        ae::rt::InMemoryAppendLogStore  ref_store;
+        ae::Principal const principal{"p-r14", "tenant-r14"};
+
+        ae::Mount const mount = ae::rag_corpus_mount(ae::corpus_scope::per_principal, principal, "docs");
+        AE_CHECK(bootstrap_corpus_worktree(object_store, ref_store, mount).has_value(),
+                 "R14 setup: the corpus worktree bootstraps");
+
+        ae::cap::FsRead const  read_cap{mount.mount_id, "", std::nullopt};
+        ae::cap::FsWrite const write_cap{mount.mount_id, "", std::nullopt, std::nullopt};
+
+        ae::BruteForceCosineIndex index;
+        auto real_id = write_chunk(object_store, ref_store, mount, write_cap, index,
+                                     "The real, still-present chunk.", "docs/real.md", 1, 1,
+                                     {1.0f, 0.0f, 0.0f});
+        AE_CHECK(real_id.has_value(), "R14 setup: writing the real chunk succeeds");
+
+        // A stale index entry: added directly to the index, WITHOUT ever writing a matching
+        // CorpusChunkRecord/blob -- the same end state a re-mount that dropped this chunk from
+        // storage (without yet reconciling the index) would leave behind, per ADR-063 §7.
+        auto stale_added = index.add_batch(std::vector<std::string>{"stale-digest-no-backing-record"},
+                                            std::vector<std::vector<float>>{{1.0f, 0.0f, 0.0f}});
+        AE_CHECK(stale_added.has_value(), "R14 setup: adding the stale (unbacked) index entry succeeds");
+
+        MockEmbedder embedder;
+        embedder.vectors["real query"] = {1.0f, 0.0f, 0.0f};  // equally close to both entries
+
+        Provider provider{object_store, ref_store, mount, read_cap, embedder, index, /*max_injected=*/2};
+
+        std::vector<ae::Message> history{make_msg(ae::role::user, "real query", "m-r14")};
+        ae::EffectContext ctx{};
+        ctx.principal = principal;
+        ae::SessionContext session_ctx{"s-r14", principal, history};
+
+        auto out = ae::test_support::run_task_sync<ae::result<ae::ContextContribution>>(
+            provider.on_context(session_ctx, ctx));
+        AE_CHECK(out.has_value() && out->tools.size() == 1,
+                 "R14 setup: on_context() succeeds despite the index holding a stale entry");
+
+        auto args = ae::json::parse(R"({"query":"real query"})");
+        AE_CHECK(args.has_value(), "R14 setup: recall args parse");
+        ae::EffectContext tool_ctx{};
+        auto reply = out.has_value() ? out->tools.front().invoke(*args, tool_ctx) : ae::result<ae::json::Value>{};
+        AE_CHECK(reply.has_value(),
+                 "R14: recall's invoke succeeds even though the index also holds a stale, unbacked "
+                 "entry -- the stale entry is skipped, not surfaced as a whole-call failure");
+        auto parsed_reply = reply.has_value() ? ae::schema::from_json<ae::RagRecallReply>(*reply)
+                                                : ae::result<ae::RagRecallReply>{};
+        AE_CHECK(parsed_reply.has_value() && parsed_reply->results.size() == 1 &&
+                     parsed_reply->results.front().find("real, still-present chunk") != std::string::npos,
+                 "R14: recall() returns exactly the one real chunk, silently skipping the stale index "
+                 "entry -- render_scored_chunk()'s best-effort skip-on-miss posture (already proven for "
+                 "on_context()) genuinely holds through recall's invoke path too, not just on_context()");
+    }
+
+    // ============================================================================================
+    // R15 (red-team pass 2's own named-but-not-closed residual, closed here): CONCURRENT recall()
+    // calls against the SAME VectorRagContextProvider instance from multiple real threads -- the
+    // shared, multi-session Embedder/VectorIndex sharing scenario ADR-064 §4's own "checked, no issue
+    // found" paragraph reasons about but had never actually executed. Independently verified first
+    // (before writing this test) that every read path recall's invoke touches under contention --
+    // InMemoryWorktreeObjectStore::get_blob()/get_tree() (plain unordered_map lookups, no mutex, no
+    // mutable cache), InMemoryAppendLogStore's own read path (already internally mutex-guarded, safe
+    // even against a concurrent writer, not just readers), and BruteForceCosineIndex::search() (pure
+    // read, no internal mutable state) -- are each safe for concurrent READS with no writer present,
+    // which is exactly this scenario (no ingestion path exists in the tree today, so no writer is
+    // ever actually concurrent with recall() in production either).
+    // ============================================================================================
+    {
+        ae::InMemoryWorktreeObjectStore object_store;
+        ae::rt::InMemoryAppendLogStore  ref_store;
+        ae::Principal const principal{"p-r15", "tenant-r15"};
+
+        ae::Mount const mount = ae::rag_corpus_mount(ae::corpus_scope::per_principal, principal, "docs");
+        AE_CHECK(bootstrap_corpus_worktree(object_store, ref_store, mount).has_value(),
+                 "R15 setup: the corpus worktree bootstraps");
+
+        ae::cap::FsRead const  read_cap{mount.mount_id, "", std::nullopt};
+        ae::cap::FsWrite const write_cap{mount.mount_id, "", std::nullopt, std::nullopt};
+
+        ae::BruteForceCosineIndex index;
+        StatelessEmbedder embedder;
+        std::string const chunk_text = "concurrent recall target chunk";
+        auto chunk_id = write_chunk(object_store, ref_store, mount, write_cap, index, chunk_text,
+                                      "docs/concurrent.md", 1, 1, stateless_vector_for(chunk_text));
+        AE_CHECK(chunk_id.has_value(), "R15 setup: writing the chunk succeeds");
+
+        StatelessProvider provider{object_store, ref_store, mount, read_cap, embedder, index,
+                                    /*max_injected=*/1};
+
+        std::vector<ae::Message> history{make_msg(ae::role::user, chunk_text, "m-r15")};
+        ae::EffectContext setup_ctx{};
+        setup_ctx.principal = principal;
+        ae::SessionContext session_ctx{"s-r15", principal, history};
+
+        auto out = ae::test_support::run_task_sync<ae::result<ae::ContextContribution>>(
+            provider.on_context(session_ctx, setup_ctx));
+        AE_CHECK(out.has_value() && out->tools.size() == 1,
+                 "R15 setup: on_context() contributes the recall tool");
+
+        auto args = ae::json::parse(R"({"query":")" + chunk_text + R"("})");
+        AE_CHECK(args.has_value(), "R15 setup: recall args parse");
+
+        // N threads, each calling recall's invoke CONCURRENTLY against the SAME ToolDescriptor -- the
+        // same captured `this`, the same underlying provider/embedder/index/object_store instances.
+        // Each thread uses its OWN local EffectContext (never shared) -- EffectContext sharing across
+        // threads is a separate, already-out-of-scope concern (each real AgentSession owns its own).
+        constexpr int kThreads = 8;
+        std::vector<std::thread> threads;
+        std::vector<ae::result<ae::json::Value>> results(kThreads);
+        threads.reserve(kThreads);
+        for (int i = 0; i < kThreads; ++i) {
+            threads.emplace_back([&, i]() {
+                ae::EffectContext thread_ctx{};
+                thread_ctx.principal = principal;
+                results[i] = out->tools.front().invoke(*args, thread_ctx);
+            });
+        }
+        for (auto& t : threads) t.join();
+
+        bool all_ok = true;
+        for (auto const& r : results) {
+            if (!r.has_value()) {
+                all_ok = false;
+                continue;
+            }
+            auto parsed = ae::schema::from_json<ae::RagRecallReply>(*r);
+            if (!parsed.has_value() || parsed->results.size() != 1 ||
+                parsed->results.front().find(chunk_text) == std::string::npos) {
+                all_ok = false;
+            }
+        }
+        AE_CHECK(all_ok,
+                 "R15: " + std::to_string(kThreads) + " threads concurrently calling recall's invoke "
+                 "against the SAME provider instance all succeed with the correct, real result -- no "
+                 "crash, no corrupted/partial read, no observable race between concurrent embed_batch()/"
+                 "index search()/blob-read calls");
     }
 
     bool const ok = g_failures == total_failures_before;
