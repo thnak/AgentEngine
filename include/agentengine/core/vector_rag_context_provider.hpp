@@ -278,11 +278,17 @@ private:
     // accessed through a `const&`, breaking every non-const conformer. The lambda below captures
     // `this` (not individual members by value, unlike `MemoryProvider::make_recall_tool_descriptor()`)
     // because it needs `embedder_.embed_batch()`, `index_->search()`, AND `render_scored_chunk()` --
-    // sound because every real caller stores this provider by a stable heap address for its whole
-    // lifetime before ever calling `on_context()` (`context_assembly.hpp::make_context_provider_
-    // descriptor()`'s own `std::make_shared<ProviderT>`), so the captured `this` outlives every
-    // `ToolDescriptor` it produces, same lifetime relationship `index_`'s own raw pointer already
-    // relies on.
+    // sound because every real wiring shape gives this provider a STABLE address for its whole
+    // lifetime before ever calling `on_context()`, verified end-to-end (red-team, 2026-08-19) against
+    // both real shapes in this tree: (a) plugged in directly as an `AgentSession`/composite
+    // provider's own template-parameter member (`this` is a stable member-subobject address, alive as
+    // long as the owning session/composite is), or (b) wrapped via `context_assembly.hpp::
+    // make_context_provider_descriptor()`'s `std::make_shared<ProviderT>` (`this` is a stable heap
+    // address kept alive by the `ContextProviderDescriptor`'s own captured closures). Either way, every
+    // real call site (`rt/agent_session.hpp`'s three `invoke_tool()` sites) builds its `ToolTable`
+    // as a purely local, same-activation variable from `contribution.tools` and never stores a
+    // `ToolDescriptor` beyond that scope -- so the captured `this` outlives every `ToolDescriptor` it
+    // produces, the same lifetime relationship `index_`'s own raw pointer already relies on.
     [[nodiscard]] ToolDescriptor make_recall_tool_descriptor() {
         ToolDescriptor d;
         d.name              = "recall";

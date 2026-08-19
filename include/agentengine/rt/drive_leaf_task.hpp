@@ -51,24 +51,36 @@ namespace agentengine::rt {
 //   if (!embedded) return std::unexpected(embedded.error());   // INNER: the ORDINARY provider error
 //                                                                // channel (network failure, bad
 //                                                                // response) -- the common failure case
+// Red-team (2026-08-19, against this implementation, not just the paper design) found the first
+// version of this function wrapped only `take_value()`'s own rethrow in try/catch, leaving
+// `resume()` itself uncovered -- an unexplained deviation from `ThreadPool::run_job()`
+// (rt/thread_pool.hpp), the idiom this function's own top comment claims to reuse, whose try/catch
+// explicitly covers resume() too as "defense-in-depth... against a future change to task<T>'s
+// contract or misuse this type can't statically rule out." Verified against task<T>'s actual
+// promise_type (task.hpp): `unhandled_exception()` is `noexcept` and never rethrows, so `resume()`
+// cannot throw from a body exception TODAY -- this was not an exploitable gap, but the asymmetry was
+// real and unexplained. Fixed by wrapping the whole drive (resume() through take_value()) in one
+// try/catch, matching run_job()'s shape exactly rather than reasoning independently about which
+// calls can throw.
 template <class T>
 [[nodiscard]] result<T> drive_leaf_task(task<T> t) {
-    if (!t.done()) t.resume();
-    if (!t.done()) {
-        return std::unexpected(error{
-            failure_class::fatal,
-            "drive_leaf_task() needed more than one resume() to reach done() -- the task suspended "
-            "on something other than a nested task<T>/task<void>, violating its synchronous_leaf "
-            "contract. The coroutine state from here on is not trustworthy (see this function's own "
-            "comment) -- this error exists to stop cleanly, not to recover.",
-            "rt.leaf_task_contract_violation"});
-    }
-    // take_value() rethrows a fault via std::rethrow_exception (a genuine C++ exception escaping the
-    // coroutine body -- allocation failure, a bug, NOT the ordinary provider-error channel, which for
-    // every task<result<U>> in this codebase already flows through the normal co_return/return_value
-    // path as an ordinary std::unexpected(...) value, not a fault). Translated to ae::error here so a
-    // caller never has to catch task<T>'s exception-based fault protocol directly.
     try {
+        if (!t.done()) t.resume();
+        if (!t.done()) {
+            return std::unexpected(error{
+                failure_class::fatal,
+                "drive_leaf_task() needed more than one resume() to reach done() -- the task "
+                "suspended on something other than a nested task<T>/task<void>, violating its "
+                "synchronous_leaf contract. The coroutine state from here on is not trustworthy (see "
+                "this function's own comment) -- this error exists to stop cleanly, not to recover.",
+                "rt.leaf_task_contract_violation"});
+        }
+        // take_value() rethrows a fault via std::rethrow_exception (a genuine C++ exception escaping
+        // the coroutine body -- allocation failure, a bug, NOT the ordinary provider-error channel,
+        // which for every task<result<U>> in this codebase already flows through the normal
+        // co_return/return_value path as an ordinary std::unexpected(...) value, not a fault).
+        // Translated to ae::error here so a caller never has to catch task<T>'s exception-based fault
+        // protocol directly.
         return t.take_value();
     } catch (...) {
         return std::unexpected(error{failure_class::transient, "leaf task faulted", "rt.leaf_task_faulted"});

@@ -11,7 +11,12 @@ separately-flagged `ThreadPool` bug was FIXED for real** (§7 top — `rt/thread
 implemented and proven** — `rt/drive_leaf_task.hpp` (new), `Embedder::synchronous_leaf`
 (`core/embedder.hpp`), all 4 real conformers migrated, `VectorRagContextProvider::recall`'s real
 `invoke`, a new `tests/test_rt_drive_leaf_task.cpp` (D1-D5), and real end-to-end coverage in
-`tests/test_vector_rag_context_provider.cpp` (R8/R8b/R8c) — see §5/§6. Full suite **195/195**
+`tests/test_vector_rag_context_provider.cpp` (R8/R8b/R8c) — see §5/§6. **A second red-team pass
+against this real implementation (§5's own subsection) found no blocking defect** — one real
+`resume()`/try-catch asymmetry fixed, one comment's own justification corrected (and now backed by a
+new test, R12, driving `recall` through the actual `shared_ptr`-backed wiring), one overclaimed
+thread-safety line narrowed (`IndexT` sharing named as a real-but-unreachable residual), and one more
+real scenario covered (R13: `recall` against an empty index). Full suite **195/195**
 (`ctest -LE live-network`), zero regressions.
 
 **Relates to:** `decisions/ADR-063-retrieval-augmented-context-provider-shape.md` §7 (the exact gap
@@ -351,7 +356,15 @@ those other traits. **Fixed in §3 above.**
 **Checked, no issue found — thread-safety of `drive_leaf_task`/a shared `Embedder` instance across
 concurrent sessions.** `session_mutex_` already serializes all tool dispatch within one session (I1),
 and `OpenAIEmbedder::embed_batch()` has no shared mutable state (`store_` is a `const&`, everything
-else local) — sharing one instance across sessions/workers is independently safe.
+else local) — sharing one instance across sessions/workers is independently safe. **Scope correction
+(red-team against the real implementation, 2026-08-19): this checked only `Embedder`, not `IndexT`.**
+`VectorRagContextProvider` takes its index by reference specifically so it CAN be shared across
+provider instances (this file's own constructor comment); `BruteForceCosineIndex`
+(`core/vector_index.hpp`) has zero internal synchronization. If a shared index is ever concurrently
+WRITTEN by a future ingestion process (`CorpusSource`, still not built per ADR-063 §2.4A) while a live
+session's `recall()` concurrently calls `index_->search()`, that is a genuine data race — not
+reachable today (no concurrent-writer ingestion path exists in the tree), but a real, named residual
+for whenever one lands, not covered by this paragraph's own claim as originally scoped.
 
 **Red-team's own bottom line:** Design B's application to the one real conformer that exists today
 (`OpenAIEmbedder`) is sound and holds up under independent verification. The design's safety argument
@@ -424,6 +437,88 @@ branch through a real `if constexpr` instantiation yet. The branch is dead-code-
 since `if constexpr`'s discarded branch is still parsed, only not instantiated) but not exercised at
 runtime by any test in this pass.
 
+### Red-team pass 2 (2026-08-19, `general-purpose` agent, no prior context, against the REAL
+implementation, not the paper design §4 already covered)
+
+Read every file this pass touched (`rt/drive_leaf_task.hpp`, `core/embedder.hpp`,
+`core/vector_rag_context_provider.hpp`, `protocol/openai/embedder.hpp`, `context_assembly.hpp`,
+`composed_context_provider.hpp`, `rt/thread_pool.hpp`, `rt/task.hpp`, `rt/agent_session.hpp`'s three
+real `invoke_tool()` call sites, both test files) end-to-end by tracing actual code, not re-reading
+this document's own claims. Findings:
+
+**REAL, FIXED — `drive_leaf_task()` didn't wrap `resume()` in try/catch, an unexplained deviation from
+`ThreadPool::run_job()`, the idiom this function's own top comment claims to reuse.** `run_job()`
+(`rt/thread_pool.hpp`) wraps its whole body, including `resume()`, in try/catch as explicit
+"defense-in-depth... against a future change to `task<T>`'s contract or misuse this type can't
+statically rule out." The first version of `drive_leaf_task()` wrapped only `take_value()`. Verified
+against `task<T>::promise_type::unhandled_exception()` (`rt/task.hpp`, `noexcept`, never rethrows)
+that this was not currently exploitable — `resume()` cannot throw from a body exception today — but
+the asymmetry was real and unexplained, not a deliberate, argued choice. **Fixed**: the whole drive
+(`resume()` through `take_value()`) is now one try/catch, matching `run_job()`'s shape exactly.
+
+**NAMED, NOT A BUG — `synchronous_leaf` is a purely declarative, non-type-enforced trust boundary.**
+No portable C++20/23 mechanism exists to statically verify a coroutine body's suspension behavior, so
+this cannot be meaningfully strengthened within the type system — both this file and `core/
+embedder.hpp`'s own comment are already honest that a lying declaration produces real UB. Not a defect;
+restated here so it isn't lost as a residual review-discipline dependency, not a solved problem.
+
+**REAL, NARROWED — the ADR's own "Checked, no issue found" thread-safety line (§4) read broader than
+what was actually checked.** It verified `Embedder`/`OpenAIEmbedder` only, saying nothing about
+`IndexT` sharing. **Fixed above** (this section, the paragraph immediately preceding this
+subsection) — narrowed to name the real, currently-unreachable `IndexT` concurrent-write residual
+explicitly rather than let the original phrasing imply a broader guarantee than was checked.
+
+**REAL, FIXED — an imprecise justification in `make_recall_tool_descriptor()`'s own comment.** The
+comment claimed "every real caller stores this provider... via `make_shared<ProviderT>`," but one of
+the two real wiring shapes in this tree (a provider plugged in directly as an `AgentSession`/composite
+provider's own template-parameter member) doesn't go through `make_shared` at all — it's still safe,
+for a different reason (a stable member-subobject address), which the comment didn't name. The
+underlying CONCLUSION (capturing `this` is sound) was independently re-traced end-to-end by red-team
+and confirmed correct for both real shapes — **only the comment's own reasoning was incomplete, not
+the design**. **Fixed**: the comment now names both wiring shapes explicitly.
+
+**REAL, TEST GAP, NOW CLOSED — no test exercised `recall`'s `invoke` through the actual
+`make_shared<ProviderT>`-backed path the comment specifically cites, only through a still-in-scope
+stack-local `Provider`.** New `tests/test_vector_rag_context_provider.cpp` R12 moves a provider into a
+real `ContextProviderDescriptor` (`context_assembly.hpp::make_context_provider_descriptor()`) BEFORE
+calling `on_context()`/`recall`, proving the captured `this` really does follow the provider into
+shared_ptr-managed heap storage (the original stack-local `provider` is moved-from and out of scope by
+the time `recall`'s `invoke` runs) rather than pointing at a stale address.
+
+**REAL, TEST GAP, NOW CLOSED — no test drove `recall`'s `invoke` against a genuinely empty index**
+(on_context()'s own R10 only covered an embedder FAILURE, a structurally different scenario from a
+successful call that simply finds nothing). New R13 proves an empty index still returns a clean, empty
+`results: []` reply through `recall`'s real invoke path, not an error.
+
+**NAMED, NOT CLOSED — two test gaps remain, judged acceptable to leave open rather than close in this
+pass:** (1) no test drives `recall`'s invoke against a STALE index entry (a chunk id present in the
+index whose backing record/blob was since removed) — `on_context()`'s own equivalent skip-on-miss
+logic (§this file's design) is inherited unchanged by `recall`'s copy of the same logic, and remains
+untested either way, a pre-existing gap this ADR's own scope did not introduce. (2) no test exercises
+CONCURRENT `recall()` calls (single- or cross-session) — matches this ADR's own §4 "checked, no issue
+found" reasoning (I1's `session_mutex_` serializes within one session; `OpenAIEmbedder` has no shared
+mutable state), but that reasoning has not been backed by an executed concurrent test. Both named here
+rather than silently assumed safe, per this project's own "residuals named, not solved" convention.
+
+**Checked, no other issue found:** the double-wrapped `result<T>` unwrap in `recall`'s `invoke` body
+matches `on_context()`'s equivalent unwrap and `drive_leaf_task()`'s own documented contract exactly,
+no wrong-branch bug; `render_scored_chunk()`'s const-correctness and identical
+capability/mount/object-store arguments across both call paths; the 1-resume bound's correctness,
+re-verified directly against `task<T>`'s actual `await_suspend`/`FinalAwaiter` symmetric-transfer
+implementation, not merely re-argued; `OpenAIEmbedder::synchronous_leaf = true`'s justification,
+re-verified structurally (`perform_provider_https_exchange` returns `result<T>` directly, never a
+`task`); the `k=10` hardcoded recall max-results, a reasonable, deliberately independent judgment call
+from `max_injected_`; cross-session `EffectContext` safety (each `AgentSession` owns its own instance,
+no structural sharing exists independent of `recall`); both new/extended test files' assertions are
+real and specific, not tautological.
+
+**Red-team pass 2's own bottom line:** Design B's real implementation holds up — the core soundness
+argument (symmetric transfer bounding `drive_leaf_task` to one `resume()`, `OpenAIEmbedder` genuinely
+never suspending, the double-wrapped `result<T>` unwrapped correctly, `this`-capture lifetime backed
+by real ownership with no path to invoke a dangling closure) is correct by direct code tracing, not
+just by this document's own say-so. Nothing found was a blocking defect; the fixes above tighten an
+already-sound implementation rather than repair a broken one.
+
 ## 6. Per-claim verdicts
 
 Per `decisions/README.md`'s bar — decided by observed output, not argument.
@@ -471,6 +566,22 @@ Per `decisions/README.md`'s bar — decided by observed output, not argument.
   stub by construction (not edited), but no conformer in the tree declares `synchronous_leaf = false`
   today, so no test drives THAT specific `if constexpr` branch through a real instantiation. Honestly
   left open rather than claimed CORRECT — see §5's own named residual.
+- **`this`-capture lifetime safety in `make_recall_tool_descriptor()` (red-team pass 2) — CORRECT,
+  executed.** New R12 drives `recall`'s `invoke` through the REAL `make_shared<ProviderT>`-backed
+  `ContextProviderDescriptor` wiring (the specific path the code comment cites), with the original
+  stack-local provider already moved-from and out of scope — the captured `this` still resolves to
+  live data, not a stale address. The comment's own justification text was independently found
+  incomplete (it named only one of two real wiring shapes) and has been corrected; the underlying
+  safety conclusion was unaffected and is now backed by an executed test, not argument alone.
+- **`recall`'s invoke against a genuinely empty index (red-team pass 2) — CORRECT, executed.** New R13
+  confirms a clean, empty `results: []` reply, not an error — a real, reachable scenario (a
+  freshly-mounted, not-yet-ingested corpus) no prior test drove through the invoke path.
+- **`IndexT` thread-safety under a shared, concurrently-written index (red-team pass 2) —
+  INCONCLUSIVE, honestly narrowed, not claimed safe.** No concurrent-writer ingestion path exists in
+  the tree today (ADR-063 §2.4A's `CorpusSource` is not built), so this is not currently reachable —
+  but §4's original "checked, no issue found" thread-safety claim read broader than what was actually
+  checked (`Embedder` only). Narrowed in §4 above rather than left to imply a guarantee this ADR never
+  verified for `IndexT`.
 
 ## 7. The decision — implemented and proven; awaiting explicit user "Judged"
 
@@ -495,8 +606,22 @@ caller, not just `recall`/`Embedder`/RAG.
 (`core/vector_rag_context_provider.hpp`) are all real, compiled, tested code — see §5 for the full
 evidence and §6 for per-claim verdicts. `recall(query)` is now genuinely invocable end-to-end for any
 `Embedder` conformer that declares `synchronous_leaf = true` (all 4 real conformers in the tree today
-do); a conformer declaring `false` still gets the original, byte-identical fail-closed error. Full
-suite **195/195** (`ctest -LE live-network`), zero regressions against the pre-existing 194.
+do); a conformer declaring `false` still gets the original, byte-identical fail-closed error.
+
+**A second red-team pass, against this real implementation (not the paper design §4 already covered),
+found no blocking defect** — see §5's "Red-team pass 2" subsection for the full findings. One real gap
+was fixed (`drive_leaf_task()` now wraps `resume()` in the same try/catch as `take_value()`, matching
+`ThreadPool::run_job()`'s own defense-in-depth exactly, closing an unexplained deviation from the
+idiom it claims to reuse); one comment's own justification was corrected (the `this`-capture safety
+argument named only one of two real wiring shapes — fixed, and now backed by a new test, R12, that
+drives `recall` through the specific `make_shared<ProviderT>`-backed path the comment cites); one
+overclaim was narrowed (§4's original blanket thread-safety line covered `Embedder` only, not `IndexT`
+— narrowed to name a real-but-currently-unreachable `IndexT` concurrent-write residual explicitly);
+and one more real, reachable scenario gained test coverage (R13: `recall` against a genuinely empty
+index). R12/R13 are new checks inside the existing `test_vector_rag_context_provider` target, not new
+`ctest` targets — the target count is unchanged. Two test gaps remain named, not closed (a stale index
+entry reached through `recall` — a pre-existing gap this ADR didn't introduce — and concurrent
+`recall()` calls). Full suite **195/195** (`ctest -LE live-network`), zero regressions.
 
 **What this document recommends and has now built:** Design B (the revised `rt::drive_leaf_task()`
 with a 1-resume bound, `Embedder::synchronous_leaf` with an honestly-stated higher review bar, the

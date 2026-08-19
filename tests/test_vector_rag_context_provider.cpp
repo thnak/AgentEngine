@@ -24,6 +24,7 @@
 #include <variant>
 #include <vector>
 
+#include "agentengine/core/context_assembly.hpp"
 #include "agentengine/core/corpus_chunk.hpp"
 #include "agentengine/core/corpus_scope.hpp"
 #include "agentengine/core/error.hpp"
@@ -585,6 +586,121 @@ int main() {
                  "(deterministic retrieval over a fixed corpus) does NOT hold here. This is real and "
                  "reproducible, not a theoretical concern, for any Embedder conformer that is not "
                  "itself deterministic (a real, network-backed provider makes no such guarantee).");
+    }
+
+    // ============================================================================================
+    // R12 (red-team, 2026-08-19, against ADR-064 Design B's real implementation): recall's invoke
+    // through the REAL shared_ptr-backed wiring (context_assembly.hpp::
+    // make_context_provider_descriptor()), not a raw stack-local Provider. Every recall test above
+    // only ever calls a still-in-scope stack-local `provider` directly -- but make_recall_tool_
+    // descriptor()'s own comment specifically justifies capturing `this` by citing
+    // make_shared<ProviderT>, and nothing exercised that path until now. Moves the provider into a
+    // ContextProviderDescriptor (the real production wiring shape a composed multi-provider
+    // AgentSession uses) BEFORE ever calling on_context()/recall, so the `this` recall's invoke
+    // captures really does point into shared_ptr-managed heap storage, not a stack frame.
+    // ============================================================================================
+    {
+        ae::InMemoryWorktreeObjectStore object_store;
+        ae::rt::InMemoryAppendLogStore  ref_store;
+        ae::Principal const principal{"p-r12", "tenant-r12"};
+
+        ae::Mount const mount = ae::rag_corpus_mount(ae::corpus_scope::per_principal, principal, "docs");
+        AE_CHECK(bootstrap_corpus_worktree(object_store, ref_store, mount).has_value(),
+                 "R12 setup: the corpus worktree bootstraps");
+
+        ae::cap::FsRead const  read_cap{mount.mount_id, "", std::nullopt};
+        ae::cap::FsWrite const write_cap{mount.mount_id, "", std::nullopt, std::nullopt};
+
+        ae::BruteForceCosineIndex index;
+        auto chunk_id = write_chunk(object_store, ref_store, mount, write_cap, index,
+                                      "The build system used by this project is CMake.", "docs/build.md",
+                                      1, 2, {1.0f, 0.0f, 0.0f});
+        AE_CHECK(chunk_id.has_value(), "R12 setup: writing the chunk succeeds");
+
+        MockEmbedder embedder;
+        embedder.vectors["which build system"] = {1.0f, 0.0f, 0.0f};
+
+        Provider provider{object_store, ref_store, mount, read_cap, embedder, index, /*max_injected=*/1};
+
+        // Move the provider into the REAL production wiring shape -- `provider` itself is now
+        // moved-from; only the descriptor's own captured shared_ptr reaches the real (heap) instance
+        // from here on, exactly the shape composed_context_provider.hpp builds for every real
+        // multi-provider AgentSession composition.
+        ae::ContextProviderDescriptor descriptor =
+            ae::make_context_provider_descriptor(std::move(provider), ae::ContextBudget{});
+
+        std::vector<ae::Message> history{make_msg(ae::role::user, "which build system", "m-r12")};
+        ae::EffectContext ctx{};
+        ctx.principal = principal;
+        ae::SessionContext session_ctx{"s-r12", principal, history};
+
+        auto out = ae::test_support::run_task_sync<ae::result<ae::ContextContribution>>(
+            descriptor.on_context(session_ctx, ctx));
+        AE_CHECK(out.has_value() && out->tools.size() == 1 && out->tools.front().name == "recall",
+                 "R12: on_context() through the shared_ptr-backed descriptor still contributes recall");
+
+        auto args = ae::json::parse(R"({"query":"which build system"})");
+        AE_CHECK(args.has_value(), "R12 setup: recall args parse");
+        ae::EffectContext tool_ctx{};
+        auto reply = out.has_value() ? out->tools.front().invoke(*args, tool_ctx) : ae::result<ae::json::Value>{};
+        AE_CHECK(reply.has_value(),
+                 "R12: recall's invoke succeeds even though `this` now points into shared_ptr-managed "
+                 "heap storage, not the original (now moved-from) stack-local provider -- the captured "
+                 "`this` genuinely follows the provider's real storage, not a stale address");
+        auto parsed_reply = reply.has_value() ? ae::schema::from_json<ae::RagRecallReply>(*reply)
+                                                : ae::result<ae::RagRecallReply>{};
+        AE_CHECK(parsed_reply.has_value() && parsed_reply->results.size() == 1 &&
+                     parsed_reply->results.front().find("CMake") != std::string::npos,
+                 "R12: the real chunk text is returned through the shared_ptr-backed wiring, not "
+                 "stale or garbage data");
+    }
+
+    // ============================================================================================
+    // R13 (red-team, 2026-08-19): recall's invoke against a genuinely empty index -- a real,
+    // reachable scenario (a freshly-mounted corpus with no chunks ingested yet) that no test above
+    // exercised through the invoke path (only on_context()'s own embedder-FAILURE case, R10, was
+    // covered -- a structurally different scenario from a successful call that simply finds nothing).
+    // ============================================================================================
+    {
+        ae::InMemoryWorktreeObjectStore object_store;
+        ae::rt::InMemoryAppendLogStore  ref_store;
+        ae::Principal const principal{"p-r13", "tenant-r13"};
+
+        ae::Mount const mount = ae::rag_corpus_mount(ae::corpus_scope::per_principal, principal, "docs");
+        AE_CHECK(bootstrap_corpus_worktree(object_store, ref_store, mount).has_value(),
+                 "R13 setup: the corpus worktree bootstraps");
+
+        ae::cap::FsRead const read_cap{mount.mount_id, "", std::nullopt};
+        ae::BruteForceCosineIndex empty_index;  // never populated -- no add_batch() call at all
+
+        MockEmbedder embedder;
+        embedder.vectors["anything"] = {1.0f, 0.0f, 0.0f};
+
+        Provider provider{object_store, ref_store, mount, read_cap, embedder, empty_index,
+                           /*max_injected=*/3};
+
+        std::vector<ae::Message> history{make_msg(ae::role::user, "anything", "m-r13")};
+        ae::EffectContext ctx{};
+        ctx.principal = principal;
+        ae::SessionContext session_ctx{"s-r13", principal, history};
+
+        auto out = ae::test_support::run_task_sync<ae::result<ae::ContextContribution>>(
+            provider.on_context(session_ctx, ctx));
+        AE_CHECK(out.has_value() && out->messages.empty(),
+                 "R13 setup: on_context() against an empty index succeeds with zero injected messages");
+
+        auto args = ae::json::parse(R"({"query":"anything"})");
+        AE_CHECK(args.has_value(), "R13 setup: recall args parse");
+        ae::EffectContext tool_ctx{};
+        auto reply = out.has_value() ? out->tools.front().invoke(*args, tool_ctx) : ae::result<ae::json::Value>{};
+        AE_CHECK(reply.has_value(),
+                 "R13: recall's invoke against an empty index still succeeds -- zero matches is not "
+                 "an error");
+        auto parsed_reply = reply.has_value() ? ae::schema::from_json<ae::RagRecallReply>(*reply)
+                                                : ae::result<ae::RagRecallReply>{};
+        AE_CHECK(parsed_reply.has_value() && parsed_reply->results.empty(),
+                 "R13: recall() returns an empty results list, not an error or stale data, when the "
+                 "corpus/index is genuinely empty");
     }
 
     bool const ok = g_failures == total_failures_before;
