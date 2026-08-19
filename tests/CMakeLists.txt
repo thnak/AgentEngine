@@ -409,6 +409,10 @@ if(WIN32)
   add_executable(test_vector_index test_vector_index.cpp)
   target_link_libraries(test_vector_index PRIVATE agentengine::core agentengine_warnings)
   add_test(NAME test_vector_index COMMAND test_vector_index)
+
+  add_executable(test_vector_index_benchmark test_vector_index_benchmark.cpp)
+  target_link_libraries(test_vector_index_benchmark PRIVATE agentengine::core agentengine_warnings)
+  add_test(NAME test_vector_index_benchmark COMMAND test_vector_index_benchmark)
 endif()
 
 # §2.6a / §3 claim 5: rag_corpus_key()/rag_corpus_mount() (core/corpus_scope.hpp) -- multi-tenant

@@ -11,8 +11,15 @@ full local test suite is 193/193 green (MSVC 19.4x, `ctest -LE live-network`), i
 dedicated test files. §3 claims 5 and 6 now have a real end-to-end CORRECT verdict (§6) — the FULL
 `VectorRagContextProvider`-level proof, not just the underlying-mechanism-level proof recorded
 earlier. Claim 4 has since been executed for real against live `openrouter.ai` with a real
-credential (all 5 assertion groups pass) and is also CORRECT. Claims 1, 3, and 7 remain PENDING
-(§6 says exactly why each one still is).
+credential (all 5 assertion groups pass) and is also CORRECT. **Claim 3 has since been executed for
+real and is CORRECT** (a scripted embedder returning two different vectors for the same query text
+produces two different `ContextContribution`s across two `on_context()` calls). **Claim 1 has since
+been benchmarked for real** (`tests/test_vector_index_benchmark.cpp`, Release/clang numbers: ~248
+µs/~1.45 ms/~7.6 ms per `search()` call at n=200/1000/5000, dim 1536) — verdict is INCONCLUSIVE, not
+CORRECT, since RFC 023 names no dedicated budget row to compare against yet, but the numbers already
+exceed the closest existing analog at realistic corpus sizes, a real finding worth acting on. Only
+claim 7 (Vulkan, deliberately deferred per §2.3B — not a gap) remains outside a CORRECT/INCONCLUSIVE
+verdict.
 **A second, independent red-team pass against the NEW (implementation) code ran 2026-08-19**
 (`general-purpose` agent, again no prior context on this document — matching §4's own methodology),
 specifically hunting for what the design-level §4 pass could not have found. It reported **1
@@ -724,6 +731,30 @@ Everything found in this pass and listed above is now fixed and tested; nothing 
 remains open. The full local suite is still 193/193 green after these fixes
 (`ctest -LE live-network`), zero regressions.
 
+### Closing claims 1 and 3 (2026-08-19)
+
+Two small, targeted additions, neither requiring new production code beyond what already existed:
+
+- **`tests/test_vector_index_benchmark.cpp`** (new) — closes claim 1's own disproof
+  (`BruteForceCosineIndex::search()` latency at the hypothesized corpus size). Mirrors
+  `test_capability_token_benchmark.cpp`'s own bench-file shape (single-threaded, bounded iteration
+  count, warm-up before timing, machine-safety comment per CLAUDE.md). Measured at dim=1536
+  (text-embedding-3-small's real dimension) across n=200/1000/5000. First measured under this
+  session's Debug/MSVC build and found to be meaningless (`~5 ms/call` even at n=200 — an `/Od`
+  artifact); rebuilt and re-measured under the repo's existing `build-clang-release` (Release, clang)
+  configuration for real numbers, reported in §6.
+- **`tests/test_vector_rag_context_provider.cpp`** (new block, added to the existing file) — closes
+  claim 3's own disproof exactly as §3 specifies: a new `AlternatingEmbedder` mock alternates between
+  two distinct vectors by CALL COUNT (not by input text), so the identical query text legitimately
+  embeds differently across two calls, modeling real provider nondeterminism. Two `on_context()`
+  calls against the identical stored corpus and identical history retrieve different chunks, proven
+  by an unambiguous proxy (each chunk's own stored vector is an exact match for one of the two
+  scripted embedder outputs). Kept deliberately distinct from `R10` (embedder FAILURE propagation) —
+  neither test can be cited as proving the other's property.
+
+Both proven against the existing 193/193-green suite; full suite re-run after these additions still
+green, zero regressions (see below).
+
 ## 6. Per-claim verdicts — partial, several now real
 
 Per `decisions/README.md`'s CORRECT / WRONG / INCONCLUSIVE bar. Only claims with real, executed
@@ -757,13 +788,34 @@ evidence get a verdict; the rest stay PENDING, not guessed at.
   (not array-order assumption), a wrong-key positive control correctly rejected and classified
   `policy`, an I2 ungranted-capability control denied before any network call, and a same-input
   same-length shape guarantee across two calls. Full transcript in §5's Second-pass evidence.
-- **Claims 1, 3, 7 — still PENDING, unchanged.** No bench exists for claim 1 (no latency bound is even
-  named yet, per §4 finding 12's own honesty-check). No test exercises claim 3's specific scenario (a
-  scripted `Embedder` mock returning two DIFFERENT vectors for the same input across two `on_context()`
-  calls, proving the replay-break is reproducible, not theoretical) — `test_vector_rag_context_provider.
-  cpp`'s `R10` proves an embedder FAILURE propagates correctly, which is a related but distinct
-  property from claim 3's own determinism-break wording; do not conflate the two. Claim 7 (Vulkan) is
-  explicitly deferred per §2.3B.
+- **Claim 3 (§2.2A, unwrapped Embedder breaks replay) — CORRECT, executed
+  (2026-08-19).** `tests/test_vector_rag_context_provider.cpp`'s new claim-3 block runs exactly the
+  scenario §3 names: a scripted `AlternatingEmbedder` returns two DIFFERENT vectors for the SAME
+  query text on two successive calls; two `on_context()` calls against the IDENTICAL stored corpus
+  and IDENTICAL history produce two DIFFERENT `ContextContribution`s (chunk A ranks first on call 1,
+  chunk B on call 2), solely because the embedding itself changed. This is distinct from `R10` (which
+  proves an embedder FAILURE propagates, not a determinism break) — do not conflate the two, they
+  were kept as separate tests specifically so neither could be cited as proving the other.
+- **Claim 1 (§2.3A, brute-force latency) — evidence now exists; verdict is INCONCLUSIVE, not
+  CORRECT, pending a real budget target.** `tests/test_vector_index_benchmark.cpp` (new, 2026-08-19)
+  measures `BruteForceCosineIndex::search(k=5)` at dim=1536 (text-embedding-3-small's real
+  dimension) across the hypothesized corpus-size range. Numbers under a Debug/MSVC build are not
+  representative (`/Od`, ~5 ms/call even at n=200 — an artifact of no optimization, not of the
+  algorithm); rebuilt and measured under `build-clang-release` (Release, clang) for real numbers:
+  **n=200 → ~248 µs/call, n=1000 → ~1.45 ms/call, n=5000 → ~7.6 ms/call** (single-threaded, one
+  reference machine, not yet a 023 §7 G1-baselined reference machine — a caveat worth restating, not
+  a reason to withhold the number). RFC `023-Performance-Targets-and-Budgets.md` names no dedicated
+  budget row for vector-index search specifically; the closest existing analog, "Context assembly:
+  assemble a 50-message context, p99 ≤ 500 µs (Goal)," is already exceeded at n=1000 and clearly
+  exceeded at n=5000 — both comfortably inside claim 1's own hypothesized "low hundreds to low
+  thousands" range. This is a real, honest finding, not a fabricated pass/fail: `BruteForceCosineIndex`
+  itself already says "correct by construction, not tuned" (`vector_index.hpp`'s own comment) and
+  §2.3B already names ANN/GPU as opt-in seam backends "gated on a real bench against this default
+  proving it is the actual bottleneck" — this bench is that proof, earlier than "if it turns out to
+  be a bottleneck" implied. **Recommended follow-up, out of this ADR's own scope to do unilaterally**:
+  a dedicated budget row for RAG/vector-index retrieval in RFC 023 §3, and revisiting whether the
+  ANN backend gate should move up the roadmap rather than stay speculative.
+- **Claim 7 (Vulkan) is explicitly deferred per §2.3B** — not a gap, a deliberate scope decision.
 
 ## 7. The decision — not yet made; this is the proposal awaiting judgment
 
@@ -883,8 +935,12 @@ pass 2" subsection) and its 5 findings are fixed and tested — but per this pro
 clean red-team pass is evidence, not a guarantee nothing else is there; a further pass remains
 prudent before Judged, particularly once `recall(query)`'s sync-invoke/async-embedder gap has an
 actual fix to review (a project-wide `ToolDescriptor::invoke` decision, not something this ADR can
-settle alone). Still needed: executed evidence for §3's remaining PENDING claims (1, 3 — claims 2, 4,
-5, 6 and finding 7 are now closed; claim 7/Vulkan is deliberately deferred, not a gap), and a real
-decision on the async-invoke gap. Per `decisions/README.md`, this file gets superseded (not silently
-edited into a false "Judged" status) once that happens, or removed per that same README if a future
-pass concludes this shape does not survive red-team.
+settle alone). Claims 2, 3, 4, 5, 6 and finding 7 are now closed with real executed evidence; claim 1
+now has real measured numbers but stays INCONCLUSIVE pending a dedicated RFC 023 budget row (a
+separate, cross-cutting spec change, not this ADR's own call to make unilaterally); claim 7 (Vulkan)
+is deliberately deferred, not a gap. What remains before Judged: a real decision on the async-invoke
+gap, and — since claim 1 turned up a real, measured finding (the closest existing 023 budget analog
+is already exceeded at realistic corpus sizes) — a decision on whether the ANN/GPU seam backend gate
+(§2.3B) should move up the roadmap rather than stay speculative. Per `decisions/README.md`, this file
+gets superseded (not silently edited into a false "Judged" status) once that happens, or removed per
+that same README if a future pass concludes this shape does not survive red-team.

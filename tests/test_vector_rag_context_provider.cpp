@@ -145,6 +145,38 @@ ae::result<ae::Digest> write_chunk(ae::InMemoryWorktreeObjectStore& object_store
     return digest;
 }
 
+// ADR-063 §3 claim 3's own disproof scenario: a scripted Embedder that returns TWO DIFFERENT vectors
+// for the identical input text across successive embed_batch() calls (modeling real API
+// nondeterminism -- e.g. a provider-side model/routing change between calls, or genuine floating-
+// point nondeterminism in a real backend). Deliberately alternates by CALL COUNT, not by input text,
+// so the same query text can legitimately produce two different embeddings across two on_context()
+// calls -- exactly the "unwrapped Embedder breaks replay" tradeoff §2.2A accepts explicitly.
+class AlternatingEmbedder {
+public:
+    [[nodiscard]] ae::EmbedderCapabilities capabilities() const { return {3, 100}; }
+
+    ae::task<ae::result<std::vector<std::vector<float>>>> embed_batch(std::vector<std::string> const& texts,
+                                                                        ae::EffectContext&) {
+        std::vector<std::vector<float>> out;
+        out.reserve(texts.size());
+        for (std::size_t i = 0; i < texts.size(); ++i) {
+            out.push_back(call_count % 2 == 0 ? vector_a : vector_b);
+        }
+        ++call_count;
+        co_return out;
+    }
+
+    std::vector<float> vector_a{1.0f, 0.0f, 0.0f};
+    std::vector<float> vector_b{0.0f, 1.0f, 0.0f};
+    std::size_t call_count = 0;
+};
+static_assert(ae::Embedder<AlternatingEmbedder>,
+              "AlternatingEmbedder must satisfy the Embedder concept (ADR-063 §2.2)");
+
+using AlternatingProvider =
+    ae::VectorRagContextProvider<AlternatingEmbedder, ae::BruteForceCosineIndex,
+                                  ae::InMemoryWorktreeObjectStore, ae::rt::InMemoryAppendLogStore>;
+
 std::size_t count_occurrences(std::string const& haystack, std::string const& needle) {
     std::size_t count = 0, pos = 0;
     while ((pos = haystack.find(needle, pos)) != std::string::npos) {
@@ -462,6 +494,75 @@ int main() {
                      rendered.find("admin password") != std::string::npos,
                  "C6-R3 sanity: neutralization mangles only the marker bytes, not the surrounding "
                  "content -- the rest of the (still tainted, still untrusted) text is unchanged");
+    }
+
+    // ============================================================================================
+    // ADR-063 §3 claim 3, "disproof-of-the-null": two on_context() calls against the IDENTICAL
+    // stored corpus and IDENTICAL history, through a scripted Embedder that returns two DIFFERENT
+    // vectors for the same query text, produce two DIFFERENT ContextContributions -- proving the
+    // replay-break §2.2A accepts as a tradeoff is real and reproducible, not theoretical. This is
+    // the exact scenario §3's own claim 3 text names, distinct from R10 above (which proves an
+    // embedder FAILURE propagates -- a different property; do not conflate the two, per ADR-063 §6's
+    // own explicit warning).
+    // ============================================================================================
+    {
+        ae::InMemoryWorktreeObjectStore object_store;
+        ae::rt::InMemoryAppendLogStore  ref_store;
+        ae::Principal const principal{"p-replay", "tenant-1"};
+
+        ae::Mount const mount = ae::rag_corpus_mount(ae::corpus_scope::per_principal, principal, "docs");
+        AE_CHECK(bootstrap_corpus_worktree(object_store, ref_store, mount).has_value(),
+                 "setup: the corpus worktree bootstraps");
+
+        ae::cap::FsRead const  read_cap{mount.mount_id, "", std::nullopt};
+        ae::cap::FsWrite const write_cap{mount.mount_id, "", std::nullopt, std::nullopt};
+
+        ae::BruteForceCosineIndex index;
+        // chunk_a's vector is an EXACT match for AlternatingEmbedder::vector_a, chunk_b's for
+        // vector_b -- so which chunk ranks first is an unambiguous, directly observable proxy for
+        // which vector the query was embedded to on a given call.
+        auto chunk_a = write_chunk(object_store, ref_store, mount, write_cap, index, "chunk A content",
+                                    "a.md", 1, 1, {1.0f, 0.0f, 0.0f});
+        AE_CHECK(chunk_a.has_value(), "setup: chunk A written");
+        auto chunk_b = write_chunk(object_store, ref_store, mount, write_cap, index, "chunk B content",
+                                    "b.md", 1, 1, {0.0f, 1.0f, 0.0f});
+        AE_CHECK(chunk_b.has_value(), "setup: chunk B written");
+
+        AlternatingEmbedder embedder;
+        AlternatingProvider provider{object_store, ref_store, mount, read_cap, embedder, index, /*max_injected=*/1};
+
+        std::vector<ae::Message> history{make_msg(ae::role::user, "same query text, every time", "m-replay")};
+        ae::EffectContext ctx{};
+        ctx.principal = principal;
+        ae::SessionContext session_ctx{"s-replay", principal, history};
+
+        // First call: call_count starts at 0 (even) -> vector_a -> chunk A should rank first.
+        auto out1 = ae::test_support::run_task_sync<ae::result<ae::ContextContribution>>(
+            provider.on_context(session_ctx, ctx));
+        // Second call: SAME provider (same embedder instance, call_count now 1, odd) -> vector_b ->
+        // chunk B should rank first. SAME session_ctx, SAME history, SAME stored corpus -- nothing
+        // about the call site changed between the two calls.
+        auto out2 = ae::test_support::run_task_sync<ae::result<ae::ContextContribution>>(
+            provider.on_context(session_ctx, ctx));
+
+        AE_CHECK(out1.has_value() && out2.has_value(),
+                 "setup: both on_context() calls succeed independently");
+        AE_CHECK(out1.has_value() && !out1->messages.empty() &&
+                     out1->messages.front().message_id == "rag:" + *chunk_a,
+                 "setup: the first call's embedding (vector_a) ranks chunk A first, as scripted");
+        AE_CHECK(out2.has_value() && !out2->messages.empty() &&
+                     out2->messages.front().message_id == "rag:" + *chunk_b,
+                 "setup: the second call's embedding (vector_b) ranks chunk B first, as scripted");
+
+        AE_CHECK(out1.has_value() && out2.has_value() && !out1->messages.empty() && !out2->messages.empty() &&
+                     out1->messages.front().message_id != out2->messages.front().message_id,
+                 "claim 3 (disproof-of-the-null, CONFIRMED): two on_context() calls against the "
+                 "IDENTICAL stored corpus and IDENTICAL history produce DIFFERENT "
+                 "ContextContributions, solely because the Embedder itself returned two different "
+                 "vectors for the same input text -- the guarantee 029 §9 G1 makes for Memory "
+                 "(deterministic retrieval over a fixed corpus) does NOT hold here. This is real and "
+                 "reproducible, not a theoretical concern, for any Embedder conformer that is not "
+                 "itself deterministic (a real, network-backed provider makes no such guarantee).");
     }
 
     bool const ok = g_failures == total_failures_before;
