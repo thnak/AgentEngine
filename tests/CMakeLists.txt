@@ -393,6 +393,60 @@ if(WIN32)
   add_test(NAME test_memory_no_authority_laundering COMMAND test_memory_no_authority_laundering)
 endif()
 
+# ---- ADR-063 (retrieval-augmented ContextProvider shape) -- foundation layer, Proposed status ----
+# §2.6b / §3 claim 6: neutralize_forged_provenance_markers() (core/provenance_marker.hpp), the
+# marker-forgery defense generalized out of memory_provider.hpp's own gap-17 fix.
+if(WIN32)
+  add_executable(test_provenance_marker test_provenance_marker.cpp)
+  target_link_libraries(test_provenance_marker PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_provenance_marker COMMAND test_provenance_marker)
+endif()
+
+# §2.3 / §4 finding 7: BruteForceCosineIndex (core/vector_index.hpp) -- ranking correctness, contract
+# rejection, and the deterministic score-desc/id-asc tie-break.
+if(WIN32)
+  add_executable(test_vector_index test_vector_index.cpp)
+  target_link_libraries(test_vector_index PRIVATE agentengine::core agentengine_warnings)
+  add_test(NAME test_vector_index COMMAND test_vector_index)
+endif()
+
+# §2.6a / §3 claim 5: rag_corpus_key()/rag_corpus_mount() (core/corpus_scope.hpp) -- multi-tenant
+# corpus isolation, mirroring test_memory_cross_tenant_isolation.cpp's proven shape.
+if(WIN32)
+  add_executable(test_corpus_scope test_corpus_scope.cpp)
+  target_link_libraries(test_corpus_scope PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_corpus_scope COMMAND test_corpus_scope)
+endif()
+
+# §2.4 / §4 findings 1-2: CorpusChunkRecord (core/corpus_chunk.hpp) -- the shared citation-metadata
+# contract CorpusSource (writer) and VectorRagContextProvider (reader) both build against.
+if(WIN32)
+  add_executable(test_corpus_chunk test_corpus_chunk.cpp)
+  target_link_libraries(test_corpus_chunk PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_corpus_chunk COMMAND test_corpus_chunk)
+endif()
+
+# §2.4/§2.4b, closes §4 findings 2/8/9 for its own call site: DiskCorpusSource + RecursiveChunker
+# (core/corpus_source.hpp) -- folder-mount ingestion, re-mount dedup, chunking.
+if(WIN32)
+  add_executable(test_corpus_source test_corpus_source.cpp)
+  target_link_libraries(test_corpus_source PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_corpus_source COMMAND test_corpus_source)
+endif()
+
+# §2.1/§2.1b/§2.6a/§2.6b, closes the "full claim" gap for §3 claims 5/6: VectorRagContextProvider
+# (core/vector_rag_context_provider.hpp) -- the real ContextProvider conformer.
+if(WIN32)
+  add_executable(test_vector_rag_context_provider test_vector_rag_context_provider.cpp)
+  target_link_libraries(test_vector_rag_context_provider PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_vector_rag_context_provider COMMAND test_vector_rag_context_provider)
+endif()
+
 
 # ---- Milestone 4 Phase H3 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
 # Roadmap exit criterion (029 §9 G1): the default (non-vector) memory retrieval path is
@@ -531,6 +585,23 @@ if(AGENTENGINE_WITH_HTTPS)
     MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
   add_test(NAME test_openrouter_live_e2e COMMAND test_openrouter_live_e2e)
   set_tests_properties(test_openrouter_live_e2e PROPERTIES LABELS "live-network" TIMEOUT 300)
+
+  # ---- ADR-063 §2.5: OpenAIEmbedder (protocol/openai/embedder.hpp) -- offline-provable surface --
+  # request/response construction and embed_batch()'s two synchronous pre-network gates. No server,
+  # runs unconditionally, mirrors test_openai_chat_client_translation.cpp's own offline split.
+  add_executable(test_openai_embedder test_openai_embedder.cpp)
+  target_link_libraries(test_openai_embedder PRIVATE
+    agentengine::core agentengine::provider_http_client agentengine_warnings
+    MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+  add_test(NAME test_openai_embedder COMMAND test_openai_embedder)
+
+  # ---- ADR-063 §3 claim 4's own disproof test: OpenAIEmbedder against REAL api.openrouter.ai -----
+  add_executable(test_openai_embedder_openrouter_live_e2e test_openai_embedder_openrouter_live_e2e.cpp)
+  target_link_libraries(test_openai_embedder_openrouter_live_e2e PRIVATE
+    agentengine::core agentengine::provider_http_client agentengine_warnings
+    MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+  add_test(NAME test_openai_embedder_openrouter_live_e2e COMMAND test_openai_embedder_openrouter_live_e2e)
+  set_tests_properties(test_openai_embedder_openrouter_live_e2e PROPERTIES LABELS "live-network" TIMEOUT 300)
 
   add_executable(test_llamacpp_live_e2e test_llamacpp_live_e2e.cpp)
   target_link_libraries(test_llamacpp_live_e2e PRIVATE
