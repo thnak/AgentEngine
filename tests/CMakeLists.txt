@@ -513,6 +513,14 @@ add_executable(test_net_egress_proxy test_net_egress_proxy.cpp)
 target_link_libraries(test_net_egress_proxy PRIVATE agentengine::net_egress_proxy agentengine_warnings)
 add_test(NAME test_net_egress_proxy COMMAND test_net_egress_proxy)
 
+# ---- ADR-061 §10b claim 4 (decisions/ADR-061-host-provided-inbound-transport.md, Tier 1 prove -------
+# phase): the MCP conformance client's resolve_host/resolve_and_validate two-way SSRF control. Written
+# for real -- tools/mcp_conformance_client.cpp's own top comment referred to this file before it
+# existed.
+add_executable(test_mcp_conformance_transport test_mcp_conformance_transport.cpp)
+target_link_libraries(test_mcp_conformance_transport PRIVATE agentengine::net_egress_proxy agentengine_warnings)
+add_test(NAME test_mcp_conformance_transport COMMAND test_mcp_conformance_transport)
+
 # ---- HTTPS egress TLS client proof (decisions/ADR-013-https-egress-tls-client.md) --------------
 # Only built when AGENTENGINE_WITH_HTTPS is explicitly turned ON (root CMakeLists.txt) -- links
 # directly against mbedTLS (test-only in-memory certificate generation, a loopback TLS test server)

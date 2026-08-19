@@ -892,9 +892,15 @@ current test files directly for what they actually run against today.
   `clientCapabilities.extensions` shape, and **SEP-2243 `x-mcp-header` entirely unimplemented** —
   which 011 §8b itself calls "a mandatory client-side surface... easy to miss".
 
-  **Conformance, client role, spec `2026-07-28`: 42/48 (88%), six scenarios clean.** Full detail,
-  including the tool-version and RFC-mismatch findings, in
-  `docs/research/2026-08-15-mcp-conformance-harness.md`.
+  **Conformance, client role, spec `2026-07-28`: 42/48 (88%), six scenarios clean** at the time this
+  was first written. Full detail, including the tool-version and RFC-mismatch findings, in
+  `docs/research/2026-08-15-mcp-conformance-harness.md`. **Superseded (2026-08-19) by ADR-061 §11's
+  formal Tier 1 prove phase**, run against the full official suite rather than a partial pass:
+  **non-auth 75/75 (100%)**; **auth 3/49 (~6%)** — this driver has no OAuth machinery at all, so **011
+  §10 G2 is NOT met** despite non-auth being complete (G2 names `auth` as one of its four required
+  suites). See the ADR's own §11 for the six claims' individual evidence, including two real teeth
+  experiments (`derive_param_headers` broken -> passing count drops by 30, reverted) and the previously
+  forward-referenced-but-nonexistent `tests/test_mcp_conformance_transport.cpp` written for real.
 
   **Open, and load-bearing for whoever picks this up:**
   - **All 33 findings remain open for Tier 3** (host-fronted HTTP). Research confirmed Tier 3 is the
@@ -902,10 +908,10 @@ current test files directly for what they actually run against today.
   - ~~**`perform_http_exchange` cannot talk to a chunking MCP server.**~~ **Closed (2026-08-19).**
     `perform_http_exchange`/`perform_https_exchange` now dechunk a `Transfer-Encoding: chunked`
     response for real (`net_egress_proxy.cpp`'s `dechunk_response_body_if_needed`, ADR-011's own
-    addendum) — the conformance binary's local decode workaround this line referred to is no longer
-    needed at that call site, though it wasn't itself touched by this fix. Byte cap enforcement during
-    the read loop (claim C8) is unchanged; dechunking runs only after the full buffer is already in
-    hand.
+    addendum). Byte cap enforcement during the read loop (claim C8) is unchanged; dechunking runs only
+    after the full buffer is already in hand. `tools/mcp_conformance_client.cpp`'s own local decode
+    workaround, retired the same day during ADR-061 §11's prove phase (running the real suite exposed
+    it as now redundant AND actively harmful — double-decoding an already-plain body).
   - **011 §10's own gate is unrunnable as written**: `latest` (0.1.16) does not know `2026-07-28`;
     only `0.2.0-alpha.11` does. The RFC requires a percentage "pinned to a conformance release" and
     the only qualifying version is a prerelease.

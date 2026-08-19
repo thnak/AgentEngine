@@ -1737,8 +1737,57 @@ carries an ADR-015 teeth arm (constraint 6).
 
 ## 11. Prove phase
 
-*(not yet run — Tier 1's claims in §10b are what it runs against first)*
+Run 2026-08-19 against the real `@modelcontextprotocol/conformance@0.2.0-alpha.11` CLI (the only
+release that knows spec `2026-07-28`, per §10c), driving the real `agentengine_mcp_conformance_client`
+binary. Every claim below is against an executed experiment, not inspection alone except where §10b
+itself scoped the claim as inspection (claim 5).
+
+Two real defects were found and fixed as a direct byproduct of running this phase, before the numbers
+below were taken as final:
+
+- `perform_http_exchange` did not decode `Transfer-Encoding: chunked` responses — the harness's own
+  mock server sends chunked, so this binary carried a local `decode_chunked()` workaround since it was
+  first written. Fixed at the transport layer instead (`net_egress_proxy.cpp`'s
+  `dechunk_response_body_if_needed`, ADR-011's own 2026-08-19 addendum), which made the local
+  workaround redundant and, briefly, actively harmful (double-decoding an already-plain body). Retired
+  it from this file in the same pass.
+- `tools/mcp_conformance_client.cpp`'s own top comment had referred to a
+  `tests/test_mcp_conformance_transport.cpp` proving claim 4's two-way SSRF control since the file was
+  first written — it did not exist. Written for real as part of this prove phase (below).
+
+| # | Claim | Result | Evidence |
+|---|---|---|---|
+| 1 | Published percentage per suite, pinned to a conformance release | **CORRECT, with a real, load-bearing gap named.** `--suite all --spec-version 2026-07-28`: **78 passed, 46 failed, 1 warning** (125 total). Every one of the 46 failures is an `auth/*` scenario — **non-auth: 75/75 (100%)**; **auth: 3/49 (~6%)**, and the 3 that pass (`resource-mismatch`, 2 of `authorization-server-migration`) do so on request-shape checks reachable before any token exchange, not because auth itself works. `McpClient`/this driver implement **no OAuth machinery at all** (confirmed by inspection: zero matches for `oauth`/`bearer`/`authorization` in either file) — every auth scenario fails at the very first `tools/list`, HTTP 401 "Missing Authorization header". This is real, not a driver bug to fix casually: **RFC 011 §10's G2 gate names `auth` as one of the four required suites, so G2 is NOT met as of this run.** The CLI's own `--suite core`/`--suite extensions`/`--suite backcompat` (run individually, matching §10b's literal wording) returned incomplete or empty results at this alpha version — `extensions`/`backcompat` returned 0/0/0, `core` returned a different, overlapping scenario set than `all` — a real tool-immaturity finding, not silently smoothed over; `--suite all` is the one complete, authoritative run and is what these numbers are taken from. |
+| 2 | Every counted check is engine-attributable (no fixture in the loop) | **CORRECT, teeth fired.** Broke `derive_param_headers()` (`client.hpp`) to return `{}` unconditionally — `http-custom-headers` dropped from 35 passed/0 failed to **5 passed/30 failed**, total dropped from 78 to 48. Reverted; baseline (78/46/1) reconfirmed after rebuild. (The claim row's own suggested example, `isError` surfacing, was tried FIRST and produced no observable change — no scenario in this run's reachable set currently depends on it — so `derive_param_headers` was used instead; recorded honestly rather than silently swapped without comment.) |
+| 3 | Fails loudly rather than defaulting to a guessed endpoint | **CORRECT.** No argv: `usage: ... <server-url>`, exit 2. Never attempts a connection. (The scenario env var's own absence does not gate behavior — it is informational/diagnostic only, per the code's own comment — so the claim's actual subject, the endpoint, was what was tested.) |
+| 4 | Loopback requires an explicit egress address policy; the SSRF block is real | **CORRECT, and the missing test now exists.** New `tests/test_mcp_conformance_transport.cpp`: `resolve_host(127.0.0.1, ...)` (this binary's real, deliberate choice, ADR-016) succeeds; `resolve_and_validate(127.0.0.1, ...)` (the guest-path resolver, ADR-011) fails with `net.address_blocked` specifically. Both halves pass. Registered in `tests/CMakeLists.txt`, part of the ordinary suite from now on. |
+| 5 | `RequestSender` is the only inbound seam, no ambient state | **CORRECT (inspection, as §10b itself scoped this claim).** `McpClient` has exactly two constructors, both taking a sender callable (`client.hpp:347,350`); the ONLY two call sites that invoke a sender are `client.hpp:612-613`, both gated by the constructor-injected member. No socket/http/connect call anywhere else in the file. |
+| 6 | No credential/secret reaches stdout/stderr over a full suite run | **CORRECT, teeth fired, with a scope note.** Temporarily planted a distinctive marker (`MCPTIER1-CANARY-9f61ac2e`) as a tool-call string argument (env-var-gated, reverted after). With `AE_MCP_TRACE` unset (the real default/gate posture): **zero occurrences** in this binary's own captured `stdout.txt`/`stderr.txt` across a scenario that actually carries the marker over the wire (`http-custom-headers`). With `AE_MCP_TRACE=1` (the one intentional, opt-in diagnostic path): the marker **does** appear in `stderr.txt` — proving the scan itself is non-vacuous, not silently blind to a real occurrence. Scope note: the harness's own saved `checks.json` DOES contain the marker regardless of trace — that file is the harness's OWN server-side record (it runs the mock server and necessarily observes every argument to verify SEP-2243 header derivation), not an artifact this binary produces, so it is outside claim 6's actual subject ("reaches stdout/stderr"); named explicitly rather than silently excluded. Currently this finding is close to vacuous in the other direction too — no auth flow in this driver ever completes (claim 1), so no REAL credential material exists anywhere in its data flow yet to leak; the marker experiment proves the MECHANISM works, not that a real secret was ever at risk this run. Citation correction: the claim row cites "ADR-015's precedent" — ADR-015 (`decisions/ADR-015-shellrunner-grammar-parser-fuzzing.md`) contains no canary-scan material; the real precedent is `tests/test_rt_secret_hygiene_canary_scan.cpp` (ADR-043/018 §7 G2). Noted here rather than silently corrected without comment. |
+
+**Net effect on §10's gates**: `sender_with_headers_ + perform_http_exchange` (Tier 1's actual, minimal
+surface) is proven — claims 2-6 all hold, with claim 2's real teeth and claim 4's real test now
+existing where before there was only a forward-reference to one. **Claim 1 is where this phase earns
+its keep**: it does NOT let this ADR claim RFC 011 §10 G2 is met. Non-auth conformance is complete and
+real (75/75); auth conformance is entirely unbuilt (3/49, and those 3 are coincidental). Closing G2
+needs OAuth client machinery this ADR never scoped Tier 1 to build — a real, named follow-on, not
+folded into this ADR's own decision.
 
 ## 12. Decision
 
-*(not yet judged — Tier 1 must be proven first; Tier 3 needs the 33 open findings answered)*
+**Tier 1 is proven** (§11, all six §10b claims CORRECT) but **not yet Judged** — that sign-off is the
+project owner's, not the ADR's own author's, per `decisions/README.md`'s governance rule. What Tier 1
+concretely delivers: `agentengine_mcp_conformance_client` genuinely drives `McpClient` over real
+outbound HTTP against the official conformance harness, non-auth conformance is complete (75/75), the
+SSRF boundary between the operator-supplied endpoint and a guest-supplied one is real and now tested,
+and the transport surface is exactly as narrow as claimed (a `RequestSender`, nothing else).
+
+**What Tier 1 does NOT deliver, named so a sign-off decision is made with full information**:
+- **011 §10 G2 is not met.** `auth` is one of G2's four required suites and this driver has zero OAuth
+  support. Closing it is real, scoped follow-on work (an MCP client-side OAuth flow), not a Tier 1 gap
+  to paper over.
+- **Tier 3 (host-fronted HTTP server role) is untouched.** All 33 findings against §8 remain open;
+  §10.4's own research confirmed Tier 3 is the *only* path to G1.
+- **§10.2's admissibility policy declaration surface** is still deferred to 007 §5's rule language,
+  which this project has repeatedly named as future work.
+
+*(Tier 3 needs the 33 open findings answered before it can be proven at all.)*
