@@ -885,7 +885,9 @@ public:
         // written by apply_dispatch_authority() at the top of every real entry point (start_run(),
         // resolve_interaction()) before this is ever reached.
         CapabilitySet const& held      = effect_context_.capabilities ? *effect_context_.capabilities : empty_caps;
-        ApprovalDecider const one_shot_approve = [](std::string_view, std::string const&) { return true; };
+        ApprovalDecider const one_shot_approve = [](Principal const&, std::string_view, std::string const&) {
+            return true;
+        };
 
         std::vector<ToolResult> results;
         results.reserve(pending_calls.size());
@@ -1497,7 +1499,9 @@ private:
         // written by apply_dispatch_authority() at the top of every real entry point (start_run(),
         // resolve_interaction()) before this is ever reached.
         CapabilitySet const& held      = effect_context_.capabilities ? *effect_context_.capabilities : empty_caps;
-        ApprovalDecider const one_shot_approve = [](std::string_view, std::string const&) { return true; };
+        ApprovalDecider const one_shot_approve = [](Principal const&, std::string_view, std::string const&) {
+            return true;
+        };
 
         // Rebuilt directly from the STORED record, never from `pending_calls`' own
         // `arguments_json` -- see this function's own top comment for why.

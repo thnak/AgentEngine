@@ -296,7 +296,15 @@ struct IdempotencyKey {
 // canonical JSON of the exact arguments about to execute (006 §4: "approval is bound to the exact
 // call").
 // ae-naming-lint: allow ApprovalDecider — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
-using ApprovalDecider = std::function<bool(std::string_view tool_name, std::string const& canonical_args_json)>;
+//
+// ADR-061 §46: `caller` is the identity `EffectContext::principal` already carries at both call
+// sites below -- the SAME identity `ToolInvocationAudit` already records, not a second,
+// independently-suppliable value. Lets a decider branch on WHO is asking (006 §4/007 §5's own
+// "principal" axis), which the prior two-argument shape made structurally impossible; 007 §5's
+// policy engine still does not exist, so nothing here derives a decision from `caller` -- a decider
+// that ignores it behaves exactly as before.
+using ApprovalDecider = std::function<bool(Principal const& caller, std::string_view tool_name,
+                                            std::string const& canonical_args_json)>;
 
 // Step 10's minimal audit record (016/013's full span shape is out of scope for M2, see file-top
 // comment). Phase F1 adds the call's own idempotency key -- computed unconditionally (it costs one
@@ -457,7 +465,7 @@ namespace tool_pipeline_detail {
     bool const requires_approval = tool_call_requires_approval(*tool, request.provenance);
     if (requires_approval) {
         std::string canonical_args = json::dump(request.arguments);
-        bool approved = approve && approve(request.tool_name, canonical_args);
+        bool approved = approve && approve(ctx.principal, request.tool_name, canonical_args);
         if (!approved) {
             for (auto const& b : bound) b.revoke();  // never bind authority we then refuse to use
             error e{failure_class::policy, "approval required and not granted", "tool.approval_denied"};
@@ -615,7 +623,7 @@ using BackgroundTaskCompletion = std::function<void(ToolResult, ToolInvocationAu
     // -- step 5: approve ------------------------------------------------------------------------------
     if (tool->approval != approval_mode::never_require) {
         std::string canonical_args = json::dump(request.arguments);
-        bool approved = approve && approve(request.tool_name, canonical_args);
+        bool approved = approve && approve(ctx.principal, request.tool_name, canonical_args);
         if (!approved) {
             for (auto const& b : bound) b.revoke();
             error e{failure_class::policy, "approval required and not granted", "tool.approval_denied"};
@@ -636,6 +644,17 @@ using BackgroundTaskCompletion = std::function<void(ToolResult, ToolInvocationAu
         audit.call_id   = request.call_id;
         audit.tool_name = request.tool_name;
         audit.duration  = std::chrono::steady_clock::now() - started;
+        // ADR-061 §7 R26 / 007 §8, found not fully applied here while proving §46: `invoke_tool()`'s
+        // own `finish()` lambda has stamped `ToolInvocationAudit` with `idempotency_key` and the
+        // caller's identity since R26, but THIS function's own audit construction was never updated
+        // to match -- a backgrounded call's completion record carried no identity and no idempotency
+        // key at all, unattributable in exactly the way R26's own comment on `EffectContext::principal`
+        // describes. Same derivation `invoke_tool()` uses, from the same `ctx` this closure already
+        // captured by value; not a second, independently-derived value that could disagree with it.
+        audit.idempotency_key    = derive_idempotency_key(ctx, request.call_index, request.arguments);
+        audit.principal_id       = ctx.principal.id;
+        audit.principal_tenant_id = ctx.principal.tenant_id;
+        audit.principal_on_behalf_of = ctx.principal.on_behalf_of;
 
         if (!invoke_result) {
             error const& e = invoke_result.error();

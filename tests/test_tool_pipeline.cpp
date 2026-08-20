@@ -203,7 +203,8 @@ int main() {
         auto ctx = make_ctx();
         ToolCallRequest req{"call-5", "gated_action", *json::parse(R"({"action":"go"})"), false};
         bool decider_called = false;
-        agentengine::ApprovalDecider deny = [&](std::string_view, std::string const&) {
+        agentengine::ApprovalDecider deny = [&](agentengine::Principal const&, std::string_view,
+                                                  std::string const&) {
             decider_called = true;
             return false;
         };
@@ -218,7 +219,8 @@ int main() {
         auto ctx = make_ctx();
         ToolCallRequest req{"call-6", "gated_action", *json::parse(R"({"action":"go"})"), false};
         std::string seen_args;
-        agentengine::ApprovalDecider allow = [&](std::string_view tool_name, std::string const& args_json) {
+        agentengine::ApprovalDecider allow = [&](agentengine::Principal const&, std::string_view tool_name,
+                                                   std::string const& args_json) {
             check(tool_name == "gated_action", "decider sees the correct tool name");
             seen_args = args_json;
             return true;
@@ -254,7 +256,8 @@ int main() {
                               .arguments = *json::parse(R"({"note":"leaked but harmless"})"),
                               .provenance = call_provenance::text_derived};
         bool decider_called = false;
-        agentengine::ApprovalDecider tripwire = [&](std::string_view, std::string const&) {
+        agentengine::ApprovalDecider tripwire = [&](agentengine::Principal const&, std::string_view,
+                                                       std::string const&) {
             decider_called = true;
             return false;  // if this ever runs, the call MUST still fail -- proving auto-declassify
                             // isn't secretly routing through a permissive decider
@@ -296,7 +299,8 @@ int main() {
               "-- the override holds");
 
         bool decider_called = false;
-        agentengine::ApprovalDecider deny = [&](std::string_view, std::string const&) {
+        agentengine::ApprovalDecider deny = [&](agentengine::Principal const&, std::string_view,
+                                                  std::string const&) {
             decider_called = true;
             return false;
         };
@@ -306,7 +310,8 @@ int main() {
               "the gate routes through the real approval step, not a separate silent-deny path) and "
               "a 'no' from it still blocks the call");
 
-        agentengine::ApprovalDecider allow = [](std::string_view, std::string const&) { return true; };
+        agentengine::ApprovalDecider allow = [](agentengine::Principal const&, std::string_view,
+                                                  std::string const&) { return true; };
         auto result_approved = invoke_tool(table, held, req, ctx, allow);
         check(!result_approved.is_error,
               "ADR-023 P2-T2: an EXPLICIT human/policy approval still lets a text_derived call to a "

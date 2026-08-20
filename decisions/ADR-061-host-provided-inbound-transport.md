@@ -47,10 +47,14 @@ the bridge through for real (§38, commit `3cc1e2c`, 205/205 green), `McpServer:
 own per-request `CapabilityGrant` (§39-§41, seven design/red-team rounds, commit `394e3f6`, 206/206
 green) — the construction-time-only `held_` gap R16/R27 named — and both bearer-credential bridges now
 share one clock-conversion primitive (§42-§44, commit `6b18907`, 207/207 green). All of §20-§44 is
-Judged as a single sign-off; `McpServer`'s own per-call threading beyond the capability grant,
-`approve_`/`A2aServer::context_id_`/`RunEventProjector::thread_id_` (R27's other three), and a
-reference host-side example (ADR-039 §3e) remain unbuilt, named residuals for a future design round,
-not in scope so far.** §17 (sixth iteration) failed its red-team
+Judged as a single sign-off (§45). **R27's `approve_` finding is separately implemented and proven**
+(§46-§47, not yet committed): `ApprovalDecider` now carries the calling `Principal`, closing the
+construction-time principal-blindness R27 named, plus a real, previously-unexamined `background_task()`
+audit-attribution gap found and fixed as a byproduct (§47.2) — 208/208 green, awaiting Judge.
+`McpServer`'s own per-call threading beyond the capability grant, `A2aServer::context_id_`/
+`RunEventProjector::thread_id_` (R27's remaining two), and a reference host-side example (ADR-039 §3e)
+remain unbuilt, named residuals for a future design round, not in scope so far.** §17 (sixth iteration)
+failed its red-team
 pass (§18) — the fourth consecutive iteration to do so (§8, §13, §15, §17). Per §18c's recommendation,
 §19 completed a full, verified, single-pass enumeration of every `capabilities_`/`principal_`/
 `effect_context_` read/write in `agent_session.hpp` before writing a further fix, finding **eight
@@ -5828,3 +5832,276 @@ policy engine, R27's other three construction-time authorities (`approve_`,
 `A2aServer::context_id_`, `RunEventProjector::thread_id_`), and ADR-039 §3e's reference host-side
 example — are real, understood gaps, not silently dropped scope. None of those residuals are closed
 by this sign-off; each remains its own separate, unbuilt, future design question.
+
+## 46. Design iteration — a principal-aware `ApprovalDecider` closes R27's `approve_` finding (2026-08-20)
+
+### 46.0 Scope, stated precisely
+
+R27 (§7) named three more construction-time authorities beyond `held_`, each "a genuinely different
+authority TYPE with its own design questions" (§39.0): `ApprovalDecider approve_`
+(`protocol/mcp/server.hpp:372`), `A2aServer::context_id_`, and `RunEventProjector::thread_id_`. This
+section takes `approve_` only. `context_id_`/`thread_id_` are conversation-grouping labels, not
+security gates — a different flavor of problem (multi-tenant history merging, not authorization) —
+and stay out of scope here exactly as §39.0 declined to conflate `held_` with them.
+
+**Not the three-state decider.** `protocol/mcp/server.hpp:51-53`'s own file-top comment names a
+*separate*, already-known `ApprovalDecider` gap: it is binary (allow/deny) today, not a three-state
+decider that could produce MRTR's `"input_required"`. That is a different axis (what values the
+decision can take) from R27's finding (what inputs the decision function can see). This section
+changes only the latter; the three-state extension remains exactly as unbuilt and out of scope as it
+was before this section.
+
+### 46.1 The finding, restated precisely
+
+`ApprovalDecider` (`core/tool_pipeline.hpp:299`) is `std::function<bool(std::string_view tool_name,
+std::string const& canonical_args_json)>` — it has no parameter through which it could ever see WHO
+is asking. 006 §4 lists `principal` as one of the axes a real approval policy needs (`{tool,
+capability, path, principal, taint}` — "auto-approve reads under a mounted workspace... always
+require approval for network egress to a host not in the allowlist" is one example row; a
+principal-scoped rule is the same shape). 007 §5's declarative policy engine does not exist and this
+section does not build it (unchanged residual, same discipline `CapabilityGrant`/`RequestAuthority`
+already established at §31.2/§39.5: caller-supplied, never engine-derived) — but today, even a host
+that hand-writes its OWN principal-aware decider in C++ has no way to, because the function type
+itself carries no identity parameter. That is a strictly narrower, purely mechanical gap: not "the
+policy engine is missing" (already known, already out of scope everywhere in this ADR) but "the seam
+a policy engine — or a hand-written stand-in — would need doesn't exist yet."
+
+### 46.2 Why this is safe to wire from `ctx.principal`, not a new authority source
+
+Both call sites that invoke `approve(...)` (`tool_pipeline.hpp:460` inside `invoke_tool()`, `:618`
+inside `background_task()`) already have `EffectContext& ctx`/`EffectContext ctx` in scope, and
+`ctx.principal` is already the SAME identity ADR-061 §7 R26 wired into `ToolInvocationAudit` at this
+exact call site — the identity the call actually ran under, established by the session/dispatcher
+before `invoke_tool`/`background_task` is ever called, never derived from the request body or model
+output (I3). Passing `ctx.principal` to `approve(...)` therefore introduces **no new authority
+channel** — it hands the decider a read of an identity the pipeline already trusts and already
+audits, not a second, independently-suppliable value that could disagree with it (the exact
+two-sources-of-truth shape §39.1/§40.1 had to design around for `CapabilityGrant`). There is only one
+`ctx.principal` per call, set once, before either approval call site runs; there is nothing for a
+decider-supplied identity to disagree WITH.
+
+**Caution named, not a defect this section introduces**: a decider that branches on `Principal` is
+the IMPLEMENTER's own code from here on, same as any capability or policy logic a host writes. An
+unauthenticated caller reaches this pipeline as `Principal{}` (empty `id`) on paths that don't
+establish one (018 §1's common embedded case) — a decider that mistakenly treats an empty principal
+as "trusted" would be a bug in that decider, not in this mechanism, exactly the same division of
+responsibility `CapabilityGrant`'s caller-supplied `capabilities` already has (§39.5: "capabilities
+stays required, caller-supplied... no legitimate way to decide what a default should mean"). Worth
+stating for whoever writes the first real principal-aware decider, not a residual to fix here.
+
+### 46.3 The change
+
+`ApprovalDecider` widens from `std::function<bool(std::string_view, std::string const&)>` to
+`std::function<bool(Principal const&, std::string_view, std::string const&)>` — `Principal` first,
+matching `EffectContext::principal`'s own position as the first identity field convention elsewhere
+in this codebase (e.g. `ToolInvocationAudit`'s `principal_id`/`principal_tenant_id` block immediately
+follows `ok`/`error_code`, not appended last). Every existing decider that ignores identity keeps
+working unchanged by accepting-and-discarding the new leading parameter — this is a pure signature
+widening, not a behavior change for any decider that does not read the new argument.
+
+```cpp
+// core/tool_pipeline.hpp
+using ApprovalDecider =
+    std::function<bool(Principal const& caller, std::string_view tool_name,
+                        std::string const& canonical_args_json)>;
+```
+
+Both call sites pass `ctx.principal` (already in scope, no new parameter threading required):
+
+```cpp
+// invoke_tool(), tool_pipeline.hpp:460
+bool approved = approve && approve(ctx.principal, request.tool_name, canonical_args);
+// background_task(), tool_pipeline.hpp:618 -- identical shape
+bool approved = approve && approve(ctx.principal, request.tool_name, canonical_args);
+```
+
+`protocol/mcp/server.hpp` needs **no code change at all**: `McpServer` stores `approve_` by type, not
+by lambda literal, and already threads `ctx.principal = caller` before calling `invoke_tool`/
+`background_task` (§39.3) — the widened signature reaches `McpServer`'s per-request `caller` for
+free, through the exact same `ctx` plumbing §39 already built for capabilities.
+
+### 46.4 Full enumeration of every construction-time site this signature change touches
+
+Following §19's own precedent (a verified, single-pass enumeration before writing a fix, not a
+guess) — every `ApprovalDecider` value constructed with the OLD two-argument lambda shape.
+
+**Correction (red-team round, §46.7): the original pass here grepped for the string
+`ApprovalDecider` across `include/`, `src/`, `tests/`, re-verifying each hit by reading the site
+directly — a method that, by construction, cannot find a call site that passes `nullptr`/`{}`
+positionally into `invoke_tool()`/`background_task()` without ever spelling the type name.** A
+second pass, searching CALL SITES of `invoke_tool`/`background_task`/`start_background_task` rather
+than the type name, found seven more test files doing exactly that: `test_effect_reexecution.cpp`,
+`test_idempotency_key.cpp`, `test_tool_pipeline_capability_reuse.cpp`, `test_tool_table_scoping.cpp`,
+`test_on_demand_skill_mount.cpp`, `test_rt_agent_session_tier3_authority.cpp`, and
+`test_rt_agent_session_schedule_wakeup_tool.cpp` — none contain the string "ApprovalDecider" at all,
+so none appeared in the original 31-file sweep. Every one of them passes `nullptr` or `{}`, which
+constructs an empty `std::function` under EITHER signature — so, as with the sites below, no edit is
+needed — but the ORIGINAL claim that grepping the type name constitutes "full enumeration" was false;
+it happened to reach the right conclusion by the accident that this codebase always spells the type
+name when writing a real decider lambda, not because the method was sound. Corrected here rather than
+left standing.
+
+**Production (3 files, 6 sites)**:
+- `core/tool_pipeline.hpp:299` (type alias), `:460`/`:618` (call sites) — this section's own edits.
+- `rt/agent_session.hpp:888` and `:1500` — two identical `ApprovalDecider const one_shot_approve =
+  [](std::string_view, std::string const&) { return true; };` lambdas (ADR-029's resume-with-approval
+  path) — become `[](Principal const&, std::string_view, std::string const&) { return true; }`,
+  behavior unchanged (still always approves, now simply also accepting an identity it ignores).
+- `src/backends/native_jail/tool_bridge.hpp:72` — `bundled_approval`, 010 §10 Q2's "bundled, not
+  per-call" decision — becomes `[approved = config.approved](Principal const&, std::string_view,
+  std::string const&) { return approved; }`, behavior unchanged (the bundled decision was never
+  principal-scoped and stays that way; this section does not change `ToolBridgeConfig`).
+
+**No change needed** (already default-constructing `ApprovalDecider{}`, an empty `std::function`
+whose type parameter list updates automatically with no lambda body to touch):
+`core/agent_registry.hpp:543`, and every `mcp::McpServer` test construction (`test_mcp_server.cpp`,
+`test_mcp_client.cpp`, `test_mcp_tasks_extension.cpp`, `test_codeact_tool_union.cpp`,
+`test_task_principal_binding.cpp`, `test_capability_grant_bridge.cpp`, `test_mcp_capability_grant.cpp`,
+`test_agent_session_tool_call_progress.cpp`, `test_wasm_tool_bridge.cpp`'s three `ApprovalDecider
+const approve;` default-constructed members).
+
+**Tests with real 2-argument lambdas (2 files, 7 sites)**:
+- `tests/test_memory_no_authority_laundering.cpp:157`/`:167` — `denies`/`approves`.
+- `tests/test_tool_pipeline.cpp:206`/`:221`/`:257`/`:299`/`:309` — `deny`/`allow`/`tripwire`/`deny`/
+  `allow`; `:221`'s `allow` lambda already captures and inspects `tool_name`/`args_json` by name (not
+  just `[&]`-and-ignore) — worth reading at prove time rather than pure find-replace, though the risk
+  is lower than a same-type-adjacent-parameter mistake would be: `Principal`, `string_view`, and
+  `string const&` are three distinct types, so inserting the new leading parameter in the wrong spot
+  would fail to COMPILE, not silently misbind (red-team round, §46.7).
+
+No other file constructs an `ApprovalDecider` with a real lambda body; every remaining match from the
+initial grep sweep (31 files) was either a doc/planning file (never compiled), a comment, a type
+reference with no lambda, or `ApprovalDecider{}` default construction; the seven `nullptr`/`{}`
+call sites named above are covered by the second, call-site-based pass, not the type-name grep.
+
+### 46.5 Falsifiable claims
+
+| # | Claim | Test | Control |
+|---|---|---|---|
+| 1 | A decider that reads its `Principal` argument sees the SAME identity `ToolInvocationAudit::principal_id`/`principal_tenant_id` records for the same call | A capturing decider stashes the `Principal` it was called with; compare against `audit_out->principal_id`/`principal_tenant_id` from the same `invoke_tool()` call | Two calls with different `ctx.principal` values produce two different observed identities, not one cached/stale value |
+| 2 | `McpServer::dispatch()`'s per-request `caller` reaches a principal-aware decider with NO code change to `server.hpp` | An `ApprovalDecider` that denies unless `caller.tenant_id == "trusted-tenant"`, supplied at `McpServer` construction; call `dispatch()` with two different `caller` tenants | The same decider, same server instance, denies one tenant and allows the other — proving the identity is truly per-call, not fixed at construction despite `approve_` itself being a construction-time member |
+| 3 | Every decider updated per §46.4 behaves IDENTICALLY to its pre-change behavior when it ignores the new parameter | Full existing test suite, re-run at prove time, with no assertion changes anywhere outside the files §46.4 names — only lambda signatures widened | Zero behavioral regressions — this is a pure signature widening; the exact green count is recorded at prove time (§37.2/§44.2's own pattern), not hardcoded here where it would go stale |
+| 4 | `background_task()`'s `approve(...)` call sees the correct `Principal` for the call it is deciding, sourced from `ctx.principal` on the CALLING thread before `.detach()` — not a value read inside the detached worker, and not stale/default | A capturing decider on a backgrounded call records `Principal`; assert it matches the `caller` the background call was started with | Control: a synchronous call with a different `caller` on the same server records a different `Principal`; `approve()` itself never needs to be thread-safe against the worker, since it never runs there |
+
+### 46.6 What this section does not attempt
+
+- **007 §5's policy engine.** Still doesn't exist. This section makes principal-aware deciders
+  *possible to write*, not automatic — no default decider this codebase ships branches on principal.
+- **The three-state (`input_required`) `ApprovalDecider`.** §46.0's own scoping; unchanged, unbuilt,
+  named residual, same as before this section.
+- **`A2aServer::context_id_` and `RunEventProjector::thread_id_`.** R27's other two remaining
+  authorities, still untouched — different problem shape (conversation-grouping identity, not an
+  authorization gate), each its own future design question.
+- **Changing `AgentSession::approval_decider_`'s OWN construction-time-per-session lifetime.** This
+  section widens what a decider CAN see, not when/how one is installed — `set_approval_decider()`
+  (`rt/agent_session.hpp:606`) stays session-scoped exactly as it is today; a caller who wants
+  genuinely per-request decider SWAPPING (not just per-request identity visibility within one
+  decider) is asking a different, unaddressed question this section does not answer.
+
+### 46.7 Red-team round — against §46, run hostile
+
+**No FATAL findings.** The core mechanism was checked and confirmed correct against real, current
+source: `ctx.principal = caller` is set (`protocol/mcp/server.hpp:370` sync path, `:429` background
+path) before `invoke_tool`/`background_task` run; `background_task()`'s `approve(...)` call
+(`tool_pipeline.hpp:618`) executes on the CALLING thread before `ctx` is moved into the detached
+closure at `:627` — no read-after-move, no stale-principal hazard; `AgentSession`'s own three
+`invoke_tool()` call sites read `effect_context_.principal`, which `apply_dispatch_authority()`
+(`rt/agent_session.hpp:1238-1259`) already documents as rewritten immediately after admission passes,
+under `session_mutex_` (I1) serialization — pre-existing §20.3/§26.1 machinery this section reuses,
+not re-derives. No confused-deputy or authority-widening risk: `ctx.principal` is a single value read,
+not a second, independently-suppliable one that could disagree with the pipeline's own trusted
+identity (unlike `CapabilityGrant`'s `principal`, which §39.1 had to design an agreement check for
+precisely because it WAS independently suppliable).
+
+**MUST-FIX (fixed in place, §46.4)**: the original enumeration's method — grep for the string
+`ApprovalDecider` — cannot find a call site that passes `nullptr`/`{}` into `invoke_tool()`/
+`background_task()` without spelling the type name. Seven test files do exactly that
+(`test_effect_reexecution.cpp`, `test_idempotency_key.cpp`, `test_tool_pipeline_capability_reuse.cpp`,
+`test_tool_table_scoping.cpp`, `test_on_demand_skill_mount.cpp`,
+`test_rt_agent_session_tier3_authority.cpp`, `test_rt_agent_session_schedule_wakeup_tool.cpp`) and
+were absent from the original 31-file sweep entirely. The section's BOTTOM-LINE conclusion (no other
+real lambda site exists) was still true — these seven need no edits either, `nullptr`/`{}` construct
+an empty `std::function` under either signature — but "full enumeration" was not established by the
+method used; it happened to be right. §46.4 now names these seven and the corrected method.
+
+**NIT (fixed in place)**: claim 3 cited a hardcoded "207 tests" that would go stale the moment another
+session's work changes the suite size — reworded to defer the exact count to prove time, matching
+§37.2/§44.2's own established pattern of recording the count when it is actually measured, not
+predicting it in design text. Claim 4's title implied `background_task()`'s decider call might need
+to be thread-safe against the detached worker; reworded to state plainly that `approve()` never runs
+on that thread at all. §46.4's caution on `test_tool_pipeline.cpp:221` overstated its own risk
+(distinct-typed parameters fail to compile on a positional mistake, they do not silently misbind);
+softened to say so.
+
+### 46.8 Status
+
+Design converges clean after one red-team round — no FATAL, one MUST-FIX (a documentation-accuracy
+correction to the enumeration's own claimed method, not a code defect: the enumeration's CONCLUSION
+was already right), both fixed in place. Per this project's `design → red-team → prove → judge`
+discipline, this closes design; prove is next.
+
+## 47. Prove phase — §46's principal-aware `ApprovalDecider` implemented and proven (2026-08-20)
+
+`ApprovalDecider` (`core/tool_pipeline.hpp:299`) is now `std::function<bool(Principal const& caller,
+std::string_view tool_name, std::string const& canonical_args_json)>`, exactly as §46.3 specified.
+Both call sites (`invoke_tool()`, `background_task()`) pass `ctx.principal`. Every site §46.4's
+(corrected) enumeration named was updated: the two `one_shot_approve` lambdas
+(`rt/agent_session.hpp`), `native_jail::bridge_tool_call`'s `bundled_approval`
+(`src/backends/native_jail/tool_bridge.hpp`), and the seven real 2-argument test lambdas across
+`tests/test_memory_no_authority_laundering.cpp` (2) and `tests/test_tool_pipeline.cpp` (5) — including
+`:221`'s `allow` lambda, hand-checked as flagged: its three parameters are distinct types, so the
+insertion could only ever have failed to compile, not silently misbound, and it compiled and passed
+unchanged. `protocol/mcp/server.hpp` needed no edit at all, confirmed by claim 2 below. Every
+default-constructed `ApprovalDecider{}`/`nullptr`/`{}` site named in §46.4 needed no edit either,
+including the seven call sites the red-team round's own second pass found.
+
+### 47.1 Real, compiled, passing positive controls
+
+`tests/test_approval_decider_principal.cpp` (new, 12 checks, all passing) proves §46.5's claims 1, 2,
+and 4 (claim 3 is the full-suite regression run below, per its own table row):
+
+- **Claim 1**: a capturing decider's observed `Principal` is byte-identical to the SAME call's
+  `ToolInvocationAudit::principal_id`/`principal_tenant_id`; a second call with a different caller
+  produces a different observed identity matching ITS OWN audit record.
+- **Claim 2**: a tenant-conditional decider, supplied once at `McpServer` construction, denies one
+  tenant and allows another on the SAME server instance across two `dispatch()` calls — zero code
+  changes to `server.hpp` needed to make this possible, exactly as §46.3 claimed.
+- **Claim 4**: `background_task()`'s `approve(...)` call is confirmed to run on the CALLING thread
+  (captured via `std::this_thread::get_id()`, compared before vs. inside the decider), observes the
+  correct `Principal`, and the eventual worker-thread audit record carries the same identity.
+
+### 47.2 A real defect found and fixed as a byproduct, not part of §46's own design scope
+
+Claim 4's control assertion (the worker-thread audit record matches the decider-observed identity)
+failed on first run — not a test bug, and not a regression from this section's own change.
+`background_task()`'s own `ToolInvocationAudit` construction (`tool_pipeline.hpp`, inside the detached
+worker lambda) was **never updated to match `invoke_tool()`'s `finish()` lambda** when ADR-061 §7 R26
+added `idempotency_key`/`principal_id`/`principal_tenant_id`/`principal_on_behalf_of` to that struct —
+a backgrounded call's completion record carried NEITHER identity NOR its idempotency key, silently,
+since R26 landed. This is exactly the unattributable-effect gap R26's own comment on the struct warns
+against (007 §8, I4), just on the path R26's own implementation missed. Fixed in the same worker
+lambda, deriving both from the SAME captured `ctx`/`request` `invoke_tool()` already uses — not a
+second, independently-derived value. Named here rather than silently folded into §46's own claims
+table, since it is a different finding than what this section set out to prove.
+
+### 47.3 Build and test evidence
+
+Full workspace rebuild (`ninja -k 0`, MSVC 14.51.36231/SDK 10.0.26100.0): clean except the same two
+pre-existing, unrelated `protocol/openai/embedder.hpp` failures named since §30.5 (confirmed untouched
+by `git status`). Full `ctest -j4` run: **208/208 passing** (one apparent failure,
+`test_rt_spawn_cost_budget`, on the first parallel run reproduced as a scheduling flake unrelated to
+this section's diff — passes both standalone and on an immediate full re-run; not touched by this
+section's changes per `git status`), zero real regressions.
+
+### 47.4 Residuals unchanged
+
+007 §5's policy engine still does not exist — no decider this codebase ships branches on `Principal`;
+this section only makes that possible to write. `A2aServer::context_id_` and
+`RunEventProjector::thread_id_` (R27's remaining two) are untouched. The three-state
+(`input_required`) `ApprovalDecider` extension remains unbuilt, as before this section.
+
+### 47.5 Status
+
+Real, compiled, tested. Per this project's `design → red-team → prove → judge` discipline, this closes
+prove for R27's `approve_` finding; judge (project owner sign-off) is next.
+

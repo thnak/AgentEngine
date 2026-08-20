@@ -60,6 +60,7 @@ int main() {
     namespace json = agentengine::json;
     using agentengine::ApprovalDecider;
     using agentengine::invoke_tool;
+    using agentengine::Principal;
 
     // --- Retrieved memory is tainted regardless of provenance -- 029 §6's own "no MemoryItem,
     // regardless of MemorySource, may satisfy a policy predicate that requires a user assertion" --
@@ -151,10 +152,12 @@ int main() {
         agentengine::EffectContext ctx{};
 
         // A real host decider that never inspects memory/session state -- it CAN'T, its own
-        // signature is (tool_name, canonical_args_json) -> bool, nothing memory-shaped is
-        // reachable from it at all. This one represents "no real confirmation happened" and
-        // returns false.
-        ApprovalDecider denies = [](std::string_view, std::string const&) { return false; };
+        // signature is (caller, tool_name, canonical_args_json) -> bool (ADR-061 §46 widened it to
+        // also carry the calling Principal, but nothing memory-shaped is reachable from it at all).
+        // This one represents "no real confirmation happened" and returns false.
+        ApprovalDecider denies = [](Principal const&, std::string_view, std::string const&) {
+            return false;
+        };
         auto denied_result = invoke_tool(table, held, req, ctx, denies);
         check(denied_result.is_error,
               "G3(gate)-R3: the hostile content smuggled into the tool's own arguments does NOT "
@@ -164,7 +167,9 @@ int main() {
         // Positive control: a decider that DOES say yes (representing a genuine, SEPARATE
         // operator confirmation -- never derived from the smuggled text itself) succeeds normally,
         // proving the denial above was real gating, not an unrelated pipeline failure.
-        ApprovalDecider approves = [](std::string_view, std::string const&) { return true; };
+        ApprovalDecider approves = [](Principal const&, std::string_view, std::string const&) {
+            return true;
+        };
         auto approved_result = invoke_tool(table, held, req, ctx, approves);
         check(!approved_result.is_error,
               "G3(gate)-R4 (positive control): the SAME call succeeds when the decider itself "

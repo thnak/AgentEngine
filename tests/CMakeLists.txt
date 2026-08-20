@@ -1218,6 +1218,12 @@ add_executable(test_mcp_capability_grant test_mcp_capability_grant.cpp)
 target_link_libraries(test_mcp_capability_grant PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_mcp_capability_grant COMMAND test_mcp_capability_grant)
 
+# ---- ADR-061 §46 prove phase -- ApprovalDecider widened to see the calling Principal, closing R27's
+# `approve_` finding (decisions/ADR-061) ---------------------------------------------------------------
+add_executable(test_approval_decider_principal test_approval_decider_principal.cpp)
+target_link_libraries(test_approval_decider_principal PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_approval_decider_principal COMMAND test_approval_decider_principal)
+
 # ---- Milestone 7 Phase C3 -- 011 §3's MCP client role (protocol/mcp/client.hpp): caching,
 # pagination, digest-pinning/rug-pull detection, isError surfaced not thrown -------------------------
 add_executable(test_mcp_client test_mcp_client.cpp)

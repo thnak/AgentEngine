@@ -69,10 +69,9 @@ struct ToolBridgeConfig {
                                                   ToolInvocationAudit* audit_out = nullptr) {
     request.arguments_tainted = true;
     CapabilitySet const sandbox_capabilities = CapabilitySet::grant_root(config.capabilities);
-    ApprovalDecider const bundled_approval = [approved = config.approved](std::string_view,
-                                                                            std::string const&) {
-        return approved;
-    };
+    ApprovalDecider const bundled_approval = [approved = config.approved](
+                                                      Principal const&, std::string_view,
+                                                      std::string const&) { return approved; };
     return invoke_tool(config.bridged_tools, sandbox_capabilities, request, ctx, bundled_approval, audit_out);
 }
 
