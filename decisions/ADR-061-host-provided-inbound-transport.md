@@ -37,17 +37,20 @@ Proven in §11 (all six §10b claims CORRECT: 75/75 non-auth conformance, real S
 teeth) and accepted as delivered in §12, with 011 §10 G2's `auth` suite (3/49) named explicitly as
 NOT met and scoped to a separate OAuth client follow-on, not folded into this sign-off. **Tier 3
 (host-fronted, no first-party listener — AgentEngine will never own the socket, ADR-039 Judged
-2026-08-14): session-side mechanism (§20-§29) is implemented and proven for real (§30, commit
-`2db2e8f`) — 204/204 tests green, including T1-T10 positive/negative controls; the bearer-credential-
-to-`RequestAuthority` bridge (`EndpointId` minting, `request_authority_from_bearer_claims()`) is
-ALSO now implemented and proven for real (§31-§37, six design/red-team rounds, 205/205 tests green,
-not yet committed). `A2aServer::send_message()` now wires the bridge through for real (§38, commit
-`3cc1e2c`, 205/205 green), and `McpServer::dispatch()` gained its own per-request `CapabilityGrant`
-(§39-§41, seven design/red-team rounds, 206/206 green, not yet committed) — the construction-time-only
-`held_` gap R16/R27 named. All await Judge (project owner sign-off); `McpServer`'s own per-call
-threading beyond the capability grant, `approve_`/`A2aServer::context_id_`/`RunEventProjector::
-thread_id_` (R27's other three), and a reference host-side example (ADR-039 §3e) remain unbuilt, named
-residuals, not in scope so far.** §17 (sixth iteration) failed its red-team
+2026-08-14) — Judged (2026-08-20, project owner sign-off).** Session-side mechanism (§20-§29) is
+implemented and proven for real (§30, commit `2db2e8f`) — 204/204 tests green, including T1-T10
+positive/negative controls; the bearer-credential-to-`RequestAuthority` bridge (`EndpointId` minting,
+`request_authority_from_bearer_claims()`) is implemented and proven for real (§31-§37, six
+design/red-team rounds, commit `2d32840`, 205/205 tests green; its one code-review-flagged vacuous
+test assertion fixed at commit `a130c66`, still 21/21 in that file). `A2aServer::send_message()` wires
+the bridge through for real (§38, commit `3cc1e2c`, 205/205 green), `McpServer::dispatch()` gained its
+own per-request `CapabilityGrant` (§39-§41, seven design/red-team rounds, commit `394e3f6`, 206/206
+green) — the construction-time-only `held_` gap R16/R27 named — and both bearer-credential bridges now
+share one clock-conversion primitive (§42-§44, commit `6b18907`, 207/207 green). All of §20-§44 is
+Judged as a single sign-off; `McpServer`'s own per-call threading beyond the capability grant,
+`approve_`/`A2aServer::context_id_`/`RunEventProjector::thread_id_` (R27's other three), and a
+reference host-side example (ADR-039 §3e) remain unbuilt, named residuals for a future design round,
+not in scope so far.** §17 (sixth iteration) failed its red-team
 pass (§18) — the fourth consecutive iteration to do so (§8, §13, §15, §17). Per §18c's recommendation,
 §19 completed a full, verified, single-pass enumeration of every `capabilities_`/`principal_`/
 `effect_context_` read/write in `agent_session.hpp` before writing a further fix, finding **eight
@@ -4359,9 +4362,9 @@ out-of-reach for a design-only phase — the host-side wiring that constructs a 
 from a verified credential (`EndpointId` minting, bearer-token verification) — is unchanged and still
 not attempted; per ADR-039 §2/§3 (Judged 2026-08-14, cross-referenced at this ADR's own top as of §31)
 that wiring is host-supplied glue code, never a first-party listener AgentEngine ships. Per this
-project's own `design → red-team → prove → judge` discipline, the session-side mechanism has now
-completed prove and awaits judge (project owner sign-off) before it can be called closed. §31 opens a
-new, narrower design round for the glue code named above.
+project's own `design → red-team → prove → judge` discipline, the session-side mechanism completed
+prove here and was Judged (2026-08-20, project owner sign-off) together with §31-§44 (see the
+top-of-file status). §31 opens a new, narrower design round for the glue code named above.
 
 ## 31. Eleventh design iteration — the bearer-credential-to-`RequestAuthority` bridge (2026-08-20)
 
@@ -4969,9 +4972,10 @@ end-to-end exists yet (ADR-039 §3e's own scoping, `examples/`, not core).
 
 The bridge `§31-§36` designed is no longer design text — it is real, compiled code with real, passing
 positive controls for all seven falsifiable claims. Committed and pushed to `origin/main` (`2d32840`,
-"Implement ADR-061's bearer-credential-to-RequestAuthority bridge, proven for real"). Per this
-project's `design → red-team → prove → judge` discipline, this closes prove; judge (project owner
-sign-off) is next, same as §30's session-side mechanism already awaits.
+"Implement ADR-061's bearer-credential-to-RequestAuthority bridge, proven for real"; the claim 7 test
+assertion later tightened at `a130c66` after an independent code review flagged it as vacuous). Per
+this project's `design → red-team → prove → judge` discipline, this closes prove; Judged 2026-08-20
+(project owner sign-off), together with §30's session-side mechanism.
 
 ## 38. Closing the `A2aServer::send_message()` residual named at §35/§37.3
 
@@ -5007,7 +5011,7 @@ new executable).
 
 Real, compiled, tested. `A2aServer`'s own residual is closed; `McpServer`'s per-call threading
 (ADR-039 §3a, a genuinely different dispatch surface) and a reference host-side example (ADR-039 §3e)
-remain the named, unbuilt residuals. Awaits Judge alongside §30/§37.
+remain the named, unbuilt residuals. Judged 2026-08-20 (project owner sign-off) alongside §30/§37.
 
 ## 39. Design iteration — `McpServer`'s per-request capability grant (2026-08-20)
 
@@ -5480,8 +5484,8 @@ outside a supplied grant remains an open question, not silently assumed fine.
 
 Real, compiled, tested. Committed and pushed to `origin/main` (`394e3f6`, "Wire McpServer::dispatch()
 to accept a per-request CapabilityGrant"). Per this project's `design → red-team → prove → judge`
-discipline, this closes prove for `McpServer`'s per-request capability grant; judge (project owner
-sign-off) is next, alongside §30/§37/§38's own already-awaiting mechanisms.
+discipline, this closes prove for `McpServer`'s per-request capability grant; Judged 2026-08-20
+(project owner sign-off), alongside §30/§37/§38.
 
 ## 42. Design iteration — one shared clock-conversion primitive for both bearer-credential bridges (2026-08-20)
 
@@ -5800,7 +5804,27 @@ carried forward from §41, plus the new file), zero regressions.
 
 ### 44.3 Status
 
-Real, compiled, tested. Not yet committed to version control this session. Per this project's
-`design → red-team → prove → judge` discipline, this closes prove for the shared clock primitive and
-the MCP-side bearer-credential bridge; judge (project owner sign-off) is next, alongside
-§30/§37/§38/§41's own already-awaiting mechanisms.
+Real, compiled, tested. Committed and pushed to `origin/main` (`6b18907`, "Add
+mcp::capability_grant_from_bearer_claims(), sharing the rt-side bridge's clock-conversion primitive").
+Per this project's `design → red-team → prove → judge` discipline, this closes prove for the shared
+clock primitive and the MCP-side bearer-credential bridge; Judged 2026-08-20 (project owner
+sign-off), alongside §30/§37/§38/§41.
+
+## 45. Judge — §20-§44 sign-off (2026-08-20)
+
+The project owner reviewed §20-§44 as a single block — the Tier-3 session-side admission mechanism,
+both bearer-credential-to-authority bridges (`rt::` and `mcp::`), the shared `trust::
+steady_deadline_from()` primitive, `A2aServer::send_message()`'s authority wiring, and `McpServer::
+dispatch()`'s per-request `CapabilityGrant` — and signed off. This is independent verification, not
+self-certification: an independent `/code-review` pass against the final commit in this arc
+(`6b18907`) found zero defects in the diff itself and one legitimate, minor, out-of-scope issue (the
+vacuous test assertion fixed at `a130c66`), which was fixed before this sign-off.
+
+**What Judged means here, precisely**: the mechanism as built matches the design text of §20-§44; the
+falsifiable claims tables at §20-§29/§31.3/§33.8/§39.4/§42.3 are proven for real by compiled,
+passing, checked-in tests (207/207 green, zero regressions against the two pre-existing, unrelated
+`embedder.hpp` failures named since §30.5); and the residuals named throughout this arc — 007 §5's
+policy engine, R27's other three construction-time authorities (`approve_`,
+`A2aServer::context_id_`, `RunEventProjector::thread_id_`), and ADR-039 §3e's reference host-side
+example — are real, understood gaps, not silently dropped scope. None of those residuals are closed
+by this sign-off; each remains its own separate, unbuilt, future design question.
