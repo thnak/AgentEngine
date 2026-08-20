@@ -252,6 +252,13 @@ add_executable(test_turn_middleware test_turn_middleware.cpp)
 target_link_libraries(test_turn_middleware PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_turn_middleware COMMAND test_turn_middleware)
 
+# ---- decisions/ADR-069-content-triggered-model-response-replay.md's prove phase: ContentReplayGateway
+# -- a settled response's content-triggered discard-and-retry, wrapping any ModelCallGatewayLike,
+# bounded both per-trigger-site and across a session's lifetime independently.
+add_executable(test_content_replay_gateway test_content_replay_gateway.cpp)
+target_link_libraries(test_content_replay_gateway PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_content_replay_gateway COMMAND test_content_replay_gateway)
+
 # ---- ComposedContextProvider<Ms...> (core/composed_context_provider.hpp) -- generalizes
 # history_and_skills_provider.hpp's fixed two-provider HistoryAndSkillsProvider<H,S> to an arbitrary
 # Ms... pack via the SAME assemble_context() B3 already proved, and wires it into rt::AgentSession's
