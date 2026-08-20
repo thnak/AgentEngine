@@ -1974,6 +1974,21 @@ if(WIN32)
   add_test(NAME test_on_demand_skill_mount COMMAND test_on_demand_skill_mount)
 endif()
 
+# ---- issue #15 / docs/planning/tool-optimizer-provider-design-draft.md / ADR-065: ToolOptimizerProvider
+# (core/tool_optimizer_provider.hpp) -- an ordinary composite ContextProvider gating MCP/plugin/agent
+# tool exposure the same way mount_skill already gates skill tools. Core-tier only (no native_jail/
+# Python dependency) -- proves the declare/invoke cadence through the real invoke_tool pipeline (R2,
+# mirroring test_on_demand_skill_mount.cpp's own R2), cross-source/reserved-name collision rejection
+# (R3), search_tools (R4), a structural no-leakage check (R5), and the second real (non-fixture)
+# 3-provider ComposedContextProvider production composition in the tree, wired into a real
+# rt::AgentSession (R6).
+if(WIN32)
+  add_executable(test_tool_optimizer_provider test_tool_optimizer_provider.cpp)
+  target_link_libraries(test_tool_optimizer_provider PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_tool_optimizer_provider COMMAND test_tool_optimizer_provider)
+endif()
+
 # ---- Skills Phase 2: src/backends/native_jail/skill_mount_materializer.hpp -- the bridge that was
 # missing entirely before this session: SkillsProvider::mounted()'s Mounts, materialized to real files
 # on a real host directory via materialize_mount, plus the reserved-mount-id collision guard. Needs

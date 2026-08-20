@@ -6,9 +6,9 @@ shape of the project.
 
 **Legend:** 🔴 blocks a v1 decision · 🟠 needed before implementation of its area · 🟡 can wait
 
-**Three open cross-cutting questions as of 2026-08-14: OQ-19, OQ-20, OQ-21.** OQ-1 through OQ-18 are all
-resolved. New questions are added here as they're identified; per-RFC open questions that don't change
-the shape of the project stay in their own RFC's §Open questions and are never promoted here by
+**Four open cross-cutting questions as of 2026-08-20: OQ-19, OQ-20, OQ-21, OQ-22.** OQ-1 through OQ-18
+are all resolved. New questions are added here as they're identified; per-RFC open questions that don't
+change the shape of the project stay in their own RFC's §Open questions and are never promoted here by
 default.
 
 ---
@@ -126,6 +126,26 @@ external-dispatching hook at run/turn level remain explicitly unresolved, now fo
 identified reason. Six remaining punch-list items, none implemented — real, named follow-on work, not
 silently dropped. **No project-owner implementation direction yet — this is a fresh design draft, not a
 standing "document only" instruction like OQ-19/OQ-20.**
+
+### OQ-22 — Should `ContextContribution` carry per-contributor provenance, independent of chaining? 🟡
+
+Separable side-question, split off from the `ToolOptimizerProvider` work (issue #15, ADR-065) rather
+than folded into it — flagged there, not designed there, and explicitly not a re-litigation of OQ-18's
+own already-judged "should composition become a chained pipeline" question (OQ-18 stays resolved as
+written; this is narrower and does not depend on its answer either way).
+
+Right now, if something bad lands in an assembled `ContextContribution` (a message, a tool), there is
+no way to attribute which contributor produced it after the fact — only by re-reading each
+contributor's own code. OQ-18's own resolution already noted the composite-provider pattern
+(`HistoryAndSkillsProvider`, `ComposedContextProvider<Ms...>`) gives *better* provenance than MAF's own
+message-stamping (`WithAgentRequestMessageSource`) would, because a composite's own code calls each
+sub-provider directly and knows exactly which one produced what by construction (C++ type identity) —
+but that provenance is only available to the composite's own author at compile time, never surfaced to
+a later reader of an assembled `ContextContribution`/transcript for I4 (every effect is attributable)
+purposes. Whether that gap is worth closing — e.g. stamping each `Message`/`ToolDescriptor` with the
+contributor index/type name that produced it, purely for audit/forensics, at zero cost to a
+`ContextProvider` that doesn't care — is real and separate from the chaining question, and not designed
+here.
 
 ---
 
