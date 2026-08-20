@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -15,9 +16,27 @@
 
 namespace agentengine {
 
+// ADR-061 §20.3's type change (EffectContext::capabilities: raw pointer -> shared_ptr) means a call
+// site that used to write `ctx.capabilities = &local_caps;` directly (constructing an EffectContext
+// by hand -- every test that exercises a Tool<>::invoke()/invoke_tool() directly, not through
+// AgentSession) no longer compiles by simple assignment. This is the non-owning bridge: a shared_ptr
+// that aliases a caller-owned CapabilitySet without ever deleting it -- the caller must outlive every
+// use of the returned shared_ptr, the same lifetime contract a raw pointer already implied.
+[[nodiscard]] inline std::shared_ptr<CapabilitySet const> borrow_capabilities(
+        CapabilitySet const& cs) noexcept {
+    return std::shared_ptr<CapabilitySet const>(&cs, [](CapabilitySet const*) noexcept {});
+}
+
 struct EffectContext {
     Principal                             principal;
-    CapabilitySet const*                  capabilities = nullptr;  // borrowed; never owned here
+    // ADR-061 §20.3: a shared_ptr, not a raw pointer, since Tier 3 populates this per-request from a
+    // RequestAuthority-owned CapabilitySet (rt/agent_session.hpp) that must outlive the coroutine
+    // frame that constructed it -- a raw pointer borrowed from that frame would dangle once the
+    // originating start_run()/resolve_interaction() call returns. Still non-owning in the sense that
+    // matters for the session-level fallback case: AgentSession::capabilities_ is itself a shared_ptr
+    // constructed with a no-op deleter (ADR-061 §26.1), so copying it here never implies deleting the
+    // caller-owned CapabilitySet it points at.
+    std::shared_ptr<CapabilitySet const>  capabilities;  // borrowed or per-request-owned; see above
     // 006 §3 step 7's per-call handles ("materialize capability handles for this call only") --
     // distinct from `capabilities` above (the run's whole held set, useful for read-only checks):
     // these are freshly minted for THIS invocation and revoked at step 10 (core/tool_pipeline.hpp),

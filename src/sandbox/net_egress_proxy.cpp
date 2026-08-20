@@ -129,6 +129,63 @@ std::optional<std::size_t> parse_content_length(std::string_view head) {
     return std::nullopt;
 }
 
+bool header_value_contains_token_ci(std::string_view value, std::string_view lowercase_token) {
+    std::string lowered(value);
+    std::transform(lowered.begin(), lowered.end(), lowered.begin(),
+                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return lowered.find(lowercase_token) != std::string::npos;
+}
+
+// ADR-011's own documented cut ("chunked transfer-encoding is not supported on the response side")
+// undersold the actual risk: a server that speaks `Transfer-Encoding: chunked` with no
+// `Content-Length` still terminates the read loop above cleanly via peer-close (every request this
+// client sends carries `Connection: close`), so the raw chunk-size lines and terminators were
+// landing in `resp.body` verbatim instead of timing out -- a silently corrupted body, not the
+// documented "fails to terminate" failure mode. Dechunks for real rather than merely detecting the
+// case and erroring, so a chunked-only peer (confirmed reachable via the official MCP conformance
+// suite's mock server, docs/research/2026-08-15-mcp-conformance-harness.md) now round-trips
+// correctly through this non-streaming path. NOT applied to `perform_http_exchange_streaming`'s own
+// SSE path, which relays the body incrementally and never buffers it here -- see
+// dechunk_response_body_if_needed()'s own comment for why calling this unconditionally from
+// parse_http_response() broke that path on the first attempt.
+result<std::string> dechunk_body(std::string_view chunked) {
+    std::string out;
+    std::size_t pos = 0;
+    for (;;) {
+        auto const line_end = chunked.find("\r\n", pos);
+        if (line_end == std::string_view::npos) {
+            return std::unexpected(error{failure_class::transient,
+                                          "malformed chunked body (missing chunk-size line terminator)",
+                                          "net.protocol_error"});
+        }
+        std::string_view size_line = chunked.substr(pos, line_end - pos);
+        auto const semi = size_line.find(';');  // chunk extensions, if any, are discarded unread
+        if (semi != std::string_view::npos) size_line = size_line.substr(0, semi);
+        std::size_t chunk_size = 0;
+        auto const [ptr, ec] =
+            std::from_chars(size_line.data(), size_line.data() + size_line.size(), chunk_size, /*base=*/16);
+        if (ec != std::errc{} || ptr != size_line.data() + size_line.size()) {
+            return std::unexpected(error{failure_class::transient, "malformed chunked body (invalid chunk-size)",
+                                          "net.protocol_error"});
+        }
+        pos = line_end + 2;
+        if (chunk_size == 0) break;  // terminal chunk -- any trailer fields are discarded, not surfaced
+        if (chunk_size > chunked.size() - pos || pos + chunk_size + 2 > chunked.size()) {
+            return std::unexpected(error{failure_class::transient, "malformed chunked body (truncated chunk data)",
+                                          "net.protocol_error"});
+        }
+        out.append(chunked.data() + pos, chunk_size);
+        pos += chunk_size;
+        if (chunked.compare(pos, 2, "\r\n") != 0) {
+            return std::unexpected(error{failure_class::transient,
+                                          "malformed chunked body (missing chunk-data terminator)",
+                                          "net.protocol_error"});
+        }
+        pos += 2;
+    }
+    return out;
+}
+
 result<NetEgressResponse> parse_http_response(std::string const& buf) {
     auto const header_end = buf.find("\r\n\r\n");
     if (header_end == std::string::npos) {
@@ -170,6 +227,28 @@ result<NetEgressResponse> parse_http_response(std::string const& buf) {
     }
     resp.body = buf.substr(header_end + 4);
     return resp;
+}
+
+// Dechunks `resp.body` in place when `resp` carries `Transfer-Encoding: chunked` -- split out of
+// parse_http_response() itself because that function is also used by stream_response_body() to parse
+// ONLY the header block (a deliberately body-less call: the streaming path relays the body to its own
+// caller incrementally and never buffers it here), so dechunking unconditionally inside
+// parse_http_response() dechunks an always-empty string on that path and fails closed, breaking every
+// chunked SSE response. Only the two full-buffer exchange functions below, which have the complete
+// body in hand by construction (their read loop doesn't exit until it does), call this.
+result<std::monostate> dechunk_response_body_if_needed(NetEgressResponse& resp) {
+    bool is_chunked = false;
+    for (auto const& [name, value] : resp.headers) {
+        if (equals_ci(name, "transfer-encoding") && header_value_contains_token_ci(value, "chunked")) {
+            is_chunked = true;
+            break;
+        }
+    }
+    if (!is_chunked) return std::monostate{};
+    auto dechunked = dechunk_body(resp.body);
+    if (!dechunked) return std::unexpected(dechunked.error());
+    resp.body = std::move(*dechunked);
+    return std::monostate{};
 }
 
 struct AllowlistTarget {
@@ -375,7 +454,10 @@ result<NetEgressResponse> perform_http_exchange(VerifiedEndpoint endpoint, std::
         }
     }
 
-    return parse_http_response(buf);
+    auto parsed = parse_http_response(buf);
+    if (!parsed) return parsed;
+    if (auto const d = dechunk_response_body_if_needed(*parsed); !d) return std::unexpected(d.error());
+    return parsed;
 }
 
 #ifdef AGENTENGINE_WITH_HTTPS
@@ -443,7 +525,10 @@ result<NetEgressResponse> perform_https_exchange(VerifiedEndpoint endpoint, std:
         }
     }
 
-    return parse_http_response(buf);
+    auto parsed = parse_http_response(buf);
+    if (!parsed) return parsed;
+    if (auto const d = dechunk_response_body_if_needed(*parsed); !d) return std::unexpected(d.error());
+    return parsed;
 }
 #endif
 

@@ -26,10 +26,24 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # Pinned deliberately, and pinned to >= 22.1 deliberately.
+  # docs/research/2026-08-16-clang-windows-asan-exception-ptr.md: clang's
+  # AddressSanitizer on Windows corrupts catch-block parameters (google/sanitizers#749),
+  # mitigated by llvm/llvm-project#159618 which first shipped in LLVM 22.1.0. On clang 20.1.8 --
+  # what these jobs silently used before this pin -- the ASanUBSan leg cannot run any program that
+  # catches an exception and calls what(). Measured clean on 22.1.8 across static/DLL CRT and
+  # ASan/ASan+UBSan.
+  AE_LLVM_VERSION: 22.1.8
+
 jobs:
   windows-msvc:
     name: Windows / MSVC / ${{ matrix.build_type }}
     runs-on: windows-latest
+    # Bounds a hang. Without this a stuck ctest runs to GitHub's 6-hour
+    # default -- the MSVC ASan leg has done exactly that, reporting one
+    # timeout and then sitting for an hour until a human cancelled it.
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -50,11 +64,35 @@ jobs:
         run: cmake --build build --config Release -j 4
 
       - name: Test
-        run: ctest --test-dir build -C Release -j 4 --output-on-failure
+        shell: pwsh
+        run: |
+          # MSVC's ASan links against clang_rt.asan_dynamic-x86_64.dll (it is a /MD-only feature),
+          # and this job never enters a VS dev shell -- CMake finds the toolchain by itself for
+          # Configure/Build, but the Test step inherits no MSVC PATH. So every ASan-instrumented
+          # test binary failed to start with 0xC0000135 (DLL not found).
+          #
+          # That is why the ASan leg reported ZERO passes out of 169 while appearing to "hang":
+          # a launch failure on the runner does not exit promptly the way it does locally, so ctest
+          # sat waiting on processes that were never going to run. It was never a deadlock in the
+          # examples -- example_04 only looked special because it is the one example carrying a
+          # TIMEOUT property, so it was the only one CTest could cut off and report.
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          if (Test-Path $vswhere) {
+            $vs = & $vswhere -latest -property installationPath
+            $dll = Get-ChildItem "$vs\VC\Tools\MSVC" -Recurse -Filter "clang_rt.asan_dynamic-x86_64.dll" -ErrorAction SilentlyContinue |
+                   Where-Object { $_.DirectoryName -like '*Hostx64*x64*' } | Select-Object -First 1
+            if ($dll) { $env:PATH = "$($dll.DirectoryName);$env:PATH"; Write-Host "ASan runtime: $($dll.DirectoryName)" }
+            else { Write-Host "WARNING: clang_rt.asan_dynamic-x86_64.dll not found under $vs" }
+          }
+          ctest --test-dir build -C Release -j 4 --output-on-failure --timeout 180
 
   windows-clang-cl:
     name: Windows / clang-cl / ${{ matrix.build_type }}
     runs-on: windows-latest
+    # Bounds a hang. Without this a stuck ctest runs to GitHub's 6-hour
+    # default -- the MSVC ASan leg has done exactly that, reporting one
+    # timeout and then sitting for an hour until a human cancelled it.
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -68,10 +106,31 @@ jobs:
       # (clang 20+) often enough that pinning our own install is more predictable than hoping the
       # runner image caught up. AgentEngineCompilerGuard.cmake fails configure with a clear message
       # if this ever regresses below the floor, instead of a confusing mid-build error.
-      - name: Install LLVM + Ninja
+      # `choco install llvm -y` was NOT a pin, despite the comment above having claimed one for as
+      # long as it existed: choco no-ops when the package is already present, and the windows-latest
+      # image ships LLVM. These jobs therefore ran whatever the image happened to carry -- clang
+      # 20.1.8 as of 2026-08-16 -- with nobody choosing it, which is how the ASan defect went
+      # unnoticed. Installing LLVM's own release asset at a pinned version is an actual pin.
+      - name: Install LLVM ${{ env.AE_LLVM_VERSION }} (pinned) + Ninja
+        shell: pwsh
         run: |
-          choco install llvm -y
           choco install ninja -y
+          $v = "${{ env.AE_LLVM_VERSION }}"
+          $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$v/LLVM-$v-win64.exe"
+          Invoke-WebRequest -Uri $url -OutFile "$env:RUNNER_TEMP\llvm.exe"
+          Start-Process -FilePath "$env:RUNNER_TEMP\llvm.exe" -ArgumentList '/S' -Wait
+          echo "C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Verify the pinned clang is what we got
+        shell: pwsh
+        run: |
+          $env:PATH = "C:\Program Files\LLVM\bin;$env:PATH"
+          $ver = (clang++ --version | Select-Object -First 1)
+          Write-Host $ver
+          if ($ver -notmatch 'clang version (\d+)\.') { throw "cannot parse clang version from '$ver'" }
+          # 021 §5 floor is clang 20+; the research note above raises the effective floor to 22 on Windows,
+          # because below it the sanitizer leg cannot execute exception-handling code at all.
+          if ([int]$Matches[1] -lt 22) { throw "clang $($Matches[1]) predates llvm/llvm-project#159618 -- see docs/research/2026-08-16-clang-windows-asan-exception-ptr.md" }
 
       - name: Enter MSVC dev shell
         uses: ilammy/msvc-dev-cmd@v1
@@ -81,15 +140,66 @@ jobs:
         run: |
           $env:CC = "clang-cl"
           $env:CXX = "clang-cl"
-          $flags = ""
-          if ("${{ matrix.build_type }}" -eq "ASanUBSan") { $flags = "-fsanitize=address,undefined" }
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="$flags"
+          # The two legs of this matrix need genuinely different link setups, so they are
+          # configured separately rather than through one command with a flag variable.
+          #
+          # Release keeps the clang-cl frontend, which is the point of this job: MSVC-compatible
+          # parsing of the whole codebase.
+          #
+          # ASanUBSan cannot use clang-cl here. CMake drives Ninja + clang-cl through lld-link, and
+          # lld-link does not understand -fsanitize -- it says so directly ("ignoring unknown
+          # argument '-fsanitize=address,undefined'") and then fails with "undefined symbol:
+          # __asan_init", because the instrumentation is compiled in with no runtime linked. Passing
+          # the flag through CMAKE_EXE_LINKER_FLAGS does not help for the same reason: it reaches
+          # lld-link, which ignores it again.
+          #
+          # So the sanitizer leg uses the clang++ DRIVER with the static CRT -- exactly the recipe
+          # the ShellRunner fuzz job in this same workflow already uses successfully on this same
+          # runner image. The driver understands -fsanitize and links the ASan/UBSan runtimes
+          # itself. Stated plainly: this narrows what the leg exercises from the clang-cl frontend
+          # to the clang++ one. That is a real reduction, accepted because the Release leg above
+          # still covers clang-cl parsing, and a sanitizer job that cannot link covers nothing.
+          if ("${{ matrix.build_type }}" -eq "ASanUBSan") {
+            cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo `
+              -DCMAKE_CXX_COMPILER=clang++ `
+              -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded `
+              -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=undefined -D_DISABLE_STRING_ANNOTATION -D_DISABLE_VECTOR_ANNOTATION -g -O1"
+          } else {
+            cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release `
+              -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL
+          }
 
       - name: Build
         run: cmake --build build -j 4
 
+      # The ASanUBSan leg needs clang's sanitizer runtime DLLs on PATH before ctest launches
+      # anything. Without them nothing runs: EVERY test in this job timed out at its full limit
+      # having produced ZERO output -- 0 passed, 41 timed out before the job cap killed it, and that
+      # included example_01_hello_agent, which cannot fail on its own merits. A binary whose DLL is
+      # missing never reaches main, and on a headless runner it stalls instead of reporting, so the
+      # signature is a hang rather than an error. This is the same defect, and the same fix, as the
+      # MSVC ASan job's own vswhere PATH step earlier in this file.
+      #
+      # `clang++ -print-resource-dir` is exactly how the ShellRunner fuzz job below -- same compiler,
+      # same -fsanitize flags, same static CRT, and passing -- locates them. Harmless on the Release
+      # leg, which links no sanitizer runtime, so this is not conditionalized.
+      #
+      # ASAN_OPTIONS/UBSAN_OPTIONS also mirror that job: LeakSanitizer has no Windows
+      # implementation, so detect_leaks=0 states that rather than leaving it to fail obscurely, and
+      # halt_on_error keeps a sanitizer finding a hard failure instead of a warning in a log.
       - name: Test
-        run: ctest --test-dir build -j 4 --output-on-failure
+        shell: pwsh
+        run: |
+          $rt = $(clang++ -print-resource-dir)
+          $env:PATH = "$rt\lib\windows;$env:PATH"
+          Write-Host "clang sanitizer runtime dir: $rt\lib\windows"
+          $env:ASAN_OPTIONS = "detect_leaks=0:halt_on_error=1"
+          $env:UBSAN_OPTIONS = "halt_on_error=1:print_stacktrace=1"
+          ctest --test-dir build -j 4 --output-on-failure --timeout 180
+          # Explicit, not incidental: this step became a pwsh block to set PATH, and a shell block
+          # that ends on a native command must still surface that command's exit code. Stated here
+          # rather than relying on the runner appending it, so a failing ctest can never read green.
+          if ($LASTEXITCODE -ne 0) { throw "ctest failed with exit code $LASTEXITCODE" }
 
   windows-shell-fuzz:
     # 010 SS9 G8 / decisions/ADR-015-shellrunner-grammar-parser-fuzzing.md: continuous, corpus-driven
@@ -99,15 +209,40 @@ jobs:
     # target, not the whole test suite (AGENTENGINE_BUILD_TESTS=OFF).
     name: Windows / ShellRunner grammar-parser fuzz (G8, ADR-015)
     runs-on: windows-latest
+    # Bounds a hang. Without this a stuck ctest runs to GitHub's 6-hour
+    # default -- the MSVC ASan leg has done exactly that, reporting one
+    # timeout and then sitting for an hour until a human cancelled it.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: Install LLVM + Ninja
+      # `choco install llvm -y` was NOT a pin, despite the comment above having claimed one for as
+      # long as it existed: choco no-ops when the package is already present, and the windows-latest
+      # image ships LLVM. These jobs therefore ran whatever the image happened to carry -- clang
+      # 20.1.8 as of 2026-08-16 -- with nobody choosing it, which is how the ASan defect went
+      # unnoticed. Installing LLVM's own release asset at a pinned version is an actual pin.
+      - name: Install LLVM ${{ env.AE_LLVM_VERSION }} (pinned) + Ninja
+        shell: pwsh
         run: |
-          choco install llvm -y
           choco install ninja -y
+          $v = "${{ env.AE_LLVM_VERSION }}"
+          $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$v/LLVM-$v-win64.exe"
+          Invoke-WebRequest -Uri $url -OutFile "$env:RUNNER_TEMP\llvm.exe"
+          Start-Process -FilePath "$env:RUNNER_TEMP\llvm.exe" -ArgumentList '/S' -Wait
+          echo "C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Verify the pinned clang is what we got
+        shell: pwsh
+        run: |
+          $env:PATH = "C:\Program Files\LLVM\bin;$env:PATH"
+          $ver = (clang++ --version | Select-Object -First 1)
+          Write-Host $ver
+          if ($ver -notmatch 'clang version (\d+)\.') { throw "cannot parse clang version from '$ver'" }
+          # 021 §5 floor is clang 20+; the research note above raises the effective floor to 22 on Windows,
+          # because below it the sanitizer leg cannot execute exception-handling code at all.
+          if ([int]$Matches[1] -lt 22) { throw "clang $($Matches[1]) predates llvm/llvm-project#159618 -- see docs/research/2026-08-16-clang-windows-asan-exception-ptr.md" }
 
       - name: Enter MSVC dev shell
         uses: ilammy/msvc-dev-cmd@v1
@@ -141,6 +276,10 @@ jobs:
   linux:
     name: Linux / gcc-14 / Release (build-only — see file header)
     runs-on: ubuntu-latest
+    # Bounds a hang. Without this a stuck ctest runs to GitHub's 6-hour
+    # default -- the MSVC ASan leg has done exactly that, reporting one
+    # timeout and then sitting for an hour until a human cancelled it.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
@@ -163,11 +302,15 @@ jobs:
         run: cmake --build build -j 4
 
       - name: Test
-        run: ctest --test-dir build -j 4 --output-on-failure
+        run: ctest --test-dir build -j 4 --output-on-failure --timeout 180
 
   naming-lint:
     name: 027 naming lint (stub)
     runs-on: ubuntu-latest
+    # Bounds a hang. Without this a stuck ctest runs to GitHub's 6-hour
+    # default -- the MSVC ASan leg has done exactly that, reporting one
+    # timeout and then sitting for an hour until a human cancelled it.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -181,6 +324,10 @@ jobs:
   milestone-status-lint:
     name: Milestone-status drift lint (ADR-026)
     runs-on: ubuntu-latest
+    # Bounds a hang. Without this a stuck ctest runs to GitHub's 6-hour
+    # default -- the MSVC ASan leg has done exactly that, reporting one
+    # timeout and then sitting for an hour until a human cancelled it.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 

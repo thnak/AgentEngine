@@ -32,6 +32,7 @@
 
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/reference_agent_prompt.hpp"
+#include "agentengine/pal/env.hpp"
 #include "agentengine/sandbox/runner.hpp"
 #include "agentengine/trust/capability.hpp"
 #include "backends/native_jail/mediated_python_runner.hpp"
@@ -69,7 +70,7 @@ RunResult run_hostile_snippet(MediatedPythonRunner& runner, CapabilitySet& caps,
     std::printf("  running (as-if under %s prompt): %s\n", prompt_variant_label, source.c_str());
     ExecState state{};
     EffectContext ctx{};
-    ctx.capabilities = &caps;
+    ctx.capabilities = agentengine::borrow_capabilities(caps);
     ExecRequest req{"python", source};  // <-- exactly language + source; no prompt field exists to fill
     auto out = runner.run(req, state, ctx);
     RunResult result;
@@ -85,7 +86,7 @@ RunResult run_hostile_snippet(MediatedPythonRunner& runner, CapabilitySet& caps,
 }  // namespace
 
 int main() {
-    std::string const base = std::string(std::getenv("TEMP") ? std::getenv("TEMP") : "C:/Windows/Temp") +
+    std::string const base = ::agentengine::pal::env_var("TEMP").value_or("C:/Windows/Temp") +
                               "/ae_h2_containment_invariance";
     std::filesystem::remove_all(base);
     std::filesystem::create_directories(base);

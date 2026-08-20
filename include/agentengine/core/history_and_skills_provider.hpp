@@ -30,6 +30,7 @@ namespace agentengine {
 // unfixed here because nothing needed a non-default-constructible `HistoryProviderT` before this).
 template <class HistoryProviderT, class SkillsProviderT>
     requires ContextProvider<HistoryProviderT> && ContextProvider<SkillsProviderT>
+// ae-naming-lint: allow HistoryAndSkillsProvider — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class HistoryAndSkillsProvider {
 public:
     // decisions/ADR-066-context-provider-attribution-provenance.md §3 -- only load-bearing if THIS
@@ -83,7 +84,7 @@ public:
     // its source -- it only ever invokes `on_context`) -- forwarded manually here to both wrapped
     // providers, or the hook would be silently dropped for both.
     task<std::monostate> on_turn_end(TurnView turn, EffectContext& ctx) {
-        for (auto& contributor : contributors_) co_await contributor.on_turn_end(turn, ctx);
+        for (auto& contributor : contributors_) (void)co_await contributor.on_turn_end(turn, ctx);
         co_return std::monostate{};
     }
 

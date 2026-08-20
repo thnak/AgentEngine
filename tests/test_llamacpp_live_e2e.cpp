@@ -59,6 +59,7 @@
 // long chain of thought will exceed it. The default prefix is Qwen's own thinking-off directive;
 // point this at a non-Qwen model and set the variable to that model's equivalent, or to empty.
 
+#include "agentengine/pal/env.hpp"
 #include "agentengine/pal/net.hpp"
 
 #include <cstdint>
@@ -101,8 +102,8 @@ void report(char const* what, error const& e) {
 }
 
 [[nodiscard]] std::string env_or(char const* name, std::string fallback) {
-    char const* v = std::getenv(name);
-    return (v && *v) ? std::string(v) : std::move(fallback);
+    auto const v = ::agentengine::pal::env_var(name);
+    return (v && !v->empty()) ? *v : std::move(fallback);
 }
 
 std::string g_prompt_prefix;
@@ -187,8 +188,8 @@ constexpr char const* kCapitalSchema =
 }  // namespace
 
 int main() {
-    char const* port_env = std::getenv("AGENTENGINE_LLAMACPP_PORT");
-    if (!port_env || !*port_env) {
+    auto const port_env = ::agentengine::pal::env_var("AGENTENGINE_LLAMACPP_PORT");
+    if (!port_env || port_env->empty()) {
         std::fprintf(stderr,
                      "test_llamacpp_live_e2e: SKIPPED -- AGENTENGINE_LLAMACPP_PORT is not set.\n"
                      "  Start a llama.cpp server (llama-server --port 8080) and run "
@@ -205,17 +206,17 @@ int main() {
     g_prompt_prefix = env_or("AGENTENGINE_LLAMACPP_PREFIX", "/no_think ");
 
     unsigned port_value = 0;
-    for (char const* p = port_env; *p; ++p) {
-        if (*p < '0' || *p > '9' || port_value > 65535) {
+    for (char const c : *port_env) {
+        if (c < '0' || c > '9' || port_value > 65535) {
             std::fprintf(stderr, "test_llamacpp_live_e2e: AGENTENGINE_LLAMACPP_PORT ('%s') is not a port.\n",
-                         port_env);
+                         port_env->c_str());
             return 1;
         }
-        port_value = port_value * 10 + static_cast<unsigned>(*p - '0');
+        port_value = port_value * 10 + static_cast<unsigned>(c - '0');
     }
     if (port_value == 0 || port_value > 65535) {
         std::fprintf(stderr, "test_llamacpp_live_e2e: AGENTENGINE_LLAMACPP_PORT ('%s') is out of range.\n",
-                     port_env);
+                     port_env->c_str());
         return 1;
     }
     auto const port = static_cast<std::uint16_t>(port_value);
@@ -232,7 +233,7 @@ int main() {
     CapabilitySet held = CapabilitySet::grant_root({cap::Secret{kSecretName, std::chrono::seconds{0}}});
     EffectContext ctx;
     ctx.principal = Principal{"llamacpp-live-e2e-principal", ""};
-    ctx.capabilities = &held;
+    ctx.capabilities = agentengine::borrow_capabilities(held);
 
     ChatClientCapabilities caps;  // DECLARED from what this deployment's server supports, never probed.
     caps.tool_calling = true;
@@ -414,7 +415,7 @@ int main() {
     {
         CapabilitySet empty;
         EffectContext denied = ctx;
-        denied.capabilities = &empty;
+        denied.capabilities = agentengine::borrow_capabilities(empty);
         auto resp = run_task_sync<result<ChatResponse>>(client.chat(request_asking("hi"), denied));
         check(!resp.has_value(),
               "LC-7 (I2): with no cap::Secret grant the call is denied at the point of use and never "

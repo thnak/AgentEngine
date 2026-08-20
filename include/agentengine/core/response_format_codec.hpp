@@ -41,6 +41,7 @@ namespace agentengine::response_format_codec {
 // Where a field's raw text comes from: the header span (between `block_open` and `body_open`, e.g.
 // Harmony's `assistant<|channel|>commentary to=functions.NAME <|constrain|>json`) or the body span
 // (between `body_open` and whichever terminator matched).
+// ae-naming-lint: allow field_source — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 enum class field_source { header, body };
 
 // `none`: field not present in this format. `whole`: the entire segment, untouched. `marker`: found
@@ -48,17 +49,20 @@ enum class field_source { header, body };
 // literals (or segment end if none match) -- ADR §4a finding 1's fix, a LIST of stop literals, not
 // one. `json_field`: the value of a named top-level JSON key within the segment (Hermes/Qwen's body
 // is itself one JSON object).
+// ae-naming-lint: allow field_mode — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 enum class field_mode { none, whole, marker, json_field };
 
+// ae-naming-lint: allow field_spec — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct field_spec {
     field_source source = field_source::body;
     field_mode   mode   = field_mode::none;
-    std::string_view marker;
+    std::string_view marker{};
     std::array<std::string_view, 4> stop_at{};  // empty entries ignored
-    std::string_view strip_prefix;               // e.g. Harmony's "functions." recipient prefix
-    std::string_view json_path;                  // top-level key name, when mode == json_field
+    std::string_view strip_prefix{};               // e.g. Harmony's "functions." recipient prefix
+    std::string_view json_path{};                  // top-level key name, when mode == json_field
 };
 
+// ae-naming-lint: allow terminator_spec — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct terminator_spec {
     std::string_view token;
     // True for the terminator that means "this block is tool-call-shaped" (Harmony's `<|call|>` vs.
@@ -68,6 +72,7 @@ struct terminator_spec {
     bool tool_call_shaped = false;
 };
 
+// ae-naming-lint: allow channel_kind — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 enum class channel_kind { analysis, commentary, final_answer, unknown };
 
 // One format's grammar, entirely as data. `fixed_channel` is set for formats with no explicit
@@ -75,17 +80,18 @@ enum class channel_kind { analysis, commentary, final_answer, unknown };
 // `<think>` row is always `analysis`) -- `channel_field` is only consulted when `fixed_channel ==
 // unknown` (Harmony, whose single envelope carries all three channels distinguished by
 // `<|channel|>NAME`).
+// ae-naming-lint: allow format_spec — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct format_spec {
     std::string_view name;
     std::array<std::string_view, 2> sniff{};  // cheap pre-check; ANY non-empty entry must be present
-    std::string_view block_open;
-    std::string_view body_open;  // empty => no separate header segment
+    std::string_view block_open{};
+    std::string_view body_open{};  // empty => no separate header segment
     std::array<terminator_spec, 3> terminators{};
     channel_kind fixed_channel = channel_kind::unknown;
-    field_spec   channel_field;
-    field_spec   recipient_field;
-    field_spec   arguments_field;
-    field_spec   constraint_field;
+    field_spec   channel_field{};
+    field_spec   recipient_field{};
+    field_spec   arguments_field{};
+    field_spec   constraint_field{};
     std::string_view default_arg_type = "json";
 };
 
@@ -261,6 +267,7 @@ inline constexpr format_spec kBuiltinTable[] = {
 // ADR-023 §6 point 4 (Phase 2). Plain, inert data -- two strings -- extracted from a commentary-
 // channel block whose recipient and arguments both parsed cleanly. Carries no trust of its own;
 // see this file's own top comment for the full chain from here to an actual approval decision.
+// ae-naming-lint: allow DetectedToolCallCandidate — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct DetectedToolCallCandidate {
     std::string recipient;
     std::string arguments_json;
@@ -271,6 +278,7 @@ struct DetectedToolCallCandidate {
     std::size_t diagnostic_item_index = 0;
 };
 
+// ae-naming-lint: allow decode_result — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct decode_result {
     std::vector<ContentItem> items;
     // Phase 2: one entry per commentary-channel block that had BOTH a non-empty recipient and
@@ -278,7 +286,7 @@ struct decode_result {
     // diagnostic `Text` item in `items` above (every candidate has a matching diagnostic; not every
     // diagnostic has a matching candidate, e.g. recipient extraction failed but the block still
     // parsed as tool-call-shaped).
-    std::vector<DetectedToolCallCandidate> candidates;
+    std::vector<DetectedToolCallCandidate> candidates{};
     // True when suspicious tokens were seen (sniff hit) but the content could not be safely,
     // completely segmented (a dangling/truncated block, or a channel this table can't classify) --
     // ADR §4a finding 2's fail-closed behavior. `items` then holds exactly one untouched `Text`

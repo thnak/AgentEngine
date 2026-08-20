@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <cstddef>
+#include <mutex>
 #include <optional>
 #include <vector>
 
@@ -94,28 +95,36 @@ std::wstring build_minimal_environment_block() {
 }
 
 // One AppContainer profile for the whole process (ADR-004 §3: reused across sessions, the SID is
-// stable identity). Magic-static init is thread-safe and runs exactly once; the fallible part
-// (CreateAppContainerProfile/DeriveAppContainerSidFromAppContainerName) is captured into
-// `init_error` rather than thrown, matching this project's `result<T>`-everywhere convention.
-struct SharedProfileState {
-    std::optional<AppContainerProfile> profile;
-    std::optional<ae::error> init_error;
-};
+// stable identity). The fallible part
+// (CreateAppContainerProfile/DeriveAppContainerSidFromAppContainerName) is returned as an error
+// rather than thrown, matching this project's `result<T>`-everywhere convention.
+//
+// This was a magic static holding BOTH the profile and a cached `init_error`, which had a defect
+// worth naming because it turned a rare transient into a total one. Profile creation can fail
+// transiently under cross-process contention (measured -- app_container_profile.cpp's
+// CrossProcessLock, tests/experiments/appcontainer_profile_race.cpp). A magic static runs its
+// initializer exactly once, so ONE such failure was latched for the lifetime of the process and
+// every subsequent create() returned the stale error. That is why the observed symptom was never
+// "one create() failed" but "all nine create()s in this test failed", while a concurrent process
+// was perfectly healthy.
+//
+// Success is still cached forever -- that part was right, and `profile` is never mutated again once
+// engaged, so handing out a pointer to it is safe. Only failure is retried. Callers that genuinely
+// cannot create a profile still fail closed, one error per attempt, which is what they should have
+// been getting all along.
+[[nodiscard]] result<AppContainerProfile const*> shared_profile() {
+    static std::mutex profile_mutex;
+    static std::optional<AppContainerProfile> profile;
 
-SharedProfileState& shared_profile_state() {
-    static SharedProfileState state = [] {
-        SharedProfileState s;
+    std::lock_guard<std::mutex> guard(profile_mutex);
+    if (!profile.has_value()) {
         auto created = AppContainerProfile::ensure(
             L"AgentEngine.NativeJail", L"AgentEngine Native Jail",
             L"AgentEngine native-jail sandbox AppContainer profile (008 SS1b, ADR-004)");
-        if (created.has_value()) {
-            s.profile.emplace(std::move(*created));
-        } else {
-            s.init_error = created.error();
-        }
-        return s;
-    }();
-    return state;
+        if (!created.has_value()) return std::unexpected(created.error());
+        profile.emplace(std::move(*created));
+    }
+    return &*profile;
 }
 
 // Bounded pipe drain: reads until EOF (the write end closes once the child -- the only other
@@ -149,8 +158,8 @@ std::string drain_pipe_bounded(HANDLE read_handle, std::uint64_t cap_bytes) {
 }  // namespace
 
 result<SandboxHandle> NativeJailBackend::create(SandboxSpec const& spec, EffectContext&) {
-    SharedProfileState& shared = shared_profile_state();
-    if (shared.init_error.has_value()) return std::unexpected(*shared.init_error);
+    auto profile = shared_profile();
+    if (!profile.has_value()) return std::unexpected(profile.error());
 
     auto instance = std::make_unique<Instance>();
     instance->limits = spec.limits;
@@ -165,7 +174,7 @@ result<SandboxHandle> NativeJailBackend::create(SandboxSpec const& spec, EffectC
             });
         }
         std::wstring host_path = widen(std::get<std::string>(mount.source));
-        auto granted = shared.profile->grant_path(host_path, mount.read_write);
+        auto granted = (*profile)->grant_path(host_path, mount.read_write);
         if (!granted.has_value()) return std::unexpected(granted.error());
         if (mount.read_write && instance->cwd.empty()) instance->cwd = host_path;
     }
@@ -191,8 +200,8 @@ result<ExecOutcome> NativeJailBackend::exec(SandboxHandle& handle, ExecRequest c
     }
     Instance& inst = *it->second;
 
-    SharedProfileState& shared = shared_profile_state();
-    if (shared.init_error.has_value()) return std::unexpected(*shared.init_error);
+    auto profile = shared_profile();
+    if (!profile.has_value()) return std::unexpected(profile.error());
 
     // 008 §2's "static constexpr ProfileTraits traits" line documents ExecRequest::source as this
     // backend's M2-only convention: a fully-resolved Win32 command line, not a name a Runner/Tool
@@ -202,7 +211,7 @@ result<ExecOutcome> NativeJailBackend::exec(SandboxHandle& handle, ExecRequest c
     mutable_cmdline.push_back(L'\0');
 
     SECURITY_CAPABILITIES sec_cap{};
-    sec_cap.AppContainerSid = shared.profile->sid();
+    sec_cap.AppContainerSid = (*profile)->sid();
     sec_cap.Capabilities = nullptr;
     sec_cap.CapabilityCount = 0;
 

@@ -43,6 +43,7 @@ namespace agentengine {
 // directly on `.get()`. There is deliberately no "reopen this by path" accessor: reopening a
 // verified-safe location by re-parsing a path string is exactly the operation this module exists
 // to make unnecessary (see `redteam::naive_open_checked_path` below for what that operation costs).
+// ae-naming-lint: allow SafeFileHandle — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class SafeFileHandle {
 public:
     SafeFileHandle() = default;

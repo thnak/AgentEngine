@@ -30,6 +30,7 @@
 #endif
 
 #include "agentengine/core/effect_context.hpp"
+#include "agentengine/pal/env.hpp"
 #include "agentengine/sandbox/runner.hpp"
 #include "agentengine/trust/capability.hpp"
 #include "backends/native_jail/mediated_python_runner.hpp"
@@ -75,7 +76,7 @@ std::string read_file(std::string const& path) {
 int main() {
     disable_crt_assert_dialog();
 
-    std::string const scratch = std::string(std::getenv("TEMP") ? std::getenv("TEMP") : "C:/Windows/Temp") +
+    std::string const scratch = ::agentengine::pal::env_var("TEMP").value_or("C:/Windows/Temp") +
                                  "/ae_e2_mount";
     std::filesystem::create_directories(scratch);
 
@@ -203,7 +204,7 @@ int main() {
             {Capability{cap::FsWrite{"work", "", std::nullopt, std::nullopt}},
              Capability{cap::FsRead{"work", "", std::nullopt}}});
         EffectContext ctx{};
-        ctx.capabilities = &caps;
+        ctx.capabilities = agentengine::borrow_capabilities(caps);
 
         // E2-C8 (positive control for E2-C5): "json" IS in this runner's package policy -- the
         // identical import that failed above now succeeds.

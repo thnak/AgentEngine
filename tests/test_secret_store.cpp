@@ -55,7 +55,7 @@ int main() {
         store.set("openai-api-key", "sk-real-value-do-not-print");
         CapabilitySet held = CapabilitySet::grant_root({cap::Secret{"openai-api-key", std::chrono::seconds{0}}});
         auto ctx = make_ctx();
-        ctx.capabilities = &held;
+        ctx.capabilities = agentengine::borrow_capabilities(held);
 
         auto lease = store.resolve(SecretRef{"openai-api-key"}, ctx);
         AE_CHECK(lease.has_value(), "A1: resolve() succeeds when the capability is held and the value exists");
@@ -87,7 +87,7 @@ int main() {
         store.set("db-password", "hunter2");
         CapabilitySet empty;
         auto ctx = make_ctx();
-        ctx.capabilities = &empty;
+        ctx.capabilities = agentengine::borrow_capabilities(empty);
         auto lease = store.resolve(SecretRef{"db-password"}, ctx);
         AE_CHECK(!lease.has_value(), "gate: resolve() denies against an empty (but non-null) capability set");
     }
@@ -99,7 +99,7 @@ int main() {
         store.set("service-b-key", "value-b");
         CapabilitySet held = CapabilitySet::grant_root({cap::Secret{"service-a-key", std::chrono::seconds{0}}});
         auto ctx = make_ctx();
-        ctx.capabilities = &held;
+        ctx.capabilities = agentengine::borrow_capabilities(held);
 
         auto allowed = store.resolve(SecretRef{"service-a-key"}, ctx);
         AE_CHECK(allowed.has_value(), "A4: the granted name resolves");
@@ -116,7 +116,7 @@ int main() {
         store.set("rotating-key", "value-v1");
         CapabilitySet held = CapabilitySet::grant_root({cap::Secret{"rotating-key", std::chrono::seconds{0}}});
         auto ctx = make_ctx();
-        ctx.capabilities = &held;
+        ctx.capabilities = agentengine::borrow_capabilities(held);
 
         auto first = store.resolve(SecretRef{"rotating-key"}, ctx);
         AE_CHECK(first.has_value() && first->reveal_text() == "value-v1", "A4: first resolve sees v1");
@@ -138,7 +138,7 @@ int main() {
         AgentEngineSecretStore store(std::make_unique<EnvSecretSource>());
         CapabilitySet held = CapabilitySet::grant_root({cap::Secret{"test-env-secret", std::chrono::seconds{0}}});
         auto ctx = make_ctx();
-        ctx.capabilities = &held;
+        ctx.capabilities = agentengine::borrow_capabilities(held);
 
         auto lease = store.resolve(SecretRef{"test-env-secret"}, ctx);
         AE_CHECK(lease.has_value() && lease->reveal_text() == "env-value-123",
@@ -146,7 +146,7 @@ int main() {
 
         CapabilitySet missing_held =
             CapabilitySet::grant_root({cap::Secret{"never-set-anywhere", std::chrono::seconds{0}}});
-        ctx.capabilities = &missing_held;
+        ctx.capabilities = agentengine::borrow_capabilities(missing_held);
         auto missing = store.resolve(SecretRef{"never-set-anywhere"}, ctx);
         AE_CHECK(!missing.has_value(), "A3: EnvSecretSource fails closed (not empty-string) when unset");
     }
@@ -163,7 +163,7 @@ int main() {
         CapabilitySet held = CapabilitySet::grant_root(
             {cap::Secret{"ae_test_secret_file_store_secret", std::chrono::seconds{0}}});
         auto ctx = make_ctx();
-        ctx.capabilities = &held;
+        ctx.capabilities = agentengine::borrow_capabilities(held);
 
         auto lease = store.resolve(SecretRef{"ae_test_secret_file_store_secret"}, ctx);
         AE_CHECK(lease.has_value() && lease->reveal_text() == "file-value-456",

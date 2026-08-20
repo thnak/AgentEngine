@@ -188,44 +188,48 @@ struct tools_of<P, Rest...> {
     [[nodiscard]] static ToolTable table() { return tools_of<Rest...>::table(); }
 };
 
+// Every `*_of<Policies...>()` below shares one idiom: a lambda invoked once per policy by a comma
+// fold, written INSIDE the fold pattern rather than declared first and invoked after. The two forms
+// run identically for a non-empty pack; the difference is the EMPTY one. `Agent<>` with no policy
+// tags expands the fold to nothing, which left the previously-named `consider`/`append_one` local
+// declared and never called -- gcc's -Wunused-but-set-variable, 14 times across this file and
+// tool.hpp. Naming nothing means there is nothing to be unused, so the warning is gone by
+// construction instead of by annotation. The empty-pack instantiation still returns the declared
+// default, and for a multi-policy pack the last tag that supplies a value still wins.
 template <class... Policies>
 [[nodiscard]] std::string_view chat_client_id_of() {
     std::string_view found;
-    auto consider = [&found]<class P>() {
-        if (auto v = policy_chat_client_id<P>::get(); !v.empty()) found = v;
-    };
-    (consider.template operator()<Policies>(), ...);
+    ([&found] {
+        if (auto v = policy_chat_client_id<Policies>::get(); !v.empty()) found = v;
+    }(), ...);
     return found;
 }
 
 template <class... Policies>
 [[nodiscard]] std::vector<Capability> capability_ceiling_of() {
     std::vector<Capability> result;
-    auto append_one = [&result]<class P>() {
-        auto caps = tool_detail::policy_capabilities<P>::get();
+    ([&result] {
+        auto caps = tool_detail::policy_capabilities<Policies>::get();
         result.insert(result.end(), caps.begin(), caps.end());
-    };
-    (append_one.template operator()<Policies>(), ...);
+    }(), ...);
     return result;
 }
 
 template <class... Policies>
 [[nodiscard]] std::uint32_t max_turns_of() {
     std::uint32_t value = 16;
-    auto consider = [&value]<class P>() {
-        if (auto v = policy_max_turns<P>::get(); v.has_value()) value = *v;
-    };
-    (consider.template operator()<Policies>(), ...);
+    ([&value] {
+        if (auto v = policy_max_turns<Policies>::get(); v.has_value()) value = *v;
+    }(), ...);
     return value;
 }
 
 template <class... Policies>
 [[nodiscard]] std::optional<std::uint64_t> token_budget_of() {
     std::optional<std::uint64_t> value;
-    auto consider = [&value]<class P>() {
-        if (auto v = policy_token_budget<P>::get(); v.has_value()) value = v;
-    };
-    (consider.template operator()<Policies>(), ...);
+    ([&value] {
+        if (auto v = policy_token_budget<Policies>::get(); v.has_value()) value = v;
+    }(), ...);
     return value;
 }
 
@@ -235,50 +239,45 @@ template <class... Policies>
     // default (policy_driven) differs from Tool's (never_require, core/tool.hpp), a difference in
     // the owning context's default, not a second definition of Approval<M> itself.
     approval_mode mode = approval_mode::policy_driven;
-    auto consider = [&mode]<class P>() {
-        if (auto m = tool_detail::policy_approval<P>::get(); m.has_value()) mode = *m;
-    };
-    (consider.template operator()<Policies>(), ...);
+    ([&mode] {
+        if (auto m = tool_detail::policy_approval<Policies>::get(); m.has_value()) mode = *m;
+    }(), ...);
     return mode;
 }
 
 template <class... Policies>
 [[nodiscard]] concurrency_mode concurrency_of() {
     concurrency_mode value = concurrency_mode::sequential;
-    auto consider = [&value]<class P>() {
-        if (auto v = policy_concurrency<P>::get(); v.has_value()) value = *v;
-    };
-    (consider.template operator()<Policies>(), ...);
+    ([&value] {
+        if (auto v = policy_concurrency<Policies>::get(); v.has_value()) value = *v;
+    }(), ...);
     return value;
 }
 
 template <class... Policies>
 [[nodiscard]] telemetry_capture telemetry_of() {
     telemetry_capture value = telemetry_capture::metadata_only;
-    auto consider = [&value]<class P>() {
-        if (auto v = policy_telemetry<P>::get(); v.has_value()) value = *v;
-    };
-    (consider.template operator()<Policies>(), ...);
+    ([&value] {
+        if (auto v = policy_telemetry<Policies>::get(); v.has_value()) value = *v;
+    }(), ...);
     return value;
 }
 
 template <class... Policies>
 [[nodiscard]] std::optional<std::uint32_t> stateless_of() {
     std::optional<std::uint32_t> value;
-    auto consider = [&value]<class P>() {
-        if (auto v = policy_stateless<P>::get(); v.has_value()) value = v;
-    };
-    (consider.template operator()<Policies>(), ...);
+    ([&value] {
+        if (auto v = policy_stateless<Policies>::get(); v.has_value()) value = v;
+    }(), ...);
     return value;
 }
 
 template <class... Policies>
 [[nodiscard]] std::optional<std::string> output_schema_of() {
     std::optional<std::string> value;
-    auto consider = [&value]<class P>() {
-        if (auto v = policy_output_schema<P>::get(); v.has_value()) value = v;
-    };
-    (consider.template operator()<Policies>(), ...);
+    ([&value] {
+        if (auto v = policy_output_schema<Policies>::get(); v.has_value()) value = v;
+    }(), ...);
     return value;
 }
 
@@ -288,10 +287,9 @@ template <class... Policies>
 template <class... Policies>
 [[nodiscard]] SandboxProfileDescriptor sandbox_profile_of() {
     std::optional<SandboxProfileDescriptor> value;
-    auto consider = [&value]<class P>() {
-        if (auto v = policy_sandbox_profile<P>::get(); v.has_value()) value = v;
-    };
-    (consider.template operator()<Policies>(), ...);
+    ([&value] {
+        if (auto v = policy_sandbox_profile<Policies>::get(); v.has_value()) value = v;
+    }(), ...);
     return value.value_or(SandboxProfileDescriptor{});
 }
 

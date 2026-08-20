@@ -404,7 +404,7 @@ int main() {
     CapabilitySet held = CapabilitySet::grant_root({cap::Secret{"openai-api-key", std::chrono::seconds{0}}});
     EffectContext ctx;
     ctx.principal = Principal{"test-principal", ""};
-    ctx.capabilities = &held;
+    ctx.capabilities = agentengine::borrow_capabilities(held);
 
     using agentengine::test_support::run_task_sync;
 
@@ -461,7 +461,7 @@ int main() {
                                              ChatClientCapabilities{}, store, "/v1", fake_resolver, leaf.cert_pem);
             CapabilitySet empty;
             EffectContext denied_ctx = ctx;
-            denied_ctx.capabilities = &empty;
+            denied_ctx.capabilities = agentengine::borrow_capabilities(empty);
             auto resp = run_task_sync<result<ChatResponse>>(client.chat(request_asking("hi"), denied_ctx));
             check(!resp.has_value(), "J2: the denied call fails, as expected");
             if (!resp) {

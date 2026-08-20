@@ -30,6 +30,7 @@
 #include <vector>
 
 #include "agentengine/core/worktree_mount_fs_posix.hpp"
+#include "agentengine/pal/env.hpp"
 
 using namespace agentengine;
 
@@ -87,8 +88,8 @@ std::string read_all(int fd) {
 }
 
 std::string make_scratch_dir() {
-    char const* tmp = std::getenv("TMPDIR");
-    std::string base = tmp && *tmp ? tmp : "/tmp";
+    auto const tmp = ::agentengine::pal::env_var("TMPDIR");
+    std::string base = (tmp && !tmp->empty()) ? *tmp : "/tmp";
     std::string tmpl = base + "/ae_c4_XXXXXX";
     std::vector<char> buf(tmpl.begin(), tmpl.end());
     buf.push_back('\0');
@@ -254,7 +255,12 @@ int main() {
     }
 
     std::string const cleanup_cmd = "rm -rf '" + scratch + "'";
-    std::system(cleanup_cmd.c_str());  // best-effort teardown, matching the Windows corpus's own
+    // Best-effort teardown, matching the Windows corpus's own. The result is bound rather than
+    // dropped because std::system carries warn_unused_result on glibc, and deliberately not checked:
+    // a scratch directory that outlives the run is untidy, not a test failure, and turning it into
+    // one would let an unrelated filesystem hiccup mask the escape-corpus verdict above.
+    int const cleanup_rc = std::system(cleanup_cmd.c_str());
+    (void)cleanup_rc;
 
     if (g_failures != 0) {
         std::cerr << g_failures << " check(s) failed.\n";

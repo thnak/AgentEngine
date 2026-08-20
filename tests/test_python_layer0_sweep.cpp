@@ -47,17 +47,10 @@
 
 #if defined(_WIN32)
 #include <crtdbg.h>
+#include "support/crt_fail_fast.hpp"
 #endif
 
 namespace {
-void disable_crt_assert_dialog() {
-#if defined(_WIN32)
-    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
-    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
-#endif
-}
 
 std::set<std::string> dump_sys_modules() {
     std::set<std::string> out;
@@ -85,7 +78,7 @@ bool run_ok(const char* src) {
 } // namespace
 
 int main() {
-    disable_crt_assert_dialog();
+    ::agentengine::test_support::fail_fast_on_windows();
 
     PyConfig config;
     PyConfig_InitPythonConfig(&config);

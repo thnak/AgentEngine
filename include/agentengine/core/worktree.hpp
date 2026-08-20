@@ -44,6 +44,7 @@
 
 namespace agentengine {
 
+// ae-naming-lint: allow Digest — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 using Digest = std::string;  // hex-encoded SHA-256, 64 lowercase hex chars
 
 // SHA-256(bytes), hex-encoded. Implemented in src/core/worktree_digest.cpp (Windows for now);
@@ -58,6 +59,7 @@ using Digest = std::string;  // hex-encoded SHA-256, 64 lowercase hex chars
 // storage -- the opposite of 025 §2's dedup claim. A bool is the plainest way to say which of the
 // store's two tables (`blobs_`/`trees_`) a digest should be looked up in, without inventing a
 // second digest-space tag.
+// ae-naming-lint: allow TreeEntry — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct TreeEntry {
     std::string name;
     Digest      digest;
@@ -70,6 +72,7 @@ struct TreeEntry {
 // dedup claim ("the same file written by two agents is stored once") actually true rather than
 // aspirational: two trees with identical entries built in different insertion order must hash
 // identically, which requires a canonical order to hash over.
+// ae-naming-lint: allow Tree — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct Tree {
     std::vector<TreeEntry> entries;
 };
@@ -78,6 +81,7 @@ struct Tree {
 // one principal (029 §2 reuses this exact shape one level up, scoped to a principal instead).
 // Persistence rides `agentengine::rt::AppendLogStore` directly, not this header's object store --
 // see the file-top comment (ADR-037) and the milestone-3 breakdown's decision 1.
+// ae-naming-lint: allow Ref — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct Ref {
     std::string name;       // e.g. "session:s-42" or "principal:p-7"
     Digest      tree_digest;
@@ -119,6 +123,7 @@ struct Ref {
 // (synchronous) for the same reason every other seam header still is: `ae::task<T>` is not yet
 // wired in project-wide (M2's own decision 2, unchanged).
 template <class S>
+// ae-naming-lint: allow WorktreeObjectStore — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 concept WorktreeObjectStore =
     requires(S& s, std::span<std::byte const> bytes, Digest const& digest, Tree tree) {
         { s.put_blob(bytes) } -> std::same_as<result<Digest>>;
@@ -133,6 +138,7 @@ concept WorktreeObjectStore =
 // Quark's own `Store` seam uses for a different shape of persistence) is a tracked follow-up, not
 // built in this pass -- see docs/planning/milestone-3-worktree-interpreter-codeact-breakdown.md
 // Phase A.
+// ae-naming-lint: allow InMemoryWorktreeObjectStore — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class InMemoryWorktreeObjectStore {
 public:
     [[nodiscard]] result<Digest> put_blob(std::span<std::byte const> bytes) {
@@ -194,6 +200,7 @@ static_assert(WorktreeObjectStore<InMemoryWorktreeObjectStore>);
 // ============================================================================================
 
 // One committed Ref update: the tree it now points at.
+// ae-naming-lint: allow RefMoved — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct RefMoved {
     Digest tree_digest;
 };
@@ -295,6 +302,7 @@ template <rt::AppendLogStore StoreT>
 // The result of a turn-boundary commit: the moved `Ref` plus `turn`, this commit's own position in
 // the ref's log -- what a caller (the not-yet-built session/turn-loop layer, 019/session-shaped)
 // hands back to a later `rewind_to_turn` call to name this exact point again.
+// ae-naming-lint: allow TurnCommit — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct TurnCommit {
     Ref       ref;
     rt::SeqNo turn;
@@ -367,6 +375,7 @@ template <rt::AppendLogStore StoreT>
 // this header can infer from a Ref and a name alone, so it is deliberately not attempted here.
 // ============================================================================================
 
+// ae-naming-lint: allow SubWorktree — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct SubWorktree {
     std::string  name;              // this sub-worktree's own logical name
     std::string  backing_ref_name;  // the Ref actually read/written through; empty iff readonly
@@ -460,6 +469,7 @@ template <rt::AppendLogStore S>
 // One genuine collision: `path` is slash-joined from the merge root (e.g. "a/b/c.txt"). Any of
 // `base`/`ours`/`theirs` may be absent -- absent means "did not exist on that side" (an add/add
 // divergence has no `base`; an edit/delete divergence has no `ours` or no `theirs`).
+// ae-naming-lint: allow MergeConflict — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct MergeConflict {
     std::string               path;
     std::optional<TreeEntry>  base;
@@ -467,6 +477,7 @@ struct MergeConflict {
     std::optional<TreeEntry>  theirs;
 };
 
+// ae-naming-lint: allow MergeResult — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct MergeResult {
     Digest                     merged_tree_digest;  // valid only when conflicts.empty()
     std::vector<MergeConflict> conflicts;
@@ -587,6 +598,7 @@ template <WorktreeObjectStore S>
 // The outcome of merging one `branch` sub-worktree back into its parent: either the parent's Ref
 // moved to the merged tree (`parent_ref` set), or the merge produced one or more conflicts and
 // NOTHING was committed (025 §4: a failed merge must never partially apply).
+// ae-naming-lint: allow BranchMergeOutcome — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct BranchMergeOutcome {
     std::optional<Ref>         parent_ref;
     std::vector<MergeConflict> conflicts;
@@ -836,17 +848,20 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
 // other direction, so it is written standalone rather than as a special case of B2's algorithm.
 // ============================================================================================
 
+// ae-naming-lint: allow TreeDiffKind — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 enum class TreeDiffKind { added, removed, modified };
 
 // One changed FILE (never a directory -- see `detail::collect_leaves_as` below): `path` is
 // slash-joined from the tree root. A whole subdirectory added or removed is walked all the way
 // down so each actual file inside it gets its own entry, matching "N files changed" being a count
 // of files, not of the top-level names that happened to move.
+// ae-naming-lint: allow TreeDiffEntry — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct TreeDiffEntry {
     std::string   path;
     TreeDiffKind  kind;
 };
 
+// ae-naming-lint: allow TreeDiff — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct TreeDiff {
     std::vector<TreeDiffEntry> changes;
 
@@ -991,6 +1006,7 @@ template <WorktreeObjectStore S>
 // What an agent's turn opens with (025 §10 Q2): whether `shared` moved since `last_read_digest`
 // (typically what the agent's own previous turn last observed via `read_sub_worktree`), and if so,
 // the diff that moved it. `stale()` false and `diff.changes` empty both when nothing moved.
+// ae-naming-lint: allow SharedStalenessNote — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct SharedStalenessNote {
     Digest    last_read_digest;
     Digest    current_digest;
@@ -1057,6 +1073,7 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
 // point at the SAME ref with different `subtree_path`s, or at entirely different refs. Never derived
 // from a guest-supplied path (I2); constructed only by host policy, the same way a `Capability` is
 // only ever minted by `CapabilitySet::grant_root`.
+// ae-naming-lint: allow Mount — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct Mount {
     std::string mount_id;
     std::string ref_name;

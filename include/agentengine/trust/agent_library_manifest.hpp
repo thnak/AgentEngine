@@ -34,6 +34,7 @@
 
 namespace agentengine::trust {
 
+// ae-naming-lint: allow ModuleDescriptor — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct ModuleDescriptor {
     std::string_view name;
     std::string_view one_line;                    // <= ~10 words; see push_side_summary's budget check
@@ -100,6 +101,7 @@ inline std::size_t approx_token_count(std::string_view text) {
     return {};
 }
 
+// ae-naming-lint: allow GrantedModule — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct GrantedModule {
     std::string_view name;
     std::string_view one_line;

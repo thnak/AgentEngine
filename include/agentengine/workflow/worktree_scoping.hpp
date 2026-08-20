@@ -51,6 +51,7 @@ namespace agentengine::workflow {
 // core/worktree.hpp change, out of scope for this file (see ADR-032 §5). A `readonly` executor
 // still gets a real, correct `SubWorktree` (`sub.pinned_digest` is valid and independently readable
 // via `read_sub_worktree`) -- it just has no capability-gated guest-facing view yet.
+// ae-naming-lint: allow ExecutorWorktreeGrant — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct ExecutorWorktreeGrant {
     SubWorktree               sub;
     std::optional<Mount>      mount;

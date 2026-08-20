@@ -35,6 +35,7 @@
 namespace agentengine {
 
 template <class RunnerT>
+// ae-naming-lint: allow CodeActRunnerBinding — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class CodeActRunnerBinding {
 public:
     // Non-owning: `runner` is the host's (e.g. `main()`'s own static-lifetime instance) — this

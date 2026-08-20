@@ -277,12 +277,41 @@ effect, proven against the real compiled fixture, not a hand-crafted test double
   unchanged) until that milestone wires this proxy in as the mediation target.
 - **No redirect-following, by design, not a gap** — see §3 Design B. A caller that needs to follow a
   redirect issues a new, separately-allowlist-checked request.
-- **Chunked transfer-encoding is not supported** on the response side — `perform_http_exchange` only
-  understands a `Content-Length`-framed body or read-until-close. Every consumer of this proxy this
-  milestone (the test double, and any well-behaved M2-era target) sends one or the other; a target that
-  only speaks chunked encoding is a documented gap, not a silent misparse (the response would fail to
-  terminate correctly and time out, a `net.connect_failed`-class error, not a corrupted body silently
-  returned).
+- ~~**Chunked transfer-encoding is not supported** on the response side...~~ **Fixed (2026-08-19).**
+  The claim above was itself wrong, found while scoping M7's chunking-MCP-mock gap
+  (`docs/planning/milestone-7-protocol-conformance-breakdown.md` H3): every request this client sends
+  already carries `Connection: close`, so a `Transfer-Encoding: chunked`, no-`Content-Length` target
+  does NOT fail to terminate — the read loop's existing read-until-peer-close path already collects
+  the whole raw response correctly. The real bug was one level later: `parse_http_response()` handed
+  that raw buffer straight to `resp.body`, chunk-size lines/extensions/terminators and all, a silently
+  corrupted body, not the documented timeout. Fixed by dechunking for real (`dechunk_body()`,
+  `net_egress_proxy.cpp`) whenever a response carries `Transfer-Encoding: chunked` — chunk extensions
+  and trailer fields are parsed past and discarded, not surfaced; a malformed chunk-size or truncated
+  chunk data fails closed with `net.protocol_error` rather than misparsing. No `Content-Length`-framed
+  or read-until-close (non-chunked) response's behavior changes. New tests in
+  `tests/test_net_egress_proxy.cpp`: a real chunked response (two data chunks, one with an extension,
+  a discarded trailer) dechunks to the correct body; a malformed chunk-size fails closed with the
+  documented error code, not a misparse. This is a bug fix against this ADR's own already-decided
+  design (a `Content-Length`-or-read-until-close read loop, claim C8's byte-cap-during-the-loop
+  discipline unchanged), not a new competing design — no separate ADR filed, per the ADR-062 removal
+  precedent (`decisions/README.md`, "an ADR for everything is an ADR for nothing"). Applied only to
+  `perform_http_exchange`/`perform_https_exchange` (the buffered, full-response functions) via a
+  `dechunk_response_body_if_needed()` helper called AFTER `parse_http_response()`, never inside it —
+  `parse_http_response()` is also called by `stream_response_body()` with only the header bytes (the
+  streaming path relays the body incrementally and never buffers it here), and dechunking unconditionally
+  inside `parse_http_response()` itself, tried first, dechunked an always-empty string on that path and
+  broke every SSE test — caught by the full suite, not by `test_net_egress_proxy.cpp` alone, fixed
+  before committing. That fix in turn surfaced a second, real conflict: `protocol/openai/chat_client.hpp`
+  and `protocol/anthropic/chat_client.hpp` each already carried their OWN independent chunked-decode
+  workaround on `chat()`'s non-streaming path (an older, narrower fix for the same real OpenRouter
+  finding this ADR's own §9 originally undersold) — with this fix now dechunking at the transport layer
+  first, that per-provider decode ran a second time on already-plain JSON and misparsed it as chunk
+  framing. Retired both providers' redundant `decode_chunked_body`/`response_is_chunked`/
+  `decoded_response_body` helpers (and their direct unit tests) rather than keeping two decode layers —
+  `chat()` now trusts `resp->body` is already plain. Neither provider's STREAMING path
+  (`chat_stream()`/`sandbox::perform_provider_streaming_exchange`) was touched; it uses the separate
+  incremental `sandbox::ChunkedBodyDecoder`, which this fix deliberately does not reach. Full suite
+  195/195 after both rounds of fixes, confirmed clean (not just the one target).
 - **`method_restrictions`/`byte_cap` are the only two of `cap::NetOut`'s three parameters this ADR
   exercises against a live target in the WASM path** — the third, `host_allowlist`, is exercised
   structurally (C1) but every M2-era `NetOut<Host>` declaration tag only ever produces a single-entry

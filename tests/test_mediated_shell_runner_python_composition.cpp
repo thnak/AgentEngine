@@ -18,6 +18,7 @@
 #endif
 
 #include "agentengine/core/effect_context.hpp"
+#include "agentengine/pal/env.hpp"
 #include "agentengine/trust/capability.hpp"
 #include "backends/native_jail/mediated_command_registry.hpp"
 #include "backends/native_jail/mediated_filesystem_adapter.hpp"
@@ -56,7 +57,7 @@ void disable_crt_assert_dialog() {
 int main() {
     disable_crt_assert_dialog();
 
-    std::string const scratch = std::string(std::getenv("TEMP") ? std::getenv("TEMP") : "C:/Windows/Temp") +
+    std::string const scratch = ::agentengine::pal::env_var("TEMP").value_or("C:/Windows/Temp") +
                                  "/ae_e3_py_compose";
     std::filesystem::remove_all(scratch);
     std::filesystem::create_directories(scratch);
@@ -90,7 +91,7 @@ int main() {
         ExecState state{};
         CapabilitySet caps = CapabilitySet::grant_root({Capability{cap::RunnerCall{"python"}}});
         EffectContext ctx{};
-        ctx.capabilities = &caps;
+        ctx.capabilities = agentengine::borrow_capabilities(caps);
 
         auto out = shell.run(ExecRequest{"shell", "python print(6 * 7)"}, state, ctx);
         AE_CHECK(out.has_value() && out->stdout_text.find("42") != std::string::npos,
@@ -118,7 +119,7 @@ int main() {
         // CPython, this would be defined from that earlier, supposedly-blocked execution; a real
         // NameError instead proves it was never set.
         CapabilitySet caps = CapabilitySet::grant_root({Capability{cap::RunnerCall{"python"}}});
-        ctx.capabilities = &caps;
+        ctx.capabilities = agentengine::borrow_capabilities(caps);
         auto probe = shell.run(ExecRequest{"shell", "python print(ae_e3_side_effect)"}, state, ctx);
         AE_CHECK(probe.has_value() && probe->stderr_text.find("NameError") != std::string::npos,
                  "E3-PY3: the denied call's side effect never happened -- the interpreter was truly "
@@ -134,7 +135,7 @@ int main() {
         ExecState state{};
         CapabilitySet caps = CapabilitySet::grant_root({Capability{cap::RunnerCall{"python"}}});
         EffectContext ctx{};
-        ctx.capabilities = &caps;
+        ctx.capabilities = agentengine::borrow_capabilities(caps);
         // The whole multi-line, quote-containing Python body is wrapped in ONE shell-level
         // double-quoted word so this grammar's word-splitting never sees the spaces/quotes inside
         // it -- the double quotes are stripped by expand_word(), leaving the real newlines and

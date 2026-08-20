@@ -33,6 +33,7 @@ struct ExecState {
 // stability across further insertions is a guaranteed property of the container (only iterators may
 // be invalidated by growth, never references to an existing element) -- a `vector`-backed store
 // would not give `get_or_create` the right to keep handing out the same `ExecState&` forever.
+// ae-naming-lint: allow SessionExecStateRegistry — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class SessionExecStateRegistry {
 public:
     // Default-constructs a fresh `ExecState` on the FIRST call for `session_id`; every later call

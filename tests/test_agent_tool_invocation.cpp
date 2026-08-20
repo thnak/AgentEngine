@@ -105,7 +105,7 @@ int main() {
     {
         agentengine::EffectContext ctx;
         ctx.principal = agentengine::Principal{"test-principal", ""};
-        ctx.capabilities = &covering_caps;
+        ctx.capabilities = agentengine::borrow_capabilities(covering_caps);
         ToolCallRequest req{"call-1", "echo", *json::parse(R"({"message":"hi"})"), false};
         agentengine::ToolInvocationAudit audit;
         auto result = invoke_agent_tool(*meta, req, ctx, {}, &audit);
@@ -130,7 +130,7 @@ int main() {
     //    unknown_name), not from the attenuation gate rejecting the caller first ---------------------
     {
         agentengine::EffectContext ctx;
-        ctx.capabilities = &covering_caps;
+        ctx.capabilities = agentengine::borrow_capabilities(covering_caps);
         ToolCallRequest req{"call-2", "does_not_exist", json::Value::make_object({}), false};
         agentengine::ToolInvocationAudit audit;
         auto result = invoke_agent_tool(*meta, req, ctx, {}, &audit);
@@ -145,7 +145,7 @@ int main() {
     {
         agentengine::CapabilitySet const empty_caps = agentengine::CapabilitySet::grant_root({});
         agentengine::EffectContext ctx;
-        ctx.capabilities = &empty_caps;
+        ctx.capabilities = agentengine::borrow_capabilities(empty_caps);
         ToolCallRequest req{"call-3", "echo", *json::parse(R"({"message":"hi"})"), false};
         agentengine::ToolInvocationAudit audit;
         auto result = invoke_agent_tool(*meta, req, ctx, {}, &audit);
@@ -162,7 +162,7 @@ int main() {
         agentengine::CapabilitySet const generous_caps = agentengine::CapabilitySet::grant_root(
             {agentengine::cap::Entropy{}, agentengine::cap::NetOut{{"unrelated.example:443:https"}, std::nullopt, {}}});
         agentengine::EffectContext ctx;
-        ctx.capabilities = &generous_caps;
+        ctx.capabilities = agentengine::borrow_capabilities(generous_caps);
         ToolCallRequest req{"call-4", "echo", *json::parse(R"({"message":"hi"})"), false};
         agentengine::ToolInvocationAudit audit;
         auto result = invoke_agent_tool(*meta, req, ctx, {}, &audit);

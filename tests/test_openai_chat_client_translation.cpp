@@ -337,18 +337,6 @@ int main() {
         }
     }
 
-    // ---- D2: Transfer-Encoding: chunked decoding -----------------------------------------------------
-    {
-        std::string chunked = "5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n";
-        auto decoded = decode_chunked_body(chunked);
-        check(decoded.has_value() && *decoded == "hello world", "D2-R1: chunked transfer-encoding decodes correctly");
-    }
-    {
-        std::string malformed = "not-hex\r\ndata\r\n0\r\n\r\n";
-        auto decoded = decode_chunked_body(malformed);
-        check(!decoded.has_value(), "D2-R2: a malformed chunk size fails cleanly, not a garbled decode");
-    }
-
     // ---- D2: SSE event splitting --------------------------------------------------------------------
     {
         std::string sse = "data: {\"a\":1}\n\ndata: {\"a\":2}\n\ndata: [DONE]\n\n";

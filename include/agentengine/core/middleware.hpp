@@ -69,6 +69,7 @@ namespace agentengine {
 // separate short-circuit-vs-review pair to keep in sync. `settled()` is checked by the chain runner
 // after every before-hook; the FIRST hook that settles it stops the before-phase (no further
 // before_model runs, the real backend is never called).
+// ae-naming-lint: allow ModelCallContext — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct ModelCallContext {
     ChatRequest                 request;
     std::optional<ChatResponse> response;
@@ -83,12 +84,14 @@ struct ModelCallContext {
 // nullptr by default, mirroring `workflow/supervisor.hpp`'s `WorkflowSupervisor::CheckpointHook`
 // idiom exactly (an explicitly injected hook, never an ambient sink this file would have to own or
 // template over). A host that wants real durability/OTel export closes over its own sink in the hook.
+// ae-naming-lint: allow MiddlewareTraceEvent — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct MiddlewareTraceEvent {
     std::string_view middleware_name;
     std::string_view hook;       // "before_model" | "after_model"
     bool             settled_here = false;  // this hook's call is what settled ctx (short-circuit/deny)
     bool             threw = false;         // this hook's call ended in a caught exception
 };
+// ae-naming-lint: allow MiddlewareTraceHook — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 using MiddlewareTraceHook = std::function<void(MiddlewareTraceEvent const&)>;
 
 namespace middleware_detail {

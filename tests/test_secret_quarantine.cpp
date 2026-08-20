@@ -37,7 +37,11 @@ EffectContext make_ctx(std::string principal_id = "test-principal") {
 
 EffectContext make_granted_ctx(CapabilitySet const& caps, std::string principal_id = "test-principal") {
     EffectContext ctx = make_ctx(std::move(principal_id));
-    ctx.capabilities = &caps;
+    // ADR-061 §20.3 (merged from main after this test was first written): EffectContext::capabilities
+    // is a shared_ptr now, not a raw pointer -- borrow_capabilities() is the documented non-owning
+    // bridge for a caller-owned CapabilitySet that outlives every use of the returned shared_ptr,
+    // effect_context.hpp's own header comment.
+    ctx.capabilities = borrow_capabilities(caps);
     return ctx;
 }
 

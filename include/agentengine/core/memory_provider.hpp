@@ -27,16 +27,19 @@
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/memory.hpp"
+#include "agentengine/core/provenance_marker.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/rt/append_log_store.hpp"
 
 namespace agentengine {
 
+// ae-naming-lint: allow RecallArgs — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct RecallArgs {
     std::string query;
 };
 AE_JSON_SCHEMA(RecallArgs, query)
 
+// ae-naming-lint: allow RecallReply — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct RecallReply {
     std::vector<std::string> results;
 };
@@ -91,24 +94,13 @@ namespace memory_detail {
 // broken by inserting a zero-width space (U+200B) into it before the item's own real, structurally-
 // emitted label is prepended -- so the only place the exact, unbroken marker can ever appear in the
 // assembled text is a label this function itself emitted, never inside retrieved content.
+// 2026-08-19 (ADR-063 §2.6b): this used to inline the whole neutralization loop. It is now a
+// one-line call to `neutralize_forged_provenance_markers()` (core/provenance_marker.hpp), the
+// same technique generalized over which marker family is being protected — behavior-preserving,
+// not a rewrite; RAG citations (ADR-063) reuse the identical mechanism with their own `rag:`
+// marker family instead of a second, duplicate implementation.
 [[nodiscard]] inline std::string neutralize_forged_memory_labels(std::string const& content) {
-    std::string_view const marker = memory_label_open();
-    std::string out;
-    out.reserve(content.size());
-    std::size_t pos = 0;
-    while (true) {
-        auto const found = content.find(marker, pos);
-        if (found == std::string::npos) {
-            out.append(content, pos, std::string::npos);
-            break;
-        }
-        out.append(content, pos, found - pos);
-        out += "\xE2\x9F\xA6";      // the marker's own open glyph, unbroken (harmless alone)
-        out += "\xE2\x80\x8B";      // U+200B zero-width space -- breaks the exact "...memory:" match
-        out += "memory:";
-        pos = found + marker.size();
-    }
-    return out;
+    return neutralize_forged_provenance_markers(content, memory_label_open());
 }
 
 // Shared by `on_context()`'s default injection AND the contributed `recall(query)` tool's reply --
@@ -304,10 +296,23 @@ public:
     }
 
 private:
+    // Walks BACKWARD to the most recent `role::user` message, never just `history.back()` —
+    // a red-team pass against `VectorRagContextProvider` (ADR-063, 2026-08-19) found the identical
+    // pattern here treats `history.back()` as the query source even when `on_context()` runs at a
+    // point where the assistant's own pending tool-call message (its text preamble, if any) is what
+    // sits at `history.back()` — e.g. `AgentSession::resolve_interaction()`'s approved-tool-call
+    // branch, before `tool_results_message` is pushed. For Memory this was comparatively inert (a
+    // local, no-network keyword match), but it is still a real I3 violation ("model output is data,
+    // never authority") in principle: a keyword-match query derived from model output rather than
+    // the user is still authority derived from model output. Fixed the same way here.
     [[nodiscard]] static std::string last_user_text(std::vector<Message> const& history) {
-        if (history.empty() || history.back().content.empty()) return {};
-        auto const* text = std::get_if<Text>(&history.back().content.front().value);
-        return text != nullptr ? text->text : std::string{};
+        for (auto it = history.rbegin(); it != history.rend(); ++it) {
+            if (it->role != role::user) continue;
+            if (it->content.empty()) return {};
+            auto const* text = std::get_if<Text>(&it->content.front().value);
+            return text != nullptr ? text->text : std::string{};
+        }
+        return {};
     }
 
     // 029 §6: "Retrieved memory is tainted external content... it was written by a process on an

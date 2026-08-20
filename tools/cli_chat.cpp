@@ -63,6 +63,7 @@
 #include "agentengine/core/skill_provider.hpp"
 #include "agentengine/core/skill_tool_scoping.hpp"
 #include "agentengine/core/tool_call_extraction.hpp"
+#include "agentengine/pal/env.hpp"
 #include "agentengine/protocol/openai/chat_client.hpp"
 #include "agentengine/rt/agent_session.hpp"
 #include "agentengine/rt/thread_pool.hpp"
@@ -77,8 +78,8 @@ using namespace agentengine;
 namespace {
 
 [[nodiscard]] std::string env_or(char const* name, std::string fallback) {
-    char const* v = std::getenv(name);
-    return (v && *v) ? std::string(v) : std::move(fallback);
+    auto const v = ::agentengine::pal::env_var(name);
+    return (v && !v->empty()) ? *v : std::move(fallback);
 }
 
 constexpr char const* kDefaultModel = "~deepseek/deepseek-v4-flash-latest";
@@ -723,8 +724,8 @@ void print_skills_banner(std::vector<native_jail::MaterializedSkillMount> const&
 }  // namespace
 
 int main() {
-    char const* key_env = std::getenv("AGENTENGINE_OPENROUTER_API_KEY");
-    if (!key_env || !*key_env) {
+    auto const key_env = ::agentengine::pal::env_var("AGENTENGINE_OPENROUTER_API_KEY");
+    if (!key_env || key_env->empty()) {
         std::cerr << "AGENTENGINE_OPENROUTER_API_KEY is not set. Export a real OpenRouter API key "
                      "and re-run.\n";
         return 1;
@@ -751,7 +752,7 @@ int main() {
     }
 
     InMemorySecretStore store;
-    store.set(kSecretName, key_env);
+    store.set(kSecretName, *key_env);
     std::vector<Capability> grants = {
         Capability{cap::Secret{kSecretName, std::chrono::seconds{0}}},
         Capability{cap::FsRead{kWorkMount, "", std::nullopt}},

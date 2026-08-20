@@ -138,6 +138,24 @@ void handle_ok(agentengine::pal::fd_t fd) {
     write_all(fd, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\n\r\nhello");
 }
 
+// A real `Transfer-Encoding: chunked` response, no `Content-Length` at all -- two data chunks, a
+// chunk-extension on the second (";ext=1", which must be discarded unread, not misparsed as part of
+// the size), a trailer field after the terminal 0-chunk (also discarded), then the peer closes
+// (matching every real chunked server this client's `Connection: close` request will see).
+void handle_chunked(agentengine::pal::fd_t fd) {
+    write_all(fd,
+              "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nTransfer-Encoding: chunked\r\n\r\n"
+              "5\r\nhello\r\n"
+              "7;ext=1\r\n, world\r\n"
+              "0\r\nX-Trailer: ignored\r\n\r\n");
+}
+
+void handle_chunked_malformed(agentengine::pal::fd_t fd) {
+    write_all(fd,
+              "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+              "not-hex\r\nhello\r\n0\r\n\r\n");
+}
+
 void handle_flood(agentengine::pal::fd_t fd, std::size_t total_bytes) {
     std::string const header = "HTTP/1.1 200 OK\r\nContent-Length: " + std::to_string(total_bytes) + "\r\n\r\n";
     if (!write_all(fd, header)) return;
@@ -440,6 +458,34 @@ int main() {
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(50));  // let any stray connect land
             check(target.accept_count() == 0, "the redirect target received ZERO connections -- no auto-follow");
+        }
+    }
+
+    // -- ADR-011 §9 residual, closed: a `Transfer-Encoding: chunked`, no-Content-Length response is --
+    // -- dechunked into its real body, not left with raw chunk-size/terminator bytes in resp.body ----
+    {
+        TestHttpServer server(handle_chunked);
+        check(server.ok(), "chunked test server started");
+        if (server.ok()) {
+            VerifiedEndpoint const ep{kLoopbackHostOrder, server.port()};
+            auto r = perform_http_exchange(ep, "test.invalid", NetEgressRequest{"GET", "/", {}, ""}, std::nullopt);
+            check(r.has_value(), "a chunked response is read successfully, not timed out or errored");
+            if (r) {
+                check(r->status == 200, "chunked response status round-trips correctly");
+                check(r->body == "hello, world",
+                      "chunked response body is dechunked (chunk-size lines/extensions/trailer stripped), "
+                      "not left as raw chunk framing bytes");
+            }
+        }
+    }
+    {
+        TestHttpServer server(handle_chunked_malformed);
+        check(server.ok(), "malformed-chunked test server started");
+        if (server.ok()) {
+            VerifiedEndpoint const ep{kLoopbackHostOrder, server.port()};
+            auto r = perform_http_exchange(ep, "test.invalid", NetEgressRequest{"GET", "/", {}, ""}, std::nullopt);
+            check(!r.has_value(), "an invalid chunk-size fails closed rather than misparsing the body");
+            if (!r) check(r.error().code == "net.protocol_error", "specific diagnostic code");
         }
     }
 

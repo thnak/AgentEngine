@@ -62,12 +62,14 @@
 
 namespace agentengine::rt {
 
+// ae-naming-lint: allow checkpoint_phase — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 enum class checkpoint_phase { pending, committed };
 
 // One checkpoint-log entry. `state` is only meaningful when `phase == pending` -- the `committed`
 // marker carries no payload (already durable via its matching `pending` entry); re-encoding the
 // whole state a second time would double the log's storage cost for zero benefit, the same shape
 // the Quark original's own `WorkflowCheckpointRecord` used.
+// ae-naming-lint: allow WorkflowCheckpointEntry — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct WorkflowCheckpointEntry {
     std::uint64_t    checkpoint_index = 0;
     checkpoint_phase phase = checkpoint_phase::pending;
@@ -123,6 +125,7 @@ struct WorkflowCheckpointEntry {
 
 // 014 §5: "every rewind is audited". See file banner for why operator_id/reason are caller-supplied
 // rather than inferred, and why audited_at_ns stays 0.
+// ae-naming-lint: allow RewindAuditRecord — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct RewindAuditRecord {
     std::string   run_id;
     std::uint64_t from_checkpoint_index = 0;

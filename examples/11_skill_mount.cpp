@@ -89,7 +89,7 @@ int main() {
     ToolTable const    universe = ToolTable::from_tools<WordCountTool>();
     CapabilitySet const held = CapabilitySet::grant_root({});
     EffectContext ctx;
-    ctx.capabilities = &held;
+    ctx.capabilities = agentengine::borrow_capabilities(held);
 
     // ---- Before mounting: word_count is named by the skill, but the skill isn't mounted ----------
     {

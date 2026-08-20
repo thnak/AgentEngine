@@ -14,6 +14,7 @@
 
 namespace agentengine {
 
+// ae-naming-lint: allow sharing_mode — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 enum class sharing_mode { shared, branch, readonly, scratch };
 
 }  // namespace agentengine

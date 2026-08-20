@@ -21,6 +21,7 @@
 #include <string>
 
 #include "agentengine/core/skill_provider.hpp"
+#include "agentengine/pal/env.hpp"
 #include "backends/native_jail/mediated_python_runner.hpp"
 #include "backends/native_jail/skill_mount_materializer.hpp"
 
@@ -55,7 +56,7 @@ void check(bool cond, char const* what) {
 }  // namespace
 
 int main() {
-    std::string const base = std::string(std::getenv("TEMP") ? std::getenv("TEMP") : "C:/Windows/Temp") +
+    std::string const base = ::agentengine::pal::env_var("TEMP").value_or("C:/Windows/Temp") +
                               "/ae_skill_mounts_python_test";
     std::filesystem::remove_all(base);
     std::filesystem::create_directories(base);
@@ -88,7 +89,7 @@ int main() {
     EffectContext ctx{};
     auto granted = CapabilitySet::grant_root(
         {Capability{cap::FsRead{"real-mounted-skill", "", std::nullopt}}});
-    ctx.capabilities = &granted;
+    ctx.capabilities = agentengine::borrow_capabilities(granted);
 
     // ---- the actual proof: real Python code, real open(), real mounted skill content ---------------
     {

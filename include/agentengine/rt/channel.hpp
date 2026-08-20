@@ -96,6 +96,7 @@ namespace agentengine::rt {
 // while still treating the latter -- or an unexpected `cancelled` it did not itself trigger -- as
 // worth noting. Collapsing this into `closed` would erase that distinction at the one place (the
 // producer) that could otherwise act on it, for the sole benefit of not adding one enumerator.
+// ae-naming-lint: allow channel_terminal — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 enum class channel_terminal { open, closed, failed, cancelled };
 
 namespace detail {
@@ -158,6 +159,7 @@ struct channel_state {
 // push sequence; two live copies pushing concurrently on the SAME logical stream would defeat the
 // "one writer" assumption the channel's terminal-transition bookkeeping relies on.
 template <class T, class E = std::string>
+// ae-naming-lint: allow channel_producer — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class channel_producer {
 public:
     enum class push_result { ok, terminated };
@@ -234,6 +236,7 @@ private:
 
 // The consumer side. Move-only (mirrors `ae::stream<T>`).
 template <class T, class E = std::string>
+// ae-naming-lint: allow channel_consumer — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class channel_consumer {
 public:
     channel_consumer() noexcept = default;
@@ -344,7 +347,7 @@ private:
     // banner's "single-consumer" note -- is never accidentally cleared by the wrong owner).
     struct next_awaiter {
         channel_consumer* self;
-        std::optional<T> value;
+        std::optional<T> value{};
         bool have_value = false;
         bool parked = false;
         std::coroutine_handle<> handle_{};
@@ -417,6 +420,7 @@ private:
 };
 
 template <class T, class E = std::string>
+// ae-naming-lint: allow channel_pair — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct channel_pair {
     channel_producer<T, E> producer;
     channel_consumer<T, E> consumer;

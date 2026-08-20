@@ -21,6 +21,7 @@
 
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
+#include "agentengine/pal/env.hpp"
 #include "agentengine/trust/capability.hpp"
 #include "backends/native_jail/mediated_python_runner.hpp"
 #include "backends/native_jail/tool_bridge.hpp"
@@ -68,7 +69,7 @@ struct BlockedNetTool : Tool<BlockedNetTool, Capabilities<cap::decl::Entropy>> {
 }  // namespace
 
 int main() {
-    std::string const base = std::string(std::getenv("TEMP") ? std::getenv("TEMP") : "C:/Windows/Temp") +
+    std::string const base = ::agentengine::pal::env_var("TEMP").value_or("C:/Windows/Temp") +
                               "/ae_g4_error_mapping_test";
     std::filesystem::path work_dir = std::filesystem::path(base) / "work";
     std::filesystem::path quota_dir = std::filesystem::path(base) / "quota";
@@ -98,7 +99,7 @@ int main() {
         auto caps = CapabilitySet::grant_root({
             Capability{cap::FsRead{"work", "", std::nullopt}},
         });
-        ctx.capabilities = &caps;
+        ctx.capabilities = agentengine::borrow_capabilities(caps);
 
         ExecRequest req{"python",
                          "try:\n"
@@ -142,7 +143,7 @@ int main() {
             auto caps = CapabilitySet::grant_root({
                 Capability{cap::FsWrite{"quota", "", std::uint64_t{10}, std::nullopt}},
             });
-            ctx.capabilities = &caps;
+            ctx.capabilities = agentengine::borrow_capabilities(caps);
 
             // a.txt: 5 bytes, usage before this open() is 0 (<=10) -- allowed.
             auto a = runner.run(ExecRequest{"python", "open('/quota/a.txt','w').write('hello')"}, state, ctx);
@@ -179,7 +180,7 @@ int main() {
             auto caps = CapabilitySet::grant_root({
                 Capability{cap::FsWrite{"count", "", std::nullopt, std::uint32_t{1}}},
             });
-            ctx.capabilities = &caps;
+            ctx.capabilities = agentengine::borrow_capabilities(caps);
 
             auto x = runner.run(ExecRequest{"python", "open('/count/x.txt','w').write('x')"}, state, ctx);
             AE_CHECK(x.has_value(), "G4-R2-C1: the first file (pre-open count 0/1) is allowed");
@@ -222,7 +223,7 @@ int main() {
         ExecState state{};
         EffectContext ctx{};
         auto caps = CapabilitySet::grant_root({});  // no cap::NetOut granted at all
-        ctx.capabilities = &caps;
+        ctx.capabilities = agentengine::borrow_capabilities(caps);
 
         // G4-R3-1: the raw-socket path -- a connect() attempt with no NetOut capability.
         {

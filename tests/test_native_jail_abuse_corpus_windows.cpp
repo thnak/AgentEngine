@@ -29,6 +29,8 @@
 #endif
 
 #include "backends/native_jail/native_jail_backend.hpp"
+#include "support/crt_fail_fast.hpp"
+#include "support/error_detail.hpp"
 
 using namespace agentengine;
 using agentengine::native_jail::NativeJailBackend;
@@ -47,12 +49,6 @@ int g_failures = 0;
         }                                                                                          \
     } while (0)
 
-void disable_crt_assert_dialog() {
-    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
-    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
-}
 
 std::string quote(std::string const& s) { return "\"" + s + "\""; }
 
@@ -127,7 +123,7 @@ std::string run_raw_unsandboxed(std::string const& cmdline, DWORD grace_ms) {
 }  // namespace
 
 int main() {
-    disable_crt_assert_dialog();
+    ::agentengine::test_support::fail_fast_on_windows();
 
     std::filesystem::path work_dir =
         std::filesystem::temp_directory_path() / "ae_native_jail_abuse_corpus_test";
@@ -169,7 +165,7 @@ int main() {
         contained_spec.limits.output_bytes = 1024 * 1024;
 
         auto handle = backend.create(contained_spec, ctx);
-        AE_CHECK(handle.has_value(), "C3 fork-bomb: create() succeeds");
+        AE_CHECK_OK(handle, "C3 fork-bomb: create() succeeds");
         if (handle.has_value()) {
             auto t0 = std::chrono::steady_clock::now();
             ExecRequest req{.language = "native",
@@ -177,6 +173,12 @@ int main() {
             auto outcome = backend.exec(*handle, req, ctx);
             auto t1 = std::chrono::steady_clock::now();
             AE_CHECK(outcome.has_value(), "C3 fork-bomb: contained exec() returns a result");
+            if (!outcome.has_value()) {
+                // exec() has six distinct failure returns -- say which one. This assertion has
+                // fired intermittently in CI (run 31939239439) with no detail attached.
+                std::cerr << "  exec() error: "
+                          << ::agentengine::test_support::describe(outcome.error()) << "\n";
+            }
             if (outcome.has_value()) {
                 int succeeded = parse_spawn_succeeded(outcome->stdout_text);
                 std::cout << "  measured: fork-bomb contained, requested=40 succeeded=" << succeeded
@@ -213,7 +215,7 @@ int main() {
         contained_spec.limits.output_bytes = 1024 * 1024;
 
         auto handle = backend.create(contained_spec, ctx);
-        AE_CHECK(handle.has_value(), "C3 OOM: create() with memory_bytes=32MB succeeds");
+        AE_CHECK_OK(handle, "C3 OOM: create() with memory_bytes=32MB succeeds");
         if (handle.has_value()) {
             auto t0 = std::chrono::steady_clock::now();
             ExecRequest req{.language = "native", .source = hostile_child_cmd("alloc 512")};  // 512 MB >> 32 MB
@@ -232,7 +234,7 @@ int main() {
         positive_spec.limits.memory_bytes = 0;
         NativeJailBackend positive_backend;
         auto positive_handle = positive_backend.create(positive_spec, ctx);
-        AE_CHECK(positive_handle.has_value(), "C3 OOM positive control: create() with memory disabled succeeds");
+        AE_CHECK_OK(positive_handle, "C3 OOM positive control: create() with memory disabled succeeds");
         if (positive_handle.has_value()) {
             ExecRequest req{.language = "native", .source = hostile_child_cmd("alloc 64")};  // 64 MB, > the 32 MB cap above
             auto outcome = positive_backend.exec(*positive_handle, req, ctx);
@@ -255,7 +257,7 @@ int main() {
         short_spec.limits.output_bytes = 1024 * 1024;
 
         auto handle = backend.create(short_spec, ctx);
-        AE_CHECK(handle.has_value(), "C3 infinite-loop: create() with wall_ms=500 succeeds");
+        AE_CHECK_OK(handle, "C3 infinite-loop: create() with wall_ms=500 succeeds");
         long long short_elapsed = -1;
         if (handle.has_value()) {
             auto t0 = std::chrono::steady_clock::now();
@@ -282,7 +284,7 @@ int main() {
         SandboxSpec long_spec = short_spec;
         long_spec.limits.wall_ms = 1800;
         auto long_handle = long_backend.create(long_spec, ctx);
-        AE_CHECK(long_handle.has_value(), "C3 infinite-loop positive control: create() with wall_ms=1800 succeeds");
+        AE_CHECK_OK(long_handle, "C3 infinite-loop positive control: create() with wall_ms=1800 succeeds");
         if (long_handle.has_value()) {
             auto t0 = std::chrono::steady_clock::now();
             ExecRequest req{.language = "native", .source = hostile_child_cmd("spin")};
@@ -313,7 +315,7 @@ int main() {
         contained_spec.limits.output_bytes = 1024 * 1024;
 
         auto handle = backend.create(contained_spec, ctx);
-        AE_CHECK(handle.has_value(), "C3 fs-escape: create() with only work_dir mounted succeeds");
+        AE_CHECK_OK(handle, "C3 fs-escape: create() with only work_dir mounted succeeds");
         if (handle.has_value()) {
             auto t0 = std::chrono::steady_clock::now();
             ExecRequest req{.language = "native",
@@ -340,7 +342,7 @@ int main() {
         positive_spec.mounts.push_back(
             MountSpec{.source = secret_dir.string(), .guest_path = "/secret", .read_write = false});
         auto positive_handle = positive_backend.create(positive_spec, ctx);
-        AE_CHECK(positive_handle.has_value(), "C3 fs-escape positive control: create() granting the secret dir succeeds");
+        AE_CHECK_OK(positive_handle, "C3 fs-escape positive control: create() granting the secret dir succeeds");
         if (positive_handle.has_value()) {
             ExecRequest req{.language = "native",
                              .source = hostile_child_cmd("escape " + quote(secret_file.string()))};
@@ -394,7 +396,7 @@ int main() {
         contained_spec.limits.output_bytes = 4096;  // tight cap
 
         auto handle = backend.create(contained_spec, ctx);
-        AE_CHECK(handle.has_value(), "C3 unbounded-output: create() with output_bytes=4096 succeeds");
+        AE_CHECK_OK(handle, "C3 unbounded-output: create() with output_bytes=4096 succeeds");
         if (handle.has_value()) {
             auto t0 = std::chrono::steady_clock::now();
             ExecRequest req{.language = "native", .source = hostile_child_cmd("flood")};
@@ -423,7 +425,7 @@ int main() {
         positive_spec.limits.output_bytes = 2ull * 1024 * 1024;  // 2 MiB, still bounded by design
         positive_spec.limits.wall_ms = 300;  // short: only need to show it captures far more, fast
         auto positive_handle = positive_backend.create(positive_spec, ctx);
-        AE_CHECK(positive_handle.has_value(), "C3 unbounded-output positive control: create() with a loose cap succeeds");
+        AE_CHECK_OK(positive_handle, "C3 unbounded-output positive control: create() with a loose cap succeeds");
         if (positive_handle.has_value()) {
             ExecRequest req{.language = "native", .source = hostile_child_cmd("flood")};
             auto outcome = positive_backend.exec(*positive_handle, req, ctx);

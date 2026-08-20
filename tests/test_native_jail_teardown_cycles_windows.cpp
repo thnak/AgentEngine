@@ -62,6 +62,8 @@
 
 #include "backends/native_jail/app_container_profile.hpp"
 #include "backends/native_jail/native_jail_backend.hpp"
+#include "support/crt_fail_fast.hpp"
+#include "support/error_detail.hpp"
 
 using namespace agentengine;
 using agentengine::native_jail::AppContainerProfile;
@@ -81,12 +83,6 @@ int g_failures = 0;
         }                                                                                          \
     } while (0)
 
-void disable_crt_assert_dialog() {
-    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
-    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
-}
 
 std::string hostile_child_cmd(std::string const& args) {
     return std::string("\"") + AE_HOSTILE_CHILD_EXE + "\" " + args;
@@ -143,7 +139,7 @@ int count_processes_named(std::wstring const& name_lower) {
 }  // namespace
 
 int main() {
-    disable_crt_assert_dialog();
+    ::agentengine::test_support::fail_fast_on_windows();
 
     std::filesystem::path work_dir =
         std::filesystem::temp_directory_path() / "ae_native_jail_teardown_cycles_test";
@@ -227,7 +223,8 @@ int main() {
     auto run_cycle = [&](int cycle_index) {
         auto handle = backend.create(spec, ctx);
         if (!handle.has_value()) {
-            std::cerr << "cycle " << cycle_index << ": create() failed\n";
+            std::cerr << "cycle " << cycle_index << ": create() failed: "
+                      << ::agentengine::test_support::describe(handle.error()) << "\n";
             ++g_failures;
             return;
         }

@@ -48,12 +48,14 @@ namespace agentengine::trust {
 // `capability_token.hpp`'s `SecretKey` -- possession of a token never implies possession of this).
 // A distinct TYPE from `capability_token.hpp`'s `SecretKey`, even though the underlying bytes are the
 // same shape, so a caller cannot accidentally use one seam's key to mint the other seam's tokens.
+// ae-naming-lint: allow BearerSecretKey — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct BearerSecretKey {
     std::array<std::uint8_t, 32> bytes{};
 };
 
 [[nodiscard]] result<BearerSecretKey> generate_bearer_secret_key();
 
+// ae-naming-lint: allow BearerTokenClaims — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct BearerTokenClaims {
     std::string sub;         // the principal id this token asserts (018 SS1's "who is this caller")
     std::string tenant_id;   // 018 SS6: tenant is first-class, carried on the credential itself
@@ -63,6 +65,7 @@ struct BearerTokenClaims {
     std::string jti;         // unique id, for replay rejection (ReplayGuard)
 };
 
+// ae-naming-lint: allow BearerToken — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct BearerToken {
     BearerTokenClaims claims;
     HmacSha256          signature;  // HMAC-SHA256 over the canonical encoding of `claims`
@@ -74,6 +77,7 @@ struct BearerToken {
 
 // Bounded, single-instance replay cache -- see finding 4 above. Thread-safe (a real listener's
 // per-connection handlers would call this concurrently).
+// ae-naming-lint: allow ReplayGuard — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class ReplayGuard {
 public:
     // Returns true (and records `jti`) the FIRST time this exact `jti` is seen before its own `exp`;
@@ -90,6 +94,7 @@ private:
     std::unordered_map<std::string, std::chrono::system_clock::time_point> seen_;
 };
 
+// ae-naming-lint: allow BearerVerificationRequest — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct BearerVerificationRequest {
     // Both from STATIC, per-route server configuration -- see finding 2 above. Never populate these
     // from the token being verified, or from any other part of the inbound request.
@@ -129,5 +134,14 @@ struct BearerVerificationRequest {
     p.kind      = kind;
     return p;
 }
+
+// ADR-061 §42/§43: a bearer-credential-domain POLICY value, not part of the generic clock-conversion
+// primitive (trust/steady_deadline.hpp) -- `verify_bearer_token()`'s own contract only rejects an
+// `exp` in the past, never bounds it from above, so a claim more than this far in the future (a
+// misconfigured issuer, or a deliberately-oversized claim from a compromised signing key) is rejected
+// outright by any bridge converting `exp` into a steady-clock deadline. Shared by every bearer-
+// credential-to-authority bridge in this codebase (rt::request_authority_from_bearer_claims(),
+// mcp::capability_grant_from_bearer_claims()) rather than each choosing its own value independently.
+inline constexpr std::chrono::hours kMaxAuthorityHorizon{24 * 365};
 
 } // namespace agentengine::trust

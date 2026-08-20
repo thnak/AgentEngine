@@ -20,23 +20,16 @@
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/sandbox/runner.hpp"
 #include "backends/native_jail/python_runner.hpp"
+#include "support/crt_fail_fast.hpp"
 
 static_assert(agentengine::Runner<agentengine::PythonRunner>,
               "PythonRunner must satisfy the Runner concept (010 §1a) for real, not just as a stub");
 
 namespace {
-void disable_crt_assert_dialog() {
-#if defined(_WIN32)
-    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
-    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
-#endif
-}
 } // namespace
 
 int main() {
-    disable_crt_assert_dialog();
+    ::agentengine::test_support::fail_fast_on_windows();
 
     agentengine::native_jail::PythonLockdownConfig cfg;
     cfg.python_home = AE_PYTHON_HOME;

@@ -116,8 +116,24 @@ def find_declarations(path: Path) -> list[tuple[int, str, bool]]:
     ns_stack: list[tuple[int, str]] = []  # (depth after opening, namespace name)
     out: list[tuple[int, str, bool]] = []
     prev_raw = ""
+    in_macro = False  # inside a `\`-continued #define body
     for line_no, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
         line = strip_comment(raw)
+
+        # A macro body is not a declaration site. `AE_WORKFLOW_MESSAGE` (workflow/graph.hpp) spells
+        # `struct agentengine::workflow::message_type<Type>` inside a `\`-continued #define, and the
+        # brace/namespace tracker below read the qualified name as an exported declaration called
+        # `agentengine` -- a name no header actually exports. Skipping macro bodies removes that
+        # false positive at the source rather than papering over it with a suppression for a
+        # declaration that does not exist. It also matters for correctness of the fix: a `//`
+        # suppression comment cannot be placed inside a line-continued macro at all, because the
+        # comment would swallow the continuation.
+        was_in_macro = in_macro
+        if in_macro or line.lstrip().startswith("#define"):
+            in_macro = raw.rstrip().endswith("\\")
+        if was_in_macro or line.lstrip().startswith("#define"):
+            prev_raw = raw
+            continue
 
         ns_match = _NAMESPACE_OPEN.match(line)
         depth_before = depth

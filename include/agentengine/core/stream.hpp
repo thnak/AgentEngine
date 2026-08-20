@@ -85,11 +85,13 @@ namespace agentengine {
 // Direct alias, not a translation target -- see file banner for why `rt::channel_terminal`'s four
 // values (open/closed/cancelled/failed) are exactly what this type can ever reach, no fifth
 // unreachable case to carry around.
+// ae-naming-lint: allow stream_terminal — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 using stream_terminal = rt::channel_terminal;
 
 // `rt::channel_producer<T,E>::push_result` re-expressed as a non-templated, standalone enum -- the
 // nested member type is templated on T/E and can't be aliased once without picking a concrete T, so
 // this is a small, separately-defined mirror (same two values, same meaning) rather than an alias.
+// ae-naming-lint: allow stream_push — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 enum class stream_push { ok, terminated };
 
 // The producer side — held by a `ChatClient` conformer's `chat_stream()` implementation, or by
@@ -97,6 +99,7 @@ enum class stream_push { ok, terminated };
 // `chat_stream()` itself returns synchronously and cannot keep producing after it returns. Move-only
 // (the channel's single-writer contract, rt/channel.hpp, guards a second bind).
 template <class T>
+// ae-naming-lint: allow stream_producer — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class stream_producer {
 public:
     stream_producer() noexcept = default;
@@ -142,6 +145,7 @@ private:
 // The consumer-side drain handle — 004 §1's literal `ae::stream<T>` return type of `chat_stream()`.
 // Move-only; dropping it cancels the stream (mirrors `rt::channel_consumer<T,E>`'s own destructor).
 template <class T>
+// ae-naming-lint: allow stream — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class stream {
 public:
     stream() noexcept = default;
@@ -189,6 +193,7 @@ private:
 };
 
 template <class T>
+// ae-naming-lint: allow stream_pair — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct stream_pair {
     stream_producer<T> producer;
     stream<T> consumer;
@@ -201,6 +206,7 @@ struct stream_pair {
 // in the body depends on it) purely for source compatibility with existing call sites that write
 // `stream_config<SomeType>`.
 template <class T>
+// ae-naming-lint: allow stream_config — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct stream_config {
     std::size_t capacity = 256;  // matches Quark's own prior default
 };

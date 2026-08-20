@@ -21,6 +21,7 @@
 
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
+#include "agentengine/pal/env.hpp"
 #include "agentengine/trust/agent_library_manifest.hpp"
 #include "agentengine/trust/capability.hpp"
 #include "backends/native_jail/mediated_python_runner.hpp"
@@ -73,7 +74,7 @@ struct EchoTool : Tool<EchoTool, Capabilities<cap::decl::Entropy>> {
 }  // namespace
 
 int main() {
-    std::string const base = std::string(std::getenv("TEMP") ? std::getenv("TEMP") : "C:/Windows/Temp") +
+    std::string const base = ::agentengine::pal::env_var("TEMP").value_or("C:/Windows/Temp") +
                               "/ae_g2_files_data_test";
     std::filesystem::path input_dir = std::filesystem::path(base) / "input";
     std::filesystem::path work_dir = std::filesystem::path(base) / "work";
@@ -114,7 +115,7 @@ int main() {
             Capability{cap::FsRead{"out", "", std::nullopt}},
             Capability{cap::FsWrite{"out", "", std::nullopt, std::nullopt}},
         });
-        ctx.capabilities = &caps;
+        ctx.capabilities = agentengine::borrow_capabilities(caps);
 
         // G2-I1: agent.files.input reads /input/<name> as bytes.
         {
@@ -252,7 +253,7 @@ int main() {
         {
             EffectContext narrow_ctx{};
             auto narrow_caps = CapabilitySet::grant_root({});  // nothing granted at all
-            narrow_ctx.capabilities = &narrow_caps;
+            narrow_ctx.capabilities = agentengine::borrow_capabilities(narrow_caps);
             ExecRequest req{"python",
                              "from agent import files\n"
                              "try:\n"
@@ -290,7 +291,7 @@ int main() {
         ExecState state{};
         EffectContext ctx{};
         auto caps = CapabilitySet::grant_root({Capability{cap::FsRead{"input", "", std::nullopt}}});
-        ctx.capabilities = &caps;
+        ctx.capabilities = agentengine::borrow_capabilities(caps);
 
         ExecRequest req{"python",
                          "import agent\n"

@@ -104,7 +104,7 @@ int main() {
 
     EffectContext ctx;
     ctx.principal = Principal{"test-principal", ""};
-    ctx.capabilities = &held;
+    ctx.capabilities = agentengine::borrow_capabilities(held);
 
     using agentengine::test_support::run_task_sync;
 
@@ -131,7 +131,7 @@ int main() {
 
     // ---- revoking the capability mid-lifetime denies the very next call ---------------------------
     CapabilitySet empty;
-    ctx.capabilities = &empty;
+    ctx.capabilities = agentengine::borrow_capabilities(empty);
     auto denied = run_task_sync<result<ChatResponse>>(client.chat(ChatRequest{}, ctx));
     check(!denied.has_value(),
           "with the Secret capability no longer held, the next chat() call is denied -- the gate is "

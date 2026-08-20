@@ -373,7 +373,12 @@ current test files directly for what they actually run against today.
   `description`/`version`/`defaultInputModes`/`defaultOutputModes` are explicit caller-supplied
   `AgentCardIdentity` fields rather than fabricated from `agent_instructions`: `AgentMetadata` (002-
   owned, M2/M5 vintage) has no description/version/modality-declaration fields yet, a real gap named
-  here rather than papered over. §2.1's own "the card advertises only what the conformance suite
+  here rather than papered over. **Update (2026-08-14):** the description/version half of this gap is
+  closed — `decisions/ADR-044-agent-workflow-description-version.md` gave `AgentMetadata` real
+  `agent_description`/`agent_version` fields and wired `to_agent_card()` to fall back to them when
+  `AgentCardIdentity`'s own fields are left default-empty; the modality-declaration
+  (`defaultInputModes`/`defaultOutputModes`) half named here stays open, per that ADR's own §5 scope
+  note. §2.1's own "the card advertises only what the conformance suite
   proves" rule is enforced BY CONSTRUCTION, not just by convention: `supported_interfaces` defaults
   empty and `capabilities.streaming`/`push_notifications` default `false`, since no JSON-RPC/REST
   binding or streaming/push machinery exists yet (D3+'s own job) — proven directly (D2-3). `AgentSkill.
@@ -702,9 +707,10 @@ current test files directly for what they actually run against today.
   `metadata.version` has no home in `Workflow`'s own current shape (pure graph data, no
   document-identity/versioning field) and is read then honestly dropped, the same "the struct doesn't
   have a slot for this yet" finding D2 already recorded for `AgentMetadata`'s own missing description/
-  version fields; the generic JSON-Schema 2020-12 validator, the Agent-document compiler, and the I6
-  equivalence CORPUS (a systematic sweep over every 002 §3 policy, §7 G1's own bar) are all still
-  unbuilt.
+  version fields (**closed 2026-08-14, ADR-044** — `Workflow` gained real `description`/`version`
+  fields too, see F3's own update below); the generic JSON-Schema 2020-12 validator, the Agent-document
+  compiler, and the I6 equivalence CORPUS (a systematic sweep over every 002 §3 policy, §7 G1's own
+  bar) are all still unbuilt.
 
   **Outcome, F3 (2026-08-08, commit pending):** `core/agent_yaml_compiler.hpp` (new) —
   `compile_agent_document()`, a parsed 015 §2 Agent document → a REAL `AgentMetadata`, the same
@@ -727,6 +733,11 @@ current test files directly for what they actually run against today.
   and Phase F2's Workflow-document compiler each hit the identical gap on their own compiled targets).
   Three independent compilers landing on the same missing fields is a real signal `AgentMetadata`
   (002-owned) genuinely needs them at some point — outside this file's own authority to add.
+  **Update (2026-08-14):** exactly this signal is what `decisions/ADR-044-agent-workflow-description-
+  version.md` acted on — `AgentMetadata`/`Workflow` both gained real `description`/`version` fields,
+  and `compile_agent_document()`/`compile_workflow_document()` now read them for real instead of
+  honestly dropping them. The A2A modality-declaration fields (`defaultInputModes`/
+  `defaultOutputModes`, D2's own separate note) remain out of scope of that fix.
 
   The actual I6 property, proven directly rather than merely asserted (F-2): a hand-written C++
   `Agent` equivalent to 015 §2's own example (`ChatClientId<"anthropic:claude-opus-5">`,
@@ -881,16 +892,26 @@ current test files directly for what they actually run against today.
   `clientCapabilities.extensions` shape, and **SEP-2243 `x-mcp-header` entirely unimplemented** —
   which 011 §8b itself calls "a mandatory client-side surface... easy to miss".
 
-  **Conformance, client role, spec `2026-07-28`: 42/48 (88%), six scenarios clean.** Full detail,
-  including the tool-version and RFC-mismatch findings, in
-  `docs/research/2026-08-15-mcp-conformance-harness.md`.
+  **Conformance, client role, spec `2026-07-28`: 42/48 (88%), six scenarios clean** at the time this
+  was first written. Full detail, including the tool-version and RFC-mismatch findings, in
+  `docs/research/2026-08-15-mcp-conformance-harness.md`. **Superseded (2026-08-19) by ADR-061 §11's
+  formal Tier 1 prove phase**, run against the full official suite rather than a partial pass:
+  **non-auth 75/75 (100%)**; **auth 3/49 (~6%)** — this driver has no OAuth machinery at all, so **011
+  §10 G2 is NOT met** despite non-auth being complete (G2 names `auth` as one of its four required
+  suites). See the ADR's own §11 for the six claims' individual evidence, including two real teeth
+  experiments (`derive_param_headers` broken -> passing count drops by 30, reverted) and the previously
+  forward-referenced-but-nonexistent `tests/test_mcp_conformance_transport.cpp` written for real.
 
   **Open, and load-bearing for whoever picks this up:**
   - **All 33 findings remain open for Tier 3** (host-fronted HTTP). Research confirmed Tier 3 is the
     *only* path to G1 — the suite is URL-only for both roles, so stdio yields no gate.
-  - **`perform_http_exchange` cannot talk to a chunking MCP server.** It is Content-Length-only by a
-    documented cut; the conformance binary decodes chunked locally. Fixing it properly is an ADR-011
-    amendment (its byte cap is enforced *during* the read loop, claim C8).
+  - ~~**`perform_http_exchange` cannot talk to a chunking MCP server.**~~ **Closed (2026-08-19).**
+    `perform_http_exchange`/`perform_https_exchange` now dechunk a `Transfer-Encoding: chunked`
+    response for real (`net_egress_proxy.cpp`'s `dechunk_response_body_if_needed`, ADR-011's own
+    addendum). Byte cap enforcement during the read loop (claim C8) is unchanged; dechunking runs only
+    after the full buffer is already in hand. `tools/mcp_conformance_client.cpp`'s own local decode
+    workaround, retired the same day during ADR-061 §11's prove phase (running the real suite exposed
+    it as now redundant AND actively harmful — double-decoding an already-plain body).
   - **011 §10's own gate is unrunnable as written**: `latest` (0.1.16) does not know `2026-07-28`;
     only `0.2.0-alpha.11` does. The RFC requires a percentage "pinned to a conformance release" and
     the only qualifying version is a prerelease.

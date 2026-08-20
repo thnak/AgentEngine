@@ -1,8 +1,8 @@
 #pragma once
 // ADR-037 Phase 1, item 3: `agentengine::rt::ThreadPool`, the "minimal executor for driving I/O
 // continuations" the ADR calls for -- a small, fixed-size worker-thread pool that drives an already-
-// constructed `agentengine::rt::task<void>` to completion (`while (!t.done()) t.resume();`) on a POOL
-// WORKER THREAD instead of the calling thread, so the caller isn't blocked for the round-trip.
+// constructed `agentengine::rt::task<void>` to completion on a POOL WORKER THREAD instead of the
+// calling thread, so the caller isn't blocked for the round-trip.
 //
 // SCOPE, DELIBERATELY NARROW (see the ADR's own §5 red-team finding: "the minimal executor is new,
 // unproven infrastructure exactly where AgentEngine currently gets a mature, independently-red-teamed
@@ -14,9 +14,33 @@
 // pass before anything depends on it. What THIS type does is much smaller and self-contained: take a
 // task<void> whose body may internally `co_await` other NESTED task<T>s (those all resolve
 // synchronously via symmetric transfer -- see task.hpp's own top comment -- no external suspension is
-// ever involved) and run it to completion on one worker thread, uninterrupted, in one un-suspended
-// sequence of resume() calls. A worker never parks a partially-run task and hands it to another worker
-// mid-flight; each job lives on exactly one thread for its entire lifetime.
+// ever involved) and run it to completion on one worker thread, uninterrupted, in exactly ONE resume()
+// call. A worker never parks a partially-run task and hands it to another worker mid-flight; each job
+// lives on exactly one thread for its entire lifetime.
+//
+// **THIS SCOPE IS NOW RUNTIME-ENFORCED, NOT MERELY DOCUMENTED (fixed 2026-08-19, found via red-team
+// against decisions/ADR-064-recall-tool-sync-invoke-vs-async-embedder.md's own design review):**
+// `run_job()` originally drove a job with `while (!done()) resume();` -- a job that genuinely suspends
+// on something other than a nested task<T> (e.g. `AsyncMutex::lock()`/`channel<T>`'s async surface
+// under REAL contention -- `rt/async_mutex.hpp`, `rt/channel.hpp`) parks its coroutine handle for a
+// LATER, possibly DIFFERENT thread's `unlock()`/`push()` call to resume directly. The naive loop would
+// call `resume()` on that SAME handle again itself -- a genuine cross-thread double-resume race,
+// undefined behavior per the C++20 coroutine spec, not merely a logic bug. This was never actually
+// triggered in this codebase (every real usage today -- `tools/cli_chat.cpp`'s `AgentSession` driving,
+// every job in `tests/test_rt_thread_pool.cpp` -- happens to complete in exactly one `resume()`), but
+// nothing PREVENTED a future composition from hitting it silently -- `tests/test_rt_async_mutex.cpp`'s
+// own top comment already names this exact hazard (discovered independently while drafting THAT file's
+// cross-thread contention test, which deliberately does NOT use `ThreadPool` for that reason). Fixed:
+// `run_job()` now resumes exactly once, then FAILS the job (`JobOutcome::faulted = true`, a diagnosable
+// `std::runtime_error`) if it isn't `done()` yet, instead of looping. Abandoning (not further resuming)
+// a job in that state is safe, not a new hazard: destroying its `task<void>` runs the coroutine frame's
+// live locals' destructors, including whatever awaiter it is parked in -- `AsyncMutex::LockAwaiter`/
+// `channel<T>`'s `next_awaiter` already implement safe self-removal from their primitive's own waiter
+// queue on exactly this "destroyed while parked" path (ADR-017's "drop the handle = cancel" house
+// idiom), so no later `unlock()`/`push()` can ever resume an already-destroyed frame. A caller that
+// needs GENUINE cross-thread `AsyncMutex`/`channel<T>` contention should follow
+// `tests/test_rt_async_mutex.cpp`'s own M3 pattern (real `std::thread`s, resume() once per job, then
+// let the primitive's own internal hand-off carry it) instead of `ThreadPool`.
 //
 // WHY std::mutex + std::condition_variable_any, NOT a lock-free queue: this project's own ADR-037 §5
 // explicitly wants conservative correctness here over throughput -- this is a correctness-first
@@ -61,6 +85,7 @@
 #include <exception>
 #include <future>
 #include <mutex>
+#include <stdexcept>
 #include <stop_token>
 #include <thread>
 #include <utility>
@@ -84,6 +109,7 @@ namespace agentengine::rt {
 // handle to race against a worker thread still resuming it; JobOutcome is a plain, thread-safely-
 // delivered value (via std::promise/std::future, which itself guarantees the happens-before edge
 // between the worker writing it and the caller reading it after wait()/get()).
+// ae-naming-lint: allow JobOutcome — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct JobOutcome {
     bool faulted = false;
     std::exception_ptr fault{};
@@ -100,6 +126,7 @@ struct JobOutcome {
 // invalidate every one of those captures; a pool is meant to be constructed once and held by reference
 // or through a stable owner (e.g. a unique_ptr), matching how a fixed thread pool is used everywhere
 // else in C++ (std::jthread itself is the same non-movable-while-running shape, one level down).
+// ae-naming-lint: allow ThreadPool — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class ThreadPool {
 public:
     // `worker_count == 0` (including the default) means "use default_worker_count()" -- a caller who
@@ -198,9 +225,39 @@ private:
     static void run_job(QueuedJob item) {
         JobOutcome outcome;
         try {
-            while (!item.job.done()) item.job.resume();
-            outcome.faulted = item.job.faulted();
-            outcome.fault = item.job.fault_ptr();
+            // Exactly ONE resume() first, not a `while (!done())` loop -- see this file's top comment
+            // ("SCOPE, DELIBERATELY NARROW") for why: a job whose body only ever nests further
+            // task<T>/task<void> awaits (real C++20 symmetric transfer, no external suspension) always
+            // reaches done() in exactly one resume() call, regardless of nesting depth -- there is no
+            // legitimate scenario where a SECOND resume() from THIS loop would ever be correct.
+            if (!item.job.done()) item.job.resume();
+            if (!item.job.done()) {
+                // The job suspended on something other than a nested task<T>/task<void> -- e.g.
+                // AsyncMutex::lock() or channel<T>'s async surface genuinely contended (async_mutex.hpp,
+                // channel.hpp), which resumes the SAME coroutine handle later from WHATEVER thread calls
+                // unlock()/push(). Looping resume() here would race that thread for the same handle --
+                // undefined behavior, not merely wrong output (found via red-team against ADR-064,
+                // 2026-08-19; tests/test_rt_async_mutex.cpp's own top comment already names this exact
+                // hazard, discovered independently while drafting that file's M3). FAIL LOUD instead:
+                // this job is outside ThreadPool's documented scope, full stop. Destroying `item.job`
+                // below (via its own destructor once this function returns) is SAFE, not a new hazard --
+                // it exercises the SAME "abandon a genuinely-parked awaiter" path AsyncMutex's
+                // `LockAwaiter`/channel<T>'s `next_awaiter` already designed and tested for cancellation
+                // (ADR-017's "drop the handle = cancel" house idiom): `coroutine_handle::destroy()` runs
+                // the frame's live locals' destructors, including the parked awaiter, which removes its
+                // own registration from the primitive's internal waiter queue under that primitive's own
+                // lock -- so no later unlock()/push() can ever resume this now-destroyed frame.
+                outcome.faulted = true;
+                outcome.fault = std::make_exception_ptr(std::runtime_error(
+                    "ThreadPool::run_job(): job did not reach done() within one resume() call -- it "
+                    "suspended on something other than a nested task<T>/task<void> (e.g. a genuinely "
+                    "contended AsyncMutex::lock() or channel<T> await), which is outside this type's "
+                    "documented scope (see this file's own top comment). The job has been abandoned "
+                    "(not driven further) rather than risking a cross-thread double-resume."));
+            } else {
+                outcome.faulted = item.job.faulted();
+                outcome.fault = item.job.fault_ptr();
+            }
         } catch (...) {
             // Defense-in-depth only -- see this file's top comment on why resume() is not expected to
             // ever throw here given task<void>'s actual promise_type. If this branch is ever reached,

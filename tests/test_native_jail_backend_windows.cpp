@@ -22,6 +22,8 @@
 #endif
 
 #include "backends/native_jail/native_jail_backend.hpp"
+#include "support/crt_fail_fast.hpp"
+#include "support/error_detail.hpp"
 
 using namespace agentengine;
 using agentengine::native_jail::NativeJailBackend;
@@ -40,12 +42,6 @@ int g_failures = 0;
         }                                                                                          \
     } while (0)
 
-void disable_crt_assert_dialog() {
-    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
-    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
-}
 
 std::string hostile_child_cmd(std::string const& args) {
     return std::string("\"") + AE_HOSTILE_CHILD_EXE + "\" " + args;
@@ -54,7 +50,7 @@ std::string hostile_child_cmd(std::string const& args) {
 }  // namespace
 
 int main() {
-    disable_crt_assert_dialog();
+    ::agentengine::test_support::fail_fast_on_windows();
 
     std::filesystem::path work_dir =
         std::filesystem::temp_directory_path() / "ae_native_jail_backend_test";
@@ -83,7 +79,9 @@ int main() {
     auto handle = backend.create(spec, ctx);
     AE_CHECK(handle.has_value(), "C2: create() succeeds given a real mount and ResourceLimits");
     if (!handle.has_value()) {
-        std::cerr << "create() failed, aborting remaining checks\n";
+        // create() has five distinct failure returns; print which one, not just "it failed".
+        std::cerr << "create() failed, aborting remaining checks: "
+                  << ::agentengine::test_support::describe(handle.error()) << "\n";
         return 1;
     }
 
@@ -91,7 +89,7 @@ int main() {
     {
         ExecRequest req{.language = "native", .source = hostile_child_cmd("sleep 50")};
         auto outcome = backend.exec(*handle, req, ctx);
-        AE_CHECK(outcome.has_value(), "C2: exec() of a well-behaved child returns a result");
+        AE_CHECK_OK(outcome, "C2: exec() of a well-behaved child returns a result");
         if (outcome.has_value()) {
             AE_CHECK(outcome->klass == exec_outcome_class::ok, "C2: a well-behaved exec reports ok");
             AE_CHECK(outcome->stdout_text.find("SLEEP_DONE") != std::string::npos,
@@ -114,7 +112,7 @@ int main() {
     {
         ExecRequest req{.language = "native", .source = hostile_child_cmd("fail 7")};
         auto outcome = backend.exec(*handle, req, ctx);
-        AE_CHECK(outcome.has_value(), "C2: exec() of a failing child returns a result");
+        AE_CHECK_OK(outcome, "C2: exec() of a failing child returns a result");
         if (outcome.has_value()) {
             AE_CHECK(outcome->klass == exec_outcome_class::crash,
                       "C2: an ordinary nonzero exit reports crash, not oom (positive control)");

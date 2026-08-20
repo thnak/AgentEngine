@@ -35,6 +35,7 @@
 #include <vector>
 
 #include "agentengine/core/json_value.hpp"
+#include "agentengine/pal/env.hpp"
 #include "agentengine/protocol/mcp/client.hpp"
 #include "agentengine/protocol/mcp/json_rpc.hpp"
 #include "agentengine/sandbox/net_egress_proxy.hpp"
@@ -115,49 +116,17 @@ struct ParsedUrl {
     return collected;
 }
 
-// `perform_http_exchange` is "Content-Length-framed only -- no chunked transfer-encoding support this
-// milestone, a documented cut since this proxy's own test server never emits it"
-// (sandbox/net_egress_proxy.hpp). The conformance harness's mock DOES emit chunked
-// (`b42\r\n{"jsonrpc"...`), so a real MCP server can too, and the cut is a genuine client-role
-// conformance gap -- predicted by ADR-061 §9h's R19 and hit empirically here.
-//
-// Decoded HERE rather than inside the egress proxy on purpose: that function is ADR-011-judged code
-// whose byte cap is enforced DURING the read loop (claim C8), and widening its framing would require
-// re-running that proof. Decoding the already-capped buffer afterwards changes none of its proven
-// properties. Adding real chunked support to the engine's own HTTP client is a named follow-up
-// against ADR-011, not a drive-by edit.
-//
-// Returns std::nullopt if the body is not well-formed chunked, so a caller can fall back rather than
-// silently truncate.
-[[nodiscard]] std::optional<std::string> decode_chunked(std::string const& body) {
-    std::string out;
-    std::size_t pos = 0;
-    while (pos < body.size()) {
-        std::size_t const eol = body.find("\r\n", pos);
-        if (eol == std::string::npos) return std::nullopt;
-        std::string_view size_line{body.data() + pos, eol - pos};
-        if (auto const semi = size_line.find(';'); semi != std::string_view::npos) {
-            size_line = size_line.substr(0, semi);  // strip chunk extensions
-        }
-        if (size_line.empty()) return std::nullopt;
-        std::size_t chunk = 0;
-        for (char c : size_line) {
-            std::size_t digit = 0;
-            if (c >= '0' && c <= '9')      digit = static_cast<std::size_t>(c - '0');
-            else if (c >= 'a' && c <= 'f') digit = static_cast<std::size_t>(c - 'a' + 10);
-            else if (c >= 'A' && c <= 'F') digit = static_cast<std::size_t>(c - 'A' + 10);
-            else return std::nullopt;
-            chunk = chunk * 16 + digit;
-        }
-        pos = eol + 2;
-        if (chunk == 0) return out;              // terminal chunk; trailers ignored
-        if (pos + chunk > body.size()) return std::nullopt;
-        out.append(body, pos, chunk);
-        pos += chunk;
-        if (body.compare(pos, 2, "\r\n") == 0) pos += 2;
-    }
-    return out;
-}
+// `perform_http_exchange` used to be "Content-Length-framed only -- no chunked transfer-encoding
+// support" -- the conformance harness's mock DOES emit chunked (`b42\r\n{"jsonrpc"...`), so a real MCP
+// server can too, and that cut was a genuine client-role conformance gap (predicted by ADR-061 §9h's
+// R19, hit empirically here). This file used to carry its own local `decode_chunked()` as a documented
+// workaround rather than widen ADR-011-judged code as a drive-by edit. As of 2026-08-19
+// `perform_http_exchange` dechunks for real (`net_egress_proxy.cpp`'s `dechunk_response_body_if_needed`,
+// ADR-011's own addendum) -- `http_resp->body` below is already plain by the time this sender sees it.
+// The local decode was retired rather than kept as a second, redundant pass: running it again on an
+// already-dechunked body would misparse the JSON as chunk framing and fail closed (the exact regression
+// found and fixed the same day in protocol/openai and protocol/anthropic's chat clients, which had the
+// identical duplicate-decode shape).
 
 [[nodiscard]] bool header_contains(std::vector<std::pair<std::string, std::string>> const& headers,
                                     std::string_view name, std::string_view needle) {
@@ -204,9 +173,9 @@ int main(int argc, char** argv) {
 
     // ADR-061 §10b claim 3: the scenario is contract, not decoration -- reported so a run's output
     // shows which scenario the harness selected without having to correlate by timestamp.
-    char const* scenario = std::getenv("MCP_CONFORMANCE_SCENARIO");
+    auto const scenario = ::agentengine::pal::env_var("MCP_CONFORMANCE_SCENARIO");
     std::fprintf(stderr, "agentengine-mcp-conformance-client: scenario=%s endpoint=%s\n",
-                  scenario ? scenario : "<unset>", url_text.c_str());
+                  scenario ? scenario->c_str() : "<unset>", url_text.c_str());
 
     // ADR-016's HOST-INITIATED resolver -- see this file's own top comment for why this, and not
     // `resolve_and_validate`, is the correct and non-weakening choice here.
@@ -275,17 +244,14 @@ int main(int argc, char** argv) {
                                    json::Value{}});
         }
 
-        // Un-chunk first if needed, then apply SSE framing to whatever the body really is.
-        std::string framed = http_resp->body;
-        if (header_contains(http_resp->headers, "transfer-encoding", "chunked")) {
-            if (auto decoded = decode_chunked(framed)) framed = std::move(*decoded);
-        }
+        // `http_resp->body` is already dechunked by perform_http_exchange (ADR-011's addendum) --
+        // apply only SSE framing, if the response used it.
         std::string const payload =
             header_contains(http_resp->headers, "content-type", "text/event-stream")
-                ? extract_sse_last_data(framed)
-                : framed;
+                ? extract_sse_last_data(http_resp->body)
+                : http_resp->body;
 
-        if (std::getenv("AE_MCP_TRACE")) {
+        if (::agentengine::pal::env_var("AE_MCP_TRACE")) {
             std::fprintf(stderr, "TRACE >> %s\n", body.c_str());
             std::fprintf(stderr, "TRACE << %s\n", payload.c_str());
         }

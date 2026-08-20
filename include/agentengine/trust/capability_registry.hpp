@@ -20,8 +20,10 @@ namespace agentengine::trust {
 // Opaque to whoever holds it -- a hex-encoded 128-bit id, carrying no authority itself. Unlike
 // CapabilityToken, this type alone proves nothing; every use requires reaching the issuing
 // CapabilityRegistry.
+// ae-naming-lint: allow CapabilityRef — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 using CapabilityRef = std::string;
 
+// ae-naming-lint: allow RegistryEntry — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct RegistryEntry {
     capability_kind kind;
     std::string param;
@@ -31,6 +33,7 @@ struct RegistryEntry {
 
 // Host-side only. A remote process never holds this type -- only a CapabilityRef it must present
 // back to whatever RPC stub fronts this registry on every use.
+// ae-naming-lint: allow CapabilityRegistry — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class CapabilityRegistry {
 public:
     result<CapabilityRef> grant(capability_kind kind, std::string param, std::string path_prefix,

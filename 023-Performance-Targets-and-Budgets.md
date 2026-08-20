@@ -36,6 +36,7 @@ until then.
 |---|---|---|---|
 | Turn overhead | Engine time per turn excluding provider and tools, p50 / p99 | ≤ 200 µs / ≤ 1 ms | Hard |
 | Context assembly | Assemble a 50-message context, p99 | ≤ 500 µs | Goal |
+| RAG retrieval | `VectorIndex::search(k)`, p99, ~200-chunk corpus, dim 1536 | ≤ 500 µs | Goal |
 | Streaming | Per-chunk engine overhead | ≤ 10 µs, **0 allocations** | Hard |
 | Streaming | Sustained chunk throughput per session | ≥ 100 k/s | Goal |
 | Tool dispatch | Native tool, engine overhead p50 / p99 | ≤ 20 µs / ≤ 100 µs | Hard |

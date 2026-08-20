@@ -49,6 +49,7 @@ namespace agentengine {
 // One entry in the immutable per-run tool table (006 §6: "resolved at run start into an immutable
 // per-run tool table"). Type-erased: `invoke` closes over ToolT's real Args/Reply types so the
 // pipeline itself never needs to be a template.
+// ae-naming-lint: allow ToolDescriptor — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct ToolDescriptor {
     std::string name;
     std::string description;
@@ -72,7 +73,13 @@ struct ToolDescriptor {
     // conservative default `declared_effect_class()` itself uses, so a hand-built `ToolDescriptor`
     // that predates this field (not going through `make_tool_descriptor<T>()` below) fails CLOSED
     // against auto-declassification rather than silently qualifying.
-    effect_class effect_class = effect_class::at_most_once;
+    // The type name is written QUALIFIED, deliberately. A member named `effect_class` whose type is
+    // also spelled `effect_class` makes the unqualified name mean the type before the declaration and
+    // the member after it -- which [basic.scope.class] makes ill-formed, and GCC 14 rejects outright
+    // (`-Wchanges-meaning`), while MSVC and clang accept it. Qualifying both uses means the
+    // unqualified name never denotes the type inside this class, so there is no change of meaning.
+    // The member name is kept as-is: `d.effect_class` is the reading call sites already use.
+    agentengine::effect_class effect_class = agentengine::effect_class::at_most_once;
 
     // Session-scoped-stateful-tools mechanism (ADR-028): `true` only for a descriptor built via
     // `make_tool_descriptor_with_invoke<ToolT>()` below, whose `invoke` closure captures a
@@ -159,11 +166,13 @@ template <class ToolT, class InvokeFn>
 // one direction. `ToolTable::from_names()` below is declared here (next to `from_tools`/
 // `from_descriptors`, where a caller would look for it) and DEFINED out-of-line in
 // core/tool_registry.hpp -- a caller of `from_names()` must include that header, not just this one.
+// ae-naming-lint: allow ToolRegistry — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class ToolRegistry;
 
 // 006 §6: static tools are resolved once into an immutable table at run start -- a mid-run change
 // to what's registered cannot alter what a run is allowed to call. Linear lookup: tool counts in
 // this milestone's scope are single digits, not a hot path.
+// ae-naming-lint: allow ToolTable — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class ToolTable {
 public:
     template <class... ToolTs>
@@ -208,6 +217,7 @@ private:
     std::vector<ToolDescriptor> descriptors_;
 };
 
+// ae-naming-lint: allow ToolCallRequest — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct ToolCallRequest {
     std::string call_id;
     std::string tool_name;
@@ -243,6 +253,7 @@ struct ToolCallRequest {
     return h;
 }
 
+// ae-naming-lint: allow IdempotencyKey — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct IdempotencyKey {
     std::string   run_id;
     std::uint64_t turn_index = 0;
@@ -295,12 +306,22 @@ struct IdempotencyKey {
 // host/human-supplied callable, never invented ambiently inside the pipeline. Receives the
 // canonical JSON of the exact arguments about to execute (006 §4: "approval is bound to the exact
 // call").
-using ApprovalDecider = std::function<bool(std::string_view tool_name, std::string const& canonical_args_json)>;
+// ae-naming-lint: allow ApprovalDecider — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
+//
+// ADR-061 §46: `caller` is the identity `EffectContext::principal` already carries at both call
+// sites below -- the SAME identity `ToolInvocationAudit` already records, not a second,
+// independently-suppliable value. Lets a decider branch on WHO is asking (006 §4/007 §5's own
+// "principal" axis), which the prior two-argument shape made structurally impossible; 007 §5's
+// policy engine still does not exist, so nothing here derives a decision from `caller` -- a decider
+// that ignores it behaves exactly as before.
+using ApprovalDecider = std::function<bool(Principal const& caller, std::string_view tool_name,
+                                            std::string const& canonical_args_json)>;
 
 // Step 10's minimal audit record (016/013's full span shape is out of scope for M2, see file-top
 // comment). Phase F1 adds the call's own idempotency key -- computed unconditionally (it costs one
 // digest of bytes already being canonicalized for step 5's approval check) so ANY caller journaling
 // effects (F2) has it without re-deriving it from the request a second time.
+// ae-naming-lint: allow ToolInvocationAudit — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct ToolInvocationAudit {
     std::string call_id;
     std::string tool_name;
@@ -455,7 +476,7 @@ namespace tool_pipeline_detail {
     bool const requires_approval = tool_call_requires_approval(*tool, request.provenance);
     if (requires_approval) {
         std::string canonical_args = json::dump(request.arguments);
-        bool approved = approve && approve(request.tool_name, canonical_args);
+        bool approved = approve && approve(ctx.principal, request.tool_name, canonical_args);
         if (!approved) {
             for (auto const& b : bound) b.revoke();  // never bind authority we then refuse to use
             error e{failure_class::policy, "approval required and not granted", "tool.approval_denied"};
@@ -519,17 +540,21 @@ namespace tool_pipeline_detail {
 // (account: revoke bound capabilities) also run on that same background thread, immediately before
 // `on_complete` fires.
 //
-// `ctx` is copied into the background thread's own closure -- `ctx.capabilities`/
-// `ctx.bound_capabilities` are non-owning pointers, the SAME "host owns it, must outlive" contract
-// `EffectContext::capabilities` already carries everywhere in this codebase (effect_context.hpp), not
-// a new hazard this function introduces. `bound` (the per-invocation `BoundCapability` handles from
-// step 7) is moved into the same closure so its RAII revoke-at-step-10 semantics are preserved
-// exactly, just on a different thread than the one that minted them.
+// `ctx` is copied into the background thread's own closure. `ctx.capabilities` is an OWNED
+// `std::shared_ptr<CapabilitySet const>` (ADR-061 §20.3) -- refcounted, safe to copy across the
+// detach regardless of the caller's own stack frame having already returned; it was a raw, non-owning
+// pointer before that fix, and copying it into a detached thread was unsafe until it landed
+// (ADR-061 §7 R16). `ctx.bound_capabilities`, by contrast, genuinely remains a non-owning
+// `std::vector<BoundCapability> const*` -- the SAME "host owns it, must outlive" contract as before,
+// unchanged by that fix and not a hazard this function introduces. `bound` (the per-invocation
+// `BoundCapability` handles from step 7) is moved into the same closure so its RAII revoke-at-step-10
+// semantics are preserved exactly, just on a different thread than the one that minted them.
 //
 // `on_complete` fires from the BACKGROUND thread, exactly once. What "deliver this back to a run"
 // means is entirely the caller's job -- `AgentSession::start_background_task()` (agent_session.hpp)
 // wires this to a self-`tell()`, mirroring `TimerWake`'s own established "host arms the callback"
 // shape (`test_agent_session_timer_wake.cpp`'s own precedent), not a mechanism this function invents.
+// ae-naming-lint: allow BackgroundTaskCompletion — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 using BackgroundTaskCompletion = std::function<void(ToolResult, ToolInvocationAudit)>;
 
 [[nodiscard]] inline result<void> background_task(ToolTable const& table, CapabilitySet const& held,
@@ -609,7 +634,7 @@ using BackgroundTaskCompletion = std::function<void(ToolResult, ToolInvocationAu
     // -- step 5: approve ------------------------------------------------------------------------------
     if (tool->approval != approval_mode::never_require) {
         std::string canonical_args = json::dump(request.arguments);
-        bool approved = approve && approve(request.tool_name, canonical_args);
+        bool approved = approve && approve(ctx.principal, request.tool_name, canonical_args);
         if (!approved) {
             for (auto const& b : bound) b.revoke();
             error e{failure_class::policy, "approval required and not granted", "tool.approval_denied"};
@@ -630,6 +655,17 @@ using BackgroundTaskCompletion = std::function<void(ToolResult, ToolInvocationAu
         audit.call_id   = request.call_id;
         audit.tool_name = request.tool_name;
         audit.duration  = std::chrono::steady_clock::now() - started;
+        // ADR-061 §7 R26 / 007 §8, found not fully applied here while proving §46: `invoke_tool()`'s
+        // own `finish()` lambda has stamped `ToolInvocationAudit` with `idempotency_key` and the
+        // caller's identity since R26, but THIS function's own audit construction was never updated
+        // to match -- a backgrounded call's completion record carried no identity and no idempotency
+        // key at all, unattributable in exactly the way R26's own comment on `EffectContext::principal`
+        // describes. Same derivation `invoke_tool()` uses, from the same `ctx` this closure already
+        // captured by value; not a second, independently-derived value that could disagree with it.
+        audit.idempotency_key    = derive_idempotency_key(ctx, request.call_index, request.arguments);
+        audit.principal_id       = ctx.principal.id;
+        audit.principal_tenant_id = ctx.principal.tenant_id;
+        audit.principal_on_behalf_of = ctx.principal.on_behalf_of;
 
         if (!invoke_result) {
             error const& e = invoke_result.error();

@@ -12,7 +12,9 @@
 // `rt::` test in this suite already uses) instead of `block_on(ref.ask<...>(...))` against a real
 // actor mailbox. Same behavior proven, no engine/mailbox left to stand it up.
 
+#include <chrono>
 #include <cstdio>
+#include <memory>
 #include <memory_resource>
 #include <string>
 
@@ -222,6 +224,39 @@ int main() {
                   "D3-8: the FAILED task is retrievable by its own minted id, exactly like a "
                   "COMPLETED one would be");
         }
+    }
+
+    // --- D3-9/D3-10: ADR-061 §35/§37.3's `authority` parameter, against a REAL Tier-3-mode session --
+    {
+        Harness<CannedChatClient> h3{"s-a2a-tier3"};
+        h3.session.set_require_authority(true);
+        a2a::A2aServer tier3_server(h3.starter(), "ctx-3");
+
+        // D3-9: the session requires per-request authority; omitting it (the plain 2-arg call, exactly
+        // what every pre-existing call site still does) must NOT silently fall back to `caller` --
+        // agent_session.hpp's own §20.4 admission denies it outright (run.authority_required), which
+        // this dispatcher surfaces as a real, retrievable FAILED task, the same shape D3-8 already
+        // proved for a chat-layer failure -- SendMessage itself does not reject, the TASK reports it.
+        auto no_authority = tier3_server.send_message(text_message("no authority supplied"), kOwner);
+        check(no_authority.has_value(),
+              "D3-9: SendMessage itself still succeeds even when the underlying run is denied");
+        check(no_authority.has_value() &&
+                  no_authority->status.state == a2a::task_state::failed,
+              "D3-9: a Tier-3 session denies a request with no `authority` argument -- omission does "
+              "NOT silently fall back to the `caller` argument admitting the run");
+
+        // D3-10: a real RequestAuthority, for a principal 018 §2 admits against the session's own
+        // owner, is honored -- the run actually completes.
+        art::RequestAuthority const authority{
+            ae::Principal{"p-owner", ""},
+            std::make_shared<ae::CapabilitySet const>(ae::CapabilitySet::grant_root({})),
+            std::chrono::steady_clock::now() + std::chrono::hours{1},
+        };
+        auto with_authority =
+            tier3_server.send_message(text_message("real authority supplied"), kOwner, authority);
+        check(with_authority.has_value() &&
+                  with_authority->status.state == a2a::task_state::completed,
+              "D3-10: a real, admitted `authority` argument lets a Tier-3 session's run complete");
     }
 
     if (g_failures == 0) {

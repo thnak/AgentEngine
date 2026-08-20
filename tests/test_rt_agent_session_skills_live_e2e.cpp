@@ -43,6 +43,7 @@
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/skill_provider.hpp"
 #include "agentengine/core/tool_call_extraction.hpp"
+#include "agentengine/pal/env.hpp"
 #include "agentengine/protocol/openai/chat_client.hpp"
 #include "agentengine/rt/agent_session.hpp"
 #include "agentengine/trust/principal.hpp"
@@ -70,8 +71,8 @@ void note(char const* label, std::string const& value) {
 }
 
 [[nodiscard]] std::string env_or(char const* name, std::string fallback) {
-    char const* v = std::getenv(name);
-    return (v && *v) ? std::string(v) : std::move(fallback);
+    auto const v = ::agentengine::pal::env_var(name);
+    return (v && !v->empty()) ? *v : std::move(fallback);
 }
 
 // Same "safe here because nothing genuinely suspends externally" drive<T>() every other
@@ -221,8 +222,8 @@ static_assert(std::is_default_constructible_v<SkillsLiveSession>);
 }  // namespace
 
 int main() {
-    char const* key_env = std::getenv("AGENTENGINE_OPENROUTER_API_KEY");
-    if (!key_env || !*key_env) {
+    auto const key_env = ::agentengine::pal::env_var("AGENTENGINE_OPENROUTER_API_KEY");
+    if (!key_env || key_env->empty()) {
         std::fprintf(stderr,
                      "test_rt_agent_session_skills_live_e2e: SKIPPED -- "
                      "AGENTENGINE_OPENROUTER_API_KEY is not set.\n"
@@ -237,7 +238,7 @@ int main() {
                  model.c_str());
 
     InMemorySecretStore store;
-    store.set(kSecretName, key_env);
+    store.set(kSecretName, *key_env);
     CapabilitySet held = CapabilitySet::grant_root({cap::Secret{kSecretName, std::chrono::seconds{0}}});
 
     ChatClientCapabilities caps;

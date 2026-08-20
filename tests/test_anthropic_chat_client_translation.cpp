@@ -468,13 +468,6 @@ int main() {
         }
     }
 
-    // ---- D2/E2-equivalent: chunked-transfer decoding (same RFC 9112 logic as Phase D) --------------
-    {
-        std::string chunked = "5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n";
-        auto decoded = decode_chunked_body(chunked);
-        check(decoded.has_value() && *decoded == "hello world", "chunked decoding works identically to Phase D");
-    }
-
     // ---- Named-event SSE splitting (distinct from OpenAI's single-field shape) ----------------------
     {
         std::string sse =

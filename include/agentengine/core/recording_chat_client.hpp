@@ -114,6 +114,7 @@ inline void discard_recording(ChatCallRecording) noexcept {}
 // `capabilities()` forwards to `Inner`; `chat()`/`chat_stream()` wrap `Inner`'s own calls with
 // capture-and-emit recording that never changes what the caller observes (see file-top comment).
 template <class Inner>
+// ae-naming-lint: allow RecordingChatClient — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class RecordingChatClient {
     // LegacyChatClient (chat_client.hpp), not ChatClient -- this type's own chat()/chat_stream()
     // bodies below call `inner_.chat(...)` directly, which the relaxed `ChatClient` concept

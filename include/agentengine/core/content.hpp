@@ -56,7 +56,7 @@ struct Reasoning {  // ae-naming-lint: allow Reasoning — pre-existing M0 scaff
     // never assumed safe). Appended last (003 §6's field-ordering lesson — see `Usage::
     // cache_write_tokens`'s own comment for why), so every existing positional `Reasoning{text,
     // encrypted}` call site keeps compiling unchanged.
-    std::string producer_chat_client_id;
+    std::string producer_chat_client_id{};
 
     friend bool operator==(Reasoning const&, Reasoning const&) = default;
 };

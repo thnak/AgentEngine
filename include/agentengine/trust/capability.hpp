@@ -34,6 +34,7 @@ namespace agentengine {
 // downgraded to (shell_dispatch.hpp: "Capability checks are KIND-ONLY per §2.5.4's downgrade") —
 // never as capability storage itself. `capability_kind_of()` derives it from a real `Capability`, so
 // there is exactly one place (the `cap::` variant below) that can drift out of sync with reality.
+// ae-naming-lint: allow capability_kind — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 enum class capability_kind {
     fs_read,
     fs_write,
@@ -521,6 +522,7 @@ struct InvocationTicket {
 // — however many the invoked code made or stashed — shares the same ticket, so a copy squirreled
 // away past the call's end is exactly as dead as the original (007 §9 G4 / 006 §8 G3: "a capability
 // handle from call n is unusable in call n+1").
+// ae-naming-lint: allow BoundCapability — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class BoundCapability {
 public:
     [[nodiscard]] result<Capability> use() const {
@@ -551,6 +553,7 @@ private:
 // host policy calls — never reachable from anything derived from model output, I3). No convenience
 // "give me everything" shortcut exists; that is the actual property 007 §9 G1 tests, not merely a
 // comment promising it.
+// ae-naming-lint: allow CapabilitySet — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class CapabilitySet {
 public:
     CapabilitySet() = default;  // always empty -- there is no other public default state

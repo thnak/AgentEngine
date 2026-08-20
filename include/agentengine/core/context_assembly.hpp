@@ -57,6 +57,7 @@ namespace agentengine {
 // "Every contributor declares a token budget" (005 §3). `max_tokens == 0` means unbounded — a
 // contributor that never drops, matching `HistoryProvider<Window<0>>`'s own "0 means unbounded"
 // convention (history_provider.hpp) rather than inventing a second sentinel for the same idea.
+// ae-naming-lint: allow ContextBudget — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct ContextBudget {
     std::uint64_t max_tokens = 0;
 };
@@ -84,6 +85,7 @@ template <class T>
 // One recorded drop — "drops are recorded in the trace" (005 §3). A minimal in-memory record
 // (016's full span/telemetry shape is out of scope here, matching `ToolInvocationAudit`'s own
 // precedent for the same "not yet built" reason) rather than a real trace-emission call.
+// ae-naming-lint: allow ContextDrop — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct ContextDrop {
     std::size_t contributor_index = 0;
     std::string contributor_message_id;  // the dropped Message's own id; empty if it had none
@@ -95,6 +97,7 @@ struct ContextDrop {
 // `std::function`, a `make_*_descriptor<T>()` factory): 006 §6 already established this project's
 // answer to "N compile-time-declared conformers, one runtime table"; this is that same shape
 // applied to `ContextProvider` instead of `Tool`.
+// ae-naming-lint: allow ContextProviderDescriptor — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct ContextProviderDescriptor {
     // Milestone 5 Phase B4: task<T>-returning, matching the ContextProvider concept's own now-real
     // signature (context_provider.hpp) -- forced by the same cascade that made HistoryProvider and
@@ -139,6 +142,7 @@ template <class ProviderT>
     return d;
 }
 
+// ae-naming-lint: allow ContextAssemblyResult — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct ContextAssemblyResult {
     ContextContribution      combined;
     std::vector<ContextDrop> drops;

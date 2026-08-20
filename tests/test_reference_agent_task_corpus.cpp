@@ -43,6 +43,7 @@
 #include "agentengine/core/chat_client.hpp"
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/effect_context.hpp"
+#include "agentengine/pal/env.hpp"
 #include "agentengine/trust/capability.hpp"
 #include "backends/native_jail/mediated_python_runner.hpp"
 #include "support/recorded_chat_client.hpp"
@@ -102,7 +103,7 @@ std::string extract_python_code(std::string const& text) {
 }  // namespace
 
 int main() {
-    std::string const base = std::string(std::getenv("TEMP") ? std::getenv("TEMP") : "C:/Windows/Temp") +
+    std::string const base = ::agentengine::pal::env_var("TEMP").value_or("C:/Windows/Temp") +
                               "/ae_h1_task_corpus";
     std::filesystem::path input_dir = std::filesystem::path(base) / "input";
     std::filesystem::path work_dir = std::filesystem::path(base) / "work";
@@ -186,7 +187,7 @@ int main() {
 
         ExecState state{};
         EffectContext ctx{};
-        ctx.capabilities = &caps;
+        ctx.capabilities = agentengine::borrow_capabilities(caps);
         ExecRequest req{"python", code};
         auto out = runner.run(req, state, ctx);
         AE_CHECK(out.has_value() && out->klass == exec_outcome_class::ok,
@@ -212,7 +213,7 @@ int main() {
 
         ExecState state{};
         EffectContext ctx{};
-        ctx.capabilities = &caps;
+        ctx.capabilities = agentengine::borrow_capabilities(caps);
         ExecRequest req{"python", code};
         auto out = runner.run(req, state, ctx);
         AE_CHECK(out.has_value() && out->klass == exec_outcome_class::ok,
@@ -239,7 +240,7 @@ int main() {
 
         ExecState state{};
         EffectContext ctx{};
-        ctx.capabilities = &caps;
+        ctx.capabilities = agentengine::borrow_capabilities(caps);
         ExecRequest req{"python", code};
         auto out = runner.run(req, state, ctx);
         AE_CHECK(out.has_value() && out->klass == exec_outcome_class::ok,

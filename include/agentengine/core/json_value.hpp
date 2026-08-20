@@ -26,8 +26,10 @@
 
 namespace agentengine::json {
 
+// ae-naming-lint: allow value_kind — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 enum class value_kind { null, boolean, number, string, array, object };
 
+// ae-naming-lint: allow Value — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class Value {
 public:
     Value() : data_(std::monostate{}) {}

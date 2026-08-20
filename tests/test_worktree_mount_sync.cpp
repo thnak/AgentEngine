@@ -14,6 +14,7 @@
 #include <string>
 
 #include "agentengine/core/worktree.hpp"
+#include "agentengine/pal/env.hpp"
 #include "backends/native_jail/mediated_filesystem_adapter.hpp"
 #include "backends/native_jail/worktree_mount_sync.hpp"
 
@@ -69,7 +70,7 @@ std::string fresh_dir(std::string const& base, std::string const& name) {
 } // namespace
 
 int main() {
-    std::string const scratch = std::string(std::getenv("TEMP") ? std::getenv("TEMP") : "C:/Windows/Temp") +
+    std::string const scratch = ::agentengine::pal::env_var("TEMP").value_or("C:/Windows/Temp") +
                                  "/ae_f1_mount_sync";
     std::filesystem::remove_all(scratch);
     std::filesystem::create_directories(scratch);

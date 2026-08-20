@@ -218,6 +218,54 @@ if(WIN32)
     "real one-argument signatures compile)")
 endif()
 
+# ---- Keep assert() live in every configuration, Release included --------------------------------
+# 13 files here (195 assert() calls) use bare <cassert> rather than the AE_CHECK/g_failures harness:
+# smoke_vocabulary, test_job_object_limits, test_native_jail_runner_stubs, test_python_audit_hook,
+# test_python_caller_gated_{benchmark,import}, test_python_embed_smoke, test_python_layer0_sweep,
+# test_python_meta_path_finder, test_python_numpy_pandas_import,
+# test_python_trusted_loader_proxy_heap_type_negative_control, test_real_filesystem_adapter,
+# test_recorded_chat_client.
+#
+# CMake's Release/RelWithDebInfo flags carry -DNDEBUG, which turns every one of those into a no-op --
+# so the CI jobs that build Release (Windows/MSVC, Windows/clang-cl, Linux/gcc-14) were running
+# bodies that cannot fail. That is the exact thing CLAUDE.md forbids ("a test that cannot fail proves
+# nothing"), and it covered real security proofs: the caller-gated import gate (45 asserts), the
+# audit hook, the Job-object limits, and a file whose name is literally
+# ..._negative_control.cpp. gcc's -Wunused-variable is what exposed it -- four locals in
+# test_recorded_chat_client.cpp had no remaining reader once the asserts were preprocessed away.
+#
+# Dropping NDEBUG for tests/ only is the narrow fix: production targets keep their Release semantics
+# untouched, and the assertions become load-bearing everywhere they are built.
+#
+# The define is STRIPPED from this directory's config flags rather than countered with a
+# `/UNDEBUG`-`-UNDEBUG` compile option. Both undefine it, but appending the counter-flag makes cl
+# itself emit `command line warning D9025: overriding '/DNDEBUG' with '/UNDEBUG'` on every single
+# translation unit -- trading 195 dead assertions for a few thousand lines of new warning, when the
+# rule here is that warnings get fixed rather than accumulated. Editing the variables at directory
+# scope leaves no contradictory pair on the command line for cl to complain about.
+# Three places NDEBUG can arrive from, and an earlier version of this block only handled the first:
+#   1. CMAKE_<LANG>_FLAGS_<CONFIG>          -- CMake's own Release/RelWithDebInfo/MinSizeRel defaults
+#   2. CMAKE_<LANG>_FLAGS                   -- seeded by the CXXFLAGS/CFLAGS environment variables and
+#                                              by -DCMAKE_CXX_FLAGS=..., both entirely ordinary in a
+#                                              packaging or toolchain-file build
+#   3. the directory COMPILE_DEFINITIONS property -- an add_compile_definitions(NDEBUG) above us
+# Missing (2) meant a perfectly standard configuration silently restored all 195 dead assertions,
+# which is precisely the failure this block exists to prevent, so all three are handled.
+foreach(ae_lang C CXX)
+  foreach(ae_flags_var CMAKE_${ae_lang}_FLAGS
+                        CMAKE_${ae_lang}_FLAGS_RELEASE
+                        CMAKE_${ae_lang}_FLAGS_RELWITHDEBINFO
+                        CMAKE_${ae_lang}_FLAGS_MINSIZEREL)
+    string(REPLACE "/DNDEBUG" "" ${ae_flags_var} "${${ae_flags_var}}")
+    string(REPLACE "-DNDEBUG" "" ${ae_flags_var} "${${ae_flags_var}}")
+  endforeach()
+endforeach()
+get_directory_property(ae_dir_defs COMPILE_DEFINITIONS)
+if(ae_dir_defs)
+  list(REMOVE_ITEM ae_dir_defs NDEBUG)
+  set_directory_properties(PROPERTIES COMPILE_DEFINITIONS "${ae_dir_defs}")
+endif()
+
 add_executable(smoke_vocabulary smoke_vocabulary.cpp)
 target_link_libraries(smoke_vocabulary PRIVATE agentengine::core agentengine_warnings)
 
@@ -367,6 +415,64 @@ if(WIN32)
   add_test(NAME test_memory_no_authority_laundering COMMAND test_memory_no_authority_laundering)
 endif()
 
+# ---- ADR-063 (retrieval-augmented ContextProvider shape) -- foundation layer, Proposed status ----
+# §2.6b / §3 claim 6: neutralize_forged_provenance_markers() (core/provenance_marker.hpp), the
+# marker-forgery defense generalized out of memory_provider.hpp's own gap-17 fix.
+if(WIN32)
+  add_executable(test_provenance_marker test_provenance_marker.cpp)
+  target_link_libraries(test_provenance_marker PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_provenance_marker COMMAND test_provenance_marker)
+endif()
+
+# §2.3 / §4 finding 7: BruteForceCosineIndex (core/vector_index.hpp) -- ranking correctness, contract
+# rejection, and the deterministic score-desc/id-asc tie-break.
+if(WIN32)
+  add_executable(test_vector_index test_vector_index.cpp)
+  target_link_libraries(test_vector_index PRIVATE agentengine::core agentengine_warnings)
+  add_test(NAME test_vector_index COMMAND test_vector_index)
+
+  add_executable(test_vector_index_benchmark test_vector_index_benchmark.cpp)
+  target_link_libraries(test_vector_index_benchmark PRIVATE agentengine::core agentengine_warnings)
+  add_test(NAME test_vector_index_benchmark COMMAND test_vector_index_benchmark)
+endif()
+
+# §2.6a / §3 claim 5: rag_corpus_key()/rag_corpus_mount() (core/corpus_scope.hpp) -- multi-tenant
+# corpus isolation, mirroring test_memory_cross_tenant_isolation.cpp's proven shape.
+if(WIN32)
+  add_executable(test_corpus_scope test_corpus_scope.cpp)
+  target_link_libraries(test_corpus_scope PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_corpus_scope COMMAND test_corpus_scope)
+endif()
+
+# §2.4 / §4 findings 1-2: CorpusChunkRecord (core/corpus_chunk.hpp) -- the shared citation-metadata
+# contract CorpusSource (writer) and VectorRagContextProvider (reader) both build against.
+if(WIN32)
+  add_executable(test_corpus_chunk test_corpus_chunk.cpp)
+  target_link_libraries(test_corpus_chunk PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_corpus_chunk COMMAND test_corpus_chunk)
+endif()
+
+# §2.4/§2.4b, closes §4 findings 2/8/9 for its own call site: DiskCorpusSource + RecursiveChunker
+# (core/corpus_source.hpp) -- folder-mount ingestion, re-mount dedup, chunking.
+if(WIN32)
+  add_executable(test_corpus_source test_corpus_source.cpp)
+  target_link_libraries(test_corpus_source PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_corpus_source COMMAND test_corpus_source)
+endif()
+
+# §2.1/§2.1b/§2.6a/§2.6b, closes the "full claim" gap for §3 claims 5/6: VectorRagContextProvider
+# (core/vector_rag_context_provider.hpp) -- the real ContextProvider conformer.
+if(WIN32)
+  add_executable(test_vector_rag_context_provider test_vector_rag_context_provider.cpp)
+  target_link_libraries(test_vector_rag_context_provider PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_vector_rag_context_provider COMMAND test_vector_rag_context_provider)
+endif()
+
 
 # ---- Milestone 4 Phase H3 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
 # Roadmap exit criterion (029 §9 G1): the default (non-vector) memory retrieval path is
@@ -428,6 +534,14 @@ add_test(NAME test_reference_agent_prompt COMMAND test_reference_agent_prompt)
 add_executable(test_net_egress_proxy test_net_egress_proxy.cpp)
 target_link_libraries(test_net_egress_proxy PRIVATE agentengine::net_egress_proxy agentengine_warnings)
 add_test(NAME test_net_egress_proxy COMMAND test_net_egress_proxy)
+
+# ---- ADR-061 §10b claim 4 (decisions/ADR-061-host-provided-inbound-transport.md, Tier 1 prove -------
+# phase): the MCP conformance client's resolve_host/resolve_and_validate two-way SSRF control. Written
+# for real -- tools/mcp_conformance_client.cpp's own top comment referred to this file before it
+# existed.
+add_executable(test_mcp_conformance_transport test_mcp_conformance_transport.cpp)
+target_link_libraries(test_mcp_conformance_transport PRIVATE agentengine::net_egress_proxy agentengine_warnings)
+add_test(NAME test_mcp_conformance_transport COMMAND test_mcp_conformance_transport)
 
 # ---- HTTPS egress TLS client proof (decisions/ADR-013-https-egress-tls-client.md) --------------
 # Only built when AGENTENGINE_WITH_HTTPS is explicitly turned ON (root CMakeLists.txt) -- links
@@ -505,6 +619,23 @@ if(AGENTENGINE_WITH_HTTPS)
     MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
   add_test(NAME test_openrouter_live_e2e COMMAND test_openrouter_live_e2e)
   set_tests_properties(test_openrouter_live_e2e PROPERTIES LABELS "live-network" TIMEOUT 300)
+
+  # ---- ADR-063 §2.5: OpenAIEmbedder (protocol/openai/embedder.hpp) -- offline-provable surface --
+  # request/response construction and embed_batch()'s two synchronous pre-network gates. No server,
+  # runs unconditionally, mirrors test_openai_chat_client_translation.cpp's own offline split.
+  add_executable(test_openai_embedder test_openai_embedder.cpp)
+  target_link_libraries(test_openai_embedder PRIVATE
+    agentengine::core agentengine::provider_http_client agentengine_warnings
+    MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+  add_test(NAME test_openai_embedder COMMAND test_openai_embedder)
+
+  # ---- ADR-063 §3 claim 4's own disproof test: OpenAIEmbedder against REAL api.openrouter.ai -----
+  add_executable(test_openai_embedder_openrouter_live_e2e test_openai_embedder_openrouter_live_e2e.cpp)
+  target_link_libraries(test_openai_embedder_openrouter_live_e2e PRIVATE
+    agentengine::core agentengine::provider_http_client agentengine_warnings
+    MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+  add_test(NAME test_openai_embedder_openrouter_live_e2e COMMAND test_openai_embedder_openrouter_live_e2e)
+  set_tests_properties(test_openai_embedder_openrouter_live_e2e PROPERTIES LABELS "live-network" TIMEOUT 300)
 
   add_executable(test_llamacpp_live_e2e test_llamacpp_live_e2e.cpp)
   target_link_libraries(test_llamacpp_live_e2e PRIVATE
@@ -847,6 +978,12 @@ add_executable(test_rt_async_mutex test_rt_async_mutex.cpp)
 target_link_libraries(test_rt_async_mutex PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_async_mutex COMMAND test_rt_async_mutex)
 
+# ---- ADR-064 Design B -- agentengine::rt::drive_leaf_task<T>(), the narrow "leaf task" driver
+# VectorRagContextProvider::recall's invoke uses (include/agentengine/rt/drive_leaf_task.hpp).
+add_executable(test_rt_drive_leaf_task test_rt_drive_leaf_task.cpp)
+target_link_libraries(test_rt_drive_leaf_task PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_drive_leaf_task COMMAND test_rt_drive_leaf_task)
+
 # ---- ADR-037 Phase 2, Slice 1 -- agentengine::rt::AgentSession, the Quark-actor-free replacement
 # for agentengine::AgentSession's core turn loop.
 add_executable(test_rt_agent_session test_rt_agent_session.cpp)
@@ -1123,6 +1260,12 @@ add_executable(test_rt_agent_session_identity_and_admission test_rt_agent_sessio
 target_link_libraries(test_rt_agent_session_identity_and_admission PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_agent_session_identity_and_admission COMMAND test_rt_agent_session_identity_and_admission)
 
+# ADR-061 §20-§29 (Tier 3 per-request authority mechanism) -- real positive/negative controls against
+# the compiled build, not just design text.
+add_executable(test_rt_agent_session_tier3_authority test_rt_agent_session_tier3_authority.cpp)
+target_link_libraries(test_rt_agent_session_tier3_authority PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_agent_session_tier3_authority COMMAND test_rt_agent_session_tier3_authority)
+
 # ---- ADR-037 Phase 2 -- porting test_agent_session_streaming_model_calls(.cpp) (ADR-034 streaming
 # turn loop), test_agent_session_response_format_leak_scan(.cpp) (ADR-035 Phase 1 leak scan), and
 # test_agent_session_run_event_stream(.cpp) (Milestone 7 Phase A run event stream) onto
@@ -1141,6 +1284,17 @@ add_test(NAME test_mcp_json_rpc COMMAND test_mcp_json_rpc)
 add_executable(test_mcp_server test_mcp_server.cpp)
 target_link_libraries(test_mcp_server PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_mcp_server COMMAND test_mcp_server)
+
+# ---- ADR-061 §39/§40 prove phase -- McpServer's per-request CapabilityGrant (decisions/ADR-061) -----
+add_executable(test_mcp_capability_grant test_mcp_capability_grant.cpp)
+target_link_libraries(test_mcp_capability_grant PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_mcp_capability_grant COMMAND test_mcp_capability_grant)
+
+# ---- ADR-061 §46 prove phase -- ApprovalDecider widened to see the calling Principal, closing R27's
+# `approve_` finding (decisions/ADR-061) ---------------------------------------------------------------
+add_executable(test_approval_decider_principal test_approval_decider_principal.cpp)
+target_link_libraries(test_approval_decider_principal PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_approval_decider_principal COMMAND test_approval_decider_principal)
 
 # ---- Milestone 7 Phase C3 -- 011 §3's MCP client role (protocol/mcp/client.hpp): caching,
 # pagination, digest-pinning/rug-pull detection, isError surfaced not thrown -------------------------
@@ -1574,9 +1728,14 @@ endif()
 if(WIN32)
   # Deliberately hostile test-only helper process (tests/helpers/hostile_child.cpp) the Job Object
   # tests launch and try to contain -- never a product target, never linked into anything else.
-  # ws2_32: C5's probe_net mode uses raw Winsock.
-  add_executable(job_object_hostile_child helpers/hostile_child.cpp)
-  target_link_libraries(job_object_hostile_child PRIVATE ws2_32)
+  #
+  # Defined in its own directory scope (helpers/CMakeLists.txt) rather than here, because it must be
+  # built WITHOUT sanitizer instrumentation and CMAKE_CXX_FLAGS is global. An instrumented child
+  # imports the sanitizer runtime DLL from Program Files, which a zero-capability AppContainer has no
+  # ACL grant for -- so it never reaches main and six containment tests fail while create() succeeds.
+  # That subdirectory carries the full reasoning, including why granting the ACL would be the wrong
+  # fix.
+  add_subdirectory(helpers)
 
   add_executable(test_job_object_limits test_job_object_limits.cpp)
   target_link_libraries(test_job_object_limits PRIVATE
@@ -1760,6 +1919,22 @@ if(WIN32)
   target_link_libraries(test_principal_from_bearer_claims PRIVATE
     agentengine::core agentengine::capability_token agentengine_warnings)
   add_test(NAME test_principal_from_bearer_claims COMMAND test_principal_from_bearer_claims)
+
+  # ---- ADR-061 §31/§33/§34/§35 prove phase -- trust::EndpointId/EndpointRegistry/mint_endpoint_id()
+  # and rt::request_authority_from_bearer_claims(), the bearer-credential-to-RequestAuthority bridge
+  # for the Tier-3 mechanism §20-§30 already proved (decisions/ADR-061) -------------------------------
+  add_executable(test_request_authority_bridge test_request_authority_bridge.cpp)
+  target_link_libraries(test_request_authority_bridge PRIVATE
+    agentengine::core agentengine::capability_token agentengine_warnings)
+  add_test(NAME test_request_authority_bridge COMMAND test_request_authority_bridge)
+
+  # ---- ADR-061 §42/§43 prove phase -- trust::steady_deadline_from() (shared clock-conversion
+  # primitive) and mcp::capability_grant_from_bearer_claims(), the bearer-credential-to-CapabilityGrant
+  # bridge for McpServer::dispatch()'s per-request grant (§39-§41, decisions/ADR-061) -----------------
+  add_executable(test_capability_grant_bridge test_capability_grant_bridge.cpp)
+  target_link_libraries(test_capability_grant_bridge PRIVATE
+    agentengine::core agentengine::capability_token agentengine_warnings)
+  add_test(NAME test_capability_grant_bridge COMMAND test_capability_grant_bridge)
 endif()
 
 # ---- Worktree content-addressed object store (025 §2, Milestone 3 Phase A1) --------------------

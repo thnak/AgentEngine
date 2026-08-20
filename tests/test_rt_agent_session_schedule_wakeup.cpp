@@ -106,7 +106,7 @@ int main() {
         auto started = drive(session.start_run(StartRun{user_message("hi")}));
         check(started.has_value(), "S1 setup: start_run succeeds");
 
-        auto handle = session.schedule_wakeup(std::chrono::milliseconds(1000), "reminder", t0);
+        auto handle = drive(session.schedule_wakeup(std::chrono::milliseconds(1000), "reminder", t0));
         check(!handle.has_value(), "S1: schedule_wakeup fails closed with no cap::Schedule granted");
         if (!handle.has_value()) {
             check(handle.error().code == "schedule_wakeup.not_granted",
@@ -126,7 +126,7 @@ int main() {
         auto started = drive(session.start_run(StartRun{user_message("hi")}));
         check(started.has_value(), "S2 setup: start_run succeeds");
 
-        auto handle = session.schedule_wakeup(std::chrono::milliseconds(120000), "too far out", t0);
+        auto handle = drive(session.schedule_wakeup(std::chrono::milliseconds(120000), "too far out", t0));
         check(!handle.has_value(), "S2: a delay past the granted max_horizon (60s) is rejected");
         if (!handle.has_value()) {
             check(handle.error().code == "schedule_wakeup.horizon_exceeded",
@@ -136,7 +136,7 @@ int main() {
 
         // A delay within the horizon still succeeds under the same grant -- proves S2 above rejected
         // for the stated reason, not because the grant itself is unusable.
-        auto ok = session.schedule_wakeup(std::chrono::milliseconds(30000), "within horizon", t0);
+        auto ok = drive(session.schedule_wakeup(std::chrono::milliseconds(30000), "within horizon", t0));
         check(ok.has_value(), "S2: a delay within the granted horizon (30s <= 60s) is accepted");
     }
 
@@ -153,7 +153,7 @@ int main() {
         check(started.has_value(), "S3 setup: start_run succeeds");
 
         auto const delay = std::chrono::milliseconds(5000);
-        auto handle = session.schedule_wakeup(delay, "daily digest", t0);
+        auto handle = drive(session.schedule_wakeup(delay, "daily digest", t0));
         check(handle.has_value(), "S3: a schedule_wakeup within grant is accepted");
         if (handle.has_value()) {
             check(handle->kind == agentengine::standing_effect_kind::schedule_wakeup,
@@ -191,10 +191,10 @@ int main() {
         auto started = drive(session.start_run(StartRun{user_message("hi")}));
         check(started.has_value(), "S4 setup: start_run succeeds");
 
-        auto first = session.schedule_wakeup(std::chrono::milliseconds(1000), "first", t0);
+        auto first = drive(session.schedule_wakeup(std::chrono::milliseconds(1000), "first", t0));
         check(first.has_value(), "S4: the first call, under a Schedule<..,1> grant, is accepted");
 
-        auto second = session.schedule_wakeup(std::chrono::milliseconds(1000), "second", t0);
+        auto second = drive(session.schedule_wakeup(std::chrono::milliseconds(1000), "second", t0));
         check(!second.has_value(), "G9-analog: a second call while max_active is already at 1/1 is rejected");
         if (!second.has_value()) {
             check(second.error().code == "schedule_wakeup.capacity_exceeded",
@@ -215,8 +215,8 @@ int main() {
         auto started = drive(session.start_run(StartRun{user_message("hi")}));
         check(started.has_value(), "S5 setup: start_run succeeds");
 
-        auto soon = session.schedule_wakeup(std::chrono::milliseconds(1000), "soon", t0);
-        auto later = session.schedule_wakeup(std::chrono::milliseconds(10000), "later", t0);
+        auto soon = drive(session.schedule_wakeup(std::chrono::milliseconds(1000), "soon", t0));
+        auto later = drive(session.schedule_wakeup(std::chrono::milliseconds(10000), "later", t0));
         check(soon.has_value() && later.has_value(), "S5 setup: both calls succeed");
 
         auto const check_time = t0 + std::chrono::milliseconds(5000);
