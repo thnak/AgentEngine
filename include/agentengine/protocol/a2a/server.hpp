@@ -119,10 +119,23 @@ public:
     //     mandatory here and there is no defaulted overload to fall back into.
     //   - R1: the task store is now keyed per-principal (see `owner_` on `StoredTask`), which needs
     //     the establishing principal at creation time.
-    [[nodiscard]] result<Task> send_message(Message const& inbound, agentengine::rt::SessionCaller const& caller) {
+    //
+    // ADR-061 §35/§37.3: `authority` is a NEW, trailing, DEFAULTED parameter -- unlike `caller` above,
+    // its absence does not fail open. `AgentSession::start_run()`'s own admission (§20.4,
+    // agent_session.hpp's `if (require_authority_)` branch) consults `authority` ONLY when the
+    // underlying session was put into Tier-3 mode (`set_require_authority(true)`); an unset `authority`
+    // against such a session is denied outright (`run.authority_required`), never silently admitted
+    // through the `caller` branch instead -- fails closed by the session's own construction, not by
+    // this dispatcher remembering to check anything. A non-Tier-3 session (the common, embedded/
+    // single-tenant case, 018 §1) never reads `authority` at all, so every existing 2-argument call
+    // site (`tests/test_a2a_server.cpp`, `tests/test_task_principal_binding.cpp`) is unaffected.
+    [[nodiscard]] result<Task> send_message(
+            Message const& inbound, agentengine::rt::SessionCaller const& caller,
+            std::optional<agentengine::rt::RequestAuthority> authority = std::nullopt) {
         agentengine::Message input = from_a2a_message(inbound);
         agentengine::rt::StartRun start{std::move(input)};
-        start.caller = caller;
+        start.caller    = caller;
+        start.authority = std::move(authority);
         result<RunOutcome> outcome = starter_(std::move(start));
 
         std::lock_guard<std::mutex> lock(mutex_);

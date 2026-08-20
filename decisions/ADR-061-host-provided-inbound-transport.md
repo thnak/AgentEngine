@@ -4964,6 +4964,43 @@ end-to-end exists yet (ADR-039 §3e's own scoping, `examples/`, not core).
 ### 37.4 Status
 
 The bridge `§31-§36` designed is no longer design text — it is real, compiled code with real, passing
-positive controls for all seven falsifiable claims. Not yet committed to version control this session.
-Per this project's `design → red-team → prove → judge` discipline, this closes prove; judge (project
-owner sign-off) is next, same as §30's session-side mechanism already awaits.
+positive controls for all seven falsifiable claims. Committed and pushed to `origin/main` (`2d32840`,
+"Implement ADR-061's bearer-credential-to-RequestAuthority bridge, proven for real"). Per this
+project's `design → red-team → prove → judge` discipline, this closes prove; judge (project owner
+sign-off) is next, same as §30's session-side mechanism already awaits.
+
+## 38. Closing the `A2aServer::send_message()` residual named at §35/§37.3
+
+§35's correction and §37.3's residual list both named the same small, real, unbuilt gap:
+`A2aServer::send_message()` already routes through `rt::AgentSession::start_run()` (via its own
+`RunStarter`), builds a real `rt::StartRun`, and sets `.caller` — but never sets `.authority`, so a
+Tier-3-fronted A2A deployment had no way to actually supply per-request authority through this
+dispatcher, even though the session-side mechanism it would need to reach was already proven (§30).
+
+**Fix, matching the exact shape ADR-061 §7 R1/R2 already used once for `caller`**:
+`send_message()` gains a third parameter, `std::optional<agentengine::rt::RequestAuthority> authority
+= std::nullopt` (`protocol/a2a/server.hpp`), forwarded to `start.authority`. Deliberately **not**
+mandatory like `caller` was: `caller`'s absence caused a fail-OPEN admission bypass (018 §2 skipped
+entirely), which is why R2 made it required with no defaulted overload. `authority`'s absence does not
+fail open — `AgentSession::start_run()`'s own §20.4 admission branches on the session's own
+`require_authority_` mode, not on whether the caller remembered to pass anything: a non-Tier-3 session
+(the common case, 018 §1) never reads `authority` at all, and a Tier-3 session with `authority` unset
+is denied outright (`run.authority_required`), by the session's own construction, not by this
+dispatcher's discipline. A trailing defaulted parameter therefore keeps every existing 2-argument call
+site (`tests/test_a2a_server.cpp`, `tests/test_task_principal_binding.cpp`) unaffected.
+
+**Real, compiled, passing positive/negative controls** (`tests/test_a2a_server.cpp`, new D3-9/D3-10):
+against a real `require_authority_ == true` session, the 2-argument call (no `authority`) is denied —
+surfaced as a real, retrievable `TASK_STATE_FAILED` task (the same shape D3-8 already proved for a
+chat-layer failure; `SendMessage` itself does not reject, the task reports it) — and a real,
+admission-passing `RequestAuthority` lets the same session's run actually complete
+(`TASK_STATE_COMPLETED`). Full workspace rebuild clean except the same two pre-existing, unrelated
+`embedder.hpp` failures; full `ctest` run: **205/205 passing**, zero regressions (the test count is
+unchanged from §37 — two new checks landed inside the existing `test_a2a_server` binary rather than a
+new executable).
+
+### 38.1 Status
+
+Real, compiled, tested. `A2aServer`'s own residual is closed; `McpServer`'s per-call threading
+(ADR-039 §3a, a genuinely different dispatch surface) and a reference host-side example (ADR-039 §3e)
+remain the named, unbuilt residuals. Awaits Judge alongside §30/§37.
