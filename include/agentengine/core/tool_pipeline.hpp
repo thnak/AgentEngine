@@ -521,12 +521,15 @@ namespace tool_pipeline_detail {
 // (account: revoke bound capabilities) also run on that same background thread, immediately before
 // `on_complete` fires.
 //
-// `ctx` is copied into the background thread's own closure -- `ctx.capabilities`/
-// `ctx.bound_capabilities` are non-owning pointers, the SAME "host owns it, must outlive" contract
-// `EffectContext::capabilities` already carries everywhere in this codebase (effect_context.hpp), not
-// a new hazard this function introduces. `bound` (the per-invocation `BoundCapability` handles from
-// step 7) is moved into the same closure so its RAII revoke-at-step-10 semantics are preserved
-// exactly, just on a different thread than the one that minted them.
+// `ctx` is copied into the background thread's own closure. `ctx.capabilities` is an OWNED
+// `std::shared_ptr<CapabilitySet const>` (ADR-061 §20.3) -- refcounted, safe to copy across the
+// detach regardless of the caller's own stack frame having already returned; it was a raw, non-owning
+// pointer before that fix, and copying it into a detached thread was unsafe until it landed
+// (ADR-061 §7 R16). `ctx.bound_capabilities`, by contrast, genuinely remains a non-owning
+// `std::vector<BoundCapability> const*` -- the SAME "host owns it, must outlive" contract as before,
+// unchanged by that fix and not a hazard this function introduces. `bound` (the per-invocation
+// `BoundCapability` handles from step 7) is moved into the same closure so its RAII revoke-at-step-10
+// semantics are preserved exactly, just on a different thread than the one that minted them.
 //
 // `on_complete` fires from the BACKGROUND thread, exactly once. What "deliver this back to a run"
 // means is entirely the caller's job -- `AgentSession::start_background_task()` (agent_session.hpp)

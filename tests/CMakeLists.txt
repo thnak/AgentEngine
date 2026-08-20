@@ -1213,6 +1213,11 @@ add_executable(test_mcp_server test_mcp_server.cpp)
 target_link_libraries(test_mcp_server PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_mcp_server COMMAND test_mcp_server)
 
+# ---- ADR-061 §39/§40 prove phase -- McpServer's per-request CapabilityGrant (decisions/ADR-061) -----
+add_executable(test_mcp_capability_grant test_mcp_capability_grant.cpp)
+target_link_libraries(test_mcp_capability_grant PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_mcp_capability_grant COMMAND test_mcp_capability_grant)
+
 # ---- Milestone 7 Phase C3 -- 011 §3's MCP client role (protocol/mcp/client.hpp): caching,
 # pagination, digest-pinning/rug-pull detection, isError surfaced not thrown -------------------------
 add_executable(test_mcp_client test_mcp_client.cpp)

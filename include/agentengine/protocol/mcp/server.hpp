@@ -53,7 +53,10 @@
 // that could ever produce `"input_required"`); `notifications/tasks` needs a push channel this
 // request/response-only dispatcher does not have.
 
+#include <chrono>
+#include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -67,6 +70,39 @@
 #include "agentengine/trust/secure_random.hpp"
 
 namespace agentengine::mcp {
+
+// ADR-061 §39/§40 (decisions/ADR-061-host-provided-inbound-transport.md): a per-request capability
+// grant `McpServer::dispatch()` MAY consult instead of `held_` (the construction-time capability set).
+// Unblocked by §20.3's earlier fix, which made `EffectContext::capabilities` a `shared_ptr` rather
+// than a raw borrowed pointer -- the specific hazard that made a per-request, function-local
+// `CapabilitySet` unsafe to hand to a detached background thread (`handle_tools_call_as_task()`'s own
+// `this`-outlives-every-task contract, below) no longer applies once the grant is copied in as an
+// owned, refcounted value.
+//
+// REPLACE semantics, not a narrowing bound (matching `RequestAuthority`'s own already-Judged
+// precedent, §20.1: when present, authority replaces the session-level default entirely, never
+// intersected with it) -- named `CapabilityGrant`, not "Ceiling," for exactly that reason. A
+// per-request grant MAY exceed what `held_` itself grants; `held_` is this object's OWN
+// construction-time ceiling, not an upper bound imposed on every future per-request credential a host
+// might separately verify.
+//
+// Carries a `Principal` deliberately: `principal` is who this grant was actually verified for, and
+// `dispatch()` checks it against its own `caller` argument via `principal_admitted_for()` before ever
+// using the grant. Without this, `caller` and the grant would be two independently-suppliable values
+// with nothing checking they describe the same party -- a confused-deputy vector (a caller could
+// supply `caller = Alice` alongside a grant verified for Bob; the effect would be attributed to Alice
+// while authorized by Bob's grant). Bundling identity with the capability grant is what
+// `RequestAuthority` already does for exactly this reason (ADR-061 §20.1); this type restores that
+// precedent rather than dropping the field to (incorrectly) avoid it.
+// ae-naming-lint: allow CapabilityGrant — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
+struct CapabilityGrant {
+    Principal principal;
+    std::shared_ptr<CapabilitySet const> capabilities;  // never null once accepted -- dispatch() guards
+    std::chrono::steady_clock::time_point expiry{};
+    [[nodiscard]] bool live(std::chrono::steady_clock::time_point now) const noexcept {
+        return now < expiry;
+    }
+};
 
 // One entry of `tools/list`'s result array (011 §3.1/§4). `input_schema`/`output_schema` are
 // `ToolDescriptor::args_schema_json`/`reply_schema_json`, parsed into real JSON so `tools/list`
@@ -155,20 +191,45 @@ public:
     // possible: "every inbound request establishes a principal... and executes with that
     // principal's capability set, never the host's."
     //
-    // Scope, stated precisely so this is not mistaken for more than it is: `caller` currently binds
-    // the TASK STORE (§8a's "bound server-side as `<user_id>:<handle>`") and nothing else. It does
-    // NOT yet select the capability set -- `held_` remains a construction-time member, so authority
-    // is still per-server, which is ADR-021 §8's "per-request, never per-connection" constraint
-    // still unmet (ADR-061 §7 R16/R27). Fixing that is ADR-061's own decision, not a drive-by change
-    // here: it requires per-request OWNED authority, because `EffectContext::capabilities` is a
-    // borrowed pointer whose safety argument ("the host owns it and must outlive the session")
-    // holds only while authority is per-connection, and `background_task()` copies that context into
-    // a detached thread. Binding the task store is safe to do now and closes a live cross-principal
-    // read; changing authority lifetime is not.
-    [[nodiscard]] JsonRpcResponse dispatch(JsonRpcRequest const& req, Principal const& caller) const {
+    // `caller` currently binds the TASK STORE (§8a's "bound server-side as `<user_id>:<handle>`")
+    // unconditionally, and -- since ADR-061 §39/§40 -- ALSO selects the capability set whenever a
+    // `grant` is supplied: `held_` (construction-time, per-server) remains the default, but a live,
+    // principal-admitted `grant` replaces it for this one call, closing ADR-021 §8's "per-request,
+    // never per-connection" constraint (ADR-061 §7 R16/R27) for capability authority the same way
+    // `caller` itself already closed it for identity. `grant`/`now` are additive, defaulted parameters
+    // -- every pre-existing 2-argument call is unaffected (§39.4 claim 1).
+    [[nodiscard]] JsonRpcResponse dispatch(
+            JsonRpcRequest const& req, Principal const& caller,
+            std::optional<CapabilityGrant> const& grant = std::nullopt,
+            std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now()) const {
+        if (grant.has_value()) {
+            // Three independent fail-closed guards, all required before a grant is ever consulted.
+            if (!grant->capabilities) {
+                return JsonRpcResponse::make_error(
+                    req.id, JsonRpcError{kRpcInvalidRequest, "capability grant has no capabilities",
+                                          json::Value{}});
+            }
+            if (!grant->live(now)) {
+                return JsonRpcResponse::make_error(
+                    req.id, JsonRpcError{kRpcInvalidRequest, "capability grant expired", json::Value{}});
+            }
+            // Identity binding: refuses a grant verified for a DIFFERENT principal than `caller`
+            // claims to be -- see CapabilityGrant's own comment for why this check exists at all.
+            if (!principal_admitted_for(caller, grant->principal)) {
+                return JsonRpcResponse::make_error(
+                    req.id, JsonRpcError{kRpcInvalidRequest,
+                                          "capability grant does not admit this caller", json::Value{}});
+            }
+        }
+        // Blanket, unconditional across every method including `server/discover`/`tools/list` (which
+        // consult no capability today) -- deliberate: matches AgentSession's own `require_authority_`
+        // precedent exactly, which has no read-only exemption either (rt::AgentSession::start_run()/
+        // resolve_interaction() both apply the identical admission check unconditionally, ADR-061
+        // §20.4). A host that supplies a `grant` at all is choosing per-request mode for this call; a
+        // malformed grant is symptomatic of a broken credential, not something safe to partially honor.
         if (req.method == "server/discover") return handle_discover(req);
         if (req.method == "tools/list") return handle_tools_list(req);
-        if (req.method == "tools/call") return handle_tools_call(req, caller);
+        if (req.method == "tools/call") return handle_tools_call(req, caller, grant);
         if (req.method == "tasks/get") return handle_tasks_get(req, caller);
         if (req.method == "tasks/cancel") return handle_tasks_cancel(req, caller);
         return JsonRpcResponse::make_error(
@@ -246,8 +307,9 @@ private:
         return JsonRpcResponse::make_result(req.id, std::move(result));
     }
 
-    [[nodiscard]] JsonRpcResponse handle_tools_call(JsonRpcRequest const& req,
-                                                     Principal const& caller) const {
+    [[nodiscard]] JsonRpcResponse handle_tools_call(
+            JsonRpcRequest const& req, Principal const& caller,
+            std::optional<CapabilityGrant> const& grant) const {
         json::Value const* name_field = req.params.find("name");
         if (!name_field || !name_field->is_string()) {
             return JsonRpcResponse::make_error(
@@ -279,7 +341,7 @@ private:
                                           "cannot background it: " + name_field->as_string(),
                                           json::Value{}});
             }
-            return handle_tools_call_as_task(req, name_field->as_string(), args_value, caller);
+            return handle_tools_call_as_task(req, name_field->as_string(), args_value, caller, grant);
         }
 
         // An inbound MCP tool call is external input (003 §2) -- arguments_tainted=true unconditionally,
@@ -294,9 +356,20 @@ private:
         // ":0:0:<digest>" for EVERY caller and tenant -- so a journal deduping on it could serve one
         // principal a result computed for another. Carrying the real caller here is the identity half
         // of that fix; `IdempotencyKey`'s own derivation is fixed in tool_pipeline.hpp.
+        //
+        // ADR-061 §39/§40: `effective` is `held_` unless `grant` was supplied (already validated live
+        // and principal-admitted by `dispatch()`), in which case it REPLACES `held_` for this call.
+        // `ctx.capabilities` is populated ONLY on the grant-supplied path -- deliberately NOT from
+        // `held_` on the no-grant path, which stays exactly as before this section: real, already-
+        // shipped consumers (`native_jail::has_capability()`, `trust::require_secret_capability()`)
+        // treat a null `ctx.capabilities` as deny-all today, and populating it unconditionally would
+        // silently flip that fail-closed behavior for any shell/secret-consuming tool served through
+        // this dispatcher -- a real authorization change this section does not make as a side effect.
+        CapabilitySet const& effective = grant.has_value() ? *grant->capabilities : held_;
         EffectContext ctx;
         ctx.principal = caller;
-        ToolResult tool_result = invoke_tool(table_, held_, call, ctx, approve_);
+        if (grant.has_value()) ctx.capabilities = grant->capabilities;
+        ToolResult tool_result = invoke_tool(table_, effective, call, ctx, approve_);
 
         // 011 §3.1: "isError vs JSON-RPC error is a semantic split we honour on both sides": an
         // execution error -- including an input-validation failure `invoke_tool()` itself already
@@ -320,10 +393,9 @@ private:
     // `AgentSession::start_background_task()`'s own closure already documents -- this `McpServer` must
     // outlive every task it starts. A real transport sub-phase, which owns the server for a connection's
     // whole lifetime, satisfies this; nothing here invents a stronger guarantee.
-    [[nodiscard]] JsonRpcResponse handle_tools_call_as_task(JsonRpcRequest const& req,
-                                                             std::string const& tool_name,
-                                                             json::Value const& args_value,
-                                                             Principal const& caller) const {
+    [[nodiscard]] JsonRpcResponse handle_tools_call_as_task(
+            JsonRpcRequest const& req, std::string const& tool_name, json::Value const& args_value,
+            Principal const& caller, std::optional<CapabilityGrant> const& grant) const {
         // ADR-061 §7 R3: fails closed if the CSPRNG fails, rather than minting a weaker handle.
         result<std::string> minted = server_detail::generate_task_id();
         if (!minted) {
@@ -345,10 +417,19 @@ private:
         }
 
         ToolCallRequest call{task_id, tool_name, args_value, /*arguments_tainted=*/true};
+        // ADR-061 §39/§40: same rule as the synchronous path above -- `effective` replaces `held_`
+        // only when `grant` was supplied (already validated by `dispatch()`), and `ctx.capabilities`
+        // is populated only in that same case. `ctx` is copied BY VALUE into `background_task()`'s
+        // detached closure below (tool_pipeline.hpp), so `grant->capabilities` (an owned, refcounted
+        // shared_ptr) survives into the background thread regardless of this call having already
+        // returned -- the property `EffectContext::capabilities` becoming a shared_ptr (§20.3) made
+        // possible, and the reason this fix could not have been written before that one landed.
+        CapabilitySet const& effective = grant.has_value() ? *grant->capabilities : held_;
         EffectContext ctx;
         ctx.principal = caller;  // ADR-061 §7 R4/R26, same reasoning as the synchronous path above.
+        if (grant.has_value()) ctx.capabilities = grant->capabilities;
         auto started = background_task(
-            table_, held_, call, ctx, approve_, live_count,
+            table_, effective, call, ctx, approve_, live_count,
             [this, task_id](ToolResult result, ToolInvocationAudit) {
                 std::lock_guard<std::mutex> lock(tasks_mutex_);
                 auto it = tasks_.find(task_id);

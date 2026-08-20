@@ -41,9 +41,13 @@ NOT met and scoped to a separate OAuth client follow-on, not folded into this si
 `2db2e8f`) — 204/204 tests green, including T1-T10 positive/negative controls; the bearer-credential-
 to-`RequestAuthority` bridge (`EndpointId` minting, `request_authority_from_bearer_claims()`) is
 ALSO now implemented and proven for real (§31-§37, six design/red-team rounds, 205/205 tests green,
-not yet committed). Both await Judge (project owner sign-off); `A2aServer::send_message()` wiring the
-bridge through and a reference host-side example (ADR-039 §3e) remain unbuilt, named residuals, not
-in scope so far.** §17 (sixth iteration) failed its red-team
+not yet committed). `A2aServer::send_message()` now wires the bridge through for real (§38, commit
+`3cc1e2c`, 205/205 green), and `McpServer::dispatch()` gained its own per-request `CapabilityGrant`
+(§39-§41, seven design/red-team rounds, 206/206 green, not yet committed) — the construction-time-only
+`held_` gap R16/R27 named. All await Judge (project owner sign-off); `McpServer`'s own per-call
+threading beyond the capability grant, `approve_`/`A2aServer::context_id_`/`RunEventProjector::
+thread_id_` (R27's other three), and a reference host-side example (ADR-039 §3e) remain unbuilt, named
+residuals, not in scope so far.** §17 (sixth iteration) failed its red-team
 pass (§18) — the fourth consecutive iteration to do so (§8, §13, §15, §17). Per §18c's recommendation,
 §19 completed a full, verified, single-pass enumeration of every `capabilities_`/`principal_`/
 `effect_context_` read/write in `agent_session.hpp` before writing a further fix, finding **eight
@@ -5004,3 +5008,477 @@ new executable).
 Real, compiled, tested. `A2aServer`'s own residual is closed; `McpServer`'s per-call threading
 (ADR-039 §3a, a genuinely different dispatch surface) and a reference host-side example (ADR-039 §3e)
 remain the named, unbuilt residuals. Awaits Judge alongside §30/§37.
+
+## 39. Design iteration — `McpServer`'s per-request capability grant (2026-08-20)
+
+### 39.0 Why this is this ADR's decision, and why it is unblocked now
+
+`protocol/mcp/server.hpp:158-167`'s own comment states the scope precisely and names its own blocker:
+*"`caller` currently binds the TASK STORE... It does NOT yet select the capability set -- `held_`
+remains a construction-time member... Fixing that is ADR-061's own decision, not a drive-by change
+here: it requires per-request OWNED authority, because `EffectContext::capabilities` is a borrowed
+pointer whose safety argument... holds only while authority is per-connection, and `background_task()`
+copies that context into a detached thread."* This is §7's own **R16** finding, restated. Both
+citations are now **stale**, re-verified directly against current source:
+
+- `EffectContext::capabilities` (`core/effect_context.hpp:39`) is `std::shared_ptr<CapabilitySet
+  const>`, not a raw borrowed pointer — §20.3's real, compiled, tested fix (§30), which R16 itself
+  predates.
+- `core/tool_pipeline.hpp:524-526`'s own comment is *partially* stale in the same way (**correction,
+  §40.6**: only the `ctx.capabilities` half — `ctx.bound_capabilities` genuinely remains
+  `std::vector<BoundCapability> const*`, a real non-owning pointer, unchanged and untouched by this
+  section, and that half of the comment stays accurate): *"`ctx.capabilities`/`ctx.bound_capabilities`
+  are non-owning pointers, the SAME 'host owns it, must outlive' contract `EffectContext::capabilities`
+  already carries everywhere in this codebase... not a new hazard this function introduces."*
+  `ctx.capabilities` has been a `shared_ptr` since the same fix; that clause of the comment was never
+  updated to match, a second, previously-unnoticed instance of the "code changed, comment didn't"
+  pattern — but `bound_capabilities` needs no correction, and this section does not touch it.
+
+The specific hazard R16 named — a per-request, function-local `CapabilitySet` dangling the moment
+`dispatch()` returns while a detached background thread (`handle_tools_call_as_task()`,
+`protocol/mcp/server.hpp:319-322`'s own documented `this`-outlives-every-task contract) still uses it —
+is closed by the SAME mechanism that closed it for `AgentSession`: an OWNED `shared_ptr` copied into
+the detached closure by value, not a reference into a stack frame that returns before the thread does.
+This section is not new invention; it is applying an infrastructure fix ADR-061 already built and
+proved, to a second, previously-blocked consumer, now that the blocker is gone.
+
+**Scope, stated precisely**: this section is `held_` only. R27 (§7) named three more construction-time
+authorities sharing the same flaw in kind — `approve_` (`ApprovalDecider`), `A2aServer::context_id_`,
+`RunEventProjector::thread_id_` — each a genuinely different authority TYPE with its own design
+questions (an approval policy fixed at construction is not the same problem as a capability grant fixed
+at construction), explicitly **not** attempted here. Conflating them would silently widen this section
+past what a single design round should carry.
+
+### 39.1 The real design tension: a per-call parameter without recreating the two-sources-of-truth bug
+
+`dispatch(JsonRpcRequest const&, Principal const& caller)` already threads a per-call `Principal` —
+unlike `StartRun`, which made both `caller` and `authority` optional fields with a mode-branch,
+`caller` here is unconditional and mandatory (ADR-061 §7 R3, closing the exact fail-open R2 found on
+the A2A path).
+
+**Superseded in place by §40.1-§40.4 (2026-08-20) — this subsection and §39.2/§39.3 below now state
+the corrected design directly.** The original text here reasoned that dropping the `Principal` field
+entirely (rather than bundling it, as `RequestAuthority` does) avoided the two-sources-of-truth bug
+X3 found. §40's own red-team pass found that reasoning backwards: dropping the field didn't remove the
+disagreement risk, it removed the only thing that could have NAMED and CHECKED it — `caller` and the
+capability-grant parameter became two independently-suppliable values with *nothing* verifying they
+describe the same party, a confused-deputy vector (I4: the effect would be attributed to `caller` while
+authorized by a grant verified for someone else entirely). The fix restores identity-binding, matching
+`RequestAuthority`'s own precedent properly instead of avoiding it:
+
+```cpp
+// ADR-061 §39/§40: a per-request capability grant, closing R16/§7's finding now that
+// EffectContext::capabilities is shared_ptr (§20.3, proven) -- the specific hazard R16 named,
+// background_task() copying a borrowed pointer into a detached thread, no longer applies.
+//
+// Named CapabilityGrant, not "Ceiling" (§40.4's correction) -- REPLACE semantics, matching
+// RequestAuthority's own already-Judged precedent exactly (§20.1: when present, authority replaces
+// the session-level default entirely; it is never intersected with it). A per-request grant MAY
+// exceed what `held_` itself grants -- `held_` is this object's OWN construction-time ceiling, not an
+// upper bound imposed on every future per-request credential a host might separately verify.
+//
+// Carries a Principal deliberately (§40.1's correction to §39's first draft, which dropped this field
+// to avoid X3's two-sources-of-truth shape and thereby recreated it in a different, unchecked form):
+// `principal` is who this grant was actually verified for. dispatch() checks it against its own
+// `caller` argument via principal_admitted_for() before ever using the grant (§40.1) -- an
+// independently-supplied grant for a DIFFERENT principal is refused by construction of the check, not
+// silently trusted to agree.
+// ae-naming-lint: allow CapabilityGrant — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
+struct CapabilityGrant {
+    agentengine::Principal principal;
+    std::shared_ptr<CapabilitySet const> capabilities;  // never null once accepted -- dispatch() guards
+    std::chrono::steady_clock::time_point expiry{};
+    [[nodiscard]] bool live(std::chrono::steady_clock::time_point now) const noexcept {
+        return now < expiry;
+    }
+};
+```
+
+### 39.2 `dispatch()`'s corrected signature
+
+**Superseded in place, §40.2.** The original snippet here had one real defect: `effective =
+*ceiling->capabilities` dereferenced without checking `capabilities != nullptr` first (a
+`CapabilityGrant` with `expiry` set but `capabilities` left default-constructed/null is a real,
+constructible value nothing forbade). Fixed below. (§40.3's separate defect — `ctx.capabilities` set
+unconditionally on the no-grant path — lived in `handle_tools_call`'s own construction of `EffectContext`,
+not in `dispatch()` shown here; `dispatch()` never builds an `EffectContext` at all. See §39.3.)
+
+```cpp
+[[nodiscard]] JsonRpcResponse dispatch(
+        JsonRpcRequest const& req, Principal const& caller,
+        std::optional<CapabilityGrant> const& grant = std::nullopt,
+        std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now()) const {
+    if (grant.has_value()) {
+        // Three independent fail-closed guards, checked in this order, ALL required before a grant is
+        // ever consulted -- §40's own red-team pass found a first draft missing the first and third.
+        if (!grant->capabilities) {
+            return JsonRpcResponse::make_error(
+                req.id, JsonRpcError{kRpcInvalidRequest, "capability grant has no capabilities",
+                                      json::Value{}});
+        }
+        if (!grant->live(now)) {
+            return JsonRpcResponse::make_error(
+                req.id, JsonRpcError{kRpcInvalidRequest, "capability grant expired", json::Value{}});
+        }
+        // Identity binding (§40.1): refuses a grant verified for a DIFFERENT principal than `caller`
+        // claims to be, closing the FATAL confused-deputy finding §39's first draft left open.
+        if (!agentengine::principal_admitted_for(caller, grant->principal)) {
+            return JsonRpcResponse::make_error(
+                req.id, JsonRpcError{kRpcInvalidRequest, "capability grant does not admit this caller",
+                                      json::Value{}});
+        }
+    }
+    // Blanket, unconditional across every method including `server/discover`/`tools/list` (which
+    // consult no capability today) -- deliberate, not an oversight: matches AgentSession's own
+    // `require_authority_` precedent exactly, which has no read-only exemption either (start_run() and
+    // resolve_interaction() both apply the identical admission check unconditionally, §20.4). A host
+    // that supplies a `grant` at all is choosing per-request mode for this call; a malformed grant is
+    // symptomatic of a broken credential, not something safe to partially honor.
+    if (req.method == "server/discover") return handle_discover(req);
+    if (req.method == "tools/list") return handle_tools_list(req);
+    if (req.method == "tools/call") return handle_tools_call(req, caller, grant);
+    if (req.method == "tasks/get") return handle_tasks_get(req, caller);
+    if (req.method == "tasks/cancel") return handle_tasks_cancel(req, caller);
+    return JsonRpcResponse::make_error(
+        req.id, JsonRpcError{kRpcMethodNotFound, "unknown method: " + req.method, json::Value{}});
+}
+```
+
+`now` is a defaulted, caller-suppliable parameter — this ADR's own established I5 discipline
+(`start_run()`/`resolve_interaction()`'s convention, §29c), not an internal clock read.
+
+### 39.3 Threading `grant` all the way to the backgrounded call site — corrected, closing a real gap the previous edit left
+
+**§40's own re-check found this subsection's prior text described `handle_tools_call`/
+`handle_tools_call_as_task` as if `dispatch()` fed both directly and symmetrically — it does not.**
+`dispatch()` calls `handle_tools_call(req, caller, grant)` only; `handle_tools_call` is the ONLY caller
+of `handle_tools_call_as_task` (its own internal branch, real line 282, for the `tasks` extension
+opt-in), and neither intermediate signature was shown carrying `grant` onward. Corrected below, with
+both real signatures made explicit rather than left implied:
+
+```cpp
+// handle_tools_call: gains `grant` as a third parameter, forwarded from dispatch(). Computes
+// `effective`/owns `effective_owned` ONCE here (not duplicated at the task-extension branch), and
+// forwards `grant` itself (not just the derived values) into handle_tools_call_as_task, which needs
+// its OWN owned copy for its OWN, later, detached-thread use -- computing `effective_owned` twice from
+// the same `grant` is cheap (shared_ptr copy) and keeps each function's own null/liveness reasoning
+// self-contained rather than trusting a value computed two frames up.
+[[nodiscard]] JsonRpcResponse handle_tools_call(
+        JsonRpcRequest const& req, Principal const& caller,
+        std::optional<CapabilityGrant> const& grant) const {
+    // ... existing tool-name/args resolution unchanged ...
+    if (server_detail::request_wants_tasks_extension(req)) {
+        // ... existing backgroundable check unchanged ...
+        return handle_tools_call_as_task(req, name_field->as_string(), args_value, caller, grant);
+    }
+    CapabilitySet const& effective = grant.has_value() ? *grant->capabilities : held_;
+    EffectContext ctx;
+    ctx.principal = caller;
+    if (grant.has_value()) ctx.capabilities = grant->capabilities;  // §39.3's own rule: only when supplied
+    ToolResult tool_result = invoke_tool(table_, effective, call, ctx, approve_);
+    // ... existing response construction unchanged ...
+}
+
+// handle_tools_call_as_task: gains `grant` as a fifth parameter. Its own detached-thread closure
+// (real line 350-359) already copies `ctx` BY VALUE (tool_pipeline.hpp:539) -- unchanged shape, now
+// simply fed a `ctx` whose `.capabilities` was populated correctly before background_task() was ever
+// called, the same rule §39.3 states for the synchronous path, applied at this call site too.
+[[nodiscard]] JsonRpcResponse handle_tools_call_as_task(
+        JsonRpcRequest const& req, std::string const& tool_name, json::Value const& args_value,
+        Principal const& caller, std::optional<CapabilityGrant> const& grant) const {
+    // ... existing task-id minting/live-count/TaskRecord bookkeeping unchanged ...
+    CapabilitySet const& effective = grant.has_value() ? *grant->capabilities : held_;
+    EffectContext ctx;
+    ctx.principal = caller;
+    if (grant.has_value()) ctx.capabilities = grant->capabilities;
+    auto started = background_task(table_, effective, call, ctx, approve_, live_count, /* ... */);
+    // ... existing response construction unchanged ...
+}
+```
+
+Both corrected signatures above change their own `held_` use to `effective`
+(`grant.has_value() ? *grant->capabilities : held_`, now null-safe per §39.2's guard) and both set
+`ctx.capabilities` conditionally rather than unconditionally. **Why (§40.3): `ctx.capabilities` is
+populated ONLY when `grant.has_value()`, never unconditionally.** §39's first draft set it from
+`effective` on *every* call, including the pre-existing
+no-grant path — and two real, already-shipped call sites key off exactly that null today as
+deny-by-default: `has_capability()` (`src/backends/native_jail/command_registry.hpp:140-143`, gating
+`fs_read`/`fs_write`/`env_write` throughout `shell_dispatch.cpp`) and `require_secret_capability()`
+(`trust/secret.hpp:255-265`) both treat a null `ctx.capabilities` as an empty, deny-all `CapabilitySet`.
+Any shell- or secret-consuming tool served through `McpServer` today therefore ALWAYS fails closed on
+every call, independent of what `held_` grants — populating `ctx.capabilities` from `held_` on the
+no-grant path would silently let such a tool start succeeding wherever `held_` happens to permit it, a
+real authorization change on an existing, shipped call path with no claim or test of its own covering
+it. Since `grant` is a brand-new parameter with no prior callers, populating `ctx.capabilities` only
+inside the `grant.has_value()` branch is purely additive: the no-grant path is now genuinely
+byte-for-byte identical to today (§40.3's own claim 1, corrected), and a host that opts into per-request
+mode gets a populated, correct `ctx.capabilities` for the first time. Whether the no-grant/`held_` path
+should ALSO eventually populate `ctx.capabilities` from `held_` is named as a real, separate, deliberately
+unresolved question (§39.5) — not decided by this section as a side effect.
+
+The backgrounded path's own detached closure receives `ctx` **by value** (`background_task()`'s
+signature, `tool_pipeline.hpp:539`), so `grant->capabilities` (a real `shared_ptr`, refcounted) copies
+safely into the detached thread regardless of `dispatch()` having already returned — the exact property
+that was missing when `held_`/`ctx.capabilities` were a raw reference/null pointer, and the reason this
+section could not have been written before §20.3's fix landed.
+
+### 39.4 Falsifiable claims
+
+| # | Claim | Disproving experiment | Positive control / teeth |
+|---|---|---|---|
+| 1 | A `dispatch()` call with no `grant` argument is genuinely byte-for-byte identical to today: uses `held_`, `ctx.capabilities` stays null, no expiry/identity check reached | Compare a 2-arg call's `tools/call` result, and `ctx.capabilities`'s nullness inside the tool body, before and after this change, same inputs | Control: an expired-in-the-past `now` passed alongside NO grant still succeeds (proves the expiry check is gated on `grant.has_value()`, not on `now` alone) |
+| 2 | A live, principal-admitted `grant` is used for capability authorization instead of `held_`, and MAY exceed what `held_` itself grants | Grant a capability in `grant` but NOT in `held_`; the call must succeed | Control: the reverse (granted in `held_`, absent from `grant`) must be DENIED when a live grant is supplied — proves `held_` is not silently consulted as a fallback once a grant is present |
+| 3 | An expired (`now >= expiry`) `grant` denies the request outright, before any method-specific branch — including `server/discover`/`tools/list`, which consult no capability at all | Supply an expired grant granting every capability a requested tool needs, and separately try it against `server/discover`; both must be denied | Control: the same grant, `now` moved one tick earlier than `expiry`, succeeds on both |
+| 4 | A `CapabilityGrant` with `capabilities == nullptr` is rejected before any dereference, never a crash | Construct a default `CapabilityGrant{principal, nullptr, far_future_expiry}` and dispatch with it | Control: the same grant with real, non-null `capabilities` succeeds |
+| 5 | A `grant` whose `principal` does not admit `caller` (distinct id/tenant, no delegation) is refused, even when the grant is otherwise live and well-formed | `caller = Principal{"attacker", "tenant-a"}`, `grant.principal = Principal{"victim", "tenant-a"}`, distinct ids, no `on_behalf_of` | Control: `caller == grant.principal` exactly, or a real single-hop delegation, succeeds |
+| 6 | `ctx.capabilities` is populated (never null) ONLY on the grant-supplied path, on both the synchronous and backgrounded call sites | Inspect `ctx.capabilities` from inside a test tool's own `invoke()`, with and without a grant | Control: the no-grant path's `ctx.capabilities` stays null, matching claim 1 exactly |
+| 7 | A backgrounded call's detached thread still has a live, usable `CapabilitySet` after `dispatch()` has already returned, when a per-call `grant` supplied it | Backgrounded call with a grant-only capability; assert the tool's own `invoke()` (running on the detached thread, after the call has returned) still sees it via `ctx.capabilities` | Control: an in-flight backgrounded call using only `held_` (no grant) behaves identically to before this section |
+
+### 39.5 What this section does not attempt
+
+- **R27's other three construction-time authorities** (`approve_`, `A2aServer::context_id_`,
+  `RunEventProjector::thread_id_`) — different authority kinds, different design questions, real and
+  unbuilt, explicitly out of scope here (§39.0).
+- **The host-side wiring that constructs a `CapabilityGrant` from a verified bearer credential** — the
+  natural fit is reusing `rt::request_authority_from_bearer_claims()`'s own `principal`/`capabilities`/
+  `expiry` (§31/§37, already proven) rather than a second, parallel derivation; not built this round.
+- **Whether the no-`grant`/`held_` path should ALSO populate `ctx.capabilities` from `held_`.** §39.3's
+  correction deliberately leaves it null, matching today's actual (if likely accidental) fail-closed
+  behavior for shell/secret-consuming tools. Changing that is real, separate work needing its own
+  review of every consumer that currently treats null as meaningful — not a side effect of this section.
+- **Whether `McpServer` needs an admission check on `caller` at all outside a supplied `grant`.** Today
+  it has none in the no-grant path — `caller` binds the task store (§7 R3) and nothing else; unlike
+  `AgentSession`, there is no "session owner" concept here to admit against, which may be a deliberate
+  consequence of ADR-039 §3b's "one dispatcher instance per already-authenticated session" model (the
+  object itself is already scoped to one admitted party by construction) — or may be a real, unnamed
+  gap. Named as an open question this section does not resolve, not silently assumed fine.
+- **007 §5's policy engine** — unchanged, still doesn't exist; `CapabilityGrant::capabilities` stays
+  caller-supplied, same discipline as `RequestAuthority`'s own (§31.2).
+- **Reconciling explicitly with ADR-039 §3b's binding contract** — done at §40.5, not silently assumed
+  compatible: this section does not reconstruct `McpServer` per call (the object stays session-scoped,
+  exactly as §3b mandates); it only adds a parameter to an existing method, the same already-accepted
+  shape `caller` itself already uses.
+
+### 39.6 Next step
+
+Per this project's own `design → red-team → prove → judge` discipline: this is design, not proof. It
+needs an independent adversarial pass — fresh context, told to find what's wrong — before any claim
+above is more than a hypothesis. That pass ran (§40) and found real defects, now corrected in place
+above.
+
+## 40. Red-team round — against §39, run hostile (2026-08-20)
+
+**Verdict up front, matching this ADR's own established bluntness: §39 did not survive as first
+written.** Three independent findings clear FATAL/MUST-FIX (§40.1-§40.3); every prior design round in
+this document that reached its first red-team pass has failed it, and this one was no exception.
+
+### 40.1 FATAL — dropping the `Principal` field didn't remove the two-sources-of-truth risk, it removed the only thing that could check it
+
+§39.1's first draft removed `RequestAuthority`'s `Principal` field specifically to avoid X3's
+disagreement-bug shape, reasoning "no principal field, nothing to disagree with." That's backwards:
+`caller` and the capability-grant parameter remained two INDEPENDENTLY SUPPLIABLE values with nothing
+checking they describe the same party — a caller could pass `caller = Alice` alongside a grant actually
+verified for Bob, and nothing in the design would refuse it. The effect would be attributed to Alice
+(`ctx.principal = caller`) while authorized by Bob's grant — a real confused-deputy vector, and I4
+(attributability) broken in a way this ADR's own central mechanism (`RequestAuthority`) was specifically
+built to make structurally impossible by bundling identity with the grant. **Closed at §39.1/§40**:
+`CapabilityGrant` now carries `principal`, checked against `caller` via `principal_admitted_for()`
+before the grant is ever consulted (§39.2) — restoring `RequestAuthority`'s own precedent properly,
+rather than avoiding the field that made the precedent work.
+
+### 40.2 MUST-FIX — an unguarded null dereference
+
+`CapabilityGrant::live()` (as first drafted) checked only `now < expiry`, never `capabilities !=
+nullptr`. A `CapabilityGrant` with `expiry` set but `capabilities` left default-constructed (null) was
+a real, constructible value nothing forbade, and `dispatch()`'s first draft dereferenced it
+unconditionally once `live()` passed — undefined behavior, not a clean denial. **Closed at §39.2**: a
+dedicated `capabilities != nullptr` guard runs before the liveness check, in `dispatch()` itself
+(claim 4).
+
+### 40.3 MUST-FIX — the "byte-for-byte identical" claim was false, and the gap it hid was a real, silent security-behavior flip
+
+§39.3's first draft set `ctx.capabilities = effective_owned` unconditionally, on EVERY call including
+the pre-existing no-grant path — directly contradicting §39.4's own claim 1, which asserted the
+no-grant path was unchanged. It was not: `has_capability()`
+(`src/backends/native_jail/command_registry.hpp:140-143`, gating `fs_read`/`fs_write`/`env_write`
+throughout `shell_dispatch.cpp`) and `require_secret_capability()` (`trust/secret.hpp:255-265`) both
+already treat a null `ctx.capabilities` as an empty, deny-all `CapabilitySet` — meaning any shell- or
+secret-consuming tool served through `McpServer` today ALWAYS fails closed, on every call, regardless
+of what `held_` grants. Populating `ctx.capabilities` from `held_` on the no-grant path would have
+silently let such tools start succeeding wherever `held_` permits — a real authorization change on an
+already-shipped call path, mischaracterized as a no-op. **Closed at §39.3**: `ctx.capabilities` is now
+populated only inside the `grant.has_value()` branch — purely additive, since `grant` is a brand-new
+parameter with no prior callers — making the no-grant path genuinely unchanged (claim 1, corrected) and
+naming whether the no-grant path should EVER populate it from `held_` as a real, separate, explicitly
+unresolved question (§39.5), not a side effect of this fix.
+
+### 40.4 SHOULD-FIX — "ceiling" was the wrong word for what the design actually does
+
+§39.4's claim 2 always required a per-request grant to be able to exceed `held_` (its own positive
+control: "grant a capability in `ceiling` but NOT in `held_`; the call must succeed") — REPLACE
+semantics, not a narrowing bound. That's consistent with `RequestAuthority`'s own already-Judged
+behavior (§20.1: authority replaces the session-level default, never intersected with it), so the
+*mechanism* was right — but naming it "Ceiling" implied the opposite of what it does. **Closed**:
+renamed `CapabilityCeiling` → `CapabilityGrant` throughout, with the REPLACE-not-narrow semantics
+stated explicitly and tied to its real precedent instead of left implicit in a table row.
+
+### 40.5 SHOULD-FIX — reconciliation with ADR-039 §3b, made explicit rather than silently assumed
+
+§39 never cited or engaged ADR-039 §3b (Judged 2026-08-14) — the binding contract that rejected
+per-call `Principal` reconstruction for `McpServer` specifically, because a naive fresh-object-per-call
+implementation collides with `handle_tools_call_as_task()`'s detached-thread `this`-capture hazard
+(`server.hpp:319-322`). Direct check, made explicit now (§39.5's own closing bullet): §39's mechanism
+does not reconstruct `McpServer` per call — the object stays session-scoped exactly as §3b requires;
+it only adds a new parameter to an existing method, the same shape `caller` itself already uses on
+`dispatch()` today. The two designs are consistent, but the design text should say so rather than leave
+a directly relevant, already-Judged constraint unaddressed for a reader to independently re-derive.
+
+### 40.6 RESIDUAL-WORTH-NAMING — the stale-comment claim overreached by one clause
+
+§39.0 characterized `tool_pipeline.hpp:524-526`'s comment as stale "in the identical way" as
+`mcp/server.hpp:158-167`'s. Only the `ctx.capabilities` half of that comment is actually stale —
+`ctx.bound_capabilities` genuinely remains a raw `std::vector<BoundCapability> const*`, unchanged and
+untouched by this section, so that half of the comment is still accurate. Corrected at §39.0: a
+one-clause carve-out rather than a blanket "also stale" claim that could mislead a future reader into
+correcting a comment that doesn't need it.
+
+### 40.7 Status
+
+All six findings closed in place, at the section each corrects (§39.0-§39.5 all now state the corrected
+design directly), not appended as a further layer a reader would need to separately discover — matching
+the discipline this ADR's own §33→§34 correction round established after finding the opposite pattern
+failed once already. Whether these fixes themselves hold up needs its own fresh adversarial pass before
+being trusted further than "this author believes it is now correct." That pass ran (§40.8) and found a
+real, structural gap this round's own fixes had missed.
+
+### 40.8 Second re-check — against §40's own fixes
+
+**§39/§40 did not fully survive this pass either.** The three original findings (40.1-40.3) really were
+closed correctly — independently re-verified, including `principal_admitted_for()`'s real argument
+order (`trust/principal.hpp`) matched against `agent_session.hpp`'s own established call shape, and the
+two "real consumer" citations (`command_registry.hpp:140-143`, `trust/secret.hpp:255-265`) re-confirmed
+accurate. But the correction round introduced its own new, real gap, plus cosmetic drift:
+
+- **MUST-FIX**: `grant` never actually reached `handle_tools_call_as_task` — `dispatch()`'s corrected
+  snippet called `handle_tools_call(req, caller, grant)`, but neither `handle_tools_call`'s nor
+  `handle_tools_call_as_task`'s own corrected signature was ever shown, and `handle_tools_call_as_task`
+  (the ONLY caller of which is `handle_tools_call`'s own internal `tasks`-extension branch, real line
+  282) had no path to receive a grant at all. This directly falsified claims 6 and 7's own assertion
+  that both the synchronous AND backgrounded paths were fixed — the backgrounded path, this section's
+  own named motivating case (§39.0: "the specific hazard R16 named... applying an infrastructure fix...
+  to a second, previously-blocked consumer"), was not actually delivered by the shown code. **Closed at
+  §39.3**: both real signatures are now shown explicitly, with `handle_tools_call` forwarding `grant`
+  into `handle_tools_call_as_task` at its own real line-282 call site, and each function computing its
+  own `effective`/setting its own `ctx.capabilities` independently rather than trusting a value computed
+  two frames up.
+- **SHOULD-FIX (×2, cross-references)**: the `principal_admitted_for()` code comment cited "§40.2" (the
+  null-dereference finding) instead of "§40.1" (the actual confused-deputy fix it describes) — corrected.
+  The blanket-expiry-denial comment cited a nonexistent "§40.5" discussion — removed; the real
+  justification was already inline two lines below it (§20.4's precedent), which is now the only
+  citation.
+- **SHOULD-FIX**: §40's own opening verdict said "two independent findings clear FATAL/MUST-FIX" while
+  its own six subsections (three of them FATAL/MUST-FIX: §40.1-§40.3) said otherwise — corrected to
+  "three."
+- **RESIDUAL, cosmetic**: §39's own section title still said "capability ceiling" after §40.4 renamed
+  the type to `CapabilityGrant` specifically because "ceiling" was misleading — corrected.
+
+Per this ADR's own now well-established pattern: a correction round closing real findings while
+introducing a smaller new one is the norm here, not the exception (the §31→§33→§34 arc hit the
+identical shape twice). This round's own fixes have not yet been re-checked by a further independent
+pass.
+
+### 40.9 Third re-check — against §40.8's own fixes
+
+**Genuinely clean on the mechanism this time.** Independently re-verified all six items §40.8 claimed
+to close, tracing real compile-fit rather than trusting the shown snippets: the `handle_tools_call`→
+`handle_tools_call_as_task` forwarding call (5 args) matches the shown declaration positionally and the
+real pre-fix `server.hpp:282` call site exactly; `background_task()`'s real signature
+(`tool_pipeline.hpp:538-542`) lines up 1:1 with the design's own call, including the completion lambda
+(verified it never touches `ctx.capabilities`/`held_`, so eliding it was legitimate, not paperwork over
+a real gap); every remaining `§39.x`/`§40.x` cross-reference in the document resolves to a real
+subsection discussing what it claims; no leftover `Ceiling`/`ceiling`-as-type-name residue anywhere
+except accurate historical quotes inside §40.4/§40.8's own finding text. Claims 6/7 now accurately
+describe the fully-threaded code.
+
+One real, narrow **SHOULD-FIX** survived this pass: §39.2's "Superseded in place" note misattributed
+which subsection's first draft actually set `ctx.capabilities` unconditionally (it said "the original
+snippet here," i.e. `dispatch()`'s own; the defect actually lived in `handle_tools_call`'s construction
+of `EffectContext`, which `dispatch()` never builds at all) — a narrative attribution error, not a
+code-shape defect; the corrected code in both §39.2 and §39.3 was already internally consistent with
+real source. **Fixed** at §39.2, attributing the defect to `handle_tools_call`'s first draft and
+pointing to §39.3 rather than claiming it for `dispatch()`'s own snippet.
+
+Three consecutive checks against this section's own claimed fixes (§40, §40.8, §40.9) now converge:
+the mechanism holds. §39-§40 are ready for a `prove` phase.
+
+## 41. Prove phase — §39/§40's `CapabilityGrant` implemented and proven (2026-08-20)
+
+**§39.1's design is now real code**: `agentengine::mcp::CapabilityGrant` (`include/agentengine/
+protocol/mcp/server.hpp`), verbatim against the final, corrected text — `principal`/`capabilities`/
+`expiry`, REPLACE semantics, no deviation found necessary.
+
+**§39.2/§39.3's design is now real code**: `McpServer::dispatch()` gains `grant`/`now` (both defaulted,
+every pre-existing 2-argument call site unaffected); the three fail-closed guards (null capabilities,
+expiry, `principal_admitted_for()`) run in the order the design specifies; `handle_tools_call()` gains
+`grant` as a third parameter and forwards it into `handle_tools_call_as_task()`'s new fifth parameter
+at its real call site; both compute `effective`/populate `ctx.capabilities` only on the grant-supplied
+path, exactly as corrected at §40.3. The two stale comments named at §39.0/§40.6 are corrected in the
+real source (`protocol/mcp/server.hpp`'s own scope comment, `core/tool_pipeline.hpp:524-531`'s
+`ctx.capabilities`-vs-`ctx.bound_capabilities` clause).
+
+### 41.1 Real, compiled, passing positive/negative controls
+
+`tests/test_mcp_capability_grant.cpp` (new, 17 checks, all passing) exercises every row of §39.4's
+falsifiable claims table, against a real `GatedTool`/`GatedBackgroundableTool` pair whose own
+`capability_ceiling` genuinely requires `cap::Entropy` (not a trivially-empty ceiling `held_` could
+satisfy by accident):
+
+- **Claim 1**: a bare 2-argument `dispatch()` call is genuinely unaffected — `held_` grants nothing,
+  the gated tool is denied, `ctx.capabilities` stays null; a past `now` with no grant behaves
+  identically (the expiry check never reaches, proving it's gated on `grant.has_value()`).
+- **Claim 2**: a live grant supplying `cap::Entropy` succeeds even though `held_` grants nothing
+  (REPLACE, not narrow); the reverse (granted in `held_`, absent from the grant) is denied once a live
+  grant is present, proving `held_` is never a silent fallback.
+- **Claim 3**: an expired grant denies `tools/call` outright as a JSON-RPC error (not `isError:true`),
+  and the SAME expired grant also denies `server/discover` — blanket, not scoped to capability-
+  consuming methods, matching the design's deliberate, `AgentSession`-precedented choice.
+- **Claim 4**: a grant with `capabilities == nullptr` is rejected with a clean JSON-RPC error, never
+  dereferenced — no crash.
+- **Claim 5**: `caller = attacker` with a grant verified for `victim` (distinct ids, same tenant, no
+  delegation) is refused; `caller == grant.principal` exactly succeeds.
+- **Claim 6**: `ctx.capabilities` is populated only on the grant-supplied path; the no-grant control
+  stays null, matching claim 1.
+- **Claim 7**: a backgrounded call with a real grant is accepted (held_ alone would have refused it
+  before any thread spawned); ~200ms later, on the ACTUAL detached thread, `ctx.capabilities` is
+  populated and non-null — proving the per-call grant's `shared_ptr` survived past `dispatch()`'s own
+  return, the central claim R16 named and this whole section exists to prove. The no-grant control on
+  the same backgrounded tool is refused upfront, unchanged from before this section.
+
+One real test-authoring bug found and fixed during this pass, the same "trace to the real cause"
+discipline this ADR's own design rounds already established: claim 7's first attempt failed with
+`Background<max_concurrent> ceiling reached or not granted` — not an implementation defect.
+Backgrounding requires a SEPARATE `cap::Background<N>` capability, independent of a tool's own declared
+ceiling (`cap::Entropy` here); the test's grant hadn't included it. Fixed by granting both.
+
+### 41.2 Build and test evidence
+
+Full workspace rebuild (`ninja -k 0`, MSVC 14.51.36231/SDK 10.0.26100.0): clean except the same two
+pre-existing, unrelated `protocol/openai/embedder.hpp` failures named since §30.5. Full `ctest` run:
+**206/206 passing** (205 carried forward from §38, plus the new file), zero regressions.
+
+### 41.3 Residuals unchanged
+
+R27's other three construction-time authorities (`approve_`, `A2aServer::context_id_`,
+`RunEventProjector::thread_id_`) remain separate, unbuilt, out of scope. The host-side wiring that
+constructs a real `CapabilityGrant` from a verified bearer credential — the natural fit is reusing
+`rt::request_authority_from_bearer_claims()`'s own `principal`/`capabilities`/`expiry` (§31/§37) — is
+not built. Whether the no-grant/`held_` path should also populate `ctx.capabilities` from `held_`
+remains a real, deliberately unresolved question (§39.5). `McpServer`'s own admission check on `caller`
+outside a supplied grant remains an open question, not silently assumed fine.
+
+### 41.4 Status
+
+Real, compiled, tested. Not yet committed to version control this session. Per this project's
+`design → red-team → prove → judge` discipline, this closes prove for `McpServer`'s per-request
+capability grant; judge (project owner sign-off) is next, alongside §30/§37/§38's own already-awaiting
+mechanisms.
