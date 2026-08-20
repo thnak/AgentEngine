@@ -1,7 +1,6 @@
 # ADR-066 — Should `ContextContribution` provenance be stamped by each contributor's own discipline, or enforced structurally at `assemble_context()`'s seam?
 
-**Status:** Proposed (design → red-team → prove phases complete for Design B; awaiting explicit user
-"Judged"). Implemented: `ContributorProvenance` (`content.hpp`), `Message::attribution` and
+**Status:** Judged (2026-08-21, project owner sign-off). Implemented: `ContributorProvenance` (`content.hpp`), `Message::attribution` and
 `ToolDescriptor::attribution`, `HasContextProviderName`/`ContextProviderDescriptor::name`
 (`context_assembly.hpp`), and the stamping logic inside `assemble_context()` itself — proven by
 `tests/test_context_provenance.cpp` (16/16 checks, real Windows/MSVC build; see §5/§6 for the

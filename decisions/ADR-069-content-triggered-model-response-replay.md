@@ -1,7 +1,6 @@
 # ADR-069 — When a model response has already committed content that violates policy, does AgentEngine discard-and-retry inside the existing `after_model` point, or leave remediation entirely to the host?
 
-**Status:** Proposed (design → red-team → prove phases complete for Design B; awaiting explicit user
-"Judged"). Implemented: `ContentReplayDecision`/`ContentReplayTrigger`/`ContentReplayAttemptEvent`/
+**Status:** Judged (2026-08-21, project owner sign-off). Implemented: `ContentReplayDecision`/`ContentReplayTrigger`/`ContentReplayAttemptEvent`/
 `ContentReplayTraceHook`/`corrective_message()`/`ContentReplayGateway<Inner>`
 (`include/agentengine/core/content_replay_gateway.hpp`), proven by
 `tests/test_content_replay_gateway.cpp` (30/30 checks, real Windows/MSVC build — see §5/§6 for the
