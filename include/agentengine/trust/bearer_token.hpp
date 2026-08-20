@@ -135,4 +135,13 @@ struct BearerVerificationRequest {
     return p;
 }
 
+// ADR-061 §42/§43: a bearer-credential-domain POLICY value, not part of the generic clock-conversion
+// primitive (trust/steady_deadline.hpp) -- `verify_bearer_token()`'s own contract only rejects an
+// `exp` in the past, never bounds it from above, so a claim more than this far in the future (a
+// misconfigured issuer, or a deliberately-oversized claim from a compromised signing key) is rejected
+// outright by any bridge converting `exp` into a steady-clock deadline. Shared by every bearer-
+// credential-to-authority bridge in this codebase (rt::request_authority_from_bearer_claims(),
+// mcp::capability_grant_from_bearer_claims()) rather than each choosing its own value independently.
+inline constexpr std::chrono::hours kMaxAuthorityHorizon{24 * 365};
+
 } // namespace agentengine::trust

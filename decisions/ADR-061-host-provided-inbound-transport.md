@@ -5478,7 +5478,329 @@ outside a supplied grant remains an open question, not silently assumed fine.
 
 ### 41.4 Status
 
+Real, compiled, tested. Committed and pushed to `origin/main` (`394e3f6`, "Wire McpServer::dispatch()
+to accept a per-request CapabilityGrant"). Per this project's `design → red-team → prove → judge`
+discipline, this closes prove for `McpServer`'s per-request capability grant; judge (project owner
+sign-off) is next, alongside §30/§37/§38's own already-awaiting mechanisms.
+
+## 42. Design iteration — one shared clock-conversion primitive for both bearer-credential bridges (2026-08-20)
+
+### 42.0 Scope
+
+§41.3 named the host-side wiring that constructs a real `mcp::CapabilityGrant` from a verified bearer
+credential as a real, unbuilt residual, pointing at `rt::request_authority_from_bearer_claims()`'s own
+`principal`/`capabilities`/`expiry` derivation (§31/§37) as "the natural fit." Building that bridge
+naively (a second, independently-written copy of §31.2's `system_clock`→`steady_clock` conversion,
+inside `protocol/mcp/`) would duplicate the exact piece of logic that took two design rounds and three
+red-team passes to get right the first time (§31→§35: the unbounded-cast bug, the saturating-
+subtraction edge case, the maximum-horizon guard) — precisely the kind of "N independently-written
+copies instead of one shared primitive" pattern this project's own convention (`trust::hmac.hpp`'s
+extraction, `trust::principal_from_bearer_claims()`'s own stated role) exists to avoid. This section
+extracts the clock-conversion logic into one shared, generic, already-proven-shape primitive both
+bridges call, then builds the MCP-side bridge on top of it.
+
+### 42.1 The shared primitive
+
+**Corrected in place (§43) — the generic function stays as designed, but its placement and both
+callers' error-wrapping are fixed below rather than left as this subsection's own first draft
+(which a red-team pass found showed an unwrapped passthrough in §42.2 while its OWN prose claimed the
+`rt::` side re-wraps — a claim never actually shown in code, and the exact bug that framing warns
+against).**
+
+Generic — not tied to `BearerTokenClaims` specifically, since the underlying problem ("convert a
+wall-clock deadline to a steady-clock one, sampled together, bounded, saturating") has nothing to do
+with bearer tokens per se. **Placed in a NEW, neutral header, `trust/steady_deadline.hpp`** — not
+`trust/bearer_token.hpp` (§43's correction): that file's real content (`BearerSecretKey`,
+`BearerToken`, `mint_bearer_token`, `ReplayGuard`, `verify_bearer_token`) is entirely bearer-token-
+specific and transitively pulls in `trust/hmac.hpp`'s HMAC machinery; putting a claimed-generic
+function there would force a future, genuinely different credential kind to pull in bearer-specific
+machinery it has no use for, contradicting the "generic" claim in the same breath as making it.
+
+```cpp
+// trust/steady_deadline.hpp -- new file, no bearer-token dependency at all.
+namespace agentengine::trust {
+
+// Converts a wall-clock deadline to a steady-clock one, sampled together by the caller at the same
+// admission event (I5: the nondeterministic read crosses a recorded seam at the caller's boundary,
+// never read internally here) -- extracted from ADR-061 §31.2's own bridge, which needed this exact
+// conversion first and got it right only after two design rounds and three red-team passes (§31-§35).
+// Bounded: `exp` more than `max_horizon` past `wall_now` is rejected outright rather than reaching an
+// unchecked duration_cast. Saturating: an already-past `exp` converts to `steady_now` itself (dead on
+// arrival), never a wraparound-derived far-future deadline. Returns a generic
+// `steady_deadline.horizon_exceeded` error on rejection -- CALLERS re-wrap this into their own
+// established, already-tested error vocabulary (see both real call sites below); this primitive does
+// not invent a caller-specific code, matching every other extracted-shared-primitive in this codebase
+// (`trust::hmac.hpp`, `trust::principal_from_bearer_claims()`).
+[[nodiscard]] inline result<std::chrono::steady_clock::time_point> steady_deadline_from(
+        std::chrono::system_clock::time_point exp, std::chrono::system_clock::time_point wall_now,
+        std::chrono::steady_clock::time_point steady_now,
+        std::chrono::system_clock::duration max_horizon) {
+    if (exp > wall_now + max_horizon) {
+        return std::unexpected(ae::error{failure_class::contract,
+                                          "deadline exceeds the maximum authority horizon",
+                                          "steady_deadline.horizon_exceeded"});
+    }
+    auto const remaining = exp > wall_now
+        ? std::chrono::duration_cast<std::chrono::steady_clock::duration>(exp - wall_now)
+        : std::chrono::steady_clock::duration::zero();
+    return steady_now + remaining;
+}
+
+}  // namespace agentengine::trust
+```
+
+**`kMaxAuthorityHorizon` moves from `rt::` to `trust::`**, declared in `trust/bearer_token.hpp`
+alongside `verify_bearer_token()` (§43's second correction, also closing the red-team's R1 finding):
+it is a bearer-credential-domain POLICY value (its own reasoning cites "a misconfigured issuer, or a
+deliberately-oversized claim from a compromised signing key" — bearer-specific), not part of the
+generic math primitive, so it does not belong in `steady_deadline.hpp` either. Both bridges already
+include `trust/bearer_token.hpp` regardless (for `BearerTokenClaims`/`principal_from_bearer_claims()`),
+so this relocation costs neither bridge a new dependency, and — critically — means the MCP-side bridge
+(§42.2) no longer needs to reach into `agentengine::rt` AT ALL just to read one constant. Shown
+explicitly, not left asserted only in prose (a lesson this same round's own FATAL finding just taught):
+
+```cpp
+// trust/bearer_token.hpp -- relocated declaration, unchanged value/type, only the namespace/file move.
+namespace agentengine::trust {
+inline constexpr std::chrono::hours kMaxAuthorityHorizon{24 * 365};
+}  // namespace agentengine::trust
+```
+
+**`rt::request_authority_from_bearer_claims()`'s corrected body**, shown explicitly rather than
+asserted in prose (§43's first, FATAL-severity correction):
+
+```cpp
+// rt/request_authority_bridge.hpp -- refactored body.
+[[nodiscard]] inline result<RequestAuthority> request_authority_from_bearer_claims(
+        trust::BearerTokenClaims const& claims,
+        std::shared_ptr<agentengine::CapabilitySet const> capabilities,
+        std::chrono::system_clock::time_point wall_now,
+        std::chrono::steady_clock::time_point steady_now,
+        agentengine::principal_kind kind = agentengine::principal_kind::service) {
+    auto deadline = trust::steady_deadline_from(claims.exp, wall_now, steady_now, trust::kMaxAuthorityHorizon);
+    if (!deadline) {
+        // Re-wrap: this function's own, already-tested error code
+        // (tests/test_request_authority_bridge.cpp:183 asserts this EXACT string) must survive the
+        // refactor unchanged -- the shared primitive's generic `steady_deadline.horizon_exceeded`
+        // is deliberately NOT what this function returns to its own callers.
+        return std::unexpected(ae::error{failure_class::contract,
+                                          "bearer credential exp exceeds the maximum authority horizon",
+                                          "request_authority.exp_horizon_exceeded"});
+    }
+    return RequestAuthority{
+        trust::principal_from_bearer_claims(claims, kind),
+        std::move(capabilities),
+        *deadline,
+    };
+}
+```
+
+### 42.2 The MCP-side bridge
+
+**Corrected (§43): re-wraps into its own namespaced error code**, `capability_grant.exp_horizon_
+exceeded`, rather than passing the shared primitive's generic code straight through unwrapped (the
+FATAL finding, and the reason this section's naive first draft was itself the counter-evidence to
+§42.1's own prose):
+
+```cpp
+// protocol/mcp/capability_grant_bridge.hpp -- new file.
+namespace agentengine::mcp {
+
+// The recommended path from a verified bearer credential to a CapabilityGrant -- mirrors
+// rt::request_authority_from_bearer_claims()'s own role and structure exactly (ADR-061 §31.2), built
+// on the same shared trust::steady_deadline_from() primitive (§42.1) rather than a second,
+// independently-derived conversion. `capabilities` stays REQUIRED and caller-supplied, for the
+// identical reason §31.2 already states: 007 §5's policy engine does not exist, and this function has
+// no legitimate way to decide what a default should mean for a caller who forgot to wire capabilities.
+[[nodiscard]] inline result<CapabilityGrant> capability_grant_from_bearer_claims(
+        trust::BearerTokenClaims const& claims,
+        std::shared_ptr<CapabilitySet const> capabilities,
+        std::chrono::system_clock::time_point wall_now,
+        std::chrono::steady_clock::time_point steady_now,
+        principal_kind kind = principal_kind::service) {
+    auto deadline =
+        trust::steady_deadline_from(claims.exp, wall_now, steady_now, trust::kMaxAuthorityHorizon);
+    if (!deadline) {
+        // Re-wrap into this bridge's OWN namespaced code -- symmetric with the rt:: side (§42.1),
+        // never the shared primitive's generic code passed straight through.
+        return std::unexpected(ae::error{failure_class::contract,
+                                          "bearer credential exp exceeds the maximum authority horizon",
+                                          "capability_grant.exp_horizon_exceeded"});
+    }
+    return CapabilityGrant{
+        trust::principal_from_bearer_claims(claims, kind),
+        std::move(capabilities),
+        *deadline,
+    };
+}
+
+}  // namespace agentengine::mcp
+```
+
+Placed in a NEW header, `include/agentengine/protocol/mcp/capability_grant_bridge.hpp` (not inside
+`server.hpp` itself), mirroring `rt::request_authority_from_bearer_claims()`'s own placement decision
+(§31.2): `server.hpp` stays free of a `trust/bearer_token.hpp` dependency for callers who never verify
+bearer credentials at all (an embedded, single-tenant host per 018 §1's common case) — the direction is
+one-way, `capability_grant_bridge.hpp` depends on `server.hpp` (for `CapabilityGrant`/`CapabilitySet`
+itself, the function's own return type — `#include "agentengine/protocol/mcp/server.hpp"`, an
+unavoidable dependency this bridge cannot omit), never the reverse. Beyond that unavoidable one, its
+only NEW dependencies are `trust::` (`bearer_token.hpp`, `principal.hpp`) and `steady_deadline.hpp` —
+**not** on `agentengine::rt` at all, now that `kMaxAuthorityHorizon` lives in `trust::` (§42.1's
+correction), closing the red-team's R1 finding (pulling in the entire 2,258-line `rt/agent_session.hpp`
+for one `constexpr` constant) outright rather than accepting it as a named cost.
+
+### 42.3 Falsifiable claims
+
+| # | Claim | Disproving experiment | Positive control / teeth |
+|---|---|---|---|
+| 1 | `trust::steady_deadline_from()`'s extraction preserved `rt::request_authority_from_bearer_claims()`'s exact prior behavior, INCLUDING its own error code | Run `tests/test_request_authority_bridge.cpp`'s existing 7-row claims table (§31.3/§33.8, especially claim 7's exact assertion on the `request_authority.exp_horizon_exceeded` string) unmodified against the refactored function | Control: the shared primitive's own generic `steady_deadline.horizon_exceeded` code is never observed by any `rt::` caller — only the re-wrapped code is |
+| 2 | `mcp::capability_grant_from_bearer_claims()`'s `CapabilityGrant.expiry` matches `trust::steady_deadline_from()`'s own output exactly, for the same `claims`/`wall_now`/`steady_now` | Call both directly with identical inputs; compare `expiry` | Control: differing `wall_now` inputs produce differing `expiry`, proving it's not a fixed/ignored value |
+| 3 | An exp beyond `kMaxAuthorityHorizon` is rejected by the MCP-side bridge too, surfaced as `capability_grant.exp_horizon_exceeded` (never the shared primitive's own generic code, and never the rt-side's differently-namespaced code) | `claims.exp = wall_now + 1000 years` via `capability_grant_from_bearer_claims()`; inspect the returned error's code | Control: `claims.exp = wall_now + 1 hour` succeeds |
+| 4 | The resulting `CapabilityGrant` is accepted by a REAL `McpServer::dispatch()` call, end to end | Verify a real bearer token, bridge it to a `CapabilityGrant`, dispatch a `tools/call` requiring a capability only the grant (not `held_`) supplies | Control: the same grant with `kind = human` produces a `Principal` with `principal_kind::human`, threaded through correctly |
+
+### 42.4 What this section does not attempt
+
+- **The reverse question — should `rt::` and `mcp::` share more than the clock primitive** (e.g. a
+  single generic `AuthorityGrant<T>` template both `RequestAuthority` and `CapabilityGrant` alias) —
+  considered and rejected, but **corrected (§43): the reason is a difference in MECHANISM, not
+  presence.** `RequestAuthority` DOES have an identity-mismatch guard —
+  `principal_admitted_for(request.authority->principal, principal_)` runs in both `start_run()`
+  (`agent_session.hpp:701`) and `resolve_interaction()` (`:784`), checked against the SESSION's own
+  fixed, construction-time-bound `principal_`. `CapabilityGrant`'s own guard checks against a fresh,
+  PER-CALL `caller` argument instead (`server.hpp`'s own `dispatch()`). Both guard against the identical
+  confused-deputy class; they differ in what they check against (session-bound vs. per-call), because
+  `AgentSession` and `McpServer` have genuinely different admission models at the object level, not
+  because one type has a guard and the other invented one from nothing. Forcing a shared template would
+  still lose that divergence or leak one type's concerns into the other's name — the clock conversion
+  is the genuinely shared, policy-free part; the rest is not, for the corrected reason above.
+- **`McpClient`/an actual transport adapter calling this bridge** — still ADR-039 §3e's own scoped
+  future work (`examples/`, not core), unaffected by this section.
+- **007 §5's policy engine** — unchanged, still doesn't exist.
+
+### 42.5 Next step
+
+Per this project's own discipline: design, not proof. Needs an independent adversarial pass before any
+claim above is more than a hypothesis. That pass ran (§43) and found real defects, now corrected in
+place above.
+
+## 43. Red-team round — against §42, run hostile (2026-08-20)
+
+**Verdict up front: §42 did not survive as first written — a FATAL finding, on a refactor of already-
+shipped, already-tested code, plus one MUST-FIX factual error and two SHOULD-FIX issues.**
+
+**FATAL — §42.1's own two shown code snippets contradicted its own prose, and the contradiction was
+exactly the naive bug the prose warned against.** §42.1's prose asserted the refactored
+`rt::request_authority_from_bearer_claims()` "preserves" its own error code by re-wrapping the shared
+primitive's generic result — but §42.1 showed NO code for the refactored `rt::` function at all, only
+the new `steady_deadline_from()` itself. The ONLY shown example of "how a caller consumes
+`steady_deadline_from()`" was §42.2's MCP snippet, which passed the shared primitive's error straight
+through unwrapped. Since §42.2 explicitly framed itself as mirroring the `rt::` side "exactly," a
+reader implementing from what was actually shown — not what the prose merely claimed — would produce
+the unwrapped passthrough on BOTH sides. This is not theoretical: `tests/test_request_authority_bridge.
+cpp:183` asserts the exact string `request_authority.exp_horizon_exceeded` on the horizon-rejection
+path — an already-shipped, already-passing test that the naive (as-shown) refactor would break. Closed
+at §42.1: both bridges' corrected bodies are now shown explicitly, each re-wrapping into its own
+namespaced code.
+
+**MUST-FIX — §42.4's "`RequestAuthority` has no identity-mismatch guard" is false against real,
+current, shipped code, and contradicts this codebase's own already-shipped documentation.**
+`agent_session.hpp:701` and `:784` both run `principal_admitted_for(request.authority->principal,
+principal_)` before ever applying a `RequestAuthority` — a real, working identity check. Worse, this
+directly contradicts `CapabilityGrant`'s own doc comment already shipped in `server.hpp` this same
+session: *"Bundling identity with the capability grant is what `RequestAuthority` already does for
+exactly this reason (ADR-061 §20.1); this type restores that precedent rather than dropping the field
+to (incorrectly) avoid it."* The real distinction is mechanism (session-bound `principal_` vs. per-call
+`caller`), not presence vs. absence. Closed at §42.4.
+
+**SHOULD-FIX — `steady_deadline_from()`'s placement in `trust/bearer_token.hpp` contradicted its own
+claimed genericity.** That file's real content (`BearerSecretKey`, `mint_bearer_token`, `ReplayGuard`,
+`verify_bearer_token`) is entirely bearer-specific and transitively pulls in `trust/hmac.hpp` — a
+future, genuinely different credential kind wanting only the generic clock conversion would be forced
+to pull in HMAC machinery it has no use for. Closed at §42.1: relocated to a new, neutral
+`trust/steady_deadline.hpp` with no bearer-specific dependency.
+
+**SHOULD-FIX — claim 1's disproving experiment described an experiment that becomes impossible to run
+the moment the refactor lands** (diffing against "pre-refactor inline logic" that the refactor deletes
+from the tree). Closed at §42.3: reworded to point at the existing, fixed-expected-output test file
+instead.
+
+**RESIDUAL-WORTH-NAMING, closed as a side effect — `protocol/mcp/capability_grant_bridge.hpp` pulling
+in the entire `rt/agent_session.hpp` (2,258 lines) for one `constexpr` constant.** Not fatal on its own
+(`protocol::a2a::server.hpp` already depends on `rt::` directly, so the direction isn't unprecedented),
+but a real, avoidable cost. Closed as a side effect of relocating `kMaxAuthorityHorizon` to `trust::`
+(§42.1): the MCP-side bridge now depends only on `trust::`, never reaching `rt::` at all.
+
+### 43.1 Status
+
+All five findings closed in place, at the sections they correct. Whether these fixes hold up needs its
+own fresh adversarial pass before being trusted further than "this author believes it is now correct"
+— that pass ran (§43.2) and found the mechanism holds, with two smaller new items closed in place.
+
+### 43.2 Second re-check — against §43's own fixes
+
+**All four originally-flagged findings (the FATAL re-wrap bug, the MUST-FIX identity-guard claim, and
+both SHOULD-FIXes) independently re-verified as genuinely closed** — traced literally against the
+shown code, not trusted from either round's own prose. Two smaller new items surfaced, both from the
+correction round itself rather than the original design:
+
+- **MUST-FIX**: §42.2's "Depends ONLY on `trust::`... and `steady_deadline.hpp` — not on
+  `agentengine::rt` at all" omitted that the function's own return type (`CapabilityGrant`) requires
+  `#include "agentengine/protocol/mcp/server.hpp"` — a real, unavoidable dependency the enumeration
+  never named. **Closed** at §42.2: stated explicitly as the one-way, unavoidable dependency it is,
+  before naming what's genuinely new beyond it.
+- **SHOULD-FIX**: the relocated `trust::kMaxAuthorityHorizon` declaration was asserted only in prose,
+  never shown in a code block — the same species of gap the FATAL finding existed to close, just lower
+  stakes (a constant's declaration, not a security-relevant control-flow claim). **Closed** at §42.1:
+  shown explicitly.
+
+### 43.3 Status
+
+Two consecutive independent checks (§43, §43.2) now converge on §42 as corrected: every claim traced
+against real, current source rather than trusted from the design's own prose. Ready for a `prove`
+phase.
+
+## 44. Prove phase — §42/§43's shared clock primitive and MCP-side bridge implemented and proven (2026-08-20)
+
+**§42.1's design is now real code**, verbatim against the final, corrected text, split as designed:
+- `include/agentengine/trust/steady_deadline.hpp` (new) — `trust::steady_deadline_from()`, generic,
+  no bearer-token dependency.
+- `include/agentengine/trust/bearer_token.hpp` — gains `trust::kMaxAuthorityHorizon`, relocated from
+  `rt::` verbatim (value/type unchanged, only namespace and file).
+- `include/agentengine/rt/request_authority_bridge.hpp` — `rt::request_authority_from_bearer_claims()`
+  refactored to call the shared primitive and re-wrap into its own, unchanged
+  `request_authority.exp_horizon_exceeded` error code. `tests/test_request_authority_bridge.cpp`
+  (already-shipped, already-passing) re-run unmodified: **21/21 checks still pass**, including claim
+  7's exact-string assertion on that code — the refactor the design's own red-team round existed to
+  make safe is confirmed safe against the real, already-shipped test that would have caught it wrong.
+
+**§42.2's design is now real code**: `include/agentengine/protocol/mcp/capability_grant_bridge.hpp`
+(new) — `mcp::capability_grant_from_bearer_claims()`, depending on `server.hpp` (for `CapabilityGrant`)
+and `trust::` only, never reaching `agentengine::rt`.
+
+### 44.1 Real, compiled, passing positive controls
+
+`tests/test_capability_grant_bridge.cpp` (new, 12 checks, all passing on the first run — no test-
+authoring bugs found this round) exercises §42.3's remaining claims (claim 1 is covered by the
+existing, re-run `test_request_authority_bridge.cpp` above):
+
+- **Claim 2**: `CapabilityGrant.expiry` matches `steady_deadline_from()`'s own output exactly; a
+  differing `wall_now` produces a differing `expiry`.
+- **Claim 3**: an exp ~1000 years out is rejected with the bridge's OWN `capability_grant.exp_horizon_
+  exceeded` code — never the shared primitive's generic code, never the rt-side bridge's differently-
+  namespaced code; an exp one hour out succeeds normally.
+- **Claim 4**: a REAL bearer token — minted, verified via `verify_bearer_token()`, bridged to a
+  `CapabilityGrant` — is accepted end to end by a REAL `McpServer::dispatch()` call, authorizing a tool
+  `held_` alone (empty) could never have permitted; `kind = human` threads through correctly.
+
+### 44.2 Build and test evidence
+
+Full workspace rebuild (`ninja -k 0`): clean except the same two pre-existing, unrelated
+`protocol/openai/embedder.hpp` failures named since §30.5. Full `ctest` run: **207/207 passing** (206
+carried forward from §41, plus the new file), zero regressions.
+
+### 44.3 Status
+
 Real, compiled, tested. Not yet committed to version control this session. Per this project's
-`design → red-team → prove → judge` discipline, this closes prove for `McpServer`'s per-request
-capability grant; judge (project owner sign-off) is next, alongside §30/§37/§38's own already-awaiting
-mechanisms.
+`design → red-team → prove → judge` discipline, this closes prove for the shared clock primitive and
+the MCP-side bearer-credential bridge; judge (project owner sign-off) is next, alongside
+§30/§37/§38/§41's own already-awaiting mechanisms.

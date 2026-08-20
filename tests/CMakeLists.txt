@@ -1849,6 +1849,14 @@ if(WIN32)
   target_link_libraries(test_request_authority_bridge PRIVATE
     agentengine::core agentengine::capability_token agentengine_warnings)
   add_test(NAME test_request_authority_bridge COMMAND test_request_authority_bridge)
+
+  # ---- ADR-061 §42/§43 prove phase -- trust::steady_deadline_from() (shared clock-conversion
+  # primitive) and mcp::capability_grant_from_bearer_claims(), the bearer-credential-to-CapabilityGrant
+  # bridge for McpServer::dispatch()'s per-request grant (§39-§41, decisions/ADR-061) -----------------
+  add_executable(test_capability_grant_bridge test_capability_grant_bridge.cpp)
+  target_link_libraries(test_capability_grant_bridge PRIVATE
+    agentengine::core agentengine::capability_token agentengine_warnings)
+  add_test(NAME test_capability_grant_bridge COMMAND test_capability_grant_bridge)
 endif()
 
 # ---- Worktree content-addressed object store (025 §2, Milestone 3 Phase A1) --------------------

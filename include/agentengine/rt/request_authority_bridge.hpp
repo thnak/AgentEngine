@@ -23,14 +23,9 @@
 #include "agentengine/trust/bearer_token.hpp"
 #include "agentengine/trust/capability.hpp"
 #include "agentengine/trust/principal.hpp"
+#include "agentengine/trust/steady_deadline.hpp"
 
 namespace agentengine::rt {
-
-// `verify_bearer_token()`'s own contract only rejects an `exp` in the past, never bounds it from
-// above -- a `claims.exp` more than this far past `wall_now` (a misconfigured issuer, or a
-// deliberately-oversized claim from a compromised signing key) is rejected outright rather than
-// reaching an unchecked `duration_cast`. Generous, still a real ceiling.
-inline constexpr std::chrono::hours kMaxAuthorityHorizon{24 * 365};
 
 // The recommended path from a verified bearer credential to a RequestAuthority -- not a
 // construction-enforced one: RequestAuthority (agent_session.hpp:278-290) is a plain, fully-public
@@ -65,24 +60,24 @@ inline constexpr std::chrono::hours kMaxAuthorityHorizon{24 * 365};
         std::chrono::system_clock::time_point wall_now,
         std::chrono::steady_clock::time_point steady_now,
         agentengine::principal_kind kind = agentengine::principal_kind::service) {
-    if (claims.exp > wall_now + kMaxAuthorityHorizon) {
+    // ADR-061 §42/§43: the clock conversion itself is `trust::steady_deadline_from()` (does NOT
+    // re-check claims.exp against wall_now as a pass/fail gate -- verify_bearer_token() already did
+    // that; the saturating subtraction it performs guards a narrower case: an already-expired-but-
+    // otherwise-valid claims object converts to an ALREADY-DEAD deadline, never a wraparound-derived
+    // far-future one). Re-wrapped into THIS function's own, already-tested error code -- the shared
+    // primitive's generic `steady_deadline.horizon_exceeded` is never observed by a caller of this
+    // function; `tests/test_request_authority_bridge.cpp` asserts the exact string below.
+    auto deadline =
+        trust::steady_deadline_from(claims.exp, wall_now, steady_now, trust::kMaxAuthorityHorizon);
+    if (!deadline) {
         return std::unexpected(ae::error{failure_class::contract,
                                           "bearer credential exp exceeds the maximum authority horizon",
                                           "request_authority.exp_horizon_exceeded"});
     }
-    // Does NOT re-check claims.exp against wall_now as a pass/fail gate -- verify_bearer_token()
-    // already did that (single source of truth for "is this token still valid," never duplicated).
-    // What this saturating subtraction guards is narrower: an already-expired-but-otherwise-valid
-    // claims object (e.g. a caller that skipped the exp check by construction error) must convert to
-    // an ALREADY-DEAD RequestAuthority (live() false for every now >= steady_now), never a negative
-    // duration that wraps into a far-future deadline.
-    auto const remaining = claims.exp > wall_now
-        ? std::chrono::duration_cast<std::chrono::steady_clock::duration>(claims.exp - wall_now)
-        : std::chrono::steady_clock::duration::zero();
     return RequestAuthority{
         trust::principal_from_bearer_claims(claims, kind),
         std::move(capabilities),
-        steady_now + remaining,
+        *deadline,
     };
 }
 
