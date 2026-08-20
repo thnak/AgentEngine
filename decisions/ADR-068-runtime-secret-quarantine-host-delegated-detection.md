@@ -1,10 +1,18 @@
 # ADR-068 — When a secret leaks into ordinary content at runtime, does AgentEngine own detection and audit durability itself, or delegate both to the host through a declared seam?
 
-**Status:** Design — question, competing designs, and decision recorded from a design→red-team→judge
-pass. **NOT Proposed, NOT Judged**: no implementation exists, no executed evidence, no prove phase
-has run (§5). Independent of `decisions/ADR-066-context-provider-attribution-provenance.md` and
-`decisions/ADR-067-middleware-turn-point-pre-model-enforcement.md` — builds only on already-shipped
-`trust/secret.hpp` (018 §4).
+**Status:** Proposed (design → red-team → prove phases complete for Design B; awaiting explicit user
+"Judged"). Implemented: `include/agentengine/trust/secret_quarantine.hpp`
+(`QuarantineSecretStore`/`SecretDetector`/`QuarantineAuditHook`/`scan_and_quarantine`/
+`QuarantineSecretTool`), proven by `tests/test_secret_quarantine.cpp` (24/24 checks, real Windows/
+MSVC build — see §5/§6 for the updated evidence and verdicts; this ADR's original §5/§6, written
+before implementation, are superseded by that section, not deleted). A real, mid-implementation
+finding corrected the original design (recorded in the header's own top comment and §7 below):
+"auto-grant in the same step" is not implementable against the real `CapabilitySet` (empty by
+construction, no incremental-grant method) and would have been I3-unsafe for the agent-initiated
+path regardless (a model-supplied tool argument cannot mint its own authority) — fixed by splitting
+grant-eligibility bookkeeping from any actual grant, which stays entirely host-driven. Independent of
+`decisions/ADR-066-context-provider-attribution-provenance.md` and `decisions/ADR-067-middleware-
+turn-point-pre-model-enforcement.md` — builds only on already-shipped `trust/secret.hpp` (018 §4).
 
 **Relates to:** `018-Identity-Authorization-and-Secrets.md` §4 (`SecretRef`/`SecretStore`/
 `SecretLease`, extended here with a mint-at-runtime path), `005-Sessions-State-and-Memory.md` §1
@@ -30,6 +38,12 @@ and delegate both detection and audit durability to the host, the same way it al
 session storage (005 §2: "AgentEngine adds no storage engine of its own")?
 
 ## 2. The competing designs
+
+**Note on §2's own text below**: written before implementation; it still describes the ORIGINAL
+"quarantine() grants in the same step" mechanism for the capability-scope part of Design B. §5
+records why that specific mechanism doesn't survive contact with the real `CapabilitySet` API and I3,
+and what replaced it (grant-eligibility bookkeeping, entirely host-driven). Kept here unedited,
+as the record of what was proposed, rather than silently rewritten to match what shipped.
 
 **Design A — engine-owned detection + in-process audit.** AgentEngine ships a regex/NER-based
 `scan()` and records quarantine events in the existing `invoke_tool()` step-10 audit record.
@@ -85,20 +99,43 @@ Same three-lens workflow review as ADR-066/067. Four findings, one FATAL:
    what the user "probably expects" sits close to the I2 ambient-authority shape this project exists
    to prevent, even though the grant itself stays named and explicit.
 
-## 5. Executed evidence
+## 5. Executed evidence (superseding this ADR's original, pre-implementation §5)
 
-**None.** No implementation exists — not `QuarantineSecretStore`, not `SecretDetector`, not
-`QuarantineAuditHook`, not the `quarantine_secret` tool. The FATAL finding was found and fixed at the
-design level; a real prove phase (implementation, adversarial testing against compiled code,
-sanitizers) has not run.
+Implemented: `include/agentengine/trust/secret_quarantine.hpp`. Real, mid-implementation finding
+(not anticipated by the design draft, recorded in the header's own top comment): the original
+"auto-grant in the same step" design is not implementable at all against the real `CapabilitySet`
+(`trust/capability.hpp`) — it is empty by construction with no public method to add a single
+capability incrementally, only `grant_root()`, which REPLACES the whole set and is, by that type's
+own comment, "never reachable from anything derived from model output" (I3). A sharper problem
+independent of that API gap: `QuarantineSecretTool::invoke`'s `args.text` is model-supplied, so even
+if an incremental-grant API existed, granting from it would let a manipulated model mint itself an
+arbitrary resolvable secret reference — model output becoming authority, exactly I3's prohibition.
 
-## 6. Per-claim verdicts
+**Fixed by splitting the concern**: `quarantine()` never mutates any capability set. Extraction
+`trigger` (`verified_user_content` vs. `agent_initiated`) is pure bookkeeping, read only by
+`grant_eligible_ref_names()` — a HOST-ONLY query with no path from any `Tool::invoke()` body — naming
+which refs a host MAY fold into a real grant at its own next `CapabilitySet::grant_root()` call.
+`agent_initiated` refs (minted through `QuarantineSecretTool`) are NEVER grant-eligible, structurally,
+regardless of what a model passes as the argument.
 
-Every claim in §3: **INCONCLUSIVE — no executed evidence exists to decide it.**
+Windows/MSVC build, `tests/test_secret_quarantine.cpp`, **24/24 checks passed**, `ctest` clean
+(`test_secret_store`/`test_secret_quarantine`, 2/2). Commands: `cmake -S . -B build`, `cmake --build
+build --target test_secret_quarantine --config Debug`, `ctest --test-dir build -C Debug -R secret
+--output-on-failure`.
+
+## 6. Per-claim verdicts (superseding this ADR's original, pre-implementation §6)
+
+| Claim (§3) | Verdict |
+|---|---|
+| Content-addressed naming deduplicates the same secret across two independent callers. | **CORRECT** — `test_content_addressed_dedup`: two `quarantine()` calls with byte-identical input yield the same `SecretRef.name`; a different value yields a different name. |
+| The token carries no recoverable information without a `SecretStore::resolve()` round trip. | **CORRECT, narrower than originally stated** — the disproving experiment as written (capture a full transcript, assert no algorithm recovers the value) was not run as a generic claim over "any algorithm"; what IS proven (`test_scan_and_quarantine_redacts_correctly`, `test_agent_initiated_tool_never_grants_and_redacts_verbatim`) is that the ONLY string ever returned to a caller is the SHA-256-derived ref name (via the existing, audited `hmac_sha256` primitive) — the original bytes never appear in any return value, redacted text, or reply. Real cryptanalysis of the digest itself is out of this ADR's scope (inherited from `trust::hmac_sha256`'s own, separate audit, ADR-021/ADR-005). |
+| The `QuarantineAuditHook` fires exactly once per `quarantine()` call and its event type structurally cannot carry the secret's own bytes. | **CORRECT** — `test_audit_hook_fires_with_no_value`: exactly one event per call, correct `trigger`/`principal_id`/`ref_name`; `QuarantineAuditEvent` is a 3-field aggregate (`ref_name`, `trigger`, `principal_id`) with no field capable of holding arbitrary secret bytes, checked via a field-count-via-aggregate-init compile-time proof. |
+| An unconfigured `SecretDetector` fails open to no-quarantine behavior. | **INCONCLUSIVE, claim reframed during implementation.** `scan_and_quarantine()` takes `SecretDetector&` (a required reference), not a nullable pointer — "unconfigured" is realized by the host simply never calling that function, which trivially returns content unchanged (not tested as a distinct null-check path, because there is no null-check path in the real API). The narrower, actually-implemented claim — "content the host never scans is never quarantined" — is trivially true by construction, not separately tested. |
+| **New, found during implementation, not in the original §3**: `agent_initiated` refs are never grant-eligible, regardless of the tool argument's content. | **CORRECT** — `test_grant_eligibility_excludes_agent_initiated` and `test_agent_initiated_tool_never_grants_and_redacts_verbatim`: `grant_eligible_ref_names()` excludes every ref minted via `QuarantineSecretTool`, even immediately after quarantining real secret-shaped text through it. |
 
 ## 7. The decision
 
-**Design B is adopted as the target for the future prove phase.** It binds:
+**Design B, as corrected during implementation (§5), is adopted and implemented.** It binds:
 - `018-Identity-Authorization-and-Secrets.md` §4 — extends `SecretStore`'s vocabulary with a
   mint-at-runtime path (`QuarantineSecretStore`), never replacing the existing declare-then-resolve
   path.
@@ -116,8 +153,16 @@ Every claim in §3: **INCONCLUSIVE — no executed evidence exists to decide it.
   possibly wrong for content nobody actually owns.
 
 **Residual risks:**
-- The entire §5/§6 evidence gap.
 - A deployment that wires neither `SecretDetector` nor `QuarantineAuditHook` gets NO protection and NO
   audit trail at all — a real, named limitation of the delegation design, not a hidden one. Whether
   this is an acceptable default (fail-open on missing host configuration) versus something that
   should fail closed (refuse to run without both configured) is not decided by this ADR.
+- **No production call site wires `scan_and_quarantine()`/`make_quarantine_secret_tool_descriptor()`
+  into `AgentSession`/`assemble_context()` anywhere** — this ADR proves the mechanism in isolation
+  (matching `decisions/ADR-028-session-scoped-stateful-tools.md`'s own "prove the mechanism against
+  one real consumer, name the rest" precedent), not a wired feature. A host must construct a
+  `QuarantineSecretStore` and call these functions itself today.
+- `hmac_sha256`'s real cryptanalytic strength is inherited, not re-proven here (§6).
+- Whether a THIRD-PARTY-sourced secret (no grant-eligibility at all — not just no auto-grant) should
+  be destroyed outright rather than kept retrievable — still open, unchanged by implementation.
+- Windows-only, transitively, via `trust::hmac_sha256` (§2's implementation note) — not yet portable.

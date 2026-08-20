@@ -673,6 +673,19 @@ add_executable(test_secret_store test_secret_store.cpp)
 target_link_libraries(test_secret_store PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_secret_store COMMAND test_secret_store)
 
+# decisions/ADR-068-runtime-secret-quarantine-host-delegated-detection.md's prove phase.
+# QuarantineSecretStore's content-addressed naming reuses trust::hmac_sha256 (trust/hmac.cpp,
+# ADR-021) rather than a second, unaudited digest implementation -- that primitive lives in the
+# Windows-only agentengine::capability_token library (CMakeLists.txt's own "Cross-process capability
+# tokens -- Windows only" section), so this test needs the same link, same as that section's own
+# consumers (capability_token.cpp/bearer_token.cpp).
+if(WIN32)
+  add_executable(test_secret_quarantine test_secret_quarantine.cpp)
+  target_link_libraries(test_secret_quarantine PRIVATE
+    agentengine::core agentengine::capability_token agentengine_warnings)
+  add_test(NAME test_secret_quarantine COMMAND test_secret_quarantine)
+endif()
+
 # ---- Milestone 5 Phase B1/B2/B5/B6 -- the ChatClient concept made real -------------------------
 # ChatRequest.tools/output_schema_json, the completed ChatClientCapabilities bitset,
 # select_output_schema_strategy (004 §2's degradation rule), ChatClientRegistry.
