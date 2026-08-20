@@ -87,6 +87,17 @@ struct ToolDescriptor {
     // reference/data-race hazard found by design review, closed here structurally rather than left
     // as a documented-only rule a future caller could violate by accident.
     bool captures_session_state = false;
+
+    // decisions/ADR-066-context-provider-attribution-provenance.md: same stamp as
+    // `Message::attribution`, same seam (`assemble_context()`), same "nullopt means not
+    // contributor-sourced" convention (a tool from `make_tool_descriptor<ToolT>()`'s ordinary,
+    // host-declared static tool table is never contributor-sourced, so stays nullopt). MAF has no
+    // equivalent for this field (`AIContextProvider.cs`'s `mergedTools` is a bare, unstamped
+    // `Concat`) -- this is a place this project's design goes further than its own surveyed prior
+    // art, needed for the not-yet-implemented turn-middleware tool-arbitration use case
+    // (decisions/ADR-067-middleware-turn-point-pre-model-enforcement.md). Appended last, this
+    // struct's own established convention.
+    std::optional<ContributorProvenance> attribution;
 };
 
 template <class ToolT>

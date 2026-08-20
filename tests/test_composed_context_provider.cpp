@@ -19,6 +19,7 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <vector>
 
@@ -74,6 +75,8 @@ ae::Message make_msg(std::string text, std::string message_id) {
 // tracked on_turn_end call count, so composition order/budgeting/turn-end fan-out can all be told
 // apart from HistoryProvider's own behavior.
 struct FixedMessagesProvider {
+    static constexpr std::string_view name = "fixed-messages";  // ADR-066 §3
+
     std::vector<ae::Message>    to_return;
     std::shared_ptr<std::size_t> turn_end_calls = std::make_shared<std::size_t>(0);
 
@@ -94,6 +97,8 @@ static_assert(ae::ContextProvider<FixedMessagesProvider>,
 // Contributes exactly one tool descriptor, nothing else -- proves ContextContribution.tools survives
 // N-way composition (006 §1's declaration shape, reused verbatim by 005 §5 providers).
 struct ToolContributingProvider {
+    static constexpr std::string_view name = "tool-contributing";  // ADR-066 §3
+
     [[nodiscard]] ae::task<ae::result<ae::ContextContribution>> on_context(ae::SessionContext&,
                                                                              ae::EffectContext&) {
         ae::ContextContribution c;

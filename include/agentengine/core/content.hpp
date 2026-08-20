@@ -15,6 +15,24 @@ namespace agentengine {
 
 enum class content_origin { user, assistant, tool, system, external };  // ae-naming-lint: allow content_origin — pre-existing M0 scaffolding, reconcile at owning milestone
 
+// decisions/ADR-066-context-provider-attribution-provenance.md: which ContextProvider contributor
+// (if any) produced a Message/ToolDescriptor this turn. Stamped ONLY by `assemble_context()`
+// (context_assembly.hpp) at its one seam every contribution already flows through unconditionally
+// -- never self-stamped by a contributor (MAF's shape, `ChatMessage.WithAgentRequestMessageSource`;
+// rejected here because a provider that overrides its own merge path, or a non-cooperating/hostile
+// plugin conformer, 009 §2, can skip or forge a self-stamp; the assemble_context() seam cannot be
+// bypassed by construction). `contributor_type` (a `ContextProviderDescriptor`'s declared, static
+// `name`) is the durable, cross-turn identity; `contributor_index` is a same-turn-only
+// disambiguator -- an operator reordering or adding a contributor between turns must not silently
+// corrupt anything that persists provenance past the turn it was stamped in (029's memory system is
+// the named, near-term consumer this protects; see the ADR's §7).
+struct ContributorProvenance {  // ae-naming-lint: allow ContributorProvenance — ADR-066 names this concept normatively; 027 has not been updated to list it
+    std::size_t contributor_index = 0;
+    std::string contributor_type;
+
+    friend bool operator==(ContributorProvenance const&, ContributorProvenance const&) = default;
+};
+
 // `TaintedText` is `Tainted<std::string>` specialized for the text/bytes case (003 §2: "not a
 // separate mechanism") — the mechanism itself lives in tainted.hpp, not reimplemented here.
 using TaintedText = Tainted<std::string>;  // ae-naming-lint: allow TaintedText — pre-existing M0 scaffolding, reconcile at owning milestone
@@ -158,6 +176,12 @@ struct Message {
     agentengine::role        role;
     std::vector<ContentItem> content;
     std::string              message_id;
+    // ADR-066: appended last (003 §6's field-ordering convention -- see Usage::cache_write_tokens's
+    // own comment for why) so every existing positional `Message{role, content, id}` call site keeps
+    // compiling unchanged. `std::nullopt` for a message that never passed through assemble_context()
+    // (genuine user input, or a model's own reply, appended straight to session history) -- absence
+    // of attribution is not itself suspicious, matching MAF's own `External` default.
+    std::optional<ContributorProvenance> attribution;
 
     friend bool operator==(Message const&, Message const&) = default;
 };

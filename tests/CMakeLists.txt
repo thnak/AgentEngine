@@ -237,6 +237,13 @@ add_executable(test_context_assembly test_context_assembly.cpp)
 target_link_libraries(test_context_assembly PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_context_assembly COMMAND test_context_assembly)
 
+# ---- decisions/ADR-066-context-provider-attribution-provenance.md's prove phase: per-contributor
+# attribution stamping on Message/ToolDescriptor, and the narrower (not blanket) content_origin::user
+# forgery check, both applied structurally at assemble_context()'s own seam.
+add_executable(test_context_provenance test_context_provenance.cpp)
+target_link_libraries(test_context_provenance PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_context_provenance COMMAND test_context_provenance)
+
 # ---- ComposedContextProvider<Ms...> (core/composed_context_provider.hpp) -- generalizes
 # history_and_skills_provider.hpp's fixed two-provider HistoryAndSkillsProvider<H,S> to an arbitrary
 # Ms... pack via the SAME assemble_context() B3 already proved, and wires it into rt::AgentSession's

@@ -1,12 +1,19 @@
 # ADR-066 — Should `ContextContribution` provenance be stamped by each contributor's own discipline, or enforced structurally at `assemble_context()`'s seam?
 
-**Status:** Design — question, competing designs, and decision recorded from a design→red-team→judge
-pass. **NOT Proposed, NOT Judged**: no implementation exists, no executed evidence, no prove phase
-has run (§5). Per `decisions/README.md`'s own requirement ("competing designs implemented in real
-C++23, attacked adversarially, compiled under multiple compilers, run under sanitizers, and
-measured"), this ADR is not eligible for either status until that work happens. Recorded now so the
-decision and its reasoning are not lost, and so a future prove-phase pass has a fixed target rather
-than a moving one.
+**Status:** Proposed (design → red-team → prove phases complete for Design B; awaiting explicit user
+"Judged"). Implemented: `ContributorProvenance` (`content.hpp`), `Message::attribution` and
+`ToolDescriptor::attribution`, `HasContextProviderName`/`ContextProviderDescriptor::name`
+(`context_assembly.hpp`), and the stamping logic inside `assemble_context()` itself — proven by
+`tests/test_context_provenance.cpp` (16/16 checks, real Windows/MSVC build; see §5/§6 for the
+updated evidence and verdicts, superseding this ADR's original, pre-implementation §5/§6). A real,
+mid-implementation finding corrected the design draft's own §4 prose (recorded in
+`context_assembly.hpp`'s own stamping-loop comment and §5/§6 below): "any contributor-sourced
+message maps to `content_origin::provider`, never `::user`, regardless of what the contributor set"
+is WRONG as literally stated — it would have regressed `SkillsProvider`'s already-shipped,
+already-tested `content_origin::system` advertisement (`skill_provider.hpp:136`). Fixed by narrowing
+the check to `content_origin::user` specifically (the one origin that can truthfully claim "a human
+literally typed this," which no synthesized/non-replayed content may ever claim), left untouched for
+every other origin a legitimately host-authored contributor may still claim.
 
 **Relates to:** `OpenQuestions.md` OQ-18 (fan-out vs. chaining — this ADR closes red-team reason #1,
 the missing-provenance prerequisite, without reopening OQ-18 itself), OQ-22 (this ADR creates and
@@ -81,39 +88,115 @@ No attack was found against Design B's core structural claim (stamping cannot be
 non-cooperating contributor) — the findings above are all refinements/closures of adjacent gaps, not
 counterexamples to the central mechanism.
 
-## 5. Executed evidence
+## 5. Executed evidence (superseding this ADR's original, pre-implementation §5)
 
-**None.** No implementation exists. This is the explicit, acknowledged gap this ADR does not paper
-over: the falsifiable claims in §3 are stated so they CAN be run against real code, but none have
-been. A future prove phase must implement `ContextProviderDescriptor::name`, the `assemble_context()`
-stamping change, and the `content_origin` derivation, then run the §3 experiments (plus whatever a
-fresh red-team pass against the REAL code finds — a text-level red-team, as run here, is not a
-substitute for one run against compiled, tested code, per `decisions/README.md`'s own standard).
+Implemented: `ContributorProvenance{contributor_index, contributor_type}` (`content.hpp`, next to
+`content_origin` — has to live there, not in `context_provider.hpp`, since `content.hpp` is the
+lower-level header both `Message` and `ToolDescriptor`, via `tool_pipeline.hpp`, depend on without a
+circular include); `Message::attribution`/`ToolDescriptor::attribution`, both
+`std::optional<ContributorProvenance>`, appended last per this codebase's own established
+field-ordering convention (`Usage::cache_write_tokens`'s precedent), so every existing positional
+construction site keeps compiling unchanged (confirmed: a full-tree rebuild found zero call sites
+broken by either field addition). `HasContextProviderName<T>` (`context_assembly.hpp`), reusing
+ADR-033's `HasMiddlewareName` pattern verbatim; `make_context_provider_descriptor<ProviderT>()` now
+requires it and stamps `ContextProviderDescriptor::name` from `ProviderT::name`.
 
-## 6. Per-claim verdicts
+**Real, mid-implementation finding, not anticipated by the design draft**: re-grounding §4's
+"content_origin derivation" claim against the actual shipped conformers (not just the drafted prose)
+found that `SkillsProvider::on_context()` (`skill_provider.hpp:136`) deliberately, correctly sets
+`content_origin::system` on its own host-authored skill advertisement — legitimate, tested, shipped
+behavior. The draft's literal wording ("any contributor-sourced message maps to
+`content_origin::provider`... regardless of what the contributor set") would have clamped this to
+`::external` too, a real regression, not a refinement. Root cause: I3 constrains MODEL output, not
+engine/host-authored C++ code — a `ContextProvider` conformer is compiled-in or host-vetted code
+(009 §2), not model output, so it is entitled to claim `content_origin::system`/`::assistant`/`::tool`
+the same way any other engine-internal code path is. The ONE origin no synthesized content may ever
+truthfully claim is `content_origin::user` — "a human literally typed this" is a claim only the real
+input path can make. **Fixed mechanism, narrower than drafted**: `assemble_context()` checks
+`content_origin::user` specifically; when found on a message that is NOT byte-identical to something
+already present in `session_ctx.history` (i.e. not a genuine historical replay — `Message` already
+has a default `operator==`, reused here rather than inventing a second equality notion), it is forced
+to `content_origin::external`. Every other origin is left exactly as the contributor set it.
 
-Every claim in §3: **INCONCLUSIVE — no executed evidence exists to decide it.** This is an honest
-verdict, not a placeholder for an assumed CORRECT — per `decisions/README.md` §6, INCONCLUSIVE "must
-not be laundered into either" CORRECT or WRONG.
+This same re-grounding pass also surfaced a second, previously-unnoticed, real (not hypothetical) gap
+in already-shipped code: `HistoryProvider<Summarize<N,SummarizerT>>`'s synthesized summary message
+(`history_provider.hpp`) inherits whatever `content_origin` the summarizer's raw drained response
+carried (`ContentItem`'s own default, `::assistant`) with nothing marking it as a SUMMARY rather than
+a real assistant turn. This ADR's `::user`-only check does NOT close that gap (a summary is not
+claiming `::user`) — named here as a real residual (§7), not silently claimed fixed.
+
+New test file `tests/test_context_provenance.cpp`: an `AdversarialProvider` conformer (the concrete
+009 §2 threat named in §2/§4) returns one message forging `content_origin::user` on brand-new,
+non-replayed text, one message legitimately claiming `content_origin::system` (the same shape
+`SkillsProvider` already ships), and one contributed `ToolDescriptor` — run alongside a real
+`HistoryProvider<Window<0>>` replaying one genuine history entry. Windows/MSVC build, **16/16 checks
+passed**. Full-tree rebuild (`cmake --build . --config Debug`, all targets): **zero compile errors**
+— every existing `ContextProvider` conformer in the tree (6 production conformers plus 5 test/example
+-local ones: `FixedMessagesProvider`/`FixedInstructionsProvider` in
+`test_context_assembly.cpp`, `FixedMessagesProvider`/`ToolContributingProvider` in
+`test_composed_context_provider.cpp`, `ToolDeclaringHistoryProvider` in `tools/cli_chat.cpp`) needed
+and received a declared `::name`; `examples/02_add_tools.cpp`/`05_human_approval.cpp`/
+`06_capabilities_and_denial.cpp`'s own local conformers needed no change, confirming
+`HasContextProviderName` only bites a conformer that is actually routed through
+`make_context_provider_descriptor()` (i.e. multi-contributor composition), not `AgentSession`'s plain
+single-provider slot. Full `ctest` run: 181/191 passed; the 10 not-run are all
+`test_mediated_python_runner_*`/`test_reference_agent_*`/`test_agent_session_suspend_codeact_ask`
+(CPython-embedding tests whose executables were never produced by this build — confirmed pre-existing
+and unrelated: no `Message`/`ContextProvider`/`ToolDescriptor` dependency, and the same targets are
+absent regardless of this ADR's changes). Commands: `cmake --build build --target
+test_context_provenance --config Debug`, `ctest --test-dir build -C Debug --output-on-failure`.
+
+## 6. Per-claim verdicts (superseding this ADR's original, pre-implementation §6)
+
+| Claim (§3) | Verdict |
+|---|---|
+| Design A: a provider overriding its own merge path (or simply never calling a self-stamp helper) produces unstamped output. | **CORRECT, by construction — not independently re-tested.** Design A was never implemented (it was rejected in §2); this is a statement about the ABSENCE of a structural mechanism, definitionally true given Design A's own shape, not an empirical claim this prove phase needed its own code to decide. |
+| Design B: no contributor, cooperating or not, can produce an unstamped `Message`/`ToolDescriptor`. | **CORRECT** — `test_context_provenance.cpp`: both the well-behaved `HistoryProvider` replay AND the `AdversarialProvider`'s forged message/tool are stamped with correct `contributor_index`/`contributor_type`, unconditionally. |
+| Design B: stamping is pure and does not affect I5 replay determinism. | **CORRECT** — re-running `assemble_context()` against identical `{contributors, session_ctx, ctx}` produces byte-identical `Message`s, `attribution` included. |
+| Design B: the `content_origin` fix closes the truthful-side-channel gap, overriding a contributor-set origin "regardless of what the contributor set." | **CORRECT, narrowed from the original wording.** The literal claim as drafted (override REGARDLESS of what was set, for ANY origin) is WRONG — proven wrong by `SkillsProvider`'s own real `content_origin::system` usage, which must NOT be overridden. What IS correct and tested: `content_origin::user` specifically is overridden to `::external` unless the message verbatim-matches `session_ctx.history`; every other origin is left as the contributor set it. This is the actual, shipped, tested claim — narrower than drafted, not a failure of the mechanism. |
 
 ## 7. The decision
 
-**Design B is adopted as the target for the future prove phase.** It binds:
-- `027-Vocabulary-and-Naming.md` §3 — `ContextProviderDescriptor` gains a required `name`.
+**Design B, as corrected during implementation (§5), is adopted and implemented.** It binds:
+- `027-Vocabulary-and-Naming.md` §3 — `ContextProviderDescriptor` gains a required `name`;
+  `ContributorProvenance` is a new normatively-named concept, not yet listed in 027's own table.
 - `OpenQuestions.md` — creates and closes OQ-22; remains the named prerequisite for OQ-18's own
   red-team reason #1 (does not reopen OQ-18 itself).
-- `content.hpp` — `Message` gains an `attribution` field; `content_origin`'s derivation moves from
-  contributor-set to `assemble_context()`-derived.
+- `content.hpp` — `Message` gains an `attribution` field; `content_origin::user` specifically (not
+  every origin) is now `assemble_context()`-derived rather than trusted from whatever the contributor
+  set, for any message that isn't a verbatim historical replay.
 - `tool_pipeline.hpp` — `ToolDescriptor` gains an `attribution` field (MAF has no equivalent; this is
   a place AgentEngine's design goes further than its surveyed prior art, not merely catching up —
   needed by the not-yet-implemented `decisions/ADR-067-middleware-turn-point-pre-model-enforcement.md`
   design, which depends on this ADR).
 
-**Residual risks, named not solved:**
-- Backward compatibility for 6 existing `ContextProvider` conformers needing a `name` added —
-  breaking-change-vs-deprecation-path question, still open.
+**Explicitly out of scope, named rather than left implied:**
+- Closing `content_origin::system`/`::assistant`/`::tool` forgery by a genuinely hostile/compromised
+  `ContextProvider` conformer — only `::user` is structurally checked (§5's own reasoning: I3
+  constrains model output, not engine/host-authored code, so a legitimate contributor is entitled to
+  claim these origins; a genuinely COMPROMISED first-party or plugin conformer forging `::system` to
+  gain instruction-level trust is a different, broader threat model this ADR does not close).
+- `HistoryProvider<Summarize<N,SummarizerT>>`'s synthesized summary message being mislabeled
+  `content_origin::assistant` with nothing marking it as a summary — a real, found-during-this-pass
+  gap, NOT closed by the `::user`-only check (§5).
+- Wiring `attribution` through `rt/message_codec.hpp`'s JSON codec — checked, confirmed absent; the
+  field does not currently survive a JSON round-trip through that codec. Durability/replay-across-
+  restart wiring is a separate, unscoped pass (matching ADR-042's own precedent of naming, not
+  building, the durability angle of a new field).
+
+**Residual risks:**
 - Whether `contributor_type`'s stability across a process restart/replay (a renamed C++ type changes
   the stamped string) interacts with 019's durability/replay guarantees for a checkpointed session
-  resumed after a code change — still open, not addressed by this ADR.
-- The entire §5/§6 evidence gap — this ADR records a decision, not a proof. Implementation and a real
-  prove phase are required before this can become Proposed, let alone Judged.
+  resumed after a code change — still open, unchanged by implementation.
+- `attribution` is stamped only inside `assemble_context()`'s own loop — a caller that builds
+  `ContextContribution`/`ChatRequest` content some OTHER way (bypassing `assemble_context()` entirely,
+  e.g. `AgentSession`'s own direct single-`HistoryProviderT`-slot path used by most of the tree today,
+  confirmed unaffected in §5) gets no attribution at all, `nullopt` throughout — correct per this
+  ADR's own "nullopt means not contributor-sourced" convention, but means today's dominant,
+  production-path messages (real user/assistant turns, appended straight to `history_` by
+  `AgentSession::run_rounds()`) never carry attribution either, by design, not by omission.
+- No production call site consumes `attribution`/the narrowed `content_origin` guarantee for any real
+  policy decision yet — this ADR proves the stamping mechanism, matching
+  `decisions/ADR-028-session-scoped-stateful-tools.md`'s "prove the mechanism, name the rest"
+  precedent; `decisions/ADR-067-middleware-turn-point-pre-model-enforcement.md` (not yet implemented)
+  is the named future consumer.
