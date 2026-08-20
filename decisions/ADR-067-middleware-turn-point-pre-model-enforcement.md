@@ -1,11 +1,27 @@
 # ADR-067 — Does closing 017 §4's `pre_model` filter gap need a new "terminal `ContextProvider`" concept, or does it reuse 002 §5's already-declared, unwired `Middleware` `turn` point?
 
-**Status:** Design — question, competing designs, and decision recorded from a design→red-team→judge
-pass. **NOT Proposed, NOT Judged**: no implementation exists, no executed evidence, no prove phase
-has run (§5). Depends on `decisions/ADR-066-context-provider-attribution-provenance.md` (provenance
-must exist first — without it, this design reopens exactly `OpenQuestions.md` OQ-18's red-team reason
-#1). Independent of `decisions/ADR-068-runtime-secret-quarantine-host-delegated-detection.md` and
+**Status:** Proposed (design → red-team → prove phases complete for Design B; awaiting explicit user
+"Judged"). Implemented: `TurnContext`/`ToolSurfaceView`/`redact_subspan()`/`Compactor<N>`/
+`run_turn_middleware_chain()` (`include/agentengine/core/turn_middleware.hpp`), proven by
+`tests/test_turn_middleware.cpp` (22/22 checks, real Windows/MSVC build — see §5/§6 for the updated
+evidence and verdicts, superseding this ADR's original, pre-implementation §5/§6). Depends on
+`decisions/ADR-066-context-provider-attribution-provenance.md` (Proposed as of this pass — provenance
+exists first, as required). Independent of
+`decisions/ADR-068-runtime-secret-quarantine-host-delegated-detection.md` and
 `decisions/ADR-069-content-triggered-model-response-replay.md`.
+
+Two real, mid-implementation findings, neither anticipated by the design draft (recorded in
+`turn_middleware.hpp`'s own top comment and §5/§6 below): (1) the draft's §2 said this "reuses
+ADR-033's proven composition shape verbatim... before-phase forward, after-phase backward" — that
+shape exists to sandwich a real inner action (the backend model call) between hooks; the turn/
+pre_model point has no analogous inner action to sandwich, so what actually got built is a single
+forward pass, first-deny-short-circuits, not the full onion. (2) `ToolSurfaceView` as drafted implied
+each middleware constructs its own view over `assembled.combined.tools` — building that literally
+produces a silent no-op: a fresh `ToolSurfaceView`'s `redact()`/`reorder()` bookkeeping is private to
+that instance, disconnected from any other instance's `finalize()` call. Found by the first version of
+this ADR's own test file failing in exactly that way. Fixed: `TurnContext` now owns ONE
+`ToolSurfaceView` (`tool_surface`), shared by every middleware in the chain and finalized exactly once
+by `run_turn_middleware_chain()` itself.
 
 **Relates to:** `002-Agent-Model-and-Authoring.md` §5 (`Middleware`'s declared, unwired `turn` point),
 `017-Safety-and-Content-Governance.md` §4 (`ae:filter`'s declared, unimplemented `pre_model` point —
@@ -97,43 +113,114 @@ Nine findings, one FATAL:
    follow-up, cross-source dedup named as an explicit non-goal, and a shared detector/verdict
    interface across this design and ADR-068/ADR-069 flagged as a known, deferred architectural gap.
 
-## 5. Executed evidence
+## 5. Executed evidence (superseding this ADR's original, pre-implementation §5)
 
-**None.** No implementation exists — not `TurnContext`, not `ToolSurfaceView`, not `redact_subspan()`,
-not the `Compactor` re-resolution of 005 §8 Q3. The FATAL finding in §4 was found and fixed at the
-DESIGN level (the review workflow attacked the proposed API shape, not compiled code) — this is a
-real, valuable adversarial pass, but per `decisions/README.md`'s own standard it is not a substitute
-for the "implemented in real C++23, attacked adversarially, compiled under multiple compilers, run
-under sanitizers, and measured" bar an ADR requires to become Proposed or Judged.
+Implemented `include/agentengine/core/turn_middleware.hpp`: `TurnContext{assembled, tool_surface}`;
+`ToolSurfaceView` (`descriptors()`/`redact()`/`reorder()`/`annotate_description()`/`finalize()`, never
+exposing a mutable `ToolDescriptor&`); `redact_subspan()`; `run_turn_middleware_chain<Ms...>()`
+(single forward pass over a declared `std::tuple<Ms...>`, first `on_turn` returning
+`std::unexpected` stops the chain, `finalize()`s the shared `tool_surface` exactly once at the end);
+`Compactor<N>` (a real `turn`-middleware conformer proving §4's 005 §8 Q3 re-resolution).
 
-## 6. Per-claim verdicts
+**Two real, mid-implementation findings** (§1 header, and `turn_middleware.hpp`'s own top comment,
+have the full account):
+1. The draft's "reuses ADR-033's before/after onion verbatim" claim does not survive contact with
+   what's actually being wrapped. `middleware.hpp`'s onion exists to sandwich a REAL inner action (the
+   backend call) between a middleware's `before_model`/`after_model`. The turn/pre_model point has no
+   inner action to sandwich — `assemble_context()` already fully ran before the chain starts, and
+   there is no model call between two turn middlewares. What's implemented, and what actually matches
+   017 §4's verdict vocabulary, is simpler: one forward pass, `on_turn` succeeds (allow, having
+   applied whatever mutations in place) or denies (stops the chain). This was never load-bearing for
+   any §3 claim as originally worded (none of the four claims require a two-phase onion specifically),
+   so this is a genuine simplification, not a broken promise.
+2. `ToolSurfaceView` as drafted (a middleware "constructs" one over `assembled.combined.tools`)
+   produces a silent no-op if taken literally: two independently-constructed `ToolSurfaceView`
+   instances over the same vector do NOT share `redacted_`/`pending_reorder_` state — a middleware's
+   `redact()` call on ITS OWN local instance is invisible to whichever instance's `finalize()`
+   eventually runs. Found by `test_turn_middleware.cpp`'s own first version, which built exactly this
+   mistake (a local view inside the test middleware, a second local view after the chain to check the
+   result) and got a passing "allow" but an unredacted tool list. **Fixed**: `TurnContext` owns ONE
+   `ToolSurfaceView` (`tool_surface`), constructed once per chain run and shared by every middleware
+   via `ctx.tool_surface`; `run_turn_middleware_chain()` itself calls `finalize()` exactly once, after
+   the whole chain settles.
 
-Every claim in §3: **INCONCLUSIVE — no executed evidence exists to decide it.**
+`tests/test_turn_middleware.cpp`, **22/22 checks passed**, Windows/MSVC:
+- A `HostileToolMiddleware` using ONLY `ctx.tool_surface`'s public API (never reaching around it)
+  attempts `annotate_description`+`redact` on a 3-tool surface; every SURVIVING tool's `invoke()` is
+  called for real and its return value checked against a per-tool marker set at construction — proving
+  no substitution occurred through the sanctioned API (§3 claim 1).
+- A 2-middleware chain (`DenyingMiddleware` then `CountingMiddleware`) proves first-deny stops the
+  chain: the second middleware's own call counter stays at 0.
+- Re-running an identical `Compactor<2>` chain against identical input twice produces byte-identical
+  output (§3 claim 4, I5).
+- A 5-message scenario with a deliberately-split-inducing `Compactor<3>` (naive last-3 windowing would
+  land exactly on the `ToolResult` message, separating it from its `ToolCall` one message earlier) is
+  extended backward to keep both — proving the atomic-pair invariant for real, not just asserting it
+  holds by construction. `history[]` non-interference (§3 claim 3) is proven BOTH ways: structurally
+  (`TurnContext` carries no reference to any `history_` at all — provable by reading the type, the
+  same "proof by absence" ADR-066's I2 argument already uses) and behaviorally (a real, untouched
+  `history` vector is asserted byte-identical before/after the compactor runs).
+- `redact_subspan()` is checked against 8 `{offset, length}` cases including adversarial ones
+  (`offset == size`, `offset > size`, `length` far exceeding the remainder, whole-string removal) —
+  every result is exactly `original`'s bytes with one contiguous range removed (§3 claim 2).
+
+Full-tree rebuild (`cmake --build . --config Debug`, all targets): **zero compile errors**. Full
+`ctest`: same 181/191 baseline as ADR-066's own pass (10 not-run are the pre-existing, unrelated
+CPython-embedding targets — confirmed unaffected by this ADR too). Commands: `cmake --build build
+--target test_turn_middleware --config Debug`, `ctest --test-dir build -C Debug --output-on-failure`.
+
+**Not run, named rather than left implied**: `require_approval` (017 §4's fifth verdict) is not
+modeled by `on_turn`'s binary success/`std::unexpected` outcome — it would mean suspending the run for
+human approval before the model sees the context, needing `rt::AgentSession`'s own real suspend/
+approval machinery, out of scope here (§7).
+
+## 6. Per-claim verdicts (superseding this ADR's original, pre-implementation §6)
+
+| Claim (§3) | Verdict |
+|---|---|
+| A `turn` middleware cannot cause a tool's actually-dispatched `invoke` to differ from what fan-out produced. | **CORRECT, scoped to the sanctioned API.** `test_turn_middleware.cpp`'s hostile-middleware test: using only `ToolSurfaceView`'s public methods, every surviving tool's `invoke()` still returns its original marker. Narrower than an unscoped reading of the claim: a middleware that bypasses `ToolSurfaceView` and reaches `TurnContext::assembled.combined.tools` directly (still a plain mutable reference) is NOT prevented — C++ offers no way to give one reference read/write access to `.messages` while denying it for `.tools` within the same struct without a larger refactor, out of scope here (named in `turn_middleware.hpp`'s own top comment, matching `Tainted<T>`'s own "not a fix for a careless or bad-faith wrap" scoping). |
+| `redact_subspan()` cannot introduce content that wasn't already present in the original `TaintedText`. | **CORRECT** — 8-case property check including adversarial offset/length combinations; every result is a prefix+suffix split of the original bytes with the requested range removed, clamped safely on out-of-range input rather than throwing. |
+| A `turn`-level `Compactor` never mutates `history[]`. | **CORRECT, and provable two ways** — structurally (by `TurnContext`'s own field list: no reference to any `history_` vector exists anywhere reachable from `Compactor<N>::on_turn`, so there is no expression that could touch it) and behaviorally (a real `history` vector is asserted untouched after a real compaction run). |
+| Chaining multiple `turn` middlewares is deterministic given `{Ms..., assembled}`. | **CORRECT** — re-running an identical chain against identical input twice produces byte-identical `assembled.combined.messages`. |
 
 ## 7. The decision
 
-**Design B is adopted as the target for the future prove phase**, scoped narrowly: the `turn`/
-`pre_model` point only, tool-surface enforcement via `ToolSurfaceView`, taint-safe compaction via
-`redact_subspan()`. It binds:
+**Design B, as corrected during implementation (§5), is adopted and implemented**, scoped narrowly:
+the `turn`/`pre_model` point only, tool-surface enforcement via `ToolSurfaceView`, taint-safe
+compaction via `redact_subspan()`, a single forward pass (not the full before/after onion). It binds:
 - `002-Agent-Model-and-Authoring.md` §5 — the `turn` interception point moves from declared-but-
-  unwired to specified (pending implementation).
-- `017-Safety-and-Content-Governance.md` §4 — closes the `pre_model` filter point only.
+  unwired to specified AND implemented as a standalone mechanism (not yet wired into
+  `rt::AgentSession`, see residuals below).
+- `017-Safety-and-Content-Governance.md` §4 — closes the `pre_model` filter point's `allow`/
+  `annotate`/`redact`/`deny` verdicts; `require_approval` is explicitly not modeled (see residuals).
 - `005-Sessions-State-and-Memory.md` §8 Q3 — re-resolved narrower: a `turn`-level `Compactor` may
-  shape what one turn's model call sees, but never rewrites `history[]`; 005 §4's own `history[]`
-  compaction is untouched by this ADR.
-- Depends on `decisions/ADR-066-context-provider-attribution-provenance.md`.
+  shape what one turn's model call sees, but never rewrites `history[]` — proven both structurally
+  (the type signature) and behaviorally (§5/§6); 005 §4's own `history[]` compaction is untouched.
+- Depends on `decisions/ADR-066-context-provider-attribution-provenance.md` (Proposed).
 
 **Explicitly out of scope, named rather than left implied:**
 - `post_model` (017 §4) — remains orphaned; `decisions/ADR-069-content-triggered-model-response-
-  replay.md` mitigates but does not close it.
+  replay.md` (not yet implemented) mitigates but does not close it.
+- `require_approval` (017 §4's fifth verdict) — `on_turn`'s binary allow/deny outcome does not model
+  it; wiring it needs `rt::AgentSession`'s own real suspend/approval machinery.
 - Budget/priority arbitration across sources — `OpenQuestions.md` OQ-18 red-team reason #2's rejection
   of a shared cross-contributor budget pool stands unchanged.
 - Cross-source dedup, warn-before-evict, and a shared detector/verdict interface spanning this ADR
   and ADR-068/ADR-069 — all named, deliberately deferred.
 
 **Residual risks:**
-- The entire §5/§6 evidence gap.
-- Whether `ToolSurfaceView`'s prevention-based design has a hole a text-level red-team couldn't find
-  — only a real, compiled, adversarially-tested implementation can settle this.
-- The `Compactor`-output-leaking-into-a-checkpoint question (does a `turn`-level compactor's state,
-  if it has any, reopen 005 §4's retention guarantee via a `StateBag`-like mechanism) — still open.
+- **No production call site wires `run_turn_middleware_chain()`/`TurnContext` into
+  `rt::AgentSession::run_rounds()` anywhere** — this ADR proves the mechanism in isolation, matching
+  `middleware.hpp`'s own explicit precedent for its run/tool-call points AND ADR-028's "prove the
+  mechanism, name the rest." `AgentSession` calls `history_provider_.on_context()` directly, at
+  several call sites, never `assemble_context()` itself — wiring this in is real, separately-scoped
+  work touching a large, mature, heavily tested file, not a small follow-up.
+- `ToolSurfaceView`'s guarantee holds against a middleware using ONLY its sanctioned public API — NOT
+  against one that bypasses it and mutates `TurnContext::assembled.combined.tools` directly (§6's own
+  narrowed verdict). Closing this fully would need restructuring `ContextContribution`/
+  `ContextAssemblyResult` so `.tools` isn't reachable as a plain mutable vector once a `TurnContext`
+  exists — a larger refactor, not attempted here.
+- The `Compactor`-output-leaking-into-a-checkpoint question (does a `turn`-level compactor's state, if
+  it has any, reopen 005 §4's retention guarantee via a `StateBag`-like mechanism) — still open,
+  unchanged by implementation (the proven `Compactor<N>` itself holds no state across turns, but a
+  hypothetical stateful strategy is not ruled out by anything built here).

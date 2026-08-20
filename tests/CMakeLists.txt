@@ -244,6 +244,14 @@ add_executable(test_context_provenance test_context_provenance.cpp)
 target_link_libraries(test_context_provenance PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_context_provenance COMMAND test_context_provenance)
 
+# ---- decisions/ADR-067-middleware-turn-point-pre-model-enforcement.md's prove phase: the turn/
+# pre_model interception point (TurnContext, ToolSurfaceView, redact_subspan(), Compactor<N>), wired
+# as its own standalone, tested mechanism -- not yet threaded into rt::AgentSession::run_rounds()
+# (named residual, matching middleware.hpp's own precedent for the run/tool-call points).
+add_executable(test_turn_middleware test_turn_middleware.cpp)
+target_link_libraries(test_turn_middleware PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_turn_middleware COMMAND test_turn_middleware)
+
 # ---- ComposedContextProvider<Ms...> (core/composed_context_provider.hpp) -- generalizes
 # history_and_skills_provider.hpp's fixed two-provider HistoryAndSkillsProvider<H,S> to an arbitrary
 # Ms... pack via the SAME assemble_context() B3 already proved, and wires it into rt::AgentSession's
