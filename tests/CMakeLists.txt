@@ -1836,6 +1836,14 @@ if(WIN32)
   target_link_libraries(test_principal_from_bearer_claims PRIVATE
     agentengine::core agentengine::capability_token agentengine_warnings)
   add_test(NAME test_principal_from_bearer_claims COMMAND test_principal_from_bearer_claims)
+
+  # ---- ADR-061 §31/§33/§34/§35 prove phase -- trust::EndpointId/EndpointRegistry/mint_endpoint_id()
+  # and rt::request_authority_from_bearer_claims(), the bearer-credential-to-RequestAuthority bridge
+  # for the Tier-3 mechanism §20-§30 already proved (decisions/ADR-061) -------------------------------
+  add_executable(test_request_authority_bridge test_request_authority_bridge.cpp)
+  target_link_libraries(test_request_authority_bridge PRIVATE
+    agentengine::core agentengine::capability_token agentengine_warnings)
+  add_test(NAME test_request_authority_bridge COMMAND test_request_authority_bridge)
 endif()
 
 # ---- Worktree content-addressed object store (025 §2, Milestone 3 Phase A1) --------------------

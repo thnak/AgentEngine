@@ -1,5 +1,26 @@
 # ADR-061 — Host-provided inbound transport: who authenticates an inbound MCP/A2A/AG-UI request?
 
+> **Cross-reference note (added 2026-08-20, §31).** `decisions/ADR-039-inbound-transport-host-
+> pluggable.md` (Judged 2026-08-14) already decided the exact question this ADR's own preamble
+> independently re-derives below ("AgentEngine will not implement HTTP networking at all... the shape
+> Microsoft Agent Framework takes on .NET") — no first-party listener, ever; a host-pluggable
+> transport-agnostic boundary instead; `trust::principal_from_bearer_claims()` already built as the
+> claims→`Principal` bridge (ADR-039 §3c). **Zero prior section of this ADR (§0 through §30) cites
+> ADR-039**, across fifteen design iterations and ten red-team rounds, despite both documents reasoning
+> about the same "session-scoped dispatcher, host supplies transport, bearer credential bridges to
+> identity" shape — **§35 correction (2026-08-20): "two different entry points" overstated it for half
+> of ADR-039's own scope.** `McpServer` genuinely bypasses `rt::AgentSession` (calls `invoke_tool()`
+> directly); `A2aServer` does not — it already runs "over a REAL `AgentSession` run" via its own
+> `RunStarter` indirection (`protocol/a2a/server.hpp`'s own file-top comment), the same entry point
+> this ADR's Tier-3 mechanism gates. So this ADR and ADR-039 §3a/§3c converge on the *same* entry point
+> for A2A specifically, not two independent ones — consistent, not merely non-contradictory, for that
+> half. Whether the two designs actually agree, or one silently drifted from the other's already-Judged
+> constraints, was an open question this note raised and did not itself answer; §31/§32's own red-team
+> pass checked it directly (§33.5/§34.4) and found them consistent for the mechanism checked. This is
+> exactly the kind of silent-drift finding `decisions/ADR-026-milestone-status-doc-accuracy-and-drift-
+> lint.md` exists to catch, and it went unnoticed for six days across both documents. Named here rather
+> than silently fixed by omission.
+
 > **Porting note (2026-08-15). R17 and §8b claim 6 are MOOT on this line.** This ADR was written on
 > a parallel history where Quark was still the actor engine. **ADR-037 removed the Quark submodule
 > entirely** (`agentengine::pal` + `agentengine::rt` replace it), so `quark::Ask<StartRun,
@@ -15,7 +36,14 @@
 Proven in §11 (all six §10b claims CORRECT: 75/75 non-auth conformance, real SSRF and canary-scan
 teeth) and accepted as delivered in §12, with 011 §10 G2's `auth` suite (3/49) named explicitly as
 NOT met and scoped to a separate OAuth client follow-on, not folded into this sign-off. **Tier 3
-(host-fronted HTTP server role) remains open, Design.** §17 (sixth iteration) failed its red-team
+(host-fronted, no first-party listener — AgentEngine will never own the socket, ADR-039 Judged
+2026-08-14): session-side mechanism (§20-§29) is implemented and proven for real (§30, commit
+`2db2e8f`) — 204/204 tests green, including T1-T10 positive/negative controls; the bearer-credential-
+to-`RequestAuthority` bridge (`EndpointId` minting, `request_authority_from_bearer_claims()`) is
+ALSO now implemented and proven for real (§31-§37, six design/red-team rounds, 205/205 tests green,
+not yet committed). Both await Judge (project owner sign-off); `A2aServer::send_message()` wiring the
+bridge through and a reference host-side example (ADR-039 §3e) remain unbuilt, named residuals, not
+in scope so far.** §17 (sixth iteration) failed its red-team
 pass (§18) — the fourth consecutive iteration to do so (§8, §13, §15, §17). Per §18c's recommendation,
 §19 completed a full, verified, single-pass enumeration of every `capabilities_`/`principal_`/
 `effect_context_` read/write in `agent_session.hpp` before writing a further fix, finding **eight
@@ -2125,13 +2153,20 @@ token itself changes, closing the containment gap without touching the design's 
   mutation-invariance check (claim 24's own shape) is unchanged: mutate the fixture and the
   engine-attributable subset must not move.
 - **`EndpointId::surface` is a partial re-expression of 020 §4, named as partial (T16).** Row 10 and row
-  11 of §8.6's table contradicted each other; this iteration resolves it by not claiming both. The
-  engine-side method refusal (an admin method is unreachable on a `public_api`-surfaced `EndpointId`) is
-  real and engine-enforced. The socket-level guarantee 020 §4 actually states — never on the same
-  *listener* — is a host obligation the engine cannot see or enforce, named as such in the obligation
-  list, not folded into the engine-attributable number. **020 §8 Q2 is reopened**, tracked explicitly
-  (not silently, T16's finding) as a real open question this ADR's acceptance carries forward, because
-  both premises of its prior "in-process, same binary" resolution are gone under a host-owned listener.
+  11 of §8.6's table contradicted each other; this iteration resolves it by not claiming both.
+  ~~The engine-side method refusal (an admin method is unreachable on a `public_api`-surfaced
+  `EndpointId`) is real and engine-enforced.~~ **CORRECTION (§33.3, 2026-08-20): this claim was never
+  true and stood uncorrected in this document for six days.** No such refusal mechanism was ever built
+  — confirmed against the real §30.1 prove-phase file list and, independently, against current
+  `include/agentengine/`, which contains no `endpoint_surface`/admin-refusal code anywhere. §31.1
+  explicitly declines to build it ("no consumer exists yet to enforce it"), so as of this document it
+  remains unbuilt design text only, exactly what T16 itself called it ("a partial re-expression"), not
+  the engine-enforced fact this paragraph asserted in present tense at authoring time. The socket-level
+  guarantee 020 §4 actually states — never on the same *listener* — is a host obligation the engine
+  cannot see or enforce, named as such in the obligation list, not folded into the engine-attributable
+  number. **020 §8 Q2 is reopened**, tracked explicitly (not silently, T16's finding) as a real open
+  question this ADR's acceptance carries forward, because both premises of its prior "in-process, same
+  binary" resolution are gone under a host-owned listener.
 - **R18/011 §10 G3 (statelessness), decided rather than left as two options.** §8.6 listed "externalize
   the task store" or "claim G3 only for the core suite" as an open trade. This iteration picks the
   second for now: **G3 is claimed only for the suite scenarios that do not require multi-replica
@@ -4300,21 +4335,635 @@ flaky regardless of this work, not a regression it introduced).
 ### 30.6 Residuals unchanged, one item added
 
 Everything in §24.5/§25b/§26.4/§28.3/§29c stands. §29b's `set_capabilities()` contract (callers must
-not be `noexcept` without wrapping the call) remains unverifiable against real Tier-3 listener wiring
-code, because that code still does not exist — this section implements the *session-side* mechanism
-§20-§29 designed, not the HTTP listener that will someday call into it. That listener, when built,
-must honor: `set_require_authority(true)` unconditionally for every session it fronts (§20.2's own
-named risk), the `set_capabilities()` exception contract (§29b), and must supply real
-`RequestAuthority` values derived from verified per-request credentials (§13's still-unbuilt
-`EndpointId`/bearer-token minting). None of these are closed by this section; all are exactly where
-§29c left them.
+not be `noexcept` without wrapping the call) remains unverifiable against real host-side wiring code,
+because that code still does not exist — this section implements the *session-side* mechanism §20-§29
+designed, not the host glue (never a first-party listener, ADR-039 §2) that will someday call into it.
+That glue code, when built, must honor: `set_require_authority(true)` unconditionally for every
+session it fronts (§20.2's own named risk), the `set_capabilities()` exception contract (§29b), and
+must supply real `RequestAuthority` values derived from verified per-request credentials (§13's
+still-unbuilt `EndpointId`/bearer-token minting). None of these are closed by this section; all are
+exactly where §29c left them.
 
 ### 30.7 Status
 
 Tier-3's session-side mechanism is no longer design text — it is real, compiled code with real,
 passing positive and negative controls, including the specific claim (per-request authority actually
 gates real tool authorization) that four prior design iterations claimed true without this kind of
-verification. Not yet committed to version control (no commit has been made this session; the user has
-not asked for one). The remaining work this ADR has always scoped as out-of-reach for a design-only
-phase — the Tier-3 HTTP listener itself, `EndpointId` minting, bearer-token verification — is
-unchanged and still not attempted.
+verification. Committed and pushed to `origin/main` (`2db2e8f`, "Implement ADR-061 Tier 3
+per-request authority mechanism, proven for real"). The remaining work this ADR has always scoped as
+out-of-reach for a design-only phase — the host-side wiring that constructs a real `RequestAuthority`
+from a verified credential (`EndpointId` minting, bearer-token verification) — is unchanged and still
+not attempted; per ADR-039 §2/§3 (Judged 2026-08-14, cross-referenced at this ADR's own top as of §31)
+that wiring is host-supplied glue code, never a first-party listener AgentEngine ships. Per this
+project's own `design → red-team → prove → judge` discipline, the session-side mechanism has now
+completed prove and awaits judge (project owner sign-off) before it can be called closed. §31 opens a
+new, narrower design round for the glue code named above.
+
+## 31. Eleventh design iteration — the bearer-credential-to-`RequestAuthority` bridge (2026-08-20)
+
+**Scope, confirmed directly by the project owner this round**: AgentEngine ships no HTTP stack, no
+TLS, no socket, no listener, ever — restated from ADR-039 §2 (Judged 2026-08-14), not reopened. What
+this section designs is strictly the two small, transport-agnostic, socket-free pieces §30.6 named as
+still-unbuilt: (a) `EndpointId` as a real minted value closing T8/claim 8 for real, and (b) the one
+function that bridges a verified bearer credential into the `RequestAuthority` §20-§30 already proved
+gates real tool authorization. Everything else — parsing an HTTP request, terminating TLS, routing to
+an endpoint, threading `InboundTransportRequest`/`InboundTransportResponse` through
+`McpServer::dispatch()`/`A2aServer` — is explicitly **not** this section's scope: the first three are
+ADR-039 §2's permanent host obligation, and the fourth is ADR-039 §3a's own still-open follow-on item.
+**Correction (§35, 2026-08-20): the original claim here — that this is out of scope because
+`McpServer`/`A2aServer` "call `invoke_tool()` directly and do not go through `rt::AgentSession` at
+all" — was only true for `McpServer` and was checked by a grep scoped to that one file; applying its
+conclusion to `A2aServer` too was never independently verified and is false.** `A2aServer` is NOT a
+different dispatch surface from `rt::AgentSession` — its own file-top comment states directly that it
+runs *"over a REAL `AgentSession` run"* and is handed a `RunStarter` (`using RunStarter =
+std::function<result<RunOutcome>(agentengine::rt::StartRun)>`, `protocol/a2a/server.hpp:85`) that a
+host wires to `rt::AgentSession::start_run()` — the exact same entry point §20-§30's Tier-3 mechanism
+gates. The real, narrower reason this section still doesn't touch `A2aServer`: `send_message()`
+(`protocol/a2a/server.hpp:122-125`) builds its own `rt::StartRun` and sets `start.caller`, but never
+sets `start.authority` — there is no parameter on `send_message()`'s own signature to accept a
+`RequestAuthority` and forward it, the same shape of gap R1/R2 already found and fixed for `caller`
+(§7). Wiring that through is real, small, unbuilt follow-on work — adding one parameter and one
+assignment, not a new dispatch mechanism — named here accurately instead of dismissed as "a different
+surface," but still not attempted this round: this section's own scope is the standalone bridge
+function and `EndpointId`, not any protocol-adapter signature change, for either `McpServer` (which
+genuinely doesn't reach `AgentSession`) or `A2aServer` (which does, but isn't wired yet). Conflating
+"builds the bridge" with "wires every protocol adapter to use it" would still silently widen this
+section past what was asked, for the correct reason this time.
+
+### 31.1 `EndpointId`: real code for §13.5's already-decided shape
+
+§8.3 first sketched `EndpointId` as a dense `std::uint32_t` index (line ~1097 of this file); §13.5
+already corrected that to "minted by CSPRNG, not indexed" to close T8 (a guessable/adjacent index is
+uncontained across audience-adjacent resources). Neither ever became real code. This section builds it,
+changing nothing about the already-settled shape:
+
+```cpp
+namespace agentengine::trust {
+
+// Minted once, at operator configuration time, never per-request and never by a host. Opaque and
+// unguessable (§13.5/T8) -- deliberately NOT parsed, decoded, or treated as carrying meaning; its
+// only job is to be an unenumerable key into EndpointRegistry's own config.
+// ae-naming-lint: allow EndpointId — ADR-025 §4c
+struct EndpointId {
+    std::string token;
+    [[nodiscard]] bool operator==(EndpointId const&) const = default;
+};
+
+// Same CSPRNG, same entropy budget as `server_detail::generate_task_id()` (protocol/mcp/server.hpp) --
+// reused, not independently chosen, per this ADR's own "one shared primitive" discipline.
+[[nodiscard]] inline result<EndpointId> mint_endpoint_id() {
+    auto hex = secure_random_hex(16);
+    if (!hex) return std::unexpected(hex.error());
+    return EndpointId{*std::move(hex)};
+}
+
+// What an operator-configured endpoint actually carries -- audience/issuer feed `verify_bearer_token`'s
+// own caller-supplied `expected_aud`/`expected_iss` (§13.5's "host selects among operator-approved
+// endpoints, never asserts a value the operator didn't mint" constraint, unchanged).
+struct EndpointConfig {
+    std::string audience;
+    std::string issuer;
+};
+
+// Real, in-process registry. `resolve()` fails closed on an absent key -- no positional fallback, no
+// "endpoint 0", matching §13.5's "the host presents the value verbatim" (there is no default to fall
+// back to because there is no ordering to fall back into).
+class EndpointRegistry {
+public:
+    void configure(EndpointId const& id, EndpointConfig config) { by_token_[id.token] = std::move(config); }
+    [[nodiscard]] result<EndpointConfig const*> resolve(EndpointId const& id) const {
+        auto it = by_token_.find(id.token);
+        if (it == by_token_.end()) {
+            return std::unexpected(ae::error{failure_class::contract, "unknown endpoint id",
+                                              "endpoint_registry.unknown_id"});
+        }
+        return &it->second;
+    }
+private:
+    std::unordered_map<std::string, EndpointConfig> by_token_;
+};
+
+}  // namespace agentengine::trust
+```
+
+**Deliberately out of scope, named rather than silently dropped**: `endpoint_surface`/admin-vs-
+public-API refusal (§8.3's second half, T16's "partial re-expression of 020 §4"). That check is
+meaningless at this layer — `rt::AgentSession` has a tool table, not a notion of "admin methods";
+surface enforcement belongs wherever `McpServer`'s method dispatch lives, which is ADR-039 §3a's
+territory, not this section's. Building `EndpointId::surface` here without a consumer that can enforce
+it would be dead code asserting a guarantee nothing checks — worse than not building it.
+
+### 31.2 The bridge: `request_authority_from_bearer_claims()`
+
+**Superseded in place by §33.2/§33.6 (2026-08-20) — this subsection now states the corrected design
+directly; it is not a historical snapshot readers should implement from.** The original text claimed
+"the existing direction, not against it" for the `rt`→`trust` dependency and had an unbounded clock
+cast; both were real defects (§32 findings 2 and 6) and both are fixed below, in place, rather than
+left as a second, stale copy elsewhere in this document for an in-order reader to implement from by
+mistake — the same failure mode §33's own retraction of §13.7 (above, in this same edit) exists to
+close, applied here to code instead of prose.
+
+The one function a host's own wiring calls after a successful `verify_bearer_token()`, to get a
+`RequestAuthority` that `AgentSession::start_run()`/`resolve_interaction()` will accept. Placed in
+`agentengine::rt` (a new header, `include/agentengine/rt/request_authority_bridge.hpp`, depending on
+`trust/bearer_token.hpp`), not in `trust::`. **On the dependency direction**: `rt/agent_session.hpp`
+already includes `trust/principal.hpp` and uses `agentengine::Principal`/`CapabilitySet` throughout,
+including inside `RequestAuthority` itself — so `rt::` depending on a header that lives under the
+`trust/` directory is not new. What IS new here is the first use of an `agentengine::trust`-*namespace*-
+qualified symbol from `rt::` code (`trust::BearerTokenClaims`, `trust::principal_from_bearer_claims`) —
+a narrower claim than "first dependency on trust/" (false) or "follows an existing precedent" (also
+false, per §32 finding 2); precisely as new as that and no newer. The placement itself is justified on
+its own terms, not by precedent either way: `trust::` is a lower-level identity/credential-verification
+layer with no knowledge of sessions, tools, or capabilities-as-consumed-by-a-run; `rt::` already
+assembles primitives into session-level concepts (`RequestAuthority` is defined there). Putting the
+bridge in `trust::` would require `trust/` to include the large `rt/agent_session.hpp` orchestration
+header to reference one struct — the actual inversion.
+
+```cpp
+namespace agentengine::rt {
+
+// The recommended path from a verified bearer credential to a RequestAuthority -- not a
+// construction-enforced one: RequestAuthority (agent_session.hpp:278-290) is a plain, fully-public
+// aggregate, matching Principal's own existing posture (ADR-039 §3c), so nothing stops a host from
+// hand-constructing one directly. This function mirrors `trust::principal_from_bearer_claims()`'s own
+// "one shared primitive" role (ADR-039 §3c) so a future red-team pass has exactly one recommended place
+// to re-check when this bridge changes -- a convention, named as a convention, not asserted as the
+// only possible path.
+//
+// `capabilities` is REQUIRED and caller-supplied -- never derived inside this function. Not because
+// every other capability entry point in this codebase refuses a default (AgentSession itself defaults
+// an unset session-level grant to empty, agent_session.hpp:883-887 et al. -- a real, different,
+// considered answer to a different question: "what does an ungranted SESSION mean"), but because this
+// specific function has no legitimate way to decide what a default should mean for a caller who forgot
+// to wire capabilities at all, and 007 §5's policy engine (the only thing that COULD correctly derive
+// one) does not exist (ADR-061 §13.9). Guessing empty here would look safe (deny-by-default) while
+// actually hiding that omission behind a silently-succeeding, silently-inert authority -- the ambient-
+// authority shape I2 forbids this function specifically from introducing.
+//
+// `wall_now`/`steady_now` MUST be sampled together, by the caller, at the actual admission event --
+// not read internally here, and not read at two separate points. This function performs a
+// system_clock -> steady_clock conversion (`claims.exp` is necessarily system_clock, since it is a
+// wire-transmitted wall-clock claim; `RequestAuthority::expiry` is steady_clock, per §13.4/S8's
+// already-decided "no settable-clock authority extension" discipline) that is only correct if both
+// samples describe the same instant. Passing them in is this function's own I5 compliance -- the
+// nondeterministic read crosses a recorded seam at the caller's admission boundary, consistent in
+// spirit with (but, since there is no safe implicit default for a credential-verification instant,
+// deliberately stricter than) `start_run()`/`resolve_interaction()`'s own defaulted-`now` convention
+// (§29c).
+//
+// Returns `result<RequestAuthority>`, not a bare value: `verify_bearer_token()`'s own contract only
+// rejects an `exp` in the past, never bounds it from above, so a `claims.exp` more than
+// `kMaxAuthorityHorizon` past `wall_now` (a misconfigured issuer, or a deliberately-oversized claim
+// from a compromised signing key) is rejected outright rather than reaching an unchecked
+// `duration_cast` -- closing §32's sixth finding.
+inline constexpr std::chrono::hours kMaxAuthorityHorizon{24 * 365};  // generous, still a real ceiling
+
+[[nodiscard]] inline result<RequestAuthority> request_authority_from_bearer_claims(
+        trust::BearerTokenClaims const& claims,
+        std::shared_ptr<agentengine::CapabilitySet const> capabilities,
+        std::chrono::system_clock::time_point wall_now,
+        std::chrono::steady_clock::time_point steady_now,
+        agentengine::principal_kind kind = agentengine::principal_kind::service) {
+    if (claims.exp > wall_now + kMaxAuthorityHorizon) {
+        return std::unexpected(ae::error{failure_class::contract,
+                                          "bearer credential exp exceeds the maximum authority horizon",
+                                          "request_authority.exp_horizon_exceeded"});
+    }
+    // Does NOT re-check claims.exp against wall_now as a pass/fail gate -- verify_bearer_token()
+    // already did that (single source of truth for "is this token still valid," never duplicated).
+    // What this saturating subtraction guards is narrower: an already-expired-but-otherwise-valid
+    // claims object (e.g. a caller that skipped the exp check by construction error) must convert to
+    // an ALREADY-DEAD RequestAuthority (live() false for every now >= steady_now), never a negative
+    // duration that wraps into a far-future deadline.
+    auto const remaining = claims.exp > wall_now
+        ? std::chrono::duration_cast<std::chrono::steady_clock::duration>(claims.exp - wall_now)
+        : std::chrono::steady_clock::duration::zero();
+    return RequestAuthority{
+        trust::principal_from_bearer_claims(claims, kind),
+        std::move(capabilities),
+        steady_now + remaining,
+    };
+}
+
+}  // namespace agentengine::rt
+```
+
+### 31.3 Falsifiable claims, this section
+
+| # | Claim | Disproving experiment | Positive control / teeth |
+|---|---|---|---|
+| 1 | `mint_endpoint_id()` values are CSPRNG-derived, not sequential/predictable | Mint N in a row, check for arithmetic/positional relationship | Control: two mints never collide across 10⁶ trials |
+| 2 | `EndpointRegistry::resolve()` fails closed on an absent/adjacent-guessed key | Query a key one bit-flip from a real one | Control: the real, configured key resolves correctly |
+| 3 | `request_authority_from_bearer_claims()` never reads `system_clock::now()` or `steady_clock::now()` internally | Grep the function body; separately, call it with a `wall_now` far in the past and confirm the result reflects THAT time, not real wall-clock time | Control: called with `wall_now`/`steady_now` matching real current time, behaves identically to today's manual construction |
+| 4 | An already-expired `claims.exp` (relative to `wall_now`) converts to a `RequestAuthority` that is dead (`live()` false) for every `now`, never a wraparound-derived far-future deadline | `claims.exp = wall_now - 1h`; assert `live(steady_now)` is false and `live(steady_now + 24h)` is also false | Control: `claims.exp = wall_now + 1h` produces `live(steady_now)` true, `live(steady_now + 2h)` false |
+| 5 | `capabilities` is never synthesized or defaulted inside the bridge — omitting the argument is a compile error | Attempt to call with the parameter omitted | Control: an explicit, non-empty `CapabilitySet` passes through unchanged (pointer/content identity check) |
+| 6 | `principal_from_bearer_claims()` is reused, not reimplemented — the bridge produces byte-identical `Principal` output to calling that function directly with the same claims/kind | Diff the two call paths' output for a fixed input | Control: differing `kind` arguments produce differing output, proving the parameter is actually threaded through |
+
+### 31.4 What this section does not resolve
+
+- **007 §5's policy engine** (still unbuilt, named again at §31.2) — `capabilities` stays a required,
+  caller-supplied parameter with no internal derivation, for as long as that gap stands.
+- **ADR-039 §3a's still-open `McpServer` per-call threading** — a genuinely different dispatch surface
+  (§31.0/§35), untouched here.
+- **`A2aServer::send_message()` never sets `StartRun::authority`** — corrected at §35: `A2aServer`
+  DOES route through `rt::AgentSession::start_run()` already (via its `RunStarter`), so this is not a
+  different-surface gap like `McpServer`'s; it's one missing parameter/assignment on an already-
+  AgentSession-backed call, real and unbuilt, but small and separately scoped from this round's bridge
+  function.
+- **`EndpointId::surface`/admin separation** — named as deliberately not built at §31.1, no consumer
+  exists yet to enforce it.
+- **The Sidecar/out-of-process bridge** (R11, ADR-061 §13.9) — still separate, still unbuilt.
+- **Multi-instance replay-guard externalization** — `trust::ReplayGuard` remains single-process
+  in-memory (ADR-021's own named residual); nothing in this bridge changes that.
+- **A reference example showing a real host wiring this together end to end** (ADR-039 §3e's own
+  already-Judged "MAY ship one example adapter, under `examples/`, never core" scoping) — not built
+  this round; a natural prove-phase deliverable once this design survives red-team.
+
+### 31.5 Next step
+
+Per this ADR's own established discipline: this is design, not proof. It needs an independent
+adversarial pass — fresh context, told explicitly to find what's wrong, not to confirm what's right —
+before any claim above is more than a hypothesis. That pass has not run yet.
+
+## 32. Eleventh red-team round — against §31, run hostile (2026-08-20)
+
+**Verdict up front, matching this ADR's own established bluntness: §31 does not survive.** A fifth
+consecutive failed design round (after §8, §13, §15, §17), all re-verified directly against real
+source, not against this ADR's own citations of itself.
+
+**MUST-FIX — the "no precedent" claim behind mandatory `capabilities` is fabricated, disproved by
+the very file it cites.** §31.2's comment asserted *"every other capability entry point in this
+codebase requires the set explicitly, never defaults it."* False: `AgentSession::capabilities_`
+(`agent_session.hpp:1938`) defaults to null, `initialize()` never takes capabilities at all, and every
+real consumption site (`agent_session.hpp:883-887, 1180-1182, 1495-1499, 1581-1585, 1633-1635`) falls
+back silently to an empty grant (`empty_caps = CapabilitySet::grant_root({})`) when unset — §29b's own
+probe and §30.4's T6a scenario ("a session with NOTHING granted at the session level") depend on that
+exact fallback existing and working.
+
+**MUST-FIX — the layering-precedent claim conflates directory with namespace, and asserts a precedent
+that does not exist.** `Principal`/`CapabilitySet` live under `trust/` but in namespace `agentengine::`,
+not `agentengine::trust::`. Grepping every `include/agentengine/rt/*.hpp` for `trust::` finds zero real
+code (one comment hit only, `spawn_cost_budget.hpp:3`). `request_authority_from_bearer_claims()` would
+be the **first** real `rt::` code depending on `agentengine::trust`. "Follows the existing direction,
+not against it" overstates a precedent that isn't there — it's new coupling.
+
+**MUST-FIX — §13.7's "real and engine-enforced" claim for `EndpointId::surface` admin refusal was never
+true, and §31.1 walks past it without retracting it.** §13.7 (line ~2147, an earlier "closed" section
+of this same document) states in present tense that engine-side admin-method refusal *"is real and
+engine-enforced."* §30.1's actual prove-phase build list contains no such mechanism — it was never
+built. §31.1 declines to build it too ("no consumer exists yet to enforce it") but never says §13.7's
+own claim was false. A silent, uncorrected false claim sitting inside this ADR's own "already closed"
+material — the exact silent-drift class `decisions/ADR-026-milestone-status-doc-accuracy-and-drift-
+lint.md` exists to catch, found here inside this document's own history, not against ADR-039.
+
+**SHOULD-FIX — "the ONLY sanctioned path" overclaims a convention as an enforced guarantee.**
+`RequestAuthority` (`agent_session.hpp:278-290`) is a plain, fully-public aggregate with no validating
+constructor; nothing stops a host from hand-constructing one with arbitrary contents, bypassing the
+bridge entirely. Naming-convention enforcement, not construction-level enforcement — the exact
+distinction ADR-039 §3b itself insists on ("unforgeable/impossible by construction over correct by
+convention").
+
+**SHOULD-FIX — the ADR-039 §3b consistency question was dodged, not answered.** §31.0 only confirmed
+`McpServer`/`A2aServer` don't currently call `rt::AgentSession` (**§35 correction: this premise itself
+was only true for `McpServer` — `A2aServer` does route through `rt::AgentSession::start_run()`; that
+error didn't affect this specific finding's own conclusion, since the dodge stands either way, but the
+premise it's stated against was still wrong and is corrected at §35, not silently left here**) — it
+never engaged whether
+`RequestAuthority`'s explicit per-call refresh is compatible with §3b's binding contract (session-scoped
+binding is mandatory; per-call Principal construction is *"both unnecessary and dangerous"*), the exact
+question the top-of-file cross-reference note asked this pass to check. Substituted an easier,
+code-path-non-collision claim for the design-philosophy question actually asked.
+
+**RESIDUAL-WORTH-NAMING — no bound on the clock-cast in `request_authority_from_bearer_claims()`.**
+`verify_bearer_token()`'s contract only rejects an `exp` in the past, not one implausibly far in the
+future; `duration_cast<steady_clock::duration>(claims.exp - wall_now)` has no guard against a
+pathologically large delta before the cast.
+
+**Checked, not defects**: `EndpointRegistry::resolve()`'s `unordered_map::find` matches the existing
+`McpServer::tasks_` lookup pattern exactly (`protocol/mcp/server.hpp:446`) — no timing-side-channel
+inconsistency with precedent. `EndpointId{*std::move(hex)}` is valid (`result<T>`'s rvalue-qualified
+`operator*() &&`). The `claims.exp == wall_now` edge case correctly saturates to dead-on-arrival, no
+off-by-one. Minor nit: §31.2 claimed to match `start_run()`/`resolve_interaction()`'s defaulted-`now`
+convention (§29c) but the bridge makes both time parameters mandatory with no default — stricter, not
+identical, harmless but inaccurately described.
+
+## 33. Twelfth design iteration — corrections to §31 (2026-08-20)
+
+Written directly against §32's five real findings. Nothing in §31.1/§31.2's actual C++ shape changes
+except the overflow guard (33.6) — every other fix is a correction to what the surrounding prose
+claims, not to the mechanism itself.
+
+### 33.1 Correction — mandatory `capabilities`, restated on its own real merits (closes finding 1)
+
+Drop the false "no other entry point defaults it" claim. The real, honest justification stands without
+it: `capabilities` stays a required parameter with no default because 007 §5's policy engine (the only
+thing that could correctly derive a value) does not exist (§13.9, unchanged), and because this bridge
+sits at a point in the system where I2 applies directly — synthesizing *any* default here, empty or
+otherwise, would mean the bridge itself decided what a principal may do, which is exactly the ambient-
+authority shape I2 forbids. That the rest of `agent_session.hpp` *does* default an unset session-level
+grant to empty (§30.4's own proven, correct behavior for that different case — a session with
+genuinely nothing granted) is not a counter-argument: that fallback is `AgentSession`'s own considered
+answer to "what does an ungranted session mean," decided in-repo and tested: `empty_caps`. This
+bridge is not `AgentSession` and gets no comparable vote — it converts a claim to a struct, and has no
+standing to invent what "no capabilities specified" should mean for a caller who forgot to wire
+anything. The corrected comment: *"`capabilities` has no default — not because every other entry point
+in this codebase refuses one (`AgentSession` itself defaults an unset session-level grant to empty,
+`agent_session.hpp:883-887` et al.), but because this specific function has no legitimate way to decide
+what a default should be, and guessing empty would look safe while actually hiding a caller that forgot
+to wire capabilities at all behind a silently-succeeding, silently-inert authority."*
+
+### 33.2 Correction — the `rt`→`trust` dependency (closes finding 2; corrected again at §34.2)
+
+*(§34.2 below found this subsection's own first attempt re-committed a version of the exact error it
+was fixing — collapsing directory and namespace, this time in the opposite direction. §31.2's own text,
+above, now carries the accurate version directly; treat that as authoritative over this paragraph's
+history.)* Original correction: dropped "follows the existing direction, not against it," restated as
+"the first real `rt::` code to depend on `agentengine::trust`." The placement decision (`rt::`, not
+`trust::`) is unaffected by that error and is still correct, argued on its own merits independent of
+precedent either way: `trust::` is a lower-level identity/credential-verification layer with no
+knowledge of sessions, tools, or capabilities-as-consumed-by-a-run; `rt::` already knows about all
+three (`RequestAuthority` is defined there). Putting the bridge in `trust::` would require `trust/` to
+include `rt/agent_session.hpp` — a large, session-orchestration header — to reference a single struct,
+the actual inversion.
+
+### 33.3 Correction — §13.7's admin-refusal claim, explicitly retracted (closes finding 3)
+
+**§13.7's "the engine-side method refusal... is real and engine-enforced" was never true.** No such
+mechanism exists anywhere in the current tree; §30.1's prove-phase build list contains nothing
+resembling it. §13.7 stated a design intention in the present tense as if it were already-verified
+fact, and no later section ever caught the tense error until this one. `EndpointId::surface`/admin-vs-
+public-API refusal is, and has always actually been, **unbuilt design text**, matching T16's own
+"partial re-expression, not a full one" finding — T16 was right that it was partial; it was wrong (or
+this document became wrong after it, silently) that the partial piece that DOES exist was engine-
+enforced. It is not. §31.1's decision not to build it this round stands unchanged; what changes here is
+only that the record no longer claims something false.
+
+### 33.4 Correction — "recommended path," not "only sanctioned path" (closes finding 4)
+
+`RequestAuthority` stays a plain aggregate. **The `Principal` comparison, corrected**: `trust/
+principal.hpp:27-56` confirms `Principal` is likewise a plain, all-public-field aggregate with no
+validating constructor, so the same hand-construction-bypasses-verification gap exists for it too — that
+underlying fact is real and re-verified directly against source. What is NOT textually supported is the
+stronger claim that ADR-039 §3c "accepted" this gap explicitly when Judged — ADR-039 §3b's binding-
+contract language is about session-*lifetime* binding, not about raw `Principal` construction bypass
+specifically, and ADR-039 never states that narrower gap was considered and accepted. The analogy
+(both types are unenforced-by-construction) holds; "and that was accepted, not fixed, when Judged" was
+an inference dressed as a citation and is dropped. `request_authority_from_bearer_claims()` is the
+**recommended** path — the one place a future red-team pass needs to re-check
+when the bridge changes — not a construction-level guarantee. Named explicitly as a residual, same
+category as `Principal`'s own: a genuinely construction-level fix (a private-field `RequestAuthority`
+buildable only via a factory, or a distinct `VerifiedRequestAuthority` wrapper type) is real, unbuilt,
+future work this section does not attempt, consistent with this codebase's own stated preference
+(ADR-022 §7) being aspirational here, not yet reachable in current C++ without a larger refactor of an
+already-shipped, already-tested struct.
+
+### 33.5 Correction — the ADR-039 §3b consistency question, actually answered (closes finding 5; citation
+fixed and argument extended at §34.4)
+
+**Direct check, not a substitute claim.** ADR-039 §3b's hazard was specific: constructing a *fresh
+dispatcher object* per HTTP request, where that object's own detached-thread completion callback
+captures `this` non-owning (`McpServer`'s documented "must outlive every task it starts" hazard —
+`server.hpp:319-322`'s `handle_tools_call_as_task()` lifetime comment; **§34.4 below corrects this
+citation from an earlier, unverified copy of ADR-039's own now-stale line numbers**) — the object dies
+at the end of `dispatch()` while a backgrounded completion still fires into it later. That is a
+**use-after-free of the dispatcher itself**, driven by *object* lifetime, not by anything about how
+often its credential state changes.
+
+`rt::AgentSession` under Tier 3 does not have this shape. The session object is constructed once and
+lives for the session's whole duration — exactly ADR-039 §3b's own mandate ("one dispatcher instance
+per authenticated session... held via shared ownership for at least as long as the session's underlying
+connection lives"). `RequestAuthority` refreshing on every `StartRun`/`ResolveInteraction` is a
+**data parameter to a method call on that already-long-lived object**, not a new object per call.
+Confirmed directly against the session's own documented background-task lifetime discipline
+(`agent_session.hpp:96-152`): the detached-thread completion closure captures a `std::weak_ptr` to a
+small completion queue, **never `this`/the session directly** — precisely the indirection ADR-039 §3b
+was asking for in spirit (no raw, non-owning capture of anything whose lifetime a background thread
+can outlive), independently arrived at before this cross-check existed. The two designs are consistent:
+ADR-039 §3b's binding contract is about the *dispatcher object's* lifetime; ADR-061's per-call
+`RequestAuthority` is about *credential freshness within* that already-satisfied lifetime, a different
+axis §3b never spoke to because MCP/A2A's per-call Principal draft never separated the two either.
+
+**§34.4 extends this to the question this subsection didn't itself ask**: not just the background-task
+path, but whether two *concurrently-admitted* `StartRun`/`ResolveInteraction` calls against the same
+session could leak one call's `RequestAuthority` into `effect_context_` state a DIFFERENT, concurrently-
+in-flight call reads (I1's "one session, one executor" is the relevant structural claim to check, not
+assume). Confirmed directly: `start_run()`/`resolve_interaction()` (`agent_session.hpp:688`, `:774`)
+each hold `session_mutex_` (RAII `AsyncMutex::Guard`) for the entire coroutine body, and
+`apply_dispatch_authority()` writes `effect_context_.principal`/`.capabilities`
+(`agent_session.hpp:1233-1258`) under that same lock before any consumer reads them. One `AsyncMutex`
+serializing every entry point structurally rules out the interleave — not by convention, by
+construction, matching I1 directly.
+
+### 33.6 Real fix — bounded clock conversion (closes finding 6; superseded in place at §34.3)
+
+*(§34.3 found this subsection's own code block was never synced back into §31.2, leaving two diverging
+versions of the same function in one document — the exact "stale copy an in-order reader implements
+from" failure this whole correction round exists to close, recurring inside the fix itself. §31.2 now
+carries this code directly and is authoritative; the block that stood here has been removed rather than
+left as a second, driftable copy.)*
+
+Return type changes from `RequestAuthority` to `result<RequestAuthority>` to carry the new failure
+mode — every call site must now handle it, matching this codebase's fail-loud-not-fail-open convention
+(the same shape `mint_endpoint_id()`/`EndpointRegistry::resolve()` already use).
+
+### 33.7 Correction — the §29c citation, made accurate (minor, closes the citation nit)
+
+§31.2's claim to "match" `start_run()`/`resolve_interaction()`'s defaulted-`now` convention overstated
+it: those real signatures give `now` a *default argument* of a live clock read; this bridge makes both
+time parameters mandatory, no default. Corrected framing: **consistent in spirit** (the nondeterministic
+read crosses a recorded seam at the caller's boundary either way) but **stricter in mechanism** (no
+default at all, because unlike a session's own turn-processing `now` — which has an obviously-correct
+default of "right now" — a credential-verification instant has no safe implicit default; a caller
+that forgets to pass it should fail to compile, not silently get a plausible-looking but potentially
+stale value).
+
+### 33.8 Falsifiable claims table — one addition
+
+| # | Claim | Disproving experiment | Positive control / teeth |
+|---|---|---|---|
+| 7 | `claims.exp` more than `kMaxAuthorityHorizon` past `wall_now` is rejected, never cast | `wall_now` now, `claims.exp` = now + 1000 years | Control: `claims.exp` = now + 1 hour succeeds normally |
+
+### 33.9 Status
+
+Design-corrected against all five of §32's real findings (33.1-33.5), plus the one concrete code fix
+(33.6) and one citation correction (33.7). Per this ADR's own discipline, this is still design, not
+proof, until re-verified by a further independent adversarial pass — the corrections above are this
+author's own fixes to this author's own design, the exact shape every prior "author claims fixed, red-
+team must re-check" cycle in this document requires before being trusted. **That pass ran (§34) and
+found §33 itself does not survive as written — see §34.**
+
+## 34. Twelfth red-team round — against §33, and this document's own in-place corrections (2026-08-20)
+
+**Verdict up front, matching this ADR's own convention: §33 did not survive as written — a sixth
+consecutive failed round (§8, §13, §15, §17, §31, §33).** Two of §32's five findings were genuinely
+fixed (33.1, 33.6's mechanism); two more were substantively improved but themselves overstated a
+correction (33.2, 33.5); and the finding §33 stated most confidently as closed — §13.7's retraction —
+was not actually executed: the false claim sat unedited in §13.7 itself, discoverable to any reader who
+reached §13.7 before §33. On top of that, §33 introduced two of its own new defects: a stale line
+citation (`server.hpp:266-269`, imported verbatim from ADR-039's own citation without re-verification
+against this tree's current line numbers — the actual comment is at `server.hpp:319-322`) and an
+un-synced code snippet, leaving §31.2 and §33.6 as two diverging versions of the same function in one
+document — the exact "stale copy an in-order reader implements from" failure class §33.3 was written to
+close, recurring inside the very act of closing it.
+
+**§34.1 — §13.7 itself is now edited in place**, above (strikethrough plus an inline correction dated
+2026-08-20, not a discussion at a distance), rather than left for a reader to discover was wrong only by
+also reading §33.3 two thousand lines later.
+
+**§34.2 — §33.2's own re-commit of the directory/namespace conflation is corrected**, above: `rt/
+agent_session.hpp:249` already includes `trust/principal.hpp` and uses `agentengine::Principal`
+throughout, so "first real `rt::` code to depend on `agentengine::trust`" was itself false — what's
+actually new is the first `agentengine::trust`-*namespace*-qualified symbol reference from `rt::` code.
+§31.2's own text now states this precisely; §33.2 points to it rather than repeating a third, still-
+wrong version.
+
+**§34.3 — §31.2 now carries §33.6's corrected code directly**, superseding the version that stood there
+before; §33.6's own code block has been removed rather than kept as a second copy that could drift from
+§31.2 again.
+
+**§34.4 — the stale `server.hpp:266-269` citation is corrected to `server.hpp:319-322`** (the real
+`handle_tools_call_as_task()` lifetime comment) at its point of use in §33.5, and §33.5's argument is
+extended to the question it was asked to check but didn't: whether two concurrently-admitted
+`StartRun`/`ResolveInteraction` calls against one session could interleave `RequestAuthority` state
+through `effect_context_`. Confirmed structurally ruled out by `session_mutex_`'s `AsyncMutex::Guard`
+serializing every entry point (`agent_session.hpp:688,774`) with `apply_dispatch_authority()`'s writes
+(`agent_session.hpp:1233-1258`) happening under that same lock — I1 ("one session, one executor")
+holding by construction, not by convention, extending §33.5's proof rather than just re-labeling it.
+
+**§34.5 — §33.4's unsupported "ADR-039 §3c accepted this gap when Judged" inference is dropped**,
+above, keeping only the re-verified, textually-supported half of the comparison (`Principal` is
+likewise a plain aggregate with no validating constructor — confirmed directly, `trust/
+principal.hpp:27-56`).
+
+### 34.6 Status
+
+Every fix in this section is applied in place, at the section it corrects, not appended as a seventh
+layer a future reader would need to separately discover. Whether THIS round's fixes themselves hold up
+is, per this ADR's own now six-round-long pattern, not something this author gets to decide by
+assertion — it needs its own fresh adversarial pass before being trusted further than "this author
+believes it is now correct." That pass ran (below) and found §34's own five fixes all genuinely hold —
+plus one new, real, previously-unexamined defect neither of the first two rounds caught.
+
+## 35. Thirteenth red-team round — against §34's own fixes, run hostile a third time (2026-08-20)
+
+**Verdict up front: §34 substantially survives — every specific repair it claims (§34.1-§34.5) was
+independently re-verified against real source and holds.** This is the first round of this six-round
+sequence where the author's own claimed fixes were checked and found genuinely correct, not merely
+claimed. One new MUST-FIX surfaced, previously unexamined across all five prior rounds because it lives
+in §31's own scope-setting preamble rather than in anything §32-§34 had reason to re-check: the claim
+that `A2aServer`, like `McpServer`, "call[s] `invoke_tool()` directly and do[es] not go through
+`rt::AgentSession` at all" was verified only against `McpServer` and silently applied to `A2aServer` too
+without checking — `A2aServer` in fact already runs over a real `AgentSession` via its own `RunStarter`
+indirection. This premise had propagated, uncaught, into §31.4's residual list and §32's own SHOULD-FIX
+5 finding text.
+
+**Independently re-verified, not merely re-asserted, this round**: `EndpointId`/`EndpointRegistry`/
+`mint_endpoint_id()` (§31.1, untouched by any correction across five rounds) — confirmed to still
+compile and hold no aliasing/lifetime defect on a genuine fresh look, not a rubber-stamp. The falsifiable
+claims table (§31.3 plus §33.8's addition) has no numbering collision and claim 7 matches the final,
+corrected §31.2 code exactly. `agent_session.hpp:688`/`:774`'s `session_mutex_` acquisition really does
+span the full coroutine body through `apply_dispatch_authority()`'s writes (`AsyncMutex::Guard` is
+RAII-only, no early `release()` in either function) — §34.4's concurrency claim is real, not just
+plausible-sounding.
+
+**This round's own fix**: the `A2aServer` premise is corrected in place at §31.0's scope paragraph,
+§31.4's residual list, §32's own SHOULD-FIX 5 text, and the top-of-file cross-reference note — not
+appended as a seventh layer, matching §34's own stated discipline for exactly this failure mode. The
+corrected, narrower scope boundary: `McpServer` is genuinely a different dispatch surface (real,
+unchanged finding); `A2aServer` already shares `rt::AgentSession::start_run()`'s entry point via
+`RunStarter`, and the actual reason this round still doesn't wire it is that `send_message()`
+(`protocol/a2a/server.hpp:122-125`) never sets `StartRun::authority` — one missing parameter and one
+assignment, the same shape of gap R1/R2 already fixed once for `caller`, real and unbuilt but small,
+named accurately now rather than dismissed as a different surface.
+
+### 35.1 Status
+
+Six rounds in, on a section originally scoped as narrow: three genuine security/correctness-adjacent
+defects closed for real (§31→§33: fabricated precedent claim, overstated layering claim, unbounded
+clock cast), two meta-defects from the correction process itself closed for real (§33→§34: an unexecuted
+retraction, a diverged duplicate code block, a stale citation), and one scope-accuracy defect closed
+this round (§35: the `A2aServer` premise). Every fix that was claimed complete in a given round and then
+independently re-checked in the next round was, on the third check, found to actually hold — this round
+is the first with no MUST-FIX against the immediately preceding round's own claimed fixes, only a new
+finding in older, previously-unexamined text.
+
+## 36. Fourteenth red-team round — against §35, and a full independent re-derivation (2026-08-20)
+
+**Verdict up front: §31-§35 survive. No FATAL, MUST-FIX, or SHOULD-FIX findings.** Every claim was
+re-derived from real, current source rather than trusted from any prior round's own citation of itself,
+matching this document's own established discipline: the §35 `A2aServer` correction was independently
+re-verified true (`protocol/a2a/server.hpp`'s own file-top comment, `RunStarter`'s real type,
+`send_message()`'s real body never setting `.authority`, `StartRun::authority`'s real field at
+`agent_session.hpp:293-300`), all four locations §35 edited were checked for mutual consistency (clean,
+no divergence), a sample of round 2's already-claimed-fixed citations was independently re-derived
+rather than assumed still true (`server.hpp:319-322`, the single surviving code copy, the
+`session_mutex_` concurrency guarantee — all held), and one thing no prior round had reason to examine —
+`RunStarter`/`RunOutcome`'s own type consistency against what `AgentSession::start_run()` actually
+returns — was checked for the first time and confirmed correct, including against real, currently
+passing test evidence (`tests/test_a2a_server.cpp:108-117`).
+
+This is the first clean round against this document's own six-round history on this section. Per this
+ADR's own `design → red-team → prove → judge` discipline, **§31-§35 (as corrected in place through
+§35) are ready for a `prove` phase**: real, compiled code for `trust::EndpointId`/`EndpointRegistry`/
+`mint_endpoint_id()` and `rt::request_authority_from_bearer_claims()`, plus real tests exercising the
+falsifiable claims tables at §31.3/§33.8, the same discipline §20-§30's own prove phase (§30) already
+executed for the session-side mechanism this bridge connects to.
+
+## 37. Prove phase — §31-§36's bridge implemented and proven (2026-08-20)
+
+**§31.1's design is now real code, unchanged from what §36 cleared**: `include/agentengine/trust/
+endpoint_id.hpp` — `EndpointId`, `EndpointConfig`, `EndpointRegistry`, `mint_endpoint_id()`, verbatim
+against §31.1's final text (no deviation found necessary during implementation, unlike §20-§30's own
+prove phase which found a real blast-radius gap).
+
+**§31.2/§33.6's design is now real code**: `include/agentengine/rt/request_authority_bridge.hpp` —
+`kMaxAuthorityHorizon`, `request_authority_from_bearer_claims()`, also verbatim against the final,
+corrected text. Depends on `rt/agent_session.hpp` (for `RequestAuthority`) and `trust/bearer_token.hpp`/
+`trust/capability.hpp`/`trust/principal.hpp`, matching §31.2's own stated dependency direction exactly.
+
+### 37.1 Real, compiled, passing positive controls
+
+`tests/test_request_authority_bridge.cpp` (new, 21 checks, all passing) exercises every row of the
+falsifiable claims tables at §31.3 and §33.8:
+- **Claim 1**: 2,000 consecutive `mint_endpoint_id()` calls, zero collisions, correct 32-hex-char width.
+- **Claim 2**: `EndpointRegistry::resolve()` succeeds on the real configured key, fails closed on both
+  an adjacent-bit-flipped guess and a wholly unconfigured key — never falls through to a default.
+- **Claim 3**: a `wall_now`/`steady_now` pair deliberately far from real wall-clock time produces an
+  `expiry` derived purely from those samples, not from an internal clock read.
+- **Claim 4**: an already-expired `claims.exp` produces a `RequestAuthority` that is dead at `steady_now`
+  AND still dead 24 hours later (no wraparound-derived far-future deadline); a real hour-ahead `exp` is
+  live now and dead two hours later.
+- **Claim 5**: the exact `CapabilitySet` instance passed in comes out the other side unchanged (pointer
+  identity), never synthesized or substituted.
+- **Claim 6**: the bridge's `Principal` output is byte-identical to calling `trust::
+  principal_from_bearer_claims()` directly with the same claims/kind, and a differing `kind` argument
+  is actually threaded through (not silently ignored).
+- **Claim 7**: an exp ~1000 years out is rejected with the documented `request_authority.exp_horizon_
+  exceeded` code, never reaching the `duration_cast`; an exp one hour out succeeds normally.
+
+### 37.2 Build and test evidence
+
+Full workspace rebuild (`ninja -k 0`, MSVC 14.51.36231/SDK 10.0.26100.0): every target compiles clean
+on the first attempt — no deviation from the design's own code blocks was needed, unlike §20-§30's own
+prove phase (§30.2's real, unrelated-file blast-radius gap) — except the same two pre-existing,
+unrelated failures already named at §30.5 (`protocol/openai/embedder.hpp`'s `decoded_response_body`
+error, confirmed via `git status` to be untouched by this or any prior session's work on this ADR).
+Full `ctest` run: **205/205 tests passing** (204 carried forward from §30, plus the new file), zero
+regressions.
+
+### 37.3 Residuals unchanged
+
+Everything named at §31.4/§34's residual lists stands: 007 §5's policy engine still doesn't exist
+(`capabilities` stays required, caller-supplied, unfilled by anything this section built);
+`EndpointId::surface`/admin separation still has no consumer; the Sidecar/out-of-process bridge and
+multi-instance replay-guard externalization are still separate, unbuilt work; `McpServer`'s per-call
+threading (ADR-039 §3a) is still untouched; `A2aServer::send_message()` still never sets `StartRun::
+authority` (§35's corrected, real, small, unbuilt gap); no reference example wiring a real host
+end-to-end exists yet (ADR-039 §3e's own scoping, `examples/`, not core).
+
+### 37.4 Status
+
+The bridge `§31-§36` designed is no longer design text — it is real, compiled code with real, passing
+positive controls for all seven falsifiable claims. Not yet committed to version control this session.
+Per this project's `design → red-team → prove → judge` discipline, this closes prove; judge (project
+owner sign-off) is next, same as §30's session-side mechanism already awaits.
