@@ -92,7 +92,7 @@ int main() {
         ToolTable const universe = ToolTable::from_tools<FakeTool>();
         CapabilitySet const held = CapabilitySet::grant_root({});
         EffectContext ctx;
-        ctx.capabilities = &held;
+        ctx.capabilities = agentengine::borrow_capabilities(held);
 
         // Before any mount: fake_tool is named by test-skill's allowed-tools, but test-skill is not
         // yet mounted -- allowed_tool_names_for(empty) must be empty, and the resulting scoped table

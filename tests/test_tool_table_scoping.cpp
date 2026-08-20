@@ -90,7 +90,7 @@ int main() {
         ToolTable const scoped = scope_tools_to_mounted_skills(universe, {"beta"});
         CapabilitySet const held = CapabilitySet::grant_root({});
         EffectContext ctx;
-        ctx.capabilities = &held;
+        ctx.capabilities = agentengine::borrow_capabilities(held);
 
         ToolCallRequest const allowed_req{"call-1", "beta", json::Value::make_object({{"note", json::Value::make_string("x")}}),
                                            /*arguments_tainted=*/false, 0};

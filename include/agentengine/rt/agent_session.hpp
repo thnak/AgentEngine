@@ -122,19 +122,26 @@
 //     `resolve_interaction()`, right after acquiring the guard -- so a host never has to remember to
 //     drain separately; `drain_background_completions()` (public, its own task<T>) exists for a host
 //     that wants to force a drain between runs anyway.
-//   - `start_background_task()`/`cancel_standing_effect()`/`list_standing_effects()` themselves stay
-//     PLAIN, UNLOCKED methods (no session_mutex_ acquisition) -- this is not an oversight, it matches
-//     the ORIGINAL's own asymmetry exactly: those three were never part of Quark's `Messages` type
-//     list for this actor either (unlike `BackgroundTaskDone`, which WAS), so they were already
-//     unserialized-by-the-mailbox in the Quark version too, the same category `fork_from()`/`redact()`/
-//     `clear_in_process_state()` above already fall into. NAMED, NOT SILENTLY ASSUMED SAFE: a host that
-//     calls these three concurrently with a `start_run()`/`resolve_interaction()` in flight on another
-//     "thread of control" races `standing_effects_` directly -- a real, pre-existing-in-kind
-//     precondition (not a new one introduced here), but easy to wrongly assume is now covered just
-//     because a completion queue exists. `cancel_standing_effect()` racing an already-queued-but-not-
-//     yet-drained completion is safe by construction: drain looks up by `handle_id`; if cancel already
-//     erased the entry, drain's lookup misses and no-ops, exactly the original's own documented
-//     idempotent-no-op behavior for "a late BackgroundTaskDone for a canceled handle."
+//   - `cancel_standing_effect()`/`list_standing_effects()` stay PLAIN, UNLOCKED methods (no
+//     session_mutex_ acquisition) -- this is not an oversight, it matches the ORIGINAL's own asymmetry
+//     exactly: neither was ever part of Quark's `Messages` type list for this actor either (unlike
+//     `BackgroundTaskDone`, which WAS), so they were already unserialized-by-the-mailbox in the Quark
+//     version too, the same category `fork_from()`/`redact()`/`clear_in_process_state()` above already
+//     fall into. NAMED, NOT SILENTLY ASSUMED SAFE: a host that calls these concurrently with a
+//     `start_run()`/`resolve_interaction()` in flight on another "thread of control" races
+//     `standing_effects_` directly -- a real, pre-existing-in-kind precondition (not a new one
+//     introduced here), but easy to wrongly assume is now covered just because a completion queue
+//     exists. `cancel_standing_effect()` racing an already-queued-but-not-yet-drained completion is
+//     safe by construction: drain looks up by `handle_id`; if cancel already erased the entry, drain's
+//     lookup misses and no-ops, exactly the original's own documented idempotent-no-op behavior for "a
+//     late BackgroundTaskDone for a canceled handle."
+//     ADR-061 §20.5/§24.2: `start_background_task()` is NO LONGER part of this "plain, unlocked"
+//     group -- it now acquires `session_mutex_` like `start_run()`/`resolve_interaction()` do,
+//     deliberately breaking the asymmetry described above for this one function. Confirmed (grep,
+//     repo-wide, across three independent red-team rounds) to have zero real callers in product code,
+//     so nothing shipped depended on the old unlocked behavior; I1 made staying unlocked a real hazard
+//     once Tier 3 makes a session reachable from more than one concurrently-arriving caller. See that
+//     function's own comment for the full rationale.
 //   - `rt::channel<T>` (already built, Phase 1) was considered and rejected for this queue: its
 //     producer side is move-only and auto-closes on destruction, so sharing it across many independent
 //     detached-thread closures would need the exact same weak_ptr-to-a-shared-instance dance for zero
@@ -156,10 +163,17 @@
 // `CapabilitySet` through the EXISTING mechanism `Background<max_concurrent>` already exercises end to
 // end; only `CapabilitySet::find_schedule()` (mirroring `find_background()`) needed adding. Design,
 // matching `start_background_task()`'s own shape exactly:
-//   - `schedule_wakeup(delay, label, now)` is PLAIN, UNLOCKED, same asymmetry as
-//     `start_background_task()`/`cancel_standing_effect()` above (never part of Quark's own Messages
-//     list either -- see Slice 3's own paragraph for why that's a pre-existing, named, not-new
-//     precondition). `now` is a REQUIRED caller-supplied parameter, never read from an ambient clock --
+//   - `schedule_wakeup(delay, label, now)` WAS plain, unlocked, same asymmetry as
+//     `cancel_standing_effect()` above (never part of Quark's own Messages list either -- see Slice
+//     3's own paragraph for why that's a pre-existing, named, not-new precondition). ADR-061 §20.5
+//     found it was ALSO a directly-callable, unlocked entry point in its own right (not just its
+//     internal reads) -- now split: `schedule_wakeup_impl()` (private, unlocked, the logic above)
+//     stays exactly this shape, and a new public `schedule_wakeup()` wrapper locks and resolves
+//     per-request authority before delegating to it, mirroring `start_background_task()`'s own
+//     locking exactly. The internal offer-gate closure in `run_rounds()` calls `schedule_wakeup_impl()`
+//     directly (already locked via its own caller; a non-reentrant `AsyncMutex` would self-deadlock on
+//     a second `co_await lock()`). `now` is a REQUIRED caller-supplied parameter, never read from an
+//     ambient clock --
 //     the same discipline `CircuitBreaker::on_send(now_ns)`/`on_result(now_ns)` already establishes in
 //     this codebase (I5: nondeterminism crosses a recorded seam), and the only way this stays free of a
 //     new ambient-Clock-capability violation (007 §3's own separate, explicitly-granted `Clock` cap).
@@ -252,10 +266,37 @@ struct SessionCaller {
     std::string tenant_id;
 };
 
+// ADR-061 §20.1: the per-request identity+grant bundle a Tier-3 (host-fronted HTTP) dispatcher
+// supplies, in place of the coarser `SessionCaller`. Deliberately ONE bundle carrying identity and
+// capability grant TOGETHER, not two fields that must be kept in agreement -- §20.1's own rationale:
+// keeping `caller` (identity) and a separate capabilities field as two things that must agree is
+// exactly the two-sources-of-truth shape this ADR found buggy repeatedly elsewhere. A session with
+// `require_authority_ == true` (`set_require_authority()`, below) consults ONLY `authority`, never
+// `caller`, on a `StartRun`/`ResolveInteraction` that carries both (ADR-061 §20.4) -- there is no
+// agreement check because there is no code path where both are read.
+// ae-naming-lint: allow RequestAuthority — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
+struct RequestAuthority {
+    agentengine::Principal principal;  // per-request identity, distinct from the session's own principal_
+    // Owned, not borrowed: the CapabilitySet a per-request bearer credential resolves to must outlive
+    // the coroutine frame that constructed this RequestAuthority (ADR-061 §20.1/§20.3) -- a raw
+    // pointer/reference into that frame would dangle the moment start_run()/resolve_interaction()
+    // returns, while EffectContext::capabilities (core/effect_context.hpp) is read again by a LATER,
+    // unrelated call.
+    std::shared_ptr<agentengine::CapabilitySet const> capabilities;
+    std::chrono::steady_clock::time_point expiry{};
+    [[nodiscard]] bool live(std::chrono::steady_clock::time_point now) const noexcept {
+        return now < expiry;
+    }
+};
+
 // ae-naming-lint: allow StartRun — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct StartRun {
     Message input;
     std::optional<SessionCaller> caller = std::nullopt;
+    // ADR-061 §20.1: additive, defaulted -- every existing `StartRun{input}`/`StartRun{input, caller}`
+    // call site is unaffected. Consulted only by a `require_authority_ == true` session (§20.4); a
+    // non-Tier-3 session's admission check is byte-for-byte unchanged from before this field existed.
+    std::optional<RequestAuthority> authority = std::nullopt;
 };
 
 // ae-naming-lint: allow ResolveInteraction — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
@@ -269,6 +310,8 @@ struct ResolveInteraction {
     // field-ordering convention -- every existing positional `ResolveInteraction{a,b,c}` call site
     // is unaffected, the 4th field simply defaults to `std::nullopt`).
     std::optional<std::string> answer = std::nullopt;
+    // ADR-061 §20.1: same additive, defaulted shape as StartRun::authority above.
+    std::optional<RequestAuthority> authority = std::nullopt;
 };
 
 struct AgentResponse {
@@ -347,7 +390,8 @@ AE_JSON_SCHEMA(ScheduleWakeupReply, handle_id)
 // same reason `Background<max_concurrent>`'s own enforcement lives inside `background_task()`'s body
 // rather than a static `ToolDescriptor::capability_ceiling` entry, not this tool's own compile-time
 // declared ceiling (which a generic `invoke_tool()` step-4/7 bind could only check for bare
-// existence, never the live count `schedule_wakeup()` itself already checks correctly).
+// existence, never the live count `schedule_wakeup_impl()` (ADR-061 §20.5) itself already checks
+// correctly).
 // ae-naming-lint: allow ScheduleWakeupTool — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct ScheduleWakeupTool : agentengine::Tool<ScheduleWakeupTool> {
     static constexpr std::string_view name = "schedule_wakeup";
@@ -394,8 +438,11 @@ struct PendingCodeActAsk {
 // (notably: no created_at_ns/updated_at_ns, a deliberate narrowing vs. the Quark original's own
 // AgentSessionRecord; history/state/metadata are likewise not carried, same "no Message/ContentItem
 // serialization yet" gap the original named). `to_record()`/`restore_from_record()` (AgentSession
-// member functions, below) are the only two places that cross between the in-process type and this
-// shape, so the field list can't drift between them silently.
+// member functions, below) and `make_tombstone_record()` (free function, below) are the only three
+// places that cross between the in-process type and this shape -- ADR-061 §24.1 found
+// `delete_session()` had been hand-building one directly, silently contradicting this comment's own
+// former "only two places" claim; `make_tombstone_record()` closes that gap rather than leaving a
+// fourth hand-built site for the next one to find.
 // ae-naming-lint: allow AgentSessionRecord — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct AgentSessionRecord {
     std::string session_id;
@@ -405,7 +452,25 @@ struct AgentSessionRecord {
     std::uint64_t run_counter = 0;
     std::uint64_t turn_index = 0;
     std::vector<Interaction> open_interactions;
+    // ADR-061 §22.1: whether this session required per-request authority (Tier 3). Carried through
+    // fork_from()/restore_from_record() (below) so a fork or a restart of a Tier-3 session cannot
+    // silently downgrade to the caller-only admission path -- fail-closed direction (§21a Finding 1).
+    bool require_authority = false;
 };
+
+// ADR-061 §24.1: the ONE other sanctioned way to construct an AgentSessionRecord outside
+// to_record() -- replacing delete_session()'s previous direct field-by-field build. The
+// `require_authority` value chosen here is inert either way (load_agent_session_snapshot(), below,
+// returns nullopt for any deleted==true record before require_authority is ever read back), but it
+// is now a real, explicit choice this function states, not an omission the type system happened to
+// paper over.
+[[nodiscard]] inline AgentSessionRecord make_tombstone_record(std::string session_id) {
+    AgentSessionRecord rec;
+    rec.session_id        = std::move(session_id);
+    rec.deleted            = true;
+    rec.require_authority = false;
+    return rec;
+}
 
 // interaction_to_json()/interaction_from_json() live in interaction_codec.hpp -- shared with
 // rt::WorkflowSupervisor's own record codec (see that header's own banner for why this used to be a
@@ -423,9 +488,16 @@ struct AgentSessionRecord {
         {"run_counter", json::Value::make_number(static_cast<double>(rec.run_counter))},
         {"turn_index", json::Value::make_number(static_cast<double>(rec.turn_index))},
         {"open_interactions", json::Value::make_array(std::move(interactions))},
+        {"require_authority", json::Value::make_bool(rec.require_authority)},
     });
 }
 
+// ADR-061 §22.1: `require_authority` is REQUIRED below, matching this function's own established
+// strictness for every other field (deleted/run_counter/turn_index are all required, none defaulted-
+// on-absence) -- a deliberate breaking change to the record wire schema: a pre-this-change persisted
+// snapshot fails to deserialize ("malformed AgentSessionRecord") rather than silently defaulting
+// require_authority to false. Accepted without a migration path: no real snapshot deployment exists
+// yet (Milestones 8-9, where one first would, have not started).
 [[nodiscard]] inline result<AgentSessionRecord> agent_session_record_from_json(json::Value const& v) {
     json::Value const* session_id           = v.find("session_id");
     json::Value const* principal_id         = v.find("principal_id");
@@ -434,11 +506,13 @@ struct AgentSessionRecord {
     json::Value const* run_counter          = v.find("run_counter");
     json::Value const* turn_index           = v.find("turn_index");
     json::Value const* open_interactions    = v.find("open_interactions");
+    json::Value const* require_authority    = v.find("require_authority");
     if (session_id == nullptr || !session_id->is_string() || principal_id == nullptr ||
         !principal_id->is_string() || principal_tenant_id == nullptr ||
         !principal_tenant_id->is_string() || deleted == nullptr || !deleted->is_bool() ||
         run_counter == nullptr || !run_counter->is_number() || turn_index == nullptr ||
-        !turn_index->is_number() || open_interactions == nullptr || !open_interactions->is_array()) {
+        !turn_index->is_number() || open_interactions == nullptr || !open_interactions->is_array() ||
+        require_authority == nullptr || !require_authority->is_bool()) {
         return std::unexpected(error{failure_class::contract, "malformed AgentSessionRecord",
                                       "rt.agent_session.record.malformed"});
     }
@@ -449,6 +523,7 @@ struct AgentSessionRecord {
     rec.deleted             = deleted->as_bool();
     rec.run_counter         = static_cast<std::uint64_t>(run_counter->as_number());
     rec.turn_index          = static_cast<std::uint64_t>(turn_index->as_number());
+    rec.require_authority   = require_authority->as_bool();
     rec.open_interactions.reserve(open_interactions->as_array().size());
     for (json::Value const& item : open_interactions->as_array()) {
         result<Interaction> parsed = interaction_from_json(item);
@@ -502,10 +577,31 @@ public:
     }
     [[nodiscard]] bool has_chat_client() const noexcept { return chat_client_.has_value(); }
 
-    void set_capabilities(agentengine::CapabilitySet const* capabilities) noexcept {
-        capabilities_ = capabilities;
+    // ADR-061 §26.1: no longer `noexcept` (§28.1) -- constructing the owning `shared_ptr`'s control
+    // block is a real allocation (the non-owning `(pointer, deleter)` form still allocates a control
+    // block even though it never deletes the pointee), so this can now throw `std::bad_alloc`. Cold
+    // setup path only (CONVENTIONS.md: "Exceptions may surface only from cold setup paths") -- never
+    // called from a per-request or protocol-dispatch path; every real caller is session construction/
+    // wiring code. A caller of this function must not itself be `noexcept` without wrapping the call
+    // (ADR-061 §29b proved the intended try/catch pattern degrades gracefully; a `noexcept` caller
+    // that does not catch still terminates, confirmed by the same round's negative control).
+    void set_capabilities(agentengine::CapabilitySet const* capabilities) {
+        capabilities_ = std::shared_ptr<agentengine::CapabilitySet const>(
+            capabilities, [](agentengine::CapabilitySet const*) noexcept {});
     }
-    [[nodiscard]] agentengine::CapabilitySet const* capabilities() const noexcept { return capabilities_; }
+    [[nodiscard]] agentengine::CapabilitySet const* capabilities() const noexcept {
+        return capabilities_.get();
+    }
+
+    // ADR-061 §20.2: session-level, set once at wiring time -- replacing an earlier, abandoned design
+    // (§17.2) that put this on every StartRun/ResolveInteraction message individually, which §21a
+    // Finding proved forgettable on a session's second message. A Tier-3 listener wiring up a session
+    // it fronts MUST call this with `true` unconditionally; this ADR does not consider a default-
+    // `false` Tier-3 session a safe configuration (§20.2's own named residual -- no construction-level
+    // guard catches a listener that forgets this call; it is a real, still-open, documented risk, not
+    // silently assumed closed).
+    void set_require_authority(bool require) noexcept { require_authority_ = require; }
+    [[nodiscard]] bool require_authority() const noexcept { return require_authority_; }
 
     void set_approval_decider(agentengine::ApprovalDecider approve) { approval_decider_ = std::move(approve); }
     [[nodiscard]] agentengine::ApprovalDecider const& approval_decider() const noexcept {
@@ -581,18 +677,46 @@ public:
     // error result rather than a fabricated response -- see each branch's own comment for which error
     // code, matching the original's "never fabricate a response" rule exactly, just expressed as a
     // return value instead of a never-answered Ask.
-    task<result<AgentResponse>> start_run(StartRun request) {
+    // ADR-061 §20.5: `now` is caller-supplied (I5), defaulted to `std::chrono::steady_clock::now()`
+    // so the ~155 existing non-Tier-3 call sites (none of which pass `authority` either, and so never
+    // reach the branch that reads `now` at all) are unaffected -- the default is evaluated at each
+    // call site, not read from inside this function's body, so the "no internal clock read" discipline
+    // still holds; it exists purely to bound the size of this mechanical migration.
+    task<result<AgentResponse>> start_run(
+            StartRun request,
+            std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now()) {
         AsyncMutex::Guard guard = co_await session_mutex_.lock();  // I1 -- see file banner
         drain_background_completions_locked();  // Slice 3 -- see file banner
 
-        if (request.caller.has_value() &&
-            !agentengine::principal_admitted_for(
-                agentengine::Principal{request.caller->id, request.caller->tenant_id}, principal_)) {
+        // ADR-061 §20.4: branches on session MODE first, rather than widening a shared condition to
+        // `caller.has_value() || authority.has_value()` -- the shape that broke once already (X3): a
+        // `require_authority_` session consults ONLY `authority`; a `caller`-only request is rejected
+        // outright, never silently admitted through the other branch. No code path reads both.
+        if (require_authority_) {
+            if (!request.authority.has_value()) {
+                ++admission_denied_count_;
+                co_return std::unexpected(error{failure_class::policy,
+                    "this session requires per-request authority", "run.authority_required"});
+            }
+            if (!agentengine::principal_admitted_for(request.authority->principal, principal_)) {
+                ++admission_denied_count_;
+                co_return std::unexpected(error{failure_class::policy,
+                    "caller not admitted for this session", "run.admission_denied"});
+            }
+        } else if (request.caller.has_value() &&
+                   !agentengine::principal_admitted_for(
+                       agentengine::Principal{request.caller->id, request.caller->tenant_id},
+                       principal_)) {
             ++admission_denied_count_;
-            co_return std::unexpected(agentengine::error{
-                agentengine::failure_class::policy, "caller not admitted for this session",
+            co_return std::unexpected(error{
+                failure_class::policy, "caller not admitted for this session",
                 "run.admission_denied"});
         }
+
+        // ADR-061 §20.3/§22.3: written here, before any other branch below could reach a `held`/
+        // `effect_context_.capabilities` consumer.
+        result<void> applied = apply_dispatch_authority(request.authority, now);
+        if (!applied) co_return std::unexpected(applied.error());
 
         // ADR-057 §9 / §4 Finding A2: an open `codeact_ask` interaction must reject a fresh
         // `StartRun` too, unlike a plain `input`/`auth` interaction (ADR-029 finding #5's own,
@@ -616,8 +740,9 @@ public:
 
         run_counter_ += 1;
         run_tokens_consumed_ = 0;
-        effect_context_.principal    = principal_;
-        effect_context_.capabilities = capabilities_;
+        // ADR-061 §20.3: principal/capabilities are already set by apply_dispatch_authority() above
+        // -- setting them again here from session-level state would silently overwrite a correctly-
+        // resolved per-request authority, reproducing the exact bug this mechanism exists to close.
         effect_context_.run_id       = session_id_ + ":run:" + std::to_string(run_counter_);
         effect_context_.turn_index   = 0;
         last_run_id_ = effect_context_.run_id;
@@ -643,18 +768,42 @@ public:
     }
 
     // Replaces `handle(quark::Ask<ResolveInteraction, AgentResponse> const&)`.
-    task<result<AgentResponse>> resolve_interaction(ResolveInteraction request) {
+    task<result<AgentResponse>> resolve_interaction(
+            ResolveInteraction request,
+            std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now()) {
         AsyncMutex::Guard guard = co_await session_mutex_.lock();  // I1 -- see file banner
         drain_background_completions_locked();  // Slice 3 -- see file banner
 
-        if (request.caller.has_value() &&
-            !agentengine::principal_admitted_for(
-                agentengine::Principal{request.caller->id, request.caller->tenant_id}, principal_)) {
+        // ADR-061 §20.4: same mode-branch shape as start_run() -- see that function's own comment.
+        if (require_authority_) {
+            if (!request.authority.has_value()) {
+                ++admission_denied_count_;
+                co_return std::unexpected(error{failure_class::policy,
+                    "this session requires per-request authority", "run.authority_required"});
+            }
+            if (!agentengine::principal_admitted_for(request.authority->principal, principal_)) {
+                ++admission_denied_count_;
+                co_return std::unexpected(error{failure_class::policy,
+                    "caller not admitted for this session", "run.admission_denied"});
+            }
+        } else if (request.caller.has_value() &&
+                   !agentengine::principal_admitted_for(
+                       agentengine::Principal{request.caller->id, request.caller->tenant_id},
+                       principal_)) {
             ++admission_denied_count_;
-            co_return std::unexpected(agentengine::error{
-                agentengine::failure_class::policy, "caller not admitted for this session",
+            co_return std::unexpected(error{
+                failure_class::policy, "caller not admitted for this session",
                 "run.admission_denied"});
         }
+
+        // ADR-061 §22.3: placed HERE, immediately after admission and before EVERY later branch --
+        // not just before the approved/!approved split further down. resolve_interaction() has five
+        // real branches after admission (interaction-lookup validity, the codeact_ask early return at
+        // the `resolve_codeact_ask()` call below, `resolve_interaction_record()`, then the approved/
+        // !approved split) -- §21b/§23a found a placement claim that only named the last of these was
+        // not actually safe against the codeact_ask branch. This dominates all of them.
+        result<void> applied = apply_dispatch_authority(request.authority, now);
+        if (!applied) co_return std::unexpected(applied.error());
 
         auto it = std::find_if(open_interactions_.begin(), open_interactions_.end(),
                                 [&](Interaction const& i) {
@@ -720,7 +869,8 @@ public:
             co_return co_await run_rounds();
         }
 
-        SessionContext session_ctx{session_id_, principal_, history_};
+        // ADR-061 §20.7: effect_context_.principal, not principal_ -- per-request, not session-level.
+        SessionContext session_ctx{session_id_, effect_context_.principal, history_};
         result<ContextContribution> contribution =
             co_await history_provider_.on_context(session_ctx, effect_context_);
         if (!contribution) {
@@ -731,7 +881,10 @@ public:
         }
         ToolTable const tool_table = ToolTable::from_descriptors(contribution->tools);
         CapabilitySet const empty_caps = CapabilitySet::grant_root({});
-        CapabilitySet const& held      = capabilities_ ? *capabilities_ : empty_caps;
+        // ADR-061 §20.6: per-request, not session-level -- effect_context_.capabilities is freshly
+        // written by apply_dispatch_authority() at the top of every real entry point (start_run(),
+        // resolve_interaction()) before this is ever reached.
+        CapabilitySet const& held      = effect_context_.capabilities ? *effect_context_.capabilities : empty_caps;
         ApprovalDecider const one_shot_approve = [](std::string_view, std::string const&) { return true; };
 
         std::vector<ToolResult> results;
@@ -776,6 +929,14 @@ public:
                     std::optional<std::size_t> history_prefix_len = std::nullopt) {
         session_id_ = std::move(new_session_id);
         principal_  = source.principal_;
+        // ADR-061 §22.1/§21a Finding 1: fail-closed carry-forward -- a fork of a Tier-3 session must
+        // stay Tier-3 by default. Not copying this alongside principal_ (the identity) was a real,
+        // test-proven gap (a forked session was immediately start_run()-able with require_authority_
+        // silently back at its unsafe default). capabilities_ is deliberately still NOT copied here --
+        // a pre-existing gap unrelated to Tier 3, a non-issue for a require_authority_==true fork
+        // (that mode never reads capabilities_) and unchanged behavior for a ==false fork (which
+        // needs set_capabilities() re-called after fork_from(), exactly as before this change).
+        require_authority_ = source.require_authority_;
         std::size_t const n = std::min(history_prefix_len.value_or(source.history_.size()),
                                         source.history_.size());
         history_.assign(source.history_.begin(), source.history_.begin() + static_cast<std::ptrdiff_t>(n));
@@ -879,6 +1040,7 @@ public:
         rec.run_counter         = run_counter_;
         rec.turn_index          = effect_context_.turn_index;
         rec.open_interactions   = open_interactions_;
+        rec.require_authority   = require_authority_;  // ADR-061 §22.1
         return rec;
     }
 
@@ -890,6 +1052,7 @@ public:
                                           : std::string{};
         effect_context_.turn_index = rec.turn_index;
         open_interactions_ = rec.open_interactions;
+        require_authority_ = rec.require_authority;  // ADR-061 §22.1 -- fail-closed carry-forward
     }
 
     // The real, in-flight-safe way to read this session's durable state out: acquires
@@ -912,16 +1075,28 @@ public:
 
     // ---- Slice 3: standing effects / background tasks (file banner has the design writeup) --
 
-    // PLAIN, UNLOCKED -- matches the original's own asymmetry exactly; see file banner. Runs
-    // tool_pipeline.hpp's background_task() (steps 1-7 synchronous, step 8 onward a detached
-    // std::thread) unchanged, wiring on_complete to push into background_completions_ instead of
-    // the original's self.tell(BackgroundTaskDone{...}).
-    [[nodiscard]] result<agentengine::StandingEffect> start_background_task(
+    // ADR-061 §20.5/§24.2: NOW LOCKED -- this deliberately breaks the file banner's originally-
+    // documented "PLAIN, UNLOCKED... matches the original's own asymmetry exactly" parity. Confirmed
+    // (grep, repo-wide, re-verified across three separate red-team rounds) to have zero real callers
+    // in product code -- only tests call it directly -- so nothing in shipped code depended on it
+    // staying unlocked, and I1 makes an unlocked mutator of session-scoped state (standing_effects_,
+    // standing_effect_counter_) a real hazard once Tier 3 makes a session reachable from more than one
+    // concurrently-arriving caller. `authority`/`now` default so every existing non-Tier-3 test caller
+    // needs only to add `co_await`.
+    [[nodiscard]] task<result<agentengine::StandingEffect>> start_background_task(
         ToolTable const& table, ToolCallRequest const& request,
+        std::optional<RequestAuthority> const& authority = std::nullopt,
+        std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now(),
         ApprovalDecider const& approve = ApprovalDecider{}) {
-        if (!capabilities_) {
-            return std::unexpected(error{failure_class::policy, "session has no granted capabilities",
-                                          "standing_effect.no_capabilities"});
+        AsyncMutex::Guard guard = co_await session_mutex_.lock();  // I1 -- see file banner
+
+        result<void> applied = apply_dispatch_authority(authority, now);  // <-- resolved FIRST
+        if (!applied) co_return std::unexpected(applied.error());
+
+        if (!effect_context_.capabilities) {  // reads the field THIS call just populated, never stale
+            co_return std::unexpected(error{failure_class::policy,
+                                             "session has no granted capabilities",
+                                             "standing_effect.no_capabilities"});
         }
         std::size_t const current_count = static_cast<std::size_t>(std::count_if(
             standing_effects_.begin(), standing_effects_.end(),
@@ -936,7 +1111,7 @@ public:
 
         std::weak_ptr<BackgroundCompletionQueue> weak_queue = background_completions_;
         result<void> submitted = background_task(
-            table, *capabilities_, request, effect_context_, approve, current_count,
+            table, *effect_context_.capabilities, request, effect_context_, approve, current_count,
             [weak_queue, handle_id, call_id = request.call_id](ToolResult /*result_out*/,
                                                                  ToolInvocationAudit audit) mutable {
                 if (std::shared_ptr<BackgroundCompletionQueue> q = weak_queue.lock()) {
@@ -945,7 +1120,7 @@ public:
                         BackgroundTaskDone{std::move(handle_id), std::move(call_id), audit.ok});
                 }  // else: session (and its queue) already gone -- drop, no UAF, no residue to clean up
             });
-        if (!submitted) return std::unexpected(submitted.error());
+        if (!submitted) co_return std::unexpected(submitted.error());
 
         agentengine::StandingEffect effect;
         effect.handle_id    = handle_id;
@@ -958,7 +1133,7 @@ public:
 
         emit_run_event_for(owner_run_id, run_event_kind::tool_call_started,
                             run_event_payload::ToolCallStarted{request.call_id, request.tool_name});
-        return effect;
+        co_return effect;
     }
 
     [[nodiscard]] std::vector<agentengine::StandingEffect> const& list_standing_effects() const noexcept {
@@ -988,50 +1163,25 @@ public:
 
     // ---- Slice 4: schedule_wakeup (file banner has the design writeup) -----------------------
 
-    [[nodiscard]] result<agentengine::StandingEffect> schedule_wakeup(
-        std::chrono::milliseconds delay, std::string label, std::chrono::steady_clock::time_point now) {
-        if (!capabilities_) {
-            return std::unexpected(error{failure_class::policy, "session has no granted capabilities",
-                                          "standing_effect.no_capabilities"});
-        }
-        auto const schedule_cap = capabilities_->find_schedule();
-        if (!schedule_cap.has_value()) {
-            return std::unexpected(error{failure_class::policy,
-                                          "Schedule<max_horizon, max_active> not granted",
-                                          "schedule_wakeup.not_granted"});
-        }
-        if (delay < std::chrono::milliseconds{0} ||
-            std::chrono::duration_cast<std::chrono::seconds>(delay) > schedule_cap->max_horizon) {
-            return std::unexpected(error{failure_class::policy,
-                                          "delay exceeds the granted Schedule<max_horizon>",
-                                          "schedule_wakeup.horizon_exceeded"});
-        }
-        std::size_t const current_count = static_cast<std::size_t>(std::count_if(
-            standing_effects_.begin(), standing_effects_.end(),
-            [](agentengine::StandingEffect const& e) {
-                return e.kind == agentengine::standing_effect_kind::schedule_wakeup;
-            }));
-        if (current_count >= schedule_cap->max_active) {
-            return std::unexpected(error{failure_class::resource, "Schedule<max_active> ceiling reached",
-                                          "schedule_wakeup.capacity_exceeded"});
-        }
-
-        std::string const handle_id =
-            session_id_ + ":standing:" + std::to_string(++standing_effect_counter_);
-
-        agentengine::StandingEffect effect;
-        effect.handle_id    = handle_id;
-        effect.session_id   = session_id_;
-        effect.principal_id = effect_context_.principal.id;
-        effect.run_id       = effect_context_.run_id;
-        effect.kind         = agentengine::standing_effect_kind::schedule_wakeup;
-        effect.label        = label;
-        effect.fire_at      = now + delay;
-        standing_effects_.push_back(effect);
-
-        emit_run_event_for(effect_context_.run_id, run_event_kind::state_changed,
-                            run_event_payload::StateChanged{"schedule_wakeup armed: " + label});
-        return effect;
+    // ADR-061 §20.5: a FOURTH real entry point, found while designing Tier 3 -- this function was
+    // exactly as unlocked/directly-callable as start_background_task() (no session_mutex_ guard, real
+    // test callers exist), but it is ALSO called internally by the offer-gate closure in run_rounds()
+    // (below), which runs ALREADY LOCKED. Locking this wrapper directly would self-deadlock against
+    // that internal call on a non-reentrant AsyncMutex -- so, split: schedule_wakeup_impl() (private,
+    // below) is the real unlocked logic taking exactly what it needs as parameters; this public
+    // wrapper resolves authority and locks for a direct/host caller; the internal closure calls
+    // schedule_wakeup_impl() directly, reusing what run_rounds() already resolved, no re-lock.
+    [[nodiscard]] task<result<agentengine::StandingEffect>> schedule_wakeup(
+        std::chrono::milliseconds delay, std::string label, std::chrono::steady_clock::time_point now,
+        std::optional<RequestAuthority> const& authority = std::nullopt) {
+        AsyncMutex::Guard guard = co_await session_mutex_.lock();  // I1 -- see file banner
+        result<void> applied = apply_dispatch_authority(authority, now);
+        if (!applied) co_return std::unexpected(applied.error());
+        CapabilitySet const empty_caps = CapabilitySet::grant_root({});
+        CapabilitySet const& held =
+            effect_context_.capabilities ? *effect_context_.capabilities : empty_caps;
+        co_return schedule_wakeup_impl(delay, std::move(label), now, held, effect_context_.principal,
+                                        effect_context_.run_id);
     }
 
     [[nodiscard]] std::vector<agentengine::StandingEffect> due_standing_effects(
@@ -1078,6 +1228,87 @@ private:
             emit_run_event_for(owner_run_id, run_event_kind::tool_call_finished,
                                 run_event_payload::ToolCallFinished{m.call_id, m.ok});
         }
+    }
+
+    // ADR-061 §20.3/§26.1: the ONE place `effect_context_.principal`/`.capabilities` get (re)written
+    // for a dispatch -- called immediately after admission passes, before any branch that could reach
+    // a `held`/`effect_context_.capabilities` consumer (§22.3: this placement rule is what makes it
+    // safe for every read downstream, in the SAME call, to never observe a stale value left over from
+    // a previous call). `now` is caller-supplied, never read from an ambient clock (I5).
+    [[nodiscard]] result<void> apply_dispatch_authority(
+            std::optional<RequestAuthority> const& authority,
+            std::chrono::steady_clock::time_point now) {
+        if (require_authority_) {
+            if (!authority.has_value()) {
+                return std::unexpected(error{failure_class::policy,
+                    "this session requires per-request authority; dispatcher supplied none",
+                    "run.authority_required"});
+            }
+            if (!authority->live(now)) {
+                return std::unexpected(error{failure_class::policy,
+                    "per-request authority has expired", "run.authority_expired"});
+            }
+            effect_context_.principal    = authority->principal;
+            effect_context_.capabilities = authority->capabilities;
+            return {};
+        }
+        // Tier-3 does not front this session -- session-level state is the only authority that has
+        // ever existed for it, unchanged from before this mechanism existed.
+        effect_context_.principal    = principal_;
+        effect_context_.capabilities = capabilities_;
+        return {};
+    }
+
+    // ADR-061 §20.5/§20.6/§19.6: the real schedule_wakeup logic, UNLOCKED, taking exactly what it
+    // needs as parameters instead of reading capabilities_/effect_context_ directly -- called both by
+    // the public schedule_wakeup() wrapper above (already resolved authority, already locked) and by
+    // the offer-gate closure in run_rounds() (below), which runs already locked via its own caller and
+    // must not re-lock. Deliberately outside tool_pipeline.hpp's held.bind() mechanism -- see
+    // ScheduleWakeupTool's own comment (above) for why: the real enforcement (does the session hold a
+    // live cap::Schedule grant, does delay fit max_horizon, is max_active already at capacity) is a
+    // live, per-call check a static capability_ceiling can't express, mirroring Background<
+    // max_concurrent>'s own in-body check for the same reason.
+    [[nodiscard]] result<agentengine::StandingEffect> schedule_wakeup_impl(
+        std::chrono::milliseconds delay, std::string label, std::chrono::steady_clock::time_point now,
+        CapabilitySet const& held, agentengine::Principal const& principal, std::string const& run_id) {
+        auto const schedule_cap = held.find_schedule();
+        if (!schedule_cap.has_value()) {
+            return std::unexpected(error{failure_class::policy,
+                                          "Schedule<max_horizon, max_active> not granted",
+                                          "schedule_wakeup.not_granted"});
+        }
+        if (delay < std::chrono::milliseconds{0} ||
+            std::chrono::duration_cast<std::chrono::seconds>(delay) > schedule_cap->max_horizon) {
+            return std::unexpected(error{failure_class::policy,
+                                          "delay exceeds the granted Schedule<max_horizon>",
+                                          "schedule_wakeup.horizon_exceeded"});
+        }
+        std::size_t const current_count = static_cast<std::size_t>(std::count_if(
+            standing_effects_.begin(), standing_effects_.end(),
+            [](agentengine::StandingEffect const& e) {
+                return e.kind == agentengine::standing_effect_kind::schedule_wakeup;
+            }));
+        if (current_count >= schedule_cap->max_active) {
+            return std::unexpected(error{failure_class::resource, "Schedule<max_active> ceiling reached",
+                                          "schedule_wakeup.capacity_exceeded"});
+        }
+
+        std::string const handle_id =
+            session_id_ + ":standing:" + std::to_string(++standing_effect_counter_);
+
+        agentengine::StandingEffect effect;
+        effect.handle_id    = handle_id;
+        effect.session_id   = session_id_;
+        effect.principal_id = principal.id;
+        effect.run_id       = run_id;
+        effect.kind         = agentengine::standing_effect_kind::schedule_wakeup;
+        effect.label        = label;
+        effect.fire_at      = now + delay;
+        standing_effects_.push_back(effect);
+
+        emit_run_event_for(run_id, run_event_kind::state_changed,
+                            run_event_payload::StateChanged{"schedule_wakeup armed: " + label});
+        return effect;
     }
 
     void emit_run_event(run_event_kind kind, RunEventPayload payload = run_event_payload::Empty{}) {
@@ -1250,7 +1481,8 @@ private:
 
         emit_run_event(run_event_kind::input_resolved, run_event_payload::InteractionRef{interaction_id});
 
-        SessionContext session_ctx{session_id_, principal_, history_};
+        // ADR-061 §20.7: effect_context_.principal, not principal_ -- per-request, not session-level.
+        SessionContext session_ctx{session_id_, effect_context_.principal, history_};
         result<ContextContribution> contribution =
             co_await history_provider_.on_context(session_ctx, effect_context_);
         if (!contribution) {
@@ -1261,7 +1493,10 @@ private:
         }
         ToolTable const tool_table = ToolTable::from_descriptors(contribution->tools);
         CapabilitySet const empty_caps = CapabilitySet::grant_root({});
-        CapabilitySet const& held      = capabilities_ ? *capabilities_ : empty_caps;
+        // ADR-061 §20.6: per-request, not session-level -- effect_context_.capabilities is freshly
+        // written by apply_dispatch_authority() at the top of every real entry point (start_run(),
+        // resolve_interaction()) before this is ever reached.
+        CapabilitySet const& held      = effect_context_.capabilities ? *effect_context_.capabilities : empty_caps;
         ApprovalDecider const one_shot_approve = [](std::string_view, std::string const&) { return true; };
 
         // Rebuilt directly from the STORED record, never from `pending_calls`' own
@@ -1344,13 +1579,17 @@ private:
     // otherwise byte-for-byte identical logic.
     task<result<AgentResponse>> run_rounds() {
         CapabilitySet const empty_caps = CapabilitySet::grant_root({});
-        CapabilitySet const& held      = capabilities_ ? *capabilities_ : empty_caps;
+        // ADR-061 §20.6: per-request, not session-level -- effect_context_.capabilities is freshly
+        // written by apply_dispatch_authority() at the top of every real entry point (start_run(),
+        // resolve_interaction()) before this is ever reached.
+        CapabilitySet const& held      = effect_context_.capabilities ? *effect_context_.capabilities : empty_caps;
 
         for (; !max_turns_.has_value() || effect_context_.turn_index < *max_turns_;
              ++effect_context_.turn_index) {
             emit_run_event(run_event_kind::turn_started, run_event_payload::Turn{effect_context_.turn_index});
 
-            SessionContext session_ctx{session_id_, principal_, history_};
+            // ADR-061 §20.7: effect_context_.principal, not principal_ -- per-request, not session-level.
+        SessionContext session_ctx{session_id_, effect_context_.principal, history_};
             result<ContextContribution> contribution =
                 co_await history_provider_.on_context(session_ctx, effect_context_);
             if (!contribution) {
@@ -1379,11 +1618,25 @@ private:
             // member). ONLY offered when the session actually holds a `cap::Schedule` grant: never
             // advertise a tool the model could never successfully call (a confusing, wasted turn), and
             // never let an ungranted session synthesize a de facto capability grant by merely existing.
-            if (capabilities_ && capabilities_->find_schedule().has_value()) {
+            // ADR-061 §20.6/§19.7: reuses the SAME `held` computed above (not a fresh session-level
+            // re-derivation) -- the offer decision and the enforcement decision now read the identical
+            // per-request source, closing the "offered but would-be-denied-differently" inconsistency
+            // a session-level re-check here would otherwise reopen.
+            if (held.find_schedule().has_value()) {
                 contribution->tools.push_back(make_tool_descriptor_with_invoke<ScheduleWakeupTool>(
-                    [this](ScheduleWakeupArgs args, EffectContext&) -> result<ScheduleWakeupReply> {
-                        auto effect = schedule_wakeup(std::chrono::milliseconds(args.delay_ms),
-                                                       std::move(args.label), std::chrono::steady_clock::now());
+                    [this](ScheduleWakeupArgs args, EffectContext& ctx) -> result<ScheduleWakeupReply> {
+                        // ADR-061 §20.6: `ctx` is the real, per-request EffectContext invoke_tool()
+                        // hands this closure -- calls schedule_wakeup_impl() DIRECTLY (never the
+                        // locking public schedule_wakeup() wrapper: this closure already runs inside
+                        // the session_mutex_ lock via run_rounds() -> invoke_tool(), and a non-
+                        // reentrant AsyncMutex would deadlock on a second co_await lock()).
+                        CapabilitySet const empty_caps = CapabilitySet::grant_root({});
+                        CapabilitySet const& call_held =
+                            ctx.capabilities ? *ctx.capabilities : empty_caps;
+                        auto effect = schedule_wakeup_impl(std::chrono::milliseconds(args.delay_ms),
+                                                            std::move(args.label),
+                                                            std::chrono::steady_clock::now(), call_held,
+                                                            ctx.principal, ctx.run_id);
                         if (!effect) return std::unexpected(effect.error());
                         return ScheduleWakeupReply{effect->handle_id};
                     }));
@@ -1676,9 +1929,19 @@ private:
     // stays open (erased from both together, `resolve_interaction()`'s codeact_ask branch below).
     std::unordered_map<std::string, PendingCodeActAsk> pending_codeact_asks_;
     std::optional<ChatClientT>                          chat_client_ = make_default_chat_client();
-    CapabilitySet const*                                capabilities_ = nullptr;
+    // ADR-061 §26.1: the session-level capability grant -- single source of truth, a shared_ptr (not
+    // a raw pointer kept in sync with a separate alias field, §24.3's design, superseded) so it can be
+    // copied directly into EffectContext::capabilities without constructing a second aliasing wrapper
+    // at read time. Still non-owning in the sense that matters: set_capabilities()'s (pointer,
+    // deleter) construction never deletes the pointee -- ownership of the real CapabilitySet stays
+    // with whoever calls set_capabilities(), unchanged from before this type change.
+    std::shared_ptr<CapabilitySet const>                capabilities_;
     HistoryProviderT                                    history_provider_;
     EffectContext                                       effect_context_;
+    // ADR-061 §20.2: session-level, set once at wiring time by whichever Tier-3 listener fronts this
+    // session (set_require_authority(), above). Defaults to false -- unchanged behavior for every
+    // embedded/non-Tier-3 session.
+    bool                                                  require_authority_ = false;
     std::optional<std::uint64_t>                        token_budget_;
     std::uint64_t                                        run_tokens_consumed_ = 0;
     std::optional<std::uint64_t>                         max_turns_;
@@ -1978,9 +2241,10 @@ template <class ChatClientT, class StateT, class HistoryProviderT, SessionStore 
     SessionDeletionReceipt receipt{};
     receipt.session_id = session.session_id();
 
-    AgentSessionRecord tombstone{};
-    tombstone.session_id = receipt.session_id;
-    tombstone.deleted    = true;
+    // ADR-061 §24.1: goes through the named factory, not a direct field-by-field build -- this exact
+    // site was the real, hand-built AgentSessionRecord construction §23a Finding 1 found silently
+    // contradicting the struct's own "only two places" comment.
+    AgentSessionRecord tombstone = make_tombstone_record(receipt.session_id);
     result<void> saved = store.save(receipt.session_id, encode_agent_session_record(tombstone));
     if (!saved) co_return std::unexpected(saved.error());
     receipt.durable_record_removed = true;

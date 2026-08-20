@@ -118,7 +118,7 @@ int main() {
     ae::CapabilitySet caps{};
     ae::EffectContext ctx{};
     ctx.principal = ae::Principal{"p-1", "tenant-1"};
-    ctx.capabilities = &caps;
+    ctx.capabilities = agentengine::borrow_capabilities(caps);
     ctx.trace_id = "trace-1";
     ctx.span_id = "span-1";
 

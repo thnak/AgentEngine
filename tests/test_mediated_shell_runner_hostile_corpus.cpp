@@ -71,7 +71,7 @@ int main() {
     });
     ExecState state{};
     EffectContext ctx{};
-    ctx.capabilities = &caps;
+    ctx.capabilities = agentengine::borrow_capabilities(caps);
 
     // Real content the mount's own `cat`/`ls` should see -- the target of every hijack/substitution
     // attempt below, so a successful attack would be trivially observable (the decoy or a

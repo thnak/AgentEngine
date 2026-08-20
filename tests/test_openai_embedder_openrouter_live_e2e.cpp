@@ -101,7 +101,7 @@ int main() {
     CapabilitySet held = CapabilitySet::grant_root({cap::Secret{kSecretName, std::chrono::seconds{0}}});
     EffectContext ctx;
     ctx.principal = Principal{"live-e2e-principal", ""};
-    ctx.capabilities = &held;
+    ctx.capabilities = agentengine::borrow_capabilities(held);
 
     using agentengine::test_support::run_task_sync;
 
@@ -200,7 +200,7 @@ int main() {
     {
         CapabilitySet empty;
         EffectContext denied = ctx;
-        denied.capabilities = &empty;
+        denied.capabilities = agentengine::borrow_capabilities(empty);
         auto resp = run_task_sync<result<std::vector<std::vector<float>>>>(
             embedder.embed_batch({"hi"}, denied));
         check(!resp.has_value(),

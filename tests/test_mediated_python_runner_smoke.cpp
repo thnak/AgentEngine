@@ -204,7 +204,7 @@ int main() {
             {Capability{cap::FsWrite{"work", "", std::nullopt, std::nullopt}},
              Capability{cap::FsRead{"work", "", std::nullopt}}});
         EffectContext ctx{};
-        ctx.capabilities = &caps;
+        ctx.capabilities = agentengine::borrow_capabilities(caps);
 
         // E2-C8 (positive control for E2-C5): "json" IS in this runner's package policy -- the
         // identical import that failed above now succeeds.

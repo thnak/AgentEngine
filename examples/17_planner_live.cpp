@@ -185,7 +185,7 @@ int main() {
 
     EffectContext ctx;
     ctx.principal    = agentengine::Principal{"example-17-principal", ""};
-    ctx.capabilities = &held;
+    ctx.capabilities = agentengine::borrow_capabilities(held);
 
     Workflow wf;
     wf.id        = "planner-live";

@@ -394,7 +394,7 @@ int main() {
         {cap::Secret{"openai-api-key", std::chrono::seconds{0}}, cap::Secret{"anthropic-api-key", std::chrono::seconds{0}}});
     EffectContext ctx;
     ctx.principal = Principal{"test-principal", ""};
-    ctx.capabilities = &held;
+    ctx.capabilities = agentengine::borrow_capabilities(held);
 
     ChatRequest const req = request_asking("hi");
 

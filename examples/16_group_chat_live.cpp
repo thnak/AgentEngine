@@ -152,7 +152,7 @@ int main() {
 
     EffectContext ctx;
     ctx.principal     = agentengine::Principal{"example-16-principal", ""};
-    ctx.capabilities  = &held;
+    ctx.capabilities  = agentengine::borrow_capabilities(held);
 
     // The SAME "moderator cycles among participants, bounded by the caller's round count" shape
     // 15_group_chat_and_planner.cpp uses -- just two live nodes instead of two plain functions.

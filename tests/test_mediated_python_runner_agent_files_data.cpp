@@ -115,7 +115,7 @@ int main() {
             Capability{cap::FsRead{"out", "", std::nullopt}},
             Capability{cap::FsWrite{"out", "", std::nullopt, std::nullopt}},
         });
-        ctx.capabilities = &caps;
+        ctx.capabilities = agentengine::borrow_capabilities(caps);
 
         // G2-I1: agent.files.input reads /input/<name> as bytes.
         {
@@ -253,7 +253,7 @@ int main() {
         {
             EffectContext narrow_ctx{};
             auto narrow_caps = CapabilitySet::grant_root({});  // nothing granted at all
-            narrow_ctx.capabilities = &narrow_caps;
+            narrow_ctx.capabilities = agentengine::borrow_capabilities(narrow_caps);
             ExecRequest req{"python",
                              "from agent import files\n"
                              "try:\n"
@@ -291,7 +291,7 @@ int main() {
         ExecState state{};
         EffectContext ctx{};
         auto caps = CapabilitySet::grant_root({Capability{cap::FsRead{"input", "", std::nullopt}}});
-        ctx.capabilities = &caps;
+        ctx.capabilities = agentengine::borrow_capabilities(caps);
 
         ExecRequest req{"python",
                          "import agent\n"

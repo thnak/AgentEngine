@@ -1188,6 +1188,12 @@ add_executable(test_rt_agent_session_identity_and_admission test_rt_agent_sessio
 target_link_libraries(test_rt_agent_session_identity_and_admission PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_agent_session_identity_and_admission COMMAND test_rt_agent_session_identity_and_admission)
 
+# ADR-061 §20-§29 (Tier 3 per-request authority mechanism) -- real positive/negative controls against
+# the compiled build, not just design text.
+add_executable(test_rt_agent_session_tier3_authority test_rt_agent_session_tier3_authority.cpp)
+target_link_libraries(test_rt_agent_session_tier3_authority PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_agent_session_tier3_authority COMMAND test_rt_agent_session_tier3_authority)
+
 # ---- ADR-037 Phase 2 -- porting test_agent_session_streaming_model_calls(.cpp) (ADR-034 streaming
 # turn loop), test_agent_session_response_format_leak_scan(.cpp) (ADR-035 Phase 1 leak scan), and
 # test_agent_session_run_event_stream(.cpp) (Milestone 7 Phase A run event stream) onto

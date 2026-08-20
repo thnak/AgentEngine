@@ -11,9 +11,102 @@
 > it.** Nothing else in this ADR depends on Quark: the security findings (§7a), the conformance
 > results, and every other red-team finding are transport- and runtime-independent.
 
-**Status:** Design, second iteration (2026-08-15) — red-teamed once, not yet proven or judged.
-Supersedes ADR-022 in effect (the reactor question is moot if no first-party listener is ever built)
-and re-scopes ADR-021.
+**Status:** Split by tier (2026-08-20). **Tier 1 — Judged (2026-08-20, project owner sign-off).**
+Proven in §11 (all six §10b claims CORRECT: 75/75 non-auth conformance, real SSRF and canary-scan
+teeth) and accepted as delivered in §12, with 011 §10 G2's `auth` suite (3/49) named explicitly as
+NOT met and scoped to a separate OAuth client follow-on, not folded into this sign-off. **Tier 3
+(host-fronted HTTP server role) remains open, Design.** §17 (sixth iteration) failed its red-team
+pass (§18) — the fourth consecutive iteration to do so (§8, §13, §15, §17). Per §18c's recommendation,
+§19 completed a full, verified, single-pass enumeration of every `capabilities_`/`principal_`/
+`effect_context_` read/write in `agent_session.hpp` before writing a further fix, finding **eight
+real authorization-relevant sites across three structurally distinct mechanisms** (not the four
+§17.1 assumed), a write-side gap (`resolve_interaction()` had no site populating per-request
+authority at all), and confirming X3's admission-gate bug. **§20 (seventh iteration) is written
+against that map**: a session-level `require_authority_` flag (replacing §17.2's per-message field,
+which 18b showed was forgettable per-call by construction), a single `RequestAuthority` bundle rather
+than two fields that must agree, an admission gate that branches on session mode instead of
+union-widening a condition (closing X3 without reintroducing an agreement check), and a fourth
+previously-unnamed unlocked entry point (`schedule_wakeup()` itself, not just its internal reads)
+split into a locked public wrapper plus an unlocked impl. **Red-teamed in §21: partially survives —
+the first Tier-3 iteration to hold up on more than one structural axis under independent checking**
+(the `EffectContext::capabilities` type-change blast radius, the `held`-reuse scoping, the
+write-ordering claim, the "zero callers" claims, and the admission-branch logic itself all check out).
+Does not fully survive: `require_authority_` is not carried by `fork_from()`/`restore_from_record()`
+— proven against a real passing test, not hypothetical (§21a Finding 1) — plus two real null-safety
+inconsistencies in the design text (§21a Findings 2-3) and a third recurrence of this ADR's
+residual-list-quietly-shrinks-each-round pattern (§21b, §16b, §18b). **§22 (eighth iteration) closes
+all four items §21c named**: fail-closed `require_authority_` carry-forward through `fork_from()`/
+`restore_from_record()` (a deliberate breaking change to the record wire schema, accepted since no
+real snapshot deployment exists yet), one null-safety idiom applied uniformly instead of two
+disagreeing ones, `resolve_interaction()`'s authority write moved to dominate all five of the
+function's real branches (not just the one §20.3 named), and the residual list re-derived
+item-for-item against §17.6's original superset rather than narrowed again. **Red-teamed in §23:
+partially survives, again, with narrower gaps than §20 but the same shape of gap.** All three fixes
+§22 was written for are correctly traced and genuinely close what §21 proved. But: a real production
+`AgentSessionRecord` construction site (`delete_session()`'s tombstone) undercuts §22.1's implicit
+construction-not-convention claim; §22.2's `start_background_task()` guard-ordering claim is asserted
+in prose rather than shown in merged code, the same failure shape this ADR has now caught three times;
+and — the most structurally interesting finding — §22.4's residual re-derivation, while faithfully
+matching §17.6 item-for-item, silently dropped two findings §21 itself generated (§21a Finding 4, the
+allocation-cost regression; §21b's ignored-`request.caller` finding), because "re-derive against
+§17.6" and "carry forward everything the last round found" are different instructions and only the
+first was given. **§24 (ninth iteration) closes all four §23c items**: `delete_session()`'s
+tombstone now goes through a named `make_tombstone_record()` factory instead of a direct field-by-
+field build, correcting the struct's own "only two construction sites" claim rather than just patching
+the instance found; `start_background_task()`'s guard is now shown in full merged code proving it
+runs after the authority write, not asserted in prose; §21a Finding 4 (the allocation-cost regression)
+is genuinely fixed via a `set_capabilities()`-time cached alias rather than a per-request allocation;
+§21b's ignored-`request.caller` finding gets a documentation-level fix (discoverability, not a runtime
+behavior change, named as such). §24.6 also states the process fix itself: future residual work must
+check the full historical superset AND everything the immediately preceding round found, not the
+historical anchor alone. **Red-teamed in §25: §24 survives** — the first Tier-3 iteration in this
+ADR's history to get a clean mechanism-pass verdict rather than "partially survives" (both hardest-
+probed risk areas, `capabilities_alias_`'s null-representation/`fork_from()` interaction and
+`resolve_codeact_ask()`'s early-return paths, came back genuinely clean under direct testing) and a
+closure-completeness pass confirming §24.5 breaks the three-round residual-drop pattern (§21→§22.4→
+§23b) for real. The one open gap is process, not mechanism: §24.6's fix is prose without structural
+enforcement, evidenced by this ADR's own history of that exact shape of fix already failing twice.
+§25c leaves two options for a possible tenth iteration — give `capabilities_`/`capabilities_alias_`
+a real structural guarantee, or accept it as a named residual and move toward this ADR's own `prove`
+phase against §20-§24's mechanism as it now stands. **§26 (tenth iteration) takes the structural-
+guarantee path**: `capabilities_` becomes the `shared_ptr` itself rather than a raw pointer kept in
+sync with a separate alias — one field, not two, so the specific "future maintainer forgets to update
+the alias" risk §25a named has no object left to apply to. Public API (`set_capabilities()`/
+`capabilities()`) unchanged; only the internal representation changes. **Red-teamed in §27: survives,
+with one real finding** — an independent pass EMPIRICALLY tested (compiled and ran, not just
+reasoned) the claim that `shared_ptr(nullptr, deleter)` behaves identically to a default-constructed
+empty `shared_ptr`, and found it doesn't fully: it allocates a real control block and invokes its
+deleter on destruction even for a null pointer, meaning `set_capabilities()` now allocates on every
+call inside a function still marked `noexcept` — a `bad_alloc` there would `std::terminate()`, a
+failure mode a plain pointer assignment never had. Latent since §24.3, only surfaced now under
+empirical testing. Low severity (config-time only, not attacker-reachable), but real. **§28 (eleventh iteration) drops
+the now-inaccurate `noexcept` from `set_capabilities()`** and adds the bookkeeping bucket §26.4 had
+skipped, closing 27b's milder recurrence in the same section that caused it. **Red-teamed hostile in
+§29: found the fix relocates rather than closes the terminate risk** (empirically confirmed by a
+compiled probe — a `noexcept`/non-catching caller still terminates) **and closed it directly rather
+than deferring**: §29b compiled and ran both a positive probe (a non-`noexcept`, `try`/`catch`-wrapped
+caller degrades gracefully) and a negative control (a `noexcept` caller still terminates, exit 127),
+establishing the real contract `set_capabilities()` callers must honor. **Tier-3's core mechanism
+(§20-§29) is now considered settled for design purposes** — the one remaining gap (does the real,
+not-yet-written Tier-3 listener wiring honor that contract) requires actual implementation code to
+verify, placing it in this ADR's `prove` phase rather than a further design iteration.
+
+**§30: the `prove` phase — §20-§29 implemented for real and proven against a compiled build.** Every
+mechanism piece is now in `include/agentengine/rt/agent_session.hpp`/`core/effect_context.hpp`, not
+design text. One real gap the design phase never surfaced: `EffectContext::capabilities`'s type change
+broke ~30 test/example files that construct an `EffectContext` directly and assign a raw pointer — no
+red-team round ever grepped outside `agent_session.hpp`'s "known" consumers. Fixed with a
+`borrow_capabilities()` helper. `tests/test_rt_agent_session_tier3_authority.cpp` (new, 10 scenarios)
+proves every real security claim against running code, including the central one: a per-request
+`authority` grant works with NO session-level grant, and a per-request grant that withholds a
+capability denies the call even when the SESSION level would have allowed it — the exact claim W1
+found false in §16a and every subsequent round claimed fixed on paper, now verified for real. Full
+build clean except two pre-existing, unrelated failures; full `ctest` 204/204 passing. §30.6/§30.7 have
+the residuals and status. Tier 2 (server
+role over stdio) is
+deprioritised to product work per §10.4 — the conformance harness is URL-only, so stdio yields no
+gate. Supersedes ADR-022 in effect (the reactor question is moot if no first-party listener is ever
+built) and re-scopes ADR-021.
 
 Two independent adversarial passes returned 27 findings (§7), four of which were **live security
 defects in shipped M7 code** rather than design problems — latent only because no inbound transport
@@ -1774,20 +1867,2454 @@ folded into this ADR's own decision.
 
 ## 12. Decision
 
-**Tier 1 is proven** (§11, all six §10b claims CORRECT) but **not yet Judged** — that sign-off is the
-project owner's, not the ADR's own author's, per `decisions/README.md`'s governance rule. What Tier 1
-concretely delivers: `agentengine_mcp_conformance_client` genuinely drives `McpClient` over real
-outbound HTTP against the official conformance harness, non-auth conformance is complete (75/75), the
-SSRF boundary between the operator-supplied endpoint and a guest-supplied one is real and now tested,
-and the transport surface is exactly as narrow as claimed (a `RequestSender`, nothing else).
+**Tier 1 is proven** (§11, all six §10b claims CORRECT) and **Judged (2026-08-20, project owner
+sign-off)** — accepted with full information of what it does and does not deliver, per
+`decisions/README.md`'s governance rule that sign-off is the project owner's, not the ADR's own
+author's. What Tier 1 concretely delivers: `agentengine_mcp_conformance_client` genuinely drives
+`McpClient` over real outbound HTTP against the official conformance harness, non-auth conformance is
+complete (75/75), the SSRF boundary between the operator-supplied endpoint and a guest-supplied one is
+real and now tested, and the transport surface is exactly as narrow as claimed (a `RequestSender`,
+nothing else).
 
-**What Tier 1 does NOT deliver, named so a sign-off decision is made with full information**:
+**What Tier 1 does NOT deliver, accepted as named residuals rather than blocking the sign-off above**:
 - **011 §10 G2 is not met.** `auth` is one of G2's four required suites and this driver has zero OAuth
   support. Closing it is real, scoped follow-on work (an MCP client-side OAuth flow), not a Tier 1 gap
   to paper over.
 - **Tier 3 (host-fronted HTTP server role) is untouched.** All 33 findings against §8 remain open;
-  §10.4's own research confirmed Tier 3 is the *only* path to G1.
+  §10.4's own research confirmed Tier 3 is the *only* path to G1. This is real, separate design work —
+  a fourth iteration, red-teamed and proven independently — not a residual of Tier 1's own scope.
 - **§10.2's admissibility policy declaration surface** is still deferred to 007 §5's rule language,
   which this project has repeatedly named as future work.
 
-*(Tier 3 needs the 33 open findings answered before it can be proven at all.)*
+*(Tier 3 needs the 33 open findings answered before it can be proven at all. Its own design→red-team→
+prove→judge cycle starts at §13.)*
+
+## 13. Fourth design iteration — Tier 3, host-fronted HTTP server role (2026-08-20)
+
+Written under §9i's six constraints (start from stdio — done, §10/§12 above; anything the host names,
+the host controls; enumerate principal sources by construction; one stream policy per seam, named;
+every spec citation grepped before it is written; every claim gets a positive control, security claims
+get teeth). Every code citation below was re-verified against current source today, not carried
+forward from §7/§9's dated line numbers — several have moved or no longer exist post-ADR-037, and one
+citation below (§13.3) corrects a finding from §9 that current source disproves.
+
+### 13.0 What this iteration reuses unmodified, and why that shrinks the remaining problem
+
+§9f already named four survivors; grepping today's tree adds a fifth, more consequential one:
+
+1. **The four-contract framing (§8.0)** — request admission, response emission, stream lifecycle,
+   authority lifetime are still the right decomposition; nothing in §9/§10 disputed it.
+2. **`EndpointId`-as-operator-approved-selection (§8.3)** — the host selects among endpoints the
+   operator configured; it never supplies an audience. Revised below (§13.6) only on HOW `EndpointId`
+   values are minted, not on this shape.
+3. **`OutboundResponse`/`ResponseStream`/`HandlerResult` (§8.3)** — untouched in shape, corrected below
+   (§13.7) only on which status/header obligations are engine-reachable, per §10.0's grepped
+   corrections to T7.
+4. **§10.2's six-value principal-provenance enum** (`anonymous`, `credential_verified`, `host_asserted`,
+   `operator_configured`, `derived`, `restored`) — already Judged as part of Tier 1's sign-off (§12) in
+   spirit, since Tier 1 built no principal-provenance mechanism of its own to contradict it. Reused
+   as-is; **it already closes S9 and S10** (§13.4).
+5. **The most consequential correction**: §9's S4 found `RequestAuthority::revoked_` in §8.1
+   "structurally disconnected from the mechanism ADR-009 accepted" and S3 found `AuthorityRef` reinvents
+   ADR-005 Design B "without citation." Both are right about §8.1's *invented* device. But grepping
+   `include/agentengine/core/tool_pipeline.hpp` today (not asserted from memory, per constraint 5) shows
+   ADR-009's real mechanism is **already wired into the pipeline that matters**: step 4/7 calls
+   `held.bind(requirement)` for every capability a tool declares (`tool_pipeline.hpp:437`, `:593`),
+   producing owned, unforgeable `BoundCapability` values (private constructor, `friend class
+   CapabilitySet` only, `trust/capability.hpp:526-547`); step 10 calls `b.revoke()` unconditionally,
+   success or failure (`:483`, `:630`); and for `background_task()` specifically, the **entire bind→
+   invoke→revoke sequence is moved into the detached thread's own closure** (`:626-630`), so a
+   backgrounded call's authority is bound for exactly its own real lifetime, not released early and not
+   held open past completion. §8.1 did not need a new device at all — it needed to notice this one
+   already exists and ask what's missing around it. §13.3 answers that question directly, and it is
+   much smaller than §8.1 assumed.
+
+### 13.1 Admission: credentials only. No host-assertion bridge in this iteration.
+
+§9's S1 and S2 killed Design G (launders a host-chosen identity into `verified_by_engine`) and Design
+F (its central citation was fabricated, and the "disjoint" claim is false — both paths still terminate
+in one `StartRun`-equivalent with no origin tag, confirmed again below at §13.4). Rather than a third
+attempt at a bridge, this iteration **narrows scope**: the protocol-endpoint surface (MCP/A2A/AG-UI
+server roles, host-fronted) admits **`credential_verified` principals only** — a request without a
+credential the engine itself validates is `anonymous`, full stop, and every 011 §8a/012/013 MUST-bearing
+surface refuses anything else. A host that has already authenticated its user by its own means (OIDC,
+session cookie, mTLS) and wants that fact to reach the engine uses the **existing, already-real**
+in-process path — `AgentSession::initialize(session_id, Principal, ...)` /
+`set_capabilities()` (`include/agentengine/rt/agent_session.hpp:505-508` and the `principal_`
+assignment cited at §13.4) — which is not a protocol-dispatcher entry point and was never claimed to be
+disjoint from it by construction; it is disjoint because **this iteration's protocol dispatchers simply
+never call it.** That is the honest version of what F reached for: not a structural guarantee about the
+codebase as a whole (S2's fabrication), but a scope commitment about what Tier 3's own new code paths
+do.
+
+**Cost, stated as plainly as §1 stated it for Design A**: a host with its own edge auth must forward (or
+have the engine mint — see below) a credential the engine can verify per request. This is real,
+recurring friction for that deployment shape, and it is deliberately not solved here. §13.9 names the
+bridge as future work, not as solved-by-omission.
+
+**One reuse that removes the friction's worst case without reopening S1.** An **embedded** host (in the
+same process, per 007 §1's actual definition — not a peer over IPC, which R11 already separated out and
+which stays out of scope) that wants to expose a protocol-dispatcher surface to *other* in-process code
+can mint a `credential_verified`-equivalent locally by calling the SAME bearer-token mint path
+(`trust/bearer_token.hpp`, ADR-021, proven) an external identity provider would, and hand the resulting
+token to its own adapter as if it arrived over the wire. This is not new mechanism — it is Design A used
+by a host against itself — and it does not launder identity, because the resulting principal's
+provenance is genuinely `credential_verified`: the engine validated a real, verifiable, MAC'd credential;
+it merely does not know or care that the same process signed it. S1's attack does not reproduce, because
+there is no exchange seam accepting an asserted `sub`/`tenant_id` on the engine's own signing authority —
+the host must possess (or be handed) a real signing key exactly as any other issuer would, and 018 §3's
+key-management obligations apply to it identically. Named explicitly as a real but narrow answer to the
+friction, not a general solution.
+
+### 13.2 One credential kind: reusable bearer access token. Drop the one-shot-assertion split.
+
+Design C (signed one-shot assertion) is already withdrawn (§8.2, for reasons R11 sharpened). With G
+withdrawn too (§13.1), **there is no remaining consumer of one-shot `jti`-single-use semantics** — S12's
+finding that "§8.4's replay split has nowhere to carry the discriminator" is resolved by removing the
+second kind rather than finding it a home. This directly:
+
+- **Closes R5.** `verify_bearer_token()`'s `replay_guard.check_and_record(...)` (currently unconditional
+  on every successful verification) is removed from the access-token path entirely. A bearer access
+  token is valid for repeat use within its `exp`, exactly as RFC 6750 describes and exactly as 018 §1's
+  HTTP row names — this was never a design trade-off, §7's R5 finding is simply correct that the
+  original mechanism modeled the wrong role, and iteration 4's fix is to stop modeling it. Bearer-token
+  replay (a captured token reused by an attacker) is answered the way bearer credentials are always
+  answered: transport confidentiality is a hard requirement, stated as such, not smuggled in as a
+  `TransportFacts` boolean (closing S13 — there is no split left for a boolean to gate).
+- **Moots S12/S13.** Both were findings against a two-kind split that no longer exists.
+- **R12 (verification latency)** still needs its own fix, now scoped smaller: with no replay map at all
+  on this path, `ReplayGuard`'s O(N)-under-one-mutex structure is simply not reached by access-token
+  verification. It is retained (unused by this path) only if a genuinely one-shot use reappears later;
+  named as dead code to remove, not dead code to keep "just in case."
+- **R6 still stands, unchanged**: a real `Authorization: Bearer <token>` decoder does not exist anywhere
+  in the tree (`BearerToken`'s only consumers remain its own header/`.cpp`/test — reconfirmed by grep
+  today). It needs building and fuzzing (ADR-015's pattern) before Tier 3 can admit a single real
+  request. Scoped as required implementation work, not redesigned here.
+- **R10 still stands, unchanged**: the decoded credential must be a move-only, unprintable type with no
+  path into `HeaderView` or any outbound client. `try_compile()` gates this at the prove phase.
+
+### 13.3 Per-request authority: no new device. Fix the one real gap in what's already built.
+
+Per §13.0 point 5, the mechanism is real and already correct for the *tool-invocation* half of the
+problem. What is missing is narrower than §8.1 assumed:
+
+**The gap, precisely.** `EffectContext::capabilities` is `CapabilitySet const*`, documented "borrowed;
+never owned here" (`include/agentengine/core/effect_context.hpp:19`). `background_task()` moves the
+*whole* `ctx` (containing this raw pointer) into its detached closure by value — `ctx = std::move(ctx)`
+(`tool_pipeline.hpp:626`) — and the pointer travels with it, still aimed at whatever `CapabilitySet`
+the caller passed as `held`. That is fine today because `held` is a per-*connection* member with
+process/session lifetime. **It stops being fine the moment `held` becomes a per-request, request-scoped
+value**, which is exactly what per-request authority requires — the dangling read R16 named is real, but
+it is scoped to exactly one field, not to the whole authority model. `ctx.bound_capabilities` (the
+`std::vector<BoundCapability> const*` used for the actual invocation, populated at step 7 and cleared
+after, `tool_pipeline.hpp:627-629`) is **not** the danger — `bound` is a value moved into the same
+closure, and each `BoundCapability` inside it owns its own `std::shared_ptr<InvocationTicket>`
+(`trust/capability.hpp:547`), so it is already safe under a request-scoped `held`.
+
+**The fix**: `EffectContext::capabilities` changes from `CapabilitySet const*` to
+`std::shared_ptr<const CapabilitySet>`. Nothing else about the ten-step pipeline changes — `held.bind(...)`
+still runs synchronously at step 4/7, before any detach, so the *shared_ptr* only needs to keep the
+per-request `CapabilitySet` alive long enough for that synchronous call plus however long a tool
+legitimately reads `ctx.capabilities` directly for a "read-only check" (the sanctioned use the
+`effect_context.hpp` comment names) inside `invoke()` — including inside the detached thread, which is
+exactly the case that needed fixing. A `shared_ptr` costs 16 bytes over the bare pointer; there is no
+new registry, no slot/generation pair, no lookup table, and therefore **none of S3's forgeability
+surface, S5's cross-tenant-revoke-by-guessing surface, or S3's unnamed-table-ownership gap** — there is
+nothing to forge, because the object crossing the boundary is the real, owned capability set, not a
+reference to it.
+
+**Revocation (R15, S4, S5), answered honestly rather than re-invented.** `revoke()` already fires
+unconditionally at step 10 for both the synchronous and backgrounded paths — that is real,
+already-proven ADR-009 behavior, unchanged by this ADR. What it does **not** do, and what no design in
+this ADR can make it do without reopening 006 §6b's own accepted scope: **stop a `tool->invoke()` call
+already running on a detached thread before that call returns on its own.** `tool_pipeline.hpp`'s own
+comment is explicit that step 8 is "not preemptible mid-call without real coroutines"
+(`:519` area) and 006 §6b's own Phase B outcome already named this a documented limit, not an oversight
+this ADR introduces. **Stated as the honest residual §7a/§9 both asked for**: authority for an in-flight
+native effect is bounded by that effect's own natural completion, never by external revocation, request
+deadline, or credential expiry arriving mid-call. What Tier 3 *can* and does bound is **new** work and
+**stream consumption** admitted after revocation/expiry — the next paragraph.
+
+**Streams (R15's other half, R22, R23, T12).** A stream does not hold a raw `bound` vector the way a
+single tool invocation does — it holds the request's `std::shared_ptr<const CapabilitySet>` for its own
+lifetime and, per constraint 4, uses `EvictAfter<N>` (013 §7 Q2's own already-resolved policy) rather
+than the lossless `Block` policy `core/stream.hpp` also offers — this is the one-policy-per-seam
+decision constraint 4 asked for, made explicit rather than left implicit as §8b's withdrawn claims 8/9
+left it. Liveness is re-checked **on a bounded interval timer, not only at emission boundaries** — T12's
+finding that an idle, event-sparse stream (011 §3.3's `subscriptions/listen`) never gets checked and so
+"passes vacuously" is closed by decoupling the check from emission entirely. `emit_run_event_for()`'s
+currently-discarded push outcome (`(void)run_event_producer_.push(...)`, R22) must instead observe
+`Terminated` and end the run's own emission — this is a real, scoped bug fix independent of anything
+else in this ADR. Multi-subscriber fan-out (R23: `enable_event_stream()` overwrites its single producer
+member, while 012 §2.3 makes identical ordered broadcast to every subscriber a MUST) is real,
+already-scoped infrastructure work — 013 §7 Q2 named the *policy*; Tier 3 is what makes N connections to
+one run the normal case, so it is the milestone that must build the fan-out, not defer it further.
+
+**T14 (unbounded, attacker-keyed progress-token map)**: `McpProgressProjector`'s
+`progress_by_token_[p.call_id]` map, keyed on the caller-chosen JSON-RPC request id, has no eviction. It
+gains a bound: erase-on-request-completion (the ordinary case) plus a hard per-session cap with
+oldest-eviction as the backstop, so a caller sending fresh ids cannot grow engine memory without bound
+even if the completion signal is itself never sent.
+
+### 13.4 The `AgentSession::principal_` collision (S7) and the unrecorded clock read (S8)
+
+**S7, re-verified against current source.** `include/agentengine/rt/agent_session.hpp:619-620` sets
+`effect_context_.principal = principal_; effect_context_.capabilities = capabilities_;` — `principal_`
+is the value passed to `initialize()`, fixed for the session's lifetime, not the current request's own
+freshly-derived identity. Under per-request authority this is exactly S7's bug: two identities exist
+(the session's fixed owner, and the request's own verified principal), and the wrong one silently wins.
+**The fix**: `effect_context_.principal` is populated from the *current request's* verified `Principal`
+at each dispatch, not from the cached `principal_` field. 018 §2 admission is unchanged (it already
+checks the request's caller against the session owner by id/tenant, `principal_admitted_for`) — this
+fix only changes *which* `Principal` value (the fresh one or the stale one) is what capability/audit
+code downstream actually sees once admission has already passed. **What this iteration does not
+attempt**: relaxing 018 §2 to admit a caller who is not the session owner, or giving one session
+multiple concurrent legitimate callers. That is S7's second, harder question, and it is named as an
+explicit non-goal at §13.9, not answered by omission — a session stays single-owner for this iteration.
+
+**S8, closed by using a boundary that already exists rather than inventing a new clock read.**
+`run_id`/`turn_index` are minted deterministically from a monotonic counter specifically so no
+unrecorded wall-clock read enters a replayable path (`effect_context.hpp`'s own comment, cited above).
+Authority expiry must follow the same discipline: **the expiry deadline is computed once, from the
+verified credential's `exp`, at request admission — an event boundary that is already recorded — and
+represented from then on as a `std::chrono::steady_clock::time_point` deadline** (matching
+`EffectContext::deadline`'s existing field and clock, `effect_context.hpp`), never as a repeated
+`system_clock::now()` read at each stream emission. This closes both halves of S8: no unrecorded read on
+the hot path, and no `system_clock`-vs-`steady_clock` mismatch (a settable wall clock can no longer
+extend or truncate authority after admission, because nothing downstream of admission reads wall-clock
+again).
+
+### 13.5 `EndpointId`: minted, not indexed (closes T8)
+
+§8.3's `EndpointId{std::uint32_t index}` is a dense, guessable index into operator config. T8 showed a
+lying or misconfigured index is uncontained when two logical resources share an audience-adjacent
+namespace. Per §9g's own constraint 2 ("a handle is a credential"), applied here exactly as it was
+applied to the (now-withdrawn) `AuthorityRef`: `EndpointId` is minted by the operator's own
+configuration step with CSPRNG entropy (`trust/secure_random.hpp`, already real since §7a's R3
+remediation — reused, not reinvented), unguessable, and the host presents the value verbatim rather than
+selecting a small integer. The shape §9f praised is unchanged (the host still only *selects among*
+operator-approved endpoints, never asserts a value the operator didn't mint) — only the entropy of the
+token itself changes, closing the containment gap without touching the design's actual logic.
+
+### 13.6 Response contract, dispatch source, and ownership — carried from §8.3, corrected per §10.0
+
+- **`OutboundResponse`/`ResponseStream`/`HandlerResult` (§8.3)** are reused as specified. §10.0's grepped
+  correction stands: `405` (legacy GET/DELETE, `Mcp-Session-Id`/`Last-Event-ID` ignored) is a real,
+  engine-determined status per the cited research source; `202` remains unconfirmed in any spec or
+  research file and is dropped from the response-contract obligation list rather than asserted.
+- **One dispatch source (R9), strengthened per T9.** §8.3 said the engine rejects any *disagreement*
+  between transport hints (`target`, `Mcp-Method`, `Mcp-Name`) and the JSON-RPC body. T9 showed that
+  rule alone is satisfied by a host that never surfaces the hints at all — "disagreement" needs two
+  values to disagree. Since 011 §7 makes `Mcp-Method`/`Mcp-Name` **MUST-carry**, the fix is presence,
+  not just consistency: their **absence** on a POST is itself a rejection, not a silent fallback to
+  body-only dispatch. A host cannot strip what it is required to carry and have the engine quietly
+  accept the request anyway.
+- **Ownership at the boundary (R24)** is reused as specified: the body is copied once at the boundary
+  and every downstream consumer (digest, parse, audit, a background task, a stream) works from the
+  owned copy, never a view into host memory.
+
+### 13.7 Conformance honesty (R19, R20, R21, T11) and the multi-replica gap (R18, T5, T16)
+
+- **Two numbers, via 011 §10's own already-adopted mechanism, not a new bespoke harness.** T11's finding
+  against §8.5 was specifically that a hand-maintained scenario-label harness with an author-chosen
+  denominator is *weaker* than the baseline mechanism 011 §10 already committed to ("a baselined-but-
+  now-passing check also exits non-zero, so the baseline cannot rot silently" — the same mechanism §11's
+  Tier 1 prove phase already used for real, `docs/research/2026-08-15-mcp-conformance-harness.md`). Tier
+  3 reuses that exact mechanism: every scenario is tagged engine-determined or fixture/host-determined in
+  the same baseline file the harness already reads, not a second, project-authored ledger. The
+  mutation-invariance check (claim 24's own shape) is unchanged: mutate the fixture and the
+  engine-attributable subset must not move.
+- **`EndpointId::surface` is a partial re-expression of 020 §4, named as partial (T16).** Row 10 and row
+  11 of §8.6's table contradicted each other; this iteration resolves it by not claiming both. The
+  engine-side method refusal (an admin method is unreachable on a `public_api`-surfaced `EndpointId`) is
+  real and engine-enforced. The socket-level guarantee 020 §4 actually states — never on the same
+  *listener* — is a host obligation the engine cannot see or enforce, named as such in the obligation
+  list, not folded into the engine-attributable number. **020 §8 Q2 is reopened**, tracked explicitly
+  (not silently, T16's finding) as a real open question this ADR's acceptance carries forward, because
+  both premises of its prior "in-process, same binary" resolution are gone under a host-owned listener.
+- **R18/011 §10 G3 (statelessness), decided rather than left as two options.** §8.6 listed "externalize
+  the task store" or "claim G3 only for the core suite" as an open trade. This iteration picks the
+  second for now: **G3 is claimed only for the suite scenarios that do not require multi-replica
+  round-robin**, and true statelessness (an adopter load-balancing N engine instances) is named as a
+  host obligation — sticky routing on `session_id`, reusing 020 §5's own already-specified HRW placement
+  scheme — not solved by externalizing task-store state, which is real distributed-systems work this
+  project's own roadmap already assigns to Milestone 9's Cluster hosting shape (014 §8 G6), not to this
+  ADR.
+- **T5's four-clause scope, made explicit.** If `task_id`/`run_id` decoupling (012 §1/§5) is ever done,
+  it is not a two-clause edit: 012 §2.3's push-notification dedup, 012 §8 G4, 012 §5a's OQ-4 resolution,
+  and 013 §2.2 all rely on the identity today and must be amended together or not at all. This iteration
+  does **not** attempt the decoupling — R1's mitigation (per-principal binding, §7a) already makes
+  enumerability defense-in-depth rather than the control — and records the full scope so a future
+  attempt does not repeat T5's finding of doing a quarter of the job.
+- **T4's `IdempotencyKey` fix reuses ADR-021's own precedent, not a new encoding.** §8.6 proposed adding
+  a principal/tenant dimension to the digest; T4 showed the real bug is `to_string()`'s raw colon
+  concatenation (`tool_pipeline.hpp`), which makes any additional string field a delimiter-injection
+  collision regardless of digest strength. The fix is the length-prefixed canonical encoding ADR-021
+  already built for exactly this class of problem (`trust/hmac.hpp`'s canonicalization, T4's own
+  citation) applied to `IdempotencyKey::to_string()`, with the tenant/principal dimension added on top of
+  the corrected encoding, not instead of it.
+- **T2 (operator-configured principal, 020 §3b triggers).** Already representable — §10.2's enum has
+  `operator_configured` — so this closes by inclusion: Tier 3's admissibility declaration surface (still
+  deferred to 007 §5's rule language, §13.9) must list `operator_configured` as a legitimate source for
+  a triggered run, and 019 §2's wake-condition table cross-reference gets the citation T2 found missing.
+
+### 13.8 Falsifiable claims, Tier 3 — supersedes §8b for every row this iteration touches
+
+Rows carried unchanged from §8b (11, 12, 20 — already proven) are not restated. New/replaced rows only;
+every security-relevant row states its positive control and its teeth per constraint 6.
+
+| # | Claim | Disproving experiment | Positive control / teeth |
+|---|---|---|---|
+| 1 | The protocol-endpoint surface admits `credential_verified` principals only; `host_asserted`/`operator_configured`/`derived`/`restored` are refused at every 011 §8a MUST | Attempt each non-`credential_verified` provenance against a MUST-bearing endpoint | Control: a real verified credential succeeds |
+| 2 | The same valid, unexpired access token authenticates N ≥ 2 successive requests with the same derived principal | Present one token twice | **Teeth:** reintroduce the removed `check_and_record` call; claim must then FAIL (proves the removal, not just the absence, is what's tested) |
+| 3 | `EffectContext::capabilities` (owned `shared_ptr`) and every `BoundCapability` in `ctx.bound_capabilities` remain valid for the full real duration of a backgrounded `tool->invoke()`, including after the originating request's synchronous dispatch has returned | ASan/TSan run: request completes, its per-request `CapabilitySet` would-be-destroyed, backgrounded tool still reads `ctx.capabilities` mid-call | Control: an in-flight backgrounded call using only synchronous-path capabilities behaves identically to today |
+| 4 | `revoke()` fires exactly once per bound capability, unconditionally, at the real completion of a backgrounded `invoke()` — never early, never omitted | Long-running background tool; assert capability still reflects "held" for the tool's entire real duration, revoked only after its actual return | **Already largely proven** by existing ADR-009 behavior (§13.0); this claim reconfirms it holds unchanged under a request-scoped (not connection-scoped) `held` |
+| 5 | An idle stream (no events for interval T) still re-evaluates its authority's expiry within T + bounded slop, independent of emission | Open a stream with `exp = now + 1s` against a tool that never emits; assert termination without any event ever having fired | Control: a live, non-expiring stream is never spuriously terminated by the same timer |
+| 6 | `progress_by_token_` size is bounded across an adversarial session sending unique ids with no completion signal | Flood distinct `call_id`s; assert memory/map size plateaus | Control: normal request/response pairs still track progress correctly within the bound |
+| 7 | A POST missing required `Mcp-Method`/`Mcp-Name` is rejected, never silently dispatched from the JSON-RPC body alone | Omit both headers on an otherwise well-formed `tools/call` | Control: present and agreeing headers dispatch normally |
+| 8 | `EndpointId` values are CSPRNG-derived and a guessed/adjacent value fails lookup rather than resolving to a different endpoint's audience | Enumerate small/adjacent integers against a real multi-endpoint config | Control: the operator-issued value resolves correctly |
+| 9 | `effect_context_.principal` reflects the CURRENT request's verified principal, not the session's `initialize()`-time value, once two different verified principals dispatch against the same session in sequence | Two sequential requests, two distinct (but both admission-passing, e.g. delegated) principals; assert the second's audit/capability context shows the second principal | Control: a single-caller session shows one consistent principal throughout, unchanged from today |
+| 10 | No credential/secret reaches stdout/stderr/logs/audit records over a full Tier 3 request cycle including a backgrounded call and an open stream | Canary-scan fixture per ADR-043/018 §7 G2's real precedent (correcting §11 claim 6's own citation error) | **Teeth:** plant a marker in a header value; scan must trip |
+
+### 13.9 What this iteration does not resolve — named, per §8c/§9g's own precedent
+
+- **In-flight native `invoke()` effects cannot be recalled once dispatched.** Bounded only by their own
+  completion. This is 006 §6b's own accepted scope, confirmed against current code at §13.3, not a gap
+  this ADR introduces or can close without reopening 006 §6b itself.
+- **The `rt::` message-boundary byte budget is not re-measured.** The porting note at the top of this ADR
+  already flags this; §13.3's `shared_ptr<const CapabilitySet>` fix does not cross `StartRun` the way
+  §8.1's `AuthorityRef` was designed to (it lives on `EffectContext`, constructed at dispatch time, not
+  minted into the request message itself) — but `include/agentengine/rt/agent_session.hpp:191-193`
+  states the `SessionCaller`-shaped size discipline was carried forward deliberately post-ADR-037, so
+  whether *any* part of this design crosses that boundary, and at what cost, needs a real measurement
+  against `rt::`'s actual structures before implementation, not an assumption either way.
+- **007 §5's policy engine (`Principal → CapabilitySet` derivation) still does not exist.** Every design
+  in this ADR, iteration 1 through 4, terminates in it. Tier 3 needs it to determine what capability set
+  a `credential_verified` principal actually holds; this ADR does not build it.
+- **The bridge for an out-of-process, already-authenticated host (a Sidecar per 020 §3) is not designed.**
+  R11 separated this from the in-process case explicitly; §13.1's embedded-host workaround does not
+  apply across an IPC boundary. Real, separate future work.
+- **The multi-caller/session-sharing question S7 raised is a named non-goal, not an open question left
+  ambiguous.** A session has exactly one legitimate caller (its `initialize()`-time owner or a principal
+  admitted by the unchanged 018 §2 rule) for this iteration. Relaxing that is real, separate design work
+  this ADR deliberately does not attempt.
+- **The decoder (R6), the O(1) verification fix now scoped smaller (R12), and the multi-subscriber
+  fan-out (R23)** are all real, unbuilt implementation work this design specifies the shape of but does
+  not itself build.
+- **All findings not named above as closed remain the honest status quo** — this section does not claim
+  a clean sweep; it claims a specific, checkable list, matching every prior iteration's own discipline.
+
+### 13.10 Next step
+
+Per this project's own `design → red-team → prove → judge` discipline (`decisions/README.md`) and the
+precedent every prior iteration of this ADR set, §13 is a **design**, not a proof. It needs an
+independent adversarial pass — fresh context, no exposure to this section's own reasoning — before any
+claim above is treated as more than a hypothesis. That pass has not run yet.
+
+## 14. Third red-team round — against §13 (2026-08-20)
+
+Two independent adversarial passes (fresh context each, disjoint lenses — one on §13.3/§13.4's core
+mechanism-reuse claim, one on §13.1/§13.2/§13.6-§13.9's scope-closure and honesty claims), matching this
+ADR's own established two-lens methodology (§7, §9). Every finding below was **re-verified by this
+author against current source** before being recorded, per this section's own §13's stated discipline —
+several of the highest-stakes ones directly (grep output reproduced at the point of verification), the
+rest by re-reading the exact original R/S/T text they're checked against.
+
+**Verdict up front, matching §9's own bluntness: §13 does not survive.** Its central mechanism-reuse
+claim (§13.3) is necessary but not sufficient, one of its two admission-scope narrowings (§13.1)
+reproduces the exact attack it was written to avoid, and its own residual-honesty section (§13.9) is
+itself incomplete against findings §13 silently drops. A fifth iteration is required.
+
+### 14a. The mechanism-reuse claim (§13.3) is incomplete, not wrong
+
+**U1 (CONCEPT-FLAW) — the `shared_ptr` fix targets the wrong object; the actual owner is untouched.**
+§13.3's fix is stated as a single field-type change: `EffectContext::capabilities` from
+`CapabilitySet const*` to `std::shared_ptr<const CapabilitySet>`. But that field is populated from
+`AgentSession::capabilities_`, and §13 never touches that member. **Re-verified directly**:
+`capabilities_` is declared `CapabilitySet const* capabilities_ = nullptr;`
+(`include/agentengine/rt/agent_session.hpp:1679`), set by exactly one method,
+`set_capabilities(CapabilitySet const*)` (`:505-508`), and — checked across the entire tree, not just
+the agent's report — every one of its ~60 call sites across `examples/`, `tests/`, and `tools/` calls it
+**once, at session/test setup, before any run starts**; `tools/cli_chat.cpp:367`'s own comment calls it
+a *"Host-only, configuration-time call."* There is no per-request re-population path anywhere in the
+codebase today. Wrapping this raw member in a `shared_ptr` either does nothing (a no-op-deleter wrapper
+around the same per-session pointer) or silently requires `AgentSession` itself to gain new per-request
+plumbing §13.3 never names. **The single-field-change claim is false**; the real fix has to reach
+`AgentSession::capabilities_`'s own lifetime model, which is a materially bigger change than stated.
+
+**U2 (CONCEPT-FLAW) — the per-request-principal fix (§13.4) covers one of two real dispatch entry
+points.** `AgentSession` has exactly two entry points per its own file banner: `start_run()`
+(`agent_session.hpp:584`) and `resolve_interaction()` (`:646`). Only `start_run()` assigns
+`effect_context_.principal = principal_` (`:619`). **Re-verified directly**: `resolve_interaction()`'s
+body (`:646-700`) runs the identical `principal_admitted_for(...)` admission check but never assigns
+`effect_context_.principal` anywhere — confirmed by grepping its body for `principal`, which returns
+only the admission check itself. It then dispatches through `invoke_tool()` carrying whatever principal
+the *previous* `start_run()` left in place. Resolving a suspended approval is exactly the ordinary case
+where a caller other than the one who started the run legitimately shows up (an approver, not the
+original requester) — S7's exact bug, reproduced at the one entry point §13.4's text never names. §13.8
+claim 9's own disproving experiment ("two sequential requests... assert the second's audit/capability
+context shows the second principal") does not specify which entry point, and is satisfiable by testing
+two `start_run()` calls only, leaving this gap unexercised by the very control meant to catch it.
+
+**U3 (CONCEPT-FLAW) — the stream-liveness fix names a policy type and a timer mechanism that do not
+exist, one of which this project already rejected the shape of.** §13.3 states streams "use
+`EvictAfter<N>`... rather than the lossless `Block` policy `core/stream.hpp` also offers" and are
+"re-checked on a bounded interval timer." **Re-verified directly**: `grep -n "EvictAfter" include/
+agentengine/core/stream.hpp` returns nothing — the file implements exactly one behavior (a single
+bounded, blocking channel), not a choice between policies; `EvictAfter` appears nowhere in the tree
+except this ADR and RFC 013's own prose describing a mechanism that does not match `stream.hpp` as it
+exists. No interval-timer/periodic-callback primitive exists in `core/stream.hpp` or `rt/channel.hpp`
+either. Worse, `agent_session.hpp`'s own banner (~`:14-21`) records that *"a literal 'AgentSession owns
+a background `std::jthread`' design was considered and rejected"* for `schedule_wakeup`, replaced by a
+deliberately **host-polled** mechanism (`due_standing_effects(now)`) — self-verified present at `:1037`
+and `:178`. An engine-internal self-firing timer is the exact shape this project already rejected once;
+a host-polled equivalent means §13.8 claim 5's "independent of emission" guarantee is not something the
+engine can promise unconditionally. Neither the eviction policy nor the timer appears in §13.9's
+residual list — both are asserted as available rather than flagged as new, unbuilt, architecturally
+contested work.
+
+**U4 (minor, citation hygiene)** — two line-citation slips in §13.0/§13.3 (`effect_context.hpp:19` should
+read `:20`; the "entire bind→invoke→revoke sequence... moved into the closure" overstates what's inside
+it — `bind()` runs synchronously before the thread is constructed, only the already-bound values move).
+Neither breaks the substantive claim, both are corrected here since §13's own premise is that every
+citation was freshly grepped.
+
+**What held up (14a)**: `held.bind()`/`revoke()`'s exactly-once-per-branch firing (`tool_pipeline.hpp:437,
+483,593,630`, confirmed against every early-return branch); `BoundCapability`'s shared-ticket safety
+under a moved-by-value `bound` vector; the `EndpointId` CSPRNG-reuse claim (`trust/secure_random.hpp` is
+real); the `steady_clock`-reuse fix for S8.
+
+### 14b. Scope-closure and admission claims (§13.1, §13.2, §13.6-§13.9)
+
+**V1 (CONCEPT-FLAW) — §13.1's "embedded host mints its own token" is S1's attack, not an avoidance of
+it.** S1's substance (not just its exchange-seam mechanics) is that `verified_by_engine` "means *the
+bytes verified*, never *the identity verified*," directly contradicting 011 §8a's MUST that identity
+"comes from the verified token, **never from the client**." §13.1's workaround has the embedded host
+hold a real signing key and mint arbitrary `sub`/`tenant_id` claims with it — the engine verifies the
+bytes are unmodified, not that the claimed identity is true. This is R5's own words, quoted inside S1 —
+*"the host would then need the signing key, at which point it can mint any `sub`/`tenant_id`, and Design
+A is Design B with extra steps"* — describing §13.1's own workaround close to verbatim. §10.2's
+carried-provenance rule (which genuinely closed S1 for the exchange-seam case) doesn't apply here:
+there is no round trip carrying provenance through, because the host is the *original* source of the
+identity claim, merely self-signed rather than asserted through a distinguishable channel. Confirmed:
+this is Design B, re-admitted through the gate §13.1 built specifically to keep it out, narrowed to
+embedded hosts but not structurally different from what S1 defeated.
+
+**V2 (CONCEPT-FLAW) — §13.2 takes the "bad escape" R5 itself named, and the residual isn't named in
+§13.9.** R5 named exactly two fixes, both bad: mint per-request (reopens the friction argument) or
+"disable the replay guard and discard one of ADR-021's four proven findings." §13.2 does the second.
+The RFC-6750-modeling argument is legitimate, but §13.2 never revisits R5's actual security question: a
+captured bearer token (log line, browser history, misbehaving proxy) is now reusable for its **entire
+`exp` window** rather than exactly once, with the engine — having no socket — unable to verify the one
+control ("transport confidentiality") it now depends on entirely. S13's specific *boolean-gate* problem
+is closed; the underlying full-window-replay exposure it was gating is not, and is absent from §13.9.
+
+**V3 (SCOPE-GAP) — §13.7's T4 fix closes the encoding bug, not the dilemma T4 actually posed.** T4 is a
+two-horn dilemma (digest the whole `Principal`: breaks 019/011 resumption gates; digest only
+`{id, tenant_id}`: reopens R4's cross-provenance collision). §13.7 fixes the orthogonal
+delimiter-injection bug via ADR-021's length-prefixed encoding — a real, correctly attributed fix — but
+never states which horn it chooses. T4 itself said the encoding was never the dilemma's substance
+("upgrading the digest does nothing about the concatenation" — the inverse holds too). Unresolved,
+unnamed in §13.9.
+
+**V4 (SCOPE-GAP) — T5's expiry requirement, not just its decoupling half, is dropped.** T5 has two parts:
+decoupling's true scope (§13.7 correctly declines to attempt it), and a separate finding that 011 §8a
+requires handles be "high-entropy, **expiring**, and bound" — expiry named nowhere in this ADR's
+amendments. §13.5 adds entropy to `EndpointId` (closing T8) but adds no expiry to any handle
+(`EndpointId`, `run_id`/`task_id`, `session_id`). Unnamed in §13.9.
+
+**V5 (citation-integrity) — §13 cites a section, "§13.15," that does not exist.** Confirmed by grepping
+every `§13.x` heading in the file: the section runs `§13.0`-`§13.10`. Three cross-references (fixed in
+this pass, see the corrected text above at §13.1/§13.4/§13.7) pointed at a nonexistent `§13.15` where
+the content in fact lives in `§13.9`. A smaller-magnitude instance of the exact discipline failure (S2's
+fabricated citation, T7's mis-grepped one) this iteration's own preamble claims to have fixed by
+grepping every citation before writing it.
+
+**V6 (SCOPE-GAP) — T10 and T13 are silently dropped from the stream rework.** §13.3 rebuilds liveness
+(T12), names a stream policy (T1, though see U3), and fan-out (R23) — but never addresses T10 (`ae::
+stream<ResponseChunk>` is poll-only, forcing a host driving an idle `subscriptions/listen` stream to
+busy-poll — re-verified: `core/stream.hpp`'s poll-only consumer contract is unchanged post-ADR-037) or
+T13 (013 §6 G2 severed at the deadline; a push abandoned between snapshot and `RUN_FINISHED` is
+"unrecoverable"). Neither appears in §13.9, despite §13.9 otherwise naming adjacent open stream work.
+
+**What held up (14b)**: §13.5 (`EndpointId` CSPRNG minting) cleanly closes T8; §13.6's one-dispatch-source
+strengthening (presence, not mere agreement, of MUST-carry headers) cleanly closes T9; §13.7's T11
+(reusing 011 §10's own baseline mechanism instead of a bespoke harness) and T16 (`EndpointId::surface`
+explicitly labeled partial, 020 §8 Q2 explicitly reopened) both match their findings precisely; T2's
+close by inclusion into §10.2's enum is sound; §13.8's claims table is a genuine, checked improvement
+over T15's target — every row carries a real negative control or an explicit teeth mutation, and the
+specific vacuous-row defect T15 found in seven of §8b's rows does not reproduce.
+
+### 14c. Status
+
+**§13 is not ready for a prove phase.** Its central device-reuse claim needs to reach
+`AgentSession::capabilities_`'s own lifetime, not just `EffectContext`'s (U1); its per-request-identity
+fix needs to cover `resolve_interaction()`, not only `start_run()` (U2); its stream-liveness mechanism
+needs a real design, not a named-but-unbuilt policy type and a timer this project already rejected the
+shape of (U3); its embedded-host admission narrowing needs to either accept it is Design B for that case
+(and cost it honestly, as §3 originally did) or be replaced (V1); and four findings (T4's dilemma, T5's
+expiry, T10, T13) plus the replay-window residual (V2) need to move from silently dropped to explicitly
+named or closed. Two things the next iteration should reuse without re-litigating: everything under
+"what held up" in 14a/14b, and the discovery that drove §13 in the first place — ADR-009's bind/revoke
+mechanism genuinely is already correct for the synchronous and backgrounded tool-invocation cases; the
+gap is narrower than §8.1 assumed, even though §13 did not finish closing it.
+
+## 15. Fifth design iteration — Tier 3 (2026-08-20)
+
+Written directly against §14c's punch list. §13's surviving material (§13.5 `EndpointId`, §13.6 response
+contract/dispatch source, §13.7 conformance honesty, §13.8's claims-table discipline) is **unchanged and
+not restated** — only what §14 found broken is revised here. Every code citation re-verified today
+against current source, including the two entry-point structs neither §13 nor §14 quoted directly.
+
+### 15.1 One shared per-request authority field, added identically to both real entry points (closes U1, U2)
+
+**The root cause both findings share**: `StartRun` and `ResolveInteraction` already carry an identical
+`std::optional<SessionCaller> caller` field (`agent_session.hpp:257`, `:264`) used only for the
+admission check — confirmed today: `start_run()` constructs a throwaway `Principal{request.caller->id,
+request.caller->tenant_id}` purely to call `principal_admitted_for()` (`:588-590`), then discards it and
+unconditionally assigns the *session's* `principal_`/`capabilities_` (`:617-618`). `resolve_interaction()`
+runs the identical admission check against its own `request.caller` but never assigns
+`effect_context_` at all — it inherits whatever the last `start_run()` left there. Two symptoms (S7,
+U2), one cause: the per-request field that exists (`caller`) only ever feeds admission, never the
+dispatch that follows it, and only one of the two entry points even tries.
+
+**The fix**: both structs gain one additional field, populated only by a Tier-3 dispatcher, never by
+ordinary in-process/test callers:
+
+```cpp
+struct RequestAuthority {              // owned value, no registry, no ref/slot — S3/S5/S6 do not apply
+    Principal                             principal;      // credential_verified only, per §13.1
+    std::shared_ptr<const CapabilitySet>  capabilities;   // 007 §5 derivation output; still unbuilt (§13.9)
+};
+
+struct StartRun {
+    Message input;
+    std::optional<SessionCaller>          caller    = std::nullopt;
+    std::shared_ptr<const RequestAuthority> authority = nullptr;   // NEW, additive, defaults preserve every existing call site
+};
+// ResolveInteraction gains the identical field, in the same additive, defaulted, appended-last shape
+// ADR-057 §9 already used for `answer` — no existing positional-construction call site is affected.
+```
+
+A Tier-3 dispatcher constructs `caller` and `authority` from **the same verified credential in one
+step** — `caller = SessionCaller{authority->principal.id, authority->principal.tenant_id}` — so the two
+fields cannot disagree by construction; there is no code path where `caller` names one identity and
+`authority` supplies a different one.
+
+**One private helper, called from both entry points**, replacing the two divergent inline assignments:
+
+```cpp
+void apply_dispatch_authority(std::shared_ptr<const RequestAuthority> const& authority) {
+    if (authority) {
+        effect_context_.principal    = authority->principal;
+        effect_context_.capabilities = authority->capabilities;
+    } else {
+        effect_context_.principal    = principal_;
+        // Non-owning alias, not a new lifetime claim -- see the two-source explanation below.
+        effect_context_.capabilities = capabilities_
+            ? std::shared_ptr<const CapabilitySet>(capabilities_, [](CapabilitySet const*) {})
+            : nullptr;
+    }
+}
+```
+
+called at `start_run()`'s existing assignment site (`:617-618`) **and** newly added to
+`resolve_interaction()`, which today has no such assignment at all. This closes U2 by construction —
+one function, two call sites, not two independent edits that can drift the way §13.4's text (which never
+named `resolve_interaction()`) let them.
+
+**U1's real fix, not just a field-type change.** `EffectContext::capabilities` becomes
+`std::shared_ptr<const CapabilitySet>` (as §13.3 already said), but it now has **two honest sources**,
+not one wrapped raw pointer:
+
+- **Session-default path** (`authority == nullptr`, the ordinary case today and the embedded-host path,
+  §15.2): wraps the existing `capabilities_` raw pointer in a **non-owning aliasing `shared_ptr`**
+  (`std::shared_ptr<const CapabilitySet>(capabilities_, [](CapabilitySet const*){})`). This changes
+  nothing about `AgentSession::capabilities_`'s own lifetime contract — "the host that grants it owns
+  it and must outlive the session" (unchanged, unbroken, exactly as it is today) — it only changes the
+  *type* `EffectContext` carries so both sources fit one field.
+- **Per-request path** (`authority != nullptr`, Tier 3 only): the `shared_ptr` is genuinely owned,
+  minted by the dispatcher's own admission step from 007 §5's (still unbuilt) policy derivation. When
+  `background_task()` moves `ctx` into its detached closure (`ctx = std::move(ctx)`,
+  `tool_pipeline.hpp:626`), this shared_ptr's refcount keeps the per-request `CapabilitySet` alive for
+  the effect's full real duration by ordinary `shared_ptr` semantics — no wrapper, no registry, nothing
+  to forge, and no dependency on `AgentSession::capabilities_`'s own unrelated lifetime.
+
+This is the same two-line-of-reasoning §13.3 was missing: the *type* unifies at `EffectContext`, but the
+*source* — and therefore the actual lifetime guarantee — differs by which of the two real inputs
+populated it, and that difference is now stated rather than glossed over.
+
+**Byte-budget note, restated honestly rather than silently dropped**: `std::shared_ptr<const
+RequestAuthority>` is 16 bytes regardless of what it points to (same order of magnitude as §8.1's
+already-measured `AuthorityRef`, cheaper than embedding `Principal`/`CapabilitySet` by value). §13.9's
+open item stands unchanged: this needs a real measurement against current `rt::StartRun`/`rt::
+ResolveInteraction` sizes before implementation, not an assumption either way — carried forward, not
+resolved here.
+
+### 15.2 §13.1's embedded-host workaround is withdrawn (closes V1)
+
+§13.1's "embedded host mints its own bearer token and hands it to its own adapter" is withdrawn — V1
+showed it reproduces S1 (identity laundering) with the mechanism relocated, not removed. **No
+replacement bridge is proposed.** An embedded host has exactly two ways to reach a session, and this
+iteration keeps them structurally separate rather than looking for a shortcut between them:
+
+1. **The direct in-process API** — `initialize(session_id, Principal, ...)` / `set_capabilities()`
+   (`agent_session.hpp:505-508` and its callers) — real, unchanged, exactly 007 §1's actual trust scope
+   ("the host process, its configuration, and first-party native code"). This is not a protocol-dispatcher
+   entry point and Tier 3 does not touch it.
+2. **The Tier-3 protocol-dispatcher surface** (MCP/A2A/AG-UI, host-fronted) — admits `credential_verified`
+   principals only, **with no exception for a same-process caller**. An embedded host wanting to expose
+   an MCP-shaped API to its own in-process plugins does so by calling `AgentSession` directly (path 1),
+   never by routing through Tier 3's HTTP-shaped dispatcher and asking it to trust a self-signed token.
+
+**Cost, named as plainly as §1 and §3 originally named it, because that is the honest accounting V1's
+finding forces**: a host with its own already-authenticated edge (OIDC, session cookie, mTLS) that wants
+*that* identity to reach the *protocol*-dispatcher surface has no shortcut in this design. It forwards a
+credential the engine verifies, exactly as any other caller does. This is real, recurring friction for
+that specific deployment shape, deliberately left unsolved rather than solved by a mechanism that turns
+out to be Design B in disguise.
+
+### 15.3 Replay-window residual, named (closes V2)
+
+§13.2's replay-guard removal stands (a bearer access token is legitimately reusable within `exp`, per
+RFC 6750 and 018 §1's own HTTP row). The residual V2 found unnamed is now named explicitly: **a captured
+valid token is usable by the capturer for the remainder of its `exp` window**, with the engine — owning
+no socket — structurally unable to verify the one control (transport confidentiality) that bounds this
+exposure; that verification is a host obligation, joining the list §13.7/§8.5 already tracks such
+obligations in. Mitigated only by short `exp` (an operator configuration choice, not an engine
+guarantee) and TLS-in-transit. Proof-of-possession tokens (DPoP-style, binding a token to a key the
+holder must prove possession of on each use) would close this for real; that is new, unscoped
+cryptographic machinery this iteration does not attempt, named here as real future work rather than
+silently possible.
+
+### 15.4 `IdempotencyKey`'s digest fields, decided (closes V3/T4)
+
+T4's dilemma is resolved by picking a specific field set rather than either extreme: the digest keys on
+**`{principal.id, principal.tenant_id, provenance}`** — not the full `Principal` (which carries
+claims/issuer/expiry that don't round-trip through `AgentSessionRecord`, R17/S9), and not bare
+`{id, tenant_id}` alone (R4's collision). Adding `provenance` is what separates the two horns: a
+`restored` principal and a `credential_verified` principal sharing the same `id`/`tenant_id` now key
+differently, closing R4's cross-provenance collision, while `id`/`tenant_id`/`provenance` are exactly
+the fields `restore_from_record()` already reconstructs deterministically (§10.2's own `restored` case),
+so a resumed run's key reconstructs identically — closing the resumption horn (019 §7 G1/G2/G6, 011 §10
+G4). Applied through ADR-021's own length-prefixed canonical encoding (T4's originally-cited fix for the
+delimiter-injection bug in `IdempotencyKey::to_string()`), not as a separate step.
+
+### 15.5 Handle expiry, an explicit interpretive stance (closes V4/T5's second half)
+
+011 §8a's "high-entropy, expiring, and bound" requirement is read, explicitly, as applying to the
+**credential** used to reach a handle (already real and expiring, ADR-021's `exp`) rather than to the
+task/run id itself. This iteration does not attempt the task_id/run_id decoupling (T5's first half,
+correctly left out of scope — R1's per-principal binding, §7a, already makes enumerability
+defense-in-depth rather than the control). Stated as a position on 011 §8a's own ambiguity, not a
+silent assumption: if a future reading requires the id itself to expire, that is the decoupling work
+T5 already scoped as four-clause and this ADR still does not attempt.
+
+### 15.6 Stream liveness: checked at every poll, not on an invented timer (closes U3, closes T12 for real, narrows T10)
+
+§13.3's `EvictAfter<N>`/interval-timer language is withdrawn — neither exists in `core/stream.hpp`, and
+an engine-internal self-firing timer repeats the shape this project already rejected for
+`schedule_wakeup` (`agent_session.hpp`'s own banner, §14a/U3). The replacement reuses what T10 already
+established is true of this codebase rather than fighting it: the stream consumer is **poll-only**
+(`core/stream.hpp`'s `try_pop()`-shaped contract, unchanged, confirmed still true post-ADR-037). Rather
+than treating that as only a cost (T10's busy-poll complaint), Tier 3's liveness check rides it: **the
+per-request authority's expiry is checked inside the poll path itself**, before a "no data yet" result
+is returned — not only at a real emission boundary. This closes T12's actual complaint precisely: T12
+showed liveness-at-emission-only passes *vacuously* for a stream that never emits again; liveness-at-
+poll does not, because a host driving a poll-only consumer must, by construction, keep calling it to
+ever notice new data — every one of those calls is now also a real liveness check, whether or not data
+was waiting. **What this does not fix**: T10's own complaint (no wake/notify signal, so a host polls on
+its own cadence rather than blocking efficiently) is unbuilt real infrastructure work, named as such,
+not claimed solved by this change — it is only no longer *also* the reason idle-stream liveness is
+unverifiable.
+
+### 15.7 T13, accepted as a frequency change to already-accepted spec language
+
+013 §2.2 already states that a push abandoned between a snapshot and its interrupt-bearing
+`RUN_FINISHED` is "unrecoverable, because the run is over." T13's finding is that Tier 3's
+deadline-severing (§8.3, unchanged) makes this the *ordinary* case for a host-fronted deployment rather
+than a rare one. This iteration accepts that as a real, named consequence of the design rather than a
+new defect — the spec already names the failure mode as acceptable; Tier 3 changes how often it's hit,
+not whether it's handled.
+
+### 15.8 What §15 still does not resolve
+
+Unchanged from §13.9 except where superseded above: 006 §6b's in-flight-native-effect residual (§13.3,
+confirmed correct, unchanged); the `rt::` message-boundary re-measurement (now scoped to `RequestAuthority`'s
+16-byte `shared_ptr`, not `AuthorityRef`); 007 §5's policy engine (still the source every `authority.capabilities`
+in §15.1 ultimately depends on and still does not exist); the out-of-process Sidecar bridge (still not
+designed, and now more clearly not a rehearsal for the embedded-host case either, since §15.2 withdrew
+that case's own workaround); the multi-caller/session-sharing non-goal (unchanged — `principal_admitted_for`'s
+owner-match rule is untouched by §15.1, which only changed *which* principal populates `EffectContext`
+once admission has already passed, never who admission accepts); R6 (decoder), R12-as-now-scoped
+(verification latency once the replay path is fully gone), and R23 (multi-subscriber fan-out) —
+all still real, unbuilt implementation work.
+
+### 15.9 Next step
+
+Same discipline as §13.10: this is a design, corrected against a real red-team round, not itself proven.
+It has not yet had its own independent adversarial pass.
+
+## 16. Fourth red-team round — against §15 (2026-08-20)
+
+Two independent passes: one on §15.1's mechanism directly, one a systematic finding-by-finding closure
+audit across every number this ADR has accumulated (R1-27, S1-14, T0-16, U1-4, V1-6) against §15's
+actual text. The mechanism finding below was **re-verified by this author against source before being
+recorded**, and it is decisive.
+
+### 16a. §15.1's central mechanism does not gate anything (confirmed against source)
+
+**W1 (CONCEPT-FLAW, severe) — the per-request `authority` field is disconnected from the real
+authorization gate.** `invoke_tool()`/`background_task()` take `held` (`CapabilitySet const&`) as a
+parameter **separate from `ctx`/`ctx.capabilities`**, and `held.bind(requirement)`
+(`tool_pipeline.hpp:437`, `:593`) is what actually authorizes a call — not anything read off
+`ctx.capabilities`. **Re-verified directly, today**: every real call site in `agent_session.hpp`
+computes `held` from the session-level `capabilities_` raw pointer, never from
+`effect_context_.capabilities` — `CapabilitySet const& held = capabilities_ ? *capabilities_ :
+empty_caps;` appears verbatim at `:734`, `:1264`, `:1347`, and `start_background_task()` passes
+`*capabilities_` directly (`:939`). §15.1's `apply_dispatch_authority()` populates
+`effect_context_.capabilities` from `authority` when present — but **nothing downstream ever reads
+that field to build `held`.** A Tier-3 request carrying a narrower per-request `RequestAuthority::
+capabilities` does not narrow, widen, or otherwise affect what tools it can invoke: every ordinary tool
+call is still gated exclusively by the session's own `capabilities_`, unchanged from today. This is
+S14's original 2026-08-15 finding ("claim 5 is satisfied by an implementation where the shared_ptr
+rides along in EffectContext for audit while every capability check still consults the server-wide
+`held_`... the pipeline authorizes from separate parameters, not from EffectContext") — still true,
+confirmed against current source, surviving through §13 and §15 without being caught by either
+iteration's own author.
+
+**W2 (CONCEPT-FLAW) — the two paths that ARE wired to `ctx.capabilities` were mischaracterized as
+incidental.** `require_secret_capability()` (`trust/secret.hpp:255-263`) and `invoke_agent_tool()`
+(ADR-059, `core/agent_registry.hpp:557-566`) both genuinely consult `ctx.capabilities` for real
+enforcement — secret resolution and sub-agent delegation attenuation. So §15.1's fix narrows exactly the
+two paths this ADR called "a tool's own voluntary read-only check," while leaving the dominant case (a
+declared tool's own `capability_ceiling`, checked via `held.bind()`) completely unaffected by
+per-request authority. An inconsistent security boundary, not a partial one.
+
+**W3 (IMPLEMENTATION-HAZARD) — the non-owning aliasing `shared_ptr` in the session-default branch
+manufactures a false safety signal.** Once `EffectContext::capabilities` is uniformly typed as
+`shared_ptr<const CapabilitySet>`, the type itself invites the assumption that it IS the safety
+property — but the no-op-deleter alias used for the session-default/embedded-host path confers zero
+real lifetime extension; that path's safety still rests entirely on "host owns it, must outlive,"
+unchanged and now less visible.
+
+**W4 (CONCEPT-FLAW) — §15.6's "checked inside the existing poll path" names no function that could do
+it.** `stream<T>::next()` is `try_pop()` against `channel_consumer<T, error>`
+(`stream.hpp:170`/`channel.hpp:291`) — a generic queue with no authority-awareness and no route to
+reach a `RequestAuthority`. §15.6 correctly withdraws §13.3's fictional `EvictAfter<N>`/timer, but its
+replacement is a sketch of where the check conceptually belongs, not a design that names which type
+gains the check or how it reaches the authority object.
+
+**What held up**: the U1/U2 field-population fix is genuinely real — both entry points do now assign
+`effect_context_.principal`/`.capabilities` from one shared source, which is exactly what U2 asked for
+and it holds. The `StartRun`/`ResolveInteraction`/`SessionCaller` citations all match current source
+verbatim. §15.2-§15.5's withdrawals/decisions hold against their own findings. The 16-byte
+`shared_ptr<const RequestAuthority>` measurement is empirically correct.
+
+### 16b. Closure-completeness audit: what §15.8 silently dropped
+
+A systematic pass checked every finding number this ADR has accumulated against §15's actual text, not
+against what earlier iterations claimed. Confirmed **silently unaddressed** (present in no closed-list
+and no residual list from §13.9 onward): **R10** (credential-unreachable-from-dispatch — the design fix
+stands but stopped being tracked), **R13**'s anonymous-tenant-selection half, **R22**'s full
+finding (the push-outcome fix is real but untracked, and the pinned-worker half is superseded by §15.6
+without being marked closed or moot), **R25** (`TransportFacts`/cleartext-credential rejection, never
+revisited past §7), **R26**'s `call_id`-as-caller-chosen-audit-key collision half, **R27**'s
+`approve_`/`A2aServer::context_id_`/`RunEventProjector::thread_id_` cluster (only `held_` was ever
+addressed, and — per W1 — not even that, in the sense that matters), **T1**'s actual per-seam
+delivery/backpressure policy (only the liveness-check timing was fixed), **T7**'s six other named MUSTs
+beyond 405, and **T10** (named in §15.6's own body, then dropped from §15.8's list — reproducing V6's
+exact pattern one section later, inside the very section written to fix V6).
+
+Two **new** gaps, found by tracing consequences §15 itself didn't:
+
+**S8 self-contradiction inside §15 itself.** §15.6 relies on "the per-request authority's expiry," but
+§15.1's own `RequestAuthority` struct declares only `{principal, capabilities}` — no expiry field, no
+`live()`. §15.6 depends on a mechanism §15.1 doesn't specify.
+
+**Fail-open fallback, not fail-closed — and it interacts with restart (S6).** `apply_dispatch_authority()`'s
+`else` branch (no `authority` supplied) silently re-derives `EffectContext` from the session owner's
+`principal_`/`capabilities_` rather than rejecting — a partially-wired Tier-3 adapter that omits
+`authority` silently inherits session-owner privilege instead of failing closed, the same
+"convention, not construction" shape this ADR has already indicted twice (Design D, `AuthorityRef`).
+Confirmed against `restore_from_record()` (`agent_session.hpp:885-893`): a resumed session rebuilds
+`principal_` via plain aggregate init (current `Principal` has no provenance field at all — §8.1a's
+private-construction/provenance design is still §7's own proposal, not built) and never touches
+`capabilities_`. A resumed session hitting the fallback branch inherits full, untagged session-owner
+authority — exactly what §10.2's `restored` provenance value exists to prevent, via a path §10.2 never
+anticipated because `Principal` itself doesn't carry provenance in real code yet.
+
+**`caller`/`authority` agreement is dispatcher discipline, not a type-level invariant** — R7's own
+critique of Design D ("the unsafe path is strictly cheaper to write... provenance evaporates") applies
+to §15.1's own new fields: nothing stops the two from being set inconsistently except a dispatcher
+choosing to construct them together.
+
+### 16c. Status
+
+**§15 is not ready for a prove phase, and its core mechanism is currently non-functional as security
+enforcement**: the field it wires per-request authority into is not the field the pipeline actually
+authorizes from. This is not a smaller residual to name and move past — W1 means §15's headline claim
+("closes the gap in the mechanism iteration 4 discovered") does not hold for the dominant case (ordinary
+tool invocation) at all, only for the two narrower paths W2 identifies. A sixth iteration must route
+`authority->capabilities` into the actual `held` computation at every real call site
+(`agent_session.hpp:734,753,939,1264,1297,1347,1540`) — or admit plainly, the way §15.2 admitted the
+embedded-host cost, that this design secures secret-resolution and delegation but not ordinary
+per-request tool dispatch, and cost that limitation honestly rather than implying otherwise.
+
+**Also required before a sixth iteration is trusted**: add `provenance` to `Principal` for real (§8.1a's
+design has been "carried forward" since iteration 2 without ever being built — every provenance-based
+claim in this ADR, including §15's own reliance on §10.2's enum, currently rests on a type that doesn't
+have the field); give `RequestAuthority` an actual expiry field before §15.6 is allowed to depend on
+one; and re-run the full closure audit from §13.9's own superset, not just against §15.8's own list,
+since findings are now provably falling out between rounds rather than being deliberately closed.
+
+**A pattern worth naming plainly, since this ADR's own culture is to name what a pass finds rather than
+soften it**: this is the third consecutive design iteration (§8, §13, §15) whose central device did not
+survive its first independent red-team pass. Each has gotten more precisely wrong — §8 invented an
+unnecessary device; §13 reused the right mechanism but wired it to the wrong field, twice; the pattern
+across all three is a design believing it has connected a new authority representation to real
+enforcement without checking the actual call sites that gate effects. Whatever the sixth iteration does,
+tracing every claimed fix to its real `held`/`bind()`/`capabilities()` call site *before* writing the
+claim, not after a red-team pass finds it missing, is the one discipline change likely to break this
+pattern rather than repeat it a fourth time.
+
+## 17. Sixth design iteration — Tier 3 (2026-08-20)
+
+Written against §16's own closing instruction: trace every claimed fix to its real `held`/`bind()`/
+`capabilities()` call site *before* writing the claim. Every call site named below was re-read from
+current source in this pass, not carried from §16's citations.
+
+### 17.1 Wiring the gate for real (closes W1, W2)
+
+**The exact edit, at the exact sites W1 found.** `AgentSession` has exactly three `held` declarations
+and one direct `*capabilities_` use, and no others — confirmed by grep, not assumed:
+
+| Site | Current | Fixed to |
+|---|---|---|
+| `agent_session.hpp:734` (resolve_interaction's approval branch) | `capabilities_ ? *capabilities_ : empty_caps` | `effect_context_.capabilities ? *effect_context_.capabilities : empty_caps` |
+| `agent_session.hpp:1264` (resolve_codeact_ask) | same | same substitution |
+| `agent_session.hpp:1347` (run_rounds) | same | same substitution |
+| `agent_session.hpp:939` (start_background_task) | `if (!capabilities_) {...}` then `*capabilities_` | `if (!effect_context_.capabilities) {...}` then `*effect_context_.capabilities` |
+
+Nothing else changes: `invoke_tool()`'s/`background_task()`'s three call sites (`:753`, `:1297`,
+`:1540`) already consume `held` by reference and need no edit, since `held` itself now resolves
+correctly upstream.
+
+**Why this is sound, traced through the actual control flow, not asserted.** `effect_context_.capabilities`
+is set by `apply_dispatch_authority()` (§15.1, §17.2 below) at the top of `start_run()`/
+`resolve_interaction()`, before `run_rounds()`, `resolve_codeact_ask()`, or `start_background_task()`
+ever run — all three execute later in the *same* synchronous coroutine frame, under I1's single-executor
+guarantee (`session_mutex_`'s guard, held for the duration), so nothing else can mutate
+`effect_context_` between the assignment and these reads. For the session-default path (no
+`authority`), `effect_context_.capabilities` is the non-owning alias of `capabilities_` (§15.1) — the
+same underlying object, so `*effect_context_.capabilities` and `*capabilities_` are behaviorally
+identical and every existing test/example call site (the ~60 `set_capabilities()` callers, none of
+which ever construct an `authority`) is unaffected. For the per-request path, `held.bind(requirement)`
+now genuinely authorizes against the credential-derived `CapabilitySet`, closing W1 for the case it
+actually needed closing: ordinary declared-tool invocation via all three real dispatch loops, not only
+the two paths (`require_secret_capability()`, `invoke_agent_tool()`) W2 found already wired.
+
+### 17.2 Fail-closed, not fail-open, when a Tier-3 dispatcher omits `authority` (closes the new gap in §16b)
+
+`apply_dispatch_authority()` cannot itself distinguish "an embedded/test caller correctly relying on
+session defaults" from "a Tier-3 adapter that forgot to supply a verified authority" — both look
+identical (`authority == nullptr`) from inside `AgentSession`. The fix moves the distinction to the
+caller, additively:
+
+```cpp
+struct StartRun {
+    Message input;
+    std::optional<SessionCaller>            caller             = std::nullopt;
+    std::shared_ptr<const RequestAuthority> authority          = nullptr;
+    bool                                    require_authority  = false;   // NEW; Tier-3 dispatchers set true
+};
+// ResolveInteraction gains the identical field, same additive/defaulted/appended-last shape.
+
+result<void> apply_dispatch_authority(std::shared_ptr<const RequestAuthority> const& authority,
+                                       bool require_authority) {
+    if (authority) {
+        effect_context_.principal    = authority->principal;
+        effect_context_.capabilities = authority->capabilities;
+        return {};
+    }
+    if (require_authority) {
+        return std::unexpected(agentengine::error{
+            agentengine::failure_class::policy,
+            "this dispatch requires a verified per-request authority and none was supplied",
+            "run.authority_required"});
+    }
+    effect_context_.principal    = principal_;
+    effect_context_.capabilities = capabilities_
+        ? std::shared_ptr<const CapabilitySet>(capabilities_, [](CapabilitySet const*) {})
+        : nullptr;
+    return {};
+}
+```
+
+`start_run()`/`resolve_interaction()` call this immediately after their existing admission check and
+`co_return std::unexpected(...)` on failure — the same early-return shape both functions already use for
+admission denial (`:588-594`). A Tier-3 dispatcher sets `require_authority = true` on every request it
+constructs; an embedded/test caller never sets it and is completely unaffected (default `false`
+preserves every existing call site, matching this project's established additive-field convention —
+`ResolveInteraction::answer`, §13.1's own precedent). This makes "Tier-3 requires real authority" a
+per-dispatcher-declared, checked contract rather than an implicit property of what the dispatcher
+happens to populate — closing the fail-open gap by construction at the one point (the flag's own default)
+where it can't yet be a compile-time guarantee (that would need a distinct request type per §8.2's
+withdrawn Design D, whose own R7 cost — two entry points, unsafe path cheaper to write — this project has
+already rejected twice; a checked runtime contract is the deliberate, cheaper alternative here).
+
+### 17.3 `RequestAuthority` gains real expiry (closes the S8 self-contradiction)
+
+```cpp
+struct RequestAuthority {
+    Principal                             principal;
+    std::shared_ptr<const CapabilitySet>  capabilities;
+    std::chrono::steady_clock::time_point expiry;   // NEW — from the verified credential's `exp`,
+                                                      // converted once at admission (§13.4's own
+                                                      // steady_clock discipline, unchanged)
+    [[nodiscard]] bool live(std::chrono::steady_clock::time_point now) const noexcept {
+        return now < expiry;
+    }
+};
+```
+
+§15.6's poll-time liveness check now has a real field to consult. §15.6's own remaining gap (W4 — no
+named function in `stream<T>`/`channel_consumer<T,E>` can reach this without new plumbing) is **not**
+closed by this alone and stays open, named explicitly at §17.6 rather than implied fixed.
+
+### 17.4 `caller`/`authority` agreement, made structural rather than a dispatcher promise (closes the new gap in §16b)
+
+Admission no longer trusts two independently-settable fields to agree. When `authority` is present, it
+is the **sole** source for both the admission-check identity and the dispatched principal — `caller` is
+derived from it, never read independently:
+
+```cpp
+SessionCaller const effective_caller = authority
+    ? SessionCaller{authority->principal.id, authority->principal.tenant_id}
+    : request.caller.value_or(SessionCaller{});
+```
+
+with the existing `principal_admitted_for(...)` check run against `effective_caller`, and
+`request.caller` itself becoming vestigial once `authority` is set — no longer capable of disagreeing
+with it, because it is no longer consulted when `authority` is present. This is the same
+construction-over-convention move §13.5 already made for `EndpointId`, applied to the field R7 originally
+found unenforced in Design D.
+
+### 17.5 `Principal` provenance — specified concretely, not deferred again
+
+§8.1a's design has been "carried forward" since iteration 2 without ever being built, and §16b confirmed
+current `trust/principal.hpp` still has no provenance field at all — every provenance-based claim in
+this ADR (§10.2's enum, §13.1's `credential_verified`-only admission rule, §17.1's own "the per-request
+path" framing) currently rests on a type that cannot express the distinction. This is genuinely
+implementation work, not a redesign — §10.2's six-value enum is unchanged — but it is named here with
+the exact shape needed so a seventh round or the prove phase does not have to re-derive it:
+
+**Traced against real call sites before being specified, per this iteration's own rule — and it changed
+the shape.** A first draft of this fix made `id`/`tenant_id` private with accessor methods; grepping the
+tree first (as §16c demands) found **34+ real call sites reading `principal.id`/`.tenant_id` as plain
+field access** (`core/memory.hpp:80,123,194,254`, `core/tool_pipeline.hpp:411`,
+`core/corpus_scope.hpp:65`, and more) — an accessor-method API would have broken every one of them, the
+exact class of untraced-consequence mistake this section exists to stop repeating. R7's actual finding
+is about **construction and assignment** being uncontrolled ("default construction and copy assignment,
+and no private construction"), not about read access. The fix that closes R7 without touching a single
+existing reader: public, `const`-qualified members (read access unchanged for all 34+ sites) with a
+private constructor reachable only from `trust/`'s own factories:
+
+```cpp
+enum class principal_provenance : std::uint8_t {
+    anonymous, credential_verified, host_asserted, operator_configured, derived, restored
+};  // §10.2's six values, verbatim
+
+class Principal {
+public:
+    std::string const           id;
+    std::string const           tenant_id;
+    principal_provenance const  provenance;   // non-defaultable: every factory must state one
+    // Const members make this non-default-constructible and non-copy-assignable by the language's
+    // own rules -- both halves of R7's finding close without a separate enforcement mechanism.
+    // Copy CONSTRUCTION remains (needed to pass Principal by value, e.g. into RequestAuthority),
+    // which is fine -- R7's objection was to fabricating an identity from nothing / overwriting one
+    // in place, not to holding a legitimately-constructed value.
+private:
+    Principal(std::string id, std::string tenant_id, principal_provenance provenance)
+        : id(std::move(id)), tenant_id(std::move(tenant_id)), provenance(provenance) {}
+    friend Principal make_anonymous_principal(std::string tenant_id);
+    friend Principal derive_on_behalf_of(Principal const& parent, std::string derived_id);
+    // ...every existing trust/ factory becomes a friend and the only producer; restore_from_record()
+    // must be updated to call one that stamps `restored`, not aggregate-init a stale/default value
+    // (S9's fix, otherwise unreachable no matter how many times §10.2's enum is cited elsewhere).
+};
+```
+
+**This is a required prerequisite for a prove phase, not an optional hardening pass** — without it,
+§13.1's "admits `credential_verified` only" rule has no field to check, and §17.4's own admission fix
+has no provenance to prefer over a bare id/tenant match. And it is real, mechanical, and now scoped
+precisely enough that a seventh round does not need to re-derive it or repeat this pass's own
+near-miss: **every remaining call site that currently copy-*assigns* a `Principal`** (not just
+constructs one) needs a matching audit before this lands — `effect_context_.principal = principal_;`
+(§17.1's own fixed sites) becomes ill-formed the moment `Principal` gains `const` members, and must
+change to construction/rebinding instead. Not fixed here; named so it is not discovered the same way
+the accessor-method mistake almost was.
+
+### 17.6 Full residual list, re-derived against §13.9's original superset per §16c's instruction
+
+Rather than append to a list findings have already fallen out of twice, this is the complete list,
+checked against every number this ADR has accumulated:
+
+- **Real, unbuilt implementation work**: R6 (decoder), R12-as-scoped (verification latency once replay
+  is gone), R23 (multi-subscriber fan-out), §17.5's `Principal::provenance` (above), 007 §5's policy
+  engine (every `authority.capabilities` in this design still ultimately depends on it).
+- **Honest, accepted architectural limits, not defects**: 006 §6b's in-flight-native-effect residual
+  (§13.3, unchanged); T13 (013 §2.2's own "unrecoverable" case, now the ordinary case under Tier 3,
+  §15.7); R15's in-flight half (same as 006 §6b above).
+- **Named but not attempted, by deliberate scope choice**: the out-of-process Sidecar bridge (R11); the
+  multi-caller/session-sharing question (S7's harder half); T5's decoupling (four-clause scope named,
+  not attempted); the replay-window exposure of a captured reusable token (§15.3/V2).
+- **Real gaps this iteration does NOT close, carried forward explicitly rather than re-dropped**:
+  **R10** (credential-unreachable-from-dispatch — the `try_compile()` gate itself is still unbuilt);
+  **R13**'s anonymous-tenant-selection half (an anonymous request's tenant must be pinned to
+  `EndpointId`'s own config, never request content — not yet wired into §17's admission path);
+  **R22**'s pinned-worker half (the bounded-block deadline variant for `push()` — superseded in
+  *intent* by §15.6's poll-time check but not built); **R25** (`TransportFacts`/cleartext-credential
+  rejection — no code exists); **R26**'s `call_id`-as-audit-key collision (unaddressed since §7a);
+  **R27**'s `approve_`/`A2aServer::context_id_`/`RunEventProjector::thread_id_` cluster (only `held_`'s
+  equivalent is fixed, by §17.1 — the other three are real, untouched, per-connection-scoped authorities
+  in files this ADR's `agent_session.hpp`-centered design work has not yet touched); **T1** (a real
+  per-seam delivery/backpressure policy — §15.6 fixed only liveness-check *timing*); **T7**'s six
+  remaining named MUSTs beyond 405 (`x-mcp-header` exclusion, `serverInfo`, `logLevel` gating,
+  `A2A-Version`, `A2A-Extensions`, RFC 9111 caching); **T10** (no wake/notify signal for the poll-only
+  stream consumer — §15.6 makes polling productive, does not make it efficient).
+- **This iteration's own new surface, not yet independently checked**: §17.2's `require_authority` flag
+  and §17.4's caller-derivation change are new code paths through `start_run()`/`resolve_interaction()`
+  that have not themselves been red-teamed.
+
+### 17.7 Next step
+
+Unchanged discipline: this is a design. §17.1's fix is traced to its real call sites in this pass, which
+is the specific failure mode the last three red-team rounds found — but "traced correctly by its own
+author" is not the same bar as "survived an independent adversarial pass," and this section has not yet
+had one.
+
+## 18. Fifth red-team round — against §17 (2026-08-20)
+
+Two independent passes: one on §17.1-§17.5's mechanism, one a closure-completeness audit against the
+full 58-finding master list this ADR has now accumulated. The most severe finding (X3) was **re-verified
+by this author directly against source** before being recorded.
+
+### 18a. §17's own mechanism has three new severe gaps
+
+**X1 (CONCEPT-FLAW, severe) — §17.1's "confirmed by grep, not assumed" completeness claim is false.**
+Two more authorization-relevant direct reads of `capabilities_` exist and were missed:
+`schedule_wakeup()` (`agent_session.hpp:993-997`, `capabilities_->find_schedule()`) — the actual gate
+deciding whether a `Schedule<...>` standing effect can be armed — and `run_rounds()`'s own tool-offering
+check (`:1382`, `capabilities_ && capabilities_->find_schedule().has_value()`), which decides whether
+`schedule_wakeup` is even advertised to the model. Both still authorize from session-wide `capabilities_`,
+untouched by §17.1's fix. A Tier-3 request whose per-request authority omits `Schedule` still gets the
+effect armed under the session owner's grant.
+
+**X2 (CONCEPT-FLAW, severe) — §17.1's safety argument is false for a third real entry point.**
+§17.1 claims the fix is race-free because `run_rounds()`, `resolve_codeact_ask()`, and
+`start_background_task()` "execute later in the same synchronous coroutine frame, under I1's
+single-executor guarantee." **Re-verified directly**: `start_background_task()` is explicitly
+**"PLAIN, UNLOCKED"** per the file's own banner (`agent_session.hpp:125-134`, and independently seen at
+its own definition site, `:915-916`: *"PLAIN, UNLOCKED — matches the original's own asymmetry exactly;
+see file banner"*) — no `session_mutex_` acquisition, a genuine independent host-callable entry point
+(confirmed: `tests/test_rt_agent_session_background_task.cpp` calls it directly, not via `run_rounds()`).
+It is not "later in the same frame" as §17.1 claims. Its own signature
+(`agent_session.hpp:919-921`) takes no `authority`/`require_authority` parameter at all — it can only
+ever read whatever `effect_context_.capabilities` a prior locked call left behind, reproducing exactly
+the "inherits the last dispatch's identity" bug §15.1 fixed for `resolve_interaction()`, for a third
+entry point this iteration never brought into scope.
+
+**X3 (CONCEPT-FLAW, severe, security-relevant) — §17.4's caller-derivation fix creates a fail-open
+confused-deputy gap. Re-verified directly against source.** Both `start_run()` and `resolve_interaction()`
+gate their ENTIRE admission check on `request.caller.has_value()` — `if (request.caller.has_value() &&
+!agentengine::principal_admitted_for(...))` (`agent_session.hpp:588-590`, `:650-652`, confirmed
+byte-for-byte identical in both functions). §17.4's own text calls `request.caller` "vestigial once
+`authority` is set," and its snippet only changes what feeds `principal_admitted_for` — it never touches
+the outer `.has_value()` gate. A request carrying `authority` but no `caller` (exactly the shape §17.4
+invites a Tier-3 dispatcher toward) skips admission **entirely**, not merely evaluates it permissively.
+Combined with §17.2's `require_authority` flag (which checks only that *an* authority exists, never that
+it's checked against session ownership), a correctly-authenticated principal for a **different** session**
+reaches this session's dispatch with zero ownership check, as long as `caller` is omitted — the exact
+confused-deputy shape this ADR has repeatedly indicted (R7, Design D). The needed fix is
+`authority || request.caller.has_value()` as the outer gate; §17.4 doesn't state it.
+
+**X4 (IMPLEMENTATION-HAZARD) — §17.5 undercounts its own blast radius.** It names one ripple site
+(`effect_context_.principal = principal_;`) for the const-member `Principal` change. Real scope is
+larger: `EffectContext::principal` (`effect_context.hpp:19`) is an uninitialized plain member, so once
+`Principal` loses its default constructor, `EffectContext`'s own implicit default constructor is deleted
+— which deletes `AgentSession`'s implicit default constructor in turn (`principal_`, `effect_context_`
+are plain members, `agent_session.hpp:1662`, `:1681`, no user-declared constructor), breaking every bare
+`AgentSession<...> session;` call site in every test file. Further unaudited assignment sites in the same
+file: `fork_from()` (`:778`, `:787`), `clear_in_process_state()` (`:819`, `:825`),
+`restore_from_record()` (`:887`) — all become ill-formed the same way, none named. §17.5 caught the
+read-access near-miss by grepping first; the same discipline wasn't applied to assignment/
+default-construction sites in this same file.
+
+**What held up**: the four line citations (734, 939, 1264, 1347) are accurate and the substitution
+itself is sound wherever it actually applies; the coroutine control-flow claim holds for the two real
+locked entry points (`start_run()`/`resolve_interaction()`) themselves — X2's break is that a third,
+unlocked entry point exists, not that the locked two are unsafe; §17.3's expiry field is a correct,
+honestly-scoped fix for S8.
+
+### 18b. Closure-completeness audit: the drift pattern narrows but does not break
+
+A full audit against all 58 tracked finding numbers (R1-27, S1-14, T0-16, U1-4, V1-6, W1-4, plus §16b's
+two unlettered gaps) found §17.6 a real improvement — roughly two dozen long-lived residuals correctly
+carried forward for the first time without loss, and T10 (dropped once already, per §16b) correctly
+recovered. But it is not clean:
+
+- **W3 (§16a's finding that the non-owning aliasing `shared_ptr` manufactures a false safety signal) is
+  silently dropped** — not fixed, not named anywhere in §17.1-§17.6, despite §17 being written
+  specifically to answer §16.
+- **W4 is dropped despite an explicit written promise two sections earlier to include it.** §17.3's own
+  text says W4 "stays open, named explicitly at §17.6" — §17.6 contains no such entry; its nearest
+  neighbor (the T10 bullet) is about polling *efficiency*, a different claim.
+- **R17 (the `rt::` message-boundary re-measurement) vanishes from §17.6** at the exact moment its own
+  subject (`RequestAuthority`, `StartRun`/`ResolveInteraction`) grew two more fields (§17.2's
+  `require_authority`, §17.3's `expiry`) — dropped, not carried, right when it became more relevant.
+- **R4/T4/V3's "closure" is mischaracterized as unconditional.** §15.4 closes T4 by keying
+  `IdempotencyKey` on `{id, tenant_id, provenance}` — but §17.5 itself confirms `Principal::provenance`
+  doesn't exist in real code yet. The closure is correct on paper and inert in practice; §17.6 lists
+  `Principal::provenance` as unbuilt without drawing the line back to what depends on it.
+- **A new, unnamed residual from §17.2's own mechanism**: `require_authority` is set per-message, with
+  nothing enforcing that a dispatcher which sets it on a session-opening `StartRun` also sets it on
+  every later `ResolveInteraction` for that session. Forgetting on the second call silently falls back
+  to the fail-open branch §17.2 exists to close — U2's exact bug, reproduced one level up.
+
+### 18c. Status
+
+**§17 does not survive.** X3 is a real, security-relevant fail-open gap in new code this iteration wrote,
+not a residual it failed to close — the sharpest possible failure mode for a security-focused design
+round. X1/X2 show the "trace every fix to its real call site" discipline §17 was explicitly built around
+was applied incompletely even within its own stated method. This is the **fourth consecutive design
+iteration (§8, §13, §15, §17)** whose central device has not survived its first independent red-team
+pass, and the specific failure mode has now shifted from "wrong mechanism" (§8) to "right mechanism,
+incompletely wired" (§13, §15) to "correctly wired at the sites checked, incompletely enumerated sites,
+new gap introduced while closing an old one" (§17) — narrowing each round, but not yet closing.
+
+**Recommendation, stated plainly rather than launching a sixth round by default**: four rounds of
+incremental patch-and-verify on this specific mechanism have each found comparably severe new problems.
+That is not, on its own, evidence the approach is wrong — §16c's own diagnosis (trace to the real call
+site before claiming) is still the correct discipline, and this round's failures (X1: two more
+`capabilities_` reads; X2: a third, unlocked entry point; X3: an outer gate not updated to match an
+inner one) are each mechanical, fixable, narrow-scope. But the *pattern* of narrow, iteration-at-a-time
+fixes each surfacing a next problem of similar severity is itself a signal worth naming rather than
+continuing past silently: a seventh round should not repeat this shape (fix what the last round found,
+ship, get red-teamed) without first doing what §17 attempted but §18a shows was incomplete — a **single,
+exhaustive enumeration of every `capabilities_`/`principal_`/`effect_context_` read and write across
+`agent_session.hpp` in one pass**, before any fix is written, rather than fixing sites as they're found
+one red-team round at a time.
+
+## 19. Exhaustive site enumeration — `agent_session.hpp` (2026-08-20)
+
+Per §18c's recommendation: every read and write of `capabilities_`, `principal_`, and
+`effect_context_` in `include/agentengine/rt/agent_session.hpp` (1994 lines), located by an
+unfiltered grep for the three names and then verified by reading each site's real surrounding
+function — not the grep line alone, and not carried forward from §17.1's table, which turns out to
+have been incomplete in ways this pass corrects (see 19.5). This section is audit only; it proposes
+no fix. §20 is where a seventh design iteration gets written against this map.
+
+### 19.1 Field declarations (3 sites)
+
+`principal_` (1662), `capabilities_` (1679, `CapabilitySet const*`, raw/borrowed, defaults to
+`nullptr`), `effect_context_` (1681, the `EffectContext` value every request-processing path shares).
+This is the entire state surface the rest of this section is about.
+
+### 19.2 The two locked entry points' admission gates — where X3 lives (2 sites)
+
+`start_run()` line 588-590 and `resolve_interaction()` line 650-652 are structurally identical:
+
+```
+if (request.caller.has_value() &&
+    !agentengine::principal_admitted_for(
+        agentengine::Principal{request.caller->id, request.caller->tenant_id}, principal_)) {
+    ++admission_denied_count_;
+    co_return std::unexpected(...);
+}
+```
+
+Both gate solely on `request.caller.has_value()`. Confirmed by direct read (not carried forward from
+§18a): this is exactly X3's target, unchanged since §17. Any request-shaped `authority` field a
+future design adds needs this condition changed to admit-check whenever *either* `caller` or
+`authority` is present — never skip admission because one of the two is absent.
+
+### 19.3 `EffectContext` population — the one write site, and the gap next to it (1 site + 1 absence)
+
+`start_run()` lines 619-623 is the **only** place in the file that freshly populates
+`effect_context_.principal` / `.capabilities` for a run:
+
+```
+effect_context_.principal    = principal_;
+effect_context_.capabilities = capabilities_;
+effect_context_.run_id       = session_id_ + ":run:" + std::to_string(run_counter_);
+effect_context_.turn_index   = 0;
+```
+
+Both fields are copied from **session-level** state (`principal_`, `capabilities_`), never from
+`request`. `resolve_interaction()` has no equivalent block — verified by reading its full body
+(646-770): it touches `effect_context_.turn_index`, `.report_progress`, `.codeact_preseeded_answers`,
+but never `.principal` or `.capabilities`. A `ResolveInteraction` request today has no line in the
+file that could carry per-request authority into `effect_context_` even in principle — not a
+missed-read bug like 19.4/19.5 below, an **absent write**. §15.1/§17's `apply_dispatch_authority()`
+idea was aimed at exactly this gap; this pass confirms the gap is real and confirms it is the
+`resolve_interaction()` side, specifically, that has nothing to extend.
+
+### 19.4 The `held` pattern — three sites, not four (confirms/corrects §17.1)
+
+Three distinct local `CapabilitySet const& held = capabilities_ ? *capabilities_ : empty_caps;`
+constructions, each immediately followed by a `held`-carrying call to `invoke_tool()`:
+
+| Line | Function | Notes |
+|---|---|---|
+| 734 | `resolve_interaction()`, approval-resolution branch | resolves the pending tool calls an approved interaction was suspended on |
+| 1264 | `resolve_codeact_ask()` | replays the stored `execute_code` call after an `agent.ask()` answer |
+| 1347 | `run_rounds()` | the shared per-turn loop every one of `start_run()` / the non-approval branch of `resolve_interaction()` / `resolve_codeact_ask()` ultimately calls into |
+
+§17.1's table named four sites (734, 939, 1264, 1347). Verified by reading each: 939 is a different
+mechanism (19.5 below), not a fourth `held` construction — folding it into the same table in §17.1
+understated how differently it needs to be fixed. All three real `held` sites read `capabilities_`
+directly; none reads `effect_context_.capabilities`. Given 19.3, fixing these three to read
+`effect_context_.capabilities` instead is necessary but not sufficient on its own — it only becomes
+meaningful once 19.3's gap (both entry points actually populating that field per-request) is closed.
+
+### 19.5 `background_task()` dispatch — one site, a structurally different problem (X2, confirmed)
+
+Line 939, inside `start_background_task()`:
+
+```
+result<void> submitted = background_task(
+    table, *capabilities_, request, effect_context_, approve, current_count, ...);
+```
+
+`*capabilities_` is passed inline as `background_task()`'s `held` argument — the same role as 19.4's
+three sites, just unnamed. The difference that matters: `start_background_task()` itself is **"PLAIN,
+UNLOCKED"** by its own file banner (915-918) and its own signature confirms it — `result<...>`, not
+`task<...>`, no `AsyncMutex::Guard`. Grepped for real callers across `include/` and found **none** —
+every hit outside `agent_session.hpp` itself is a comment or a test
+(`tests/test_rt_agent_session_background_task.cpp` and others call it directly). It is not reached
+from inside `run_rounds()`'s own model-driven tool-call loop; it is a genuinely separate,
+host-initiated third entry point, exactly as X2 said. Its signature —
+`start_background_task(ToolTable const&, ToolCallRequest const&, ApprovalDecider const&)` — carries
+no `caller`/`authority`-shaped parameter at all today, so there is no vehicle for per-request
+authority to reach it short of adding one. A fix here is not a `capabilities_` → `effect_context_.
+capabilities` swap like 19.4 — `effect_context_` isn't freshly populated for this call at all (19.3
+only fires from `start_run()`), so pointing this site at `effect_context_.capabilities` would read
+stale state left over from whatever run last called `start_run()`, which is arguably worse than
+today's session-level read. This site needs its own parameter, not a shared fix.
+
+### 19.6 `schedule_wakeup()` — two sites, deliberately outside the `bind()` mechanism entirely (X1, confirmed and re-scoped)
+
+Lines 993-994 and 997:
+
+```
+if (!capabilities_) { return std::unexpected(...); }
+...
+auto const schedule_cap = capabilities_->find_schedule();
+```
+
+Read `ScheduleWakeupTool`'s own definition (352-367) and its dispatch comment (335-350) directly,
+rather than assuming this is the same shape as 19.4/19.5. It is not. The comment is explicit and
+load-bearing: **"No `Capabilities<...>` policy tag is declared here deliberately"** — `declared_
+capabilities()` returns empty, so `ToolDescriptor::capability_ceiling` for this tool is empty, so
+`invoke_tool()`'s `held.bind(requirement)` loop (tool_pipeline.hpp:436-437) runs zero iterations for
+`schedule_wakeup` regardless of what `held` is. The real enforcement — does the session hold `cap::
+Schedule` at all, does the delay fit `max_horizon`, is `max_active` already at capacity — is a
+**live, per-call runtime check that a static ceiling can't express**, deliberately placed inside the
+function body instead (documented parallel to `Background<max_concurrent>`'s own in-body check for
+the same reason). Compounding this: the tool's dispatch closure (line 1384,
+`make_tool_descriptor_with_invoke<ScheduleWakeupTool>`) *does* receive a real `EffectContext&` from
+`invoke_tool()` when the model calls it — the closure signature is
+`(ScheduleWakeupArgs args, EffectContext&) -> result<ScheduleWakeupReply>` — but ignores that
+parameter and instead calls `this->schedule_wakeup(...)`, which reaches back around to session-level
+`capabilities_` rather than consulting the `EffectContext` it was just handed. So this is not "two
+more sites of the same missed-read bug" as X1's original framing put it — it's a tool whose entire
+authorization path is structurally outside the `bind()` mechanism the other three `held` sites use,
+*and* whose dispatch closure already has a live per-request `EffectContext&` in hand and discards it.
+A fix here needs its own parameter/threading (closer in shape to 19.5's problem than to 19.4's),
+not a mechanical swap.
+
+### 19.7 The tool-offer gate (1 site, feeds 19.6)
+
+Line 1382, inside `run_rounds()`'s per-turn loop:
+
+```
+if (capabilities_ && capabilities_->find_schedule().has_value()) {
+    contribution->tools.push_back(make_tool_descriptor_with_invoke<ScheduleWakeupTool>(...));
+}
+```
+
+Decides whether the model is even offered `schedule_wakeup` this turn, using session-level
+`capabilities_`. Same category as 19.6: if per-request authority ever narrows below session-level
+`capabilities_`, this gate would still offer (and, per 19.6, still allow invoking) a tool a
+narrower-authority request should not see. Needs the same fix as 19.6, not a separate one — this is
+the offer-side half of that same mechanism.
+
+### 19.8 Identity reads that don't gate authorization but carry it downstream (5 sites)
+
+Not bugs on their own; named because a Tier-3 fix that only touches 19.2-19.7 could leave these
+silently inconsistent with whatever per-request authority ends up threaded elsewhere:
+
+- **723, 1253, 1353** — `SessionContext{session_id_, principal_, history_}`, passed to
+  `history_provider_.on_context()` in `resolve_interaction()`, `resolve_codeact_ask()`, and
+  `run_rounds()` respectively. All three hand the **session-level** `principal_` to the context
+  provider, never any per-request identity. A memory/RAG `ContextProvider` that scopes recall by
+  caller (ADR-063/064 territory — [[project_adr063_064_rag_status]]) would see the same principal
+  regardless of which per-request authority actually issued the call.
+- **935, 1025** — `effect_context_.principal.id` copied into `StandingEffect.principal_id` at
+  ownership-stamp time (`start_background_task()`, `schedule_wakeup()`). Downstream of 19.3's gap:
+  since `effect_context_.principal` is only ever session-level today, every standing effect's
+  recorded owner is the session principal, never a per-request one.
+- **980** — `cancel_standing_effect()`'s `it->principal_id != caller_principal.id` check. Worth
+  naming as a precedent: this function already takes an explicit `Principal const& caller_principal`
+  parameter rather than reading `principal_`/`effect_context_.principal` — proof a request-shaped
+  authority parameter is an established, working pattern in this same file, not a novel idea 19.5/19.6
+  would be introducing for the first time.
+
+### 19.9 Bookkeeping and pure accessors — confirmed not authorization-relevant (11 sites)
+
+`initialize()` (494, sets `principal_` once at construction time, before any request exists),
+`fork_from()` (778, 787), `clear_in_process_state()` (819, 825), `to_record()`/`restore_from_record()`
+(877-878, 880, 887, 891, session-snapshot serialization), and the three public accessors
+`capabilities()` (508), `principal()` (558), `last_turn_index()` (567). Read each in context; none
+participates in an authorization decision inside this file. Listed for completeness, not carried into
+§20.
+
+### 19.10 Summary — what a seventh iteration actually needs to cover
+
+Eight real authorization-relevant sites (not four), spanning **three structurally distinct
+mechanisms**, sitting behind **one gap that has no site yet** (19.3, resolve_interaction's missing
+write) and **one gate bug already found** (19.2/X3):
+
+1. **The `bind()`-mediated `held` pattern** (19.4, 3 sites: 734, 1264, 1347) — a per-request
+   `CapabilitySet`/authority swapped in for `capabilities_`, meaningful only once 19.3's write-side
+   gap is closed for both entry points.
+2. **`background_task()`'s inlined `held` argument** (19.5, 1 site: 939) — same `bind()` mechanism as
+   (1), but reached from a third, unlocked, request-parameter-less entry point that needs its own
+   authority parameter added to its signature, not a field read swapped underneath it.
+3. **`schedule_wakeup()`'s live in-body check, deliberately outside `bind()`** (19.6+19.7, 3 sites:
+   993, 997, 1382) — needs its own authority parameter threaded from the `EffectContext&` its dispatch
+   closure already receives and currently discards; the two-number "does the session even hold this,
+   does the live count allow it" split is a by-design property this codebase already has for
+   `Background<max_concurrent>` too, not something to collapse into (1)/(2).
+
+None of this changes the shape of X3 (19.2) — that fix (require `caller` OR `authority`, never admit
+on the absence-implies-skip reading) is independent of all three mechanisms above and should land
+regardless of how (1)-(3) get resolved.
+
+## 20. Seventh design iteration — Tier 3 (2026-08-20)
+
+Written against §19's map, not against §18's findings directly — each piece below is cited to the
+§19 subsection it closes, not to the red-team finding that originally motivated it, since §19 showed
+the findings undercounted the real site list.
+
+### 20.1 `RequestAuthority` — one bundle, never split across two fields
+
+```cpp
+struct RequestAuthority {
+    agentengine::Principal                       principal;      // per-request identity
+    std::shared_ptr<agentengine::CapabilitySet const> capabilities;  // per-request grant, OWNED
+    std::chrono::steady_clock::time_point        expiry;
+    [[nodiscard]] bool live(std::chrono::steady_clock::time_point now) const noexcept {
+        return now < expiry;
+    }
+};
+```
+
+Deliberately a single bundle carrying identity AND grant together, not `caller` (identity) plus a
+separate capabilities field that could disagree with it. §17.4 tried to keep `caller`/`authority` as
+two fields that must *agree*, and building the agreement check was exactly the kind of two-sources-
+of-truth machinery this ADR keeps finding bugs in (R4/T4/V3, U2, W2, X1's "two more reads"). §20.4
+below avoids needing an agreement check at all by making the two fields **mutually exclusive by
+session mode**, not by per-message cross-validation.
+
+`capabilities` is `shared_ptr<CapabilitySet const>`, not a raw pointer/reference, because — traced
+through an actual lifetime scenario, not assumed — a per-request `CapabilitySet` that a raw pointer
+borrowed from `request.authority` (itself living in the request's own coroutine frame) would dangle
+the moment `start_run()`'s `task<>` resolves, while `effect_context_` persists as a session-level
+member read again by a *later*, unrelated call. §20.3 below relies on this: every entry point
+re-writes `effect_context_.capabilities` fresh at entry, and only a `shared_ptr` makes that write
+safe regardless of what already destroyed the previous call's stack frame. `Principal::provenance`
+(§17.5) is deliberately NOT reattempted here — nothing below needs it, and leaving `Principal`
+untouched removes X4's entire blast-radius class from this iteration's own risk surface.
+
+### 20.2 `require_authority_` — a session-level flag, set once, not a per-message field
+
+```cpp
+void set_require_authority(bool require) noexcept { require_authority_ = require; }
+```
+
+§17.2 put `require_authority` on `StartRun`/`ResolveInteraction` themselves — a dispatcher had to
+remember to set it on *every* message for a session, and 18b found the exact bug that shape invites:
+forgetting it on the second call silently falls back to the fail-open branch. Moving it to session
+construction-time state (set once, alongside `set_capabilities()`, by whichever Tier-3 listener wires
+up the session — §13's endpoint-registration path) removes the "forgot on message N" bug class by
+construction rather than by discipline: there is no longer a message-shaped place to forget it on.
+Defaults to `false` — unchanged behavior for every embedded/non-Tier-3 session, i.e. every existing
+test. **The Tier-3 listener wiring must call `set_require_authority(true)` unconditionally for every
+session it fronts; this ADR does not consider a default-`false` Tier-3 session a safe configuration**
+— naming it here rather than leaving it to be discovered as a residual later.
+
+### 20.3 `apply_dispatch_authority()` — the one write site, closes 19.3, made structurally singular
+
+`EffectContext::capabilities` changes type from `CapabilitySet const*` to
+`std::shared_ptr<CapabilitySet const>`. `EffectContext::principal` is unchanged (`Principal`, by
+value — already copyable, no ownership question). A single private helper, called at the *top* of
+every entry point immediately after admission passes, before any branch that could reach a `held`/
+`effect_context_.capabilities` consumer:
+
+```cpp
+[[nodiscard]] result<void> apply_dispatch_authority(
+        std::optional<RequestAuthority> const& authority,
+        std::chrono::steady_clock::time_point now) {
+    if (require_authority_) {
+        if (!authority.has_value()) {
+            return std::unexpected(error{failure_class::policy,
+                "this session requires per-request authority; dispatcher supplied none",
+                "run.authority_required"});
+        }
+        if (!authority->live(now)) {
+            return std::unexpected(error{failure_class::policy,
+                "per-request authority has expired", "run.authority_expired"});
+        }
+        effect_context_.principal    = authority->principal;
+        effect_context_.capabilities = authority->capabilities;
+        return {};
+    }
+    // Tier-3 does not front this session -- session-level grant is the only authority that has
+    // ever existed for it. Aliasing constructor: a real shared_ptr, but never owns/deletes the
+    // borrowed capabilities_ pointer -- capabilities_'s own lifetime (owned by whoever called
+    // set_capabilities()) is completely unchanged by this wrapping.
+    effect_context_.principal    = principal_;
+    effect_context_.capabilities = std::shared_ptr<agentengine::CapabilitySet const>(
+        capabilities_, [](agentengine::CapabilitySet const*) noexcept {});
+    return {};
+}
+```
+
+This closes 19.3 for `start_run()` (replacing its existing 619-620 lines) **and** gives
+`resolve_interaction()` the write it never had — called unconditionally right after that function's
+own admission check, before the `approved`/`!approved` branch split, so both branches (and
+everything `run_rounds()` reads afterward) see a freshly-written value from *this* call, never a
+stale one left over from a previous `start_run()`. The "written fresh at entry, before any branch"
+placement is the structural rule that makes the `shared_ptr` lifetime argument in 20.1 hold.
+
+### 20.4 The admission gate — single source of truth per session mode, closes X3 without an agreement check
+
+```cpp
+if (require_authority_) {
+    if (!request.authority.has_value()) {
+        ++admission_denied_count_;
+        co_return std::unexpected(error{failure_class::policy,
+            "this session requires per-request authority", "run.authority_required"});
+    }
+    if (!agentengine::principal_admitted_for(request.authority->principal, principal_)) {
+        ++admission_denied_count_;
+        co_return std::unexpected(error{failure_class::policy,
+            "caller not admitted for this session", "run.admission_denied"});
+    }
+} else if (request.caller.has_value() &&
+           !agentengine::principal_admitted_for(
+               agentengine::Principal{request.caller->id, request.caller->tenant_id}, principal_)) {
+    ++admission_denied_count_;
+    co_return std::unexpected(error{failure_class::policy,
+        "caller not admitted for this session", "run.admission_denied"});
+}
+```
+
+X3's bug was a boolean condition gated on `caller.has_value()` alone, so a request carrying
+`authority` but no `caller` skipped it entirely. §17's instinct (and an earlier draft of this
+section) was to widen that condition to `caller.has_value() || authority.has_value()` — but a
+union-widened condition is exactly the shape that has broken twice already in this ADR (S1's
+identity-laundering shape, X3 itself). This version does not widen a shared condition; it **branches
+on session mode first**. A `require_authority_` session checks `authority` and nothing else — a
+`caller`-only request is rejected outright, never silently admitted through the other branch. A
+non-Tier-3 session keeps the original `caller`-only check, byte-for-byte, so every existing test is
+unaffected. There is no code path where the two checks can disagree, because there is no code path
+where both run.
+
+### 20.5 The four real entry points that touch authority — including one not previously named as such
+
+**`start_run(StartRun request, std::chrono::steady_clock::time_point now)`** and
+**`resolve_interaction(ResolveInteraction request, std::chrono::steady_clock::time_point now)`** —
+both gain `now` (I5: nondeterminism crosses a recorded seam, the same discipline `schedule_wakeup()`
+already used before this iteration touched it; no internal `steady_clock::now()` call is added to
+either). §20.4's admission check runs first, then `apply_dispatch_authority(request.authority, now)`
+unconditionally, both before the first branch.
+
+**`start_background_task(ToolTable const&, ToolCallRequest const&, std::optional<RequestAuthority> const& authority, std::chrono::steady_clock::time_point now, ApprovalDecider const& approve = {})`**
+— becomes `task<result<StandingEffect>>` and acquires `session_mutex_` at entry, same as the two
+entry points above. The file's own banner (915-918) called its unlocked status "matches the
+original's own asymmetry exactly" — a deliberate, ported-forward property, not a bug any prior
+iteration introduced. This iteration breaks that parity deliberately: confirmed by grep (19.5) that
+it has **zero real callers** in product code today (only tests), so nothing in shipped code depends
+on it staying unlocked, and I1 makes an unlocked mutator of session-scoped state (`standing_effects_`,
+`standing_effect_counter_`) a real hazard the instant Tier-3 makes this session reachable from more
+than one concurrently-arriving caller — exactly the condition this ADR exists to introduce. Internally
+calls `apply_dispatch_authority(authority, now)` then uses `*effect_context_.capabilities` (was
+`*capabilities_`, closes 19.5) at its `background_task()` call site.
+
+**`schedule_wakeup(...)` — a fourth entry point, found while designing this section, not by §18/§19's
+audit.** §19.6 examined its *internal* reads (993, 997) but not its own callability. Reading its
+signature again while designing this fix: it is `result<...>`, not `task<...>` — **no
+`session_mutex_` guard, exactly the same unlocked shape as `start_background_task()`**, and grep
+confirms real direct test callers (`tests/test_rt_agent_session_schedule_wakeup.cpp`). But it is
+*also* called internally, from the closure `run_rounds()` registers at line 1384 — which runs
+**already inside the lock** (via `invoke_tool()`, itself only reached from a locked `start_run()`/
+`resolve_interaction()`). Locking `schedule_wakeup()` itself, the way `start_background_task()` above
+just was, would make that internal call self-deadlock against a non-reentrant `AsyncMutex`. Split, the
+same way this file already splits `clear_in_process_state()`/`clear_in_process_state_locked()` and
+`to_record()`/`snapshot_record()` (874-911) — an established pattern in this exact file, not a new
+one:
+
+- `schedule_wakeup_impl(delay, label, now, CapabilitySet const& held, Principal const& principal, std::string const& run_id)`
+  — the real logic (993-1030-ish), UNLOCKED, taking exactly what it needs as parameters instead of
+  reading `capabilities_`/`effect_context_` itself. Closes 19.6's `held` half.
+- `schedule_wakeup(delay, label, now, std::optional<RequestAuthority> const& authority)` — NEW public
+  `task<...>`, locks, calls `apply_dispatch_authority()`, then `schedule_wakeup_impl()` with the
+  resolved fields. For host-direct callers (existing tests migrate to this).
+- The line-1384 closure, which already runs locked and already receives a real `EffectContext&` from
+  `invoke_tool()` (and previously discarded it — 19.6's other finding), now calls
+  `schedule_wakeup_impl(..., *ctx.capabilities, ctx.principal, ctx.run_id)` directly — no re-lock, no
+  re-authority-resolution, reuses what the enclosing `run_rounds()` already resolved.
+
+### 20.6 The eight sites, closed against §19.10's three mechanisms
+
+1. **`held` sites (3: 734, 1264, 1347)** — `capabilities_ ? *capabilities_ : empty_caps` becomes
+   `effect_context_.capabilities ? *effect_context_.capabilities : empty_caps`. Mechanical once 20.3
+   guarantees a fresh per-call write; the `? :` fallback stays (a session that never called
+   `set_capabilities()` still has a legitimately-empty grant, same as today).
+2. **`background_task()` argument (1: 939)** — `*capabilities_` becomes `*effect_context_.capabilities`,
+   inside the now-locked, now-authority-aware `start_background_task()` from 20.5.
+3. **`schedule_wakeup` (3: 993, 997, 1382)** — 993/997 move into `schedule_wakeup_impl()`, taking
+   `held` as a parameter instead of reading `capabilities_`/doing its own null-guard (an empty
+   `CapabilitySet`'s `find_schedule()` already returns `nullopt`, so the explicit `if (!capabilities_)`
+   guard collapses into the existing `has_value()` check — a simplification, not just a swap). 1382
+   (the offer-gate) is rewritten to reuse the *same* local `held` that 20.6.1 just fixed at line 1347,
+   a few lines above it in `run_rounds()` — `if (held.find_schedule().has_value())` — so the offer
+   decision and the enforcement decision read the identical source for the first time, closing 19.7.
+
+### 20.7 Identity reads that "come free" once 20.3 is in place (19.8)
+
+`SessionContext{session_id_, principal_, history_}` at 723, 1253, 1353 becomes
+`SessionContext{session_id_, effect_context_.principal, history_}` — a direct substitution enabled by
+20.3, not a separate mechanism. The `StandingEffect` ownership stamps (935, 1025) already read
+`effect_context_.principal`/`.run_id`, not `principal_` directly, so they become correct automatically
+once 20.3/20.5 make `effect_context_.principal` genuinely per-request — no separate fix needed there,
+confirmed by re-reading both sites rather than assumed.
+
+### 20.8 Named residuals — what this iteration deliberately does not attempt
+
+- **Ripple size, stated honestly, not rounded down**: grepped real call counts —
+  `start_run()`: **155**, `resolve_interaction()`: **9**, `schedule_wakeup()`: **8**,
+  `start_background_task()`: **4** — across `tests/`, `include/`, `src/`. Every one needs a `now`
+  argument added; the 8 `schedule_wakeup()` callers additionally need to migrate to the new locked
+  wrapper's signature (`authority` argument, `std::nullopt` for every existing non-Tier-3 caller).
+  This is a real, sizable mechanical migration, not a paper cost — named here so it isn't discovered
+  as a surprise during implementation.
+- **`Principal::provenance` (§17.5)** — deliberately not reattempted (20.1). Still unbuilt.
+- **`IdempotencyKey` digest fields (§15.4), `EndpointId` CSPRNG minting (§13.5), the replay-window
+  residual (§15.3)** — orthogonal to everything in §20, still open exactly as §17.6 left them.
+- **`background_task()`'s detached-`std::thread` continuation (tool_pipeline.hpp step 8 onward)** is
+  UNCHANGED by 20.5's locking of `start_background_task()` — the lock covers the synchronous
+  steps 1-7 (including the `bind()` call this section fixes), matching how `start_run()`/
+  `resolve_interaction()` already only hold the lock for their own synchronous portion. Not a new gap;
+  named so it isn't mistaken for one.
+- **This section has not been red-teamed yet.** Per this ADR's own repeated lesson (§16c, §18c): a
+  claim in this subsection is a design claim, not a proven one, until an independent pass tries to
+  break it.
+
+### 20.9 Next step
+
+Launch an independent red-team pass against §20 specifically — the sixth round against a Tier-3
+design overall, but the first against a design built from an exhaustive site map rather than from
+the previous round's findings alone. Instructed lens, given the pattern §16c/§18c named: check
+whether 20.4's "branch on session mode, never union" admission shape actually eliminates the
+agreement-check hazard it claims to (rather than relocating it), and whether the newly-split
+`schedule_wakeup`/`schedule_wakeup_impl` boundary (20.5) is clean — a wrapper/impl split is exactly
+the shape where an argument silently stops flowing through on one side.
+
+## 21. Sixth red-team round — against §20 (2026-08-20)
+
+Two independent passes, run in parallel: a mechanism-lens pass (adversarially break §20 against real
+source) and a closure-completeness audit (does §20 honestly account for the ADR's own residual
+history and §19's full site map). Both traced claims to real source rather than trusting the ADR's
+prose — several of §20's riskiest-looking claims held up under that scrutiny; others didn't.
+
+### 21a. Mechanism-lens findings
+
+**Finding 1 (real, severe) — `require_authority_` is not carried by `fork_from()`/`restore_from_record()`, and a real passing test proves the resulting session is immediately runnable with it silently at its unsafe default.** §20.2 claims moving the flag to session-construction-time state "removes the 'forgot on message N' bug class by construction." True only on the *message* axis. `fork_from()` (agent_session.hpp:775-797) copies `principal_` field-by-field onto a freshly default-constructed target but was never taught about a `require_authority_` field, and `restore_from_record()`'s `AgentSessionRecord` has no slot for it either. `tests/test_rt_agent_session_lifecycle.cpp:318-349` (FORK4/FORK5) constructs a fresh session, calls only `fork_from(source, ...)`, and immediately `start_run()`s successfully — no re-wiring call in between. A session forked from a Tier-3-fronted parent would inherit `principal_` (the identity) but not `require_authority_` (the rule that identity must come from a live, per-request-verified authority) — a real, demonstrated trust-tier downgrade, not a hypothetical one.
+
+**Finding 2 (real inconsistency) — §20.5's literal code and §20.6.3's description of the same call disagree on null-safety.** §20.5 shows the line-1384 closure calling `schedule_wakeup_impl(..., *ctx.capabilities, ...)` — an unguarded dereference. §20.6.3 describes the *same* call using the null-safe `held` pattern (`? *x : empty_caps`). Nothing in `apply_dispatch_authority()` validates `authority->capabilities` is non-null before assignment, so if a `RequestAuthority` is ever constructed with a null `capabilities`, §20.5's literal form crashes where §20.6.3's doesn't.
+
+**Finding 3 (real gap) — `start_background_task()`'s existing guard (line 922, `if (!capabilities_)`) is never named as needing to move to `effect_context_.capabilities`.** §20.6.2 names only the line-939 dereference swap. Left as-is, the guard checks session-level state while the dereference reads per-request state — a Tier-3 session with non-null session-level `capabilities_` but a null `authority->capabilities` passes the stale guard and hits an unguarded null dereference.
+
+**Finding 4 (minor, honesty-of-scoping)** — `apply_dispatch_authority()`'s non-Tier-3 branch allocates a fresh `shared_ptr` control block (aliasing constructor + deleter) on *every* `start_run()`/`resolve_interaction()` call, for every existing session, Tier-3 or not — a real, previously zero-cost pointer copy becoming an allocation on the hot path. Not named in §20.8.
+
+**Claims independently re-verified and confirmed to hold**: §20.3's "only agent_session.hpp needs fixing" scoping claim (checked every real external consumer of `EffectContext::capabilities` — agent_registry.hpp, secret.hpp, native_jail's command_registry.hpp/mediated_shell_dispatch.cpp — all consume it in ways source-compatible with the type change); `held`'s scope at line 1382 (genuinely in scope, not gated behind a skippable branch); `drain_background_completions_locked()` doesn't read `effect_context_` (the write-before-read ordering claim is safe with respect to this function); `start_background_task()`'s "zero real callers" claim (re-confirmed by independent grep); §20.4's admission-branch structure itself (sound as written — the hazard is in whether `require_authority_` is reliably *true*, not in the branch logic, which is exactly Finding 1).
+
+### 21b. Closure-completeness findings
+
+**All 8 sites from §19.10 are honestly, correctly closed** — no silent skip found.
+
+**§19.3's write-side gap: §20.3's placement claim is under-specified against `resolve_interaction()`'s real branches.** The function has a `codeact_ask` early return at line 689-690 (`co_return co_await resolve_codeact_ask(...)`) that §20.3's prose never names — it names only the later `approved`/`!approved` split at line 702. If an implementer places the write per the sentence as literally written (before the branch actually named) rather than before line 689 (the first branch point, which is what "right after admission" actually requires), `resolve_codeact_ask()` — which has its own sites at §19.4's line 1264 and §19.8's line 1253 — would read stale `effect_context_` state, reproducing 19.3's exact bug on that one path.
+
+**§17.6's residual superset is not carried forward.** Roughly twenty items (R6, R10-R13, R15, R22-R27's uncovered clusters, S7, T1, T5, T7, T10, T13, the 007 §5 policy engine, the Sidecar bridge, the decoder) appear nowhere in §20's text — neither fixed nor named open. §20.8 retains only 5 of them. This is the same "silently dropped between rounds" pattern §16b and §18b each already caught, now recurring a third time.
+
+**§20.2's real replacement-failure mode is named in prose but missing from §20.8's consolidated list** — converges exactly with 21a Finding 1: a Tier-3 listener forgetting `set_require_authority(true)` at session-wiring time has no construction-level guard, only documented convention. The closure audit found this abstractly; the mechanism pass independently found the same gap concretely, with a real failing-by-omission test path (`fork_from()`) as proof. Two independent passes converging on the same root cause from different angles is a stronger signal than either alone.
+
+**§20.1's "avoids an agreement check" claim is narrowly true but incomplete**: no comparison code exists, so the literal claim holds — but `request.caller` becomes a field that is permanently, silently ignored on a `require_authority_` session, with nothing flagging that to a future maintainer or a future code path.
+
+### 21c. Status
+
+**§20 partially survives — the first iteration in this ADR's Tier-3 history to hold up on more than one structural axis under independent adversarial checking.** The `EffectContext::capabilities` type-change blast radius, the `held`-reuse scoping at line 1382, the write-before-read ordering against `drain_background_completions_locked()`, the "zero callers" claims for `start_background_task()`, and the admission-gate branch logic itself all check out against real source. That is real progress relative to §8/§13/§15/§17, none of which had a comparable fraction of claims survive first contact.
+
+It does not fully survive. One finding is severe and concretely proven (fork/restore not carrying `require_authority_`, demonstrated against a real passing test — not a hypothetical); two are real, fixable inconsistencies in the design text itself (Findings 2-3, both null-safety, both traceable to a specific line); and the closure audit confirms the ADR's now-three-times-recurring pattern of a "named residuals" list quietly shrinking each round rather than being re-derived against the full accumulated history. An eighth iteration needs to: (a) make `fork_from()`/`restore_from_record()` carry `require_authority_` forward from the source session (fail-closed direction: a fork of a Tier-3 session must stay Tier-3 by default, not silently downgrade), (b) reconcile §20.5/§20.6.3's null-safety inconsistency and extend it to `start_background_task()`'s line-922 guard, (c) name the write placement in `resolve_interaction()` against its real branch structure (before line 689, not before line 702), and (d) re-derive the full residual list against §17.6's original superset rather than continuing to narrow it silently — the same instruction §16c and §18c already gave, still not followed.
+
+## 22. Eighth design iteration — Tier 3 (2026-08-20)
+
+Written to close exactly the four items §21c named, in order, plus the re-derivation §21c's item (d)
+requires. Nothing here revisits §20.1-§20.7's mechanism itself, which §21 found largely sound.
+
+### 22.1 (a) `require_authority_` carried by `fork_from()`/`restore_from_record()`, fail-closed direction
+
+```cpp
+void fork_from(AgentSession const& source, std::string new_session_id,
+                std::optional<std::size_t> history_prefix_len = std::nullopt) {
+    session_id_ = std::move(new_session_id);
+    principal_  = source.principal_;
+    require_authority_ = source.require_authority_;  // NEW -- fail-closed: a fork of a Tier-3
+    // session must stay Tier-3 by default. Not copying this was §21a Finding 1: `principal_` (the
+    // identity) was already carried forward while `require_authority_` (the rule that identity must
+    // come from a live, per-request-verified authority, not a bare claim) was not -- a silent
+    // downgrade in exactly the dangerous direction, proven reachable by a real, already-passing test
+    // (tests/test_rt_agent_session_lifecycle.cpp FORK4/FORK5) that forks and immediately start_run()s
+    // with no re-wiring call in between.
+    ...
+}
+```
+
+`AgentSessionRecord` (agent_session.hpp:400-408) gains a field:
+
+```cpp
+struct AgentSessionRecord {
+    std::string session_id;
+    std::string principal_id;
+    std::string principal_tenant_id;
+    bool deleted = false;
+    std::uint64_t run_counter = 0;
+    std::uint64_t turn_index = 0;
+    std::vector<Interaction> open_interactions;
+    bool require_authority = false;  // NEW
+};
+```
+
+`to_record()`/`restore_from_record()` gain the corresponding `rec.require_authority = require_authority_;`
+/ `require_authority_ = rec.require_authority;` lines. The JSON codec
+(`agent_session_record_to_json()`/`agent_session_record_from_json()`, lines 414-452) gains a matching
+`"require_authority"` bool field, added as a **required** field in `agent_session_record_from_json()`'s
+malformed-check — the same strictness every other field in that function already has (`deleted`,
+`run_counter`, `turn_index` are all required, none defaulted-on-absence). This is a deliberate breaking
+change to the record wire schema: a pre-this-change persisted snapshot fails to deserialize (`"malformed
+AgentSessionRecord"`) rather than silently defaulting `require_authority` to `false` on an old record —
+fail loud, not fail open, matching this function's own existing convention and this project's
+"construction, not convention" bias. Accepted without a migration path because Milestones 8-9 (where
+any real persisted-snapshot deployment would first exist) have not started — there is no real data this
+would break.
+
+**Named but not fixed here, out of scope for this iteration**: `fork_from()` does not copy
+`capabilities_` either, and never has — a pre-existing gap unrelated to Tier 3, not introduced or
+enlarged by this change. For a `require_authority_ == true` fork this is a non-issue (that branch of
+`apply_dispatch_authority()` never reads `capabilities_`); for a `require_authority_ == false` fork it
+means the forked session has no granted capabilities until something re-calls `set_capabilities()`,
+exactly as it does today, unchanged.
+
+### 22.2 (b) One null-safety idiom, applied everywhere `capabilities_`/`effect_context_.capabilities` is consumed
+
+§21a Findings 2-3 both trace back to the same root cause: §20.6's three `held` sites (734, 1264, 1347)
+correctly use `X ? *X : empty_caps`, but §20.5's schedule_wakeup closure and `start_background_task()`'s
+line-939 dereference did not consistently reuse that same idiom. Fixed by applying it uniformly,
+not by inventing a second mechanism:
+
+- **Line-1384 closure** (§20.5): before calling `schedule_wakeup_impl`, resolve a null-safe local
+  exactly like the three `held` sites already do:
+  ```cpp
+  [this](ScheduleWakeupArgs args, EffectContext& ctx) -> result<ScheduleWakeupReply> {
+      CapabilitySet const empty_caps = CapabilitySet::grant_root({});
+      CapabilitySet const& held = ctx.capabilities ? *ctx.capabilities : empty_caps;
+      auto effect = schedule_wakeup_impl(std::chrono::milliseconds(args.delay_ms),
+                                          std::move(args.label), std::chrono::steady_clock::now(),
+                                          held, ctx.principal, ctx.run_id);
+      ...
+  }
+  ```
+  replacing §20.5's unguarded `*ctx.capabilities` — this is the correction to §20.5's shown code,
+  bringing it into agreement with what §20.6.3 already (correctly) described.
+- **`start_background_task()`'s guard** (line 922): moves from checking session-level `capabilities_`
+  to checking the per-request field the rest of the function now reads —
+  `if (!effect_context_.capabilities) { return std::unexpected(error{failure_class::policy, "session has no granted capabilities", "standing_effect.no_capabilities"}); }` —
+  called after `apply_dispatch_authority()` has run, so this checks the field that call just populated,
+  not stale session state. This preserves the guard's original shape and intent (early, explicit
+  rejection when no grant is present, not a silent empty-capability fallthrough into `background_task()`)
+  — §20.6.2 named only the line-939 dereference swap; this closes the guard half §21a Finding 3 found
+  missing. With the guard in place, the line-939 dereference (`*effect_context_.capabilities`) is safe
+  for the same reason it always was: guard-then-dereference, now against the correct field.
+
+### 22.3 (c) `resolve_interaction()`'s `apply_dispatch_authority()` call, placed against its real branch structure
+
+§20.3 said "before the `approved`/`!approved` branch split" — true but incomplete: that split is the
+*third* branch point in the function, not the first. The real structure, read again against
+agent_session.hpp:646-734:
+
+1. Admission check (650-657)
+2. Interaction-lookup validity block (659-667: unknown id; 669-674: stale history)
+3. `codeact_ask` early return (689-690: `co_return co_await resolve_codeact_ask(request, it->interaction_id);`)
+4. `resolve_interaction_record()` (693)
+5. `approved`/`!approved` split (702)
+
+`resolve_codeact_ask()` (branch 3) has its own authority-relevant sites (§19.4 line 1264, §19.8 line
+1253) and is reached *before* branch 5. §21b's finding was exact: placing the write before branch 5
+only, per §20.3's literal sentence, would leave branch 3 reading stale `effect_context_` state whenever
+an interaction resolves as a `codeact_ask`. The call belongs immediately after branch 1, before branch
+2, dominating every later branch including 3:
+
+```cpp
+task<result<AgentResponse>> resolve_interaction(ResolveInteraction request,
+                                                  std::chrono::steady_clock::time_point now) {
+    AsyncMutex::Guard guard = co_await session_mutex_.lock();
+    drain_background_completions_locked();
+
+    // §20.4's admission check goes here, unchanged from start_run()'s shape.
+    ...
+
+    result<void> applied = apply_dispatch_authority(request.authority, now);   // <-- HERE, before
+    if (!applied) co_return std::unexpected(applied.error());                  //     ANY branch,
+                                                                                 //     not just before
+    auto it = std::find_if(open_interactions_.begin(), ...);                   //     the approved/
+    // ... branches 2, 3, 4, 5 all now see a freshly-written effect_context_ ...//     !approved split
+```
+
+This is the same placement rule 20.3 already stated in prose ("before any branch that could reach a
+`held`/`effect_context_.capabilities` consumer") — §21b's finding is that the accompanying code
+sketch didn't actually satisfy the rule its own prose set, not that the rule itself was wrong.
+
+### 22.4 (d) Residual list, re-derived against §17.6's original superset — not narrowed again
+
+Checked every item in §17.6, not just the ones §20.8 happened to retain:
+
+- **Superseded, not carried forward in their old form**: §17.2's `require_authority` flag and §17.4's
+  caller-derivation change are replaced outright by §20.2/§20.4 — listing them as "still open" would be
+  wrong; they no longer exist as designed.
+- **Unchanged, still open, not touched by §20/§22**: R6 (decoder); R12-as-scoped (verification latency
+  once replay is gone); R23 (multi-subscriber fan-out); `Principal::provenance` (§17.5/§20.1, still
+  deliberately deferred); 007 §5's policy engine (every `RequestAuthority.capabilities` in this design
+  still ultimately depends on it existing); 006 §6b's in-flight-native-effect residual; T13 (013 §2.2's
+  "unrecoverable" case, now ordinary under Tier 3); R15's in-flight half; the Sidecar bridge (R11); S7's
+  harder half (multi-caller/session-sharing); T5's decoupling; the replay-window exposure (§15.3/V2);
+  R10 (credential-unreachable-from-dispatch, `try_compile()` gate unbuilt); R13's anonymous-tenant-
+  selection half; R22's pinned-worker half; R25 (`TransportFacts`/cleartext-credential rejection); R26
+  (`call_id`-as-audit-key collision); R27's `approve_`/`A2aServer::context_id_`/
+  `RunEventProjector::thread_id_` cluster (still real, still untouched — this design work has stayed
+  `agent_session.hpp`-centered throughout, same scope boundary §17.6 already named); T1 (per-seam
+  delivery/backpressure policy); T7's six remaining named MUSTs; T10 (no wake/notify signal).
+- **Closed by §22, pending its own red-team**: §21a Finding 1 (`require_authority_` fork/restore
+  carry-forward, §22.1); §21a Findings 2-3 (null-safety, §22.2); §21b's write-placement finding for
+  `resolve_interaction()` (§22.3).
+- **This iteration's own new surface, not yet independently checked** — same caveat §17.6's own last
+  line carried, now against different code: the `AgentSessionRecord.require_authority` wire-schema
+  change (22.1), the uniform null-safety idiom (22.2), and the corrected `resolve_interaction()` write
+  placement (22.3) are new, and have not themselves been red-teamed.
+
+### 22.5 Next step
+
+Independent red-team pass against §22 specifically — the seventh round against a Tier-3 design.
+Instructed lens: (i) does 22.1's breaking wire-schema change actually get enforced everywhere
+`AgentSessionRecord` is constructed, or is there a hand-built-record path (a test fixture, a codec
+call site) that still compiles without setting the new field and now silently carries `false`; (ii)
+does 22.3's placement, read against the real function body once the edit lands, actually dominate every
+branch including `resolve_codeact_ask()`, or does `resolve_codeact_ask()` itself have some earlier
+return path that could still see a stale `effect_context_` for a different reason; (iii) whether 22.4's
+re-derivation genuinely matches §17.6 item-for-item or has itself already dropped something in the
+process of re-deriving it.
+
+## 23. Seventh red-team round — against §22 (2026-08-20)
+
+Two independent passes, as before: mechanism-lens and closure-completeness. Both explicitly checked
+this ADR's own baseline first — none of §20/§22's design exists in real code yet (grepped for
+`require_authority`/`RequestAuthority`/`apply_dispatch_authority`: zero hits), so every line/function
+cited was checked against the pre-fix source §19 originally enumerated, confirmed to still match.
+
+### 23a. Mechanism-lens findings
+
+**Finding 1 (real, §22.1 undercounts its own blast radius) — a real production hand-built `AgentSessionRecord`.** `delete_session()` (agent_session.hpp:1981) constructs a `AgentSessionRecord tombstone{};` directly — not through `to_record()` — sets only `session_id`/`deleted`, and saves it. §22.1 characterizes the JSON codec as strict but never checks non-`to_record()` C++ construction sites; a default member initializer (`= false`) makes `require_authority` silently omittable at any of them, and this is a real one, in production code, not a test. Confirmed low-impact (`load_agent_session_snapshot()` returns `nullopt` for any `deleted == true` record before `require_authority` would ever be read back), but a real, live counterexample to the "construction, not convention" claim §22.1's fix rests on.
+
+**Finding 2 (real gap, same recurring failure shape) — §22.2's `start_background_task()` guard-ordering claim is asserted, not shown.** Unlike §22.3 (which shows the full merged function body proving the write dominates every branch), §22.2 shows only the isolated guard line and asserts in prose that it runs after `apply_dispatch_authority()`. In real source this guard is the literal first statement of the function (line 922). If an implementer preserves that position rather than inferring the reordering from prose, the guard reads `effect_context_.capabilities` **before** this call's own fresh write — reproducing 21a Finding 3's exact stale-state hazard, one line downstream of where it was supposedly fixed. This is the identical failure shape §21b caught in §20.3 (placement claimed correct in prose, not verified against merged code), recurring here specifically because §22.2 didn't get the same full-snippet treatment §22.3 did.
+
+**Finding 3 (real, minor — a second thing quietly dropped) — §21b's own live finding about `request.caller` doesn't survive into §22.4.** §21b: "`request.caller` becomes a field that is permanently, silently ignored on a `require_authority_` session, with nothing flagging that to a future maintainer." Still true, still unaddressed by §22.1-22.3, and absent from §22.4's residual list — even though §22.4 otherwise correctly re-derives against the full §17.6 superset. §21c's own instruction (d) scoped the re-derivation to "§17.6's original superset," so §22.4 satisfies that instruction's letter — but a finding from the *immediately preceding* round, sitting one section earlier in the same document, still fell out.
+
+**Claims independently re-verified and confirmed to hold**: the fork/restore fix itself (§22.1(a)) — real gap, real test proof (FORK4/FORK5), correctly closed by the proposed copy; `CapabilitySet::grant_root({})`'s empty-set behavior (degrades cleanly through `find_schedule()`/`bind()`, no landmine); §22.3's `resolve_interaction()`/`resolve_codeact_ask()` placement, including the chained-`agent.ask()` scenario specifically (a second answer re-enters through the top of `resolve_interaction()`, through admission and the new write, not through a side door — verified against real control flow, not assumed); the JSON-codec blast radius (no callers of the record codec exist anywhere outside `agent_session.hpp` itself today — though a real `FileSessionStore` backend does exist, worth remembering even though nothing persisted through it yet is real per the project's own milestone status).
+
+### 23b. Closure-completeness findings
+
+**§22.4's re-derivation against §17.6 is complete — confirmed independently, matching 23a's own read.** All 23 original items are accounted for; the 2 correctly reclassified as superseded by §20 check out against §20.2/§20.4's real text, not just asserted.
+
+**One thing fell out one level up, not from §17.6 but from §21 itself: §21a Finding 4** (the `shared_ptr` allocation-cost regression on the non-`require_authority_` path) **is absent from both §20.8 and §22.4.** Traced to its source: §21c's own "(a)...(d)" instruction list never included Finding 4, so §22 — scoped explicitly to "close exactly the four items §21c named" — never had a reason to touch it. Not a dishonest re-derivation by §22.4 against the mandate it was actually given; a gap in what that mandate covered.
+
+Combined with 23a Finding 3 (§21b's ignored-`request.caller` finding, also absent from §22.4): **two distinct findings from round §21 — one from each of its two passes — failed to survive into §22's residual tracking**, for the identical structural reason: §22.4 was instructed to re-derive against §17.6's *historical* superset, which by construction cannot include findings §21 itself generated. "Re-derive against the last full list" and "carry forward everything the immediately preceding round found" are two different instructions, and only the first was given.
+
+### 23c. Status
+
+**§22 partially survives, again — narrower gaps than §20, same shape of gap.** All three items §22 was explicitly written to fix (fork/restore carry-forward, the null-safety idiom, `resolve_interaction()`'s write placement) are correctly traced and genuinely close the bugs §21 proved. But: one real production construction site (Finding 1) undercuts §22.1's implicit construction-not-convention claim; one placement claim (Finding 2) repeats a failure shape this ADR has now caught three times (§20.3/§21b, and now §22.2) — asserting an ordering in prose without showing the merged code that proves it; and the residual-tracking process itself has a confirmed structural hole (23b): a round's own new findings can silently fail to carry forward into the next round's "re-derive against history" pass, because that pass's instructions name a historical list, not "everything the last round found." §22.4 followed its instructions exactly and still dropped two live findings as a result — the instruction itself needs fixing, not just the next iteration's diligence.
+
+**Before a ninth iteration**: (1) fix Finding 1 by explicitly updating `delete_session()`'s tombstone construction (or any future hand-built `AgentSessionRecord`) to set `require_authority` deliberately, not rely on the default; (2) fix Finding 2 by giving `start_background_task()`'s guard the same full-merged-body treatment §22.3 gave `resolve_interaction()`, showing the guard's real position relative to `apply_dispatch_authority()`, not asserting it; (3) carry forward both newly-dropped findings (§21a Finding 4, §21b's `request.caller` finding) explicitly; (4) going forward, residual re-derivation should be instructed as "the full accumulated history plus everything the immediately preceding round found," not "re-derive against §17.6" as a fixed historical anchor — otherwise this specific gap reopens every round.
+
+## 24. Ninth design iteration — Tier 3 (2026-08-20)
+
+Closes §23c's four items, in order.
+
+### 24.1 Finding 1 — closing off hand-built `AgentSessionRecord`s at their source, not just patching the one found
+
+The struct's own banner comment (agent_session.hpp:393-398) already *claims* `to_record()`/
+`restore_from_record()` are "the only two places that cross between the in-process type and this
+shape" — Finding 1 showed that claim was already false (`delete_session()`'s tombstone is a third).
+Rather than just setting one field at that one site (which leaves the claim broken for the next hand-
+built record someone adds), this closes the actual gap between the claim and reality: a named factory
+becomes the one other sanctioned construction path, and the banner comment is corrected to describe
+what's true.
+
+```cpp
+// The tombstone-record factory -- the ONE other sanctioned way to construct an AgentSessionRecord
+// outside to_record(), replacing delete_session()'s previous direct field-by-field build (found by
+// §23a Finding 1: that direct build let `require_authority` silently take its default-initializer
+// value rather than being a deliberate choice). The value chosen (`false`) is inert either way --
+// load_agent_session_snapshot() returns nullopt for any `deleted == true` record before
+// `require_authority` is ever read back -- but it is now a real choice this function states, not an
+// omission the type system happened to paper over.
+[[nodiscard]] inline AgentSessionRecord make_tombstone_record(std::string session_id) {
+    AgentSessionRecord rec;
+    rec.session_id        = std::move(session_id);
+    rec.deleted            = true;
+    rec.require_authority = false;
+    return rec;
+}
+```
+
+`delete_session()` (agent_session.hpp:1981) changes from building the struct inline to
+`AgentSessionRecord tombstone = make_tombstone_record(receipt.session_id);`. The banner comment at
+393-398 is corrected from "the only two places" to name this factory as the third.
+
+### 24.2 Finding 2 — `start_background_task()`, shown in full merged form, guard after the write
+
+§22.2 only showed the isolated guard line. Full body, same treatment §22.3 already gave
+`resolve_interaction()`:
+
+```cpp
+task<result<agentengine::StandingEffect>> start_background_task(
+        ToolTable const& table, ToolCallRequest const& request,
+        std::optional<RequestAuthority> const& authority,
+        std::chrono::steady_clock::time_point now,
+        ApprovalDecider const& approve = ApprovalDecider{}) {
+    AsyncMutex::Guard guard = co_await session_mutex_.lock();           // §20.5's new lock
+
+    result<void> applied = apply_dispatch_authority(authority, now);    // <-- authority resolved
+    if (!applied) co_return std::unexpected(applied.error());           //     and effect_context_
+                                                                          //     freshly written FIRST
+    if (!effect_context_.capabilities) {                                // <-- guard now reads the
+        co_return std::unexpected(error{failure_class::policy,          //     field THIS call just
+            "session has no granted capabilities",                      //     populated, never a
+            "standing_effect.no_capabilities"});                        //     stale prior value
+    }
+    std::size_t const current_count = static_cast<std::size_t>(std::count_if(
+        standing_effects_.begin(), standing_effects_.end(),
+        [](agentengine::StandingEffect const& e) {
+            return e.kind == agentengine::standing_effect_kind::background_task;
+        }));
+    std::string const handle_id =
+        session_id_ + ":standing:" + std::to_string(++standing_effect_counter_);
+    std::string const owner_run_id       = effect_context_.run_id;
+    std::string const owner_principal_id = effect_context_.principal.id;
+    std::weak_ptr<BackgroundCompletionQueue> weak_queue = background_completions_;
+    result<void> submitted = background_task(
+        table, *effect_context_.capabilities, request, effect_context_, approve, current_count,
+        /* ... completion closure unchanged from today's ... */);
+    if (!submitted) co_return std::unexpected(submitted.error());
+    // ... StandingEffect construction/push_back/emit_run_event_for unchanged from today's ...
+}
+```
+
+The guard now unambiguously runs after `apply_dispatch_authority()`, not merely "after" in prose.
+
+### 24.3 §21a Finding 4 — fixed, not just carried forward
+
+Cheap and real: cache the aliasing `shared_ptr` at `set_capabilities()` time (config-time, rare)
+instead of rebuilding its control block on every `start_run()`/`resolve_interaction()` call
+(request-time, frequent) for every non-`require_authority_` session:
+
+```cpp
+void set_capabilities(agentengine::CapabilitySet const* capabilities) noexcept {
+    capabilities_       = capabilities;
+    capabilities_alias_ = std::shared_ptr<agentengine::CapabilitySet const>(
+        capabilities_, [](agentengine::CapabilitySet const*) noexcept {});
+}
+// ... new private member alongside capabilities_:
+std::shared_ptr<agentengine::CapabilitySet const> capabilities_alias_;
+```
+
+`apply_dispatch_authority()`'s non-`require_authority_` branch changes from constructing a fresh
+`shared_ptr` inline to `effect_context_.capabilities = capabilities_alias_;` — a refcount-bump copy,
+not a new control-block allocation. `capabilities_alias_` stays correctly null/empty whenever
+`capabilities_` is (a default-constructed session that never calls `set_capabilities()` still gets a
+null `capabilities_alias_`, same as today's null `capabilities_`), so every existing null-check idiom
+(`? *x : empty_caps`) is unaffected.
+
+### 24.4 §21b's `request.caller`-ignored finding — named precisely, fixed as far as this ADR's own discipline reasonably reaches
+
+Not a runtime behavior change: `require_authority_` sessions are meant to ignore `caller` in favor of
+`authority` by §20.4's own design, and adding a runtime check that fires when both happen to be
+present would penalize a dispatcher that populates `caller` for unrelated reasons (logging, audit
+trails) without doing anything unsafe. The gap Finding 3/§21b actually named is discoverability, not
+correctness — fixed at that level: `SessionCaller caller`'s declaration in both `StartRun` and
+`ResolveInteraction` (agent_session.hpp:255-272) gains an explicit comment stating it is read only
+when the owning session has `require_authority_ == false`; `authority` takes over entirely otherwise.
+Documentation, not construction — named as such, not oversold as more than it is.
+
+### 24.5 Master residual list — re-derived against history AND against §21's own findings
+
+§17.6's 23 items, §22.4's correct classification of 2 as superseded, plus what §21 itself
+independently generated that §22.4's instructions never told it to carry:
+
+- **Unchanged from §22.4, still open**: R6, R12-as-scoped, R23, `Principal::provenance`, 007 §5 policy
+  engine, 006 §6b residual, T13, R15's in-flight half, R11 (Sidecar), S7's harder half, T5's
+  decoupling, replay-window/§15.3/V2, R10, R13's anon-tenant half, R22's pinned-worker half, R25, R26,
+  R27's cluster, T1, T7's six MUSTs, T10.
+- **Superseded**: §17.2's flag, §17.4's caller-derivation (both replaced by §20.2/§20.4).
+- **Closed by §22, confirmed by §23**: `require_authority_` fork/restore carry-forward; the
+  null-safety idiom for the three `held` sites and the `schedule_wakeup` closure; `resolve_interaction()`'s
+  write placement.
+- **Closed by §24**: the `delete_session()` tombstone construction gap (24.1); `start_background_task()`'s
+  guard-ordering ambiguity, now shown rather than asserted (24.2); §21a Finding 4's allocation cost
+  (24.3, real fix, not deferred).
+- **Named, documentation-level fix only, correctness unchanged**: §21b's `request.caller`-ignored
+  finding (24.4) — discoverability closed, no runtime behavior claimed to change.
+- **This iteration's own new surface, not yet independently checked**: `make_tombstone_record()`
+  (24.1) — does anything else construct a tombstone-shaped record a different way that this factory
+  doesn't cover; the cached `capabilities_alias_` (24.3) — does it stay correctly in sync with
+  `capabilities_` across every code path that could change the latter (only `set_capabilities()` does
+  today, but this should be checked, not assumed) and does it interact correctly with `fork_from()`
+  (which does not copy `capabilities_` and, per 22.1, is deliberately not being changed to — does it
+  need to reset `capabilities_alias_` too, to avoid a forked session inheriting a stale alias pointing
+  at the source session's capabilities); `start_background_task()`'s fully-shown body (24.2) — the
+  same instruction §22.5(ii) gave for `resolve_interaction()`, now applies here too.
+
+### 24.6 Process fix for future rounds — stated explicitly, not left implicit
+
+§23b's diagnosis: "re-derive against §17.6" and "carry forward everything the immediately preceding
+round found" are different instructions. Going forward, any residual re-derivation in this ADR is
+instructed to do **both**: re-check the full historical superset (currently: §17.6 plus this section,
+24.5, as the new anchor) **and** explicitly carry forward every finding the immediately preceding
+red-team round raised, whether or not it has been given a name like the R/S/T/U/V/W/X series yet.
+24.5 above is written against both sources for that reason — it is the new anchor a tenth iteration's
+own residual work should re-derive against, not §17.6 alone.
+
+### 24.7 Next step
+
+Independent red-team pass against §24 — the eighth round against a Tier-3 design. Instructed lens:
+(i) `make_tombstone_record()` (24.1) — is it actually the only other real construction site now, or
+does grep turn up another hand-built `AgentSessionRecord` this pass missed; (ii) `capabilities_alias_`
+(24.3) — trace every place `capabilities_` can change and confirm the alias is never allowed to go
+stale relative to it, including across `fork_from()`; (iii) whether 24.5 is itself now a complete,
+trustworthy anchor, i.e. does the closure-completeness pass find anything from §17.6 through §23 that
+24.5 still doesn't account for.
+
+## 25. Eighth red-team round — against §24 (2026-08-20)
+
+Two independent passes, as before.
+
+### 25a. Mechanism-lens findings — §24 survives in full, independently verified, not asserted
+
+Every one of §24.1-24.4's fixes was checked against real source, including the two places probed
+hardest for a hidden landmine, and both came back clean rather than confirming a bug:
+
+- **§24.1** (`make_tombstone_record()`): repo-wide grep for `AgentSessionRecord` construction found
+  exactly three real sites — `agent_session_record_from_json()` (a fully-required-field parser, not a
+  silent-default risk), `to_record()` (the sanctioned path), and `delete_session()`'s tombstone
+  (line 1981-1983, unfixed in current pre-implementation source, exactly as Finding 1 described). No
+  other file in the repo constructs one directly. The claim holds.
+- **§24.2** (`start_background_task()` full-merged-body): the real function body (919-962) checked
+  line-by-line against the merged snippet — the elided parts (`current_count`, the owner locals, the
+  completion closure, `StandingEffect` construction) are unchanged in position/order, and
+  `owner_run_id`/`owner_principal_id` are computed after `apply_dispatch_authority()` in the proposed
+  merge, reading freshly-written state, not stale. Elision doesn't hide an ordering problem. One
+  pre-existing, out-of-scope observation surfaced in passing: `apply_dispatch_authority()` never
+  writes `effect_context_.run_id` (only `.principal`/`.capabilities` — `run_id` is a `start_run()`-
+  minted session-run identity, not something a per-request authority bundle carries), so a
+  directly-called `start_background_task()` still stamps a `StandingEffect` with whatever `run_id`
+  `start_run()` last left there. Not a regression §24 introduced and not something it claimed to fix
+  — named here since nobody had named it before, closely related to but distinct from §19.5's already-
+  accepted residual.
+- **§24.3** (`capabilities_alias_`): grepped every `capabilities_\s*=` in the file — `set_capabilities()`
+  is genuinely the sole writer today (`fork_from()`/`clear_in_process_state()` read in full, neither
+  touches it), so the cache stays in sync under every real code path that exists. The specific
+  null-representation worry was tested directly rather than assumed: `shared_ptr(nullptr, deleter)`'s
+  `get()` is `nullptr`, so `!capabilities_alias_` and `!capabilities_` agree in every case. No
+  divergence found.
+- **§24.4** (`request.caller` documentation fix): re-grepped `.caller` reads across the whole file —
+  still only the two admission-check sites. The fix's justification is independently confirmed true,
+  not merely asserted.
+- **Bonus, against §24.7's own lens (ii)-adjacent territory**: read `resolve_codeact_ask()`'s two early
+  returns (1231-1236, 1237-1248) in full — both exit before the `held` read at 1264, so §22.3's write
+  placement (carried unchanged into §24) genuinely dominates this path too, independently reconfirmed
+  a level deeper than §23a's own check went.
+- **`start_background_task()`'s "zero real callers" claim**: independently re-confirmed a third time.
+
+**One forward-looking risk named, not a finding that breaks §24 as written**: `capabilities_`/
+`capabilities_alias_` is architecturally two fields kept in sync by one disciplined writer
+(`set_capabilities()`), not by construction — safe today because that invariant is genuinely true, but
+a landmine for any future maintainer who adds a second `capabilities_ = ...` site without knowing to
+touch the alias too. The same risk shape this ADR has repeatedly broken on elsewhere (agreement-check/
+union-widening bugs), currently dormant only because the single-writer fact holds.
+
+### 25b. Closure-completeness findings
+
+**§24.5 re-verified independently as complete** — recounted §17.6's 23 items from scratch rather than
+trusting §22.4's/§23b's prior claim; all 21 still-open plus both superseded items are correctly present
+and classified. Both §21-era findings that §22.4 dropped are present and correctly bucketed (§21a
+Finding 4 genuinely marked "closed" against real fix text in §24.3, not a restatement; §21b's finding
+correctly self-limited to "documentation-level fix only, correctness unchanged," not oversold). Hunted
+specifically for a fourth silent drop — a hedge inside §24.1-24.4's own text that didn't make it into
+§24.5's "new surface" bucket — and found none. **On this specific axis, §24 breaks the three-round
+recurring pattern (§21→§22.4→§23b).**
+
+One small, self-effacing loose thread: §23a's `FileSessionStore` remark never made it into any tracked
+list anywhere. Low severity (§23a itself framed it as non-urgent), but real.
+
+**§24.6's process fix does not have real teeth.** It restates, more explicitly, what §16c and §18c
+already instructed — and the ADR's own history shows a prose instruction of this shape has already
+failed twice (§22.4 followed "re-derive against §17.6" to the letter and still dropped two live
+findings). §24.6 introduces no structural safeguard — no required diff against the prior round's raw
+text, no per-finding checklist, nothing that fails loudly the way §22.1's JSON-codec strictness does
+for code. The honest characterization: §24 fixed *this instance* of the drop through manual diligence
+(confirmed by 25a/25b finding no fourth recurrence), not the process that let it happen. Nothing in
+§24.6 itself would stop an eleventh round from reproducing it — only continued manual diligence would.
+
+### 25c. Status
+
+**§24 survives.** This is the first Tier-3 design iteration in this ADR's history to receive a clean
+mechanism-pass verdict rather than "partially survives" — both hard-probed risk areas
+(`capabilities_alias_`'s null-representation and `fork_from()` interaction; `resolve_codeact_ask()`'s
+early-return paths) came back genuinely clean under direct testing, not assumption. The
+closure-completeness side is equally clean on its primary question: §24.5 is a complete, trustworthy
+residual anchor, breaking a pattern that had recurred in three straight rounds.
+
+The one real gap is process, not mechanism: §24.6's fix is prose without enforcement, and the ADR's
+own history is the evidence that this specific shape of fix doesn't reliably hold. This does not block
+treating §24's actual security mechanism as ready for the next stage of this ADR's own discipline
+(`design → red-team → prove → judge`, decisions/README.md) — the design has now survived independent
+adversarial review on its merits. It does mean a **tenth iteration, if one happens, should be scoped
+narrowly**: either (a) give `capabilities_`/`capabilities_alias_` a real structural guarantee (single
+accessor pair, or derive the raw pointer from the shared_ptr instead of maintaining both) rather than
+a single-writer invariant that holds only by current fact, or (b) accept that residual as a named,
+accepted risk and move to writing the `prove` phase's real conformance/security tests against
+§20-§24's mechanism as it now stands. Left to the user which of those two paths to take.
+
+## 26. Tenth design iteration — Tier 3 (2026-08-20)
+
+Path (a) chosen: give `capabilities_`/`capabilities_alias_` a real structural guarantee rather than a
+single-writer invariant. Narrow by design — nothing else in §20-§24's mechanism is touched.
+
+### 26.1 One field, not two kept in sync
+
+§24.3's two-field design (`capabilities_` raw pointer + a co-maintained `capabilities_alias_`
+`shared_ptr`) is replaced outright, not patched: `capabilities_` itself becomes the `shared_ptr`, so
+there is no second field for a future writer to forget.
+
+```cpp
+// The session-level capability grant -- single source of truth. A shared_ptr, not a raw pointer,
+// so it can be copied directly into EffectContext::capabilities (also a shared_ptr, since §20.3)
+// without constructing a second aliasing wrapper at read time -- closes §21a Finding 4 the same way
+// §24.3 did, but as a consequence of there being one field, not as a second field kept in step with
+// it. Still non-owning in the sense that matters: the (pointer, deleter) constructor below never
+// deletes the pointee, exactly like §24.3's alias did -- ownership of the real CapabilitySet stays
+// with whoever calls set_capabilities(), unchanged from today.
+std::shared_ptr<agentengine::CapabilitySet const> capabilities_;
+```
+
+```cpp
+void set_capabilities(agentengine::CapabilitySet const* capabilities) noexcept {
+    capabilities_ = std::shared_ptr<agentengine::CapabilitySet const>(
+        capabilities, [](agentengine::CapabilitySet const*) noexcept {});
+}
+[[nodiscard]] agentengine::CapabilitySet const* capabilities() const noexcept {
+    return capabilities_.get();
+}
+```
+
+Both signatures are unchanged (`set_capabilities(CapabilitySet const*)`, `capabilities() ->
+CapabilitySet const*`) — every existing external caller of either is unaffected; only the internal
+representation changes. `apply_dispatch_authority()`'s non-`require_authority_` branch (§20.3)
+simplifies from constructing a fresh aliasing `shared_ptr` (§20.3's original form) or copying a
+separately-cached one (§24.3's form) to a single line: `effect_context_.capabilities = capabilities_;`
+— a `shared_ptr` copy (refcount bump), still not a control-block allocation, still closing §21a
+Finding 4, now for the structural reason that there's only one `shared_ptr` in play, not because a
+second field was kept faithfully in sync with it.
+
+### 26.2 What this does and doesn't change elsewhere
+
+Checked against §25a's own findings before writing this, not assumed: after §20.6's fixes, every
+consumption site outside `set_capabilities()`/`capabilities()` already reads `effect_context_.
+capabilities`, never `capabilities_` directly — the three `held` sites (734, 1264, 1347),
+`start_background_task()` (939, per §24.2's shown body), `schedule_wakeup_impl` (via the parameter
+`held`, per §20.5), and the offer-gate (1382, reusing the local `held`). None of those sites change
+under 26.1 — they were already reading the per-request field, not the session-level one. `fork_from()`/
+`clear_in_process_state()` (confirmed by §25a's grep to never touch `capabilities_` today) are
+likewise unaffected — a fresh/forked session's `capabilities_` still starts at its default (now a
+default-constructed empty `shared_ptr`, behaviorally identical to today's default-constructed
+`nullptr` for every `!capabilities_`/`? : empty_caps` check already in use).
+
+### 26.3 Why this closes the residual, not just relabels it
+
+§25a's named risk was specific: "two fields kept in sync by one disciplined writer, not by
+construction... a landmine for any future maintainer who adds a second `capabilities_ = ...` site
+without knowing to touch the alias too." With one field, that specific failure mode has no object to
+apply to — a future maintainer adding a second write site to `capabilities_` now trivially keeps
+`capabilities()`/`apply_dispatch_authority()` consistent by construction, because there is nothing
+else to fall out of sync with. This is narrower than solving synchronization-in-general (a future
+maintainer could still, in principle, add some THIRD unrelated field that needs to agree with
+`capabilities_` and forget to update it — that risk is unbounded and not what §25a named) — it closes
+exactly the specific, named two-field risk, not every conceivable future one.
+
+### 26.4 Residual list — unchanged from §24.5/§25b except this entry
+
+§24.5 (as amended by 25b's one addition, the untracked `FileSessionStore` remark) stands, with one
+line struck: §21a Finding 4 was already marked "closed by §24" (via §24.3's cache); it is now closed by
+§26.1 instead, superseding §24.3's specific mechanism without reopening the finding. No other item in
+§24.5/§25b changes.
+
+### 26.5 Next step
+
+Independent red-team pass against §26 — narrow scope invites a narrow but sharp check: (i) does
+`shared_ptr`'s `(pointer, deleter)` constructor with a `nullptr` pointer and a no-op deleter actually
+behave identically, in every observable way (not just `operator bool()`, already checked by §25a — also
+`.get()`, comparisons, and copy behavior) to a default-constructed empty `shared_ptr`, since 26.2's
+"behaviorally identical to today's default" claim leans on that; (ii) re-confirm §25a's repo-wide grep
+for `capabilities_\s*=` still finds only `set_capabilities()` as a writer, now against 26.1's changed
+declaration, in case the type change itself created a new write site (e.g. a constructor needing to
+default-initialize it explicitly that didn't need to before); (iii) whether 26.3's narrower claim
+("closes exactly the named two-field risk, not every future one") is itself accurate, or whether it
+undersells/oversells what the change actually guarantees.
+
+## 27. Ninth red-team round — against §26 (2026-08-20)
+
+### 27a. Mechanism-lens findings
+
+**Items (ii) and (iii) from §26.5 come back fully clean, independently verified against real source**:
+`AgentSession` has no user-declared constructor and is already non-copyable/non-movable today (its
+`AsyncMutex session_mutex_` member deletes copy and declares no move, which per the standard already
+deletes the implicit copy constructor and suppresses the implicit move — independent of `capabilities_`'s
+type), so §26.1's type change creates no new special-member obligation. No second capability-presence
+tracker exists anywhere in the file (the one other `.capabilities()` call, on `chat_client_`, is an
+unrelated concept — multimodal support, not `CapabilitySet` grants) — 26.3's narrower framing holds.
+
+**Item (i) surfaces a real, previously-unflagged, empirically-confirmed nuance — not reasoned about,
+tested.** `shared_ptr<T>(nullptr, deleter)` is NOT fully equivalent to a default-constructed empty
+`shared_ptr<T>()`: it allocates a real control block, reports `use_count() == 1` instead of `0`, is
+not owner-equivalent to an independently-constructed empty instance, and — confirmed by direct
+compiled test, not assumption — genuinely invokes the stored (no-op) deleter on destruction even
+though the managed pointer was null the whole time. Practically harmless (the deleter never
+dereferences its null argument), but it means **`set_capabilities()` now performs a real heap
+allocation on every call — including the null/never-configured case — inside a function still marked
+`noexcept`.** A `std::bad_alloc` there would call `std::terminate()`, a failure mode a plain pointer
+assignment never had. **This is not a regression §26 introduces**: §24.3's `capabilities_alias_` used
+the identical `(pointer, deleter)` construction inside the identically-`noexcept` `set_capabilities()`
+— this nuance has been present, unflagged, since §24, and §25a's "clean" mechanism verdict for §24
+didn't catch it because §25a never empirically tested the null-representation claim it verified, only
+reasoned about `operator bool()`/`.get()` equivalence (which do hold) rather than allocation/exception
+behavior (which doesn't).
+
+### 27b. Closure-completeness findings
+
+**§26.4's core claim (§21a Finding 4 stays closed under the new mechanism) is accurate**, verified
+against the fix's actual text, not assumed. The `FileSessionStore` loose thread from §25b is carried
+forward at its exact prior status — neither dropped nor resolved. §26.3's own hedge (a hypothetical
+future third field) is correctly judged out-of-scope rather than a hidden finding — it names no
+concrete candidate, no code path, nothing actionable.
+
+**One real, milder recurrence of this ADR's core historical failure mode.** §24.5 established a
+"this iteration's own new surface, not yet independently checked" bucket, and duplicated that content
+into its own next-step section too — deliberately redundant. §26.4 states only "unchanged from
+§24.5/§25b except this entry," adding no equivalent bucket for 26.1's own open questions — those exist
+only in §26.5's next-step prose (items (i)-(iii)), not in tracked residual bookkeeping. Nothing is
+lost (27a/27b just closed all three), but §26 partially reverts to keeping new-round content in one
+place instead of the two places §24 — the round §25b specifically credited with breaking this
+pattern — used.
+
+### 27c. Status
+
+**§26 survives, with one real finding to close before calling Tier-3's core mechanism settled.** The
+structural fix (26.1, one field instead of two) does exactly what it claims, verified independently
+across every angle both passes checked, including two that required real empirical testing rather
+than reasoning. The one finding worth acting on — `set_capabilities()`'s new allocation inside a
+`noexcept` body, a genuine (if low-severity, non-attacker-controlled, config-time-only) behavior change
+from today's real code — has been latent since §24 and only surfaced now because this round tested the
+claim empirically instead of trusting the reasoning. An eleventh iteration should: (1) remove the now-
+inaccurate `noexcept` from `set_capabilities()` (it can allocate; it did not before this design
+touched it) rather than leave a specification the function no longer honors; (2) add the bookkeeping
+bucket §26.4 skipped, closing 27b's milder recurrence in the same section that caused it, not left for
+a round after.
+
+## 28. Eleventh design iteration — Tier 3 (2026-08-20)
+
+Closes both §27c items.
+
+### 28.1 `set_capabilities()` drops `noexcept`
+
+```cpp
+void set_capabilities(agentengine::CapabilitySet const* capabilities) {
+    // No longer noexcept (26.1): constructing the owning shared_ptr's control block is a real
+    // allocation -- this function could not throw before §24.3/§26.1 gave it one, and claiming
+    // noexcept on a function that can now call std::terminate() on bad_alloc is a worse contract
+    // than an honest one that can throw. Config-time only (session wiring), never on a per-request
+    // or adversarially-reachable path -- 27a's own severity read stands, this is about the
+    // function's stated contract matching its real behavior, not about new attacker exposure.
+    capabilities_ = std::shared_ptr<agentengine::CapabilitySet const>(
+        capabilities, [](agentengine::CapabilitySet const*) noexcept {});
+}
+```
+
+The deleter itself stays `noexcept` (it's a true no-op, never fails) — only the outer function's
+specification changes, because the allocation the outer function now performs is the part that can
+genuinely fail.
+
+### 28.2 This iteration's own new surface — tracked here, not deferred to next-step prose only
+
+Duplicating §24.5's discipline rather than §26.4's narrower one: 28.1 is a one-line, low-risk change
+(dropping an exception specification, not adding logic), so there is little to independently verify —
+but naming that explicitly is the fix for 27b's finding, not skipping the bucket again. Open questions
+for the next pass: does dropping `noexcept` from `set_capabilities()` change anything at any of its
+real call sites (does any caller currently rely on `noexcept(set_capabilities(...))` being `true` —
+e.g. inside another `noexcept` function that calls it, which would now need its own reconsideration);
+is there anywhere else in `agent_session.hpp` with the same latent "small function marked `noexcept`
+that quietly started allocating" shape this same design work may have introduced elsewhere (the
+`apply_dispatch_authority()`-adjacent code from §20.3/§24.1's `make_tombstone_record()` are the two
+other newest functions worth checking specifically, since they're the other recent additions).
+
+### 28.3 Residual list — unchanged except the two items just closed
+
+Everything in §24.5/§25b/§26.4 stands; §21a Finding 4 remains closed (unaffected by this change — the
+allocation this section is about is a *config-time* one already accounted for, distinct from the
+*per-request* one Finding 4 was about); 27a's `noexcept` finding moves from open to closed.
+
+### 28.4 Next step
+
+Independent red-team pass against §28 — narrowest scope yet. Instructed lens: (i) grep every real and
+hypothetical caller of `set_capabilities()` for a dependency on its old `noexcept` guarantee; (ii)
+check whether `apply_dispatch_authority()`'s design (§20.3) or `make_tombstone_record()` (§24.1) have
+the same latent allocate-inside-`noexcept` shape 28.2 flags as worth checking, since neither has been
+checked for this specific property before; (iii) whether this is finally a point where Tier-3's core
+mechanism (§20, §22, §24, §26, §28 combined) is ready to be called settled-for-now, with remaining
+items handed to this ADR's own `prove` phase rather than another design iteration.
+
+## 29. Tenth red-team round — against §28, run hostile (2026-08-20)
+
+Run with explicit adversarial framing rather than neutral fact-checking, per standing instruction:
+default to distrust, try hard to break each claim, don't give benefit of the doubt where something is
+checkable against real source. Blunt result: **§28.1's fix is convention-correct but was incompletely
+specified, §28.2's audit method was a rigor regression even though its conclusion was right, and the
+honest answer to "is this settled" was no — not on reasoning alone.**
+
+### 29a. Findings
+
+**§28.1's fix relocates the problem rather than closing it, and §28's own text never says so.**
+Verified empirically, not reasoned about: compiled two minimal repros of a §28.1-shaped
+`set_capabilities()` (allocates via `shared_ptr(pointer, deleter)`, no longer `noexcept`) under a
+forced `bad_alloc`. A caller that wraps the call in `try`/`catch` degrades gracefully (reports failure,
+process survives). A caller that is itself `noexcept` — or any caller that simply never catches —
+still calls `std::terminate()`, at the same severity as before, just one frame further out. §28.1
+removes a guarantee without ever establishing what replaces it, because the real Tier-3 session-wiring
+caller that will call `set_capabilities()` doesn't exist yet — nothing in §13-§28 sketches it, even as
+pseudocode.
+
+**The severity claim is genuinely honest** — re-verified independently for a third time (§25a, §26's
+pass, now this one): every real call site is test setup, `fork_from()`/`restore_from_record()` never
+touch `capabilities_`, and no design between §13 and §28 creates a synchronous request-path call to
+`set_capabilities()`.
+
+**§28.2's audit method was a rigor regression, even though its conclusion happened to be right.**
+It named exactly two candidates (`apply_dispatch_authority()`, `make_tombstone_record()`) as "worth
+checking" and punted the check itself to the next round — but neither candidate was ever a real risk:
+neither is declared `noexcept` anywhere in their own design text (§20.3, §24.1), so a single grep would
+have closed this immediately, the same discipline §19's "unfiltered grep, not carried forward" already
+established as this ADR's own bar. The actual exhaustive check (all 25 `noexcept`-marked functions/
+accessors in `agent_session.hpp`) was then run for real: every other `noexcept` setter (`set_suspend_
+for_approval`, `set_stream_model_calls`, `set_scan_response_format_leaks`, `set_max_turns`, §20.2's
+`set_require_authority`) is a trivial bool/optional assignment untouched by any Tier-3 proposal; every
+`noexcept` accessor either returns by value/reference or (for `capabilities()` under §26.1) calls a
+non-throwing `.get()`. **No second landmine exists** — confirmed, not asserted.
+
+**"Ready to be settled" — the honest answer, before this round's own fix, was no.** The track record:
+§20→§21 found 4 defects; §22→§23 found 3 more; §24→§25 was the *only* round to come back fully clean
+on mechanism — and that "clean" verdict was itself later proven wrong: §27a states plainly the
+`noexcept`+allocation defect "has been latent since §24, and §25a's 'clean' mechanism verdict... didn't
+catch it because §25a never empirically tested the... claim it verified, only reasoned about it." §28's
+own fix, as originally written, repeated exactly that shape — reasoning-only verification of a claim
+about exception/allocation behavior, the precise category this ADR has now twice proven itself wrong
+about when it doesn't compile something.
+
+### 29b. Closed during this round, not deferred to a twelfth
+
+Rather than write another purely-textual iteration restating the gap, the missing verification was
+produced directly: a standalone probe (`scratchpad/probe_set_capabilities_throw.cpp`) compiled and run
+against clang++ 22, mirroring a §26.1-shaped `set_capabilities()` under a forced `bad_alloc`
+(`operator new` override, the same forcing technique 29a's own repro used):
+
+- **Positive case**: a representative session-wiring caller — itself not `noexcept`, wrapping the call
+  in `try`/`catch`, converting `bad_alloc` into an explicit, attributable failure outcome (the pattern
+  CONVENTIONS.md's cold-setup-path exception model implies but never spells out for this specific
+  function) — degrades gracefully: process survives, failure is reported, `capabilities_` is left
+  empty rather than partially constructed. Exit code 0, all assertions passed.
+- **Negative control** (`probe_negative.cpp`): the exact failure shape 29a described — a `noexcept`
+  caller that does not catch — genuinely still terminates (exit code 127) even with `noexcept` dropped
+  from `set_capabilities()` itself. Confirms 29a's finding is real, not overstated, and confirms the
+  fix's boundary condition precisely rather than leaving it as a claim.
+
+**The contract this proves must hold, now stated explicitly rather than left implicit**: any code that
+calls `set_capabilities()` — the Tier-3 listener's own session-wiring path, when it is eventually
+built — must either not itself be `noexcept`, or must wrap the call the way the positive-case probe
+does. This cannot be structurally enforced today because that caller does not exist yet; it is a real,
+named obligation on whoever writes it, not a residual this ADR's design work can fully close on its
+own. That boundary — what compiled, empirical verification can prove today versus what requires real
+implementation code that doesn't exist yet — is itself the honest answer to §28.4's item (iii).
+
+### 29c. Status
+
+**Tier-3's core mechanism (§20 through this round) is settled for design purposes.** Every named
+defect across ten red-team rounds has either been fixed and reconfirmed, or is a named, accepted,
+low-severity residual (the master list at §24.5/§25b/§26.4/§28.3, now plus: nothing new from this
+round beyond what 29b already closed). The one item that cannot be closed by further design text —
+whether the real, not-yet-written Tier-3 listener wiring actually honors the `set_capabilities()`
+contract 29b states — is not a design gap; it is the boundary between this ADR's `design`/`red-team`
+work and its `prove` phase (decisions/README.md), where real code and real tests are the only things
+that can close it. Recommending the `prove` phase next, carrying 29b's contract and the full residual
+list forward as its starting checklist, rather than an unbounded twelfth design iteration chasing
+verification that specifically requires code this ADR's design phase was never going to produce.
+
+## 30. Prove phase — §20-§29's mechanism implemented and proven (2026-08-20)
+
+§20-§29 was design text against real line numbers but zero real code (confirmed by every red-team
+round from §21 onward). This section implements it for real in
+`include/agentengine/rt/agent_session.hpp`/`include/agentengine/core/effect_context.hpp` and proves
+the security claims against a compiled build, not just design review.
+
+### 30.1 What was built
+
+Every mechanism piece from §20-§29, largely as designed, with two real corrections found only by
+compiling and running code (§30.3):
+
+- `RequestAuthority` (§20.1), `authority` field on `StartRun`/`ResolveInteraction` (additive,
+  defaulted — zero ripple to existing call sites).
+- `require_authority_`/`set_require_authority()` (§20.2), `apply_dispatch_authority()` (§20.3),
+  placed correctly in both `start_run()` and `resolve_interaction()` per §22.3's dominance rule
+  (verified by reading the merged function, not assumed).
+- The mode-branching admission gate (§20.4) in both entry points.
+- `start_run()`/`resolve_interaction()` gain `now` — defaulted to `std::chrono::steady_clock::now()`
+  at the call site (not read inside the function body, preserving I5) specifically to bound this
+  migration's size: **~155 existing `start_run()` call sites and ~9 `resolve_interaction()` sites
+  needed zero changes**, a pragmatic bound the design text didn't commit to either way.
+- `start_background_task()` locked, gains `authority`/`now` (defaulted) (§20.5/§24.2) — 4 real test
+  call sites migrated to `co_await`.
+- `schedule_wakeup`/`schedule_wakeup_impl` split (§20.5) — the public wrapper locks and resolves
+  authority; the internal offer-gate closure in `run_rounds()` calls the impl directly, now actually
+  using the `EffectContext&` it receives instead of discarding it (closing the original W2/19.6
+  finding for real) — 8 real test call sites migrated to `co_await`.
+- The eight sites from §19.10, `SessionContext` substitution (§20.7), `fork_from()`/
+  `restore_from_record()` carrying `require_authority_` (§22.1), `AgentSessionRecord.require_authority`
+  plus its required (breaking) JSON codec field, `make_tombstone_record()` replacing `delete_session()`'s
+  inline build (§24.1), `capabilities_` collapsed to a single `shared_ptr` field (§26.1), `set_capabilities()`
+  no longer `noexcept` with its contract stated explicitly (§28.1) — all present in the real file, not
+  just described.
+
+### 30.2 A real gap the design work never surfaced: `EffectContext::capabilities`'s external blast radius
+
+§20.3's type change (`EffectContext::capabilities`: raw pointer → `shared_ptr<CapabilitySet const>`)
+was checked by three separate red-team passes for READ compatibility (`== nullptr`, `->method()`) —
+all correctly found compatible. None checked WRITE sites: ~30 files across `tests/`/`examples/`
+construct an `EffectContext` directly and assign `ctx.capabilities = &local_caps;` — a pattern no
+red-team round ever grepped for, because every round's search stayed scoped to `agent_session.hpp`'s
+"known" external consumers (`agent_registry.hpp`, `secret.hpp`, the native_jail files). Fixed by
+adding `agentengine::borrow_capabilities(CapabilitySet const&)` (a non-owning aliasing `shared_ptr`
+constructor, `core/effect_context.hpp`) and mechanically updating every real call site (`sed`, then
+individually verified against the full build, not just the pattern match — one straggler with
+non-standard whitespace was caught by the build, not the search). Named here because it's the kind of
+gap this ADR's own history says should be named, not quietly folded into "implementation details."
+
+### 30.3 Two real bugs found only by compiling and running code, neither in the design's own mechanism
+
+Writing `test_rt_agent_session_tier3_authority.cpp` (30.4) surfaced two genuine test-authoring bugs
+that produced a false "the mechanism doesn't grant" signal before being isolated:
+
+1. A `RequestAuthority.principal` with a different `id` than the session's own principal, no
+   `on_behalf_of` set — correctly denied by `principal_admitted_for()`'s real 018 §2 rule (same-tenant
+   exact-id-match or single-hop delegation). Not a mechanism bug: a test that hadn't read its own
+   admission rule closely enough. Fixed by using delegation (`on_behalf_of`) to keep the "per-request
+   principal differs from session principal" claim meaningful.
+2. A tool call's `arguments_json` of `"{}"` against an `AE_JSON_SCHEMA`-described `Args` struct whose
+   one field has a C++ default — the JSON schema validator requires the field present regardless of
+   the C++-level default, so every attempted grant failed at args validation, before capability
+   binding was ever reached, masking the real signal entirely (both the should-grant and should-deny
+   cases "denied," for different, wrong reasons). Isolated by temporarily instrumenting the real
+   denial message (`"missing required field 'unused'"` vs `"required capability not held"`) rather
+   than guessing — the same "trace to the real cause, don't assume" discipline this ADR's red-team
+   rounds have used throughout, now applied to a test bug instead of a design bug.
+
+Neither bug was in `agent_session.hpp`'s own mechanism — both were in the new test file, caught by
+the test itself once instrumented, before any claim was recorded as proven.
+
+### 30.4 Real, compiled, passing positive/negative controls
+
+`tests/test_rt_agent_session_tier3_authority.cpp` (new, 10 scenarios, all passing against a full
+release build): T1/T2 close X3 for real (a `require_authority_` session rejects caller-only and bare
+requests, `ChatClientT` never reached); T3 rejects a non-admitted per-request principal; T4 proves a
+live, admitted authority is accepted AND that the resulting `EffectContext` carries the per-request
+principal, not the session's own; T5 proves expiry is genuinely checked against caller-supplied `now`;
+**T6a/T6b are the central claim** — a session with NOTHING granted at the session level still lets a
+capability-gated tool call through when per-request `authority` grants it (T6a), and a session with
+the SAME capability granted at the session level still DENIES the call when per-request `authority`
+does not grant it (T6b) — proving `held.bind()` genuinely consults the per-request field, not a
+session-level fallback, in both directions. This is the exact claim W1 found false in §16a, that every
+subsequent design round claimed fixed on paper; this is the first time it has been checked against
+running code. T7 proves `fork_from()`'s carry-forward is not just a flag that reads true but a flag
+the forked session's own admission check actually enforces. T8/T9 prove the record/tombstone changes
+round-trip and construct correctly. T10 proves non-Tier-3 backward compatibility is unchanged.
+
+### 30.5 Build and test evidence
+
+Full workspace rebuild (`ninja -k 0`, MSVC 14.51.36231/SDK 10.0.26100.0): every target compiles clean
+except two pre-existing failures in `protocol/openai/embedder.hpp` (`decoded_response_body`,
+confirmed via `git status` to be untouched by this work — unrelated to Tier 3). Full `ctest` run:
+**204/204 tests passing, including the new file** (two unrelated, pre-existing timing-sensitive tests
+in `workflow_supervisor`/`spawn_cost_budget` — neither touching `agent_session.hpp`/
+`effect_context.hpp` — were independently re-run three times in isolation and confirmed intermittently
+flaky regardless of this work, not a regression it introduced).
+
+### 30.6 Residuals unchanged, one item added
+
+Everything in §24.5/§25b/§26.4/§28.3/§29c stands. §29b's `set_capabilities()` contract (callers must
+not be `noexcept` without wrapping the call) remains unverifiable against real Tier-3 listener wiring
+code, because that code still does not exist — this section implements the *session-side* mechanism
+§20-§29 designed, not the HTTP listener that will someday call into it. That listener, when built,
+must honor: `set_require_authority(true)` unconditionally for every session it fronts (§20.2's own
+named risk), the `set_capabilities()` exception contract (§29b), and must supply real
+`RequestAuthority` values derived from verified per-request credentials (§13's still-unbuilt
+`EndpointId`/bearer-token minting). None of these are closed by this section; all are exactly where
+§29c left them.
+
+### 30.7 Status
+
+Tier-3's session-side mechanism is no longer design text — it is real, compiled code with real,
+passing positive and negative controls, including the specific claim (per-request authority actually
+gates real tool authorization) that four prior design iterations claimed true without this kind of
+verification. Not yet committed to version control (no commit has been made this session; the user has
+not asked for one). The remaining work this ADR has always scoped as out-of-reach for a design-only
+phase — the Tier-3 HTTP listener itself, `EndpointId` minting, bearer-token verification — is
+unchanged and still not attempted.

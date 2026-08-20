@@ -70,7 +70,7 @@ RunResult run_hostile_snippet(MediatedPythonRunner& runner, CapabilitySet& caps,
     std::printf("  running (as-if under %s prompt): %s\n", prompt_variant_label, source.c_str());
     ExecState state{};
     EffectContext ctx{};
-    ctx.capabilities = &caps;
+    ctx.capabilities = agentengine::borrow_capabilities(caps);
     ExecRequest req{"python", source};  // <-- exactly language + source; no prompt field exists to fill
     auto out = runner.run(req, state, ctx);
     RunResult result;

@@ -89,7 +89,7 @@ int main() {
     EffectContext ctx{};
     auto granted = CapabilitySet::grant_root(
         {Capability{cap::FsRead{"real-mounted-skill", "", std::nullopt}}});
-    ctx.capabilities = &granted;
+    ctx.capabilities = agentengine::borrow_capabilities(granted);
 
     // ---- the actual proof: real Python code, real open(), real mounted skill content ---------------
     {

@@ -170,7 +170,7 @@ int main() {
     {
         agentengine::ToolCallRequest req{"call-fg", "foreground_only", *json::parse(R"({"noop":true})"),
                                           false};
-        auto handle = session.start_background_task(table, req);
+        auto handle = drive(session.start_background_task(table, req));
         check(!handle.has_value(), "B1: a tool not declared Backgroundable is rejected");
         if (!handle.has_value()) {
             check(handle.error().code == "tool.not_backgroundable",
@@ -186,7 +186,7 @@ int main() {
         agentengine::ToolCallRequest req{"call-1", "slow_backgroundable",
                                           *json::parse(R"({"noop":true})"), false};
         auto const t0      = std::chrono::steady_clock::now();
-        auto        handle = session.start_background_task(table, req);
+        auto        handle = drive(session.start_background_task(table, req));
         auto const elapsed = std::chrono::steady_clock::now() - t0;
         check(handle.has_value(), "B2: a Backgroundable tool under a granted Background<1> is accepted");
         check(elapsed < std::chrono::milliseconds(50),
@@ -210,7 +210,7 @@ int main() {
     {
         agentengine::ToolCallRequest req{"call-2", "slow_backgroundable",
                                           *json::parse(R"({"noop":true})"), false};
-        auto handle = session.start_background_task(table, req);
+        auto handle = drive(session.start_background_task(table, req));
         check(!handle.has_value(), "G9: a second background_task while the cap is at 1/1 is rejected");
         if (!handle.has_value()) {
             check(handle.error().code == "tool.background_capacity_exceeded",
@@ -278,7 +278,7 @@ int main() {
     {
         agentengine::ToolCallRequest req{"call-3", "slow_backgroundable",
                                           *json::parse(R"({"noop":true})"), false};
-        auto handle = session.start_background_task(table, req);
+        auto handle = drive(session.start_background_task(table, req));
         check(handle.has_value(), "B6 setup: a fresh background task is accepted (cap freed by B5)");
         check(session.list_standing_effects().size() == 1, "B6 setup: the effect is pending");
 

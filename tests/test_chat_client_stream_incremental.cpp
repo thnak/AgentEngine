@@ -209,7 +209,7 @@ int main() {
     CapabilitySet held = CapabilitySet::grant_root({cap::Secret{"provider-key", std::chrono::seconds{0}}});
     EffectContext ctx;
     ctx.principal = Principal{"incremental-test", ""};
-    ctx.capabilities = &held;
+    ctx.capabilities = agentengine::borrow_capabilities(held);
 
     // ---- G1/G2: the OpenAI-compatible backend streams incrementally --------------------------------
     {

@@ -291,7 +291,7 @@ int main() {
             CapabilitySet::grant_root({cap::Secret{"never-resolved", std::chrono::seconds{0}}});
         EffectContext ctx;
         ctx.principal = Principal{"test-principal", ""};
-        ctx.capabilities = &held;  // the capability IS granted -- proves the batch-size gate fires
+        ctx.capabilities = agentengine::borrow_capabilities(held);  // the capability IS granted -- proves the batch-size gate fires
                                     // first, independent of whether resolution would have succeeded
 
         auto outcome = run_task_sync<result<std::vector<std::vector<float>>>>(

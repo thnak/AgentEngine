@@ -187,7 +187,7 @@ int main() {
 
         ExecState state{};
         EffectContext ctx{};
-        ctx.capabilities = &caps;
+        ctx.capabilities = agentengine::borrow_capabilities(caps);
         ExecRequest req{"python", code};
         auto out = runner.run(req, state, ctx);
         AE_CHECK(out.has_value() && out->klass == exec_outcome_class::ok,
@@ -213,7 +213,7 @@ int main() {
 
         ExecState state{};
         EffectContext ctx{};
-        ctx.capabilities = &caps;
+        ctx.capabilities = agentengine::borrow_capabilities(caps);
         ExecRequest req{"python", code};
         auto out = runner.run(req, state, ctx);
         AE_CHECK(out.has_value() && out->klass == exec_outcome_class::ok,
@@ -240,7 +240,7 @@ int main() {
 
         ExecState state{};
         EffectContext ctx{};
-        ctx.capabilities = &caps;
+        ctx.capabilities = agentengine::borrow_capabilities(caps);
         ExecRequest req{"python", code};
         auto out = runner.run(req, state, ctx);
         AE_CHECK(out.has_value() && out->klass == exec_outcome_class::ok,

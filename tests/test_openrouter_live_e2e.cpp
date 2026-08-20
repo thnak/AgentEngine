@@ -230,7 +230,7 @@ int main() {
     CapabilitySet held = CapabilitySet::grant_root({cap::Secret{kSecretName, std::chrono::seconds{0}}});
     EffectContext ctx;
     ctx.principal = Principal{"live-e2e-principal", ""};
-    ctx.capabilities = &held;
+    ctx.capabilities = agentengine::borrow_capabilities(held);
 
     using agentengine::test_support::run_task_sync;
 
@@ -446,7 +446,7 @@ int main() {
     {
         CapabilitySet empty;
         EffectContext denied = ctx;
-        denied.capabilities = &empty;
+        denied.capabilities = agentengine::borrow_capabilities(empty);
         auto resp = run_task_sync<result<ChatResponse>>(oai.chat(request_asking("hi"), denied));
         check(!resp.has_value(),
               "OR-OAI-8 (I2): with no cap::Secret grant the call is denied at the point of use and "

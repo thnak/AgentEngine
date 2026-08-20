@@ -134,7 +134,7 @@ int main() {
             {Capability{cap::FsRead{"work", "", std::nullopt}},
              Capability{cap::FsWrite{"work", "", std::nullopt, std::nullopt}}});
         EffectContext ctx{};
-        ctx.capabilities = &caps;
+        ctx.capabilities = agentengine::borrow_capabilities(caps);
 
         // ---- ctypes / winreg: denied via the import allowlist, never reaching the loader --------
         {

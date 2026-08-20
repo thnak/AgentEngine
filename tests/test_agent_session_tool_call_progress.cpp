@@ -361,7 +361,7 @@ int main() {
 
         CapabilitySet const held =
             CapabilitySet::grant_root({agentengine::cap::Background{1}});
-        ctx.capabilities = &held;
+        ctx.capabilities = agentengine::borrow_capabilities(held);
 
         auto const table = agentengine::ToolTable::from_tools<BackgroundableProgressTool>();
         agentengine::ToolCallRequest const req{"call-bg", "bg_progress_tool",

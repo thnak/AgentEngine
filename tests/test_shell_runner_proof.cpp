@@ -88,7 +88,7 @@ void test_sh_c1_execstate_sharing() {
     state.cwd = "/";
     EffectContext ctx;
     CapabilitySet caps; // cd needs no capability per §2.4
-    ctx.capabilities = &caps;
+    ctx.capabilities = agentengine::borrow_capabilities(caps);
 
     ExecState* state_addr_before = &state;
     ExecRequest req{"shell", "cd /work"};
@@ -113,7 +113,7 @@ void test_sh_c3_no_retokenize() {
     state.cwd = "/";
     EffectContext ctx;
     CapabilitySet caps = make_capabilities({capability_kind::env_write});
-    ctx.capabilities = &caps;
+    ctx.capabilities = agentengine::borrow_capabilities(caps);
 
     struct Case { char const* name; std::string value; };
     std::vector<Case> cases = {
@@ -205,7 +205,7 @@ void test_sh_g4_runner_call_gate_and_identity() {
     {
         EffectContext ctx;
         CapabilitySet caps; // empty
-        ctx.capabilities = &caps;
+        ctx.capabilities = agentengine::borrow_capabilities(caps);
         invoked = false;
         auto outcome = runner.run(ExecRequest{"shell", "py hello"}, state, ctx);
         AE_CHECK(!outcome.has_value() && outcome.error().code == "shell.capability_denied",
@@ -217,7 +217,7 @@ void test_sh_g4_runner_call_gate_and_identity() {
     {
         EffectContext ctx;
         CapabilitySet caps = make_capabilities({capability_kind::runner_call});
-        ctx.capabilities = &caps;
+        ctx.capabilities = agentengine::borrow_capabilities(caps);
         invoked = false;
         ctx_seen_inside_runner = nullptr;
         auto outcome = runner.run(ExecRequest{"shell", "py hello"}, state, ctx);
@@ -262,7 +262,7 @@ void test_capability_checks_kind_only() {
         ExecState state;
         state.cwd = "/";
         EffectContext ctx;
-        ctx.capabilities = &caps;
+        ctx.capabilities = agentengine::borrow_capabilities(caps);
         return runner.run(ExecRequest{"shell", std::move(script)}, state, ctx);
     };
 
@@ -326,7 +326,7 @@ void test_a_c2_nothing_executes_on_parse_failure() {
     // directory would actually get created) rather than being masked by an unrelated capability
     // denial.
     CapabilitySet caps = make_capabilities({capability_kind::fs_write, capability_kind::fs_read});
-    ctx.capabilities = &caps;
+    ctx.capabilities = agentengine::borrow_capabilities(caps);
 
     std::string script = "mkdir /work/should_not_exist; if true then echo hi";
     auto outcome = runner.run(ExecRequest{"shell", script}, state, ctx);
@@ -372,7 +372,7 @@ void test_sh_s1_hostile_name_corpus() {
     for (auto const& name : {"/bin/sh", "cmd.exe", "totally_bogus_xyz123"}) {
         EffectContext ctx;
         CapabilitySet caps;
-        ctx.capabilities = &caps;
+        ctx.capabilities = agentengine::borrow_capabilities(caps);
         auto outcome = runner.run(ExecRequest{"shell", std::string(name) + " -c hostile"}, state, ctx);
         AE_CHECK(!outcome.has_value() && outcome.error().code == "shell.command_not_found",
                  std::string("end-to-end: '") + name + "' fails closed as command_not_found");

@@ -513,7 +513,7 @@ int main() {
     CapabilitySet held = CapabilitySet::grant_root({cap::Secret{"openai-api-key", std::chrono::seconds{0}}});
     EffectContext ctx;
     ctx.principal = Principal{"test-principal", ""};
-    ctx.capabilities = &held;
+    ctx.capabilities = agentengine::borrow_capabilities(held);
 
     // ---- (A) the common case: a fast, single-shot SSE response -- already fully fetched and the
     // socket already closed by the time the consumer could possibly drop the stream. Bounded
