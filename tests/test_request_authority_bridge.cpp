@@ -179,7 +179,7 @@ int main() {
         auto rejected =
             rt::request_authority_from_bearer_claims(far_future, held, wall_now, steady_now);
         check(!rejected.has_value(), "claim 7: an implausibly-distant exp is rejected, not cast");
-        check(rejected.has_value() ||
+        check(!rejected.has_value() &&
                   rejected.error().code == "request_authority.exp_horizon_exceeded",
               "claim 7: the rejection carries the documented, stable error code");
 
