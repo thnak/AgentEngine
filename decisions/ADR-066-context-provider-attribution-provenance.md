@@ -190,13 +190,21 @@ test_context_provenance --config Debug`, `ctest --test-dir build -C Debug --outp
   resumed after a code change — still open, unchanged by implementation.
 - `attribution` is stamped only inside `assemble_context()`'s own loop — a caller that builds
   `ContextContribution`/`ChatRequest` content some OTHER way (bypassing `assemble_context()` entirely,
-  e.g. `AgentSession`'s own direct single-`HistoryProviderT`-slot path used by most of the tree today,
-  confirmed unaffected in §5) gets no attribution at all, `nullopt` throughout — correct per this
-  ADR's own "nullopt means not contributor-sourced" convention, but means today's dominant,
-  production-path messages (real user/assistant turns, appended straight to `history_` by
-  `AgentSession::run_rounds()`) never carry attribution either, by design, not by omission.
-- No production call site consumes `attribution`/the narrowed `content_origin` guarantee for any real
-  policy decision yet — this ADR proves the stamping mechanism, matching
-  `decisions/ADR-028-session-scoped-stateful-tools.md`'s "prove the mechanism, name the rest"
-  precedent; `decisions/ADR-067-middleware-turn-point-pre-model-enforcement.md` (not yet implemented)
-  is the named future consumer.
+  e.g. `AgentSession`'s own direct single-`HistoryProviderT`-slot path used by most of the tree today)
+  gets no attribution at all, `nullopt` throughout — correct per this ADR's own "nullopt means not
+  contributor-sourced" convention, but means today's dominant, production-path messages (real
+  user/assistant turns, appended straight to `history_` by `AgentSession::run_rounds()`) never carry
+  attribution either, by design, not by omission.
+- **WIRED, real end-to-end evidence (2026-08-20, same pass as the AgentSession wiring for all four of
+  this batch's ADRs)**: `tests/test_rt_agent_session_context_provenance.cpp` runs a real
+  `rt::AgentSession<..., ComposedContextProvider<HistoryProvider<Window<0>>, SkillLikeProvider>>`
+  round and inspects the ACTUAL outbound `ChatRequest` the mock backend received — 13/13 checks pass:
+  both contributors' messages/tools reach the wire correctly stamped (`contributor_type`/
+  `contributor_index` matching each provider's own declared identity), a genuine historical replay
+  keeps `content_origin::user`, and a second provider's legitimate `content_origin::system` claim is
+  left untouched, all through the REAL composition path (`ComposedContextProvider`), not a hand-built
+  `ContextAssemblyResult`. Zero changes to `agent_session.hpp` were needed for this — `AgentSession`
+  already calls `history_provider_.on_context()` generically, and a composed provider already routes
+  through `assemble_context()` internally. `decisions/ADR-067-middleware-turn-point-pre-model-
+  enforcement.md`'s own `TurnContext`/turn-middleware hook (also now wired) is a real consumer of this
+  attribution, though no policy decision in this codebase keys off it yet.

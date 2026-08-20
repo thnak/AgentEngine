@@ -753,6 +753,43 @@ add_executable(test_rt_agent_session_tool_call_loop test_rt_agent_session_tool_c
 target_link_libraries(test_rt_agent_session_tool_call_loop PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_agent_session_tool_call_loop COMMAND test_rt_agent_session_tool_call_loop)
 
+# ---- decisions/ADR-067-middleware-turn-point-pre-model-enforcement.md wired for real:
+# AgentSession::set_turn_middleware_hook() -- the turn/pre_model mechanism proven standalone in
+# test_turn_middleware.cpp now proven against a real AgentSession round.
+add_executable(test_rt_agent_session_turn_middleware test_rt_agent_session_turn_middleware.cpp)
+target_link_libraries(test_rt_agent_session_turn_middleware PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_agent_session_turn_middleware COMMAND test_rt_agent_session_turn_middleware)
+
+# ---- decisions/ADR-069-content-triggered-model-response-replay.md wired for real: ContentReplayGateway
+# plugs directly into AgentSession's existing ChatClientT slot (ModelCallGatewayLike), zero core changes.
+add_executable(test_rt_agent_session_content_replay test_rt_agent_session_content_replay.cpp)
+target_link_libraries(test_rt_agent_session_content_replay PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_agent_session_content_replay COMMAND test_rt_agent_session_content_replay)
+
+# ---- decisions/ADR-066-context-provider-attribution-provenance.md wired for real: a composed
+# multi-provider HistoryProviderT slot (already-existing composition path, ComposedContextProvider)
+# carries attribution all the way to a real AgentSession round's outbound ChatRequest.
+add_executable(test_rt_agent_session_context_provenance test_rt_agent_session_context_provenance.cpp)
+target_link_libraries(test_rt_agent_session_context_provenance PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_agent_session_context_provenance COMMAND test_rt_agent_session_context_provenance)
+
+# ---- decisions/ADR-068-runtime-secret-quarantine-host-delegated-detection.md wired for real:
+# QuarantineToolProvider (trust/secret_quarantine.hpp) occupies AgentSession's HistoryProviderT slot;
+# a real tool-call round reaches the quarantine store through the actual invoke_tool() pipeline.
+# Windows-only (QuarantineSecretStore depends on trust::hmac_sha256, agentengine::capability_token).
+if(WIN32)
+  add_executable(test_rt_agent_session_quarantine_tool test_rt_agent_session_quarantine_tool.cpp)
+  target_link_libraries(test_rt_agent_session_quarantine_tool PRIVATE agentengine::core agentengine::capability_token agentengine_warnings)
+  add_test(NAME test_rt_agent_session_quarantine_tool COMMAND test_rt_agent_session_quarantine_tool)
+endif()
+
+# ---- decisions/ADR-069-content-triggered-model-response-replay.md §7's own open question, answered
+# with real evidence: ADR-067's turn/pre_model hook and ADR-069's ContentReplayGateway, both wired
+# into ONE real AgentSession simultaneously -- proves they compose correctly, not merely independently.
+add_executable(test_rt_agent_session_turn_and_replay_composition test_rt_agent_session_turn_and_replay_composition.cpp)
+target_link_libraries(test_rt_agent_session_turn_and_replay_composition PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_agent_session_turn_and_replay_composition COMMAND test_rt_agent_session_turn_and_replay_composition)
+
 # ---- ADR-036 -- ModelCallGateway/MiddlewareModelCallGateway (retry+breaker+failover+middleware as
 # a real coroutine, AgentSession-pluggable without a template-signature change).
 add_executable(test_model_call_gateway test_model_call_gateway.cpp)

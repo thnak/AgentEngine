@@ -189,8 +189,9 @@ approval machinery, out of scope here (§7).
 the `turn`/`pre_model` point only, tool-surface enforcement via `ToolSurfaceView`, taint-safe
 compaction via `redact_subspan()`, a single forward pass (not the full before/after onion). It binds:
 - `002-Agent-Model-and-Authoring.md` §5 — the `turn` interception point moves from declared-but-
-  unwired to specified AND implemented as a standalone mechanism (not yet wired into
-  `rt::AgentSession`, see residuals below).
+  unwired to specified, implemented, AND wired into `rt::AgentSession` for real (2026-08-20, see §7's
+  residual-risk update below): `AgentSession::set_turn_middleware_hook()` runs the chain once per
+  round, right before that round's `ChatRequest` is built.
 - `017-Safety-and-Content-Governance.md` §4 — closes the `pre_model` filter point's `allow`/
   `annotate`/`redact`/`deny` verdicts; `require_approval` is explicitly not modeled (see residuals).
 - `005-Sessions-State-and-Memory.md` §8 Q3 — re-resolved narrower: a `turn`-level `Compactor` may
@@ -209,12 +210,25 @@ compaction via `redact_subspan()`, a single forward pass (not the full before/af
   and ADR-068/ADR-069 — all named, deliberately deferred.
 
 **Residual risks:**
-- **No production call site wires `run_turn_middleware_chain()`/`TurnContext` into
-  `rt::AgentSession::run_rounds()` anywhere** — this ADR proves the mechanism in isolation, matching
-  `middleware.hpp`'s own explicit precedent for its run/tool-call points AND ADR-028's "prove the
-  mechanism, name the rest." `AgentSession` calls `history_provider_.on_context()` directly, at
-  several call sites, never `assemble_context()` itself — wiring this in is real, separately-scoped
-  work touching a large, mature, heavily tested file, not a small follow-up.
+- **WIRED, real end-to-end evidence (2026-08-20)**: `AgentSession::set_turn_middleware_hook()`
+  (`agent_session.hpp`) is a new, optional (`nullptr`-by-default) member — a
+  `TurnMiddlewareHook = std::function<task<result<std::monostate>>(TurnContext&)>` (`turn_middleware.
+  hpp`) a host sets once, and `run_rounds()` calls it exactly once per round, after context assembly
+  (including the dynamically-injected `schedule_wakeup` tool) and before `ChatRequest` is built —
+  confirmed via re-grounding that this is the ONE genuine `pre_model` seam in the file: the two OTHER
+  `on_context()` call sites (`resolve_interaction()`'s approval branch, `resolve_codeact_ask()`) only
+  ever build a `ToolTable` to dispatch an ALREADY-DECIDED tool call and never reach the model, so
+  wiring only `run_rounds()`'s own call site is complete, not a partial cut. `AgentSession` adapts its
+  raw `ContextContribution` into a `ContextAssemblyResult` with an empty `drops` list at the call site
+  (the ADR-066 seam's own `ContextAssemblyResult` doesn't exist yet at this point in `AgentSession`,
+  since it never calls `assemble_context()` itself) — a small, local adapter, not a change to
+  `turn_middleware.hpp`. `tests/test_rt_agent_session_turn_middleware.cpp`, 8/8 checks: a redacting
+  middleware's decision reaches the REAL outbound `ChatRequest` (the redacted tool is verifiably
+  absent from what the mock backend received); a denying middleware fails the round with the model
+  NEVER CALLED AT ALL (a real pre-model denial, not a post-hoc check); with no hook set, behavior is
+  byte-identical to every other existing `AgentSession` test in the tree. Full-tree rebuild: zero
+  compile errors; full `ctest`: 187/197 (same 10 pre-existing, unrelated not-run targets as every
+  other ADR in this batch).
 - `ToolSurfaceView`'s guarantee holds against a middleware using ONLY its sanctioned public API — NOT
   against one that bypasses it and mutates `TurnContext::assembled.combined.tools` directly (§6's own
   narrowed verdict). Closing this fully would need restructuring `ContextContribution`/

@@ -3,10 +3,12 @@
 **Status:** Proposed (design → red-team → prove phases complete for Design B; awaiting explicit user
 "Judged"). Implemented: `include/agentengine/trust/secret_quarantine.hpp`
 (`QuarantineSecretStore`/`SecretDetector`/`QuarantineAuditHook`/`scan_and_quarantine`/
-`QuarantineSecretTool`), proven by `tests/test_secret_quarantine.cpp` (24/24 checks, real Windows/
-MSVC build — see §5/§6 for the updated evidence and verdicts; this ADR's original §5/§6, written
-before implementation, are superseded by that section, not deleted). A real, mid-implementation
-finding corrected the original design (recorded in the header's own top comment and §7 below):
+`QuarantineSecretTool`/`QuarantineToolProvider`), proven by `tests/test_secret_quarantine.cpp`
+(24/24 checks) and, wired into a real `rt::AgentSession` round via `QuarantineToolProvider`,
+`tests/test_rt_agent_session_quarantine_tool.cpp` (5/5 checks, 2026-08-20 — see §7's residual-risk
+update), real Windows/MSVC build — see §5/§6 for the updated evidence and verdicts; this ADR's
+original §5/§6, written before implementation, are superseded by that section, not deleted). A real,
+mid-implementation finding corrected the original design (recorded in the header's own top comment and §7 below):
 "auto-grant in the same step" is not implementable against the real `CapabilitySet` (empty by
 construction, no incremental-grant method) and would have been I3-unsafe for the agent-initiated
 path regardless (a model-supplied tool argument cannot mint its own authority) — fixed by splitting
@@ -157,11 +159,27 @@ build --target test_secret_quarantine --config Debug`, `ctest --test-dir build -
   audit trail at all — a real, named limitation of the delegation design, not a hidden one. Whether
   this is an acceptable default (fail-open on missing host configuration) versus something that
   should fail closed (refuse to run without both configured) is not decided by this ADR.
-- **No production call site wires `scan_and_quarantine()`/`make_quarantine_secret_tool_descriptor()`
-  into `AgentSession`/`assemble_context()` anywhere** — this ADR proves the mechanism in isolation
-  (matching `decisions/ADR-028-session-scoped-stateful-tools.md`'s own "prove the mechanism against
-  one real consumer, name the rest" precedent), not a wired feature. A host must construct a
-  `QuarantineSecretStore` and call these functions itself today.
+- **WIRED, real end-to-end evidence (2026-08-20)**: `QuarantineToolProvider`
+  (`trust/secret_quarantine.hpp`, new) is a real `ContextProvider` conformer wrapping
+  `QuarantineSecretStore`, contributing exactly one tool (`quarantine_secret`) — it occupies
+  `AgentSession`'s `HistoryProviderT` slot directly, or composes alongside other contributors via
+  `ComposedContextProvider`, with zero changes to `agent_session.hpp`.
+  `tests/test_rt_agent_session_quarantine_tool.cpp`, 5/5 checks, drives a REAL round where the model
+  calls `quarantine_secret` as an ordinary tool through the actual `ToolTable`/`invoke_tool()`
+  pipeline (not a hand-built `EffectContext` calling the closure directly, the standalone unit test's
+  own shape): the raw secret never appears anywhere in durable session history (recursing into the
+  `ToolResult`'s own nested content — a real bug in this test's FIRST version, which only scanned
+  top-level `ContentItem`s and so found neither leak nor marker, silently proving nothing until
+  fixed), the `[quarantined secret: ...]` marker does appear, and `grant_eligible_ref_names()` stays
+  empty end-to-end, confirming the I3 fix holds through the real pipeline, not just the isolated
+  store. **A real, load-bearing constraint found while wiring this**: `AgentSession::
+  history_provider()` cannot be reassigned after construction (a plain, default-constructed value
+  member, the same limitation `history_and_skills_provider.hpp`'s own top comment already documents
+  for a different reason) — and `QuarantineSecretStore` holds a `std::mutex`, making it neither copy-
+  nor move-assignable regardless — so this test exercises the provider's DEFAULT (`nullptr`) audit
+  hook; injecting a custom one requires a host-level construction API this ADR does not add. Full-tree
+  rebuild: zero compile errors; full `ctest`: 187/197 (same 10 pre-existing, unrelated not-run targets
+  as every other ADR in this batch).
 - `hmac_sha256`'s real cryptanalytic strength is inherited, not re-proven here (§6).
 - Whether a THIRD-PARTY-sourced secret (no grant-eligibility at all — not just no auto-grant) should
   be destroyed outright rather than kept retrievable — still open, unchanged by implementation.

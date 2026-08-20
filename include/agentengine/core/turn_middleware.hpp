@@ -52,6 +52,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <exception>
+#include <functional>
 #include <optional>
 #include <set>
 #include <span>
@@ -258,6 +259,16 @@ template <class... Ms>
     ctx.tool_surface.finalize();
     co_return outcome;
 }
+
+// A host-injected callback, matching this codebase's own established idiom (`ApprovalDecider`,
+// `MiddlewareTraceHook`, `ContentReplayTrigger`) -- the ONE seam `rt::AgentSession` (agent_session.hpp)
+// actually calls, once per round, right before building that round's `ChatRequest`. A host wanting a
+// declared `std::tuple<Ms...>` chain builds it externally and wraps `run_turn_middleware_chain()`
+// (above) in a closure over that tuple; `AgentSession` itself never needs to know `Ms...` at compile
+// time, matching the same reason `MiddlewareTraceHook` is `std::function`-erased rather than adding a
+// template parameter to whatever calls it. `nullptr` (the default) means no turn middleware at all --
+// every existing `AgentSession<...>` specialization is unaffected until a caller opts in.
+using TurnMiddlewareHook = std::function<task<result<std::monostate>>(TurnContext&)>;
 
 // decisions/ADR-067 §4 -- 005 §8 Q3's re-resolution, made real. A `turn`-level compactor that shapes
 // what THIS turn's model call sees, never `history[]`: PROVABLE BY THE TYPE SIGNATURE, not merely by

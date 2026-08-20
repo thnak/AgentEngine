@@ -227,6 +227,7 @@
 #include "agentengine/core/stream.hpp"
 #include "agentengine/core/tool_call_extraction.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
+#include "agentengine/core/turn_middleware.hpp"
 #include "agentengine/rt/async_mutex.hpp"
 #include "agentengine/rt/interaction_codec.hpp"
 #include "agentengine/rt/message_codec.hpp"
@@ -499,6 +500,19 @@ public:
     void set_approval_decider(agentengine::ApprovalDecider approve) { approval_decider_ = std::move(approve); }
     [[nodiscard]] agentengine::ApprovalDecider const& approval_decider() const noexcept {
         return approval_decider_;
+    }
+
+    // decisions/ADR-067-middleware-turn-point-pre-model-enforcement.md, wired in for real: runs once
+    // per round, in `run_rounds()`, after this turn's `ContextContribution` is fully assembled
+    // (including the dynamically-injected `schedule_wakeup` tool, if any) but BEFORE it is turned
+    // into that round's `ChatRequest` -- the real `pre_model`/`turn` seam 017 §4 and 002 §5 both name.
+    // Unset (`nullptr`) by default -- every existing `AgentSession<...>` caller is completely
+    // unaffected until it opts in.
+    void set_turn_middleware_hook(agentengine::TurnMiddlewareHook hook) {
+        turn_middleware_hook_ = std::move(hook);
+    }
+    [[nodiscard]] agentengine::TurnMiddlewareHook const& turn_middleware_hook() const noexcept {
+        return turn_middleware_hook_;
     }
 
     [[nodiscard]] HistoryProviderT& history_provider() noexcept { return history_provider_; }
@@ -1375,6 +1389,32 @@ private:
                     }));
             }
 
+            // decisions/ADR-067-middleware-turn-point-pre-model-enforcement.md, wired in for real:
+            // the ONE genuine `pre_model`/`turn` seam in this file -- unlike the `on_context()` call
+            // sites in `resolve_interaction()`/`resolve_codeact_ask()` (above), which only ever
+            // build a `ToolTable` to dispatch an ALREADY-DECIDED tool call and never reach the model
+            // at all, THIS contribution is about to become the round's own `ChatRequest`. Runs after
+            // the Reasoning filter and the dynamically-injected `schedule_wakeup` tool above, so a
+            // turn middleware sees the FINAL tool surface, and before `.instructions` is materialized
+            // into a plain `Message` below, so `redact_subspan()` still has a real `TaintedText` to
+            // operate on (`turn_middleware.hpp`'s own documented ordering requirement). Wrapping the
+            // raw `ContextContribution` in a fresh `ContextAssemblyResult` with an empty `drops` list
+            // is the adapter this seam needs -- `AgentSession` calls `history_provider_.on_context()`
+            // directly, never `assemble_context()` itself, so there is no `ContextAssemblyResult`
+            // already in hand the way ADR-066's own seam has one.
+            if (turn_middleware_hook_) {
+                agentengine::ContextAssemblyResult assembled_for_turn{std::move(*contribution), {}};
+                agentengine::TurnContext turn_ctx{assembled_for_turn};
+                result<std::monostate> const turn_outcome = co_await turn_middleware_hook_(turn_ctx);
+                *contribution = std::move(assembled_for_turn.combined);
+                if (!turn_outcome) {
+                    emit_run_event(run_event_kind::run_failed,
+                                    run_event_payload::RunFailed{"run.turn_denied",
+                                                                  turn_outcome.error().message});
+                    co_return std::unexpected(turn_outcome.error());
+                }
+            }
+
             ToolTable const tool_table = ToolTable::from_descriptors(contribution->tools);
             // Gap-16 fix (2026-08-14): `contribution->instructions` used to be read this far and then
             // never referenced again -- silently dropped, never reaching the model. The ONE explicit
@@ -1668,6 +1708,8 @@ private:
     std::uint64_t                                        run_tokens_consumed_ = 0;
     std::optional<std::uint64_t>                         max_turns_;
     ApprovalDecider                                      approval_decider_{};
+    // decisions/ADR-067-middleware-turn-point-pre-model-enforcement.md. Unset by default.
+    agentengine::TurnMiddlewareHook                       turn_middleware_hook_{};
     bool                                                  suspend_for_approval_ = false;
     bool                                                  stream_model_calls_ = false;
     bool                                                  scan_response_format_leaks_ = false;

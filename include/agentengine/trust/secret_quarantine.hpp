@@ -49,6 +49,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "agentengine/core/context_provider.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/json_schema.hpp"
@@ -270,5 +271,45 @@ struct QuarantineSecretTool : Tool<QuarantineSecretTool, EffectClass<effect_clas
             return QuarantineSecretReply{"[quarantined secret: " + ref.name + "]"};
         });
 }
+
+// Wraps `QuarantineSecretStore` as a real `ContextProvider` conformer -- ADR-068's own named residual
+// ("no production call site wires this in yet") closed here structurally: this type can occupy
+// `rt::AgentSession`'s `HistoryProviderT` slot directly, or be composed alongside other contributors
+// via `ComposedContextProvider`/`HistoryAndSkillsProvider` (`core/composed_context_provider.hpp`),
+// the SAME real, already-proven composition path `decisions/ADR-066-context-provider-attribution-
+// provenance.md`'s own end-to-end test uses -- no change to `agent_session.hpp` needed for this ADR
+// at all. Contributes exactly one tool (`quarantine_secret`) and no messages/instructions of its own.
+// Owns `store_` by value (not a reference to a caller-owned instance): `ComposedContextProvider`
+// moves its `Ms...` pack into a `shared_ptr` once, at construction (`context_assembly.hpp`'s own
+// `make_context_provider_descriptor` comment), and calls `on_context()` on that SAME instance every
+// turn -- so `make_quarantine_secret_tool_descriptor(store_)`'s captured `&store_` reference stays
+// valid for the provider's whole lifetime, the identical shape `SkillsProvider`/`MemoryProvider`
+// already use for their own long-lived, session-scoped state.
+class QuarantineToolProvider {
+public:
+    static constexpr std::string_view name = "quarantine";  // decisions/ADR-066-...md §3
+
+    explicit QuarantineToolProvider(QuarantineAuditHook audit_hook = nullptr)
+        : store_(std::move(audit_hook)) {}
+
+    [[nodiscard]] task<result<ContextContribution>> on_context(SessionContext&, EffectContext&) {
+        ContextContribution c;
+        c.tools.push_back(make_quarantine_secret_tool_descriptor(store_));
+        co_return c;
+    }
+    task<std::monostate> on_turn_end(TurnView, EffectContext&) { co_return std::monostate{}; }
+
+    // Host-only introspection -- `grant_eligible_ref_names()` (this same file, above) and the raw
+    // store itself for a host that wants to `resolve()` a ref once it decides to grant it, exactly
+    // ADR-068's own §5 host-driven-grant shape, now reachable from whatever owns the `AgentSession`.
+    [[nodiscard]] QuarantineSecretStore& store() noexcept { return store_; }
+    [[nodiscard]] QuarantineSecretStore const& store() const noexcept { return store_; }
+
+private:
+    QuarantineSecretStore store_;
+};
+static_assert(ContextProvider<QuarantineToolProvider>,
+              "QuarantineToolProvider must satisfy ContextProvider (005 §5) to occupy AgentSession's "
+              "HistoryProviderT slot, directly or via ComposedContextProvider");
 
 }  // namespace agentengine
