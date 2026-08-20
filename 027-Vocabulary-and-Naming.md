@@ -73,6 +73,11 @@ cheaper than overloading `AgentResponse` with a lifecycle it does not have.
 | `AgentMiddleware` / `ChatMiddleware` / `FunctionMiddleware` | The three interception scopes | MAF |
 | **`Plugin`** | A signed package containing WASM components implementing a WIT world (009) | **ours** |
 | **`MemoryProvider`** → **use `ContextProvider`** | *Superseded.* Memory is a kind of context provider, not a parallel concept | — |
+| **`ToolOptimizerProvider`** | A `ContextProvider` that gates MCP/WASM-plugin/agent tool exposure behind mount/unmount, the same shape `mount_skill` already uses for skill tools (009 §8b, ADR-065) | **ours** |
+| **`SearchToolsTool`** | `ToolOptimizerProvider`'s always-on, zero-capability `search_tools` management tool — read-only keyword search over the full tool universe (ADR-065) | **ours** |
+| **`MountToolTool`** | `ToolOptimizerProvider`'s always-on, zero-capability `mount_tool` management tool — moves the visibility window to include an already-authorized tool, granting no new capability (ADR-065) | **ours** |
+| **`UnmountToolTool`** | `ToolOptimizerProvider`'s always-on, zero-capability `unmount_tool` management tool — the inverse of `MountToolTool` (ADR-065) | **ours** |
+| **`ToolSourceFetch`** | The closure seam `ToolOptimizerProvider` uses to fetch a tool source's current `ToolDescriptor`s fresh on every `on_context()` call (ADR-065) | **ours** |
 
 ### The `ContextProvider` correction
 

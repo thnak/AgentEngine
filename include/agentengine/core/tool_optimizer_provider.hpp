@@ -56,11 +56,13 @@ namespace agentengine {
 // is a dead poison stub; real logic lives in ToolOptimizerProvider's own member functions, reached
 // via make_tool_descriptor_with_invoke()'s closure -- MountSkillTool's exact pattern.
 
+// ae-naming-lint: allow SearchToolsArgs — mechanical request DTO for the vocabularied SearchToolsTool (027 §3); not itself a distinct concept.
 struct SearchToolsArgs {
     std::string query;
 };
 AE_JSON_SCHEMA(SearchToolsArgs, query)
 
+// ae-naming-lint: allow SearchToolsReply — mechanical reply DTO for the vocabularied SearchToolsTool (027 §3); not itself a distinct concept.
 struct SearchToolsReply {
     std::vector<std::string> names;
 };
@@ -82,11 +84,13 @@ struct SearchToolsTool : Tool<SearchToolsTool, EffectClass<effect_class::pure>> 
     }
 };
 
+// ae-naming-lint: allow MountToolArgs — mechanical request DTO for the vocabularied MountToolTool (027 §3); not itself a distinct concept.
 struct MountToolArgs {
     std::string name;
 };
 AE_JSON_SCHEMA(MountToolArgs, name)
 
+// ae-naming-lint: allow MountToolReply — mechanical reply DTO for the vocabularied MountToolTool (027 §3); not itself a distinct concept.
 struct MountToolReply {
     bool ok = false;
     std::string message;
@@ -109,11 +113,13 @@ struct MountToolTool : Tool<MountToolTool, EffectClass<effect_class::pure>> {
     }
 };
 
+// ae-naming-lint: allow UnmountToolArgs — mechanical request DTO for the vocabularied UnmountToolTool (027 §3); not itself a distinct concept.
 struct UnmountToolArgs {
     std::string name;
 };
 AE_JSON_SCHEMA(UnmountToolArgs, name)
 
+// ae-naming-lint: allow UnmountToolReply — mechanical reply DTO for the vocabularied UnmountToolTool (027 §3); not itself a distinct concept.
 struct UnmountToolReply {
     bool ok = false;
     std::string message;
@@ -149,9 +155,6 @@ using ToolSourceFetch = std::function<result<std::vector<ToolDescriptor>>(Effect
     };
 }
 
-// ae-naming-lint: allow ToolOptimizerProvider — matches ComposedContextProvider/
-// HistoryAndSkillsProvider's own already-accepted PascalCase precedent for this ADR-025 §4c
-// deferral class.
 class ToolOptimizerProvider {
 public:
     ToolOptimizerProvider(ToolTable agent_tools, ToolSourceFetch mcp_tools_fetch,
