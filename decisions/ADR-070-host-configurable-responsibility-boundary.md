@@ -2,7 +2,7 @@
 # formal seam for shifting part of that responsibility to the consumer dev, and where does that
 # seam stop?
 
-**Status:** Proposed (design → red-team → prove phases complete; awaiting explicit user "Judged").
+**Status:** Judged (design → red-team → prove phases complete; approved by project owner, 2026-08-21).
 Implemented: `include/agentengine/core/tool_pipeline.hpp` (`PolicyDecider`/`policy_decision`/
 `resolve_approval_outcome`), `include/agentengine/core/agent_registry.hpp` (`invoke_agent_tool`
 threading), `include/agentengine/rt/agent_session.hpp` (`set_policy_decider`/`policy_decider`,
