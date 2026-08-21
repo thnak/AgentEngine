@@ -6,12 +6,14 @@ const sections = {
     { id: "capabilities", label: "Declaration vs grant" },
     { id: "tool-pipeline", label: "The ten-step pipeline" },
     { id: "attenuation", label: "Attenuation only" },
+    { id: "secret-quarantine", label: "Secret quarantine" },
     { id: "sandbox-profile", label: "Sandbox profiles" },
   ],
   vi: [
     { id: "capabilities", label: "Khai báo và cấp phát" },
     { id: "tool-pipeline", label: "Pipeline mười bước" },
     { id: "attenuation", label: "Chỉ có thể thu hẹp (attenuation)" },
+    { id: "secret-quarantine", label: "Cách ly secret" },
     { id: "sandbox-profile", label: "Sandbox profile" },
   ],
 };

@@ -20,6 +20,8 @@ import {
   sandboxPassivationRows,
   sandboxProfileSnippet,
   sandboxRunEventSnippet,
+  secretQuarantineExampleSnippet,
+  secretQuarantineOwnership,
   toolPipelineSteps,
   trustEntries,
   wasmImportGatingSnippet,
@@ -170,6 +172,71 @@ const copy = {
         the ONE explicitly-named, greppable entry point host policy calls. That's not a
         comment promising a property — it's the actual thing 007 §9's own falsifiable test
         gate checks.
+      </>
+    ),
+    s3bEyebrow: "ADR-068 — trust/secret_quarantine.hpp",
+    s3bHeading: <>Quarantining a secret that shows up where nobody declared one</>,
+    s3bBody: (
+      <>
+        <code>trust/secret.hpp</code> already gives an operator-declared secret a
+        capability-gated, zeroizing, declare-then-resolve path. A secret that shows up
+        incidentally — a pasted API key, a tool result echoing a leaked credential — was never
+        declared anywhere, so nothing catches it. <code>QuarantineSecretStore</code> adds a
+        second, mint-at-runtime path satisfying the same <code>SecretStore</code> concept:
+        content-addressed by a MAC of the detected bytes (reusing <code>hmac_sha256</code>, the
+        one audited digest primitive already in this codebase — ADR-021), so the same value
+        quarantined by two independent callers collapses onto one <code>SecretRef</code>{" "}
+        without either caller coordinating. Follows HashiCorp Vault's tokenization shape — an
+        opaque <code>quarantine:&lt;hex&gt;</code> reference, nothing recoverable without a{" "}
+        <code>resolve()</code> round trip — not a reversible-ciphertext-in-place shape.
+      </>
+    ),
+    s3bOwnershipIntro: "AgentEngine ships no detection of its own — ADR-068 §2 owns the seam and a narrow structural guarantee on the audit event; detection and audit durability are the host's:",
+    s3bOwnershipColumns: ["Concern", "Owner", "Notes"],
+    s3bTriggerIntro: "The one thing quarantine() itself decides is bookkeeping, not trust: HOW a piece of text got here changes what a host is later allowed to do with the resulting ref — the ref-minting call never grants anything by itself, either way.",
+    s3bVerifiedLabel: "verified_user_content",
+    s3bVerified: (
+      <>
+        The engine itself verified this content's provenance — a <code>Message</code> whose{" "}
+        <code>content_origin</code> is genuinely <code>user</code> — before{" "}
+        <code>scan_and_quarantine()</code> ever ran. <code>grant_eligible_ref_names()</code>{" "}
+        names the resulting ref, so a host MAY fold it into a real grant at its own next{" "}
+        <code>CapabilitySet::grant_root()</code> call.
+      </>
+    ),
+    s3bAgentLabel: "agent_initiated",
+    s3bAgent: (
+      <>
+        A model-issued <code>quarantine_secret</code> tool call supplied this text as an
+        argument — model output, not an engine-verified fact. Never grant-eligible,
+        structurally: there is no branch of <code>grant_eligible_ref_names()</code> that can
+        return a ref minted this way, no matter what the model passes.
+      </>
+    ),
+    s3bNote: (
+      <>
+        <strong>The fatal finding this mechanism had to close on its own.</strong> The design
+        originally drafted <code>quarantine()</code> as minting a ref AND granting{" "}
+        <code>cap::Secret</code> in the same step. That doesn't compile against the real{" "}
+        <code>CapabilitySet</code> — empty by construction, no method to add one capability
+        incrementally, only <code>grant_root()</code>, which replaces the whole set and is
+        never reachable from anything derived from model output (I3). A sharper problem sat
+        underneath even a fixed API: <code>QuarantineSecretTool::invoke</code>'s argument is
+        model-supplied, so an auto-grant on that path would let a manipulated model mint itself
+        a resolvable secret reference for text that was never actually the user's own value —
+        model output becoming authority, exactly what I3 forbids. Fixed by splitting the
+        concern: quarantining never mutates a capability set; grant-eligibility is a host-only
+        query, reachable from no <code>Tool::invoke()</code> body, on a boundary (
+        <code>grant_root()</code>) that was already I3-safe.
+      </>
+    ),
+    s3bResidualNote: (
+      <>
+        <strong>A named limitation, not a hidden one.</strong> A deployment that wires neither a{" "}
+        <code>SecretDetector</code> nor a <code>QuarantineAuditHook</code> gets no protection
+        and no audit trail — fails open, not closed, on missing host configuration. Whether
+        that default is right for a given deployment is a decision ADR-068 leaves to the host,
+        not one it makes silently.
       </>
     ),
     s4Eyebrow: "sandbox/sandbox.hpp",
@@ -513,6 +580,75 @@ const copy = {
         điểm vào DUY NHẤT được nêu tên tường minh, có thể grep được mà chính sách của host
         gọi tới. Đó không phải một comment hứa hẹn một tính chất — đó là điều mà chính cổng
         kiểm định có thể-bác-bỏ (falsifiable) của 007 §9 kiểm tra thật.
+      </>
+    ),
+    s3bEyebrow: "ADR-068 — trust/secret_quarantine.hpp",
+    s3bHeading: <>Cách ly (quarantine) một secret xuất hiện ở nơi không ai khai báo nó</>,
+    s3bBody: (
+      <>
+        <code>trust/secret.hpp</code> đã cho một secret được operator khai báo một đường đi
+        capability-gated, tự xóa (zeroizing), theo kiểu declare-rồi-resolve. Một secret xuất
+        hiện một cách tình cờ — một API key bị dán nhầm vào, một kết quả tool lặp lại một
+        credential bị lộ — thì chưa từng được khai báo ở đâu cả, nên không có gì bắt được nó.{" "}
+        <code>QuarantineSecretStore</code> thêm một đường đi thứ hai, tạo secret ngay tại
+        runtime, thỏa cùng khái niệm <code>SecretStore</code>: định địa chỉ theo nội dung bằng
+        một MAC trên các byte phát hiện được (tái sử dụng <code>hmac_sha256</code>, primitive
+        digest duy nhất đã được kiểm toán trong codebase này — ADR-021), nên cùng một giá trị
+        được hai caller độc lập quarantine sẽ gộp về đúng một <code>SecretRef</code> mà không
+        cần hai bên phối hợp với nhau. Theo đúng hình dạng tokenization của HashiCorp Vault —
+        một tham chiếu <code>quarantine:&lt;hex&gt;</code> mờ đục, không có gì khôi phục được
+        nếu không quay lại qua <code>resolve()</code> — không phải kiểu ciphertext-có-thể-đảo-ngược-tại-chỗ.
+      </>
+    ),
+    s3bOwnershipIntro: "AgentEngine không đóng gói bất kỳ cơ chế phát hiện nào của riêng mình — ADR-068 §2 sở hữu ranh giới (seam) và một đảm bảo cấu trúc hẹp trên kiểu audit event; phát hiện và độ bền của audit là việc của host:",
+    s3bOwnershipColumns: ["Mối quan tâm", "Ai sở hữu", "Ghi chú"],
+    s3bTriggerIntro: "Điều duy nhất mà chính quarantine() quyết định là bookkeeping, không phải trust: đoạn text này đến bằng cách nào sẽ quyết định host được phép làm gì với ref kết quả về sau — bản thân lệnh gọi tạo ref không bao giờ cấp phát bất cứ điều gì, dù theo cách nào.",
+    s3bVerifiedLabel: "verified_user_content",
+    s3bVerified: (
+      <>
+        Chính engine đã xác minh nguồn gốc của nội dung này — một <code>Message</code> có{" "}
+        <code>content_origin</code> thực sự là <code>user</code> — trước khi{" "}
+        <code>scan_and_quarantine()</code> từng chạy. <code>grant_eligible_ref_names()</code>{" "}
+        nêu tên ref kết quả, để một host CÓ THỂ gộp nó vào một lần cấp phát thật ở lần gọi{" "}
+        <code>CapabilitySet::grant_root()</code> kế tiếp của chính mình.
+      </>
+    ),
+    s3bAgentLabel: "agent_initiated",
+    s3bAgent: (
+      <>
+        Một lệnh gọi tool <code>quarantine_secret</code> do model phát ra đã cung cấp đoạn
+        text này như một argument — đây là đầu ra của model, không phải một sự thật đã được
+        engine xác minh. Không bao giờ đủ điều kiện cấp phát, về mặt cấu trúc: không có nhánh
+        nào của <code>grant_eligible_ref_names()</code> có thể trả về một ref được tạo theo
+        cách này, bất kể model truyền vào gì.
+      </>
+    ),
+    s3bNote: (
+      <>
+        <strong>Phát hiện chí mạng mà cơ chế này phải tự đóng lại.</strong> Thiết kế ban đầu
+        phác thảo <code>quarantine()</code> như vừa tạo ref vừa cấp <code>cap::Secret</code>{" "}
+        trong cùng một bước. Điều đó không biên dịch được với <code>CapabilitySet</code> thật —
+        rỗng theo cấu trúc, không có phương thức nào để thêm từng capability một, chỉ có{" "}
+        <code>grant_root()</code>, thay thế toàn bộ tập hợp và không bao giờ chạm tới được từ
+        bất cứ thứ gì bắt nguồn từ đầu ra của model (I3). Một vấn đề sắc hơn nằm ngay dưới cả
+        một API đã sửa: argument của <code>QuarantineSecretTool::invoke</code> là do model
+        cung cấp, nên nếu đường đó tự động cấp phát, một model bị thao túng có thể tự tạo cho
+        mình một tham chiếu secret resolve được cho một đoạn text chưa từng thực sự là giá trị
+        của người dùng — đầu ra của model trở thành authority, đúng điều I3 cấm. Được sửa bằng
+        cách tách mối quan tâm ra: quarantine không bao giờ thay đổi một capability set; tính
+        đủ điều kiện cấp phát là một truy vấn chỉ dành cho host, không có đường nào từ thân hàm{" "}
+        <code>Tool::invoke()</code> chạm tới được, trên một ranh giới (
+        <code>grant_root()</code>) vốn đã an toàn theo I3 từ trước.
+      </>
+    ),
+    s3bResidualNote: (
+      <>
+        <strong>Một giới hạn được nêu tên, không phải bị giấu đi.</strong> Một triển khai
+        không đấu nối cả <code>SecretDetector</code> lẫn <code>QuarantineAuditHook</code> sẽ
+        không có bảo vệ nào và không có audit trail nào — an toàn kiểu "mở" (fail open) chứ
+        không phải "đóng" khi thiếu cấu hình từ host. Mặc định đó có phù hợp với một triển khai
+        cụ thể hay không là quyết định ADR-068 để ngỏ cho host, không tự ý quyết định trong im
+        lặng.
       </>
     ),
     s4Eyebrow: "sandbox/sandbox.hpp",
@@ -887,6 +1023,64 @@ export function ApiTrustSandboxReference() {
 
           <RevealItem>
             <p className="gs-note" style={{ marginTop: 20, borderLeftColor: "var(--accent-pink)" }}>{t.s3Note}</p>
+          </RevealItem>
+        </RevealGroup>
+
+        {/* ---- 3b. Secret quarantine (ADR-068) ----------------------------------------------------- */}
+        <RevealGroup>
+          <RevealItem>
+            <div className="section-head anchor-target" id="secret-quarantine" style={{ marginTop: 56, marginBottom: 22 }}>
+              <span className="eyebrow">{t.s3bEyebrow}</span>
+              <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>{t.s3bHeading}</h3>
+              <p>{t.s3bBody}</p>
+            </div>
+          </RevealItem>
+
+          <RevealItem>
+            <p style={{ color: "var(--text-dim)", lineHeight: 1.65, marginBottom: 12 }}>{t.s3bOwnershipIntro}</p>
+            <ApiTable
+              columns={[...t.s3bOwnershipColumns]}
+              templateColumns="1.1fr 0.7fr 2.6fr"
+              rows={secretQuarantineOwnership[lang].map((r) => [
+                r.concern,
+                <code key="owner">{r.owner}</code>,
+                r.notes,
+              ])}
+            />
+          </RevealItem>
+
+          <RevealItem>
+            <p style={{ color: "var(--text-dim)", lineHeight: 1.65, marginTop: 24, marginBottom: 12 }}>{t.s3bTriggerIntro}</p>
+            <div className="compare-cols">
+              <div className="compare-col is-before">
+                <div className="compare-col-label">{t.s3bVerifiedLabel}</div>
+                <p style={{ color: "var(--text-dim)", fontSize: "0.9rem", lineHeight: 1.6 }}>{t.s3bVerified}</p>
+              </div>
+              <div className="compare-col is-after">
+                <div className="compare-col-label">{t.s3bAgentLabel}</div>
+                <p style={{ color: "var(--text-dim)", fontSize: "0.9rem", lineHeight: 1.6 }}>{t.s3bAgent}</p>
+              </div>
+            </div>
+          </RevealItem>
+
+          <RevealItem>
+            <CodePanel filename="secret_quarantine.hpp">{highlightCpp(secretQuarantineExampleSnippet)}</CodePanel>
+          </RevealItem>
+
+          <RevealItem>
+            <p className="gs-note" style={{ marginTop: 20, borderLeftColor: "var(--accent-pink)" }}>{t.s3bNote}</p>
+          </RevealItem>
+
+          <RevealItem>
+            <p className="gs-note" style={{ marginTop: 14 }}>{t.s3bResidualNote}</p>
+          </RevealItem>
+
+          <RevealItem>
+            <div style={{ marginTop: 14, display: "flex", gap: 16, flexWrap: "wrap" }}>
+              <RawCite href={gh("include/agentengine/trust/secret_quarantine.hpp")} label="include/agentengine/trust/secret_quarantine.hpp" />
+              <RawCite href={gh("decisions/ADR-068-runtime-secret-quarantine-host-delegated-detection.md")} label="decisions/ADR-068-runtime-secret-quarantine-host-delegated-detection.md" />
+              <RawCite href={gh("tests/test_rt_agent_session_quarantine_tool.cpp")} label="tests/test_rt_agent_session_quarantine_tool.cpp" />
+            </div>
           </RevealItem>
         </RevealGroup>
 

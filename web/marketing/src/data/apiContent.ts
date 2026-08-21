@@ -681,6 +681,59 @@ result<CapabilitySet> denied = root.attenuate({Capability{cap::NetOut{{"api.exam
 // There is no constructor anywhere in this header that WIDENS -- grant_root() is the one
 // explicitly-named entry point host policy calls, never reachable from model output (I3).`;
 
+// ---- Secret quarantine (ADR-068) -----------------------------------------------------------------
+// A second, mint-at-runtime SecretStore conformer alongside trust/secret.hpp's operator-declared
+// one -- for a secret that shows up incidentally (a pasted API key, a leaked credential echoed
+// back in a tool result) rather than one the operator ever declared up front.
+
+export const secretQuarantineExampleSnippet = `// trust/secret_quarantine.hpp -- ADR-068
+class MyRegexDetector : public SecretDetector {
+public:
+    std::vector<DetectedSpan> scan(std::string_view content) override {
+        return find_api_key_shaped_spans(content);   // host-owned heuristic -- AgentEngine
+    }                                                  // ships none of its own (Design B)
+};
+
+QuarantineSecretStore store{
+    [](QuarantineAuditEvent const& e) { my_siem::log(e.ref_name, e.trigger, e.principal_id); }
+};
+MyRegexDetector detector;
+
+// Passive path -- content the ENGINE already verified came from the user, not the model:
+std::string redacted = scan_and_quarantine(
+    incoming_message.text, detector, store, quarantine_trigger::verified_user_content, ctx);
+// redacted now reads "...key: [quarantined secret: quarantine:9f3a...]..." -- the raw value
+// never appears in it. store.grant_eligible_ref_names() now names this ref, for the HOST to
+// fold into a real grant at its own next CapabilitySet::grant_root() call.
+
+// Agent-initiated path -- wired as an ordinary tool, zero extra plumbing:
+using Session = agentengine::rt::AgentSession<AnthropicChatClient<InMemorySecretStore>,
+                                               NoSessionState, QuarantineToolProvider>;
+// The model calls quarantine_secret({"text": "..."}) itself, on noticing something sensitive
+// in its own draft or a tool result -- ALWAYS agent_initiated, so grant_eligible_ref_names()
+// never includes anything minted through this tool, regardless of what the model passes (I3).`;
+
+export interface OwnershipRow {
+  concern: string;
+  owner: string;
+  notes: string;
+}
+
+export const secretQuarantineOwnership: Record<Lang, OwnershipRow[]> = {
+  en: [
+    { concern: "Detection heuristic", owner: "Host", notes: "SecretDetector::scan() — regex, NER, a vendor DLP scanner, whatever a real deployment already runs. AgentEngine ships none." },
+    { concern: "Ref naming & storage", owner: "AgentEngine", notes: "QuarantineSecretStore — content-addressed (a MAC via the existing hmac_sha256 primitive), so the same secret quarantined by two independent callers collapses onto one SecretRef." },
+    { concern: "Audit durability", owner: "Host", notes: "QuarantineAuditHook — nullptr by default. A deployment that wires nothing gets no durable record at all, on purpose, not by oversight." },
+    { concern: "Capability grant decision", owner: "Host", notes: "grant_eligible_ref_names() only names which refs came from verified_user_content — quarantine() itself never mutates a CapabilitySet, and agent_initiated refs are never eligible, structurally." },
+  ],
+  vi: [
+    { concern: "Heuristic phát hiện", owner: "Host", notes: "SecretDetector::scan() — regex, NER, một bộ quét DLP của bên thứ ba, bất cứ thứ gì một triển khai thật đã sẵn dùng. AgentEngine không đóng gói cái nào." },
+    { concern: "Đặt tên ref & lưu trữ", owner: "AgentEngine", notes: "QuarantineSecretStore — định địa chỉ theo nội dung (một MAC qua chính primitive hmac_sha256 đã có), nên cùng một secret được quarantine bởi hai caller độc lập sẽ gộp về đúng một SecretRef." },
+    { concern: "Độ bền của audit", owner: "Host", notes: "QuarantineAuditHook — mặc định nullptr. Một triển khai không đấu nối gì sẽ không có bản ghi bền vững nào cả — có chủ đích, không phải do sơ suất." },
+    { concern: "Quyết định cấp capability", owner: "Host", notes: "grant_eligible_ref_names() chỉ nêu tên ref nào đến từ verified_user_content — bản thân quarantine() không bao giờ thay đổi một CapabilitySet, và ref agent_initiated không bao giờ đủ điều kiện, về mặt cấu trúc." },
+  ],
+};
+
 export interface SandboxBackendRow {
   name: string;
   strength: number;
@@ -741,6 +794,16 @@ export const runtimeEntries: Record<Lang, ApiEntry[]> = {
       href: gh("include/agentengine/core/context_assembly.hpp"),
     },
     {
+      id: "context-provider-attribution",
+      status: "real",
+      tag: "ContributorProvenance · Message::attribution · ToolDescriptor::attribution",
+      title: "Attribution — closing OQ-18's own missing-provenance objection, without reopening OQ-18",
+      body:
+        "OQ-18's own red-team gave five reasons a MAF-style chained ContextProvider pipeline doesn't work here; reason #1 was that neither Message nor ToolDescriptor recorded which contributor produced them, so a later provider reacting to an earlier one would be reacting to unattributed content. ADR-066 closes exactly that gap, structurally: assemble_context() (context_assembly.hpp) — the ONE seam every contribution already flows through unconditionally — stamps ContributorProvenance{contributor_index, contributor_type} onto every Message and ToolDescriptor it merges, whether the contributor cooperates or not. This was chosen over MAF's own shape (each provider self-stamps via ChatMessage.WithAgentRequestMessageSource) because a provider that overrides its own merge path, or a non-cooperating third-party WASM plugin conformer (009 §2), can skip a self-stamp; it cannot skip a stamp applied at a seam it doesn't control. A ContextProvider type opts in by declaring static constexpr std::string_view name — HasContextProviderName, reusing ADR-033's HasMiddlewareName pattern verbatim — required by make_context_provider_descriptor<ProviderT>() for any conformer routed through multi-contributor composition (AgentSession's own single-provider slot doesn't need it). The same pass closed a real, separate side-channel: a forged content_origin::user claim ('a human literally typed this') on text that isn't a verbatim match against session_ctx.history is downgraded to content_origin::external — narrower than the design draft's original wording, which would have wrongly clamped SkillsProvider's own legitimate content_origin::system advertisement (skill_provider.hpp:136) too; every origin besides ::user is left exactly as the contributor set it. Proven by tests/test_context_provenance.cpp (16 checks) with an adversarial conformer forging both a user-origin message and unstamped output, and end to end by tests/test_rt_agent_session_context_provenance.cpp (13 checks) through a real rt::AgentSession run inspecting the actual outbound ChatRequest. Named, not silently closed: content_origin::system/::assistant/::tool forgery by a genuinely compromised (not merely untrusted) conformer is a different, broader threat model this doesn't address; a HistoryProvider<Summarize<N,SummarizerT>> synthesized summary still inherits ::assistant with nothing marking it as a summary; attribution does not yet survive a JSON round-trip through rt/message_codec.hpp, so it does not currently persist across a checkpoint/restart.",
+      cite: "include/agentengine/core/context_assembly.hpp:207",
+      href: gh("include/agentengine/core/context_assembly.hpp"),
+    },
+    {
       id: "session-scoped-stateful-tools",
       status: "real",
       tag: "make_tool_descriptor_with_invoke<ToolT>(InvokeFn)",
@@ -749,6 +812,16 @@ export const runtimeEntries: Record<Lang, ApiEntry[]> = {
         "A Tool<...> conformer's static invoke() has no path to its owning AgentSession's per-session data — every prior tool ran against process-wide statics if it needed to remember anything (tools/cli_chat.cpp's own CodeAct wiring, before ADR-030). make_tool_descriptor_with_invoke<ToolT>() keeps ToolT's compile-time-checked declarations (capability ceiling, approval, effect class, schemas) but lets a HistoryProviderT conformer supply the real invoke logic as a callable that captures its own member state — no core-seam change needed, since a provider is already a per-AgentSession-instance member. The one enforced guard: a state-capturing tool can never also be Backgroundable — background_task() rejects the combination outright, closing a real dangling-reference hazard a red-team pass found (a detached background thread is not serialized against the capturing closure's own session lifetime by rt::AsyncMutex).",
       cite: "include/agentengine/core/tool_pipeline.hpp",
       href: gh("include/agentengine/core/tool_pipeline.hpp"),
+    },
+    {
+      id: "tool-optimizer-provider",
+      status: "real",
+      tag: "ToolOptimizerProvider · search_tools / mount_tool / unmount_tool",
+      title: "On-demand tool gating — the mount_skill trust shape applied to MCP and plugin tool sources",
+      body:
+        "union_codeact_tools unions a connected MCP server's or loaded WASM plugin's entire tool surface unconditionally the moment it's bound — no on-demand gate exists for either source, unlike skills. ToolOptimizerProvider(ToolTable agent_tools, ToolSourceFetch mcp_tools_fetch, ToolSourceFetch plugin_tools_fetch, always_on = {}) is an ordinary ContextProvider closing that gap: on_context() rebuilds the full universe every turn (agent tools plus whatever each ToolSourceFetch closure returns right now, unioned through union_codeact_tools's own cross-source collision check), narrows it to always_on ∪ mounted_ via scope_tools_to_mounted_skills, and appends three always-on, zero-capability management tools reached through make_tool_descriptor_with_invoke — the exact MountSkillTool trust shape: Tool<T, EffectClass<pure>>, no Capabilities<...>, granting no new capability, only moving the visibility window over what's already pre-authorized. Two divergences from mount_skill's own precedent, named plainly: search_tools has none — 009 §8b found no need for search over skills or tools, so this stays a substring/keyword match, not embedding search; unmount_tool has none either — mount_skill never got one, and ADR-024 §8 named that an open, never-closed gap, closed here for tool sources specifically (core/mounted_skills_state.hpp itself is untouched). Because AgentSession already builds exactly one ToolTable per turn from this same on_context() output and reuses it for every invoke_tool() call that turn, a newly-mounted tool is genuinely uncallable until the next turn, never merely hidden — the same declare/invoke cadence ADR-024 §8 proved for skills, re-proven here end to end (tests/test_tool_optimizer_provider.cpp, 36 checks) through a real AgentSession run: a scripted mount_tool call, then the mounted tool present on the following outbound ChatRequest and absent from the one before it. currently_scoped_tools() is exposed for a caller that also feeds a CodeAct bridge's own tool union, so both surfaces stay sourced from the same instance rather than drifting apart.",
+      cite: "include/agentengine/core/tool_optimizer_provider.hpp:158",
+      href: gh("include/agentengine/core/tool_optimizer_provider.hpp"),
     },
     {
       id: "suspend-for-approval",
@@ -769,6 +842,26 @@ export const runtimeEntries: Record<Lang, ApiEntry[]> = {
         "A decorator over any ModelCallGatewayLike backend (typically a retry/failover ModelCallGateway<Primary, Fallback...>), a real coroutine so a hook's co_await is completely ordinary: each Ms... in order gets a before_model(ModelCallContext&) hook (can rewrite the outgoing request or short-circuit with a synthetic response) and an after_model(ModelCallContext&) hook (sees the real response once it's settled). A red-team pass found the fatal case this mechanism has to close on its own: a content-rewriting middleware could otherwise forge or mutate a trusted ToolCall reconstructed from plain text, silently bypassing ADR-023's confused-deputy gate — content-rewrite is not the same threat class as capability-widening, but it reaches the same outcome if unchecked. enforce_backend_tool_call_provenance() forces any ToolCall a middleware's rewritten Message content didn't come verbatim from the backend down to call_provenance::text_derived, so it still has to earn its way through the ordinary declassification gate — a middleware can change what the model is asked or told, never what a tool call is trusted to have come from.",
       cite: "include/agentengine/core/model_call_gateway.hpp",
       href: gh("decisions/ADR-036-model-call-gateway.md"),
+    },
+    {
+      id: "turn-middleware",
+      status: "real",
+      tag: "TurnContext · ToolSurfaceView · run_turn_middleware_chain<Ms...>()",
+      title: "turn/pre_model middleware — a single forward pass over the assembled context, not a model-call onion",
+      body:
+        "002 §5 declares a turn interception point separate from the run/model-call one MiddlewareModelCallGateway wires; ADR-067 wires it, closing 017 §4's pre_model filter gap in the same motion. AgentSession::set_turn_middleware_hook() runs a declared std::tuple<Ms...> chain exactly once per round, right after assemble_context() settles and before that round's ChatRequest is built. Each Ms...'s on_turn(TurnContext&) runs in declared order; there is no inner action to sandwich at this point (assemble_context() already fully ran), so this is a single forward pass, not the before/after onion the model-call gateway uses above — the design draft's own claim to reuse that onion verbatim did not survive implementation, a genuine simplification recorded rather than left implicit. The first on_turn returning std::unexpected is 017 §4's deny verdict and stops the chain outright, with the model never called that round. TurnContext owns exactly one ToolSurfaceView (tool_surface), shared by every middleware and finalized exactly once by run_turn_middleware_chain() itself — an early version of this ADR's own test built two independently-constructed views over the same vector and silently lost every mutation, which is why the type now enforces sharing structurally rather than by convention. ToolSurfaceView exposes only redact(handle)/reorder(new_order)/annotate_description(handle, text), none of which can touch invoke/capability_ceiling/approval_mode, closing a fatal design-review finding: an earlier draft checked four ToolDescriptor fields for tamper and missed the fifth, executable one. Compactor<N> is a real conformer proving 005 §8 Q3's re-resolution: it shapes what one round's model call sees by trimming the assembled message view (extending the cut backward to avoid splitting a ToolCall/ToolResult pair), while TurnContext carries no reference to any session's durable history_ at all, so a turn-level compactor cannot rewrite what the session remembers, provably by the type and not merely by testing. Closes pre_model only — post_model stays orphaned (ADR-069's content replay gateway narrows it, does not close it), and require_approval (017 §4's fifth verdict) isn't modeled: the binary allow/deny outcome here has no path to a real human-suspend the way set_suspend_for_approval(true) does above.",
+      cite: "include/agentengine/core/turn_middleware.hpp:254",
+      href: gh("include/agentengine/core/turn_middleware.hpp"),
+    },
+    {
+      id: "content-replay-gateway",
+      status: "real",
+      tag: "ContentReplayGateway<Inner>",
+      title: "ContentReplayGateway<Inner> — discarding an already-settled response before it commits",
+      body:
+        "Middleware<Ms...> above sees a response before it settles; ContentReplayGateway<Inner> answers a different question — a call already succeeded, and only after it settled does something flag the content itself (a leaked secret, a policy hit). Wraps any ModelCallGatewayLike (typically a ModelCallGateway<...> or a MiddlewareModelCallGateway<...>, unmodified) the same way those two already compose over each other — not a new hook on either, and not related to ReplayChatClient below, which replays a previously recorded run offline for deterministic testing; the two share only the English word. Not Retry<Policy> (002 §3) either: that retries because a call errored, while ContentReplayGateway retries because a call succeeded and what it produced must never be kept. The amended retry request appends ONLY a corrective instruction, never the discarded response's own content — re-including it would re-send whatever got the response discarded (a secret, for the motivating case) to the vendor a second time, inside the very call meant to correct it. Bounded two independent ways: max_replay_attempts (per call() invocation, resets every round) and session_lifetime_cap (across every call() this one gateway instance ever serves, for the life of the session) — exhausting either fails closed with a distinct error code rather than looping. Streaming is excluded structurally, not by a runtime check: the type declares no chat_stream() method at all, so there is no expression by which a caller could route a streaming call through it. Drops straight into AgentSession's existing ChatClientT slot with zero changes to agent_session.hpp, because AgentSession already accepts anything satisfying ChatClient<T> or ModelCallGatewayLike<T>. Proven by tests/test_content_replay_gateway.cpp and tests/test_rt_agent_session_content_replay.cpp, the latter through a real rt::AgentSession run confirming durable history holds only the final kept response, never a discarded one. Named, not glossed over: TokenBudget<N> accounting is explicitly not wired to this gateway's own discarded-attempt cost yet — a host that needs that number has to read it off the trace hook itself.",
+      cite: "include/agentengine/core/content_replay_gateway.hpp:116",
+      href: gh("include/agentengine/core/content_replay_gateway.hpp"),
     },
     {
       id: "chat-clients",
@@ -803,6 +896,16 @@ export const runtimeEntries: Record<Lang, ApiEntry[]> = {
       href: gh("include/agentengine/core/context_assembly.hpp"),
     },
     {
+      id: "context-provider-attribution",
+      status: "real",
+      tag: "ContributorProvenance · Message::attribution · ToolDescriptor::attribution",
+      title: "Attribution — đóng lại chính phản bác 'thiếu provenance' của OQ-18, mà không mở lại OQ-18",
+      body:
+        "Đợt red-team của chính OQ-18 đưa ra năm lý do khiến một pipeline ContextProvider xâu chuỗi kiểu MAF không phù hợp ở đây; lý do #1 là cả Message lẫn ToolDescriptor đều không ghi lại contributor nào đã tạo ra chúng, nên một provider phía sau phản ứng lại một provider phía trước thực chất đang phản ứng lại nội dung không rõ nguồn gốc. ADR-066 đóng đúng khoảng trống đó, theo cách cấu trúc: assemble_context() (context_assembly.hpp) — MỘT ĐIỂM DUY NHẤT mà mọi contribution đã luôn đi qua một cách vô điều kiện — đóng dấu ContributorProvenance{contributor_index, contributor_type} lên mọi Message và ToolDescriptor mà nó gộp lại, bất kể contributor có hợp tác hay không. Cách này được chọn thay vì hình dạng của MAF (mỗi provider tự đóng dấu qua ChatMessage.WithAgentRequestMessageSource) vì một provider ghi đè đường gộp của chính nó, hoặc một WASM plugin bên thứ ba không hợp tác (009 §2), có thể bỏ qua việc tự đóng dấu; nhưng không thể bỏ qua một dấu được áp tại một điểm nó không kiểm soát được. Một kiểu ContextProvider tham gia cơ chế này chỉ bằng cách khai báo static constexpr std::string_view name — HasContextProviderName, tái sử dụng nguyên văn mẫu HasMiddlewareName của ADR-033 — được make_context_provider_descriptor<ProviderT>() yêu cầu đối với bất kỳ kiểu tuân theo nào được đưa qua composition nhiều contributor (slot provider đơn của AgentSession thì không cần). Cùng đợt này đóng luôn một kênh rò rỉ thật, riêng biệt: một tuyên bố content_origin::user bị giả mạo ('một con người thực sự đã gõ điều này') trên văn bản không khớp verbatim với session_ctx.history sẽ bị hạ xuống content_origin::external — hẹp hơn cách diễn đạt ban đầu trong design draft, vốn sẽ vô tình kẹp luôn cả tuyên bố content_origin::system hợp pháp của chính SkillsProvider (skill_provider.hpp:136); mọi origin khác ngoài ::user được giữ nguyên đúng như contributor đã đặt. Được chứng minh bởi tests/test_context_provenance.cpp (16 kiểm tra) với một provider đối kháng giả mạo cả một thông điệp mang origin user lẫn cố tình để đầu ra không được đóng dấu, và được chứng minh đầu-cuối bởi tests/test_rt_agent_session_context_provenance.cpp (13 kiểm tra) qua một lần chạy rt::AgentSession thật, kiểm tra trực tiếp ChatRequest gửi đi thực sự. Được nêu rõ chứ không âm thầm coi là đã đóng: việc giả mạo content_origin::system/::assistant/::tool bởi một conformer thực sự bị xâm phạm (chứ không chỉ là không đáng tin) là một mô hình đe dọa khác, rộng hơn, chưa được xử lý ở đây; một thông điệp tóm tắt do HistoryProvider<Summarize<N,SummarizerT>> tổng hợp vẫn kế thừa ::assistant mà không có gì đánh dấu đó là một bản tóm tắt; attribution hiện chưa sống sót qua một vòng JSON round-trip trong rt/message_codec.hpp, nên chưa được lưu giữ qua một lần checkpoint/khởi động lại.",
+      cite: "include/agentengine/core/context_assembly.hpp:207",
+      href: gh("include/agentengine/core/context_assembly.hpp"),
+    },
+    {
       id: "session-scoped-stateful-tools",
       status: "real",
       tag: "make_tool_descriptor_with_invoke<ToolT>(InvokeFn)",
@@ -811,6 +914,16 @@ export const runtimeEntries: Record<Lang, ApiEntry[]> = {
         "invoke() dạng static của một kiểu tuân theo Tool<...> không có đường nào để chạm tới dữ liệu riêng-theo-session của AgentSession sở hữu nó — mọi tool trước đây, nếu cần nhớ điều gì đó, đều phải dùng biến static toàn tiến trình (chính cách đấu nối CodeAct trong tools/cli_chat.cpp, trước ADR-030). make_tool_descriptor_with_invoke<ToolT>() vẫn giữ nguyên các khai báo được kiểm tra tại thời điểm biên dịch của ToolT (capability ceiling, approval, effect class, schema) nhưng cho phép một kiểu tuân theo HistoryProviderT cung cấp logic invoke thật dưới dạng một callable đóng gói trạng thái thành viên của chính nó — không cần thay đổi core-seam nào, vì một provider vốn đã là thành viên riêng theo từng thực thể AgentSession. Điểm bảo vệ DUY NHẤT được thực thi: một tool có capture trạng thái không bao giờ được đồng thời là Backgroundable — background_task() thẳng thừng từ chối tổ hợp này, đóng lại một nguy cơ dangling-reference có thật mà một đợt red-team đã phát hiện (một luồng nền tách rời không được đồng bộ hóa với vòng đời session của chính closure capture đó bởi rt::AsyncMutex).",
       cite: "include/agentengine/core/tool_pipeline.hpp",
       href: gh("include/agentengine/core/tool_pipeline.hpp"),
+    },
+    {
+      id: "tool-optimizer-provider",
+      status: "real",
+      tag: "ToolOptimizerProvider · search_tools / mount_tool / unmount_tool",
+      title: "Kiểm soát tool theo yêu cầu — áp dụng hình dạng tin cậy của mount_skill cho các nguồn tool MCP và plugin",
+      body:
+        "union_codeact_tools hợp nhất toàn bộ bề mặt tool của một MCP server đã kết nối hoặc một WASM plugin đã nạp một cách vô điều kiện ngay khi nó được gắn vào — không có cổng kiểm soát theo yêu cầu nào cho một trong hai nguồn này, khác với skill. ToolOptimizerProvider(ToolTable agent_tools, ToolSourceFetch mcp_tools_fetch, ToolSourceFetch plugin_tools_fetch, always_on = {}) là một ContextProvider bình thường đóng khoảng trống đó: on_context() xây dựng lại toàn bộ universe mỗi lượt (tool của agent cộng với bất cứ thứ gì mỗi closure ToolSourceFetch trả về ngay lúc đó, được hợp nhất qua đúng cơ chế kiểm tra va chạm giữa các nguồn mà union_codeact_tools đã có), thu hẹp nó xuống còn always_on ∪ mounted_ thông qua scope_tools_to_mounted_skills, rồi thêm vào ba tool quản lý luôn-bật, không có capability, được chạm tới qua make_tool_descriptor_with_invoke — đúng hình dạng tin cậy của MountSkillTool: Tool<T, EffectClass<pure>>, không có Capabilities<...>, không cấp thêm bất kỳ capability nào, chỉ dịch chuyển cửa sổ hiển thị trên những gì đã được cấp phép từ trước. Hai điểm khác biệt so với chính tiền lệ của mount_skill, được nêu rõ chứ không giấu đi: search_tools không có tiền lệ nào — 009 §8b trước đây không thấy cần tìm kiếm trên skill hay tool, nên đây vẫn chỉ là so khớp chuỗi con/từ khóa, không phải embedding search; unmount_tool cũng không có tiền lệ — mount_skill chưa từng có một cơ chế tương ứng, và ADR-024 §8 từng nêu đó là một khoảng trống chưa đóng, được đóng lại ở đây riêng cho các nguồn tool (core/mounted_skills_state.hpp không hề bị đụng tới). Vì AgentSession vốn đã xây dựng đúng một ToolTable mỗi lượt từ chính đầu ra của on_context() này và tái sử dụng nó cho mọi lệnh gọi invoke_tool() trong lượt đó, một tool vừa được mount thực sự không gọi được cho tới lượt kế tiếp, chứ không chỉ là bị ẩn đi — đúng nhịp khai báo/gọi thực thi mà ADR-024 §8 đã chứng minh cho skill, được chứng minh lại ở đây từ đầu tới cuối (tests/test_tool_optimizer_provider.cpp, 36 kiểm tra) qua một lần chạy AgentSession thật: một lệnh gọi mount_tool được dàn dựng sẵn, sau đó tool vừa mount xuất hiện trong ChatRequest gửi đi kế tiếp và vắng mặt ở ChatRequest trước đó. currently_scoped_tools() được phơi bày cho một caller cũng cần cấp dữ liệu cho tool union của một CodeAct bridge, để cả hai bề mặt luôn lấy nguồn từ cùng một thực thể thay vì trôi dạt khỏi nhau.",
+      cite: "include/agentengine/core/tool_optimizer_provider.hpp:158",
+      href: gh("include/agentengine/core/tool_optimizer_provider.hpp"),
     },
     {
       id: "suspend-for-approval",
@@ -831,6 +944,26 @@ export const runtimeEntries: Record<Lang, ApiEntry[]> = {
         "Một decorator bọc quanh bất kỳ backend nào kiểu ModelCallGatewayLike (thường là một ModelCallGateway<Primary, Fallback...> có retry/failover), là một coroutine thật nên co_await trong một hook hoàn toàn bình thường: mỗi Ms... theo thứ tự có một hook before_model(ModelCallContext&) (có thể viết lại request đi ra hoặc short-circuit bằng một phản hồi tổng hợp) và một hook after_model(ModelCallContext&) (nhìn thấy phản hồi thật một khi nó đã ổn định). Một đợt red-team đã phát hiện trường hợp chí mạng mà cơ chế này phải tự đóng lại: nếu không, một middleware viết lại nội dung có thể giả mạo hoặc thay đổi một ToolCall đáng tin cậy được tái dựng từ văn bản thuần, âm thầm vượt qua cổng confused-deputy của ADR-023 — viết lại nội dung không cùng loại mối đe dọa với mở rộng capability, nhưng nếu không được kiểm soát thì dẫn tới cùng một hậu quả. enforce_backend_tool_call_provenance() buộc mọi ToolCall mà nội dung Message đã bị middleware viết lại — nếu không đến nguyên văn từ backend — phải hạ xuống thành call_provenance::text_derived, nên nó vẫn phải tự giành lấy quyền đi qua cổng giải mật thông thường — một middleware có thể thay đổi những gì model được hỏi hay được nói, nhưng không bao giờ thay đổi được việc một lệnh gọi tool được tin là đến từ đâu.",
       cite: "include/agentengine/core/model_call_gateway.hpp",
       href: gh("decisions/ADR-036-model-call-gateway.md"),
+    },
+    {
+      id: "turn-middleware",
+      status: "real",
+      tag: "TurnContext · ToolSurfaceView · run_turn_middleware_chain<Ms...>()",
+      title: "Middleware turn/pre_model — một lượt tiến duy nhất qua context đã lắp ráp, không phải một onion quanh lệnh gọi model",
+      body:
+        "002 §5 khai báo một điểm chặn turn tách biệt với điểm run/lệnh gọi model mà MiddlewareModelCallGateway đấu nối; ADR-067 đấu nối nó, đóng luôn khoảng trống lọc pre_model của 017 §4 trong cùng một động tác. AgentSession::set_turn_middleware_hook() chạy một chuỗi std::tuple<Ms...> đã khai báo đúng một lần mỗi round, ngay sau khi assemble_context() ổn định và trước khi ChatRequest của round đó được xây dựng. Mỗi Ms... có on_turn(TurnContext&) chạy theo thứ tự khai báo; không có hành động bên trong nào để bọc quanh tại điểm này (assemble_context() đã chạy xong hoàn toàn), nên đây là một lượt tiến duy nhất, không phải onion before/after mà middleware gateway của lệnh gọi model ở trên dùng — chính tuyên bố tái sử dụng onion đó nguyên vẹn trong bản thảo thiết kế đã không sống sót qua quá trình triển khai, một sự đơn giản hóa thật sự được ghi lại chứ không giấu đi. on_turn đầu tiên trả về std::unexpected chính là verdict deny của 017 §4 và dừng hẳn chuỗi lại, với model không hề được gọi trong round đó. TurnContext sở hữu đúng một ToolSurfaceView (tool_surface), dùng chung cho mọi middleware và được finalize đúng một lần bởi chính run_turn_middleware_chain() — một phiên bản sớm của bộ test cho ADR này từng dựng hai instance độc lập trên cùng một vector và âm thầm mất mọi chỉnh sửa, đó là lý do kiểu dữ liệu giờ buộc việc dùng chung phải mang tính cấu trúc thay vì chỉ là quy ước. ToolSurfaceView chỉ phơi bày redact(handle)/reorder(new_order)/annotate_description(handle, text), không cái nào chạm được tới invoke/capability_ceiling/approval_mode, đóng lại một phát hiện chí mạng từ đợt rà soát thiết kế: một bản thảo trước đó kiểm tra bốn trường của ToolDescriptor để chống can thiệp nhưng bỏ sót trường thứ năm, trường thực sự thực thi. Compactor<N> là một conformer thật chứng minh cho việc giải lại 005 §8 Q3: nó định hình những gì lệnh gọi model của một round nhìn thấy bằng cách cắt bớt view thông điệp đã lắp ráp (mở rộng điểm cắt về phía sau để tránh tách một cặp ToolCall/ToolResult), trong khi TurnContext không hề mang theo tham chiếu nào tới history_ bền vững của session, nên một compactor ở mức turn không thể viết lại những gì session ghi nhớ — có thể chứng minh bằng chính kiểu dữ liệu, không chỉ bằng kiểm thử. Chỉ đóng pre_model — post_model vẫn còn bị bỏ ngỏ (content replay gateway của ADR-069 thu hẹp nó, không đóng nó lại), và require_approval (verdict thứ năm của 017 §4) không được mô hình hóa: kết quả allow/deny nhị phân ở đây không có đường nào dẫn tới một lần tạm dừng thật cho con người như set_suspend_for_approval(true) ở trên.",
+      cite: "include/agentengine/core/turn_middleware.hpp:254",
+      href: gh("include/agentengine/core/turn_middleware.hpp"),
+    },
+    {
+      id: "content-replay-gateway",
+      status: "real",
+      tag: "ContentReplayGateway<Inner>",
+      title: "ContentReplayGateway<Inner> — loại bỏ một phản hồi đã ổn định trước khi nó được ghi nhận",
+      body:
+        "Middleware<Ms...> ở trên nhìn thấy một phản hồi trước khi nó ổn định; ContentReplayGateway<Inner> trả lời một câu hỏi khác — một lệnh gọi đã thành công, và chỉ sau khi nó ổn định thì mới có thứ gì đó gắn cờ chính nội dung của nó (một secret bị lộ, một vi phạm chính sách). Bọc quanh bất kỳ ModelCallGatewayLike nào (thường là một ModelCallGateway<...> hoặc một MiddlewareModelCallGateway<...>, không sửa đổi) theo đúng cách hai kiểu đó vốn đã bọc lẫn nhau — không phải một hook mới trên bất kỳ cái nào, và không liên quan tới ReplayChatClient bên dưới, cái đó phát lại một run đã được ghi lại từ trước, ngoại tuyến, để kiểm thử tất định; hai cái chỉ chung nhau mỗi từ tiếng Anh. Cũng không phải Retry<Policy> (002 §3): cái đó thử lại vì một lệnh gọi bị lỗi, còn ContentReplayGateway thử lại vì một lệnh gọi đã thành công nhưng những gì nó tạo ra không bao giờ được phép giữ lại. Request thử lại đã sửa đổi CHỈ thêm vào chỉ dẫn sửa lỗi, không bao giờ thêm lại nội dung của phản hồi đã bị loại bỏ — việc thêm lại nó sẽ gửi lại đúng thứ khiến phản hồi đó bị loại bỏ (một secret, với trường hợp khởi phát) tới nhà cung cấp mô hình một lần nữa, ngay bên trong lệnh gọi được cho là để sửa nó. Bị giới hạn theo hai cách độc lập: max_replay_attempts (theo từng lần gọi call(), reset lại mỗi round) và session_lifetime_cap (trên mọi call() mà một thực thể gateway này từng phục vụ, trong suốt vòng đời session) — dùng hết một trong hai sẽ từ chối đóng với một mã lỗi riêng biệt thay vì lặp mãi. Streaming bị loại trừ về mặt cấu trúc, không phải bằng một kiểm tra runtime: kiểu này không khai báo phương thức chat_stream() nào cả, nên không có biểu thức nào để một caller định tuyến một lệnh gọi streaming qua nó. Gắn thẳng vào slot ChatClientT sẵn có của AgentSession mà không cần sửa gì agent_session.hpp, vì AgentSession vốn đã chấp nhận bất cứ thứ gì thỏa ChatClient<T> hoặc ModelCallGatewayLike<T>. Được chứng minh bởi tests/test_content_replay_gateway.cpp và tests/test_rt_agent_session_content_replay.cpp, cái sau qua một lần chạy rt::AgentSession thật xác nhận history bền vững chỉ giữ lại phản hồi cuối cùng được chấp nhận, không bao giờ giữ một phản hồi đã bị loại bỏ. Được nêu rõ chứ không lướt qua: việc hạch toán TokenBudget<N> hiện chưa được đấu nối với chi phí của những lần thử bị loại bỏ trên chính gateway này — một host cần con số đó phải tự đọc nó từ trace hook.",
+      cite: "include/agentengine/core/content_replay_gateway.hpp:116",
+      href: gh("include/agentengine/core/content_replay_gateway.hpp"),
     },
     {
       id: "chat-clients",
@@ -965,6 +1098,89 @@ session.emplace_chat_client(secret_store);
 // their ContextContributions concatenate in DECLARED order: history's survivors, then skills'
 // advertisement.`;
 
+// ---- Attribution / provenance (ADR-066) --------------------------------------------------------
+// assemble_context()'s own stamping step, applied at the ONE seam every ContextProvider's output
+// already flows through unconditionally -- closes OQ-18's own red-team reason #1 (no way to tell
+// which contributor produced what) without reopening OQ-18's fan-out-vs-chaining decision itself.
+
+export const provenanceStampingSnippet = `// core/context_assembly.hpp -- assemble_context()'s own stamping loop, trimmed (ADR-066 §5)
+for (Message& m : msgs) {
+    bool const is_verbatim_history_replay =
+        std::ranges::find(session_ctx.history, m) != session_ctx.history.end();
+    if (!is_verbatim_history_replay) {
+        for (ContentItem& item : m.content) {
+            // A message just constructed by a contributor claiming content_origin::user --
+            // "a human literally typed this" -- is only true if it's a verbatim replay of real
+            // history. Anything else (a hostile plugin conformer forging user input, 009 §2) is
+            // downgraded. Every OTHER origin (::system, ::assistant, ::tool) is left untouched --
+            // SkillsProvider's own host-authored ::system advertisement is legitimate and must
+            // not be clamped (I3 constrains MODEL output, not engine/host-authored C++ code).
+            if (item.origin == content_origin::user) item.origin = content_origin::external;
+        }
+    }
+    m.attribution = ContributorProvenance{i, contributor.name};   // stamped -- no opt-out
+}
+for (ToolDescriptor& t : contribution->tools) {
+    t.attribution = ContributorProvenance{i, contributor.name};
+}
+
+// A provider type opts in just by declaring its own name -- HasContextProviderName, the same
+// concept ADR-033's Middleware<Ms...> already requires via HasMiddlewareName, reused verbatim:
+struct SkillsProvider {
+    static constexpr std::string_view name = "skills";
+    // ... on_context()/on_turn_end() as any other ContextProvider ...
+};`;
+
+export interface ProvenanceFieldRow {
+  field: string;
+  livesOn: string;
+  setBy: string;
+  notes: string;
+}
+
+export const provenanceFields: Record<Lang, ProvenanceFieldRow[]> = {
+  en: [
+    {
+      field: "contributor_index",
+      livesOn: "ContributorProvenance",
+      setBy: "assemble_context(), per contribution",
+      notes: "A same-turn-only disambiguator. An operator reordering or adding a contributor between turns must not silently corrupt anything that persists this past the turn it was stamped in.",
+    },
+    {
+      field: "contributor_type",
+      livesOn: "ContributorProvenance",
+      setBy: "ProviderT::name, at descriptor construction",
+      notes: "The durable, cross-turn identity — 029's memory system is the named near-term consumer this protects from a reordered/renamed contributor silently corrupting stored provenance.",
+    },
+    {
+      field: "attribution",
+      livesOn: "Message, ToolDescriptor",
+      setBy: "assemble_context() only",
+      notes: "std::nullopt for anything that never passed through assemble_context() — today's dominant production path (AgentSession::run_rounds() appending real user/assistant turns straight to history_) carries no attribution at all, by design, not by omission.",
+    },
+  ],
+  vi: [
+    {
+      field: "contributor_index",
+      livesOn: "ContributorProvenance",
+      setBy: "assemble_context(), theo từng contribution",
+      notes: "Chỉ dùng để phân biệt trong CÙNG một lượt. Một operator sắp xếp lại hoặc thêm contributor giữa các lượt không được phép âm thầm làm hỏng bất cứ thứ gì lưu giữ giá trị này qua khỏi lượt nó được đóng dấu.",
+    },
+    {
+      field: "contributor_type",
+      livesOn: "ContributorProvenance",
+      setBy: "ProviderT::name, lúc khởi tạo descriptor",
+      notes: "Danh tính bền vững, xuyên suốt nhiều lượt — hệ thống bộ nhớ 029 là bên tiêu thụ gần hạn được nêu tên mà cơ chế này bảo vệ khỏi việc một contributor bị đổi thứ tự/đổi tên âm thầm làm hỏng provenance đã lưu.",
+    },
+    {
+      field: "attribution",
+      livesOn: "Message, ToolDescriptor",
+      setBy: "chỉ bởi assemble_context()",
+      notes: "std::nullopt cho bất cứ thứ gì chưa từng đi qua assemble_context() — đường dẫn production chiếm ưu thế hiện nay (AgentSession::run_rounds() gắn thẳng các lượt user/assistant thật vào history_) hoàn toàn không có attribution, đây là chủ đích thiết kế, không phải bỏ sót.",
+    },
+  ],
+};
+
 export const approvalExampleSnippet = `// examples/05_human_approval.cpp (trimmed) -- ADR-029
 struct SendMessageTool
     : Tool<SendMessageTool, Capabilities<>, EffectClass<effect_class::pure>,
@@ -1017,6 +1233,96 @@ using Gateway = ModelCallGateway<AnthropicChatClient<InMemorySecretStore>>;     
 using Guarded = MiddlewareModelCallGateway<Gateway, LoggingMiddleware, BudgetGuardMiddleware>;
 Guarded gateway{Gateway{live_client, {}}, LoggingMiddleware{}, BudgetGuardMiddleware{}};`;
 
+// ---- Turn middleware / pre_model enforcement (ADR-067) ---------------------------------------------
+
+export const turnMiddlewareExampleSnippet = `// core/turn_middleware.hpp -- ADR-067
+struct RedactSensitiveTool {
+    static constexpr std::string_view name = "redact_sensitive_tool";   // HasMiddlewareName
+
+    task<result<std::monostate>> on_turn(TurnContext& ctx) {
+        // ctx.tool_surface is the ONE shared ToolSurfaceView -- never construct your own over
+        // ctx.assembled.combined.tools, a second local instance silently disconnects from the
+        // finalize() this chain actually calls.
+        auto tools = ctx.tool_surface.descriptors();
+        for (std::size_t i = 0; i < tools.size(); ++i) {
+            if (tools[i].name == "send_wire_transfer") ctx.tool_surface.redact(i);
+        }
+        co_return result<std::monostate>{};   // allow -- edits already applied in place
+    }
+};
+
+// A host wires a declared chain, then hands AgentSession a type-erased closure over it -- the
+// session never needs Ms... at compile time, same reason MiddlewareTraceHook is std::function.
+std::tuple<RedactSensitiveTool, Compactor<20>> chain;
+session.set_turn_middleware_hook([&chain](TurnContext& ctx) {
+    return run_turn_middleware_chain(chain, ctx);
+});
+// Runs once per round, after assemble_context() settles, before that round's ChatRequest exists.
+// A denying on_turn fails the round with the model NEVER CALLED -- a real pre-model veto, not a
+// post-hoc check run after the fact.`;
+
+// ---- Content replay gateway (ADR-069) ------------------------------------------------------------
+// A ModelCallGatewayLike wrapper that discards an already-settled response once its CONTENT is
+// flagged (a leaked secret, a policy hit), and retries the same call with a corrective instruction.
+// Unrelated to ReplayChatClient below, which replays a previously RECORDED run offline for testing
+// -- the two mechanisms share only the English word.
+
+export const contentReplayGatewaySnippet = `// core/content_replay_gateway.hpp -- ADR-069
+ContentReplayGateway<MiddlewareModelCallGateway<ModelCallGateway<Primary, Fallback...>, Ms...>>
+    gateway{
+        std::move(middleware_gateway),   // Inner -- any ModelCallGatewayLike, unmodified
+        [](ChatResponse const& r) -> ContentReplayDecision {
+            if (looks_like_a_leaked_secret(r.message)) {
+                return {.discard_and_retry = true,
+                        .corrective_instruction =
+                            "Your previous response was discarded for containing a secret. "
+                            "Answer again without it."};
+            }
+            return {};   // discard_and_retry = false -- the common case, passes through
+        },
+        /*max_replay_attempts=*/2,     // per call() invocation -- this one trigger site
+        /*session_lifetime_cap=*/8,    // across EVERY call() this gateway instance ever serves
+    };
+
+// Drops straight into AgentSession's existing ChatClientT slot -- zero changes to
+// agent_session.hpp, because AgentSession already accepts anything satisfying ChatClient<T> OR
+// ModelCallGatewayLike<T>, and ContentReplayGateway<Inner> satisfies the latter.
+using Session = agentengine::rt::AgentSession<decltype(gateway), NoSessionState,
+                                               HistoryProvider<Window<0>>>;`;
+
+export interface ContentReplayBoundRow {
+  bound: string;
+  scope: string;
+  atZero: string;
+}
+
+export const contentReplayBounds: Record<Lang, ContentReplayBoundRow[]> = {
+  en: [
+    {
+      bound: "max_replay_attempts",
+      scope: "One call() invocation — one trigger site, resets every round",
+      atZero: "content_replay.max_attempts_exhausted",
+    },
+    {
+      bound: "session_lifetime_cap",
+      scope: "Every call() this ONE gateway instance ever serves, for the life of the session",
+      atZero: "content_replay.session_cap_exhausted — every later call() fails on its first attempt, for the rest of the session",
+    },
+  ],
+  vi: [
+    {
+      bound: "max_replay_attempts",
+      scope: "Một lần gọi call() — một trigger site, reset lại mỗi vòng",
+      atZero: "content_replay.max_attempts_exhausted",
+    },
+    {
+      bound: "session_lifetime_cap",
+      scope: "Mọi lần gọi call() mà MỘT thực thể gateway này từng phục vụ, trong suốt vòng đời session",
+      atZero: "content_replay.session_cap_exhausted — mọi call() sau đó thất bại ngay ở lần thử đầu tiên, cho phần còn lại của session",
+    },
+  ],
+};
+
 export const chatClientSwapSnippet = `// All three satisfy the SAME ChatClient concept (004 §1):
 //   { capabilities() }        -> ChatClientCapabilities
 //   { chat_stream(req, ctx) } -> stream<ChatResponseUpdate>
@@ -1055,6 +1361,91 @@ public:
 // this descriptor outright: a detached thread holding a reference into session state, unsynchronized
 // against fork_from()/clear_in_process_state(), is a real dangling-reference hazard, closed
 // structurally rather than left as a documented-only rule (ADR-030).`;
+
+// ---- ToolOptimizerProvider (ADR-065, issue #15) ----------------------------------------------------
+// A composite ContextProvider gating an agent's own tools plus MCP/WASM-plugin tool sources behind a
+// small always-on surface, growable on demand through three management tools -- the mount_skill
+// trust shape (009 §8c) applied to a source union_codeact_tools would otherwise expose in full,
+// unconditionally, the moment a server connects.
+
+export const toolOptimizerProviderExampleSnippet = `// core/tool_optimizer_provider.hpp -- ADR-065
+ToolTable agent_tools = ToolTable::from_tools<WebSearchTool>();
+
+ToolOptimizerProvider optimizer{
+    agent_tools,
+    [mcp_client](EffectContext&) { return mcp::mcp_tools_as_descriptors(mcp_client); },
+    no_tool_source(),               // no WASM plugin connected this run
+    {"web_search"},                 // always_on -- declared every turn, never needs mounting
+};
+
+// on_context() rebuilds the full universe fresh every turn -- agent tools + whatever the MCP
+// closure returns right now, unioned through the same cross-source collision check CodeAct's
+// own bridge uses -- then narrows it to always_on ∪ mounted_ before anything reaches the model.
+// The rest of the universe isn't hidden-but-callable; invoke_tool() rejects it as unknown, because
+// AgentSession builds exactly one ToolTable per turn from this same on_context() output and reuses
+// it for every tool call that turn (the cadence ADR-024 §8 proved for mount_skill).
+
+// What the model can do about it, agent-driven, mid-run:
+optimizer.search_tools({"query": "invoice"});   // -> {"names": ["send_invoice", "list_invoices"]}
+optimizer.mount_tool({"name": "send_invoice"}); // callable starting NEXT turn, not this one
+optimizer.unmount_tool({"name": "send_invoice"}); // shrinks the surface back down; rejects
+                                                    // unmounting an always_on name outright`;
+
+export interface ManagementToolRow {
+  name: string;
+  args: string;
+  grants: string;
+  notes: string;
+}
+
+export const toolOptimizerManagementTools: Record<Lang, ManagementToolRow[]> = {
+  en: [
+    {
+      name: "search_tools",
+      args: "{query: string}",
+      grants: "Nothing — read-only",
+      notes:
+        "A substring/keyword match over every tool's name and description, including ones not currently mounted. Deliberately not semantic search — 009 §8b already found no precedent for search over skills or tools, so this stays the cheap heuristic that spirit calls for.",
+    },
+    {
+      name: "mount_tool",
+      args: "{name: string}",
+      grants: "Nothing — moves a visibility window",
+      notes:
+        "Rejects a name outside the universe (tool_optimizer.unknown_name) and is a no-op on an already-mounted name. The tool still has to be pre-authorized by whoever wired the provider — mounting can only reveal it, never widen what it's allowed to do.",
+    },
+    {
+      name: "unmount_tool",
+      args: "{name: string}",
+      grants: "Nothing — narrows the visibility window",
+      notes:
+        "Rejects unmounting an always_on name (tool_optimizer.cannot_unmount_always_on); a no-op on a name that isn't mounted. mount_skill has no counterpart to this — ADR-024 §8 left \"no expiry/unmount within a run\" open for skills, and this closes it for tool sources specifically.",
+    },
+  ],
+  vi: [
+    {
+      name: "search_tools",
+      args: "{query: string}",
+      grants: "Không cấp gì — chỉ đọc",
+      notes:
+        "So khớp chuỗi con/từ khóa trên tên và mô tả của mọi tool, kể cả những tool chưa được mount. Cố ý không phải semantic search — 009 §8b trước đây không tìm thấy tiền lệ nào cho việc tìm kiếm trên skill hay tool, nên đây vẫn là kiểu heuristic rẻ tiền đúng tinh thần đó.",
+    },
+    {
+      name: "mount_tool",
+      args: "{name: string}",
+      grants: "Không cấp gì — chỉ dịch chuyển cửa sổ hiển thị",
+      notes:
+        "Từ chối một tên nằm ngoài universe (tool_optimizer.unknown_name), và không làm gì nếu tên đó đã được mount. Tool vẫn phải được operator cấp phép từ trước — mount chỉ có thể làm nó lộ diện, không bao giờ mở rộng những gì nó được phép làm.",
+    },
+    {
+      name: "unmount_tool",
+      args: "{name: string}",
+      grants: "Không cấp gì — thu hẹp cửa sổ hiển thị",
+      notes:
+        "Từ chối unmount một tên always_on (tool_optimizer.cannot_unmount_always_on); không làm gì nếu tên đó chưa được mount. mount_skill không có đối trọng nào cho cơ chế này — ADR-024 §8 từng để ngỏ \"không có expiry/unmount trong một run\" cho skill, và đây là nơi đóng lại khoảng trống đó, riêng cho các nguồn tool.",
+    },
+  ],
+};
 
 // ---- Plugins page: illustrated walkthrough data ---------------------------------------------------
 
