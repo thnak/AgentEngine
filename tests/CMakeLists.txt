@@ -725,6 +725,16 @@ if(AGENTENGINE_WITH_HTTPS)
   add_test(NAME test_openai_embedder_openrouter_live_e2e COMMAND test_openai_embedder_openrouter_live_e2e)
   set_tests_properties(test_openai_embedder_openrouter_live_e2e PROPERTIES LABELS "live-network" TIMEOUT 300)
 
+  # ---- OpenAIChatClient against REAL OpenRouter, with a CONCRETELY NAMED OpenAI model (not the
+  # routing alias test_openrouter_live_e2e.cpp uses) -- see this file's own top comment for why that
+  # distinction is the one new claim it adds.
+  add_executable(test_openai_chat_client_openrouter_live_e2e test_openai_chat_client_openrouter_live_e2e.cpp)
+  target_link_libraries(test_openai_chat_client_openrouter_live_e2e PRIVATE
+    agentengine::core agentengine::provider_http_client agentengine_warnings
+    MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+  add_test(NAME test_openai_chat_client_openrouter_live_e2e COMMAND test_openai_chat_client_openrouter_live_e2e)
+  set_tests_properties(test_openai_chat_client_openrouter_live_e2e PROPERTIES LABELS "live-network" TIMEOUT 300)
+
   add_executable(test_llamacpp_live_e2e test_llamacpp_live_e2e.cpp)
   target_link_libraries(test_llamacpp_live_e2e PRIVATE
     agentengine::core agentengine::provider_http_client agentengine_warnings
