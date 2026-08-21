@@ -36,11 +36,24 @@
 // The `#ifdef AGENTENGINE_WITH_HTTPS` below is therefore the only preprocessor gate this file needs;
 // it matches `protocol/openai/chat_client.hpp`'s own gate on `OpenAIChatClient`'s existence.
 //
-// CREDENTIALS ARE NEVER COMPILED IN (018 §4): AGENTENGINE_OPENROUTER_API_KEY must be set in the
-// environment. AGENTENGINE_OPENROUTER_MODEL/AGENTENGINE_OPENROUTER_HOST are optional overrides.
+// CREDENTIALS ARE NEVER COMPILED IN (018 §4). `AGENTENGINE_PROVIDER` selects the real backend --
+// "openai" (default, via OpenRouter's OpenAI-compatible endpoint) or "anthropic" (direct Anthropic
+// Messages API); each needs its own key: `AGENTENGINE_OPENROUTER_API_KEY` (openai) or
+// `AGENTENGINE_ANTHROPIC_API_KEY` (anthropic), plus optional `_MODEL`/`_HOST` overrides.
+//
+// CONVERSATION DUMP: every real request/response this session's chat client sees (unary and
+// streaming, success and failure) is written to disk as it happens, via `RecordingChatClient<Inner>`
+// (core/recording_chat_client.hpp) wrapping whichever provider is selected -- generic over Inner, so
+// this is not special-cased per backend. Files land under a fresh
+// `<temp>/agentengine_cli_chat_dumps/run-<epoch-ms>/` directory each run (path printed at startup);
+// override with `AGENTENGINE_CLI_CHAT_DUMP_DIR`. Each file is one `ChatCallRecording`
+// (core/chat_recording.hpp), replayable offline via `ReplayChatClient` -- this is how a real HITL
+// suspend/approve/resume run against a real model gets debugged after the fact, not just watched
+// scroll past in the terminal.
 
 #ifdef AGENTENGINE_WITH_HTTPS
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -55,15 +68,18 @@
 #include <vector>
 
 #include "agentengine/core/builtin_skills.hpp"
+#include "agentengine/core/chat_recording.hpp"
 #include "agentengine/core/codeact_runner_binding.hpp"
 #include "agentengine/core/codeact_tool_union.hpp"
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/mounted_skills_state.hpp"
+#include "agentengine/core/recording_chat_client.hpp"
 #include "agentengine/core/run_event.hpp"
 #include "agentengine/core/skill_provider.hpp"
 #include "agentengine/core/skill_tool_scoping.hpp"
 #include "agentengine/core/tool_call_extraction.hpp"
 #include "agentengine/pal/env.hpp"
+#include "agentengine/protocol/anthropic/chat_client.hpp"
 #include "agentengine/protocol/openai/chat_client.hpp"
 #include "agentengine/rt/agent_session.hpp"
 #include "agentengine/rt/thread_pool.hpp"
@@ -82,12 +98,81 @@ namespace {
     return (v && !v->empty()) ? *v : std::move(fallback);
 }
 
-constexpr char const* kDefaultModel = "~deepseek/deepseek-v4-flash-latest";
-constexpr char const* kDefaultHost = "openrouter.ai";
+constexpr char const* kDefaultOpenAiModel = "~deepseek/deepseek-v4-flash-latest";
+constexpr char const* kDefaultOpenAiHost = "openrouter.ai";
+constexpr char const* kOpenAiPathPrefix = "/api/v1";
+constexpr char const* kOpenAiSecretName = "openrouter-api-key";
+
+constexpr char const* kDefaultAnthropicModel = "claude-sonnet-5";
+constexpr char const* kDefaultAnthropicHost = "api.anthropic.com";
+constexpr char const* kAnthropicPathPrefix = "/v1";
+constexpr char const* kAnthropicApiVersion = "2023-06-01";
+constexpr char const* kAnthropicSecretName = "anthropic-api-key";
+
 constexpr std::uint16_t kHttpsPort = 443;
-constexpr char const* kPathPrefix = "/api/v1";
-constexpr char const* kSecretName = "openrouter-api-key";
 constexpr char const* kWorkMount = "work";
+
+// ---- Conversation dump: every real request/response this CLI's chat client sees, written to disk --
+// so a real HITL run (suspend/approve/resume against a real model, not a scripted fixture) can be
+// replayed/inspected after the fact. Wraps whichever provider backend `main()` selects in
+// `RecordingChatClient<Inner>` (core/recording_chat_client.hpp) -- the wrapper is generic over Inner
+// (any `LegacyChatClient` conformer), so this is provider-agnostic by construction, not special-cased
+// per backend; only the sink below (what happens to each captured `ChatCallRecording`) is this file's
+// own code. `write_chat_call_recording` (core/chat_recording.hpp) is the same codec 004 §6/Milestone 5
+// Phase G1 already proved round-trips every ContentItem variant and both unary/streaming call shapes.
+//
+// Copyable + shared state via a `shared_ptr` body (not a bare member `std::atomic`, which is neither
+// copyable nor movable): `RecordingChatClient<Inner>::chat_stream()` captures the sink BY VALUE into a
+// detached background thread (that file's own top comment explains why -- a single instance may back
+// many concurrent streaming calls), so every copy must count against the SAME sequence and write into
+// the SAME directory, not a diverged one.
+class DumpSink {
+public:
+    explicit DumpSink(std::filesystem::path dir) : state_(std::make_shared<State>(std::move(dir))) {}
+
+    void operator()(ChatCallRecording rec) const {
+        std::size_t const index = state_->next_index.fetch_add(1, std::memory_order_relaxed);
+        std::filesystem::path const path =
+            state_->dir / ("call-" + std::to_string(index) + ".json");
+        auto written = write_chat_call_recording(path, rec);
+        if (!written) {
+            std::cerr << "[dump] failed to write " << path.string() << ": "
+                       << written.error().message << "\n";
+        } else {
+            std::cerr << "[dump] wrote " << path.string() << "\n";
+        }
+    }
+
+private:
+    struct State {
+        explicit State(std::filesystem::path d) : dir(std::move(d)) {}
+        std::filesystem::path dir;
+        std::atomic<std::size_t> next_index{0};
+    };
+    std::shared_ptr<State> state_;
+};
+
+// One directory per process run (wall-clock-epoch-ms-suffixed, portable, so back-to-back runs never
+// collide -- a PID would need a platform-specific header this tools/ CLI has no other reason to pull
+// in), under the same scratch root the rest of this file already uses for skills/workspace files.
+// `AGENTENGINE_CLI_CHAT_DUMP_DIR` overrides it -- useful to point a debugging session at a fixed,
+// inspectable path instead of a fresh temp one every run.
+[[nodiscard]] std::filesystem::path resolve_dump_dir() {
+    auto const override_dir = ::agentengine::pal::env_var("AGENTENGINE_CLI_CHAT_DUMP_DIR");
+    std::filesystem::path dir;
+    if (override_dir && !override_dir->empty()) {
+        dir = *override_dir;
+    } else {
+        auto const epoch_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::system_clock::now().time_since_epoch())
+                                    .count();
+        dir = std::filesystem::temp_directory_path() / "agentengine_cli_chat_dumps" /
+              ("run-" + std::to_string(epoch_ms));
+    }
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    return dir;
+}
 
 // ---- The real execute_code tool: wired to MediatedPythonRunner, not a stand-in --------------------
 
@@ -571,10 +656,16 @@ private:
 };
 static_assert(ContextProvider<ToolDeclaringHistoryProvider>);
 
-using CliSession = agentengine::rt::AgentSession<openai::OpenAIChatClient<InMemorySecretStore>,
+// `Inner` is whichever real provider backend `main()` selected (`openai::OpenAIChatClient<...>` or
+// `anthropic::AnthropicChatClient<...>`) -- ONE template alias covers both, since the dump feature
+// (RecordingChatClient<Inner> above) is generic over any `LegacyChatClient` conformer, not
+// special-cased per provider.
+template <class Inner>
+using CliSession = agentengine::rt::AgentSession<RecordingChatClient<Inner>,
                                                    agentengine::rt::NoSessionState,
                                                    ToolDeclaringHistoryProvider>;
-static_assert(std::is_default_constructible_v<CliSession>);
+static_assert(std::is_default_constructible_v<CliSession<openai::OpenAIChatClient<InMemorySecretStore>>>);
+static_assert(std::is_default_constructible_v<CliSession<anthropic::AnthropicChatClient<InMemorySecretStore>>>);
 
 // ADR-037: wraps one turn's start_run() call as a task<void> job for rt::ThreadPool::submit() (which
 // only accepts task<void> -- see thread_pool.hpp's own contract), stashing the real result in a
@@ -584,8 +675,9 @@ static_assert(std::is_default_constructible_v<CliSession>);
 // DIFFERENT, non-awaitable type that would not have compiled against ThreadPool::submit()'s
 // signature; that split is long gone, `task<>` now resolves to `agentengine::rt::task<void>` too, so
 // the qualification here is a style choice, not a correctness requirement).
+template <class Inner>
 [[nodiscard]] agentengine::rt::task<void> run_start_job(
-    CliSession& actor, agentengine::rt::StartRun req,
+    CliSession<Inner>& actor, agentengine::rt::StartRun req,
     std::shared_ptr<agentengine::result<agentengine::rt::AgentResponse>> out) {
     *out = co_await actor.start_run(std::move(req));
     co_return;
@@ -723,52 +815,19 @@ void print_skills_banner(std::vector<native_jail::MaterializedSkillMount> const&
 
 }  // namespace
 
-int main() {
-    auto const key_env = ::agentengine::pal::env_var("AGENTENGINE_OPENROUTER_API_KEY");
-    if (!key_env || key_env->empty()) {
-        std::cerr << "AGENTENGINE_OPENROUTER_API_KEY is not set. Export a real OpenRouter API key "
-                     "and re-run.\n";
-        return 1;
-    }
-
-    std::string const model = env_or("AGENTENGINE_OPENROUTER_MODEL", kDefaultModel);
-    std::string const host = env_or("AGENTENGINE_OPENROUTER_HOST", kDefaultHost);
-
-    std::cout << "AgentEngine CLI chat -- host=" << host << " model=" << model << "\n";
-
-    // Resolve + materialize skills into REAL files on disk before shared_python_runner()'s lazy
-    // singleton is ever touched (its mount_roots must be fully known at construction -- no public
-    // mutator exists after .initialize()). This is main()'s OWN SkillsProvider<> instance, independent
-    // of ToolDeclaringHistoryProvider's/BuiltinSkillsProvider's own instances inside CliSession -- all
-    // three resolve the identical, deterministic builtin skill source, so their outputs agree.
-    SkillsProvider<> startup_skills(demo_skill_sources());
-    std::filesystem::path const skills_scratch =
-        std::filesystem::temp_directory_path() / "agentengine_cli_chat_workspace" / "skills";
-    auto materialized =
-        native_jail::materialize_skill_mounts(startup_skills, skills_scratch, {kWorkMount});
-    if (!materialized) {
-        std::cerr << "FATAL: failed to materialize skill mounts: " << materialized.error().message << "\n";
-        return 1;
-    }
-
-    InMemorySecretStore store;
-    store.set(kSecretName, *key_env);
-    std::vector<Capability> grants = {
-        Capability{cap::Secret{kSecretName, std::chrono::seconds{0}}},
-        Capability{cap::FsRead{kWorkMount, "", std::nullopt}},
-        Capability{cap::FsWrite{kWorkMount, "", std::nullopt, std::nullopt}}};
-    for (auto const& [mount_id, host_dir] : *materialized) {
-        (void)host_dir;
-        grants.push_back(Capability{cap::FsRead{mount_id, "", std::nullopt}});
-    }
-    CapabilitySet held = CapabilitySet::grant_root(std::move(grants));
-
-    ChatClientCapabilities caps;
-    caps.streaming = true;
-    caps.tool_calling = true;
-    caps.reasoning = true;
-    caps.max_output_tokens = 2048;
-
+// Everything genuinely provider-agnostic about running one interactive session: templated on `Inner`
+// (the already-CONSTRUCTED, provider-specific chat client `main()` builds below), so this body is
+// written ONCE and instantiated for every provider, rather than duplicated per backend -- the same
+// "one call site, N real backends" shape `tests/test_chat_client_cross_backend_parity.cpp`'s own
+// `run_it`/`run_it_gateway` templates already established for this codebase (that file's own top
+// comment). `chat_client` is moved into `actor.emplace_chat_client(...)` together with `sink` -- the
+// dump feature's own sink -- so `ChatClientT` resolves to `RecordingChatClient<Inner>` regardless of
+// which provider `Inner` is; recording is never special-cased per backend.
+template <class Inner>
+[[nodiscard]] int run_interactive(Inner chat_client, DumpSink sink, std::string session_id,
+                                    CapabilitySet held,
+                                    std::vector<native_jail::MaterializedSkillMount> const& materialized,
+                                    SkillsProvider<>& startup_skills) {
     // ADR-037: real per-token streaming needs the session's own execution to genuinely run
     // concurrently with a caller draining its event stream. Previously a real, single-worker
     // `quark::Engine` (`quark::TestKit` runs everything "on the calling thread... no threads, no
@@ -779,27 +838,12 @@ int main() {
     // thread while THIS thread's drain loop (below) concurrently polls the event stream.
     agentengine::rt::ThreadPool pool(1);
 
-    CliSession actor;
-    // Fixed and stable for this CLI's whole lifetime (one process, one session) -- passed below as
-    // both AgentSession's own session_id AND the ChatClient's `end_user_id` (the OpenAI-compatible
-    // `user` body field), so a caching-aware provider/gateway sees a CONSISTENT identity across
-    // every call this process ever makes, not a fresh one per call, real Anthropic/OpenAI-side
-    // prompt-cache locality depends on -- a random or per-call value would never keep a cache hit.
-    std::string const session_id = "cli-chat-session";
-    // Trailing args beyond `caps`/`store`/`kPathPrefix` are every one of OpenAIChatClient's own
-    // defaults spelled out verbatim (chat_client.hpp's own constructor), EXCEPT two: `end_user_id`
-    // (see above) and `scan_response_format_leaks=true`, which arms ADR-023's Reasoning/<think>-
-    // channel extraction on this client's OWN `chat()`. Left armed only so the non-streaming path
-    // this file no longer takes stays correct if streaming is ever toggled off -- with streaming
-    // engaged below, this specific flag never fires (chat() is never called); the REAL scanning this
-    // CLI relies on now comes from AgentSession's own flag, set right after set_stream_model_calls()
-    // below (ADR-035 Phase 1 -- see that flag's own comment in agent_session.hpp for why it's the
-    // backend/path-agnostic one).
-    actor.emplace_chat_client(host, kHttpsPort, model, SecretRef{kSecretName}, caps, store,
-                                kPathPrefix, sandbox::resolve_host, std::string{}, std::string{},
-                                std::string{}, session_id, std::nullopt,
-                                sandbox::ProviderTransport::tls,
-                                /*scan_response_format_leaks=*/true);
+    CliSession<Inner> actor;
+    // `chat_client` already carries the provider-specific `end_user_id=session_id` construction arg
+    // `main()` set (for prompt-cache locality -- see that call site's own comment); this call only
+    // adds the dump sink on top, via `RecordingChatClient<Inner>`'s own `(Inner, RecordingSink)`
+    // constructor.
+    actor.emplace_chat_client(std::move(chat_client), std::move(sink));
     // Unbounded by default now (agent_session.hpp's own initialize(), 2026-08-12 change) -- this
     // CLI no longer caps the internal tool-call loop's own round count at all.
     actor.initialize(session_id, Principal{"cli-user", ""});
@@ -832,14 +876,14 @@ int main() {
     // longer resolves/claims the shared runner binding here (that's deferred to
     // real_execute_code()'s own first call now, on whatever thread execute_code itself runs on --
     // see ToolDeclaringHistoryProvider::configure()'s own comment for why).
-    auto configured = actor.history_provider().configure(session_id, *materialized);
+    auto configured = actor.history_provider().configure(session_id, materialized);
     if (!configured) {
         std::cerr << "FATAL: failed to configure the CodeAct provider: " << configured.error().message
                    << "\n";
         return 1;
     }
 
-    print_skills_banner(*materialized, startup_skills, actor.history_provider().mounted_skills());
+    print_skills_banner(materialized, startup_skills, actor.history_provider().mounted_skills());
     std::cout << "\nType a message and press Enter. Type 'exit' or 'quit' to stop.\n\n";
 
     std::string line;
@@ -925,6 +969,129 @@ int main() {
     // teardown path entirely and let the OS reclaim the process. Nothing here needs graceful
     // shutdown -- no other process depends on this one's static destructors running.
     std::_Exit(0);
+}
+
+// Fixed and stable for this CLI's whole lifetime (one process, one session) -- used below as both
+// AgentSession's own session_id AND the ChatClient's `end_user_id` (the OpenAI-compatible `user`
+// body field / Anthropic's own `end_user_id`), so a caching-aware provider/gateway sees a CONSISTENT
+// identity across every call this process ever makes, not a fresh one per call, real Anthropic/
+// OpenAI-side prompt-cache locality depends on -- a random or per-call value would never keep a
+// cache hit.
+constexpr char const* kSessionId = "cli-chat-session";
+
+int main() {
+    // AGENTENGINE_PROVIDER selects which real backend this run talks to -- "openai" (default, via
+    // OpenRouter's OpenAI-compatible endpoint) or "anthropic" (direct Anthropic Messages API). The
+    // dump feature (RecordingChatClient<Inner> wrapping whichever `Inner` this resolves to) is
+    // identical either way -- see CliSession<Inner>'s own comment.
+    std::string const provider = env_or("AGENTENGINE_PROVIDER", "openai");
+    if (provider != "openai" && provider != "anthropic") {
+        std::cerr << "AGENTENGINE_PROVIDER must be \"openai\" or \"anthropic\" (got \"" << provider
+                   << "\").\n";
+        return 1;
+    }
+
+    // Resolve + materialize skills into REAL files on disk before shared_python_runner()'s lazy
+    // singleton is ever touched (its mount_roots must be fully known at construction -- no public
+    // mutator exists after .initialize()). This is main()'s OWN SkillsProvider<> instance, independent
+    // of ToolDeclaringHistoryProvider's/BuiltinSkillsProvider's own instances inside CliSession -- all
+    // three resolve the identical, deterministic builtin skill source, so their outputs agree.
+    SkillsProvider<> startup_skills(demo_skill_sources());
+    std::filesystem::path const skills_scratch =
+        std::filesystem::temp_directory_path() / "agentengine_cli_chat_workspace" / "skills";
+    auto materialized =
+        native_jail::materialize_skill_mounts(startup_skills, skills_scratch, {kWorkMount});
+    if (!materialized) {
+        std::cerr << "FATAL: failed to materialize skill mounts: " << materialized.error().message << "\n";
+        return 1;
+    }
+
+    ChatClientCapabilities caps;
+    caps.streaming = true;
+    caps.tool_calling = true;
+    caps.reasoning = true;
+    caps.max_output_tokens = 2048;
+
+    std::filesystem::path const dump_dir = resolve_dump_dir();
+    std::cout << "Conversation dump: every real request/response this session's chat client sees is "
+                 "written to " << dump_dir.string() << "\n";
+    DumpSink sink(dump_dir);
+
+    if (provider == "openai") {
+        auto const key_env = ::agentengine::pal::env_var("AGENTENGINE_OPENROUTER_API_KEY");
+        if (!key_env || key_env->empty()) {
+            std::cerr << "AGENTENGINE_OPENROUTER_API_KEY is not set. Export a real OpenRouter API "
+                         "key and re-run.\n";
+            return 1;
+        }
+        std::string const model = env_or("AGENTENGINE_OPENROUTER_MODEL", kDefaultOpenAiModel);
+        std::string const host = env_or("AGENTENGINE_OPENROUTER_HOST", kDefaultOpenAiHost);
+        std::cout << "AgentEngine CLI chat -- provider=openai host=" << host << " model=" << model
+                   << "\n";
+
+        InMemorySecretStore store;
+        store.set(kOpenAiSecretName, *key_env);
+        std::vector<Capability> grants = {
+            Capability{cap::Secret{kOpenAiSecretName, std::chrono::seconds{0}}},
+            Capability{cap::FsRead{kWorkMount, "", std::nullopt}},
+            Capability{cap::FsWrite{kWorkMount, "", std::nullopt, std::nullopt}}};
+        for (auto const& [mount_id, host_dir] : *materialized) {
+            (void)host_dir;
+            grants.push_back(Capability{cap::FsRead{mount_id, "", std::nullopt}});
+        }
+        CapabilitySet held = CapabilitySet::grant_root(std::move(grants));
+
+        // Trailing args beyond `caps`/`store`/`kOpenAiPathPrefix` are every one of OpenAIChatClient's
+        // own defaults spelled out verbatim (chat_client.hpp's own constructor), EXCEPT two:
+        // `end_user_id` (see kSessionId's own comment) and `scan_response_format_leaks=true`, which
+        // arms ADR-023's Reasoning/<think>-channel extraction on this client's OWN `chat()`. Left
+        // armed only so the non-streaming path this file no longer takes stays correct if streaming
+        // is ever toggled off -- with streaming engaged (run_interactive's own
+        // set_stream_model_calls(true)), this specific flag never fires (chat() is never called); the
+        // REAL scanning this CLI relies on comes from AgentSession's own flag instead (ADR-035
+        // Phase 1 -- see that flag's own comment in agent_session.hpp).
+        openai::OpenAIChatClient<InMemorySecretStore> chat_client(
+            host, kHttpsPort, model, SecretRef{kOpenAiSecretName}, caps, store, kOpenAiPathPrefix,
+            sandbox::resolve_host, std::string{}, std::string{}, std::string{}, kSessionId,
+            std::nullopt, sandbox::ProviderTransport::tls, /*scan_response_format_leaks=*/true);
+        return run_interactive(std::move(chat_client), std::move(sink), kSessionId, std::move(held),
+                                *materialized, startup_skills);
+    }
+
+    // provider == "anthropic"
+    auto const key_env = ::agentengine::pal::env_var("AGENTENGINE_ANTHROPIC_API_KEY");
+    if (!key_env || key_env->empty()) {
+        std::cerr << "AGENTENGINE_ANTHROPIC_API_KEY is not set. Export a real Anthropic API key and "
+                     "re-run.\n";
+        return 1;
+    }
+    std::string const model = env_or("AGENTENGINE_ANTHROPIC_MODEL", kDefaultAnthropicModel);
+    std::string const host = env_or("AGENTENGINE_ANTHROPIC_HOST", kDefaultAnthropicHost);
+    std::cout << "AgentEngine CLI chat -- provider=anthropic host=" << host << " model=" << model
+               << "\n";
+
+    InMemorySecretStore store;
+    store.set(kAnthropicSecretName, *key_env);
+    std::vector<Capability> grants = {
+        Capability{cap::Secret{kAnthropicSecretName, std::chrono::seconds{0}}},
+        Capability{cap::FsRead{kWorkMount, "", std::nullopt}},
+        Capability{cap::FsWrite{kWorkMount, "", std::nullopt, std::nullopt}}};
+    for (auto const& [mount_id, host_dir] : *materialized) {
+        (void)host_dir;
+        grants.push_back(Capability{cap::FsRead{mount_id, "", std::nullopt}});
+    }
+    CapabilitySet held = CapabilitySet::grant_root(std::move(grants));
+
+    // Trailing args beyond `caps`/`store`/`kAnthropicPathPrefix`/`kAnthropicApiVersion` are every one
+    // of AnthropicChatClient's own defaults spelled out verbatim (that constructor has no per-client
+    // `scan_response_format_leaks` flag the way OpenAI's does -- ADR-035 Phase 1's AgentSession-level
+    // scan below covers this backend too, so nothing is lost).
+    anthropic::AnthropicChatClient<InMemorySecretStore> chat_client(
+        host, kHttpsPort, model, SecretRef{kAnthropicSecretName}, caps, store, kAnthropicPathPrefix,
+        kAnthropicApiVersion, sandbox::resolve_host, std::string{}, std::string{}, std::string{},
+        kSessionId, std::string{}, sandbox::ProviderTransport::tls);
+    return run_interactive(std::move(chat_client), std::move(sink), kSessionId, std::move(held),
+                            *materialized, startup_skills);
 }
 
 #else   // AGENTENGINE_WITH_HTTPS
