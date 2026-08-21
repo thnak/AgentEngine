@@ -15,6 +15,10 @@ path regardless (a model-supplied tool argument cannot mint its own authority) �
 grant-eligibility bookkeeping from any actual grant, which stays entirely host-driven. Independent of
 `decisions/ADR-066-context-provider-attribution-provenance.md` and `decisions/ADR-067-middleware-
 turn-point-pre-model-enforcement.md` — builds only on already-shipped `trust/secret.hpp` (018 §4).
+**Forward reference:** `decisions/ADR-070-host-configurable-responsibility-boundary.md` names this
+ADR's `SecretDetector`/`QuarantineAuditHook` shape (host-injected, `nullptr`-by-default, structurally
+barred from ever reaching a capability-granting position) as the prior-art precedent for its own
+formally-named "Delegated Decision Seam" pattern.
 
 **Relates to:** `018-Identity-Authorization-and-Secrets.md` §4 (`SecretRef`/`SecretStore`/
 `SecretLease`, extended here with a mint-at-runtime path), `005-Sessions-State-and-Memory.md` §1

@@ -13,7 +13,10 @@ ADR-021) for judging the ADR's own contested question while carrying forward nam
 motivated this), 007 §4 (`Tainted<T>`/declassifier rules, load-bearing here), 006 §4/§5 (the 10-step
 tool invocation pipeline this design must feed without bypassing), 009 §2 (`ae:codec` world),
 009 §11 Q1/G4a (the still-open WASM streaming-latency question this ADR inherits rather than
-resolves).
+resolves). **Forward reference:** `decisions/ADR-070-host-configurable-responsibility-boundary.md`
+cites this ADR's §4b Finding 1 red-team result (a laxer `text_derived` declassifier was found
+unsafe) as the reason its own new `PolicyDecider` seam is structurally barred from the
+`text_derived` path — proven, not just asserted, by a tripwire test (ADR-070 §5a).
 
 ## 1. The question
 

@@ -541,7 +541,11 @@ template <class A>
 // silently read as "everything" -- there is nothing to attenuate from.
 [[nodiscard]] inline ToolResult invoke_agent_tool(AgentMetadata const& meta, ToolCallRequest const& request,
                                                    EffectContext& ctx, ApprovalDecider const& approve = {},
-                                                   ToolInvocationAudit* audit_out = nullptr) {
+                                                   ToolInvocationAudit* audit_out = nullptr,
+                                                   // ADR-070: appended last, default `{}`, threaded
+                                                   // straight through to `invoke_tool()` below --
+                                                   // same seam, same fail-closed-when-unset contract.
+                                                   PolicyDecider const& policy = {}) {
     auto fail_closed = [&](error const& e) -> ToolResult {
         if (audit_out) {
             audit_out->call_id = request.call_id;
@@ -563,7 +567,7 @@ template <class A>
     if (!attenuated) {
         return fail_closed(attenuated.error());
     }
-    return invoke_tool(meta.tools, *attenuated, request, ctx, approve, audit_out);
+    return invoke_tool(meta.tools, *attenuated, request, ctx, approve, audit_out, policy);
 }
 
 }  // namespace agentengine

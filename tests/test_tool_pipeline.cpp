@@ -121,6 +121,28 @@ struct DangerousNeverRequireTool
     static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) { return Reply{true}; }
 };
 
+// -- decisions/ADR-070-host-configurable-responsibility-boundary.md: a capability-bearing tool
+// gated by Approval<policy_driven> -- the mode the new PolicyDecider seam exists to resolve.
+struct PolicyArgs {
+    std::string action;
+};
+AE_JSON_SCHEMA(PolicyArgs, action)
+struct PolicyReply {
+    bool done;
+};
+AE_JSON_SCHEMA(PolicyReply, done)
+
+struct PolicyDrivenTool
+    : agentengine::Tool<PolicyDrivenTool, agentengine::Capabilities<agentengine::cap::decl::Entropy>,
+                          agentengine::Approval<agentengine::approval_mode::policy_driven>> {
+    static constexpr std::string_view name = "policy_action";
+    static constexpr std::string_view description = "An action gated by policy_driven approval.";
+    using Args = PolicyArgs;
+    using Reply = PolicyReply;
+
+    static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) { return Reply{true}; }
+};
+
 agentengine::EffectContext make_ctx() {
     agentengine::EffectContext ctx;
     ctx.principal = agentengine::Principal{"test-principal", ""};
@@ -136,7 +158,8 @@ int main() {
     using agentengine::ToolTable;
     using agentengine::invoke_tool;
 
-    auto const table = ToolTable::from_tools<EchoTool, GatedTool, PureNoCapTool, DangerousNeverRequireTool>();
+    auto const table = ToolTable::from_tools<EchoTool, GatedTool, PureNoCapTool, DangerousNeverRequireTool,
+                                              PolicyDrivenTool>();
 
     // -- G2 positive case: capability held, tool succeeds ----------------------------------------
     {
@@ -355,6 +378,138 @@ int main() {
               "ADR-023 P2-T3: the SAME capability-bearing, never_require tool still runs with no "
               "decider for a vendor_structured call -- the amendment narrows ONLY the text_derived "
               "branch, never the existing vendor_structured one");
+    }
+
+    // ==============================================================================================
+    // ADR-070 (decisions/ADR-070-host-configurable-responsibility-boundary.md): the PolicyDecider
+    // seam, consulted ONLY for approval_mode::policy_driven.
+    // ==============================================================================================
+
+    // -- Regression: unset PolicyDecider ({} default) + policy_driven + no ApprovalDecider -> denied,
+    // EXACTLY today's pre-ADR-070 fail-closed degrade (tool_pipeline.hpp's own file-top comment).
+    {
+        CapabilitySet held = CapabilitySet::grant_root({agentengine::cap::Entropy{}});
+        auto ctx = make_ctx();
+        ToolCallRequest req{"call-12", "policy_action", *json::parse(R"({"action":"go"})"), false};
+        auto result = invoke_tool(table, held, req, ctx, nullptr);  // no ApprovalDecider, no PolicyDecider
+        check(result.is_error,
+              "ADR-070 regression: policy_driven with no PolicyDecider and no ApprovalDecider stays "
+              "fail-closed, exactly as before this ADR");
+    }
+
+    // -- PolicyDecider auto_approve: succeeds WITHOUT the ApprovalDecider ever being consulted -------
+    {
+        CapabilitySet held = CapabilitySet::grant_root({agentengine::cap::Entropy{}});
+        auto ctx = make_ctx();
+        ToolCallRequest req{"call-13", "policy_action", *json::parse(R"({"action":"go"})"), false};
+        bool decider_called = false;
+        agentengine::ApprovalDecider tripwire = [&](agentengine::Principal const&, std::string_view,
+                                                       std::string const&) {
+            decider_called = true;
+            return false;
+        };
+        agentengine::PolicyDecider approve_all =
+            [](agentengine::Principal const&, agentengine::ToolDescriptor const&, bool) {
+                return agentengine::policy_decision::auto_approve;
+            };
+        agentengine::ToolInvocationAudit audit;
+        auto result = invoke_tool(table, held, req, ctx, tripwire, &audit, approve_all);
+        check(!result.is_error, "ADR-070: PolicyDecider auto_approve lets a policy_driven call through");
+        check(!decider_called,
+              "ADR-070: auto_approve is a real bypass of ApprovalDecider, not a decider that happens "
+              "to say yes");
+        check(audit.ok, "ADR-070: a PolicyDecider-approved call produces a normal, ok audit record");
+    }
+
+    // -- PolicyDecider auto_deny: denied WITHOUT the ApprovalDecider ever being consulted, even though
+    // that decider would have said yes -- proving auto_deny is a real short-circuit, not routed
+    // through approve().
+    {
+        CapabilitySet held = CapabilitySet::grant_root({agentengine::cap::Entropy{}});
+        auto ctx = make_ctx();
+        ToolCallRequest req{"call-14", "policy_action", *json::parse(R"({"action":"go"})"), false};
+        bool decider_called = false;
+        agentengine::ApprovalDecider tripwire_allow = [&](agentengine::Principal const&, std::string_view,
+                                                             std::string const&) {
+            decider_called = true;
+            return true;
+        };
+        agentengine::PolicyDecider deny_all =
+            [](agentengine::Principal const&, agentengine::ToolDescriptor const&, bool) {
+                return agentengine::policy_decision::auto_deny;
+            };
+        agentengine::ToolInvocationAudit audit;
+        auto result = invoke_tool(table, held, req, ctx, tripwire_allow, &audit, deny_all);
+        check(result.is_error, "ADR-070: PolicyDecider auto_deny blocks a policy_driven call");
+        check(!decider_called,
+              "ADR-070: auto_deny short-circuits before ApprovalDecider is ever consulted");
+        check(audit.error_code == "tool.policy_denied",
+              "ADR-070: a policy-denied call carries its own distinct error code");
+    }
+
+    // -- PolicyDecider require_approval: falls through to the ApprovalDecider exactly as an unset
+    // PolicyDecider would ------------------------------------------------------------------------
+    {
+        CapabilitySet held = CapabilitySet::grant_root({agentengine::cap::Entropy{}});
+        auto ctx = make_ctx();
+        ToolCallRequest req{"call-15", "policy_action", *json::parse(R"({"action":"go"})"), false};
+        bool decider_called = false;
+        agentengine::ApprovalDecider allow = [&](agentengine::Principal const&, std::string_view,
+                                                    std::string const&) {
+            decider_called = true;
+            return true;
+        };
+        agentengine::PolicyDecider ask =
+            [](agentengine::Principal const&, agentengine::ToolDescriptor const&, bool) {
+                return agentengine::policy_decision::require_approval;
+            };
+        auto result = invoke_tool(table, held, req, ctx, allow, nullptr, ask);
+        check(!result.is_error, "ADR-070: require_approval falls through to the ApprovalDecider");
+        check(decider_called, "ADR-070: require_approval consults the ApprovalDecider, unlike auto_*");
+    }
+
+    // -- A PolicyDecider can never bypass capability binding: step 4/7 runs BEFORE step 5,
+    // structurally, in invoke_tool's own body -- held has NO Entropy grant, auto_approve wired anyway.
+    {
+        CapabilitySet held;  // empty
+        auto ctx = make_ctx();
+        ToolCallRequest req{"call-16", "policy_action", *json::parse(R"({"action":"go"})"), false};
+        agentengine::PolicyDecider approve_all =
+            [](agentengine::Principal const&, agentengine::ToolDescriptor const&, bool) {
+                return agentengine::policy_decision::auto_approve;
+            };
+        agentengine::ToolInvocationAudit audit;
+        auto result = invoke_tool(table, held, req, ctx, nullptr, &audit, approve_all);
+        check(result.is_error,
+              "ADR-070: an auto_approve PolicyDecider cannot manufacture a capability the caller "
+              "never held -- step 4/7's bind check runs first and is untouched by this seam");
+        check(audit.error_code == "tool.capability_not_held",
+              "ADR-070: the denial is the ordinary capability-not-held one, not a policy path");
+    }
+
+    // -- text_derived provenance: the PolicyDecider is NEVER consulted, even for a policy_driven tool
+    // -- 007 §4's closed declassifier list stays closed (ADR-070's own must-not-loosen list).
+    {
+        using agentengine::call_provenance;
+        CapabilitySet held = CapabilitySet::grant_root({agentengine::cap::Entropy{}});
+        auto ctx = make_ctx();
+        ToolCallRequest req{.call_id = "call-17",
+                              .tool_name = "policy_action",
+                              .arguments = *json::parse(R"({"action":"go"})"),
+                              .provenance = call_provenance::text_derived};
+        bool policy_called = false;
+        agentengine::PolicyDecider tripwire =
+            [&](agentengine::Principal const&, agentengine::ToolDescriptor const&, bool) {
+                policy_called = true;
+                return agentengine::policy_decision::auto_approve;
+            };
+        auto result = invoke_tool(table, held, req, ctx, nullptr, nullptr, tripwire);
+        check(result.is_error,
+              "ADR-070: a text_derived call to a policy_driven, capability-bearing tool is still "
+              "refused with no ApprovalDecider -- PolicyDecider does not reach this path");
+        check(!policy_called,
+              "ADR-070: the PolicyDecider is structurally never consulted for a text_derived call -- "
+              "007 §4's closed declassifier list is untouched by this ADR");
     }
 
     if (g_failures == 0) {

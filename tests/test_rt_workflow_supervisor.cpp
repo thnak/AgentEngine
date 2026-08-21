@@ -490,6 +490,47 @@ int main() {
               "P5: the snapshot observed POST-run state -- proof the guard prevented a torn read");
     }
 
+    // ---- ADR-070: token_budget_unenforced() is a loud, unconditional signal -- never silent -------
+    {
+        Workflow wf;
+        wf.id        = "token-budget-set";
+        wf.executors = {node_desc("a")};
+        wf.start     = "a";
+        wf.output_selection.push_back("a");
+        wf.bound.max_rounds   = 4;
+        wf.bound.token_budget = 1000;  // host-set, but this engine never enforces it (see graph.hpp)
+        check(validate_workflow(wf).has_value(), "ADR-070 setup: the graph validates with both bounds set");
+
+        std::vector<ExecutorBody> bodies = {tracing_body("a", std::chrono::milliseconds(0))};
+        WorkflowSupervisor sup;
+        sup.initialize(wf, bodies);
+        check(sup.token_budget_unenforced(),
+              "ADR-070: token_budget_unenforced() is true right after initialize(), before any round "
+              "runs -- a host can act on this immediately, not discover the gap after the fact");
+
+        WorkflowResult r = drive(sup.run_workflow(RunWorkflow{text_message("in")}));
+        check(r.status == workflow_status::completed, "ADR-070 setup: the run completes normally");
+        check(sup.token_budget_unenforced(),
+              "ADR-070: still true after a completed run -- the signal reflects the DECLARED bound, "
+              "not run-time consumption this engine never tracked");
+    }
+    {
+        Workflow wf;
+        wf.id        = "token-budget-unset";
+        wf.executors = {node_desc("a")};
+        wf.start     = "a";
+        wf.output_selection.push_back("a");
+        wf.bound.max_rounds = 4;  // token_budget deliberately left unset
+        check(validate_workflow(wf).has_value(), "ADR-070 setup: max_rounds alone is a valid bound");
+
+        std::vector<ExecutorBody> bodies = {tracing_body("a", std::chrono::milliseconds(0))};
+        WorkflowSupervisor sup;
+        sup.initialize(wf, bodies);
+        check(!sup.token_budget_unenforced(),
+              "ADR-070: false when the host never set token_budget at all -- this is a signal about "
+              "the DECLARED bound, not a blanket warning every workflow gets");
+    }
+
     if (g_failures == 0) {
         std::printf("test_rt_workflow_supervisor: ALL PASS\n");
         return 0;

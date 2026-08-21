@@ -124,6 +124,18 @@ Enforced at exactly one point, `core/tool_pipeline.hpp`'s `invoke_tool` step 5 �
 own comment for the mechanism, and `tests/test_tool_pipeline.cpp`'s `ADR-023 P2-T2` case for the
 regression test encoding the confused-deputy scenario this amendment exists to close.
 
+**Amendment (`decisions/ADR-070-host-configurable-responsibility-boundary.md`).** That ADR names a
+formal, bounded pattern — the "Delegated Decision Seam" — for shifting part of AgentEngine's own
+enforcement responsibility to the consumer dev (capability/sandbox defaults, approval grading,
+`ContextProvider`/`Workflow` configuration), explicitly so that request does not become an argument
+for loosening THIS section's own mechanism. ADR-070 §4a checks its own new seams against, and leaves
+untouched: the `text_derived` closed declassifier allowlist above (a host-supplied `PolicyDecider`
+is structurally barred from this path, proven by a tripwire test — ADR-070 §5a, §6 point 2),
+`Tainted<T>`'s single, ungeneralized `unsafe_view()` escape hatch, and every other item this
+section's own text already establishes. Read ADR-070 before proposing a new host-facing seam
+anywhere in the capability/taint/approval surface — it is the checklist, not a precedent for
+skipping this section's own rules.
+
 ## 5. Policy
 
 Policy is **declarative, versioned configuration** — not code, not model-interpreted, not editable

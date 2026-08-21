@@ -129,6 +129,15 @@ protocols we speak (MCP MRTR, A2A `INPUT_REQUIRED`).
 - **Approvals never come from a model** (I3). A model may *request*; only a host policy or a human
   may *grant*.
 
+**Amendment (`decisions/ADR-070-host-configurable-responsibility-boundary.md`).** The declared-policy
+engine this section describes (007 §5's rule DSL) is still unbuilt. ADR-070 adds `PolicyDecider` — a
+host-supplied `{tool, capability_ceiling, arguments_tainted, principal} -> {auto_approve, auto_deny,
+require_approval}` function, consulted only for `PolicyDriven` — as an evolutionary, code-level way
+to express exactly this bullet's "declared policy over {tool, capability set, ..., principal, taint}"
+shape today, without waiting for the DSL. Unset, `PolicyDriven` degrades to requiring the same
+approval decider as `always_require`, exactly as before ADR-070. A future rule-DSL interpreter is
+one more `PolicyDecider` implementation, not a competing mechanism.
+
 ## 5. Concurrency
 
 Sequential by default (001 §4). A batch is parallel only when **every** call in it is

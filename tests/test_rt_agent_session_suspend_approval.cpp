@@ -121,7 +121,33 @@ struct GatedTool : agentengine::Tool<GatedTool, agentengine::Capabilities<>,
     }
 };
 
-// -- HistoryProviderT fixture: history passthrough + the one gated tool's declaration ---------------
+// decisions/ADR-070-host-configurable-responsibility-boundary.md: a second gated tool, this one
+// `policy_driven` -- the mode the new PolicyDecider seam exists to resolve, distinct from
+// GatedTool's `always_require` above.
+struct PolicyGateArgs { int value = 0; };
+AE_JSON_SCHEMA(PolicyGateArgs, value)
+struct PolicyGateReply { int value = 0; };
+AE_JSON_SCHEMA(PolicyGateReply, value)
+
+[[nodiscard]] bool& policy_gated_tool_invoked_log() {
+    static bool invoked = false;
+    return invoked;
+}
+
+struct PolicyGatedTool : agentengine::Tool<PolicyGatedTool, agentengine::Capabilities<>,
+                                             agentengine::EffectClass<agentengine::effect_class::pure>,
+                                             agentengine::Approval<agentengine::approval_mode::policy_driven>> {
+    static constexpr std::string_view name = "policy_gated_tool";
+    static constexpr std::string_view description = "Needs policy_driven resolution before every call.";
+    using Args = PolicyGateArgs;
+    using Reply = PolicyGateReply;
+    static agentengine::result<Reply> invoke(Args a, EffectContext&) {
+        policy_gated_tool_invoked_log() = true;
+        return Reply{a.value};
+    }
+};
+
+// -- HistoryProviderT fixture: history passthrough + the gated tools' declaration --------------------
 
 class GatedHistoryProvider {
 public:
@@ -129,7 +155,7 @@ public:
         agentengine::SessionContext& sc, EffectContext&) {
         agentengine::ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools = agentengine::ToolTable::from_tools<GatedTool>().descriptors();
+        c.tools = agentengine::ToolTable::from_tools<GatedTool, PolicyGatedTool>().descriptors();
         co_return c;
     }
     task<std::monostate> on_turn_end(agentengine::TurnView, EffectContext&) { co_return std::monostate{}; }
@@ -439,6 +465,125 @@ int main() {
               "SU6: the denial is counted via admission_denied_count()");
         check(session.has_open_interactions(),
               "SU6: the interaction stays open -- a denied resolver must not consume it");
+    }
+
+    // ---- SU7 (ADR-070): a PolicyDecider that auto_approves a policy_driven call resolves it WITHOUT
+    // ever suspending -- the suspend pre-check itself must recognize the PolicyDecider's verdict, not
+    // just invoke_tool()'s own step 5. -------------------------------------------------------------
+    {
+        policy_gated_tool_invoked_log() = false;
+
+        Session session;
+        session.initialize("su7", Principal{"p", ""});
+        ScriptedChatClient& client = session.emplace_chat_client();
+        client.set_script({
+            {tool_call_response("c1", "policy_gated_tool", R"({"value":9})"), Usage{1, 1, 0, 0, 0.0}},
+            {text_response("done-via-policy"), Usage{1, 1, 0, 0, 0.0}},
+        });
+        CapabilitySet const held = CapabilitySet::grant_root({});
+        session.set_capabilities(&held);
+        session.set_suspend_for_approval(true);
+        // Deliberately no set_approval_decider() -- proving the PolicyDecider alone resolves this
+        // policy_driven call without ever needing a human.
+        session.set_policy_decider(
+            [](Principal const&, agentengine::ToolDescriptor const&, bool) {
+                return agentengine::policy_decision::auto_approve;
+            });
+
+        auto r1 = drive(session.start_run(StartRun{user_message("go")}));
+        check(r1.has_value(),
+              "SU7 (ADR-070): a PolicyDecider that auto_approves a policy_driven call converges the "
+              "run WITHOUT suspending, even with suspend_for_approval_ true and no ApprovalDecider");
+        check(!session.has_open_interactions(),
+              "SU7 (ADR-070): no Interaction ever opens -- the suspend pre-check itself recognizes "
+              "the PolicyDecider's resolution and never treats this call as needing a human");
+        check(policy_gated_tool_invoked_log(),
+              "SU7 (ADR-070): the gated tool's invoke() WAS called -- PolicyDecider auto_approve is a "
+              "real bypass of suspension, not merely of the ApprovalDecider");
+        check(client.call_count() == 2,
+              "SU7 (ADR-070): the ChatClientT was called twice, converging normally -- no suspend/"
+              "resume round trip was needed at all");
+    }
+
+    // ---- SU8 (ADR-070): a PolicyDecider that auto_denies also never suspends -- the run converges
+    // with the denial folded in like an ordinary tool error, exactly as if a human had denied it,
+    // but no human was ever asked. -------------------------------------------------------------------
+    {
+        policy_gated_tool_invoked_log() = false;
+
+        Session session;
+        session.initialize("su8", Principal{"p", ""});
+        session.emplace_chat_client().set_script({
+            {tool_call_response("c1", "policy_gated_tool", R"({"value":9})"), Usage{1, 1, 0, 0, 0.0}},
+            {text_response("denied-via-policy"), Usage{1, 1, 0, 0, 0.0}},
+        });
+        CapabilitySet const held = CapabilitySet::grant_root({});
+        session.set_capabilities(&held);
+        session.set_suspend_for_approval(true);
+        session.set_policy_decider(
+            [](Principal const&, agentengine::ToolDescriptor const&, bool) {
+                return agentengine::policy_decision::auto_deny;
+            });
+
+        auto r1 = drive(session.start_run(StartRun{user_message("go")}));
+        check(r1.has_value(),
+              "SU8 (ADR-070): a PolicyDecider that auto_denies still lets the run converge -- the "
+              "denial is an ordinary tool error fed back, not a suspension and not a run-level "
+              "failure");
+        check(!session.has_open_interactions(),
+              "SU8 (ADR-070): no Interaction ever opens for an auto_deny verdict either -- it never "
+              "needed a human in the first place");
+        check(!policy_gated_tool_invoked_log(),
+              "SU8 (ADR-070): the gated tool's invoke() was NEVER called -- auto_deny blocks it "
+              "exactly like a human denial would, without ever asking one");
+    }
+
+    // ---- SU9 (ADR-029 §6 / ADR-070): expired_interaction_ids()/set_interaction_expiry() -- the
+    // host-driven query+setter pair that closes "nothing checks expires_at_ns", without this ADR
+    // inventing a wall clock or a second resolution mechanism. ---------------------------------------
+    {
+        gated_tool_invoked_log() = false;
+
+        Session session;
+        session.initialize("su9", Principal{"p", ""});
+        session.emplace_chat_client().set_script({
+            {tool_call_response("c1", "gated_tool", R"({"value":7})"), Usage{1, 1, 0, 0, 0.0}},
+            {text_response("denied-by-timeout"), Usage{1, 1, 0, 0, 0.0}},
+        });
+        CapabilitySet const held = CapabilitySet::grant_root({});
+        session.set_capabilities(&held);
+        session.set_suspend_for_approval(true);
+
+        auto r1 = drive(session.start_run(StartRun{user_message("go")}));
+        check(!r1.has_value(), "SU9 setup: the run suspends");
+        std::string const interaction_id = session.open_interactions().front().interaction_id;
+
+        check(session.expired_interaction_ids(1'000).empty(),
+              "SU9: a freshly-opened interaction has no expiry set (expires_at_ns == 0) -- "
+              "expired_interaction_ids() finds nothing, unchanged default behavior");
+
+        check(!session.set_interaction_expiry("no-such-id", 500),
+              "SU9: set_interaction_expiry() on an unknown id returns false and touches nothing");
+
+        check(session.set_interaction_expiry(interaction_id, /*expires_at_ns=*/1'000),
+              "SU9: set_interaction_expiry() on the real open interaction returns true");
+
+        check(session.expired_interaction_ids(500).empty(),
+              "SU9: before the expiry, expired_interaction_ids() still finds nothing");
+        auto const expired_at_deadline = session.expired_interaction_ids(1'000);
+        check(expired_at_deadline.size() == 1 && expired_at_deadline.front() == interaction_id,
+              "SU9: at/after the configured expires_at_ns, the interaction is reported expired "
+              "(now_ns >= expires_at_ns, inclusive)");
+
+        // The host's own timeout policy: deny it, via the ALREADY-EXISTING resolve_interaction() --
+        // no new resolution mechanism, same synthetic-denial shape SU4 already proves.
+        auto r2 = drive(session.resolve_interaction(
+            ResolveInteraction{interaction_id, /*approved=*/false, std::nullopt}));
+        check(r2.has_value(),
+              "SU9: a host-driven timeout denial resolves through the ordinary resolve_interaction() "
+              "path and the run converges");
+        check(!gated_tool_invoked_log(), "SU9: the gated tool's invoke() was never called on timeout");
+        check(!session.has_open_interactions(), "SU9: the interaction closed once resolved");
     }
 
     if (g_failures != 0) {

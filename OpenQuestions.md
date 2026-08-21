@@ -44,6 +44,16 @@ principal? Blocks 014 §3's `agent`-kind executor and, transitively, honest "mul
 that's demonstrated today, per the gap doc's `examples/16_group_chat_live.cpp` citation). **Explicit
 project-owner direction (2026-08-13): document only, do not implement yet.**
 
+**Note (`decisions/ADR-070-host-configurable-responsibility-boundary.md`, 2026-08-21):** that ADR's
+own "Delegated Decision Seam" pattern names the direction this question would resolve toward once
+unblocked — a per-executor binding-time grant, attenuation-bounded by the workflow's own ceiling,
+matching the already-red-teamed second-pass direction in `docs/planning/agent-as-workflow-executor-
+design-draft.md` (reuses `WorkflowSupervisor::initialize()`'s existing but unused `contexts`
+parameter) — never the principal-derived option, which would be closer to ambient authority than a
+host-explicit grant. This is a cross-reference, NOT a resolution: the 2026-08-13 "document only, do
+not implement yet" instruction stands, and ADR-070 does not touch `check_workflow_executable()`'s
+hard rejection of `agent`/`sub_workflow` executors.
+
 ### OQ-20 — Coalescing concurrent agents onto one vendor batch inference call 🟠
 
 User proposal (2026-08-13): since providers support batch inference, let concurrently-running agents

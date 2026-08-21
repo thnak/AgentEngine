@@ -550,6 +550,16 @@ public:
     [[nodiscard]] std::uint32_t rounds_executed() const noexcept { return rounds_; }
     [[nodiscard]] std::string const& run_id() const noexcept { return run_id_; }
 
+    // decisions/ADR-070-host-configurable-responsibility-boundary.md: `true` whenever
+    // `graph().bound.token_budget` is set -- see that field's own doc comment
+    // (workflow/graph.hpp) for why. Unconditional and deterministic (a pure read of already-
+    // validated `graph_` state, nothing timing-dependent), so a host can check this right after
+    // `initialize()` and log/assert/refuse to run/whatever fits its own policy -- there is no path
+    // where a `token_budget`-bearing workflow makes this return `false`.
+    [[nodiscard]] bool token_budget_unenforced() const noexcept {
+        return graph_.bound.token_budget.has_value();
+    }
+
     [[nodiscard]] std::vector<agentengine::Interaction> open_interactions() const {
         std::vector<agentengine::Interaction> out;
         for (auto const& p : ports_) {

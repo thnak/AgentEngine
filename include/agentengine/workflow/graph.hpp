@@ -181,6 +181,19 @@ struct Edge {
 struct TerminationBound {
     std::optional<std::uint32_t> max_rounds;
     std::optional<std::uint64_t> deadline_ms;
+    // decisions/ADR-070-host-configurable-responsibility-boundary.md: HOST-MONITORED ONLY. Unlike
+    // `max_rounds`/`deadline_ms` above (both checked every round by `WorkflowSupervisor::execute()`,
+    // rt/workflow_supervisor.hpp), nothing in this engine reads this field to stop a run -- wiring
+    // real enforcement would mean correlating usage-tracking per-executor at the exact point
+    // `execute()` checks bounds, which this codebase does not do today (a real feature, out of this
+    // ADR's bounded scope, not a policy choice against enforcing it). Setting this is a HOST
+    // BOOKKEEPING VALUE, not an engine guarantee: `WorkflowSupervisor::token_budget_unenforced()`
+    // (rt/workflow_supervisor.hpp) always reflects whether this field is set, unconditionally and
+    // deterministically, right after `initialize()` -- so a host that relies on this field
+    // un-monitored gets a query it can check and act on, not a silent no-op it has to discover the
+    // hard way. See that accessor's own comment for the query, and ADR-070's own "Delegated
+    // Decision Seam" pattern (host-configured, host-responsible, never silently assumed) for why
+    // this is documented rather than either quietly enforced or quietly dropped.
     std::optional<std::uint64_t> token_budget;
 
     [[nodiscard]] bool any() const noexcept {

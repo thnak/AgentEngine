@@ -317,6 +317,25 @@ struct IdempotencyKey {
 using ApprovalDecider = std::function<bool(Principal const& caller, std::string_view tool_name,
                                             std::string const& canonical_args_json)>;
 
+// Delegated Decision Seam (decisions/ADR-070-host-configurable-responsibility-boundary.md): a
+// SECOND, optional host seam, consulted ONLY for `approval_mode::policy_driven` -- unlike
+// `ApprovalDecider` above (a binary yes/no over one already-pending call), this lets a host resolve
+// `policy_driven`'s existing fail-closed degrade (file-top comment: "policy_driven degrades to
+// requiring the same decider... until 007 §5's rule language exists") WITHOUT waiting for that
+// still-unbuilt declarative DSL, by writing the graduated logic itself. Defaults to `nullptr`: with
+// no `PolicyDecider` wired, `policy_driven` behaves BYTE-FOR-BYTE as it always has (falls through to
+// `ApprovalDecider`, exactly like `always_require`) -- this seam only ever makes a call MORE resolved
+// (auto_approve/auto_deny) than today, never less, and never widens past the tool's own declared
+// `capability_ceiling` (it decides among already-possessed authority, it does not grant any).
+// Never consulted for `never_require`, `always_require`, or a `text_derived` call: 007 §4's closed
+// declassifier list stays closed (ADR-023's own red-team already found a laxer version of THAT gate
+// unsafe) -- this is a deliberately narrower, different question, and `resolve_approval_outcome`
+// below enforces the distinction structurally, not just by convention.
+enum class policy_decision { auto_approve, auto_deny, require_approval };  // ae-naming-lint: allow policy_decision — ADR-070, same idiom as approval_mode/call_provenance
+// ae-naming-lint: allow PolicyDecider — ADR-070, same idiom as ApprovalDecider above
+using PolicyDecider = std::function<policy_decision(Principal const& caller, ToolDescriptor const& tool,
+                                                     bool arguments_tainted)>;
+
 // Step 10's minimal audit record (016/013's full span shape is out of scope for M2, see file-top
 // comment). Phase F1 adds the call's own idempotency key -- computed unconditionally (it costs one
 // digest of bytes already being canonicalized for step 5's approval check) so ANY caller journaling
@@ -391,6 +410,38 @@ namespace tool_pipeline_detail {
                : (tool.approval != approval_mode::never_require);
 }
 
+// ADR-070: single source of truth for step 5's THREE-way outcome once a `PolicyDecider` may be in
+// play -- both `invoke_tool()`'s own step 5 below AND `AgentSession`'s suspend-for-approval
+// pre-check (rt/agent_session.hpp) call this exact function, the same "outside invoke_tool() too"
+// reason `tool_call_requires_approval` above is itself exported for, so the two can never drift
+// apart. With `policy` unset (`{}`) this reproduces `tool_call_requires_approval()`'s own boolean
+// exactly -- `needs_decider` wherever that function would have returned `true`, `proceed` otherwise
+// -- so every existing caller that never wires a `PolicyDecider` sees byte-identical behavior.
+enum class approval_outcome { proceed, deny, needs_decider };  // ae-naming-lint: allow approval_outcome — ADR-070, same idiom as call_provenance/approval_mode
+
+[[nodiscard]] inline approval_outcome resolve_approval_outcome(ToolDescriptor const& tool,
+                                                                 call_provenance provenance,
+                                                                 Principal const& caller,
+                                                                 bool arguments_tainted,
+                                                                 PolicyDecider const& policy) {
+    // `text_derived` never consults `policy` -- 007 §4's closed declassifier list is untouched by
+    // this ADR; `is_auto_declassifiable_text_derived_call` (via `tool_call_requires_approval` below)
+    // stays the sole, unconditional gate for that provenance.
+    if (tool.approval == approval_mode::policy_driven &&
+        provenance != call_provenance::text_derived && policy) {
+        switch (policy(caller, tool, arguments_tainted)) {
+            case policy_decision::auto_approve:
+                return approval_outcome::proceed;
+            case policy_decision::auto_deny:
+                return approval_outcome::deny;
+            case policy_decision::require_approval:
+                break;  // fall through to the unchanged ApprovalDecider path below
+        }
+    }
+    return tool_call_requires_approval(tool, provenance) ? approval_outcome::needs_decider
+                                                            : approval_outcome::proceed;
+}
+
 // ADR-029 needs this outside `invoke_tool()` too, to build a denial `ToolResult` for a pending call
 // a human explicitly rejected (`AgentSession::handle()`'s resume-and-deny path) in exactly the same
 // shape a synchronous `ApprovalDecider`'s own denial already produces.
@@ -409,7 +460,15 @@ namespace tool_pipeline_detail {
 [[nodiscard]] inline ToolResult invoke_tool(ToolTable const& table, CapabilitySet const& held,
                                              ToolCallRequest const& request, EffectContext& ctx,
                                              ApprovalDecider const& approve,
-                                             ToolInvocationAudit* audit_out = nullptr) {
+                                             ToolInvocationAudit* audit_out = nullptr,
+                                             // ADR-070: appended last (this file's own established
+                                             // convention for additive parameters), default `{}` so
+                                             // every existing positional call site -- including the
+                                             // three "already resolved by a human" one-shot-approve
+                                             // sites in rt/agent_session.hpp -- is unaffected and
+                                             // never re-litigates a decision policy_driven already
+                                             // deferred to a real human.
+                                             PolicyDecider const& policy = {}) {
     using namespace tool_pipeline_detail;
     auto const started = std::chrono::steady_clock::now();
     // Phase F1: derived once, unconditionally, from exactly the four inputs 019 §3 names -- never
@@ -473,8 +532,19 @@ namespace tool_pipeline_detail {
     // exact override the confused-deputy scenario (ADR-023 §4b Finding 1) forced. A
     // `vendor_structured` call (every caller before this amendment, and every caller that never sets
     // `provenance`) takes the ORIGINAL branch, byte-for-byte unchanged.
-    bool const requires_approval = tool_call_requires_approval(*tool, request.provenance);
-    if (requires_approval) {
+    // ADR-070 (decisions/ADR-070-host-configurable-responsibility-boundary.md): `policy` only ever
+    // narrows this decision further -- an auto_approve/auto_deny verdict short-circuits
+    // `policy_driven`'s existing fail-closed degrade; an unset `policy` reproduces
+    // `tool_call_requires_approval()`'s own boolean exactly (see `resolve_approval_outcome`'s own
+    // comment), so this is a strict extension of, not a change to, the pre-ADR-070 behavior.
+    approval_outcome const outcome = resolve_approval_outcome(*tool, request.provenance, ctx.principal,
+                                                                request.arguments_tainted, policy);
+    if (outcome == approval_outcome::deny) {
+        for (auto const& b : bound) b.revoke();  // never bind authority we then refuse to use
+        error e{failure_class::policy, "denied by policy", "tool.policy_denied"};
+        return finish(make_error_result(request.call_id, e), &e);
+    }
+    if (outcome == approval_outcome::needs_decider) {
         std::string canonical_args = json::dump(request.arguments);
         bool approved = approve && approve(ctx.principal, request.tool_name, canonical_args);
         if (!approved) {

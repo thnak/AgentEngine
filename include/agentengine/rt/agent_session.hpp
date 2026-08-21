@@ -609,6 +609,19 @@ public:
         return approval_decider_;
     }
 
+    // decisions/ADR-070-host-configurable-responsibility-boundary.md: unset (`nullptr`) by default --
+    // every existing session is unaffected until it opts in. Consulted ONLY for
+    // `approval_mode::policy_driven` calls, at exactly the two places that already decide anything
+    // about that mode -- the main round loop's `invoke_tool()` call and the suspend-for-approval
+    // pre-check just above it (both in `run_rounds()` below) -- never at the three "already resolved
+    // by a real human" `invoke_tool()` call sites (`resolve_interaction()`'s approved branch,
+    // `resolve_codeact_ask()`), which keep using their own `one_shot_approve` and this member's
+    // default-`{}` trailing parameter, exactly as before this ADR.
+    void set_policy_decider(agentengine::PolicyDecider decide) { policy_decider_ = std::move(decide); }
+    [[nodiscard]] agentengine::PolicyDecider const& policy_decider() const noexcept {
+        return policy_decider_;
+    }
+
     // decisions/ADR-067-middleware-turn-point-pre-model-enforcement.md, wired in for real: runs once
     // per round, in `run_rounds()`, after this turn's `ContextContribution` is fully assembled
     // (including the dynamically-injected `schedule_wakeup` tool, if any) but BEFORE it is turned
@@ -622,6 +635,15 @@ public:
         return turn_middleware_hook_;
     }
 
+    // decisions/ADR-066-context-provider-attribution-provenance.md §7 residual / ADR-070 amendment:
+    // this session calls `history_provider_.on_context()` DIRECTLY, never `assemble_context()` --
+    // messages/tools this session assembles carry NO `attribution` (`Message::attribution`/
+    // `ToolDescriptor::attribution` stay `nullopt` throughout), even for a genuinely multi-role
+    // `HistoryProviderT`. A host that wants ADR-066's mandatory, non-bypassable provenance stamping
+    // composes through `ComposedContextProvider<...>` as `HistoryProviderT` instead (that conformer
+    // routes through `assemble_context()` internally, no change needed here) -- using this single-
+    // provider slot as-is is a deliberate, acknowledged trade for the simpler API, not an
+    // undiscovered gap.
     [[nodiscard]] HistoryProviderT& history_provider() noexcept { return history_provider_; }
 
     void set_suspend_for_approval(bool suspend) noexcept { suspend_for_approval_ = suspend; }
@@ -681,6 +703,45 @@ public:
         return open_interactions_;
     }
     [[nodiscard]] bool has_open_interactions() const noexcept { return !open_interactions_.empty(); }
+
+    // decisions/ADR-029-suspend-for-human-approval.md §6 / ADR-070: closes the named gap that
+    // `Interaction::expires_at_ns` is stored but nothing ever checks it. `interaction.hpp`'s own
+    // comment is why this is a QUERY, not a wired timer: "no real wall-clock source wired in
+    // anywhere in this project yet (Clock is not a wired capability)" -- an engine-internal poll
+    // would have to invent exactly the untracked nondeterminism I5 forbids. The host supplies its
+    // own notion of "now" instead (I5: nondeterminism crosses a recorded seam -- the caller's, not
+    // an ambient one this function reads for itself); `expires_at_ns == 0` ("no expiry", 001 §2)
+    // never matches. Deciding WHAT an expiry means is entirely the host's job -- typically calling
+    // the ALREADY-EXISTING `resolve_interaction({id, approved=false})` for each id this returns,
+    // which is already race-free against a concurrently-arriving real human answer via
+    // `session_mutex_` (I1) -- this function adds no new resolution mechanism, only the query that
+    // was missing.
+    [[nodiscard]] std::vector<std::string> expired_interaction_ids(std::int64_t now_ns) const {
+        std::vector<std::string> ids;
+        for (Interaction const& i : open_interactions_) {
+            if (i.expires_at_ns != 0 && now_ns >= i.expires_at_ns) ids.push_back(i.interaction_id);
+        }
+        return ids;
+    }
+
+    // decisions/ADR-029-suspend-for-human-approval.md §6 / ADR-070: the OTHER half of the same gap
+    // -- nothing today ever POPULATES `expires_at_ns` either (`open_interaction()`'s own body sets
+    // only `interaction_id`/`run_id`/`reason`). A host that learns of a new suspension (the
+    // `input_required` run event already names the interaction_id) calls this, in its own wall-clock
+    // terms, to opt that ONE interaction into the timeout policy `expired_interaction_ids()` above
+    // can then observe -- an interaction nobody calls this for keeps `expires_at_ns == 0` ("no
+    // expiry") exactly as before this ADR. Plain and unlocked, matching every other `set_*`
+    // session-configuration method on this class (`set_approval_decider`, `set_policy_decider`,
+    // `set_suspend_for_approval`) -- I1's "one session, one executor" contract, not a per-call lock,
+    // is what makes that safe; a host driving this session from more than one concurrent caller is
+    // already the require_authority_ Tier-3 path's own documented contract, unaffected by this.
+    bool set_interaction_expiry(std::string const& interaction_id, std::int64_t expires_at_ns) noexcept {
+        auto it = std::find_if(open_interactions_.begin(), open_interactions_.end(),
+                                [&](Interaction const& i) { return i.interaction_id == interaction_id; });
+        if (it == open_interactions_.end()) return false;
+        it->expires_at_ns = expires_at_ns;
+        return true;
+    }
 
     // ---- The two real entry points -----------------------------------------------------------
 
@@ -1791,7 +1852,17 @@ private:
                 bool any_needs_approval = false;
                 for (ToolCall const& call : calls) {
                     ToolDescriptor const* td = tool_table.find(call.tool_name);
-                    if (td != nullptr && tool_call_requires_approval(*td, call.provenance)) {
+                    // ADR-070: a `policy_decider_`-resolved policy_driven call (auto_approve/
+                    // auto_deny) never needs a real human -- only `needs_decider` should count
+                    // toward suspending this round; `resolve_approval_outcome` with `policy_decider_`
+                    // unset reproduces `tool_call_requires_approval()`'s own boolean exactly, so this
+                    // is unchanged behavior for every session that never wires a `PolicyDecider`.
+                    // `arguments_tainted` is always `true` here -- every `ToolCall` this loop sees
+                    // originates from a model response (`tool_call_request_of`'s own comment).
+                    if (td != nullptr &&
+                        resolve_approval_outcome(*td, call.provenance, effect_context_.principal,
+                                                  /*arguments_tainted=*/true, policy_decider_) ==
+                            approval_outcome::needs_decider) {
                         any_needs_approval = true;
                         break;
                     }
@@ -1834,8 +1905,13 @@ private:
                     emit_run_event(run_event_kind::tool_call_delta,
                                     run_event_payload::ToolCallDelta{call_id, std::string(text)});
                 };
+                // ADR-070: the ONLY invoke_tool() call site that consults `policy_decider_` -- the
+                // other three (resolve_interaction()'s approved branch, start_background_task(),
+                // resolve_codeact_ask()) keep their default-`{}` trailing parameter deliberately,
+                // since a call reaching any of them has already been resolved by a real human and
+                // must never be re-litigated by policy (see set_policy_decider()'s own comment).
                 ToolResult result = invoke_tool(tool_table, held, req, effect_context_, approval_decider_,
-                                                 &audit);
+                                                 &audit, policy_decider_);
                 effect_context_.report_progress = [](std::string_view) {};
                 emit_run_event(run_event_kind::tool_call_finished,
                                 run_event_payload::ToolCallFinished{audit.call_id, audit.ok});
@@ -1990,6 +2066,9 @@ private:
     std::uint64_t                                        run_tokens_consumed_ = 0;
     std::optional<std::uint64_t>                         max_turns_;
     ApprovalDecider                                      approval_decider_{};
+    // decisions/ADR-070-host-configurable-responsibility-boundary.md. Unset by default -- see
+    // set_policy_decider()'s own comment above for exactly where this is (and is not) consulted.
+    PolicyDecider                                         policy_decider_{};
     // decisions/ADR-067-middleware-turn-point-pre-model-enforcement.md. Unset by default.
     agentengine::TurnMiddlewareHook                       turn_middleware_hook_{};
     bool                                                  suspend_for_approval_ = false;

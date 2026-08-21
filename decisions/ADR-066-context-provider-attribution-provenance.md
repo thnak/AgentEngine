@@ -207,3 +207,17 @@ test_context_provenance --config Debug`, `ctest --test-dir build -C Debug --outp
   through `assemble_context()` internally. `decisions/ADR-067-middleware-turn-point-pre-model-
   enforcement.md`'s own `TurnContext`/turn-middleware hook (also now wired) is a real consumer of this
   attribution, though no policy decision in this codebase keys off it yet.
+
+**Amendment (decisions/ADR-070-host-configurable-responsibility-boundary.md):** the residual named
+two bullets up — `AgentSession`'s direct single-`HistoryProviderT`-slot path (still today's dominant
+production path) gets no `attribution` at all — is formalized as a deliberate, acknowledged two-tier
+contract rather than left as an undocumented gap a caller might discover by surprise. A host that
+constructs `AgentSession<ChatClientT, StateT, HistoryProviderT>` with one plain conformer, instead of
+composing through `ComposedContextProvider<...>`, is KNOWINGLY choosing the simpler API and forgoing
+`assemble_context()`'s mandatory provenance stamping for that session — this is not a defect to fix
+silently, because the two paths exist precisely so a host that has no multi-contributor attribution
+need is not forced to pay for machinery it doesn't use. `AgentSession::history_provider()`'s own
+accessor comment (`rt/agent_session.hpp`) now states this explicitly, so it's discoverable at the
+call site, not only in this ADR's own §7. No code mechanism was added — this amendment is
+documentation-only, matching this ADR's own "nullopt means not contributor-sourced" convention
+exactly, now spelled out as a choice rather than left implicit.

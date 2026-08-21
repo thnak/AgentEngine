@@ -125,10 +125,28 @@ live model) matching ADR-027/028's own proof style.
 
 ## 6. What this ADR does not claim
 
-- **Expiry is still unwired.** `Interaction::expires_at_ns` exists (001 §2's own optional field) but
+- **Expiry is still unwired** (as originally written by this ADR; see the amendment immediately
+  below for what changed). `Interaction::expires_at_ns` exists (001 §2's own optional field) but
   nothing in this ADR checks it — a suspended run with no human ever answering stays suspended
   forever (or until a host-level timeout/kill, outside this actor). Named in `interaction.hpp`
   already; unchanged by this ADR.
+
+**Amendment (decisions/ADR-070-host-configurable-responsibility-boundary.md):** the gap above is
+closed, as a Delegated Decision Seam — a host-driven QUERY, not an engine-internal timer.
+`interaction.hpp`'s own comment is why: "no real wall-clock source wired in anywhere in this project
+yet (Clock is not a wired capability)" — an engine-internal poll would have to invent exactly the
+untracked nondeterminism I5 forbids. `AgentSession::set_interaction_expiry(interaction_id,
+expires_at_ns)` lets a host that learns of a new suspension (the `input_required` event already
+names the id) opt it into a timeout, in the host's own wall-clock terms;
+`AgentSession::expired_interaction_ids(now_ns)` lets the host later ask, in that same host-supplied
+"now," which open interactions have passed their configured `expires_at_ns`. Deciding what to do
+about an expired interaction is entirely the host's job — typically the ALREADY-EXISTING
+`resolve_interaction({id, approved: false})`, which is already race-free against a concurrently-
+arriving real human answer via `session_mutex_` (I1) — this amendment adds no new resolution
+mechanism, only the query and the setter that were missing. An interaction nobody calls
+`set_interaction_expiry` for keeps `expires_at_ns == 0` ("no expiry") exactly as before this
+amendment — every existing caller is unaffected. Proven: `tests/test_rt_agent_session_suspend_approval.cpp`'s
+SU9.
 - **`AgentSessionRecord`'s checkpoint already includes `open_interactions` (Phase D1) but the
   suspended round's OWN state — the pending assistant tool-call message in `history_` — is not
   durably checkpointed**, the same pre-existing gap ADR-027/028 both already name (`Message`/
