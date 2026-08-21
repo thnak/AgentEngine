@@ -742,6 +742,15 @@ if(AGENTENGINE_WITH_HTTPS)
   add_test(NAME test_llamacpp_live_e2e COMMAND test_llamacpp_live_e2e)
   set_tests_properties(test_llamacpp_live_e2e PROPERTIES LABELS "live-network" TIMEOUT 300)
 
+  # ---- 004 §3's OpenAI-compatible backend against a REAL, LOCAL Ollama server -- the other local
+  # server that section's table names by name, alongside llama.cpp above.
+  add_executable(test_ollama_live_e2e test_ollama_live_e2e.cpp)
+  target_link_libraries(test_ollama_live_e2e PRIVATE
+    agentengine::core agentengine::provider_http_client agentengine_warnings
+    MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+  add_test(NAME test_ollama_live_e2e COMMAND test_ollama_live_e2e)
+  set_tests_properties(test_ollama_live_e2e PROPERTIES LABELS "live-network" TIMEOUT 300)
+
   # A real AgentSession (not the raw ChatClient layer above) driven through a genuinely hard,
   # multi-tool, multi-turn, forced-parallel-tool-call conversation against a real remote model. Also
   # the live proof for two real bugs this file's own prerequisite fixed (see its own top comment):
