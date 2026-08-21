@@ -306,7 +306,6 @@ struct IdempotencyKey {
 // host/human-supplied callable, never invented ambiently inside the pipeline. Receives the
 // canonical JSON of the exact arguments about to execute (006 §4: "approval is bound to the exact
 // call").
-// ae-naming-lint: allow ApprovalDecider — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 //
 // ADR-061 §46: `caller` is the identity `EffectContext::principal` already carries at both call
 // sites below -- the SAME identity `ToolInvocationAudit` already records, not a second,
@@ -314,6 +313,7 @@ struct IdempotencyKey {
 // "principal" axis), which the prior two-argument shape made structurally impossible; 007 §5's
 // policy engine still does not exist, so nothing here derives a decision from `caller` -- a decider
 // that ignores it behaves exactly as before.
+// ae-naming-lint: allow ApprovalDecider — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 using ApprovalDecider = std::function<bool(Principal const& caller, std::string_view tool_name,
                                             std::string const& canonical_args_json)>;
 

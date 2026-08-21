@@ -47,6 +47,11 @@ Names verified against `agent_framework` (Python core) unless marked **ours**.
 | **`Usage`** | Token and cost accounting (003 §6) | **ours** (deliberately shorter than MAF's `UsageDetails` — 003 §6 and 004 have both normatively spelled it `Usage` since those RFCs were first written; this row itself was the drifted one, corrected 2026-08-14, gap-audit finding 9, `decisions/ADR-050-*.md` — not a rename of already-shipped code) |
 | **`Run`** | One invocation of an agent against a session — the unit of tracing, checkpointing, replay, and the thing an A2A `Task` maps to (001) | **ours** |
 | **`Turn`** | One model call plus the tool invocations it triggers, inside a run | **ours** |
+| **`ContentReplayGateway<Inner>`** | Wraps a `ModelCallGatewayLike` and discards a settled response that a pluggable trigger flags (a secret, a policy hit), re-invoking the call with a corrective instruction instead of letting the tainted content commit to durable history (`decisions/ADR-069-content-triggered-model-response-replay.md` §3) | **ours** |
+| **`ContentReplayDecision`** | The verdict a `ContentReplayTrigger` returns over a settled `ChatResponse` — discard-and-retry, with a corrective instruction, or stand (ADR-069 §3) | **ours** |
+| **`ContentReplayTrigger`** | The host-supplied callable producing a `ContentReplayDecision` (ADR-069 §3) | **ours** |
+| **`ContentReplayAttemptEvent`** | Fires once per attempt inside a `ContentReplayGateway::call()` retry loop, discarded or not, carrying that attempt's real `Usage` (ADR-069) | **ours** |
+| **`ContentReplayTraceHook`** | The optional hook receiving each `ContentReplayAttemptEvent`, so a host can account every attempt's true cost (ADR-069) | **ours** |
 
 ### Why `Run` and `Turn` are ours
 
@@ -71,6 +76,11 @@ cheaper than overloading `AgentResponse` with a lifecycle it does not have.
 | `SkillsProvider` | A `ContextProvider` supplying skills | MAF |
 | `Middleware` | An interceptor around a run, turn, model call, or tool call (002 §5) | MAF |
 | `AgentMiddleware` / `ChatMiddleware` / `FunctionMiddleware` | The three interception scopes | MAF |
+| **`HasContextProviderName`** | The compile-time concept a `ContextProvider` type must satisfy — declares `static constexpr std::string_view name`, so provenance stamping (005 §3) has a real name to stamp with, the same requirement `Middleware`'s own `HasMiddlewareName` already carries (`decisions/ADR-066-context-provider-attribution-provenance.md` §3) | **ours** |
+| **`ToolSurfaceView`** | The turn-middleware point's structural seam for mutating a round's tool surface — `redact()`/`reorder()`/`annotate_description()` only, with no path to a mutable `ToolDescriptor&` that could touch `invoke`/`capability_ceiling`/`approval_mode` (`decisions/ADR-067-middleware-turn-point-pre-model-enforcement.md` §3) | **ours** |
+| **`TurnContext`** | The `turn`/`pre_model` interception point's context — the assembled context plus the one shared `ToolSurfaceView` every turn middleware in the chain sees and mutates (ADR-067) | **ours** |
+| **`TurnMiddlewareHook`** | The `std::function`-erased seam `rt::AgentSession` calls once per round, before building that round's `ChatRequest`, to run a host-supplied turn-middleware chain (ADR-067) | **ours** |
+| **`Compactor<N>`** | A `turn`-level middleware that keeps the last `N` messages of the assembled (not durable `history[]`) view for the model call about to happen, closing 005 §8 Q3 (ADR-067 §4) | **ours** |
 | **`Plugin`** | A signed package containing WASM components implementing a WIT world (009) | **ours** |
 | **`MemoryProvider`** → **use `ContextProvider`** | *Superseded.* Memory is a kind of context provider, not a parallel concept | — |
 | **`ToolOptimizerProvider`** | A `ContextProvider` that gates MCP/WASM-plugin/agent tool exposure behind mount/unmount, the same shape `mount_skill` already uses for skill tools (009 §8b, ADR-065) | **ours** |
@@ -120,6 +130,16 @@ word is free, and we take it. §5 records the collision so nobody re-imports the
 | **`EmbeddedHost`** | The in-process bring-up object a C++ application constructs to link the engine as a library and mint `Run`/`ReplyStream` handles (020 §3a) | **ours** |
 | **`Project`** | A durable index above a session — a root session plus every session it transitively owns, with directed pause/restore distinct from idle passivation (030) | **ours** |
 | **`ExecState`** | The `{cwd, env}` shared by reference across every `Runner` call in a session (010 §3a) | **ours** |
+| **`SecretDetector`** | A host-injected seam scanning content for secrets (a pasted API key, a leaked credential) — AgentEngine ships no regex/NER of its own (`decisions/ADR-068-runtime-secret-quarantine-host-delegated-detection.md` §2) | **ours** |
+| **`DetectedSpan`** | One match a `SecretDetector` found in some content — purely descriptive, never itself a decision (ADR-068 §2) | **ours** |
+| **`QuarantineSecretStore`** | A mint-at-runtime, content-addressed `SecretStore` for a secret that shows up incidentally inside ordinary content, as opposed to `trust/secret.hpp`'s declare-then-resolve path for operator-declared config secrets (ADR-068 §2b) | **ours** |
+| **`quarantine_trigger`** | Bookkeeping-only provenance of how a quarantine happened — `verified_user_content` (engine-verified, host-grant-eligible) vs. `agent_initiated` (model-supplied, never grant-eligible, I3) (ADR-068) | **ours** |
+| **`QuarantineAuditEvent`** | Fires once per `quarantine()` call with no path to carry the secret's own bytes (ADR-068) | **ours** |
+| **`QuarantineAuditHook`** | The optional host-wired hook receiving each `QuarantineAuditEvent` (ADR-068) | **ours** |
+| **`QuarantineSecretArgs`** | The agent-initiated quarantine path's tool args shape — the exact text the model wants hidden (ADR-068 §2e) | **ours** |
+| **`QuarantineSecretReply`** | The agent-initiated quarantine path's tool reply shape — the text with the secret replaced by an opaque reference (ADR-068 §2e) | **ours** |
+| **`QuarantineSecretTool`** | A zero-capability tool letting the model itself hide text it's about to say, always `agent_initiated` and so never grant-eligible (ADR-068 §2e) | **ours** |
+| **`QuarantineToolProvider`** | Wraps a `QuarantineSecretStore` as a real `ContextProvider` conformer, contributing the `quarantine_secret` tool (ADR-066/068) | **ours** |
 | `Actor` · `Activation` · `Worker` · `Shard` · `Mailbox` · `ActorRef<A>` · `Policy` | **Retired vocabulary** — none of these names are used anywhere in AgentEngine's codebase today (historical: this was Quark's runtime vocabulary, used verbatim and unchanged, before `decisions/ADR-037-remove-quark-as-core-runtime.md` removed Quark as a dependency entirely; there is no actor model left to name) | Quark (historical) |
 | `ae::task<T>` · `ae::result<T>` | Coroutine return type · `std::expected<T, error>` | `agentengine::rt::` (historical: `task<T>` originated as a `quark::task<T>` alias before ADR-037; `core/task.hpp` now defines it directly, zero Quark dependency) |
 
