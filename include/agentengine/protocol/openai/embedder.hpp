@@ -20,15 +20,18 @@
 // This file deliberately `#include`s chat_client.hpp (both in this SAME `agentengine::openai`
 // namespace, same vendor, same OpenAI-compatible wire family -- unlike the openai/anthropic split,
 // which duplicates their own one-shot chunked-body decoders because those two ARE genuinely
-// different wire dialects) to reuse `detail::decoded_response_body()` and `detail::
-// map_http_status_error()` verbatim rather than re-deriving them. `decoded_response_body()` exists
-// specifically because a REAL OpenAI-compatible server (confirmed live against OpenRouter,
-// chat_client.hpp's own comment) sends `Transfer-Encoding: chunked` on an ORDINARY, non-streaming
-// POST response, not only on SSE -- the embeddings endpoint is the same host, same non-streaming
-// response shape, so the identical decode step applies verbatim; duplicating that logic into a
-// second copy would risk silently reintroducing the exact parse bug chat_client.hpp's own comment
-// documents having hit once already. One implementation of the wire contract, not two that could
-// drift -- the same principle this project's own files invoke repeatedly for exactly this reason.
+// different wire dialects) to reuse `detail::map_http_status_error()` verbatim rather than
+// re-deriving it. No separate body-decode step is needed here: as of 2026-08-19, dechunking a
+// `Transfer-Encoding: chunked` ORDINARY non-streaming response (confirmed live against a real
+// OpenAI-compatible server, OpenRouter's `api.openrouter.ai` -- not only SSE sends it) happens at
+// the transport layer (`net_egress_proxy.cpp`'s `dechunk_response_body_if_needed`, ADR-011's
+// addendum), so `resp->body` below is already plain by the time `embed_batch()` reads it -- the
+// same reason `OpenAIChatClient::chat()` (chat_client.hpp) reads `resp->body` directly rather than
+// through a per-provider decode. A per-provider decode step used to exist here and in
+// chat_client.hpp/protocol/anthropic/chat_client.hpp; it was retired everywhere the same day
+// running it twice on an already-dechunked JSON body was found to misparse the JSON as chunk
+// framing (chat_client.hpp's own comment at its `chat()` call site has the full account). One
+// implementation of the wire contract, not two that could drift.
 //
 // `EmbedderCapabilities` (dimensions/max_batch_size) is a CONSTRUCTOR ARGUMENT the caller supplies,
 // exactly mirroring `OpenAIChatClient`'s own `ChatClientCapabilities caps` parameter -- declared, not
@@ -269,15 +272,18 @@ public:
                                                                transport_);
         if (!resp) co_return std::unexpected(resp.error());
 
-        // Reuses `OpenAIChatClient`'s own one-shot decoder -- see this file's top comment for why
-        // that is a deliberate reuse, not an accidental cross-file coupling.
-        auto decoded_body = detail::decoded_response_body(*resp);
-        if (!decoded_body) co_return std::unexpected(decoded_body.error());
+        // As of 2026-08-19, dechunking happens at the transport layer (`net_egress_proxy.cpp`'s
+        // `dechunk_response_body_if_needed`, ADR-011's addendum) -- `resp->body` is already plain by
+        // the time any caller of the buffered exchange functions sees it. `OpenAIChatClient::chat()`
+        // (chat_client.hpp) reads `resp->body` directly for the identical reason; this mirrors that,
+        // not the file's own now-retired `detail::decoded_response_body()` (removed same day a double-
+        // dechunk regression it caused was found and fixed -- see chat_client.hpp's own comment at its
+        // `chat()` call site).
         if (resp->status < 200 || resp->status >= 300) {
-            co_return std::unexpected(detail::map_http_status_error(resp->status, *decoded_body));
+            co_return std::unexpected(detail::map_http_status_error(resp->status, resp->body));
         }
 
-        auto parsed = json::parse(*decoded_body);
+        auto parsed = json::parse(resp->body);
         if (!parsed) co_return std::unexpected(parsed.error());
         co_return detail::parse_embeddings_response(*parsed, texts.size());
     }
