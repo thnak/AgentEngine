@@ -39,6 +39,7 @@
 #include <cctype>
 #include <functional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "agentengine/core/codeact_tool_union.hpp"
@@ -157,6 +158,12 @@ using ToolSourceFetch = std::function<result<std::vector<ToolDescriptor>>(Effect
 
 class ToolOptimizerProvider {
 public:
+    // decisions/ADR-066-context-provider-attribution-provenance.md §3: required for this conformer
+    // to be composed via ComposedContextProvider<Ms...>/HistoryAndSkillsProvider (HasContextProviderName)
+    // -- missed when this class first landed (ADR-065), caught by a full-tree rebuild against
+    // ADR-066's own requirement.
+    static constexpr std::string_view name = "tool_optimizer";  // ae-naming-lint: allow name — ADR-033's HasMiddlewareName precedent, reused verbatim per ADR-066 §3
+
     ToolOptimizerProvider(ToolTable agent_tools, ToolSourceFetch mcp_tools_fetch,
                            ToolSourceFetch plugin_tools_fetch, std::vector<std::string> always_on = {})
         : agent_tools_(std::move(agent_tools)),

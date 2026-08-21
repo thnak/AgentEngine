@@ -238,6 +238,10 @@ struct OneWeatherTool : agentengine::Tool<OneWeatherTool> {
 
 class ToolDeclaringHistoryProvider {
 public:
+    // decisions/ADR-066-context-provider-attribution-provenance.md §3: required to satisfy
+    // HasContextProviderName, needed to compose via HistoryAndSkillsProvider below.
+    static constexpr std::string_view name = "real-backend-history";
+
     [[nodiscard]] agentengine::task<agentengine::result<agentengine::ContextContribution>> on_context(
         agentengine::SessionContext& session_ctx, agentengine::EffectContext&) {
         agentengine::ContextContribution contribution;
@@ -259,6 +263,9 @@ static_assert(agentengine::ContextProvider<ToolDeclaringHistoryProvider>,
 // `ContextProvider` conformer).
 class BuiltinSkillsProvider {
 public:
+    // decisions/ADR-066-context-provider-attribution-provenance.md §3.
+    static constexpr std::string_view name = "real-backend-skills";
+
     BuiltinSkillsProvider() : inner_({agentengine::make_builtin_skills_source()}) {}
     [[nodiscard]] agentengine::task<agentengine::result<agentengine::ContextContribution>> on_context(
         agentengine::SessionContext& sc, agentengine::EffectContext& ec) {

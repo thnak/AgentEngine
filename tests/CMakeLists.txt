@@ -292,6 +292,12 @@ add_executable(test_context_provenance test_context_provenance.cpp)
 target_link_libraries(test_context_provenance PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_context_provenance COMMAND test_context_provenance)
 
+# ---- decisions/ADR-066-*.md §7 residual: Message::attribution now survives a round-trip through
+# rt/message_codec.hpp's JSON codec (previously confirmed absent).
+add_executable(test_message_codec_attribution test_message_codec_attribution.cpp)
+target_link_libraries(test_message_codec_attribution PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_message_codec_attribution COMMAND test_message_codec_attribution)
+
 # ---- decisions/ADR-067-middleware-turn-point-pre-model-enforcement.md's prove phase: the turn/
 # pre_model interception point (TurnContext, ToolSurfaceView, redact_subspan(), Compactor<N>), wired
 # as its own standalone, tested mechanism -- not yet threaded into rt::AgentSession::run_rounds()

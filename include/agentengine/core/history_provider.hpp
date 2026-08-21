@@ -131,6 +131,15 @@ public:
         // user or assistant turn it replaces.
         Message summary_message      = std::move(drained.accumulated);
         summary_message.role         = role::system;
+        // ADR-066 §7 residual: `drain_chat_stream()` leaves every `ContentItem::origin` at
+        // `content_origin::assistant` (chat_stream_drain.hpp), which without this loop would make a
+        // synthesized summary indistinguishable from a real assistant turn to anything reading
+        // `content_origin` -- including `assemble_context()`'s own ADR-066 stamping loop, which only
+        // special-cases `::user`. Relabeled to `::system` here, matching `role` above and the same
+        // claim `SkillsProvider::on_context()` already makes for its own host-synthesized advertisement
+        // (skill_provider.hpp) -- host/engine-authored synthesized content, not model output passed
+        // through, is entitled to claim `::system` (ADR-066 §5).
+        for (ContentItem& item : summary_message.content) item.origin = content_origin::system;
         contribution.messages.push_back(std::move(summary_message));
         contribution.messages.insert(contribution.messages.end(), recent.begin(), recent.end());
         co_return contribution;

@@ -141,6 +141,11 @@ int main() {
     AE_CHECK(out1.has_value() && out1->messages.size() == 3 && text_of(out1->messages[1]) == "four" &&
                  text_of(out1->messages[2]) == "five",
              "B4-R4: the last 2 messages (four, five) survive verbatim, unmodified by the summarizer");
+    AE_CHECK(out1.has_value() && out1->messages.size() == 3 &&
+                 out1->messages[0].content.front().origin == ae::content_origin::system,
+             "B4-R6 (ADR-066 §7 residual): the summary message's content_origin is `::system`, not "
+             "the summarizer's raw `::assistant` reply origin -- marks it as a synthesized summary, "
+             "not a real assistant turn, closing ADR-066 §7's named gap");
 
     // --- Bounded-divergence gate (005 §7 G3): the SAME history summarized twice produces a
     // byte-identical result -- deterministic given a deterministic summarizer, never re-derived

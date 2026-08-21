@@ -399,6 +399,20 @@ namespace message_codec_detail {
     content.reserve(m.content.size());
     for (auto const& item : m.content) content.push_back(agentengine::rt::content_item_to_json(item));
     obj.emplace_back("content", agentengine::json::Value::make_array(std::move(content)));
+    // ADR-066 §7 residual: `attribution` previously did not survive this codec's JSON round-trip at
+    // all (checked, confirmed absent). Omit-when-absent, matching this file's own `Data::schema_id`
+    // convention (content_item_to_json above) -- `nullopt` means "never routed through
+    // assemble_context()" (content.hpp's own `Message::attribution` comment), which must round-trip
+    // back to `nullopt`, not a zeroed/default `ContributorProvenance`.
+    if (m.attribution.has_value()) {
+        std::vector<std::pair<std::string, agentengine::json::Value>> attribution_obj;
+        attribution_obj.emplace_back(
+            "contributor_index",
+            agentengine::json::Value::make_number(static_cast<double>(m.attribution->contributor_index)));
+        attribution_obj.emplace_back(
+            "contributor_type", agentengine::json::Value::make_string(m.attribution->contributor_type));
+        obj.emplace_back("attribution", agentengine::json::Value::make_object(std::move(attribution_obj)));
+    }
     return agentengine::json::Value::make_object(std::move(obj));
 }
 
@@ -416,6 +430,14 @@ namespace message_codec_detail {
             if (!item) return std::unexpected(item.error());
             m.content.push_back(std::move(*item));
         }
+    }
+    if (agentengine::json::Value const* attribution = j.find("attribution");
+        attribution != nullptr && attribution->is_object()) {
+        agentengine::ContributorProvenance provenance;
+        provenance.contributor_index =
+            static_cast<std::size_t>(message_codec_detail::opt_u64(*attribution, "contributor_index"));
+        provenance.contributor_type = message_codec_detail::opt_string(*attribution, "contributor_type");
+        m.attribution = provenance;
     }
     return m;
 }
