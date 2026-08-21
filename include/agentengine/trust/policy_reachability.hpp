@@ -112,6 +112,7 @@ enum class finding_kind {
         case capability_kind::schedule: return "schedule";
         case capability_kind::background: return "background";
         case capability_kind::elicit: return "elicit";
+        case capability_kind::native_exec: return "native_exec";
     }
     return "unknown";
 }

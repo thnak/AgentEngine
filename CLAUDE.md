@@ -61,13 +61,22 @@ model output influence a permission decision, it is wrong regardless of how well
   reintroduce a Quark dependency without a new ADR relitigating this.
 - **WASM Component Model (WASI 0.3) is the plugin ABI** — tools, skills, providers, memory stores,
   filters, and the C/C++ library track (009 §7).
-- **The Python code interpreter is embedded native CPython, permanently — never WASM, never a
-  second runtime**, regardless of WASI Python's future maturity. The rich Python-on-WASM ecosystem
-  is Emscripten (needs a JS host) and WASI Python has no binary-wheel ecosystem yet (evidence:
-  `docs/research/2026-standards-landscape.md` §6) — corroborating, not the reason: two Python
-  runtimes would mean an agent's generated code, and the humans verifying it, must know which one
+- **The embedded native CPython interpreter remains the one mediated code-interpreter path,
+  permanently — never WASM, never a second *interpreter* for that job**, regardless of WASI
+  Python's future maturity. The rich Python-on-WASM ecosystem is Emscripten (needs a JS host) and
+  WASI Python has no binary-wheel ecosystem yet (evidence: `docs/research/2026-standards-landscape.
+  md` §6) — corroborating, not the reason: two Python interpreters behind the SAME `execute_code`
+  job would mean an agent's generated code, and the humans verifying it, must know which one
   they're dealing with. The sandbox seam (008) still lets the *isolation backend* evolve; the
-  interpreter itself does not fork.
+  interpreter itself does not fork. (Historical: this bullet used to read "never a second runtime,"
+  full stop — `decisions/ADR-071-native-unsandboxed-process-execution-providers.md`, executed
+  2026-08-21, narrowed it: that paragraph's own evidence is about the WASM-vs-native axis for the
+  code *interpreter* specifically, and does not on its own text resolve a different axis — an
+  unmediated, host-installed Python reached through `NativePythonProvider`, a distinct,
+  explicitly-scoped, host-opt-in capability for native automation, never silently substituted for
+  `execute_code` at any call site, structurally kept out of `agentengine_python_runner`.) Do not
+  reintroduce an unmediated Python path outside `NativePythonProvider`'s own explicitly-scoped seam,
+  or blur it with the code interpreter, without a new ADR relitigating this.
 - **No `microvm` sandbox profile.** Isolation strength for the interpreter/shell comes from treating
   the whole execution environment as the sandbox — worktree, capabilities, resource limits, network
   policy — with CPython's dangerous entry points mediated at the point of use and the OS-level jail

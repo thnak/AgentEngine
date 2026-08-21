@@ -204,6 +204,51 @@ if(NOT WIN32)
   add_library(agentengine::linux_native_jail_backend ALIAS agentengine_linux_native_jail_backend)
 endif()
 
+# ---- native_process backend (src/backends/native_process/) -- OPTIONAL, OFF by default ---------
+# Implements decisions/ADR-071-native-unsandboxed-process-execution-providers.md: real, UNSANDBOXED
+# host process spawning for NativeShellProvider/NativeBashProvider/NativePythonProvider/
+# NativeNodeProvider (ADR-070's "host-configurable responsibility boundary" made concrete for a new
+# capability class, not a variant of the existing native_jail sandbox). No third-party dependency
+# (Win32 CreateProcessW + the ALREADY-BUILT job_object_limits.hpp/worktree_store primitives, reused
+# not duplicated) -- this option exists NOT for CONVENTIONS.md's usual "heavy dependency" reason but
+# because real process creation off a host-granted allowlist is a genuinely new, security-relevant
+# capability class a consumer dev must deliberately opt into building, matching
+# AGENTENGINE_BUILD_PYTHON_RUNNER/AGENTENGINE_WITH_WASM's own "off by default, one option per new
+# capability surface" posture. Deliberately never linked into, or reachable from,
+# agentengine_shell_runner/agentengine_python_runner -- those targets' own ADR-001 Sh-S1 static
+# "no process-creation symbol" proof must stay meaningful independent of whether this option is on.
+option(AGENTENGINE_WITH_NATIVE_PROCESS
+  "Build the native_process backend (real, unsandboxed host process spawning for the Native*Provider family, ADR-071)"
+  OFF)
+
+if(AGENTENGINE_WITH_NATIVE_PROCESS)
+  if(WIN32)
+    add_library(agentengine_native_process_backend STATIC
+      src/backends/native_process/native_process_spawn.cpp
+      src/backends/native_process/native_path_scan.cpp
+      src/backends/native_process/native_worktree_bridge.cpp)
+    target_include_directories(agentengine_native_process_backend PUBLIC
+      "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(agentengine_native_process_backend PUBLIC
+      agentengine::core agentengine::job_object_limits agentengine::worktree_store)
+    target_link_libraries(agentengine_native_process_backend PRIVATE agentengine_warnings)
+    add_library(agentengine::native_process_backend ALIAS agentengine_native_process_backend)
+  else()
+    message(WARNING "AGENTENGINE_WITH_NATIVE_PROCESS: no POSIX spawn implementation yet "
+      "(decisions/ADR-071-native-unsandboxed-process-execution-providers.md, design-only for "
+      "non-Windows -- matching this project's existing 'no Linux env available to build/verify "
+      "against' posture for other Milestone-3+ Linux gaps). Only native_path_scan.cpp (portable) "
+      "is built; there is no native_process_spawn/native_worktree_bridge target on this platform.")
+    add_library(agentengine_native_process_backend STATIC
+      src/backends/native_process/native_path_scan.cpp)
+    target_include_directories(agentengine_native_process_backend PUBLIC
+      "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(agentengine_native_process_backend PUBLIC agentengine::core)
+    target_link_libraries(agentengine_native_process_backend PRIVATE agentengine_warnings)
+    add_library(agentengine::native_process_backend ALIAS agentengine_native_process_backend)
+  endif()
+endif()
+
 # ---- wasmtime C API import (src/backends/wasm/) -- Windows + Linux -----------------------------
 # Milestone 2 Phase D task D1 (docs/planning/milestone-2-tools-capabilities-sandbox-breakdown.md,
 # decision 5): wasmtime 47.0.3 as the `wasm` SandboxBackend's one CONVENTIONS.md tier-2 seam-backend

@@ -32,6 +32,22 @@ Two things are nonetheless **locked**, because leaving them open would leave the
   decision rules out regardless of WASI's future maturity: one Python means one behaviour for the
   agent to reason about and one thing to test, not two runtimes whose subtle differences (available
   packages, threading, extension modules) surface as bugs nobody can reproduce on the other one.
+
+  **Amendment (decisions/ADR-071-native-unsandboxed-process-execution-providers.md):** the paragraph
+  above (and 010 §2's fuller "ecosystem argument" AND "architectural argument," both amended
+  in-place there) is scoped to a second, INTERCHANGEABLE `execute_code` backend — the confusion
+  concern ("an agent's generated code... must know which Python they were dealing with") is real
+  precisely when two runtimes sit behind the same call site, indistinguishably. It does not, on its
+  own text, resolve a different axis: an UNMEDIATED, host-installed Python process reached through
+  `NativePythonProvider` (`src/backends/native_process/`), a distinct, explicitly-scoped, host-opt-in
+  capability for native automation (arbitrary host-installed packages/venvs), reached only through
+  its own distinctly-named tool (`native_python_run`, never `execute_code`) whose own seeded
+  description states outright that it is not the code interpreter — the disambiguation this
+  decision's own concern calls for happens at the point of use, not left implicit.
+  `NativePythonProvider` is structurally kept out of the `agentengine_python_runner` target, so
+  `MediatedPythonRunner` remains the sole, mediated `execute_code` path this locked decision protects,
+  unchanged. See CLAUDE.md's matching amendment to its own paraphrase of this paragraph, and 010 §2
+  for the fuller architectural argument and its own matching amendment.
 - **No `microvm` profile.** An earlier draft of this RFC offered `microvm` (Firecracker/Hyperlight-
   class hardware isolation) as the strongest local boundary for hostile or multi-tenant workloads.
   It is dropped. The original rationale cited a missing macOS backend; that framing is superseded

@@ -90,6 +90,20 @@ equivalent logic (008 §1): the workloads it would have served either run fine u
 with §1b's interpreter-level mediation, or genuinely need cluster-grade hardware isolation, which is
 `remote`'s job, not a second local profile's.
 
+**Amendment (decisions/ADR-071-native-unsandboxed-process-execution-providers.md):** the
+architectural argument above is specifically about a second, INTERCHANGEABLE `execute_code` backend
+— "an agent's generated code, and the humans verifying it, would have to know which Python they
+were dealing with" is a real concern exactly when the two runtimes sit behind the same call site,
+indistinguishably. `NativePythonProvider` (`src/backends/native_process/`) does not do that: it is
+reached only through its own distinctly-named tool (`native_python_run`, never `execute_code`),
+whose own seeded description states outright that it is "Distinct from the engine's own embedded,
+mediated code interpreter" — the disambiguation this argument calls for happens AT the point of
+use, not left implicit. `execute_code` itself still resolves to exactly one runtime, unchanged by
+this amendment: `MediatedPythonRunner`. What `NativePythonProvider` answers is a different question
+entirely — native host-installed-package automation (venvs, system packages the embedded, mediated
+interpreter's import allowlist does not and should not carry) — not "which Python runs my generated
+code," which stays answered exactly as this section already says.
+
 | Profile | Runtime | What you get | When it is used |
 |---|---|---|---|
 | `native-jail` | Real CPython + venv + PyPI, mediated per 008 §1b | Full ecosystem: NumPy, pandas, SciPy, whatever the operator allows | **Default**, every deployment tier |

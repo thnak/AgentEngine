@@ -218,6 +218,50 @@ if(WIN32)
     "real one-argument signatures compile)")
 endif()
 
+# ---- ADR-071 compile-fail proof (native-execution family distinctness) -------------------------
+# `NativeCapabilityAnnouncer<Ps...>` (src/backends/native_process/native_capability_announcer.hpp)
+# must reject composing two providers sharing the same declared family name (e.g. two
+# `NativePythonProvider`s) -- otherwise an LLM could be handed two functionally-identical
+# native-execution tools with no principled way to choose between them. Header-only; no linking
+# needed (the `requires` clause is checked at the point the type alias itself is named, before any
+# member function is instantiated). WIN32-gated: this backend's headers are Windows-only today
+# (native_providers.hpp includes <windows.h> unconditionally), matching AGENTENGINE_WITH_NATIVE_
+# PROCESS's own current platform scope -- independent of whether that CMake option happens to be ON
+# for this particular configure, since try_compile() runs in an isolated mini-project that only
+# needs the header search path, not the outer project's own build graph.
+if(WIN32)
+  try_compile(AE_NATIVE_ANNOUNCER_REJECTS_DUPLICATE_FAMILY
+    "${CMAKE_CURRENT_BINARY_DIR}/compile_fail_checks/native_announcer_rejects_duplicate_family"
+    "${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/native_capability_announcer_rejects_duplicate_family.cpp"
+    CXX_STANDARD 23
+    CMAKE_FLAGS "-DINCLUDE_DIRECTORIES=${PROJECT_SOURCE_DIR}/include;${PROJECT_SOURCE_DIR}/src"
+    OUTPUT_VARIABLE AE_NATIVE_ANNOUNCER_REJECTS_DUPLICATE_FAMILY_LOG)
+  if(AE_NATIVE_ANNOUNCER_REJECTS_DUPLICATE_FAMILY)
+    message(FATAL_ERROR
+      "ADR-071 VIOLATED: tests/compile_fail/native_capability_announcer_rejects_duplicate_family.cpp "
+      "compiled, but NativeCapabilityAnnouncer<Ps...> must reject composing two providers with the "
+      "same declared family name (Ps::name) -- an LLM must never be handed two functionally-identical "
+      "native-execution tools. Build log:\n${AE_NATIVE_ANNOUNCER_REJECTS_DUPLICATE_FAMILY_LOG}")
+  endif()
+
+  try_compile(AE_NATIVE_ANNOUNCER_DISTINCT_FAMILIES_POSITIVE_CONTROL
+    "${CMAKE_CURRENT_BINARY_DIR}/compile_fail_checks/native_announcer_distinct_families_positive_control"
+    "${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/native_capability_announcer_distinct_families_positive_control.cpp"
+    CXX_STANDARD 23
+    CMAKE_FLAGS "-DINCLUDE_DIRECTORIES=${PROJECT_SOURCE_DIR}/include;${PROJECT_SOURCE_DIR}/src"
+    OUTPUT_VARIABLE AE_NATIVE_ANNOUNCER_DISTINCT_FAMILIES_POSITIVE_CONTROL_LOG)
+  if(NOT AE_NATIVE_ANNOUNCER_DISTINCT_FAMILIES_POSITIVE_CONTROL)
+    message(FATAL_ERROR
+      "ADR-071 positive control FAILED: tests/compile_fail/"
+      "native_capability_announcer_distinct_families_positive_control.cpp must compile (four DISTINCT "
+      "families composing together is the intended, legitimate path) but did not. "
+      "Build log:\n${AE_NATIVE_ANNOUNCER_DISTINCT_FAMILIES_POSITIVE_CONTROL_LOG}")
+  endif()
+  message(STATUS
+    "ADR-071 compile-fail proof: OK (NativeCapabilityAnnouncer rejects a duplicated native-execution "
+    "family; distinct families still compose)")
+endif()
+
 # ---- Keep assert() live in every configuration, Release included --------------------------------
 # 13 files here (195 assert() calls) use bare <cassert> rather than the AE_CHECK/g_failures harness:
 # smoke_vocabulary, test_job_object_limits, test_native_jail_runner_stubs, test_python_audit_hook,
@@ -513,6 +557,44 @@ add_test(NAME test_capability_enforcement COMMAND test_capability_enforcement)
 add_executable(test_capability_declaration_tags test_capability_declaration_tags.cpp)
 target_link_libraries(test_capability_declaration_tags PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_capability_declaration_tags COMMAND test_capability_declaration_tags)
+
+# ---- cap::NativeExec (decisions/ADR-071-native-unsandboxed-process-execution-providers.md) ------
+# Header-only (trust/capability.hpp), core-tier -- links only agentengine::core.
+add_executable(test_native_exec_capability test_native_exec_capability.cpp)
+target_link_libraries(test_native_exec_capability PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_native_exec_capability COMMAND test_native_exec_capability)
+
+# ---- native_process backend (decisions/ADR-071-native-unsandboxed-process-execution-providers.md)
+# Only built when AGENTENGINE_WITH_NATIVE_PROCESS is explicitly turned ON (root CMakeLists.txt) --
+# matching AGENTENGINE_BUILD_PYTHON_RUNNER/AGENTENGINE_WITH_WASM's own gating pattern. Windows-only
+# for now (native_process_spawn/native_worktree_bridge have no POSIX implementation yet, a named,
+# honest gap -- see root CMakeLists.txt's own AGENTENGINE_WITH_NATIVE_PROCESS block).
+if(AGENTENGINE_WITH_NATIVE_PROCESS AND WIN32)
+  add_executable(test_native_process_spawn test_native_process_spawn.cpp)
+  target_link_libraries(test_native_process_spawn PRIVATE
+    agentengine::native_process_backend agentengine_warnings)
+  add_test(NAME test_native_process_spawn COMMAND test_native_process_spawn)
+
+  add_executable(test_native_path_scan test_native_path_scan.cpp)
+  target_link_libraries(test_native_path_scan PRIVATE
+    agentengine::native_process_backend agentengine_warnings)
+  add_test(NAME test_native_path_scan COMMAND test_native_path_scan)
+
+  add_executable(test_native_worktree_bridge test_native_worktree_bridge.cpp)
+  target_link_libraries(test_native_worktree_bridge PRIVATE
+    agentengine::native_process_backend agentengine_warnings)
+  add_test(NAME test_native_worktree_bridge COMMAND test_native_worktree_bridge)
+
+  add_executable(test_native_providers test_native_providers.cpp)
+  target_link_libraries(test_native_providers PRIVATE
+    agentengine::core agentengine::native_process_backend agentengine_warnings)
+  add_test(NAME test_native_providers COMMAND test_native_providers)
+
+  add_executable(test_native_capability_announcer test_native_capability_announcer.cpp)
+  target_link_libraries(test_native_capability_announcer PRIVATE
+    agentengine::core agentengine::native_process_backend agentengine_warnings)
+  add_test(NAME test_native_capability_announcer COMMAND test_native_capability_announcer)
+endif()
 
 # ---- agent.spawn depth/budget bound (decisions/ADR-006-agent-spawn-depth-budget-bound.md) -------
 # Header-only (trust/spawn_budget.hpp), core-tier (std only, no crypto -- in-process, never crosses

@@ -56,6 +56,11 @@ enum class capability_kind {
     background,    // 006 §6b.
     elicit,        // 026 §5 — agent.ask; not yet in 007 §3's own table (pre-existing drift this
                    // enum does not otherwise attempt to reconcile).
+    native_exec,   // decisions/ADR-071-native-unsandboxed-process-execution-providers.md — a host-
+                   // granted allowlist entry naming one native, unsandboxed executable a
+                   // NativeShellProvider/NativeBashProvider/NativePythonProvider/NativeNodeProvider
+                   // may invoke; distinct from `exec` (sandbox PROFILE selection for nested/managed
+                   // execution, 008 §4) — this kind names a real host binary outside any sandbox.
 };
 // `memory` (029) is deliberately NOT its own kind: it is FsRead/FsWrite scoped to a `/memory` mount
 // (trust/agent_library_manifest.hpp's own comment already said so). The parameterized FsRead/FsWrite
@@ -137,6 +142,20 @@ struct Background {
     std::uint32_t max_concurrent = 0;
 };
 struct Elicit {};
+struct NativeExec {
+    // Host-authored, never model-derived (I3 — no constructor here takes a TaintedText). May end in
+    // '*' for a prefix grant (e.g. "python*" covers "python3.11"); a REQUESTED NativeExec (the
+    // resolved, concrete program a provider is about to invoke) must never itself carry a '*' — see
+    // capability_detail::native_exec_pattern_covers below for the exact narrowing rule this enforces.
+    std::string program_pattern;
+    // Which materialized worktree mount the child process's cwd must be confined to
+    // (decisions/ADR-071-...md — worktree confinement stays mandatory even though the OS sandbox
+    // jail is optional for these providers).
+    std::string worktree_mount_id;
+    std::optional<std::uint64_t> cpu_ms_cap;
+    std::optional<std::uint64_t> wall_ms_cap;
+    std::optional<std::uint64_t> memory_bytes_cap;
+};
 
 }  // namespace cap
 
@@ -147,7 +166,7 @@ struct Elicit {};
 using Capability = std::variant<cap::FsRead, cap::FsWrite, cap::NetOut, cap::NetListen, cap::Secret,
                                  cap::ToolCall, cap::RunnerCall, cap::Exec, cap::Clock, cap::Entropy,
                                  cap::EnvRead, cap::EnvWrite, cap::AgentCall, cap::Schedule,
-                                 cap::Background, cap::Elicit>;
+                                 cap::Background, cap::Elicit, cap::NativeExec>;
 
 [[nodiscard]] inline capability_kind capability_kind_of(Capability const& c) {
     return std::visit(
@@ -168,6 +187,7 @@ using Capability = std::variant<cap::FsRead, cap::FsWrite, cap::NetOut, cap::Net
             else if constexpr (std::is_same_v<T, cap::Schedule>) return capability_kind::schedule;
             else if constexpr (std::is_same_v<T, cap::Background>) return capability_kind::background;
             else if constexpr (std::is_same_v<T, cap::Elicit>) return capability_kind::elicit;
+            else if constexpr (std::is_same_v<T, cap::NativeExec>) return capability_kind::native_exec;
             else static_assert(sizeof(T) == 0, "unhandled Capability alternative in capability_kind_of");
         },
         c);
@@ -197,6 +217,7 @@ using Capability = std::variant<cap::FsRead, cap::FsWrite, cap::NetOut, cap::Net
         case capability_kind::schedule:    return cap::Schedule{};
         case capability_kind::background:  return cap::Background{};
         case capability_kind::elicit:      return cap::Elicit{};
+        case capability_kind::native_exec: return cap::NativeExec{};
     }
     return cap::Entropy{};  // unreachable (every enumerator handled above) — a defined fallback
                              // rather than UB if the enum is ever extended without updating this
@@ -245,6 +266,9 @@ using Capability = std::variant<cap::FsRead, cap::FsWrite, cap::NetOut, cap::Net
                                                             // window" reason as schedule
         case capability_kind::elicit:      return false;  // can be used to social-engineer the human
                                                             // via the agent
+        case capability_kind::native_exec: return false;  // subprocess execution outside any
+                                                            // sandbox — same reasoning as `exec`,
+                                                            // strictly stronger (no jail at all)
     }
     return false;  // unreachable (every enumerator handled above) -- fails CLOSED if the enum is
                     // ever extended without updating this switch, the opposite direction from
@@ -318,6 +342,11 @@ struct Schedule {};
 template <std::uint32_t MaxConcurrent>
 struct Background {};
 struct Elicit {};
+template <agentengine::fixed_string ProgramPattern, agentengine::fixed_string WorktreeMount>
+struct NativeExec {
+    static constexpr std::string_view program_pattern = std::string_view{ProgramPattern};
+    static constexpr std::string_view worktree_mount = std::string_view{WorktreeMount};
+};
 
 }  // namespace cap::decl
 
@@ -382,6 +411,12 @@ template <std::uint32_t MaxConcurrent>
     return cap::Background{MaxConcurrent};
 }
 [[nodiscard]] inline Capability to_capability(cap::decl::Elicit const&) { return cap::Elicit{}; }
+template <agentengine::fixed_string ProgramPattern, agentengine::fixed_string WorktreeMount>
+[[nodiscard]] inline Capability to_capability(cap::decl::NativeExec<ProgramPattern, WorktreeMount> const&) {
+    return cap::NativeExec{std::string(std::string_view{ProgramPattern}),
+                            std::string(std::string_view{WorktreeMount}), std::nullopt, std::nullopt,
+                            std::nullopt};
+}
 
 // Named `capability_detail`, not the more obvious `detail` -- `agentengine::trust::detail` already
 // exists (trust/agent_library_manifest.hpp) and a caller with both `using namespace agentengine;`
@@ -497,6 +532,32 @@ template <class T>
     return requested.max_concurrent <= parent.max_concurrent;
 }
 [[nodiscard]] inline bool subsumes_payload(cap::Elicit const&, cap::Elicit const&) { return true; }
+
+// decisions/ADR-071-native-unsandboxed-process-execution-providers.md — the narrowing rule for
+// `cap::NativeExec::program_pattern`. `parent` is host-granted (may end in a single trailing '*'
+// for a prefix grant, e.g. "python*"); `requested` is either (a) an identical re-request of the
+// same grant (attenuate-to-self, same shape every other exact-string kind above already permits),
+// or (b) the CONCRETE, resolved program name a provider is about to invoke — which must never
+// itself carry a '*', or a caller could "request" the wildcard right back and claim it was
+// narrowed. This is the one place PATH-scan discovery output is checked against an actual grant —
+// scanning never grants; this function is what decides whether an invocation is authorized.
+[[nodiscard]] inline bool native_exec_pattern_covers(std::string const& parent_pattern,
+                                                       std::string const& requested_pattern) {
+    if (parent_pattern == requested_pattern) return true;
+    if (!parent_pattern.empty() && parent_pattern.back() == '*') {
+        if (requested_pattern.find('*') != std::string::npos) return false;  // no re-widening
+        std::string const prefix = parent_pattern.substr(0, parent_pattern.size() - 1);
+        return requested_pattern.compare(0, prefix.size(), prefix) == 0;
+    }
+    return false;
+}
+[[nodiscard]] inline bool subsumes_payload(cap::NativeExec const& parent, cap::NativeExec const& requested) {
+    return native_exec_pattern_covers(parent.program_pattern, requested.program_pattern) &&
+           parent.worktree_mount_id == requested.worktree_mount_id &&
+           cap_covers(parent.cpu_ms_cap, requested.cpu_ms_cap) &&
+           cap_covers(parent.wall_ms_cap, requested.wall_ms_cap) &&
+           cap_covers(parent.memory_bytes_cap, requested.memory_bytes_cap);
+}
 
 struct InvocationTicket {
     std::atomic<bool> live{true};
@@ -669,6 +730,23 @@ public:
             if (auto const* sc = std::get_if<cap::Schedule>(&c)) return *sc;
         }
         return std::nullopt;
+    }
+
+    // decisions/ADR-071-native-unsandboxed-process-execution-providers.md -- unlike find_background/
+    // find_schedule above (at most one meaningful grant per session), a session may hold SEVERAL
+    // independent cap::NativeExec grants at once (e.g. one for "python*", one for "node"), so this
+    // returns ALL of them, verbatim, rather than the first/only match. A Native*Provider filters this
+    // list down to the entries it owns (its own host-authored `owned_patterns` configuration) and
+    // re-checks EACH one against the specific program a tool call actually names via
+    // `capability_detail::native_exec_pattern_covers` -- this accessor itself performs no filtering
+    // or authorization decision, it is a pure lookup, matching every other `find_*` accessor's own
+    // documented shape.
+    [[nodiscard]] std::vector<cap::NativeExec> native_exec_grants() const {
+        std::vector<cap::NativeExec> out;
+        for (Capability const& c : granted_) {
+            if (auto const* ne = std::get_if<cap::NativeExec>(&c)) out.push_back(*ne);
+        }
+        return out;
     }
 
     [[nodiscard]] result<BoundCapability> bind(Capability const& requirement) const {
