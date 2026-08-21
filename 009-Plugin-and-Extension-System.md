@@ -355,6 +355,22 @@ These ship in this repo, not as a separate download, and are mounted by default 
 per-session grant model as any skill (§8c) — "built-in" means "shipped and trusted by default," not
 "ungoverned."
 
+### 8g. External, host-discovered skill sources (`decisions/ADR-072-external-host-discovered-skill-
+sources.md`)
+
+§8a's format choice (`SKILL.md`) is also the interchange format several other AI coding tools
+converged on independently in 2026 — Claude Code, GitHub Copilot, and OpenAI Codex CLI all read the
+identical shape from their own per-tool, per-scope conventional directories. `core/external_skill_
+discovery.hpp`'s `discover_external_skill_locations()` is a small, host-invoked-only locator that
+finds those real directories on the machine a session is running on and hands back
+`(origin_id, path)` pairs a host feeds into the SAME `DiskSkillSource`/`SkillsProvider` pipeline §8b
+already specifies — no second parser, no new provider, no new capability kind. It is not called
+automatically anywhere in the engine (ADR-070's "explicit opt-in" property); §8c's per-session grant
+model, the anti-shadowing collision rule, and the read-only worktree mount all apply to a discovered
+skill exactly as they do to any other. See ADR-072 for the full design and the residual, honestly-
+scoped risk it accepts (a host that opts in may surface third-party skill content it did not
+personally author or review).
+
 ## 9. Observability
 
 Per invocation: plugin id + version + digest, world, instantiation (cold/warm/pooled), fuel/CPU,

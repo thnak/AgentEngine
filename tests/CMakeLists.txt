@@ -2185,6 +2185,18 @@ if(WIN32)
   add_test(NAME test_skill_provider_mount COMMAND test_skill_provider_mount)
 endif()
 
+# ---- ADR-072: external, host-discovered skill sources (Claude Code / Codex / Copilot / generic
+# agents installs already on the machine) -- real scratch-directory fixtures plus real evidence
+# against this session's own already-installed tools, and a SkillsProvider integration proving the
+# existing collision guard still protects discovered sources. WIN32-gated for the same reason
+# test_skill_provider_mount is: it links agentengine::worktree_store for that integration proof.
+if(WIN32)
+  add_executable(test_external_skill_discovery test_external_skill_discovery.cpp)
+  target_link_libraries(test_external_skill_discovery PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_external_skill_discovery COMMAND test_external_skill_discovery)
+endif()
+
 # ---- Skills Phase 3 (decisions/ADR-024's addendum): agent-triggered, on-demand skill mounting.
 # Core-tier only (no native_jail/Python dependency) -- proves MountedSkillsState's own contract plus
 # the load-bearing chain: invoke_tool genuinely rejects a skill-named tool before that skill is
