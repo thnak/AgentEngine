@@ -25,7 +25,17 @@ extern char const* const kVendoredCaBundlePem;
 
 namespace {
 
-constexpr int kIoTimeoutMs = 10'000;
+// Live-model evidence (repeated `net.connect_failed`/"TLS read failed: SSL - The operation timed
+// out" failures across several tests/test_rt_agent_session_*_live_e2e.cpp runs, isolated by cross-
+// checking the identical scenario through the plain Python `openai` SDK, which never reproduced the
+// failure) traced this to 10s being far too short: `TlsClientSession::recv()`'s retry loop only
+// continues past MBEDTLS_ERR_SSL_WANT_READ/WANT_WRITE -- a real MBEDTLS_ERR_SSL_TIMEOUT from
+// wait_ready() below falls straight through as a hard error, and a reasoning-capable model can
+// legitimately take well over 10s to produce its first response byte on a non-streaming completion
+// (there is nothing to read until the model has finished "thinking"). Widened to something that
+// comfortably covers that latency while still bounding a genuinely dead connection, not removed
+// entirely -- this is one `wait_ready` poll's own timeout, not a whole-request budget.
+constexpr int kIoTimeoutMs = 90'000;
 
 // Mirrors net_egress_proxy.cpp's own `wait_ready` exactly (same agentengine::pal primitive, same
 // select()-based readiness wait) -- kept as an independent copy rather than a shared header, since

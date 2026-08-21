@@ -238,16 +238,41 @@ private:
         return s;
     }
 
+    // Splits on whitespace, dropping empty tokens (repeated spaces, leading/trailing whitespace).
+    [[nodiscard]] static std::vector<std::string> split_words(std::string const& lower) {
+        std::vector<std::string> words;
+        std::string word;
+        for (char c : lower) {
+            if (std::isspace(static_cast<unsigned char>(c))) {
+                if (!word.empty()) { words.push_back(std::move(word)); word.clear(); }
+            } else {
+                word += c;
+            }
+        }
+        if (!word.empty()) words.push_back(std::move(word));
+        return words;
+    }
+
+    // Token-overlap match, not a whole-query substring match: a live model run against a multi-tool
+    // pool showed this heuristic's earlier whole-phrase form failing every natural multi-word query
+    // ("code execution compute calculation", "python calculator math", "run code script compute
+    // liters", ...) for a tool whose name/description never happened to contain that exact phrase
+    // verbatim, causing the model to give up searching for a tool that was in fact present. Matching
+    // if ANY query word appears in a tool's name+description is what "search" is actually expected to
+    // mean; a single-word query (this class's own R4 test, tests/test_tool_optimizer_provider.cpp)
+    // behaves identically either way, so this is a strict widening, not a behavior change for it.
     [[nodiscard]] result<SearchToolsReply> real_search_tools(SearchToolsArgs args, EffectContext& ctx) {
         auto universe = build_universe(ctx);
         if (!universe) return std::unexpected(universe.error());
-        std::string const query_lower = to_lower(args.query);
+        std::vector<std::string> const words = split_words(to_lower(args.query));
         std::vector<std::string> names;
         for (ToolDescriptor const& d : universe->descriptors()) {
-            if (query_lower.empty() || to_lower(d.name).find(query_lower) != std::string::npos ||
-                to_lower(d.description).find(query_lower) != std::string::npos) {
-                names.push_back(d.name);
-            }
+            std::string const haystack = to_lower(d.name) + " " + to_lower(d.description);
+            bool const matches = words.empty() ||
+                std::ranges::any_of(words, [&](std::string const& w) {
+                    return haystack.find(w) != std::string::npos;
+                });
+            if (matches) names.push_back(d.name);
         }
         return SearchToolsReply{std::move(names)};
     }

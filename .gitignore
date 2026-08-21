@@ -69,3 +69,4 @@ apt-openrouter.txt
 
 # Local debug dumps of live-provider chat transcripts -- scratch, never committed
 response-dumps/
+dumps/

@@ -753,6 +753,48 @@ if(AGENTENGINE_WITH_HTTPS)
       MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
     add_test(NAME test_rt_agent_session_skills_live_e2e COMMAND test_rt_agent_session_skills_live_e2e)
     set_tests_properties(test_rt_agent_session_skills_live_e2e PROPERTIES LABELS "live-network" TIMEOUT 300)
+
+    # ---- Farm-field-advisory (009 §8 + ADR-024's Phase 3 addendum), LIVE: a NEW skill/tool pair
+    # purpose-built for this file (farm-field-advisory -> check_field_weather), not a reuse of the
+    # builtin five or of execute_code -- a rice-farmer scenario driven through the same
+    # advertise -> mount_skill -> next-turn-unlocked-tool round-trip as the skills test above, against
+    # a REAL remote model over OpenRouter. See the .cpp's own top comment for the full rationale.
+    add_executable(test_rt_agent_session_farm_advisory_live_e2e test_rt_agent_session_farm_advisory_live_e2e.cpp)
+    target_link_libraries(test_rt_agent_session_farm_advisory_live_e2e PRIVATE
+      agentengine::core agentengine::provider_http_client agentengine::worktree_store agentengine_warnings
+      MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+    add_test(NAME test_rt_agent_session_farm_advisory_live_e2e COMMAND test_rt_agent_session_farm_advisory_live_e2e)
+    set_tests_properties(test_rt_agent_session_farm_advisory_live_e2e PROPERTIES LABELS "live-network" TIMEOUT 300)
+
+    # ---- Farm operations (009 §8 multi-skill + ADR-065 ToolOptimizerProvider + 010 real CPython
+    # sandbox), LIVE: an expanded scenario -- two independent skills (crop-field-operations,
+    # livestock-care-operations) gating their own domain tools via the same advertise->mount_skill->
+    # next-turn-unlocked round-trip the two tests above already prove, PLUS a separate five-tool
+    # scheduling/market pool gated through a REAL ToolOptimizerProvider (search_tools/mount_tool/
+    # unmount_tool, ADR-065) so that mechanism has enough of a tool surface to be meaningful, PLUS one
+    # genuinely real tool (execute_code) backed by the real embedded CPython interpreter
+    # (native_jail::PythonRunner, not a canned stand-in) for actual numeric computation -- against a
+    # REAL remote model over OpenRouter. Needs a real CPython install to link against, so this block is
+    # further gated by AGENTENGINE_BUILD_PYTHON_RUNNER on top of the outer WIN32/AGENTENGINE_WITH_HTTPS
+    # gating above (the .cpp's own #else main(){return 0;} still applies if HTTPS alone is off). See
+    # the .cpp's own top comment for the full rationale.
+    if(AGENTENGINE_BUILD_PYTHON_RUNNER)
+      add_executable(test_rt_agent_session_farm_ops_live_e2e test_rt_agent_session_farm_ops_live_e2e.cpp)
+      target_link_libraries(test_rt_agent_session_farm_ops_live_e2e PRIVATE
+        agentengine::core agentengine::provider_http_client agentengine::worktree_store
+        agentengine::python_runner agentengine_warnings
+        MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+      target_compile_definitions(test_rt_agent_session_farm_ops_live_e2e PRIVATE
+        AE_PYTHON_HOME="${AGENTENGINE_PYTHON_HOME}")
+      add_test(NAME test_rt_agent_session_farm_ops_live_e2e COMMAND test_rt_agent_session_farm_ops_live_e2e)
+      set_tests_properties(test_rt_agent_session_farm_ops_live_e2e PROPERTIES
+        # 480s, not the other live tests' 300s: this file's own max_turns is intentionally unbounded
+        # (an ordinary open-ended conversation, not a fixed-step workflow -- see the .cpp's own
+        # comment at the initialize() call site), so ctest's TIMEOUT is the only outer bound on a
+        # session that occasionally needs several extra rounds to recover and converge.
+        LABELS "live-network" TIMEOUT 480
+        ENVIRONMENT "PATH=${AGENTENGINE_PYTHON_DLL_DIR};$ENV{PATH}")
+    endif()
   endif()
 
   # ---- Milestone 5 Phase J1 (roadmap exit criterion, 004 §7 G1): the same unchanged call site, run

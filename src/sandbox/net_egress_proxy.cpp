@@ -61,7 +61,12 @@ bool equals_ci(std::string_view a, std::string_view b) noexcept {
            });
 }
 
-constexpr int kIoTimeoutMs = 10'000;
+// See src/sandbox/tls_client.cpp's own kIoTimeoutMs comment -- same live-model evidence, same fix:
+// 10s is too short a single wait_ready() poll timeout for a non-streaming LLM completion, which can
+// legitimately produce no bytes at all until the model finishes "thinking." Kept as an independent
+// constant (this file's own top-of-file note on why these two copies aren't shared) but widened to
+// the same value so the plain-HTTP path doesn't retain the bug the TLS path just had fixed.
+constexpr int kIoTimeoutMs = 90'000;
 
 bool wait_ready(agentengine::pal::fd_t fd, bool for_write, int timeout_ms) {
     ::fd_set set;
