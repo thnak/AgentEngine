@@ -114,6 +114,14 @@ constexpr char const* kDefaultHost = "openrouter.ai";
 constexpr std::uint16_t kHttpsPort = 443;
 constexpr char const* kPathPrefix = "/api/v1";
 constexpr char const* kSecretName = "openrouter-api-key";
+// OpenRouter's dashboard Activity view groups/labels rows by this (the `X-Title` header), NOT by the
+// `user` field (`end_user_id` below) -- confirmed directly against a real run: without a per-file
+// X-Title, every case here reads as an anonymous, unlabeled request no matter how distinct its
+// `end_user_id` is. This is the SEPARATE field that makes this file's own traffic findable in the
+// dashboard at all -- `end_user_id` does NOT drive OpenRouter's own cache routing (docs/research/
+// 2026-08-21-openrouter-session-id-header.md corrects an earlier claim here that it did); the new
+// `session_id` constructor param below is what actually keys OpenRouter's sticky routing.
+constexpr char const* kXTitle = "AgentEngine: multitool-live-e2e";
 constexpr int kMaxRounds = 6;  // AgentSession's own max_turns -- fails the run (not hang) if it never
                                 // converges to plain Text; this file only ever OBSERVES via one ask now.
 
@@ -316,8 +324,19 @@ int main() {
         convert_arg_celsius_log().reset();
 
         Session session;
+        // This case's own stable id, matching `initialize()`'s own session_id below -- passed to
+        // BOTH `end_user_id` (abuse-tracking only) and `session_id` (OpenRouter's own prompt-cache
+        // sticky-routing key, docs/research/2026-08-21-openrouter-session-id-header.md; a DIFFERENT
+        // field, established after test_rt_agent_session_hitl_live_e2e.cpp's own `configure_session()`
+        // first threaded a case id through, though that file's own comment at the time predates this
+        // research and named the wrong field).
         session.emplace_chat_client(host, kHttpsPort, model, SecretRef{kSecretName}, caps, store,
-                                     kPathPrefix);
+                                     kPathPrefix, sandbox::resolve_host, /*ca=*/std::string{},
+                                     /*http_referer=*/std::string{}, /*x_title=*/kXTitle,
+                                     /*end_user_id=*/std::string{"mt1-session"}, /*seed=*/std::nullopt,
+                                     /*transport=*/sandbox::ProviderTransport::tls,
+                                     /*scan_response_format_leaks=*/false,
+                                     /*session_id=*/std::string{"mt1-session"});
         session.initialize("mt1-session", Principal{"live-e2e-principal", ""}, /*token_budget=*/std::nullopt,
                             /*max_turns=*/static_cast<std::uint64_t>(kMaxRounds));
         session.set_capabilities(&held);
@@ -374,8 +393,14 @@ int main() {
         called_tools_log().clear();
 
         Session session;
+        // See MT-1's own comment on this same pattern.
         session.emplace_chat_client(host, kHttpsPort, model, SecretRef{kSecretName}, caps, store,
-                                     kPathPrefix);
+                                     kPathPrefix, sandbox::resolve_host, /*ca=*/std::string{},
+                                     /*http_referer=*/std::string{}, /*x_title=*/kXTitle,
+                                     /*end_user_id=*/std::string{"mt2-session"}, /*seed=*/std::nullopt,
+                                     /*transport=*/sandbox::ProviderTransport::tls,
+                                     /*scan_response_format_leaks=*/false,
+                                     /*session_id=*/std::string{"mt2-session"});
         session.initialize("mt2-session", Principal{"live-e2e-principal", ""}, /*token_budget=*/std::nullopt,
                             /*max_turns=*/static_cast<std::uint64_t>(kMaxRounds));
         session.set_capabilities(&held);

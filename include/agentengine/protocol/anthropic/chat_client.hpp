@@ -463,12 +463,19 @@ inline constexpr std::uint64_t kMinThinkingBudgetTokens = 1024;
 // `http_referer`/`x_title` (7): OpenRouter's own app-attribution header convention (Finding 1) --
 // stamped in ONLY when non-empty, both default-empty, so a caller who never sets them gets exactly
 // today's three headers and nothing more.
+//
+// `session_id` (docs/research/2026-08-21-openrouter-session-id-header.md): OpenRouter's own prompt-
+// cache sticky-routing key -- NOT `end_user_id`/`user`/`metadata.user_id`, which that vendor uses only
+// for abuse-tracking and plays no role in cache routing (confirmed directly against OpenRouter's own
+// docs, correcting an earlier claim in this codebase's own comments). Sent as the `x-session-id`
+// header, same "stamped only when non-empty" discipline as the two headers above.
 [[nodiscard]] inline sandbox::NetEgressRequest build_http_request(std::string const& path,
                                                                     std::string const& api_key,
                                                                     std::string const& api_version,
                                                                     std::string body,
                                                                     std::string const& http_referer = {},
-                                                                    std::string const& x_title = {}) {
+                                                                    std::string const& x_title = {},
+                                                                    std::string const& session_id = {}) {
     sandbox::NetEgressRequest req;
     req.method = "POST";
     req.path = path;
@@ -477,6 +484,7 @@ inline constexpr std::uint64_t kMinThinkingBudgetTokens = 1024;
     req.headers.emplace_back("anthropic-version", api_version);
     if (!http_referer.empty()) req.headers.emplace_back("HTTP-Referer", http_referer);
     if (!x_title.empty()) req.headers.emplace_back("X-Title", x_title);
+    if (!session_id.empty()) req.headers.emplace_back("x-session-id", session_id);
     req.body = std::move(body);
     return req;
 }
@@ -937,7 +945,7 @@ inline void run_stream_worker(std::string host, std::uint16_t port, std::string 
                                Resolver resolver, std::string ca_bundle_pem_override,
                                std::string http_referer, std::string x_title, std::string end_user_id,
                                std::string cache_ttl, sandbox::ProviderTransport transport,
-                               std::stop_token stop) {
+                               std::stop_token stop, std::string session_id) {
     auto body = build_request_body(request, model, caps, /*stream=*/true, end_user_id, cache_ttl);
     if (!body) {
         // Forward the real error (see protocol/openai/chat_client.hpp's identical rationale) instead
@@ -946,7 +954,8 @@ inline void run_stream_worker(std::string host, std::uint16_t port, std::string 
         producer.fail(body.error());
         return;
     }
-    auto req = build_http_request(path, api_key, api_version, json::dump(*body), http_referer, x_title);
+    auto req = build_http_request(path, api_key, api_version, json::dump(*body), http_referer, x_title,
+                                   session_id);
 
     // ADR-019: decode and push as the bytes arrive -- see the OpenAI backend's identical note for why
     // `chunked` is inferred from the first fragment (the sink never sees the response head).
@@ -1027,7 +1036,13 @@ public:
                          detail::Resolver resolver = sandbox::resolve_host,
                          std::string ca_bundle_pem_override = {}, std::string http_referer = {},
                          std::string x_title = {}, std::string end_user_id = {}, std::string cache_ttl = {},
-                         sandbox::ProviderTransport transport = sandbox::ProviderTransport::tls)
+                         sandbox::ProviderTransport transport = sandbox::ProviderTransport::tls,
+                         // docs/research/2026-08-21-openrouter-session-id-header.md: OpenRouter's own
+                         // prompt-cache sticky-routing key, sent as the `x-session-id` header -- NOT
+                         // `end_user_id` above, which that vendor does not use for cache routing at
+                         // all. Appended last, same "never insert earlier" convention as every
+                         // optional param above.
+                         std::string session_id = {})
         : host_(std::move(host)),
           port_(port),
           model_(std::move(model)),
@@ -1042,7 +1057,8 @@ public:
           x_title_(std::move(x_title)),
           end_user_id_(std::move(end_user_id)),
           cache_ttl_(std::move(cache_ttl)),
-          transport_(transport) {
+          transport_(transport),
+          session_id_(std::move(session_id)) {
         if (!detail::is_valid_cache_ttl(cache_ttl_)) {
             throw std::invalid_argument(
                 "AnthropicChatClient: cache_ttl must be \"\" (server default), \"5m\", or \"1h\"");
@@ -1073,7 +1089,8 @@ public:
         if (!body) co_return std::unexpected(body.error());
 
         auto req = detail::build_http_request(path_prefix_ + "/messages", lease->reveal_text(),
-                                                api_version_, json::dump(*body), http_referer_, x_title_);
+                                                api_version_, json::dump(*body), http_referer_, x_title_,
+                                                session_id_);
         auto resp = sandbox::perform_provider_https_exchange(host_, port_, req, {}, std::nullopt,
                                                                 resolver_, ca_bundle_pem_override_,
                                                                 transport_);
@@ -1101,7 +1118,7 @@ public:
         std::thread(&detail::run_stream_worker, host_, port_, path_prefix_ + "/messages",
                     lease->reveal_text(), api_version_, model_, capabilities_, std::move(request),
                     std::move(pair.producer), resolver_, ca_bundle_pem_override_, http_referer_, x_title_,
-                    end_user_id_, cache_ttl_, transport_, std::move(stop))
+                    end_user_id_, cache_ttl_, transport_, std::move(stop), session_id_)
             .detach();
         return std::move(pair.consumer);
     }
@@ -1122,6 +1139,7 @@ private:
     std::string end_user_id_;
     std::string cache_ttl_;
     sandbox::ProviderTransport transport_;
+    std::string session_id_;
 };
 
 }  // namespace agentengine::anthropic

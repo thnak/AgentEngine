@@ -721,6 +721,18 @@ if(AGENTENGINE_WITH_HTTPS AND AGENTENGINE_BUILD_PYTHON_RUNNER)
     AE_PYTHON_HOME="${AGENTENGINE_PYTHON_HOME}")
 endif()
 
+# ---- Standalone batch inference (tools/batch_infer.cpp) -- submits N independent prompts to
+# OpenRouter's real Batch API (beta) and polls to completion. See that file's own top comment for
+# why this is scoped OUTSIDE docs/planning/batch-inference-coalescing-gap.md's standing "do not wire
+# vendor batch mode into AgentSession without an ADR" directive: no AgentSession/StandingEffect/
+# workflow dependency at all, so unlike agentengine_cli_chat above it needs no Python embed.
+if(AGENTENGINE_WITH_HTTPS)
+  add_executable(agentengine_batch_infer tools/batch_infer.cpp)
+  target_link_libraries(agentengine_batch_infer PRIVATE
+    agentengine::core agentengine::provider_http_client agentengine_warnings
+    MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+endif()
+
 # ---- Examples -------------------------------------------------------------------
 # "Get started" examples (mirrors Microsoft Agent Framework's samples/01-get-started progression) --
 # small, offline, single-file programs, one AgentEngine concept each. Needs only agentengine::core;
