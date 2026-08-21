@@ -362,6 +362,9 @@ struct MountSkillTool : Tool<MountSkillTool, EffectClass<effect_class::pure>> {
 // closed (not silently racing) if a second session ever tried to reach the same one.
 class ToolDeclaringHistoryProvider {
 public:
+    // decisions/ADR-066-context-provider-attribution-provenance.md §3.
+    static constexpr std::string_view name = "cli-tool-declaring-history";
+
     ToolDeclaringHistoryProvider() : skills_(demo_skill_sources()) {}
 
     // Host-only, configuration-time call (mirrors `AgentSession::set_capabilities()`/

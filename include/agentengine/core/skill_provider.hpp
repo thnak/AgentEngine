@@ -39,6 +39,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -108,6 +109,9 @@ template <WorktreeObjectStore ObjectStoreT>
 template <WorktreeObjectStore ObjectStoreT = InMemoryWorktreeObjectStore>
 class SkillsProvider {
 public:
+    // decisions/ADR-066-context-provider-attribution-provenance.md §3.
+    static constexpr std::string_view name = "skills";  // ae-naming-lint: allow name — ADR-033's HasMiddlewareName precedent, reused verbatim per ADR-066 §3
+
     explicit SkillsProvider(std::vector<SkillSourceDescriptor> sources) : sources_(std::move(sources)) {}
 
     // Forces resolution outside a coroutine context -- `resolve_and_mount()` is already fully

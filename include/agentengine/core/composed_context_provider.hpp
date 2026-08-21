@@ -17,6 +17,7 @@
 #include <array>
 #include <concepts>
 #include <cstddef>
+#include <string_view>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -35,6 +36,12 @@ template <class... Ms>
 // ae-naming-lint: allow ComposedContextProvider — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class ComposedContextProvider {
 public:
+    // decisions/ADR-066-context-provider-attribution-provenance.md §3 -- see
+    // `HistoryAndSkillsProvider::name`'s own comment (history_and_skills_provider.hpp): only
+    // load-bearing if this composite is itself wrapped in its own descriptor; its own internal
+    // `contributors_` (below) are named by each wrapped `Ms`'s own declared name.
+    static constexpr std::string_view name = "composed";  // ae-naming-lint: allow name — ADR-033's HasMiddlewareName precedent, reused verbatim per ADR-066 §3
+
     // Default-constructible only when every Ms is -- the same AgentSession-slot constraint
     // history_and_skills_provider.hpp's own comment documents: `AgentSession<...>::history_provider_`
     // is a plain, default-constructed value member with no emplace_*/accessor pair to reach in and

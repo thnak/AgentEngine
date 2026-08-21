@@ -109,6 +109,11 @@ template <class EmbedderT, class IndexT, class OS, class RS>
 // ae-naming-lint: allow VectorRagContextProvider
 class VectorRagContextProvider {
 public:
+    // decisions/ADR-066-context-provider-attribution-provenance.md §3 (merged from a sibling branch
+    // after this class was first written): every ContextProvider routed through
+    // make_context_provider_descriptor()/ComposedContextProvider must declare a static name.
+    static constexpr std::string_view name = "rag";
+
     // `mount`/`read_cap` are ALREADY BUILT by the caller (e.g. via `rag_corpus_mount()`,
     // corpus_scope.hpp) -- this class never derives `corpus_scope` itself, the identical posture
     // `MemoryProvider`'s own constructor already establishes for memory mounts (ADR-063's own brief:

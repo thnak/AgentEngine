@@ -10,6 +10,7 @@
 // it, entirely at the HistoryProviderT layer.
 
 #include <concepts>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -32,6 +33,12 @@ template <class HistoryProviderT, class SkillsProviderT>
 // ae-naming-lint: allow HistoryAndSkillsProvider — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class HistoryAndSkillsProvider {
 public:
+    // decisions/ADR-066-context-provider-attribution-provenance.md §3 -- only load-bearing if THIS
+    // composite is itself wrapped in its own `ContextProviderDescriptor` (e.g. nested inside a
+    // further `ComposedContextProvider`); its own internal `contributors_` (below) are named by
+    // each wrapped `HistoryProviderT`/`SkillsProviderT`'s own declared name, not this one.
+    static constexpr std::string_view name = "history_and_skills";  // ae-naming-lint: allow name — ADR-033's HasMiddlewareName precedent, reused verbatim per ADR-066 §3
+
     HistoryAndSkillsProvider()
         requires std::default_initializable<HistoryProviderT> &&
                  std::default_initializable<SkillsProviderT>

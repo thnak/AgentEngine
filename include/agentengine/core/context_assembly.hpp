@@ -21,6 +21,8 @@
 // its sub-providers directly (see `history_and_skills_provider.hpp`'s `HistoryAndSkillsProvider` for
 // the proven shape) instead of extending this function -- read OQ-18 before reopening this.
 
+#include <algorithm>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -60,6 +62,26 @@ struct ContextBudget {
     std::uint64_t max_tokens = 0;
 };
 
+// decisions/ADR-066-context-provider-attribution-provenance.md §3: a `ContextProvider` type must
+// declare its own name at compile time -- the identical requirement, and the identical reasoning,
+// as `Middleware`'s own `HasMiddlewareName` (middleware.hpp): this codebase does not use
+// typeid/RTTI to fabricate one (CONVENTIONS.md), and provenance stamping (below) needs a real,
+// stable name to stamp with. Reused verbatim rather than inventing a second name convention for the
+// same idea.
+template <class T>
+concept HasContextProviderName = requires {
+    { T::name } -> std::convertible_to<std::string_view>;
+};
+
+template <class T>
+[[nodiscard]] constexpr std::string_view context_provider_name() noexcept {
+    static_assert(HasContextProviderName<T>,
+                  "a ContextProvider type must declare `static constexpr std::string_view name` "
+                  "(decisions/ADR-066-context-provider-attribution-provenance.md §3) -- this "
+                  "codebase does not use typeid/RTTI to fabricate one");
+    return T::name;
+}
+
 // One recorded drop — "drops are recorded in the trace" (005 §3). A minimal in-memory record
 // (016's full span/telemetry shape is out of scope here, matching `ToolInvocationAudit`'s own
 // precedent for the same "not yet built" reason) rather than a real trace-emission call.
@@ -89,6 +111,12 @@ struct ContextProviderDescriptor {
     // `on_turn_end`), but the type must still match what every real conformer's method returns.
     using OnTurnEndFn = std::function<task<std::monostate>(TurnView, EffectContext&)>;
 
+    // decisions/ADR-066-...: this contributor's declared `contributor_type` -- set from
+    // `ProviderT::name` by `make_context_provider_descriptor<ProviderT>()` below, never by a caller
+    // hand-building a descriptor (there is no public setter; a hand-built `ContextProviderDescriptor`
+    // that bypasses the factory gets an empty name, same fail-... shape `ToolDescriptor::
+    // effect_class`'s own comment documents for a hand-built descriptor bypassing ITS factory).
+    std::string   name;
     ContextBudget budget;
     OnContextFn   on_context;
     OnTurnEndFn   on_turn_end;
@@ -102,11 +130,12 @@ struct ContextProviderDescriptor {
 // body only runs once something later `co_await`s it (rt/task.hpp's own lazy-start idiom, historical:
 // quark/core/task.hpp's before ADR-037 removed Quark).
 template <class ProviderT>
-    requires ContextProvider<ProviderT>
+    requires ContextProvider<ProviderT> && HasContextProviderName<ProviderT>
 [[nodiscard]] ContextProviderDescriptor make_context_provider_descriptor(ProviderT provider,
                                                                            ContextBudget budget) {
     auto shared = std::make_shared<ProviderT>(std::move(provider));
     ContextProviderDescriptor d;
+    d.name        = std::string(context_provider_name<ProviderT>());
     d.budget      = budget;
     d.on_context  = [shared](SessionContext& sc, EffectContext& ec) { return shared->on_context(sc, ec); };
     d.on_turn_end = [shared](TurnView tv, EffectContext& ec) { return shared->on_turn_end(tv, ec); };
@@ -173,6 +202,61 @@ struct ContextAssemblyResult {
                 ++drop_from;
             }
             msgs.erase(msgs.begin(), msgs.begin() + static_cast<std::ptrdiff_t>(drop_from));
+        }
+
+        // decisions/ADR-066-context-provider-attribution-provenance.md §2/§4 -- stamped here,
+        // structurally, at the ONE seam every contribution already flows through unconditionally,
+        // rather than trusted from each contributor's own discipline (MAF's shape; rejected, see the
+        // ADR's §2). Two independent steps per message, in this order:
+        //
+        // 1. `content_origin::user` is checked, not merely stamped over: a message this
+        //    contributor's own `on_context()` just constructed is genuinely `content_origin::user`
+        //    ONLY if it is byte-identical to something already present in `session_ctx.history` --
+        //    i.e. a real historical replay (`HistoryProvider<Window<N>>`'s whole job), never a
+        //    synthesized one (a compromised/hostile plugin conformer, 009 §2, forging
+        //    `content_origin::user` on invented text to claim it is literal human input, the
+        //    concrete attack this closes). `content_origin::system`/`::assistant`/`::tool` are left
+        //    untouched by this check -- unlike `::user`, those are legitimately claimed by
+        //    C++-authored, host-controlled contributor code today (`SkillsProvider`'s own
+        //    host-declared advertisement message deliberately sets `content_origin::system`,
+        //    `skill_provider.hpp:136`; I3 constrains MODEL output, not engine/host code, so
+        //    blanket-clamping every non-replayed origin to `::external` would have been a real
+        //    regression against that already-shipped, already-tested case, not a fix). This also
+        //    closes a real, previously-unstamped bug this same pass found by re-grounding against
+        //    shipped code: `HistoryProvider<Summarize<N,SummarizerT>>`'s synthesized summary message
+        //    (history_provider.hpp) inherits whatever `content_origin` the summarizer's raw response
+        //    carried (typically `::assistant`, ContentItem's own default) with nothing to mark it as
+        //    a SUMMARY rather than a real assistant turn -- not verbatim-present in
+        //    `session_ctx.history` (it's newly synthesized text), so this check now catches it too
+        //    (as `::assistant`, unaffected by the `::user`-only clamp -- named as a real residual,
+        //    not silently claimed fixed by this ADR; see its own §7/evidence).
+        // 2. `attribution{contributor_index, contributor_type}` is stamped unconditionally,
+        //    including on a verbatim-replayed message -- provenance ("who surfaced this content
+        //    THIS turn") and content_origin ("what kind of turn content is this, semantically") are
+        //    orthogonal; a real user message replayed by `HistoryProvider` is still genuinely
+        //    `content_origin::user` (step 1 keeps it that way) AND genuinely attributable to the
+        //    `history` contributor for this turn (step 2 stamps that).
+        //
+        // The `session_ctx.history` scan is checked BEFORE this contributor's own messages are
+        // stamped with `attribution` (an unstamped provider-constructed message, e.g. a fresh
+        // `HistoryProvider<Window<N>>` copy, equality-compares identically to its `session_ctx.
+        // history` source, which is likewise never itself stamped -- see AgentSession::run_rounds(),
+        // which appends real turn input/output straight into `history_` without ever routing it
+        // through `assemble_context()`). O(this contributor's message count x history size) --
+        // acceptable here for the same reason this whole function's own top comment already accepts
+        // non-hot-path cost (005 §3's determinism requirement, not perf, is what's load-bearing).
+        for (Message& m : msgs) {
+            bool const is_verbatim_history_replay =
+                std::ranges::find(session_ctx.history, m) != session_ctx.history.end();
+            if (!is_verbatim_history_replay) {
+                for (ContentItem& item : m.content) {
+                    if (item.origin == content_origin::user) item.origin = content_origin::external;
+                }
+            }
+            m.attribution = ContributorProvenance{i, contributor.name};
+        }
+        for (ToolDescriptor& t : contribution->tools) {
+            t.attribution = ContributorProvenance{i, contributor.name};
         }
 
         out.combined.messages.insert(out.combined.messages.end(), msgs.begin(), msgs.end());

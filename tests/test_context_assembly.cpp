@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <iostream>
 #include <string>
+#include <string_view>
 #include <variant>
 
 #include "agentengine/core/content.hpp"
@@ -48,6 +49,8 @@ ae::Message make_msg(std::string text, std::string message_id) {
 // multi-contributor ordering/union (a single-provider setup can't distinguish "preserved order"
 // from "there was only ever one thing to order").
 struct FixedMessagesProvider {
+    static constexpr std::string_view name = "fixed-messages";  // ADR-066 §3
+
     std::vector<ae::Message> to_return;
 
     [[nodiscard]] ae::task<ae::result<ae::ContextContribution>> on_context(ae::SessionContext&, ae::EffectContext&) {
@@ -63,6 +66,8 @@ static_assert(ae::ContextProvider<FixedMessagesProvider>,
 // Gap-16/21 fix (2026-08-14): a ContextProvider contributing `.instructions`, now `TaintedText` --
 // constructing it explicitly IS the trust decision (context_provider.hpp's own comment).
 struct FixedInstructionsProvider {
+    static constexpr std::string_view name = "fixed-instructions";  // ADR-066 §3
+
     std::string text;
 
     [[nodiscard]] ae::task<ae::result<ae::ContextContribution>> on_context(ae::SessionContext&, ae::EffectContext&) {

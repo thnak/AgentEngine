@@ -15,6 +15,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -231,6 +232,9 @@ template <class SummarizerT, class OS, class RS>
     requires ChatClient<SummarizerT> && WorktreeObjectStore<OS> && rt::AppendLogStore<RS>
 class MemoryProvider {
 public:
+    // decisions/ADR-066-context-provider-attribution-provenance.md §3.
+    static constexpr std::string_view name = "memory";  // ae-naming-lint: allow name — ADR-033's HasMiddlewareName precedent, reused verbatim per ADR-066 §3
+
     MemoryProvider(OS& object_store, RS& ref_store, Mount mount, cap::FsRead read_cap,
                     cap::FsWrite write_cap, SummarizerT summarizer, std::size_t max_injected = 3)
         : object_store_(&object_store),
