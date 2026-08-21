@@ -5,11 +5,10 @@ Guidance for Claude Code when working in this repository.
 ## What this is
 
 **AgentEngine** is a C++23 engine for building agent applications: agents, sessions, tools, and
-multi-agent workflows on its own `agentengine::rt::` runtime substrate (historical: originally built
-on top of the [Quark](https://github.com/thnak/QuarkCpp) actor engine; ADR-037 removed that
-dependency entirely and `third_party/quark` is gone from the tree), with sandboxed execution and a
-Python code interpreter as built-in subsystems, speaking the open agent protocols of 2026 (MCP, A2A,
-AG-UI, OpenTelemetry GenAI).
+multi-agent workflows on its own `agentengine::rt::` runtime substrate (ADR-037 removed the prior
+[Quark](https://github.com/thnak/QuarkCpp) dependency; `third_party/quark` is gone from the tree),
+with sandboxed execution and a Python code interpreter as built-in subsystems, speaking the open
+agent protocols of 2026 (MCP, A2A, AG-UI, OpenTelemetry GenAI).
 
 The developer model is **MAF-shaped** (Microsoft Agent Framework's agent/session/tool/workflow
 vocabulary) expressed in AgentEngine's own **zero-cost CRTP policy idiom** (originally modeled on
@@ -19,19 +18,12 @@ Quark's identical idiom).
 `decisions/ADR-*.md` are executed proofs. **When code and a spec disagree, the spec wins**; if the
 spec is wrong, fix the spec first (with an ADR), then the code.
 
-**Status: implementation under way, not design phase.** All 30 RFCs have passed their own review
-gate (each RFC's own `**Status:**` header reads `Reviewed`, dated 2026-08-05 —
-`docs/planning/v1-review-signoff-workflow.md`); several have real ADR evidence behind specific
-gates (see `decisions/`). Real, tested C++23 implementation exists under `include/agentengine/`,
-`src/`, and `tests/`. Per `docs/planning/v1-implementation-roadmap.md`'s milestone sequence,
-Milestones 0-6 are complete (Milestone 6 closed with Phase J, its own exit-criterion proof).
-Milestone 7 (protocol conformance) is **in progress**: real code exists for its earlier phases
-(011 MCP, 012 A2A, 013 AG-UI, 015 declarative compilers, 006 §6b Backgroundable/StandingEffect),
-and a Phase G gate audit has run against that code — the audit found the milestone's own exit
-criterion **not yet met**. Milestones 8-9 have not started. **Do not hardcode
-a milestone/phase table** (or specific gate counts) **here** — it goes stale on the next commit, and
-the same rule applies to this paragraph: check `docs/planning/v1-implementation-roadmap.md` and the
-per-milestone breakdown docs for current phase/gate status, not this prose.
+**Status: implementation under way, not design phase.** All 30 RFCs passed their own review gate
+(`docs/planning/v1-review-signoff-workflow.md`); real, tested C++23 implementation exists under
+`include/agentengine/`, `src/`, and `tests/`, with ADR evidence behind specific gates (`decisions/`).
+**Do not hardcode a milestone/phase table here — it goes stale fast.** Check
+`docs/planning/v1-implementation-roadmap.md` and the per-milestone breakdown docs for current
+phase/gate status.
 
 ## Read first
 
@@ -54,35 +46,37 @@ model output influence a permission decision, it is wrong regardless of how well
 
 ## Locked decisions — do not relitigate without an ADR
 
-- **Quark is not a dependency of this project.** (Historical: it used to be consumed as an
-  unmodified submodule, with runtime changes going upstream — `decisions/ADR-037-remove-quark-as-
-  core-runtime.md`, executed 2026-08-13, removed it entirely; `third_party/quark` is gone from the
-  tree and AgentEngine's runtime substrate is now its own `agentengine::rt::` namespace.) Do not
-  reintroduce a Quark dependency without a new ADR relitigating this.
+- **Quark is not a dependency of this project.** `ADR-037` removed it entirely (was an unmodified
+  submodule); `third_party/quark` is gone and the runtime substrate is `agentengine::rt::`. Do not
+  reintroduce without a new ADR.
 - **WASM Component Model (WASI 0.3) is the plugin ABI** — tools, skills, providers, memory stores,
   filters, and the C/C++ library track (009 §7).
-- **The embedded native CPython interpreter remains the one mediated code-interpreter path,
-  permanently — never WASM, never a second *interpreter* for that job**, regardless of WASI
-  Python's future maturity. The rich Python-on-WASM ecosystem is Emscripten (needs a JS host) and
-  WASI Python has no binary-wheel ecosystem yet (evidence: `docs/research/2026-standards-landscape.
-  md` §6) — corroborating, not the reason: two Python interpreters behind the SAME `execute_code`
-  job would mean an agent's generated code, and the humans verifying it, must know which one
-  they're dealing with. The sandbox seam (008) still lets the *isolation backend* evolve; the
-  interpreter itself does not fork. (Historical: this bullet used to read "never a second runtime,"
-  full stop — `decisions/ADR-071-native-unsandboxed-process-execution-providers.md`, executed
-  2026-08-21, narrowed it: that paragraph's own evidence is about the WASM-vs-native axis for the
-  code *interpreter* specifically, and does not on its own text resolve a different axis — an
-  unmediated, host-installed Python reached through `NativePythonProvider`, a distinct,
-  explicitly-scoped, host-opt-in capability for native automation, never silently substituted for
-  `execute_code` at any call site, structurally kept out of `agentengine_python_runner`.) Do not
-  reintroduce an unmediated Python path outside `NativePythonProvider`'s own explicitly-scoped seam,
-  or blur it with the code interpreter, without a new ADR relitigating this.
+- **The embedded native CPython interpreter is the one mediated code-interpreter path,
+  permanently** — never WASM, never a second *interpreter* for `execute_code` (rationale and WASI
+  Python's ecosystem gap: `docs/research/2026-standards-landscape.md` §6). `ADR-071` narrowed this
+  from a blanket "never a second runtime" to permit `NativePythonProvider` — a distinct,
+  explicitly-scoped, host-opt-in native-automation capability, never substituted for `execute_code`
+  and kept out of `agentengine_python_runner`. Don't blur the two, or widen either scope, without a
+  new ADR.
 - **No `microvm` sandbox profile.** Isolation strength for the interpreter/shell comes from treating
   the whole execution environment as the sandbox — worktree, capabilities, resource limits, network
   policy — with CPython's dangerous entry points mediated at the point of use and the OS-level jail
   as a second layer (008 §1b), not from a second local isolation technology. A workload that would
   need hardware isolation uses the `remote` profile against infrastructure that already provides it.
 - **v1 authoring surfaces are C++ CRTP and declarative YAML/JSON.** Python/.NET bindings deferred.
+
+## Feature vs. safety balance
+
+**Default to enabling, not blocking.** `ADR-070` (Judged) records a deliberate project-owner
+trade: ship a broader feature surface even where it costs some engine-enforced safety, via a
+disciplined **Delegated Decision Seam** — explicit host opt-in, fails closed/safe when unset,
+narrows or decides among already-possessed authority only (never mints/widens it), host code never
+model output, always audited. Ship first behind that seam with real ADR evidence and honestly
+disclosed residuals (`ADR-071`'s native unsandboxed process-execution providers is the model);
+harden later, as a follow-on ADR, not as a precondition to shipping. This is not a license to
+relax I2/I3 themselves — `ADR-070` §3 rejected that outright — it only bounds where responsibility
+for an already-scoped risk can be delegated to the consumer dev, and it still needs its own ADR,
+not a blanket exemption because the goal sounds reasonable.
 
 ## Working within this repo
 
