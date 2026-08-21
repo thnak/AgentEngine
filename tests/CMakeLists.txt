@@ -664,6 +664,21 @@ if(AGENTENGINE_WITH_HTTPS)
   add_test(NAME test_rt_agent_session_live_multitool_e2e COMMAND test_rt_agent_session_live_multitool_e2e)
   set_tests_properties(test_rt_agent_session_live_multitool_e2e PROPERTIES LABELS "live-network" TIMEOUT 300)
 
+  # ADR-029's suspend-for-approval mechanism (HITL), driven by a REAL model's own tool calls instead
+  # of a scripted ChatClientT (every offline suspend/approval test uses a scripted one). Hunts for
+  # bugs in the suspend/resume/approval-surface machinery itself: a misleading approval_requested
+  # fan-out over a mixed gated/ungated round (BUG-1), collateral denial of an ungated call sharing a
+  # round with a gated one (BUG-2), an approval surface that exposes no tool_name/arguments for a
+  # human to actually decide on (BUG-3), plus softer "mid-conversation drop" (does history_ survive a
+  # real suspend/resume across multiple start_run() calls) and "no-explanation" (does a real model's
+  # own reply actually explain a denial to the user) probes. See the file's own top comment.
+  add_executable(test_rt_agent_session_hitl_live_e2e test_rt_agent_session_hitl_live_e2e.cpp)
+  target_link_libraries(test_rt_agent_session_hitl_live_e2e PRIVATE
+    agentengine::core agentengine::provider_http_client agentengine_warnings
+    MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+  add_test(NAME test_rt_agent_session_hitl_live_e2e COMMAND test_rt_agent_session_hitl_live_e2e)
+  set_tests_properties(test_rt_agent_session_hitl_live_e2e PROPERTIES LABELS "live-network" TIMEOUT 300)
+
   # ---- ADR-016 gates G1-G4: host-initiated provider egress address policy + transport --------------
   # The positive control for ADR-016. It relaxes the SSRF blocked-range table on the provider path
   # while leaving it enforced on the WASM guest path -- only defensible if BOTH halves are shown
