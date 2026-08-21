@@ -91,6 +91,17 @@ constexpr char const* kPathPrefix = "/api/v1";
 
 constexpr char const* kSecretName = "openrouter-api-key";
 
+// OpenRouter's dashboard Activity view groups/labels rows by this (the `X-Title` header), NOT by the
+// `user` field (`end_user_id`, set below on `oai`/`ant`/`thinker`) -- confirmed directly against a
+// real run. This is the SEPARATE field that makes this file's own traffic findable in the dashboard
+// at all -- `end_user_id` does NOT drive OpenRouter's own cache routing (docs/research/2026-08-21-
+// openrouter-session-id-header.md corrects an earlier claim here that it did); `session_id`, set
+// below alongside it, is what actually keys OpenRouter's sticky routing. OR-OAI-6/OR-ANT-6 below
+// already prove the attribution fields themselves work, with their own literal "AgentEngine Live E2E"
+// title -- reused verbatim here so this file's traffic all lands under ONE recognizable app name
+// rather than fragmenting across two.
+constexpr char const* kXTitle = "AgentEngine Live E2E";
+
 // A live reasoning model can spend a long time before emitting anything, and the HTTP read loop's
 // idle timeout (net_egress_proxy.cpp's kIoTimeoutMs, 10s) applies to a NON-streaming response as one
 // single wait. Every prompt below is therefore deliberately tiny and answerable in a few tokens.
@@ -243,11 +254,28 @@ int main() {
     caps.seed = true;
     caps.max_output_tokens = 1024;  // bounds cost and wall-clock; Anthropic REQUIRES max_tokens.
 
-    // Default resolver AND default CA bundle -- the real ones, on both clients.
+    // Default resolver (sandbox::resolve_host -- see ADR-016: the provider path is never guest-
+    // supplied, so it does not want the guest-path blocked-range filtering resolve_and_validate
+    // applies) AND default CA bundle -- the real ones, on both clients, spelled out explicitly only
+    // because reaching `end_user_id`/`session_id` requires it. A stable id (distinct per backend,
+    // since OR-OAI-*/OR-ANT-* below reuse `oai`/`ant` across several independent one-shot exchanges
+    // each) is passed to BOTH: `end_user_id` (abuse-tracking only, dashboard filterable) and
+    // `session_id` (OpenRouter's own prompt-cache sticky-routing key, docs/research/2026-08-21-
+    // openrouter-session-id-header.md -- a DIFFERENT field; a default-empty `session_id` would leave
+    // every one of these calls without sticky routing at all).
     openai::OpenAIChatClient oai(host, kHttpsPort, model, SecretRef{kSecretName}, caps, store,
-                                  kPathPrefix);
+                                  kPathPrefix, sandbox::resolve_host, /*ca=*/{},
+                                  /*http_referer=*/{}, /*x_title=*/kXTitle,
+                                  /*end_user_id=*/"test-openrouter-live-e2e-oai", /*seed=*/std::nullopt,
+                                  /*transport=*/sandbox::ProviderTransport::tls,
+                                  /*scan_response_format_leaks=*/false,
+                                  /*session_id=*/"test-openrouter-live-e2e-oai");
     anthropic::AnthropicChatClient ant(host, kHttpsPort, model, SecretRef{kSecretName}, caps, store,
-                                        kPathPrefix);
+                                        kPathPrefix, "2023-06-01", sandbox::resolve_host,
+                                        /*ca=*/{}, /*http_referer=*/{}, /*x_title=*/kXTitle,
+                                        /*end_user_id=*/"test-openrouter-live-e2e-ant",
+                                        /*cache_ttl=*/{}, /*transport=*/sandbox::ProviderTransport::tls,
+                                        /*session_id=*/"test-openrouter-live-e2e-ant");
 
     static_assert(ChatClient<decltype(oai)>, "OpenAIChatClient must satisfy the ChatClient concept");
     static_assert(ChatClient<decltype(ant)>, "AnthropicChatClient must satisfy the ChatClient concept");
@@ -648,7 +676,12 @@ int main() {
         think_caps.max_output_tokens = 4096;
         anthropic::AnthropicChatClient thinker(host, kHttpsPort, model, SecretRef{kSecretName},
                                                 think_caps, store, kPathPrefix, "2023-06-01",
-                                                sandbox::resolve_and_validate);
+                                                sandbox::resolve_and_validate, /*ca=*/{},
+                                                /*http_referer=*/{}, /*x_title=*/kXTitle,
+                                                /*end_user_id=*/"test-openrouter-live-e2e-ant-reasoning",
+                                                /*cache_ttl=*/{},
+                                                /*transport=*/sandbox::ProviderTransport::tls,
+                                                /*session_id=*/"test-openrouter-live-e2e-ant-reasoning");
 
         auto count_reasoning = [](Message const& m) {
             std::size_t n = 0;

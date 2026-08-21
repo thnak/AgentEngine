@@ -132,6 +132,13 @@ constexpr char const* kDefaultHost = "openrouter.ai";
 constexpr std::uint16_t kHttpsPort = 443;
 constexpr char const* kPathPrefix = "/api/v1";
 constexpr char const* kSecretName = "openrouter-api-key";
+// OpenRouter's dashboard Activity view groups/labels rows by this (the `X-Title` header), NOT by the
+// `user` field (`end_user_id`, configure_session's own `id` param below) -- confirmed directly against
+// a real run: without a per-file X-Title, every case here reads as an anonymous, unlabeled request no
+// matter how distinct its `end_user_id` is. `end_user_id` still does its real job (OpenRouter's
+// prompt-caching affinity, session.hpp is threaded per-case for exactly that); this is the SEPARATE
+// field that makes this file's own traffic findable in the dashboard at all.
+constexpr char const* kXTitle = "AgentEngine: hitl-live-e2e";
 constexpr int kMaxRounds = 6;
 
 // ---- Two tools: one gated (always_require), one ordinary (never gated) --------------------------
@@ -234,13 +241,18 @@ using Session = AgentSession<RealClient, NoSessionState, TwoToolHistoryProvider>
 void configure_session(Session& session, std::string const& id, std::string const& host,
                         std::string const& model, InMemorySecretStore& store,
                         ChatClientCapabilities const& caps, CapabilitySet const& held) {
-    // `end_user_id` is passed as this test CASE's own stable id (one Session -> one conversation, every
-    // request across turns A/B/C in HITL-5 included) -- OpenRouter's prompt-caching layer keys a cache
-    // hit on a consistent `user` value across a conversation's repeated, growing-prefix requests, so a
-    // fresh/random value per call would defeat caching for every multi-turn case in this file.
+    // `id` is passed as this test CASE's own stable id (one Session -> one conversation, every request
+    // across turns A/B/C in HITL-5 included) -- to BOTH `end_user_id` (OpenAI/Anthropic abuse-tracking
+    // only) and `session_id` (docs/research/2026-08-21-openrouter-session-id-header.md: OpenRouter's
+    // OWN prompt-cache sticky-routing key, sent as the `x-session-id` header -- a DIFFERENT field from
+    // `end_user_id`, which that vendor does not use for cache routing at all, correcting this file's
+    // own earlier claim that it did). A fresh/random value per call would defeat caching for every
+    // multi-turn case in this file.
     session.emplace_chat_client(host, kHttpsPort, model, SecretRef{kSecretName}, caps, store, kPathPrefix,
                                  sandbox::resolve_host, /*ca=*/std::string{}, /*http_referer=*/std::string{},
-                                 /*x_title=*/std::string{}, /*end_user_id=*/id);
+                                 /*x_title=*/kXTitle, /*end_user_id=*/id, /*seed=*/std::nullopt,
+                                 /*transport=*/sandbox::ProviderTransport::tls,
+                                 /*scan_response_format_leaks=*/false, /*session_id=*/id);
     session.initialize(id, Principal{"live-hitl-e2e-principal", ""}, /*token_budget=*/std::nullopt,
                         /*max_turns=*/static_cast<std::uint64_t>(kMaxRounds));
     session.set_capabilities(&held);

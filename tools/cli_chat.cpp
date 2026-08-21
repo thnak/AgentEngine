@@ -98,10 +98,24 @@ namespace {
     return (v && !v->empty()) ? *v : std::move(fallback);
 }
 
-constexpr char const* kDefaultOpenAiModel = "~deepseek/deepseek-v4-flash-latest";
-constexpr char const* kDefaultOpenAiHost = "openrouter.ai";
-constexpr char const* kOpenAiPathPrefix = "/api/v1";
-constexpr char const* kOpenAiSecretName = "openrouter-api-key";
+// Real, direct api.openai.com -- distinct from the "openrouter" provider below. Untestable in an
+// environment that only holds an OpenRouter credential (this workstation's own api-test.txt/
+// OPENROUTER_API_KEY -- docs/research/2026-08-21-openrouter-batch-api.md), which is exactly why this
+// used to default to OpenRouter's host under the misleading "openai" label; now split into two real,
+// correctly-named options.
+constexpr char const* kDefaultOpenAiModel = "gpt-5-mini";
+constexpr char const* kDefaultOpenAiHost = "api.openai.com";
+constexpr char const* kOpenAiPathPrefix = "/v1";
+constexpr char const* kOpenAiSecretName = "openai-api-key";
+
+// OpenRouter's own OpenAI-compatible endpoint -- what the "openai" provider used to mean here. Kept
+// as its own explicit provider so a caller can choose either real OpenAI or OpenRouter's routing
+// layer, rather than the two being silently conflated under one label.
+constexpr char const* kDefaultOpenRouterModel = "~deepseek/deepseek-v4-flash-latest";
+constexpr char const* kDefaultOpenRouterHost = "openrouter.ai";
+constexpr char const* kOpenRouterPathPrefix = "/api/v1";
+constexpr char const* kOpenRouterSecretName = "openrouter-api-key";
+constexpr char const* kOpenRouterXTitle = "AgentEngine CLI Chat";
 
 constexpr char const* kDefaultAnthropicModel = "claude-sonnet-5";
 constexpr char const* kDefaultAnthropicHost = "api.anthropic.com";
@@ -971,23 +985,28 @@ template <class Inner>
     std::_Exit(0);
 }
 
-// Fixed and stable for this CLI's whole lifetime (one process, one session) -- used below as both
-// AgentSession's own session_id AND the ChatClient's `end_user_id` (the OpenAI-compatible `user`
-// body field / Anthropic's own `end_user_id`), so a caching-aware provider/gateway sees a CONSISTENT
-// identity across every call this process ever makes, not a fresh one per call, real Anthropic/
-// OpenAI-side prompt-cache locality depends on -- a random or per-call value would never keep a
-// cache hit.
+// Fixed and stable for this CLI's whole lifetime (one process, one session) -- used below as
+// AgentSession's own session_id, the ChatClient's `end_user_id` (abuse-tracking only -- OpenAI's
+// `user` field / Anthropic's `metadata.user_id`), AND the ChatClient's `session_id` (OpenRouter's own
+// prompt-cache sticky-routing key, sent as the `x-session-id` header -- docs/research/2026-08-21-
+// openrouter-session-id-header.md; NOT the same field as `end_user_id`, which that vendor does not use
+// for cache routing at all). A random or per-call value for any of the three would defeat the point of
+// each.
 constexpr char const* kSessionId = "cli-chat-session";
 
 int main() {
-    // AGENTENGINE_PROVIDER selects which real backend this run talks to -- "openai" (default, via
-    // OpenRouter's OpenAI-compatible endpoint) or "anthropic" (direct Anthropic Messages API). The
-    // dump feature (RecordingChatClient<Inner> wrapping whichever `Inner` this resolves to) is
-    // identical either way -- see CliSession<Inner>'s own comment.
-    std::string const provider = env_or("AGENTENGINE_PROVIDER", "openai");
-    if (provider != "openai" && provider != "anthropic") {
-        std::cerr << "AGENTENGINE_PROVIDER must be \"openai\" or \"anthropic\" (got \"" << provider
-                   << "\").\n";
+    // AGENTENGINE_PROVIDER selects which real backend this run talks to -- "openai" (direct
+    // api.openai.com), "anthropic" (direct Anthropic Messages API), or "openrouter" (OpenRouter's own
+    // OpenAI-compatible endpoint -- what "openai" used to mean here before this was split into two
+    // correctly-named options). Defaults to "openrouter": it is the one backend this workstation's own
+    // credential setup (AGENTENGINE_OPENROUTER_API_KEY / api-test.txt) can actually reach, so this
+    // default keeps the CLI usable out of the box the same way it always was. The dump feature
+    // (RecordingChatClient<Inner> wrapping whichever `Inner` this resolves to) is identical across all
+    // three -- see CliSession<Inner>'s own comment.
+    std::string const provider = env_or("AGENTENGINE_PROVIDER", "openrouter");
+    if (provider != "openai" && provider != "anthropic" && provider != "openrouter") {
+        std::cerr << "AGENTENGINE_PROVIDER must be \"openai\", \"anthropic\", or \"openrouter\" (got \""
+                   << provider << "\").\n";
         return 1;
     }
 
@@ -1018,14 +1037,14 @@ int main() {
     DumpSink sink(dump_dir);
 
     if (provider == "openai") {
-        auto const key_env = ::agentengine::pal::env_var("AGENTENGINE_OPENROUTER_API_KEY");
+        auto const key_env = ::agentengine::pal::env_var("AGENTENGINE_OPENAI_API_KEY");
         if (!key_env || key_env->empty()) {
-            std::cerr << "AGENTENGINE_OPENROUTER_API_KEY is not set. Export a real OpenRouter API "
-                         "key and re-run.\n";
+            std::cerr << "AGENTENGINE_OPENAI_API_KEY is not set. Export a real OpenAI API key and "
+                         "re-run.\n";
             return 1;
         }
-        std::string const model = env_or("AGENTENGINE_OPENROUTER_MODEL", kDefaultOpenAiModel);
-        std::string const host = env_or("AGENTENGINE_OPENROUTER_HOST", kDefaultOpenAiHost);
+        std::string const model = env_or("AGENTENGINE_OPENAI_MODEL", kDefaultOpenAiModel);
+        std::string const host = env_or("AGENTENGINE_OPENAI_HOST", kDefaultOpenAiHost);
         std::cout << "AgentEngine CLI chat -- provider=openai host=" << host << " model=" << model
                    << "\n";
 
@@ -1043,17 +1062,58 @@ int main() {
 
         // Trailing args beyond `caps`/`store`/`kOpenAiPathPrefix` are every one of OpenAIChatClient's
         // own defaults spelled out verbatim (chat_client.hpp's own constructor), EXCEPT two:
-        // `end_user_id` (see kSessionId's own comment) and `scan_response_format_leaks=true`, which
-        // arms ADR-023's Reasoning/<think>-channel extraction on this client's OWN `chat()`. Left
-        // armed only so the non-streaming path this file no longer takes stays correct if streaming
-        // is ever toggled off -- with streaming engaged (run_interactive's own
-        // set_stream_model_calls(true)), this specific flag never fires (chat() is never called); the
-        // REAL scanning this CLI relies on comes from AgentSession's own flag instead (ADR-035
-        // Phase 1 -- see that flag's own comment in agent_session.hpp).
+        // `end_user_id` (OpenAI's own abuse-tracking `user` field -- real on this direct backend too)
+        // and `scan_response_format_leaks=true`, which arms ADR-023's Reasoning/<think>-channel
+        // extraction on this client's OWN `chat()`. Left armed only so the non-streaming path this
+        // file no longer takes stays correct if streaming is ever toggled off -- with streaming
+        // engaged (run_interactive's own set_stream_model_calls(true)), this specific flag never
+        // fires (chat() is never called); the REAL scanning this CLI relies on comes from
+        // AgentSession's own flag instead (ADR-035 Phase 1 -- see that flag's own comment in
+        // agent_session.hpp). `session_id` (the last arg, `x-session-id` header) is left EMPTY here,
+        // unlike the "openrouter" branch below -- it is OpenRouter's own cache-routing convention
+        // (docs/research/2026-08-21-openrouter-session-id-header.md), not a real api.openai.com header.
         openai::OpenAIChatClient<InMemorySecretStore> chat_client(
             host, kHttpsPort, model, SecretRef{kOpenAiSecretName}, caps, store, kOpenAiPathPrefix,
             sandbox::resolve_host, std::string{}, std::string{}, std::string{}, kSessionId,
-            std::nullopt, sandbox::ProviderTransport::tls, /*scan_response_format_leaks=*/true);
+            std::nullopt, sandbox::ProviderTransport::tls, /*scan_response_format_leaks=*/true,
+            /*session_id=*/std::string{});
+        return run_interactive(std::move(chat_client), std::move(sink), kSessionId, std::move(held),
+                                *materialized, startup_skills);
+    }
+
+    if (provider == "openrouter") {
+        auto const key_env = ::agentengine::pal::env_var("AGENTENGINE_OPENROUTER_API_KEY");
+        if (!key_env || key_env->empty()) {
+            std::cerr << "AGENTENGINE_OPENROUTER_API_KEY is not set. Export a real OpenRouter API "
+                         "key and re-run.\n";
+            return 1;
+        }
+        std::string const model = env_or("AGENTENGINE_OPENROUTER_MODEL", kDefaultOpenRouterModel);
+        std::string const host = env_or("AGENTENGINE_OPENROUTER_HOST", kDefaultOpenRouterHost);
+        std::cout << "AgentEngine CLI chat -- provider=openrouter host=" << host << " model=" << model
+                   << "\n";
+
+        InMemorySecretStore store;
+        store.set(kOpenRouterSecretName, *key_env);
+        std::vector<Capability> grants = {
+            Capability{cap::Secret{kOpenRouterSecretName, std::chrono::seconds{0}}},
+            Capability{cap::FsRead{kWorkMount, "", std::nullopt}},
+            Capability{cap::FsWrite{kWorkMount, "", std::nullopt, std::nullopt}}};
+        for (auto const& [mount_id, host_dir] : *materialized) {
+            (void)host_dir;
+            grants.push_back(Capability{cap::FsRead{mount_id, "", std::nullopt}});
+        }
+        CapabilitySet held = CapabilitySet::grant_root(std::move(grants));
+
+        // Same shape as the "openai" branch above, except `x_title` (dashboard app grouping) and
+        // `session_id` (`x-session-id`, OpenRouter's own prompt-cache sticky-routing key -- NOT
+        // `end_user_id`, see kSessionId's own comment) ARE set: both are OpenRouter-specific
+        // conventions this backend actually honors.
+        openai::OpenAIChatClient<InMemorySecretStore> chat_client(
+            host, kHttpsPort, model, SecretRef{kOpenRouterSecretName}, caps, store, kOpenRouterPathPrefix,
+            sandbox::resolve_host, std::string{}, std::string{}, kOpenRouterXTitle, kSessionId,
+            std::nullopt, sandbox::ProviderTransport::tls, /*scan_response_format_leaks=*/true,
+            /*session_id=*/kSessionId);
         return run_interactive(std::move(chat_client), std::move(sink), kSessionId, std::move(held),
                                 *materialized, startup_skills);
     }
@@ -1085,11 +1145,12 @@ int main() {
     // Trailing args beyond `caps`/`store`/`kAnthropicPathPrefix`/`kAnthropicApiVersion` are every one
     // of AnthropicChatClient's own defaults spelled out verbatim (that constructor has no per-client
     // `scan_response_format_leaks` flag the way OpenAI's does -- ADR-035 Phase 1's AgentSession-level
-    // scan below covers this backend too, so nothing is lost).
+    // scan below covers this backend too, so nothing is lost), EXCEPT `session_id` (see kSessionId's
+    // own comment -- OpenRouter's own cache-routing key, distinct from `end_user_id` above it).
     anthropic::AnthropicChatClient<InMemorySecretStore> chat_client(
         host, kHttpsPort, model, SecretRef{kAnthropicSecretName}, caps, store, kAnthropicPathPrefix,
         kAnthropicApiVersion, sandbox::resolve_host, std::string{}, std::string{}, std::string{},
-        kSessionId, std::string{}, sandbox::ProviderTransport::tls);
+        kSessionId, std::string{}, sandbox::ProviderTransport::tls, /*session_id=*/kSessionId);
     return run_interactive(std::move(chat_client), std::move(sink), kSessionId, std::move(held),
                             *materialized, startup_skills);
 }

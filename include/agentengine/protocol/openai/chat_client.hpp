@@ -332,11 +332,18 @@ namespace detail {
 // specific app-attribution convention (`HTTP-Referer`/`X-Title` HTTP headers, NOT a JSON body field --
 // no other surveyed backend has an equivalent, confirmed Finding 1). Stamped in only when non-empty --
 // an empty string means "don't send this header at all," never a fabricated empty header value.
+//
+// `session_id` (docs/research/2026-08-21-openrouter-session-id-header.md): OpenRouter's own prompt-
+// cache sticky-routing key -- NOT `end_user_id`/`user`, which that vendor uses only for abuse-tracking
+// and plays no role in cache routing (confirmed directly against OpenRouter's own docs, correcting an
+// earlier claim in this codebase's own comments). Sent as the `x-session-id` header, same "stamped
+// only when non-empty" discipline as the two headers above.
 [[nodiscard]] inline sandbox::NetEgressRequest build_http_request(std::string const& path,
                                                                     std::string const& api_key,
                                                                     std::string body,
                                                                     std::string const& http_referer = {},
-                                                                    std::string const& x_title = {}) {
+                                                                    std::string const& x_title = {},
+                                                                    std::string const& session_id = {}) {
     sandbox::NetEgressRequest req;
     req.method = "POST";
     req.path = path;
@@ -344,6 +351,7 @@ namespace detail {
     req.headers.emplace_back("Authorization", "Bearer " + api_key);
     if (!http_referer.empty()) req.headers.emplace_back("HTTP-Referer", http_referer);
     if (!x_title.empty()) req.headers.emplace_back("X-Title", x_title);
+    if (!session_id.empty()) req.headers.emplace_back("x-session-id", session_id);
     req.body = std::move(body);
     return req;
 }
@@ -723,15 +731,16 @@ using Resolver = std::function<result<sandbox::VerifiedEndpoint>(std::string_vie
 // parameter is owned by value -- no reference back to the `OpenAIChatClient` instance that spawned it.
 // `ca_bundle_pem_override` mirrors `perform_provider_https_exchange`'s own testability seam verbatim
 // (empty in production -- the vendored CA bundle applies; a test's self-signed leaf isn't in it).
-// `http_referer`/`x_title`/`end_user_id`/`seed`/`transport` are `OpenAIChatClient`'s own optional
-// constructor fields, threaded through by value exactly like every other captured parameter here.
+// `http_referer`/`x_title`/`end_user_id`/`seed`/`transport`/`session_id` are `OpenAIChatClient`'s own
+// optional constructor fields, threaded through by value exactly like every other captured parameter
+// here.
 inline void run_stream_worker(std::string host, std::uint16_t port, std::string path, std::string api_key,
                                std::string model, ChatRequest request,
                                stream_producer<ChatResponseUpdate> producer, Resolver resolver,
                                std::string ca_bundle_pem_override, std::string http_referer,
                                std::string x_title, std::string end_user_id,
                                std::optional<std::int64_t> seed, sandbox::ProviderTransport transport,
-                               std::stop_token stop, ChatClientCapabilities caps) {
+                               std::stop_token stop, ChatClientCapabilities caps, std::string session_id) {
     // ADR-020: `caps` reaches here for one reason -- so `chat_stream()` enforces the SAME reasoning-
     // effort gate `chat()` does. A capability check that held on one of the two entry points would be
     // no check at all.
@@ -743,7 +752,7 @@ inline void run_stream_worker(std::string host, std::uint16_t port, std::string 
         producer.fail(body.error());
         return;
     }
-    auto req = build_http_request(path, api_key, json::dump(*body), http_referer, x_title);
+    auto req = build_http_request(path, api_key, json::dump(*body), http_referer, x_title, session_id);
 
     // ADR-019: decode and push AS THE BYTES ARRIVE. `chunked` is not known until the response head is
     // parsed, which happens before the first `on_body` call -- but the sink cannot see the head, so it
@@ -844,7 +853,12 @@ public:
                       // content-triggered (the ADR's Finding 6). Appended last, same "never insert
                       // earlier" convention this constructor's own file-top comment already documents
                       // for every optional param above.
-                      bool scan_response_format_leaks = false)
+                      bool scan_response_format_leaks = false,
+                      // docs/research/2026-08-21-openrouter-session-id-header.md: OpenRouter's own
+                      // prompt-cache sticky-routing key, sent as the `x-session-id` header -- NOT
+                      // `end_user_id` above, which that vendor does not use for cache routing at all.
+                      // Appended last, same convention as every optional param above.
+                      std::string session_id = {})
         : host_(std::move(host)),
           port_(port),
           model_(std::move(model)),
@@ -859,7 +873,8 @@ public:
           end_user_id_(std::move(end_user_id)),
           seed_(seed),
           transport_(transport),
-          scan_response_format_leaks_(scan_response_format_leaks) {}
+          scan_response_format_leaks_(scan_response_format_leaks),
+          session_id_(std::move(session_id)) {}
 
     [[nodiscard]] ChatClientCapabilities capabilities() const { return capabilities_; }
 
@@ -883,7 +898,7 @@ public:
         if (!body) co_return std::unexpected(body.error());
 
         auto req = detail::build_http_request(path_prefix_ + "/chat/completions", lease->reveal_text(),
-                                                json::dump(*body), http_referer_, x_title_);
+                                                json::dump(*body), http_referer_, x_title_, session_id_);
         auto resp = sandbox::perform_provider_https_exchange(host_, port_, req, {}, std::nullopt,
                                                                 resolver_, ca_bundle_pem_override_,
                                                                 transport_);
@@ -920,7 +935,7 @@ public:
         std::thread(&detail::run_stream_worker, host_, port_, path_prefix_ + "/chat/completions",
                     lease->reveal_text(), model_, std::move(request), std::move(pair.producer), resolver_,
                     ca_bundle_pem_override_, http_referer_, x_title_, end_user_id_, seed_, transport_,
-                    std::move(stop), capabilities_)
+                    std::move(stop), capabilities_, session_id_)
             .detach();
         return std::move(pair.consumer);
     }
@@ -941,6 +956,7 @@ private:
     std::optional<std::int64_t> seed_;
     sandbox::ProviderTransport transport_;
     bool scan_response_format_leaks_;
+    std::string session_id_;
 };
 
 }  // namespace agentengine::openai

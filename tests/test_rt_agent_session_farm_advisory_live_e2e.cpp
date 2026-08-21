@@ -91,6 +91,14 @@ constexpr char const* kDefaultHost = "openrouter.ai";
 constexpr std::uint16_t kHttpsPort = 443;
 constexpr char const* kPathPrefix = "/api/v1";
 constexpr char const* kSecretName = "openrouter-api-key";
+// OpenRouter's dashboard Activity view groups/labels rows by this (the `X-Title` header), NOT by the
+// `user` field (`end_user_id` below) -- confirmed directly against a real run: without a per-file
+// X-Title, every case here reads as an anonymous, unlabeled request no matter how distinct its
+// `end_user_id` is. This is the SEPARATE field that makes this file's own traffic findable in the
+// dashboard at all -- `end_user_id` does NOT drive OpenRouter's own cache routing (docs/research/
+// 2026-08-21-openrouter-session-id-header.md corrects an earlier claim here that it did); the new
+// `session_id` constructor param below is what actually keys OpenRouter's sticky routing.
+constexpr char const* kXTitle = "AgentEngine: farm-advisory-live-e2e";
 constexpr int kMaxRounds = 6;  // AgentSession's own max_turns now (agent_session.hpp)
 constexpr char const* kSkillName = "farm-field-advisory";
 
@@ -356,8 +364,16 @@ int main() {
     caps.max_output_tokens = 1024;
 
     FarmAdvisoryLiveSession session;
+    // Matches `initialize()`'s own session_id below -- passed to BOTH `end_user_id` (abuse-tracking
+    // only) and `session_id` (OpenRouter's own prompt-cache sticky-routing key, docs/research/
+    // 2026-08-21-openrouter-session-id-header.md -- a DIFFERENT field from `end_user_id`).
     session.emplace_chat_client(host, kHttpsPort, model, SecretRef{kSecretName}, caps, store,
-                                 kPathPrefix);
+                                 kPathPrefix, sandbox::resolve_host, /*ca=*/std::string{},
+                                 /*http_referer=*/std::string{}, /*x_title=*/kXTitle,
+                                 /*end_user_id=*/std::string{"farm-advisory-live-e2e-session"},
+                                 /*seed=*/std::nullopt, /*transport=*/sandbox::ProviderTransport::tls,
+                                 /*scan_response_format_leaks=*/false,
+                                 /*session_id=*/std::string{"farm-advisory-live-e2e-session"});
     session.initialize("farm-advisory-live-e2e-session", Principal{"live-e2e-principal", ""},
                         /*token_budget=*/std::nullopt,
                         /*max_turns=*/static_cast<std::uint64_t>(kMaxRounds));
