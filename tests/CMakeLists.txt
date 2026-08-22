@@ -1442,6 +1442,15 @@ add_executable(test_rt_agent_session_tier3_authority test_rt_agent_session_tier3
 target_link_libraries(test_rt_agent_session_tier3_authority PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_agent_session_tier3_authority COMMAND test_rt_agent_session_tier3_authority)
 
+# v1 slice of docs/planning/dynamic-multi-agent-fanout-design-draft.md (rounds 1-14) --
+# agentengine::rt::multi_agent::{Budget, spawn, spawn_with_retry, parallel}
+# (include/agentengine/rt/multi_agent.hpp). Real positive/negative controls, including a genuine
+# multi-threaded Budget contention test and a ThreadPool-backed parallel() fan-out, per this project's
+# own "a real concurrency test under rt::ThreadPool, not a synchronous driver" bar.
+add_executable(test_rt_multi_agent test_rt_multi_agent.cpp)
+target_link_libraries(test_rt_multi_agent PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_multi_agent COMMAND test_rt_multi_agent)
+
 # ---- ADR-037 Phase 2 -- porting test_agent_session_streaming_model_calls(.cpp) (ADR-034 streaming
 # turn loop), test_agent_session_response_format_leak_scan(.cpp) (ADR-035 Phase 1 leak scan), and
 # test_agent_session_run_event_stream(.cpp) (Milestone 7 Phase A run event stream) onto
