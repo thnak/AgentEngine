@@ -1348,6 +1348,32 @@ default to it, and a host who wires it anyway is knowingly outside what this des
 silently exposed to an undocumented race. Closing it for real is separate work against
 `core/memory.hpp` itself, not bundled into this document's own implementation.
 
+## Round 15 — v1 implemented and proven (2026-08-22)
+
+Real code + real tests now exist for the round-12-narrowed v1 scope: `include/agentengine/rt/
+multi_agent.hpp` (`Budget`, `spawn()`, `spawn_with_retry()`, `parallel()`) and `tests/
+test_rt_multi_agent.cpp` (19 real positive/negative controls, 236 checks, all passing; includes a
+genuine multi-threaded `Budget` contention test -- 200 real-thread races for one slot, none doubly
+admitted -- and a real `ThreadPool`-backed `parallel()` run proving `max_in_flight` bounds OBSERVED
+concurrent overlap, not merely configured value). No regression in `test_rt_thread_pool` or
+`test_rt_agent_session_tier3_authority`.
+
+One real bug surfaced by writing the tests, not by further reading: the first `spawn_with_retry()`
+fixture assumed a flaky chat client's own failure counter would persist across retry attempts --
+impossible given fix 3's own "genuinely fresh session every attempt" contract, since a fresh
+`SessionFactory` call also constructs a fresh chat client with no memory of prior attempts. Fixed by
+sharing the failure counter externally (a `std::shared_ptr<std::atomic<int>>`), matching how a real
+vendor's own rate-limit state lives outside any one client object -- not a production defect, but
+exactly the kind of thing this document's own repeated instinct (test the design, don't just read it
+as correct) exists to catch, one more time, in the actual "prove" phase this time.
+
+Per `decisions/README.md`, this is the evidence a future ADR needs to cite -- the design/red-team
+rounds above are the "design → red-team" half; this round is the first real "prove" evidence. Still
+open before a real ADR: round 6's un-revisited concurrent-`MemoryProvider`-write restriction (not
+exercised by this implementation, since `FanOutProvider`/shared context is out of this pass's scope),
+and the two structurally-unenforced restrictions this file's own banner documents rather than checks
+(the executor-body caller restriction, round 12; `EffectContext` provenance, round 10's residual).
+
 ## What survives from the gap doc's original sketch, unchanged
 
 The two-primitive split (native `multi_agent` library + a bounded, non-scripting declarative
