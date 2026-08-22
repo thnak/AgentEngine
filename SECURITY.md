@@ -1,15 +1,15 @@
 # Security Policy
 
-AgentEngine is in the design phase (CLAUDE.md): there is no released binary and no public issue
-tracker yet, so this document states the process that takes effect **before** any public release
-(024 §7 Q4 / OpenQuestions.md OQ-11), not a live intake channel today.
+AgentEngine is under active implementation (CLAUDE.md), with a public remote at
+[github.com/thnak/AgentEngine](https://github.com/thnak/AgentEngine), but there is still no released
+binary, so this document states the process that takes effect **before** any public release (024 §7
+Q4 / OpenQuestions.md OQ-11), not a live intake channel today.
 
 ## Reporting a vulnerability
 
-- Report privately to the project owner rather than opening a public issue or PR. Once the project
-  has a public remote, this section is updated with a dedicated contact (a security-reporting email
-  address or GitHub private vulnerability reporting) — a placeholder is not shipped as the real
-  channel.
+- Report privately to the project owner rather than opening a public issue or PR. A dedicated
+  contact (a security-reporting email address or GitHub private vulnerability reporting) is added to
+  this section before the first public release — a placeholder is not shipped as the real channel.
 - Include: affected RFC/component, reproduction steps or a proof of concept, and the invariant or
   gate you believe fails (007 I2–I4, 008, 017, 018, 021 §6 G3 are the highest-severity classes —
   sandbox escape, cross-tenant leakage, and capability widening are release-blocking defect classes

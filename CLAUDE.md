@@ -64,6 +64,18 @@ model output influence a permission decision, it is wrong regardless of how well
   as a second layer (008 §1b), not from a second local isolation technology. A workload that would
   need hardware isolation uses the `remote` profile against infrastructure that already provides it.
 - **v1 authoring surfaces are C++ CRTP and declarative YAML/JSON.** Python/.NET bindings deferred.
+- **AgentEngine does not implement HTTP networking itself.** Project-owner direction (2026-08-15)
+  settled the inbound MCP/A2A/AG-UI transport question: host/consumer code owns the socket,
+  terminates TLS/auth, and hands the engine already-parsed requests — MAF-style — rather than the
+  engine running its own listener. `ADR-061`'s Tier 1 (client-role principal derivation) and Tier 3
+  (host-fronted server role's session-side admission mechanism and bearer-credential bridges) are
+  both Judged (2026-08-20, project-owner sign-off) — but Tier 3 never built the actual test-fixture
+  listener a server-role conformance run needs, so 011 §10 G1 / 012 §8 G1 remain unmet. Don't reopen
+  "should AgentEngine bind a port" without a new ADR; `decisions/README.md`'s ADR-061 row and the
+  milestone-7 breakdown doc's Phase H have the full rationale and the real security defects this
+  decision's red-teaming found and fixed in already-shipped code.
+- **The licence is MIT, decided.** See [`LICENSE`](LICENSE); resolved 2026-08-04
+  (024 Q1 / OQ-11). Not an open question.
 
 ## Feature vs. safety balance
 

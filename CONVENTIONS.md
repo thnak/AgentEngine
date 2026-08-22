@@ -1,7 +1,7 @@
 # AgentEngine implementation conventions — the coding contract
 
 This file binds all code (human- or agent-written) to the RFC specs. **Every change must follow
-the specs (`001`–`024`) and the proven decisions (`decisions/ADR-*`).** When code and a spec
+the specs (`001`–`030`) and the proven decisions (`decisions/ADR-*`).** When code and a spec
 disagree, **the spec wins**; if the spec is genuinely wrong, fix the spec first (RFC-style, backed
 by an ADR), then the code — never silently diverge. This rule is inherited from Quark and is not
 negotiable here either.

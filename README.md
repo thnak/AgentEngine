@@ -18,17 +18,29 @@ configuration objects.
 > **Status: implementation under way.** All 30 RFCs have passed review (each RFC's own header reads
 > **Reviewed**, dated 2026-08-05) and this repository now contains a real, tested C++23
 > implementation alongside the specification set — hundreds of passing tests under `tests/`, dozens
-> of headers under `include/agentengine/`, and a growing set of ADRs in
-> [`decisions/`](decisions/README.md) recording gates that were actually executed against real code,
-> not just designed. Per the build order in
-> [`docs/planning/v1-implementation-roadmap.md`](docs/planning/v1-implementation-roadmap.md),
+> of headers under `include/agentengine/`, and 73 ADRs in [`decisions/`](decisions/README.md)
+> recording gates that were actually executed against real code, not just designed. Per the build
+> order in [`docs/planning/v1-implementation-roadmap.md`](docs/planning/v1-implementation-roadmap.md),
 > Milestones 0-6 (core substrate, tools/capabilities/sandbox, worktree/interpreter/CodeAct,
 > sessions/durability/memory, real providers/identity/secrets, multi-agent orchestration) are
-> complete. Milestone 7 (protocol conformance) is **in progress**: real code exists for its earlier
-> phases (MCP, A2A, AG-UI, the declarative YAML/JSON compilers), and a Phase G gate audit has run
-> against that code — the audit found the milestone's own exit criterion **not yet met**. Milestones
-> 8-9 (safety/observability/perf, hosting/platform/bulk-data) have not started. Each RFC still names
-> the gate that promotes it further, from Reviewed toward Proven and Accepted — see the
+> complete. Milestone 7 (protocol conformance) is **in progress**: a Phase G gate audit
+> (2026-08-08) checked all 28 named gates across MCP/A2A/AG-UI/declarative-format against what had
+> been built and found 3 fully met, 7 partially met, and 18 blocked — mainly on the milestone having
+> deliberately deferred a real network listener. Phase H then resolved that as a genuine trust-boundary
+> question rather than an oversight: the project owner decided (2026-08-15) **AgentEngine will not
+> implement HTTP networking itself** — host code owns the socket and hands the engine parsed requests
+> (`decisions/ADR-061-host-provided-inbound-transport.md`, Judged). Red-teaming that design against the
+> already-shipped M7 code surfaced and fixed four real, live security defects (unauthenticated
+> cross-principal A2A/MCP task reads, an admission-check bypass, non-CSPRNG task ids). With no listener
+> needed for the client-role suite, a first real MCP conformance number now exists: spec `2026-07-28`,
+> non-auth **75/75 (100%)**, auth **3/49 (~6%, no OAuth machinery yet)** — so 011 §10 G2, and the
+> milestone's own exit criterion, remain **not yet met**. ADR-061's host-fronted server-role tier is
+> itself now Judged too (session-side admission mechanism, bearer-credential-to-authority bridges),
+> but it never built the test-fixture listener a real `conformance server`/`a2a-tck` run needs, so
+> 011 §10 G1 and 012 §8 G1 — and most of the remaining blocked gates — stay open on that one missing
+> piece. Milestones 8-9 (safety/observability/perf, hosting/platform/bulk-data) have not started.
+> Each RFC still names the gate that promotes it further,
+> from Reviewed toward Proven and Accepted — see the
 > [per-milestone breakdown docs](docs/planning/) for live, phase-by-phase status.
 
 ## The shape of it
@@ -64,10 +76,13 @@ auto built = quickstart::OpenAiSessionBuilder("gpt-4o-mini")
 if (built) { auto reply = built->ask("Compare WASI 0.2 and 0.3."); }
 ```
 
-`build()` fails closed (no credential, no store) instead of failing at the first `chat()` call. See
-`include/agentengine/core/session_builder.hpp` and
+`build()` fails closed (no credential, no store) instead of failing at the first `chat()` call, and the
+built `Bundle` also has a streaming entry point, `ask_stream()`, reusing `ask()`'s own proven
+bounded-single-`resume()` contract (`decisions/ADR-073-unified-streaming-gateway-call-stream-tool-argument-result-streaming-ask-stream.md`,
+Judged). See `include/agentengine/core/session_builder.hpp` and
 [`docs/planning/quickstart-session-builder-design-draft.md`](docs/planning/quickstart-session-builder-design-draft.md)
-for scope and the three red-team passes it went through before promotion.
+for scope and the red-team passes (eight rounds and counting) it went through before and after
+promotion.
 
 ## What makes it different
 
@@ -225,10 +240,11 @@ review gate 2026-08-05 (`docs/planning/v1-review-signoff-workflow.md`; each RFC'
 header confirms it). Promotion beyond Reviewed happens by executing a gate — not by consensus that a
 document reads well — and several RFCs already have real, executed evidence in `decisions/` toward
 their named gate: 007 (Capability and Trust Model, §9) via ADR-005/006/007/009; 008 (Sandbox and
-Isolation, §9) via ADR-004/008/011/013; 009 (Plugin and Extension System, §10) via ADR-010; 010
-(Python Code Interpreter, §9) via ADR-001/002/003/015; 025 (Worktree and Virtual Filesystem, §9) via
-ADR-014. None of that evidence is a full gate close, though — every one of those ADRs is explicit
-about what it leaves open (e.g. ADR-004 is "Spiked, not Judged"; ADR-009 resolves "007 §3's
+Isolation, §9) via ADR-004/008/011/013/071; 009 (Plugin and Extension System, §10) via ADR-010; 010
+(Python Code Interpreter, §9) via ADR-001/002/003/015; 011 (MCP Conformance, §10) via ADR-061 §11's
+Tier 1 prove phase (real client-role conformance number, non-auth 75/75); 025 (Worktree and Virtual
+Filesystem, §9) via ADR-014. None of that evidence is a full gate close, though — every one of those
+ADRs is explicit about what it leaves open (e.g. ADR-004 is "Spiked, not Judged"; ADR-009 resolves "007 §3's
 in-process enforcement half"; ADR-014 is Windows-only with named untested residuals), so no RFC has
 actually reached **Proven** yet by this ladder's own strict definition. Check the ADR itself before
 citing one as closing a specific gate item.
@@ -254,6 +270,7 @@ the code. Contested, hot-path, or security-critical designs go through
 
 ## Licence
 
-Not yet decided ([024 Q1](024-Versioning-Compatibility-and-Governance.md)); MIT is the working
-assumption (historical: originally chosen to match Quark's own licence, back when Quark was a
-consumed dependency; ADR-037 removed that dependency, the MIT assumption itself is unchanged).
+**MIT** — see [`LICENSE`](LICENSE). Resolved by the project owner 2026-08-04
+([024 Q1](024-Versioning-Compatibility-and-Governance.md), OQ-11), originally to match Quark's own
+licence back when Quark was a consumed dependency; ADR-037 later removed that dependency without
+reopening the licence choice.
