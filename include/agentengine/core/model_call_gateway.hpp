@@ -210,9 +210,25 @@ public:
     // at a time for a given gateway instance. This invariant is the CALLER's responsibility (this class
     // does not and cannot enforce it) -- a hand-built `ModelCallGateway` driven from two genuinely
     // concurrent threads outside `AgentSession`'s own serialization would violate it.
+    //
+    // Code review finding (2026-08-22): `ctx_copy` below MUST NOT carry `report_progress`/
+    // `bound_capabilities` onto the detached thread as-is. `report_progress` is a `std::function` that,
+    // whenever a live `invoke_tool()` bracket is open (`rt/agent_session.hpp`'s three bracket sites),
+    // captures `[this, call_id]` back into the OWNING `AgentSession` -- calling it off-thread would reach
+    // `emit_run_event()`'s unlocked `run_event_seq_by_run_` map, the exact unlocked data race ADR-060 §4
+    // already found and fixed once for `tool_pipeline.hpp::background_task()`'s own identical by-value-
+    // EffectContext-onto-detached-thread shape (see that function's own comment, `tool_pipeline.hpp:664-
+    // 679`). `bound_capabilities` is a raw, non-owning pointer the same file revokes at step 10 --
+    // carrying it stale risks a dangling read. Neither is live TODAY at this specific call site (both are
+    // only ever bound inside an `invoke_tool()` bracket, and `run_model_call()` -- the only caller of
+    // `call_stream()` -- never runs inside one), but that is an unenforced cross-file invariant, not a
+    // structural guarantee; reset unconditionally here, matching `tool_pipeline.hpp:679`'s own precedent,
+    // rather than relying on callers never changing that invariant.
     [[nodiscard]] stream<ChatResponseUpdate> call_stream(ChatRequest request, EffectContext& ctx) {
         request.idempotency_key = IdempotencyKey{ctx.run_id, ctx.turn_index, 0, 0}.to_string();
         EffectContext ctx_copy = ctx;  // never hold a reference back into the caller's frame cross-thread
+        ctx_copy.report_progress = [](ContentItem) {};
+        ctx_copy.bound_capabilities = nullptr;
         auto pair = make_stream<ChatResponseUpdate>(std::pmr::get_default_resource());
         std::thread(
             [this, request = std::move(request), ctx = std::move(ctx_copy),
