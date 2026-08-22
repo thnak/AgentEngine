@@ -15,6 +15,21 @@
 // contract comment). A lightweight, always-ask-pending scripted tool is sufficient to prove the
 // turn-bound mechanism itself, matching this project's own "no heavier dependency than the claim
 // needs" convention.
+//
+// R3 (added by round 8's own dedicated re-examination of this fix, docs/planning/quickstart-session-
+// builder-design-draft.md's own "finding 7" thread) closes finding 17: `clear_in_process_state()`
+// never cleared `pending_codeact_asks_`, unlike every other piece of interaction state it resets --
+// a pooled/reused `AgentSession` (the `Stateless<N>` pooling pattern) that clears+reinitializes after
+// an in-flight codeact-ask permanently retained that record (full script source + every answer given)
+// for the C++ object's remaining lifetime. Round 8 also found and fixed a related, LOWER-severity gap
+// (finding 16: `resolve_codeact_ask()`'s "no stored record" branch is genuinely reachable after a
+// session restore mid-ask, since `restore_from_record()` restores `open_interactions_` but never
+// `pending_codeact_asks_` -- previously left the interaction stuck open forever; now erases it too) --
+// NOT regression-tested here, since reaching that branch through the public API alone would require
+// reconstructing `history_` (no public mutator exists) to look like a genuinely suspended tool-call
+// turn; verified by code review only, matching this project's own disclosed-scope-limit convention
+// for round 4's `ask_mutex_` concurrency fix (this file's own sibling, session_builder.hpp's top
+// comment).
 
 #include <cstdio>
 #include <memory>
@@ -248,6 +263,28 @@ int main() {
               "R2: with max_turns_ explicitly left unbounded (nullopt), the ask loop keeps suspending "
               "normally -- the fix only enforces a cap when the host actually set one, matching every "
               "other max_turns_ consumer in this file");
+    }
+
+    // R3: round 8's finding 17 -- clear_in_process_state() must actually drop a pending codeact-ask
+    // record, not silently retain it forever (the leak this file's own top comment documents).
+    {
+        Session session;
+        session.initialize("codeact-clear-leak", Principal{"p", ""});  // max_turns defaults to nullopt
+        CapabilitySet const held = CapabilitySet::grant_root({});
+        session.set_capabilities(&held);
+        (void)session.emplace_chat_client();
+
+        auto first = drive(session.start_run(StartRun{user_message("go")}));
+        check(!first.has_value() && first.error().code == Session::kSuspendedForCodeActAsk,
+              "R3 setup: the first round suspends for agent.ask(), opening a pending record");
+        check(session.pending_codeact_ask_count() == 1,
+              "R3 setup: exactly one PendingCodeActAsk record now exists");
+
+        session.clear_in_process_state();
+        check(session.pending_codeact_ask_count() == 0,
+              "R3: clear_in_process_state() actually drops the pending codeact-ask record -- before "
+              "the finding-17 fix this stayed at 1 forever, a permanent leak of the record (including "
+              "the full script source and every answer given) for a pooled/reused session object");
     }
 
     std::fprintf(stderr, g_failures == 0 ? "test_rt_agent_session_codeact_ask_max_turns: ALL PASS\n"

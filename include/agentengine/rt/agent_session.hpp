@@ -704,6 +704,15 @@ public:
     }
     [[nodiscard]] bool has_open_interactions() const noexcept { return !open_interactions_.empty(); }
 
+    // Round 8 red-team: added so clear_in_process_state()'s "no residue left to read back through ANY
+    // of this class's own accessors" contract (005 §6) can actually be checked against
+    // pending_codeact_asks_ -- previously unobservable (no accessor existed), which is exactly how the
+    // finding-17 leak (clear_in_process_state() never clearing this map) went undetected. Mirrors
+    // admission_denied_count()'s own shape.
+    [[nodiscard]] std::size_t pending_codeact_ask_count() const noexcept {
+        return pending_codeact_asks_.size();
+    }
+
     // decisions/ADR-029-suspend-for-human-approval.md §6 / ADR-070: closes the named gap that
     // `Interaction::expires_at_ns` is stored but nothing ever checks it. `interaction.hpp`'s own
     // comment is why this is a QUERY, not a wired timer: "no real wall-clock source wired in
@@ -1091,6 +1100,16 @@ public:
         effect_context_ = EffectContext{};
         open_interactions_.clear();
         interaction_counter_ = 0;
+        // Round 8 red-team, finding 17 (LOW): this function's own contract is "no residue left to read
+        // back through ANY of this class's own accessors" (005 §6, cited below for standing_effects_)
+        // -- pending_codeact_asks_ was missing from this list entirely, unlike every other piece of
+        // interaction state above. No public accessor exposes it, so this did not literally violate
+        // the accessor wording, but it is a real leak: a pooled/reused AgentSession (the Stateless<N>
+        // pooling pattern) that clears+reinitializes with a DIFFERENT session_id_ after an in-flight
+        // codeact-ask permanently retains that PendingCodeActAsk record (full script source + every
+        // answer given so far) for the remaining lifetime of the C++ object -- unreachable for erasure
+        // since future interaction ids embed the new session_id and can never match the orphaned key.
+        pending_codeact_asks_.clear();
         token_budget_ = std::nullopt;
         run_tokens_consumed_ = 0;
         admission_denied_count_ = 0;
@@ -1631,14 +1650,24 @@ private:
         }
         auto rec_it = pending_codeact_asks_.find(interaction_id);
         if (rec_it == pending_codeact_asks_.end()) {
-            // Should be unreachable in practice -- `open_interactions_`/`pending_codeact_asks_` are
-            // always mutated together (see that map's own comment) -- but this is a real, checked
-            // guard rather than an assumed invariant, matching this project's own fail-closed
-            // discipline for anything that would otherwise be an unchecked lookup into a map keyed by
-            // caller-influenced-adjacent state.
+            // Round 8 red-team, finding 16 (LOW): this comment used to claim "should be unreachable in
+            // practice" -- WRONG, corrected here. `restore_from_record()` (below) restores
+            // `open_interactions_`, which can contain a `codeact_ask`-reason `Interaction`, but never
+            // restores `pending_codeact_asks_` (`PendingCodeActAsk`'s own comment already discloses
+            // this as a deliberate, not-yet-solved durability gap) -- so resolving a codeact_ask
+            // interaction that survived a session restore genuinely reaches here. Previously this
+            // branch returned `fatal` WITHOUT erasing the interaction from `open_interactions_`,
+            // leaving it stuck open forever with no cancel path (every future resolve attempt against
+            // the same id hit this identical branch again). Fixed: erase it here too (best-effort --
+            // if this ALSO fails there is nothing further to reconcile, the fatal error below is
+            // returned either way) so the interaction closes cleanly even though the underlying work
+            // cannot be resumed -- still fails closed, but recoverably instead of permanently stuck.
+            result<void> const erased = resolve_interaction_record(interaction_id);
+            (void)erased;
             co_return std::unexpected(error{
                 failure_class::fatal,
-                "internal error: no stored codeact-ask record for this open interaction",
+                "internal error: no stored codeact-ask record for this open interaction (likely a "
+                "session restore mid-ask -- pending_codeact_asks_ is not durably checkpointed)",
                 "session.resolve_interaction.codeact_ask_record_missing"});
         }
         rec_it->second.answers_so_far.push_back(*request.answer);

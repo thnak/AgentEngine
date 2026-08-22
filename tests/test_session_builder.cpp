@@ -28,6 +28,7 @@
 #include <cstdio>
 #include <memory>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <tuple>
 #include <type_traits>
@@ -82,6 +83,49 @@ static_assert(!std::is_default_constructible_v<RequiredArgProvider>,
               "the whole point of B14-B17: this type must genuinely have no default constructor");
 static_assert(agentengine::ContextProvider<RequiredArgProvider>,
               "RequiredArgProvider must satisfy ContextProvider (005 §5) to be usable at all");
+
+// B22 (round 8 red-team, finding 15): proves LazyComposedContextProvider::engage() is exception-safe.
+// CountingProvider never throws -- pushed first, its on_context() call count proves whether a stale
+// copy from a FAILED engage() attempt survives into a later successful retry.
+struct CountingProvider {
+    static constexpr std::string_view name = "counting-provider";  // ADR-066 §3
+    static inline int on_context_calls = 0;
+
+    [[nodiscard]] agentengine::task<agentengine::result<agentengine::ContextContribution>> on_context(
+        agentengine::SessionContext&, agentengine::EffectContext&) {
+        ++on_context_calls;
+        co_return agentengine::ContextContribution{};
+    }
+    agentengine::task<std::monostate> on_turn_end(agentengine::TurnView, agentengine::EffectContext&) {
+        co_return std::monostate{};
+    }
+};
+
+// Throws on its Nth move-construction (1-indexed, counted across the WHOLE type, not per-instance) --
+// lets a test fire the throw at a precise point inside engage()'s own machinery rather than merely
+// "at construction time." set_throw_on_move(-1) disarms it (used for the retry, which must succeed).
+struct ThrowingProvider {
+    static constexpr std::string_view name = "throwing-provider";  // ADR-066 §3
+    static inline int move_count = 0;
+    static inline int throw_on_move_number = -1;
+
+    ThrowingProvider() = default;
+    ThrowingProvider(ThrowingProvider&&) {
+        ++move_count;
+        if (move_count == throw_on_move_number) {
+            throw std::runtime_error("B22: simulated move failure mid-engage()");
+        }
+    }
+    ThrowingProvider(ThrowingProvider const&) = default;
+
+    [[nodiscard]] agentengine::task<agentengine::result<agentengine::ContextContribution>> on_context(
+        agentengine::SessionContext&, agentengine::EffectContext&) {
+        co_return agentengine::ContextContribution{};
+    }
+    agentengine::task<std::monostate> on_turn_end(agentengine::TurnView, agentengine::EffectContext&) {
+        co_return std::monostate{};
+    }
+};
 
 }  // namespace
 
@@ -706,6 +750,65 @@ int main() {
                       "the second call fails");
             }
         }
+    }
+
+    // B22: round 8 red-team, finding 15 -- engage() must be exception-safe. If a later Ms's move
+    // constructor (or make_context_provider_descriptor()'s own internal make_shared) throws partway
+    // through build_contributors(), contributors_ used to be left PARTIALLY populated while engaged_
+    // stayed false -- engaged_ == false does not block a retry (and a retry is exactly what a caller
+    // seeing an exception has every reason to attempt), but the old shape push_back'd directly into
+    // contributors_ without clearing it first, so a successful retry silently carried the FAILED
+    // attempt's stale entry forward too, duplicating it on the wire.
+    {
+        using ProviderT = ComposedQuickstartSessionBuilder<quickstart::Provider::openai,
+                                                              InMemorySecretStore, CountingProvider,
+                                                              ThrowingProvider>::HistoryProviderT;
+        Principal principal{"p-b22", ""};
+        std::vector<Message> empty_history;
+        SessionContext session_ctx{"s-b22", principal, empty_history};
+        EffectContext effect_ctx{};
+
+        CountingProvider::on_context_calls = 0;
+        ProviderT lcp;
+
+        // First attempt: CountingProvider (index 0) is pushed successfully; ThrowingProvider (index 1)
+        // throws while build_contributors() extracts it -- move #1 is engage()'s own by-value
+        // `providers` parameter binding (must succeed, or the throw would prove nothing about engage()
+        // itself), move #2 is the extraction under test.
+        ThrowingProvider::move_count = 0;
+        ThrowingProvider::throw_on_move_number = 2;
+        bool threw = false;
+        try {
+            (void)lcp.engage(std::make_tuple(CountingProvider{}, ThrowingProvider{}));
+        } catch (std::exception const&) {
+            threw = true;
+        }
+        check(threw, "B22 setup: the first engage() attempt throws partway through");
+
+        auto after_throw = agentengine::test_support::run_task_sync<result<ContextContribution>>(
+            lcp.on_context(session_ctx, effect_ctx));
+        check(!after_throw.has_value() &&
+                  after_throw.error().code == "quickstart.composed_context.not_engaged",
+              "B22: after the failed attempt, on_context() correctly fails closed (not_engaged) -- "
+              "engaged_ was never set to true");
+        check(CountingProvider::on_context_calls == 0,
+              "B22: the failed attempt's partially-built contributor was never invoked");
+
+        // Retry with fresh, non-throwing providers -- must succeed AND must not carry the failed
+        // attempt's stale contributor forward.
+        ThrowingProvider::throw_on_move_number = -1;
+        auto retried = lcp.engage(std::make_tuple(CountingProvider{}, ThrowingProvider{}));
+        check(retried.has_value(), "B22: the retry engage() call succeeds");
+
+        auto after_retry = agentengine::test_support::run_task_sync<result<ContextContribution>>(
+            lcp.on_context(session_ctx, effect_ctx));
+        check(after_retry.has_value(), "B22: on_context() succeeds after the retry");
+        check(CountingProvider::on_context_calls == 1,
+              "B22 (THE FIX UNDER TEST): a single on_context() call after the retry invokes the "
+              "counting contributor EXACTLY ONCE -- 2 would mean the stale contributor from the FAILED "
+              "first attempt survived into the successful retry and is being invoked a second, "
+              "duplicate time on the wire, exactly the hazard engage()'s own already_engaged guard "
+              "exists to prevent");
     }
 
     std::fprintf(stderr, g_failures == 0 ? "test_session_builder: ALL PASS\n"
