@@ -1615,6 +1615,37 @@ private:
                         run_event_payload::ToolCallFinished{audit.call_id, audit.ok});
 
         if (!audit.ok && audit.error_code == "codeact.ask_pending") {
+            // Red-team finding (docs/planning/quickstart-session-builder-design-draft.md's own §0-series
+            // history names it as the session_builder.hpp "finding 7" investigation's byproduct, though
+            // the bug itself lives here, in AgentSession, not in that facade): this branch used to
+            // `co_return` WITHOUT ever touching `effect_context_.turn_index` -- the ONLY field
+            // `run_rounds()`'s own `max_turns_` bound (below) ever inspects. Since `run_rounds()` is not
+            // re-entered while an interaction keeps resolving to ask-pending (the "completed" branch
+            // below is the only path that calls back into it), a CodeAct script that keeps asking
+            // follow-up questions forever was COMPLETELY unbounded by `.max_turns()`/`.token_budget()` --
+            // LIVE-REPRODUCED: 50 `resolve_interaction()` round trips against a scripted always-ask tool,
+            // `max_turns_ == 3`, never once produced `run.max_turns_exceeded`, `turn_index` never left 0.
+            // Fixed the same way the ordinary (non-codeact) approval-resume branches one function up
+            // already do (`resolve_interaction()`'s own `:943`/`:998`, which increment once per call
+            // regardless of approved/denied): count THIS round of ask/resolve work against the bound,
+            // then refuse to suspend for yet another ask once the cap is reached -- fails closed with the
+            // identical `run.max_turns_exceeded` `run_rounds()`'s own fallthrough produces, instead of
+            // silently granting an ask-loop unlimited rounds no other resume path gets.
+            ++effect_context_.turn_index;
+            if (max_turns_.has_value() && effect_context_.turn_index >= *max_turns_) {
+                pending_codeact_asks_.erase(rec_it);
+                result<void> const erased = resolve_interaction_record(interaction_id);
+                if (!erased) co_return std::unexpected(erased.error());
+                emit_run_event(run_event_kind::run_failed,
+                                run_event_payload::RunFailed{
+                                    "run.max_turns_exceeded",
+                                    "codeact ask loop did not converge within max_turns"});
+                co_return std::unexpected(
+                    error{failure_class::contract,
+                          "codeact ask loop did not converge within max_turns",
+                          "run.max_turns_exceeded"});
+            }
+
             std::string prompt;
             if (!tool_result.content.empty()) {
                 if (auto const* e = std::get_if<Error>(&tool_result.content.front().value)) prompt = e->message;

@@ -1,15 +1,18 @@
 # Quickstart session builder — a convenience facade over `AgentSession`'s wiring — design draft
 
 **Status: promoted from prototype to a supported feature (2026-08-22) — §2a/§2b/§2c/§2d/§3/§4
-implemented. §2a/§2c/§2d/§3/§4 red-teamed three times, all findings closed. §2b was implemented in a
-4th pass, then red-teamed three times (round 4 §0f, round 5 §0g, round 6 §0h): round 4 found and fixed
-a real session-isolation gap (`fork_from()` aliasing stateful composed providers, finding 9) plus a
+implemented, red-teamed SEVEN times total across this file's history. §2b was implemented in a 4th
+pass, then red-teamed three times (round 4 §0f, round 5 §0g, round 6 §0h): round 4 found and fixed a
+real session-isolation gap (`fork_from()` aliasing stateful composed providers, finding 9) plus a
 diagnostics gap (finding 10); round 5 found finding 9's own fix was NECESSARY BUT NOT SUFFICIENT — a
-second, worse bypass of the same class through a MOVE rather than a copy (finding 11, fixed); round 6,
-explicitly re-scoped to include finding 7 (round 3's fix, never independently re-examined until now)
-alongside finding 11, found NO functional bug in either — the first clean round since round 1 — only a
-real test-coverage gap (closed as B21a-d). Finding 11 still awaits its own next independent red-team
-round — disclosed as an open item, not silently treated as closed.** A convenience facade over
+second, worse bypass of the same class through a MOVE rather than a copy (finding 11, fixed); round 6
+found no functional bug. **Round 7 (§0i) then gave finding 7 its own dedicated round at last, and found
+a real bug — NOT in this facade, but in the `AgentSession` mechanism it wires into**:
+`resolve_codeact_ask()`'s ask-pending branch never advanced `turn_index`, so `.max_turns()`/
+`.token_budget()` were completely bypassed by a non-converging CodeAct ask loop (finding 13, fixed at
+the root in `rt/agent_session.hpp`, also recorded in `decisions/ADR-057-agent-ask-suspend-without-
+deadlock.md` §8). Findings 11 and 13 both still await their own next independent red-team round —
+disclosed as open items, not silently treated as closed.** A convenience facade over
 already-Reviewed RFCs,
 not a new invariant or capability shape, so promotion did not require its own ADR (CLAUDE.md's
 `design → red-team → prove → judge` cycle is reserved for contested/hot-path/security-critical
@@ -374,6 +377,64 @@ Full suite 221/221 (`ctest -LE live-network`) after B21a-d landed; `tests/test_s
 65/65. Finding 7 has now survived TWO rounds (5, 6) without a new finding against it specifically —
 still disclosed as never independently re-examined in its OWN dedicated round the way findings 9/11
 were, but no longer untouched by any later round's fresh-eyes sweep either.
+
+## §0i. Seventh red-team pass — finding 7's own dedicated round, at last — a real bug found in `AgentSession` itself
+
+The one item named at the end of §0h as still lacking its own dedicated round: an independent,
+adversarial pass scoped SPECIFICALLY and exclusively to `max_turns_`/`token_budget_` (finding 7),
+explicitly told to go deep rather than broad. Two live reproductions built as temporary probes.
+
+**Finding 13 (HIGH) — `AgentSession::resolve_codeact_ask()`'s ask-pending branch never advanced
+`turn_index`; `max_turns_`/`token_budget_` were COMPLETELY bypassed by a non-converging CodeAct ask
+loop.** The bug lives in `rt/agent_session.hpp`, not in `session_builder.hpp` itself — this facade's
+own `max_turns_`/`token_budget_` wiring was always correct; what it wires INTO had a real gap this
+round's dedicated depth found. `run_rounds()`'s bound only ever inspects `effect_context_.turn_index`;
+that field is incremented in exactly four places, and the ask-pending branch returns strictly BEFORE
+all four whenever a CodeAct script asks another follow-up question — so `run_rounds()` (where the
+bound actually lives) is never even re-entered while the ask loop continues. LIVE-REPRODUCED: a
+scripted always-ask-pending tool, `max_turns_ == 3`, driven through 50 `resolve_interaction()` round
+trips — `run.max_turns_exceeded` never fired, `turn_index` never left 0, the model (`chat()`) was
+called exactly once for the whole 50-round exchange. Host-paced (each round needs a genuine external
+`resolve_interaction()` call, not a CPU-spin hang), but any automation layer built on ADR-057's own
+`agent.ask()`/`resolve_interaction()` mechanism that answers ask-prompts in a loop reproduces the same
+runaway-cost class finding 7 exists to prevent, completely unprotected by the very setter whose entire
+purpose is that protection — and unlike `.max_turns(std::nullopt)`, there is no setting that would have
+warned a host this specific path is unbounded. **Fixed** in `rt/agent_session.hpp`'s
+`resolve_codeact_ask()`: the ask-pending branch now increments `turn_index` and checks it against
+`max_turns_` itself, failing closed with `run.max_turns_exceeded` before suspending for another ask
+once the cap is reached — mirroring exactly how the ordinary (non-codeact) approval-resume branches one
+function up already increment once per call regardless of approved/denied. Regression-proofed:
+`tests/test_rt_agent_session_codeact_ask_max_turns.cpp` (R1/R2, no real `MediatedPythonRunner` needed —
+any tool returning `error_code == "codeact.ask_pending"` reaches the same path) — verified to actually
+have teeth by reverting the fix and confirming the test fails exactly the way the red-team's own probe
+did. Also recorded as an addendum to `decisions/ADR-057-agent-ask-suspend-without-deadlock.md` §8, since
+the mechanism the gap lived inside is that ADR's own (still Proposed, not yet Judged).
+
+**Finding 14 (MEDIUM, documentation gap, not fixed with code) — the finding-7 disclosure never named
+that `max_turns_`/`token_budget_` bound turn COUNT, never turn DURATION.** Live-reproduced: a
+`ContextProvider::on_context()` that spins forever with no `co_await` hangs `start_run()` past a 20s
+timeout even with `max_turns_ == 25`, the builder's real default. Architecturally expected —
+`ContextProvider`/`Tool`/`ChatClientT` are host-authored, trusted code — not a defect in the fix. But
+the header's own finding-7 text explains why `Bundle::ask()`'s bounded-resume guard doesn't catch a
+model-retry hang without ever stating the identical blind spot applies to a stuck `on_context()`/tool
+`invoke()`/`ChatClientT::chat()` itself. Not fixed with code in this pass — the honest gap is in the
+DISCLOSURE, addressed by this section existing.
+
+**Two LOW findings, informational:** (a) a suspend exactly at `turn_index == max_turns_ - 1` gets one
+extra, unguarded unit of resolution work before the next check catches it — a real ±1 divergence from
+"the cap is exact," not itself a hang (each call is host-paced), undisclosed anywhere until now, not
+fixed (a one-round grace at the boundary, judged not worth the added complexity of tightening further in
+this pass). (b) B11-B13 (session_builder.hpp's own finding-7 regression tests) only ever proved value-
+readback through `AgentSession::max_turns()`, matching their own disclosed scope limit — but
+`tests/test_rt_agent_session_tool_call_loop.cpp`'s R4/R5 (predating finding 7's own fix commit) already
+give the real "does `max_turns_` bound `run_rounds()`'s ordinary loop" proof, live, no network, just
+uncross-referenced from this file. Worth a cross-reference, not a new test.
+
+Full suite 222/222 (`ctest -LE live-network`) after the fix (`rt/agent_session.hpp` + the new
+`tests/test_rt_agent_session_codeact_ask_max_turns.cpp`) landed — a full rebuild confirmed zero
+regressions anywhere else in the tree, including every OTHER `AgentSession` consumer. **Verdict: finding
+7's own dedicated round finally ran, and found a real bug — not in this facade, but in the mechanism it
+wires into.** Not yet independently re-examined a second time.
 
 ## 0. Correction found during implementation — §3's own fix does not compile as written
 

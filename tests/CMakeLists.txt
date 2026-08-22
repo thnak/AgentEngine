@@ -1061,6 +1061,13 @@ add_executable(test_rt_agent_session_tool_call_loop test_rt_agent_session_tool_c
 target_link_libraries(test_rt_agent_session_tool_call_loop PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_agent_session_tool_call_loop COMMAND test_rt_agent_session_tool_call_loop)
 
+# ---- Regression proof for the resolve_codeact_ask()/ask-pending max_turns_ bypass fix, found by a
+# red-team round dedicated to session_builder.hpp's own "finding 7" (docs/planning/quickstart-session-
+# builder-design-draft.md). No real MediatedPythonRunner needed -- see this file's own top comment.
+add_executable(test_rt_agent_session_codeact_ask_max_turns test_rt_agent_session_codeact_ask_max_turns.cpp)
+target_link_libraries(test_rt_agent_session_codeact_ask_max_turns PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_agent_session_codeact_ask_max_turns COMMAND test_rt_agent_session_codeact_ask_max_turns)
+
 # ---- decisions/ADR-067-middleware-turn-point-pre-model-enforcement.md wired for real:
 # AgentSession::set_turn_middleware_hook() -- the turn/pre_model mechanism proven standalone in
 # test_turn_middleware.cpp now proven against a real AgentSession round.

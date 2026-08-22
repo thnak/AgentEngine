@@ -25,7 +25,15 @@
 // either -- both held under deliberately harsher probing (self-move-assignment, move-construction,
 // third-generation moves, a fresh `max_turns`/`token_budget` audit) -- only a real test-coverage gap,
 // closed as B21a-d. This is the first round since round 1 to find no live bug; still not proof nothing
-// remains, only that this specific, disclosed probing found none.
+// remains, only that this specific, disclosed probing found none. Finding 7 THEN got its own dedicated
+// round at last (round 7, finding 13): a real bug, but NOT in this file -- `AgentSession::
+// resolve_codeact_ask()`'s own ask-pending branch (`rt/agent_session.hpp`) never advanced `turn_index`,
+// so `.max_turns()`/`.token_budget()` were completely bypassed by a non-converging CodeAct ask loop.
+// This facade's OWN `max_turns_`/`token_budget_` wiring was always correct; what it wires into had the
+// gap. Fixed at the root, in `rt/agent_session.hpp` -- see that file's own comment at the fix site, and
+// `decisions/ADR-057-agent-ask-suspend-without-deadlock.md` §8 for the addendum, and this facade's own
+// design draft §0i for the full account. Regression-proofed: `tests/test_rt_agent_session_codeact_ask_
+// max_turns.cpp`, not this file's own test file, since the bug and its fix are both in `AgentSession`.
 //
 // Correction found during implementation, not anticipated by the design draft's own §3: `AgentSession`
 // (rt/agent_session.hpp) holds `rt::AsyncMutex session_mutex_` directly as a data member;
