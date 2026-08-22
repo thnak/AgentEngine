@@ -1,18 +1,20 @@
 #pragma once
-// Prototype implementation of docs/planning/quickstart-session-builder-design-draft.md -- covers
-// §2a (client stack, gateway-wrapped by default)/§2c (capability+secret sugar, generalized past the
+// QuickstartSessionBuilder -- a convenience facade over AgentSession's wiring, promoted from
+// prototype to a supported feature (2026-08-22) after three red-team rounds against this real code,
+// all findings closed. Implements docs/planning/quickstart-session-builder-design-draft.md's §2a
+// (client stack, gateway-wrapped by default)/§2c (capability+secret sugar, generalized past the
 // draft's own original sketch -- see finding 3 below)/§2d (approval/policy sugar, corrected from its
 // original sketch -- see finding 5 below)/§3 (the Store-lifetime finding)/§4 (`.ask()`) ONLY.
 // Explicitly NOT implemented here, named rather than silently dropped: §2b (history/context
 // composition -- a real structural gap, not just unstarted work; see finding 6 below for why),
 // `.with_fallback()`/`.with_middleware()`/`.with_content_replay()`, and the draft's own
-// `.raw_client_only()` escape hatch. Not an ADR. Red-teamed three times against this real code: round 1
-// found findings 1-2; round 2, specifically against finding 3's own fix, found finding 3's own
+// `.raw_client_only()` escape hatch. A convenience layer over already-Reviewed RFCs (002, 004, 005,
+// 006, 007, 018), not itself a new invariant or capability shape, so it has no ADR of its own --
+// round 1 found findings 1-2; round 2, specifically against finding 3's own fix, found finding 3's own
 // `.store(Store)` shape was itself wrong (finding 4); round 3, specifically against finding 5's
 // `.approve_tools()`/`.policy()` landing, found and LIVE-REPRODUCED a real hang (finding 7) plus a
 // documentation overclaim. Round 3's own fix (finding 7) has not itself been independently red-teamed
-// yet -- same disclosure posture every prior "just fixed" state had before its own next round found
-// something.
+// a fourth time -- disclosed here as the one open item, not silently treated as closed.
 //
 // Correction found during implementation, not anticipated by the design draft's own §3: `AgentSession`
 // (rt/agent_session.hpp) holds `rt::AsyncMutex session_mutex_` directly as a data member;
@@ -73,14 +75,14 @@
 //    `trust/secret_quarantine.hpp`'s `QuarantineSecretStore` (a real, already-shipped conformer,
 //    ADR-068) holds a `std::mutex` directly, making it neither movable nor copyable -- a by-value
 //    `.store(Store)` could not even be CALLED with one. Also found: the test proving this path
-//    (`test_session_builder_prototype.cpp`'s "B5") never actually called `.resolve()`/`chat()`, so the
+//    (`test_session_builder.cpp`'s "B5") never actually called `.resolve()`/`chat()`, so the
 //    design draft's "proven end to end" wording overclaimed what it actually tested (construction-only,
 //    not the capability-name-match at resolve time).
 // 4. `.store()` is now a variadic, forwarding EMPLACE (matches `AgentSession::emplace_chat_client`'s own
 //    established idiom, rt/agent_session.hpp) -- constructs `Store` in place from whatever constructor
 //    arguments it needs, never requiring `Store` to be movable OR copyable at all. Closes finding 3's
-//    residual: `QuarantineSecretStore` now works too (regression-proofed, `test_session_builder_
-//    prototype.cpp`'s "B7"). `.api_key_from_env()`'s internal use updated to match (default-emplace,
+//    residual: `QuarantineSecretStore` now works too (regression-proofed, `test_session_builder.cpp`'s
+//    "B7"). `.api_key_from_env()`'s internal use updated to match (default-emplace,
 //    then mutate through the `unique_ptr` -- never moves a `Store` value either). B5 strengthened
 //    ("B5b") to actually call `.resolve()` against the real `AgentEngineSecretStore`/`EnvSecretSource`
 //    pair with the exact capability grant `.api_key()` produces, closing the overclaim -- this specific

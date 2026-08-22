@@ -338,8 +338,8 @@ int main() {
         }
     }
 
-    std::fprintf(stderr, g_failures == 0 ? "test_session_builder_prototype: ALL PASS\n"
-                                          : "test_session_builder_prototype: %d FAILURE(S)\n",
+    std::fprintf(stderr, g_failures == 0 ? "test_session_builder: ALL PASS\n"
+                                          : "test_session_builder: %d FAILURE(S)\n",
                  g_failures);
     return g_failures == 0 ? 0 : 1;
 }

@@ -52,6 +52,23 @@ auto stream  = session.run_stream<Researcher>("Compare WASI 0.2 and 0.3.");
 The same agent is expressible in YAML and compiles to **byte-identical metadata** — that equivalence
 is a tested invariant, not a convention.
 
+For a single-provider script that doesn't need the full `Agent<>` policy surface, a smaller facade
+sits over the same `AgentSession` wiring — one credential, a `ModelCallGateway`-wrapped client by
+default, and a synchronous `.ask()`:
+
+```cpp
+auto built = quickstart::OpenAiSessionBuilder("gpt-4o-mini")
+                 .api_key_from_env("openai-api-key", "OPENAI_API_KEY")
+                 .grant(Capability{cap::FsRead{"scratch", "", std::nullopt}})
+                 .build();
+if (built) { auto reply = built->ask("Compare WASI 0.2 and 0.3."); }
+```
+
+`build()` fails closed (no credential, no store) instead of failing at the first `chat()` call. See
+`include/agentengine/core/session_builder.hpp` and
+[`docs/planning/quickstart-session-builder-design-draft.md`](docs/planning/quickstart-session-builder-design-draft.md)
+for scope and the three red-team passes it went through before promotion.
+
 ## What makes it different
 
 - **Isolation is the substrate, not a tool.** Every effect — filesystem, network, secrets,

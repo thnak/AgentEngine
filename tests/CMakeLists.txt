@@ -950,17 +950,18 @@ if(AGENTENGINE_WITH_HTTPS)
     agentengine::core agentengine::provider_http_client agentengine_warnings)
   add_test(NAME test_json_schema_described COMMAND test_json_schema_described)
 
-  # ---- docs/planning/quickstart-session-builder-design-draft.md's prototype prove pass
-  # (core/session_builder.hpp) -- build()-time capability/secret validation and the Bundle
-  # Store/CapabilitySet lifetime-across-a-move proof. No .ask()/start_run() call, so no real network
-  # exchange happens and OpenAIChatClient::chat()'s body is never instantiated -- linked against
-  # provider_http_client only because session_builder.hpp's own file-wide AGENTENGINE_WITH_HTTPS guard
-  # requires the real OpenAIChatClient/AnthropicChatClient types to be visible at all, same reason
-  # test_json_schema_described above needs the same link with no live network call either.
-  add_executable(test_session_builder_prototype test_session_builder_prototype.cpp)
-  target_link_libraries(test_session_builder_prototype PRIVATE
+  # ---- QuickstartSessionBuilder (core/session_builder.hpp), promoted from prototype after three
+  # red-team rounds -- see docs/planning/quickstart-session-builder-design-draft.md. Covers build()-time
+  # capability/secret validation and the Bundle Store/CapabilitySet lifetime-across-a-move proof. No
+  # .ask()/start_run() call, so no real network exchange happens and OpenAIChatClient::chat()'s body is
+  # never instantiated -- linked against provider_http_client only because session_builder.hpp's own
+  # file-wide AGENTENGINE_WITH_HTTPS guard requires the real OpenAIChatClient/AnthropicChatClient types
+  # to be visible at all, same reason test_json_schema_described above needs the same link with no live
+  # network call either.
+  add_executable(test_session_builder test_session_builder.cpp)
+  target_link_libraries(test_session_builder PRIVATE
     agentengine::core agentengine::provider_http_client agentengine_warnings)
-  add_test(NAME test_session_builder_prototype COMMAND test_session_builder_prototype)
+  add_test(NAME test_session_builder COMMAND test_session_builder)
 endif()
 
 # ---- Gap-3 fix (2026-08-14, decisions/ADR-045-*.md) -- core/json_schema_validator.hpp, proving

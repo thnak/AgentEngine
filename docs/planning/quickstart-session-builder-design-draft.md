@@ -1,7 +1,11 @@
 # Quickstart session builder — a convenience facade over `AgentSession`'s wiring — design draft
 
-**Status: prototyped (§2a/§2c/§2d/§3/§4), red-teamed three times against the real code, all findings
-from all three passes closed; round 3's own fix not yet independently red-teamed a fourth time.**
+**Status: promoted from prototype to a supported feature (2026-08-22) — §2a/§2c/§2d/§3/§4 implemented,
+red-teamed three times against the real code, all findings from all three passes closed; round 3's own
+fix not yet independently red-teamed a fourth time.** A convenience facade over already-Reviewed RFCs,
+not a new invariant or capability shape, so promotion did not require its own ADR (CLAUDE.md's
+`design → red-team → prove → judge` cycle is reserved for contested/hot-path/security-critical
+designs; this used the lighter `design → prototype → red-team → fix` cycle throughout, per §7 below).
 Round 1 found and fixed two real issues (§0b findings 1-2); round 1 also found a third, real gap it
 left open, fixed in a same-session follow-up (§0b finding 3) — round 2 (§0c) then red-teamed THAT fix
 specifically and found it did not actually deliver on its own claim, fixing it again (§0c findings 3-4,
@@ -16,7 +20,7 @@ implemented, for a real structural reason, not lack of time — see finding 6, h
 §2b below. Matches this project's `design → red-team → prove → judge` discipline (CLAUDE.md), same
 honesty level as `docs/planning/tool-optimizer-provider-design-draft.md` and `docs/planning/model-call-
 gateway-routing-design-draft.md`. Real, compiling, passing code:
-`include/agentengine/core/session_builder.hpp`, `tests/test_session_builder_prototype.cpp` (36/36
+`include/agentengine/core/session_builder.hpp`, `tests/test_session_builder.cpp` (36/36
 checks, Windows/MSVC, `AGENTENGINE_WITH_HTTPS=ON`). Not implemented: §2b,
 `.with_fallback()`/`.with_middleware()`/`.with_content_replay()`, and this draft's own
 `.raw_client_only()` escape hatch — named in the header's own top comment, not silently dropped.
@@ -51,8 +55,8 @@ for the record:
    grant for the first name behind, an I4 attributability smell (an audit reading `capabilities()` back
    would see a grant with no corresponding usable secret). **Fixed**: the auto-derived grant now lives
    in its own `primary_secret_grant_` field, overwritten (not appended) each call — last-call-wins,
-   matching `api_key_ref_`'s own semantics. Regression-proofed: `tests/test_session_builder_prototype.
-   cpp`'s "B4" case.
+   matching `api_key_ref_`'s own semantics. Regression-proofed: `tests/test_session_builder.cpp`'s
+   "B4" case.
 3. **STILL OPEN — real, disclosed, not yet fixed.** `build()` requires `Store` to be default-
    constructible and expose `.set(name, value)` — properties `InMemorySecretStore` (the default, and
    the only type this file's own tests exercise) has, but which are neither part of the `SecretStore`
@@ -74,7 +78,7 @@ wrong assumption) when `Store` isn't default-constructible-and-`.set()`-able. A 
 change came with this fix: `build()` now MOVES `store_` out of the builder, so a SECOND `build()` call
 on the same instance now fails closed with `quickstart_builder.no_store` rather than the prior
 red-team's verified "produces two independent Bundles" non-finding (below) — proven by
-`test_session_builder_prototype.cpp`'s "B6". No formal `try_compile()` compile-fail gate was added for
+`test_session_builder.cpp`'s "B6". No formal `try_compile()` compile-fail gate was added for
 the `.api_key_from_env()` `requires`-clause rejection (this project's own established idiom for "must
 not compile" claims, e.g. `tests/compile_fail/`) — skipped as disproportionate for a mechanically
 obvious constraint, unlike ADR-071's `native_provider_families_distinct` gate, which tested genuinely
@@ -116,7 +120,7 @@ the original code). Two real issues found, both fixed; full detail in the header
    `Store` IN PLACE from whatever arguments its constructor needs, never requiring `Store` to be movable
    OR copyable at all. `.api_key_from_env()`'s internal use updated to match (default-emplace via
    `.store()`, then mutate through the `unique_ptr` — never moves a `Store` value either).
-   Regression-proofed against the actual counter-example: `test_session_builder_prototype.cpp`'s "B7"
+   Regression-proofed against the actual counter-example: `test_session_builder.cpp`'s "B7"
    builds a real session against `QuarantineSecretStore` — if `.store()` ever regresses back to a
    by-value shape, this stops COMPILING, not merely stops passing.
 2. **FIXED — a real test-gap/overclaim, not a bug in the code itself.** B5 (finding 3's proof for the
@@ -125,7 +129,7 @@ the original code). Two real issues found, both fixed; full detail in the header
    this scope limit). So B5 only proved "constructs and wires successfully," not the capability-
    name-match between `.api_key(SecretRef)`'s auto-granted `cap::Secret` and what `EnvSecretSource`/
    `AgentEngineSecretStore` actually check/look up — despite the design draft's own wording claiming
-   "proven end to end." **Fixed**: `test_session_builder_prototype.cpp`'s new "B5b" calls
+   "proven end to end." **Fixed**: `test_session_builder.cpp`'s new "B5b" calls
    `AgentEngineSecretStore::resolve()` directly against a real `EnvSecretSource`, using the EXACT
    capability-grant shape `.api_key()` produces, and checks the resolved value matches the real env var
    — independent of the full session/`Bundle` machinery, closing the overclaim for real rather than
@@ -172,7 +176,7 @@ approval logic itself. Full detail in the header's own top comment (finding 7); 
    applied to turn-bounding instead of retry. `.max_turns(std::nullopt)` remains available as an
    explicit, informed opt-out for a host with their own external timeout/cancellation layer.
    Regression-proofed (wiring only, not a re-run of the live hang probe — see the scope-limit note in
-   `test_session_builder_prototype.cpp`'s own comment on "B11"/"B12"/"B13", and finding 7's own account
+   `test_session_builder.cpp`'s own comment on "B11"/"B12"/"B13", and finding 7's own account
    in the header for why a full live-hang test isn't included here — this builder has no
    `.raw_client_only()` escape hatch yet to substitute a scripted client without real network).
 2. **FIXED — documentation overclaim, corrected in §2d above.** The design draft's own §2d text claimed
@@ -413,7 +417,7 @@ the safe default. This can only ever turn an already-required human decision int
 an immediate host-declared approve; it can never skip a decision that was never required, and can never
 turn a decision into an approval for a tool not explicitly named (I2: narrows/decides among
 already-required decisions, never widens which calls need one). If never called, no `ApprovalDecider` is
-installed at all — verified, not merely asserted (`test_session_builder_prototype.cpp`'s "B8": the
+installed at all — verified, not merely asserted (`test_session_builder.cpp`'s "B8": the
 session's `approval_decider()` is genuinely empty, `static_cast<bool>(...)` false, not an always-false
 stand-in). `.policy(PolicyDecider)` is unchanged from the sketch — a thin, unmodified pass-through to
 `set_policy_decider`. **Correction (round 3, §0d): "proven end to end" below overclaimed what "B9"/"B10"
