@@ -2,9 +2,12 @@
 
 **Status: promoted from prototype to a supported feature (2026-08-22) — §2a/§2b/§2c/§2d/§3/§4
 implemented. §2a/§2c/§2d/§3/§4 red-teamed three times against the real code, all findings from all
-three passes closed. §2b (this session's 4th pass) implemented but NOT yet independently red-teamed —
-disclosed as an open item, not silently treated as closed, consistent with round 3's own fix (finding
-7) also still awaiting its own next red-team round.** A convenience facade over already-Reviewed RFCs,
+three passes closed. §2b was implemented in a 4th pass, then red-teamed once (round 4, §0f) — found
+and fixed a real HIGH-severity session-isolation gap (`fork_from()` aliasing stateful composed
+providers, finding 9) plus a diagnostics gap (finding 10) and two test gaps. Round 3's fix (finding 7)
+and round 4's fixes (findings 9-10) are BOTH still awaiting their own next independent red-team round —
+disclosed as open items, not silently treated as closed.** A convenience facade over already-Reviewed
+RFCs,
 not a new invariant or capability shape, so promotion did not require its own ADR (CLAUDE.md's
 `design → red-team → prove → judge` cycle is reserved for contested/hot-path/security-critical
 designs; this used the lighter `design → prototype → red-team → fix` cycle throughout, per §7 below).
@@ -25,7 +28,7 @@ analysis had NOT anticipated (the default-constructibility constraint runs deepe
 text captured). Matches this project's `design → red-team → prove → judge` discipline (CLAUDE.md),
 same honesty level as `docs/planning/tool-optimizer-provider-design-draft.md` and `docs/planning/
 model-call-gateway-routing-design-draft.md`. Real, compiling, passing code:
-`include/agentengine/core/session_builder.hpp`, `tests/test_session_builder.cpp` (47/47 checks,
+`include/agentengine/core/session_builder.hpp`, `tests/test_session_builder.cpp` (51/51 checks,
 Windows/MSVC, `AGENTENGINE_WITH_HTTPS=ON`, full suite 221/221 `ctest -LE live-network`). Still not
 implemented: `.with_fallback()`/`.with_middleware()`/`.with_content_replay()`, and this draft's own
 `.raw_client_only()` escape hatch — named in the header's own top comment, not silently dropped.
@@ -224,6 +227,54 @@ provider.hpp` first, matching this project's "explore before editing" convention
 landed most recently (finding 3 → 4, finding 5 → 7); this pass has had no round against it yet at all,
 a real gap, not an oversight.
 
+## §0f. Fourth red-team pass, against §0e's §2b landing — a real session-isolation gap, plus two diagnostic/test-gap fixes
+
+An independent, adversarial pass (fresh agent, no prior context, matching this project's own "independent
+of the implementer" practice) against `ComposedQuickstartSessionBuilder`/`LazyComposedContextProvider`,
+scoped explicitly to exclude everything already 3x red-teamed (§0b/§0c/§0d). Verdict: **not clean** —
+found and fixed one real, HIGH-severity design gap plus one comprehensibility gap and two test gaps.
+
+1. **HIGH, I1/I4-adjacent — `AgentSession::fork_from()` silently aliases stateful composed providers
+   across sessions.** `fork_from()` (`rt/agent_session.hpp:1022`) plain copy-assigns `history_provider_`.
+   `LazyComposedContextProvider<Ms...>`'s `contributors_` holds descriptors whose closures capture a
+   `shared_ptr<Ms>` BY VALUE (`make_context_provider_descriptor`, pre-existing, `context_assembly.hpp`)
+   — an implicit memberwise copy therefore aliases the SAME underlying provider instances, not
+   independent ones. LIVE-VERIFIED by the red-team's own probe: copy-assigning a stateful fixture,
+   mutating the original via `on_turn_end`, then reading the COPY's `on_context` showed the mutation. A
+   forked session was meant to diverge independently; instead a turn-end effect attributed to one
+   `Principal` becomes visible through another session's identity. The underlying mechanism predates this
+   pass (`core/composed_context_provider.hpp`'s `ComposedContextProvider<Ms...>` has the identical
+   exposure) — what's new is that this pass is what first makes it reachable through documented, public
+   API composing real stateful providers into a real, fork-capable session, contradicting §7's own
+   "no new capability semantics, no new authority path" claim as originally written. **Fixed**:
+   `LazyComposedContextProvider` made move-only (copy ctor/assignment deleted, move ctor/assignment
+   explicit) — `fork_from()` is an ordinary, non-template member function, so this turns the silent
+   runtime aliasing into a compile error at the exact call site, zero effect on every already-passing
+   path. `ComposedContextProvider`'s own identical exposure is UNCHANGED — out of this file's scope,
+   named as a real, disclosed residual.
+2. **MEDIUM, diagnostics — an empty `Ms...` pack produced a confusing multi-error cascade.** Verified: a
+   standalone probe compile of `ComposedQuickstartSessionBuilder<Provider::openai, InMemorySecretStore>`
+   (zero `Ms`) produced ~20 lines of unrelated failures deep inside `<expected>`/`<type_traits>` before
+   the real constraint violation. **Fixed**: `requires (sizeof...(Ms) >= 1)` added directly on
+   `ComposedQuickstartSessionBuilder` itself (previously only on the inner `LazyComposedContextProvider`)
+   — re-verified after the fix: one clean `C7602: associated constraints are not satisfied` error,
+   nothing else. (MSVC required the identical `requires` clause on `Bundle`'s own friend declaration too,
+   or the friend and the real definition disagreed — `error C3864: requires clause is incompatible with
+   the declaration` — a real MSVC-specific gotcha, not present with clang/g++, fixed alongside.)
+3. **Test gap, closed — `on_turn_end` fan-out untested for this type.** `test_composed_context_provider
+   .cpp` already proves this for its sibling `ComposedContextProvider`; B14-B17 never did for
+   `LazyComposedContextProvider`. Closed as B19.
+4. **Test gap, closed — wire order untested with TWO real contributions.** B16 only proved order using
+   one contributor that contributes nothing (`HistoryProvider<Window<0>>` on empty history) + one that
+   does — unable to distinguish "order preserved" from "only the non-empty one shows up regardless of
+   position." Closed as B18, using two instances of the same non-default-constructible fixture type with
+   distinct text.
+
+Full suite 221/221 (`ctest -LE live-network`) after all four fixes; `tests/test_session_builder.cpp` now
+51/51. **Verdict: findings 9-10 (header's own numbering) fixed; not yet independently red-teamed a fifth
+time**, same disclosure posture every prior "just fixed" state in this file has had before its own next
+round.
+
 ## 0. Correction found during implementation — §3's own fix does not compile as written
 
 **`AgentSession` cannot be moved or copied at all.** It holds `rt::AsyncMutex session_mutex_`
@@ -334,7 +385,7 @@ installs the bare client directly — for a deterministic fake (`JokerChatClient
 Named explicitly as escape hatch, not a coequal option, so a reader doesn't reach for it by habit in
 production code.
 
-### 2b. `HistoryProviderT`/context slot — RESOLVED (4th pass, 2026-08-22), see finding 8
+### 2b. `HistoryProviderT`/context slot — RESOLVED and red-teamed once (round 4, §0f), see findings 8-10
 
 Verified via CodeGraph (`include/agentengine/core/composed_context_provider.hpp`,
 `include/agentengine/core/skill_provider.hpp`): `ComposedContextProvider<Ms...>`'s own file-top comment
@@ -574,17 +625,21 @@ already-safe idiom.
 ## 7. What this draft is not
 
 Not an ADR. §2a/§2b/§2c/§2d/§3(as corrected in §0)/§4 are now real, tested code. §2a/§2c/§2d/§3/§4 are
-red-teamed three times (§0b, §0c, §0d) with every finding from all three passes closed; §2b (§0e, a
-fourth pass) is implemented but has had NO red-team round against it yet at all — the fallback/
-middleware/content-replay/raw-client-only surface remains design-only, unimplemented. This facade's own
-risk profile is genuinely low (§5: no new capability semantics, no new authority path — every real
-finding across §0/§0b/§0c/§0d was an ordinary C++ lifetime/concurrency/hygiene/genericity/availability
-bug, not an I2/I3 mechanism breach — §0d in particular went looking specifically for an I2-class
-approval-bypass finding and found none, finding an unrelated availability gap instead), so this
-continues to follow this same design → prototype → red-team → fix cycle, not the full `design →
-red-team → prove → judge` gauntlet ADR-070/071-class changes require, since nothing here touches I2/I3's
-own mechanisms, only how conveniently a host can drive them correctly. Two items now stand equally
-ready for their next red-team round: finding 7 (round 3's fix, still not independently re-examined) and
-§2b/finding 8 (never examined at all) — neither is a blocker to starting the other. If a later pass
-surfaces a finding that *does* touch I2/I3's own mechanisms, that finding gets its own escalation at
-that point, matching this project's established practice — not decided in advance here.
+red-teamed three times (§0b, §0c, §0d); §2b (§0e's 4th pass) has been red-teamed once (§0f, round 4) —
+every finding from all four rounds is closed. The fallback/middleware/content-replay/raw-client-only
+surface remains design-only, unimplemented. This facade's own risk profile is low but NOT zero-new-
+authority in every respect, a claim an earlier version of this section made too broadly: §0f's finding
+9 (`AgentSession::fork_from()` aliasing stateful composed providers across sessions) is a real,
+I1/I4-adjacent session-isolation gap, not merely an "ordinary C++ hygiene bug" the way every finding
+across §0/§0b/§0c/§0d was — it does not touch I2/I3's capability/authority MECHANISMS directly (nothing
+gets approved or granted that shouldn't), but it does let one session's identity observe another's
+mutable state, which is the class of thing I4 (every effect is attributable) cares about. Fixed by
+making the affected type move-only, closing it at compile time rather than leaving it a runtime trap.
+This continues to follow the lighter `design → prototype → red-team → fix` cycle, not the full `design
+→ red-team → prove → judge` gauntlet ADR-070/071-class changes require, since the FIX itself narrows
+exposure (deletes a capability the type had, adds none) rather than granting anything — but §0f is the
+reason this section no longer claims "no new capability semantics, no new authority path" as a blanket
+fact about this whole file. Findings 7 (round 3's fix) and 9-10 (round 4's fixes) all still stand ready
+for their own next, independent red-team round — none is a blocker to starting either of the others. If
+a later pass surfaces a finding that touches I2/I3's own mechanisms directly, that finding gets its own
+escalation at that point, matching this project's established practice — not decided in advance here.

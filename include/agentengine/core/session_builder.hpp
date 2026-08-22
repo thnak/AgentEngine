@@ -15,9 +15,12 @@
 // 5's `.approve_tools()`/`.policy()` landing, found and LIVE-REPRODUCED a real hang (finding 7) plus a
 // documentation overclaim; round 3's own fix (finding 7) has not itself been independently red-teamed
 // a fourth time -- disclosed here as an open item, not silently treated as closed. §2b's own
-// `ComposedQuickstartSessionBuilder`/`detail::LazyComposedContextProvider` (finding 8) have NOT yet
-// been through any red-team round at all -- a real, disclosed gap, matching how every other addition
-// in this file started before its own first pass.
+// `ComposedQuickstartSessionBuilder`/`detail::LazyComposedContextProvider` (finding 8) then WAS
+// red-teamed (round 4): found and fixed a real session-isolation gap on `AgentSession::fork_from()`
+// (finding 9) and a diagnostic-quality gap on an empty `Ms...` pack (finding 10), plus two test gaps
+// closed (on_turn_end fan-out, two-real-contributor wire order). Round 4's own fixes (findings 9-10)
+// have not themselves been independently red-teamed a fifth time -- same disclosure posture every
+// prior "just fixed" state in this file has had before its own next round.
 //
 // Correction found during implementation, not anticipated by the design draft's own §3: `AgentSession`
 // (rt/agent_session.hpp) holds `rt::AsyncMutex session_mutex_` directly as a data member;
@@ -164,6 +167,38 @@
 //    `ComposedQuickstartSessionBuilder` duplicates §2a's fluent setters rather than sharing them via a
 //    CRTP base -- a deliberate, disclosed simplification (see this file's own top-of-class comment on
 //    that class), named as a candidate follow-up if a red-team pass finds the duplication drifting.
+// 9. **Round 4 red-team, HIGH, I1/I4-adjacent: `AgentSession::fork_from()` silently aliases stateful
+//    composed providers across sessions.** `fork_from()` (`rt/agent_session.hpp:1022`) plain
+//    copy-assigns `history_provider_`. `LazyComposedContextProvider<Ms...>`'s `contributors_` holds
+//    `ContextProviderDescriptor`s whose closures capture a `shared_ptr<Ms>` BY VALUE
+//    (`make_context_provider_descriptor`, `context_assembly.hpp`) -- an implicit memberwise copy
+//    therefore aliases the SAME underlying provider instances, not independent ones. LIVE-VERIFIED
+//    (round 4's own probe): copy-assigning a stateful fixture, mutating the ORIGINAL via `on_turn_end`,
+//    then reading the COPY's `on_context` showed the mutation. A forked session was meant to diverge
+//    independently; instead it shares live mutable state (a memory-provider write-back, a per-skill
+//    counter, a RAG cache) with its source -- a turn-end effect attributed to one `Principal` becomes
+//    visible through another session's identity. Pre-existing in `core/composed_context_provider.hpp`'s
+//    `ComposedContextProvider<Ms...>` too (not this file's own bug to begin with), but THIS pass is
+//    what first makes it reachable through documented, public API composing real stateful providers
+//    into a real, fork-capable session. **Fixed**: `LazyComposedContextProvider` is now move-only (copy
+//    ctor/assignment `= delete`d, move ctor/assignment explicit `= default`) -- `fork_from()` is an
+//    ordinary, non-template member function, only compiled when actually called, so this turns the
+//    silent runtime aliasing into a compile error at the exact call site, with zero effect on every
+//    already-passing path. The underlying `shared_ptr`-aliasing mechanism in `ComposedContextProvider`
+//    itself is UNCHANGED -- out of this file's scope, named here as a real, disclosed residual rather
+//    than silently left for the next caller to rediscover.
+// 10. **Round 4 red-team, MEDIUM, diagnostics.** `ComposedQuickstartSessionBuilder<Provider, Store>`
+//    (an empty `Ms...` pack) used to fail with a confusing multi-error cascade -- `LazyComposedContext
+//    Provider<>`'s own `requires (sizeof...(Ms) >= 1)` fired, but cascaded into an unrelated
+//    "unspecialized class template" error and ~20 lines of failures deep inside `<expected>`/
+//    `<type_traits>`. **Fixed**: the identical constraint now also sits directly on
+//    `ComposedQuickstartSessionBuilder` itself, so the OUTER template rejects an empty pack before ever
+//    reaching the inner type's instantiation -- one clear diagnostic instead of a cascade. Also closed
+//    as test gaps (not bugs): `on_turn_end` fan-out to every wrapped provider (previously proven for
+//    `ComposedContextProvider` but not this file's own `LazyComposedContextProvider`), and wire order
+//    with TWO providers that both contribute a real message (B16 previously proved order only for one
+//    empty + one non-empty contributor, which cannot distinguish "order preserved" from "only the
+//    non-empty one shows up regardless of position").
 
 #include <algorithm>
 #include <array>
@@ -294,6 +329,30 @@ public:
 
     LazyComposedContextProvider() = default;  // contributors_ starts empty -- see engage() below
 
+    // Move-only, NOT copyable -- red-team finding 9 (header top comment): `make_context_provider_
+    // descriptor()` (context_assembly.hpp) wraps each `Ms` in a `shared_ptr<Ms>` CAPTURED BY VALUE in
+    // `contributors_`'s closures, so an implicit memberwise COPY of this type would copy those
+    // `shared_ptr`s too -- aliasing the SAME underlying provider instances, not independent ones. The
+    // one real place this bites: `AgentSession::fork_from()` (rt/agent_session.hpp:1022) does a plain
+    // `history_provider_ = source.history_provider_;` -- a fork of a session using this type would
+    // silently start sharing live, mutable provider state (a memory-provider write-back, a per-skill
+    // usage counter, a RAG cache) with its source, an I1/I4-adjacent session-isolation gap a caller has
+    // no reason to expect. Deleting copy here turns that into a COMPILE ERROR at the exact `fork_from()`
+    // call site instead -- `fork_from()` is an ordinary (non-template) member function, only compiled
+    // when actually called, so this has zero effect on every already-passing build()/engage()/
+    // on_context()/on_turn_end() path; it only surfaces where the real problem would have. Move
+    // constructor/assignment declared explicitly (not implicit) since declaring the copy pair suppresses
+    // implicit move generation -- `AgentSession::clear_in_process_state()`'s own `history_provider_ =
+    // HistoryProviderT{};` (rt/agent_session.hpp:1070) needs move-assignment from a prvalue to keep
+    // working. The underlying `shared_ptr`-aliasing mechanism itself is unchanged and pre-existing in
+    // `core/composed_context_provider.hpp`'s `ComposedContextProvider<Ms...>` too (not fixed here -- out
+    // of this file's scope, named as a real, disclosed residual, not silently left for a caller to
+    // rediscover).
+    LazyComposedContextProvider(LazyComposedContextProvider&&) noexcept = default;
+    LazyComposedContextProvider& operator=(LazyComposedContextProvider&&) noexcept = default;
+    LazyComposedContextProvider(LazyComposedContextProvider const&) = delete;
+    LazyComposedContextProvider& operator=(LazyComposedContextProvider const&) = delete;
+
     // Host-only, configuration-time call (`ComposedQuickstartSessionBuilder::build()`, never derived
     // from model output, I3) -- builds each `Ms`'s real `ContextProviderDescriptor` and appends it, in
     // `Ms...`'s declared order (005 §3 drop-order-determinism / final wire order, identical rule to
@@ -416,7 +475,8 @@ public:
 private:
     template <Provider, class>
     friend class QuickstartSessionBuilder;
-    template <Provider, class, class...>
+    template <Provider, class, class... Ms>
+        requires (sizeof...(Ms) >= 1)
     friend class ComposedQuickstartSessionBuilder;
 
     Bundle(std::unique_ptr<Store> store, std::unique_ptr<agentengine::CapabilitySet> capabilities,
@@ -687,7 +747,15 @@ using AnthropicSessionBuilder = QuickstartSessionBuilder<Provider::anthropic>;
 // oversight: extracting a CRTP mixin would mean touching the already-shipped, already-red-teamed §2a
 // class too, a larger, separate-risk refactor. Named here as a candidate follow-up if red-team finds
 // the duplication has drifted, not attempted in this pass.
+//
+// Red-team finding 10 (header top comment): `requires (sizeof...(Ms) >= 1)` declared HERE too, not
+// left to surface only once `HistoryProviderT` (below) instantiates `LazyComposedContextProvider<>`'s
+// own identical constraint -- an empty `Ms...` pack used to fail with a multi-error cascade (an
+// unspecialized-class-template error, then unrelated failures deep inside <expected>/<type_traits>),
+// not one clean, actionable diagnostic. This constraint is checked on the OUTER template first now,
+// so the compiler rejects it before ever reaching the inner type's own instantiation.
 template <Provider P, class Store, class... Ms>
+    requires (sizeof...(Ms) >= 1)
 class ComposedQuickstartSessionBuilder {
 public:
     using Primary          = typename detail::primary_client<P, Store>::type;

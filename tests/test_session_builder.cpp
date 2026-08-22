@@ -24,7 +24,10 @@
 // task.hpp`'s own documented precedent for this exact bug class, not by a live concurrency test.
 
 #include <array>
+#include <cstddef>
 #include <cstdio>
+#include <memory>
+#include <span>
 #include <string>
 #include <tuple>
 #include <type_traits>
@@ -43,10 +46,16 @@ namespace {
 // occupy `AgentSession`'s plain, always-default-constructed `HistoryProviderT` slot on its own now
 // composes fine through `LazyComposedContextProvider`, since that slot is never asked to
 // default-construct THIS type -- only `LazyComposedContextProvider<Ms...>` itself, which always can.
+// Round 4 red-team findings 9-10 (session_builder.hpp's own top comment) -- `turn_end_calls` (a
+// shared counter, not a private member, so a test can read it after the provider moves into
+// LazyComposedContextProvider's own contributors_) lets B18/B19 prove `on_turn_end` fan-out reaches
+// every wrapped provider, not just the first -- the same thing test_composed_context_provider.cpp's
+// own FixedMessagesProvider already proves for ComposedContextProvider, previously untested here.
 struct RequiredArgProvider {
     static constexpr std::string_view name = "required-arg";  // ADR-066 §3
 
-    explicit RequiredArgProvider(std::string text) : text_(std::move(text)) {}
+    RequiredArgProvider(std::string text, std::shared_ptr<std::size_t> turn_end_calls)
+        : text_(std::move(text)), turn_end_calls_(std::move(turn_end_calls)) {}
 
     [[nodiscard]] agentengine::task<agentengine::result<agentengine::ContextContribution>> on_context(
         agentengine::SessionContext&, agentengine::EffectContext&) {
@@ -61,11 +70,13 @@ struct RequiredArgProvider {
         co_return c;
     }
     agentengine::task<std::monostate> on_turn_end(agentengine::TurnView, agentengine::EffectContext&) {
+        ++*turn_end_calls_;
         co_return std::monostate{};
     }
 
 private:
     std::string text_;
+    std::shared_ptr<std::size_t> turn_end_calls_;
 };
 static_assert(!std::is_default_constructible_v<RequiredArgProvider>,
               "the whole point of B14-B17: this type must genuinely have no default constructor");
@@ -426,10 +437,12 @@ int main() {
         // before this pass (AgentSession<..., ComposedContextProvider<H, RequiredArgProvider>> could
         // not even be default-constructed, since ComposedContextProvider's own default ctor requires
         // every Ms default-constructible).
+        auto turn_end_calls = std::make_shared<std::size_t>(0);
         auto built = ComposedBuilder("gpt-4o-mini")
                          .api_key_from_env("openai-api-key", "AE_TEST_QUICKSTART_KEY")
                          .providers(std::make_tuple(HistoryProvider<Window<0>>{},
-                                                     RequiredArgProvider{"required-arg-text"}))
+                                                     RequiredArgProvider{"required-arg-text",
+                                                                           turn_end_calls}))
                          .build();
         check(built.has_value(), "credential + providers set: build() succeeds even with a "
                                   "non-default-constructible Ms in the pack");
@@ -465,21 +478,63 @@ int main() {
         // closed (defense-in-depth, independent of the builder-level "second build() fails at
         // no_providers" guard) -- calling it twice would otherwise silently duplicate every
         // contributor on the wire.
+        auto counter_a = std::make_shared<std::size_t>(0);
+        auto counter_b = std::make_shared<std::size_t>(0);
         auto built = ComposedBuilder("gpt-4o-mini")
                          .api_key_from_env("openai-api-key", "AE_TEST_QUICKSTART_KEY")
                          .providers(std::make_tuple(HistoryProvider<Window<0>>{},
-                                                     RequiredArgProvider{"first-engage"}))
+                                                     RequiredArgProvider{"first-engage", counter_a}))
                          .build();
         check(built.has_value(), "B17 setup: build() succeeds");
         if (built.has_value()) {
-            auto second_engage = built->session().history_provider().engage(
-                std::make_tuple(HistoryProvider<Window<0>>{}, RequiredArgProvider{"second-engage"}));
+            auto second_engage = built->session().history_provider().engage(std::make_tuple(
+                HistoryProvider<Window<0>>{}, RequiredArgProvider{"second-engage", counter_b}));
             check(!second_engage.has_value(),
                   "a second engage() call on the same instance fails closed");
             if (!second_engage.has_value()) {
                 check(second_engage.error().code == "quickstart.composed_context.already_engaged",
                       "the failure is specifically 'already_engaged', not a different error");
             }
+        }
+    }
+    {
+        // B18/B19: round 4 red-team findings 9-10's own test-gap closures -- TWO providers that BOTH
+        // contribute a real message (unlike B16's history+skills-style pairing, where only one ever
+        // contributes anything) prove declared order genuinely holds, not just "the one non-empty
+        // contributor shows up regardless of position"; and on_turn_end() fans out to BOTH, not just
+        // the first, matching what test_composed_context_provider.cpp already proves for its sibling
+        // ComposedContextProvider.
+        using TwoRealBuilder =
+            ComposedQuickstartSessionBuilder<quickstart::Provider::openai, InMemorySecretStore,
+                                               RequiredArgProvider, RequiredArgProvider>;
+        auto calls_first  = std::make_shared<std::size_t>(0);
+        auto calls_second = std::make_shared<std::size_t>(0);
+        auto built = TwoRealBuilder("gpt-4o-mini")
+                         .api_key_from_env("openai-api-key", "AE_TEST_QUICKSTART_KEY")
+                         .providers(std::make_tuple(RequiredArgProvider{"first", calls_first},
+                                                     RequiredArgProvider{"second", calls_second}))
+                         .build();
+        check(built.has_value(), "B18/B19 setup: build() succeeds with two REAL-contribution providers");
+        if (built.has_value()) {
+            Principal principal{"p-composed-2", ""};
+            std::vector<Message> empty_history;
+            SessionContext session_ctx{"s-composed-2", principal, empty_history};
+            EffectContext effect_ctx{};
+            auto contribution = agentengine::test_support::run_task_sync<result<ContextContribution>>(
+                built->session().history_provider().on_context(session_ctx, effect_ctx));
+            check(contribution.has_value() && contribution->messages.size() == 2,
+                  "B18: both providers' messages reach the combined contribution");
+            check(contribution.has_value() && contribution->messages.size() == 2 &&
+                      std::get<Text>(contribution->messages[0].content.front().value).text == "first" &&
+                      std::get<Text>(contribution->messages[1].content.front().value).text == "second",
+                  "B18: declared order is preserved -- 'first' before 'second', not reordered or "
+                  "reversed");
+
+            TurnView turn{std::span<Message const>{empty_history.data(), empty_history.size()}};
+            agentengine::test_support::run_task_sync<std::monostate>(
+                built->session().history_provider().on_turn_end(turn, effect_ctx));
+            check(*calls_first == 1 && *calls_second == 1,
+                  "B19: on_turn_end() fans out to BOTH wrapped providers, not just the first");
         }
     }
 
