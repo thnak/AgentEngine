@@ -1,7 +1,8 @@
 // Prototype prove pass for docs/planning/quickstart-session-builder-design-draft.md /
 // core/session_builder.hpp -- covers §2a (gateway-wrapped-by-default client stack)/§2c (capability+
-// secret sugar, fail-closed at build() time)/§3 (Store/CapabilitySet lifetime safety across a move)
-// ONLY, matching the header's own scope comment.
+// secret sugar, fail-closed at build() time, generalized to any real SecretStore conformer -- proven
+// against the project's own production AgentEngineSecretStore, not just InMemorySecretStore)/§3
+// (Store/CapabilitySet lifetime safety across a move) ONLY, matching the header's own scope comment.
 //
 // Deliberately NOT exercised here, named as a real scope limit rather than silently skipped: no
 // `.ask()`/`start_run()` call, so no real (or even attempted) network exchange happens in this test --
@@ -58,8 +59,9 @@ int main() {
                          .build();
         check(!built.has_value(), "credential named but env var unset: build() fails");
         if (!built.has_value()) {
-            check(built.error().code == "quickstart_builder.credential_env_unset",
-                  "the failure is specifically 'credential_env_unset'");
+            check(built.error().code == "quickstart_builder.no_store",
+                  "the failure is specifically 'no_store' -- api_key_from_env() named the ref (so "
+                  "no_credential does NOT fire) but never reached store() since the env var was unset");
         }
     }
 
@@ -126,6 +128,50 @@ int main() {
             check(!built->capabilities().contains(
                       Capability{cap::Secret{"wrong-name", std::chrono::seconds{0}}}),
                   "the FIRST (wrong) name's grant is genuinely gone, not merely shadowed");
+        }
+    }
+
+    // ---- B5: the GENERIC path (.api_key() + .store()) works with the REAL production store type,
+    // AgentEngineSecretStore over EnvSecretSource -- not merely InMemorySecretStore-shaped. This closes
+    // the finding named in the header's own top comment (finding 3): AgentEngineSecretStore has no
+    // default constructor and no .set(), so .api_key_from_env() cannot even be NAMED against it (a
+    // compile-time `requires` gate, not a runtime check) -- .api_key()+.store() is the only path for
+    // this Store, and this proves it actually works end to end, against the real type, not a stand-in.
+    {
+#if defined(_WIN32)
+        _putenv_s("QUARK_SECRET_prod-api-key", "sk-prod-value-789");
+#else
+        setenv("QUARK_SECRET_prod-api-key", "sk-prod-value-789", 1);
+#endif
+        AgentEngineSecretStore prod_store(std::make_unique<EnvSecretSource>());
+        quickstart::QuickstartSessionBuilder<quickstart::Provider::openai, AgentEngineSecretStore>
+            builder("gpt-4o-mini");
+        builder.api_key(SecretRef{"prod-api-key"});
+        builder.store(std::move(prod_store));
+        auto built = builder.build();
+        check(built.has_value(), "the generic .api_key()+.store() path builds successfully against the "
+                                  "REAL production AgentEngineSecretStore, not just InMemorySecretStore");
+        if (built.has_value()) {
+            check(built->session().has_chat_client(),
+                  "the built session (real production Store type) has a ChatClientT emplaced");
+        }
+    }
+
+    // ---- B6: build() called a second time on the same builder instance now fails closed --
+    // documented behavior change from the earlier red-team's "build() called twice is safe" non-finding
+    // (see the header's own top comment, finding 3): build() now MOVES store_ out to stay generic over
+    // non-copyable stores.
+    {
+        quickstart::OpenAiSessionBuilder builder("gpt-4o-mini");
+        builder.api_key_from_env("openai-api-key", "AE_TEST_QUICKSTART_KEY");
+        auto first = builder.build();
+        check(first.has_value(), "first build() call on this builder succeeds");
+        auto second = builder.build();
+        check(!second.has_value(), "second build() call on the SAME builder instance fails closed, not "
+                                    "UB and not a silently-broken second Bundle");
+        if (!second.has_value()) {
+            check(second.error().code == "quickstart_builder.no_store",
+                  "specifically because store_ was already moved out by the first build() call");
         }
     }
 

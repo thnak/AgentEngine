@@ -1,11 +1,12 @@
 #pragma once
 // Prototype implementation of docs/planning/quickstart-session-builder-design-draft.md -- covers
-// §2a (client stack, gateway-wrapped by default)/§2c (capability+secret sugar)/§3 (the Store-lifetime
-// finding)/§4 (`.ask()`) ONLY. Explicitly NOT implemented here, named rather than silently dropped:
-// §2b (history/context composition), §2d (approval/policy sugar), `.with_fallback()`/
-// `.with_middleware()`/`.with_content_replay()`, and the draft's own `.raw_client_only()` escape
-// hatch. Not an ADR. Self-red-team not yet run against this real code (the draft's own self-red-team
-// was against the SKETCH) -- see the design draft's §7 for why that gap is acceptable at this stage.
+// §2a (client stack, gateway-wrapped by default)/§2c (capability+secret sugar, generalized past the
+// draft's own original sketch -- see finding 3 below)/§3 (the Store-lifetime finding)/§4 (`.ask()`)
+// ONLY. Explicitly NOT implemented here, named rather than silently dropped: §2b (history/context
+// composition), §2d (approval/policy sugar), `.with_fallback()`/`.with_middleware()`/
+// `.with_content_replay()`, and the draft's own `.raw_client_only()` escape hatch. Not an ADR.
+// Red-teamed once against this real code (findings 1-2 below); finding 3 is a same-session follow-up
+// fix, not itself independently red-teamed yet.
 //
 // Correction found during implementation, not anticipated by the design draft's own §3: `AgentSession`
 // (rt/agent_session.hpp) holds `rt::AsyncMutex session_mutex_` directly as a data member;
@@ -46,23 +47,27 @@
 //    `primary_secret_grant_` field, overwritten (not appended) each call, matching `api_key_ref_`'s own
 //    last-call-wins semantics -- `grants_` is now exclusively the explicit `.grant()` escape hatch.
 //
-// NOT fixed here, named as a real, disclosed gap rather than glossed over: `build()` requires `Store`
-// to be default-constructible and expose `.set(name, value)` -- properties `InMemorySecretStore`
-// (the default `Store=` and the ONLY type this file's own two call sites actually exercise) has, but
-// which are neither part of the `SecretStore` concept nor present on this project's own real
-// production store, `AgentEngineSecretStore` (trust/secret.hpp -- no default constructor, no `.set()`).
-// `InMemorySecretStore` is that same file's own designated **test-only** backend ("Production code
-// constructs `AgentEngineSecretStore`... never this" -- its own header comment); its values are a
-// plain, never-zeroized `std::unordered_map`, a direct contradiction of 018 §4's secret-hygiene
-// invariant the rest of `trust/secret.hpp` goes out of its way to uphold. A host following this
-// facade's DEFAULT, documented path (`OpenAiSessionBuilder`/`AnthropicSessionBuilder`,
-// `.api_key_from_env()`) therefore currently wires a real credential into this project's own
-// test-only, non-hygienic store, with nothing here warning them at the API surface. This is a real
-// residual, not yet closed -- do not present this facade as production-ready until it is (either by
-// making `build()` work generically against any `SecretStore` conformer regardless of shape, or by
-// requiring a non-default `Store=` explicitly and refusing to compile against `InMemorySecretStore`
-// without an opt-in marker).
+// 3. (Follow-up pass, generalizes the builder rather than fixing a bug) `build()` used to require
+//    `Store` to be default-constructible and expose `.set(name, value)` -- properties
+//    `InMemorySecretStore` has but this project's real production store, `AgentEngineSecretStore`
+//    (trust/secret.hpp -- no default constructor, no `.set()`), does not. `.api_key_from_env()` was
+//    the ONLY way to supply a Store at all, so a host could not use this builder with a real production
+//    secret store, full stop -- not merely a hygiene warning, a hard capability gap. Fixed: `.store(
+//    Store)` now accepts an ALREADY-CONSTRUCTED, host-owned `Store` of any shape (works for
+//    `AgentEngineSecretStore` over `EnvSecretSource`/`FileSecretSource`, proven in the test against the
+//    real types, not a stand-in), and `.api_key(SecretRef)` separately declares which ref the
+//    `ChatClient` resolves against + auto-grants its `cap::Secret` -- independent of how the Store gets
+//    populated. `.api_key_from_env()` still exists as TEST-ONLY convenience sugar, now `requires`-
+//    gated (a hard compile error, not a silent wrong assumption) to only exist when `Store` is
+//    default-constructible and exposes `.set()` -- i.e., genuinely `InMemorySecretStore`-shaped --
+//    calling `.api_key()`+`.store()` under the hood. Behavior change, disclosed rather than silently
+//    reintroduced: `build()` now MOVES `store_` out of the builder (needed to stay generic over
+//    non-copyable stores like `AgentEngineSecretStore`, which owns a `unique_ptr<SecretSource>`) --
+//    calling `build()` a second time on the same builder instance now fails closed with
+//    `quickstart_builder.no_store` instead of the prior red-team's verified "produces two independent
+//    Bundles" non-finding. Not UB, not silently wrong -- just single-use now, named here for the record.
 
+#include <concepts>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -70,7 +75,6 @@
 #include <string>
 #include <tuple>
 #include <type_traits>
-#include <unordered_map>
 #include <vector>
 
 #include "agentengine/core/chat_client.hpp"
@@ -140,6 +144,17 @@ struct default_endpoint<Provider::anthropic> {
     static constexpr char const* host        = "api.anthropic.com";
     static constexpr std::uint16_t port      = 443;
     static constexpr char const* path_prefix = "/v1";
+};
+
+// A Store shape `.api_key_from_env()` can populate on its own: default-constructible, and exposing a
+// plain `.set(name, value)` mutator -- neither is part of the real `SecretStore` concept
+// (trust/secret.hpp only requires `.resolve()`), so this is deliberately narrower, matching exactly
+// what `InMemorySecretStore` provides and this project's real production store (`AgentEngineSecretStore`
+// -- no default constructor, no `.set()`) does not.
+template <class S>
+concept TestOnlyPopulatableSecretStore = std::default_initializable<S> && requires(S s, std::string n,
+                                                                                      std::string v) {
+    s.set(std::move(n), std::move(v));
 };
 
 }  // namespace detail
@@ -255,30 +270,49 @@ public:
         return *this;
     }
 
-    // Design draft §2c -- grants BOTH halves a secret needs to actually resolve at call time: the
-    // Store's own value (`Store::set`) AND a matching `cap::Secret` grant (I2 -- without this second
-    // half, the constructed session would hold a value nothing authorizes it to read). This is the
-    // ONLY way this builder ever populates a secret value; `.grant()` below is for anything else, or a
-    // hand-built `cap::Secret` with a non-default ttl.
-    //
-    // TEST-ONLY DEFAULT, disclosed rather than silent: with `Store` left at its default
-    // (`agentengine::InMemorySecretStore`), the value this reads is stored in-memory, in plaintext,
-    // never zeroized -- that type's OWN header comment (trust/secret.hpp) labels it "Test-only...
-    // Production code constructs AgentEngineSecretStore... never this." `build()` also requires
-    // whatever `Store` IS used to be default-constructible and expose `.set(name, value)` -- properties
-    // `AgentEngineSecretStore` (this project's real production store) does not have. Do not wire a real
-    // production credential through this method against the default `Store` -- see this file's own top
-    // comment for the full, still-open finding.
-    QuickstartSessionBuilder& api_key_from_env(std::string secret_name, char const* env_var) {
-        if (auto value = agentengine::pal::env_var(env_var); value.has_value()) {
-            pending_secret_values_[secret_name] = std::move(*value);
-        }
-        api_key_ref_ = agentengine::SecretRef{secret_name};
-        // Overwritten, not appended -- last-call-wins, matching api_key_ref_ above. Calling this twice
-        // (e.g. to correct a typo'd env_var) must never leave a phantom grant for the FIRST name behind
-        // in the final CapabilitySet; see this file's own top comment for the finding this closes.
+    // Design draft §2c, generalized -- declares which `SecretRef` the constructed `ChatClient` will
+    // resolve against, and auto-grants a matching `cap::Secret` (I2 -- without this, the constructed
+    // session would reference a ref nothing authorizes it to resolve). Independent of `.store()` below
+    // -- this only names the ref, it never touches Store content, so it works identically regardless of
+    // what kind of `SecretStore` `.store()` ends up supplying.
+    QuickstartSessionBuilder& api_key(agentengine::SecretRef ref) {
+        api_key_ref_ = ref;
+        // Overwritten, not appended -- last-call-wins. Calling this twice (e.g. to correct a typo'd
+        // name) must never leave a phantom grant for the FIRST ref behind in the final CapabilitySet;
+        // this file's own top comment names the finding this fixed.
         primary_secret_grant_ =
-            agentengine::Capability{agentengine::cap::Secret{secret_name, std::chrono::seconds{0}}};
+            agentengine::Capability{agentengine::cap::Secret{ref.name, std::chrono::seconds{0}}};
+        return *this;
+    }
+
+    // The PRODUCTION path: hand over an already-constructed, already-populated `Store` of any real
+    // `SecretStore` conformer -- `AgentEngineSecretStore` over `EnvSecretSource`/`FileSecretSource`
+    // included, proven against those real types in the test for this file, not a stand-in. The host
+    // remains responsible for constructing and populating it however fits their deployment; this
+    // builder only takes ownership from here (heap-owned, moved in) -- see this file's own top comment
+    // for why `Bundle` needs that stability.
+    QuickstartSessionBuilder& store(Store store) {
+        store_ = std::make_unique<Store>(std::move(store));
+        return *this;
+    }
+
+    // TEST-ONLY convenience sugar, `requires`-gated: only exists at all (hard compile error otherwise,
+    // never a silent wrong assumption) when `Store` is default-constructible and exposes `.set(name,
+    // value)` -- i.e., genuinely `InMemorySecretStore`-shaped. Calls `.api_key()` + `.store()` under the
+    // hood, so it composes with either. With `Store` left at its default (`InMemorySecretStore`), the
+    // value this reads sits in-memory, in plaintext, never zeroized -- that type's OWN header comment
+    // (trust/secret.hpp) labels it "Test-only... Production code constructs AgentEngineSecretStore...
+    // never this." For a real deployment, call `.api_key(...)` + `.store(...)` directly with a real
+    // `AgentEngineSecretStore` instead.
+    QuickstartSessionBuilder& api_key_from_env(std::string secret_name, char const* env_var)
+        requires detail::TestOnlyPopulatableSecretStore<Store>
+    {
+        api_key(agentengine::SecretRef{secret_name});
+        if (auto value = agentengine::pal::env_var(env_var); value.has_value()) {
+            Store s{};
+            s.set(secret_name, std::move(*value));
+            store(std::move(s));
+        }
         return *this;
     }
 
@@ -291,38 +325,35 @@ public:
     }
 
     // Fails closed -- a `result<BundleT>` error, not a thrown exception or a silent partial build --
-    // when `.api_key_from_env(...)` was never called at all, or when the environment variable it named
-    // was unset at build time (a real value never reached the Store, so the built session would fail
-    // `secret.not_found` on its very first call instead of here, at construction).
+    // when `.api_key(...)`/`.api_key_from_env(...)` was never called, or when no `Store` ever reached
+    // this builder (either `.store(...)` was never called, or `.api_key_from_env(...)`'s named
+    // environment variable was unset at build time). MOVES `store_` out (see this file's own top
+    // comment on why, and on the resulting single-use behavior change).
     [[nodiscard]] agentengine::result<BundleT> build() {
         if (!api_key_ref_.has_value()) {
             return std::unexpected(agentengine::error{
                 agentengine::failure_class::contract,
-                "no primary backend credential named -- call .api_key_from_env(...) before build()",
+                "no primary backend credential named -- call .api_key(...) (or .api_key_from_env(...), "
+                "if Store supports it) before build()",
                 "quickstart_builder.no_credential"});
         }
-        auto pending = pending_secret_values_.find(api_key_ref_->name);
-        if (pending == pending_secret_values_.end()) {
+        if (!store_) {
             return std::unexpected(agentengine::error{
                 agentengine::failure_class::contract,
-                "the environment variable named for '" + api_key_ref_->name +
-                    "' was unset at build time -- the built session would fail on its first call "
-                    "instead of here",
-                "quickstart_builder.credential_env_unset"});
+                "no Store supplied -- call .store(...) with an already-populated store (or "
+                ".api_key_from_env(...) with the named environment variable actually set) before "
+                "build()",
+                "quickstart_builder.no_store"});
         }
 
-        auto store = std::make_unique<Store>();
-        store->set(pending->first, pending->second);
-
         // primary_secret_grant_ is guaranteed set here: it and api_key_ref_ are only ever written
-        // together, in api_key_from_env(), and the has_value() check above already confirmed
-        // api_key_ref_.
+        // together, in api_key(), and the has_value() check above already confirmed api_key_ref_.
         std::vector<agentengine::Capability> all_grants = grants_;
         all_grants.push_back(*primary_secret_grant_);
         auto capabilities = std::make_unique<agentengine::CapabilitySet>(
             agentengine::CapabilitySet::grant_root(std::move(all_grants)));
 
-        Primary primary(host_, port_, model_, *api_key_ref_, caps_, *store, path_prefix_);
+        Primary primary(host_, port_, model_, *api_key_ref_, caps_, *store_, path_prefix_);
 
         auto session = std::make_unique<typename BundleT::SessionT>();
         session->initialize(session_id_, principal_);
@@ -332,7 +363,7 @@ public:
         session->emplace_chat_client(std::move(primary), std::tuple<>{});
         session->set_capabilities(capabilities.get());
 
-        return BundleT(std::move(store), std::move(capabilities), std::move(session));
+        return BundleT(std::move(store_), std::move(capabilities), std::move(session));
     }
 
 private:
@@ -342,8 +373,8 @@ private:
     agentengine::ChatClientCapabilities caps_{};
     std::optional<agentengine::SecretRef> api_key_ref_;
     std::optional<agentengine::Capability> primary_secret_grant_;
-    std::unordered_map<std::string, std::string> pending_secret_values_;
-    std::vector<agentengine::Capability> grants_;  // explicit .grant() calls only -- see api_key_from_env()
+    std::unique_ptr<Store> store_;
+    std::vector<agentengine::Capability> grants_;  // explicit .grant() calls only -- see api_key()
     std::string host_        = detail::default_endpoint<P>::host;
     std::uint16_t port_      = detail::default_endpoint<P>::port;
     std::string path_prefix_ = detail::default_endpoint<P>::path_prefix;
