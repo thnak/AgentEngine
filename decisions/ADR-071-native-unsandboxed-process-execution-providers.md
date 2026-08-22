@@ -1,8 +1,8 @@
 # ADR-071 — Should AgentEngine ship native, unsandboxed host-process-execution providers, and how
 # do they stay compatible with I2/I3 and worktree confinement without a sandbox jail?
 
-**Status:** Proposed (design → red-team → prove phases complete; implemented and tested; awaiting
-project-owner "Judged" sign-off).
+**Status:** Judged (design → red-team → prove phases complete; implemented and tested; approved by
+project owner, 2026-08-22).
 
 **Relates to:** `decisions/ADR-070-host-configurable-responsibility-boundary.md` (the Delegated
 Decision Seam pattern this ADR is a bounded instance of — see §4), `decisions/ADR-059-invoke-agent-
