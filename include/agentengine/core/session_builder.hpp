@@ -19,8 +19,10 @@
 // red-teamed (round 4): found and fixed a real session-isolation gap on `AgentSession::fork_from()`
 // (finding 9) and a diagnostic-quality gap on an empty `Ms...` pack (finding 10), plus two test gaps
 // closed (on_turn_end fan-out, two-real-contributor wire order). Round 4's own fixes (findings 9-10)
-// have not themselves been independently red-teamed a fifth time -- same disclosure posture every
-// prior "just fixed" state in this file has had before its own next round.
+// then WERE red-teamed (round 5): found finding 9's own fix was necessary but not sufficient (finding
+// 11 -- see below). Round 5's own fix (finding 11) has not itself been independently red-teamed a
+// sixth time -- same disclosure posture every prior "just fixed" state in this file has had before its
+// own next round; round 3's fix (finding 7) also remains at that same posture.
 //
 // Correction found during implementation, not anticipated by the design draft's own §3: `AgentSession`
 // (rt/agent_session.hpp) holds `rt::AsyncMutex session_mutex_` directly as a data member;
@@ -199,6 +201,27 @@
 //    with TWO providers that both contribute a real message (B16 previously proved order only for one
 //    empty + one non-empty contributor, which cannot distinguish "order preserved" from "only the
 //    non-empty one shows up regardless of position").
+// 11. **Round 5 red-team, I1/I4-adjacent: finding 9's move-only fix was necessary but not sufficient.**
+//    Finding 9 deleted copy ctor/assignment to block `fork_from()`'s aliasing COPY at compile time, but
+//    left move ctor/assignment `= default`ed. `contributors_` (a vector) is correctly drained by a
+//    default move, but `engaged_` (a plain `bool`) is trivially copied, not reset -- so the MOVED-FROM
+//    side kept `engaged_ == true` over an now-EMPTY `contributors_`. LIVE-REPRODUCED: `session2.
+//    history_provider() = std::move(session1.history_provider())` (the exact bypass route `on_context()`
+//    's own comment below already names) left session1's `on_context()` NOT hitting the `!engaged_`
+//    guard -- it silently returned a SUCCESSFUL, empty contribution instead of the `not_engaged` error
+//    that guard exists to produce, and `engage()`'s `already_engaged` guard then permanently blocked
+//    ever re-engaging it (no recovery). This is worse than what finding 9 anticipated: finding 9's own
+//    text called `fork_from()` "the one real place this bites" -- demonstrably not true, since the same
+//    public `history_provider()` accessor reaches an ENGAGED instance too, and that path bypasses BOTH
+//    of this class's own fail-closed guards rather than tripping either one. **Fixed**: move ctor/
+//    assignment now explicitly reset the moved-from side's `engaged_` to `false` (and defensively clear
+//    its `contributors_`) -- restores the invariant ("`engaged_` implies `contributors_` is populated")
+//    across a move, so a moved-from instance correctly fails closed via the EXISTING `not_engaged` guard
+//    and can be `engage()`d again. Regression-proofed: `tests/test_session_builder.cpp`'s "B20".
+//    Deliberately NOT changed: a move-assignment INTO an already-engaged target still silently replaces
+//    its contributors with no diagnostic -- ordinary `operator=` replacement semantics, identical to
+//    `history_provider() = HistoryProviderT{}`'s own pre-existing silent-reset behavior, not a new
+//    hazard finding 11 introduces or needed to close.
 
 #include <algorithm>
 #include <array>
@@ -333,23 +356,56 @@ public:
     // descriptor()` (context_assembly.hpp) wraps each `Ms` in a `shared_ptr<Ms>` CAPTURED BY VALUE in
     // `contributors_`'s closures, so an implicit memberwise COPY of this type would copy those
     // `shared_ptr`s too -- aliasing the SAME underlying provider instances, not independent ones. The
-    // one real place this bites: `AgentSession::fork_from()` (rt/agent_session.hpp:1022) does a plain
-    // `history_provider_ = source.history_provider_;` -- a fork of a session using this type would
+    // one real place a plain COPY bites: `AgentSession::fork_from()` (rt/agent_session.hpp:1022) does a
+    // plain `history_provider_ = source.history_provider_;` -- a fork of a session using this type would
     // silently start sharing live, mutable provider state (a memory-provider write-back, a per-skill
     // usage counter, a RAG cache) with its source, an I1/I4-adjacent session-isolation gap a caller has
     // no reason to expect. Deleting copy here turns that into a COMPILE ERROR at the exact `fork_from()`
     // call site instead -- `fork_from()` is an ordinary (non-template) member function, only compiled
     // when actually called, so this has zero effect on every already-passing build()/engage()/
-    // on_context()/on_turn_end() path; it only surfaces where the real problem would have. Move
-    // constructor/assignment declared explicitly (not implicit) since declaring the copy pair suppresses
-    // implicit move generation -- `AgentSession::clear_in_process_state()`'s own `history_provider_ =
-    // HistoryProviderT{};` (rt/agent_session.hpp:1070) needs move-assignment from a prvalue to keep
-    // working. The underlying `shared_ptr`-aliasing mechanism itself is unchanged and pre-existing in
-    // `core/composed_context_provider.hpp`'s `ComposedContextProvider<Ms...>` too (not fixed here -- out
-    // of this file's scope, named as a real, disclosed residual, not silently left for a caller to
-    // rediscover).
-    LazyComposedContextProvider(LazyComposedContextProvider&&) noexcept = default;
-    LazyComposedContextProvider& operator=(LazyComposedContextProvider&&) noexcept = default;
+    // on_context()/on_turn_end() path; it only surfaces where the real problem would have.
+    //
+    // Round 5 red-team, finding A (header top comment): the FIRST version of this fix left move ctor/
+    // assignment `= default`ed -- `contributors_` (a vector) is correctly drained on move, but `engaged_`
+    // (a plain `bool`) is trivially copied by the defaulted move, so it stayed `true` on the MOVED-FROM
+    // side even though its `contributors_` was now empty. LIVE-REPRODUCED: `session2.history_provider() =
+    // std::move(session1.history_provider())` (reachable through the same public `history_provider()`
+    // accessor `on_context()`'s own comment below already names as a bypass route) left session1 with
+    // `engaged_ == true`, `contributors_` empty -- `on_context()`'s `if (!engaged_)` guard did NOT fire,
+    // so session1 silently returned a SUCCESSFUL, empty contribution instead of the `not_engaged` error
+    // the guard exists to produce, and `engage()`'s own `already_engaged` guard permanently blocked ever
+    // re-engaging it (no recovery). **Fixed**: move ctor/assignment now explicitly reset the moved-from
+    // side's `engaged_` to `false` (and defensively clear its `contributors_`, rather than relying on a
+    // vector move's typically-but-not-guaranteed-empty post-move state) -- restores the class's own
+    // invariant ("`engaged_ == true` iff `contributors_` is populated") across a move, so a moved-from
+    // instance correctly fails closed via the EXISTING `not_engaged` guard, and can be `engage()`d again
+    // (a real recovery path, not a permanently bricked instance). Declared explicitly (not `= default`)
+    // since declaring the copy pair suppresses implicit move generation -- `AgentSession::
+    // clear_in_process_state()`'s own `history_provider_ = HistoryProviderT{};` (rt/agent_session.hpp:
+    // 1070) needs move-assignment from a prvalue to keep working; that call site is unaffected by this
+    // fix (assigning FROM a fresh, never-engaged temporary, so there is nothing for the reset logic to
+    // observably change). NOT fixed, deliberately out of scope for this round: a move-assignment into an
+    // ALREADY-engaged target still silently replaces its contributors with no diagnostic -- ordinary,
+    // expected `operator=` semantics (identical to `history_provider() = HistoryProviderT{}`'s own
+    // existing silent-reset behavior, not a new hazard this fix introduces), not the state-invariant
+    // violation the `engaged_`/`contributors_` desync above was. The underlying `shared_ptr`-aliasing
+    // mechanism itself remains unchanged and pre-existing in `core/composed_context_provider.hpp`'s
+    // `ComposedContextProvider<Ms...>` too (not fixed here -- out of this file's scope, named as a real,
+    // disclosed residual, not silently left for a caller to rediscover).
+    LazyComposedContextProvider(LazyComposedContextProvider&& other) noexcept
+        : contributors_(std::move(other.contributors_)), engaged_(other.engaged_) {
+        other.engaged_ = false;
+        other.contributors_.clear();
+    }
+    LazyComposedContextProvider& operator=(LazyComposedContextProvider&& other) noexcept {
+        if (this != &other) {
+            contributors_ = std::move(other.contributors_);
+            engaged_      = other.engaged_;
+            other.engaged_ = false;
+            other.contributors_.clear();
+        }
+        return *this;
+    }
     LazyComposedContextProvider(LazyComposedContextProvider const&) = delete;
     LazyComposedContextProvider& operator=(LazyComposedContextProvider const&) = delete;
 

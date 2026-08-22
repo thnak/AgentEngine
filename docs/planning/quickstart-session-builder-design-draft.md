@@ -1,13 +1,14 @@
 # Quickstart session builder — a convenience facade over `AgentSession`'s wiring — design draft
 
 **Status: promoted from prototype to a supported feature (2026-08-22) — §2a/§2b/§2c/§2d/§3/§4
-implemented. §2a/§2c/§2d/§3/§4 red-teamed three times against the real code, all findings from all
-three passes closed. §2b was implemented in a 4th pass, then red-teamed once (round 4, §0f) — found
-and fixed a real HIGH-severity session-isolation gap (`fork_from()` aliasing stateful composed
-providers, finding 9) plus a diagnostics gap (finding 10) and two test gaps. Round 3's fix (finding 7)
-and round 4's fixes (findings 9-10) are BOTH still awaiting their own next independent red-team round —
-disclosed as open items, not silently treated as closed.** A convenience facade over already-Reviewed
-RFCs,
+implemented. §2a/§2c/§2d/§3/§4 red-teamed three times, all findings closed. §2b was implemented in a
+4th pass, then red-teamed twice (round 4, §0f, then round 5, §0g): round 4 found and fixed a real
+session-isolation gap (`fork_from()` aliasing stateful composed providers, finding 9) plus a
+diagnostics gap (finding 10); round 5 found finding 9's own fix was NECESSARY BUT NOT SUFFICIENT — a
+second, worse bypass of the same class through a MOVE rather than a copy (finding 11, now fixed).
+Round 3's fix (finding 7) and round 5's fix (finding 11) both still await their own next independent
+red-team round — disclosed as open items, not silently treated as closed.** A convenience facade over
+already-Reviewed RFCs,
 not a new invariant or capability shape, so promotion did not require its own ADR (CLAUDE.md's
 `design → red-team → prove → judge` cycle is reserved for contested/hot-path/security-critical
 designs; this used the lighter `design → prototype → red-team → fix` cycle throughout, per §7 below).
@@ -28,7 +29,7 @@ analysis had NOT anticipated (the default-constructibility constraint runs deepe
 text captured). Matches this project's `design → red-team → prove → judge` discipline (CLAUDE.md),
 same honesty level as `docs/planning/tool-optimizer-provider-design-draft.md` and `docs/planning/
 model-call-gateway-routing-design-draft.md`. Real, compiling, passing code:
-`include/agentengine/core/session_builder.hpp`, `tests/test_session_builder.cpp` (51/51 checks,
+`include/agentengine/core/session_builder.hpp`, `tests/test_session_builder.cpp` (55/55 checks,
 Windows/MSVC, `AGENTENGINE_WITH_HTTPS=ON`, full suite 221/221 `ctest -LE live-network`). Still not
 implemented: `.with_fallback()`/`.with_middleware()`/`.with_content_replay()`, and this draft's own
 `.raw_client_only()` escape hatch — named in the header's own top comment, not silently dropped.
@@ -275,6 +276,60 @@ Full suite 221/221 (`ctest -LE live-network`) after all four fixes; `tests/test_
 time**, same disclosure posture every prior "just fixed" state in this file has had before its own next
 round.
 
+## §0g. Fifth red-team pass, against §0f's finding-9 fix — necessary but not sufficient
+
+An independent, adversarial pass, explicitly prioritized at re-examining finding 7 (round 3's fix) and
+findings 9-10 (round 4's fixes) while remaining free to sweep the whole file — matching this project's
+own established red-team scoping. Verdict: **finding 7 and finding 10 both held up; finding 9's fix did
+not.**
+
+**Finding 11 (I1/I4-adjacent) — finding 9's move-only fix closed the COPY aliasing path but left a MOVE-
+based one open, and the moved-from side degraded silently instead of failing closed.** Finding 9 deleted
+`LazyComposedContextProvider`'s copy ctor/assignment to block `fork_from()`'s aliasing copy at compile
+time, but left move ctor/assignment `= default`ed. A defaulted move correctly drains `contributors_` (a
+vector) on the source, but `engaged_` (a plain `bool`) is trivially copied, not reset — so the MOVED-FROM
+instance kept `engaged_ == true` over an now-empty `contributors_`. LIVE-REPRODUCED by the red-team's own
+probe: `session2.history_provider() = std::move(session1.history_provider())` — the exact bypass route
+`on_context()`'s own comment already named as reachable — left session1's `on_context()` **silently
+returning a successful, empty contribution** instead of the `not_engaged` error its own guard exists to
+produce, and `engage()`'s `already_engaged` guard then **permanently blocked ever re-engaging it** (no
+recovery path). This directly falsifies finding 9's own claim that `fork_from()` is "the one real place
+this bites" — the same public accessor reaches an *engaged* instance through an entirely different,
+ordinary-looking write, and that path is worse: it bypasses BOTH of the class's own fail-closed guards
+rather than tripping either one.
+
+**Fixed**: move ctor/assignment now explicitly reset the moved-from side's `engaged_` to `false` (and
+defensively clear its `contributors_`, rather than relying on a vector move's typically-but-not-
+guaranteed-empty post-move state) — restores the class's own invariant ("`engaged_` implies
+`contributors_` is populated") across a move, so a moved-from instance correctly fails closed via the
+existing `not_engaged` guard and can be `engage()`d again. Regression-proofed: `tests/test_session_
+builder.cpp`'s "B20" — proves the moved-from side now fails with `not_engaged`, that it can be
+re-engaged, and that the moved-to side correctly carries the source's own contribution. Deliberately NOT
+changed: a move-assignment INTO an already-engaged target still silently replaces its contributors with
+no diagnostic — the red-team's own report explicitly separated this from finding 11 proper, since it is
+ordinary `operator=` replacement semantics, identical to `history_provider() = HistoryProviderT{}`'s own
+pre-existing silent-reset behavior (needed by `AgentSession::clear_in_process_state()`), not a new hazard
+the move fix introduced or needed to close.
+
+**Verified non-findings this round** (explored, no bug found): `fork_from()` still genuinely fails to
+compile (re-confirmed via a standalone `cl.exe` probe against the current code, `error C2280` at the
+exact call site); no other place in `agent_session.hpp` copies or copy-assigns `history_provider_`
+(`restore_from_record()` doesn't touch it; `clear_in_process_state()`'s move-assignment from a fresh
+prvalue is the only other write site, unaffected by the finding-11 fix); moving a whole `Bundle` after
+`engage()` works correctly (heap-owned via `unique_ptr`, so a `Bundle` move only relocates the pointer,
+never exercises `HistoryProviderT`'s own movability); `ComposedQuickstartSessionBuilder`'s duplicated
+setters have NOT drifted from `QuickstartSessionBuilder`'s (diffed method-by-method, including finding
+7's `25`-turn default on both); the default `ContextBudget{}` does not silently drop composed content;
+no I2/I3 path found across `.approve_tools()`/`.policy()`/`.providers()`/`.grant()`/`.max_turns()`/
+`.token_budget()`/`.api_key()`.
+
+Full suite 221/221 (`ctest -LE live-network`, one unrelated pre-existing flake in `test_native_jail_
+parity_windows` confirmed to pass on retry — not touched by this file) after the fix; `tests/test_
+session_builder.cpp` now 55/55. **Verdict: finding 11 fixed; not yet independently red-teamed a sixth
+time** — same disclosure posture every prior "just fixed" state in this file has had before its own
+next round. Finding 7 (round 3) remains at that same posture too — this round found nothing new against
+it, but that is a verified non-finding, not proof of correctness beyond what round 5 actually checked.
+
 ## 0. Correction found during implementation — §3's own fix does not compile as written
 
 **`AgentSession` cannot be moved or copied at all.** It holds `rt::AsyncMutex session_mutex_`
@@ -385,7 +440,7 @@ installs the bare client directly — for a deterministic fake (`JokerChatClient
 Named explicitly as escape hatch, not a coequal option, so a reader doesn't reach for it by habit in
 production code.
 
-### 2b. `HistoryProviderT`/context slot — RESOLVED and red-teamed once (round 4, §0f), see findings 8-10
+### 2b. `HistoryProviderT`/context slot — RESOLVED and red-teamed twice (rounds 4-5, §0f-§0g), see findings 8-11
 
 Verified via CodeGraph (`include/agentengine/core/composed_context_provider.hpp`,
 `include/agentengine/core/skill_provider.hpp`): `ComposedContextProvider<Ms...>`'s own file-top comment
@@ -625,21 +680,25 @@ already-safe idiom.
 ## 7. What this draft is not
 
 Not an ADR. §2a/§2b/§2c/§2d/§3(as corrected in §0)/§4 are now real, tested code. §2a/§2c/§2d/§3/§4 are
-red-teamed three times (§0b, §0c, §0d); §2b (§0e's 4th pass) has been red-teamed once (§0f, round 4) —
-every finding from all four rounds is closed. The fallback/middleware/content-replay/raw-client-only
-surface remains design-only, unimplemented. This facade's own risk profile is low but NOT zero-new-
-authority in every respect, a claim an earlier version of this section made too broadly: §0f's finding
-9 (`AgentSession::fork_from()` aliasing stateful composed providers across sessions) is a real,
-I1/I4-adjacent session-isolation gap, not merely an "ordinary C++ hygiene bug" the way every finding
-across §0/§0b/§0c/§0d was — it does not touch I2/I3's capability/authority MECHANISMS directly (nothing
-gets approved or granted that shouldn't), but it does let one session's identity observe another's
-mutable state, which is the class of thing I4 (every effect is attributable) cares about. Fixed by
-making the affected type move-only, closing it at compile time rather than leaving it a runtime trap.
-This continues to follow the lighter `design → prototype → red-team → fix` cycle, not the full `design
-→ red-team → prove → judge` gauntlet ADR-070/071-class changes require, since the FIX itself narrows
-exposure (deletes a capability the type had, adds none) rather than granting anything — but §0f is the
-reason this section no longer claims "no new capability semantics, no new authority path" as a blanket
-fact about this whole file. Findings 7 (round 3's fix) and 9-10 (round 4's fixes) all still stand ready
-for their own next, independent red-team round — none is a blocker to starting either of the others. If
-a later pass surfaces a finding that touches I2/I3's own mechanisms directly, that finding gets its own
-escalation at that point, matching this project's established practice — not decided in advance here.
+red-teamed three times (§0b, §0c, §0d); §2b (§0e's 4th pass) has been red-teamed TWICE (§0f round 4,
+§0g round 5) — every finding from all five rounds is closed. The fallback/middleware/content-replay/
+raw-client-only surface remains design-only, unimplemented. This facade's own risk profile is low but
+NOT zero-new-authority in every respect, a claim an earlier version of this section made too broadly:
+§0f's finding 9 and §0g's finding 11 (both `LazyComposedContextProvider` state silently crossing/
+vanishing across session identities via `AgentSession::fork_from()`/`history_provider()`) are real,
+I1/I4-adjacent session-isolation gaps, not merely "ordinary C++ hygiene bugs" the way every finding
+across §0/§0b/§0c/§0d was — neither touches I2/I3's capability/authority MECHANISMS directly (nothing
+gets approved or granted that shouldn't), but both let one session's identity observe or silently lose
+another's mutable state, the class of thing I4 (every effect is attributable) cares about. §0g in
+particular is the sharper lesson: finding 9's OWN fix (move-only) was itself red-teamed and found
+insufficient on its first re-examination — a real instance of this project's own repeated pattern
+(finding 3 → 4, finding 5 → 7) applying to a SECURITY-ADJACENT fix, not just an ergonomics one. Fixed
+both times by narrowing exposure (deleting/correcting a capability the type had, adding none) rather
+than granting anything, so this continues to follow the lighter `design → prototype → red-team → fix`
+cycle, not the full `design → red-team → prove → judge` gauntlet ADR-070/071-class changes require —
+but §0f/§0g are why this section no longer claims "no new capability semantics, no new authority path"
+as a blanket fact about this whole file. Findings 7 (round 3's fix) and 11 (round 5's fix) both still
+stand ready for their own next, independent red-team round — neither is a blocker to starting the
+other. If a later pass surfaces a finding that touches I2/I3's own mechanisms directly, that finding
+gets its own escalation at that point, matching this project's established practice — not decided in
+advance here.

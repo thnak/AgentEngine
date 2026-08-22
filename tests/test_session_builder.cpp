@@ -537,6 +537,57 @@ int main() {
                   "B19: on_turn_end() fans out to BOTH wrapped providers, not just the first");
         }
     }
+    {
+        // B20: round 5 red-team finding A -- moving a LazyComposedContextProvider (reachable through
+        // AgentSession::history_provider()'s own mutable accessor) must leave the MOVED-FROM instance
+        // genuinely `not_engaged`, not silently `engaged_ == true` over an empty contributors_. Proves
+        // the class's own invariant ("engaged_ implies contributors_ is populated") survives a move.
+        using SingleBuilder = ComposedQuickstartSessionBuilder<quickstart::Provider::openai,
+                                                                  InMemorySecretStore, RequiredArgProvider>;
+        auto counter1 = std::make_shared<std::size_t>(0);
+        auto counter2 = std::make_shared<std::size_t>(0);
+        auto built1 = SingleBuilder("gpt-4o-mini")
+                          .api_key_from_env("openai-api-key", "AE_TEST_QUICKSTART_KEY")
+                          .providers(std::make_tuple(RequiredArgProvider{"session-1", counter1}))
+                          .build();
+        auto built2 = SingleBuilder("gpt-4o-mini")
+                          .api_key_from_env("openai-api-key", "AE_TEST_QUICKSTART_KEY")
+                          .providers(std::make_tuple(RequiredArgProvider{"session-2", counter2}))
+                          .build();
+        check(built1.has_value() && built2.has_value(), "B20 setup: both sessions build() successfully");
+        if (built1.has_value() && built2.has_value()) {
+            // The exact move the red-team's probe used, through the same public accessor.
+            built2->session().history_provider() = std::move(built1->session().history_provider());
+
+            Principal principal{"p-move", ""};
+            std::vector<Message> empty_history;
+            SessionContext session_ctx{"s-move", principal, empty_history};
+            EffectContext effect_ctx{};
+
+            auto moved_from = agentengine::test_support::run_task_sync<result<ContextContribution>>(
+                built1->session().history_provider().on_context(session_ctx, effect_ctx));
+            check(!moved_from.has_value(),
+                  "B20: the MOVED-FROM session's on_context() now genuinely fails ('not_engaged'), "
+                  "instead of silently succeeding with zero messages");
+            if (!moved_from.has_value()) {
+                check(moved_from.error().code == "quickstart.composed_context.not_engaged",
+                      "B20: the failure is specifically 'not_engaged', not a different error");
+            }
+
+            auto re_engage = built1->session().history_provider().engage(
+                std::make_tuple(RequiredArgProvider{"session-1-recovered", counter1}));
+            check(re_engage.has_value(),
+                  "B20: the moved-from instance can be engage()d again -- a real recovery path, not "
+                  "permanently bricked by the stale 'already_engaged' guard");
+
+            auto moved_to = agentengine::test_support::run_task_sync<result<ContextContribution>>(
+                built2->session().history_provider().on_context(session_ctx, effect_ctx));
+            check(moved_to.has_value() && moved_to->messages.size() == 1 &&
+                      std::get<Text>(moved_to->messages[0].content.front().value).text == "session-1",
+                  "B20: the MOVED-TO session correctly carries session1's own moved-in contribution "
+                  "(ordinary, expected operator= replacement semantics -- not itself a finding)");
+        }
+    }
 
     std::fprintf(stderr, g_failures == 0 ? "test_session_builder: ALL PASS\n"
                                           : "test_session_builder: %d FAILURE(S)\n",
