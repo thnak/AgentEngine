@@ -1,15 +1,20 @@
-// Prototype prove pass for docs/planning/quickstart-session-builder-design-draft.md /
-// core/session_builder.hpp -- covers §2a (gateway-wrapped-by-default client stack)/§2c (capability+
-// secret sugar, fail-closed at build() time, generalized to any real SecretStore conformer -- proven
-// against the project's own production AgentEngineSecretStore, not just InMemorySecretStore)/§3
-// (Store/CapabilitySet lifetime safety across a move) ONLY, matching the header's own scope comment.
+// Prove pass for docs/planning/quickstart-session-builder-design-draft.md / core/session_builder.hpp
+// -- covers §2a (gateway-wrapped-by-default client stack)/§2b (history/context composition, B14-B17,
+// added in a 4th pass -- see session_builder.hpp's own top comment, finding 8)/§2c (capability+secret
+// sugar, fail-closed at build() time, generalized to any real SecretStore conformer -- proven against
+// the project's own production AgentEngineSecretStore, not just InMemorySecretStore)/§3 (Store/
+// CapabilitySet lifetime safety across a move), matching the header's own scope comment.
 //
 // Deliberately NOT exercised here, named as a real scope limit rather than silently skipped: no
 // `.ask()`/`start_run()` call, so no real (or even attempted) network exchange happens in this test --
 // `OpenAIChatClient::chat()`'s body is therefore never instantiated, which is also why this test needs
 // no MbedTLS/provider_http_client link (see tests/CMakeLists.txt's own comment on this target). A
 // live, real-network proof of `.ask()` end to end is separately scoped future work, matching this
-// project's own "live-network" label convention for that class of test.
+// project's own "live-network" label convention for that class of test. B14-B17 (§2b) similarly never
+// drive a live `start_run()` through `ComposedQuickstartSessionBuilder`'s own session -- it has no
+// `.raw_client_only()` escape hatch either (§2a, still unimplemented) -- so `LazyComposedContextProvider
+// ::on_context()` is driven DIRECTLY instead, the same scope limit `tests/test_composed_context_
+// provider.cpp`'s own "Part 1" uses for the equivalent reason.
 //
 // Also NOT exercised: a genuine multi-threaded proof of the red-team's #1 finding fix (`ask_mutex_`
 // serializing concurrent `.ask()` calls against a real, contended `session_mutex_`). That needs a
@@ -18,11 +23,56 @@
 // here. The fix is currently verified by code review against `rt/thread_pool.hpp`'s/`rt/drive_leaf_
 // task.hpp`'s own documented precedent for this exact bug class, not by a live concurrency test.
 
+#include <array>
 #include <cstdio>
 #include <string>
+#include <tuple>
+#include <type_traits>
+#include <vector>
 
+#include "agentengine/core/history_provider.hpp"
 #include "agentengine/core/session_builder.hpp"
+#include "agentengine/core/skill_provider.hpp"
 #include "agentengine/trust/secret_quarantine.hpp"
+#include "support/run_task_sync.hpp"
+
+namespace {
+
+// A minimal, LOCAL ContextProvider conformer with NO default constructor -- exists purely to prove
+// §2b's real fix unambiguously (session_builder.hpp finding 8): a provider that genuinely cannot
+// occupy `AgentSession`'s plain, always-default-constructed `HistoryProviderT` slot on its own now
+// composes fine through `LazyComposedContextProvider`, since that slot is never asked to
+// default-construct THIS type -- only `LazyComposedContextProvider<Ms...>` itself, which always can.
+struct RequiredArgProvider {
+    static constexpr std::string_view name = "required-arg";  // ADR-066 §3
+
+    explicit RequiredArgProvider(std::string text) : text_(std::move(text)) {}
+
+    [[nodiscard]] agentengine::task<agentengine::result<agentengine::ContextContribution>> on_context(
+        agentengine::SessionContext&, agentengine::EffectContext&) {
+        agentengine::ContextContribution c;
+        agentengine::Message m;
+        m.role = agentengine::role::system;
+        agentengine::ContentItem item;
+        item.origin = agentengine::content_origin::system;
+        item.value  = agentengine::Text{text_};
+        m.content.push_back(item);
+        c.messages.push_back(std::move(m));
+        co_return c;
+    }
+    agentengine::task<std::monostate> on_turn_end(agentengine::TurnView, agentengine::EffectContext&) {
+        co_return std::monostate{};
+    }
+
+private:
+    std::string text_;
+};
+static_assert(!std::is_default_constructible_v<RequiredArgProvider>,
+              "the whole point of B14-B17: this type must genuinely have no default constructor");
+static_assert(agentengine::ContextProvider<RequiredArgProvider>,
+              "RequiredArgProvider must satisfy ContextProvider (005 §5) to be usable at all");
+
+}  // namespace
 
 namespace {
 
@@ -40,7 +90,15 @@ void check(bool cond, char const* what) {
 
 int main() {
     using namespace agentengine;
+    using quickstart::ComposedQuickstartSessionBuilder;
     using quickstart::OpenAiSessionBuilder;
+
+    // §2b's own env-var setup, reused for B14-B17 (same value B3+ already use).
+#if defined(_WIN32)
+    _putenv_s("AE_TEST_QUICKSTART_KEY", "sk-test-value-123");
+#else
+    setenv("AE_TEST_QUICKSTART_KEY", "sk-test-value-123", 1);
+#endif
 
     // ---- B1: no .api_key_from_env() at all -- build() fails closed, not a thrown exception --------
     {
@@ -335,6 +393,93 @@ int main() {
         if (built.has_value()) {
             check(built->session().max_turns() == std::uint64_t{3},
                   ".max_turns(3) genuinely reaches the session, not silently ignored or clamped");
+        }
+    }
+
+    // ---- §2b: ComposedQuickstartSessionBuilder<Provider, Store, Ms...> -- session_builder.hpp's own
+    // finding 8. The pack mixes a default-constructible provider (HistoryProvider<Window<0>>) with a
+    // genuinely NON-default-constructible one (RequiredArgProvider, this file's own local fixture) --
+    // proving the actual gap finding 8 closes, not just that composition works for already-easy types.
+    using ComposedBuilder =
+        ComposedQuickstartSessionBuilder<quickstart::Provider::openai, InMemorySecretStore,
+                                           HistoryProvider<Window<0>>, RequiredArgProvider>;
+    static_assert(std::is_default_constructible_v<ComposedBuilder::HistoryProviderT>,
+                  "LazyComposedContextProvider<Ms...> itself must stay default-constructible -- the "
+                  "whole mechanism finding 8 relies on -- even though one of ITS Ms (RequiredArgProvider) "
+                  "deliberately is not");
+
+    {
+        // B14: build() without .providers() fails closed, not a partially-wired session silently
+        // missing its whole history/context slot.
+        auto built = ComposedBuilder("gpt-4o-mini")
+                         .api_key_from_env("openai-api-key", "AE_TEST_QUICKSTART_KEY")
+                         .build();
+        check(!built.has_value(), "no .providers() call: build() fails");
+        if (!built.has_value()) {
+            check(built.error().code == "quickstart_builder.no_providers",
+                  "the failure is specifically 'no_providers', not a different error");
+        }
+    }
+    {
+        // B15: build() succeeds once .providers() supplies real values for BOTH Ms -- including the
+        // non-default-constructible one, which is exactly the case finding 8 says was never possible
+        // before this pass (AgentSession<..., ComposedContextProvider<H, RequiredArgProvider>> could
+        // not even be default-constructed, since ComposedContextProvider's own default ctor requires
+        // every Ms default-constructible).
+        auto built = ComposedBuilder("gpt-4o-mini")
+                         .api_key_from_env("openai-api-key", "AE_TEST_QUICKSTART_KEY")
+                         .providers(std::make_tuple(HistoryProvider<Window<0>>{},
+                                                     RequiredArgProvider{"required-arg-text"}))
+                         .build();
+        check(built.has_value(), "credential + providers set: build() succeeds even with a "
+                                  "non-default-constructible Ms in the pack");
+        if (built.has_value()) {
+            check(built->session().has_chat_client(),
+                  "the built session has a ChatClientT emplaced, same as every other builder path");
+
+            // B16: the composed provider's on_context() -- driven DIRECTLY (see this file's own top
+            // comment for why, matching test_composed_context_provider.cpp's own "Part 1" scope) --
+            // actually returns RequiredArgProvider's real, host-supplied contribution, in declared
+            // order (HistoryProvider<Window<0>> first, contributing nothing for an empty history;
+            // RequiredArgProvider second).
+            Principal principal{"p-composed", ""};
+            std::vector<Message> empty_history;
+            SessionContext session_ctx{"s-composed", principal, empty_history};
+            EffectContext effect_ctx{};
+            auto contribution = agentengine::test_support::run_task_sync<
+                result<ContextContribution>>(built->session().history_provider().on_context(
+                session_ctx, effect_ctx));
+            check(contribution.has_value(), "B16: on_context() succeeds once engaged");
+            check(contribution.has_value() && contribution->messages.size() == 1,
+                  "B16: exactly one message -- HistoryProvider<Window<0>> contributes nothing for an "
+                  "empty history, RequiredArgProvider contributes exactly one");
+            check(contribution.has_value() && contribution->messages.size() == 1 &&
+                      std::get<Text>(contribution->messages[0].content.front().value).text ==
+                          "required-arg-text",
+                  "B16: the message is genuinely RequiredArgProvider's own host-supplied text, not a "
+                  "placeholder or a default-constructed empty one");
+        }
+    }
+    {
+        // B17: engage() called a second time on the SAME LazyComposedContextProvider instance fails
+        // closed (defense-in-depth, independent of the builder-level "second build() fails at
+        // no_providers" guard) -- calling it twice would otherwise silently duplicate every
+        // contributor on the wire.
+        auto built = ComposedBuilder("gpt-4o-mini")
+                         .api_key_from_env("openai-api-key", "AE_TEST_QUICKSTART_KEY")
+                         .providers(std::make_tuple(HistoryProvider<Window<0>>{},
+                                                     RequiredArgProvider{"first-engage"}))
+                         .build();
+        check(built.has_value(), "B17 setup: build() succeeds");
+        if (built.has_value()) {
+            auto second_engage = built->session().history_provider().engage(
+                std::make_tuple(HistoryProvider<Window<0>>{}, RequiredArgProvider{"second-engage"}));
+            check(!second_engage.has_value(),
+                  "a second engage() call on the same instance fails closed");
+            if (!second_engage.has_value()) {
+                check(second_engage.error().code == "quickstart.composed_context.already_engaged",
+                      "the failure is specifically 'already_engaged', not a different error");
+            }
         }
     }
 

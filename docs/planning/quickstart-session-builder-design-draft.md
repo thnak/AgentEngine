@@ -1,8 +1,10 @@
 # Quickstart session builder — a convenience facade over `AgentSession`'s wiring — design draft
 
-**Status: promoted from prototype to a supported feature (2026-08-22) — §2a/§2c/§2d/§3/§4 implemented,
-red-teamed three times against the real code, all findings from all three passes closed; round 3's own
-fix not yet independently red-teamed a fourth time.** A convenience facade over already-Reviewed RFCs,
+**Status: promoted from prototype to a supported feature (2026-08-22) — §2a/§2b/§2c/§2d/§3/§4
+implemented. §2a/§2c/§2d/§3/§4 red-teamed three times against the real code, all findings from all
+three passes closed. §2b (this session's 4th pass) implemented but NOT yet independently red-teamed —
+disclosed as an open item, not silently treated as closed, consistent with round 3's own fix (finding
+7) also still awaiting its own next red-team round.** A convenience facade over already-Reviewed RFCs,
 not a new invariant or capability shape, so promotion did not require its own ADR (CLAUDE.md's
 `design → red-team → prove → judge` cycle is reserved for contested/hot-path/security-critical
 designs; this used the lighter `design → prototype → red-team → fix` cycle throughout, per §7 below).
@@ -15,14 +17,17 @@ this draft's own original sketch during implementation (finding 5, header's own 
 as `.approve_tools(...)` instead) — round 3 (§0d) then red-teamed THAT landing specifically and found a
 real, LIVE-REPRODUCED hang unrelated to the approval logic itself (finding 7: no `max_turns`/
 `token_budget` bound, and `Bundle::ask()`'s own §0b-finding-1 guard does not catch this class of hang),
-plus a documentation overclaim — both fixed. §2b (history/context composition) is explicitly NOT
-implemented, for a real structural reason, not lack of time — see finding 6, header's own comment, and
-§2b below. Matches this project's `design → red-team → prove → judge` discipline (CLAUDE.md), same
-honesty level as `docs/planning/tool-optimizer-provider-design-draft.md` and `docs/planning/model-call-
-gateway-routing-design-draft.md`. Real, compiling, passing code:
-`include/agentengine/core/session_builder.hpp`, `tests/test_session_builder.cpp` (36/36
-checks, Windows/MSVC, `AGENTENGINE_WITH_HTTPS=ON`). Not implemented: §2b,
-`.with_fallback()`/`.with_middleware()`/`.with_content_replay()`, and this draft's own
+plus a documentation overclaim — both fixed. §2b (history/context composition), explicitly NOT
+implemented through three rounds for a real structural reason (finding 6, header's own comment), is
+now RESOLVED — see §2b below and finding 8, header's own comment, for the mechanism
+(`ComposedQuickstartSessionBuilder`/`detail::LazyComposedContextProvider`) and what round 3's own
+analysis had NOT anticipated (the default-constructibility constraint runs deeper than finding 6's
+text captured). Matches this project's `design → red-team → prove → judge` discipline (CLAUDE.md),
+same honesty level as `docs/planning/tool-optimizer-provider-design-draft.md` and `docs/planning/
+model-call-gateway-routing-design-draft.md`. Real, compiling, passing code:
+`include/agentengine/core/session_builder.hpp`, `tests/test_session_builder.cpp` (47/47 checks,
+Windows/MSVC, `AGENTENGINE_WITH_HTTPS=ON`, full suite 221/221 `ctest -LE live-network`). Still not
+implemented: `.with_fallback()`/`.with_middleware()`/`.with_content_replay()`, and this draft's own
 `.raw_client_only()` escape hatch — named in the header's own top comment, not silently dropped.
 
 ## §0b. Red-team pass against the real code — two findings fixed, one still open
@@ -205,6 +210,20 @@ builder's own lifetime after `build()` returns. `.policy()` and `.approve_tools(
 round was asked to examine. Fixed now; not yet independently red-teamed a fourth time, same disclosure
 posture every prior "just fixed" state in this file has had before its own next round.
 
+## §0e. Fourth pass — §2b (history/context composition) resolved, not yet red-teamed
+
+Not a red-team round — a design → prototype pass, resolving §2b (below), which every prior round left
+explicitly unattempted. `ComposedQuickstartSessionBuilder<Provider, Store, Ms...>` + `detail::
+LazyComposedContextProvider<Ms...>` (see finding 8, header's own comment, and §2b below for the full
+account). Real, compiling, passing code — B14-B17 in `tests/test_session_builder.cpp`, driven via
+CodeGraph exploration of `rt/agent_session.hpp`/`core/composed_context_provider.hpp`/`core/skill_
+provider.hpp` first, matching this project's "explore before editing" convention. Full suite 221/221
+(`ctest -LE live-network`), zero regressions; `tests/test_session_builder.cpp` alone now 47/47.
+
+**Not yet independently red-teamed** — every prior round in this file found something real in whatever
+landed most recently (finding 3 → 4, finding 5 → 7); this pass has had no round against it yet at all,
+a real gap, not an oversight.
+
 ## 0. Correction found during implementation — §3's own fix does not compile as written
 
 **`AgentSession` cannot be moved or copied at all.** It holds `rt::AsyncMutex session_mutex_`
@@ -315,7 +334,7 @@ installs the bare client directly — for a deterministic fake (`JokerChatClient
 Named explicitly as escape hatch, not a coequal option, so a reader doesn't reach for it by habit in
 production code.
 
-### 2b. `HistoryProviderT`/context slot — NOT IMPLEMENTED, a real structural gap, not lack of time
+### 2b. `HistoryProviderT`/context slot — RESOLVED (4th pass, 2026-08-22), see finding 8
 
 Verified via CodeGraph (`include/agentengine/core/composed_context_provider.hpp`,
 `include/agentengine/core/skill_provider.hpp`): `ComposedContextProvider<Ms...>`'s own file-top comment
@@ -344,7 +363,7 @@ combination, of an open-ended set of contributors. A single extra template param
 things; it cannot represent "any subset of N optional contributors" without either an exponential blow-up
 of specializations or a genuinely different construction shape.
 
-Two real ways to actually build this, neither attempted yet:
+Two real ways to actually build this were named, neither attempted at the time:
 1. A true type-changing fluent builder — every setter `&&`-qualified, returning a NEW specialization of
    `QuickstartSessionBuilder` with an extended `HistoryProviderT`. A real, cross-cutting refactor of this
    whole file (`.api_key()`/`.store()`/`.grant()`/`.approve_tools()` would all need the same treatment
@@ -353,8 +372,38 @@ Two real ways to actually build this, neither attempted yet:
    `ComposedQuickstartSessionBuilder<Provider, Store, Ms...>`), accepting the up-front ceremony of naming
    the composition shape in the type instead of building it up fluently.
 
-Left undesigned here, not rushed into either shape without picking one deliberately — a real follow-up
-pass, scoped on its own.
+**RESOLVED, 4th pass (2026-08-22): option 2, implemented as `ComposedQuickstartSessionBuilder<Provider,
+Store, Ms...>`.** `Ms...` is fixed at the builder's own declaration (same reasoning as `Provider`); a
+single `.providers(std::tuple<Ms...>, budgets)` call supplies the real, host-constructed values instead
+of one setter per provider type (there is no generic way to name "the SkillsProvider slot" in an
+arbitrary pack without either a `requires`-constrained lookup-by-type or exposed index positions — a
+real, deliberately NOT-taken third option, since the underlying providers' own constructors are already
+the ergonomic surface, e.g. `SkillsProvider{sources}` written directly into the tuple). Option 1 (the
+type-changing fluent builder) was not attempted — option 2's own mechanism made it unnecessary, not
+merely deferred a second time.
+
+**What this analysis had NOT anticipated, found during implementation:** `AgentSession<...>::
+history_provider_` is a PLAIN value member, always default-constructed (`rt/agent_session.hpp:2059`; no
+user-declared `AgentSession` constructor exists to route around this) — so `HistoryProviderT` must be
+default-constructible REGARDLESS of which of the two options above got picked. The project's own
+existing `ComposedContextProvider<Ms...>` (`core/composed_context_provider.hpp`) only satisfies that
+when EVERY `Ms` is itself default-constructible — true for `HistoryProvider<Window<n>>` or a mock, never
+true for real `SkillsProvider` (explicit ctor, requires a `vector<SkillSourceDescriptor>`, no default),
+`MemoryProvider`/`VectorRagContextProvider` (both take required reference parameters). Confirmed
+empirically: `tests/test_composed_context_provider.cpp`'s only real `AgentSession` proof
+(`ThreeWayProvider`) uses three deliberately default-constructible MOCK providers, never a real
+`SkillsProvider`/`MemoryProvider`/`VectorRagContextProvider` — composing any of those three into a real
+`AgentSession` had never actually been exercised, a materially bigger gap than this section's original
+text captured (it named "the shape of the builder problem," not "the underlying `AgentSession`-slot
+constraint blocks the interesting cases regardless of builder shape"). Fixed with
+`detail::LazyComposedContextProvider<Ms...>`, kept local to `session_builder.hpp` — see finding 8,
+`session_builder.hpp`'s own top comment, for the mechanism. Also found, separately: `composed_context_
+provider.hpp`'s own comment ("no emplace_*/accessor pair" for `history_provider_`) is now STALE —
+`AgentSession::history_provider()` (`rt/agent_session.hpp:647`) is a real, mutable-reference accessor,
+added since that comment was written; not relied on to bypass the default-constructibility constraint
+above (it doesn't — `AgentSession` still needs to default-construct the member once before the accessor
+can be used), but relied on to install the REAL, engaged provider set after that first, placeholder
+default construction.
 
 ### 2c. Capability/secret slot — pure sugar, zero new default authority (unchanged from the prior survey, IMPLEMENTED)
 
@@ -524,19 +573,18 @@ already-safe idiom.
 
 ## 7. What this draft is not
 
-Not an ADR. §2a/§2c/§2d/§3(as corrected in §0)/§4 are now real, tested code, red-teamed three times
-(§0b, §0c, §0d) with every finding from all three passes closed — §2b and the fallback/middleware/
-content-replay/raw-client-only surface remain design-only, unimplemented (§2b for a real structural
-reason, not lack of time — see its own section above). This facade's own risk profile is genuinely low
-(§5: no new capability semantics, no new authority path — every real finding across §0/§0b/§0c/§0d was
-an ordinary C++ lifetime/concurrency/hygiene/genericity/availability bug, not an I2/I3 mechanism breach
-— §0d in particular went looking specifically for an I2-class approval-bypass finding and found none,
-finding an unrelated availability gap instead) — proportionate next step, once §2b's own structural
-question (type-changing builder vs. a separate builder type) is decided, is real code for it following
-this same design → prototype → red-team → fix cycle, not the full `design → red-team → prove → judge`
-gauntlet ADR-070/071-class changes require, since nothing here touches I2/I3's own mechanisms, only how
-conveniently a host can drive them correctly. §0d's own fixes (finding 7) have not themselves been
-through a fourth, independent red-team round yet — worth a light look before §2b, given every prior
-round so far has found something real in whatever landed most recently, not a blocker to starting it.
-If a later pass surfaces a finding that *does* touch I2/I3's own mechanisms, that finding gets its own
-escalation at that point, matching this project's established practice — not decided in advance here.
+Not an ADR. §2a/§2b/§2c/§2d/§3(as corrected in §0)/§4 are now real, tested code. §2a/§2c/§2d/§3/§4 are
+red-teamed three times (§0b, §0c, §0d) with every finding from all three passes closed; §2b (§0e, a
+fourth pass) is implemented but has had NO red-team round against it yet at all — the fallback/
+middleware/content-replay/raw-client-only surface remains design-only, unimplemented. This facade's own
+risk profile is genuinely low (§5: no new capability semantics, no new authority path — every real
+finding across §0/§0b/§0c/§0d was an ordinary C++ lifetime/concurrency/hygiene/genericity/availability
+bug, not an I2/I3 mechanism breach — §0d in particular went looking specifically for an I2-class
+approval-bypass finding and found none, finding an unrelated availability gap instead), so this
+continues to follow this same design → prototype → red-team → fix cycle, not the full `design →
+red-team → prove → judge` gauntlet ADR-070/071-class changes require, since nothing here touches I2/I3's
+own mechanisms, only how conveniently a host can drive them correctly. Two items now stand equally
+ready for their next red-team round: finding 7 (round 3's fix, still not independently re-examined) and
+§2b/finding 8 (never examined at all) — neither is a blocker to starting the other. If a later pass
+surfaces a finding that *does* touch I2/I3's own mechanisms, that finding gets its own escalation at
+that point, matching this project's established practice — not decided in advance here.

@@ -2,19 +2,22 @@
 // QuickstartSessionBuilder -- a convenience facade over AgentSession's wiring, promoted from
 // prototype to a supported feature (2026-08-22) after three red-team rounds against this real code,
 // all findings closed. Implements docs/planning/quickstart-session-builder-design-draft.md's §2a
-// (client stack, gateway-wrapped by default)/§2c (capability+secret sugar, generalized past the
-// draft's own original sketch -- see finding 3 below)/§2d (approval/policy sugar, corrected from its
-// original sketch -- see finding 5 below)/§3 (the Store-lifetime finding)/§4 (`.ask()`) ONLY.
-// Explicitly NOT implemented here, named rather than silently dropped: §2b (history/context
-// composition -- a real structural gap, not just unstarted work; see finding 6 below for why),
-// `.with_fallback()`/`.with_middleware()`/`.with_content_replay()`, and the draft's own
-// `.raw_client_only()` escape hatch. A convenience layer over already-Reviewed RFCs (002, 004, 005,
-// 006, 007, 018), not itself a new invariant or capability shape, so it has no ADR of its own --
-// round 1 found findings 1-2; round 2, specifically against finding 3's own fix, found finding 3's own
-// `.store(Store)` shape was itself wrong (finding 4); round 3, specifically against finding 5's
-// `.approve_tools()`/`.policy()` landing, found and LIVE-REPRODUCED a real hang (finding 7) plus a
-// documentation overclaim. Round 3's own fix (finding 7) has not itself been independently red-teamed
-// a fourth time -- disclosed here as the one open item, not silently treated as closed.
+// (client stack, gateway-wrapped by default)/§2b (history/context composition, `ComposedQuickstart
+// SessionBuilder` -- resolved during a 4th pass, see finding 8 below; a real structural gap, not just
+// unstarted work)/§2c (capability+secret sugar, generalized past the draft's own original sketch --
+// see finding 3 below)/§2d (approval/policy sugar, corrected from its original sketch -- see finding 5
+// below)/§3 (the Store-lifetime finding)/§4 (`.ask()`). Explicitly NOT implemented here, named rather
+// than silently dropped: `.with_fallback()`/`.with_middleware()`/`.with_content_replay()`, and the
+// draft's own `.raw_client_only()` escape hatch. A convenience layer over already-Reviewed RFCs (002,
+// 004, 005, 006, 007, 018), not itself a new invariant or capability shape, so it has no ADR of its
+// own -- round 1 found findings 1-2; round 2, specifically against finding 3's own fix, found finding
+// 3's own `.store(Store)` shape was itself wrong (finding 4); round 3, specifically against finding
+// 5's `.approve_tools()`/`.policy()` landing, found and LIVE-REPRODUCED a real hang (finding 7) plus a
+// documentation overclaim; round 3's own fix (finding 7) has not itself been independently red-teamed
+// a fourth time -- disclosed here as an open item, not silently treated as closed. §2b's own
+// `ComposedQuickstartSessionBuilder`/`detail::LazyComposedContextProvider` (finding 8) have NOT yet
+// been through any red-team round at all -- a real, disclosed gap, matching how every other addition
+// in this file started before its own first pass.
 //
 // Correction found during implementation, not anticipated by the design draft's own §3: `AgentSession`
 // (rt/agent_session.hpp) holds `rt::AsyncMutex session_mutex_` directly as a data member;
@@ -100,20 +103,19 @@
 //    `AgentSession`'s own true unset-decider default exactly, not approximating it with an
 //    always-false one. `.policy(PolicyDecider)` is a thin, unmodified pass-through to
 //    `set_policy_decider` (ADR-070).
-// 6. §2b (history/context composition) is explicitly NOT attempted in this pass, for a real structural
-//    reason rather than lack of time: `AgentSession<ChatClientT, StateT, HistoryProviderT>`'s
+// 6. §2b (history/context composition) was explicitly NOT attempted in this pass, for a real
+//    structural reason rather than lack of time: `AgentSession<ChatClientT, StateT, HistoryProviderT>`'s
 //    `HistoryProviderT` is a COMPILE-TIME type parameter, exactly like `ChatClientT` (§2a) -- adding
 //    `.with_skills(...)` would need to change `Bundle`'s/`QuickstartSessionBuilder`'s own C++ type
 //    partway through a fluent chain, the same "no clean single return type for a runtime toggle between
 //    two different types" problem §2a's own top-of-class comment already named for `Provider`. Unlike
 //    `Provider` (one value, chosen once, at construction), history/context composition is naturally
-//    MULTI-VALUED and incremental (`.with_skills()`, later maybe `.with_memory()`, `.with_rag()`, any
-//    subset, in any combination) -- a single extra template parameter does not scale the way `Provider`
-//    did. Doing this properly needs either a real type-changing fluent builder (every setter
-//    `&&`-qualified, returning a new specialization -- a bigger refactor of this whole file, touching
-//    `.api_key()`/`.store()`/`.grant()`/`.approve_tools()` too, not just the new methods) or a distinct,
-//    separately-templated builder type for the composed-context case. Left undesigned here rather than
-//    rushed -- a real follow-up, not a placeholder.
+//    MULTI-VALUED (`Ms...`, any subset of contributor TYPES, in any combination) -- a single extra
+//    template parameter does not scale the way `Provider` did. **RESOLVED in a 4th pass -- see finding
+//    8 below**: a distinct, separately-templated builder type (`ComposedQuickstartSessionBuilder<
+//    Provider, Store, Ms...>`), the second of the two options this finding originally named. The other
+//    option (a type-changing fluent builder, every setter `&&`-qualified) was not attempted -- finding
+//    8's own mechanism made it unnecessary, not merely deferred a second time.
 // 7. **A third red-team round, against finding 5's `.approve_tools()`/`.policy()` landing, found and
 //    LIVE-REPRODUCED a real hang.** `build()` called `session->initialize(session_id_, principal_)`,
 //    never passing `max_turns`/`token_budget` -- `AgentSession::initialize()`'s own raw default for both
@@ -136,9 +138,37 @@
 //    directly, never through a live `start_run()` round -- the SAME overclaim shape finding 3 already
 //    caught once for `.store()`/B5. Wording corrected in the design draft; a live-round test remains a
 //    named gap, not yet added.
+// 8. **§2b resolved (4th pass, not yet independently red-teamed).** `ComposedQuickstartSessionBuilder<
+//    Provider, Store, Ms...>` fixes `Ms...` at declaration (same reasoning as `Provider`, finding 6);
+//    `.providers(tuple, budgets)` supplies the REAL, host-constructed values for each `Ms` (no per-type
+//    setter -- see this file's own top-of-class comment on that class for why). The part finding 6 did
+//    NOT anticipate: `AgentSession<...>::history_provider_` is a PLAIN value member, always default-
+//    constructed (no user-declared `AgentSession` constructor exists to route around this), so
+//    `HistoryProviderT` must be default-constructible regardless of which builder shape is chosen --
+//    `core/composed_context_provider.hpp`'s own `ComposedContextProvider<Ms...>` only clears that bar
+//    when EVERY `Ms` is default-constructible, which real `SkillsProvider`/`MemoryProvider`/
+//    `VectorRagContextProvider` never are (confirmed empirically: `tests/test_composed_context_provider
+//    .cpp`'s only real `AgentSession` proof uses three default-constructible MOCK providers, never one
+//    of these three real types -- composing any of them into a real `AgentSession` had never actually
+//    been exercised before this pass, a materially bigger gap than finding 6's own text captured).
+//    Fixed with `detail::LazyComposedContextProvider<Ms...>` -- ALWAYS default-constructible (starts
+//    with an empty `contributors_`, not a default-constructed `Ms{}...`), engaged with the real values
+//    after `AgentSession` already exists, via `AgentSession::history_provider()`'s mutable-reference
+//    accessor (`rt/agent_session.hpp:647`) -- an accessor that DOES exist despite `composed_context_
+//    provider.hpp`'s own comment (written before it was added) still describing this slot as having
+//    "no emplace_*/accessor pair"; that comment is now stale and was not relied on here. `engage()` is
+//    single-use per instance (fails closed on a second call, matching this file's own established
+//    idiom for anything that would otherwise silently duplicate a wire contribution); `build()` itself
+//    fails closed with a new `quickstart_builder.no_providers` if `.providers(...)` was never called,
+//    the same posture `.api_key()`/`.store()` already have for their own missing-input cases.
+//    `ComposedQuickstartSessionBuilder` duplicates §2a's fluent setters rather than sharing them via a
+//    CRTP base -- a deliberate, disclosed simplification (see this file's own top-of-class comment on
+//    that class), named as a candidate follow-up if a red-team pass finds the duplication drifting.
 
 #include <algorithm>
+#include <array>
 #include <concepts>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -147,9 +177,12 @@
 #include <string_view>
 #include <tuple>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #include "agentengine/core/chat_client.hpp"
+#include "agentengine/core/context_assembly.hpp"
+#include "agentengine/core/context_provider.hpp"
 #include "agentengine/core/model_call_gateway.hpp"
 #include "agentengine/core/tool_call_extraction.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
@@ -230,15 +263,113 @@ concept TestOnlyPopulatableSecretStore = std::default_initializable<S> && requir
     s.set(std::move(n), std::move(v));
 };
 
+// §2b's real fix -- see this file's own top comment, finding 8. `AgentSession<...>::history_provider_`
+// is a plain, always-default-constructed value member (rt/agent_session.hpp:2059; no user-declared
+// `AgentSession` constructor exists, so the compiler-generated default one runs, which default-inits
+// EVERY member including this one) -- so whatever occupies `HistoryProviderT` must itself be
+// default-constructible, unconditionally, regardless of what the *quickstart* builder does. The
+// project's own existing N-way composite, `core/composed_context_provider.hpp`'s `ComposedContextProvider
+// <Ms...>`, only clears that bar when EVERY `Ms` is itself default-constructible (its own default
+// constructor is `requires`-gated on exactly that) -- fine for `HistoryProvider<Window<n>>` or a mock,
+// but `SkillsProvider` (explicit ctor, requires a `vector<SkillSourceDescriptor>`, no default),
+// `MemoryProvider`/`VectorRagContextProvider` (both take required reference parameters) are NEVER
+// default-constructible, so `ComposedContextProvider<HistoryProvider<...>, SkillsProvider<...>>` cannot
+// even be default-constructed, meaning `AgentSession<..., ComposedContextProvider<...>>` cannot compile
+// for that combination at all -- confirmed empirically: `tests/test_composed_context_provider.cpp`'s own
+// only real `AgentSession` proof (`ThreeWayProvider`) uses three deliberately-default-constructible mock
+// providers (`static_assert(std::is_default_constructible_v<ThreeWayProvider>...)`), never a real
+// `SkillsProvider`/`MemoryProvider`/`VectorRagContextProvider`. This type closes that gap the same way
+// ADR-018 closed the analogous one for `chat_client_`: always default-constructible (an empty
+// `contributors_`, not a default-constructed `Ms{}...`), engaged with the REAL, host-constructed `Ms...`
+// values after `AgentSession` already exists -- reachable because `AgentSession::history_provider()`
+// (rt/agent_session.hpp:647) returns a mutable reference (an accessor `composed_context_provider.hpp`'s
+// own comment, written before that accessor existed, still describes as absent -- stale, not relied on
+// here). Kept local to this file (`quickstart::detail`), not promoted to `core/`, since nothing outside
+// the quickstart builder currently needs a lazily-engaged composite.
+template <class... Ms>
+    requires (sizeof...(Ms) >= 1) && (agentengine::ContextProvider<Ms> && ...)
+class LazyComposedContextProvider {
+public:
+    static constexpr std::string_view name = "quickstart_composed";  // ae-naming-lint: allow name — ADR-033's HasMiddlewareName precedent, reused verbatim per ADR-066 §3
+
+    LazyComposedContextProvider() = default;  // contributors_ starts empty -- see engage() below
+
+    // Host-only, configuration-time call (`ComposedQuickstartSessionBuilder::build()`, never derived
+    // from model output, I3) -- builds each `Ms`'s real `ContextProviderDescriptor` and appends it, in
+    // `Ms...`'s declared order (005 §3 drop-order-determinism / final wire order, identical rule to
+    // `ComposedContextProvider`'s own). May be called AT MOST ONCE per instance -- a second call would
+    // silently duplicate every contributor on the wire, so it fails closed instead of accumulating.
+    [[nodiscard]] agentengine::result<void> engage(
+        std::tuple<Ms...> providers,
+        std::array<agentengine::ContextBudget, sizeof...(Ms)> budgets = {}) {
+        if (engaged_) {
+            return std::unexpected(agentengine::error{
+                agentengine::failure_class::contract,
+                "LazyComposedContextProvider::engage() called twice on the same instance -- every "
+                "contributor from the first call would otherwise be duplicated on the wire",
+                "quickstart.composed_context.already_engaged"});
+        }
+        contributors_.reserve(sizeof...(Ms));
+        build_contributors(providers, budgets, std::index_sequence_for<Ms...>{});
+        engaged_ = true;
+        return {};
+    }
+
+    [[nodiscard]] agentengine::task<agentengine::result<agentengine::ContextContribution>> on_context(
+        agentengine::SessionContext& session_ctx, agentengine::EffectContext& ctx) {
+        if (!engaged_) {
+            // Not reachable through ComposedQuickstartSessionBuilder::build() (it always calls engage()
+            // before returning a Bundle) -- only reachable if a caller reaches in via
+            // Bundle::session().history_provider() and substitutes/reuses an unengaged instance.
+            // Fail-closed, matching this project's convention for a used-before-configured contract
+            // violation, rather than silently contributing nothing.
+            co_return std::unexpected(agentengine::error{
+                agentengine::failure_class::contract,
+                "LazyComposedContextProvider::on_context() called before engage()",
+                "quickstart.composed_context.not_engaged"});
+        }
+        agentengine::ContextAssemblyResult assembled =
+            co_await agentengine::assemble_context(contributors_, session_ctx, ctx);
+        co_return assembled.combined;
+    }
+
+    // Matches ComposedContextProvider::on_turn_end's own forwarding -- assemble_context() itself never
+    // calls it on its contributors.
+    agentengine::task<std::monostate> on_turn_end(agentengine::TurnView turn, agentengine::EffectContext& ctx) {
+        for (auto& contributor : contributors_) (void)co_await contributor.on_turn_end(turn, ctx);
+        co_return std::monostate{};
+    }
+
+private:
+    template <std::size_t... I>
+    void build_contributors(std::tuple<Ms...>& providers,
+                             std::array<agentengine::ContextBudget, sizeof...(Ms)> const& budgets,
+                             std::index_sequence<I...>) {
+        (contributors_.push_back(agentengine::make_context_provider_descriptor(
+             std::move(std::get<I>(providers)), budgets[I])),
+         ...);
+    }
+
+    std::vector<agentengine::ContextProviderDescriptor> contributors_;
+    bool engaged_ = false;
+};
+
 }  // namespace detail
 
 // Move-only. Owns every long-lived object the constructed session's `ChatClientT` and
 // `CapabilitySet const*` reference for as long as the session is used -- see this file's own top
 // comment for why a plain move-constructed `AgentSession` member cannot work here.
-template <class ChatClientT, class Store>
+//
+// `HistoryProviderT` defaults to `AgentSession`'s own default (`HistoryProvider<Window<0>>`) so
+// every existing `Bundle<ChatClientT, Store>` spelling (§2a's `QuickstartSessionBuilder`) is
+// completely unaffected -- the third parameter exists only so `ComposedQuickstartSessionBuilder`
+// (§2b, below) can supply its own `detail::LazyComposedContextProvider<Ms...>` instead.
+template <class ChatClientT, class Store,
+          class HistoryProviderT = agentengine::HistoryProvider<agentengine::Window<0>>>
 class Bundle {
 public:
-    using SessionT = agentengine::rt::AgentSession<ChatClientT>;
+    using SessionT = agentengine::rt::AgentSession<ChatClientT, agentengine::rt::NoSessionState,
+                                                     HistoryProviderT>;
 
     Bundle(Bundle&&) noexcept = default;
     Bundle(Bundle const&)     = delete;
@@ -285,6 +416,8 @@ public:
 private:
     template <Provider, class>
     friend class QuickstartSessionBuilder;
+    template <Provider, class, class...>
+    friend class ComposedQuickstartSessionBuilder;
 
     Bundle(std::unique_ptr<Store> store, std::unique_ptr<agentengine::CapabilitySet> capabilities,
            std::unique_ptr<SessionT> session)
@@ -534,6 +667,192 @@ private:
 
 using OpenAiSessionBuilder    = QuickstartSessionBuilder<Provider::openai>;
 using AnthropicSessionBuilder = QuickstartSessionBuilder<Provider::anthropic>;
+
+// §2b -- history/context composition. `Ms...` is a compile-time pack chosen ONCE, at this builder's
+// own declaration, the same reason `Provider` is (§2a's own top-of-class comment): a runtime toggle
+// between different C++ types has no single, clean `build()` return type, and unlike `Provider` (one
+// value, chosen once) this slot is naturally multi-valued -- but still fixed in SHAPE (which provider
+// TYPES compose, and in what order) the moment a host writes the type out, same as `Provider`. What
+// varies at runtime is each provider's own VALUE (a `SkillsProvider` needs real sources, a
+// `MemoryProvider` needs a real store reference) -- supplied via `.providers(tuple, budgets)` below,
+// not via one setter per provider type (there is no generic way to name "the SkillsProvider slot" in
+// an arbitrary `Ms...` pack without either a `requires`-constrained lookup-by-type or exposing index
+// positions -- both real options, neither attempted here; a single aggregate call is simpler and the
+// underlying providers' own constructors are already the ergonomic surface, e.g. `SkillsProvider{
+// sources}` directly in the tuple).
+//
+// Deliberately duplicates QuickstartSessionBuilder's session_id()/principal()/declare_capabilities()/
+// endpoint()/max_turns()/token_budget()/api_key()/store()/api_key_from_env()/grant()/approve_tools()/
+// policy() rather than sharing them through a common base -- a real, named simplification, not an
+// oversight: extracting a CRTP mixin would mean touching the already-shipped, already-red-teamed §2a
+// class too, a larger, separate-risk refactor. Named here as a candidate follow-up if red-team finds
+// the duplication has drifted, not attempted in this pass.
+template <Provider P, class Store, class... Ms>
+class ComposedQuickstartSessionBuilder {
+public:
+    using Primary          = typename detail::primary_client<P, Store>::type;
+    using ChatClientT       = agentengine::ModelCallGateway<Primary>;
+    using HistoryProviderT = detail::LazyComposedContextProvider<Ms...>;
+    using BundleT           = Bundle<ChatClientT, Store, HistoryProviderT>;
+
+    explicit ComposedQuickstartSessionBuilder(std::string model) : model_(std::move(model)) {}
+
+    ComposedQuickstartSessionBuilder& session_id(std::string id) {
+        session_id_ = std::move(id);
+        return *this;
+    }
+    ComposedQuickstartSessionBuilder& principal(agentengine::Principal p) {
+        principal_ = std::move(p);
+        return *this;
+    }
+    ComposedQuickstartSessionBuilder& declare_capabilities(agentengine::ChatClientCapabilities caps) {
+        caps_ = caps;
+        return *this;
+    }
+    ComposedQuickstartSessionBuilder& endpoint(std::string host, std::uint16_t port,
+                                                 std::string path_prefix) {
+        host_        = std::move(host);
+        port_        = port;
+        path_prefix_ = std::move(path_prefix);
+        return *this;
+    }
+    ComposedQuickstartSessionBuilder& max_turns(std::optional<std::uint64_t> n) {
+        max_turns_ = n;
+        return *this;
+    }
+    ComposedQuickstartSessionBuilder& token_budget(std::optional<std::uint64_t> n) {
+        token_budget_ = n;
+        return *this;
+    }
+    ComposedQuickstartSessionBuilder& api_key(agentengine::SecretRef ref) {
+        api_key_ref_ = ref;
+        primary_secret_grant_ =
+            agentengine::Capability{agentengine::cap::Secret{ref.name, std::chrono::seconds{0}}};
+        return *this;
+    }
+    template <class... Args>
+    ComposedQuickstartSessionBuilder& store(Args&&... args) {
+        store_ = std::make_unique<Store>(std::forward<Args>(args)...);
+        return *this;
+    }
+    ComposedQuickstartSessionBuilder& api_key_from_env(std::string secret_name, char const* env_var)
+        requires detail::TestOnlyPopulatableSecretStore<Store>
+    {
+        api_key(agentengine::SecretRef{secret_name});
+        if (auto value = agentengine::pal::env_var(env_var); value.has_value()) {
+            store();
+            store_->set(secret_name, std::move(*value));
+        }
+        return *this;
+    }
+    ComposedQuickstartSessionBuilder& grant(agentengine::Capability cap) {
+        grants_.push_back(std::move(cap));
+        return *this;
+    }
+    ComposedQuickstartSessionBuilder& approve_tools(std::vector<std::string> tool_names) {
+        approved_tool_names_ = std::move(tool_names);
+        return *this;
+    }
+    ComposedQuickstartSessionBuilder& policy(agentengine::PolicyDecider decide) {
+        policy_decider_ = std::move(decide);
+        return *this;
+    }
+
+    // The REAL, host-constructed provider values -- e.g. `.providers(std::make_tuple(
+    // HistoryProvider<Window<8>>{}, SkillsProvider{sources}))`. Declared order == wire order (same
+    // rule `ComposedContextProvider`/`LazyComposedContextProvider` themselves already enforce).
+    // Last-call-wins if called more than once before build() (matching `.api_key()`/`.store()`'s own
+    // semantics) -- `Ms...` is fixed at declaration time, so a second call has nothing incremental to
+    // add, only a full replacement.
+    ComposedQuickstartSessionBuilder& providers(
+        std::tuple<Ms...> providers,
+        std::array<agentengine::ContextBudget, sizeof...(Ms)> budgets = {}) {
+        providers_ = std::move(providers);
+        budgets_   = budgets;
+        return *this;
+    }
+
+    // Fails closed exactly like §2a's build(): missing credential, missing Store, AND (new here)
+    // missing `.providers(...)` all produce a `result<BundleT>` error, never a partially-wired session
+    // silently missing its whole history/context slot.
+    [[nodiscard]] agentengine::result<BundleT> build() {
+        if (!api_key_ref_.has_value()) {
+            return std::unexpected(agentengine::error{
+                agentengine::failure_class::contract,
+                "no primary backend credential named -- call .api_key(...) (or .api_key_from_env(...), "
+                "if Store supports it) before build()",
+                "quickstart_builder.no_credential"});
+        }
+        if (!store_) {
+            return std::unexpected(agentengine::error{
+                agentengine::failure_class::contract,
+                "no Store supplied -- call .store(...) with an already-populated store (or "
+                ".api_key_from_env(...) with the named environment variable actually set) before "
+                "build()",
+                "quickstart_builder.no_store"});
+        }
+        if (!providers_.has_value()) {
+            return std::unexpected(agentengine::error{
+                agentengine::failure_class::contract,
+                "no history/context providers supplied -- call .providers(...) with a real value for "
+                "every Ms... this builder was declared with before build()",
+                "quickstart_builder.no_providers"});
+        }
+
+        std::vector<agentengine::Capability> all_grants = grants_;
+        all_grants.push_back(*primary_secret_grant_);
+        auto capabilities = std::make_unique<agentengine::CapabilitySet>(
+            agentengine::CapabilitySet::grant_root(std::move(all_grants)));
+
+        Primary primary(host_, port_, model_, *api_key_ref_, caps_, *store_, path_prefix_);
+
+        auto session = std::make_unique<typename BundleT::SessionT>();
+        session->initialize(session_id_, principal_, token_budget_, max_turns_);
+        session->emplace_chat_client(std::move(primary), std::tuple<>{});
+        session->set_capabilities(capabilities.get());
+
+        // Move `providers_` out and clear the optional -- same single-use signal `store_` going null
+        // gives the base builder's own double-build() check above, applied here since `providers_`
+        // (unlike `store_`) is not itself a pointer that goes null on move.
+        auto providers = std::move(*providers_);
+        providers_.reset();
+        auto engaged = session->history_provider().engage(std::move(providers), budgets_);
+        if (!engaged) return std::unexpected(engaged.error());
+
+        if (approved_tool_names_.has_value()) {
+            std::vector<std::string> const allow = *approved_tool_names_;
+            session->set_approval_decider(
+                [allow](agentengine::Principal const&, std::string_view tool_name,
+                        std::string const&) {
+                    return std::find(allow.begin(), allow.end(), tool_name) != allow.end();
+                });
+        }
+        if (policy_decider_) {
+            session->set_policy_decider(policy_decider_);
+        }
+
+        return BundleT(std::move(store_), std::move(capabilities), std::move(session));
+    }
+
+private:
+    std::string model_;
+    std::string session_id_ = "s-quickstart";
+    agentengine::Principal principal_{"p-quickstart", ""};
+    agentengine::ChatClientCapabilities caps_{};
+    std::optional<agentengine::SecretRef> api_key_ref_;
+    std::optional<agentengine::Capability> primary_secret_grant_;
+    std::unique_ptr<Store> store_;
+    std::vector<agentengine::Capability> grants_;
+    std::optional<std::vector<std::string>> approved_tool_names_;
+    agentengine::PolicyDecider policy_decider_;
+    std::optional<std::uint64_t> max_turns_ = std::uint64_t{25};
+    std::optional<std::uint64_t> token_budget_;
+    std::string host_        = detail::default_endpoint<P>::host;
+    std::uint16_t port_      = detail::default_endpoint<P>::port;
+    std::string path_prefix_ = detail::default_endpoint<P>::path_prefix;
+    std::optional<std::tuple<Ms...>> providers_;
+    std::array<agentengine::ContextBudget, sizeof...(Ms)> budgets_{};
+};
 
 }  // namespace agentengine::quickstart
 
