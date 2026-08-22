@@ -225,3 +225,116 @@ disposition): the *token-budget* enforcement that does exist is per-contributor 
 aggregate/pre-flight — so "budgets are enforced" (I8) is real but narrower than the name alone suggests.
 That's a factual note about what the mechanism currently does, kept here for accuracy, not a request to
 add a count-based limit or otherwise constrain how freely a consumer-dev can compose chains.
+
+### Finding E — per-contributor budget trimming is completely invisible by the time a dev could see it (I4 gap)
+
+User flagged (2026-08-22): silent trimming is dangerous — a dev has no way to know it happened. Traced the
+full path of `ContextAssemblyResult.drops` (the diagnostic `assemble_context()` itself already produces,
+`ContextDrop{contributor_index, contributor_message_id, reason}`) from where it's created to wherever it
+might surface. It doesn't, anywhere in a real run:
+
+- `assemble_context()` (`context_assembly.hpp:165-`) genuinely records every drop into `out.drops` —
+  the mechanism to know a drop happened exists and is unit-tested in isolation
+  (`tests/test_context_assembly.cpp`: B3-R1 etc.).
+- But **every real composite that wraps it throws `.drops` away**, identically, in three places:
+  `ComposedContextProvider::on_context()` (`composed_context_provider.hpp:67-71`),
+  `HistoryAndSkillsProvider::on_context()` (`history_and_skills_provider.hpp:77-81`), and
+  `LazyComposedContextProvider::on_context()` (`session_builder.hpp:519-521`) all do the identical
+  `ContextAssemblyResult assembled = co_await assemble_context(...); co_return assembled.combined;` —
+  `assembled.drops` is computed, then discarded, never logged, never turned into an event.
+- This isn't three independent oversights — it's **structurally forced** by the `ContextProvider` concept
+  itself: `on_context()` must return `task<result<ContextContribution>>` (`context_provider.hpp:101-105`),
+  and `ContextContribution` has no drops field at all. Any composite exposing itself as an ordinary
+  `ContextProvider` has no type-level room to pass drop diagnostics further up, even if it wanted to.
+- Confirmed `AgentSession` itself never sees real drops either: `rt/agent_session.hpp:1881` explicitly
+  fabricates an EMPTY `ContextAssemblyResult{drops: {}}` around the already-drop-stripped
+  `ContextContribution` it received from `history_provider_.on_context()`, purely as a type-adapter so
+  `TurnMiddleware` has something to look at — the comment there is explicit that this is a workaround, not
+  a claim the list is genuinely empty.
+- No `run_event_kind` exists for "a contributor's own budget dropped N messages." Grepped
+  `run_event.hpp`/`agent_session.hpp` for anything drop/trim-related — nothing.
+
+**Net effect**: a consumer-dev who sets (or leaves at a too-tight non-default) a `ContextBudget` on their
+own provider gets messages silently dropped from what the model sees, with zero observability anywhere in
+a real `AgentSession` run — no event, no log, no return value carrying it. The only way to ever see a drop
+happen is to call `assemble_context()` directly in a unit test, bypassing the actual session machinery
+entirely. This is a real gap against **I4** ("every effect is attributable") — a drop is an effect on what
+the model actually sees, and today it is not attributable through any production path.
+
+**Disposition: tracked, not closed** (session scope is survey-and-mark only, per explicit instruction).
+Not in tension with Finding D's "no chain-length limit, by design" — this isn't about constraining what a
+consumer-dev can compose, it's about them being unable to find out afterward that their own chosen budget
+silently ate something.
+
+**Project-owner direction on the fix shape (2026-08-22, not implemented this session): a budget-exceeded
+trim should be an ERROR, not a silently-succeeding trim — and the condition needs to be something a test
+can actually catch.** Concretely: today, exceeding a declared `ContextBudget.max_tokens` still returns
+`result<ContextContribution>` as a plain success (`Ok`) with fewer messages inside it — there is no
+`std::unexpected` anywhere on this path, so nothing in this codebase's own established `result<T>`
+error-checking idiom can observe it, which is exactly why no test exercises it through a real
+`AgentSession` run today. This has a real, already-shipped precedent to follow: `AgentSession`'s own
+cross-round `token_budget_` does exactly this shape — `failure_class::resource`,
+`"run.token_budget_exceeded"` (`rt/agent_session.hpp:1950-1956`) — fail closed on a declared budget being
+exceeded, not silently continue. Applying the same shape to the PER-CONTRIBUTOR `ContextBudget` would mean
+`assemble_context()` (or whichever seam owns the check) returns `std::unexpected` when a contributor's own
+declared budget is exceeded, instead of trimming and returning `Ok` — making it a normal, testable
+`AE_CHECK(!result.has_value())`-shaped assertion like every other fail-closed contract in this tree,
+instead of requiring a caller to inspect an out-of-band `drops` list that (Finding E's own body above)
+doesn't even reach them today.
+
+**Named tension to resolve at design time, not decided here:** `ContextBudget.max_tokens == 0` (unbounded)
+is the default, and per `history_and_skills_provider.hpp`'s own comment, budgets are opt-in specifically
+because unconditionally trimming (rather than erroring) was already judged wrong for at least one real
+case (a `SkillsProviderT` advertisement that must arrive whole or not at all). Turning "exceeded" into a
+hard error changes that case's own failure mode too (from "silently arrives empty" to "the whole turn
+fails") — whoever designs this needs to decide whether that's the same fix or a second, related one, since
+a caller who explicitly opted into a low budget expecting graceful degradation and a caller who never
+expected the budget to bind at all are arguably different failure modes wanting different treatment. Left
+open, not decided here.
+
+### Finding F — a large file read (via a file-read tool or native `bash`'s `cat`) has no size cap anywhere by default, and can end up dropping the newest message when it finally hits a budget
+
+User asked what happens when a tool like a file-read or `bash` reads a huge text file. Traced the whole
+chain from read to wire, real code at each step:
+
+1. **Read itself — capped only if the grant opts in, and capped means hard-fail, not truncate.**
+   `worktree::mount_read()` (`core/worktree.hpp:1289-1328`) is the one mediated file-read primitive every
+   file-reading path in this engine goes through (per `skill_provider.hpp`'s own comment: skills are read
+   "with ordinary file operations... via `mount_read`"). Its only size control is
+   `cap::FsRead.size_cap_bytes` (`trust/capability.hpp:83-87`) — `std::optional<uint64_t>`, **default
+   `std::nullopt` (no cap)** unless whoever GRANTED that capability explicitly set one. If set and
+   exceeded: `mount_read` refuses the ENTIRE read (`"worktree.mount_read_exceeds_size_cap"`) — there is no
+   partial-read/streaming/truncate path at all, by design (confirmed: `object_store.get_blob(entry->digest)`
+   fetches the whole blob before the size check even runs).
+2. **Native `bash`'s `cat` builtin has no additional check of its own.**
+   `mediated_shell_dispatch.cpp:143-154` — `cat` calls `fs.read_file(target)` (same `mount_read` path,
+   same optional cap) then does an unconditional `out.stdout_text.assign(data->data(), data->size())` —
+   whatever came back becomes the entire captured stdout, verbatim, no truncation logic at this layer
+   either.
+3. **`invoke_tool()` only records size, never enforces it.** `reply_bytes`
+   (`tool_pipeline.hpp:581`, `= reply_json.size()`) exists purely for the audit record
+   (`ToolInvocationAudit::result_bytes`) — nothing compares it against any limit.
+4. **The (possibly huge) `ToolResult` lands in `history_` unbounded**, then on the NEXT round is replayed
+   verbatim by `HistoryProvider<Window<N>>` (default `N == 0`, unbounded) into that round's
+   `ContextContribution.messages` — gated only by whatever `ContextBudget` a caller optionally set on that
+   provider (Finding D/E's own subject: default unbounded, and even when set, exceeding it silently trims
+   rather than erroring, per Finding E).
+5. **A newly-surfaced sharp edge, found while tracing this**: `assemble_context()`'s own trim loop
+   (`context_assembly.hpp:198-204`, `while (total > max_tokens && drop_from < msgs.size())`) drops
+   OLDEST-first with **no protection for the newest message**. If a caller HAS set a nonzero
+   `ContextBudget` and the single huge tool-result message (almost always the newest one, just appended)
+   is larger than the ENTIRE budget by itself, the loop keeps advancing `drop_from` right up through and
+   including that newest message too — silently dropping the very thing the tool call was for, with no
+   different treatment for "the message that would never fit no matter what else is dropped" vs. an
+   ordinary old message being aged out.
+
+**Net chain**: no cap by default at the read layer, no cap at the shell layer, no enforcement at the tool
+pipeline layer, no aggregate cap at context assembly (Finding D, confirmed intentional), and the one
+opt-in per-contributor budget that exists can silently discard the newest message rather than erroring
+(Finding E, not yet given a design). A single `cat hugefile.txt` can carry an arbitrarily large payload
+all the way to the wire completely ungated, unless a host manually set `cap::FsRead.size_cap_bytes` for
+that specific grant.
+
+**Disposition: tracked, not closed** (survey-and-mark only, per this session's explicit scope). Compounds
+Finding E rather than introducing a fourth mechanism — the newest-message-can-be-dropped detail belongs to
+Finding E's own eventual fix (fail-closed on budget-exceeded, not silent trim), not a separate design.
