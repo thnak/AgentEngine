@@ -1,23 +1,25 @@
 # Quickstart session builder — a convenience facade over `AgentSession`'s wiring — design draft
 
-**Status: prototyped (§2a/§2c/§2d/§3/§4), red-teamed twice against the real code, all findings from
-both passes closed; §2d not yet independently red-teamed.** Round 1 found and fixed two real issues
-(§0b findings 1-2); round 1 also found a third, real gap it left open, fixed in a same-session
-follow-up (§0b finding 3) — round 2 (§0c) then red-teamed THAT fix specifically and found it did not
-actually deliver on its own claim, fixing it again (§0c findings 3-4, re-numbered to match the header's
-own comment). §2d landed in a later same-session pass, corrected from this draft's own original sketch
-during implementation (finding 5, header's own comment — `.require_approval_for(...)` read backwards
-against the real `ApprovalDecider` mechanism; implemented as `.approve_tools(...)` instead) — not yet
-independently red-teamed, same disclosure posture every prior "just landed" state had before its own
-next round found something. §2b (history/context composition) is explicitly NOT implemented, for a
-real structural reason, not lack of time — see finding 6, header's own comment, and §2b below. Matches
-this project's `design → red-team → prove → judge` discipline (CLAUDE.md), same honesty level as
-`docs/planning/tool-optimizer-provider-design-draft.md` and `docs/planning/model-call-gateway-routing-
-design-draft.md`. Real, compiling, passing code: `include/agentengine/core/session_builder.hpp`,
-`tests/test_session_builder_prototype.cpp` (30/30 checks, Windows/MSVC, `AGENTENGINE_WITH_HTTPS=ON`).
-Not implemented: §2b, `.with_fallback()`/`.with_middleware()`/`.with_content_replay()`, and this
-draft's own `.raw_client_only()` escape hatch — named in the header's own top comment, not silently
-dropped.
+**Status: prototyped (§2a/§2c/§2d/§3/§4), red-teamed three times against the real code, all findings
+from all three passes closed; round 3's own fix not yet independently red-teamed a fourth time.**
+Round 1 found and fixed two real issues (§0b findings 1-2); round 1 also found a third, real gap it
+left open, fixed in a same-session follow-up (§0b finding 3) — round 2 (§0c) then red-teamed THAT fix
+specifically and found it did not actually deliver on its own claim, fixing it again (§0c findings 3-4,
+re-numbered to match the header's own comment). §2d landed in a later same-session pass, corrected from
+this draft's own original sketch during implementation (finding 5, header's own comment —
+`.require_approval_for(...)` read backwards against the real `ApprovalDecider` mechanism; implemented
+as `.approve_tools(...)` instead) — round 3 (§0d) then red-teamed THAT landing specifically and found a
+real, LIVE-REPRODUCED hang unrelated to the approval logic itself (finding 7: no `max_turns`/
+`token_budget` bound, and `Bundle::ask()`'s own §0b-finding-1 guard does not catch this class of hang),
+plus a documentation overclaim — both fixed. §2b (history/context composition) is explicitly NOT
+implemented, for a real structural reason, not lack of time — see finding 6, header's own comment, and
+§2b below. Matches this project's `design → red-team → prove → judge` discipline (CLAUDE.md), same
+honesty level as `docs/planning/tool-optimizer-provider-design-draft.md` and `docs/planning/model-call-
+gateway-routing-design-draft.md`. Real, compiling, passing code:
+`include/agentengine/core/session_builder.hpp`, `tests/test_session_builder_prototype.cpp` (36/36
+checks, Windows/MSVC, `AGENTENGINE_WITH_HTTPS=ON`). Not implemented: §2b,
+`.with_fallback()`/`.with_middleware()`/`.with_content_replay()`, and this draft's own
+`.raw_client_only()` escape hatch — named in the header's own top comment, not silently dropped.
 
 ## §0b. Red-team pass against the real code — two findings fixed, one still open
 
@@ -144,6 +146,60 @@ own stated generality — real, compiler-verified, not cosmetic. Now fixed and r
 now closed rather than left as a known gap. This pass's own fixes have NOT themselves been through a
 third, independent red-team round — same disclosure posture the original finding 3 had before this
 pass found it wrong.
+
+## §0d. Third red-team pass, against §2d's `.approve_tools()`/`.policy()` landing — a real, live-reproduced hang, plus a documentation overclaim
+
+A fresh pass, explicitly asked to take the approval-gating surface seriously as security-adjacent (a
+finding that could let something auto-approve that shouldn't would be the most severe class possible
+here) — none of that shape was found; what WAS found is a real availability gap unrelated to the
+approval logic itself. Full detail in the header's own top comment (finding 7); summarized here:
+
+1. **FIXED — real, LIVE-REPRODUCED hang, not a hypothetical.** `build()` never passed `max_turns`/
+   `token_budget` to `AgentSession::initialize()` — that method's own raw default for both is
+   `std::nullopt`, and `run_rounds()`'s turn loop is genuinely unbounded when `max_turns_` is unset. The
+   red-team compiled and ran a live probe: a scripted `ChatClient` that keeps requesting a tool
+   `.approve_tools()` denies, never emitting a terminating text-only reply — ordinary retry-on-denial
+   behavior a real model could plausibly exhibit, not a contrived adversarial input. **The process hung
+   indefinitely** (killed after 120+ seconds of no progress). Critically, `Bundle::ask()`'s own "bounded
+   to one `resume()`" guard (§0b finding 1) provides ZERO protection here: every `chat()` call in this
+   engine runs synchronously to completion within one `resume()` — confirmed by finding 1's own comment
+   — so the entire unbounded turn loop executes inside that single guarded `resume()` call, a scenario
+   the guard was never designed to see. A host using `.approve_tools()` exactly as documented — the
+   sugar's whole selling point — had a live, silent hang vector with no failure surfaced. **Fixed**:
+   `.max_turns(std::optional<uint64_t>)`/`.token_budget(...)` setters added; `max_turns_` now defaults
+   to a FINITE value (25) instead of mirroring `AgentSession`'s own raw unbounded default — a deliberate,
+   disclosed divergence from the lower-level API, matching §2a's own "one rung above bare" philosophy
+   applied to turn-bounding instead of retry. `.max_turns(std::nullopt)` remains available as an
+   explicit, informed opt-out for a host with their own external timeout/cancellation layer.
+   Regression-proofed (wiring only, not a re-run of the live hang probe — see the scope-limit note in
+   `test_session_builder_prototype.cpp`'s own comment on "B11"/"B12"/"B13", and finding 7's own account
+   in the header for why a full live-hang test isn't included here — this builder has no
+   `.raw_client_only()` escape hatch yet to substitute a scripted client without real network).
+2. **FIXED — documentation overclaim, corrected in §2d above.** The design draft's own §2d text claimed
+   `.policy()`/`.approve_tools()` were "proven end to end" by "B9"/"B10" — false as written; those tests
+   only call the extracted decider directly, never through a live round. A repo-wide grep found exactly
+   one non-null `set_approval_decider(...)` call site in the whole codebase: `session_builder.hpp` itself
+   — every other approval test in this project deliberately exercises the human-suspend path instead. The
+   red-team verified the real wiring live (a scripted round, `approval_decider_` genuinely reached and
+   consulted through `invoke_tool()`) and it held up correctly — so this is a test-gap/wording issue, not
+   a functional bug — but the claim as written was not true. Wording corrected; a live-round test for
+   this specific wiring remains a named, not-yet-added gap.
+
+Non-findings, verified rather than assumed: the `false`-from-installed-decider vs. absent-decider
+distinction genuinely doesn't matter behaviorally at the real call site (`tool_pipeline.hpp`'s `approve
+&& approve(...)` short-circuits identically either way) — the one place it WOULD matter
+(`suspend_for_approval_ && !approval_decider_`) is dead code for every session this builder produces,
+since `suspend_for_approval_` defaults `false` and `build()` never touches it (a real, disclosed design
+smell — a host cannot currently get BOTH human-suspend-for-unlisted-tools AND auto-approve-for-named-
+tools through this sugar — but it fails closed, not open, so not itself a blocking finding). The
+allowlist's `std::find` does an exact match with no substring/case-fold bypass; a typo'd name fails
+closed. The lambda's captured `allow` vector is a real, independent copy, safe regardless of the
+builder's own lifetime after `build()` returns. `.policy()` and `.approve_tools()` compose correctly per
+`resolve_approval_outcome()`'s own documented fallthrough — no shadowing bug.
+
+**Verdict:** not clean before the fix — a real, reproduced availability hole directly on the surface this
+round was asked to examine. Fixed now; not yet independently red-teamed a fourth time, same disclosure
+posture every prior "just fixed" state in this file has had before its own next round.
 
 ## 0. Correction found during implementation — §3's own fix does not compile as written
 
@@ -360,11 +416,14 @@ already-required decisions, never widens which calls need one). If never called,
 installed at all — verified, not merely asserted (`test_session_builder_prototype.cpp`'s "B8": the
 session's `approval_decider()` is genuinely empty, `static_cast<bool>(...)` false, not an always-false
 stand-in). `.policy(PolicyDecider)` is unchanged from the sketch — a thin, unmodified pass-through to
-`set_policy_decider`; both are proven end to end (`test_session_builder_prototype.cpp`'s "B9"/"B10").
+`set_policy_decider`. **Correction (round 3, §0d): "proven end to end" below overclaimed what "B9"/"B10"
+actually test** — both only extract the `ApprovalDecider`/`PolicyDecider` and call it directly, never
+through a live `start_run()` round; a round-3 red-team pass live-verified the real wiring separately
+(a scripted round, `approval_decider_` genuinely consulted through `invoke_tool()`) and it held up, but
+that proof does not live in this repo's own test suite yet — a named, disclosed test gap, not a bug.
 
-Not yet independently red-teamed — landed in the same pass that corrected the naming, no adversarial
-pass against the real code yet, same disclosure posture every other "just landed" piece of this file had
-before its own next round.
+Landed in this same pass, then red-teamed once (§0d) — see §0d for what that pass found (a real,
+live-reproduced hang unrelated to the approval logic itself, plus the overclaim corrected above).
 
 ## 3. The one integration point that must not be gotten wrong
 
@@ -461,16 +520,19 @@ already-safe idiom.
 
 ## 7. What this draft is not
 
-Not an ADR. §2a/§2c/§3(as corrected in §0)/§4 are now real, tested code, red-teamed twice (§0b, §0c)
-with every finding from both passes closed — §2b/§2d and the fallback/middleware/content-replay/
-raw-client-only surface remain design-only, unimplemented. This facade's own risk profile is genuinely
-low (§5: no new capability semantics, no new authority path — every real finding across §0/§0b/§0c was
-an ordinary C++ lifetime/concurrency/hygiene/genericity bug, not an I2/I3 mechanism breach) —
-proportionate next step is real code for §2b/§2d following this same design → prototype → red-team → fix
-cycle, not the full `design → red-team → prove → judge` gauntlet ADR-070/071-class changes require,
-since nothing here touches I2/I3's own mechanisms, only how conveniently a host can drive them
-correctly. §0c's own fixes have not themselves been through a third, independent red-team round yet —
-worth a light look before or alongside §2b/§2d given round 2 found round 1's "fixed" finding 3 was
-itself wrong, not a blocker to starting them. If a later pass surfaces a finding that *does* touch
-I2/I3's own mechanisms, that finding gets its own escalation at that point, matching this project's
-established practice — not decided in advance here.
+Not an ADR. §2a/§2c/§2d/§3(as corrected in §0)/§4 are now real, tested code, red-teamed three times
+(§0b, §0c, §0d) with every finding from all three passes closed — §2b and the fallback/middleware/
+content-replay/raw-client-only surface remain design-only, unimplemented (§2b for a real structural
+reason, not lack of time — see its own section above). This facade's own risk profile is genuinely low
+(§5: no new capability semantics, no new authority path — every real finding across §0/§0b/§0c/§0d was
+an ordinary C++ lifetime/concurrency/hygiene/genericity/availability bug, not an I2/I3 mechanism breach
+— §0d in particular went looking specifically for an I2-class approval-bypass finding and found none,
+finding an unrelated availability gap instead) — proportionate next step, once §2b's own structural
+question (type-changing builder vs. a separate builder type) is decided, is real code for it following
+this same design → prototype → red-team → fix cycle, not the full `design → red-team → prove → judge`
+gauntlet ADR-070/071-class changes require, since nothing here touches I2/I3's own mechanisms, only how
+conveniently a host can drive them correctly. §0d's own fixes (finding 7) have not themselves been
+through a fourth, independent red-team round yet — worth a light look before §2b, given every prior
+round so far has found something real in whatever landed most recently, not a blocker to starting it.
+If a later pass surfaces a finding that *does* touch I2/I3's own mechanisms, that finding gets its own
+escalation at that point, matching this project's established practice — not decided in advance here.

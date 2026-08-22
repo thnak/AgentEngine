@@ -289,6 +289,55 @@ int main() {
         }
     }
 
+    // ---- B11/B12/B13: red-team round 3's finding #7 regression proof -- `max_turns_` genuinely
+    // defaults to a FINITE value (25), not `AgentSession::initialize()`'s own raw `std::nullopt`
+    // (unbounded) default, and `.max_turns(...)` genuinely reaches the constructed session. Scope limit,
+    // named rather than silently skipped: this proves the builder's own WIRING is correct (the value it
+    // passes to `initialize()` reads back correctly through `AgentSession::max_turns()`); it does NOT
+    // re-run the red-team's own live hang-reproduction probe against a scripted, always-denies
+    // ChatClient -- this builder has no `.raw_client_only()` escape hatch (§2a, still unimplemented) to
+    // substitute a fake client for that without real network. The deeper guarantee ("does a finite
+    // `max_turns_` actually bound `run_rounds()`'s loop") is `AgentSession`'s own responsibility, not
+    // reproven here -- what IS this builder's own responsibility, and what these three prove, is that it
+    // actually gets threaded through instead of silently staying at the dangerous raw default.
+    {
+        // B11: default -- finite, not unbounded.
+        auto built = OpenAiSessionBuilder("gpt-4o-mini")
+                         .api_key_from_env("openai-api-key", "AE_TEST_QUICKSTART_KEY")
+                         .build();
+        check(built.has_value(), "B11 setup: build() succeeds");
+        if (built.has_value()) {
+            check(built->session().max_turns() == std::uint64_t{25},
+                  "default max_turns() is a FINITE value (25), not AgentSession's own raw unbounded "
+                  "(nullopt) default -- the fix for the red-team's live-reproduced hang");
+        }
+    }
+    {
+        // B12: .max_turns(std::nullopt) -- an explicit, informed opt-in to unbounded, still reachable.
+        auto built = OpenAiSessionBuilder("gpt-4o-mini")
+                         .api_key_from_env("openai-api-key", "AE_TEST_QUICKSTART_KEY")
+                         .max_turns(std::nullopt)
+                         .build();
+        check(built.has_value(), "B12 setup: build() succeeds");
+        if (built.has_value()) {
+            check(!built->session().max_turns().has_value(),
+                  ".max_turns(std::nullopt) genuinely reaches the session as unbounded -- the safe "
+                  "default is overridable, not hardcoded");
+        }
+    }
+    {
+        // B13: .max_turns(n) -- a custom finite bound reaches the session unchanged.
+        auto built = OpenAiSessionBuilder("gpt-4o-mini")
+                         .api_key_from_env("openai-api-key", "AE_TEST_QUICKSTART_KEY")
+                         .max_turns(3)
+                         .build();
+        check(built.has_value(), "B13 setup: build() succeeds");
+        if (built.has_value()) {
+            check(built->session().max_turns() == std::uint64_t{3},
+                  ".max_turns(3) genuinely reaches the session, not silently ignored or clamped");
+        }
+    }
+
     std::fprintf(stderr, g_failures == 0 ? "test_session_builder_prototype: ALL PASS\n"
                                           : "test_session_builder_prototype: %d FAILURE(S)\n",
                  g_failures);

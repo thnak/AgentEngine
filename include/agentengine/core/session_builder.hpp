@@ -6,10 +6,13 @@
 // Explicitly NOT implemented here, named rather than silently dropped: §2b (history/context
 // composition -- a real structural gap, not just unstarted work; see finding 6 below for why),
 // `.with_fallback()`/`.with_middleware()`/`.with_content_replay()`, and the draft's own
-// `.raw_client_only()` escape hatch. Not an ADR. Red-teamed twice against this real code: round 1
+// `.raw_client_only()` escape hatch. Not an ADR. Red-teamed three times against this real code: round 1
 // found findings 1-2; round 2, specifically against finding 3's own fix, found finding 3's own
-// `.store(Store)` shape was itself wrong (finding 4). §2d (finding 5) has not been independently
-// red-teamed yet -- same disclosure posture finding 3 originally had before round 2 found it wrong.
+// `.store(Store)` shape was itself wrong (finding 4); round 3, specifically against finding 5's
+// `.approve_tools()`/`.policy()` landing, found and LIVE-REPRODUCED a real hang (finding 7) plus a
+// documentation overclaim. Round 3's own fix (finding 7) has not itself been independently red-teamed
+// yet -- same disclosure posture every prior "just fixed" state had before its own next round found
+// something.
 //
 // Correction found during implementation, not anticipated by the design draft's own §3: `AgentSession`
 // (rt/agent_session.hpp) holds `rt::AsyncMutex session_mutex_` directly as a data member;
@@ -109,6 +112,28 @@
 //    `.api_key()`/`.store()`/`.grant()`/`.approve_tools()` too, not just the new methods) or a distinct,
 //    separately-templated builder type for the composed-context case. Left undesigned here rather than
 //    rushed -- a real follow-up, not a placeholder.
+// 7. **A third red-team round, against finding 5's `.approve_tools()`/`.policy()` landing, found and
+//    LIVE-REPRODUCED a real hang.** `build()` called `session->initialize(session_id_, principal_)`,
+//    never passing `max_turns`/`token_budget` -- `AgentSession::initialize()`'s own raw default for both
+//    is `std::nullopt`, and `run_rounds()`'s turn loop (`agent_session.hpp`) is genuinely unbounded when
+//    `max_turns_` is unset. A live probe (a scripted `ChatClient` that keeps requesting a tool
+//    `.approve_tools()` denies, never emitting a terminating text-only reply -- ordinary retry-on-denial
+//    behavior, not adversarial) hung the calling thread indefinitely. `Bundle::ask()`'s "bounded to one
+//    `resume()`" guard (finding 1) does **NOT** catch this: every `chat()` call in this engine runs
+//    synchronously to completion within one `resume()` (finding 1's own comment already says so), so the
+//    ENTIRE unbounded turn loop executes inside that single guarded `resume()`, invisible to the
+//    done()-check the guard relies on. Not an I2/I3 violation (nothing gets approved that shouldn't) --
+//    a real availability/DoS-class gap, reachable through entirely ordinary use of the sugar this file
+//    exists to make easy. **Fixed**: `.max_turns(std::optional<uint64_t>)`/`.token_budget(...)` setters
+//    added, and `max_turns_` now defaults to a FINITE value (25, an arbitrary but reasonable safety net)
+//    instead of mirroring `AgentSession`'s own raw unbounded default -- a deliberate divergence, named
+//    here rather than silently matching the lower-level API. `.max_turns(std::nullopt)` remains a
+//    legitimate way to opt back into genuinely unbounded turns, an explicit host choice. Also found (test
+//    -gap, not a functional bug): the design draft's account of `.policy()`/`.approve_tools()` claimed
+//    "proven end to end," but B9/B10 only ever call the extracted `ApprovalDecider`/`PolicyDecider`
+//    directly, never through a live `start_run()` round -- the SAME overclaim shape finding 3 already
+//    caught once for `.store()`/B5. Wording corrected in the design draft; a live-round test remains a
+//    named gap, not yet added.
 
 #include <algorithm>
 #include <concepts>
@@ -316,6 +341,22 @@ public:
         return *this;
     }
 
+    // Red-team finding 7 (header top comment) -- `AgentSession::initialize()`'s raw default is
+    // `std::nullopt` (genuinely unbounded, `agent_session.hpp`'s own `run_rounds()` loop condition:
+    // `!max_turns_.has_value() || turn_index < *max_turns_`). This builder deliberately does NOT mirror
+    // that default -- see `max_turns_`'s own member default below for why -- so these two setters exist
+    // to opt OUT of the safe default, not just to set a value the raw API already defaults to.
+    // `std::nullopt` is a legitimate, explicit choice here (a host who has their own external timeout/
+    // cancellation layer and genuinely wants unbounded turns), not a value that shouldn't be reachable.
+    QuickstartSessionBuilder& max_turns(std::optional<std::uint64_t> n) {
+        max_turns_ = n;
+        return *this;
+    }
+    QuickstartSessionBuilder& token_budget(std::optional<std::uint64_t> n) {
+        token_budget_ = n;
+        return *this;
+    }
+
     // Design draft §2c, generalized -- declares which `SecretRef` the constructed `ChatClient` will
     // resolve against, and auto-grants a matching `cap::Secret` (I2 -- without this, the constructed
     // session would reference a ref nothing authorizes it to resolve). Independent of `.store()` below
@@ -438,7 +479,7 @@ public:
         Primary primary(host_, port_, model_, *api_key_ref_, caps_, *store_, path_prefix_);
 
         auto session = std::make_unique<typename BundleT::SessionT>();
-        session->initialize(session_id_, principal_);
+        session->initialize(session_id_, principal_, token_budget_, max_turns_);
         // Constructs ModelCallGateway<Primary> IN PLACE from (Primary&&, std::tuple<>&&) -- §2a's "one
         // rung above bare" default (retry+circuit-breaker, empty fallback chain, default RetryPolicy/
         // BreakerConfig) -- never a move of an already-built ChatClientT.
@@ -474,6 +515,16 @@ private:
     std::vector<agentengine::Capability> grants_;  // explicit .grant() calls only -- see api_key()
     std::optional<std::vector<std::string>> approved_tool_names_;
     agentengine::PolicyDecider policy_decider_;
+    // Red-team finding 7 (header top comment): deliberately DIVERGES from `AgentSession::initialize()`'s
+    // own raw default (`std::nullopt`, genuinely unbounded) -- a live-reproduced hang was found where a
+    // model that keeps retrying an `.approve_tools()`-denied call never terminates the round, and
+    // `Bundle::ask()`'s "bounded resume()" guard (§0b finding 1) does NOT catch this class of hang
+    // (every `chat()` call here is synchronous, so the WHOLE unbounded turn loop runs inside that one
+    // guarded `resume()`, invisible to it). 25 is an arbitrary but reasonable safety net for a
+    // "quickstart" surface whose whole purpose is a safe, working default -- `.max_turns(std::nullopt)`
+    // opts back into genuinely unbounded, an explicit, informed host choice, not the silent default.
+    std::optional<std::uint64_t> max_turns_ = std::uint64_t{25};
+    std::optional<std::uint64_t> token_budget_;
     std::string host_        = detail::default_endpoint<P>::host;
     std::uint16_t port_      = detail::default_endpoint<P>::port;
     std::string path_prefix_ = detail::default_endpoint<P>::path_prefix;
