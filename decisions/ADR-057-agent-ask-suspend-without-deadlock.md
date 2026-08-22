@@ -672,3 +672,23 @@ extend, not copy.
   failure). A session with `max_turns_` left at its true, explicit `std::nullopt` default is
   unaffected -- this only enforces a cap the host actually set, matching every other `max_turns_`
   consumer in this file.
+- **FOUND AND FIXED (2026-08-22, round 8), two more LOW findings in the same mechanism.** A dedicated
+  re-examination of the fix directly above (`session_builder.hpp`'s design draft §0j) found: (a)
+  `resolve_codeact_ask()`'s missing-record guard carried a stale "should be unreachable in practice"
+  comment -- WRONG. `PendingCodeActAsk` is deliberately NOT included in `AgentSessionRecord`/
+  `to_record()`/`restore_from_record()` (an already-disclosed durability gap, directly related to this
+  section's own "Expiry" bullet above), while `open_interactions_` (which can hold a `codeact_ask`-
+  reason `Interaction`) IS restored -- so resolving a codeact_ask interaction that survived a session
+  restore genuinely reaches the "missing record" branch. Previously that branch returned `fatal`
+  WITHOUT erasing the interaction, leaving it stuck open forever with no cancel path. **Fixed**: the
+  branch now erases the interaction too (best-effort), closing it cleanly even though the underlying
+  work cannot be resumed -- still fails closed, but recoverably. Verified by code review, not live-
+  reproduced (reaching this branch through the public API alone would require reconstructing `history_`
+  to look like a genuinely suspended tool-call turn, which has no public mutator). (b)
+  `clear_in_process_state()` never cleared `pending_codeact_asks_`, unlike every other piece of
+  interaction state it resets -- a pooled/reused `AgentSession` (the `Stateless<N>` pooling pattern)
+  that clears+reinitializes after an in-flight codeact-ask permanently retained that record (full
+  script source + every answer given) for the object's remaining lifetime. **Fixed**: now cleared
+  alongside everything else. Regression-proofed and verified to have teeth: `tests/test_rt_agent_
+  session_codeact_ask_max_turns.cpp`'s R3, using a new `pending_codeact_ask_count()` accessor added
+  specifically so this (previously unobservable) leak could be checked at all.

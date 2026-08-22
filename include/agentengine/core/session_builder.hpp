@@ -35,6 +35,35 @@
 // design draft §0i for the full account. Regression-proofed: `tests/test_rt_agent_session_codeact_ask_
 // max_turns.cpp`, not this file's own test file, since the bug and its fix are both in `AgentSession`.
 //
+// Round 8: findings 11 and 13 (round 7's own fix) both got their own dedicated, independent
+// re-examination round at last. Finding 11 (this file's `LazyComposedContextProvider` move ctor/
+// assignment) held up clean under live probing (self-move-assignment, move-assignment INTO an
+// already-engaged target from a different source, both confirmed no leak/no double-invoke via a
+// destructor-counting mock). But a NEW real bug was found in the SAME class: `engage()` was not
+// exception-safe (finding 15, MEDIUM). `build_contributors()` used to `push_back` each contributor
+// directly into `contributors_` inside a fold -- if a LATER `Ms`'s move constructor (or
+// `make_context_provider_descriptor()`'s own internal `make_shared`) threw partway through,
+// `contributors_` was left PARTIALLY populated while `engaged_` stayed `false` (the `engaged_ = true`
+// assignment was never reached). Since `engaged_ == false`, the `already_engaged` guard did NOT block
+// a retry -- and round 5's own fix comment explicitly frames retry-after-failure as safe recovery --
+// but `reserve()` does not clear existing elements, so a retry's `build_contributors()` APPENDED onto
+// the stale entries instead of starting fresh. LIVE-REPRODUCED: a throwing-provider mock, first
+// `engage()` throws after 1 of 2 contributors pushed, a retry with fresh providers succeeds, then ONE
+// `on_context()` call invoked the stale first-attempt contributor a SECOND, duplicate time -- exactly
+// the "duplicate every contributor on the wire" hazard `already_engaged` exists to prevent,
+// reintroduced via the exception path. **Fixed**: `engage()` now builds into a LOCAL vector and
+// publishes into `contributors_` (and flips `engaged_`) only once every `Ms` has been constructed
+// without throwing -- a strong exception guarantee, so a throw now leaves `contributors_`/`engaged_`
+// completely untouched and a retry genuinely starts fresh. Regression-proofed: `tests/test_session_
+// builder.cpp`'s "B22" -- verified to have teeth (reverting the fix reproduces the exact double-invoke
+// failure). Round 8 also re-examined finding 13's surrounding mechanism and found two LOW findings in
+// `rt/agent_session.hpp` (findings 16 and 17, both fixed there -- see that file's own comments at the
+// fix sites and this facade's design draft §0j for the full account): a stale "should be unreachable
+// in practice" comment on `resolve_codeact_ask()`'s missing-record guard (it IS reachable via a
+// session restore mid-ask, and used to leave the interaction stuck open forever instead of erasing
+// it), and `clear_in_process_state()` never clearing `pending_codeact_asks_` (a real leak for a
+// pooled/reused session). Full suite 222/222 after all three fixes landed.
+//
 // Correction found during implementation, not anticipated by the design draft's own §3: `AgentSession`
 // (rt/agent_session.hpp) holds `rt::AsyncMutex session_mutex_` directly as a data member;
 // `AsyncMutex`'s copy constructor is explicitly deleted and it declares no move constructor of its own
@@ -446,8 +475,26 @@ public:
                 "contributor from the first call would otherwise be duplicated on the wire",
                 "quickstart.composed_context.already_engaged"});
         }
-        contributors_.reserve(sizeof...(Ms));
-        build_contributors(providers, budgets, std::index_sequence_for<Ms...>{});
+        // Round 8 red-team, finding 15: build into a LOCAL vector first, publish into contributors_
+        // (and flip engaged_) only once every Ms's descriptor has been constructed without throwing.
+        // The previous shape push_back'd directly into contributors_ inside build_contributors()'s
+        // fold -- if a later Ms's move constructor (or make_context_provider_descriptor()'s own
+        // make_shared) threw partway through, contributors_ was left PARTIALLY populated while
+        // engaged_ stayed false (the assignment below was never reached). Since engaged_ == false,
+        // the already_engaged guard above does NOT block a retry -- and round 5's own fix comment
+        // explicitly frames retry-after-failure as safe recovery -- but reserve() does not clear
+        // existing elements, so a retry's build_contributors() APPENDED onto the stale entries
+        // instead of starting fresh. LIVE-REPRODUCED: a throwing-provider mock, first engage() throws
+        // after 1 of 2 contributors pushed, a retry with fresh providers succeeds, then ONE
+        // on_context() call invoked the stale first-attempt contributor a SECOND, duplicate time --
+        // exactly the "duplicate every contributor on the wire" hazard already_engaged exists to
+        // prevent, reintroduced via the exception path. Building locally and swapping in only on
+        // success gives a strong exception guarantee: a throw here now leaves contributors_/engaged_
+        // completely untouched, so a retry genuinely starts fresh instead of accumulating wreckage.
+        std::vector<agentengine::ContextProviderDescriptor> built;
+        built.reserve(sizeof...(Ms));
+        build_contributors(built, providers, budgets, std::index_sequence_for<Ms...>{});
+        contributors_ = std::move(built);
         engaged_ = true;
         return {};
     }
@@ -479,10 +526,11 @@ public:
 
 private:
     template <std::size_t... I>
-    void build_contributors(std::tuple<Ms...>& providers,
+    void build_contributors(std::vector<agentengine::ContextProviderDescriptor>& out,
+                             std::tuple<Ms...>& providers,
                              std::array<agentengine::ContextBudget, sizeof...(Ms)> const& budgets,
                              std::index_sequence<I...>) {
-        (contributors_.push_back(agentengine::make_context_provider_descriptor(
+        (out.push_back(agentengine::make_context_provider_descriptor(
              std::move(std::get<I>(providers)), budgets[I])),
          ...);
     }

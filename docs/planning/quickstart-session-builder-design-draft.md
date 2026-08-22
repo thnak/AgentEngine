@@ -1,18 +1,22 @@
 # Quickstart session builder — a convenience facade over `AgentSession`'s wiring — design draft
 
 **Status: promoted from prototype to a supported feature (2026-08-22) — §2a/§2b/§2c/§2d/§3/§4
-implemented, red-teamed SEVEN times total across this file's history. §2b was implemented in a 4th
+implemented, red-teamed EIGHT times total across this file's history. §2b was implemented in a 4th
 pass, then red-teamed three times (round 4 §0f, round 5 §0g, round 6 §0h): round 4 found and fixed a
 real session-isolation gap (`fork_from()` aliasing stateful composed providers, finding 9) plus a
 diagnostics gap (finding 10); round 5 found finding 9's own fix was NECESSARY BUT NOT SUFFICIENT — a
 second, worse bypass of the same class through a MOVE rather than a copy (finding 11, fixed); round 6
-found no functional bug. **Round 7 (§0i) then gave finding 7 its own dedicated round at last, and found
-a real bug — NOT in this facade, but in the `AgentSession` mechanism it wires into**:
+found no functional bug. Round 7 (§0i) then gave finding 7 its own dedicated round at last, and found
+a real bug — NOT in this facade, but in the `AgentSession` mechanism it wires into:
 `resolve_codeact_ask()`'s ask-pending branch never advanced `turn_index`, so `.max_turns()`/
 `.token_budget()` were completely bypassed by a non-converging CodeAct ask loop (finding 13, fixed at
 the root in `rt/agent_session.hpp`, also recorded in `decisions/ADR-057-agent-ask-suspend-without-
-deadlock.md` §8). Findings 11 and 13 both still await their own next independent red-team round —
-disclosed as open items, not silently treated as closed.** A convenience facade over
+deadlock.md` §8). **Round 8 (§0j) then gave findings 11 and 13 their own dedicated re-examination
+round: finding 11 held up clean, but a NEW bug (finding 15, MEDIUM) was found in the SAME class —
+`LazyComposedContextProvider::engage()` was not exception-safe, letting a throw-then-retry duplicate a
+contributor on the wire — fixed with a strong exception guarantee. Finding 13's surrounding mechanism
+also yielded two LOW findings (16, 17) in `rt/agent_session.hpp`, both fixed there too. Full suite
+222/222 after.** A convenience facade over
 already-Reviewed RFCs,
 not a new invariant or capability shape, so promotion did not require its own ADR (CLAUDE.md's
 `design → red-team → prove → judge` cycle is reserved for contested/hot-path/security-critical
@@ -434,7 +438,89 @@ Full suite 222/222 (`ctest -LE live-network`) after the fix (`rt/agent_session.h
 `tests/test_rt_agent_session_codeact_ask_max_turns.cpp`) landed — a full rebuild confirmed zero
 regressions anywhere else in the tree, including every OTHER `AgentSession` consumer. **Verdict: finding
 7's own dedicated round finally ran, and found a real bug — not in this facade, but in the mechanism it
-wires into.** Not yet independently re-examined a second time.
+wires into.** Independently re-examined next, in round 8 (§0j below).
+
+## §0j. Eighth red-team pass — findings 11 and 13 both get their own dedicated re-examination round, at last
+
+The two items §0i's own verdict left open: an independent, adversarial pass scoped specifically to (1)
+`LazyComposedContextProvider`'s move ctor/assignment (finding 11's own fix, round 5) and (2)
+`resolve_codeact_ask()`'s `turn_index` fix (finding 13, round 7) — explicitly told to try to break both
+with live reproductions, not merely re-read the diff. Two live probes built, one real new bug found in
+each target area.
+
+**Finding 11 — CLEAN.** Self-move-assignment on an engaged instance, and move-assignment INTO an
+already-engaged target from a DIFFERENT engaged source, were both live-probed with a destructor-
+counting mock provider: no leak (the old contributor's `shared_ptr`-owned instance is genuinely
+destroyed by `vector::operator=(vector&&)`), no double-invoke, no aliasing. The header's own claim that
+move-into-an-engaged-target is "ordinary, expected `operator=` semantics... not a new hazard" is now
+independently verified, not merely trusted from the comment.
+
+**Finding 15 (NEW, MEDIUM) — `LazyComposedContextProvider::engage()` was not exception-safe.**
+`build_contributors()` used to `push_back` each `Ms`'s descriptor directly into `contributors_` inside
+a comma-fold. If a LATER `Ms`'s move constructor (or `make_context_provider_descriptor()`'s own
+internal `make_shared`, a realistic `std::bad_alloc` path) threw partway through, `contributors_` was
+left PARTIALLY populated while `engaged_` stayed `false` — the `engaged_ = true` assignment was never
+reached. Since `engaged_ == false`, `engage()`'s own `already_engaged` guard did NOT block a retry —
+and round 5's own fix comment explicitly frames retry-after-failure as safe, expected recovery — but
+`contributors_.reserve()` does not clear existing elements, so a retry's `build_contributors()`
+APPENDED onto the stale entries instead of starting fresh. LIVE-REPRODUCED: a throwing-provider mock
+(instrumented to throw on a specific, counted move — calibrated so the throw fires genuinely INSIDE
+`engage()`'s own machinery, not while binding the caller's argument tuple), first `engage()` throws
+after 1 of 2 contributors pushed, a retry with fresh, non-throwing providers succeeds, then ONE
+`on_context()` call invoked the stale first-attempt contributor a SECOND, duplicate time — exactly the
+"duplicate every contributor on the wire" hazard `already_engaged` exists to prevent, reintroduced via
+the exception path. **Fixed**: `engage()` now builds into a LOCAL vector and publishes into
+`contributors_` (and flips `engaged_`) only once every `Ms` has been constructed without throwing — a
+strong exception guarantee, so a throw now leaves `contributors_`/`engaged_` completely untouched and
+a retry genuinely starts fresh instead of accumulating wreckage. Regression-proofed: `tests/test_
+session_builder.cpp`'s "B22" — verified to have teeth (reverting the fix reproduces the exact
+double-invoke failure this section describes).
+
+**Finding 13's surrounding mechanism — the original fix confirmed correct; two new LOW findings found
+and fixed nearby.** `token_budget_` irrelevance to the ask-loop confirmed genuinely correct (no model
+call happens during pure ask/resolve cycling — only tool re-invocation). Double-resolve after
+`run.max_turns_exceeded` confirmed clean (both `pending_codeact_asks_` and `open_interactions_` are
+erased unconditionally before that branch returns; a second resolve attempt correctly gets
+`unknown_id`). The already-disclosed ±1 grace (§0i's own LOW finding (a)) was probed further and
+confirmed NOT to compound across multiple, separate ask-phases within one run — a multi-phase scripted
+probe (a new ask-phase starting every round) still hit the exact same 3-call bound as the original
+single-continuous-chain test, ruling out a "worse than characterized" hypothesis.
+
+Two NEW LOW findings, both confirmed by direct source reading (not just trusted from the sub-agent that
+first surfaced them), and both fixed:
+- **Finding 16.** `resolve_codeact_ask()`'s missing-record guard carried a comment claiming "should be
+  unreachable in practice" — WRONG. `restore_from_record()` restores `open_interactions_` (which can
+  contain a `codeact_ask`-reason `Interaction`) but `PendingCodeActAsk` is deliberately NOT included in
+  `AgentSessionRecord` at all (`PendingCodeActAsk`'s own comment already discloses this durability gap,
+  directly related to §8's "Expiry" residual in `decisions/ADR-057-agent-ask-suspend-without-deadlock.
+  md`) — so resolving a codeact_ask interaction that survived a session restore genuinely reaches this
+  branch. It used to return `fatal` WITHOUT erasing the interaction from `open_interactions_`, leaving
+  it stuck open forever with no cancel path (every future resolve attempt hit the same branch again).
+  **Fixed**: erases the interaction too (best-effort) before returning the fatal error — still fails
+  closed, but recoverably. Verified by code review only, not live-reproduced: reaching this branch
+  through the public API alone would require reconstructing `history_` to look like a genuinely
+  suspended tool-call turn, and `history_` has no public mutator — matching this project's own
+  disclosed-scope-limit precedent for round 1's `ask_mutex_` concurrency fix (§0b finding 1 above,
+  "verified by code review against the cited precedent only").
+- **Finding 17.** `clear_in_process_state()` never cleared `pending_codeact_asks_`, unlike every other
+  piece of interaction state it resets (`open_interactions_`, `standing_effects_`, etc.) — its own
+  contract is "no residue left to read back through ANY of this class's own accessors" (005 §6), which
+  this silently violated in spirit (no accessor existed to observe it, so not the letter). A
+  pooled/reused `AgentSession` (the `Stateless<N>` pooling pattern) that clears+reinitializes with a
+  DIFFERENT `session_id_` after an in-flight codeact-ask permanently retained that record — full script
+  source plus every answer given — for the C++ object's remaining lifetime, unreachable for erasure
+  since future interaction ids embed the new session_id and can never match the orphaned key. **Fixed**:
+  now cleared alongside everything else. A new `pending_codeact_ask_count()` accessor was added (mirrors
+  `admission_denied_count()`'s own shape) specifically so this previously-unobservable leak could
+  actually be checked — regression-proofed and verified to have teeth: `tests/test_rt_agent_session_
+  codeact_ask_max_turns.cpp`'s new "R3".
+
+Full suite 222/222 (`ctest -LE live-network`) after all three fixes (`session_builder.hpp`'s `engage()`,
+and `rt/agent_session.hpp`'s two LOW fixes) landed — a full rebuild confirmed zero regressions anywhere
+else in the tree. **Verdict: both open items from §0i's verdict got their dedicated round. Finding 11
+held up; finding 13's own fix held up, but the round found one new MEDIUM bug (15) in the neighboring
+class it was told to also stress, and two LOW findings (16, 17) in the mechanism finding 13 lives
+inside.** Finding 15 has not yet been independently re-examined a second time.
 
 ## 0. Correction found during implementation — §3's own fix does not compile as written
 
