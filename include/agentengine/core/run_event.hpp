@@ -34,6 +34,8 @@
 #include <string>
 #include <variant>
 
+#include "agentengine/core/content.hpp"
+
 namespace agentengine {
 
 enum class run_event_kind {  // ae-naming-lint: allow run_event_kind — 013 §1 names this vocabulary normatively; 027 has not been updated to list it
@@ -68,8 +70,26 @@ struct Turn {
 
 // The *model's* incrementally-produced text -- distinct from ToolCallDelta below (013 §1: "that is
 // the model incrementally producing a call's arguments before invocation starts").
+struct ModelTextDelta {
+    std::string text;
+};
+
+// A raw, possibly-incomplete fragment of ONE tool call's arguments as the model streams them --
+// `arguments_fragment` is the bytes received in THIS delta, not the accumulated total; the fragment
+// is never engine-side repaired/parsed (unified-streaming-design-draft.md §1: presentation is a
+// projection concern, dispatch stays gated on the one real `json::parse` at stream-completion,
+// unchanged). `is_final` is a DIFFERENT signal from `ChatResponseUpdate::is_final` (that one means
+// "last update in the whole response"; this one means "this tool call's own arguments are
+// complete") -- never conflate the two.
+struct ModelToolCallArgumentDelta {
+    std::string call_id;
+    std::string tool_name;           // present on the fragment that opens the call
+    std::string arguments_fragment;  // raw bytes received in THIS delta, not the accumulated total
+    bool        is_final = false;    // true on the fragment that completes the call
+};
+
 struct ModelDelta {
-    std::string text_delta;
+    std::variant<ModelTextDelta, ModelToolCallArgumentDelta> value;
 };
 
 struct ToolCallStarted {
@@ -78,14 +98,20 @@ struct ToolCallStarted {
 };
 
 // 013 §1: "a call to EffectContext.report_progress during invoke() (006 §6a) is the only source."
+// `content` carries the engine's whole existing ContentItem vocabulary (content.hpp), not a bespoke
+// progress-text shape -- unified-streaming-design-draft.md §5 (Piece E): a tool author gets the same
+// content model used everywhere else for a mid-call update (plain text, a structured Data fact, or a
+// namespaced Custom payload for anything genuinely app-specific).
 struct ToolCallDelta {
     std::string call_id;
-    std::string progress_text;
+    ContentItem content;
 };
 
+// `result` is the tool's real ToolResult (content.hpp) -- `ok` is derived as `!result.is_error`, not
+// stored separately (unified-streaming-design-draft.md §2, Piece C).
 struct ToolCallFinished {
     std::string call_id;
-    bool        ok = false;
+    ToolResult  result;
 };
 
 // SandboxExecStarted/Finished share this shape.

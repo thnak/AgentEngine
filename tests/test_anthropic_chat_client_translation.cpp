@@ -529,33 +529,71 @@ int main() {
         auto updates = parse_streaming_response_into_updates(sse, /*is_chunked=*/false);
         check(updates.has_value(), "E-STREAM-R1: a full named-event SSE stream parses into an update list");
         if (updates) {
-            check(updates->size() == 3,
-                  "E-STREAM-R1: two text deltas (own chunk boundaries) + one assembled tool_use = 3 updates");
-            if (updates->size() == 3) {
+            // unified-streaming-design-draft.md §1 (Piece B), Findings 26/27: the companion
+            // tool-call-argument-chunk emission path (input_json_delta -> 2 live fragments,
+            // content_block_stop -> 1 final-boundary marker) adds 3 updates that didn't exist before
+            // this piece -- SseEventFramer splits on every "\n\n" (sandbox/incremental_http_body.hpp),
+            // so each SSE record is its own block, and each block's own updates land in wire order:
+            // two text deltas (each held-then-released one block later) + 3 argument-chunk updates
+            // (pushed inline, interleaved at their OWN block's position) + one assembled tool_use = 6.
+            check(updates->size() == 6,
+                  "E-STREAM-R1: two text deltas + three argument-chunk updates + one assembled "
+                  "tool_use = 6 updates");
+            if (updates->size() == 6) {
                 auto const* t0 = std::get_if<Text>(&(*updates)[0].delta.value);
-                auto const* t1 = std::get_if<Text>(&(*updates)[1].delta.value);
                 check(t0 && t0->text == "Hi ", "E-STREAM-R1: first text delta exact");
+                check(!(*updates)[0].is_final, "E-STREAM-R1: the first text delta is not final");
+
+                check((*updates)[1].tool_call_argument_chunk.has_value() &&
+                          (*updates)[2].tool_call_argument_chunk.has_value() &&
+                          (*updates)[3].tool_call_argument_chunk.has_value(),
+                      "E-STREAM-R1: the two input_json_delta fragments AND the content_block_stop "
+                      "completion marker each get their own companion update");
+                if ((*updates)[1].tool_call_argument_chunk.has_value()) {
+                    auto const& c1 = *(*updates)[1].tool_call_argument_chunk;
+                    check(c1.call_id == "call-1" && c1.tool_name == "get_weather" &&
+                              c1.arguments_fragment == R"({"location":)" && !c1.is_final,
+                          "E-STREAM-R1: the first partial_json fragment carries the real call_id/"
+                          "tool_name and its own raw bytes, not accumulated");
+                }
+                if ((*updates)[2].tool_call_argument_chunk.has_value()) {
+                    auto const& c2 = *(*updates)[2].tool_call_argument_chunk;
+                    check(c2.arguments_fragment == R"("Seattle"})" && !c2.is_final,
+                          "E-STREAM-R1: the second partial_json fragment carries its own raw bytes");
+                }
+                if ((*updates)[3].tool_call_argument_chunk.has_value()) {
+                    auto const& c3 = *(*updates)[3].tool_call_argument_chunk;
+                    check(c3.call_id == "call-1" && c3.arguments_fragment.empty() && c3.is_final,
+                          "E-STREAM-R1: content_block_stop is Anthropic's real per-index completion "
+                          "signal -- is_final is a resolved answer here, unlike OpenAI's side "
+                          "(unified-streaming-design-draft.md open question 6)");
+                }
+
+                auto const* t1 = std::get_if<Text>(&(*updates)[4].delta.value);
                 check(t1 && t1->text == "there", "E-STREAM-R1: second text delta exact");
-                auto const* tc = std::get_if<ToolCall>(&(*updates)[2].delta.value);
+                check(!(*updates)[4].is_final, "E-STREAM-R1: the second text delta is not final either");
+
+                auto const* tc = std::get_if<ToolCall>(&(*updates)[5].delta.value);
                 check(tc && tc->call_id == "call-1" && tc->tool_name == "get_weather",
                       "E-STREAM-R1: tool_use id/name survive fragment reassembly");
                 check(tc && tc->arguments_json == R"({"location":"Seattle"})",
                       "E-STREAM-R1: partial_json fragments from separate content_block_delta events "
-                      "concatenate into valid JSON");
-                check((*updates)[2].is_final, "E-STREAM-R1: the last update is marked is_final");
-                check(!(*updates)[0].usage.has_value() && !(*updates)[1].usage.has_value(),
-                      "E-STREAM-R1: usage is not attached to the interim (non-final) updates");
-                check((*updates)[2].usage.has_value(),
+                      "concatenate into valid JSON -- the one real json::parse, unaffected by the new "
+                      "display-only fragments");
+                check((*updates)[5].is_final, "E-STREAM-R1: the last update is marked is_final");
+                check(!(*updates)[0].usage.has_value() && !(*updates)[4].usage.has_value(),
+                      "E-STREAM-R1: usage is not attached to the interim text updates");
+                check((*updates)[5].usage.has_value(),
                       "E-STREAM-R1 (ADR-035): the final update carries real usage -- the message_start/"
                       "message_delta events threaded through StreamingUpdateAccumulator all the way to "
                       "ChatResponseUpdate.usage, closing the gap AnthropicUsageSnapshot/"
                       "seed_usage_from_message_start/accumulate_message_delta_usage were already tested "
                       "for (E2-R1) but never wired to actually populate");
-                if ((*updates)[2].usage.has_value()) {
-                    check((*updates)[2].usage->input_tokens == 10,
+                if ((*updates)[5].usage.has_value()) {
+                    check((*updates)[5].usage->input_tokens == 10,
                           "E-STREAM-R1: input_tokens comes from message_start (10), never overwritten by "
                           "message_delta since message_delta's usage omits input_tokens here");
-                    check((*updates)[2].usage->output_tokens == 25,
+                    check((*updates)[5].usage->output_tokens == 25,
                           "E-STREAM-R1: output_tokens is message_delta's cumulative total (25), NOT "
                           "message_start's initial value (1) and NOT their sum (26)");
                 }

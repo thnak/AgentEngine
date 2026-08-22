@@ -16,12 +16,20 @@
 // Field shape: `progressToken`/`progress` are cited directly (docs/research/2026-mcp-protocol-detail.md
 // §10: "progressToken MUST be unique across active requests; the progress value MUST increase with
 // each notification"). `message` is this project's own reasonable choice to carry `ToolCallDelta`'s
-// own `progress_text` (MCP's wider notification ecosystem commonly carries a human-readable message
+// own content (MCP's wider notification ecosystem commonly carries a human-readable message
 // alongside progress/total, but that specific field is not independently confirmed in this project's
 // own dated citation) -- included because dropping the only real content `ToolCallDelta` carries would
 // make the projection pointless, named here as a documented choice rather than asserted as spec text.
 // `total` is NOT built: nothing in `ToolCallDelta`'s payload (`core/run_event.hpp`) carries a total,
 // so there is no real value to put there.
+//
+// unified-streaming-design-draft.md §5 (Piece E), Finding 11: `ToolCallDelta::content` is now the
+// engine's whole `ContentItem` vocabulary, not a plain string -- MCP's real wire shape genuinely caps
+// `message` to text (no structured-content slot exists to widen into), so this collapses structured
+// content down to a short line per variant rather than reusing `rt::content_item_to_json()` wholesale
+// (that codec already double-quotes `Custom::payload_json` and adds irrelevant origin/tainted
+// bookkeeping no MCP client needs -- only `Text`/`Data`/`Custom` get a tight, semantically relevant
+// rendering; everything else gets a short, variant-specific human-readable line).
 
 #include <optional>
 #include <string>
@@ -59,10 +67,33 @@ public:
         double& counter = progress_by_token_[p.call_id];
         counter += 1.0;  // a real increasing sequence -- ToolCallDelta carries no numeric progress
                           // itself, only text, so "one more delta happened" is what actually increased
-        return ProgressNotification{p.call_id, counter, p.progress_text};
+        return ProgressNotification{p.call_id, counter, render_message(p.content)};
     }
 
 private:
+    // See file-top comment (Finding 11): a tight, per-variant text rendering, not a wholesale codec
+    // dump.
+    [[nodiscard]] static std::string render_message(ContentItem const& item) {
+        if (auto const* text = std::get_if<Text>(&item.value)) {
+            return text->text;
+        }
+        if (auto const* custom = std::get_if<Custom>(&item.value)) {
+            return custom->type_id + ": " + custom->payload_json;
+        }
+        if (auto const* data = std::get_if<Data>(&item.value)) {
+            return data->json;
+        }
+        if (std::holds_alternative<Media>(item.value)) return "[media content]";
+        if (std::holds_alternative<ToolCall>(item.value)) return "[tool call content]";
+        if (auto const* tool_result = std::get_if<ToolResult>(&item.value)) {
+            return tool_result->is_error ? "[tool result: error]" : "[tool result]";
+        }
+        if (std::holds_alternative<Citation>(item.value)) return "[citation]";
+        if (auto const* err = std::get_if<Error>(&item.value)) return "[error] " + err->message;
+        if (std::holds_alternative<Reasoning>(item.value)) return "[reasoning]";
+        return "[content]";
+    }
+
     std::unordered_map<std::string, double> progress_by_token_;
 };
 

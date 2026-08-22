@@ -338,7 +338,7 @@ struct AgentResponse {
 struct BackgroundTaskDone {
     std::string handle_id;
     std::string call_id;
-    bool        ok = false;
+    ToolResult  result;  // was: bool ok. ok is now !result.is_error. unified-streaming-design-draft.md §2.
 };
 
 // The thread-safe handoff point between a detached worker thread (tool_pipeline.hpp's
@@ -824,12 +824,39 @@ public:
 
         emit_run_event(run_event_kind::run_started);
         if constexpr (agentengine::ModelCallGatewayLike<ChatClientT>) {
-            emit_run_event(run_event_kind::warning,
-                            run_event_payload::Warning{
-                                "this run routes model calls through a ModelCallGateway (ADR-036): no "
-                                "live model_delta events fire for a gateway-routed round, and a single "
-                                "round may make several real backend calls (retries/fallback tiers) "
-                                "before the per-run token budget is ever checked"});
+            // unified-streaming-design-draft.md §3 (Piece A), Rev 7 (Finding 5-new, 5th red-team pass):
+            // this warning is a SEPARATE emission site from run_model_call()'s own dispatch fix -- fixing
+            // only the dispatch would leave this one asserting "no live model_delta events" on every
+            // gateway-routed run even after Piece A makes that false for a real ModelCallGateway with
+            // stream_model_calls_ set. Gated identically to that dispatch's own condition.
+            if constexpr (agentengine::ModelCallGatewayStreamLike<ChatClientT>) {
+                if (stream_model_calls_) {
+                    emit_run_event(
+                        run_event_kind::warning,
+                        run_event_payload::Warning{
+                            "this run routes model calls through a ModelCallGateway (ADR-036) with "
+                            "streaming enabled: live model_delta events fire once an attempt commits "
+                            "(unified-streaming-design-draft.md §3), but retries/fallback tiers before "
+                            "that first commit stay invisible to the caller, and the per-run token "
+                            "budget is only checked once a response resolves"});
+                } else {
+                    emit_run_event(
+                        run_event_kind::warning,
+                        run_event_payload::Warning{
+                            "this run routes model calls through a ModelCallGateway (ADR-036): no live "
+                            "model_delta events fire for a gateway-routed round, and a single round may "
+                            "make several real backend calls (retries/fallback tiers) before the per-run "
+                            "token budget is ever checked"});
+                }
+            } else {
+                emit_run_event(
+                    run_event_kind::warning,
+                    run_event_payload::Warning{
+                        "this run routes model calls through a ModelCallGateway (ADR-036): no live "
+                        "model_delta events fire for a gateway-routed round, and a single round may make "
+                        "several real backend calls (retries/fallback tiers) before the per-run token "
+                        "budget is ever checked"});
+            }
         } else if (stream_model_calls_) {
             emit_run_event(run_event_kind::warning,
                             run_event_payload::Warning{
@@ -975,15 +1002,16 @@ public:
             // ADR-060: bound fresh for THIS call only, reset immediately after regardless of outcome
             // -- the same per-call bracketing discipline `codeact_preseeded_answers` uses one function
             // down, applied independently here since that field's own bracket doesn't cover this site.
-            effect_context_.report_progress = [this, call_id = req.call_id](std::string_view text) {
+            effect_context_.report_progress = [this, call_id = req.call_id](ContentItem item) {
+                force_tainted(item);
                 emit_run_event(run_event_kind::tool_call_delta,
-                                run_event_payload::ToolCallDelta{call_id, std::string(text)});
+                                run_event_payload::ToolCallDelta{call_id, std::move(item)});
             };
             ToolResult result =
                 invoke_tool(tool_table, held, req, effect_context_, one_shot_approve, &audit);
-            effect_context_.report_progress = [](std::string_view) {};
+            effect_context_.report_progress = [](ContentItem) {};
             emit_run_event(run_event_kind::tool_call_finished,
-                            run_event_payload::ToolCallFinished{audit.call_id, audit.ok});
+                            run_event_payload::ToolCallFinished{audit.call_id, result});
             emit_run_event(run_event_kind::approval_resolved,
                             run_event_payload::ApprovalResolved{pending_calls[i].call_id, true,
                                                                   request.interaction_id});
@@ -1189,12 +1217,13 @@ public:
         std::weak_ptr<BackgroundCompletionQueue> weak_queue = background_completions_;
         result<void> submitted = background_task(
             table, *effect_context_.capabilities, request, effect_context_, approve, current_count,
-            [weak_queue, handle_id, call_id = request.call_id](ToolResult /*result_out*/,
+            [weak_queue, handle_id, call_id = request.call_id](ToolResult result_out,
                                                                  ToolInvocationAudit audit) mutable {
+                (void)audit;
                 if (std::shared_ptr<BackgroundCompletionQueue> q = weak_queue.lock()) {
                     std::lock_guard<std::mutex> lock(q->m);
-                    q->pending.push_back(
-                        BackgroundTaskDone{std::move(handle_id), std::move(call_id), audit.ok});
+                    q->pending.push_back(BackgroundTaskDone{
+                        std::move(handle_id), std::move(call_id), std::move(result_out)});
                 }  // else: session (and its queue) already gone -- drop, no UAF, no residue to clean up
             });
         if (!submitted) co_return std::unexpected(submitted.error());
@@ -1294,7 +1323,7 @@ private:
                          std::make_move_iterator(background_completions_->pending.end()));
             background_completions_->pending.clear();
         }
-        for (BackgroundTaskDone const& m : ready) {
+        for (BackgroundTaskDone& m : ready) {
             auto it = std::find_if(standing_effects_.begin(), standing_effects_.end(),
                                     [&](agentengine::StandingEffect const& e) {
                                         return e.handle_id == m.handle_id;
@@ -1303,7 +1332,7 @@ private:
             std::string const owner_run_id = it->run_id;
             standing_effects_.erase(it);
             emit_run_event_for(owner_run_id, run_event_kind::tool_call_finished,
-                                run_event_payload::ToolCallFinished{m.call_id, m.ok});
+                                run_event_payload::ToolCallFinished{m.call_id, std::move(m.result)});
         }
     }
 
@@ -1402,6 +1431,75 @@ private:
         (void)run_event_producer_.push(std::move(ev));
     }
 
+    // unified-streaming-design-draft.md §5 (Piece E). A tool-pushed `ContentItem` (via
+    // `EffectContext::report_progress`) gets `tainted = true` unconditionally, same convention
+    // `tool_pipeline.hpp`'s own `invoke_tool()` already follows for its return-value content -- a
+    // tool author does not get to unilaterally mark its own mid-call content trusted. Recursive
+    // (not a flat assignment): a pushed `ContentItem` can itself hold a `ToolResult`, which nests its
+    // own `std::vector<ContentItem>`, each independently serialized with its own `tainted` flag
+    // downstream (`rt/message_codec.hpp`) -- a non-recursive fix would leave a nested item's own
+    // `tainted = false` surviving verbatim into AG-UI/MCP output. Inherits the same unbounded-
+    // recursion-depth risk `message_codec.hpp`/`chat_recording.hpp`'s own content-item codecs already
+    // accept for this identical structure -- not a new risk class.
+    static void force_tainted(ContentItem& item) {
+        item.tainted = true;
+        if (auto* tr = std::get_if<ToolResult>(&item.value)) {
+            for (ContentItem& child : tr->content) force_tainted(child);
+        }
+    }
+
+    // unified-streaming-design-draft.md §3 (Piece A), Rev 7. Drains ANY `stream<ChatResponseUpdate>` --
+    // whether produced by a plain `ChatClientT::chat_stream()` or a gateway's `call_stream()` -- into a
+    // `result<ChatResponse>`, firing live `model_delta` events along the way exactly as the pre-Piece-A
+    // non-gateway branch already did. Factored out so both branches share ONE drain loop rather than two
+    // copies that could drift (the non-gateway branch is the one this was extracted from, unchanged in
+    // behavior; the gateway-streaming branch is new, Piece A).
+    [[nodiscard]] result<ChatResponse> drain_streaming_response(stream<ChatResponseUpdate> s) {
+        Message accumulated;
+        accumulated.role = role::assistant;
+        std::optional<Usage> usage;
+        while (!s.done()) {
+            while (std::optional<ChatResponseUpdate> upd = s.next()) {
+                if (stream_model_calls_) {
+                    if (auto const* t = std::get_if<Text>(&upd->delta.value);
+                        t != nullptr && !t->text.empty()) {
+                        emit_run_event(run_event_kind::model_delta,
+                                        run_event_payload::ModelDelta{
+                                            run_event_payload::ModelTextDelta{t->text}});
+                    } else if (upd->tool_call_argument_chunk.has_value()) {
+                        auto const& chunk = *upd->tool_call_argument_chunk;
+                        emit_run_event(run_event_kind::model_delta,
+                                        run_event_payload::ModelDelta{
+                                            run_event_payload::ModelToolCallArgumentDelta{
+                                                chunk.call_id, chunk.tool_name,
+                                                chunk.arguments_fragment, chunk.is_final}});
+                    }
+                }
+                // A pure argument-chunk update carries no real content in `delta` (it's left at its
+                // default) -- appending it would push a spurious placeholder ContentItem into the
+                // accumulated message. unified-streaming-design-draft.md §1, Finding 14.
+                if (!upd->tool_call_argument_chunk.has_value()) {
+                    accumulated.content.push_back(upd->delta);
+                }
+                if (upd->is_final && upd->usage.has_value()) usage = upd->usage;
+            }
+            if (!s.done()) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        if (s.terminal() != stream_terminal::closed) {
+            return std::unexpected(error{failure_class::transient,
+                                          "chat_stream() did not reach a clean terminal",
+                                          "run.stream_incomplete"});
+        }
+        if (!usage.has_value()) {
+            return std::unexpected(
+                error{failure_class::contract,
+                      "streaming chat call completed with no reported token usage — refusing "
+                      "to treat it as zero-cost against the per-run token budget (004 §5)",
+                      "run.usage_unavailable"});
+        }
+        return ChatResponse{std::move(accumulated), *usage};
+    }
+
     // Gap-audit finding 20 / 003 §8 Q2. Drops every `Reasoning` content item whose
     // `producer_chat_client_id` does not exactly match `current_chat_client_id` -- including an
     // EMPTY stamp (a record written before this field existed, or a `text_derived` leak-scan
@@ -1472,7 +1570,25 @@ private:
             error{failure_class::contract, "unreachable: neither call path executed", "run.internal"});
 
         if constexpr (agentengine::ModelCallGatewayLike<ChatClientT>) {
-            response = co_await chat_client_->call(request, ctx);
+            // unified-streaming-design-draft.md §3 (Piece A), Rev 7 (Finding 4-new, 5th red-team pass):
+            // MUST be `if constexpr`, not a runtime `if` nested inside `if constexpr` -- a runtime `if`
+            // does not prune the unreached branch from template instantiation, and
+            // `MiddlewareModelCallGateway`/`ContentReplayGateway` (real, currently-used
+            // `ModelCallGatewayLike` conformers, e.g. `tests/test_rt_agent_session_content_replay.cpp`)
+            // have no `call_stream()` member at all -- a runtime-gated `chat_client_->call_stream(...)`
+            // would be a hard compile error the instant either type is instantiated here, regardless of
+            // `stream_model_calls_`'s value.
+            if constexpr (agentengine::ModelCallGatewayStreamLike<ChatClientT>) {
+                if (stream_model_calls_) {
+                    response = drain_streaming_response(chat_client_->call_stream(request, ctx));
+                } else {
+                    response = co_await chat_client_->call(request, ctx);
+                }
+            } else {
+                // This concrete gateway type has no call_stream() -- unchanged from before Piece A,
+                // regardless of stream_model_calls_. start_run()'s own warning names this narrower case.
+                response = co_await chat_client_->call(request, ctx);
+            }
         } else {
             if constexpr (requires(ChatClientT& c, ChatRequest const& r, EffectContext& e) {
                               { c.chat(r, e) } -> std::same_as<agentengine::task<result<ChatResponse>>>;
@@ -1485,36 +1601,7 @@ private:
                     co_return response;
                 }
             }
-            stream<ChatResponseUpdate> s = chat_client_->chat_stream(request, ctx);
-            Message accumulated;
-            accumulated.role = role::assistant;
-            std::optional<Usage> usage;
-            while (!s.done()) {
-                while (std::optional<ChatResponseUpdate> upd = s.next()) {
-                    if (stream_model_calls_) {
-                        if (auto const* t = std::get_if<Text>(&upd->delta.value);
-                            t != nullptr && !t->text.empty()) {
-                            emit_run_event(run_event_kind::model_delta, run_event_payload::ModelDelta{t->text});
-                        }
-                    }
-                    accumulated.content.push_back(upd->delta);
-                    if (upd->is_final && upd->usage.has_value()) usage = upd->usage;
-                }
-                if (!s.done()) std::this_thread::sleep_for(std::chrono::milliseconds(5));
-            }
-            if (s.terminal() != stream_terminal::closed) {
-                response = std::unexpected(error{failure_class::transient,
-                                                  "chat_stream() did not reach a clean terminal",
-                                                  "run.stream_incomplete"});
-            } else if (!usage.has_value()) {
-                response = std::unexpected(
-                    error{failure_class::contract,
-                          "streaming chat call completed with no reported token usage — refusing "
-                          "to treat it as zero-cost against the per-run token budget (004 §5)",
-                          "run.usage_unavailable"});
-            } else {
-                response = ChatResponse{std::move(accumulated), *usage};
-            }
+            response = drain_streaming_response(chat_client_->chat_stream(request, ctx));
         }
 
         if (response.has_value() && scan_response_format_leaks_) {
@@ -1598,9 +1685,10 @@ private:
         // ADR-060: same bracketing discipline as `codeact_preseeded_answers` immediately above, its
         // own independent set/clear pair around this same call -- both fields are per-call, neither
         // implies the other.
-        effect_context_.report_progress = [this, call_id = req.call_id](std::string_view text) {
+        effect_context_.report_progress = [this, call_id = req.call_id](ContentItem item) {
+            force_tainted(item);
             emit_run_event(run_event_kind::tool_call_delta,
-                            run_event_payload::ToolCallDelta{call_id, std::string(text)});
+                            run_event_payload::ToolCallDelta{call_id, std::move(item)});
         };
         ToolInvocationAudit audit;
         // Named `tool_result`, not `result` -- the latter would shadow the `agentengine::result<T>`
@@ -1610,9 +1698,9 @@ private:
         ToolResult tool_result =
             invoke_tool(tool_table, held, req, effect_context_, one_shot_approve, &audit);
         effect_context_.codeact_preseeded_answers.clear();
-        effect_context_.report_progress = [](std::string_view) {};
+        effect_context_.report_progress = [](ContentItem) {};
         emit_run_event(run_event_kind::tool_call_finished,
-                        run_event_payload::ToolCallFinished{audit.call_id, audit.ok});
+                        run_event_payload::ToolCallFinished{audit.call_id, tool_result});
 
         if (!audit.ok && audit.error_code == "codeact.ask_pending") {
             std::string prompt;
@@ -1901,9 +1989,10 @@ private:
                 // ADR-060: bound fresh for THIS call only, reset immediately after regardless of
                 // outcome -- rebinding every loop iteration is what makes two sequential calls in the
                 // same round each get their own correctly-tagged call_id, never a leaked prior binding.
-                effect_context_.report_progress = [this, call_id = req.call_id](std::string_view text) {
+                effect_context_.report_progress = [this, call_id = req.call_id](ContentItem item) {
+                    force_tainted(item);
                     emit_run_event(run_event_kind::tool_call_delta,
-                                    run_event_payload::ToolCallDelta{call_id, std::string(text)});
+                                    run_event_payload::ToolCallDelta{call_id, std::move(item)});
                 };
                 // ADR-070: the ONLY invoke_tool() call site that consults `policy_decider_` -- the
                 // other three (resolve_interaction()'s approved branch, start_background_task(),
@@ -1912,9 +2001,9 @@ private:
                 // must never be re-litigated by policy (see set_policy_decider()'s own comment).
                 ToolResult result = invoke_tool(tool_table, held, req, effect_context_, approval_decider_,
                                                  &audit, policy_decider_);
-                effect_context_.report_progress = [](std::string_view) {};
+                effect_context_.report_progress = [](ContentItem) {};
                 emit_run_event(run_event_kind::tool_call_finished,
-                                run_event_payload::ToolCallFinished{audit.call_id, audit.ok});
+                                run_event_payload::ToolCallFinished{audit.call_id, result});
 
                 // ADR-057 §9: a script inside `execute_code` called `agent.ask()` with no answer yet
                 // available (Design B: abort-and-replay) -- `real_execute_code()`'s own host

@@ -44,17 +44,30 @@
 // `enforce_backend_tool_call_provenance` from middleware.hpp) rather than reimplementing them --
 // one set of correct, already-tested primitives, not two independent copies that could drift.
 //
-// BUFFER-THEN-DECIDE, THE UNAVOIDABLE COST: every attempt this file makes (whether it succeeds or
-// fails) is drained to completion internally, via `chat_stream()` + a poll loop, before `call()`
-// ever returns anything to its own caller. This is not a missed optimization -- a real backend's
-// failure can surface only AFTER partial content has already been produced (see the ORIGINAL
-// `failover_chat_client.hpp`'s own file-top comment for the full reasoning, still correct here);
-// showing a caller live tokens from an attempt that might still need to be retried or failed over
-// would risk exactly the silent mid-stream backend substitution 004 §4 forbids. So a gateway-routed
-// round never fires `run_event_kind::model_delta` -- `AgentSession::run_model_call()`'s own comment
-// names this trade explicitly, and `handle()` emits a one-time `run_event_kind::warning` per run
-// when a gateway is engaged, matching this codebase's established pattern for named, visible trades
-// (ADR-034's identical warning for `stream_model_calls_`).
+// BUFFER-THEN-DECIDE, THE UNAVOIDABLE COST FOR `call()` SPECIFICALLY: every attempt `call()` makes
+// (whether it succeeds or fails) is drained to completion internally, via `chat_stream()` + a poll
+// loop, before `call()` ever returns anything to its own caller. This is not a missed optimization --
+// a real backend's failure can surface only AFTER partial content has already been produced (see the
+// ORIGINAL `failover_chat_client.hpp`'s own file-top comment for the full reasoning, still correct
+// here); showing a caller live tokens from an attempt that might still need to be retried or failed
+// over would risk exactly the silent mid-stream backend substitution 004 §4 forbids. So `call()` never
+// fires `run_event_kind::model_delta` -- this is `call()`'s OWN, permanent contract, not a
+// gateway-wide limitation anymore.
+//
+// `call_stream()` (unified-streaming-design-draft.md §3, Piece A) is the commit-gated alternative:
+// pushes each chunk to the caller live as it arrives, tracking whether anything has been shown yet
+// (`any_pushed`) -- once true, a mid-attempt failure is terminal (no retry, no fallback tier, matching
+// `call()`'s own single-attempt failure contract for that case); until then, retry/failover stay
+// invisible to the caller exactly as `call()`'s own buffered path already guarantees. This does NOT
+// reopen the silent-substitution risk `call()`'s buffering exists to prevent -- pre-commit chunks are
+// never exposed to the caller under either method, only post-commit ones, and post-commit means
+// exactly one tier ever supplied what the caller sees. `AgentSession::run_model_call()` picks between
+// `call()`/`call_stream()` via `stream_model_calls_` AND `ModelCallGatewayStreamLike<ChatClientT>`
+// (only `ModelCallGateway` itself implements `call_stream()` today -- `MiddlewareModelCallGateway`/
+// `ContentReplayGateway` do not, a named residual); `start_run()` emits its own gateway warning only
+// for the narrower case that still applies (a gateway-typed session that does NOT get streaming),
+// matching this codebase's established pattern for named, visible trades (ADR-034's identical warning
+// for `stream_model_calls_`).
 
 #include <algorithm>
 #include <chrono>
@@ -63,6 +76,7 @@
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <stop_token>
 #include <string>
 #include <thread>
 #include <tuple>
@@ -162,6 +176,52 @@ public:
         request.idempotency_key = IdempotencyKey{ctx.run_id, ctx.turn_index, 0, 0}.to_string();
         result<ChatResponse> outcome = co_await try_tier<0>(request, ctx);
         co_return outcome;
+    }
+
+    // unified-streaming-design-draft.md §3 (Piece A), Rev 7. Mirrors `ChatClient::chat_stream()`'s OWN
+    // contract shape exactly (`chat_client.hpp:193-197`) -- a plain, non-coroutine function returning
+    // `stream<ChatResponseUpdate>` immediately, backed by a detached thread, NOT a `task<>` the caller
+    // `co_await`s while pushes happen synchronously on the same chain (the 4th red-team pass's Finding 2:
+    // that shape deadlocks past the channel's default 256-item capacity, since `push()` genuinely blocks
+    // until a consumer drains it). `ModelCallGatewayStreamLike` (`chat_client.hpp`) is how a caller
+    // detects this method exists -- optional, not part of `ModelCallGatewayLike` itself (Finding 4/5).
+    //
+    // LIFETIME CONTRACT, disclosed rather than structurally enforced (matching this codebase's own
+    // established precedent for the identical class of hazard -- `tool_pipeline.hpp::background_task()`'s
+    // detached thread avoids capturing `this` via a `weak_ptr`, BUT that pattern requires the target to
+    // already be `shared_ptr`-held; `ModelCallGateway` is a plain value type, normally embedded directly
+    // in `AgentSession::chat_client_`, so the same `weak_ptr` fix does not apply without a larger,
+    // out-of-scope ownership change): the detached thread below captures `this` and touches `breakers_`/
+    // `primary_`/`fallbacks_`/`retry_policy_`/`jitter_` for as long as it runs. The CALLER must ensure
+    // this `ModelCallGateway` instance (and transitively, its owning `AgentSession`) outlives every
+    // in-flight `call_stream()` call's eventual completion or cancellation. Dropping/cancelling the
+    // returned `stream<ChatResponseUpdate>` requests the thread stop ASAP (`stream_producer::stop_token()`,
+    // checked between attempts, and `push()` itself returning `terminated` mid-chunk) but does NOT
+    // synchronously guarantee the thread has exited by the time `cancel()`/the destructor returns --
+    // destroying the owning session immediately after cancelling risks a real use-after-free on the
+    // detached thread's next loop iteration. Named here because neither red-team pass traced this
+    // specific hazard; `prove`'s own tests should exercise cancel-then-destroy timing directly.
+    //
+    // THREAD-SAFETY INVARIANT for the shared `breakers_` state (Finding 6-new, 5th red-team pass):
+    // `rt::CircuitBreaker` (`rt/circuit_breaker.hpp`) is documented single-writer, no internal
+    // synchronization -- safe here ONLY because `AgentSession::session_mutex_` already serializes every
+    // `run_model_call()` invocation (I1: one session, one executor), so at most one of `call()`'s
+    // coroutine-driven access or `call_stream()`'s detached-thread access to `breakers_[i]` is ever live
+    // at a time for a given gateway instance. This invariant is the CALLER's responsibility (this class
+    // does not and cannot enforce it) -- a hand-built `ModelCallGateway` driven from two genuinely
+    // concurrent threads outside `AgentSession`'s own serialization would violate it.
+    [[nodiscard]] stream<ChatResponseUpdate> call_stream(ChatRequest request, EffectContext& ctx) {
+        request.idempotency_key = IdempotencyKey{ctx.run_id, ctx.turn_index, 0, 0}.to_string();
+        EffectContext ctx_copy = ctx;  // never hold a reference back into the caller's frame cross-thread
+        auto pair = make_stream<ChatResponseUpdate>(std::pmr::get_default_resource());
+        std::thread(
+            [this, request = std::move(request), ctx = std::move(ctx_copy),
+             producer = std::move(pair.producer)]() mutable {
+                std::stop_token const stop = producer.stop_token();
+                stream_tier<0>(request, ctx, producer, stop);
+            })
+            .detach();
+        return std::move(pair.consumer);
     }
 
 private:
@@ -268,6 +328,132 @@ private:
             // infrastructure, not a same-pass edit; left for separate design → red-team → prove work
             // per this project's own governance for
             // concurrency-critical changes.
+            std::this_thread::sleep_for(delay);
+        }
+    }
+
+    // unified-streaming-design-draft.md §3 (Piece A). Compile-time tier recursion, streaming shape --
+    // structurally mirrors `try_tier<Tier>` above, but plain synchronous code (no `co_await` needed:
+    // `chat_stream()` is already a plain, non-coroutine call per the `ChatClient` concept), driven
+    // entirely from `call_stream()`'s own detached thread. `std::optional<error>` return: `nullopt` means
+    // the producer was already closed (success) or failed (terminal, reached after `any_pushed` became
+    // true) -- nothing more for the caller to do. A real `error` means this tier's retries were exhausted
+    // with nothing ever pushed -- `stream_tier<Tier>` decides whether to try the next tier or, if this was
+    // the last one, fail the producer with THIS real error (never a generic placeholder).
+    template <std::size_t Tier>
+    void stream_tier(ChatRequest const& request, EffectContext& ctx,
+                      stream_producer<ChatResponseUpdate>& producer, std::stop_token const& stop) {
+        if constexpr (Tier == 0) {
+            std::optional<error> const failure =
+                stream_attempt_with_retry(primary_, breakers_[0], request, ctx, producer, stop);
+            if (!failure.has_value()) return;
+            if constexpr (sizeof...(Fallback) == 0) {
+                producer.fail(*failure);
+            } else {
+                stream_tier<1>(request, ctx, producer, stop);
+            }
+        } else {
+            auto& backend = std::get<Tier - 1>(fallbacks_);
+            std::optional<error> const failure =
+                stream_attempt_with_retry(backend, breakers_[Tier], request, ctx, producer, stop);
+            if (!failure.has_value()) return;
+            if constexpr (Tier < sizeof...(Fallback)) {
+                stream_tier<Tier + 1>(request, ctx, producer, stop);
+            } else {
+                producer.fail(*failure);
+            }
+        }
+    }
+
+    // unified-streaming-design-draft.md §3 (Piece A). The streaming sibling of `attempt_with_retry()`
+    // above -- reuses the SAME leaf helpers (`compute_backoff`, `model_call_gateway_detail::is_retryable`/
+    // `monotonic_now_ns`, `drained_failure_to_agent_error`) and the SAME breaker/backoff/deadline
+    // bookkeeping, but cannot reuse `attempt_with_retry()`'s own body verbatim -- that function is built
+    // around one synchronous, fully-buffering `drain_chat_stream()` call with no per-chunk hook for live
+    // pushing (5th red-team pass, Finding 3: flagged as a real, non-trivial duplication, not "relocated
+    // unchanged" as an earlier draft of this design implied). `any_pushed` is Finding 2's own original
+    // commit gate from `model-call-gateway-routing-design-draft.md`: once true, a mid-attempt failure is
+    // TERMINAL (`producer.fail(...)`, `nullopt` returned -- no further retry, no fallback tier), matching
+    // `call()`'s own single-attempt failure contract for that case via a different, streaming-capable
+    // path. `producer.push()` returning anything other than `ok` means the caller dropped/cancelled the
+    // stream -- stop immediately, `nullopt` (nothing more to do; there is no caller left to deliver to).
+    template <class Backend>
+    std::optional<error> stream_attempt_with_retry(Backend& backend, rt::CircuitBreaker& breaker,
+                                                      ChatRequest const& request, EffectContext& ctx,
+                                                      stream_producer<ChatResponseUpdate>& producer,
+                                                      std::stop_token const& stop) {
+        std::uint32_t attempts_used = 0;
+        bool any_pushed = false;
+        for (;;) {
+            if (stop.stop_requested()) return std::nullopt;  // caller already gone; nothing to deliver
+
+            rt::Admit const admit = breaker.on_send(model_call_gateway_detail::monotonic_now_ns());
+            if (admit == rt::Admit::Shed) {
+                error shed_error{failure_class::transient, "circuit open, admission shed",
+                                  "gateway.circuit_open"};
+                if (any_pushed) {
+                    producer.fail(shed_error);
+                    return std::nullopt;
+                }
+                return shed_error;
+            }
+
+            stream<ChatResponseUpdate> s = backend.chat_stream(request, ctx);
+            std::optional<Usage> last_usage;
+            bool terminated_by_consumer = false;
+            while (!s.done()) {
+                while (std::optional<ChatResponseUpdate> upd = s.next()) {
+                    if (upd->is_final && upd->usage.has_value()) last_usage = upd->usage;
+                    if (producer.push(*upd) != stream_push::ok) {
+                        terminated_by_consumer = true;
+                        break;
+                    }
+                    any_pushed = true;
+                }
+                if (terminated_by_consumer) break;
+                if (!s.done()) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            if (terminated_by_consumer) return std::nullopt;
+
+            // Same fail-closed-on-missing-usage rule `attempt_with_retry()` already enforces for `call()`
+            // -- 004 §5's TokenBudget<N> depends on a true per-call token count.
+            bool const succeeded = s.terminal() == stream_terminal::closed && last_usage.has_value();
+            ++attempts_used;
+            breaker.on_result(succeeded, model_call_gateway_detail::monotonic_now_ns());
+
+            if (succeeded) {
+                producer.close();
+                return std::nullopt;
+            }
+
+            error const failure = (s.terminal() == stream_terminal::closed)
+                ? error{failure_class::fatal, "streaming call reported no token usage",
+                        "gateway.usage_unavailable"}
+                : s.fail_error();
+
+            if (any_pushed) {
+                producer.fail(drained_failure_to_agent_error(failure, "gateway.attempt_failed"));
+                return std::nullopt;
+            }
+
+            bool const retryable = model_call_gateway_detail::is_retryable(failure.klass);
+            if (!retryable || attempts_used >= retry_policy_.max_attempts) {
+                return drained_failure_to_agent_error(failure, "gateway.attempt_failed");
+            }
+
+            std::chrono::milliseconds const delay = compute_backoff(attempts_used - 1);
+            if (ctx.deadline.time_since_epoch().count() != 0) {
+                auto const now = std::chrono::steady_clock::now();
+                if (now >= ctx.deadline) {
+                    return drained_failure_to_agent_error(failure, "gateway.attempt_failed");
+                }
+                auto const remaining = ctx.deadline - now;
+                if (delay > remaining) {
+                    return drained_failure_to_agent_error(failure, "gateway.attempt_failed");
+                }
+            }
+            // Same pre-existing blocking-`sleep_for` residual `attempt_with_retry()` already carries
+            // (see that function's own comment) -- not newly introduced here, not fixed here either.
             std::this_thread::sleep_for(delay);
         }
     }

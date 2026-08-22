@@ -106,7 +106,7 @@ struct ProgressTool : agentengine::Tool<ProgressTool> {
     using Args  = ProgressArgs;
     using Reply = ProgressReply;
     static agentengine::result<Reply> invoke(Args, EffectContext& ctx) {
-        ctx.report_progress("half done");
+        ctx.report_progress(agentengine::ContentItem{agentengine::Text{"half done"}});
         return Reply{true};
     }
 };
@@ -128,7 +128,8 @@ struct BackgroundableProgressTool : agentengine::Tool<BackgroundableProgressTool
     using Args  = ProgressArgs;
     using Reply = ProgressReply;
     static agentengine::result<Reply> invoke(Args, EffectContext& ctx) {
-        ctx.report_progress("should never be observed by the caller's own closure");
+        ctx.report_progress(agentengine::ContentItem{
+            agentengine::Text{"should never be observed by the caller's own closure"}});
         return Reply{true};
     }
 };
@@ -273,7 +274,7 @@ int main() {
                 ++delta_count;
                 if (auto const* p = std::get_if<agentengine::run_event_payload::ToolCallDelta>(&ev.payload)) {
                     delta_call_id = p->call_id;
-                    delta_text    = p->progress_text;
+                    if (auto const* t = std::get_if<Text>(&p->content.value)) delta_text = t->text;
                 }
             }
         }
@@ -357,7 +358,7 @@ int main() {
         EffectContext ctx;
         ctx.principal    = Principal{"p", ""};
         ctx.run_id       = "bg-race-run";
-        ctx.report_progress = [&fired](std::string_view) { fired.fetch_add(1); };
+        ctx.report_progress = [&fired](agentengine::ContentItem) { fired.fetch_add(1); };
 
         CapabilitySet const held =
             CapabilitySet::grant_root({agentengine::cap::Background{1}});

@@ -730,7 +730,7 @@ public:
         }
         std::vector<ChatResponseUpdate> out;
         for (std::string const& block : framer_.feed(decoded)) {
-            for (ContentItem& item : items_from_block(block)) release(&out, std::move(item));
+            for (ContentItem& item : items_from_block(block, &out)) release(&out, std::move(item));
         }
         return out;
     }
@@ -738,7 +738,7 @@ public:
     [[nodiscard]] std::vector<ChatResponseUpdate> finish() {
         std::vector<ChatResponseUpdate> out;
         if (std::string tail = framer_.take_remainder(); !tail.empty()) {
-            for (ContentItem& item : items_from_block(tail)) release(&out, std::move(item));
+            for (ContentItem& item : items_from_block(tail, &out)) release(&out, std::move(item));
         }
         for (auto const& b : pending_by_index_) {
             if (!b.seen) continue;
@@ -823,7 +823,13 @@ private:
         return pending_by_index_[index];
     }
 
-    [[nodiscard]] std::vector<ContentItem> items_from_block(std::string const& block) {
+    // `chunk_out`: unified-streaming-design-draft.md §1 (Piece B), Findings 26/27 -- companion
+    // emission path symmetric with the OpenAI-side accumulator, keyed off this backend's own
+    // `PendingBlock`/SSE-named-events vocabulary instead of OpenAI's `PendingToolCall`/JSON-array
+    // one. Unlike OpenAI, Anthropic's wire protocol gives a real per-index completion signal
+    // (`content_block_stop`) -- `is_final` is a resolved answer here, not an open question.
+    [[nodiscard]] std::vector<ContentItem> items_from_block(std::string const& block,
+                                                              std::vector<ChatResponseUpdate>* chunk_out) {
         std::vector<ContentItem> out;
         for (SseEvent const& ev : split_sse_named_events(block)) {
             if (ev.type == "content_block_start") {
@@ -870,8 +876,13 @@ private:
                         out.push_back(std::move(item));
                     }
                 } else if (dkind == "input_json_delta") {
-                    if (auto const* pj = delta->find("partial_json"); pj && pj->is_string()) {
+                    if (auto const* pj = delta->find("partial_json"); pj && pj->is_string() &&
+                                                                        !pj->as_string().empty()) {
                         b.tool_input_json += pj->as_string();
+                        ChatResponseUpdate chunk_update;
+                        chunk_update.tool_call_argument_chunk = ToolCallArgumentChunk{
+                            b.tool_id, b.tool_name, pj->as_string(), /*is_final=*/false};
+                        chunk_out->push_back(std::move(chunk_update));
                     }
                 } else if (dkind == "thinking_delta") {
                     if (auto const* th = delta->find("thinking"); th && th->is_string()) {
@@ -880,9 +891,29 @@ private:
                 }
                 // signature_delta: signature intentionally dropped (file banner (3)).
             }
-            // content_block_stop/message_stop carry no content item of their own; block completion
-            // is settled from `pending_by_index_` at `finish()`. message_start/message_delta carry
-            // no content item either, but DO carry real usage (ADR-034/035) -- captured below via
+            // content_block_stop carries no CONTENT item of its own (block completion is settled from
+            // `pending_by_index_` at `finish()`) but IS a real per-index completion boundary --
+            // unified-streaming-design-draft.md §1, Findings 26/27: for a `tool_use` block, this is
+            // the fragment-level "this tool call's arguments are now complete" signal, a genuine
+            // resolved answer this backend gives that OpenAI's stream does not.
+            else if (ev.type == "content_block_stop") {
+                auto parsed = json::parse(ev.data);
+                if (!parsed) continue;
+                auto const* idx = parsed->find("index");
+                if (!idx || !idx->is_number()) continue;
+                std::size_t const index = static_cast<std::size_t>(idx->as_number());
+                if (index >= pending_by_index_.size()) continue;
+                PendingBlock const& b = pending_by_index_[index];
+                if (b.kind == "tool_use") {
+                    ChatResponseUpdate chunk_update;
+                    chunk_update.tool_call_argument_chunk =
+                        ToolCallArgumentChunk{b.tool_id, b.tool_name, /*arguments_fragment=*/{},
+                                               /*is_final=*/true};
+                    chunk_out->push_back(std::move(chunk_update));
+                }
+            }
+            // message_stop carries no content item either. message_start/message_delta carry no
+            // content item either, but DO carry real usage (ADR-034/035) -- captured below via
             // the file banner's own (6) E2 reduce, previously computed but never attached to a
             // `ChatResponseUpdate` before `ChatResponseUpdate::usage` existed to hold it.
             else if (ev.type == "message_start") {

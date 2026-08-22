@@ -109,8 +109,9 @@ int main() {
     {
         auto turn = projector.project(
             make("run-1", 9, ae::run_event_kind::turn_started, ae::run_event_payload::Turn{0}));
-        auto delta = projector.project(make("run-1", 10, ae::run_event_kind::model_delta,
-                                              ae::run_event_payload::ModelDelta{"text"}));
+        auto delta = projector.project(
+            make("run-1", 10, ae::run_event_kind::model_delta,
+                 ae::run_event_payload::ModelDelta{ae::run_event_payload::ModelTextDelta{"text"}}));
         auto warn = projector.project(
             make("run-1", 11, ae::run_event_kind::warning, ae::run_event_payload::Warning{"w"}));
         check(turn.empty() && delta.empty() && warn.empty(),
