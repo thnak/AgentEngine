@@ -5,8 +5,8 @@
 // ONLY. Explicitly NOT implemented here, named rather than silently dropped: §2b (history/context
 // composition), §2d (approval/policy sugar), `.with_fallback()`/`.with_middleware()`/
 // `.with_content_replay()`, and the draft's own `.raw_client_only()` escape hatch. Not an ADR.
-// Red-teamed once against this real code (findings 1-2 below); finding 3 is a same-session follow-up
-// fix, not itself independently red-teamed yet.
+// Red-teamed twice against this real code: round 1 found findings 1-2; round 2, specifically against
+// finding 3's own fix, found finding 3's own `.store(Store)` shape was itself wrong (finding 4 below).
 //
 // Correction found during implementation, not anticipated by the design draft's own §3: `AgentSession`
 // (rt/agent_session.hpp) holds `rt::AsyncMutex session_mutex_` directly as a data member;
@@ -52,20 +52,34 @@
 //    `InMemorySecretStore` has but this project's real production store, `AgentEngineSecretStore`
 //    (trust/secret.hpp -- no default constructor, no `.set()`), does not. `.api_key_from_env()` was
 //    the ONLY way to supply a Store at all, so a host could not use this builder with a real production
-//    secret store, full stop -- not merely a hygiene warning, a hard capability gap. Fixed: `.store(
-//    Store)` now accepts an ALREADY-CONSTRUCTED, host-owned `Store` of any shape (works for
-//    `AgentEngineSecretStore` over `EnvSecretSource`/`FileSecretSource`, proven in the test against the
-//    real types, not a stand-in), and `.api_key(SecretRef)` separately declares which ref the
-//    `ChatClient` resolves against + auto-grants its `cap::Secret` -- independent of how the Store gets
-//    populated. `.api_key_from_env()` still exists as TEST-ONLY convenience sugar, now `requires`-
-//    gated (a hard compile error, not a silent wrong assumption) to only exist when `Store` is
-//    default-constructible and exposes `.set()` -- i.e., genuinely `InMemorySecretStore`-shaped --
-//    calling `.api_key()`+`.store()` under the hood. Behavior change, disclosed rather than silently
-//    reintroduced: `build()` now MOVES `store_` out of the builder (needed to stay generic over
-//    non-copyable stores like `AgentEngineSecretStore`, which owns a `unique_ptr<SecretSource>`) --
-//    calling `build()` a second time on the same builder instance now fails closed with
-//    `quickstart_builder.no_store` instead of the prior red-team's verified "produces two independent
-//    Bundles" non-finding. Not UB, not silently wrong -- just single-use now, named here for the record.
+//    secret store, full stop -- not merely a hygiene warning, a hard capability gap. Fixed:
+//    `.api_key(SecretRef)` separately declares which ref the `ChatClient` resolves against + auto-
+//    grants its `cap::Secret`, independent of how the Store gets populated; `.api_key_from_env()`
+//    still exists as TEST-ONLY convenience sugar, `requires`-gated (a hard compile error, not a silent
+//    wrong assumption) to only exist when `Store` is default-constructible and exposes `.set()` -- i.e.,
+//    genuinely `InMemorySecretStore`-shaped. `build()` now MOVES `store_` out of the builder (needed to
+//    stay generic over non-copyable stores) -- calling `build()` a second time on the same builder
+//    instance now fails closed with `quickstart_builder.no_store` instead of the prior red-team's
+//    verified "produces two independent Bundles" non-finding. Not UB, not silently wrong -- just
+//    single-use now, named here for the record. `.store(Store)` in this pass's FIRST version took a
+//    Store BY VALUE, claimed (wrongly) to work "for any real SecretStore conformer" -- a SECOND
+//    red-team pass, specifically against this fix, compiler-confirmed that claim false:
+//    `trust/secret_quarantine.hpp`'s `QuarantineSecretStore` (a real, already-shipped conformer,
+//    ADR-068) holds a `std::mutex` directly, making it neither movable nor copyable -- a by-value
+//    `.store(Store)` could not even be CALLED with one. Also found: the test proving this path
+//    (`test_session_builder_prototype.cpp`'s "B5") never actually called `.resolve()`/`chat()`, so the
+//    design draft's "proven end to end" wording overclaimed what it actually tested (construction-only,
+//    not the capability-name-match at resolve time).
+// 4. `.store()` is now a variadic, forwarding EMPLACE (matches `AgentSession::emplace_chat_client`'s own
+//    established idiom, rt/agent_session.hpp) -- constructs `Store` in place from whatever constructor
+//    arguments it needs, never requiring `Store` to be movable OR copyable at all. Closes finding 3's
+//    residual: `QuarantineSecretStore` now works too (regression-proofed, `test_session_builder_
+//    prototype.cpp`'s "B7"). `.api_key_from_env()`'s internal use updated to match (default-emplace,
+//    then mutate through the `unique_ptr` -- never moves a `Store` value either). B5 strengthened
+//    ("B5b") to actually call `.resolve()` against the real `AgentEngineSecretStore`/`EnvSecretSource`
+//    pair with the exact capability grant `.api_key()` produces, closing the overclaim -- this specific
+//    fix (findings 3-4 combined) has now been through ONE red-team round of its own (this one); not a
+//    second, independent one yet, same disclosure posture finding 3 originally had.
 
 #include <concepts>
 #include <cstdint>
@@ -285,33 +299,42 @@ public:
         return *this;
     }
 
-    // The PRODUCTION path: hand over an already-constructed, already-populated `Store` of any real
-    // `SecretStore` conformer -- `AgentEngineSecretStore` over `EnvSecretSource`/`FileSecretSource`
-    // included, proven against those real types in the test for this file, not a stand-in. The host
-    // remains responsible for constructing and populating it however fits their deployment; this
-    // builder only takes ownership from here (heap-owned, moved in) -- see this file's own top comment
-    // for why `Bundle` needs that stability.
-    QuickstartSessionBuilder& store(Store store) {
-        store_ = std::make_unique<Store>(std::move(store));
+    // The PRODUCTION path: construct a `Store` of any real `SecretStore` conformer IN PLACE, forwarding
+    // whatever constructor arguments that type needs -- matching `AgentSession::emplace_chat_client`'s
+    // own established idiom in this exact codebase (rt/agent_session.hpp), for the identical reason.
+    // Deliberately NOT `store(Store store)` taking a value: a prior version did, and a red-team pass
+    // found and compiler-confirmed a real counter-example -- `trust/secret_quarantine.hpp`'s
+    // `QuarantineSecretStore` (a real, already-shipped SecretStore conformer, ADR-068) holds a
+    // `std::mutex` directly, making it neither movable nor copyable; a by-value `store(Store)` could
+    // not even be CALLED with one. Emplacing sidesteps the whole question -- it never needs `Store` to
+    // be movable OR copyable, only constructible from the given arguments, so it is genuinely generic
+    // over every real `SecretStore` conformer in this codebase, not just the movable ones. The host
+    // remains responsible for whatever the constructor arguments themselves require (e.g. constructing
+    // a `unique_ptr<SecretSource>` for `AgentEngineSecretStore`); this builder only takes ownership of
+    // the resulting object from here (heap-owned) -- see this file's own top comment for why `Bundle`
+    // needs that stability.
+    template <class... Args>
+    QuickstartSessionBuilder& store(Args&&... args) {
+        store_ = std::make_unique<Store>(std::forward<Args>(args)...);
         return *this;
     }
 
     // TEST-ONLY convenience sugar, `requires`-gated: only exists at all (hard compile error otherwise,
     // never a silent wrong assumption) when `Store` is default-constructible and exposes `.set(name,
-    // value)` -- i.e., genuinely `InMemorySecretStore`-shaped. Calls `.api_key()` + `.store()` under the
-    // hood, so it composes with either. With `Store` left at its default (`InMemorySecretStore`), the
-    // value this reads sits in-memory, in plaintext, never zeroized -- that type's OWN header comment
-    // (trust/secret.hpp) labels it "Test-only... Production code constructs AgentEngineSecretStore...
-    // never this." For a real deployment, call `.api_key(...)` + `.store(...)` directly with a real
-    // `AgentEngineSecretStore` instead.
+    // value)` -- i.e., genuinely `InMemorySecretStore`-shaped. Emplaces a default-constructed `Store`
+    // via `.store()` above, then mutates it in place through the `unique_ptr` -- never requires `Store`
+    // to be movable either, same reasoning as `.store()`'s own comment. With `Store` left at its
+    // default (`InMemorySecretStore`), the value this reads sits in-memory, in plaintext, never
+    // zeroized -- that type's OWN header comment (trust/secret.hpp) labels it "Test-only... Production
+    // code constructs AgentEngineSecretStore... never this." For a real deployment, call `.api_key(...)`
+    // + `.store(...)` directly with a real `AgentEngineSecretStore` instead.
     QuickstartSessionBuilder& api_key_from_env(std::string secret_name, char const* env_var)
         requires detail::TestOnlyPopulatableSecretStore<Store>
     {
         api_key(agentengine::SecretRef{secret_name});
         if (auto value = agentengine::pal::env_var(env_var); value.has_value()) {
-            Store s{};
-            s.set(secret_name, std::move(*value));
-            store(std::move(s));
+            store();
+            store_->set(secret_name, std::move(*value));
         }
         return *this;
     }

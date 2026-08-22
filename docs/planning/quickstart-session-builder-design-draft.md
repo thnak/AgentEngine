@@ -1,13 +1,15 @@
 # Quickstart session builder — a convenience facade over `AgentSession`'s wiring — design draft
 
-**Status: prototyped (§2a/§2c/§3/§4 only), red-teamed once against the real code, all three findings
-closed** (two fixed and re-verified by the pass itself; the third — generalizing `.api_key_from_env()`
-past its original `InMemorySecretStore`-only shape — fixed in a same-session follow-up, real and
-tested against the project's actual production `AgentEngineSecretStore`, but not yet independently
-red-teamed the way the first two were). Matches this project's `design → red-team → prove → judge`
-discipline (CLAUDE.md), same honesty level as `docs/planning/tool-optimizer-provider-design-draft.md`
-and `docs/planning/model-call-gateway-routing-design-draft.md`. Real, compiling, passing code:
-`include/agentengine/core/session_builder.hpp`, `tests/test_session_builder_prototype.cpp` (18/18
+**Status: prototyped (§2a/§2c/§3/§4 only), red-teamed twice against the real code, all findings from
+both passes closed.** Round 1 found and fixed two real issues (§0b findings 1-2); round 1 also found a
+third, real gap it left open, fixed in a same-session follow-up (§0b finding 3) — round 2 (§0c) then
+red-teamed THAT fix specifically and found it did not actually deliver on its own claim, fixing it again
+(§0c findings 3-4, re-numbered to match the header's own comment). Round 2's own fixes have not yet had
+a third, independent look — same disclosure posture every prior "just fixed" state had before its own
+next round found something. Matches this project's `design → red-team → prove → judge` discipline
+(CLAUDE.md), same honesty level as `docs/planning/tool-optimizer-provider-design-draft.md` and
+`docs/planning/model-call-gateway-routing-design-draft.md`. Real, compiling, passing code:
+`include/agentengine/core/session_builder.hpp`, `tests/test_session_builder_prototype.cpp` (22/22
 checks, Windows/MSVC, `AGENTENGINE_WITH_HTTPS=ON`). Not implemented: §2b (history/context composition),
 §2d (approval/policy sugar), `.with_fallback()`/`.with_middleware()`/`.with_content_replay()`, and this
 draft's own `.raw_client_only()` escape hatch — named in the header's own top comment, not silently
@@ -57,25 +59,21 @@ for the record:
    `.api_key_from_env()`) currently wires a real credential into this project's own test-only,
    non-hygienic store, with nothing at the API surface stopping them.
 
-**FIXED in a same-session follow-up pass** (not independently red-teamed yet — flagged, not glossed
-over): `.store(Store)` now accepts an already-constructed, host-owned `Store` of ANY shape — proven
-against the project's real `AgentEngineSecretStore` over `EnvSecretSource`, not a stand-in
-(`tests/test_session_builder_prototype.cpp`'s "B5"). `.api_key(SecretRef)` separately declares which
-ref the `ChatClient` resolves against and auto-grants its `cap::Secret`, independent of how `.store()`
-got populated. `.api_key_from_env()` survives as `requires`-gated, test-only sugar — composing
-`.api_key()` + `.store()` under the hood — that simply does not exist as a callable member (a hard
-compile error, not a silent wrong assumption) when `Store` isn't default-constructible-and-`.set()`-
-able. A real, disclosed behavior change came with this fix: `build()` now MOVES `store_` out of the
-builder (required to stay generic over non-copyable stores like `AgentEngineSecretStore`, which owns a
-`unique_ptr<SecretSource>`), so a SECOND `build()` call on the same instance now fails closed with
-`quickstart_builder.no_store` rather than the prior red-team's verified "produces two independent
-Bundles" non-finding (below) — proven, not just asserted, by `test_session_builder_prototype.cpp`'s
-"B6". No formal `try_compile()` compile-fail gate was added for the `requires`-clause rejection itself
-(this project's own established idiom for "must not compile" claims, e.g. `tests/compile_fail/`) —
-skipped as disproportionate for a mechanically obvious constraint (a `requires`-clause checking
-`.set()`/default-construction against a type that provably has neither cannot do anything but reject
-it), unlike ADR-071's `native_provider_families_distinct` gate, which tested genuinely non-obvious
-compile-time logic. Named here rather than silently omitted.
+**FIXED in a same-session follow-up pass, then found WRONG in its first form by a second red-team round
+(§0c below).** `.api_key(SecretRef)` separately declares which ref the `ChatClient` resolves against
+and auto-grants its `cap::Secret`, independent of how `.store()` got populated — this part held up.
+`.api_key_from_env()` survives as `requires`-gated, test-only sugar — composing `.api_key()` + `.store()`
+under the hood — that simply does not exist as a callable member (a hard compile error, not a silent
+wrong assumption) when `Store` isn't default-constructible-and-`.set()`-able. A real, disclosed behavior
+change came with this fix: `build()` now MOVES `store_` out of the builder, so a SECOND `build()` call
+on the same instance now fails closed with `quickstart_builder.no_store` rather than the prior
+red-team's verified "produces two independent Bundles" non-finding (below) — proven by
+`test_session_builder_prototype.cpp`'s "B6". No formal `try_compile()` compile-fail gate was added for
+the `.api_key_from_env()` `requires`-clause rejection (this project's own established idiom for "must
+not compile" claims, e.g. `tests/compile_fail/`) — skipped as disproportionate for a mechanically
+obvious constraint, unlike ADR-071's `native_provider_families_distinct` gate, which tested genuinely
+non-obvious compile-time logic. **What did NOT hold up, per §0c: the original `.store(Store)` shape**
+(by value) — see §0c for the real, compiler-confirmed counter-example and the actual fix.
 
 Two non-findings, verified rather than assumed at the time of the original pass: `build()` genuinely
 fails closed on every branch (checked independent of the two the test exercises), and `build()` called
@@ -86,7 +84,62 @@ would have flagged had it reviewed the fix.
 **Verdict from the pass, before the above fixes:** not safe to build §2b/§2d on top of without fixing
 finding 1 first; finding 3 should be resolved or loudly disclosed before presenting this as production-
 ready. **All three findings are now closed** — 1 and 2 fixed and red-teamed; 3 fixed in a same-session
-follow-up, real and tested, but not yet independently red-teamed the way 1/2 were.
+follow-up, real and tested, but not yet independently red-teamed the way 1/2 were (see §0c: that pass
+happened next, and found the finding-3 fix's own `.store()` shape was itself wrong).
+
+## §0c. Second red-team pass, specifically against finding 3's own fix — found it was wrong, fixed again
+
+A fresh pass, aimed narrowly at re-checking finding 3's fix rather than the whole surface (matching how
+`.api_key_from_env()`'s original bug in §0b's finding 2 was itself found by a pass that came after the
+first fix landed — this project's own established rhythm of re-checking a fix with the same rigor as
+the original code). Two real issues found, both fixed; full detail in the header's own top comment
+(findings 3 and 4 there — this section summarizes):
+
+1. **FIXED — the fix's own central claim was false, compiler-confirmed.** `.store(Store store)` took a
+   `Store` BY VALUE — the header's own comment (and this draft's, above) claimed this worked "for any
+   real `SecretStore` conformer." A red-team pass compiled a concrete counter-example against the real
+   headers and got a real error: `trust/secret_quarantine.hpp`'s `QuarantineSecretStore` (a real,
+   already-shipped conformer, ADR-068) holds `mutable std::mutex mu_` directly, making it neither
+   movable nor copyable (`std::mutex`'s copy constructor is deleted, no move constructor exists) — a
+   by-value `.store(Store)` parameter cannot even BIND to one, a hard `C2280` compile error, not a
+   subtle behavioral gap. This is the exact same class of claim finding 3 itself was supposed to close
+   ("a host could not use this builder with a real production secret store, full stop") — the fix moved
+   the gap to a second real conformer its own test (B5) never covered. **Fixed**: `.store()` is now a
+   variadic, forwarding EMPLACE (`template <class... Args> store(Args&&... args)`), matching
+   `AgentSession::emplace_chat_client`'s own established idiom in this exact codebase — constructs
+   `Store` IN PLACE from whatever arguments its constructor needs, never requiring `Store` to be movable
+   OR copyable at all. `.api_key_from_env()`'s internal use updated to match (default-emplace via
+   `.store()`, then mutate through the `unique_ptr` — never moves a `Store` value either).
+   Regression-proofed against the actual counter-example: `test_session_builder_prototype.cpp`'s "B7"
+   builds a real session against `QuarantineSecretStore` — if `.store()` ever regresses back to a
+   by-value shape, this stops COMPILING, not merely stops passing.
+2. **FIXED — a real test-gap/overclaim, not a bug in the code itself.** B5 (finding 3's proof for the
+   generic path) never called `.resolve()`/`chat()` — resolution only happens inside `chat()`
+   (`protocol/openai/chat_client.hpp`), which no test in this file invokes (its own top comment names
+   this scope limit). So B5 only proved "constructs and wires successfully," not the capability-
+   name-match between `.api_key(SecretRef)`'s auto-granted `cap::Secret` and what `EnvSecretSource`/
+   `AgentEngineSecretStore` actually check/look up — despite the design draft's own wording claiming
+   "proven end to end." **Fixed**: `test_session_builder_prototype.cpp`'s new "B5b" calls
+   `AgentEngineSecretStore::resolve()` directly against a real `EnvSecretSource`, using the EXACT
+   capability-grant shape `.api_key()` produces, and checks the resolved value matches the real env var
+   — independent of the full session/`Bundle` machinery, closing the overclaim for real rather than
+   just softening the wording.
+
+Non-findings from this pass, verified rather than assumed: the `Store`/`CapabilitySet` reference-lifetime
+mechanics §0/§3 were originally worried about are sound under the new emplace-style `.store()` too — the
+pass traced `Primary primary(..., *store_, ...)`'s dereference against `std::move(store_)`'s later
+handle-transfer precisely and confirmed no dangling-reference window exists (a `unique_ptr` move never
+relocates its pointee); the `TestOnlyPopulatableSecretStore` concept gate was checked against every
+`.set(name,value)`-shaped type in the tree and correctly admits only `InMemorySecretStore`; and a
+legitimate "first `build()` fails due to no store, host calls `.store()`, retries `build()`" workflow
+was compiled and run, producing exactly one correct capability grant, no duplication.
+
+**Verdict from this second pass:** finding 3's fix, as it first landed, did not actually deliver on its
+own stated generality — real, compiler-verified, not cosmetic. Now fixed and regression-proofed
+(findings 3-4 above are closed); neither blocked §2b/§2d (which don't touch this surface) but both are
+now closed rather than left as a known gap. This pass's own fixes have NOT themselves been through a
+third, independent red-team round — same disclosure posture the original finding 3 had before this
+pass found it wrong.
 
 ## 0. Correction found during implementation — §3's own fix does not compile as written
 
@@ -349,16 +402,16 @@ already-safe idiom.
 
 ## 7. What this draft is not
 
-Not an ADR. §2a/§2c/§3(as corrected in §0)/§4 are now real, tested code, red-teamed once (§0b) with all
-three findings closed — §2b/§2d and the fallback/middleware/content-replay/raw-client-only surface
-remain design-only, unimplemented. This facade's own risk profile is genuinely low (§5: no new
-capability semantics, no new authority path — every real finding §0/§0b surfaced was an ordinary C++
-lifetime/concurrency/hygiene bug, not an I2/I3 mechanism breach) — proportionate next step is real code
-for §2b/§2d following this same design → prototype → red-team → fix cycle, not the full
-`design → red-team → prove → judge` gauntlet ADR-070/071-class changes require, since nothing here
-touches I2/I3's own mechanisms, only how conveniently a host can drive them correctly. Finding 3's fix
-itself has not been independently red-teamed yet (only findings 1/2 got a genuine adversarial pass) —
-a small, disclosed residual worth a light second look before or alongside §2b/§2d, not a blocker to
-starting them. If a later pass surfaces a finding that *does* touch I2/I3's own mechanisms, that finding
-gets its own escalation at that point, matching this project's established practice — not decided in
-advance here.
+Not an ADR. §2a/§2c/§3(as corrected in §0)/§4 are now real, tested code, red-teamed twice (§0b, §0c)
+with every finding from both passes closed — §2b/§2d and the fallback/middleware/content-replay/
+raw-client-only surface remain design-only, unimplemented. This facade's own risk profile is genuinely
+low (§5: no new capability semantics, no new authority path — every real finding across §0/§0b/§0c was
+an ordinary C++ lifetime/concurrency/hygiene/genericity bug, not an I2/I3 mechanism breach) —
+proportionate next step is real code for §2b/§2d following this same design → prototype → red-team → fix
+cycle, not the full `design → red-team → prove → judge` gauntlet ADR-070/071-class changes require,
+since nothing here touches I2/I3's own mechanisms, only how conveniently a host can drive them
+correctly. §0c's own fixes have not themselves been through a third, independent red-team round yet —
+worth a light look before or alongside §2b/§2d given round 2 found round 1's "fixed" finding 3 was
+itself wrong, not a blocker to starting them. If a later pass surfaces a finding that *does* touch
+I2/I3's own mechanisms, that finding gets its own escalation at that point, matching this project's
+established practice — not decided in advance here.

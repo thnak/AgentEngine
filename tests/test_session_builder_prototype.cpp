@@ -22,6 +22,7 @@
 #include <string>
 
 #include "agentengine/core/session_builder.hpp"
+#include "agentengine/trust/secret_quarantine.hpp"
 
 namespace {
 
@@ -131,29 +132,61 @@ int main() {
         }
     }
 
-    // ---- B5: the GENERIC path (.api_key() + .store()) works with the REAL production store type,
-    // AgentEngineSecretStore over EnvSecretSource -- not merely InMemorySecretStore-shaped. This closes
-    // the finding named in the header's own top comment (finding 3): AgentEngineSecretStore has no
-    // default constructor and no .set(), so .api_key_from_env() cannot even be NAMED against it (a
+    // ---- B5: the GENERIC path (.api_key() + emplacing .store()) works with the REAL production store
+    // type, AgentEngineSecretStore over EnvSecretSource -- not merely InMemorySecretStore-shaped. This
+    // closes the finding named in the header's own top comment (finding 3): AgentEngineSecretStore has
+    // no default constructor and no .set(), so .api_key_from_env() cannot even be NAMED against it (a
     // compile-time `requires` gate, not a runtime check) -- .api_key()+.store() is the only path for
-    // this Store, and this proves it actually works end to end, against the real type, not a stand-in.
+    // this Store. This proves construction/wiring succeeds; B5b right below proves the actual secret
+    // resolves, which this block alone (per a second red-team pass) did NOT prove.
     {
 #if defined(_WIN32)
         _putenv_s("QUARK_SECRET_prod-api-key", "sk-prod-value-789");
 #else
         setenv("QUARK_SECRET_prod-api-key", "sk-prod-value-789", 1);
 #endif
-        AgentEngineSecretStore prod_store(std::make_unique<EnvSecretSource>());
         quickstart::QuickstartSessionBuilder<quickstart::Provider::openai, AgentEngineSecretStore>
             builder("gpt-4o-mini");
         builder.api_key(SecretRef{"prod-api-key"});
-        builder.store(std::move(prod_store));
+        // .store(...) forwards its args to Store's own constructor, in place -- AgentEngineSecretStore
+        // itself is still movable (only QuarantineSecretStore, B7 below, genuinely needs the emplace
+        // shape), so passing an already-constructed instance here works too, exercised deliberately to
+        // prove the emplace-style `.store()` still accepts this call shape, not just default-args ones.
+        builder.store(AgentEngineSecretStore(std::make_unique<EnvSecretSource>()));
         auto built = builder.build();
         check(built.has_value(), "the generic .api_key()+.store() path builds successfully against the "
                                   "REAL production AgentEngineSecretStore, not just InMemorySecretStore");
         if (built.has_value()) {
             check(built->session().has_chat_client(),
                   "the built session (real production Store type) has a ChatClientT emplaced");
+        }
+    }
+
+    // ---- B5b: red-team round 2's finding #2 regression proof -- B5 alone never called .resolve(), so
+    // it never proved the capability-name match between .api_key(SecretRef{name})'s auto-granted
+    // cap::Secret and what EnvSecretSource/AgentEngineSecretStore actually check/look up at resolve
+    // time. This calls .resolve() directly against the SAME real types, independent of the full
+    // session/Bundle machinery, closing that gap for real.
+    {
+#if defined(_WIN32)
+        _putenv_s("QUARK_SECRET_prod-api-key-2", "sk-prod-value-abc");
+#else
+        setenv("QUARK_SECRET_prod-api-key-2", "sk-prod-value-abc", 1);
+#endif
+        AgentEngineSecretStore store(std::make_unique<EnvSecretSource>());
+        CapabilitySet const held =
+            CapabilitySet::grant_root({Capability{cap::Secret{"prod-api-key-2", std::chrono::seconds{0}}}});
+        EffectContext ctx;
+        ctx.principal    = Principal{"p-test", ""};
+        ctx.capabilities = borrow_capabilities(held);
+        auto lease = store.resolve(SecretRef{"prod-api-key-2"}, ctx);
+        check(lease.has_value(),
+              "resolve() succeeds against the REAL AgentEngineSecretStore/EnvSecretSource pair, using "
+              "the EXACT capability-grant shape .api_key(SecretRef) produces -- proves the grant name "
+              "and the store's own lookup name genuinely match, not merely assumed to");
+        if (lease.has_value()) {
+            check(lease->reveal_text() == "sk-prod-value-abc",
+                  "and it resolves to the actual env-var value, not a stale or wrong one");
         }
     }
 
@@ -172,6 +205,28 @@ int main() {
         if (!second.has_value()) {
             check(second.error().code == "quickstart_builder.no_store",
                   "specifically because store_ was already moved out by the first build() call");
+        }
+    }
+
+    // ---- B7: red-team round 2's finding #1 regression proof -- .store()'s ORIGINAL, by-value shape
+    // (`store(Store store)`) required Store to be movable/copyable, which a real, already-shipped
+    // SecretStore conformer in this codebase, QuarantineSecretStore (trust/secret_quarantine.hpp,
+    // ADR-068), genuinely is NOT (it holds a std::mutex directly). This builds a real session against
+    // it, proving the current emplace-style `.store(Args&&...)` genuinely works where the old shape
+    // could not even be CALLED -- if `.store()` ever regresses back to taking `Store` by value, this
+    // block stops compiling, not merely stops passing.
+    {
+        quickstart::QuickstartSessionBuilder<quickstart::Provider::openai, QuarantineSecretStore>
+            builder("gpt-4o-mini");
+        builder.api_key(SecretRef{"quarantined-key"});
+        builder.store();  // default-constructs QuarantineSecretStore(nullptr) IN PLACE -- never moves one
+        auto built = builder.build();
+        check(built.has_value(),
+              "the builder wires a real, non-movable SecretStore conformer (QuarantineSecretStore) via "
+              "the emplace-style .store() -- the by-value shape a prior version had could not do this");
+        if (built.has_value()) {
+            check(built->session().has_chat_client(),
+                  "the built session (non-movable Store type) has a ChatClientT emplaced");
         }
     }
 
