@@ -1,17 +1,21 @@
 # Quickstart session builder — a convenience facade over `AgentSession`'s wiring — design draft
 
-**Status: prototyped (§2a/§2c/§3/§4 only), red-teamed twice against the real code, all findings from
-both passes closed.** Round 1 found and fixed two real issues (§0b findings 1-2); round 1 also found a
-third, real gap it left open, fixed in a same-session follow-up (§0b finding 3) — round 2 (§0c) then
-red-teamed THAT fix specifically and found it did not actually deliver on its own claim, fixing it again
-(§0c findings 3-4, re-numbered to match the header's own comment). Round 2's own fixes have not yet had
-a third, independent look — same disclosure posture every prior "just fixed" state had before its own
-next round found something. Matches this project's `design → red-team → prove → judge` discipline
-(CLAUDE.md), same honesty level as `docs/planning/tool-optimizer-provider-design-draft.md` and
-`docs/planning/model-call-gateway-routing-design-draft.md`. Real, compiling, passing code:
-`include/agentengine/core/session_builder.hpp`, `tests/test_session_builder_prototype.cpp` (22/22
-checks, Windows/MSVC, `AGENTENGINE_WITH_HTTPS=ON`). Not implemented: §2b (history/context composition),
-§2d (approval/policy sugar), `.with_fallback()`/`.with_middleware()`/`.with_content_replay()`, and this
+**Status: prototyped (§2a/§2c/§2d/§3/§4), red-teamed twice against the real code, all findings from
+both passes closed; §2d not yet independently red-teamed.** Round 1 found and fixed two real issues
+(§0b findings 1-2); round 1 also found a third, real gap it left open, fixed in a same-session
+follow-up (§0b finding 3) — round 2 (§0c) then red-teamed THAT fix specifically and found it did not
+actually deliver on its own claim, fixing it again (§0c findings 3-4, re-numbered to match the header's
+own comment). §2d landed in a later same-session pass, corrected from this draft's own original sketch
+during implementation (finding 5, header's own comment — `.require_approval_for(...)` read backwards
+against the real `ApprovalDecider` mechanism; implemented as `.approve_tools(...)` instead) — not yet
+independently red-teamed, same disclosure posture every prior "just landed" state had before its own
+next round found something. §2b (history/context composition) is explicitly NOT implemented, for a
+real structural reason, not lack of time — see finding 6, header's own comment, and §2b below. Matches
+this project's `design → red-team → prove → judge` discipline (CLAUDE.md), same honesty level as
+`docs/planning/tool-optimizer-provider-design-draft.md` and `docs/planning/model-call-gateway-routing-
+design-draft.md`. Real, compiling, passing code: `include/agentengine/core/session_builder.hpp`,
+`tests/test_session_builder_prototype.cpp` (30/30 checks, Windows/MSVC, `AGENTENGINE_WITH_HTTPS=ON`).
+Not implemented: §2b, `.with_fallback()`/`.with_middleware()`/`.with_content_replay()`, and this
 draft's own `.raw_client_only()` escape hatch — named in the header's own top comment, not silently
 dropped.
 
@@ -251,14 +255,15 @@ installs the bare client directly — for a deterministic fake (`JokerChatClient
 Named explicitly as escape hatch, not a coequal option, so a reader doesn't reach for it by habit in
 production code.
 
-### 2b. `HistoryProviderT`/context slot — same "one rung above bare" rule, composed in a fixed, known-correct order
+### 2b. `HistoryProviderT`/context slot — NOT IMPLEMENTED, a real structural gap, not lack of time
 
 Verified via CodeGraph (`include/agentengine/core/composed_context_provider.hpp`,
 `include/agentengine/core/skill_provider.hpp`): `ComposedContextProvider<Ms...>`'s own file-top comment
 (`composed_context_provider.hpp:30-33`) states contributor order **is** wire-message order; separately,
 `skill_provider.hpp`'s own history (cited in `history_and_skills_provider.hpp`) already established
 that skills must precede history on the wire. This is exactly the class of detail a hand-rolled
-integration gets right once by luck and a builder should get right by construction, every time.
+integration gets right once by luck and a builder should get right by construction, every time — the
+motivation below still holds; only the sketch below turned out not to be directly implementable.
 
 ```cpp
 QuickstartSessionBuilder& window(std::size_t n = 0);          // HistoryProvider<Window<n>>, default
@@ -268,13 +273,51 @@ QuickstartSessionBuilder& with_rag(/* VectorRagContextProvider ctor args */);
 QuickstartSessionBuilder& with_tool_optimizer(/* once it exists -- see tool-optimizer-provider-design-draft.md */);
 ```
 
-`build()` picks the `ComposedContextProvider<...>` template argument order internally: skills, then
-memory/RAG, then history last — **not** the order the host called these methods in. If only `.window()`
-was called (no skills/memory/RAG), `build()` collapses to the plain `HistoryProvider<Window<n>>` alone
-rather than a one-element `ComposedContextProvider<HistoryProvider<Window<n>>>` — avoids paying the
-composite's indirection for the common single-contributor case, matching `AgentSession`'s own
-documented default-template-argument shape (`agent_session.hpp:559`, one-argument instantiation already
-means "just history, nothing composed").
+**Found during implementation, not anticipated by this sketch:** `HistoryProviderT` is a COMPILE-TIME
+type parameter on `AgentSession<ChatClientT, StateT, HistoryProviderT>`, exactly like `ChatClientT`
+(§2a). §2a's own builder already solved the analogous problem for `Provider` (openai vs. anthropic) by
+making it a template parameter chosen ONCE, at construction — not a runtime fluent toggle, because a
+runtime choice between two different C++ types has no single, clean `build()` return type. That solution
+does not scale to `.with_skills()`/`.with_memory()`/`.with_rag()`: unlike `Provider` (one value, chosen
+once), history/context composition is naturally MULTI-VALUED and incremental — any subset, in any
+combination, of an open-ended set of contributors. A single extra template parameter can pick one of two
+things; it cannot represent "any subset of N optional contributors" without either an exponential blow-up
+of specializations or a genuinely different construction shape.
+
+Two real ways to actually build this, neither attempted yet:
+1. A true type-changing fluent builder — every setter `&&`-qualified, returning a NEW specialization of
+   `QuickstartSessionBuilder` with an extended `HistoryProviderT`. A real, cross-cutting refactor of this
+   whole file (`.api_key()`/`.store()`/`.grant()`/`.approve_tools()` would all need the same treatment
+   for the chain to keep working end to end), not an additive change scoped to just the new methods.
+2. A distinct, separately-templated builder type specifically for the composed-context case (e.g.
+   `ComposedQuickstartSessionBuilder<Provider, Store, Ms...>`), accepting the up-front ceremony of naming
+   the composition shape in the type instead of building it up fluently.
+
+Left undesigned here, not rushed into either shape without picking one deliberately — a real follow-up
+pass, scoped on its own.
+
+### 2c. Capability/secret slot — pure sugar, zero new default authority (unchanged from the prior survey, IMPLEMENTED)
+
+`.openai(model, key, caps)` above does **not** itself grant `cap::Secret` — it only names which
+`SecretRef` the constructed `ChatClientT` will resolve at call time (`chat_client.hpp:891-893`'s own
+"resolution happens inside chat(), never at construction" rule, unchanged). Granting is a **separate,
+mandatory** call:
+
+```cpp
+QuickstartSessionBuilder& secret_from_env(std::string secret_name, char const* env_var);
+    // -> Store::set(secret_name, getenv(env_var)) + a queued Capability{cap::Secret{secret_name, ttl}}
+QuickstartSessionBuilder& grant(Capability);   // escape hatch for anything else (FsRead, NativeExec, ...)
+```
+
+`build()` fails (a `result<Bundle>` error, not a thrown exception or a silent no-op) if `.openai(...)`/
+`.anthropic(...)` named a `SecretRef` that no `.secret_from_env(...)`/`.grant(...)` call ever covered —
+catching the exact "host forgot to grant the key it referenced" mistake at build time instead of at
+first-call time deep inside a coroutine. This is a real ergonomic win the raw API does not offer today
+(a missing grant currently surfaces as a `chat()`-time `failure_class::policy` error, mid-run).
+
+Implemented as `.api_key(SecretRef)` + `.store(Args&&...)` + the `requires`-gated `.api_key_from_env(...)`
+convenience — a real generalization past this sketch's `secret_from_env`-only shape, and past two rounds
+of red-team findings; see §0b/§0c for the full account of what changed and why.
 
 ### 2c. Capability/secret slot — pure sugar, zero new default authority (unchanged from the prior survey)
 
@@ -295,17 +338,33 @@ catching the exact "host forgot to grant the key it referenced" mistake at build
 first-call time deep inside a coroutine. This is a real ergonomic win the raw API does not offer today
 (a missing grant currently surfaces as a `chat()`-time `failure_class::policy` error, mid-run).
 
-### 2d. Approval/policy slot — thin sugar over `ApprovalDecider`/`PolicyDecider` (ADR-070), unchanged shape
+### 2d. Approval/policy slot — thin sugar over `ApprovalDecider`/`PolicyDecider` (ADR-070), CORRECTED then IMPLEMENTED
+
+Original sketch, kept for the record — **this method name is wrong against the real mechanism**:
 
 ```cpp
-QuickstartSessionBuilder& require_approval_for(std::vector<std::string> tool_names);
+QuickstartSessionBuilder& require_approval_for(std::vector<std::string> tool_names);  // WRONG NAME, see below
 QuickstartSessionBuilder& policy(PolicyDecider);
 ```
 
-No new default behavior: `AgentSession`'s own existing fail-closed default (no decider installed ==
-`approval_mode::always_require` wins, per ADR-070's already-Judged design) is preserved untouched;
-these two methods only shorten the syntax for installing a host-authored decider, identical in spirit
-to §2c.
+**Found during implementation, before any code landed:** `ApprovalDecider` (`core/tool_pipeline.hpp`) is
+consulted ONLY for a call a tool's OWN declared `approval_mode` already marked as needing a decision
+(`always_require`, or `policy_driven` with no `PolicyDecider`) — it has no power to make MORE tools
+require approval than their own declaration already does; `require_approval_for(tool_names)` reads as
+though it could. **Implemented instead as `.approve_tools(std::vector<std::string> tool_names)`**:
+installs a decider that auto-approves ONLY the named tools and denies every other already-gated call —
+the safe default. This can only ever turn an already-required human decision into an immediate deny or
+an immediate host-declared approve; it can never skip a decision that was never required, and can never
+turn a decision into an approval for a tool not explicitly named (I2: narrows/decides among
+already-required decisions, never widens which calls need one). If never called, no `ApprovalDecider` is
+installed at all — verified, not merely asserted (`test_session_builder_prototype.cpp`'s "B8": the
+session's `approval_decider()` is genuinely empty, `static_cast<bool>(...)` false, not an always-false
+stand-in). `.policy(PolicyDecider)` is unchanged from the sketch — a thin, unmodified pass-through to
+`set_policy_decider`; both are proven end to end (`test_session_builder_prototype.cpp`'s "B9"/"B10").
+
+Not yet independently red-teamed — landed in the same pass that corrected the naming, no adversarial
+pass against the real code yet, same disclosure posture every other "just landed" piece of this file had
+before its own next round.
 
 ## 3. The one integration point that must not be gotten wrong
 

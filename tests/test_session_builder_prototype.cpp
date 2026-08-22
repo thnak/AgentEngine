@@ -230,6 +230,65 @@ int main() {
         }
     }
 
+    // ---- B8: §2d, no-decider default is genuinely untouched when .approve_tools()/.policy() are
+    // never called -- not merely "behaves the same," the underlying std::function member itself stays
+    // empty (false in a boolean context), matching AgentSession's own true unset-decider state exactly.
+    {
+        auto built = OpenAiSessionBuilder("gpt-4o-mini")
+                         .api_key_from_env("openai-api-key", "AE_TEST_QUICKSTART_KEY")
+                         .build();
+        check(built.has_value(), "B8 setup: build() succeeds");
+        if (built.has_value()) {
+            check(!static_cast<bool>(built->session().approval_decider()),
+                  "no .approve_tools() call: the session's ApprovalDecider is genuinely unset, not an "
+                  "always-false decider standing in for 'unset'");
+            check(!static_cast<bool>(built->session().policy_decider()),
+                  "no .policy() call: the session's PolicyDecider is genuinely unset");
+        }
+    }
+
+    // ---- B9: §2d, .approve_tools() installs a decider that auto-approves ONLY the named tools and
+    // denies everything else -- the safe default (I2: narrows/decides among already-required decisions,
+    // never widens which calls need one).
+    {
+        auto built = OpenAiSessionBuilder("gpt-4o-mini")
+                         .api_key_from_env("openai-api-key", "AE_TEST_QUICKSTART_KEY")
+                         .approve_tools({"safe_tool"})
+                         .build();
+        check(built.has_value(), "B9 setup: build() succeeds");
+        if (built.has_value()) {
+            auto const& decide = built->session().approval_decider();
+            check(static_cast<bool>(decide), ".approve_tools() installs a real ApprovalDecider");
+            if (decide) {
+                check(decide(Principal{"p", ""}, "safe_tool", "{}"),
+                      "the named tool is auto-approved");
+                check(!decide(Principal{"p", ""}, "other_tool", "{}"),
+                      "an UN-named tool is denied, not silently auto-approved too");
+            }
+        }
+    }
+
+    // ---- B10: §2d, .policy() is a thin, unmodified pass-through to set_policy_decider().
+    {
+        auto built = OpenAiSessionBuilder("gpt-4o-mini")
+                         .api_key_from_env("openai-api-key", "AE_TEST_QUICKSTART_KEY")
+                         .policy([](Principal const&, ToolDescriptor const&, bool) {
+                             return policy_decision::auto_deny;
+                         })
+                         .build();
+        check(built.has_value(), "B10 setup: build() succeeds");
+        if (built.has_value()) {
+            auto const& policy = built->session().policy_decider();
+            check(static_cast<bool>(policy), ".policy() installs a real PolicyDecider");
+            if (policy) {
+                ToolDescriptor td{};
+                check(policy(Principal{"p", ""}, td, false) == policy_decision::auto_deny,
+                      "the host-authored decision function is genuinely reachable, unmodified, through "
+                      "the builder");
+            }
+        }
+    }
+
     std::fprintf(stderr, g_failures == 0 ? "test_session_builder_prototype: ALL PASS\n"
                                           : "test_session_builder_prototype: %d FAILURE(S)\n",
                  g_failures);

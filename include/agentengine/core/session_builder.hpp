@@ -1,12 +1,15 @@
 #pragma once
 // Prototype implementation of docs/planning/quickstart-session-builder-design-draft.md -- covers
 // §2a (client stack, gateway-wrapped by default)/§2c (capability+secret sugar, generalized past the
-// draft's own original sketch -- see finding 3 below)/§3 (the Store-lifetime finding)/§4 (`.ask()`)
-// ONLY. Explicitly NOT implemented here, named rather than silently dropped: §2b (history/context
-// composition), §2d (approval/policy sugar), `.with_fallback()`/`.with_middleware()`/
-// `.with_content_replay()`, and the draft's own `.raw_client_only()` escape hatch. Not an ADR.
-// Red-teamed twice against this real code: round 1 found findings 1-2; round 2, specifically against
-// finding 3's own fix, found finding 3's own `.store(Store)` shape was itself wrong (finding 4 below).
+// draft's own original sketch -- see finding 3 below)/§2d (approval/policy sugar, corrected from its
+// original sketch -- see finding 5 below)/§3 (the Store-lifetime finding)/§4 (`.ask()`) ONLY.
+// Explicitly NOT implemented here, named rather than silently dropped: §2b (history/context
+// composition -- a real structural gap, not just unstarted work; see finding 6 below for why),
+// `.with_fallback()`/`.with_middleware()`/`.with_content_replay()`, and the draft's own
+// `.raw_client_only()` escape hatch. Not an ADR. Red-teamed twice against this real code: round 1
+// found findings 1-2; round 2, specifically against finding 3's own fix, found finding 3's own
+// `.store(Store)` shape was itself wrong (finding 4). §2d (finding 5) has not been independently
+// red-teamed yet -- same disclosure posture finding 3 originally had before round 2 found it wrong.
 //
 // Correction found during implementation, not anticipated by the design draft's own §3: `AgentSession`
 // (rt/agent_session.hpp) holds `rt::AsyncMutex session_mutex_` directly as a data member;
@@ -80,13 +83,41 @@
 //    pair with the exact capability grant `.api_key()` produces, closing the overclaim -- this specific
 //    fix (findings 3-4 combined) has now been through ONE red-team round of its own (this one); not a
 //    second, independent one yet, same disclosure posture finding 3 originally had.
+// 5. §2d's original sketch (`docs/planning/quickstart-session-builder-design-draft.md` §2d) named the
+//    method `.require_approval_for(tool_names)` -- a misleading name against the REAL mechanism, caught
+//    before implementation rather than after: `ApprovalDecider` (core/tool_pipeline.hpp) is consulted
+//    ONLY for a call that a tool's OWN declared `approval_mode` already marked as needing a decision
+//    (`always_require`, or `policy_driven` with no `PolicyDecider`) -- it cannot make MORE tools require
+//    approval than their own declaration already does. Implemented instead as `.approve_tools(names)`:
+//    installs a decider that auto-approves ONLY the named tools and denies every other already-gated
+//    call (the safe default) -- narrows/decides among already-required decisions only, never widens
+//    which calls need one (I2). If never called, no decider is installed at all, preserving
+//    `AgentSession`'s own true unset-decider default exactly, not approximating it with an
+//    always-false one. `.policy(PolicyDecider)` is a thin, unmodified pass-through to
+//    `set_policy_decider` (ADR-070).
+// 6. §2b (history/context composition) is explicitly NOT attempted in this pass, for a real structural
+//    reason rather than lack of time: `AgentSession<ChatClientT, StateT, HistoryProviderT>`'s
+//    `HistoryProviderT` is a COMPILE-TIME type parameter, exactly like `ChatClientT` (§2a) -- adding
+//    `.with_skills(...)` would need to change `Bundle`'s/`QuickstartSessionBuilder`'s own C++ type
+//    partway through a fluent chain, the same "no clean single return type for a runtime toggle between
+//    two different types" problem §2a's own top-of-class comment already named for `Provider`. Unlike
+//    `Provider` (one value, chosen once, at construction), history/context composition is naturally
+//    MULTI-VALUED and incremental (`.with_skills()`, later maybe `.with_memory()`, `.with_rag()`, any
+//    subset, in any combination) -- a single extra template parameter does not scale the way `Provider`
+//    did. Doing this properly needs either a real type-changing fluent builder (every setter
+//    `&&`-qualified, returning a new specialization -- a bigger refactor of this whole file, touching
+//    `.api_key()`/`.store()`/`.grant()`/`.approve_tools()` too, not just the new methods) or a distinct,
+//    separately-templated builder type for the composed-context case. Left undesigned here rather than
+//    rushed -- a real follow-up, not a placeholder.
 
+#include <algorithm>
 #include <concepts>
 #include <cstdint>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <type_traits>
 #include <vector>
@@ -94,6 +125,7 @@
 #include "agentengine/core/chat_client.hpp"
 #include "agentengine/core/model_call_gateway.hpp"
 #include "agentengine/core/tool_call_extraction.hpp"
+#include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/pal/env.hpp"
 #include "agentengine/rt/agent_session.hpp"
 #include "agentengine/trust/capability.hpp"
@@ -347,6 +379,33 @@ public:
         return *this;
     }
 
+    // Design draft §2d, corrected during implementation from its original sketch (named
+    // `.require_approval_for(...)`, which read backwards against the real mechanism -- see this file's
+    // own top comment). `ApprovalDecider` (core/tool_pipeline.hpp) is consulted ONLY for a call that
+    // ALREADY needs a decision (the tool itself declared `approval_mode::always_require`, or
+    // `policy_driven` with no `PolicyDecider` installed) -- it does not, and cannot, make MORE tools
+    // require approval than their own declared `approval_mode` already does (I2: narrows or decides
+    // among already-possessed authority only, never widens it). `.approve_tools(names)` installs a
+    // decider that auto-approves ONLY calls whose tool name is in `names`; every other already-gated
+    // call is denied (`false`), the SAFE default -- this can only ever turn an already-required human
+    // decision into an immediate deny or an immediate host-declared approve, never skip a decision that
+    // was never required in the first place, and never turn a decision INTO an approval for a tool not
+    // explicitly named. If never called, no `ApprovalDecider` is installed at all -- `AgentSession`'s
+    // own true default (unset decider, ADR-070-Judged fail-closed `always_require` wins) is preserved
+    // byte-for-byte, not merely approximated by an always-false decider.
+    QuickstartSessionBuilder& approve_tools(std::vector<std::string> tool_names) {
+        approved_tool_names_ = std::move(tool_names);
+        return *this;
+    }
+
+    // Thin pass-through to `AgentSession::set_policy_decider` (ADR-070) -- host-authored graduated
+    // resolution for `policy_driven` tools, unset (`nullptr`) by default, identical shape to the raw
+    // API. No new default behavior; this only shortens the syntax for installing one.
+    QuickstartSessionBuilder& policy(agentengine::PolicyDecider decide) {
+        policy_decider_ = std::move(decide);
+        return *this;
+    }
+
     // Fails closed -- a `result<BundleT>` error, not a thrown exception or a silent partial build --
     // when `.api_key(...)`/`.api_key_from_env(...)` was never called, or when no `Store` ever reached
     // this builder (either `.store(...)` was never called, or `.api_key_from_env(...)`'s named
@@ -386,6 +445,21 @@ public:
         session->emplace_chat_client(std::move(primary), std::tuple<>{});
         session->set_capabilities(capabilities.get());
 
+        // §2d: only touched if the host actually called .approve_tools()/.policy() -- an untouched
+        // session keeps AgentSession's own true unset-decider default (see .approve_tools()'s own
+        // comment for why this must be a conditional install, not an always-installed no-op decider).
+        if (approved_tool_names_.has_value()) {
+            std::vector<std::string> const allow = *approved_tool_names_;
+            session->set_approval_decider(
+                [allow](agentengine::Principal const&, std::string_view tool_name,
+                        std::string const&) {
+                    return std::find(allow.begin(), allow.end(), tool_name) != allow.end();
+                });
+        }
+        if (policy_decider_) {
+            session->set_policy_decider(policy_decider_);
+        }
+
         return BundleT(std::move(store_), std::move(capabilities), std::move(session));
     }
 
@@ -398,6 +472,8 @@ private:
     std::optional<agentengine::Capability> primary_secret_grant_;
     std::unique_ptr<Store> store_;
     std::vector<agentengine::Capability> grants_;  // explicit .grant() calls only -- see api_key()
+    std::optional<std::vector<std::string>> approved_tool_names_;
+    agentengine::PolicyDecider policy_decider_;
     std::string host_        = detail::default_endpoint<P>::host;
     std::uint16_t port_      = detail::default_endpoint<P>::port;
     std::string path_prefix_ = detail::default_endpoint<P>::path_prefix;
