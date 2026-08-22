@@ -86,3 +86,142 @@ candidate for **one coherent redesign** — e.g. a single composite type that is
 constructible in `AgentSession`'s plain value-member slot (closing the reason `LazyComposedContextProvider`
 had to exist as a separate type) and move-only by construction (closing Finding B at the source instead
 of per-conformer) — than for patching each layer separately. Not scheduled; no ADR opened yet.
+
+### Disposition policy applied to Finding B (per project-owner direction, 2026-08-22)
+
+`ComposedContextProvider`'s fork-aliasing gap is **not** being queued for an immediate point-fix. This
+project has already made a deliberate, ADR-backed trade (`ADR-070`): ship a broad feature surface and
+let a host/consumer-dev embedding AgentEngine as a library own the hardening of scope they've been
+delegated, rather than the engine closing every residual before shipping. Finding B fits that posture —
+a disclosed, understood, low-current-blast-radius gap — so it stays *tracked*, not rushed. If/when the
+composition cluster gets its promised clean redesign (above), Finding B is closed at the source as a
+side effect, not as a separate patch.
+
+---
+
+## 2026-08-22 — `ContextProvider` as an extension point ("AIContextProvider")
+
+Follow-up request used the name `AIContextProvider`. That name does not exist in this codebase — it's
+**MAF's** name for the equivalent seam. AgentEngine's own type is `ContextProvider`, and the difference
+is deliberate on two axes, both already recorded in 005 §5 / `OpenQuestions.md` OQ-18 (judged,
+2026-08-11):
+
+- **Naming**: CLAUDE.md's "no .NET/managed-runtime vocabulary" rule — MAF supplies the *shape*, not the
+  spelling.
+- **Composition mechanics**: MAF's `AIContextProvider` runs contributors as a *sequential pipeline*
+  (provider N sees provider N−1's already-merged `AIContext`). AgentEngine's `assemble_context()` runs
+  contributors as *independent fan-out* (each `on_context()` sees only `SessionContext`, never a prior
+  contributor's output) — a generic pipeline/reactive variant was designed, red-teamed, and rejected for
+  reopening cross-contributor coupling. A concrete reactive need is meant to be solved with a
+  purpose-built composite `ContextProvider` (the `HistoryAndSkillsProvider`/`ComposedContextProvider`
+  idiom above), not by widening the generic seam.
+
+**No finding on naming/mechanics — this boundary is intentional, judged, and consistently documented.**
+
+### Correction: what reaches the model is actually two tiers, not one
+
+User pointed out (2026-08-22) that "contributing context to the LLM" is a two-tier architecture, confirmed
+against real code — the framing above only covered tier 1:
+
+- **Tier 1 — contribute** (`ContextProvider.on_context`, this section's whole subject): every conformer
+  produces a `ContextContribution` (instructions/messages/tools); `assemble_context()` fans them out
+  independently and merges in declared order. Each contributor may only ADD.
+- **Tier 2 — govern/filter** (`TurnMiddleware.on_turn`, `core/turn_middleware.hpp`, `ADR-067`): runs once,
+  AFTER tier 1 has already merged everything, immediately before the model call (the `pre_model` point).
+  Structurally SUBTRACTIVE/ADVISORY-ONLY against what tier 1 already produced — `redact_subspan()` can
+  only remove a byte range from an already-declassified `TaintedText` (never introduce new, undeclassified
+  text); `ToolSurfaceView` only allows `redact()`/`reorder()`/`annotate_description()` on tools tier 1
+  already contributed, never touching `invoke`/`capability_ceiling`/`approval_mode`. A middleware can also
+  `deny` (stop the whole chain, 017 §4's verdict vocabulary). Wanting to ADD new instruction text at this
+  point is explicitly not supported — that must be a tier-1 contribution instead.
+
+Not overlap — genuinely complementary halves of "what reaches the LLM," and the boundary between them
+(add vs. govern-what-was-added) is structurally enforced by the types themselves, not just by convention.
+**Implication for Finding C below**: an onboarding sample/doc for "customize what the LLM sees" needs to
+teach both tiers together, not tier 1 alone, or a reader would not learn the ONE sanctioned place to
+safely filter/redact already-contributed content.
+
+### Conformer ecosystem check — no overlap found
+
+Checked all five real `ContextProvider` conformers (`HistoryProvider`, `SkillsProvider`, `MemoryProvider`,
+`VectorRagContextProvider`, `ToolOptimizerProvider`) plus `NativeProcessProvider`/`NativeCapabilityAnnouncer`.
+Each file's top comment states its scope and explicitly disclaims overlap with its nearest neighbor —
+e.g. `VectorRagContextProvider`'s own comment: mirrors `MemoryProvider`'s *shape* closely, but is a
+deliberately separate class, not a specialization or subclass (`ADR-063` §2.1b), and that "one class per
+kind" decision was independently red-teamed and confirmed "consistent with the real
+`MemoryProvider`/`SkillsProvider` precedent, not merely asserted." Where two conformers genuinely share
+logic, it's factored into a real shared helper instead of duplicated (`provenance_marker.hpp::
+neutralize_forged_provenance_markers()`, used by both the memory and RAG providers). **No finding** —
+this cluster is well-governed.
+
+### Finding C — the actual "write your own" on-ramp is undocumented and unexampled
+
+The user's own framing of this feature ("tính năng quan trọng cho phép tùy chỉnh và xây dựng tính năng")
+is exactly right, but nothing in the tree demonstrates it end-to-end for a third-party/consumer-dev:
+
+- `samples/` — named in `CONVENTIONS.md`'s own layout table as "runnable programs over the public
+  surface" — contains only a `README.md` describing intent. Zero actual sample files exist, for any
+  extension point, `ContextProvider` included.
+- No guide anywhere (checked `docs/architecture/`, `docs/planning/`, RFC 005 itself) walks through
+  writing and wiring a custom `ContextProvider` from scratch — RFC 005 §5 documents the concept's shape
+  and its built-in kinds, not an authoring walkthrough.
+- The only concrete "here's a type that satisfies the concept without being a built-in kind" reference
+  in the whole tree is a hand-rolled mock conformer inside `tests/test_composed_context_provider.cpp` —
+  not surfaced as a guide or sample anywhere a consumer-dev would find it.
+
+Minor, non-blocking naming note found alongside this: `web/marketing/api/providers.html` already exists
+and documents "Model providers" (`ChatClient` backends) — an unrelated seam that happens to share the
+English word "provider." Not confusing in code (distinct type names), but worth remembering if a future
+"Context providers" web page is added, so the two aren't titled ambiguously against each other.
+
+**Disposition: tracked, not closed.** Recommended next step (not started): add one real sample under
+`samples/` showing a minimal custom `ContextProvider` (e.g. a "hello world" provider contributing one
+instruction string) wired into an `AgentSession`, and/or a short "Writing a ContextProvider" page in the
+web docs, following the same pilot pattern already approved for `runtime.html`/`providers.html`
+(see the web-docs-overhaul project memory).
+
+### Finding D — no declared limit on chain length (confirmed intentional); budget enforcement that exists is per-contributor and post-hoc, not aggregate/pre-flight
+
+Checked both chains for an explicit maximum contributor/middleware count, and for what actually stops an
+unbounded assembled context from reaching the model. Traced the real call path
+(`context_assembly.hpp::assemble_context()` → `AgentSession::run_rounds()` → `run_model_call()`,
+`rt/agent_session.hpp:1919-1956`).
+
+- **Tier 1 (`ContextProvider` chain).** `ComposedContextProvider<Ms...>` / `LazyComposedContextProvider
+  <Ms...>` take `Ms...` as a compile-time template pack — no project-declared cap (no `MaxProviders<N>`
+  policy tag, unlike this codebase's own established idiom for other bounds, e.g. `MaxTurns<N>`,
+  `TokenBudget<N>`). The only ceiling is whatever the compiler's own template-instantiation/recursion
+  depth allows — an implementation limit, not a declared invariant.
+- **Tier 2 (`TurnMiddleware` chain).** Same shape: `run_turn_middleware_chain<Ms...>`
+  (`turn_middleware.hpp:207-261`) is a `constexpr`-recursive walk over `std::tuple<Ms...>`, one
+  specialization per pack length, again bounded only by the compiler, not a declared count.
+- **The budget mechanism that exists (`ContextBudget.max_tokens`) is per-contributor, not aggregate.**
+  `assemble_context()` (`context_assembly.hpp:193-205`) trims only the OLDEST MESSAGES WITHIN one
+  contributor's own contribution once THAT contributor's own declared budget is exceeded — deliberate,
+  documented (drop order must stay predictable from each contributor's own declared budget alone, never
+  a shared pool). There is no code path anywhere that caps the SUM of every contributor's output — N
+  contributors each individually under budget (or left at the `max_tokens == 0` default, unbounded) can
+  still combine into an arbitrarily large `ContextContribution`.
+- **The one downstream numeric safety net, `token_budget_` (`AgentSession`), is checked AFTER the model
+  call returns, not before.** `run_rounds()` builds `ChatRequest` directly from the fully-assembled,
+  unchecked `contribution->messages`/`.tools` and sends it (`rt/agent_session.hpp:1919`, `run_model_call`)
+  with no pre-flight size check at all. Only once the response comes back does
+  `run_tokens_consumed_ += response->usage...` get compared against `token_budget_` (line 1950) — and
+  that's a **cumulative, cross-round RUN budget** (stops future rounds once exceeded), not a per-request
+  cap that could have stopped THIS request from being sent oversized in the first place. A first round
+  alone, with generously-composed providers, is not gated by anything in-engine before hitting the wire.
+
+**Disposition (confirmed by project owner, 2026-08-22): no chain-length limit is intentional, not a gap.**
+Neither `ComposedContextProvider<Ms...>`/`LazyComposedContextProvider<Ms...>` (tier 1) nor
+`run_turn_middleware_chain<Ms...>` (tier 2) should have a declared `MaxProviders<N>`/`MaxMiddlewares<N>`
+cap — a consumer-dev composing their own tree of providers/middlewares is meant to be free to build
+whatever shape they need there, unconstrained by an arbitrary engine-picked number. Matches this
+project's already-established `ADR-070` posture: ship a broad, permissive composition surface; a
+host/consumer-dev embedding AgentEngine owns the tradeoffs of what they compose. **Not tracked as
+something to fix.**
+
+What stays worth recording precisely (distinct from the count question above, not re-opened by this
+disposition): the *token-budget* enforcement that does exist is per-contributor and post-hoc, not
+aggregate/pre-flight — so "budgets are enforced" (I8) is real but narrower than the name alone suggests.
+That's a factual note about what the mechanism currently does, kept here for accuracy, not a request to
+add a count-based limit or otherwise constrain how freely a consumer-dev can compose chains.
