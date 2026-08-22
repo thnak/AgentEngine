@@ -8,6 +8,12 @@ below for the executed evidence and per-claim verdicts. **Not yet Judged** — p
 governance (`decisions/README.md`, `OpenQuestions.md` OQ-11), only the project owner marks an ADR
 Judged; that has not happened.
 
+**Addendum (2026-08-22):** a real availability/turn-bound bypass found and fixed post-prove-phase —
+see §8's own new bullet below and `rt/agent_session.hpp`'s `resolve_codeact_ask()` for the fix itself.
+Not a design-level defeat of Design B; a real gap in how the already-accepted mechanism composed with
+a DIFFERENT, unrelated feature (`max_turns_`/`token_budget_`, from `include/agentengine/core/session_
+builder.hpp`'s own facade work) that this ADR's own prove phase never exercised together.
+
 **Relates to:** `decisions/ADR-029-suspend-for-human-approval.md` (the `Interaction`/suspend/resume
 mechanism this reuses, and the mutex-acquisition shape whose limits this ADR runs into),
 `decisions/ADR-030-session-scoped-codeact-wiring.md` (`CodeActRunnerBinding`'s "at most one session
@@ -645,3 +651,24 @@ extend, not copy.
   own `execute_code` wiring surfaces an `agent.ask()` call as an ordinary tool failure
   (`codeact.ask_pending`) with no resume path — named explicitly in that file's own comment, not
   silently left to look like a real dead end.
+- **FOUND AND FIXED (2026-08-22), not a residual — `max_turns_`/`token_budget_` (a later, separate
+  feature: `core/session_builder.hpp`'s own quickstart-facade work) never bounded the ask-loop this
+  ADR designed.** `resolve_codeact_ask()`'s `codeact.ask_pending` branch used to `co_return` WITHOUT
+  ever touching `effect_context_.turn_index` -- the ONLY field `AgentSession::run_rounds()`'s
+  `max_turns_` bound inspects. Since `run_rounds()` is never re-entered while an interaction keeps
+  resolving to ask-pending (only the "completed" branch calls back into it), a script that kept
+  calling `agent.ask()` forever was COMPLETELY unbounded by `.max_turns()`/`.token_budget()` --
+  LIVE-REPRODUCED by a red-team round dedicated to `session_builder.hpp`'s own "finding 7": 50
+  `resolve_interaction()` round trips against a scripted always-ask tool, `max_turns_ == 3`, never once
+  produced `run.max_turns_exceeded`. This predates and is independent of Design B's own choice
+  (abort-and-replay vs. any other design would have the identical gap, since it's about what the
+  *resume* path does with the turn counter, not about how the interpreter itself pauses) -- named here
+  because it is this ADR's own mechanism that the gap lived inside. **Fixed**: the ask-pending branch
+  now increments `turn_index` and checks it against `max_turns_` itself before suspending for another
+  ask, failing closed with the identical `run.max_turns_exceeded` `run_rounds()`'s own fallthrough
+  produces once the cap is reached, instead of granting the ask loop unlimited rounds no other resume
+  path gets. Regression-proofed: `tests/test_rt_agent_session_codeact_ask_max_turns.cpp` (R1/R2) --
+  verified to actually have teeth (reverting the fix reproduces the original 50-rounds-never-fires
+  failure). A session with `max_turns_` left at its true, explicit `std::nullopt` default is
+  unaffected -- this only enforces a cap the host actually set, matching every other `max_turns_`
+  consumer in this file.

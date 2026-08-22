@@ -1,14 +1,43 @@
 # Quickstart session builder — a convenience facade over `AgentSession`'s wiring — design draft
 
-**Status: prototyped (§2a/§2c/§3/§4 only), red-teamed once against the real code, two real findings
-fixed, one real finding still open.** Matches this project's `design → red-team → prove → judge`
-discipline (CLAUDE.md), same honesty level as `docs/planning/tool-optimizer-provider-design-draft.md`
-and `docs/planning/model-call-gateway-routing-design-draft.md`. Real, compiling, passing code:
-`include/agentengine/core/session_builder.hpp`, `tests/test_session_builder_prototype.cpp` (14/14
-checks, Windows/MSVC, `AGENTENGINE_WITH_HTTPS=ON`). Not implemented: §2b (history/context composition),
-§2d (approval/policy sugar), `.with_fallback()`/`.with_middleware()`/`.with_content_replay()`, and this
-draft's own `.raw_client_only()` escape hatch — named in the header's own top comment, not silently
-dropped.
+**Status: promoted from prototype to a supported feature (2026-08-22) — §2a/§2b/§2c/§2d/§3/§4
+implemented, red-teamed SEVEN times total across this file's history. §2b was implemented in a 4th
+pass, then red-teamed three times (round 4 §0f, round 5 §0g, round 6 §0h): round 4 found and fixed a
+real session-isolation gap (`fork_from()` aliasing stateful composed providers, finding 9) plus a
+diagnostics gap (finding 10); round 5 found finding 9's own fix was NECESSARY BUT NOT SUFFICIENT — a
+second, worse bypass of the same class through a MOVE rather than a copy (finding 11, fixed); round 6
+found no functional bug. **Round 7 (§0i) then gave finding 7 its own dedicated round at last, and found
+a real bug — NOT in this facade, but in the `AgentSession` mechanism it wires into**:
+`resolve_codeact_ask()`'s ask-pending branch never advanced `turn_index`, so `.max_turns()`/
+`.token_budget()` were completely bypassed by a non-converging CodeAct ask loop (finding 13, fixed at
+the root in `rt/agent_session.hpp`, also recorded in `decisions/ADR-057-agent-ask-suspend-without-
+deadlock.md` §8). Findings 11 and 13 both still await their own next independent red-team round —
+disclosed as open items, not silently treated as closed.** A convenience facade over
+already-Reviewed RFCs,
+not a new invariant or capability shape, so promotion did not require its own ADR (CLAUDE.md's
+`design → red-team → prove → judge` cycle is reserved for contested/hot-path/security-critical
+designs; this used the lighter `design → prototype → red-team → fix` cycle throughout, per §7 below).
+Round 1 found and fixed two real issues (§0b findings 1-2); round 1 also found a third, real gap it
+left open, fixed in a same-session follow-up (§0b finding 3) — round 2 (§0c) then red-teamed THAT fix
+specifically and found it did not actually deliver on its own claim, fixing it again (§0c findings 3-4,
+re-numbered to match the header's own comment). §2d landed in a later same-session pass, corrected from
+this draft's own original sketch during implementation (finding 5, header's own comment —
+`.require_approval_for(...)` read backwards against the real `ApprovalDecider` mechanism; implemented
+as `.approve_tools(...)` instead) — round 3 (§0d) then red-teamed THAT landing specifically and found a
+real, LIVE-REPRODUCED hang unrelated to the approval logic itself (finding 7: no `max_turns`/
+`token_budget` bound, and `Bundle::ask()`'s own §0b-finding-1 guard does not catch this class of hang),
+plus a documentation overclaim — both fixed. §2b (history/context composition), explicitly NOT
+implemented through three rounds for a real structural reason (finding 6, header's own comment), is
+now RESOLVED — see §2b below and finding 8, header's own comment, for the mechanism
+(`ComposedQuickstartSessionBuilder`/`detail::LazyComposedContextProvider`) and what round 3's own
+analysis had NOT anticipated (the default-constructibility constraint runs deeper than finding 6's
+text captured). Matches this project's `design → red-team → prove → judge` discipline (CLAUDE.md),
+same honesty level as `docs/planning/tool-optimizer-provider-design-draft.md` and `docs/planning/
+model-call-gateway-routing-design-draft.md`. Real, compiling, passing code:
+`include/agentengine/core/session_builder.hpp`, `tests/test_session_builder.cpp` (65/65 checks,
+Windows/MSVC, `AGENTENGINE_WITH_HTTPS=ON`, full suite 221/221 `ctest -LE live-network`). Still not
+implemented: `.with_fallback()`/`.with_middleware()`/`.with_content_replay()`, and this draft's own
+`.raw_client_only()` escape hatch — named in the header's own top comment, not silently dropped.
 
 ## §0b. Red-team pass against the real code — two findings fixed, one still open
 
@@ -40,8 +69,8 @@ for the record:
    grant for the first name behind, an I4 attributability smell (an audit reading `capabilities()` back
    would see a grant with no corresponding usable secret). **Fixed**: the auto-derived grant now lives
    in its own `primary_secret_grant_` field, overwritten (not appended) each call — last-call-wins,
-   matching `api_key_ref_`'s own semantics. Regression-proofed: `tests/test_session_builder_prototype.
-   cpp`'s "B4" case.
+   matching `api_key_ref_`'s own semantics. Regression-proofed: `tests/test_session_builder.cpp`'s
+   "B4" case.
 3. **STILL OPEN — real, disclosed, not yet fixed.** `build()` requires `Store` to be default-
    constructible and expose `.set(name, value)` — properties `InMemorySecretStore` (the default, and
    the only type this file's own tests exercise) has, but which are neither part of the `SecretStore`
@@ -52,21 +81,360 @@ for the record:
    secret-hygiene invariant the rest of that file goes out of its way to uphold. A host following this
    facade's DEFAULT, documented path (`OpenAiSessionBuilder`/`AnthropicSessionBuilder`,
    `.api_key_from_env()`) currently wires a real credential into this project's own test-only,
-   non-hygienic store, with nothing at the API surface stopping them — now loudly disclosed (this file's
-   own top comment, the class doc, `.api_key_from_env()`'s own doc), but not structurally prevented.
-   **Do not present this facade as production-ready until this is closed** — either by making `build()`
-   work generically against any `SecretStore` conformer regardless of shape (a real, separate design
-   question: how does a generic builder populate an arbitrary host-supplied store that exposes no
-   mutator?), or by requiring a non-default `Store=` explicitly and refusing to compile against
-   `InMemorySecretStore` without an opt-in marker.
+   non-hygienic store, with nothing at the API surface stopping them.
 
-Two non-findings, verified rather than assumed: `build()` genuinely fails closed on every branch
-(checked independent of the two the test exercises), and `build()` called twice is safe (produces two
-fully independent `Bundle`s, no aliasing) even though it isn't `&&`-qualified.
+**FIXED in a same-session follow-up pass, then found WRONG in its first form by a second red-team round
+(§0c below).** `.api_key(SecretRef)` separately declares which ref the `ChatClient` resolves against
+and auto-grants its `cap::Secret`, independent of how `.store()` got populated — this part held up.
+`.api_key_from_env()` survives as `requires`-gated, test-only sugar — composing `.api_key()` + `.store()`
+under the hood — that simply does not exist as a callable member (a hard compile error, not a silent
+wrong assumption) when `Store` isn't default-constructible-and-`.set()`-able. A real, disclosed behavior
+change came with this fix: `build()` now MOVES `store_` out of the builder, so a SECOND `build()` call
+on the same instance now fails closed with `quickstart_builder.no_store` rather than the prior
+red-team's verified "produces two independent Bundles" non-finding (below) — proven by
+`test_session_builder.cpp`'s "B6". No formal `try_compile()` compile-fail gate was added for
+the `.api_key_from_env()` `requires`-clause rejection (this project's own established idiom for "must
+not compile" claims, e.g. `tests/compile_fail/`) — skipped as disproportionate for a mechanically
+obvious constraint, unlike ADR-071's `native_provider_families_distinct` gate, which tested genuinely
+non-obvious compile-time logic. **What did NOT hold up, per §0c: the original `.store(Store)` shape**
+(by value) — see §0c for the real, compiler-confirmed counter-example and the actual fix.
+
+Two non-findings, verified rather than assumed at the time of the original pass: `build()` genuinely
+fails closed on every branch (checked independent of the two the test exercises), and `build()` called
+twice was safe before the finding-3 fix above (produced two fully independent `Bundle`s, no aliasing)
+— that second property is now INTENTIONALLY changed by the finding-3 fix, not a regression the red-team
+would have flagged had it reviewed the fix.
 
 **Verdict from the pass, before the above fixes:** not safe to build §2b/§2d on top of without fixing
 finding 1 first; finding 3 should be resolved or loudly disclosed before presenting this as production-
-ready. Findings 1 and 2 are now fixed; finding 3 is now loudly disclosed but still genuinely open.
+ready. **All three findings are now closed** — 1 and 2 fixed and red-teamed; 3 fixed in a same-session
+follow-up, real and tested, but not yet independently red-teamed the way 1/2 were (see §0c: that pass
+happened next, and found the finding-3 fix's own `.store()` shape was itself wrong).
+
+## §0c. Second red-team pass, specifically against finding 3's own fix — found it was wrong, fixed again
+
+A fresh pass, aimed narrowly at re-checking finding 3's fix rather than the whole surface (matching how
+`.api_key_from_env()`'s original bug in §0b's finding 2 was itself found by a pass that came after the
+first fix landed — this project's own established rhythm of re-checking a fix with the same rigor as
+the original code). Two real issues found, both fixed; full detail in the header's own top comment
+(findings 3 and 4 there — this section summarizes):
+
+1. **FIXED — the fix's own central claim was false, compiler-confirmed.** `.store(Store store)` took a
+   `Store` BY VALUE — the header's own comment (and this draft's, above) claimed this worked "for any
+   real `SecretStore` conformer." A red-team pass compiled a concrete counter-example against the real
+   headers and got a real error: `trust/secret_quarantine.hpp`'s `QuarantineSecretStore` (a real,
+   already-shipped conformer, ADR-068) holds `mutable std::mutex mu_` directly, making it neither
+   movable nor copyable (`std::mutex`'s copy constructor is deleted, no move constructor exists) — a
+   by-value `.store(Store)` parameter cannot even BIND to one, a hard `C2280` compile error, not a
+   subtle behavioral gap. This is the exact same class of claim finding 3 itself was supposed to close
+   ("a host could not use this builder with a real production secret store, full stop") — the fix moved
+   the gap to a second real conformer its own test (B5) never covered. **Fixed**: `.store()` is now a
+   variadic, forwarding EMPLACE (`template <class... Args> store(Args&&... args)`), matching
+   `AgentSession::emplace_chat_client`'s own established idiom in this exact codebase — constructs
+   `Store` IN PLACE from whatever arguments its constructor needs, never requiring `Store` to be movable
+   OR copyable at all. `.api_key_from_env()`'s internal use updated to match (default-emplace via
+   `.store()`, then mutate through the `unique_ptr` — never moves a `Store` value either).
+   Regression-proofed against the actual counter-example: `test_session_builder.cpp`'s "B7"
+   builds a real session against `QuarantineSecretStore` — if `.store()` ever regresses back to a
+   by-value shape, this stops COMPILING, not merely stops passing.
+2. **FIXED — a real test-gap/overclaim, not a bug in the code itself.** B5 (finding 3's proof for the
+   generic path) never called `.resolve()`/`chat()` — resolution only happens inside `chat()`
+   (`protocol/openai/chat_client.hpp`), which no test in this file invokes (its own top comment names
+   this scope limit). So B5 only proved "constructs and wires successfully," not the capability-
+   name-match between `.api_key(SecretRef)`'s auto-granted `cap::Secret` and what `EnvSecretSource`/
+   `AgentEngineSecretStore` actually check/look up — despite the design draft's own wording claiming
+   "proven end to end." **Fixed**: `test_session_builder.cpp`'s new "B5b" calls
+   `AgentEngineSecretStore::resolve()` directly against a real `EnvSecretSource`, using the EXACT
+   capability-grant shape `.api_key()` produces, and checks the resolved value matches the real env var
+   — independent of the full session/`Bundle` machinery, closing the overclaim for real rather than
+   just softening the wording.
+
+Non-findings from this pass, verified rather than assumed: the `Store`/`CapabilitySet` reference-lifetime
+mechanics §0/§3 were originally worried about are sound under the new emplace-style `.store()` too — the
+pass traced `Primary primary(..., *store_, ...)`'s dereference against `std::move(store_)`'s later
+handle-transfer precisely and confirmed no dangling-reference window exists (a `unique_ptr` move never
+relocates its pointee); the `TestOnlyPopulatableSecretStore` concept gate was checked against every
+`.set(name,value)`-shaped type in the tree and correctly admits only `InMemorySecretStore`; and a
+legitimate "first `build()` fails due to no store, host calls `.store()`, retries `build()`" workflow
+was compiled and run, producing exactly one correct capability grant, no duplication.
+
+**Verdict from this second pass:** finding 3's fix, as it first landed, did not actually deliver on its
+own stated generality — real, compiler-verified, not cosmetic. Now fixed and regression-proofed
+(findings 3-4 above are closed); neither blocked §2b/§2d (which don't touch this surface) but both are
+now closed rather than left as a known gap. This pass's own fixes have NOT themselves been through a
+third, independent red-team round — same disclosure posture the original finding 3 had before this
+pass found it wrong.
+
+## §0d. Third red-team pass, against §2d's `.approve_tools()`/`.policy()` landing — a real, live-reproduced hang, plus a documentation overclaim
+
+A fresh pass, explicitly asked to take the approval-gating surface seriously as security-adjacent (a
+finding that could let something auto-approve that shouldn't would be the most severe class possible
+here) — none of that shape was found; what WAS found is a real availability gap unrelated to the
+approval logic itself. Full detail in the header's own top comment (finding 7); summarized here:
+
+1. **FIXED — real, LIVE-REPRODUCED hang, not a hypothetical.** `build()` never passed `max_turns`/
+   `token_budget` to `AgentSession::initialize()` — that method's own raw default for both is
+   `std::nullopt`, and `run_rounds()`'s turn loop is genuinely unbounded when `max_turns_` is unset. The
+   red-team compiled and ran a live probe: a scripted `ChatClient` that keeps requesting a tool
+   `.approve_tools()` denies, never emitting a terminating text-only reply — ordinary retry-on-denial
+   behavior a real model could plausibly exhibit, not a contrived adversarial input. **The process hung
+   indefinitely** (killed after 120+ seconds of no progress). Critically, `Bundle::ask()`'s own "bounded
+   to one `resume()`" guard (§0b finding 1) provides ZERO protection here: every `chat()` call in this
+   engine runs synchronously to completion within one `resume()` — confirmed by finding 1's own comment
+   — so the entire unbounded turn loop executes inside that single guarded `resume()` call, a scenario
+   the guard was never designed to see. A host using `.approve_tools()` exactly as documented — the
+   sugar's whole selling point — had a live, silent hang vector with no failure surfaced. **Fixed**:
+   `.max_turns(std::optional<uint64_t>)`/`.token_budget(...)` setters added; `max_turns_` now defaults
+   to a FINITE value (25) instead of mirroring `AgentSession`'s own raw unbounded default — a deliberate,
+   disclosed divergence from the lower-level API, matching §2a's own "one rung above bare" philosophy
+   applied to turn-bounding instead of retry. `.max_turns(std::nullopt)` remains available as an
+   explicit, informed opt-out for a host with their own external timeout/cancellation layer.
+   Regression-proofed (wiring only, not a re-run of the live hang probe — see the scope-limit note in
+   `test_session_builder.cpp`'s own comment on "B11"/"B12"/"B13", and finding 7's own account
+   in the header for why a full live-hang test isn't included here — this builder has no
+   `.raw_client_only()` escape hatch yet to substitute a scripted client without real network).
+2. **FIXED — documentation overclaim, corrected in §2d above.** The design draft's own §2d text claimed
+   `.policy()`/`.approve_tools()` were "proven end to end" by "B9"/"B10" — false as written; those tests
+   only call the extracted decider directly, never through a live round. A repo-wide grep found exactly
+   one non-null `set_approval_decider(...)` call site in the whole codebase: `session_builder.hpp` itself
+   — every other approval test in this project deliberately exercises the human-suspend path instead. The
+   red-team verified the real wiring live (a scripted round, `approval_decider_` genuinely reached and
+   consulted through `invoke_tool()`) and it held up correctly — so this is a test-gap/wording issue, not
+   a functional bug — but the claim as written was not true. Wording corrected; a live-round test for
+   this specific wiring remains a named, not-yet-added gap.
+
+Non-findings, verified rather than assumed: the `false`-from-installed-decider vs. absent-decider
+distinction genuinely doesn't matter behaviorally at the real call site (`tool_pipeline.hpp`'s `approve
+&& approve(...)` short-circuits identically either way) — the one place it WOULD matter
+(`suspend_for_approval_ && !approval_decider_`) is dead code for every session this builder produces,
+since `suspend_for_approval_` defaults `false` and `build()` never touches it (a real, disclosed design
+smell — a host cannot currently get BOTH human-suspend-for-unlisted-tools AND auto-approve-for-named-
+tools through this sugar — but it fails closed, not open, so not itself a blocking finding). The
+allowlist's `std::find` does an exact match with no substring/case-fold bypass; a typo'd name fails
+closed. The lambda's captured `allow` vector is a real, independent copy, safe regardless of the
+builder's own lifetime after `build()` returns. `.policy()` and `.approve_tools()` compose correctly per
+`resolve_approval_outcome()`'s own documented fallthrough — no shadowing bug.
+
+**Verdict:** not clean before the fix — a real, reproduced availability hole directly on the surface this
+round was asked to examine. Fixed now; not yet independently red-teamed a fourth time, same disclosure
+posture every prior "just fixed" state in this file has had before its own next round.
+
+## §0e. Fourth pass — §2b (history/context composition) resolved, not yet red-teamed
+
+Not a red-team round — a design → prototype pass, resolving §2b (below), which every prior round left
+explicitly unattempted. `ComposedQuickstartSessionBuilder<Provider, Store, Ms...>` + `detail::
+LazyComposedContextProvider<Ms...>` (see finding 8, header's own comment, and §2b below for the full
+account). Real, compiling, passing code — B14-B17 in `tests/test_session_builder.cpp`, driven via
+CodeGraph exploration of `rt/agent_session.hpp`/`core/composed_context_provider.hpp`/`core/skill_
+provider.hpp` first, matching this project's "explore before editing" convention. Full suite 221/221
+(`ctest -LE live-network`), zero regressions; `tests/test_session_builder.cpp` alone now 47/47.
+
+**Not yet independently red-teamed** — every prior round in this file found something real in whatever
+landed most recently (finding 3 → 4, finding 5 → 7); this pass has had no round against it yet at all,
+a real gap, not an oversight.
+
+## §0f. Fourth red-team pass, against §0e's §2b landing — a real session-isolation gap, plus two diagnostic/test-gap fixes
+
+An independent, adversarial pass (fresh agent, no prior context, matching this project's own "independent
+of the implementer" practice) against `ComposedQuickstartSessionBuilder`/`LazyComposedContextProvider`,
+scoped explicitly to exclude everything already 3x red-teamed (§0b/§0c/§0d). Verdict: **not clean** —
+found and fixed one real, HIGH-severity design gap plus one comprehensibility gap and two test gaps.
+
+1. **HIGH, I1/I4-adjacent — `AgentSession::fork_from()` silently aliases stateful composed providers
+   across sessions.** `fork_from()` (`rt/agent_session.hpp:1022`) plain copy-assigns `history_provider_`.
+   `LazyComposedContextProvider<Ms...>`'s `contributors_` holds descriptors whose closures capture a
+   `shared_ptr<Ms>` BY VALUE (`make_context_provider_descriptor`, pre-existing, `context_assembly.hpp`)
+   — an implicit memberwise copy therefore aliases the SAME underlying provider instances, not
+   independent ones. LIVE-VERIFIED by the red-team's own probe: copy-assigning a stateful fixture,
+   mutating the original via `on_turn_end`, then reading the COPY's `on_context` showed the mutation. A
+   forked session was meant to diverge independently; instead a turn-end effect attributed to one
+   `Principal` becomes visible through another session's identity. The underlying mechanism predates this
+   pass (`core/composed_context_provider.hpp`'s `ComposedContextProvider<Ms...>` has the identical
+   exposure) — what's new is that this pass is what first makes it reachable through documented, public
+   API composing real stateful providers into a real, fork-capable session, contradicting §7's own
+   "no new capability semantics, no new authority path" claim as originally written. **Fixed**:
+   `LazyComposedContextProvider` made move-only (copy ctor/assignment deleted, move ctor/assignment
+   explicit) — `fork_from()` is an ordinary, non-template member function, so this turns the silent
+   runtime aliasing into a compile error at the exact call site, zero effect on every already-passing
+   path. `ComposedContextProvider`'s own identical exposure is UNCHANGED — out of this file's scope,
+   named as a real, disclosed residual.
+2. **MEDIUM, diagnostics — an empty `Ms...` pack produced a confusing multi-error cascade.** Verified: a
+   standalone probe compile of `ComposedQuickstartSessionBuilder<Provider::openai, InMemorySecretStore>`
+   (zero `Ms`) produced ~20 lines of unrelated failures deep inside `<expected>`/`<type_traits>` before
+   the real constraint violation. **Fixed**: `requires (sizeof...(Ms) >= 1)` added directly on
+   `ComposedQuickstartSessionBuilder` itself (previously only on the inner `LazyComposedContextProvider`)
+   — re-verified after the fix: one clean `C7602: associated constraints are not satisfied` error,
+   nothing else. (MSVC required the identical `requires` clause on `Bundle`'s own friend declaration too,
+   or the friend and the real definition disagreed — `error C3864: requires clause is incompatible with
+   the declaration` — a real MSVC-specific gotcha, not present with clang/g++, fixed alongside.)
+3. **Test gap, closed — `on_turn_end` fan-out untested for this type.** `test_composed_context_provider
+   .cpp` already proves this for its sibling `ComposedContextProvider`; B14-B17 never did for
+   `LazyComposedContextProvider`. Closed as B19.
+4. **Test gap, closed — wire order untested with TWO real contributions.** B16 only proved order using
+   one contributor that contributes nothing (`HistoryProvider<Window<0>>` on empty history) + one that
+   does — unable to distinguish "order preserved" from "only the non-empty one shows up regardless of
+   position." Closed as B18, using two instances of the same non-default-constructible fixture type with
+   distinct text.
+
+Full suite 221/221 (`ctest -LE live-network`) after all four fixes; `tests/test_session_builder.cpp` now
+51/51. **Verdict: findings 9-10 (header's own numbering) fixed; not yet independently red-teamed a fifth
+time**, same disclosure posture every prior "just fixed" state in this file has had before its own next
+round.
+
+## §0g. Fifth red-team pass, against §0f's finding-9 fix — necessary but not sufficient
+
+An independent, adversarial pass, explicitly prioritized at re-examining finding 7 (round 3's fix) and
+findings 9-10 (round 4's fixes) while remaining free to sweep the whole file — matching this project's
+own established red-team scoping. Verdict: **finding 7 and finding 10 both held up; finding 9's fix did
+not.**
+
+**Finding 11 (I1/I4-adjacent) — finding 9's move-only fix closed the COPY aliasing path but left a MOVE-
+based one open, and the moved-from side degraded silently instead of failing closed.** Finding 9 deleted
+`LazyComposedContextProvider`'s copy ctor/assignment to block `fork_from()`'s aliasing copy at compile
+time, but left move ctor/assignment `= default`ed. A defaulted move correctly drains `contributors_` (a
+vector) on the source, but `engaged_` (a plain `bool`) is trivially copied, not reset — so the MOVED-FROM
+instance kept `engaged_ == true` over an now-empty `contributors_`. LIVE-REPRODUCED by the red-team's own
+probe: `session2.history_provider() = std::move(session1.history_provider())` — the exact bypass route
+`on_context()`'s own comment already named as reachable — left session1's `on_context()` **silently
+returning a successful, empty contribution** instead of the `not_engaged` error its own guard exists to
+produce, and `engage()`'s `already_engaged` guard then **permanently blocked ever re-engaging it** (no
+recovery path). This directly falsifies finding 9's own claim that `fork_from()` is "the one real place
+this bites" — the same public accessor reaches an *engaged* instance through an entirely different,
+ordinary-looking write, and that path is worse: it bypasses BOTH of the class's own fail-closed guards
+rather than tripping either one.
+
+**Fixed**: move ctor/assignment now explicitly reset the moved-from side's `engaged_` to `false` (and
+defensively clear its `contributors_`, rather than relying on a vector move's typically-but-not-
+guaranteed-empty post-move state) — restores the class's own invariant ("`engaged_` implies
+`contributors_` is populated") across a move, so a moved-from instance correctly fails closed via the
+existing `not_engaged` guard and can be `engage()`d again. Regression-proofed: `tests/test_session_
+builder.cpp`'s "B20" — proves the moved-from side now fails with `not_engaged`, that it can be
+re-engaged, and that the moved-to side correctly carries the source's own contribution. Deliberately NOT
+changed: a move-assignment INTO an already-engaged target still silently replaces its contributors with
+no diagnostic — the red-team's own report explicitly separated this from finding 11 proper, since it is
+ordinary `operator=` replacement semantics, identical to `history_provider() = HistoryProviderT{}`'s own
+pre-existing silent-reset behavior (needed by `AgentSession::clear_in_process_state()`), not a new hazard
+the move fix introduced or needed to close.
+
+**Verified non-findings this round** (explored, no bug found): `fork_from()` still genuinely fails to
+compile (re-confirmed via a standalone `cl.exe` probe against the current code, `error C2280` at the
+exact call site); no other place in `agent_session.hpp` copies or copy-assigns `history_provider_`
+(`restore_from_record()` doesn't touch it; `clear_in_process_state()`'s move-assignment from a fresh
+prvalue is the only other write site, unaffected by the finding-11 fix); moving a whole `Bundle` after
+`engage()` works correctly (heap-owned via `unique_ptr`, so a `Bundle` move only relocates the pointer,
+never exercises `HistoryProviderT`'s own movability); `ComposedQuickstartSessionBuilder`'s duplicated
+setters have NOT drifted from `QuickstartSessionBuilder`'s (diffed method-by-method, including finding
+7's `25`-turn default on both); the default `ContextBudget{}` does not silently drop composed content;
+no I2/I3 path found across `.approve_tools()`/`.policy()`/`.providers()`/`.grant()`/`.max_turns()`/
+`.token_budget()`/`.api_key()`.
+
+Full suite 221/221 (`ctest -LE live-network`, one unrelated pre-existing flake in `test_native_jail_
+parity_windows` confirmed to pass on retry — not touched by this file) after the fix; `tests/test_
+session_builder.cpp` now 55/55. **Verdict: finding 11 fixed; not yet independently red-teamed a sixth
+time** — same disclosure posture every prior "just fixed" state in this file has had before its own
+next round. Finding 7 (round 3) remains at that same posture too — this round found nothing new against
+it, but that is a verified non-finding, not proof of correctness beyond what round 5 actually checked.
+
+## §0h. Sixth red-team pass — no functional bug found, one real test-coverage gap closed
+
+An independent, adversarial pass, explicitly re-scoped to prioritize the two items still standing:
+finding 7 (round 3's fix, never independently re-examined since) and finding 11 (round 5's fix, given
+finding 9's own fix was found insufficient on ITS first re-examination, so finding 11 deserved genuinely
+skeptical scrutiny rather than a rubber stamp). Deliberately harsher probing than any prior round applied
+to the move machinery specifically: self-move-assignment, move-construction as a distinct path from
+move-assignment, a third-generation move-then-re-engage-then-move-again, and a fresh `max_turns`/
+`token_budget` audit (loop bound exactness, argument-order at both `initialize()` call sites, whether
+`token_budget` is checked before or after a call, whether the two builders' finite defaults have drifted,
+whether a slow/pathological `on_context()` could escape the turn bound).
+
+**Verdict: clean — no I1-I4-class or correctness/UB bug found.** This is the first round since round 1
+to find no live bug; not proof nothing remains, only that this specific, disclosed probing found none.
+
+**One real test-coverage gap, closed as B21a-d:** B20 (round 5) only proved the class's own invariant
+survives ONE generation of move-**assignment** between two distinct instances. Untested: self-move-
+assignment (a real edge case the `if (this != &other)` guard exists for, never exercised); move-
+**construction** specifically (a separately hand-written code path, not automatically covered by proving
+move-assignment correct); a third-generation move (move → re-engage → move again — whether repeated
+`clear()`/`reserve()` cycles corrupt anything); and a double-`.build()` regression test on
+`ComposedQuickstartSessionBuilder` at all (the base `QuickstartSessionBuilder` has had one since round 1,
+B6 — §2b never got its own equivalent, despite finding 11 changing the exact move machinery `build()`/
+`engage()` now depend on). Round 6 itself verified all four hold via temporary probes (self-move-assign
+preserves content; move-construction resets the source's `engaged_` identically to move-assignment;
+third-generation moves carry the right content with the intermediate correctly `not_engaged`; double-
+build fails closed with `no_store`, matching the base builder) before reporting this as a coverage gap
+rather than a live bug — all four made permanent as B21a-d.
+
+Also re-confirmed as verified non-findings, fresh eyes: `run_rounds()`'s loop runs exactly `max_turns_`
+iterations with no off-by-one; both builders' `initialize()` call sites pass `(token_budget_, max_turns_)`
+in the correct order, matching `AgentSession::initialize()`'s real parameter order; `token_budget_` is
+checked AFTER each call returns (pre-existing `AgentSession` behavior, not introduced or fixable by this
+file); the two builders' `25`-turn defaults have not drifted from each other; a same-`name`'d pair of
+`RequiredArgProvider` contributors (B18/B19's own fixture) doesn't create attribution ambiguity, since
+`assemble_context`'s provenance stamping uses the contributor's INDEX, not its name, as the real
+disambiguator.
+
+Full suite 221/221 (`ctest -LE live-network`) after B21a-d landed; `tests/test_session_builder.cpp` now
+65/65. Finding 7 has now survived TWO rounds (5, 6) without a new finding against it specifically —
+still disclosed as never independently re-examined in its OWN dedicated round the way findings 9/11
+were, but no longer untouched by any later round's fresh-eyes sweep either.
+
+## §0i. Seventh red-team pass — finding 7's own dedicated round, at last — a real bug found in `AgentSession` itself
+
+The one item named at the end of §0h as still lacking its own dedicated round: an independent,
+adversarial pass scoped SPECIFICALLY and exclusively to `max_turns_`/`token_budget_` (finding 7),
+explicitly told to go deep rather than broad. Two live reproductions built as temporary probes.
+
+**Finding 13 (HIGH) — `AgentSession::resolve_codeact_ask()`'s ask-pending branch never advanced
+`turn_index`; `max_turns_`/`token_budget_` were COMPLETELY bypassed by a non-converging CodeAct ask
+loop.** The bug lives in `rt/agent_session.hpp`, not in `session_builder.hpp` itself — this facade's
+own `max_turns_`/`token_budget_` wiring was always correct; what it wires INTO had a real gap this
+round's dedicated depth found. `run_rounds()`'s bound only ever inspects `effect_context_.turn_index`;
+that field is incremented in exactly four places, and the ask-pending branch returns strictly BEFORE
+all four whenever a CodeAct script asks another follow-up question — so `run_rounds()` (where the
+bound actually lives) is never even re-entered while the ask loop continues. LIVE-REPRODUCED: a
+scripted always-ask-pending tool, `max_turns_ == 3`, driven through 50 `resolve_interaction()` round
+trips — `run.max_turns_exceeded` never fired, `turn_index` never left 0, the model (`chat()`) was
+called exactly once for the whole 50-round exchange. Host-paced (each round needs a genuine external
+`resolve_interaction()` call, not a CPU-spin hang), but any automation layer built on ADR-057's own
+`agent.ask()`/`resolve_interaction()` mechanism that answers ask-prompts in a loop reproduces the same
+runaway-cost class finding 7 exists to prevent, completely unprotected by the very setter whose entire
+purpose is that protection — and unlike `.max_turns(std::nullopt)`, there is no setting that would have
+warned a host this specific path is unbounded. **Fixed** in `rt/agent_session.hpp`'s
+`resolve_codeact_ask()`: the ask-pending branch now increments `turn_index` and checks it against
+`max_turns_` itself, failing closed with `run.max_turns_exceeded` before suspending for another ask
+once the cap is reached — mirroring exactly how the ordinary (non-codeact) approval-resume branches one
+function up already increment once per call regardless of approved/denied. Regression-proofed:
+`tests/test_rt_agent_session_codeact_ask_max_turns.cpp` (R1/R2, no real `MediatedPythonRunner` needed —
+any tool returning `error_code == "codeact.ask_pending"` reaches the same path) — verified to actually
+have teeth by reverting the fix and confirming the test fails exactly the way the red-team's own probe
+did. Also recorded as an addendum to `decisions/ADR-057-agent-ask-suspend-without-deadlock.md` §8, since
+the mechanism the gap lived inside is that ADR's own (still Proposed, not yet Judged).
+
+**Finding 14 (MEDIUM, documentation gap, not fixed with code) — the finding-7 disclosure never named
+that `max_turns_`/`token_budget_` bound turn COUNT, never turn DURATION.** Live-reproduced: a
+`ContextProvider::on_context()` that spins forever with no `co_await` hangs `start_run()` past a 20s
+timeout even with `max_turns_ == 25`, the builder's real default. Architecturally expected —
+`ContextProvider`/`Tool`/`ChatClientT` are host-authored, trusted code — not a defect in the fix. But
+the header's own finding-7 text explains why `Bundle::ask()`'s bounded-resume guard doesn't catch a
+model-retry hang without ever stating the identical blind spot applies to a stuck `on_context()`/tool
+`invoke()`/`ChatClientT::chat()` itself. Not fixed with code in this pass — the honest gap is in the
+DISCLOSURE, addressed by this section existing.
+
+**Two LOW findings, informational:** (a) a suspend exactly at `turn_index == max_turns_ - 1` gets one
+extra, unguarded unit of resolution work before the next check catches it — a real ±1 divergence from
+"the cap is exact," not itself a hang (each call is host-paced), undisclosed anywhere until now, not
+fixed (a one-round grace at the boundary, judged not worth the added complexity of tightening further in
+this pass). (b) B11-B13 (session_builder.hpp's own finding-7 regression tests) only ever proved value-
+readback through `AgentSession::max_turns()`, matching their own disclosed scope limit — but
+`tests/test_rt_agent_session_tool_call_loop.cpp`'s R4/R5 (predating finding 7's own fix commit) already
+give the real "does `max_turns_` bound `run_rounds()`'s ordinary loop" proof, live, no network, just
+uncross-referenced from this file. Worth a cross-reference, not a new test.
+
+Full suite 222/222 (`ctest -LE live-network`) after the fix (`rt/agent_session.hpp` + the new
+`tests/test_rt_agent_session_codeact_ask_max_turns.cpp`) landed — a full rebuild confirmed zero
+regressions anywhere else in the tree, including every OTHER `AgentSession` consumer. **Verdict: finding
+7's own dedicated round finally ran, and found a real bug — not in this facade, but in the mechanism it
+wires into.** Not yet independently re-examined a second time.
 
 ## 0. Correction found during implementation — §3's own fix does not compile as written
 
@@ -178,14 +546,15 @@ installs the bare client directly — for a deterministic fake (`JokerChatClient
 Named explicitly as escape hatch, not a coequal option, so a reader doesn't reach for it by habit in
 production code.
 
-### 2b. `HistoryProviderT`/context slot — same "one rung above bare" rule, composed in a fixed, known-correct order
+### 2b. `HistoryProviderT`/context slot — RESOLVED and red-teamed three times (rounds 4-6, §0f-§0h), see findings 8-12
 
 Verified via CodeGraph (`include/agentengine/core/composed_context_provider.hpp`,
 `include/agentengine/core/skill_provider.hpp`): `ComposedContextProvider<Ms...>`'s own file-top comment
 (`composed_context_provider.hpp:30-33`) states contributor order **is** wire-message order; separately,
 `skill_provider.hpp`'s own history (cited in `history_and_skills_provider.hpp`) already established
 that skills must precede history on the wire. This is exactly the class of detail a hand-rolled
-integration gets right once by luck and a builder should get right by construction, every time.
+integration gets right once by luck and a builder should get right by construction, every time — the
+motivation below still holds; only the sketch below turned out not to be directly implementable.
 
 ```cpp
 QuickstartSessionBuilder& window(std::size_t n = 0);          // HistoryProvider<Window<n>>, default
@@ -195,13 +564,81 @@ QuickstartSessionBuilder& with_rag(/* VectorRagContextProvider ctor args */);
 QuickstartSessionBuilder& with_tool_optimizer(/* once it exists -- see tool-optimizer-provider-design-draft.md */);
 ```
 
-`build()` picks the `ComposedContextProvider<...>` template argument order internally: skills, then
-memory/RAG, then history last — **not** the order the host called these methods in. If only `.window()`
-was called (no skills/memory/RAG), `build()` collapses to the plain `HistoryProvider<Window<n>>` alone
-rather than a one-element `ComposedContextProvider<HistoryProvider<Window<n>>>` — avoids paying the
-composite's indirection for the common single-contributor case, matching `AgentSession`'s own
-documented default-template-argument shape (`agent_session.hpp:559`, one-argument instantiation already
-means "just history, nothing composed").
+**Found during implementation, not anticipated by this sketch:** `HistoryProviderT` is a COMPILE-TIME
+type parameter on `AgentSession<ChatClientT, StateT, HistoryProviderT>`, exactly like `ChatClientT`
+(§2a). §2a's own builder already solved the analogous problem for `Provider` (openai vs. anthropic) by
+making it a template parameter chosen ONCE, at construction — not a runtime fluent toggle, because a
+runtime choice between two different C++ types has no single, clean `build()` return type. That solution
+does not scale to `.with_skills()`/`.with_memory()`/`.with_rag()`: unlike `Provider` (one value, chosen
+once), history/context composition is naturally MULTI-VALUED and incremental — any subset, in any
+combination, of an open-ended set of contributors. A single extra template parameter can pick one of two
+things; it cannot represent "any subset of N optional contributors" without either an exponential blow-up
+of specializations or a genuinely different construction shape.
+
+Two real ways to actually build this were named, neither attempted at the time:
+1. A true type-changing fluent builder — every setter `&&`-qualified, returning a NEW specialization of
+   `QuickstartSessionBuilder` with an extended `HistoryProviderT`. A real, cross-cutting refactor of this
+   whole file (`.api_key()`/`.store()`/`.grant()`/`.approve_tools()` would all need the same treatment
+   for the chain to keep working end to end), not an additive change scoped to just the new methods.
+2. A distinct, separately-templated builder type specifically for the composed-context case (e.g.
+   `ComposedQuickstartSessionBuilder<Provider, Store, Ms...>`), accepting the up-front ceremony of naming
+   the composition shape in the type instead of building it up fluently.
+
+**RESOLVED, 4th pass (2026-08-22): option 2, implemented as `ComposedQuickstartSessionBuilder<Provider,
+Store, Ms...>`.** `Ms...` is fixed at the builder's own declaration (same reasoning as `Provider`); a
+single `.providers(std::tuple<Ms...>, budgets)` call supplies the real, host-constructed values instead
+of one setter per provider type (there is no generic way to name "the SkillsProvider slot" in an
+arbitrary pack without either a `requires`-constrained lookup-by-type or exposed index positions — a
+real, deliberately NOT-taken third option, since the underlying providers' own constructors are already
+the ergonomic surface, e.g. `SkillsProvider{sources}` written directly into the tuple). Option 1 (the
+type-changing fluent builder) was not attempted — option 2's own mechanism made it unnecessary, not
+merely deferred a second time.
+
+**What this analysis had NOT anticipated, found during implementation:** `AgentSession<...>::
+history_provider_` is a PLAIN value member, always default-constructed (`rt/agent_session.hpp:2059`; no
+user-declared `AgentSession` constructor exists to route around this) — so `HistoryProviderT` must be
+default-constructible REGARDLESS of which of the two options above got picked. The project's own
+existing `ComposedContextProvider<Ms...>` (`core/composed_context_provider.hpp`) only satisfies that
+when EVERY `Ms` is itself default-constructible — true for `HistoryProvider<Window<n>>` or a mock, never
+true for real `SkillsProvider` (explicit ctor, requires a `vector<SkillSourceDescriptor>`, no default),
+`MemoryProvider`/`VectorRagContextProvider` (both take required reference parameters). Confirmed
+empirically: `tests/test_composed_context_provider.cpp`'s only real `AgentSession` proof
+(`ThreeWayProvider`) uses three deliberately default-constructible MOCK providers, never a real
+`SkillsProvider`/`MemoryProvider`/`VectorRagContextProvider` — composing any of those three into a real
+`AgentSession` had never actually been exercised, a materially bigger gap than this section's original
+text captured (it named "the shape of the builder problem," not "the underlying `AgentSession`-slot
+constraint blocks the interesting cases regardless of builder shape"). Fixed with
+`detail::LazyComposedContextProvider<Ms...>`, kept local to `session_builder.hpp` — see finding 8,
+`session_builder.hpp`'s own top comment, for the mechanism. Also found, separately: `composed_context_
+provider.hpp`'s own comment ("no emplace_*/accessor pair" for `history_provider_`) is now STALE —
+`AgentSession::history_provider()` (`rt/agent_session.hpp:647`) is a real, mutable-reference accessor,
+added since that comment was written; not relied on to bypass the default-constructibility constraint
+above (it doesn't — `AgentSession` still needs to default-construct the member once before the accessor
+can be used), but relied on to install the REAL, engaged provider set after that first, placeholder
+default construction.
+
+### 2c. Capability/secret slot — pure sugar, zero new default authority (unchanged from the prior survey, IMPLEMENTED)
+
+`.openai(model, key, caps)` above does **not** itself grant `cap::Secret` — it only names which
+`SecretRef` the constructed `ChatClientT` will resolve at call time (`chat_client.hpp:891-893`'s own
+"resolution happens inside chat(), never at construction" rule, unchanged). Granting is a **separate,
+mandatory** call:
+
+```cpp
+QuickstartSessionBuilder& secret_from_env(std::string secret_name, char const* env_var);
+    // -> Store::set(secret_name, getenv(env_var)) + a queued Capability{cap::Secret{secret_name, ttl}}
+QuickstartSessionBuilder& grant(Capability);   // escape hatch for anything else (FsRead, NativeExec, ...)
+```
+
+`build()` fails (a `result<Bundle>` error, not a thrown exception or a silent no-op) if `.openai(...)`/
+`.anthropic(...)` named a `SecretRef` that no `.secret_from_env(...)`/`.grant(...)` call ever covered —
+catching the exact "host forgot to grant the key it referenced" mistake at build time instead of at
+first-call time deep inside a coroutine. This is a real ergonomic win the raw API does not offer today
+(a missing grant currently surfaces as a `chat()`-time `failure_class::policy` error, mid-run).
+
+Implemented as `.api_key(SecretRef)` + `.store(Args&&...)` + the `requires`-gated `.api_key_from_env(...)`
+convenience — a real generalization past this sketch's `secret_from_env`-only shape, and past two rounds
+of red-team findings; see §0b/§0c for the full account of what changed and why.
 
 ### 2c. Capability/secret slot — pure sugar, zero new default authority (unchanged from the prior survey)
 
@@ -222,17 +659,36 @@ catching the exact "host forgot to grant the key it referenced" mistake at build
 first-call time deep inside a coroutine. This is a real ergonomic win the raw API does not offer today
 (a missing grant currently surfaces as a `chat()`-time `failure_class::policy` error, mid-run).
 
-### 2d. Approval/policy slot — thin sugar over `ApprovalDecider`/`PolicyDecider` (ADR-070), unchanged shape
+### 2d. Approval/policy slot — thin sugar over `ApprovalDecider`/`PolicyDecider` (ADR-070), CORRECTED then IMPLEMENTED
+
+Original sketch, kept for the record — **this method name is wrong against the real mechanism**:
 
 ```cpp
-QuickstartSessionBuilder& require_approval_for(std::vector<std::string> tool_names);
+QuickstartSessionBuilder& require_approval_for(std::vector<std::string> tool_names);  // WRONG NAME, see below
 QuickstartSessionBuilder& policy(PolicyDecider);
 ```
 
-No new default behavior: `AgentSession`'s own existing fail-closed default (no decider installed ==
-`approval_mode::always_require` wins, per ADR-070's already-Judged design) is preserved untouched;
-these two methods only shorten the syntax for installing a host-authored decider, identical in spirit
-to §2c.
+**Found during implementation, before any code landed:** `ApprovalDecider` (`core/tool_pipeline.hpp`) is
+consulted ONLY for a call a tool's OWN declared `approval_mode` already marked as needing a decision
+(`always_require`, or `policy_driven` with no `PolicyDecider`) — it has no power to make MORE tools
+require approval than their own declaration already does; `require_approval_for(tool_names)` reads as
+though it could. **Implemented instead as `.approve_tools(std::vector<std::string> tool_names)`**:
+installs a decider that auto-approves ONLY the named tools and denies every other already-gated call —
+the safe default. This can only ever turn an already-required human decision into an immediate deny or
+an immediate host-declared approve; it can never skip a decision that was never required, and can never
+turn a decision into an approval for a tool not explicitly named (I2: narrows/decides among
+already-required decisions, never widens which calls need one). If never called, no `ApprovalDecider` is
+installed at all — verified, not merely asserted (`test_session_builder.cpp`'s "B8": the
+session's `approval_decider()` is genuinely empty, `static_cast<bool>(...)` false, not an always-false
+stand-in). `.policy(PolicyDecider)` is unchanged from the sketch — a thin, unmodified pass-through to
+`set_policy_decider`. **Correction (round 3, §0d): "proven end to end" below overclaimed what "B9"/"B10"
+actually test** — both only extract the `ApprovalDecider`/`PolicyDecider` and call it directly, never
+through a live `start_run()` round; a round-3 red-team pass live-verified the real wiring separately
+(a scripted round, `approval_decider_` genuinely consulted through `invoke_tool()`) and it held up, but
+that proof does not live in this repo's own test suite yet — a named, disclosed test gap, not a bug.
+
+Landed in this same pass, then red-teamed once (§0d) — see §0d for what that pass found (a real,
+live-reproduced hang unrelated to the approval logic itself, plus the overclaim corrected above).
 
 ## 3. The one integration point that must not be gotten wrong
 
@@ -329,14 +785,31 @@ already-safe idiom.
 
 ## 7. What this draft is not
 
-Not an ADR. §2a/§2c/§3(as corrected in §0)/§4 are now real, tested code, red-teamed once (§0b) with two
-findings fixed and one still open — §2b/§2d and the fallback/middleware/content-replay/raw-client-only
-surface remain design-only, unimplemented. This facade's own risk profile is genuinely low (§5: no new
-capability semantics, no new authority path — every real finding §0/§0b surfaced was an ordinary C++
-lifetime/concurrency/hygiene bug, not an I2/I3 mechanism breach) — proportionate next step, once §0b's
-finding 3 is closed, is real code for §2b/§2d following this same design → prototype → red-team → fix
-cycle, not the full `design → red-team → prove → judge` gauntlet ADR-070/071-class changes require,
-since nothing here touches I2/I3's own mechanisms, only how conveniently a host can drive them
-correctly. If a later pass surfaces a finding that *does* touch those mechanisms, that finding gets its
-own escalation at that point, matching this project's established practice — not decided in advance
-here.
+Not an ADR. §2a/§2b/§2c/§2d/§3(as corrected in §0)/§4 are now real, tested code. §2a/§2c/§2d/§3/§4 are
+red-teamed three times (§0b, §0c, §0d); §2b (§0e's 4th pass) has been red-teamed THREE times (§0f
+round 4, §0g round 5, §0h round 6) — every finding from all six rounds is closed. The fallback/
+middleware/content-replay/raw-client-only surface remains design-only, unimplemented. This facade's
+own risk profile is low but NOT zero-new-authority in every respect, a claim an earlier version of
+this section made too broadly: §0f's finding 9 and §0g's finding 11 (both `LazyComposedContextProvider`
+state silently crossing/vanishing across session identities via `AgentSession::fork_from()`/
+`history_provider()`) are real, I1/I4-adjacent session-isolation gaps, not merely "ordinary C++ hygiene
+bugs" the way every finding across §0/§0b/§0c/§0d was — neither touches I2/I3's capability/authority
+MECHANISMS directly (nothing gets approved or granted that shouldn't), but both let one session's
+identity observe or silently lose another's mutable state, the class of thing I4 (every effect is
+attributable) cares about. §0g in particular was the sharper lesson: finding 9's OWN fix (move-only)
+was itself red-teamed and found insufficient on its first re-examination — a real instance of this
+project's own repeated pattern (finding 3 → 4, finding 5 → 7) applying to a SECURITY-ADJACENT fix, not
+just an ergonomics one. §0h then re-examined finding 11 under DELIBERATELY harsher probing than that
+pattern would have predicted was needed, and found it held — this project's first clean red-team round
+since round 1, a genuine (if narrow) data point that the fix-then-verify cycle converges rather than
+finding something new indefinitely. Fixed both real findings by narrowing exposure (deleting/correcting
+a capability the type had, adding none) rather than granting anything, so this continues to follow the
+lighter `design → prototype → red-team → fix` cycle, not the full `design → red-team → prove → judge`
+gauntlet ADR-070/071-class changes require — but §0f/§0g are why this section no longer claims "no new
+capability semantics, no new authority path" as a blanket fact about this whole file. Finding 11
+(round 5's fix) still stands ready for its own next, independent red-team round; finding 7 has now
+survived two rounds' worth of fresh-eyes scrutiny (rounds 5 and 6) without its own dedicated round the
+way findings 9/11 got, a meaningfully different disclosure posture than "never examined" but not the
+same as "independently red-teamed." If a later pass surfaces a finding that touches I2/I3's own
+mechanisms directly, that finding gets its own escalation at that point, matching this project's
+established practice — not decided in advance here.

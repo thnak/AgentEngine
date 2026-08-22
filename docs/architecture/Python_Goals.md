@@ -97,12 +97,17 @@ The framework should not depend on a system-installed Python whenever practical.
 The embedded interpreter should behave consistently across supported platforms.
 
 *Specified in: 010 §2 (embedded native CPython, one runtime, permanently). The
-"not-a-system-install" half is **aspirational, not yet decided** — 010 §10 Q1 (whether to ship a
-curated first-party interpreter image) is still open, and the concrete prove-phase embedding used a
-real installed CPython (a miniconda distribution) as its target SDK. Embedding via the C API is
-architecturally "embedded" regardless of whether the shipped product later vendors its own private
-copy of the runtime or locates a system install at deploy time — those are packaging questions Q1
-hasn't answered, not a contradiction of this goal.*
+"not-a-system-install" half is **resolved** — 010 §10 Q1 (whether to ship a curated first-party
+interpreter image) was decided 2026-08-04: yes, shipping one is not optional, since §5's default
+`preinstalled` package policy is only reproducible/offline/fast if a curated image backs it; Q1's own
+resolution names ownership (the ADR-judging authority) and a cadence (monthly rescan plus
+out-of-band CVSS-High-or-above bumps, matching the Wasmtime-pin discipline of 009 §11 Q4). The
+concrete prove-phase embedding still used a real installed CPython (a miniconda distribution) as its
+target SDK — that remains true of the SDK used to *build against*, and is not a contradiction: Q1's
+resolution is about what the *shipped* image is (a project-owned, pinned artifact), not about the
+toolchain used to compile it. Whether that curated image's CPython binary is itself compiled from
+source in-tree or vendored from an upstream release build is still an unspecified packaging detail,
+not a re-opening of this goal.*
 
 ---
 

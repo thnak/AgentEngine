@@ -950,22 +950,23 @@ if(AGENTENGINE_WITH_HTTPS)
     agentengine::core agentengine::provider_http_client agentengine_warnings)
   add_test(NAME test_json_schema_described COMMAND test_json_schema_described)
 
-  # ---- docs/planning/quickstart-session-builder-design-draft.md's prototype prove pass
-  # (core/session_builder.hpp) -- build()-time capability/secret validation and the Bundle
-  # Store/CapabilitySet lifetime-across-a-move proof. No .ask()/start_run() call, so no real network
-  # exchange happens and OpenAIChatClient::chat()'s body is never instantiated -- linked against
-  # provider_http_client only because session_builder.hpp's own file-wide AGENTENGINE_WITH_HTTPS guard
-  # requires the real OpenAIChatClient/AnthropicChatClient types to be visible at all, same reason
-  # test_json_schema_described above needs the same link with no live network call either.
-  add_executable(test_session_builder_prototype test_session_builder_prototype.cpp)
-  target_link_libraries(test_session_builder_prototype PRIVATE
+  # ---- QuickstartSessionBuilder (core/session_builder.hpp), promoted from prototype after three
+  # red-team rounds -- see docs/planning/quickstart-session-builder-design-draft.md. Covers build()-time
+  # capability/secret validation and the Bundle Store/CapabilitySet lifetime-across-a-move proof. No
+  # .ask()/start_run() call, so no real network exchange happens and OpenAIChatClient::chat()'s body is
+  # never instantiated -- linked against provider_http_client only because session_builder.hpp's own
+  # file-wide AGENTENGINE_WITH_HTTPS guard requires the real OpenAIChatClient/AnthropicChatClient types
+  # to be visible at all, same reason test_json_schema_described above needs the same link with no live
+  # network call either.
+  add_executable(test_session_builder test_session_builder.cpp)
+  target_link_libraries(test_session_builder PRIVATE
     agentengine::core agentengine::provider_http_client agentengine_warnings)
-  add_test(NAME test_session_builder_prototype COMMAND test_session_builder_prototype)
+  add_test(NAME test_session_builder COMMAND test_session_builder)
 
   # ---- unified-streaming-design-draft.md §4 (Piece D), live proof: Bundle::ask()/ask_stream() against
-  # REAL OpenRouter -- the one surface test_session_builder_prototype.cpp's own top comment names as
-  # out of its scope ("a live, real-network proof of .ask() end to end is separately scoped future
-  # work"). Needs the real MbedTLS-backed HTTPS stack, unlike its offline sibling above.
+  # REAL OpenRouter -- the one surface this facade's own history names as out of scope until now ("a
+  # live, real-network proof of .ask() end to end is separately scoped future work"). Needs the real
+  # MbedTLS-backed HTTPS stack, unlike its offline sibling above.
   add_executable(test_session_builder_openrouter_live_e2e test_session_builder_openrouter_live_e2e.cpp)
   target_link_libraries(test_session_builder_openrouter_live_e2e PRIVATE
     agentengine::core agentengine::provider_http_client agentengine_warnings
@@ -1070,6 +1071,13 @@ add_test(NAME test_rt_agent_session_token_budget COMMAND test_rt_agent_session_t
 add_executable(test_rt_agent_session_tool_call_loop test_rt_agent_session_tool_call_loop.cpp)
 target_link_libraries(test_rt_agent_session_tool_call_loop PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_agent_session_tool_call_loop COMMAND test_rt_agent_session_tool_call_loop)
+
+# ---- Regression proof for the resolve_codeact_ask()/ask-pending max_turns_ bypass fix, found by a
+# red-team round dedicated to session_builder.hpp's own "finding 7" (docs/planning/quickstart-session-
+# builder-design-draft.md). No real MediatedPythonRunner needed -- see this file's own top comment.
+add_executable(test_rt_agent_session_codeact_ask_max_turns test_rt_agent_session_codeact_ask_max_turns.cpp)
+target_link_libraries(test_rt_agent_session_codeact_ask_max_turns PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_agent_session_codeact_ask_max_turns COMMAND test_rt_agent_session_codeact_ask_max_turns)
 
 # ---- decisions/ADR-067-middleware-turn-point-pre-model-enforcement.md wired for real:
 # AgentSession::set_turn_middleware_hook() -- the turn/pre_model mechanism proven standalone in
@@ -1452,6 +1460,15 @@ add_test(NAME test_rt_agent_session_identity_and_admission COMMAND test_rt_agent
 add_executable(test_rt_agent_session_tier3_authority test_rt_agent_session_tier3_authority.cpp)
 target_link_libraries(test_rt_agent_session_tier3_authority PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_agent_session_tier3_authority COMMAND test_rt_agent_session_tier3_authority)
+
+# v1 slice of docs/planning/dynamic-multi-agent-fanout-design-draft.md (rounds 1-14) --
+# agentengine::rt::multi_agent::{Budget, spawn, spawn_with_retry, parallel}
+# (include/agentengine/rt/multi_agent.hpp). Real positive/negative controls, including a genuine
+# multi-threaded Budget contention test and a ThreadPool-backed parallel() fan-out, per this project's
+# own "a real concurrency test under rt::ThreadPool, not a synchronous driver" bar.
+add_executable(test_rt_multi_agent test_rt_multi_agent.cpp)
+target_link_libraries(test_rt_multi_agent PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_multi_agent COMMAND test_rt_multi_agent)
 
 # ---- ADR-037 Phase 2 -- porting test_agent_session_streaming_model_calls(.cpp) (ADR-034 streaming
 # turn loop), test_agent_session_response_format_leak_scan(.cpp) (ADR-035 Phase 1 leak scan), and
