@@ -20,9 +20,12 @@
 // (finding 9) and a diagnostic-quality gap on an empty `Ms...` pack (finding 10), plus two test gaps
 // closed (on_turn_end fan-out, two-real-contributor wire order). Round 4's own fixes (findings 9-10)
 // then WERE red-teamed (round 5): found finding 9's own fix was necessary but not sufficient (finding
-// 11 -- see below). Round 5's own fix (finding 11) has not itself been independently red-teamed a
-// sixth time -- same disclosure posture every prior "just fixed" state in this file has had before its
-// own next round; round 3's fix (finding 7) also remains at that same posture.
+// 11 -- see below). Round 5's own fix (finding 11) then WAS red-teamed (round 6, explicitly re-scoped
+// to also cover finding 7, never independently re-examined since round 3): found no functional bug in
+// either -- both held under deliberately harsher probing (self-move-assignment, move-construction,
+// third-generation moves, a fresh `max_turns`/`token_budget` audit) -- only a real test-coverage gap,
+// closed as B21a-d. This is the first round since round 1 to find no live bug; still not proof nothing
+// remains, only that this specific, disclosed probing found none.
 //
 // Correction found during implementation, not anticipated by the design draft's own §3: `AgentSession`
 // (rt/agent_session.hpp) holds `rt::AsyncMutex session_mutex_` directly as a data member;
@@ -222,6 +225,17 @@
 //    its contributors with no diagnostic -- ordinary `operator=` replacement semantics, identical to
 //    `history_provider() = HistoryProviderT{}`'s own pre-existing silent-reset behavior, not a new
 //    hazard finding 11 introduces or needed to close.
+// 12. **Round 6 red-team: no functional bug found, in either finding 7 or finding 11.** Explicitly
+//    re-scoped to re-examine both fixes with fresh, harsher probing (self-move-assignment, move-
+//    CONSTRUCTION as a genuinely distinct path from move-assignment, a third-generation move-then-
+//    re-engage-then-move-again, and a fresh `max_turns`/`token_budget` audit including the token-
+//    budget-checked-after-not-before-a-call ordering and whether a slow/pathological `on_context()`
+//    escapes the turn bound) -- all held. The first round since round 1 to find no live bug; not proof
+//    nothing remains, only that this specific, disclosed probing found none. One real test-coverage gap
+//    closed as B21a-d: B20 only proved the invariant survives ONE generation of move-ASSIGNMENT between
+//    two distinct instances; `ComposedQuickstartSessionBuilder` also had no double-`.build()` regression
+//    test at all (the base `QuickstartSessionBuilder` has had one, B6, since round 1) even though
+//    finding 11 changed the exact move machinery `build()`/`engage()` depend on.
 
 #include <algorithm>
 #include <array>

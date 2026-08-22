@@ -588,6 +588,125 @@ int main() {
                   "(ordinary, expected operator= replacement semantics -- not itself a finding)");
         }
     }
+    {
+        // B21: round 6 red-team's own test-gap closure -- B20 only covered ONE generation of
+        // move-ASSIGNMENT between two distinct instances. Four scenarios round 6 identified as
+        // unexamined, all closed here as permanent regression coverage (round 6 itself verified all
+        // four hold via temporary probes before reporting this as a test-gap, not a live bug).
+        Principal principal{"p-move-2", ""};
+        std::vector<Message> empty_history;
+        SessionContext session_ctx{"s-move-2", principal, empty_history};
+        EffectContext effect_ctx{};
+
+        // B21a: self-move-assignment (`x = std::move(x)`) must be a safe no-op, not a state-destroying
+        // self-clear -- the `if (this != &other)` guard in operator=(LazyComposedContextProvider&&)
+        // exists specifically for this case.
+        {
+            using SingleBuilder = ComposedQuickstartSessionBuilder<quickstart::Provider::openai,
+                                                                      InMemorySecretStore, RequiredArgProvider>;
+            auto counter = std::make_shared<std::size_t>(0);
+            auto built   = SingleBuilder("gpt-4o-mini")
+                             .api_key_from_env("openai-api-key", "AE_TEST_QUICKSTART_KEY")
+                             .providers(std::make_tuple(RequiredArgProvider{"self-move", counter}))
+                             .build();
+            check(built.has_value(), "B21a setup: build() succeeds");
+            if (built.has_value()) {
+                auto& hp = built->session().history_provider();
+                hp       = std::move(hp);
+                auto contribution = agentengine::test_support::run_task_sync<
+                    result<ContextContribution>>(hp.on_context(session_ctx, effect_ctx));
+                check(contribution.has_value() && contribution->messages.size() == 1 &&
+                          std::get<Text>(contribution->messages[0].content.front().value).text ==
+                              "self-move",
+                      "B21a: self-move-assignment leaves the instance's own content intact, not "
+                      "self-cleared by the moved-from-reset logic");
+            }
+        }
+
+        // B21b: move-CONSTRUCTION (not assignment) must reset the SOURCE's engaged_ the same way
+        // move-assignment does -- both are separately hand-written, not just one delegating to the
+        // other, so this is a genuinely distinct code path from B20's own coverage.
+        {
+            using ProviderT = ComposedQuickstartSessionBuilder<quickstart::Provider::openai,
+                                                                  InMemorySecretStore,
+                                                                  RequiredArgProvider>::HistoryProviderT;
+            auto counter = std::make_shared<std::size_t>(0);
+            ProviderT source;
+            auto engaged = source.engage(std::make_tuple(RequiredArgProvider{"ctor-move", counter}));
+            check(engaged.has_value(), "B21b setup: engage() succeeds");
+
+            ProviderT moved_to(std::move(source));  // move CONSTRUCTION, not operator=
+
+            auto from_source = agentengine::test_support::run_task_sync<result<ContextContribution>>(
+                source.on_context(session_ctx, effect_ctx));
+            check(!from_source.has_value() &&
+                      from_source.error().code == "quickstart.composed_context.not_engaged",
+                  "B21b: move-CONSTRUCTION resets the source's engaged_ exactly like move-assignment "
+                  "does, not left stale by a separate, unfixed code path");
+
+            auto from_moved_to = agentengine::test_support::run_task_sync<result<ContextContribution>>(
+                moved_to.on_context(session_ctx, effect_ctx));
+            check(from_moved_to.has_value() && from_moved_to->messages.size() == 1,
+                  "B21b: the move-constructed instance carries the source's real content");
+        }
+
+        // B21c: a THIRD generation (move -> re-engage -> move again) must not accumulate stale state
+        // or corrupt contributors_ across repeated reserve()/clear() cycles.
+        {
+            using ProviderT = ComposedQuickstartSessionBuilder<quickstart::Provider::openai,
+                                                                  InMemorySecretStore,
+                                                                  RequiredArgProvider>::HistoryProviderT;
+            auto counter_a = std::make_shared<std::size_t>(0);
+            auto counter_b = std::make_shared<std::size_t>(0);
+            ProviderT a;
+            (void)a.engage(std::make_tuple(RequiredArgProvider{"gen-1", counter_a}));
+            ProviderT b(std::move(a));  // generation 1 -> 2
+            (void)a.engage(std::make_tuple(RequiredArgProvider{"gen-1-reengaged", counter_a}));
+            ProviderT c(std::move(b));  // generation 2 -> 3 (b is now the moved-from one)
+
+            auto from_c = agentengine::test_support::run_task_sync<result<ContextContribution>>(
+                c.on_context(session_ctx, effect_ctx));
+            check(from_c.has_value() && from_c->messages.size() == 1 &&
+                      std::get<Text>(from_c->messages[0].content.front().value).text == "gen-1",
+                  "B21c: a third-generation move carries the right content through two hops");
+            auto from_b = agentengine::test_support::run_task_sync<result<ContextContribution>>(
+                b.on_context(session_ctx, effect_ctx));
+            check(!from_b.has_value() &&
+                      from_b.error().code == "quickstart.composed_context.not_engaged",
+                  "B21c: the intermediate (twice-moved-from) instance is genuinely not_engaged, not "
+                  "left in some stale intermediate state");
+            (void)counter_b;
+        }
+
+        // B21d: a second .build() call on the SAME ComposedQuickstartSessionBuilder instance fails
+        // closed -- the §2a base builder has this at B6, but §2b never had its own equivalent, even
+        // though finding 11 changed the exact move machinery build()/engage() depend on.
+        {
+            using SingleBuilder = ComposedQuickstartSessionBuilder<quickstart::Provider::openai,
+                                                                      InMemorySecretStore, RequiredArgProvider>;
+            auto counter = std::make_shared<std::size_t>(0);
+            SingleBuilder builder("gpt-4o-mini");
+            builder.api_key_from_env("openai-api-key", "AE_TEST_QUICKSTART_KEY")
+                .providers(std::make_tuple(RequiredArgProvider{"double-build", counter}));
+            auto first = builder.build();
+            check(first.has_value(), "B21d: first build() call succeeds");
+            auto second = builder.build();
+            check(!second.has_value(), "B21d: second build() call on the SAME builder fails closed");
+            if (!second.has_value()) {
+                check(second.error().code == "quickstart_builder.no_store",
+                      "B21d: the failure is specifically 'no_store' (store_ already moved out by the "
+                      "first call), matching the base builder's own B6");
+            }
+            if (first.has_value()) {
+                auto contribution = agentengine::test_support::run_task_sync<
+                    result<ContextContribution>>(
+                    first->session().history_provider().on_context(session_ctx, effect_ctx));
+                check(contribution.has_value() && contribution->messages.size() == 1,
+                      "B21d: the first, successful Bundle remains intact and correctly engaged after "
+                      "the second call fails");
+            }
+        }
+    }
 
     std::fprintf(stderr, g_failures == 0 ? "test_session_builder: ALL PASS\n"
                                           : "test_session_builder: %d FAILURE(S)\n",

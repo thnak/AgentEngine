@@ -2,12 +2,14 @@
 
 **Status: promoted from prototype to a supported feature (2026-08-22) — §2a/§2b/§2c/§2d/§3/§4
 implemented. §2a/§2c/§2d/§3/§4 red-teamed three times, all findings closed. §2b was implemented in a
-4th pass, then red-teamed twice (round 4, §0f, then round 5, §0g): round 4 found and fixed a real
-session-isolation gap (`fork_from()` aliasing stateful composed providers, finding 9) plus a
+4th pass, then red-teamed three times (round 4 §0f, round 5 §0g, round 6 §0h): round 4 found and fixed
+a real session-isolation gap (`fork_from()` aliasing stateful composed providers, finding 9) plus a
 diagnostics gap (finding 10); round 5 found finding 9's own fix was NECESSARY BUT NOT SUFFICIENT — a
-second, worse bypass of the same class through a MOVE rather than a copy (finding 11, now fixed).
-Round 3's fix (finding 7) and round 5's fix (finding 11) both still await their own next independent
-red-team round — disclosed as open items, not silently treated as closed.** A convenience facade over
+second, worse bypass of the same class through a MOVE rather than a copy (finding 11, fixed); round 6,
+explicitly re-scoped to include finding 7 (round 3's fix, never independently re-examined until now)
+alongside finding 11, found NO functional bug in either — the first clean round since round 1 — only a
+real test-coverage gap (closed as B21a-d). Finding 11 still awaits its own next independent red-team
+round — disclosed as an open item, not silently treated as closed.** A convenience facade over
 already-Reviewed RFCs,
 not a new invariant or capability shape, so promotion did not require its own ADR (CLAUDE.md's
 `design → red-team → prove → judge` cycle is reserved for contested/hot-path/security-critical
@@ -29,7 +31,7 @@ analysis had NOT anticipated (the default-constructibility constraint runs deepe
 text captured). Matches this project's `design → red-team → prove → judge` discipline (CLAUDE.md),
 same honesty level as `docs/planning/tool-optimizer-provider-design-draft.md` and `docs/planning/
 model-call-gateway-routing-design-draft.md`. Real, compiling, passing code:
-`include/agentengine/core/session_builder.hpp`, `tests/test_session_builder.cpp` (55/55 checks,
+`include/agentengine/core/session_builder.hpp`, `tests/test_session_builder.cpp` (65/65 checks,
 Windows/MSVC, `AGENTENGINE_WITH_HTTPS=ON`, full suite 221/221 `ctest -LE live-network`). Still not
 implemented: `.with_fallback()`/`.with_middleware()`/`.with_content_replay()`, and this draft's own
 `.raw_client_only()` escape hatch — named in the header's own top comment, not silently dropped.
@@ -330,6 +332,49 @@ time** — same disclosure posture every prior "just fixed" state in this file h
 next round. Finding 7 (round 3) remains at that same posture too — this round found nothing new against
 it, but that is a verified non-finding, not proof of correctness beyond what round 5 actually checked.
 
+## §0h. Sixth red-team pass — no functional bug found, one real test-coverage gap closed
+
+An independent, adversarial pass, explicitly re-scoped to prioritize the two items still standing:
+finding 7 (round 3's fix, never independently re-examined since) and finding 11 (round 5's fix, given
+finding 9's own fix was found insufficient on ITS first re-examination, so finding 11 deserved genuinely
+skeptical scrutiny rather than a rubber stamp). Deliberately harsher probing than any prior round applied
+to the move machinery specifically: self-move-assignment, move-construction as a distinct path from
+move-assignment, a third-generation move-then-re-engage-then-move-again, and a fresh `max_turns`/
+`token_budget` audit (loop bound exactness, argument-order at both `initialize()` call sites, whether
+`token_budget` is checked before or after a call, whether the two builders' finite defaults have drifted,
+whether a slow/pathological `on_context()` could escape the turn bound).
+
+**Verdict: clean — no I1-I4-class or correctness/UB bug found.** This is the first round since round 1
+to find no live bug; not proof nothing remains, only that this specific, disclosed probing found none.
+
+**One real test-coverage gap, closed as B21a-d:** B20 (round 5) only proved the class's own invariant
+survives ONE generation of move-**assignment** between two distinct instances. Untested: self-move-
+assignment (a real edge case the `if (this != &other)` guard exists for, never exercised); move-
+**construction** specifically (a separately hand-written code path, not automatically covered by proving
+move-assignment correct); a third-generation move (move → re-engage → move again — whether repeated
+`clear()`/`reserve()` cycles corrupt anything); and a double-`.build()` regression test on
+`ComposedQuickstartSessionBuilder` at all (the base `QuickstartSessionBuilder` has had one since round 1,
+B6 — §2b never got its own equivalent, despite finding 11 changing the exact move machinery `build()`/
+`engage()` now depend on). Round 6 itself verified all four hold via temporary probes (self-move-assign
+preserves content; move-construction resets the source's `engaged_` identically to move-assignment;
+third-generation moves carry the right content with the intermediate correctly `not_engaged`; double-
+build fails closed with `no_store`, matching the base builder) before reporting this as a coverage gap
+rather than a live bug — all four made permanent as B21a-d.
+
+Also re-confirmed as verified non-findings, fresh eyes: `run_rounds()`'s loop runs exactly `max_turns_`
+iterations with no off-by-one; both builders' `initialize()` call sites pass `(token_budget_, max_turns_)`
+in the correct order, matching `AgentSession::initialize()`'s real parameter order; `token_budget_` is
+checked AFTER each call returns (pre-existing `AgentSession` behavior, not introduced or fixable by this
+file); the two builders' `25`-turn defaults have not drifted from each other; a same-`name`'d pair of
+`RequiredArgProvider` contributors (B18/B19's own fixture) doesn't create attribution ambiguity, since
+`assemble_context`'s provenance stamping uses the contributor's INDEX, not its name, as the real
+disambiguator.
+
+Full suite 221/221 (`ctest -LE live-network`) after B21a-d landed; `tests/test_session_builder.cpp` now
+65/65. Finding 7 has now survived TWO rounds (5, 6) without a new finding against it specifically —
+still disclosed as never independently re-examined in its OWN dedicated round the way findings 9/11
+were, but no longer untouched by any later round's fresh-eyes sweep either.
+
 ## 0. Correction found during implementation — §3's own fix does not compile as written
 
 **`AgentSession` cannot be moved or copied at all.** It holds `rt::AsyncMutex session_mutex_`
@@ -440,7 +485,7 @@ installs the bare client directly — for a deterministic fake (`JokerChatClient
 Named explicitly as escape hatch, not a coequal option, so a reader doesn't reach for it by habit in
 production code.
 
-### 2b. `HistoryProviderT`/context slot — RESOLVED and red-teamed twice (rounds 4-5, §0f-§0g), see findings 8-11
+### 2b. `HistoryProviderT`/context slot — RESOLVED and red-teamed three times (rounds 4-6, §0f-§0h), see findings 8-12
 
 Verified via CodeGraph (`include/agentengine/core/composed_context_provider.hpp`,
 `include/agentengine/core/skill_provider.hpp`): `ComposedContextProvider<Ms...>`'s own file-top comment
@@ -680,25 +725,30 @@ already-safe idiom.
 ## 7. What this draft is not
 
 Not an ADR. §2a/§2b/§2c/§2d/§3(as corrected in §0)/§4 are now real, tested code. §2a/§2c/§2d/§3/§4 are
-red-teamed three times (§0b, §0c, §0d); §2b (§0e's 4th pass) has been red-teamed TWICE (§0f round 4,
-§0g round 5) — every finding from all five rounds is closed. The fallback/middleware/content-replay/
-raw-client-only surface remains design-only, unimplemented. This facade's own risk profile is low but
-NOT zero-new-authority in every respect, a claim an earlier version of this section made too broadly:
-§0f's finding 9 and §0g's finding 11 (both `LazyComposedContextProvider` state silently crossing/
-vanishing across session identities via `AgentSession::fork_from()`/`history_provider()`) are real,
-I1/I4-adjacent session-isolation gaps, not merely "ordinary C++ hygiene bugs" the way every finding
-across §0/§0b/§0c/§0d was — neither touches I2/I3's capability/authority MECHANISMS directly (nothing
-gets approved or granted that shouldn't), but both let one session's identity observe or silently lose
-another's mutable state, the class of thing I4 (every effect is attributable) cares about. §0g in
-particular is the sharper lesson: finding 9's OWN fix (move-only) was itself red-teamed and found
-insufficient on its first re-examination — a real instance of this project's own repeated pattern
-(finding 3 → 4, finding 5 → 7) applying to a SECURITY-ADJACENT fix, not just an ergonomics one. Fixed
-both times by narrowing exposure (deleting/correcting a capability the type had, adding none) rather
-than granting anything, so this continues to follow the lighter `design → prototype → red-team → fix`
-cycle, not the full `design → red-team → prove → judge` gauntlet ADR-070/071-class changes require —
-but §0f/§0g are why this section no longer claims "no new capability semantics, no new authority path"
-as a blanket fact about this whole file. Findings 7 (round 3's fix) and 11 (round 5's fix) both still
-stand ready for their own next, independent red-team round — neither is a blocker to starting the
-other. If a later pass surfaces a finding that touches I2/I3's own mechanisms directly, that finding
-gets its own escalation at that point, matching this project's established practice — not decided in
-advance here.
+red-teamed three times (§0b, §0c, §0d); §2b (§0e's 4th pass) has been red-teamed THREE times (§0f
+round 4, §0g round 5, §0h round 6) — every finding from all six rounds is closed. The fallback/
+middleware/content-replay/raw-client-only surface remains design-only, unimplemented. This facade's
+own risk profile is low but NOT zero-new-authority in every respect, a claim an earlier version of
+this section made too broadly: §0f's finding 9 and §0g's finding 11 (both `LazyComposedContextProvider`
+state silently crossing/vanishing across session identities via `AgentSession::fork_from()`/
+`history_provider()`) are real, I1/I4-adjacent session-isolation gaps, not merely "ordinary C++ hygiene
+bugs" the way every finding across §0/§0b/§0c/§0d was — neither touches I2/I3's capability/authority
+MECHANISMS directly (nothing gets approved or granted that shouldn't), but both let one session's
+identity observe or silently lose another's mutable state, the class of thing I4 (every effect is
+attributable) cares about. §0g in particular was the sharper lesson: finding 9's OWN fix (move-only)
+was itself red-teamed and found insufficient on its first re-examination — a real instance of this
+project's own repeated pattern (finding 3 → 4, finding 5 → 7) applying to a SECURITY-ADJACENT fix, not
+just an ergonomics one. §0h then re-examined finding 11 under DELIBERATELY harsher probing than that
+pattern would have predicted was needed, and found it held — this project's first clean red-team round
+since round 1, a genuine (if narrow) data point that the fix-then-verify cycle converges rather than
+finding something new indefinitely. Fixed both real findings by narrowing exposure (deleting/correcting
+a capability the type had, adding none) rather than granting anything, so this continues to follow the
+lighter `design → prototype → red-team → fix` cycle, not the full `design → red-team → prove → judge`
+gauntlet ADR-070/071-class changes require — but §0f/§0g are why this section no longer claims "no new
+capability semantics, no new authority path" as a blanket fact about this whole file. Finding 11
+(round 5's fix) still stands ready for its own next, independent red-team round; finding 7 has now
+survived two rounds' worth of fresh-eyes scrutiny (rounds 5 and 6) without its own dedicated round the
+way findings 9/11 got, a meaningfully different disclosure posture than "never examined" but not the
+same as "independently red-teamed." If a later pass surfaces a finding that touches I2/I3's own
+mechanisms directly, that finding gets its own escalation at that point, matching this project's
+established practice — not decided in advance here.
