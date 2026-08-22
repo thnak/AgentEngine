@@ -365,21 +365,47 @@ int main() {
         auto updates = parse_streaming_response_into_updates(sse, /*is_chunked=*/false);
         check(updates.has_value(), "D2-R4: a full SSE stream parses into an update list");
         if (updates) {
-            check(updates->size() == 3,
-                  "D2-R4: two text deltas (per-chunk fidelity) + one assembled tool call = 3 updates");
-            if (updates->size() == 3) {
+            // unified-streaming-design-draft.md §1 (Piece B): two text deltas + two companion
+            // tool_call_argument_chunk updates (one per chunk carrying a non-empty arguments
+            // fragment) + one assembled tool call = 5 updates. The two chunk updates are new;
+            // everything else is unchanged from before this piece.
+            check(updates->size() == 5,
+                  "D2-R4: two text deltas + two argument-chunk updates + one assembled tool call = "
+                  "5 updates");
+            if (updates->size() == 5) {
                 auto const* t0 = std::get_if<Text>(&(*updates)[0].delta.value);
-                auto const* t1 = std::get_if<Text>(&(*updates)[1].delta.value);
                 check(t0 && t0->text == "Let ", "D2-R4: first text delta exact, own chunk boundary preserved");
+                check(!(*updates)[0].is_final, "D2-R4: the first text delta is not final");
+
+                check((*updates)[1].tool_call_argument_chunk.has_value() &&
+                          (*updates)[2].tool_call_argument_chunk.has_value(),
+                      "D2-R4: the two tool-call argument fragments each get their own companion update");
+                if ((*updates)[1].tool_call_argument_chunk.has_value()) {
+                    auto const& c1 = *(*updates)[1].tool_call_argument_chunk;
+                    check(c1.call_id == "call-1" && c1.tool_name == "get_weather" &&
+                              c1.arguments_fragment == R"({"location":)" && !c1.is_final,
+                          "D2-R4: the first argument fragment carries the real call_id/tool_name and "
+                          "its own raw bytes, not accumulated -- OpenAI has no completion boundary, "
+                          "so is_final stays false");
+                }
+                if ((*updates)[2].tool_call_argument_chunk.has_value()) {
+                    auto const& c2 = *(*updates)[2].tool_call_argument_chunk;
+                    check(c2.call_id == "call-1" && c2.arguments_fragment == R"("Seattle"})" && !c2.is_final,
+                          "D2-R4: the second argument fragment carries its own raw bytes, not the "
+                          "accumulated total");
+                }
+
+                auto const* t1 = std::get_if<Text>(&(*updates)[3].delta.value);
                 check(t1 && t1->text == "me check.", "D2-R4: second text delta exact, own chunk boundary preserved");
-                check(!(*updates)[0].is_final && !(*updates)[1].is_final,
-                      "D2-R4: only the LAST update is marked is_final");
-                auto const* tc = std::get_if<ToolCall>(&(*updates)[2].delta.value);
+                check(!(*updates)[3].is_final, "D2-R4: the second text delta is not final either");
+
+                auto const* tc = std::get_if<ToolCall>(&(*updates)[4].delta.value);
                 check(tc && tc->call_id == "call-1" && tc->tool_name == "get_weather",
                       "D2-R4: the tool call's id/name survive fragment reassembly");
                 check(tc && tc->arguments_json == R"({"location":"Seattle"})",
-                      "D2-R4: argument fragments from TWO separate chunks concatenate into valid JSON");
-                check((*updates)[2].is_final, "D2-R4: the assembled tool call is the final update");
+                      "D2-R4: argument fragments from TWO separate chunks concatenate into valid JSON "
+                      "-- the one real json::parse, unaffected by the new display-only fragments");
+                check((*updates)[4].is_final, "D2-R4: the assembled tool call is the final update");
             }
         }
     }

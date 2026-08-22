@@ -30,6 +30,15 @@
 //         this proves the raw trip -> shed -> cooldown -> half-open -> close cycle in isolation, no
 //         fallback tier involved -- ModelCallGateway<Primary> with zero fallbacks, a legitimate
 //         configuration this file's own top comment names).
+//   G9 -- call_stream() basic success: chunks are pushed live (not buffer-then-replay) and the
+//         accumulated result matches call()'s own reconstruction exactly (unified-streaming-design-
+//         draft.md §3, Piece A).
+//   G10 -- call_stream() commit gate, invisible retry: a primary attempt that fails BEFORE pushing
+//         anything falls through to the fallback with nothing caller-visible from the failed attempt
+//         -- the SAME failover call() already proves (G2), now through the streaming entry point.
+//   G11 -- call_stream() commit gate, terminal failure: a primary attempt that pushes ONE chunk and
+//         THEN fails is terminal -- the fallback is never attempted, proving the commit gate actually
+//         gates (Finding 2's own core claim, unproven by any test until now).
 
 #include <chrono>
 #include <iostream>
@@ -69,6 +78,11 @@ struct ScriptedOutcome {
 
     static ScriptedOutcome ok(std::vector<ae::ChatResponseUpdate> u) { return ScriptedOutcome{true, std::move(u), {}}; }
     static ScriptedOutcome fail(ae::failure_class k) { return ScriptedOutcome{false, {}, k}; }
+    // G11: `call_stream()`'s own commit-gate claim needs a scenario `fail(k)` alone can't script --
+    // pushing SOME chunks live, then failing (rather than failing before anything is ever pushed).
+    static ScriptedOutcome partial_then_fail(std::vector<ae::ChatResponseUpdate> u, ae::failure_class k) {
+        return ScriptedOutcome{false, std::move(u), k};
+    }
 };
 
 // `ModelCallGateway`'s constructor takes `Primary primary`/`std::tuple<Fallback...> fallbacks` BY
@@ -105,11 +119,15 @@ public:
         std::size_t const call_count = *call_count_;
         if (call_count < outcomes.size()) {
             ScriptedOutcome const& o = outcomes[call_count];
+            // `updates` are pushed live BEFORE the terminal (close or fail) either way -- this is what
+            // lets `partial_then_fail()` script "some chunks arrived, THEN the attempt failed" (G11);
+            // `fail(k)`'s own empty `updates` makes this identical to the prior "fail immediately"
+            // behavior for every existing G1-G8 case, unchanged.
+            for (auto const& upd : o.updates) {
+                auto pushed = pair.producer.push(upd);
+                (void)pushed;
+            }
             if (o.succeed) {
-                for (auto const& upd : o.updates) {
-                    auto pushed = pair.producer.push(upd);
-                    (void)pushed;
-                }
                 pair.producer.close();
             } else {
                 pair.producer.fail(ae::error{o.fail_klass, "scripted_failure", "test.scripted_failure"});
@@ -444,6 +462,80 @@ int main() {
             AE_CHECK(r.has_value(), "G8: after closing, calls are admitted normally again");
             AE_CHECK(primary.call_count() == 5, "G8: call_count advances again -- no longer shedding");
         }
+    }
+
+    // ---- G9: call_stream() basic success -- chunks pushed live, reconstruction matches call() -----
+    {
+        ScriptedGatewayBackend primary;
+        primary.outcomes = {
+            ScriptedOutcome::ok({text_delta("Hello, "), text_delta("world!", /*is_final=*/true,
+                                                                    ae::Usage{2, 3, 0, 0, 0.0})}),
+        };
+        ae::ModelCallGateway<ScriptedGatewayBackend> gw(primary, std::make_tuple(), fast_retry_policy(),
+                                                          ae::BreakerConfig{}, &no_jitter);
+        auto ctx = make_ctx();
+        ae::DrainedChatStream drained = ae::drain_chat_stream(gw.call_stream(make_request(), ctx));
+        AE_CHECK(drained.ok, "G9: call_stream() reaches a clean, successful terminal");
+        AE_CHECK(drained.usage.has_value() && drained.usage->input_tokens == 2,
+                 "G9: the terminal update's real usage survives to the drained result");
+        AE_CHECK(text_of(drained.accumulated) == "Hello, world!",
+                 "G9: both chunks were pushed live (not buffered-then-replayed) and reconstruct the "
+                 "exact same text call()'s own buffered path would have produced");
+        AE_CHECK(primary.call_count() == 1, "G9: exactly one real attempt -- no retry needed on success");
+    }
+
+    // ---- G10: call_stream() commit gate -- a pre-commit failure falls through to the fallback, ----
+    // ---- with nothing caller-visible from the failed attempt (mirrors G2, via call_stream()) -------
+    {
+        ScriptedGatewayBackend primary;
+        primary.outcomes = {ScriptedOutcome::fail(ae::failure_class::contract)};  // fails before any push
+        ScriptedGatewayBackend fallback;
+        fallback.outcomes = {
+            ScriptedOutcome::ok({text_delta("fallback answer", /*is_final=*/true,
+                                             ae::Usage{1, 1, 0, 0, 0.0})}),
+        };
+        ae::ModelCallGateway<ScriptedGatewayBackend, ScriptedGatewayBackend> gw(
+            primary, std::make_tuple(fallback), fast_retry_policy(), ae::BreakerConfig{}, &no_jitter);
+        auto ctx = make_ctx();
+        ae::DrainedChatStream drained = ae::drain_chat_stream(gw.call_stream(make_request(), ctx));
+        AE_CHECK(drained.ok, "G10: the call converges via failover, same as call()'s own G2");
+        AE_CHECK(text_of(drained.accumulated) == "fallback answer",
+                 "G10: only the fallback's text reaches the caller -- the failed primary attempt "
+                 "contributed nothing, since it never pushed a chunk before failing");
+        AE_CHECK(primary.call_count() == 1 && fallback.call_count() == 1,
+                 "G10: the primary was tried once (and failed silently) before falling over to the "
+                 "fallback, which was tried exactly once");
+    }
+
+    // ---- G11: call_stream() commit gate -- a POST-commit failure is terminal, no fallback attempted
+    {
+        ScriptedGatewayBackend primary;
+        primary.outcomes = {
+            ScriptedOutcome::partial_then_fail({text_delta("partial output before it broke")},
+                                                ae::failure_class::transient),
+        };
+        ScriptedGatewayBackend fallback;
+        fallback.outcomes = {
+            ScriptedOutcome::ok({text_delta("should never be reached", /*is_final=*/true,
+                                             ae::Usage{1, 1, 0, 0, 0.0})}),
+        };
+        ae::ModelCallGateway<ScriptedGatewayBackend, ScriptedGatewayBackend> gw(
+            primary, std::make_tuple(fallback), fast_retry_policy(), ae::BreakerConfig{}, &no_jitter);
+        auto ctx = make_ctx();
+        ae::DrainedChatStream drained = ae::drain_chat_stream(gw.call_stream(make_request(), ctx));
+        AE_CHECK(!drained.ok,
+                 "G11: the overall call fails -- once something was shown, the commit gate forbids "
+                 "silently substituting the fallback's answer instead (004 §4)");
+        AE_CHECK(text_of(drained.accumulated) == "partial output before it broke",
+                 "G11: the one chunk pushed BEFORE the failure genuinely reached the caller live -- "
+                 "proving this is a real commit gate, not just a retry-suppression flag");
+        AE_CHECK(fallback.call_count() == 0,
+                 "G11: the commit gate's own core claim -- the fallback is NEVER attempted once "
+                 "anything has already been shown to the caller, matching call()'s own single-attempt "
+                 "failure contract for this case (unified-streaming-design-draft.md §3)");
+        AE_CHECK(primary.call_count() == 1,
+                 "G11: exactly one real attempt on the primary -- no retry either, since any_pushed "
+                 "gates retry-within-tier the same way it gates failover");
     }
 
     std::cout << (g_failures == 0 ? "test_model_call_gateway: OK\n" : "test_model_call_gateway: FAIL\n");

@@ -38,6 +38,7 @@
 
 #include "agentengine/core/run_event.hpp"
 #include "agentengine/protocol/agui/types.hpp"
+#include "agentengine/rt/message_codec.hpp"
 
 namespace agentengine::agui {
 
@@ -86,8 +87,15 @@ public:
             }
             case run_event_kind::model_delta: {
                 auto const& p = std::get<run_event_payload::ModelDelta>(ev.payload);
-                std::string const& message_id = ensure_open_message(ev.run_id);
-                return {TextMessageContent{message_id, p.text_delta}};
+                if (auto const* text = std::get_if<run_event_payload::ModelTextDelta>(&p.value)) {
+                    std::string const& message_id = ensure_open_message(ev.run_id);
+                    return {TextMessageContent{message_id, text->text}};
+                }
+                // ModelToolCallArgumentDelta -- AG-UI already has a native shape for exactly this
+                // (TOOL_CALL_ARGS), unlike tool_call_delta's own progress-report case below (no
+                // documented *_CHUNK wire shape existed for that one).
+                auto const& arg = std::get<run_event_payload::ModelToolCallArgumentDelta>(p.value);
+                return {ToolCallArgs{arg.call_id, arg.arguments_fragment}};
             }
             case run_event_kind::model_call_finished: {
                 std::string const message_id = ensure_open_message(ev.run_id);
@@ -101,19 +109,29 @@ public:
             }
             case run_event_kind::tool_call_delta: {
                 // See file-top comment: CUSTOM, not TOOL_CALL_CHUNK (undocumented wire shape in the
-                // cited research record).
+                // cited research record). `content` now carries the engine's whole ContentItem
+                // vocabulary (unified-streaming-design-draft.md §5, Piece E) -- reuses the same
+                // codec `ToolResult` content already goes through, rather than a bespoke shape.
                 auto const& p = std::get<run_event_payload::ToolCallDelta>(ev.payload);
                 return {CustomEvent{"ae:tool_call_progress",
                                      json::Value::make_object(
                                          {{"callId", json::Value::make_string(p.call_id)},
-                                          {"progressText", json::Value::make_string(p.progress_text)}})}};
+                                          {"content", rt::content_item_to_json(p.content)}})}};
             }
             case run_event_kind::tool_call_finished: {
-                // No ToolCallResult: `ToolCallFinished`'s payload carries only `{call_id, ok}`, no
-                // real result CONTENT to report -- honest scoping, not a dropped event (ToolCallEnd
-                // still fires).
+                // unified-streaming-design-draft.md §2, Piece C: `ToolCallFinished` now carries the
+                // real `ToolResult` -- project both ToolCallEnd (unchanged) and AG-UI's own
+                // already-wire-typed ToolCallResult, closing this file's own previously-honest gap
+                // ("no real result CONTENT to report").
                 auto const& p = std::get<run_event_payload::ToolCallFinished>(ev.payload);
-                return {ToolCallEnd{p.call_id}};
+                std::vector<json::Value> content_items;
+                content_items.reserve(p.result.content.size());
+                for (ContentItem const& item : p.result.content) {
+                    content_items.push_back(rt::content_item_to_json(item));
+                }
+                return {ToolCallEnd{p.call_id},
+                        ToolCallResult{/*message_id=*/mint_message_id(ev.run_id), p.call_id,
+                                       json::Value::make_array(std::move(content_items)), std::nullopt}};
             }
 
             case run_event_kind::sandbox_exec_started:

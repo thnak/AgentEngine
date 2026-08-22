@@ -261,7 +261,7 @@ int main() {
             saw_tool_call_finished = true;
             attributed_to_first_run |= (ev->run_id == "s-bg:run:1");
             if (auto const* p = std::get_if<agentengine::run_event_payload::ToolCallFinished>(&ev->payload)) {
-                finished_ok = p->ok;
+                finished_ok = !p->result.is_error;
             }
         }
     }

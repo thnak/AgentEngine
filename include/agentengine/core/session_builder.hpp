@@ -276,14 +276,18 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <memory_resource>
 #include <mutex>
 #include <optional>
+#include <stop_token>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <tuple>
 #include <type_traits>
 #include <utility>
@@ -556,6 +560,15 @@ public:
     using SessionT = agentengine::rt::AgentSession<ChatClientT, agentengine::rt::NoSessionState,
                                                      HistoryProviderT>;
 
+    // unified-streaming-design-draft.md §4 (Piece D). NEW lifetime contract, found during
+    // implementation, not named by either red-team pass or the design draft itself: `ask_stream()`'s
+    // driver/relay threads capture `this` (a `Bundle*`) for as long as they run, to reach `session_`/
+    // `event_stream_` -- unlike `ask()` (purely synchronous, no cross-call lifetime concern), moving a
+    // `Bundle` elsewhere WHILE its `ask_stream_driver_`/relay pair is still active leaves that thread
+    // holding a dangling `this` once the OLD `Bundle` object is destroyed. A caller must not move a
+    // `Bundle` after calling `ask_stream()` on it until that call's returned `stream<std::string>` has
+    // reached a terminal state (closed/failed) -- narrow, disclosed, not structurally prevented, the
+    // same class of choice `call_stream()`'s own `this`-capture residual makes (`model_call_gateway.hpp`).
     Bundle(Bundle&&) noexcept = default;
     Bundle(Bundle const&)     = delete;
     Bundle& operator=(Bundle const&) = delete;
@@ -598,6 +611,113 @@ public:
         return agentengine::text_of(r->message);
     }
 
+    // unified-streaming-design-draft.md §4 (Piece D), Rev 7. Reuses `ask()`'s OWN bounded-single-
+    // `resume()` contract exactly (see that method's own comment for why one `resume()` is always
+    // enough for a healthy, uncontended run) -- just moved onto a background thread, because this call
+    // will legitimately block for the run's whole real-world duration and the caller wants to consume
+    // text live, not because more than one `resume()` is ever needed. Two cooperating threads, not a
+    // resume loop (the 4th red-team pass's Finding 3: a resume loop is what reintroduces the exact
+    // double-resume hazard `ask()` was built to avoid):
+    //   - the OUTER driver (`ask_stream_driver_`, a `std::jthread`) calls `start_run()` then `resume()`
+    //     exactly once, matching `ask()`'s own fail-closed check if that alone doesn't finish;
+    //   - a nested relay thread, spawned BEFORE `resume()` is called (so no event is ever missed --
+    //     `emit_run_event()` pushes onto a real, backpressured channel, `core/stream.hpp:211`'s default
+    //     256-item capacity, so nothing is silently dropped even if the relay is a poll or two behind,
+    //     but it must already be polling to ever pop the run's own opening `run_started` event), drains
+    //     the session's ONE persistent event stream and relays `ModelTextDelta` fragments into the
+    //     caller-facing `stream<std::string>`.
+    //
+    // `event_stream_` is a REAL, new design point the original sketch never named: `enable_event_stream()`
+    // (`rt/agent_session.hpp`) is a single-call API (it move-assigns the session's own producer, so a
+    // second call would silently orphan any earlier consumer) -- created lazily, ONCE, on the first
+    // `ask_stream()` call, and reused by every later one. Confirmed by grep: nothing ever calls
+    // `.close()`/`.fail()` on the session's event producer -- it is session-scoped and outlives any
+    // single run, so the relay below recognizes ITS OWN run's terminal event and stops there, never
+    // relying on the shared event stream's own `.done()` (which never becomes true).
+    [[nodiscard]] agentengine::result<agentengine::stream<std::string>> ask_stream(std::string text) {
+        std::lock_guard<std::mutex> guard(*ask_mutex_);
+        if (!event_stream_.has_value()) {
+            event_stream_ = session_->enable_event_stream(std::pmr::get_default_resource());
+        }
+        // Found while writing the first real (live) test for this method, not by either red-team pass
+        // or by hand-tracing: without this, `stream_model_calls_` stays at its default `false`, so
+        // `run_model_call()`'s dispatch never reaches `call_stream()` at all (unified-streaming-design-
+        // draft.md §3) -- the relay below would then see only `run_started`/the terminal event, never a
+        // single `model_delta`, and `ask_stream()` would silently return an empty text stream. Idempotent
+        // (a bool set to its own value on a later call is harmless); also flips `.ask()`'s own behavior
+        // on this session to the streaming call_stream() path from then on, which is functionally
+        // equivalent for `.ask()` (same final result, it just doesn't read the extra live events).
+        session_->set_stream_model_calls(true);
+        auto pair = agentengine::make_stream<std::string>(std::pmr::get_default_resource());
+        // `ask_stream_driver_ = std::jthread(...)`: if a PRIOR driver is still joinable, `std::jthread`'s
+        // move-assignment operator requests-stop-and-joins it first (standard-guaranteed) -- since this
+        // whole statement runs under `ask_mutex_`, an overlapping `ask_stream()` call genuinely blocks
+        // here until the prior call's driver+relay pair has fully finished, the same full-duration
+        // serialization `ask()` already gives sequential callers (Finding 9-new, 5th red-team pass: the
+        // OBSERVABLE behavior was always meant to be this; the REASONING for why used to be wrong -- see
+        // the design draft's own correction).
+        ask_stream_driver_ = std::jthread([this, text = std::move(text), producer = std::move(pair.producer)]() mutable {
+            std::string current_run_id;
+            bool run_id_known = false;
+            std::jthread relay([this, &current_run_id, &run_id_known,
+                                 &producer](std::stop_token stop_tok) {
+                while (!stop_tok.stop_requested()) {
+                    while (std::optional<agentengine::RunEvent> ev = event_stream_->next()) {
+                        if (!run_id_known) {
+                            if (ev->kind == agentengine::run_event_kind::run_started) {
+                                current_run_id = ev->run_id;
+                                run_id_known   = true;
+                            } else {
+                                continue;  // a stray event from before this run started -- ignore
+                            }
+                        }
+                        if (ev->run_id != current_run_id) continue;  // not this run's own event
+                        if (ev->kind == agentengine::run_event_kind::model_delta) {
+                            auto const& d =
+                                std::get<agentengine::run_event_payload::ModelDelta>(ev->payload);
+                            if (auto const* t = std::get_if<agentengine::run_event_payload::ModelTextDelta>(
+                                    &d.value)) {
+                                if (producer.push(t->text) != agentengine::stream_push::ok) return;
+                            }
+                            // ModelToolCallArgumentDelta: skipped -- ask_stream()'s contract stays
+                            // text-only, unchanged from the design's own scoping.
+                        } else if (ev->kind == agentengine::run_event_kind::run_finished) {
+                            producer.close();
+                            return;
+                        } else if (ev->kind == agentengine::run_event_kind::run_failed ||
+                                   ev->kind == agentengine::run_event_kind::run_canceled) {
+                            producer.fail(agentengine::error{
+                                agentengine::failure_class::fatal,
+                                "the run ended without completing successfully",
+                                "quickstart_bundle.ask_stream_run_failed"});
+                            return;
+                        }
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                }
+            });
+
+            auto t = session_->start_run(agentengine::rt::StartRun{detail::user_message(std::move(text))});
+            t.resume();
+            if (!t.done()) {
+                producer.fail(agentengine::error{
+                    agentengine::failure_class::fatal,
+                    "Bundle::ask_stream() needed more than one resume() to complete -- the run "
+                    "suspended on something this driver will not drive further (most likely a "
+                    "concurrent caller holding session_mutex_ via the raw session() accessor, since "
+                    "ask_stream() already serializes against ask()/ask_stream() via ask_mutex_). "
+                    "Stopping here rather than resuming again, to avoid a cross-thread double-resume "
+                    "race.",
+                    "quickstart_bundle.ask_stream_would_block"});
+            }
+            // `relay`'s own destructor (end of this lambda's scope) requests-stop-and-joins it -- by
+            // design it should already have stopped itself above, having observed this run's own
+            // terminal event once resume() returned; this is a formality, not a real wait, in the
+            // healthy case.
+        });
+        return std::move(pair.consumer);
+    }
+
 private:
     template <Provider, class>
     friend class QuickstartSessionBuilder;
@@ -620,6 +740,14 @@ private:
     std::unique_ptr<agentengine::CapabilitySet> capabilities_;
     std::unique_ptr<SessionT> session_;
     std::unique_ptr<std::mutex> ask_mutex_ = std::make_unique<std::mutex>();
+    // unified-streaming-design-draft.md §4 (Piece D). CORRECTED during implementation (not as the design
+    // draft's own prose originally stated): `ask_stream_driver_` must be declared AFTER `event_stream_`,
+    // not before -- members destroy in REVERSE declared order (see this comment's own opening sentence),
+    // so declaring it last means it is destroyed FIRST, which is what stops/joins the driver+relay
+    // threads BEFORE `event_stream_` (the stream they read from) is torn down. The reverse order would
+    // destroy `event_stream_` while a thread might still be reading it.
+    std::optional<agentengine::stream<agentengine::RunEvent>> event_stream_;
+    std::jthread ask_stream_driver_;
 
     static_assert(std::is_same_v<decltype(store_), std::unique_ptr<Store>>,
                   "store_ must stay heap-owned via unique_ptr -- a plain value member here would "

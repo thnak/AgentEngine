@@ -120,6 +120,21 @@ struct ChatResponse {
     std::uint32_t fallback_tier = 0;
 };
 
+// unified-streaming-design-draft.md §1 (Piece B). A raw, possibly-incomplete fragment of ONE tool
+// call's arguments, pushed alongside (not instead of) a backend's own internal accumulation buffer
+// -- `finish()` (per-backend `StreamingUpdateAccumulator`) stays the one real `json::parse`, this is
+// purely an earlier, best-effort exposure of bytes already arriving. Mirrors
+// `run_event_payload::ModelToolCallArgumentDelta` (run_event.hpp) field-for-field; kept as a separate
+// type at this layer rather than reused directly, since `core/` (backend-facing) and
+// `run_event_payload` (session/UI-facing) are deliberately different vocabularies elsewhere in this
+// file too (e.g. `ChatResponseUpdate::delta` vs `ModelDelta`).
+struct ToolCallArgumentChunk {
+    std::string call_id;
+    std::string tool_name;           // present on the fragment that opens the call
+    std::string arguments_fragment;  // raw bytes received in THIS update, not the accumulated total
+    bool        is_final = false;    // true on the fragment that completes this tool call's arguments
+};
+
 struct ChatResponseUpdate {  // ae-naming-lint: allow ChatResponseUpdate — pre-existing M0 scaffolding, reconcile at owning milestone
     ContentItem delta;
     bool        is_final = false;
@@ -130,6 +145,13 @@ struct ChatResponseUpdate {  // ae-naming-lint: allow ChatResponseUpdate — pre
     // provided none" -- a caller that needs usage (AgentSession's streaming loop, 004 §5's
     // TokenBudget<N>) must treat nullopt as a hard failure, never silently as zero cost.
     std::optional<Usage> usage = std::nullopt;
+    // unified-streaming-design-draft.md §1 (Piece B) -- additive, following the SAME precedent
+    // `usage` above already set: every pre-existing `ChatResponseUpdate{delta, is_final}` call site
+    // keeps compiling unchanged. Set on a companion update pushed as a tool call's arguments grow;
+    // `delta` is left at its default (empty `ContentItem`) on that update, and the drain loop
+    // (`rt/agent_session.hpp`) must skip appending `delta` to accumulated content when this is set,
+    // to avoid a spurious placeholder content item.
+    std::optional<ToolCallArgumentChunk> tool_call_argument_chunk = std::nullopt;
 };
 
 // concept, not a base class (004 §1) — a backend satisfies this shape; it is never inherited from
@@ -212,6 +234,23 @@ template <class T>
 concept ModelCallGatewayLike = requires(T gateway, ChatRequest request, EffectContext& ctx) {
     { gateway.capabilities() } -> std::same_as<ChatClientCapabilities>;
     { gateway.call(request, ctx) } -> std::same_as<task<result<ChatResponse>>>;
+};
+
+// unified-streaming-design-draft.md §3 (Piece A), Finding 4/5 (4th red-team pass): a SEPARATE, optional
+// concept rather than a widening of `ModelCallGatewayLike` above -- `MiddlewareModelCallGateway` and
+// `ContentReplayGateway` (both `model_call_gateway.hpp`/`content_replay_gateway.hpp`) are real, existing
+// `ModelCallGatewayLike` conformers that expose only `call()`; widening the required concept would break
+// both outright. Checked with `if constexpr` at the one real call site (`rt/agent_session.hpp`'s
+// `run_model_call()`), the identical duck-typed-optionality idiom `HasProducerChatClientId` below already
+// establishes for the same reason ("widening the concept would force every conformer to grow a method it
+// has no real identity to report"). The required shape mirrors `ChatClient`'s own `chat_stream()`
+// requirement above exactly (`stream<ChatResponseUpdate>`, not a new payload type) -- `ModelCallGateway`
+// itself is the one real conformer; the two wrapper types above do not gain streaming in this pass, a
+// named, disclosed residual (unified-streaming-design-draft.md §3).
+template <class T>
+// ae-naming-lint: allow ModelCallGatewayStreamLike — mirrors ModelCallGatewayLike's own suppression, same file
+concept ModelCallGatewayStreamLike = requires(T gateway, ChatRequest request, EffectContext& ctx) {
+    { gateway.call_stream(request, ctx) } -> std::same_as<stream<ChatResponseUpdate>>;
 };
 
 // Gap-audit finding 20 / 003 §8 Q2 ("a Reasoning item is included in a turn's assembled context only

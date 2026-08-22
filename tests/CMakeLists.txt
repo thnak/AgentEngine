@@ -962,6 +962,17 @@ if(AGENTENGINE_WITH_HTTPS)
   target_link_libraries(test_session_builder PRIVATE
     agentengine::core agentengine::provider_http_client agentengine_warnings)
   add_test(NAME test_session_builder COMMAND test_session_builder)
+
+  # ---- unified-streaming-design-draft.md §4 (Piece D), live proof: Bundle::ask()/ask_stream() against
+  # REAL OpenRouter -- the one surface this facade's own history names as out of scope until now ("a
+  # live, real-network proof of .ask() end to end is separately scoped future work"). Needs the real
+  # MbedTLS-backed HTTPS stack, unlike its offline sibling above.
+  add_executable(test_session_builder_openrouter_live_e2e test_session_builder_openrouter_live_e2e.cpp)
+  target_link_libraries(test_session_builder_openrouter_live_e2e PRIVATE
+    agentengine::core agentengine::provider_http_client agentengine_warnings
+    MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+  add_test(NAME test_session_builder_openrouter_live_e2e COMMAND test_session_builder_openrouter_live_e2e)
+  set_tests_properties(test_session_builder_openrouter_live_e2e PROPERTIES LABELS "live-network" TIMEOUT 300)
 endif()
 
 # ---- Gap-3 fix (2026-08-14, decisions/ADR-045-*.md) -- core/json_schema_validator.hpp, proving

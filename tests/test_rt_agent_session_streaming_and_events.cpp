@@ -380,7 +380,11 @@ int main() {
         for (auto const& ev : events) {
             if (ev.kind == run_event_kind::model_delta) {
                 ++delta_count;
-                joined_deltas += std::get<agentengine::run_event_payload::ModelDelta>(ev.payload).text_delta;
+                auto const& d = std::get<agentengine::run_event_payload::ModelDelta>(ev.payload);
+                if (auto const* t =
+                        std::get_if<agentengine::run_event_payload::ModelTextDelta>(&d.value)) {
+                    joined_deltas += t->text;
+                }
             }
         }
         check(delta_count == 3, "S1: exactly one model_delta event fired per pushed Text delta");

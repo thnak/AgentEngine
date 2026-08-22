@@ -676,7 +676,7 @@ using BackgroundTaskCompletion = std::function<void(ToolResult, ToolInvocationAu
     // 006 §6b's own scope (ADR-060 §3) never promised `Backgroundable`/`StandingEffect` progress
     // delivery through this channel; this makes that exclusion true by construction, not merely true
     // because nobody has tried yet.
-    ctx.report_progress = [](std::string_view) {};
+    ctx.report_progress = [](ContentItem) {};
 
     // -- step 4/7: authorize + bind (the tool's own capability ceiling) -----------------------------
     std::vector<BoundCapability> bound;

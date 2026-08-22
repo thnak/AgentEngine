@@ -25,6 +25,13 @@
 //   G5 -- AgentSession integration: rt::AgentSession<ModelCallGateway<...>, ...> converges a real
 //         start_run() with zero model_delta events (the accepted, named ADR-036 trade) and fires the
 //         ADR-036 gateway warning.
+//
+// New claim (unified-streaming-design-draft.md §3, Piece A):
+//   G6 -- the SAME gateway-typed session, with set_stream_model_calls(true): real, live model_delta
+//         events DO fire now (proving run_model_call()'s corrected nested-if-constexpr dispatch
+//         actually reaches call_stream(), not just that it compiles), the run still converges to the
+//         same final text, and start_run()'s own gateway warning names the narrower streaming trade
+//         instead of the old blanket "no live model_delta events" claim.
 
 #include <memory>
 #include <memory_resource>
@@ -224,6 +231,64 @@ int main() {
     check(saw_gateway_warning,
           "G5: the ADR-036 gateway warning fires, naming the trade -- a visible fact about the run, not "
           "a silent one, matching ADR-034's own established pattern");
+
+    // ---- G6: the SAME gateway type, streaming enabled -- real live model_delta events now fire -------
+    {
+        static_assert(agentengine::ModelCallGatewayStreamLike<GatewayT>,
+                      "G6 setup: ModelCallGateway<ScriptedGatewayBackend> satisfies "
+                      "ModelCallGatewayStreamLike once call_stream() exists on it unconditionally");
+
+        Session session2;
+        ScriptedGatewayBackend primary2;
+        primary2.outcomes = {
+            ScriptedOutcome::ok({text_delta("live "), text_delta("streamed answer", true,
+                                                                   agentengine::Usage{4, 2, 0, 0, 0.0})}),
+        };
+        session2.emplace_chat_client(primary2, std::make_tuple(), fast_retry_policy(),
+                                      agentengine::BreakerConfig{}, GatewayT::JitterSource(&no_jitter));
+        session2.initialize("s-g6", agentengine::Principal{"p", ""});
+        session2.set_capabilities(&held);
+        session2.set_stream_model_calls(true);
+
+        auto viewer2 = session2.enable_event_stream(std::pmr::get_default_resource());
+
+        agentengine::result<agentengine::rt::AgentResponse> r2 =
+            drive(session2.start_run(StartRun{user_message("hello")}));
+        check(r2.has_value(), "G6: a streaming, gateway-backed run converges");
+        if (r2.has_value()) {
+            check(agentengine::text_of(r2->message) == "live streamed answer",
+                  "G6: the accumulated text matches exactly what live delta pushes reconstruct");
+        }
+
+        std::vector<agentengine::RunEvent> events2;
+        while (auto ev = viewer2.next()) events2.push_back(std::move(*ev));
+        std::string joined_deltas;
+        std::size_t delta_count2 = 0;
+        bool saw_streaming_warning = false;
+        for (auto const& ev : events2) {
+            if (ev.kind == agentengine::run_event_kind::model_delta) {
+                ++delta_count2;
+                auto const& d = std::get<agentengine::run_event_payload::ModelDelta>(ev.payload);
+                if (auto const* t =
+                        std::get_if<agentengine::run_event_payload::ModelTextDelta>(&d.value)) {
+                    joined_deltas += t->text;
+                }
+            }
+            if (ev.kind == agentengine::run_event_kind::warning) {
+                auto const& p = std::get<agentengine::run_event_payload::Warning>(ev.payload);
+                if (p.message.find("streaming enabled") != std::string::npos) saw_streaming_warning = true;
+            }
+        }
+        check(delta_count2 == 2,
+              "G6: real model_delta events fire for a gateway-routed round once call_stream() is "
+              "actually reached -- proving the dispatch fix (Rev 7, Finding 4-new) works at runtime, "
+              "not just that it compiles");
+        check(joined_deltas == "live streamed answer",
+              "G6: the live-pushed deltas, joined in order, match the accumulated final text exactly");
+        check(saw_streaming_warning,
+              "G6: start_run()'s own warning names the NARROWER streaming trade (Finding 5-new) -- not "
+              "the old blanket 'no live model_delta events' claim, which would now be false");
+    }
 
     if (g_failures == 0) {
         std::fprintf(stderr, "test_rt_model_call_gateway_session: ALL PASS\n");

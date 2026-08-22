@@ -191,8 +191,10 @@ int main() {
     {
         (void)projector.project(
             ae::RunEvent{"run-x", 1, ae::run_event_kind::model_call_started, ae::run_event_payload::Empty{}});
-        auto out = projector.project(ae::RunEvent{"run-x", 2, ae::run_event_kind::model_delta,
-                                                    ae::run_event_payload::ModelDelta{"partial text"}});
+        auto out = projector.project(
+            ae::RunEvent{"run-x", 2, ae::run_event_kind::model_delta,
+                         ae::run_event_payload::ModelDelta{
+                             ae::run_event_payload::ModelTextDelta{"partial text"}}});
         AE_CHECK(out.size() == 1 && std::holds_alternative<agui::TextMessageContent>(out[0]),
                  "E2-3: model_delta -> a single TextMessageContent");
         if (out.size() == 1 && std::holds_alternative<agui::TextMessageContent>(out[0])) {
@@ -205,8 +207,10 @@ int main() {
 
     // model_delta WITHOUT a preceding model_call_started -- the defensive lazy-open path.
     {
-        auto out = projector.project(ae::RunEvent{"run-y", 1, ae::run_event_kind::model_delta,
-                                                    ae::run_event_payload::ModelDelta{"orphaned"}});
+        auto out = projector.project(
+            ae::RunEvent{"run-y", 1, ae::run_event_kind::model_delta,
+                         ae::run_event_payload::ModelDelta{
+                             ae::run_event_payload::ModelTextDelta{"orphaned"}}});
         AE_CHECK(out.size() == 1 && std::holds_alternative<agui::TextMessageContent>(out[0]),
                  "E2-4: an out-of-order model_delta still produces a real TextMessageContent via the "
                  "defensive lazy-open path, never a crash");
@@ -222,7 +226,8 @@ int main() {
 
         auto delta = projector.project(
             ae::RunEvent{"run-z", 2, ae::run_event_kind::tool_call_delta,
-                         ae::run_event_payload::ToolCallDelta{"call-1", "50% done"}});
+                         ae::run_event_payload::ToolCallDelta{
+                             "call-1", ae::ContentItem{ae::Text{"50% done"}}}});
         AE_CHECK(delta.size() == 1 && std::holds_alternative<agui::CustomEvent>(delta[0]),
                  "E2-6: tool_call_delta -> CustomEvent (ae:tool_call_progress), NOT an undocumented "
                  "TOOL_CALL_CHUNK shape this codebase has no cited field layout for");
@@ -233,9 +238,12 @@ int main() {
 
         auto finished = projector.project(
             ae::RunEvent{"run-z", 3, ae::run_event_kind::tool_call_finished,
-                         ae::run_event_payload::ToolCallFinished{"call-1", true}});
-        AE_CHECK(finished.size() == 1 && std::holds_alternative<agui::ToolCallEnd>(finished[0]),
-                 "E2-7: tool_call_finished -> ToolCallEnd");
+                         ae::run_event_payload::ToolCallFinished{
+                             "call-1", ae::ToolResult{"call-1", {}, /*is_error=*/false}}});
+        AE_CHECK(finished.size() == 2 && std::holds_alternative<agui::ToolCallEnd>(finished[0]) &&
+                     std::holds_alternative<agui::ToolCallResult>(finished[1]),
+                 "E2-7: tool_call_finished -> ToolCallEnd + ToolCallResult (the real result content, "
+                 "closing this projector's own previously-honest gap)");
     }
 
     // sandbox_exec_started/finished.

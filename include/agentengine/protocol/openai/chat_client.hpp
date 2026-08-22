@@ -574,7 +574,7 @@ public:
 
         std::vector<ChatResponseUpdate> out;
         for (std::string const& block : framer_.feed(decoded)) {
-            for (ContentItem& item : items_from_block(block)) {
+            for (ContentItem& item : items_from_block(block, &out)) {
                 release(&out, std::move(item));
             }
         }
@@ -587,7 +587,7 @@ public:
         std::vector<ChatResponseUpdate> out;
         // A truncated final event still carries a real item -- do not silently drop it.
         if (std::string tail = framer_.take_remainder(); !tail.empty()) {
-            for (ContentItem& item : items_from_block(tail)) release(&out, std::move(item));
+            for (ContentItem& item : items_from_block(tail, &out)) release(&out, std::move(item));
         }
         for (auto const& acc : pending_by_index_) {
             if (!acc.seen) continue;
@@ -642,7 +642,13 @@ private:
     }
 
     // One SSE event block -> zero or more content items, updating tool-call accumulation state.
-    [[nodiscard]] std::vector<ContentItem> items_from_block(std::string const& block) {
+    // `chunk_out`: unified-streaming-design-draft.md §1 (Piece B) -- as `PendingToolCall::arguments`
+    // grows, a companion `ChatResponseUpdate{.tool_call_argument_chunk = {...}}` is pushed directly
+    // here (raw, unrepaired, best-effort display fragment), alongside (not instead of) continuing to
+    // accumulate into `pending_by_index_` exactly as before. `finish()` is unchanged -- same one real
+    // `json::parse`, same authoritative buffer, zero change to the dispatch-tier invariant.
+    [[nodiscard]] std::vector<ContentItem> items_from_block(std::string const& block,
+                                                              std::vector<ChatResponseUpdate>* chunk_out) {
         std::vector<ContentItem> out;
         for (std::string_view payload : split_sse_data_events(block)) {
             if (payload == "[DONE]") {
@@ -684,8 +690,18 @@ private:
                         if (auto const* name = fn->find("name"); name && name->is_string()) {
                             acc.name += name->as_string();
                         }
-                        if (auto const* args = fn->find("arguments"); args && args->is_string()) {
+                        if (auto const* args = fn->find("arguments");
+                            args && args->is_string() && !args->as_string().empty()) {
                             acc.arguments += args->as_string();
+                            // OpenAI's stream has no explicit per-tool-call completion boundary event
+                            // (only this unparsed `index`-transition convention or a trailing
+                            // `finish_reason`) -- `is_final` stays false here; open question, not
+                            // guessed at (unified-streaming-design-draft.md open question 6, OpenAI
+                            // side).
+                            ChatResponseUpdate chunk_update;
+                            chunk_update.tool_call_argument_chunk = ToolCallArgumentChunk{
+                                acc.id, acc.name, args->as_string(), /*is_final=*/false};
+                            chunk_out->push_back(std::move(chunk_update));
                         }
                     }
                 }

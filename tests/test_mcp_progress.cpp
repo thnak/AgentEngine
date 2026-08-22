@@ -31,8 +31,10 @@ int main() {
 
     // --- P-1: tool_call_delta -> a real progress notification ---------------------------------------
     {
-        auto out = projector.project(ae::RunEvent{"run-1", 1, ae::run_event_kind::tool_call_delta,
-                                                    ae::run_event_payload::ToolCallDelta{"call-1", "25% done"}});
+        auto out = projector.project(
+            ae::RunEvent{"run-1", 1, ae::run_event_kind::tool_call_delta,
+                         ae::run_event_payload::ToolCallDelta{
+                             "call-1", ae::ContentItem{ae::Text{"25% done"}}}});
         check(out.has_value(), "P-1: tool_call_delta produces a ProgressNotification");
         if (out.has_value()) {
             check(out->progress_token == "call-1" && out->message == "25% done" && out->progress == 1.0,
@@ -43,10 +45,14 @@ int main() {
 
     // --- P-2: progress MUST increase with each notification for the SAME token ----------------------
     {
-        auto second = projector.project(ae::RunEvent{"run-1", 2, ae::run_event_kind::tool_call_delta,
-                                                        ae::run_event_payload::ToolCallDelta{"call-1", "60% done"}});
-        auto third = projector.project(ae::RunEvent{"run-1", 3, ae::run_event_kind::tool_call_delta,
-                                                       ae::run_event_payload::ToolCallDelta{"call-1", "90% done"}});
+        auto second = projector.project(
+            ae::RunEvent{"run-1", 2, ae::run_event_kind::tool_call_delta,
+                         ae::run_event_payload::ToolCallDelta{
+                             "call-1", ae::ContentItem{ae::Text{"60% done"}}}});
+        auto third = projector.project(
+            ae::RunEvent{"run-1", 3, ae::run_event_kind::tool_call_delta,
+                         ae::run_event_payload::ToolCallDelta{
+                             "call-1", ae::ContentItem{ae::Text{"90% done"}}}});
         check(second.has_value() && third.has_value(), "P-2: subsequent deltas for the same token succeed");
         if (second.has_value() && third.has_value()) {
             check(second->progress == 2.0 && third->progress == 3.0 && third->progress > second->progress,
@@ -57,8 +63,10 @@ int main() {
 
     // --- P-3: a DIFFERENT token gets its OWN independent counter, starting fresh at 1 ----------------
     {
-        auto other = projector.project(ae::RunEvent{"run-2", 1, ae::run_event_kind::tool_call_delta,
-                                                       ae::run_event_payload::ToolCallDelta{"call-2", "starting"}});
+        auto other = projector.project(
+            ae::RunEvent{"run-2", 1, ae::run_event_kind::tool_call_delta,
+                         ae::run_event_payload::ToolCallDelta{
+                             "call-2", ae::ContentItem{ae::Text{"starting"}}}});
         check(other.has_value() && other->progress == 1.0,
               "P-3: a different progressToken (call-2) starts its own counter at 1, independent of "
               "call-1's already-advanced counter -- \"unique across active requests\" per the spec");
@@ -69,8 +77,10 @@ int main() {
     {
         auto turn = projector.project(
             ae::RunEvent{"run-1", 4, ae::run_event_kind::turn_started, ae::run_event_payload::Turn{0}});
-        auto delta = projector.project(ae::RunEvent{"run-1", 5, ae::run_event_kind::model_delta,
-                                                       ae::run_event_payload::ModelDelta{"text"}});
+        auto delta = projector.project(
+            ae::RunEvent{"run-1", 5, ae::run_event_kind::model_delta,
+                         ae::run_event_payload::ModelDelta{
+                             ae::run_event_payload::ModelTextDelta{"text"}}});
         auto started = projector.project(
             ae::RunEvent{"run-1", 6, ae::run_event_kind::tool_call_started,
                          ae::run_event_payload::ToolCallStarted{"call-3", "search"}});

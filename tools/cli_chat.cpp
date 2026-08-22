@@ -795,7 +795,7 @@ void print_skills_banner(std::vector<native_jail::MaterializedSkillMount> const&
         }
         case run_event_kind::tool_call_finished: {
             auto const& p = std::get<run_event_payload::ToolCallFinished>(ev.payload);
-            return std::string("  <- tool call ") + (p.ok ? "OK" : "FAILED") +
+            return std::string("  <- tool call ") + (!p.result.is_error ? "OK" : "FAILED") +
                    " (call_id=" + p.call_id + ")";
         }
         case run_event_kind::input_required: return "  [suspended: waiting for input]";
@@ -925,9 +925,15 @@ template <class Inner>
                     while (std::optional<RunEvent> ev = event_stream.next()) {
                         if (ev->kind == run_event_kind::model_delta) {
                             auto const& d = std::get<run_event_payload::ModelDelta>(ev->payload);
-                            std::cout << d.text_delta;
-                            std::cout.flush();
-                            mid_line = true;
+                            if (auto const* text =
+                                    std::get_if<run_event_payload::ModelTextDelta>(&d.value)) {
+                                std::cout << text->text;
+                                std::cout.flush();
+                                mid_line = true;
+                            }
+                            // ModelToolCallArgumentDelta: no display path in this CLI renderer yet --
+                            // silently skipped, same as it was invisible before this design (013's own
+                            // display-tier gap this piece closes for consumers that DO project it).
                         } else {
                             if (mid_line) { std::cout << "\n"; mid_line = false; }
                             std::cout << describe_event(*ev) << "\n";

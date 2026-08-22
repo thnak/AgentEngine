@@ -10,6 +10,7 @@
 #include <string_view>
 #include <vector>
 
+#include "agentengine/core/content.hpp"
 #include "agentengine/core/error.hpp"
 #include "agentengine/trust/capability.hpp"
 #include "agentengine/trust/principal.hpp"
@@ -69,7 +70,7 @@ struct EffectContext {
     // full consumption contract.
     std::vector<std::string> codeact_preseeded_answers;
     // ADR-060: a real, call-scoped reverse channel into the session's own `emit_run_event()` --
-    // `Tool<>::invoke()` calls `ctx.report_progress("...")` to push a `run_event_kind::
+    // `Tool<>::invoke()` calls `ctx.report_progress(ContentItem{...})` to push a `run_event_kind::
     // tool_call_delta` (run_event.hpp) for ITSELF, mid-call, onto `enable_event_stream()`'s stream.
     // Default-initialized to a no-op (this codebase's "optional-but-always-safe-to-call" idiom, e.g.
     // `ApprovalDecider`'s own default) so a tool that calls it with no session-side listener bound
@@ -99,7 +100,13 @@ struct EffectContext {
     // (captured by whichever bracket happened to be open) leak onto that detached thread would let a
     // backgrounded tool's ORDINARY call to `report_progress()` reach `emit_run_event()`'s unlocked
     // `run_event_seq_by_run_` mutation from off-thread -- see ADR-060 §4 for the full finding.
-    std::function<void(std::string_view)> report_progress = [](std::string_view) {};
+    // unified-streaming-design-draft.md §5 (Piece E): widened from `std::string_view` to the engine's
+    // whole `ContentItem` vocabulary (content.hpp) -- a tool author gets plain text, a structured
+    // `Data` fact, or a namespaced `Custom` payload for anything app-specific, not a bespoke shape.
+    // Every real bind site forces `tainted = true` (recursively, through any nested `ToolResult`)
+    // before constructing the event -- a tool never gets to mark its own pushed content trusted; see
+    // `rt/agent_session.hpp`'s `force_tainted()`.
+    std::function<void(ContentItem)> report_progress = [](ContentItem) {};
 };
 
 } // namespace agentengine
