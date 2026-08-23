@@ -250,6 +250,12 @@
 #include "agentengine/rt/task.hpp"
 #include "agentengine/trust/principal.hpp"
 
+// ADDENDUM: docs/planning/agent-spawn-runtime-design-draft.md §4.2/§9 RC-1 (OpenQuestions.md OQ-14,
+// `agent.spawn`'s nested-run mechanism) adds ONE new, additive-only, opt-in member to this class --
+// `set_background_execution_disabled()`/`background_execution_disabled()` -- and one new guard at
+// the top of `start_background_task()` below. See that setter's own comment for the full rationale;
+// every existing session is byte-for-byte unaffected until a caller opts in.
+
 namespace agentengine::rt {
 
 // Reused, unchanged shape (matching agentengine::NoSessionState). A distinct type from the
@@ -675,8 +681,40 @@ public:
     void set_scan_response_format_leaks(bool scan) noexcept { scan_response_format_leaks_ = scan; }
     [[nodiscard]] bool scan_response_format_leaks() const noexcept { return scan_response_format_leaks_; }
 
+    // docs/planning/agent-spawn-runtime-design-draft.md §4.2/§9 RC-1 (Critical, Closed): additive,
+    // unset (`false`) by default -- every existing session is unaffected until it opts in. A session
+    // constructed and driven by `rt::run_child_agent_session()` (rt/agent_spawn_child_run.hpp, OQ-14
+    // "agent.spawn"'s nested-run mechanism) sets this unconditionally on every child it builds, so
+    // `start_background_task()` (below) fails closed instead of ever reaching
+    // `tool_pipeline.hpp::background_task()`'s own detached `std::thread` -- a child driven by a
+    // plain "resume until done" loop and then destroyed can never leave a second thread of control
+    // touching the now-destroyed session object, closing the use-after-free that mechanism's own
+    // "freshly constructed, referenced by nothing else, uncontended session_mutex_" precondition
+    // would otherwise miss entirely.
+    void set_background_execution_disabled(bool disabled) noexcept {
+        background_execution_disabled_ = disabled;
+    }
+    [[nodiscard]] bool background_execution_disabled() const noexcept {
+        return background_execution_disabled_;
+    }
+
     void set_max_turns(std::optional<std::uint64_t> max_turns) noexcept { max_turns_ = max_turns; }
     [[nodiscard]] std::optional<std::uint64_t> max_turns() const noexcept { return max_turns_; }
+
+    // docs/planning/agent-spawn-runtime-design-draft.md §4.6 (item 6, OQ-16, OpenQuestions.md).
+    // New, small, opt-in -- every existing session unaffected until it's called, matching every
+    // other set_*() on this class. Unlike `contribution->instructions` (materialized from a
+    // `ContextProvider`'s `TaintedText`, `run_rounds()` below), this text is never model output and
+    // never derived from tainted material -- it is the host/engine's own `trust::push_side_summary()`
+    // rendering of a `CapabilitySet` this session was already constructed with (`core/
+    // session_builder.hpp`'s `build()`, or `rt/agent_spawn_child_run.hpp`'s child construction path
+    // for a spawned child's OWN granted surface) -- so no `TaintedText` declassification step is
+    // needed the way a `ContextProvider`'s contribution needs one (I3: only model-derived content
+    // requires that decision point; this string never touches model output at any point in its
+    // derivation). Empty by default -- `run_rounds()`'s materialization step below is a no-op until
+    // this is set.
+    void set_static_instructions(std::string text) noexcept { static_instructions_ = std::move(text); }
+    [[nodiscard]] std::string const& static_instructions() const noexcept { return static_instructions_; }
 
     // ADR-058 §8 (Design B) -- additive opt-in, same shape as set_suspend_for_approval/
     // set_stream_model_calls above: unset by default (has_output_schema() false), every existing
@@ -1304,6 +1342,15 @@ public:
         std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now(),
         ApprovalDecider const& approve = ApprovalDecider{}) {
         AsyncMutex::Guard guard = co_await session_mutex_.lock();  // I1 -- see file banner
+
+        // §9 RC-1 (design doc above) -- checked first: pure, local, no shared state touched, cheaper
+        // than resolving dispatch authority for a request that is going to be refused either way.
+        // set_background_execution_disabled()'s own comment has the full rationale.
+        if (background_execution_disabled_) {
+            co_return std::unexpected(error{failure_class::policy,
+                                             "background task execution is disabled for this session",
+                                             "standing_effect.background_execution_disabled"});
+        }
 
         result<void> applied = apply_dispatch_authority(authority, now);  // <-- resolved FIRST
         if (!applied) co_return std::unexpected(applied.error());
@@ -2222,6 +2269,26 @@ private:
                 instructions_msg.content.push_back(std::move(item));
                 contribution->messages.insert(contribution->messages.begin(), std::move(instructions_msg));
             }
+            // docs/planning/agent-spawn-runtime-design-draft.md §4.6 (item 6, OQ-16). A SECOND,
+            // independent `role::system` message, built from `static_instructions_` -- see
+            // `set_static_instructions()`'s own comment above for why this is unconditionally
+            // untainted (host/engine-derived from a `CapabilitySet`, never model output, so no
+            // `TaintedText` declassification step applies the way `contribution->instructions` above
+            // needed one). Reuses the same "a second, independent role::system message from another
+            // contributor coexists fine" precedent this block's own comment already names -- both
+            // real backends already concatenate every role::system message they see, not just the
+            // first. No-op (empty string, nothing pushed) until a caller actually calls
+            // `set_static_instructions()` -- every existing session unaffected.
+            if (!static_instructions_.empty()) {
+                Message static_instructions_msg;
+                static_instructions_msg.role = role::system;
+                ContentItem item;
+                item.origin  = content_origin::system;
+                item.tainted = false;  // host/engine-derived (CapabilitySet), never model output (I3)
+                item.value   = Text{static_instructions_};
+                static_instructions_msg.content.push_back(std::move(item));
+                contribution->messages.push_back(std::move(static_instructions_msg));
+            }
             ChatRequest request{contribution->messages, contribution->tools};
             // ADR-058 §8 (Design B) -- scoped to `native` ONLY, deliberately. Both real backends'
             // own translation code (protocol/openai/chat_client.hpp:289-293,
@@ -2666,6 +2733,10 @@ private:
     bool                                                  suspend_for_approval_ = false;
     bool                                                  stream_model_calls_ = false;
     bool                                                  scan_response_format_leaks_ = false;
+    // §9 RC-1 (design doc above) -- see set_background_execution_disabled()'s own comment.
+    bool                                                  background_execution_disabled_ = false;
+    // §4.6 (item 6, OQ-16) -- see set_static_instructions()'s own comment above. Empty by default.
+    std::string                                           static_instructions_;
     // ADR-058 §8 (Design B) -- additive opt-in. Empty/unset by default; `output_schema_validate_`
     // holding no target IS the "unset" signal (has_output_schema()), not a separate bool -- the same
     // "the function itself is the presence flag" shape `approval_decider_` already uses one member
