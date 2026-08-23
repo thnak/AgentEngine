@@ -593,21 +593,33 @@ int main() {
                 while (auto update = s.next()) received.push_back(std::move(*update));
                 if (!s.done()) std::this_thread::yield();
             }
-            check(received.size() == 3,
-                  "chat_stream()+tool_call: two text deltas + one assembled tool call = 3 updates, "
-                  "delivered through a real TLS socket and the real detached worker");
-            if (received.size() == 3) {
+            // unified-streaming-design-draft.md §1 (Piece B): two text deltas + two companion
+            // tool_call_argument_chunk updates (one per chunk carrying a non-empty arguments
+            // fragment) + one assembled tool call = 5 updates -- same shape
+            // test_openai_chat_client_translation.cpp's D2-R4 already proves offline; this is the
+            // real-backend plumbing proof for it.
+            check(received.size() == 5,
+                  "chat_stream()+tool_call: two text deltas + two argument-chunk updates + one "
+                  "assembled tool call = 5 updates, delivered through a real TLS socket and the real "
+                  "detached worker");
+            if (received.size() == 5) {
                 auto const* t0 = std::get_if<Text>(&received[0].delta.value);
-                auto const* t1 = std::get_if<Text>(&received[1].delta.value);
-                auto const* tc = std::get_if<ToolCall>(&received[2].delta.value);
                 check(t0 && t0->text == "Let ", "chat_stream()+tool_call: first text delta exact");
+
+                check(received[1].tool_call_argument_chunk.has_value() &&
+                          received[2].tool_call_argument_chunk.has_value(),
+                      "chat_stream()+tool_call: the two argument fragments each get their own "
+                      "companion update, over a real TLS socket");
+
+                auto const* t1 = std::get_if<Text>(&received[3].delta.value);
+                auto const* tc = std::get_if<ToolCall>(&received[4].delta.value);
                 check(t1 && t1->text == "me check.", "chat_stream()+tool_call: second text delta exact");
                 check(tc && tc->call_id == "call-1" && tc->tool_name == "get_weather" &&
                           tc->arguments_json == R"({"location":"Seattle"})",
                       "chat_stream()+tool_call: the tool call's argument fragments (split across two "
                       "separate SSE chunks on the wire) reassemble correctly end-to-end through the real "
                       "backend, not just the offline parser D2-R4 already proves");
-                check(received[2].is_final, "chat_stream()+tool_call: the assembled tool call is final");
+                check(received[4].is_final, "chat_stream()+tool_call: the assembled tool call is final");
             }
             check(s.terminal() == stream_terminal::closed,
                   "chat_stream()+tool_call: the stream reaches the success terminal");

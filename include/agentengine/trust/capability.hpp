@@ -732,6 +732,24 @@ public:
         return std::nullopt;
     }
 
+    // docs/planning/agent-spawn-runtime-design-draft.md §4.4a (OpenQuestions.md OQ-14's agent.spawn
+    // depth wiring, ADR-006): the same "pure lookup, not subsumes()-based" shape find_background()/
+    // find_schedule() above already establish, for the identical reason — the live remaining_depth()
+    // of what is actually held for ONE specific target agent_id is a different question than "is a
+    // requested ceiling covered" (contains()'s own job; a synthetic nullopt-budget `requested` would
+    // read as "asking for unlimited" and be rejected by AgentCall's own subsumes_payload against any
+    // real grant). std::nullopt means the caller holds no cap::AgentCall grant naming this exact
+    // agent_id at all — no spawn of that id is ever authorized, regardless of what else is granted
+    // (I2: a grant for agent "a" is never read as authority to spawn agent "b").
+    [[nodiscard]] std::optional<cap::AgentCall> find_agent_call(std::string const& agent_id) const {
+        for (Capability const& c : granted_) {
+            if (auto const* ac = std::get_if<cap::AgentCall>(&c)) {
+                if (ac->agent_id == agent_id) return *ac;
+            }
+        }
+        return std::nullopt;
+    }
+
     // decisions/ADR-071-native-unsandboxed-process-execution-providers.md -- unlike find_background/
     // find_schedule above (at most one meaningful grant per session), a session may hold SEVERAL
     // independent cap::NativeExec grants at once (e.g. one for "python*", one for "node"), so this
@@ -745,6 +763,35 @@ public:
         std::vector<cap::NativeExec> out;
         for (Capability const& c : granted_) {
             if (auto const* ne = std::get_if<cap::NativeExec>(&c)) out.push_back(*ne);
+        }
+        return out;
+    }
+
+    // docs/planning/agent-spawn-runtime-design-draft.md §4.3/§9 I2-1 (core/agent_spawn_worktree.hpp,
+    // item 3 of OpenQuestions.md OQ-14's agent.spawn wiring): the SAME "return ALL matches, verbatim,
+    // no filtering" shape `native_exec_grants()` above already establishes, for the identical reason
+    // -- a caller minting a `branch`-mode spawn worktree needs to intersect the NEW mount's grant
+    // with EVERY `cap::FsRead`/`cap::FsWrite` entry the caller itself already holds on its OWN
+    // `mount_id` (there can legitimately be more than one, e.g. two differently-scoped path
+    // prefixes), which `find_fs_read`/`find_fs_write` above cannot answer -- those two are
+    // single-path lookups ("is there a grant covering THIS path"), not "list every grant on this
+    // mount" enumeration. Filtered by `mount_id` only (not `path_prefix`) since the caller supplies
+    // its own mount id, not a path to check.
+    [[nodiscard]] std::vector<cap::FsRead> fs_read_grants(std::string const& mount_id) const {
+        std::vector<cap::FsRead> out;
+        for (Capability const& c : granted_) {
+            if (auto const* fr = std::get_if<cap::FsRead>(&c)) {
+                if (fr->mount_id == mount_id) out.push_back(*fr);
+            }
+        }
+        return out;
+    }
+    [[nodiscard]] std::vector<cap::FsWrite> fs_write_grants(std::string const& mount_id) const {
+        std::vector<cap::FsWrite> out;
+        for (Capability const& c : granted_) {
+            if (auto const* fw = std::get_if<cap::FsWrite>(&c)) {
+                if (fw->mount_id == mount_id) out.push_back(*fw);
+            }
         }
         return out;
     }
