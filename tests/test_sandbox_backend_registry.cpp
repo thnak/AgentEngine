@@ -13,6 +13,9 @@
 //   4. strict_eligibility::named_only entries never win resolve_strict(), even with higher strength.
 //   5. resolve_strict() fails closed when nothing strict-eligible supports the current platform.
 //   6. The optional resolution-audit hook fires with the real winning name.
+//   7. register_hardware_isolation_backend() -- introduced by
+//      docs/planning/microvm-first-party-backend-design-draft.md Revision 2's red-team finding #1 --
+//      always registers named_only, with no mode argument available to omit or get wrong.
 
 #include <cstdio>
 #include <memory>
@@ -217,6 +220,27 @@ int main() {
         check(registry.register_backend("unaudited", instance).has_value(), "setup registers");
         auto winner = registry.resolve_strict(platform_id::windows_x86_64);
         check(winner.has_value(), "resolve_strict works with no audit hook supplied (nullptr default)");
+    }
+
+    // ---- 7. register_hardware_isolation_backend() always registers named_only, structurally. -------
+    {
+        SandboxBackendRegistry registry;
+        auto weak = std::make_shared<StatefulBackend>();             // strength 42, strict_eligible
+        auto strong = std::make_shared<StrongerNamedOnlyBackend>();  // strength 100
+        check(registry.register_backend("weak", weak, strict_eligibility::eligible).has_value(),
+              "setup: eligible backend registers");
+        check(registry.register_hardware_isolation_backend("strong-hw", strong).has_value(),
+              "register_hardware_isolation_backend: registers cleanly with no mode argument");
+
+        auto winner = registry.resolve_strict(platform_id::windows_x86_64);
+        check(winner.has_value() && (*winner)->name == "weak",
+              "resolve_strict: a backend registered via register_hardware_isolation_backend() "
+              "never wins, even at much higher strength -- there is no call-site omission that "
+              "could have made it eligible instead");
+
+        auto named = registry.resolve_named(HostSandboxSelection{"strong-hw"});
+        check(named.has_value() && (*named)->name == "strong-hw",
+              "resolve_named: still directly reachable by its own name");
     }
 
     if (g_failures == 0) {
