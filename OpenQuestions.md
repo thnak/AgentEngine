@@ -140,6 +140,62 @@ identified reason. Six remaining punch-list items, none implemented — real, na
 silently dropped. **No project-owner implementation direction yet — this is a fresh design draft, not a
 standing "document only" instruction like OQ-19/OQ-20.**
 
+**Re-grounded (2026-08-23) against nine days of real drift** before any implementation started —
+`docs/planning/external-process-hooks-design-draft.md`'s own dated Addendum: `run_rounds()` now has
+eleven `co_return` exits (not seven), `interaction_reason` has four values (not three), but Q2's
+"`SandboxBackend::exec` is synchronous" claim held up unchanged. The one finding that changed the
+design, not just a citation: `decisions/ADR-067-middleware-turn-point-pre-model-enforcement.md`'s
+`TurnMiddlewareHook` (Judged 2026-08-20/21, built for an unrelated reason — closing 017 §4's
+`pre_model` filter gap) turned out to already be a real, wired, async, gating, pre-model turn-level
+hook — the exact thing this question's Q1 concluded needed `run_rounds()` restructuring to build. It
+doesn't, because it never tries to wrap the whole round (no onion, no inner action to sandwich) — one
+forward insertion point before the model call, which the loop already provides for free. Q3a's
+external-dispatch constraint (never inline, must suspend via `interaction_reason::hook_decision`)
+applies to it exactly as it does to the tool-call hook stage.
+
+**Implemented and proven the same day (2026-08-23), via a design → red-team → prove workflow** (8
+agents: 1 design, 3 parallel red-team lenses — safety/I2-I3, concurrency/blocking, completeness/
+regression — 1 judge/synthesis, 1 core implementation, 1 test implementation, 1 independent verify,
+plus the orchestrating session's own separate, independent re-verification). The design pass itself
+found a real coverage gap the prompt's own framing missed (inserting the hook stage only right before
+`invoke_tool()` would make a hook's rewrite invisible to the suspend-for-approval PRE-check one call
+site up, silently converting "should suspend for human approval" into "silently denied" for the
+specific combination of suspend-mode-with-no-decider plus a rewriting hook) — fixed by computing
+`any_needs_external_dispatch` and `any_needs_approval` from the SAME post-hook per-call state, in the
+same pass, before choosing which single `Interaction` to open. `core/tool_call_hook.hpp` (new):
+`ToolCallHookContext` (no `EffectContext&`, no capability type, matching `ModelCallContext`'s I2
+discipline exactly), `ToolCallHook`, `hook_call_outcome`, `HookProcessedCall`/
+`PendingHookDecisionRound` (carrying hook-processed state across a suspend/resume the same way
+`PendingCodeActAsk` does), `HookDispatchAnswer`. `core/tool_pipeline.hpp` gained
+`enforce_hook_rewritten_tool_call_provenance()`, mirroring `middleware.hpp`'s
+`enforce_backend_tool_call_provenance()` exactly. `core/interaction.hpp` gained
+`interaction_reason::hook_decision` (both directions of `rt/interaction_codec.hpp`'s JSON codec
+updated; `protocol/agui/projection.hpp`'s event-kind switch updated so an unmatched case doesn't
+silently fall through; `001-Execution-Model.md` amended, since `interaction_reason` is named there
+normatively). `rt/agent_session.hpp` gained the hook-stage block in `run_rounds()`,
+`resolve_hook_decision()`, and `finish_hook_processed_round()` — the last two deliberately do NOT
+reuse `resolve_codeact_ask()`'s `one_shot_approve` shape (a second, independently-found fatal finding,
+closed during implementation, not by the original red-team pass): an external hook's own dispatch
+answer is a different question from a human's approval, so a `hook_decision` resume re-checks approval
+need against the real `approval_decider_`/`policy_decider_` and cascades into a genuine
+`interaction_reason::approval` suspend if one is still needed, rather than ever treating the hook's
+answer as if a human had approved.
+
+`tests/test_rt_agent_session_tool_call_hook.cpp` (new, mirroring `test_rt_agent_session_suspend_
+approval.cpp`'s own precedent): H1 (denial stops the round before `ApprovalDecider`/the real tool ever
+run), H2 (a rewrite reaches the real dispatched call, downgrades provenance, and is refused with no
+decider even against a tool declaring `Approval<never_require>` — the same `ADR-023 P2-T2` shape, now
+proven at this call site too), H3 (byte-for-byte unchanged behavior with no hook registered — both the
+immediate-success and full suspend/resume paths), H4 (the `hook_decision` suspend/resume round trip,
+both an external approve and an external deny, plus a `PolicyDecider` correctly honored on resume) —
+46 checks, all passing. Full project build clean; full `ctest`: 229/231 real passes, the only 2
+failures the same pre-existing, unrelated live-TLS tests already confirmed independent of this
+session's other work; zero new regressions — independently re-verified by the orchestrating session
+itself (build + full test run + direct code review), not taken on the implementing agents' own report.
+
+**Still not judged** — matching the same "prove, then judge separately" order this project already
+used for OQ-23/ADR-076. Full record: `docs/planning/external-process-hooks-design-draft.md`.
+
 ### OQ-25 — Does the tool-calling loop need a per-tool validation-retry bound distinct from `MaxTurns<N>`? 🟡
 
 Raised 2026-08-23, same survey, `docs/research/2026-08-23-harness-landscape-hermes-pydanticai-opencode.md`

@@ -240,6 +240,7 @@
 #include "agentengine/core/standing_effect.hpp"
 #include "agentengine/core/stream.hpp"
 #include "agentengine/core/tool_call_extraction.hpp"
+#include "agentengine/core/tool_call_hook.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/core/turn_middleware.hpp"
 #include "agentengine/rt/async_mutex.hpp"
@@ -313,6 +314,12 @@ struct ResolveInteraction {
     std::optional<std::string> answer = std::nullopt;
     // ADR-061 §20.1: same additive, defaulted shape as StartRun::authority above.
     std::optional<RequestAuthority> authority = std::nullopt;
+    // OQ-21: additive, appended last (this struct's own established field-ordering convention).
+    // Interpreted ONLY when the named interaction's own `reason == interaction_reason::
+    // hook_decision`; `approved`/`answer` above stay exactly as-is, interpreted only for their own
+    // reasons. A vector, not a single field -- core/tool_call_hook.hpp's `HookDispatchAnswer` own
+    // comment explains why (a round may have multiple calls pending external dispatch at once).
+    std::optional<std::vector<agentengine::HookDispatchAnswer>> hook_dispatch_answers = std::nullopt;
 };
 
 struct AgentResponse {
@@ -609,6 +616,19 @@ public:
         return approval_decider_;
     }
 
+    // OQ-21 (core/tool_call_hook.hpp): unset (`nullptr`) by default -- every existing session is
+    // completely unaffected until a host opts in. Runs once per round, per call, in `run_rounds()`'s
+    // own hook-stage block, strictly BEFORE the suspend-for-approval pre-check and `ApprovalDecider`
+    // -- see that block's own comment for why sequencing (not two independent gates) is what closes
+    // OQ-21's own "two-independent-gates ambiguity" finding. Compile-time, host/deployer-assembled
+    // only -- never a declarative YAML/JSON surface, matching CLAUDE.md's locked v1-authoring-surface
+    // split (C++ CRTP and declarative are equivalent surfaces for AGENT authoring, not for this kind
+    // of host-wiring decision).
+    void set_tool_call_hook(agentengine::ToolCallHook hook) { tool_call_hook_ = std::move(hook); }
+    [[nodiscard]] agentengine::ToolCallHook const& tool_call_hook() const noexcept {
+        return tool_call_hook_;
+    }
+
     // decisions/ADR-070-host-configurable-responsibility-boundary.md: unset (`nullptr`) by default --
     // every existing session is unaffected until it opts in. Consulted ONLY for
     // `approval_mode::policy_driven` calls, at exactly the two places that already decide anything
@@ -809,16 +829,20 @@ public:
         // (`pending_codeact_asks_`) is keyed to one specific suspended round's own `history_`/
         // `exec_state_` -- a second concurrent `StartRun` racing that state is exactly the I1
         // violation this check exists to prevent, the same reasoning `approval` already gets.
+        // OQ-21: `hook_decision` joins this check for the identical reason `codeact_ask` already
+        // does -- `pending_hook_decisions_`'s state is keyed to one specific suspended round, and a
+        // concurrent fresh `StartRun` would race it.
         bool const has_open_approval_or_codeact_ask =
             std::any_of(open_interactions_.begin(), open_interactions_.end(), [](Interaction const& i) {
                 return i.reason == interaction_reason::approval ||
-                       i.reason == interaction_reason::codeact_ask;
+                       i.reason == interaction_reason::codeact_ask ||
+                       i.reason == interaction_reason::hook_decision;
             });
         if (has_open_approval_or_codeact_ask) {
             co_return std::unexpected(agentengine::error{
                 agentengine::failure_class::contract,
-                "a round is already suspended awaiting approval or an agent.ask() answer -- resolve "
-                "it before starting a new run",
+                "a round is already suspended awaiting approval, an agent.ask() answer, or an "
+                "external tool-call hook decision -- resolve it before starting a new run",
                 "run.approval_pending"});
         }
 
@@ -950,6 +974,14 @@ public:
             co_return co_await resolve_codeact_ask(request, it->interaction_id);
         }
 
+        // OQ-21: same branch-out shape as codeact_ask immediately above, for the identical reason --
+        // a `hook_decision` resume folds in the external process's own dispatch answers against
+        // STORED, hook-processed per-call state (`pending_hook_decisions_`), never against
+        // `pending_calls` rebuilt from `history_` -- see resolve_hook_decision()'s own comment.
+        if (it->reason == interaction_reason::hook_decision) {
+            co_return co_await resolve_hook_decision(request, it->interaction_id);
+        }
+
         result<void> const resolved = resolve_interaction_record(it->interaction_id);
         if (!resolved) {
             co_return std::unexpected(resolved.error());
@@ -960,6 +992,40 @@ public:
         std::size_t const response_msg_index = history_.size() - 1;
 
         if (!request.approved) {
+            // OQ-21: a hook-touched round being denied must deny through its STORED, hook-processed
+            // state -- never rebuild from `pending_calls` (that would silently re-run calls the hook
+            // already denied or rewrote, bypassing the hook stage on resume -- the fatal-finding
+            // shape this whole mechanism exists to close, see run_rounds()'s hook-stage comment).
+            if (auto hit = pending_hook_decisions_.find(request.interaction_id);
+                hit != pending_hook_decisions_.end()) {
+                PendingHookDecisionRound round = std::move(hit->second);
+                pending_hook_decisions_.erase(hit);
+                std::vector<ToolResult> results;
+                results.reserve(round.calls.size());
+                for (HookProcessedCall& hc : round.calls) {
+                    emit_run_event(run_event_kind::approval_resolved,
+                                    run_event_payload::ApprovalResolved{hc.request.call_id, false,
+                                                                          request.interaction_id});
+                    if (hc.outcome == hook_call_outcome::denied) {
+                        // Already decided by the hook stage (or a prior external-dispatch answer) --
+                        // reuse the SAME ToolResult verbatim rather than deriving a second one.
+                        results.push_back(std::move(*hc.denial_result));
+                    } else {
+                        results.push_back(make_denial_result(hc.request.call_id, "denied by operator",
+                                                                "tool.approval_denied"));
+                    }
+                }
+                history_.push_back(tool_results_message(std::move(results)));
+                (void)co_await history_provider_.on_turn_end(
+                    TurnView{std::span<Message const>{history_.data() + response_msg_index,
+                                                        history_.size() - response_msg_index}},
+                    effect_context_);
+                emit_run_event(run_event_kind::turn_finished,
+                                run_event_payload::Turn{effect_context_.turn_index});
+                ++effect_context_.turn_index;
+                co_return co_await run_rounds();
+            }
+
             std::vector<ToolResult> results;
             results.reserve(pending_calls.size());
             for (ToolCall const& call : pending_calls) {
@@ -991,14 +1057,36 @@ public:
             co_return std::unexpected(contribution.error());
         }
         ToolTable const tool_table = ToolTable::from_descriptors(contribution->tools);
+        ApprovalDecider const one_shot_approve = [](Principal const&, std::string_view, std::string const&) {
+            return true;
+        };
+
+        // OQ-21: this approval-suspend round was hook-touched -- use the STORED, hook-processed
+        // requests, never rebuild from `pending_calls` (that would silently re-run calls the hook
+        // already denied or rewrote, bypassing the hook stage on resume -- the fatal-finding shape
+        // this whole mechanism exists to close, see run_rounds()'s hook-stage comment).
+        //
+        // Reusing `one_shot_approve` for the WHOLE round IS safe here, unlike a `hook_decision`
+        // resume (resolve_hook_decision() never does this): reaching THIS branch means the round
+        // suspended under `interaction_reason::approval` -- directly, or via
+        // resolve_hook_decision()'s own cascade -- specifically because `any_needs_approval` was
+        // computed in run_rounds() from the POST-HOOK, already provenance-downgraded requests. Every
+        // `needs_decider` call remaining in this round is exactly what this human is being asked to
+        // approve; `invoke_tool()`'s own step 5 only ever consults the decider for a call that
+        // actually needs it, so a call that needs no approval at all (vendor_structured,
+        // never_require) is unaffected by which decider is passed.
+        if (auto hit = pending_hook_decisions_.find(request.interaction_id);
+            hit != pending_hook_decisions_.end()) {
+            PendingHookDecisionRound round = std::move(hit->second);
+            pending_hook_decisions_.erase(hit);
+            co_return co_await finish_hook_processed_round(std::move(round), tool_table, one_shot_approve);
+        }
+
         CapabilitySet const empty_caps = CapabilitySet::grant_root({});
         // ADR-061 §20.6: per-request, not session-level -- effect_context_.capabilities is freshly
         // written by apply_dispatch_authority() at the top of every real entry point (start_run(),
         // resolve_interaction()) before this is ever reached.
         CapabilitySet const& held      = effect_context_.capabilities ? *effect_context_.capabilities : empty_caps;
-        ApprovalDecider const one_shot_approve = [](Principal const&, std::string_view, std::string const&) {
-            return true;
-        };
 
         std::vector<ToolResult> results;
         results.reserve(pending_calls.size());
@@ -1110,6 +1198,9 @@ public:
         // answer given so far) for the remaining lifetime of the C++ object -- unreachable for erasure
         // since future interaction ids embed the new session_id and can never match the orphaned key.
         pending_codeact_asks_.clear();
+        // OQ-21: same leak class `pending_codeact_asks_` immediately above was once found missing
+        // from this list entirely (this function's own preceding comment) -- not reintroduced here.
+        pending_hook_decisions_.clear();
         token_budget_ = std::nullopt;
         run_tokens_consumed_ = 0;
         admission_denied_count_ = 0;
@@ -1821,6 +1912,201 @@ private:
         co_return co_await run_rounds();
     }
 
+    // OQ-21: the shared tail for a round whose hook-stage processing is already fully decided (every
+    // call's outcome known -- pass_through or denied) -- used by BOTH resolve_hook_decision() below
+    // (passing the real `approval_decider_`, only once every remaining pass_through call has already
+    // been proven to need no further human decider) AND resolve_interaction()'s approved branch
+    // (passing `one_shot_approve` -- see that branch's own comment for exactly why that reuse is safe
+    // there and NOT safe to do directly from resolve_hook_decision()). `approve` is threaded through
+    // explicitly as a parameter rather than read off a member so both callers can supply their own,
+    // the same shape `invoke_tool()` itself already takes an `ApprovalDecider const&` one layer down.
+    // `response_msg_index` is `history_.size() - 1`, matching resolve_interaction()'s own convention
+    // (not run_rounds()'s `history_.size()`) -- both real callers reach here with `history_.back()`
+    // already the pending assistant tool-call message that opened this interaction; this function
+    // never itself pushes that message, only the tool-results message that answers it.
+    //
+    // `policy` defaults to `{}` (never consulted) -- matching the SAME "already resolved by a human,
+    // never re-litigated by policy" discipline `set_policy_decider()`'s own comment documents for the
+    // three pre-existing one-shot-approve call sites: resolve_interaction()'s approved branch (this
+    // function's OTHER caller, which relies on that default) must NOT pass a real `PolicyDecider` here
+    // -- a `policy_driven` tool's `auto_deny` verdict would otherwise silently override a human's
+    // explicit round-level approval. resolve_hook_decision() below is the one caller that DOES pass
+    // the real `policy_decider_` explicitly: reaching it means NO human ever approved this round (it
+    // suspended purely for external dispatch, `any_still_needs_approval` proved false against that
+    // SAME real `policy_decider_`) -- so a `pass_through` call here is exactly as unresolved-by-a-
+    // human as `run_rounds()`'s own un-suspended loop, and must consult policy identically (omitting
+    // it would make invoke_tool()'s own step 5 misclassify a `policy_driven` tool as `needs_decider`
+    // purely from the absence of a policy argument, denying a call policy had already auto-approved).
+    task<result<AgentResponse>> finish_hook_processed_round(PendingHookDecisionRound round,
+                                                              ToolTable const& tool_table,
+                                                              ApprovalDecider const& approve,
+                                                              PolicyDecider const& policy = {}) {
+        CapabilitySet const empty_caps = CapabilitySet::grant_root({});
+        CapabilitySet const& held = effect_context_.capabilities ? *effect_context_.capabilities : empty_caps;
+        std::size_t const response_msg_index = history_.size() - 1;
+        std::vector<ToolResult> results;
+        results.reserve(round.calls.size());
+        for (HookProcessedCall& hc : round.calls) {
+            if (hc.outcome == hook_call_outcome::denied) {
+                results.push_back(std::move(*hc.denial_result));
+                continue;
+            }
+            emit_run_event(run_event_kind::tool_call_started,
+                            run_event_payload::ToolCallStarted{hc.request.call_id, hc.request.tool_name});
+            ToolInvocationAudit audit;
+            // ADR-060: same per-call bracketing discipline every other invoke_tool() call site in
+            // this file already uses.
+            effect_context_.report_progress = [this, call_id = hc.request.call_id](ContentItem item) {
+                force_tainted(item);
+                emit_run_event(run_event_kind::tool_call_delta,
+                                run_event_payload::ToolCallDelta{call_id, std::move(item)});
+            };
+            ToolResult result =
+                invoke_tool(tool_table, held, hc.request, effect_context_, approve, &audit, policy);
+            effect_context_.report_progress = [](ContentItem) {};
+            emit_run_event(run_event_kind::tool_call_finished,
+                            run_event_payload::ToolCallFinished{audit.call_id, result});
+            results.push_back(std::move(result));
+        }
+        history_.push_back(tool_results_message(std::move(results)));
+        (void)co_await history_provider_.on_turn_end(
+            TurnView{std::span<Message const>{history_.data() + response_msg_index,
+                                                history_.size() - response_msg_index}},
+            effect_context_);
+        emit_run_event(run_event_kind::turn_finished, run_event_payload::Turn{effect_context_.turn_index});
+        ++effect_context_.turn_index;
+        co_return co_await run_rounds();
+    }
+
+    // OQ-21: `resolve_interaction()`'s `hook_decision` branch (`:hook_decision` dispatch above) --
+    // needs the SAME on_context/finish-tail shape `resolve_codeact_ask()` above already uses, but
+    // diverges in the one load-bearing way that closes this design's own red-team-confirmed fatal
+    // finding: unlike `resolve_codeact_ask()`, this function NEVER reuses `one_shot_approve` for the
+    // whole round. A `hook_decision` resume answers "did the external process allow/deny/rewrite the
+    // call", which is a DIFFERENT question from "did a human approve its execution" -- so every
+    // remaining `pass_through` call is re-checked against the REAL deciders (`approval_decider_`/
+    // `policy_decider_`) after folding in the external answers, and cascades to a genuine
+    // `interaction_reason::approval` suspend (carrying the same stored round forward) if a decider is
+    // still needed and none is configured, rather than ever treating the hook's own answer as an
+    // approval. `interaction_id` has already been validated as open by the caller
+    // (`resolve_interaction()`) before this is reached -- this function does not re-check.
+    //
+    // NEVER acquires `session_mutex_` -- reached only as a sibling call from inside
+    // `resolve_interaction()`'s already-held guard (I1), exactly like `resolve_codeact_ask()` above.
+    // `AsyncMutex` (rt/async_mutex.hpp) has no owner tracking and no timeout: a second lock attempt
+    // from the same coroutine parks itself as a waiter that only an `unlock()` from that same
+    // (now-suspended) frame could ever release -- a permanent, unrecoverable deadlock of the whole
+    // session. This function, and every helper it calls (including
+    // `enforce_hook_rewritten_tool_call_provenance()`), must never call or `co_await`
+    // `session_mutex_.lock()`.
+    task<result<AgentResponse>> resolve_hook_decision(ResolveInteraction const& request,
+                                                         std::string const& interaction_id) {
+        auto it = pending_hook_decisions_.find(interaction_id);
+        if (it == pending_hook_decisions_.end()) {
+            co_return std::unexpected(error{
+                failure_class::contract, "no pending hook-decision state for this interaction",
+                "session.hook_decision.unknown"});
+        }
+        if (!request.hook_dispatch_answers) {
+            co_return std::unexpected(error{
+                failure_class::contract, "hook_decision resume requires hook_dispatch_answers",
+                "session.hook_decision.missing_answers"});
+        }
+        PendingHookDecisionRound round = std::move(it->second);
+        pending_hook_decisions_.erase(it);
+
+        // Fold in the external answers. Fails closed on any gap -- no partial-round resolution,
+        // since resolve_interaction_record() below closes the WHOLE interaction on this one resume.
+        for (HookProcessedCall& hc : round.calls) {
+            if (hc.outcome != hook_call_outcome::needs_external_dispatch) continue;
+            auto ans = std::find_if(request.hook_dispatch_answers->begin(),
+                                     request.hook_dispatch_answers->end(),
+                                     [&](agentengine::HookDispatchAnswer const& a) {
+                                         return a.call_id == hc.request.call_id;
+                                     });
+            if (ans == request.hook_dispatch_answers->end()) {
+                co_return std::unexpected(error{
+                    failure_class::contract,
+                    "hook_decision resume missing an answer for call_id " + hc.request.call_id,
+                    "session.hook_decision.incomplete"});
+            }
+            if (!ans->approved) {
+                hc.outcome = hook_call_outcome::denied;
+                hc.denial_result = make_denial_result(
+                    hc.request.call_id, ans->denial_message.value_or("denied by external hook process"),
+                    "tool.hook_denied");
+                continue;
+            }
+            json::Value const original_arguments = hc.request.arguments;
+            if (ans->rewritten_arguments) hc.request.arguments = *ans->rewritten_arguments;
+            enforce_hook_rewritten_tool_call_provenance(hc.request, original_arguments);
+            hc.outcome = hook_call_outcome::pass_through;
+        }
+
+        result<void> const resolved = resolve_interaction_record(interaction_id);
+        if (!resolved) co_return std::unexpected(resolved.error());
+        emit_run_event(run_event_kind::input_resolved, run_event_payload::InteractionRef{interaction_id});
+
+        // ADR-061 §20.7: effect_context_.principal, not principal_ -- per-request, not session-level.
+        SessionContext session_ctx{session_id_, effect_context_.principal, history_};
+        result<ContextContribution> contribution =
+            co_await history_provider_.on_context(session_ctx, effect_context_);
+        if (!contribution) {
+            emit_run_event(run_event_kind::run_failed,
+                            run_event_payload::RunFailed{"run.context_unavailable",
+                                                          contribution.error().message});
+            co_return std::unexpected(contribution.error());
+        }
+        ToolTable const tool_table = ToolTable::from_descriptors(contribution->tools);
+
+        // Deliberately NOT `one_shot_approve` here, unlike resolve_interaction()'s approved branch --
+        // see this function's own top comment. Re-checked with the SAME gating condition
+        // run_rounds()'s own suspend-for-approval pre-check uses (`suspend_for_approval_ &&
+        // !approval_decider_`) -- a session that never opts into suspending for approval, or that
+        // already has a real ApprovalDecider wired, must behave identically here to everywhere else:
+        // invoke_tool() consults `approval_decider_` directly (denying if unset), it never cascades
+        // into a suspend that could not otherwise have happened for this session's configuration.
+        bool any_still_needs_approval = false;
+        if (suspend_for_approval_ && !approval_decider_) {
+            for (HookProcessedCall const& hc : round.calls) {
+                if (hc.outcome != hook_call_outcome::pass_through) continue;
+                ToolDescriptor const* td = tool_table.find(hc.request.tool_name);
+                if (td != nullptr &&
+                    resolve_approval_outcome(*td, hc.request.provenance, effect_context_.principal,
+                                              /*arguments_tainted=*/true, policy_decider_) ==
+                        approval_outcome::needs_decider) {
+                    any_still_needs_approval = true;
+                    break;
+                }
+            }
+        }
+        if (any_still_needs_approval) {
+            // Cascading suspend: this is a NEW, legitimate suspend, not a bug -- a hook answering its
+            // own external-dispatch question does not itself satisfy a separate human-approval need.
+            Interaction const& next = open_interaction(effect_context_.run_id, interaction_reason::approval);
+            pending_hook_decisions_[next.interaction_id] = std::move(round);
+            emit_run_event(run_event_kind::input_required,
+                            run_event_payload::InteractionRef{next.interaction_id});
+            for (HookProcessedCall const& hc : pending_hook_decisions_[next.interaction_id].calls) {
+                if (hc.outcome == hook_call_outcome::pass_through) {
+                    emit_run_event(run_event_kind::approval_requested,
+                                    run_event_payload::ApprovalRequested{hc.request.call_id,
+                                                                          next.interaction_id});
+                }
+            }
+            co_return std::unexpected(error{failure_class::contract,
+                                             "round suspended awaiting human approval after hook dispatch",
+                                             kSuspendedForApproval});
+        }
+
+        // Nothing left needs a decider (already proven above) -- proceed exactly like run_rounds()'s
+        // own invoke loop, folding results and continuing the turn. `policy_decider_` IS passed here
+        // (unlike resolve_interaction()'s approved-branch call below) -- see finish_hook_processed_
+        // round()'s own comment for exactly why this caller must thread it through.
+        co_return co_await finish_hook_processed_round(std::move(round), tool_table, approval_decider_,
+                                                          policy_decider_);
+    }
+
     // Same shape as core/agent_session.hpp's own run_rounds() -- ported to rt::task<T>, no longer
     // templated on AskT (there is only one caller shape now, a plain `result<AgentResponse>` return),
     // otherwise byte-for-byte identical logic.
@@ -2016,53 +2302,169 @@ private:
                                          std::move(structured_output_json)};
             }
 
+            // OQ-21's tool-call hook stage (core/tool_call_hook.hpp) -- runs once per round, per
+            // call, strictly BEFORE the suspend-for-approval pre-check below, gated on
+            // `tool_call_hook_ != nullptr` so a session that never opts in pays nothing extra (no
+            // extra branch, no extra allocation -- `processed` stays empty and every read below that
+            // is itself gated on `hook_touched_round` takes the exact byte-for-byte original path).
+            //
+            // `processed` and `any_needs_approval` are computed from the SAME post-hook per-call
+            // state, in the SAME pass, before choosing which single `Interaction` (if any) to open --
+            // this is the fix for a red-team-confirmed fatal finding in an earlier draft: opening a
+            // `hook_decision` interaction whenever ANY call needed external dispatch, independently of
+            // whether some OTHER call in the round also needed human approval, let
+            // `resolve_hook_decision()`'s own resume silently skip the approval question entirely (an
+            // authority bypass). Here, `any_needs_approval` is always evaluated against the REAL
+            // post-hook requests (hook-rewritten arguments already provenance-downgraded by
+            // `enforce_hook_rewritten_tool_call_provenance()` below), regardless of which reason ends
+            // up suspending the round -- so a call that needs a human decider can never be silently
+            // skipped just because `hook_decision` "got there first".
+            std::vector<HookProcessedCall> processed;      // built only if tool_call_hook_ is set
+            bool const hook_touched_round = static_cast<bool>(tool_call_hook_);
+
+            if (hook_touched_round) {
+                processed.reserve(calls.size());
+                for (std::size_t i = 0; i < calls.size(); ++i) {
+                    ToolCallRequest req = tool_call_request_of(calls[i], i);
+                    json::Value const original_arguments = req.arguments;  // snapshot BEFORE the hook runs
+
+                    ToolCallHookContext hctx{
+                        .call_id = req.call_id, .tool_name = req.tool_name, .arguments = req.arguments,
+                        .provenance = req.provenance, .caller = effect_context_.principal,
+                    };
+                    result<std::monostate> const ran = co_await tool_call_hook_(hctx);
+                    if (!ran) {
+                        processed.push_back(HookProcessedCall{
+                            req, hook_call_outcome::denied,
+                            make_denial_result(req.call_id, "tool-call hook failed: " + ran.error().message,
+                                                "tool.hook_error")});
+                        continue;
+                    }
+                    if (hctx.rewritten_arguments) req.arguments = *hctx.rewritten_arguments;
+                    // Unconditional -- never gated on what the hook itself claims about provenance
+                    // (`ToolCallHookContext` has no field through which it could assert one, by
+                    // design; see that struct's own file-top comment).
+                    enforce_hook_rewritten_tool_call_provenance(req, original_arguments);
+
+                    // `denial` wins if a hook body sets both `denial` and `needs_external_dispatch` --
+                    // never "deny AND also dispatch".
+                    if (hctx.denial) {
+                        processed.push_back(HookProcessedCall{
+                            req, hook_call_outcome::denied,
+                            make_denial_result(req.call_id, hctx.denial->message,
+                                                hctx.denial->code.empty() ? "tool.hook_denied"
+                                                                            : hctx.denial->code)});
+                    } else if (hctx.needs_external_dispatch) {
+                        processed.push_back(
+                            HookProcessedCall{req, hook_call_outcome::needs_external_dispatch, std::nullopt});
+                    } else {
+                        processed.push_back(HookProcessedCall{req, hook_call_outcome::pass_through, std::nullopt});
+                    }
+                }
+            }
+
+            bool const any_needs_external_dispatch =
+                hook_touched_round &&
+                std::any_of(processed.begin(), processed.end(), [](HookProcessedCall const& p) {
+                    return p.outcome == hook_call_outcome::needs_external_dispatch;
+                });
+
+            bool any_needs_approval = false;
             if (suspend_for_approval_ && !approval_decider_) {
-                bool any_needs_approval = false;
-                for (ToolCall const& call : calls) {
-                    ToolDescriptor const* td = tool_table.find(call.tool_name);
+                for (std::size_t i = 0; i < calls.size(); ++i) {
+                    // A call the hook stage already denied is finished -- its outcome is already
+                    // decided, never re-litigated by approval.
+                    if (hook_touched_round && processed[i].outcome == hook_call_outcome::denied) continue;
+                    ToolCallRequest const& req_i =
+                        hook_touched_round ? processed[i].request : tool_call_request_of(calls[i], i);
+                    ToolDescriptor const* td = tool_table.find(req_i.tool_name);
                     // ADR-070: a `policy_decider_`-resolved policy_driven call (auto_approve/
                     // auto_deny) never needs a real human -- only `needs_decider` should count
                     // toward suspending this round; `resolve_approval_outcome` with `policy_decider_`
                     // unset reproduces `tool_call_requires_approval()`'s own boolean exactly, so this
                     // is unchanged behavior for every session that never wires a `PolicyDecider`.
-                    // `arguments_tainted` is always `true` here -- every `ToolCall` this loop sees
-                    // originates from a model response (`tool_call_request_of`'s own comment).
+                    // `req_i.provenance` reflects the hook's own rewrite (if any) when
+                    // `hook_touched_round` -- `arguments_tainted` stays `true` unconditionally, the
+                    // same "every ToolCall this loop sees originates from a model response" reasoning
+                    // `tool_call_request_of`'s own comment already establishes (a hook rewrite never
+                    // makes a model-originated call more trusted).
                     if (td != nullptr &&
-                        resolve_approval_outcome(*td, call.provenance, effect_context_.principal,
+                        resolve_approval_outcome(*td, req_i.provenance, effect_context_.principal,
                                                   /*arguments_tainted=*/true, policy_decider_) ==
                             approval_outcome::needs_decider) {
                         any_needs_approval = true;
                         break;
                     }
                 }
-                if (any_needs_approval) {
-                    Interaction const& interaction =
-                        open_interaction(effect_context_.run_id, interaction_reason::approval);
-                    emit_run_event(run_event_kind::input_required,
-                                    run_event_payload::InteractionRef{interaction.interaction_id});
-                    for (ToolCall const& call : calls) {
-                        emit_run_event(run_event_kind::approval_requested,
-                                        run_event_payload::ApprovalRequested{call.call_id,
-                                                                              interaction.interaction_id});
-                    }
-                    // Suspended -- no real response yet. Unlike the Quark original (an unanswered Ask,
-                    // left to resolve later via a completely separate ResolveInteraction message with
-                    // no return value of its own to reconcile), THIS task<T> must complete with SOME
-                    // result<AgentResponse> the instant this round decides to suspend -- there is no
-                    // "leave it unanswered" primitive here. Folded into the error channel with a named
-                    // sentinel code (kSuspendedForApproval) the caller checks FIRST, before treating a
-                    // non-value result as a genuine failure -- see that constant's own comment for why
-                    // this is a real, open design question for a later slice, not a settled shape.
-                    co_return std::unexpected(error{failure_class::contract,
-                                                     "round suspended awaiting human approval",
-                                                     kSuspendedForApproval});
+            }
+
+            if (any_needs_external_dispatch || any_needs_approval) {
+                // `hook_decision` wins when both are true in the same round -- resolving it re-checks
+                // approval need with the real deciders (resolve_hook_decision()'s own comment), so no
+                // approval need is ever silently dropped by this choice.
+                interaction_reason const reason = any_needs_external_dispatch
+                                                       ? interaction_reason::hook_decision
+                                                       : interaction_reason::approval;
+                Interaction const& interaction = open_interaction(effect_context_.run_id, reason);
+
+                // Populated whenever the hook stage touched this round AT ALL, for WHICHEVER reason
+                // the round ends up suspending under -- this is the fix for a completeness finding
+                // paired with the fatal one above: a hook-touched round that suspends for PLAIN
+                // approval (any_needs_external_dispatch == false) must still carry its post-hook
+                // state forward, or resolve_interaction()'s approved branch would silently rebuild
+                // from `pending_calls` and bypass the hook stage entirely on resume.
+                if (hook_touched_round) {
+                    pending_hook_decisions_[interaction.interaction_id] =
+                        PendingHookDecisionRound{std::move(processed)};
                 }
+
+                emit_run_event(run_event_kind::input_required,
+                                run_event_payload::InteractionRef{interaction.interaction_id});
+                if (reason == interaction_reason::hook_decision) {
+                    // 013 §2.2 hard ordering obligation -- see the codeact_ask sibling site below.
+                    for (HookProcessedCall const& hc : pending_hook_decisions_[interaction.interaction_id].calls) {
+                        if (hc.outcome == hook_call_outcome::needs_external_dispatch) {
+                            emit_run_event(run_event_kind::hook_decision_requested,
+                                            run_event_payload::HookDecisionRequested{
+                                                hc.request.call_id, interaction.interaction_id,
+                                                hc.request.tool_name});
+                        }
+                    }
+                    co_return std::unexpected(error{
+                        failure_class::contract,
+                        "round suspended awaiting an external tool-call hook decision",
+                        kSuspendedForHookDecision});
+                }
+                for (ToolCall const& call : calls) {
+                    emit_run_event(run_event_kind::approval_requested,
+                                    run_event_payload::ApprovalRequested{call.call_id,
+                                                                          interaction.interaction_id});
+                }
+                // Suspended -- no real response yet. Unlike the Quark original (an unanswered Ask,
+                // left to resolve later via a completely separate ResolveInteraction message with
+                // no return value of its own to reconcile), THIS task<T> must complete with SOME
+                // result<AgentResponse> the instant this round decides to suspend -- there is no
+                // "leave it unanswered" primitive here. Folded into the error channel with a named
+                // sentinel code (kSuspendedForApproval) the caller checks FIRST, before treating a
+                // non-value result as a genuine failure -- see that constant's own comment for why
+                // this is a real, open design question for a later slice, not a settled shape.
+                co_return std::unexpected(error{failure_class::contract,
+                                                 "round suspended awaiting human approval",
+                                                 kSuspendedForApproval});
             }
 
             std::vector<ToolResult> results;
             results.reserve(calls.size());
             for (std::size_t i = 0; i < calls.size(); ++i) {
-                ToolCallRequest const req = tool_call_request_of(calls[i], i);
+                // A hook-denied call never reaches invoke_tool() at all -- matches the "no
+                // tool_call_started/finished for a call that never actually ran" precedent
+                // resolve_interaction()'s own operator-denial branch already establishes.
+                if (hook_touched_round && processed[i].outcome == hook_call_outcome::denied) {
+                    results.push_back(std::move(*processed[i].denial_result));
+                    continue;
+                }
+                ToolCallRequest const req =
+                    hook_touched_round ? processed[i].request : tool_call_request_of(calls[i], i);
                 emit_run_event(run_event_kind::tool_call_started,
                                 run_event_payload::ToolCallStarted{calls[i].call_id, calls[i].tool_name});
                 ToolInvocationAudit audit;
@@ -2199,6 +2601,14 @@ public:
     // possibly with an updated stored prompt.
     static constexpr char const* kSuspendedForCodeActAsk = "run.suspended_for_codeact_ask";
 
+    // OQ-21's own sentinel, the same "never fold, never fabricate a response" shape as the two
+    // above, checked by the caller the identical way. Fires from `run_rounds()`'s own hook-stage
+    // block (a round where the hook stage left at least one call `needs_external_dispatch`) -- NOT
+    // from `resolve_hook_decision()`'s own cascade, which opens a fresh `interaction_reason::
+    // approval` interaction instead and returns `kSuspendedForApproval` (see that function's own
+    // comment for why a hook-decision resume is never itself an approval).
+    static constexpr char const* kSuspendedForHookDecision = "run.suspended_for_hook_decision";
+
 private:
     std::string                                       session_id_;
     agentengine::Principal                             principal_;
@@ -2217,6 +2627,16 @@ private:
     // the same id and `reason == interaction_reason::codeact_ask`, for as long as that interaction
     // stays open (erased from both together, `resolve_interaction()`'s codeact_ask branch below).
     std::unordered_map<std::string, PendingCodeActAsk> pending_codeact_asks_;
+    // OQ-21: same guard/keying discipline as `pending_codeact_asks_` immediately above -- every
+    // access happens inside `run_rounds()`/`resolve_interaction()`/`resolve_hook_decision()`, all of
+    // which run only while `session_mutex_` is held (I1). An entry here always corresponds to
+    // exactly one entry in `open_interactions_` with the same id, for as long as that interaction
+    // stays open -- consumed and erased on every real resolution path (completion, the cascade
+    // re-key into a fresh `interaction_reason::approval` interaction, and denial), never left to
+    // grow unboundedly. NOT durably checkpointed -- the same disclosed limitation
+    // `PendingCodeActAsk` already carries for its own map (that struct's own comment), inherited
+    // here, not newly introduced.
+    std::unordered_map<std::string, agentengine::PendingHookDecisionRound> pending_hook_decisions_;
     std::optional<ChatClientT>                          chat_client_ = make_default_chat_client();
     // ADR-061 §26.1: the session-level capability grant -- single source of truth, a shared_ptr (not
     // a raw pointer kept in sync with a separate alias field, §24.3's design, superseded) so it can be
@@ -2238,6 +2658,9 @@ private:
     // decisions/ADR-070-host-configurable-responsibility-boundary.md. Unset by default -- see
     // set_policy_decider()'s own comment above for exactly where this is (and is not) consulted.
     PolicyDecider                                         policy_decider_{};
+    // OQ-21 (core/tool_call_hook.hpp). Unset by default -- see set_tool_call_hook()'s own comment
+    // above for exactly where this is (and is not) consulted.
+    agentengine::ToolCallHook                             tool_call_hook_{};
     // decisions/ADR-067-middleware-turn-point-pre-model-enforcement.md. Unset by default.
     agentengine::TurnMiddlewareHook                       turn_middleware_hook_{};
     bool                                                  suspend_for_approval_ = false;

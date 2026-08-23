@@ -23,6 +23,7 @@ namespace agentengine::rt {
         case agentengine::interaction_reason::auth:        reason_str = "auth";        break;
         case agentengine::interaction_reason::approval:    reason_str = "approval";    break;
         case agentengine::interaction_reason::codeact_ask: reason_str = "codeact_ask"; break;
+        case agentengine::interaction_reason::hook_decision: reason_str = "hook_decision"; break;
     }
     return agentengine::json::Value::make_object({
         {"interaction_id", agentengine::json::Value::make_string(i.interaction_id)},
@@ -55,6 +56,7 @@ namespace agentengine::rt {
     else if (r == "auth") out.reason = agentengine::interaction_reason::auth;
     else if (r == "approval") out.reason = agentengine::interaction_reason::approval;
     else if (r == "codeact_ask") out.reason = agentengine::interaction_reason::codeact_ask;
+    else if (r == "hook_decision") out.reason = agentengine::interaction_reason::hook_decision;
     else {
         return std::unexpected(agentengine::error{agentengine::failure_class::contract,
                                                     "unknown interaction reason: " + r,

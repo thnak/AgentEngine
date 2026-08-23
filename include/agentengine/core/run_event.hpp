@@ -49,6 +49,10 @@ enum class run_event_kind {  // ae-naming-lint: allow run_event_kind — 013 §1
     auth_required, auth_resolved,
     approval_requested, approval_resolved,
     codeact_ask_requested,
+    // OQ-21: fired alongside `input_required` for a round the tool-call hook stage
+    // (core/tool_call_hook.hpp) left needing external dispatch -- see run_event_payload::
+    // HookDecisionRequested below and rt/agent_session.hpp's hook-stage block for the producer.
+    hook_decision_requested,
     warning, policy_decision,
 };
 
@@ -175,6 +179,19 @@ struct CodeActAskRequested {
     std::string prompt;
 };
 
+// OQ-21: `interaction_id` correlates this back to the `Interaction` (interaction.hpp)
+// `AgentSession::run_rounds()`/`resolve_hook_decision()` mints when a round needs external
+// dispatch -- the same correlation role `ApprovalRequested::interaction_id` already plays for
+// `interaction_reason::approval`. Fired once per call still `hook_call_outcome::
+// needs_external_dispatch`, alongside the round's single `input_required` (013 §2.2's ordering
+// obligation: whatever a resume needs must precede the interrupt-bearing terminal event, the same
+// rule `codeact_ask_requested`'s own comment already names).
+struct HookDecisionRequested {
+    std::string call_id;
+    std::string interaction_id;
+    std::string tool_name;
+};
+
 }  // namespace run_event_payload
 
 // ae-naming-lint: allow RunEventPayload — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
@@ -185,7 +202,8 @@ using RunEventPayload = std::variant<run_event_payload::Empty, run_event_payload
                                       run_event_payload::StateChanged, run_event_payload::ArtifactProduced,
                                       run_event_payload::InteractionRef, run_event_payload::ApprovalRequested,
                                       run_event_payload::ApprovalResolved, run_event_payload::Warning,
-                                      run_event_payload::PolicyDecision, run_event_payload::CodeActAskRequested>;
+                                      run_event_payload::PolicyDecision, run_event_payload::CodeActAskRequested,
+                                      run_event_payload::HookDecisionRequested>;
 
 // 013 §1: "Ordered and monotonic per run, with a sequence number." `seq` starts at 1 for the first
 // event a given run emits -- 0 is never a real sequence number, so a default-constructed RunEvent is

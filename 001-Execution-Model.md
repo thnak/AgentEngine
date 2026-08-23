@@ -55,6 +55,15 @@ workflow request/response port (014). Unifying these is deliberate: an agent aut
 **Correlation identity (resolves OQ-4).** Entering `InputRequired` or `AuthRequired` mints one or
 more durable `Interaction{interaction_id, run_id, reason ∈ {input, auth}, opened_at, expires_at?}`
 records — one per outstanding "the agent needs something" point; usually one, but a workflow with
+
+<!-- `reason`'s value set has since grown beyond `{input, auth}` without this prose being kept in
+sync at each step — `interaction.hpp`'s own enum comment is the authoritative amendment trail:
+ADR-029 added `approval` (a pending tool call needing human sign-off), ADR-057 added `codeact_ask`
+(a script inside `execute_code` calling `agent.ask()`), and OQ-21 adds `hook_decision` (a round left
+needing an out-of-process tool-call-hook dispatch decision, `core/tool_call_hook.hpp`). All three
+mint the exact same `Interaction` shape this paragraph describes -- only the tag's value set grew,
+not the mechanism. -->
+
 multiple concurrent request ports open in different branches (014 §4) can hold several at once. The
 `reason` tag is what lets one mechanism serve both states (§10 Q3) without a UI or protocol adapter
 needing to guess from context which kind of "waiting" it's looking at. `interaction_id` is the *one* internal

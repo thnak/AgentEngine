@@ -40,7 +40,19 @@ namespace agentengine {
 // `history_`/`exec_state_` the suspended script is mid-replay against. `start_run()`'s admission
 // check has a matching arm for this reason, distinct from the `input`/`auth` case it deliberately
 // still allows through.
-enum class interaction_reason { input, auth, approval, codeact_ask };  // ae-naming-lint: allow interaction_reason — 001 §2 names this concept normatively; 027 has not been updated to list it
+// OQ-21 amendment: adds `hook_decision` — a run suspended because the host's `ToolCallHook`
+// (core/tool_call_hook.hpp) left at least one call in the round `needs_external_dispatch` (an
+// out-of-process decider, not a human). Deliberately NOT the same tag as `approval`, even though
+// resolving either eventually reaches the same `AgentSession::run_rounds()` continuation: a
+// `hook_decision` resume answers "did the external process allow/deny/rewrite the call", a
+// DIFFERENT question from "did a human approve its execution" -- `AgentSession::
+// resolve_hook_decision()` re-checks approval need with the real deciders after folding in the
+// external answer, and cascades to a genuine `interaction_reason::approval` suspend (carrying the
+// same stored round forward) if a decider is still needed and none is configured, rather than ever
+// treating the hook's own answer as an approval. Like `codeact_ask`, a `hook_decision` interaction's
+// state (`AgentSession::pending_hook_decisions_`) is keyed to one specific suspended round -- the
+// admission check has a matching arm for this reason too.
+enum class interaction_reason { input, auth, approval, codeact_ask, hook_decision };  // ae-naming-lint: allow interaction_reason — 001 §2 names this concept normatively; 027 has not been updated to list it
 
 struct Interaction {  // ae-naming-lint: allow Interaction — 001 §2 names this concept normatively; 027 has not been updated to list it
     std::string        interaction_id;

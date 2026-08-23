@@ -208,6 +208,19 @@ public:
                 return {};
             }
 
+            // OQ-21: deliberately NOT its own RunFinishedInterrupt, unlike approval_requested --
+            // §2.1 permits exactly one terminal event per run, and the paired input_required event
+            // (emitted right after this one, same interaction_id) already carries the interrupt.
+            // Unlike codeact_ask_requested there is no free-text prompt to stash and ride out on
+            // it -- the interaction_id alone is sufficient correlation for a consumer that also
+            // reads this event's own {call_id, interaction_id, tool_name} out-of-band (e.g. via a
+            // separate MCP/A2A channel a hook-aware host wires up itself). Without this `case`,
+            // the switch's own lack of a `default:` means an unmatched run_event_kind falls
+            // through to `return {}` below silently -- a real, previously-found AG-UI observability
+            // gap, not merely a style choice to add the case explicitly.
+            case run_event_kind::hook_decision_requested:
+                return {};
+
             case run_event_kind::input_resolved:
             case run_event_kind::auth_resolved:
             case run_event_kind::approval_resolved:

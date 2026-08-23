@@ -451,6 +451,26 @@ enum class approval_outcome { proceed, deny, needs_decider };  // ae-naming-lint
         std::move(call_id), error{failure_class::policy, std::move(message), std::move(error_code)});
 }
 
+// OQ-21's tool-call hook stage (core/tool_call_hook.hpp): mirrors
+// `middleware_detail::enforce_backend_tool_call_provenance()` (middleware.hpp) -- the identical
+// "diff the bytes, downgrade the trust class" idiom, applied at a different seam. Called
+// UNCONDITIONALLY within the hook stage's own per-call loop (rt/agent_session.hpp) for every call
+// the hook stage touched -- never gated on what the hook itself claims, because
+// `ToolCallHookContext` (core/tool_call_hook.hpp) has no field through which a hook could assert a
+// provenance directly (that struct's own file-top comment). `json::Value` has no `operator==`
+// (json_value.hpp), so the comparison goes through canonical `json::dump()` text, the same
+// equality-by-serialization idiom this file's own `derive_idempotency_key()` already relies on.
+// Once downgraded, `tool_call_requires_approval()`/`is_auto_declassifiable_text_derived_call()`
+// (unchanged, above) already do the right thing -- a `text_derived` call only auto-declassifies when
+// the target tool is `effect_class::pure` with an entirely inert capability ceiling; ADR-023's
+// confused-deputy closure applies here exactly as it does to a genuinely model-issued call.
+inline void enforce_hook_rewritten_tool_call_provenance(ToolCallRequest& req,
+                                                          json::Value const& original_arguments) {
+    if (json::dump(req.arguments) != json::dump(original_arguments)) {
+        req.provenance = call_provenance::text_derived;
+    }
+}
+
 // The ten-step pipeline (006 §3), against a single native tool call. `held` is the run's actual
 // granted set (never mutated here); `ctx` is filled in with this call's per-invocation
 // `bound_capabilities` (step 7) for the duration of `invoke`, and cleared again before returning
