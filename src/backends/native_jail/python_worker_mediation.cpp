@@ -31,6 +31,7 @@
 #undef AE_PYTHON_WORKER_UNDEF_DEBUG
 #endif
 
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <unordered_set>
@@ -45,6 +46,7 @@
                                                                   // its own copy rather than reusing
                                                                   // native_jail_backend.cpp's local one
 #include "backends/native_jail/output_discipline.hpp"          // Milestone 3 Phase F3, 010 §3 items 4/5
+#include "backends/native_jail/relay_base64.hpp"                // HandleRelay design draft §2
 
 namespace agentengine::native_jail::worker {
 
@@ -84,6 +86,14 @@ std::vector<std::string> const* g_preseeded_answers = nullptr;
 std::size_t                     g_preseeded_answer_index = 0;
 
 PyObject* g_ask_pending_exc_type = nullptr;
+
+// The bootstrap-defined `_AeRelayFile` class (kMediationBootstrapSource, below) -- captured once, in
+// run_mediation_bootstrap(), from the bootstrap's own globals dict before that dict is dropped, the
+// same "grab a reference before the defining scope goes away" idiom `g_ask_pending_exc_type` already
+// uses. `Internal_open` (HandleRelay design draft §1) constructs instances of this from C so that
+// direct callers of `_ae_internal.open` (agent_files_data_codegen.hpp's bootstrap, not just the
+// `_ae_open` builtins wrapper) get the same relayed file object either way.
+PyObject* g_relay_file_cls = nullptr;
 
 result<void> install_ask_pending_exception() {
     g_ask_pending_exc_type = PyErr_NewException("agentengine._ae_internal.AskPending", nullptr, nullptr);
@@ -231,8 +241,16 @@ void raise_connection_error() {
 // ordinary Python exceptions 026 §3's table already establishes -- the SAME mapping
 // mediated_python_runner.cpp's own `raise_mapped_tool_error` used, now driven by the wire response
 // rather than a `tool_pipeline.hpp` error code read directly off a C++ `result<T>`.
-void raise_mapped_denial(std::string const& error_code, std::string const& message) {
-    if (error_code == "net.address_blocked" || error_code == "net.host_unresolvable") {
+void raise_mapped_denial(std::string const& error_code, std::string const& message, int native_code = 0) {
+    // HandleRelay design draft §1 / the pre-worker-process design's own `raise_os_error`: a real,
+    // win32-code-sourced exception takes priority over every string-code mapping below -- CPython
+    // itself decides FileNotFoundError vs PermissionError vs a plain OSError from the code, never a
+    // hand-authored approximation (026 §3 G4-R1's own positive control).
+    if (native_code != 0) {
+        PyErr_SetFromWindowsErr(native_code);
+        return;
+    }
+    if (error_code == wp::kErrorNetAddressBlocked || error_code == wp::kErrorNetHostUnresolvable) {
         raise_connection_error();
         return;
     }
@@ -245,6 +263,12 @@ void raise_mapped_denial(std::string const& error_code, std::string const& messa
         exc_type = PyExc_TimeoutError;
     } else if (error_code == wp::kErrorNotImplementedThisSlice) {
         exc_type = PyExc_PermissionError;
+    } else if (error_code == wp::kErrorNetSocketClosed || error_code == wp::kErrorNetTooManySockets ||
+               error_code == wp::kErrorPythonOpenOsError) {
+        // HandleRelay design draft §4 item 5 / §2 item 2 / §1 (the quota "No space left on device"
+        // case, which has no native win32 code at all) -- the ordinary Python exception for a
+        // resource condition, same as a real socket/file operation would raise.
+        exc_type = PyExc_OSError;
     }
     PyErr_SetString(exc_type, message.c_str());
 }
@@ -307,17 +331,27 @@ PyObject* Internal_open(PyObject* /*self*/, PyObject* args) {
     if (!resp) return nullptr;  // exception already set
 
     if (!wp::get_bool(*resp, "ok")) {
-        raise_mapped_denial(wp::get_string(*resp, "error_code"), wp::get_string(*resp, "message"));
+        raise_mapped_denial(wp::get_string(*resp, "error_code"), wp::get_string(*resp, "message"),
+                             wp::get_native_code(*resp));
         return nullptr;
     }
-    // Slice 2 (real file handle relay, §7/HandleRelay) is not built -- the host's dispatch handler
-    // never actually answers `ok: true` yet (native_jail_backend.cpp's dispatch_worker_query), so
-    // this branch is unreachable this pass. Left as an explicit, honest gap rather than silently
-    // treated as success with no file object to hand back.
-    PyErr_SetString(PyExc_NotImplementedError,
-                     "open(): host reported success but this worker build cannot yet receive a "
-                     "relayed file handle (Slice 2, not built)");
-    return nullptr;
+
+    // HandleRelay design draft §1 (revised): the host keeps the real, capability-checked,
+    // size-cap-checked file HANDLE open in ITS OWN process (DuplicateHandle into this AppContainer'd
+    // process produced a handle real I/O rejects with ERROR_INVALID_HANDLE, a reproduced finding, not
+    // a design choice -- see native_jail_backend.cpp's dispatch_open) and hands back an opaque
+    // `file_id`; every subsequent read/write/close is a relay through the `_AeRelayFile` Python
+    // object constructed here, not a locally-wrapped `io.FileIO`.
+    auto const file_id = static_cast<std::uint64_t>(wp::get_number(*resp, "file_id"));
+    bool const for_write = wp::get_bool(*resp, "for_write");
+    bool const binary = wp::get_bool(*resp, "binary");
+
+    if (!g_relay_file_cls) {
+        PyErr_SetString(PyExc_RuntimeError, "internal error: _AeRelayFile was never installed");
+        return nullptr;
+    }
+    return PyObject_CallFunction(g_relay_file_cls, "KOO", file_id, for_write ? Py_True : Py_False,
+                                  binary ? Py_True : Py_False);
 }
 
 PyObject* Internal_listdir(PyObject* /*self*/, PyObject* args) {
@@ -339,59 +373,179 @@ PyObject* Internal_listdir(PyObject* /*self*/, PyObject* args) {
     if (!resp) return nullptr;
 
     if (!wp::get_bool(*resp, "ok")) {
-        raise_mapped_denial(wp::get_string(*resp, "error_code"), wp::get_string(*resp, "message"));
+        raise_mapped_denial(wp::get_string(*resp, "error_code"), wp::get_string(*resp, "message"),
+                             wp::get_native_code(*resp));
         return nullptr;
     }
-    // Slice 2 residual -- see Internal_open's identical note.
+    // HandleRelay design draft §1 item 2's "no handle relay needed for listdir" branch: the host
+    // already capability-checked and enumerated the directory; this is plain JSON text, not a handle.
     std::string entries_json = wp::get_string(*resp, "entries_json", "[]");
     return PyUnicode_FromString(entries_json.c_str());
 }
 
-PyObject* g_real_socket_connect = nullptr;  // captured before the bootstrap patches it -- SAME
-                                              // "never a Python-reachable name" reasoning
-                                              // mediated_python_runner.cpp's own comment documents.
-
-PyObject* Internal_do_connect(PyObject* /*self*/, PyObject* args) {
-    PyObject* sock_obj = nullptr;
-    PyObject* address = nullptr;
-    if (!PyArg_ParseTuple(args, "OO", &sock_obj, &address)) return nullptr;
-
-    std::string host;
-    long port = 0;
-    if (PyTuple_Check(address) && PyTuple_Size(address) >= 2) {
-        PyObject* host_obj = PyTuple_GetItem(address, 0);  // borrowed
-        PyObject* port_obj = PyTuple_GetItem(address, 1);  // borrowed
-        PyObject* host_str = PyObject_Str(host_obj);
-        if (host_str) {
-            char const* h = PyUnicode_AsUTF8(host_str);
-            if (h) host = h;
-            Py_DECREF(host_str);
-        }
-        port = PyLong_AsLong(port_obj);
-        if (port == -1 && PyErr_Occurred()) {
-            PyErr_Clear();
-            port = 0;
-        }
-    }
+// `_ae_internal.file_read(file_id, max_bytes) -> bytes` -- relays one host-side ReadFile against the
+// host-owned handle `file_id` names (native_jail_backend.cpp's `PythonWorkerState::open_files`).
+// Empty bytes means real EOF (ReadFile's own contract, unlike connect_recv's would_block ambiguity --
+// a file read is never "not ready yet", so no would_block flag is needed here).
+PyObject* Internal_file_read(PyObject* /*self*/, PyObject* args) {
+    unsigned long long file_id = 0;
+    long max_bytes = 0;
+    if (!PyArg_ParseTuple(args, "Kl", &file_id, &max_bytes)) return nullptr;
 
     json::Value payload = json::Value::make_object({
-        {"host", json::Value::make_string(host)},
+        {"file_id", json::Value::make_number(static_cast<double>(file_id))},
+        {"max_bytes", json::Value::make_number(static_cast<double>(max_bytes))},
+    });
+    auto resp = query_or_raise(wp::kQueryFileRead, std::move(payload));
+    if (!resp) return nullptr;
+    if (!wp::get_bool(*resp, "ok")) {
+        raise_mapped_denial(wp::get_string(*resp, "error_code"), wp::get_string(*resp, "message"),
+                             wp::get_native_code(*resp));
+        return nullptr;
+    }
+    auto decoded = relay_base64::decode(wp::get_string(*resp, "data_base64"));
+    if (!decoded) {
+        PyErr_SetString(PyExc_RuntimeError, "internal error: malformed base64 in relayed file read data");
+        return nullptr;
+    }
+    return PyBytes_FromStringAndSize(reinterpret_cast<char const*>(decoded->data()),
+                                      static_cast<Py_ssize_t>(decoded->size()));
+}
+
+PyObject* Internal_file_write(PyObject* /*self*/, PyObject* args) {
+    unsigned long long file_id = 0;
+    Py_buffer buf{};
+    if (!PyArg_ParseTuple(args, "Ky*", &file_id, &buf)) return nullptr;
+    std::string const data_b64 =
+        relay_base64::encode(static_cast<std::byte const*>(buf.buf), static_cast<std::size_t>(buf.len));
+    PyBuffer_Release(&buf);
+
+    json::Value payload = json::Value::make_object({
+        {"file_id", json::Value::make_number(static_cast<double>(file_id))},
+        {"data_base64", json::Value::make_string(data_b64)},
+    });
+    auto resp = query_or_raise(wp::kQueryFileWrite, std::move(payload));
+    if (!resp) return nullptr;
+    if (!wp::get_bool(*resp, "ok")) {
+        raise_mapped_denial(wp::get_string(*resp, "error_code"), wp::get_string(*resp, "message"),
+                             wp::get_native_code(*resp));
+        return nullptr;
+    }
+    return PyLong_FromLong(static_cast<long>(wp::get_number(*resp, "written")));
+}
+
+PyObject* Internal_file_close(PyObject* /*self*/, PyObject* args) {
+    unsigned long long file_id = 0;
+    if (!PyArg_ParseTuple(args, "K", &file_id)) return nullptr;
+
+    json::Value payload = json::Value::make_object({
+        {"file_id", json::Value::make_number(static_cast<double>(file_id))},
+    });
+    // Idempotent success by design (design draft §2 item 4's close reasoning, reused here) -- no
+    // denial-mapping branch needed.
+    auto resp = query_or_raise(wp::kQueryFileClose, std::move(payload));
+    if (!resp) return nullptr;
+    Py_RETURN_NONE;
+}
+
+// HandleRelay design draft §2: the worker process runs inside a zero-capability AppContainer
+// (ADR-004 AC-S1, measured: `socket()` creation succeeds, `connect()` fails with WSAEACCES/WinError
+// 10013) -- there is no real, usable underlying socket for this process to ever hold, so unlike the
+// pre-worker-process design (`git show a60fc3d^:.../mediated_python_runner.cpp`'s own
+// `g_real_socket_connect`, "capture the real callable before patching, never expose it"), there is no
+// real primitive left to capture or hide here at all. Every one of connect/send/recv/close below is a
+// pure relay: the host holds the one real socket per logical connection (keyed by a host-minted
+// `socket_id`), this process holds only the id.
+
+PyObject* Internal_connect_authorize(PyObject* /*self*/, PyObject* args) {
+    char const* host_c = nullptr;
+    long port = 0;
+    if (!PyArg_ParseTuple(args, "sl", &host_c, &port)) return nullptr;
+
+    json::Value payload = json::Value::make_object({
+        {"host", json::Value::make_string(host_c)},
         {"port", json::Value::make_number(static_cast<double>(port))},
     });
     auto resp = query_or_raise(wp::kQueryConnectAuthorize, std::move(payload));
     if (!resp) return nullptr;
 
     if (!wp::get_bool(*resp, "ok")) {
-        raise_mapped_denial(wp::get_string(*resp, "error_code"), wp::get_string(*resp, "message"));
+        raise_mapped_denial(wp::get_string(*resp, "error_code"), wp::get_string(*resp, "message"),
+                             wp::get_native_code(*resp));
         return nullptr;
     }
-    // Slice 2 residual (real socket byte-relay, §9) -- unreachable this pass, same reasoning as
-    // Internal_open's own note: the host never answers ok:true yet.
-    if (!g_real_socket_connect) {
-        raise_permission_error("internal error: the real socket.connect was never captured");
+    return PyLong_FromUnsignedLongLong(static_cast<unsigned long long>(wp::get_number(*resp, "socket_id")));
+}
+
+PyObject* Internal_connect_send(PyObject* /*self*/, PyObject* args) {
+    unsigned long long socket_id = 0;
+    Py_buffer buf{};
+    if (!PyArg_ParseTuple(args, "Ky*", &socket_id, &buf)) return nullptr;
+    std::string const data_b64 =
+        relay_base64::encode(static_cast<std::byte const*>(buf.buf), static_cast<std::size_t>(buf.len));
+    PyBuffer_Release(&buf);
+
+    json::Value payload = json::Value::make_object({
+        {"socket_id", json::Value::make_number(static_cast<double>(socket_id))},
+        {"data_base64", json::Value::make_string(data_b64)},
+    });
+    auto resp = query_or_raise(wp::kQueryConnectSend, std::move(payload));
+    if (!resp) return nullptr;
+    if (!wp::get_bool(*resp, "ok")) {
+        raise_mapped_denial(wp::get_string(*resp, "error_code"), wp::get_string(*resp, "message"),
+                             wp::get_native_code(*resp));
         return nullptr;
     }
-    return PyObject_CallFunctionObjArgs(g_real_socket_connect, sock_obj, address, nullptr);
+    return PyLong_FromLong(static_cast<long>(wp::get_number(*resp, "sent")));
+}
+
+PyObject* Internal_connect_recv(PyObject* /*self*/, PyObject* args) {
+    unsigned long long socket_id = 0;
+    long bufsize = 0;
+    if (!PyArg_ParseTuple(args, "Kl", &socket_id, &bufsize)) return nullptr;
+
+    json::Value payload = json::Value::make_object({
+        {"socket_id", json::Value::make_number(static_cast<double>(socket_id))},
+        {"bufsize", json::Value::make_number(static_cast<double>(bufsize))},
+    });
+    auto resp = query_or_raise(wp::kQueryConnectRecv, std::move(payload));
+    if (!resp) return nullptr;
+    if (!wp::get_bool(*resp, "ok")) {
+        raise_mapped_denial(wp::get_string(*resp, "error_code"), wp::get_string(*resp, "message"),
+                             wp::get_native_code(*resp));
+        return nullptr;
+    }
+    // Returns a (bytes, would_block) PAIR, not bytes alone -- design draft §2 item 3: a single
+    // non-blocking attempt host-side means "nothing ready yet" and "orderly EOF" are BOTH empty data,
+    // and conflating them would falsely signal EOF to guest code still waiting on a slow-but-live
+    // peer. The Python-level `_ae_recv` wrapper (this file's bootstrap source) loops on `would_block`.
+    auto decoded = relay_base64::decode(wp::get_string(*resp, "data_base64"));
+    if (!decoded) {
+        PyErr_SetString(PyExc_RuntimeError, "internal error: malformed base64 in relayed recv() data");
+        return nullptr;
+    }
+    PyObject* data = PyBytes_FromStringAndSize(reinterpret_cast<char const*>(decoded->data()),
+                                                static_cast<Py_ssize_t>(decoded->size()));
+    if (!data) return nullptr;
+    bool const would_block = wp::get_bool(*resp, "would_block");
+    PyObject* result = PyTuple_Pack(2, data, would_block ? Py_True : Py_False);
+    Py_DECREF(data);
+    return result;
+}
+
+PyObject* Internal_connect_close(PyObject* /*self*/, PyObject* args) {
+    unsigned long long socket_id = 0;
+    if (!PyArg_ParseTuple(args, "K", &socket_id)) return nullptr;
+
+    json::Value payload = json::Value::make_object({
+        {"socket_id", json::Value::make_number(static_cast<double>(socket_id))},
+    });
+    // connect_close is idempotent success by design (HandleRelay design draft §2 item 4) -- a
+    // transport-level failure (broken pipe) still raises via query_or_raise, but an ordinary
+    // "already closed"/foreign id response is always ok:true, so no denial-mapping branch here.
+    auto resp = query_or_raise(wp::kQueryConnectClose, std::move(payload));
+    if (!resp) return nullptr;
+    Py_RETURN_NONE;
 }
 
 int g_call_tool_counter = 0;
@@ -417,7 +571,8 @@ PyObject* Internal_call_tool(PyObject* /*self*/, PyObject* args) {
     if (!resp) return nullptr;
 
     if (!wp::get_bool(*resp, "ok")) {
-        raise_mapped_denial(wp::get_string(*resp, "error_code"), wp::get_string(*resp, "message"));
+        raise_mapped_denial(wp::get_string(*resp, "error_code"), wp::get_string(*resp, "message"),
+                             wp::get_native_code(*resp));
         return nullptr;
     }
     std::string reply_json = wp::get_string(*resp, "reply_json", "null");
@@ -449,7 +604,13 @@ PyObject* Internal_ask_or_raise(PyObject* /*self*/, PyObject* args) {
 PyMethodDef g_internal_methods[] = {
     {"open", Internal_open, METH_VARARGS, nullptr},
     {"listdir", Internal_listdir, METH_VARARGS, nullptr},
-    {"do_connect", Internal_do_connect, METH_VARARGS, nullptr},
+    {"file_read", Internal_file_read, METH_VARARGS, nullptr},
+    {"file_write", Internal_file_write, METH_VARARGS, nullptr},
+    {"file_close", Internal_file_close, METH_VARARGS, nullptr},
+    {"connect_authorize", Internal_connect_authorize, METH_VARARGS, nullptr},
+    {"connect_send", Internal_connect_send, METH_VARARGS, nullptr},
+    {"connect_recv", Internal_connect_recv, METH_VARARGS, nullptr},
+    {"connect_close", Internal_connect_close, METH_VARARGS, nullptr},
     {"call_tool", Internal_call_tool, METH_VARARGS, nullptr},
     {"ask_or_raise", Internal_ask_or_raise, METH_VARARGS, nullptr},
     {nullptr, nullptr, 0, nullptr},
@@ -459,22 +620,205 @@ PyModuleDef g_internal_moddef = {
     PyModuleDef_HEAD_INIT, "_ae_internal", nullptr, -1, g_internal_methods,
 };
 
-// The mediation bootstrap script -- IDENTICAL to mediated_python_runner.cpp's own
-// `kMediationBootstrapSource` (Stage D: monkeypatches builtins.open/io.open/socket.socket.connect/
-// call_tool/subprocess+os.* denial). Not reproduced-with-changes; byte-identical text, carried
-// forward verbatim because none of Stage D's PYTHON-side shape changed -- only what the C
-// implementations behind `_ae_internal.*` do (this file, above) changed.
+// The mediation bootstrap script -- Stage D's PYTHON-side shape (monkeypatches builtins.open/io.open/
+// socket.socket's connect/send/sendall/recv/close/call_tool/subprocess+os.* denial). The
+// open()/call_tool()/subprocess/os.* wrappers are byte-identical to mediated_python_runner.cpp's own
+// pre-worker-process `kMediationBootstrapSource` text. The socket wrappers are NOT byte-identical --
+// see HandleRelay design draft §2's own note: the old design patched only `.connect` on a REAL socket
+// object and let a capability-authorized connect proceed for real; this worker process cannot (ADR-004
+// AC-S1, this file's own Internal_connect_authorize comment), so every socket verb a guest can reach
+// is now a pure relay through `_ae_internal.connect_*`, keyed by a host-minted `socket_id` correlated
+// to its (never actually connected) real `socket.socket` object via a `weakref.WeakKeyDictionary` --
+// NOT an ordinary instance attribute: this vendored CPython's `socket.socket` instances carry no
+// `__dict__` at all (a real, measured finding, not an assumption -- `self._ae_socket_id = ...` raises
+// "no __dict__ for setting new attributes"), so a weak-keyed correlation map is the mechanism, not a
+// simplification of one.
 char const* const kMediationBootstrapSource = R"PY(
-import builtins, io, os, socket, subprocess
+import builtins, io, os, socket, subprocess, time
+
+class _AeRelayFile:
+    """A pure-Python file-like object relaying every read/write/close to the host by `file_id`
+    (HandleRelay design draft SS1, revised): DuplicateHandle-ing a real file HANDLE into this
+    AppContainer'd process produces a handle real I/O rejects with ERROR_INVALID_HANDLE, so unlike a
+    real io.FileIO, nothing here ever touches a Win32 HANDLE directly -- every method is a relay."""
+    def __init__(self, file_id, for_write, binary):
+        self._id = file_id
+        self._for_write = for_write
+        self._binary = binary
+        self._closed = False
+        self._buf = b''  # unconsumed, un-decoded bytes already fetched from the host but not yet
+                          # returned to the caller -- ONE buffer for both read(size) and readline(),
+                          # so a size-bounded read() never discards bytes a later readline() needs.
+        self._eof = False
+
+    def _fill(self, min_bytes):
+        # Fetches more from the host until at least `min_bytes` are buffered, or real EOF is reached.
+        # A FIXED target evaluated once by the caller (never "keep growing the target"), matching
+        # read(size)/readline()'s own bounded-wait shape -- found necessary during implementation:
+        # pandas' C CSV parser (H1-T3, reference-agent-task-corpus) calls read(size) with a real size
+        # and depends on getting AT MOST what it asked for per call, not "the whole rest of the file"
+        # -- the first version of this method ignored `size` entirely and broke exactly that caller.
+        while len(self._buf) < min_bytes and not self._eof:
+            chunk = _ae_internal.file_read(self._id, 1 << 20)
+            if not chunk:
+                self._eof = True
+            else:
+                self._buf += chunk
+
+    def _take(self, n):
+        data, self._buf = self._buf[:n], self._buf[n:]
+        return data
+
+    def read(self, size=-1):
+        if self._for_write:
+            raise OSError('file not open for reading')
+        if size is None or size < 0:
+            while not self._eof:
+                self._fill(len(self._buf) + 1)  # grows self._buf by >=1 chunk per iteration below
+            data = self._take(len(self._buf))
+        else:
+            self._fill(size)
+            data = self._take(min(size, len(self._buf)))
+        if self._binary:
+            return data
+        # Text mode: UTF-8 decode + universal-newline translation. NOT split-multibyte-character
+        # safe across a size-bounded read() boundary (a real, narrow limitation, not silently
+        # pretended away) -- every guest-facing text file this codebase reads today (CSV/JSON/NDJSON
+        # fixtures) is ASCII, so this is not exercised; a future caller reading non-ASCII UTF-8 text
+        # in fixed-size chunks could see a UnicodeDecodeError at a chunk boundary a real io.TextIOWrapper
+        # would not.
+        return data.decode('utf-8').replace('\r\n', '\n')
+
+    def readline(self):
+        if self._binary:
+            raise OSError('readline() is not supported on a binary-mode relayed file')
+        while b'\n' not in self._buf and not self._eof:
+            self._fill(len(self._buf) + 1)
+        idx = self._buf.find(b'\n')
+        data = self._take(len(self._buf) if idx == -1 else idx + 1)
+        if not data:
+            return ''
+        return data.decode('utf-8').replace('\r\n', '\n')
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        line = self.readline()
+        if not line:
+            raise StopIteration
+        return line
+
+    def write(self, data):
+        if not self._for_write:
+            raise OSError('file not open for writing')
+        if isinstance(data, str):
+            data = data.encode('utf-8')
+        view = memoryview(data)
+        total = 0
+        while total < len(view):
+            n = _ae_internal.file_write(self._id, view[total:])
+            if n == 0:
+                raise OSError('write failed')
+            total += n
+        return total
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
+        return False
+
+    def close(self):
+        if not self._closed:
+            _ae_internal.file_close(self._id)
+            self._closed = True
+
+    def __del__(self):
+        # A real io.FileIO (the pre-worker-process design's own file object) closes deterministically
+        # when its refcount drops to zero, e.g. the common `open(path, 'w').write(data)` idiom with no
+        # explicit close() or `with` block -- CPython's non-cyclic refcounting reclaims it immediately
+        # after the statement, not merely eventually. A plain Python class has no such finalizer unless
+        # it defines __del__ itself; without this, a never-explicitly-closed relayed file would leak
+        # its host-side handle until the whole worker session tears down, and (found while proving this
+        # exact scenario) a same-session write-quota check reading LIVE on-disk usage would see the
+        # earlier write's file as still-open rather than accounted for.
+        self.close()
 
 def _ae_open(file, mode='r', *args, **kwargs):
     return _ae_internal.open(file, mode)
 builtins.open = _ae_open
 io.open = _ae_open
 
+import weakref
+# `socket.socket` instances carry no `__dict__` (a real, measured finding, not an assumption -- this
+# vendored CPython's `socket.socket` refuses `self._ae_socket_id = ...` with "no __dict__ for setting
+# new attributes"), so the socket_id<->socket correlation lives in a weak-keyed dict here instead of
+# an instance attribute. WeakKeyDictionary (not a plain dict keyed by id(self)): a plain id()-keyed
+# dict would risk a stale entry aliasing a DIFFERENT, later socket object allocated at the same
+# address after the first is garbage-collected -- weak keys mean an entry vanishes with its socket.
+_ae_socket_ids = weakref.WeakKeyDictionary()
+
 def _ae_connect(self, address):
-    return _ae_internal.do_connect(self, address)
+    _ae_socket_ids[self] = _ae_internal.connect_authorize(str(address[0]), int(address[1]))
 socket.socket.connect = _ae_connect
+
+def _ae_send(self, data, flags=0):
+    sid = _ae_socket_ids.get(self)
+    if sid is None:
+        raise OSError('socket not connected')
+    return _ae_internal.connect_send(sid, data)
+socket.socket.send = _ae_send
+
+def _ae_sendall(self, data, flags=0):
+    view = memoryview(data)
+    total = 0
+    while total < len(view):
+        n = _ae_send(self, view[total:])
+        if n == 0:
+            raise OSError('connection closed by peer')
+        total += n
+socket.socket.sendall = _ae_sendall
+
+def _ae_recv(self, bufsize, flags=0):
+    sid = _ae_socket_ids.get(self)
+    if sid is None:
+        raise OSError('socket not connected')
+    while True:
+        data, would_block = _ae_internal.connect_recv(sid, bufsize)
+        if not would_block:
+            return data
+        time.sleep(0.01)
+socket.socket.recv = _ae_recv
+
+def _ae_socket_close(self):
+    sid = _ae_socket_ids.pop(self, None)
+    if sid is not None:
+        _ae_internal.connect_close(sid)
+socket.socket.close = _ae_socket_close
+
+# Red-team finding (independent review, this pass): only connect/send/sendall/recv/close were
+# mediated above -- every OTHER socket.socket method (bind/listen/accept for an inbound server;
+# connect_ex/sendto/recvfrom for a path that never goes through _ae_connect/_ae_send at all, e.g.
+# UDP, which needs no connect() before sendto()) was still the real, unmediated CPython
+# implementation, with no capability check ever attempted. ADR-004 AC-S1's own measured evidence
+# (decisions/ADR-004-...md §5.3) is specifically `socket.connect()`; it says nothing about bind/
+# sendto/etc under the same zero-capability AppContainer, so relying on that evidence to cover this
+# wider surface would be exactly the kind of unverified claim CLAUDE.md's evidence discipline exists
+# to catch. Denied explicitly here instead, the SAME defense-in-depth posture this bootstrap already
+# applies to os.*/subprocess.* below (never trust a single OS-level backstop alone) -- `makefile`/
+# `dup`/`detach`/`share` are included because each could otherwise hand out a real, wrapped or
+# duplicated reference to the underlying (never actually connected, but still real) socket fd.
+def _ae_socket_op_denied(*a, **kw):
+    raise PermissionError(
+        "this socket operation is not available in this session "
+        "(only connect/send/sendall/recv/close are mediated)")
+for _name in ("bind", "listen", "accept", "connect_ex", "sendto", "recvfrom", "recvfrom_into",
+              "sendmsg", "sendmsg_afalg", "recvmsg", "recvmsg_into", "makefile", "dup", "detach",
+              "share", "shutdown"):
+    if hasattr(socket.socket, _name):
+        setattr(socket.socket, _name, _ae_socket_op_denied)
 
 def call_tool(name, args_json='{}'):
     return _ae_internal.call_tool(name, args_json)
@@ -524,16 +868,11 @@ std::string fetch_python_error_text() {
 }
 
 result<void> run_mediation_bootstrap() {
-    PyObject* socket_mod = PyImport_ImportModule("socket");
-    PyObject* socket_cls = socket_mod ? PyObject_GetAttrString(socket_mod, "socket") : nullptr;
-    g_real_socket_connect = socket_cls ? PyObject_GetAttrString(socket_cls, "connect") : nullptr;
-    Py_XDECREF(socket_cls);
-    Py_XDECREF(socket_mod);
-    if (!g_real_socket_connect) {
-        return std::unexpected(error{failure_class::fatal, "could not capture the real socket.connect",
-                                      "python.mediation_bootstrap_failed"});
-    }
-
+    // HandleRelay design draft §2: unlike the pre-worker-process design, there is no real
+    // socket.connect left worth capturing here -- this worker process cannot complete a real connect
+    // at all (ADR-004 AC-S1), so every socket verb the bootstrap installs below is a pure relay; the
+    // old "capture the real callable before patching" step (and its own `g_real_socket_connect`
+    // TU-static) is removed, not left as dead code with a comment explaining why it is unused forever.
     PyObject* internal_module = PyModule_Create(&g_internal_moddef);
     if (!internal_module) {
         return std::unexpected(error{failure_class::fatal, "could not create _ae_internal module",
@@ -549,6 +888,17 @@ result<void> run_mediation_bootstrap() {
     bool ok = run_result != nullptr;
     std::string err = ok ? std::string{} : fetch_python_error_text();
     Py_XDECREF(run_result);
+    if (ok) {
+        PyObject* relay_file_cls = PyDict_GetItemString(globals, "_AeRelayFile");  // borrowed
+        if (!relay_file_cls) {
+            ok = false;
+            err = "bootstrap did not define _AeRelayFile";
+        } else {
+            Py_XDECREF(g_relay_file_cls);
+            Py_INCREF(relay_file_cls);
+            g_relay_file_cls = relay_file_cls;
+        }
+    }
     Py_DECREF(globals);
     if (!ok) {
         return std::unexpected(error{failure_class::fatal, "mediation bootstrap raised: " + err,

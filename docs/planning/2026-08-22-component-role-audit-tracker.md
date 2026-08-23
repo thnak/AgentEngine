@@ -1200,3 +1200,14 @@ rather than taking this entry's own account on self-report, and names on the rec
 design-phase candidate comparison was never preserved outside this tracker entry (a process gap for future
 passes, not a defect in the shipped design). Slice 2 and Linux parity remain open, tracked there now, not
 just here.
+
+**[2026-08-23: `decisions/ADR-085-jailed-python-worker-slice-2-handle-relay.md` Judged]** — closes
+Slice 2 (real file/listdir/socket relay) for real. Two implementation-time findings falsified the
+original design plan (DuplicateHandle-based file relay fails inside the AppContainer'd worker with
+`ERROR_INVALID_HANDLE`; `socket.socket` carries no `__dict__` in this vendored CPython) — both found by
+running the real tests the prove phase required, fixed, and disclosed rather than hidden
+(`docs/planning/jailed-python-worker-slice-2-handle-relay-design-draft.md` §1a/§2). An independent
+red-team pass found and fixed one BLOCKING gap (only 5 of `socket.socket`'s methods were mediated;
+`bind`/`listen`/`accept`/`sendto`/`recvfrom`/etc. were the real, unmediated implementation) plus one
+real bug (an unvalidated port cast was UB) and three MINOR issues — see that ADR's own §3 for the full
+table. Linux parity remains the one still-open residual from this entry.
