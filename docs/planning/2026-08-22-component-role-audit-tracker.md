@@ -1004,3 +1004,195 @@ Part 1a keeps the order/tool-survival/turn-end-fan-out coverage, now with budget
 `tests/test_context_provenance.cpp`/`tests/test_memory_provider.cpp` (signature-only migrations — neither
 exercises a nonzero budget, confirmed unaffected). Full affected-target Debug rebuild and `ctest` run,
 zero failures.
+
+---
+
+## 2026-08-23 — Follow-up: `sandbox/` cluster re-checked with a sharper question — does the embedded CPython interpreter actually sit inside any isolation boundary?
+
+User asked directly whether LLM providers overlap (no finding — see git history of this session for that
+check, not logged as its own dated entry since it produced no finding) and then asked to check `sandbox/`
+specifically. The earlier parallel-sweep round (2026-08-22, above) already recorded "no finding —
+isolation-parity holds structurally" for `sandbox/` + `src/backends/{wasm,native_jail,remote}`, and Finding
+O already named that real Python execution never reaches `NativeJailBackend`'s create/exec/destroy
+lifecycle. This round pushes one level further than Finding O did: not just "does Python route through the
+jail," but "is the interpreter process contained by *anything* OS-level at all."
+
+### Finding Q — the embedded CPython interpreter runs with zero OS-level resource containment; the "OS-level jail as a second layer" CLAUDE.md's own architecture calls for was never wired onto it
+
+CLAUDE.md's own locked decision ("No `microvm` sandbox profile") states the intended architecture
+explicitly: *"Isolation strength for the interpreter/shell comes from treating the whole execution
+environment as the sandbox — worktree, capabilities, resource limits, network policy — with CPython's
+dangerous entry points mediated at the point of use **and the OS-level jail as a second layer** (008
+§1b)."* Two layers are named as the design: (1) CPython-internal mediation, (2) an outer OS-level jail.
+Checked whether layer 2 is actually wired onto the interpreter process, not just cited as intended.
+
+Layer 1 is real and verified in earlier rounds: `PythonLockdownInterpreter`/`MediatedPythonRunner`
+(`src/backends/native_jail/python_lockdown.{hpp,cpp}`, `mediated_python_runner.cpp`) implement a genuine
+C-level import allowlist (meta-path finder, ADR-002), a caller-gated import tier (ADR-003), and
+capability-mediated file I/O through `MediatedFileSystemAdapter` (ADR-014). None of this is in question.
+
+Layer 2 does not exist for this process, confirmed three ways:
+1. **No `SandboxBackend` involvement at all** — `PythonLockdownInterpreter`/`MediatedPythonRunner` never
+   construct a `SandboxHandle`, never call `create()`/`exec()`/`destroy()`, carry no
+   `static_assert(SandboxBackend<...>)`. Consistent with, and one level more specific than, Finding O's own
+   "real Python execution never reaches `NativeJailBackend` at all" finding.
+2. **No OS resource cap of any kind on the interpreter's own process.** Grepped
+   `mediated_python_runner.{hpp,cpp}` for every resource-limit vocabulary this codebase uses elsewhere
+   (`JobObjectLimits`, `ResourceLimits`, `cgroup`, `rlimit`, `memory_bytes`, `wall_ms`, `cpu_ms`) — zero
+   matches. The interpreter runs in-process with the host, sharing its memory/CPU, under no Job
+   Object/cgroup/namespace at all.
+3. **The one deadline check that exists is pre-flight only, not preemptive.** `tool_pipeline.hpp:579-583`'s
+   own comment is explicit: *"deadline checked at the call boundary, not preemptible mid-call, decision 2
+   defers it."* Once `PythonLockdownInterpreter::run()` starts executing guest code, nothing external can
+   interrupt it.
+
+**Net effect**: guest Python that never imports a blocked module (so layer 1's import lockdown has nothing
+to catch) but simply spins (`while True: pass`) or allocates unboundedly in pure Python objects runs
+unbounded, sharing the host process, with no OS-level kill, no mid-call timeout, no memory cap. This is a
+real gap against the project's own "Machine safety" rule (CLAUDE.md: sandbox/hostile tests must be
+resource-capped so a proof of containment can't itself take the machine down) — and a sharper one than
+Finding O described, because Finding O's framing ("does Python route through the jail for filesystem
+containment") left the resource-limit dimension unexamined.
+
+**A real asymmetry worth naming**: `NativeExecRequest`/`spawn_native_process`
+(`src/backends/native_process/native_process_spawn.hpp`, ADR-071) — a class of provider explicitly built
+*weaker* than the sandboxed interpreter (no AppContainer at all, by design, per that file's own top comment)
+— still gets `cpu_ms_cap`/`wall_ms_cap`/`memory_bytes_cap` enforced best-effort via the same Windows Job
+Object primitive `NativeJailBackend` uses. So today, the deliberately-weaker native-process class has
+*more* OS-level resource containment than the "one mediated code-interpreter path, permanently" class does.
+Not evidence either mechanism is wrong on its own — evidence the two were built independently and never
+reconciled on this one axis.
+
+**Disposition: tracked, not closed.** This is a survey-and-log finding, not a same-session fix (per this
+session's standing scope) — a real fix (wiring `PythonLockdownInterpreter`'s host process into
+`NativeJailBackend`/`LinuxNativeJailBackend`, or giving it its own lighter Job Object/cgroup wrap the way
+`native_process_spawn.hpp` already does) is a genuine design decision (which OS primitive, cross-platform
+parity, whether the *shell*'s still-unbuilt process-spawn case per Finding O should be unified with this
+fix rather than solved twice) that belongs behind this project's own `design → red-team → prove → judge`
+gate for a security-relevant change, not a drive-by patch.
+
+---
+
+## 2026-08-23 — Deeper follow-up on Finding Q, at user's explicit request ("the sandbox missing safety
+components is extremely concerning"): this is a spec-vs-shipped-code conflict, not merely an unwired
+residual, and it is currently more severe than Finding Q described
+
+### Finding R — the interpreter runs T3 (least-trusted) code with the RFC's own mandatory third defense
+layer (the kernel-jail backstop) entirely absent, in-process with the host, and a same-day code comment
+(under Finding O) already asserts this is permanently resolved without any ADR having actually decided that
+
+Traced the RFC text itself, not just prior comments describing it, to check whether "interpreter-level
+mediation only, no kernel jail" was ever an accepted design for the code interpreter specifically (as
+opposed to Finding Q's framing, which treated the missing resource cap as an unwired piece of an otherwise-
+agreed architecture).
+
+**The RFC is explicit that the kernel jail is not optional for the interpreter, and says exactly why.**
+`008-Sandbox-and-Isolation.md` §1b (lines 169–174) lays out the interpreter's isolation as three layers —
+(1) closed import allowlist, (2) per-module dangerous-behavior mediation, (3) **kernel-level jail as
+backstop** — and states the reason layer 3 exists in so many words: *"relying solely on interpreter
+mediation has no answer for a bug in the mediation itself."* §3's profile table (line 262) defines
+`native-jail`'s boundary as "Kernel-enforced... **plus** mediated at the point of use" — both, not either.
+§3's own prose (lines 294–296) states plainly: *"the code interpreter, which is locked to `native-jail`
+permanently."* `010-Python-Code-Interpreter.md` §2 (line 63) repeats it ("under `native-jail`") and §6
+(line 246) states code executed via `execute_code` runs at **the sandbox's trust tier, T3** — and 008's own
+profile table (line 264) states the in-process `none` profile is scoped to "first-party trusted code only;
+**refuses to load T2/T3 code**." T3 code is, by the RFC's own vocabulary, exactly the class `none` is
+defined to reject.
+
+**What's actually shipped delivers `none`'s boundary while the RFC requires `native-jail`'s.** Confirmed in
+the prior round (Finding Q) and reconfirmed here: `PythonLockdownInterpreter`/`MediatedPythonRunner` never
+touch `SandboxBackend`/`NativeJailBackend` at all, and run as an ordinary in-process CPython embed sharing
+the host binary's own address space — `tools/cli_chat.cpp`'s own comment states the runner is *"a SHARED,
+process-wide `MediatedPythonRunner`"*, one instance for the whole process's lifetime (ADR-002 §5.5.6's own
+scope: "one `PythonLockdownInterpreter` == one OS process"). So today, T3-classified guest code executes
+with zero kernel-level containment, in the same address space as the host, every session's `AgentSession`
+state, and any capability/secret material resident in that process's memory — exactly the failure mode
+008 §1b names layer 3 to catch (a bug in layers 1–2, or in an allowed module's own native extension code —
+NumPy/pandas are large C codebases explicitly named as intended `native-jail` cargo in 010's own table).
+
+**This has already been characterized as settled, without an ADR, and that characterization does not hold
+up against the RFC text.** `native_jail_backend.hpp`'s own "Correction (2026-08-23)" comment (written this
+session under Finding O, by a different/concurrent audit pass) states: *"That closes the filesystem
+boundary for Python by an entirely different, now-permanent mechanism than 'compose with this backend'"* —
+read naturally, this asserts the kernel-jail requirement no longer applies to Python. But neither CLAUDE.md
+nor 008/010 actually say that: CLAUDE.md's own "No `microvm` sandbox profile" paragraph names "the OS-level
+jail as a second layer" as part of the intended architecture, not as superseded by interpreter mediation;
+008 §1b's own reasoning (quoted above) is specifically about why interpreter mediation alone is
+insufficient. No ADR was written to actually amend 008 §3's "locked to `native-jail` permanently" or 010
+§6's T3 classification. Per CLAUDE.md's own governing rule — *"The project is spec-driven... When code and
+a spec disagree, the spec wins; if the spec is wrong, fix the spec first (with an ADR), then the code"* —
+this comment's framing is not a legitimate resolution of the conflict; it is an unreviewed reinterpretation
+of a security-critical requirement, exactly the class of change CLAUDE.md's own `design → red-team → prove
+→ judge` gate exists for.
+
+**Compounding factors already established (Finding Q), restated here because they sharpen this finding's
+severity rather than standing alone**: no OS resource cap of any kind on the interpreter process (no
+memory/CPU/wall-clock kill), and the one deadline check that exists is pre-flight-only, not preemptible
+mid-execution. So the missing layer-3 backstop is not merely "one more hardening pass away" — today there
+is no resource ceiling either, meaning even the coarsest possible containment (kill a runaway or
+memory-bombing guest) is absent alongside the finer-grained escape-containment the kernel jail would
+provide.
+
+**Disposition: tracked, not closed — flagged as this tracker's most severe finding to date.** Every other
+finding in this file so far is a disclosed, understood gap (an unwired residual, a stale comment, a design
+question deliberately deferred). This one is different in kind: the RFC states a specific security
+requirement in specific, reasoned terms; the shipped code does not meet it; and the one place in the tree
+that comments on the discrepancy asserts — without an ADR — that the requirement no longer applies. Recommend
+this be raised to the project owner directly rather than left for the next routine audit pass: the two
+live questions are (1) does 008/010's "kernel jail, permanently, for T3 code" requirement still hold, in
+which case the interpreter needs real work to route through `native-jail` (or an equivalent lighter OS-level
+wrap, matching `native_process_spawn.hpp`'s own precedent) — or (2) is interpreter-mediation-alone actually
+the intended, accepted design going forward, in which case 008 §1b/§3 and 010 §6 need an ADR amending them
+to say so explicitly, with the residual risk (mediation bugs, native-extension bugs, resource exhaustion)
+named and accepted on the record rather than implied by an unreviewed comment. Either answer is legitimate;
+leaving it undecided, with the code silently delivering the weaker of the two, is not.
+
+**Update (2026-08-23) — Slice 1 implemented, question (1) above answered by action: real work.** Project
+owner directed a full redesign (not a spec-downgrade) via `design → red-team → prove` (2 independent
+design candidates, judged and merged; 3 parallel red-team lenses — authority-leak, resource/DoS/lifecycle,
+parity/buildability; a finalized spec; real implementation + real tests, all independently re-verified —
+built and re-run on this machine, not taken on the implementing agents' own word). Result: the embedded
+CPython interpreter now runs as a genuinely separate, AppContainer + Job-Object-jailed Windows worker
+process (`src/backends/native_jail/python_worker_main.cpp`, `jailed_worker_rpc.{hpp,cpp}`,
+`mediated_python_worker_protocol.hpp`, `python_worker_mediation.{hpp,cpp}`), spawned/owned by
+`NativeJailBackend::create_python_worker()`/`exec_session()`, with a real session-scoped watchdog thread
+that preempts mid-execution (`while True: pass` under an 800ms budget: killed in ~810ms, verified directly)
+and a real Job Object memory cap (512MiB allocation under a 64MB cap: contained, verified directly) —
+closing Finding Q's "pre-flight-only" gap and Finding R's "zero kernel backstop for T3 code" gap for real,
+not by comment. `call_tool`/`agent.tools`/`agent.ask` still relay through the real host-side tool pipeline
+(`bridge_tool_call`) with `exec_seq` anti-replay and single-flight (`call_mutex`) closing the authority-leak
+red-team lens's own finding.
+
+**Named, not silently dropped: Slice 2 is a real, disclosed residual, not a hidden regression.** Real
+file-open/listdir/socket-connect relay (`HandleRelay`) was explicitly out of Slice 1's scope (the
+finalized spec's own minimum-slice boundary) — every such guest call is denied
+(`not_implemented_this_slice` → guest-visible `PermissionError`) rather than reaching the filesystem/network
+today. This is a genuine regression against the pre-jail behavior for six existing test files
+(`test_mediated_python_runner_smoke`/`_agent_files_data`/`_skill_mounts`/`_error_mapping`/`_hostile_corpus`,
+`test_reference_agent_task_corpus`) — confirmed by re-running them: every failure is a clean, disclosed
+deny (file/socket-dependent checks only), never a crash or silent wrong answer. Linux
+(`LinuxNativeJailBackend`) and `execute_shell`'s own still-separate process-spawn question (Finding O) were
+also explicitly out of scope for this pass, per the same spec.
+
+**One real, undisclosed-until-independent-verification bug found and fixed in this pass, worth naming as
+its own lesson**: `tests/test_agent_session_suspend_codeact_ask.cpp`'s B7 scenario (a residual-demonstration
+test for ADR-057 §4, unrelated in its own original intent to this redesign) silently hung the whole test
+run for the full 60s `ctest` timeout instead of failing cleanly — its old body assumed the mediated write
+it depends on always succeeds and always calls `session.open_interactions().front()` unconditionally; under
+Slice 1 that write is now denied pre-`agent.ask()`, so no Interaction ever opens and `.front()` on an empty
+vector was UB, invisible in this build because the file never called `support/crt_fail_fast.hpp`'s
+`fail_fast_on_windows()` (every other native-jail test in the suite does). Fixed: the test's assertions now
+match Slice 1's real behavior, the empty-vector case is asserted rather than blindly indexed, and
+`fail_fast_on_windows()` is now called — B7's ORIGINAL scientific claim (ADR-057 §4's replay-repeats-writes
+residual) is preserved in a comment, not deleted, with an explicit note to restore it once Slice 2 lands.
+Independently reproduced the 60s hang myself before applying the fix, and reproduced the fix (0.89s, passes)
+after — this was caught by actually running the implementing agents' own test suite personally, not by
+trusting their self-report, the same discipline this whole tracker file is built on.
+
+**Disposition: Finding Q closed for real (preemptible wall-clock + memory containment, verified). Finding R
+narrowed, not yet fully closed** — Slice 1 gives `execute_code` a genuine kernel-level backstop on Windows,
+answering this finding's own live question in favor of "the requirement still holds, build the real thing"
+rather than a spec-downgrade ADR. Still open: Slice 2 (real file/socket relay, closing the six disclosed
+regressions above) and the Linux port (`LinuxNativeJailBackend` parity) — both named, scoped follow-on work,
+not silently dropped. No ADR has been written for this yet; the design/red-team/prove record lives in this
+tracker entry and the workflow's own transcript until one is.

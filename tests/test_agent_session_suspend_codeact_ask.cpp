@@ -49,6 +49,7 @@
 #include "agentengine/rt/agent_session.hpp"
 #include "agentengine/trust/capability.hpp"
 #include "backends/native_jail/mediated_python_runner.hpp"
+#include "support/crt_fail_fast.hpp"
 
 using agentengine::rt::AgentSession;
 using agentengine::rt::NoSessionState;
@@ -57,6 +58,7 @@ using agentengine::rt::StartRun;
 using agentengine::task;
 using agentengine::native_jail::MediatedPythonConfig;
 using agentengine::native_jail::MediatedPythonRunner;
+using agentengine::native_jail::NativeJailBackend;
 
 namespace {
 
@@ -334,12 +336,15 @@ using Session = AgentSession<ScriptedChatClient, NoSessionState, CodeActHistoryP
 }  // namespace
 
 int main() {
+    ::agentengine::test_support::fail_fast_on_windows();
     using agentengine::Principal;
+
+    NativeJailBackend backend;  // one, shared across every MediatedPythonRunner constructed below
 
     // ---- B1: agent.ask() suspends the round with the named sentinel, mints a real Interaction,
     // nothing folds into history yet. ----------------------------------------------------------------
     {
-        MediatedPythonRunner runner(make_cfg());
+        MediatedPythonRunner runner(make_cfg(), backend);
         auto init = runner.initialize();
         check(init.has_value(), "B1-setup: runner initializes cleanly");
 
@@ -391,7 +396,7 @@ int main() {
 
     // ---- B2: a fresh StartRun while a codeact_ask interaction is open is rejected -------------------
     {
-        MediatedPythonRunner runner(make_cfg());
+        MediatedPythonRunner runner(make_cfg(), backend);
         auto init = runner.initialize();
         check(init.has_value(), "B2-setup: runner initializes cleanly");
 
@@ -422,7 +427,7 @@ int main() {
 
     // ---- B3: resolving with an answer re-runs the script; a deterministic prefix survives replay ---
     {
-        MediatedPythonRunner runner(make_cfg());
+        MediatedPythonRunner runner(make_cfg(), backend);
         auto init = runner.initialize();
         check(init.has_value(), "B3-setup: runner initializes cleanly");
 
@@ -479,7 +484,7 @@ int main() {
 
     // ---- B4: two sequential agent.ask() calls in one script -- same interaction_id, updated prompt -
     {
-        MediatedPythonRunner runner(make_cfg());
+        MediatedPythonRunner runner(make_cfg(), backend);
         auto init = runner.initialize();
         check(init.has_value(), "B4-setup: runner initializes cleanly");
 
@@ -545,7 +550,7 @@ int main() {
 
     // ---- B5 (positive control): no agent.ask() call -- one round, no regression --------------------
     {
-        MediatedPythonRunner runner(make_cfg());
+        MediatedPythonRunner runner(make_cfg(), backend);
         auto init = runner.initialize();
         check(init.has_value(), "B5-setup: runner initializes cleanly");
 
@@ -572,7 +577,7 @@ int main() {
 
     // ---- B6: execute_code + another tool call in one round, execute_code ask-pends -- fails closed -
     {
-        MediatedPythonRunner runner(make_cfg());
+        MediatedPythonRunner runner(make_cfg(), backend);
         auto init = runner.initialize();
         check(init.has_value(), "B6-setup: runner initializes cleanly");
 
@@ -601,7 +606,38 @@ int main() {
               "tool_results_message was folded, per ADR-057 §9's fail-closed shape");
     }
 
-    // ---- B7 (residual, demonstrated): a mediated write before agent.ask() repeats on replay --------
+    // ---- B7: a mediated write before agent.ask() -- TEMPORARILY BLOCKED, not deleted ----------------
+    // ORIGINAL INTENT (still the target, not abandoned): demonstrate ADR-057 §4's named residual --
+    // Design B's abort-and-replay re-executes a script's deterministic prefix unconditionally on
+    // resume, so a mediated write BEFORE agent.ask() repeats ('X' becomes 'XX' across suspend/resume).
+    //
+    // WHY THIS CAN'T RUN TODAY: the jailed-Python-worker redesign (docs/planning/2026-08-22-component-
+    // role-audit-tracker.md Findings Q/R; mediated_python_worker_protocol.hpp's
+    // kErrorNotImplementedThisSlice) moved real file I/O behind a host-side HandleRelay that Slice 1
+    // does not implement yet -- every open()/listdir()/connect() query is denied with a fixed
+    // PermissionError (python_worker_mediation.cpp's raise_mapped_denial, kErrorNotImplementedThisSlice
+    // -> PyExc_PermissionError), regardless of capability grant. So `open('/work/marker.txt', 'a')`
+    // now raises BEFORE `f.write('X')` or `agent.ask('q')` ever run -- the script fails closed at the
+    // open() call, the round completes normally (no suspension, no Interaction opens) instead of
+    // reaching agent.ask() at all. Under the OLD in-process interpreter this test was written against,
+    // the write succeeded and the suspension happened as originally documented; that assumption is what
+    // broke, not this test's own logic.
+    //
+    // THE BUG THIS REPLACES (found and fixed here): the old body called
+    // `session.open_interactions().front()` unconditionally, assuming B7's suspension always happens.
+    // With the write now denied pre-ask, no Interaction ever opens and `open_interactions()` is empty --
+    // `.front()` on an empty vector is UB, which manifested as a blocked MSVC debug-assert dialog (a
+    // silent 60s ctest hang, not a clean failure) because, unlike every other native-jail test in this
+    // suite, this file never called support/crt_fail_fast.hpp's fail_fast_on_windows(). Fixed on both
+    // axes: the assertions below match Slice 1's actual, current behavior instead of assuming the old
+    // one, AND fail_fast_on_windows() is now called at file scope (see includes/top of TEST_MAIN) so a
+    // future assumption mismatch here fails loud, not silently blocks for a minute.
+    //
+    // RESTORE, DO NOT DELETE, once Slice 2 lands: when HandleRelay gives the worker real mediated file
+    // I/O again, swap this block back to the version in git history (2026-08-23, this same commit's
+    // parent) that asserts 'X' then 'XX' -- ADR-057 §4's residual is a real, permanent property of
+    // Design B and still needs a standing regression test once the write path that demonstrates it
+    // works again.
     {
         std::filesystem::path const work_dir =
             std::filesystem::temp_directory_path() / "ae_adr040_b7_work";
@@ -609,7 +645,7 @@ int main() {
         std::filesystem::create_directories(work_dir);
         std::filesystem::path const marker = work_dir / "marker.txt";
 
-        MediatedPythonRunner runner(make_cfg(work_dir.wstring()));
+        MediatedPythonRunner runner(make_cfg(work_dir.wstring()), backend);
         auto init = runner.initialize();
         check(init.has_value(), "B7-setup: runner initializes cleanly with a real 'work' mount");
 
@@ -631,38 +667,18 @@ int main() {
         session.set_capabilities(&held);
 
         auto r1 = drive(session.start_run(StartRun{user_message("go")}));
-        check(!r1.has_value(), "B7 setup: the run suspends on agent.ask(), AFTER the write already ran once");
+        check(r1.has_value(),
+              "B7 (Slice 1): the write is denied (not_implemented_this_slice) before agent.ask() is ever "
+              "reached, so the round completes normally -- no suspension, unlike this test's pre-jail "
+              "behavior");
+        check(!session.has_open_interactions(),
+              "B7 (Slice 1): no Interaction ever opens -- agent.ask() is never called because the "
+              "preceding open() raised first");
 
-        std::string after_first_run;
-        {
-            std::ifstream f(marker, std::ios::binary);
-            std::ostringstream ss;
-            ss << f.rdbuf();
-            after_first_run = ss.str();
-        }
-        check(after_first_run == "X", "B7 setup: the mediated write ran exactly once before the ask suspended");
-
-        std::string const interaction_id = session.open_interactions().front().interaction_id;
-        auto r2 = drive(session.resolve_interaction(
-            ResolveInteraction{interaction_id, /*approved=*/false, std::nullopt, std::string("42")}));
-        check(r2.has_value(), "B7: resolving completes the run");
-
-        std::string after_replay;
-        {
-            std::ifstream f(marker, std::ios::binary);
-            std::ostringstream ss;
-            ss << f.rdbuf();
-            after_replay = ss.str();
-        }
-        // THE RESIDUAL, DEMONSTRATED: replay re-ran the WHOLE script from the top, including the
-        // write that already committed once before the first ask-pend -- 'X' was written a SECOND
-        // time. This is not a bug in this pass's own code; it is ADR-057 §4's named cost of Design B
-        // ("re-executes every side-effecting statement before the agent.ask() call a second time"),
-        // proven real here rather than merely asserted in the ADR's prose.
-        check(after_replay == "XX",
-              "B7: THE RESIDUAL IS REAL -- the mediated write before agent.ask() ran TWICE total "
-              "('XX', not 'X') because replay re-executes the script's deterministic prefix "
-              "unconditionally, side effects included (ADR-057 §4's named, not fixed, cost of Design B)");
+        bool const marker_exists = std::filesystem::exists(marker);
+        check(!marker_exists,
+              "B7 (Slice 1): the denied write never reached the filesystem -- marker.txt was never "
+              "created, matching every other Slice-1 file-denial test's own guarantee");
     }
 
     if (g_failures != 0) {

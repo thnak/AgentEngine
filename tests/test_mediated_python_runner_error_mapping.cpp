@@ -29,6 +29,7 @@
 using namespace agentengine;
 using agentengine::native_jail::MediatedPythonConfig;
 using agentengine::native_jail::MediatedPythonRunner;
+using agentengine::native_jail::NativeJailBackend;
 using agentengine::native_jail::ToolBridgeConfig;
 
 namespace {
@@ -69,6 +70,8 @@ struct BlockedNetTool : Tool<BlockedNetTool, Capabilities<cap::decl::Entropy>> {
 }  // namespace
 
 int main() {
+    NativeJailBackend backend;  // one, shared across every MediatedPythonRunner constructed below
+
     std::string const base = ::agentengine::pal::env_var("TEMP").value_or("C:/Windows/Temp") +
                               "/ae_g4_error_mapping_test";
     std::filesystem::path work_dir = std::filesystem::path(base) / "work";
@@ -90,7 +93,7 @@ int main() {
         cfg.python_home = AE_PYTHON_HOME;
         cfg.mount_roots["work"] = widen(work_dir);
 
-        MediatedPythonRunner runner(std::move(cfg));
+        MediatedPythonRunner runner(std::move(cfg), backend);
         auto init = runner.initialize();
         AE_CHECK(init.has_value(), "G4-setup: a MediatedPythonRunner with a 'work' mount initializes cleanly");
 
@@ -132,7 +135,7 @@ int main() {
         cfg.mount_roots["quota"] = widen(quota_dir);
         cfg.mount_roots["count"] = widen(count_dir);
 
-        MediatedPythonRunner runner(std::move(cfg));
+        MediatedPythonRunner runner(std::move(cfg), backend);
         auto init = runner.initialize();
         AE_CHECK(init.has_value(), "G4-setup: a MediatedPythonRunner with quota/count mounts initializes cleanly");
 
@@ -216,7 +219,7 @@ int main() {
         bridge.approved = true;
         cfg.tool_bridge = std::move(bridge);
 
-        MediatedPythonRunner runner(std::move(cfg));
+        MediatedPythonRunner runner(std::move(cfg), backend);
         auto init = runner.initialize();
         AE_CHECK(init.has_value(), "G4-setup: a MediatedPythonRunner with a blocked-net tool bridge initializes cleanly");
 

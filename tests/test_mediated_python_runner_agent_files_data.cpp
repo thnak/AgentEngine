@@ -30,6 +30,7 @@
 using namespace agentengine;
 using agentengine::native_jail::MediatedPythonConfig;
 using agentengine::native_jail::MediatedPythonRunner;
+using agentengine::native_jail::NativeJailBackend;
 using agentengine::native_jail::ToolBridgeConfig;
 
 namespace {
@@ -74,6 +75,11 @@ struct EchoTool : Tool<EchoTool, Capabilities<cap::decl::Entropy>> {
 }  // namespace
 
 int main() {
+    // Jailed-Python-worker design: one NativeJailBackend for this whole test binary's life, shared
+    // across the several sequential MediatedPythonRunner instances constructed below (each fully
+    // destructed -- tearing down its jailed worker process -- before the next is constructed).
+    NativeJailBackend backend;
+
     std::string const base = ::agentengine::pal::env_var("TEMP").value_or("C:/Windows/Temp") +
                               "/ae_g2_files_data_test";
     std::filesystem::path input_dir = std::filesystem::path(base) / "input";
@@ -102,7 +108,7 @@ int main() {
         cfg.mount_roots["out"] = widen(out_dir);
         cfg.expose_agent_files_data = true;
 
-        MediatedPythonRunner runner(std::move(cfg));
+        MediatedPythonRunner runner(std::move(cfg), backend);
         auto init = runner.initialize();
         AE_CHECK(init.has_value(), "G2-setup: a MediatedPythonRunner with mount_roots initializes cleanly");
 
@@ -283,7 +289,7 @@ int main() {
         bridge.approved = true;
         cfg.tool_bridge = std::move(bridge);
 
-        MediatedPythonRunner runner(std::move(cfg));
+        MediatedPythonRunner runner(std::move(cfg), backend);
         auto init = runner.initialize();
         AE_CHECK(init.has_value(), "G2-coexist: setup -- a runner with BOTH tool_bridge and "
                                     "mount_roots initializes cleanly");
@@ -343,7 +349,7 @@ int main() {
         cfg.mount_roots["input"] = widen(input_dir);
         // cfg.expose_agent_files_data left at its default false.
 
-        MediatedPythonRunner runner(std::move(cfg));
+        MediatedPythonRunner runner(std::move(cfg), backend);
         auto init = runner.initialize();
         AE_CHECK(init.has_value(), "G2-N3: setup -- a runner with mount_roots but no "
                                     "expose_agent_files_data opt-in initializes cleanly");

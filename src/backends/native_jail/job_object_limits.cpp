@@ -213,6 +213,15 @@ result<JobWaitOutcome> JobObjectLimits::wait_or_kill(HANDLE process_handle,
     return win32_error("WaitForSingleObject", failure_class::fatal, "job_object.wait_failed");
 }
 
+result<job_kill_reason> JobObjectLimits::poll_memory_limit_once() {
+    if (job_ == nullptr) {
+        return std::unexpected(ae::error{failure_class::contract,
+                                          "JobObjectLimits::poll_memory_limit_once called before create()",
+                                          "job_object.not_created"});
+    }
+    return drain_memory_limit_notification() ? job_kill_reason::memory_limit : job_kill_reason::none;
+}
+
 result<JobUsage> JobObjectLimits::query_usage() const {
     if (job_ == nullptr) {
         return std::unexpected(ae::error{failure_class::contract,

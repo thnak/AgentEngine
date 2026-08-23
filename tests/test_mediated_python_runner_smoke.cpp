@@ -41,6 +41,7 @@ static_assert(agentengine::Runner<agentengine::native_jail::MediatedPythonRunner
 using namespace agentengine;
 using agentengine::native_jail::MediatedPythonConfig;
 using agentengine::native_jail::MediatedPythonRunner;
+using agentengine::native_jail::NativeJailBackend;
 
 namespace {
 
@@ -76,6 +77,8 @@ std::string read_file(std::string const& path) {
 int main() {
     disable_crt_assert_dialog();
 
+    NativeJailBackend backend;
+
     std::string const scratch = ::agentengine::pal::env_var("TEMP").value_or("C:/Windows/Temp") +
                                  "/ae_e2_mount";
     std::filesystem::create_directories(scratch);
@@ -89,7 +92,7 @@ int main() {
         cfg.python_home = AE_PYTHON_HOME;
         cfg.mount_roots["work"] = std::wstring(scratch.begin(), scratch.end());
 
-        MediatedPythonRunner runner(std::move(cfg));
+        MediatedPythonRunner runner(std::move(cfg), backend);
         auto init = runner.initialize();
         AE_CHECK(init.has_value(), "E2-C1: MediatedPythonRunner initializes a real embedded interpreter");
         AE_CHECK(runner.ok(), "E2-C1: ok() reflects successful initialization");
@@ -194,7 +197,7 @@ int main() {
         cfg.package_policy_allowlist = {"json"};
         cfg.mount_roots["work"] = std::wstring(scratch.begin(), scratch.end());
 
-        MediatedPythonRunner runner(std::move(cfg));
+        MediatedPythonRunner runner(std::move(cfg), backend);
         auto init = runner.initialize();
         AE_CHECK(init.has_value(), "E2-C8: setup -- a second interpreter (after the first's Py_Finalize) "
                                     "initializes cleanly");
@@ -283,7 +286,7 @@ int main() {
         cfg.python_home = AE_PYTHON_HOME;
         cfg.output_cap_bytes = 128;
 
-        MediatedPythonRunner runner(std::move(cfg));
+        MediatedPythonRunner runner(std::move(cfg), backend);
         auto init = runner.initialize();
         AE_CHECK(init.has_value(), "F3-setup: a third interpreter initializes cleanly");
 

@@ -25,6 +25,7 @@
 using namespace agentengine;
 using agentengine::native_jail::MediatedPythonConfig;
 using agentengine::native_jail::MediatedPythonRunner;
+using agentengine::native_jail::NativeJailBackend;
 using agentengine::native_jail::ToolBridgeConfig;
 
 namespace {
@@ -81,6 +82,8 @@ struct RefreshedTool : Tool<RefreshedTool> {
 }  // namespace
 
 int main() {
+    NativeJailBackend backend;  // one, shared across every MediatedPythonRunner constructed below
+
     // ================================================================================
     // Scenario 1: a tool bridge configured with the required capability granted AND bundled
     // approval -- agent.tools.echo_tool should work exactly like an ordinary Python function.
@@ -94,7 +97,7 @@ int main() {
         bridge.approved = true;
         cfg.tool_bridge = std::move(bridge);
 
-        MediatedPythonRunner runner(std::move(cfg));
+        MediatedPythonRunner runner(std::move(cfg), backend);
         auto init = runner.initialize();
         AE_CHECK(init.has_value(), "G1-setup: a MediatedPythonRunner with a tool bridge initializes cleanly");
 
@@ -183,7 +186,7 @@ int main() {
         bridge.approved = true;
         cfg.tool_bridge = std::move(bridge);
 
-        MediatedPythonRunner runner(std::move(cfg));
+        MediatedPythonRunner runner(std::move(cfg), backend);
         auto init = runner.initialize();
         AE_CHECK(init.has_value(), "G1-N1: setup -- a second interpreter initializes cleanly");
 
@@ -210,7 +213,7 @@ int main() {
         cfg.python_home = AE_PYTHON_HOME;
         // cfg.tool_bridge left at its default nullopt.
 
-        MediatedPythonRunner runner(std::move(cfg));
+        MediatedPythonRunner runner(std::move(cfg), backend);
         auto init = runner.initialize();
         AE_CHECK(init.has_value(), "G1-N2: setup -- a third interpreter (no tool bridge) initializes cleanly");
 
@@ -239,7 +242,7 @@ int main() {
         // cfg.tool_bridge left at its default nullopt -- refresh_agent_tools() is what configures
         // it, not the constructor, proving this ALSO works starting from "no bridge at all".
 
-        MediatedPythonRunner runner(std::move(cfg));
+        MediatedPythonRunner runner(std::move(cfg), backend);
         auto init = runner.initialize();
         AE_CHECK(init.has_value(), "G2-R1: setup -- a fourth interpreter (no initial bridge) initializes cleanly");
 

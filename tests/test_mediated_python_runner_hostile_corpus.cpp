@@ -53,6 +53,7 @@
 using namespace agentengine;
 using agentengine::native_jail::MediatedPythonConfig;
 using agentengine::native_jail::MediatedPythonRunner;
+using agentengine::native_jail::NativeJailBackend;
 
 namespace {
 
@@ -99,6 +100,8 @@ bool create_junction(std::wstring const& link, std::wstring const& target) {
 }  // namespace
 
 int main() {
+    NativeJailBackend backend;
+
     std::string const base = ::agentengine::pal::env_var("TEMP").value_or("C:/Windows/Temp");
     std::string const scratch = base + "/ae_e4_py_mount";
     std::string const outside = base + "/ae_e4_py_outside";
@@ -125,7 +128,7 @@ int main() {
         cfg.python_home = AE_PYTHON_HOME;
         cfg.mount_roots["work"] = scratch_w;
 
-        MediatedPythonRunner runner(std::move(cfg));
+        MediatedPythonRunner runner(std::move(cfg), backend);
         auto init = runner.initialize();
         AE_CHECK(init.has_value(), "E4-PY setup: MediatedPythonRunner initializes");
 

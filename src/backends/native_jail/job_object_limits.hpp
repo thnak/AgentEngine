@@ -113,6 +113,22 @@ public:
     // 008 §8 observability.
     result<JobUsage> query_usage() const;
 
+    // Jailed-Python-worker design (008 §1b/§3, superseding native_jail_backend.hpp's former
+    // "Correction (2026-08-23)" comment) §6: a thin PUBLIC wrapper around the already-existing
+    // PRIVATE `drain_memory_limit_notification()`, for the session-scoped watchdog thread
+    // (native_jail_backend.cpp) to poll continuously across a worker's whole life -- not just once,
+    // synchronously, right after ONE exec()'s own `wait_or_kill()` returns (`wait_or_kill()` itself
+    // still drains via the private method directly; this public wrapper is for the watchdog's
+    // repeated, standalone polls between and during exec calls, where nothing else is draining the
+    // completion port). Safe to call repeatedly and interleaved with ordinary use; returns
+    // `job_kill_reason::memory_limit` the moment a JOB_OBJECT_MSG_JOB_MEMORY_LIMIT notification is
+    // seen, `job_kill_reason::none` otherwise. NEVER call this concurrently with `wait_or_kill()` on
+    // the SAME instance -- this design never does, because `wait_or_kill()` is the per_exec path's
+    // own watcher and this is the per_session watchdog's, and the two lifetimes never share one
+    // `JobObjectLimits` (native_jail_backend.cpp's `Instance` holds exactly one `job` member; a
+    // per_session `Instance` never also serves per_exec calls through the same handle).
+    [[nodiscard]] result<job_kill_reason> poll_memory_limit_once();
+
     HANDLE native_handle() const { return job_; }
 
 private:

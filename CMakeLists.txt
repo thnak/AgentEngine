@@ -178,7 +178,8 @@ endif()
 if(WIN32)
   add_library(agentengine_native_jail_backend STATIC
     src/backends/native_jail/app_container_profile.cpp
-    src/backends/native_jail/native_jail_backend.cpp)
+    src/backends/native_jail/native_jail_backend.cpp
+    src/backends/native_jail/jailed_worker_rpc.cpp)
   target_include_directories(agentengine_native_jail_backend PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/src")
   target_link_libraries(agentengine_native_jail_backend PUBLIC
@@ -673,17 +674,56 @@ if(AGENTENGINE_BUILD_PYTHON_RUNNER)
   target_link_libraries(agentengine_python_runner PRIVATE "${AE_PYTHON_IMPORT_LIB}" agentengine_warnings)
   add_library(agentengine::python_runner ALIAS agentengine_python_runner)
 
-  # ---- Milestone 3 Phase E2's real PythonRunner (mediated_python_runner.{hpp,cpp}) -- a genuinely
-  # new translation unit per decision 4, sharing CPython include/link wiring with the spike above
-  # but NO source code -- see that file's own header comment for exactly what is and isn't reused.
+  # ---- Jailed Python worker (python_worker_main.cpp/python_worker_mediation.cpp) -- the ADR
+  # superseding native_jail_backend.hpp's former "Correction (2026-08-23)" comment: real CPython
+  # execution now happens in THIS separate, AppContainer+Job-Object-jailed executable, spawned by
+  # NativeJailBackend::create_python_worker() (native_jail_backend.cpp), never in the host process
+  # that embeds agentengine_mediated_python_runner. This is the ONLY target in this CMakeLists.txt
+  # that still needs Python.h/AE_PYTHON_IMPORT_LIB for the mediated-runner subsystem -- see
+  # python_worker_mediation.hpp's own file header for exactly what moved here and why.
+  add_executable(agentengine_python_worker
+    src/backends/native_jail/python_worker_main.cpp
+    src/backends/native_jail/python_worker_mediation.cpp
+    src/backends/native_jail/jailed_worker_rpc.cpp)
+  target_include_directories(agentengine_python_worker PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    "${AGENTENGINE_PYTHON_ROOT}/include")
+  target_link_libraries(agentengine_python_worker PRIVATE
+    agentengine::core "${AE_PYTHON_IMPORT_LIB}" agentengine_warnings)
+  # python313.dll (or whatever this vendored/configured CPython's runtime DLL is actually named) must
+  # sit next to the worker's own .exe: this process is spawned CREATE_SUSPENDED inside an AppContainer
+  # with a FIXED, minimal environment block (native_jail_backend.cpp's build_minimal_environment_block(),
+  # unchanged, byte-for-byte, by this design) that does NOT inherit the launching process's own PATH --
+  # so "next to the exe" (Windows' own default DLL search order) is the only reliable way for this
+  # specific child to find it, not an environment-block special case that would touch the untouched
+  # per_exec exec() path's own environment-building function.
+  file(GLOB AE_PYTHON_RUNTIME_DLLS "${AGENTENGINE_PYTHON_ROOT}/python3*.dll")
+  foreach(AE_ONE_PYTHON_DLL IN LISTS AE_PYTHON_RUNTIME_DLLS)
+    add_custom_command(TARGET agentengine_python_worker POST_BUILD
+      COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+        "${AE_ONE_PYTHON_DLL}" "$<TARGET_FILE_DIR:agentengine_python_worker>"
+      COMMENT "Copying ${AE_ONE_PYTHON_DLL} next to agentengine_python_worker.exe")
+  endforeach()
+
+  # ---- Milestone 3 Phase E2's real PythonRunner (mediated_python_runner.{hpp,cpp}) -- REBUILT by
+  # the jailed-worker design as an IPC CLIENT: no CPython dependency of its own any more (see that
+  # file's own header comment for exactly what moved into agentengine_python_worker above). Links
+  # agentengine::native_jail_backend instead of a Python include dir/import lib.
   add_library(agentengine_mediated_python_runner STATIC
     src/backends/native_jail/mediated_python_runner.cpp)
   target_include_directories(agentengine_mediated_python_runner PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/src")
-  target_include_directories(agentengine_mediated_python_runner PRIVATE
-    "${AGENTENGINE_PYTHON_ROOT}/include")
-  target_link_libraries(agentengine_mediated_python_runner PUBLIC agentengine::core agentengine::worktree_store)
-  target_link_libraries(agentengine_mediated_python_runner PRIVATE "${AE_PYTHON_IMPORT_LIB}" agentengine_warnings)
+  target_link_libraries(agentengine_mediated_python_runner PUBLIC
+    agentengine::core agentengine::native_jail_backend)
+  target_link_libraries(agentengine_mediated_python_runner PRIVATE agentengine_warnings)
+  # Fixed, host-controlled, build-time path to the worker binary (I2 -- never resolved at runtime from
+  # anything guest/model-influenced, e.g. GetModuleFileNameW-relative-to-whatever-process-happens-to-
+  # embed-this-runner). PUBLIC: every consumer of agentengine::mediated_python_runner (cli_chat, every
+  # test that constructs a MediatedPythonRunner) needs this macro defined identically, and none of them
+  # should have to know or repeat the exact target-file generator expression themselves.
+  target_compile_definitions(agentengine_mediated_python_runner PUBLIC
+    AE_PYTHON_WORKER_EXE_PATH="$<TARGET_FILE:agentengine_python_worker>")
+  add_dependencies(agentengine_mediated_python_runner agentengine_python_worker)
   add_library(agentengine::mediated_python_runner ALIAS agentengine_mediated_python_runner)
 
   # Runtime inputs the tests need: the CPython "home" (PyConfig.home -> stdlib search path), the

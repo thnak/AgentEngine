@@ -222,6 +222,14 @@ AE_JSON_SCHEMA(ExecuteCodeReply, ok, stdout_text, stderr_text, result_repr)
 // after the first must not assume their own `mount_roots` argument had any effect.
 [[nodiscard]] native_jail::MediatedPythonRunner& shared_python_runner(
     std::vector<native_jail::MaterializedSkillMount> const& mount_roots) {
+    // Jailed-Python-worker design (008 §1b/§3, 010 §2/§6): `MediatedPythonRunner` no longer owns an
+    // in-process interpreter -- it is an IPC client over `NativeJailBackend::create_python_worker()`,
+    // so it needs a `NativeJailBackend&` to hand its jailed worker process's real OS-level
+    // containment to. ONE backend for the whole process's life, same singleton shape the runner
+    // itself already has one line down (this CLI still creates exactly ONE worker, gated by
+    // `CodeActRunnerBinding` below -- the backend's own `instances_` map is capable of holding more,
+    // nothing here exercises that).
+    static native_jail::NativeJailBackend backend;
     static native_jail::MediatedPythonRunner runner = [&] {
         native_jail::MediatedPythonConfig cfg;
         cfg.python_home = AE_PYTHON_HOME;
@@ -245,7 +253,7 @@ AE_JSON_SCHEMA(ExecuteCodeReply, ok, stdout_text, stderr_text, result_repr)
         // unresolved suspension a host has not wired a UI for yet (matching ADR-029 §6's identical
         // scoping call for this CLI's own approval path).
         cfg.expose_agent_ask = true;
-        return native_jail::MediatedPythonRunner(std::move(cfg));
+        return native_jail::MediatedPythonRunner(std::move(cfg), backend);
     }();
     static bool const initialized = [] {
         auto r = runner.initialize();

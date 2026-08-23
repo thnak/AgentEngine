@@ -40,6 +40,7 @@
 using namespace agentengine;
 using agentengine::native_jail::MediatedPythonConfig;
 using agentengine::native_jail::MediatedPythonRunner;
+using agentengine::native_jail::NativeJailBackend;
 
 namespace {
 
@@ -86,6 +87,8 @@ RunResult run_hostile_snippet(MediatedPythonRunner& runner, CapabilitySet& caps,
 }  // namespace
 
 int main() {
+    NativeJailBackend backend;
+
     std::string const base = ::agentengine::pal::env_var("TEMP").value_or("C:/Windows/Temp") +
                               "/ae_h2_containment_invariance";
     std::filesystem::remove_all(base);
@@ -103,7 +106,7 @@ int main() {
     cfg.python_home = AE_PYTHON_HOME;
     cfg.mount_roots["work"] = std::wstring(base.begin(), base.end());
 
-    MediatedPythonRunner runner(std::move(cfg));
+    MediatedPythonRunner runner(std::move(cfg), backend);
     auto init = runner.initialize();
     AE_CHECK(init.has_value(), "H2-setup: MediatedPythonRunner initializes");
 

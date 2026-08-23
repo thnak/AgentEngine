@@ -28,6 +28,7 @@
 using namespace agentengine;
 using agentengine::native_jail::MediatedPythonConfig;
 using agentengine::native_jail::MediatedPythonRunner;
+using agentengine::native_jail::NativeJailBackend;
 
 namespace {
 
@@ -56,6 +57,8 @@ void check(bool cond, char const* what) {
 }  // namespace
 
 int main() {
+    NativeJailBackend backend;
+
     std::string const base = ::agentengine::pal::env_var("TEMP").value_or("C:/Windows/Temp") +
                               "/ae_skill_mounts_python_test";
     std::filesystem::remove_all(base);
@@ -81,7 +84,7 @@ int main() {
     for (auto const& [mount_id, host_dir] : *materialized) cfg.mount_roots[mount_id] = host_dir;
     cfg.expose_agent_files_data = true;
 
-    MediatedPythonRunner runner(std::move(cfg));
+    MediatedPythonRunner runner(std::move(cfg), backend);
     auto init = runner.initialize();
     check(init.has_value(), "setup: MediatedPythonRunner with a real materialized skill mount initializes");
 

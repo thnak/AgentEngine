@@ -2422,6 +2422,19 @@ if(AGENTENGINE_BUILD_PYTHON_RUNNER)
   set_tests_properties(test_mediated_python_runner_smoke PROPERTIES
     ENVIRONMENT "${AE_PYTHON_TEST_ENV}" TIMEOUT 60)
 
+  # ---- Jailed-Python-worker design (final spec, 2026-08-23): the minimum-slice PROVE-phase positive
+  # controls (G-Q1/G-Q2/G-lifecycle-2) -- a runaway CPU loop and a memory bomb, run against the REAL
+  # agentengine_python_worker.exe, are actually caught/killed by the new session-scoped watchdog +
+  # Job Object cap, closing component-role-audit-tracker.md's Finding Q for real.
+  add_executable(test_native_jail_python_worker_slice1 test_native_jail_python_worker_slice1.cpp)
+  target_link_libraries(test_native_jail_python_worker_slice1 PRIVATE
+    agentengine::core agentengine::mediated_python_runner agentengine_warnings)
+  target_compile_definitions(test_native_jail_python_worker_slice1 PRIVATE
+    AE_PYTHON_HOME="${AGENTENGINE_PYTHON_HOME}")
+  add_test(NAME test_native_jail_python_worker_slice1 COMMAND test_native_jail_python_worker_slice1)
+  set_tests_properties(test_native_jail_python_worker_slice1 PROPERTIES
+    ENVIRONMENT "${AE_PYTHON_TEST_ENV}" TIMEOUT 60)
+
   # ---- Milestone 3 Phase G1: agent.tools generated-code execution proof (026 §4/§5) --------------
   # Generation-only correctness (no CPython dependency) is test_agent_tools_codegen.cpp, above.
   add_executable(test_mediated_python_runner_agent_tools test_mediated_python_runner_agent_tools.cpp)

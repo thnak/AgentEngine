@@ -29,6 +29,7 @@ using namespace agentengine;
 using namespace agentengine::native_jail::mediated_shell;
 using agentengine::native_jail::MediatedPythonConfig;
 using agentengine::native_jail::MediatedPythonRunner;
+using agentengine::native_jail::NativeJailBackend;
 
 namespace {
 
@@ -63,9 +64,10 @@ int main() {
     std::filesystem::create_directories(scratch);
     std::wstring scratch_w(scratch.begin(), scratch.end());
 
+    NativeJailBackend backend;
     MediatedPythonConfig py_cfg;
     py_cfg.python_home = AE_PYTHON_HOME;
-    MediatedPythonRunner python(std::move(py_cfg));
+    MediatedPythonRunner python(std::move(py_cfg), backend);
     auto init = python.initialize();
     AE_CHECK(init.has_value(), "E3-PY1: setup -- the real MediatedPythonRunner initializes");
 

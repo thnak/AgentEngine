@@ -56,6 +56,7 @@
 using namespace agentengine;
 using agentengine::native_jail::MediatedPythonConfig;
 using agentengine::native_jail::MediatedPythonRunner;
+using agentengine::native_jail::NativeJailBackend;
 using agentengine::test_support::RecordedChatClient;
 using agentengine::test_support::run_task_sync;
 
@@ -103,6 +104,8 @@ std::string extract_python_code(std::string const& text) {
 }  // namespace
 
 int main() {
+    NativeJailBackend backend;
+
     std::string const base = ::agentengine::pal::env_var("TEMP").value_or("C:/Windows/Temp") +
                               "/ae_h1_task_corpus";
     std::filesystem::path input_dir = std::filesystem::path(base) / "input";
@@ -158,7 +161,7 @@ int main() {
     cfg.mount_roots["out"] = widen(out_dir);
     cfg.expose_agent_files_data = true;
 
-    MediatedPythonRunner runner(std::move(cfg));
+    MediatedPythonRunner runner(std::move(cfg), backend);
     auto init = runner.initialize();
     AE_CHECK(init.has_value(), "H1-setup: MediatedPythonRunner initializes with the measured closure");
 
