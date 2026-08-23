@@ -335,3 +335,24 @@ Both are independent of how well-scoped Design A gets.
    this ADR's outcome — it's a real gap independent of whether a microVM backend ever gets built,
    since any future `strict_eligibility::eligible`-by-default registration of *any* stronger backend
    has the same blast-radius risk.
+
+## 8. Project-owner direction (2026-08-23) and what actually landed
+
+The project owner reviewed §7's verdict and pushed back on treating "no reversal" as a reason to do
+nothing: enriching AgentEngine's feature surface is itself a legitimate motivation, and this project's
+own "Feature vs. safety balance" doctrine (CLAUDE.md, `ADR-070`) already commits to defaulting toward
+enabling. That direction is treated here as **C4 answered** — project-owner intent is this project's
+own established standard of evidence for "real demand" (the same standing CLAUDE.md gives explicit
+project-owner direction elsewhere, e.g. the HTTP-networking decision). **C5 stands unchanged** —
+`native-jail`'s own v1 gate (`ADR-004`) being "Spiked, not Judged" is a sequencing fact, not a
+risk-tolerance question ADR-070's doctrine speaks to, and the project owner did not direct otherwise.
+
+Net: **item 4 above is now done** — `register_hardware_isolation_backend()` (`sandbox_backend_registry.hpp`),
+closing red-team finding #1 structurally, with a new regression test (`test_sandbox_backend_registry.cpp`
+item 7). **A `capability_kind` for device/GPU passthrough was considered and deliberately not added** —
+it is pattern-matched across ~20 files project-wide, and a new variant with no real exec-path semantics
+or consumer yet would be the premature abstraction this project's own conventions (CLAUDE.md) warn
+against; it stays a named open item for whenever a real hardware-isolation backend is actually built,
+not something to shape speculatively today. **No `KataBackend` or other real backend was built** — the
+project owner's chosen scope for this pass was foundation-only; §7's reopen conditions (native-jail
+gate Judged, or an explicit decision to proceed despite it) still gate anything further.
