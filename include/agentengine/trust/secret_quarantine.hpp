@@ -275,7 +275,7 @@ struct QuarantineSecretTool : Tool<QuarantineSecretTool, EffectClass<effect_clas
 // Wraps `QuarantineSecretStore` as a real `ContextProvider` conformer -- ADR-068's own named residual
 // ("no production call site wires this in yet") closed here structurally: this type can occupy
 // `rt::AgentSession`'s `HistoryProviderT` slot directly, or be composed alongside other contributors
-// via `ComposedContextProvider`/`HistoryAndSkillsProvider` (`core/composed_context_provider.hpp`),
+// via `ComposedContextProvider` (`core/composed_context_provider.hpp`),
 // the SAME real, already-proven composition path `decisions/ADR-066-context-provider-attribution-
 // provenance.md`'s own end-to-end test uses -- no change to `agent_session.hpp` needed for this ADR
 // at all. Contributes exactly one tool (`quarantine_secret`) and no messages/instructions of its own.

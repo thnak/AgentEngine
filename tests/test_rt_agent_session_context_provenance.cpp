@@ -127,6 +127,12 @@ int main() {
 
     AgentSession<RecordingChatClient, NoSessionState, ComposedProvider> session;
     session.initialize("prov-t1", Principal{"p1", ""});
+    // Default-constructed history_provider() starts UNENGAGED unconditionally (2026-08-23:
+    // ComposedContextProvider's default ctor no longer auto-engages even when every Ms is
+    // default-constructible -- see composed_context_provider.hpp's own comment on why).
+    auto engaged = session.history_provider().engage(
+        std::tuple{agentengine::HistoryProvider<agentengine::Window<0>>{}, SkillLikeProvider{}});
+    check(engaged.has_value(), "T1 setup: engage() succeeds");
     RecordingChatClient& client = session.emplace_chat_client();
 
     auto outcome = drive(session.start_run(StartRun{user_message("hi")}));

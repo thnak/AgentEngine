@@ -12,7 +12,7 @@
 // live, real-network proof of `.ask()` end to end is separately scoped future work, matching this
 // project's own "live-network" label convention for that class of test. B14-B17 (§2b) similarly never
 // drive a live `start_run()` through `ComposedQuickstartSessionBuilder`'s own session -- it has no
-// `.raw_client_only()` escape hatch either (§2a, still unimplemented) -- so `LazyComposedContextProvider
+// `.raw_client_only()` escape hatch either (§2a, still unimplemented) -- so `ComposedContextProvider
 // ::on_context()` is driven DIRECTLY instead, the same scope limit `tests/test_composed_context_
 // provider.cpp`'s own "Part 1" uses for the equivalent reason.
 //
@@ -45,11 +45,11 @@ namespace {
 // A minimal, LOCAL ContextProvider conformer with NO default constructor -- exists purely to prove
 // §2b's real fix unambiguously (session_builder.hpp finding 8): a provider that genuinely cannot
 // occupy `AgentSession`'s plain, always-default-constructed `HistoryProviderT` slot on its own now
-// composes fine through `LazyComposedContextProvider`, since that slot is never asked to
-// default-construct THIS type -- only `LazyComposedContextProvider<Ms...>` itself, which always can.
+// composes fine through `ComposedContextProvider`, since that slot is never asked to
+// default-construct THIS type -- only `ComposedContextProvider<Ms...>` itself, which always can.
 // Round 4 red-team findings 9-10 (session_builder.hpp's own top comment) -- `turn_end_calls` (a
 // shared counter, not a private member, so a test can read it after the provider moves into
-// LazyComposedContextProvider's own contributors_) lets B18/B19 prove `on_turn_end` fan-out reaches
+// ComposedContextProvider's own contributors_) lets B18/B19 prove `on_turn_end` fan-out reaches
 // every wrapped provider, not just the first -- the same thing test_composed_context_provider.cpp's
 // own FixedMessagesProvider already proves for ComposedContextProvider, previously untested here.
 struct RequiredArgProvider {
@@ -84,7 +84,7 @@ static_assert(!std::is_default_constructible_v<RequiredArgProvider>,
 static_assert(agentengine::ContextProvider<RequiredArgProvider>,
               "RequiredArgProvider must satisfy ContextProvider (005 §5) to be usable at all");
 
-// B22 (round 8 red-team, finding 15): proves LazyComposedContextProvider::engage() is exception-safe.
+// B22 (round 8 red-team, finding 15): proves ComposedContextProvider::engage() is exception-safe.
 // CountingProvider never throws -- pushed first, its on_context() call count proves whether a stale
 // copy from a FAILED engage() attempt survives into a later successful retry.
 struct CountingProvider {
@@ -459,7 +459,7 @@ int main() {
         ComposedQuickstartSessionBuilder<quickstart::Provider::openai, InMemorySecretStore,
                                            HistoryProvider<Window<0>>, RequiredArgProvider>;
     static_assert(std::is_default_constructible_v<ComposedBuilder::HistoryProviderT>,
-                  "LazyComposedContextProvider<Ms...> itself must stay default-constructible -- the "
+                  "ComposedContextProvider<Ms...> itself must stay default-constructible -- the "
                   "whole mechanism finding 8 relies on -- even though one of ITS Ms (RequiredArgProvider) "
                   "deliberately is not");
 
@@ -518,7 +518,7 @@ int main() {
         }
     }
     {
-        // B17: engage() called a second time on the SAME LazyComposedContextProvider instance fails
+        // B17: engage() called a second time on the SAME ComposedContextProvider instance fails
         // closed (defense-in-depth, independent of the builder-level "second build() fails at
         // no_providers" guard) -- calling it twice would otherwise silently duplicate every
         // contributor on the wire.
@@ -536,7 +536,7 @@ int main() {
             check(!second_engage.has_value(),
                   "a second engage() call on the same instance fails closed");
             if (!second_engage.has_value()) {
-                check(second_engage.error().code == "quickstart.composed_context.already_engaged",
+                check(second_engage.error().code == "composed_context.already_engaged",
                       "the failure is specifically 'already_engaged', not a different error");
             }
         }
@@ -582,7 +582,7 @@ int main() {
         }
     }
     {
-        // B20: round 5 red-team finding A -- moving a LazyComposedContextProvider (reachable through
+        // B20: round 5 red-team finding A -- moving a ComposedContextProvider (reachable through
         // AgentSession::history_provider()'s own mutable accessor) must leave the MOVED-FROM instance
         // genuinely `not_engaged`, not silently `engaged_ == true` over an empty contributors_. Proves
         // the class's own invariant ("engaged_ implies contributors_ is populated") survives a move.
@@ -614,7 +614,7 @@ int main() {
                   "B20: the MOVED-FROM session's on_context() now genuinely fails ('not_engaged'), "
                   "instead of silently succeeding with zero messages");
             if (!moved_from.has_value()) {
-                check(moved_from.error().code == "quickstart.composed_context.not_engaged",
+                check(moved_from.error().code == "composed_context.not_engaged",
                       "B20: the failure is specifically 'not_engaged', not a different error");
             }
 
@@ -643,7 +643,7 @@ int main() {
         EffectContext effect_ctx{};
 
         // B21a: self-move-assignment (`x = std::move(x)`) must be a safe no-op, not a state-destroying
-        // self-clear -- the `if (this != &other)` guard in operator=(LazyComposedContextProvider&&)
+        // self-clear -- the `if (this != &other)` guard in operator=(ComposedContextProvider&&)
         // exists specifically for this case.
         {
             using SingleBuilder = ComposedQuickstartSessionBuilder<quickstart::Provider::openai,
@@ -684,7 +684,7 @@ int main() {
             auto from_source = agentengine::test_support::run_task_sync<result<ContextContribution>>(
                 source.on_context(session_ctx, effect_ctx));
             check(!from_source.has_value() &&
-                      from_source.error().code == "quickstart.composed_context.not_engaged",
+                      from_source.error().code == "composed_context.not_engaged",
                   "B21b: move-CONSTRUCTION resets the source's engaged_ exactly like move-assignment "
                   "does, not left stale by a separate, unfixed code path");
 
@@ -716,7 +716,7 @@ int main() {
             auto from_b = agentengine::test_support::run_task_sync<result<ContextContribution>>(
                 b.on_context(session_ctx, effect_ctx));
             check(!from_b.has_value() &&
-                      from_b.error().code == "quickstart.composed_context.not_engaged",
+                      from_b.error().code == "composed_context.not_engaged",
                   "B21c: the intermediate (twice-moved-from) instance is genuinely not_engaged, not "
                   "left in some stale intermediate state");
             (void)counter_b;
@@ -788,7 +788,7 @@ int main() {
         auto after_throw = agentengine::test_support::run_task_sync<result<ContextContribution>>(
             lcp.on_context(session_ctx, effect_ctx));
         check(!after_throw.has_value() &&
-                  after_throw.error().code == "quickstart.composed_context.not_engaged",
+                  after_throw.error().code == "composed_context.not_engaged",
               "B22: after the failed attempt, on_context() correctly fails closed (not_engaged) -- "
               "engaged_ was never set to true");
         check(CountingProvider::on_context_calls == 0,

@@ -273,6 +273,20 @@
 //    two distinct instances; `ComposedQuickstartSessionBuilder` also had no double-`.build()` regression
 //    test at all (the base `QuickstartSessionBuilder` has had one, B6, since round 1) even though
 //    finding 11 changed the exact move machinery `build()`/`engage()` depend on.
+//
+// 2026-08-23 UPDATE, kept as a point-in-time record, not rewritten: everything above narrates real
+// history against a real type, `detail::LazyComposedContextProvider<Ms...>`, that lived in THIS file.
+// That type no longer exists here -- findings 9/11/15's fixes (move-only with a correct moved-from
+// reset; a strong-exception-guarantee `engage()`) were carried forward VERBATIM into
+// `core/composed_context_provider.hpp`'s `ComposedContextProvider<Ms...>` itself
+// (docs/planning/2026-08-22-component-role-audit-tracker.md Findings A/B,
+// decisions/ADR-074-composed-context-provider-consolidation.md), closing finding 9's own disclosed
+// residual ("the underlying shared_ptr-aliasing mechanism in `ComposedContextProvider` itself is
+// UNCHANGED") at the source. `ComposedQuickstartSessionBuilder::HistoryProviderT` below now names
+// `agentengine::ComposedContextProvider<Ms...>` directly, using its `engage()` the same way this
+// narrative describes. Every finding above still accurately describes what was true and why, against
+// the type as it existed at the time -- read `detail::LazyComposedContextProvider` throughout as "the
+// type that is now core/composed_context_provider.hpp's ComposedContextProvider."
 
 #include <algorithm>
 #include <array>
@@ -294,6 +308,7 @@
 #include <vector>
 
 #include "agentengine/core/chat_client.hpp"
+#include "agentengine/core/composed_context_provider.hpp"
 #include "agentengine/core/context_assembly.hpp"
 #include "agentengine/core/context_provider.hpp"
 #include "agentengine/core/model_call_gateway.hpp"
@@ -376,172 +391,16 @@ concept TestOnlyPopulatableSecretStore = std::default_initializable<S> && requir
     s.set(std::move(n), std::move(v));
 };
 
-// §2b's real fix -- see this file's own top comment, finding 8. `AgentSession<...>::history_provider_`
-// is a plain, always-default-constructed value member (rt/agent_session.hpp:2059; no user-declared
-// `AgentSession` constructor exists, so the compiler-generated default one runs, which default-inits
-// EVERY member including this one) -- so whatever occupies `HistoryProviderT` must itself be
-// default-constructible, unconditionally, regardless of what the *quickstart* builder does. The
-// project's own existing N-way composite, `core/composed_context_provider.hpp`'s `ComposedContextProvider
-// <Ms...>`, only clears that bar when EVERY `Ms` is itself default-constructible (its own default
-// constructor is `requires`-gated on exactly that) -- fine for `HistoryProvider<Window<n>>` or a mock,
-// but `SkillsProvider` (explicit ctor, requires a `vector<SkillSourceDescriptor>`, no default),
-// `MemoryProvider`/`VectorRagContextProvider` (both take required reference parameters) are NEVER
-// default-constructible, so `ComposedContextProvider<HistoryProvider<...>, SkillsProvider<...>>` cannot
-// even be default-constructed, meaning `AgentSession<..., ComposedContextProvider<...>>` cannot compile
-// for that combination at all -- confirmed empirically: `tests/test_composed_context_provider.cpp`'s own
-// only real `AgentSession` proof (`ThreeWayProvider`) uses three deliberately-default-constructible mock
-// providers (`static_assert(std::is_default_constructible_v<ThreeWayProvider>...)`), never a real
-// `SkillsProvider`/`MemoryProvider`/`VectorRagContextProvider`. This type closes that gap the same way
-// ADR-018 closed the analogous one for `chat_client_`: always default-constructible (an empty
-// `contributors_`, not a default-constructed `Ms{}...`), engaged with the REAL, host-constructed `Ms...`
-// values after `AgentSession` already exists -- reachable because `AgentSession::history_provider()`
-// (rt/agent_session.hpp:647) returns a mutable reference (an accessor `composed_context_provider.hpp`'s
-// own comment, written before that accessor existed, still describes as absent -- stale, not relied on
-// here). Kept local to this file (`quickstart::detail`), not promoted to `core/`, since nothing outside
-// the quickstart builder currently needs a lazily-engaged composite.
-template <class... Ms>
-    requires (sizeof...(Ms) >= 1) && (agentengine::ContextProvider<Ms> && ...)
-class LazyComposedContextProvider {
-public:
-    static constexpr std::string_view name = "quickstart_composed";  // ae-naming-lint: allow name — ADR-033's HasMiddlewareName precedent, reused verbatim per ADR-066 §3
-
-    LazyComposedContextProvider() = default;  // contributors_ starts empty -- see engage() below
-
-    // Move-only, NOT copyable -- red-team finding 9 (header top comment): `make_context_provider_
-    // descriptor()` (context_assembly.hpp) wraps each `Ms` in a `shared_ptr<Ms>` CAPTURED BY VALUE in
-    // `contributors_`'s closures, so an implicit memberwise COPY of this type would copy those
-    // `shared_ptr`s too -- aliasing the SAME underlying provider instances, not independent ones. The
-    // one real place a plain COPY bites: `AgentSession::fork_from()` (rt/agent_session.hpp:1022) does a
-    // plain `history_provider_ = source.history_provider_;` -- a fork of a session using this type would
-    // silently start sharing live, mutable provider state (a memory-provider write-back, a per-skill
-    // usage counter, a RAG cache) with its source, an I1/I4-adjacent session-isolation gap a caller has
-    // no reason to expect. Deleting copy here turns that into a COMPILE ERROR at the exact `fork_from()`
-    // call site instead -- `fork_from()` is an ordinary (non-template) member function, only compiled
-    // when actually called, so this has zero effect on every already-passing build()/engage()/
-    // on_context()/on_turn_end() path; it only surfaces where the real problem would have.
-    //
-    // Round 5 red-team, finding A (header top comment): the FIRST version of this fix left move ctor/
-    // assignment `= default`ed -- `contributors_` (a vector) is correctly drained on move, but `engaged_`
-    // (a plain `bool`) is trivially copied by the defaulted move, so it stayed `true` on the MOVED-FROM
-    // side even though its `contributors_` was now empty. LIVE-REPRODUCED: `session2.history_provider() =
-    // std::move(session1.history_provider())` (reachable through the same public `history_provider()`
-    // accessor `on_context()`'s own comment below already names as a bypass route) left session1 with
-    // `engaged_ == true`, `contributors_` empty -- `on_context()`'s `if (!engaged_)` guard did NOT fire,
-    // so session1 silently returned a SUCCESSFUL, empty contribution instead of the `not_engaged` error
-    // the guard exists to produce, and `engage()`'s own `already_engaged` guard permanently blocked ever
-    // re-engaging it (no recovery). **Fixed**: move ctor/assignment now explicitly reset the moved-from
-    // side's `engaged_` to `false` (and defensively clear its `contributors_`, rather than relying on a
-    // vector move's typically-but-not-guaranteed-empty post-move state) -- restores the class's own
-    // invariant ("`engaged_ == true` iff `contributors_` is populated") across a move, so a moved-from
-    // instance correctly fails closed via the EXISTING `not_engaged` guard, and can be `engage()`d again
-    // (a real recovery path, not a permanently bricked instance). Declared explicitly (not `= default`)
-    // since declaring the copy pair suppresses implicit move generation -- `AgentSession::
-    // clear_in_process_state()`'s own `history_provider_ = HistoryProviderT{};` (rt/agent_session.hpp:
-    // 1070) needs move-assignment from a prvalue to keep working; that call site is unaffected by this
-    // fix (assigning FROM a fresh, never-engaged temporary, so there is nothing for the reset logic to
-    // observably change). NOT fixed, deliberately out of scope for this round: a move-assignment into an
-    // ALREADY-engaged target still silently replaces its contributors with no diagnostic -- ordinary,
-    // expected `operator=` semantics (identical to `history_provider() = HistoryProviderT{}`'s own
-    // existing silent-reset behavior, not a new hazard this fix introduces), not the state-invariant
-    // violation the `engaged_`/`contributors_` desync above was. The underlying `shared_ptr`-aliasing
-    // mechanism itself remains unchanged and pre-existing in `core/composed_context_provider.hpp`'s
-    // `ComposedContextProvider<Ms...>` too (not fixed here -- out of this file's scope, named as a real,
-    // disclosed residual, not silently left for a caller to rediscover).
-    LazyComposedContextProvider(LazyComposedContextProvider&& other) noexcept
-        : contributors_(std::move(other.contributors_)), engaged_(other.engaged_) {
-        other.engaged_ = false;
-        other.contributors_.clear();
-    }
-    LazyComposedContextProvider& operator=(LazyComposedContextProvider&& other) noexcept {
-        if (this != &other) {
-            contributors_ = std::move(other.contributors_);
-            engaged_      = other.engaged_;
-            other.engaged_ = false;
-            other.contributors_.clear();
-        }
-        return *this;
-    }
-    LazyComposedContextProvider(LazyComposedContextProvider const&) = delete;
-    LazyComposedContextProvider& operator=(LazyComposedContextProvider const&) = delete;
-
-    // Host-only, configuration-time call (`ComposedQuickstartSessionBuilder::build()`, never derived
-    // from model output, I3) -- builds each `Ms`'s real `ContextProviderDescriptor` and appends it, in
-    // `Ms...`'s declared order (005 §3 drop-order-determinism / final wire order, identical rule to
-    // `ComposedContextProvider`'s own). May be called AT MOST ONCE per instance -- a second call would
-    // silently duplicate every contributor on the wire, so it fails closed instead of accumulating.
-    [[nodiscard]] agentengine::result<void> engage(
-        std::tuple<Ms...> providers,
-        std::array<agentengine::ContextBudget, sizeof...(Ms)> budgets = {}) {
-        if (engaged_) {
-            return std::unexpected(agentengine::error{
-                agentengine::failure_class::contract,
-                "LazyComposedContextProvider::engage() called twice on the same instance -- every "
-                "contributor from the first call would otherwise be duplicated on the wire",
-                "quickstart.composed_context.already_engaged"});
-        }
-        // Round 8 red-team, finding 15: build into a LOCAL vector first, publish into contributors_
-        // (and flip engaged_) only once every Ms's descriptor has been constructed without throwing.
-        // The previous shape push_back'd directly into contributors_ inside build_contributors()'s
-        // fold -- if a later Ms's move constructor (or make_context_provider_descriptor()'s own
-        // make_shared) threw partway through, contributors_ was left PARTIALLY populated while
-        // engaged_ stayed false (the assignment below was never reached). Since engaged_ == false,
-        // the already_engaged guard above does NOT block a retry -- and round 5's own fix comment
-        // explicitly frames retry-after-failure as safe recovery -- but reserve() does not clear
-        // existing elements, so a retry's build_contributors() APPENDED onto the stale entries
-        // instead of starting fresh. LIVE-REPRODUCED: a throwing-provider mock, first engage() throws
-        // after 1 of 2 contributors pushed, a retry with fresh providers succeeds, then ONE
-        // on_context() call invoked the stale first-attempt contributor a SECOND, duplicate time --
-        // exactly the "duplicate every contributor on the wire" hazard already_engaged exists to
-        // prevent, reintroduced via the exception path. Building locally and swapping in only on
-        // success gives a strong exception guarantee: a throw here now leaves contributors_/engaged_
-        // completely untouched, so a retry genuinely starts fresh instead of accumulating wreckage.
-        std::vector<agentengine::ContextProviderDescriptor> built;
-        built.reserve(sizeof...(Ms));
-        build_contributors(built, providers, budgets, std::index_sequence_for<Ms...>{});
-        contributors_ = std::move(built);
-        engaged_ = true;
-        return {};
-    }
-
-    [[nodiscard]] agentengine::task<agentengine::result<agentengine::ContextContribution>> on_context(
-        agentengine::SessionContext& session_ctx, agentengine::EffectContext& ctx) {
-        if (!engaged_) {
-            // Not reachable through ComposedQuickstartSessionBuilder::build() (it always calls engage()
-            // before returning a Bundle) -- only reachable if a caller reaches in via
-            // Bundle::session().history_provider() and substitutes/reuses an unengaged instance.
-            // Fail-closed, matching this project's convention for a used-before-configured contract
-            // violation, rather than silently contributing nothing.
-            co_return std::unexpected(agentengine::error{
-                agentengine::failure_class::contract,
-                "LazyComposedContextProvider::on_context() called before engage()",
-                "quickstart.composed_context.not_engaged"});
-        }
-        agentengine::ContextAssemblyResult assembled =
-            co_await agentengine::assemble_context(contributors_, session_ctx, ctx);
-        co_return assembled.combined;
-    }
-
-    // Matches ComposedContextProvider::on_turn_end's own forwarding -- assemble_context() itself never
-    // calls it on its contributors.
-    agentengine::task<std::monostate> on_turn_end(agentengine::TurnView turn, agentengine::EffectContext& ctx) {
-        for (auto& contributor : contributors_) (void)co_await contributor.on_turn_end(turn, ctx);
-        co_return std::monostate{};
-    }
-
-private:
-    template <std::size_t... I>
-    void build_contributors(std::vector<agentengine::ContextProviderDescriptor>& out,
-                             std::tuple<Ms...>& providers,
-                             std::array<agentengine::ContextBudget, sizeof...(Ms)> const& budgets,
-                             std::index_sequence<I...>) {
-        (out.push_back(agentengine::make_context_provider_descriptor(
-             std::move(std::get<I>(providers)), budgets[I])),
-         ...);
-    }
-
-    std::vector<agentengine::ContextProviderDescriptor> contributors_;
-    bool engaged_ = false;
-};
+// 2026-08-23 consolidation (docs/planning/2026-08-22-component-role-audit-tracker.md Findings A/B,
+// decisions/ADR-074-composed-context-provider-consolidation.md): this used to be a separate,
+// `quickstart::detail`-local type, `LazyComposedContextProvider<Ms...>`, that existed only because
+// `core/composed_context_provider.hpp`'s `ComposedContextProvider<Ms...>` required every `Ms` to be
+// default-constructible to occupy `AgentSession<...>::history_provider_` (a plain, always-default-
+// constructed value member) -- untrue for a real `SkillsProvider`/`MemoryProvider`/
+// `VectorRagContextProvider`. `ComposedContextProvider` itself now absorbs that lazy-`engage()` shape
+// (always default-constructible; `engage()` populates it once, after `AgentSession` already exists),
+// so this builder uses that type directly instead of a second, quickstart-local one. See the ADR for
+// the full before/after.
 
 }  // namespace detail
 
@@ -552,7 +411,7 @@ private:
 // `HistoryProviderT` defaults to `AgentSession`'s own default (`HistoryProvider<Window<0>>`) so
 // every existing `Bundle<ChatClientT, Store>` spelling (§2a's `QuickstartSessionBuilder`) is
 // completely unaffected -- the third parameter exists only so `ComposedQuickstartSessionBuilder`
-// (§2b, below) can supply its own `detail::LazyComposedContextProvider<Ms...>` instead.
+// (§2b, below) can supply its own `agentengine::ComposedContextProvider<Ms...>` instead.
 template <class ChatClientT, class Store,
           class HistoryProviderT = agentengine::HistoryProvider<agentengine::Window<0>>>
 class Bundle {
@@ -1003,7 +862,7 @@ using AnthropicSessionBuilder = QuickstartSessionBuilder<Provider::anthropic>;
 // the duplication has drifted, not attempted in this pass.
 //
 // Red-team finding 10 (header top comment): `requires (sizeof...(Ms) >= 1)` declared HERE too, not
-// left to surface only once `HistoryProviderT` (below) instantiates `LazyComposedContextProvider<>`'s
+// left to surface only once `HistoryProviderT` (below) instantiates `ComposedContextProvider<>`'s
 // own identical constraint -- an empty `Ms...` pack used to fail with a multi-error cascade (an
 // unspecialized-class-template error, then unrelated failures deep inside <expected>/<type_traits>),
 // not one clean, actionable diagnostic. This constraint is checked on the OUTER template first now,
@@ -1014,7 +873,7 @@ class ComposedQuickstartSessionBuilder {
 public:
     using Primary          = typename detail::primary_client<P, Store>::type;
     using ChatClientT       = agentengine::ModelCallGateway<Primary>;
-    using HistoryProviderT = detail::LazyComposedContextProvider<Ms...>;
+    using HistoryProviderT = agentengine::ComposedContextProvider<Ms...>;
     using BundleT           = Bundle<ChatClientT, Store, HistoryProviderT>;
 
     explicit ComposedQuickstartSessionBuilder(std::string model) : model_(std::move(model)) {}
@@ -1082,7 +941,7 @@ public:
 
     // The REAL, host-constructed provider values -- e.g. `.providers(std::make_tuple(
     // HistoryProvider<Window<8>>{}, SkillsProvider{sources}))`. Declared order == wire order (same
-    // rule `ComposedContextProvider`/`LazyComposedContextProvider` themselves already enforce).
+    // rule `ComposedContextProvider` itself already enforces).
     // Last-call-wins if called more than once before build() (matching `.api_key()`/`.store()`'s own
     // semantics) -- `Ms...` is fixed at declaration time, so a second call has nothing incremental to
     // add, only a full replacement.

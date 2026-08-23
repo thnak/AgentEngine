@@ -270,8 +270,12 @@ int main() {
         ae::EffectContext combined_effect_ctx{};
         combined_effect_ctx.principal = principal;
 
-        auto assembled = ae::test_support::run_task_sync<ae::ContextAssemblyResult>(
+        auto assembled_result = ae::test_support::run_task_sync<ae::result<ae::ContextAssemblyResult>>(
             ae::assemble_context(contributors, combined_ctx, combined_effect_ctx));
+        AE_CHECK(assembled_result.has_value(),
+                 "assemble_context() succeeds -- both contributors here declare ContextBudget{0} "
+                 "(unbounded), so neither can trigger the fail-closed budget path");
+        ae::ContextAssemblyResult const assembled = assembled_result.value_or(ae::ContextAssemblyResult{});
         AE_CHECK(assembled.combined.messages.size() == 1 + 2,
                  "B3xG-R1: the assembled context contains HistoryProvider's contribution (the 1 "
                  "history message) followed by MemoryProvider's own (2 injected memory items) -- "

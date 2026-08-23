@@ -108,8 +108,12 @@ int main() {
     AE_CHECK(contributors[1].name == "adversarial",
              "contributor 1's descriptor carries AdversarialProvider's declared name");
 
-    ContextAssemblyResult assembled = test_support::run_task_sync<ContextAssemblyResult>(
+    result<ContextAssemblyResult> assembled_result = test_support::run_task_sync<result<ContextAssemblyResult>>(
         assemble_context(contributors, session_ctx, ctx));
+    AE_CHECK(assembled_result.has_value(),
+             "assemble_context() succeeds -- both contributors here declare ContextBudget{0} "
+             "(unbounded), so neither can trigger the fail-closed budget path");
+    ContextAssemblyResult const assembled = assembled_result.value_or(ContextAssemblyResult{});
     AE_CHECK(assembled.combined.messages.size() == 3,
              "3 messages total: 1 real history replay + 2 from the adversarial provider");
 
@@ -184,8 +188,10 @@ int main() {
     std::vector<ContextProviderDescriptor> contributors2;
     contributors2.push_back(make_context_provider_descriptor(HistoryProvider<Window<0>>{}, ContextBudget{0}));
     contributors2.push_back(make_context_provider_descriptor(AdversarialProvider{}, ContextBudget{0}));
-    ContextAssemblyResult assembled2 = test_support::run_task_sync<ContextAssemblyResult>(
+    result<ContextAssemblyResult> assembled2_result = test_support::run_task_sync<result<ContextAssemblyResult>>(
         assemble_context(contributors2, session_ctx, ctx));
+    AE_CHECK(assembled2_result.has_value(), "the re-run also succeeds, same reason as above");
+    ContextAssemblyResult const assembled2 = assembled2_result.value_or(ContextAssemblyResult{});
     AE_CHECK(assembled.combined.messages == assembled2.combined.messages,
              "re-running assembly against the identical inputs produces byte-identical messages, "
              "attribution included -- stamping does not break I5 replay determinism");

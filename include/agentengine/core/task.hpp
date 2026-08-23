@@ -24,8 +24,8 @@
 //
 // One visible consequence of keeping it: `rt::task<T>::await_resume()` is [[nodiscard]], so
 // `co_await p.on_turn_end(...)` yields a `std::monostate` that every caller then drops, which MSVC
-// reports as C4834 (6 sites: rt/agent_session.hpp, core/composed_context_provider.hpp,
-// core/history_and_skills_provider.hpp). Those sites write `(void)co_await ...` -- the standard
+// reports as C4834 (several sites, e.g. rt/agent_session.hpp, core/composed_context_provider.hpp).
+// Those sites write `(void)co_await ...` -- the standard
 // spelling for "this value is deliberately discarded", and here the discarded value is literally
 // this codebase's own "no value" type. That is an annotation at the call site, not a silenced
 // diagnostic; retiring it for good is the same API-shape decision named above.

@@ -9,7 +9,7 @@ shape of the project.
 **Four open cross-cutting questions as of 2026-08-23: OQ-19, OQ-20, OQ-21, OQ-25.** OQ-1 through
 OQ-18 and OQ-22 through OQ-24 are all resolved (OQ-22 was closed 2026-08-21 by ADR-066, ahead of this
 file's own stale "seven open" count; OQ-24 was scoped and resolved as a non-issue on 2026-08-23; OQ-23
-was closed the same day by `decisions/ADR-074-undeclared-tool-call-leak-refusal.md`, judged the same
+was closed the same day by `decisions/ADR-076-undeclared-tool-call-leak-refusal.md`, judged the same
 session it was first raised in). New questions are added here as they're identified; per-RFC open
 questions that don't change the shape of the project stay in their own RFC's §Open questions and are
 never promoted here by default.
@@ -342,7 +342,7 @@ error and no warning — the leak was captured as ordinary, untainted `Text`, un
 `AgentSession::scan_response_format_leaks` (a separate, default-`false` flag with no relationship to
 `tool_calling` anywhere in the code) was also armed.
 
-**Resolved by `decisions/ADR-074-undeclared-tool-call-leak-refusal.md` (Judged, 2026-08-23 — design,
+**Resolved by `decisions/ADR-076-undeclared-tool-call-leak-refusal.md` (Judged, 2026-08-23 — design,
 red-team, and prove all completed and judged the same session this question was raised in).** A new
 `detect_undeclared_tool_call_leak()` (`core/response_format_leak_scan.hpp`) — detect-only,
 refuse-not-promote, structurally distinct from and never touching ADR-023's own declassifier — is
@@ -387,7 +387,7 @@ entirely gets none of this protection — matching the identical, pre-existing s
 same order ADR-035 already took) was a deliberate choice; porting down to the `ChatClient` layer is
 real, named follow-on work if judged valuable later.
 
-Full text: `decisions/ADR-074-undeclared-tool-call-leak-refusal.md`;
+Full text: `decisions/ADR-076-undeclared-tool-call-leak-refusal.md`;
 `docs/planning/oq23-undeclared-tool-call-leak-design-draft.md` (the complete, uncompressed design →
 red-team → prove record); `decisions/ADR-023-response-format-codec-seam.md`.
 

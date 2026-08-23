@@ -40,9 +40,10 @@ own name/parameter order is not a reliable guide to wire order). That inversion 
 because a code comment says so; nothing in the type signature communicates it. `ComposedContextProvider
 <Ms...>` doesn't have this problem — declared order *is* wire order, always.
 
-**Disposition: tracked, not closed.** Low-severity (two known call sites, both tests), so not worth an
-isolated point-fix. Right move is to fold this into Finding B's redesign rather than patch it alone —
-see "Recommended follow-up" below.
+**Disposition: CLOSED (2026-08-23).** Folded into Finding B's redesign, exactly as the "Recommended
+follow-up" below anticipated — `HistoryAndSkillsProvider` deleted, its two call sites migrated to
+`ComposedContextProvider`. See the "Findings A and B closed" section near the end of this file and
+`decisions/ADR-074-composed-context-provider-consolidation.md`.
 
 ### Finding B — `ComposedContextProvider` still has the fork-aliasing bug `LazyComposedContextProvider` was fixed for
 
@@ -70,14 +71,22 @@ genuinely stateful provider (a memory provider, a skills provider, a RAG cache) 
 `ComposedContextProvider` and then forking that session inherits the same aliasing `LazyComposedContextProvider`
 was fixed for.
 
-**Disposition: tracked, deliberately deferred — not a bug to rush-fix.** This is exactly the kind of
+**Disposition: CLOSED (2026-08-23), superseding the "deliberately deferred" call below.** The original
+reasoning (ADR-070's ship-first/harden-later posture) held at the time, but the project owner later
+directed this be fixed for real once the blast radius was verified safe (zero real `fork_from()` caller
+touches this type) — `ComposedContextProvider` is now move-only, closing the aliasing gap at the
+source, not left for a host to work around. See the "Findings A and B closed" section near the end of
+this file and `decisions/ADR-074-composed-context-provider-consolidation.md`. Original reasoning kept
+below as a point-in-time record, not deleted:
+
+*This is exactly the kind of
 residual `ADR-070`'s ship-first/harden-later posture and the delegated-decision-seam already cover: the
 engine is not trying to make every composition path fork-safe by construction before shipping the
 feature surface; a host/consumer-dev composing stateful providers directly and calling `fork_from()`
 owns that isolation decision, same as other already-disclosed ADR-070/ADR-071 residuals. Not silently
-unaddressed — recorded here, plus already disclosed once in `session_builder.hpp`'s own finding 9 text.
+unaddressed — recorded here, plus already disclosed once in `session_builder.hpp`'s own finding 9 text.*
 
-### Recommended follow-up (not started)
+### Recommended follow-up — DONE (2026-08-23)
 
 Per standing project-owner guidance on design taste (prefer a clean redesign over patching around
 existing shapes for reuse's sake): when this cluster is next touched for real, the three-type shape
@@ -85,9 +94,13 @@ existing shapes for reuse's sake): when this cluster is next touched for real, t
 candidate for **one coherent redesign** — e.g. a single composite type that is always safely
 constructible in `AgentSession`'s plain value-member slot (closing the reason `LazyComposedContextProvider`
 had to exist as a separate type) and move-only by construction (closing Finding B at the source instead
-of per-conformer) — than for patching each layer separately. Not scheduled; no ADR opened yet.
+of per-conformer) — than for patching each layer separately.
 
-### Disposition policy applied to Finding B (per project-owner direction, 2026-08-22)
+*Originally recorded as "not scheduled; no ADR opened yet" — done, exactly as described above, in
+`decisions/ADR-074-composed-context-provider-consolidation.md`. See the "Findings A and B closed"
+section near the end of this file.*
+
+### Disposition policy applied to Finding B (per project-owner direction, 2026-08-22) — SUPERSEDED 2026-08-23
 
 `ComposedContextProvider`'s fork-aliasing gap is **not** being queued for an immediate point-fix. This
 project has already made a deliberate, ADR-backed trade (`ADR-070`): ship a broad feature surface and
@@ -96,6 +109,10 @@ delegated, rather than the engine closing every residual before shipping. Findin
 a disclosed, understood, low-current-blast-radius gap — so it stays *tracked*, not rushed. If/when the
 composition cluster gets its promised clean redesign (above), Finding B is closed at the source as a
 side effect, not as a separate patch.
+
+*Superseded: the project owner later directed the redesign actually happen this session, once the
+blast radius was independently verified safe. Kept as a point-in-time record of the reasoning that held
+at the time, not deleted — see the "Findings A and B closed" section near the end of this file.*
 
 ---
 
@@ -174,11 +191,27 @@ and documents "Model providers" (`ChatClient` backends) — an unrelated seam th
 English word "provider." Not confusing in code (distinct type names), but worth remembering if a future
 "Context providers" web page is added, so the two aren't titled ambiguously against each other.
 
-**Disposition: tracked, not closed.** Recommended next step (not started): add one real sample under
-`samples/` showing a minimal custom `ContextProvider` (e.g. a "hello world" provider contributing one
-instruction string) wired into an `AgentSession`, and/or a short "Writing a ContextProvider" page in the
-web docs, following the same pilot pattern already approved for `runtime.html`/`providers.html`
-(see the web-docs-overhaul project memory).
+**Disposition: PARTIALLY CLOSED (2026-08-23).** The "write your own `ContextProvider`" on-ramp now
+exists: `examples/18_custom_context_provider.cpp` — a minimal `PirateStyleProvider` contributing one
+instruction message, composed with the built-in `HistoryProvider` via `ComposedContextProvider`, wired
+into a real `AgentSession`, proven end-to-end (the instruction is asserted present in the real outbound
+`ChatRequest`, not just returned in isolation). Registered in `examples/CMakeLists.txt`, builds and
+passes via `ctest`.
+
+**Placed in `examples/`, not `samples/` as originally recommended** — a real, judgment-call deviation
+from this finding's own original text, worth recording: `samples/` (the location this finding named,
+per `CONVENTIONS.md`'s layout table) still contains only its own `README.md`, nothing else, ever.
+`examples/` is a SEPARATE, already-populated, already-`ctest`-registered directory (17 numbered
+"get-started" programs mirroring MAF's own sample progression) that is the tree's actual, live
+convention for exactly this kind of runnable demonstration — confirmed by reading several existing
+entries before adding a new one, not assumed. `CONVENTIONS.md`'s layout table naming `samples/` instead
+of `examples/` is itself a minor documentation drift this finding's closure surfaced but did not fix
+(out of this round's scope — a one-line table correction or a decision to retire one of the two
+directories, left for a future pass).
+
+Still open, not attempted this round: a "Writing a ContextProvider" web docs page (the second half of
+the original recommendation) — the example above is the runnable proof; a docs page walking through it
+in prose is separate, deferred work.
 
 ### Finding D — no declared limit on chain length (confirmed intentional); budget enforcement that exists is per-contributor and post-hoc, not aggregate/pre-flight
 
@@ -261,10 +294,10 @@ happen is to call `assemble_context()` directly in a unit test, bypassing the ac
 entirely. This is a real gap against **I4** ("every effect is attributable") — a drop is an effect on what
 the model actually sees, and today it is not attributable through any production path.
 
-**Disposition: tracked, not closed** (session scope is survey-and-mark only, per explicit instruction).
-Not in tension with Finding D's "no chain-length limit, by design" — this isn't about constraining what a
-consumer-dev can compose, it's about them being unable to find out afterward that their own chosen budget
-silently ate something.
+**Disposition: CLOSED (2026-08-23).** Not in tension with Finding D's "no chain-length limit, by
+design" — this isn't about constraining what a consumer-dev can compose, it's about them being unable to
+find out afterward that their own chosen budget silently ate something. See the "Finding E closed"
+section near the end of this file and `decisions/ADR-075-context-budget-fail-closed.md`.
 
 **Project-owner direction on the fix shape (2026-08-22, not implemented this session): a budget-exceeded
 trim should be an ERROR, not a silently-succeeding trim — and the condition needs to be something a test
@@ -282,15 +315,17 @@ declared budget is exceeded, instead of trimming and returning `Ok` — making i
 instead of requiring a caller to inspect an out-of-band `drops` list that (Finding E's own body above)
 doesn't even reach them today.
 
-**Named tension to resolve at design time, not decided here:** `ContextBudget.max_tokens == 0` (unbounded)
-is the default, and per `history_and_skills_provider.hpp`'s own comment, budgets are opt-in specifically
-because unconditionally trimming (rather than erroring) was already judged wrong for at least one real
-case (a `SkillsProviderT` advertisement that must arrive whole or not at all). Turning "exceeded" into a
-hard error changes that case's own failure mode too (from "silently arrives empty" to "the whole turn
-fails") — whoever designs this needs to decide whether that's the same fix or a second, related one, since
-a caller who explicitly opted into a low budget expecting graceful degradation and a caller who never
-expected the budget to bind at all are arguably different failure modes wanting different treatment. Left
-open, not decided here.
+**Named tension, resolved 2026-08-23 (was left open here):** `ContextBudget.max_tokens == 0` (unbounded)
+is the default, and per `history_and_skills_provider.hpp`'s own (now-historical, that file is deleted —
+Findings A/B) comment, budgets were opt-in specifically because unconditionally trimming (rather than
+erroring) was already judged wrong for at least one real case (a `SkillsProviderT` advertisement that
+must arrive whole or not at all). Turning "exceeded" into a hard error changes that case's own failure
+mode too (from "silently arrives empty" to "the whole turn fails") — resolved by checking whether any
+real, shipped caller actually depended on the graceful-degradation reading before choosing between them:
+grepped every non-test `ContextBudget{...}` construction in the tree and found **zero** that set a
+nonzero `max_tokens`. There was no real case to preserve dual behavior for — see
+`decisions/ADR-075-context-budget-fail-closed.md` §3 for the full reasoning and why no "trim vs. error"
+config knob was added alongside the fix.
 
 ### Finding F — a large file read (via a file-read tool or native `bash`'s `cat`) has no size cap anywhere by default, and can end up dropping the newest message when it finally hits a budget
 
@@ -870,3 +905,102 @@ would actually see now say so.
 Design A (`capability_token.hpp`) and Design B (`capability_registry.hpp`) have zero production
 consumers today. The designs themselves are unchanged and still unwired — this is a documentation fix,
 not a wiring fix, so Finding M's own disposition (tracked, not closed) is otherwise unchanged.
+
+---
+
+## 2026-08-23 — Findings A and B closed: the ContextProvider composition cluster consolidated
+
+The tracker's own "Recommended follow-up" (end of the 2026-08-22 `ContextProvider` composition cluster
+section, above) — one coherent type instead of `HistoryAndSkillsProvider`/`ComposedContextProvider`/
+`LazyComposedContextProvider` as three separate ones — was implemented this session, following a plan
+reviewed and approved before any code was written, plus a new ADR
+(`decisions/ADR-074-composed-context-provider-consolidation.md`, Judged, project-owner sign-off).
+
+**Finding A (`HistoryAndSkillsProvider` redundant) — closed.** Deleted
+(`include/agentengine/core/history_and_skills_provider.hpp`). Its two real call sites
+(`tests/test_rt_agent_session_real_backend.cpp`, `tests/test_rt_agent_session_skills_live_e2e.cpp`)
+migrated to `ComposedContextProvider<Skills, History>` — args reordered (skills first), not left in the
+old `<History, Skills>` order, since `ComposedContextProvider`'s wire order is its declared order,
+always, unlike the old type's own hard-coded skills-first constructor. The real ordering regression
+check (`R3b`, `test_rt_agent_session_real_backend.cpp`) still passes: `skill_pos < history_pos` on the
+real wire body.
+
+**Finding B (`ComposedContextProvider`'s fork-aliasing bug) — closed at the source.**
+`ComposedContextProvider` is now move-only (copy ctor/assignment deleted), carrying forward
+`LazyComposedContextProvider`'s own already-red-teamed fix (round 5 finding A: a correct moved-from
+`engaged_`/`contributors_` reset, not a naive `=default` move) verbatim. `AgentSession::fork_from()`'s
+plain `history_provider_ = source.history_provider_;` is now a compile error for any session using this
+type as `HistoryProviderT`, closing the I1/I4-adjacent aliasing gap the tracker's own live-reproduced
+probe found. New regression test (`tests/test_composed_context_provider.cpp` Part 3) proves this
+directly on the type itself, not just through `ComposedQuickstartSessionBuilder`'s own indirection:
+`static_assert(!std::is_copy_constructible_v<...>)`, plus a runtime move-no-aliasing proof (mutate via
+one instance, move it, confirm the moved-from instance is genuinely `not_engaged` and the moved-to
+instance carries the real content).
+
+**A real bug found and fixed DURING implementation, not anticipated by the plan**: see
+`decisions/ADR-074-composed-context-provider-consolidation.md` §4 for the full account — an early
+"auto-engage the default constructor when every `Ms` is default-constructible" design silently broke
+`ComposedQuickstartSessionBuilder::build()` for any real caller whose chosen providers happened to all
+be default-constructible (`.engage()` would fail with `already_engaged`), caught by
+`tests/test_session_builder.cpp`'s own pre-existing B22 test cascading into 5 failures before the fix.
+Resolved by making default construction always start unengaged, unconditionally — matching
+`LazyComposedContextProvider`'s original, simpler behavior — with four call sites that relied on the old
+eager auto-engage ergonomics updated to call `.engage()` explicitly.
+
+**Verified clean**: every real/test call site in the tree rebuilt and re-run —
+`test_composed_context_provider`, `test_session_builder` (full B14–B22 suite), `test_tool_optimizer_provider`,
+`test_rt_agent_session_context_provenance`, `test_rt_agent_session_real_backend`,
+`test_native_capability_announcer` all pass; `test_rt_agent_session_skills_live_e2e` compiles and
+gracefully skips (no live OpenRouter key in this environment). `session_builder.hpp`'s own extensive
+round-4/5/8 red-team narrative (file-top comment) is preserved verbatim as a point-in-time historical
+record, with a short dated note redirecting a reader to where those same findings now live.
+
+---
+
+## 2026-08-23 — Finding E closed: budget-exceeded is now a hard failure, not a silent trim
+
+The project owner directed a real redesign of `assemble_context()`'s budget-exceeded path (explicitly
+authorizing a from-scratch rewrite of the mechanism, not a reuse-preserving patch, if it produced a
+cleaner result), matching the fix shape already recorded here on 2026-08-22 but left unimplemented, plus
+resolving the "named tension" that section left open. New ADR:
+`decisions/ADR-075-context-budget-fail-closed.md` (Judged, project-owner sign-off).
+
+**`assemble_context()`'s return type widened** from `task<ContextAssemblyResult>` to
+`task<result<ContextAssemblyResult>>` (`context_assembly.hpp`). A contributor whose own contribution
+exceeds its own declared `ContextBudget.max_tokens` now fails the WHOLE call closed — `failure_class::resource`,
+code `"context_assembly.contributor_budget_exceeded"`, naming which contributor (index and declared name)
+and the measured-vs-declared token counts — instead of silently trimming that contributor's oldest
+messages and returning success. Matches the already-shipped `token_budget_` precedent
+(`rt/agent_session.hpp`) at a different layer, rather than inventing a second shape.
+`ComposedContextProvider::on_context()` propagates the failure verbatim rather than unwrapping
+`ContextAssemblyResult.drops` into a silently-still-successful `ContextContribution`.
+
+**The "named tension" (trim-vs-error dual behavior) resolved by checking real usage first, not by
+guessing.** Grepped every non-test `ContextBudget{...}` construction in the whole tree before deciding —
+zero real callers set a nonzero `max_tokens` today. There was no shipped graceful-degradation case to
+preserve alongside the cleaner behavior, so no config knob was added to choose between "trim" and
+"error" per contributor — one behavior, matching this session's now-twice-applied "prefer a clean
+redesign over a patch that preserves an existing compromise" guidance (`ADR-074`'s own §2 was the first
+application). See the ADR's own §3 for the full reasoning.
+
+**`ContextAssemblyResult.drops`/`ContextDrop` are kept, not deleted** — confirmed (independently, via
+`decisions/ADR-049-cross-provider-reasoning-exclusion.md` §2's own prior finding) that nothing else in
+the tree ever produced a real one either, but the type remains real, load-bearing vocabulary
+`TurnMiddleware::TurnContext` (`turn_middleware.hpp`) is built around independent of `assemble_context()`'s
+own mechanism. Widening or repurposing that broader type was out of this fix's scope — flagged, not
+touched.
+
+**A stale comment found and fixed alongside this work, not part of Finding E itself**:
+`composed_context_provider.hpp`'s own file-top comment still described the "auto-engage when every `Ms`
+is default-constructible" design `ADR-074` §4 found broken and reverted — contradicting the constructor's
+own comment three lines below it. Corrected to match the real, shipped behavior (always starts unengaged).
+A second stale comment in `tests/test_composed_context_provider.cpp` making the same false claim about
+`ThreeWayProvider` was corrected too.
+
+**Verified clean**: `tests/test_context_assembly.cpp` (rewritten — proves the failure's class/code/attributed-contributor
+plus an exactly-at-budget boundary case, in place of the old trim-proving assertions),
+`tests/test_composed_context_provider.cpp` (new Part 1b proves the composite propagates the failure;
+Part 1a keeps the order/tool-survival/turn-end-fan-out coverage, now with budgets out of the way),
+`tests/test_context_provenance.cpp`/`tests/test_memory_provider.cpp` (signature-only migrations — neither
+exercises a nonzero budget, confirmed unaffected). Full affected-target Debug rebuild and `ctest` run,
+zero failures.

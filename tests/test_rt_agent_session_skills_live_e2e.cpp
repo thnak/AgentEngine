@@ -1,5 +1,5 @@
 // Implements 009-Plugin-and-Extension-System.md §8, live: a real, skills-composed `AgentSession`
-// (`HistoryAndSkillsProvider<ToolDeclaringHistoryProvider, BuiltinSkillsProvider>`) driven through a
+// (`ComposedContextProvider<BuiltinSkillsProvider, ToolDeclaringHistoryProvider>`) driven through a
 // two-turn conversation against a REAL remote model over OpenRouter -- a plain greeting, then a
 // request that only makes sense if the model actually read the mounted `using-the-code-interpreter`
 // skill's advertisement (name + description, injected as a `role::system` message by
@@ -39,7 +39,7 @@
 #include <vector>
 
 #include "agentengine/core/builtin_skills.hpp"
-#include "agentengine/core/history_and_skills_provider.hpp"
+#include "agentengine/core/composed_context_provider.hpp"
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/skill_provider.hpp"
 #include "agentengine/core/tool_call_extraction.hpp"
@@ -180,7 +180,7 @@ struct ExecuteCodeTool : Tool<ExecuteCodeTool, Capabilities<>, EffectClass<effec
 class ToolDeclaringHistoryProvider {
 public:
     // decisions/ADR-066-context-provider-attribution-provenance.md §3: required to satisfy
-    // HasContextProviderName, needed to compose via HistoryAndSkillsProvider below.
+    // HasContextProviderName, needed to compose via ComposedContextProvider below.
     static constexpr std::string_view name = "skills-live-e2e-history";
 
     [[nodiscard]] task<result<ContextContribution>> on_context(SessionContext& session_ctx, EffectContext&) {
@@ -212,9 +212,10 @@ private:
 };
 static_assert(ContextProvider<BuiltinSkillsProvider>);
 
+// Skills declared FIRST -- ComposedContextProvider's wire order is its declared template-arg order.
 using SkillsLiveSession =
     AgentSession<openai::OpenAIChatClient<InMemorySecretStore>, NoSessionState,
-                 HistoryAndSkillsProvider<ToolDeclaringHistoryProvider, BuiltinSkillsProvider>>;
+                 ComposedContextProvider<BuiltinSkillsProvider, ToolDeclaringHistoryProvider>>;
 static_assert(std::is_default_constructible_v<SkillsLiveSession>);
 
 [[nodiscard]] Message user_message(std::string text) {
@@ -275,6 +276,12 @@ int main() {
     session.initialize("skills-live-e2e-session", Principal{"live-e2e-principal", ""},
                         /*token_budget=*/std::nullopt, /*max_turns=*/static_cast<std::uint64_t>(kMaxRounds));
     session.set_capabilities(&held);
+    // Default-constructed history_provider() starts UNENGAGED unconditionally (2026-08-23:
+    // ComposedContextProvider's default ctor no longer auto-engages even when every Ms is
+    // default-constructible -- see composed_context_provider.hpp's own comment on why).
+    auto engaged = session.history_provider().engage(
+        std::tuple{BuiltinSkillsProvider{}, ToolDeclaringHistoryProvider{}});
+    check(engaged.has_value(), "setup: engage() succeeds");
 
     // ==================== Turn 1: an ordinary greeting -- no tool involved ==========================
     result<AgentResponse> greeting =

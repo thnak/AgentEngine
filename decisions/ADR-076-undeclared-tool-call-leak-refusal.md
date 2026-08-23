@@ -1,10 +1,14 @@
-# ADR-074 — Refusing a response that leaks a tool call as text when `tool_calling` is declared but the recovery scan isn't armed
+# ADR-076 — Refusing a response that leaks a tool call as text when `tool_calling` is declared but the recovery scan isn't armed
 
 **Status:** Judged (2026-08-23, approved by project owner). Design → red-team → prove complete, all
 in one session: design draft written and self-attacked, an independent fresh-context red-team pass
 found one required revision (incorporated before any code was written) and three residuals (named,
 not fixed), then implemented and proven against the real codebase with 22 new passing tests and a
-full-suite regression check. **Resolves `OpenQuestions.md` OQ-23.**
+full-suite regression check. **Resolves `OpenQuestions.md` OQ-23.** **Numbered 076, not 074**: judged
+and drafted locally as ADR-074, but `origin/main` had already independently claimed both 074 and 075
+(`ADR-074-composed-context-provider-consolidation.md`, `ADR-075-context-budget-fail-closed.md`, an
+unrelated concurrent session) by the time this branch was pushed — caught and renumbered at merge
+time, before 074 appeared anywhere public under this ADR's content.
 
 **Relates to:** `decisions/ADR-023-response-format-codec-seam.md` (the codec/declassifier this ADR
 sits beside and does not modify — reuses its `response_format_codec::decode_response_format()` as a

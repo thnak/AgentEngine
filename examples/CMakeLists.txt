@@ -119,3 +119,11 @@ if(AGENTENGINE_WITH_HTTPS)
   add_test(NAME example_17_planner_live COMMAND agentengine_example_17_planner_live)
   set_tests_properties(example_17_planner_live PROPERTIES LABELS "live-network" TIMEOUT 300)
 endif()
+
+# 18: not part of MAF's own progression -- closes docs/planning/2026-08-22-component-role-audit-
+# tracker.md Finding C (no example anywhere showed writing a from-scratch, non-built-in
+# ContextProvider composed alongside ordinary history). Fully offline, no special build flags.
+add_executable(agentengine_example_18_custom_context_provider 18_custom_context_provider.cpp)
+target_link_libraries(agentengine_example_18_custom_context_provider PRIVATE
+  agentengine::core agentengine_warnings)
+add_test(NAME example_18_custom_context_provider COMMAND agentengine_example_18_custom_context_provider)

@@ -105,7 +105,7 @@ template <WorktreeObjectStore ObjectStoreT>
 // `/skills/<name>`, and contributes one `role::system` advertisement `Message` naming every mounted
 // skill. Owns its own object/ref store -- a complete, self-contained `ContextProvider` conformer that
 // needs no wiring into `AgentSession` beyond occupying its existing single `HistoryProviderT` slot
-// (directly, or composed via `history_and_skills_provider.hpp`).
+// (directly, or composed via `composed_context_provider.hpp`).
 template <WorktreeObjectStore ObjectStoreT = InMemoryWorktreeObjectStore>
 class SkillsProvider {
 public:
@@ -269,7 +269,7 @@ private:
     ObjectStoreT object_store_;
     // Held via shared_ptr, not by value: `rt::InMemoryAppendLogStore` owns a `std::mutex` (its own
     // internal locking), which makes it move-only by default -- but `SkillsProvider` itself must stay
-    // COPY-constructible, because `HistoryAndSkillsProvider`'s `make_context_provider_descriptor`
+    // COPY-constructible, because `ComposedContextProvider`'s `make_context_provider_descriptor`
     // stores it inside a `std::function`-based type-erased wrapper, and `std::function` requires its
     // target to be CopyConstructible to be stored at all (even though this codebase's own call site
     // only ever MOVES a SkillsProvider into that wrapper once, never actually copies it at runtime).
@@ -288,6 +288,6 @@ private:
 
 static_assert(ContextProvider<SkillsProvider<>>,
               "SkillsProvider must satisfy the ContextProvider concept (005 §5) to occupy "
-              "AgentSession's HistoryProviderT slot, directly or via HistoryAndSkillsProvider");
+              "AgentSession's HistoryProviderT slot, directly or via ComposedContextProvider");
 
 }  // namespace agentengine

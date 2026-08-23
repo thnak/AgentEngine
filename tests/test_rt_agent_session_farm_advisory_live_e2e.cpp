@@ -239,7 +239,7 @@ struct MountSkillTool : Tool<MountSkillTool, EffectClass<effect_class::pure>> {
 
 // ---- The ContextProvider: its own SkillsProvider<> (for the advertisement + allowed-tools lookup)
 // plus its own MountedSkillsState (Phase 3's real per-session mount state) -- a complete conformer by
-// itself, occupying AgentSession's single HistoryProviderT slot directly, no HistoryAndSkillsProvider
+// itself, occupying AgentSession's single HistoryProviderT slot directly, no ComposedContextProvider
 // composition needed (mirrors tools/cli_chat.cpp's own ToolDeclaringHistoryProvider for exactly the
 // same reason: this provider already owns the whole skill-related system prompt). -------------------
 class FarmAdvisoryProvider {

@@ -89,7 +89,7 @@ measured accepting `budget_tokens == max_tokens` and `budget_tokens < 1024` with
 violating its vendor's documented constraint fails closed rather than sending a request that works
 against the lenient hop and breaks against the strict one.
 
-**Amendment (2026-08-23, ADR-074 — inbound enforcement of a declared `tool_calling` bit).** The
+**Amendment (2026-08-23, ADR-076 — inbound enforcement of a declared `tool_calling` bit).** The
 declaration/degradation rule above is stated for the outbound direction: what the engine sends
 against what a backend declares it can accept. It said nothing about the inbound direction — whether
 a *response* is checked against what `tool_calling` declared. `OpenQuestions.md` OQ-23 named a real,
@@ -98,7 +98,7 @@ llama.cpp/GGUF Hermes/Qwen without a normalizing `--tool-call-parser`) leaks a t
 an ordinary `content` string with no structured `tool_calls[]` entry — captured today as plain,
 untainted text, no error, no warning, unless the operator has *also* armed the separate
 `AgentSession::scan_response_format_leaks` recovery mechanism (`decisions/ADR-023-response-format-
-codec-seam.md`). ADR-074 adds the missing inbound check: when `tool_calling` is declared true and
+codec-seam.md`). ADR-076 adds the missing inbound check: when `tool_calling` is declared true and
 that recovery scan is not armed, a response whose content structurally matches a live tool name in
 one of `response_format_codec`'s known raw wire shapes is refused (`failure_class::contract`) rather
 than silently accepted — never promoted to a real tool call, never gated by anything other than
