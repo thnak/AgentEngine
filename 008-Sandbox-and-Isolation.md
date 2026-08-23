@@ -287,8 +287,20 @@ profiles at the same declared strength — broken toward whichever has the broad
 platform support, since a rank that doesn't discriminate should not be allowed to make the choice
 arbitrary. `resolve_strict()` (`sandbox/sandbox.hpp`) implements this rule exactly, against a caller-
 supplied candidate set — ADR-012 built `Strict` as a real, structurally-distinct type and wired its
-extraction into `register_agent<A>()`, but resolving it against the real set of backends *this
-deployment* has available still needs an Engine-level backend registry M2 does not build (ADR-012 §9).
+extraction into `register_agent<A>()`. `decisions/ADR-079-sandbox-backend-registry.md` closes the gap
+ADR-012 §9 named: `SandboxBackendRegistry` (`sandbox/sandbox_backend_registry.hpp`) is the real,
+host-curated set of backends *this deployment* has available, populated only by an explicit
+`register_backend()` call the host itself makes (never auto-discovered, mirroring `ChatClientRegistry`/
+`ToolRegistry`). `register_agent<A>()` grows an additive, defaulted `SandboxBackendRegistry const*`
+parameter; supplying one makes `Strict` resolve for real against the registry's own strict-eligible
+candidates, failing startup closed (this section's own "no fallback → startup fails" rule, above) when
+none support the current platform. With no registry supplied, `Strict` stays the honest "not evaluated"
+state this section previously described unconditionally. **Selection only, not consumption**: the
+registry answers which backend `Strict` (or a host-supplied name, via `resolve_named()` — the actual
+"always use backend X regardless of its rank" surface `Strict` alone cannot express) resolves to; it
+does not, by itself, make any real execution path construct and use a `SandboxHandle` from what it
+resolves to — real Python/Shell execution's boundary today is the interpreter-level mediation this
+section's §1b already describes, unchanged by this registry (ADR-079 §7).
 
 **What `SandboxProfile<P>` does and does not govern.** This table is what an agent's
 `SandboxProfile<P>` selects among for its own script-executing tools — it does **not** redirect
