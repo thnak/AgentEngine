@@ -1,13 +1,19 @@
 // Milestone 4 Phase B3 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md): 005
-// §3's rules ("every contributor declares a token budget... drop order is declared, not
-// incidental... drops are recorded in the trace... assembly is pure and replayable") had zero
-// implementation anywhere before this task — `ContextContribution`/`ContextProvider` existed only
-// as the single-contributor path Phase B2 wired into `AgentSession`. This proves the generalized,
-// standalone N-contributor assembler directly: budget-triggered drops are the OLDEST messages
-// within one contributor's own contribution, drop order/content is byte-identical across repeated
-// runs (005 §3's purity rule), and contributor order is preserved in the combined output.
+// §3's rules ("every contributor declares a token budget... assembly is pure and replayable") had
+// zero implementation anywhere before this task — `ContextContribution`/`ContextProvider` existed
+// only as the single-contributor path Phase B2 wired into `AgentSession`. This proves the
+// generalized, standalone N-contributor assembler directly: contributor order is preserved in the
+// combined output, and assembly is byte-identical (both on success and on failure) across repeated
+// runs given the same input (005 §3's purity rule).
+//
+// 2026-08-23 (docs/planning/2026-08-22-component-role-audit-tracker.md Finding E,
+// decisions/ADR-075-context-budget-fail-closed.md): a contributor exceeding its own declared
+// `ContextBudget` used to be proven here as a silent OLDEST-first trim that still returned success.
+// That behavior was replaced with a hard failure (`assemble_context()` itself returns
+// `std::unexpected`) -- this file's over-budget cases below prove the failure, not a trim, and
+// `ContextAssemblyResult`'s own `drops` field (still real, `context_assembly.hpp`'s own comment)
+// has no producer left to prove here.
 
-#include <algorithm>
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -90,8 +96,8 @@ int main() {
         make_msg("aaaaaaaa", "h-1"), make_msg("bbbbbbbb", "h-2"), make_msg("cccccccc", "h-3"),
         make_msg("dddddddd", "h-4"), make_msg("eeeeeeee", "h-5"),
     };
-    // Total = 10 tokens. Budget = 5: drop oldest until total <= 5 -> drops h-1 (10->8), h-2 (8->6),
-    // h-3 (6->4, now <= 5, stop) -- keeps h-4, h-5 (4 tokens), drops h-1/h-2/h-3 in that order.
+    // Total = 10 tokens. Budget = 5: exceeded -> assemble_context() itself must fail (2026-08-23,
+    // Finding E / ADR-075), not silently trim h-1/h-2/h-3 and succeed.
     ae::EffectContext ctx{};
 
     auto build_contributors = [&]() {
@@ -103,61 +109,68 @@ int main() {
         return contributors;
     };
 
-    ae::ContextAssemblyResult result1;
+    ae::result<ae::ContextAssemblyResult> result1;
     {
         auto contributors = build_contributors();
         ae::SessionContext session_ctx{"s-assembly", principal, history};
-        result1 = ae::test_support::run_task_sync<ae::ContextAssemblyResult>(
+        result1 = ae::test_support::run_task_sync<ae::result<ae::ContextAssemblyResult>>(
             ae::assemble_context(contributors, session_ctx, ctx));
     }
 
-    AE_CHECK(result1.drops.size() == 3, "B3-R1: exactly 3 messages dropped from the over-budget contributor");
-    AE_CHECK(result1.drops.size() == 3 && result1.drops[0].contributor_message_id == "h-1" &&
-                 result1.drops[1].contributor_message_id == "h-2" &&
-                 result1.drops[2].contributor_message_id == "h-3",
-             "B3-R2: drop order is OLDEST-first within the contributor, and matches exactly (h-1, "
-             "h-2, h-3) -- not incidental, per 005 §3");
-    AE_CHECK(std::ranges::all_of(result1.drops, [](ae::ContextDrop const& d) { return d.contributor_index == 0; }),
-             "B3-R3: every drop is attributed to contributor index 0 (HistoryProvider), never the "
-             "second, under-budget contributor");
-
-    AE_CHECK(result1.combined.messages.size() == 3,
-             "B3-R4: combined output keeps 2 surviving history messages + 1 from the second "
-             "contributor (3 total)");
-    AE_CHECK(result1.combined.messages.size() == 3 && result1.combined.messages[0].message_id == "h-4" &&
-                 result1.combined.messages[1].message_id == "h-5" &&
-                 result1.combined.messages[2].message_id == "f-1",
-             "B3-R5: contributor ORDER is preserved in the combined output (history's survivors "
-             "first, then the second contributor's contribution) -- 005 §3's ordered ⊕");
+    AE_CHECK(!result1.has_value(),
+             "B3-R1: a contributor exceeding its own declared ContextBudget fails the whole "
+             "assemble_context() call, rather than silently trimming and succeeding");
+    AE_CHECK(!result1.has_value() && result1.error().klass == ae::failure_class::resource,
+             "B3-R2: the failure is failure_class::resource -- the same class "
+             "rt/agent_session.hpp's own token_budget_ check already uses for the identical shape");
+    AE_CHECK(!result1.has_value() && result1.error().code == "context_assembly.contributor_budget_exceeded",
+             "B3-R3: the failure carries a stable, catchable code");
+    AE_CHECK(!result1.has_value() && result1.error().message.find("history") != std::string::npos &&
+                 result1.error().message.find("index 0") != std::string::npos,
+             "B3-R4: the failure names WHICH contributor (by declared name and index) exceeded its "
+             "budget -- attributable (I4), not a bare 'something failed'");
 
     // --- Purity/replay (005 §3: "assembly is pure and replayable given {history, ... policies}") -
-    ae::ContextAssemblyResult result2;
+    // The failure itself is deterministic and byte-identical across repeated runs against the same
+    // input, not just the old trim/success path.
+    ae::result<ae::ContextAssemblyResult> result2;
     {
         auto contributors = build_contributors();
         ae::SessionContext session_ctx{"s-assembly", principal, history};
-        result2 = ae::test_support::run_task_sync<ae::ContextAssemblyResult>(
+        result2 = ae::test_support::run_task_sync<ae::result<ae::ContextAssemblyResult>>(
             ae::assemble_context(contributors, session_ctx, ctx));
     }
-    AE_CHECK(result2.drops.size() == result1.drops.size() &&
-                 result2.combined.messages.size() == result1.combined.messages.size(),
-             "B3-R6: re-running assembly against the SAME {history, contributors} produces the "
-             "identical drop count and message count -- deterministic, not incidental");
-    for (std::size_t i = 0; i < result1.drops.size(); ++i) {
-        AE_CHECK(result2.drops[i].contributor_message_id == result1.drops[i].contributor_message_id,
-                 "B3-R7: drop #" + std::to_string(i) + " is byte-identical across the two runs");
-    }
+    AE_CHECK(!result2.has_value() && result2.error().code == result1.error().code &&
+                 result2.error().message == result1.error().message,
+             "B3-R5: re-running assembly against the SAME {history, contributors} produces the "
+             "byte-identical failure -- deterministic, not incidental");
 
-    // --- An under-budget contributor never drops anything --------------------------------------
+    // --- An under-budget contributor succeeds and drops nothing ---------------------------------
     {
         std::vector<ae::Message> small_history{make_msg("a", "s-1")};
         std::vector<ae::ContextProviderDescriptor> contributors;
         contributors.push_back(ae::make_context_provider_descriptor(
             ae::HistoryProvider<ae::Window<0>>{}, ae::ContextBudget{1000}));
         ae::SessionContext session_ctx{"s-small", principal, small_history};
-        auto result3 = ae::test_support::run_task_sync<ae::ContextAssemblyResult>(
+        auto result3 = ae::test_support::run_task_sync<ae::result<ae::ContextAssemblyResult>>(
             ae::assemble_context(contributors, session_ctx, ctx));
-        AE_CHECK(result3.drops.empty() && result3.combined.messages.size() == 1,
-                 "B3-R8: a contribution well under its declared budget drops nothing");
+        AE_CHECK(result3.has_value() && result3->drops.empty() && result3->combined.messages.size() == 1,
+                 "B3-R6: a contribution well under its declared budget succeeds and drops nothing");
+    }
+
+    // --- Exactly AT budget (not over) succeeds -- the check is `total > max_tokens`, not `>=` -----
+    {
+        // "a" -> approx_token_count == (1+3)/4 == 1 token.
+        std::vector<ae::Message> exact_history{make_msg("a", "e-1")};
+        std::vector<ae::ContextProviderDescriptor> contributors;
+        contributors.push_back(ae::make_context_provider_descriptor(
+            ae::HistoryProvider<ae::Window<0>>{}, ae::ContextBudget{1}));
+        ae::SessionContext session_ctx{"s-exact", principal, exact_history};
+        auto result3b = ae::test_support::run_task_sync<ae::result<ae::ContextAssemblyResult>>(
+            ae::assemble_context(contributors, session_ctx, ctx));
+        AE_CHECK(result3b.has_value() && result3b->combined.messages.size() == 1,
+                 "B3-R7: a contribution exactly AT its declared budget succeeds -- only STRICTLY "
+                 "exceeding it is a failure");
     }
 
     // --- Gap-16/21 fix: multiple contributors' TaintedText instructions concatenate, in declared
@@ -170,12 +183,12 @@ int main() {
         contributors.push_back(ae::make_context_provider_descriptor(
             FixedInstructionsProvider{"second."}, ae::ContextBudget{0}));
         ae::SessionContext session_ctx{"s-instructions", principal, no_history};
-        auto result4 = ae::test_support::run_task_sync<ae::ContextAssemblyResult>(
+        auto result4 = ae::test_support::run_task_sync<ae::result<ae::ContextAssemblyResult>>(
             ae::assemble_context(contributors, session_ctx, ctx));
-        AE_CHECK(result4.combined.instructions.has_value(),
+        AE_CHECK(result4.has_value() && result4->combined.instructions.has_value(),
                  "B3-I1: two instructions-contributing providers combine into a real value");
-        AE_CHECK(result4.combined.instructions.has_value() &&
-                     result4.combined.instructions->unsafe_view() == "first. second.",
+        AE_CHECK(result4.has_value() && result4->combined.instructions.has_value() &&
+                     result4->combined.instructions->unsafe_view() == "first. second.",
                  "B3-I2: combined instructions concatenate in DECLARED contributor order, exactly");
     }
     {
@@ -186,9 +199,9 @@ int main() {
         contributors.push_back(ae::make_context_provider_descriptor(
             FixedMessagesProvider{{make_msg("hi", "m-1")}}, ae::ContextBudget{0}));
         ae::SessionContext session_ctx{"s-no-instructions", principal, no_history};
-        auto result5 = ae::test_support::run_task_sync<ae::ContextAssemblyResult>(
+        auto result5 = ae::test_support::run_task_sync<ae::result<ae::ContextAssemblyResult>>(
             ae::assemble_context(contributors, session_ctx, ctx));
-        AE_CHECK(!result5.combined.instructions.has_value(),
+        AE_CHECK(result5.has_value() && !result5->combined.instructions.has_value(),
                  "B3-I3: a contributor that never sets .instructions leaves the combined field unset");
     }
 

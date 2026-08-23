@@ -16,9 +16,12 @@
 // because this type's old default constructor required every `Ms` to be default-constructible --
 // untrue for a real `SkillsProvider`/`MemoryProvider`/`VectorRagContextProvider` -- and which had
 // ALREADY been fixed (move-only; a strong-exception-guarantee `engage()`) for the exact aliasing bug
-// this type still had. This type now absorbs both: always default-constructible (auto-engaging when
-// every `Ms` happens to be default-constructible, otherwise starting empty for a later `engage()`),
-// and move-only. See the ADR for the full before/after and the verified blast radius.
+// this type still had. This type now absorbs both: always default-constructible (ALWAYS starting
+// empty, never auto-engaging even when every `Ms` happens to be default-constructible -- an earlier
+// draft of this consolidation tried auto-engaging and found it genuinely irreconcilable with
+// `ComposedQuickstartSessionBuilder`'s own later `engage()` call, see the constructor's own comment
+// below and the ADR's §4), and move-only. See the ADR for the full before/after and the verified
+// blast radius.
 
 #include <array>
 #include <concepts>
@@ -150,8 +153,14 @@ public:
                                              "ComposedContextProvider::on_context() called before engage()",
                                              "composed_context.not_engaged"});
         }
-        ContextAssemblyResult assembled = co_await assemble_context(contributors_, session_ctx, ctx);
-        co_return assembled.combined;
+        result<ContextAssemblyResult> assembled = co_await assemble_context(contributors_, session_ctx, ctx);
+        if (!assembled) {
+            // A wrapped contributor's own declared ContextBudget was exceeded -- assemble_context()
+            // itself now fails closed for that (2026-08-23, Finding E / ADR-075), so the composite
+            // fails closed too rather than papering over it with a partial/empty contribution.
+            co_return std::unexpected(assembled.error());
+        }
+        co_return assembled->combined;
     }
 
     // `assemble_context` itself never calls `on_turn_end` on its contributors (context_assembly.hpp's

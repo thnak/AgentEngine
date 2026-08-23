@@ -294,10 +294,10 @@ happen is to call `assemble_context()` directly in a unit test, bypassing the ac
 entirely. This is a real gap against **I4** ("every effect is attributable") — a drop is an effect on what
 the model actually sees, and today it is not attributable through any production path.
 
-**Disposition: tracked, not closed** (session scope is survey-and-mark only, per explicit instruction).
-Not in tension with Finding D's "no chain-length limit, by design" — this isn't about constraining what a
-consumer-dev can compose, it's about them being unable to find out afterward that their own chosen budget
-silently ate something.
+**Disposition: CLOSED (2026-08-23).** Not in tension with Finding D's "no chain-length limit, by
+design" — this isn't about constraining what a consumer-dev can compose, it's about them being unable to
+find out afterward that their own chosen budget silently ate something. See the "Finding E closed"
+section near the end of this file and `decisions/ADR-075-context-budget-fail-closed.md`.
 
 **Project-owner direction on the fix shape (2026-08-22, not implemented this session): a budget-exceeded
 trim should be an ERROR, not a silently-succeeding trim — and the condition needs to be something a test
@@ -315,15 +315,17 @@ declared budget is exceeded, instead of trimming and returning `Ok` — making i
 instead of requiring a caller to inspect an out-of-band `drops` list that (Finding E's own body above)
 doesn't even reach them today.
 
-**Named tension to resolve at design time, not decided here:** `ContextBudget.max_tokens == 0` (unbounded)
-is the default, and per `history_and_skills_provider.hpp`'s own comment, budgets are opt-in specifically
-because unconditionally trimming (rather than erroring) was already judged wrong for at least one real
-case (a `SkillsProviderT` advertisement that must arrive whole or not at all). Turning "exceeded" into a
-hard error changes that case's own failure mode too (from "silently arrives empty" to "the whole turn
-fails") — whoever designs this needs to decide whether that's the same fix or a second, related one, since
-a caller who explicitly opted into a low budget expecting graceful degradation and a caller who never
-expected the budget to bind at all are arguably different failure modes wanting different treatment. Left
-open, not decided here.
+**Named tension, resolved 2026-08-23 (was left open here):** `ContextBudget.max_tokens == 0` (unbounded)
+is the default, and per `history_and_skills_provider.hpp`'s own (now-historical, that file is deleted —
+Findings A/B) comment, budgets were opt-in specifically because unconditionally trimming (rather than
+erroring) was already judged wrong for at least one real case (a `SkillsProviderT` advertisement that
+must arrive whole or not at all). Turning "exceeded" into a hard error changes that case's own failure
+mode too (from "silently arrives empty" to "the whole turn fails") — resolved by checking whether any
+real, shipped caller actually depended on the graceful-degradation reading before choosing between them:
+grepped every non-test `ContextBudget{...}` construction in the tree and found **zero** that set a
+nonzero `max_tokens`. There was no real case to preserve dual behavior for — see
+`decisions/ADR-075-context-budget-fail-closed.md` §3 for the full reasoning and why no "trim vs. error"
+config knob was added alongside the fix.
 
 ### Finding F — a large file read (via a file-read tool or native `bash`'s `cat`) has no size cap anywhere by default, and can end up dropping the newest message when it finally hits a budget
 
@@ -952,3 +954,53 @@ eager auto-engage ergonomics updated to call `.engage()` explicitly.
 gracefully skips (no live OpenRouter key in this environment). `session_builder.hpp`'s own extensive
 round-4/5/8 red-team narrative (file-top comment) is preserved verbatim as a point-in-time historical
 record, with a short dated note redirecting a reader to where those same findings now live.
+
+---
+
+## 2026-08-23 — Finding E closed: budget-exceeded is now a hard failure, not a silent trim
+
+The project owner directed a real redesign of `assemble_context()`'s budget-exceeded path (explicitly
+authorizing a from-scratch rewrite of the mechanism, not a reuse-preserving patch, if it produced a
+cleaner result), matching the fix shape already recorded here on 2026-08-22 but left unimplemented, plus
+resolving the "named tension" that section left open. New ADR:
+`decisions/ADR-075-context-budget-fail-closed.md` (Judged, project-owner sign-off).
+
+**`assemble_context()`'s return type widened** from `task<ContextAssemblyResult>` to
+`task<result<ContextAssemblyResult>>` (`context_assembly.hpp`). A contributor whose own contribution
+exceeds its own declared `ContextBudget.max_tokens` now fails the WHOLE call closed — `failure_class::resource`,
+code `"context_assembly.contributor_budget_exceeded"`, naming which contributor (index and declared name)
+and the measured-vs-declared token counts — instead of silently trimming that contributor's oldest
+messages and returning success. Matches the already-shipped `token_budget_` precedent
+(`rt/agent_session.hpp`) at a different layer, rather than inventing a second shape.
+`ComposedContextProvider::on_context()` propagates the failure verbatim rather than unwrapping
+`ContextAssemblyResult.drops` into a silently-still-successful `ContextContribution`.
+
+**The "named tension" (trim-vs-error dual behavior) resolved by checking real usage first, not by
+guessing.** Grepped every non-test `ContextBudget{...}` construction in the whole tree before deciding —
+zero real callers set a nonzero `max_tokens` today. There was no shipped graceful-degradation case to
+preserve alongside the cleaner behavior, so no config knob was added to choose between "trim" and
+"error" per contributor — one behavior, matching this session's now-twice-applied "prefer a clean
+redesign over a patch that preserves an existing compromise" guidance (`ADR-074`'s own §2 was the first
+application). See the ADR's own §3 for the full reasoning.
+
+**`ContextAssemblyResult.drops`/`ContextDrop` are kept, not deleted** — confirmed (independently, via
+`decisions/ADR-049-cross-provider-reasoning-exclusion.md` §2's own prior finding) that nothing else in
+the tree ever produced a real one either, but the type remains real, load-bearing vocabulary
+`TurnMiddleware::TurnContext` (`turn_middleware.hpp`) is built around independent of `assemble_context()`'s
+own mechanism. Widening or repurposing that broader type was out of this fix's scope — flagged, not
+touched.
+
+**A stale comment found and fixed alongside this work, not part of Finding E itself**:
+`composed_context_provider.hpp`'s own file-top comment still described the "auto-engage when every `Ms`
+is default-constructible" design `ADR-074` §4 found broken and reverted — contradicting the constructor's
+own comment three lines below it. Corrected to match the real, shipped behavior (always starts unengaged).
+A second stale comment in `tests/test_composed_context_provider.cpp` making the same false claim about
+`ThreeWayProvider` was corrected too.
+
+**Verified clean**: `tests/test_context_assembly.cpp` (rewritten — proves the failure's class/code/attributed-contributor
+plus an exactly-at-budget boundary case, in place of the old trim-proving assertions),
+`tests/test_composed_context_provider.cpp` (new Part 1b proves the composite propagates the failure;
+Part 1a keeps the order/tool-survival/turn-end-fan-out coverage, now with budgets out of the way),
+`tests/test_context_provenance.cpp`/`tests/test_memory_provider.cpp` (signature-only migrations — neither
+exercises a nonzero budget, confirmed unaffected). Full affected-target Debug rebuild and `ctest` run,
+zero failures.

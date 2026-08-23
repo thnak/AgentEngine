@@ -5,8 +5,10 @@
 //   1. Direct unit coverage against a THREE-provider composition (deliberately N > 2 -- the whole
 //      point of genericity is proven false by a fixture that only ever exercises the same two-
 //      provider shape `HistoryAndSkillsProvider` already covers): declared order is preserved on
-//      the wire, each contributor's own budget is enforced independently, a provider-contributed
-//      tool survives composition, and `on_turn_end` fans out to every wrapped provider.
+//      the wire, each contributor's own budget is enforced independently (2026-08-23: exceeding it
+//      fails the whole composite closed, per Finding E / ADR-075 -- see the fixed-closed case below,
+//      not a silent trim), a provider-contributed tool survives composition, and `on_turn_end` fans
+//      out to every wrapped provider.
 //
 //   2. `rt::AgentSession<ChatClientT, StateT, ComposedContextProvider<...>>` actually compiles and
 //      runs a real turn with the composite occupying `AgentSession`'s single `HistoryProviderT`
@@ -120,9 +122,12 @@ static_assert(ae::ContextProvider<ThreeWayProvider>,
 static_assert(std::is_default_constructible_v<ThreeWayProvider>,
               "must be default-constructible to occupy AgentSession's plain value-member provider slot");
 
-// -- Part 3 fixtures: a NON-default-constructible provider forces the lazy engage() path (as opposed
-// to ThreeWayProvider above, where every Ms is default-constructible and the default ctor auto-
-// engages) -- plus proof that ComposedContextProvider is move-only (2026-08-22 tracker Finding B;
+// -- Part 3 fixtures: a NON-default-constructible provider proves ComposedContextProvider stays
+// default-constructible (unengaged) even when its own Ms isn't -- ThreeWayProvider above, whose Ms
+// ARE all default-constructible, still needs an explicit engage()/tuple-constructor call too; the
+// default ctor never auto-engages regardless of Ms (see composed_context_provider.hpp's own comment
+// on why an earlier draft's "auto-engage when possible" design was tried and reverted) -- plus proof
+// that ComposedContextProvider is move-only (2026-08-22 tracker Finding B;
 // decisions/ADR-074-composed-context-provider-consolidation.md).
 struct RequiredArgProvider {
     static constexpr std::string_view name = "required-arg";  // ADR-066 §3
@@ -206,41 +211,68 @@ int main() {
     ae::Principal principal{"p-composed", ""};
     ae::EffectContext ctx{};
 
-    // --- Part 1: direct unit coverage, N == 3 -------------------------------------------------
+    // --- Part 1a: direct unit coverage, N == 3, every budget unbounded -------------------------
+    // Proves the composition mechanics (declared order, tool survival, on_turn_end fan-out) with
+    // budgets out of the way entirely -- Part 1b below proves the budget-exceeded case separately,
+    // since it's no longer just "some messages get dropped" but "the whole composite fails closed"
+    // (2026-08-23, Finding E / ADR-075), a materially different assertion shape.
     {
         std::vector<ae::Message> history{make_msg("aaaaaaaa", "h-1"), make_msg("bbbbbbbb", "h-2"),
                                            make_msg("cccccccc", "h-3")};
-        // approx_token_count("aaaaaaaa") == (8+3)/4 == 2 tokens/message; total history == 6 tokens.
-        // Budget 3: drop oldest while total > 3 -> drop h-1 (6->4, still >3), drop h-2 (4->2, <=3,
-        // stop) -- exactly 1 history survivor (h-3).
         FixedMessagesProvider fixed{{make_msg("fixed-msg", "f-1")}};
         auto fixed_turn_end_calls = fixed.turn_end_calls;
 
         ThreeWayProvider provider{
             std::tuple{ae::HistoryProvider<ae::Window<0>>{}, fixed, ToolContributingProvider{}},
-            std::array<ae::ContextBudget, 3>{ae::ContextBudget{3}, ae::ContextBudget{0},
+            std::array<ae::ContextBudget, 3>{ae::ContextBudget{0}, ae::ContextBudget{0},
                                                ae::ContextBudget{0}}};
 
         ae::SessionContext session_ctx{"s-composed", principal, history};
         auto out = ae::test_support::run_task_sync<ae::result<ae::ContextContribution>>(
             provider.on_context(session_ctx, ctx));
 
-        check(out.has_value(), "P1: on_context succeeds across 3 composed providers");
-        check(out.has_value() && out->messages.size() == 2,
-              "P1: history's own over-budget drop (6 tokens > budget 3 -> drops h-1, h-2) leaves 1 "
-              "history survivor + the fixed provider's 1 message == 2");
-        check(out.has_value() && out->messages.size() == 2 &&
-                  composed_text_of(out->messages[0]) == "cccccccc" &&
-                  composed_text_of(out->messages[1]) == "fixed-msg",
-              "P1: declared order preserved (HistoryProvider first, FixedMessagesProvider second) "
-              "and the correct history message survived its own budget drop");
+        check(out.has_value(), "P1a: on_context succeeds across 3 composed providers, all unbounded");
+        check(out.has_value() && out->messages.size() == 4,
+              "P1a: 3 real history messages + the fixed provider's 1 message == 4, nothing dropped");
+        check(out.has_value() && out->messages.size() == 4 &&
+                  composed_text_of(out->messages[0]) == "aaaaaaaa" &&
+                  composed_text_of(out->messages[3]) == "fixed-msg",
+              "P1a: declared order preserved (HistoryProvider first, FixedMessagesProvider second)");
         check(out.has_value() && out->tools.size() == 1 && out->tools[0].name == "provider_tool",
-              "P1: the THIRD provider's contributed tool reaches the combined contribution");
+              "P1a: the THIRD provider's contributed tool reaches the combined contribution");
 
         ae::test_support::run_task_sync<std::monostate>(provider.on_turn_end(
             ae::TurnView{std::span<ae::Message const>{history.data(), history.size()}}, ctx));
         check(*fixed_turn_end_calls == 1,
-              "P1: on_turn_end fans out to every wrapped provider, not just the first");
+              "P1a: on_turn_end fans out to every wrapped provider, not just the first");
+    }
+
+    // --- Part 1b: a wrapped contributor exceeding its own declared budget fails the WHOLE composite
+    // closed, not a silent per-contributor trim (2026-08-23, Finding E / ADR-075) -----------------
+    {
+        std::vector<ae::Message> history{make_msg("aaaaaaaa", "h-1"), make_msg("bbbbbbbb", "h-2"),
+                                           make_msg("cccccccc", "h-3")};
+        // approx_token_count("aaaaaaaa") == (8+3)/4 == 2 tokens/message; total history == 6 tokens,
+        // exceeding a declared HistoryProvider budget of 3.
+        ThreeWayProvider provider{
+            std::tuple{ae::HistoryProvider<ae::Window<0>>{}, FixedMessagesProvider{{make_msg("fixed-msg", "f-1")}},
+                       ToolContributingProvider{}},
+            std::array<ae::ContextBudget, 3>{ae::ContextBudget{3}, ae::ContextBudget{0},
+                                               ae::ContextBudget{0}}};
+
+        ae::SessionContext session_ctx{"s-composed-over-budget", principal, history};
+        auto out = ae::test_support::run_task_sync<ae::result<ae::ContextContribution>>(
+            provider.on_context(session_ctx, ctx));
+
+        check(!out.has_value(),
+              "P1b: on_context fails closed when a wrapped contributor (HistoryProvider) exceeds "
+              "its own declared budget -- ComposedContextProvider propagates assemble_context()'s "
+              "own failure, never a partial/trimmed contribution");
+        check(!out.has_value() && out.error().klass == ae::failure_class::resource,
+              "P1b: the propagated failure is failure_class::resource");
+        check(!out.has_value() && out.error().code == "context_assembly.contributor_budget_exceeded",
+              "P1b: ComposedContextProvider re-throws assemble_context()'s own stable code verbatim, "
+              "not re-coded into a composed_context.* error");
     }
 
     // --- Part 2: ComposedContextProvider actually driving a real AgentSession turn -------------

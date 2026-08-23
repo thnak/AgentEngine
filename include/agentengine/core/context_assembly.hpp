@@ -55,8 +55,19 @@ namespace agentengine {
 }
 
 // "Every contributor declares a token budget" (005 §3). `max_tokens == 0` means unbounded — a
-// contributor that never drops, matching `HistoryProvider<Window<0>>`'s own "0 means unbounded"
-// convention (history_provider.hpp) rather than inventing a second sentinel for the same idea.
+// contributor that never fails on size, matching `HistoryProvider<Window<0>>`'s own "0 means
+// unbounded" convention (history_provider.hpp) rather than inventing a second sentinel for the same
+// idea.
+//
+// 2026-08-23 (docs/planning/2026-08-22-component-role-audit-tracker.md Finding E,
+// decisions/ADR-075-context-budget-fail-closed.md): a nonzero, exceeded budget is a HARD FAILURE of
+// `assemble_context()` (see its own comment below) — the mechanism used to silently trim the
+// contributor's oldest messages and still return success. There is deliberately no second field here
+// to pick "trim" vs. "error" per contributor: grepped every real (non-test) caller in the tree before
+// this decision and found zero that set a nonzero `max_tokens` today, so there was no shipped case
+// actually depending on graceful trimming to weigh against — one behavior, matching this codebase's
+// own established `token_budget_` precedent (`rt/agent_session.hpp`), is the cleaner shape, not a
+// configurable compromise between two.
 // ae-naming-lint: allow ContextBudget — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct ContextBudget {
     std::uint64_t max_tokens = 0;
@@ -85,6 +96,17 @@ template <class T>
 // One recorded drop — "drops are recorded in the trace" (005 §3). A minimal in-memory record
 // (016's full span/telemetry shape is out of scope here, matching `ToolInvocationAudit`'s own
 // precedent for the same "not yet built" reason) rather than a real trace-emission call.
+//
+// 2026-08-23: `assemble_context()` itself no longer ever constructs one of these — its one real
+// producer (silent budget-exceeded trimming) was removed as part of Finding E's fail-closed
+// redesign (see `ContextBudget`'s own comment above and ADR-075). This type stays because
+// `ContextAssemblyResult` (below) is real, load-bearing vocabulary beyond just this function's own
+// return value — `TurnMiddleware::TurnContext` (`turn_middleware.hpp`) is built around exactly this
+// `{combined, drops}` shape, including for turns that never call `assemble_context()` at all
+// (`AgentSession`'s own single-contributor path hand-builds one with an empty `drops` list,
+// `rt/agent_session.hpp`). Kept as forward-compatible provenance vocabulary for a future producer,
+// not deleted as dead code — but confirmed (grepping the whole tree, and per ADR-049 §2's own
+// independent finding) that nothing produces a real one today.
 // ae-naming-lint: allow ContextDrop — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct ContextDrop {
     std::size_t contributor_index = 0;
@@ -149,20 +171,26 @@ struct ContextAssemblyResult {
 };
 
 // 005 §3's assembly rules, generalized to N ordered contributors: every contributor runs, in
-// declared order (`contributors[0]` first), and if ITS OWN contribution exceeds ITS OWN declared
-// budget, the OLDEST messages within that one contribution are dropped first — oldest-first,
-// matching `Window<N>`'s own "keep the last N verbatim" direction — until it fits. Never a
-// cross-contributor competition for one shared pool: that would make drop order depend on
+// declared order (`contributors[0]` first). If ITS OWN contribution exceeds ITS OWN declared
+// budget, assembly FAILS CLOSED — `assemble_context()` itself returns `std::unexpected` — rather
+// than silently trimming that contributor's oldest messages and returning success (2026-08-23,
+// Finding E / ADR-075; see `ContextBudget`'s own comment for why this replaced the original
+// trim-and-succeed behavior, not a config knob added alongside it). Matches this codebase's own
+// already-shipped precedent for the identical shape at a different layer:
+// `rt/agent_session.hpp`'s cross-round `token_budget_` check, `failure_class::resource` +
+// `"run.token_budget_exceeded"` — a declared budget being exceeded is a real, attributable (I4)
+// failure, not a value silently reshaped underneath its own declared contract. Never a
+// cross-contributor competition for one shared pool: that would make the failure depend on
 // contributor iteration order AND every other contributor's own size in a way that isn't
-// predictable from the declared budgets alone, breaking "drop order is declared, not incidental."
-// Deterministic and replayable given `{contributors, session_ctx, ctx}` (005 §3's own purity
-// rule) — no wall-clock read, no randomness anywhere in this function. Milestone 5 Phase B4: a
+// predictable from the declared budgets alone, breaking "what's checked is declared, not
+// incidental." Deterministic and replayable given `{contributors, session_ctx, ctx}` (005 §3's own
+// purity rule) — no wall-clock read, no randomness anywhere in this function. Milestone 5 Phase B4: a
 // coroutine, `co_await`ing each contributor's `on_context` IN DECLARED ORDER, one at a time (never
-// concurrently) -- 005 §3's own ordering rule ("contributors[0] first") is about drop-order
+// concurrently) -- 005 §3's own ordering rule ("contributors[0] first") is about assembly-order
 // determinism, not about serializing unrelated I/O, but running them one at a time is what "declared
 // order" naturally means here and what every contributor's own `co_await` chain already assumes
 // (no contributor's `chat()` call is written to tolerate running concurrently with another's).
-[[nodiscard]] inline task<ContextAssemblyResult> assemble_context(
+[[nodiscard]] inline task<result<ContextAssemblyResult>> assemble_context(
     std::vector<ContextProviderDescriptor>& contributors, SessionContext& session_ctx,
     EffectContext& ctx) {
     ContextAssemblyResult out;
@@ -174,7 +202,9 @@ struct ContextAssemblyResult {
             // 005 has no "one bad contributor aborts the whole run" rule — a failed contributor
             // simply contributes nothing this turn, the same fail-open-for-THIS-source shape
             // `assemble_context`'s own caller (AgentSession) uses fail-CLOSED for, at a different
-            // layer (a provider failing is not the same as the model call itself failing).
+            // layer (a provider failing is not the same as the model call itself failing). A
+            // contributor's own declared BUDGET being exceeded is a different, stricter case (see
+            // below) — that one DOES abort this whole call, deliberately.
             continue;
         }
 
@@ -195,13 +225,14 @@ struct ContextAssemblyResult {
             std::uint64_t total = 0;
             for (auto const& m : msgs) total += approx_token_count(m);
 
-            std::size_t drop_from = 0;
-            while (total > max_tokens && drop_from < msgs.size()) {
-                total -= approx_token_count(msgs[drop_from]);
-                out.drops.push_back(ContextDrop{i, msgs[drop_from].message_id, "over budget"});
-                ++drop_from;
+            if (total > max_tokens) {
+                co_return std::unexpected(error{
+                    failure_class::resource,
+                    "contributor '" + contributor.name + "' (index " + std::to_string(i) +
+                        ") exceeded its declared ContextBudget: approx " + std::to_string(total) +
+                        " tokens > max_tokens=" + std::to_string(max_tokens),
+                    "context_assembly.contributor_budget_exceeded"});
             }
-            msgs.erase(msgs.begin(), msgs.begin() + static_cast<std::ptrdiff_t>(drop_from));
         }
 
         // decisions/ADR-066-context-provider-attribution-provenance.md §2/§4 -- stamped here,
