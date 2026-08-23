@@ -285,9 +285,17 @@ result<SandboxHandle> LinuxNativeJailBackend::create(SandboxSpec const& spec, Ef
     }
     instance->mounts = spec.mounts;
 
+    // Host-unique, not just process-unique: PID + a per-process counter. A counter alone collides
+    // across DIFFERENT test/host processes sharing this backend's default delegated paths (real,
+    // observed directly: two `ctest -j` binaries both minting "linux_native_jail-0" and racing to
+    // `mkdir` the identical cgroup/jail_root directory -- decisions/ADR-083-linux-native-jail-
+    // pivot-root-containment.md §4). A PID cannot repeat among processes alive at the same instant,
+    // so prefixing it closes the collision at its root rather than only papering over it with test
+    // serialization (`RUN_SERIAL`, still kept in tests/CMakeLists.txt as defense in depth against a
+    // reused PID from a since-exited process racing a still-running one's leftover directory).
     static std::atomic<std::uint64_t> counter{0};
-    std::string id =
-        "linux_native_jail-" + std::to_string(counter.fetch_add(1, std::memory_order_relaxed));
+    std::string id = "linux_native_jail-" + std::to_string(::getpid()) + "-" +
+                      std::to_string(counter.fetch_add(1, std::memory_order_relaxed));
 
     auto cgroup_created = instance->cgroup.create(delegated_cgroup_root_, id, spec.limits);
     if (!cgroup_created.has_value()) return std::unexpected(cgroup_created.error());

@@ -193,13 +193,14 @@ correctness depends on anything the guest process claims — every check in §4 
 host-side observation (`errno`, host-side file re-reads, host `/proc/mounts`).
 
 **Residual risks, named rather than implied:**
-- **The `RUN_SERIAL` fix is a workaround, not a root-cause fix**, for the id-collision bug it
-  addresses. The underlying cause — `create()`'s `static std::atomic<std::uint64_t> counter{0}`
-  being process-local, not host-unique — is still present and would resurface if any future caller
-  ever ran two `LinuxNativeJailBackend`-hosting *processes* concurrently against the same default
-  delegated paths outside of `ctest`'s own serialization. Not fixed in this pass (out of this ADR's
-  own scope — filesystem/process containment, not id-generation scheme); named here as a real,
-  disclosed follow-on rather than silently left for the next person to rediscover.
+- **The id-collision bug is fixed at its root, same-day follow-on.** `create()`'s id is now
+  `"linux_native_jail-" + getpid() + "-" + counter` (was counter-only, process-local, not
+  host-unique) — a PID cannot repeat among processes alive at the same instant, closing the
+  collision `RUN_SERIAL` had only serialized around. Verified directly: two copies of
+  `test_native_jail_backend_linux` launched concurrently (no `RUN_SERIAL`, no `ctest`) both pass.
+  `RUN_SERIAL` is kept on the gated tests as defense in depth against a reused PID from a
+  since-exited process racing a still-running one's leftover directory, not because the collision
+  is still possible in the common case.
 - **The toolchain-mount test helper (`add_shell_toolchain_mounts`) grants host `/bin`/`/lib`/
   `/lib64`/`/usr` at identical guest paths** — acceptable for this M2 raw-shell-exec test scope
   (`linux_native_jail_backend.hpp`'s own "not yet Runner-mediated" scope note, unchanged by this

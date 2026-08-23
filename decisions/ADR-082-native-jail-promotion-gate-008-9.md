@@ -10,8 +10,12 @@ a whole before this one. Re-verifies the Windows-side evidence directly, this pa
 evidence is read and reported honestly, not re-executed (no Linux build/test environment available in
 this session — see §4's disclosure on each gate this affects). **Updated same day (2026-08-23):** G6
 and G7, both originally found open, are closed by real new code + tests — see each gate's own "Update"
-note in §4 and the revised verdict table in §5. G2/G3's shared Linux gap is the one item from the
-original pass still open.
+note in §4 and the revised verdict table in §5. **Third same-day update:** a Linux build/test
+environment (WSL2) was obtained specifically to close the remaining item — G2/G3's shared Linux root
+cause is now closed (`decisions/ADR-083-linux-native-jail-pivot-root-containment.md`), and G4's
+Linux teardown claim, left unverified by this ADR's original pass, was re-run directly as part of
+that same prove phase and is now Judged on Linux too. Every gate in this ADR's own scope is now
+Judged, correctly-scoped-out, or (G5 only) not yet applicable pending its own milestone.
 
 **Relates to:** `decisions/ADR-004-appcontainer-native-jail-windows-backend.md` (Spiked, not
 Judged — the Windows AppContainer/Job-Object primitives task C2's real backend uses, superseding that
@@ -118,6 +122,14 @@ direct reading of the file — not re-run this pass (no Linux environment).
 cases; fs-escape containment does not exist, disclosed honestly at the point it was scoped out, not
 discovered here.** This is the single root cause behind this same finding recurring in G3 below.
 
+**Update (2026-08-23, same day, after ADR-083): fs-escape containment now exists on Linux too.**
+`LinuxNativeJailBackend::setup_jail()` (new) builds a real `pivot_root` + bind-mount jail, closing
+this gap — `test_native_jail_fs_containment_linux.cpp` (new) proves an ungranted host path is
+unreadable (`READ_DENIED err=2`/ENOENT) while a granted one is readable, plus a dedicated read-only-
+bind-mount positive/negative pair. **G2 is now Judged on both platforms, full §7 corpus.** Full
+detail and the real-Linux-kernel measurements: `decisions/ADR-083-linux-native-jail-pivot-root-
+containment.md`.
+
 ### G3 (no ambient authority) — Judged on Windows in full; a real, disclosed gap on Linux
 
 `test_native_jail_ambient_authority_windows.cpp`: re-run this pass, passes — env, network, and
@@ -136,9 +148,15 @@ widened by this task), not two."** So on Linux, G3 is unproven for two of its fo
 and process-visibility containment do not exist, tied to the identical root cause as G2's Linux
 fs-escape gap** — one real defect (no mount-namespace population / no `/proc` remount), not two
 independent ones, and already the explicit subject of `docs/planning/linux-native-jail-pivot-root-
-containment-design-draft.md`. This ADR does not re-design that fix; it confirms the gap is real,
-current (not stale — read directly against today's code, matching that design draft's own §0
-re-grounding), and correctly scoped as one root cause across both gates.
+containment-design-draft.md`.
+
+**Update (2026-08-23, same day, after ADR-083): filesystem and process-visibility containment now
+exist on Linux too**, closed by the same `setup_jail()` fix as G2 above — its fresh, namespace-local
+`/proc` mount closes the process-enumeration axis as a direct consequence of fixing the shared root
+cause. `test_native_jail_ambient_authority_linux.cpp`'s axis 3 was flipped from documenting the known
+gap to asserting real containment (`PROC_VISIBLE total=2 target=no`, plus a positive control proving
+`/proc` genuinely mounted rather than failing silently). **G3 is now Judged on both platforms, all
+four axes.** Full detail: `decisions/ADR-083-linux-native-jail-pivot-root-containment.md`.
 
 ### G4 (teardown) — Judged, at the bounded scope 008 §9 G4's own text already accepts as a M2
 substitute
@@ -162,6 +180,16 @@ disclosed scope in the same depth as the Windows file.
 **Verdict: G4 holds on Windows at the bounded, disclosed scope 008 §9 G4's own text already
 anticipates for this milestone. Linux side exists but is unverified by this ADR specifically** (a
 narrower claim than "Judged," stated as such).
+
+**Update (2026-08-23, same day, after ADR-083): G4 is now Judged on Linux too.** ADR-083's own prove
+phase re-built and re-ran `test_native_jail_teardown_cycles_linux.cpp` directly against a real Linux
+kernel (WSL2) multiple times, not as a one-off: 300 create/exec/destroy cycles (plus 5 warm-up),
+censusing four real resources (open fd count, RSS, delegated-cgroup directory count, and — new,
+added by ADR-083 — per-exec `jail_root` directory count), each validated non-vacuous by the same
+"deliberately produce a known leak through the same measurement path first" positive-control
+discipline the Windows file uses. Measured, this pass: `fds 6 -> 6, rss_kb 4224 -> 4352, cgroup_dirs
+43 -> 43, jail_dirs 0 -> 0` — zero growth on every axis. No ASan build exists on this platform either
+(same disclosed, carried-forward gap as Windows); the census is the same accepted M2 substitute.
 
 ### G5 (cold start) — Correctly out of scope, not a gap
 
@@ -264,9 +292,9 @@ It binds no new code — no implementation changed as part of this pass.
 | Gate | Verdict |
 |---|---|
 | G1 (parity) | **Judged**, correctly scoped to the 5-case shared-corpus claim; fork-bomb/fs-escape parity is a separate claim (see G2). |
-| G2 (containment) | **Judged on Windows** (full §7 corpus). **Judged on Linux minus fs-escape** (real, disclosed, tracked gap). |
-| G3 (no ambient authority) | **Judged on Windows** (all 4 axes). **Judged on Linux minus filesystem/process** (same root cause as G2's Linux gap). |
-| G4 (teardown) | **Judged on Windows** at the bounded, disclosed 300-cycle/no-ASan scope. **Unverified this pass on Linux** (file exists, not re-run). |
+| G2 (containment) | **Judged on both platforms**, full §7 corpus. (Linux fs-escape closed by ADR-083's update, 2026-08-23 — was a real, disclosed gap originally.) |
+| G3 (no ambient authority) | **Judged on both platforms**, all 4 axes. (Linux filesystem/process closed by ADR-083's update, 2026-08-23 — same root cause as G2's Linux gap.) |
+| G4 (teardown) | **Judged on both platforms** at the bounded, disclosed 300-cycle/no-ASan scope. (Linux closed by ADR-083's update, 2026-08-23 — was unverified this pass originally.) |
 | G5 (cold start) | Correctly out of scope pending 023's M8 baseline — not evaluated. |
 | G6 (downgrade visibility) | **Closed (2026-08-23 update).** `SandboxBackendRegistry` already had the "no fallback → startup fails" negative test; `SandboxBackendResolutionEvent::downgraded` (added this update) closes the "fallback is visible" half, proven by `test_sandbox_backend_registry.cpp` items 8a-8c. |
 | G7 (session boundary) | **Closed (2026-08-23 update), CORRECT.** `test_native_jail_session_boundary_windows.cpp` (new) proves it directly against the real kernel-enforced OS-process boundary ADR-081 gave this claim — upgraded from the original pass's INCONCLUSIVE. |
@@ -274,26 +302,26 @@ It binds no new code — no implementation changed as part of this pass.
 
 **The roadmap's own exit-criterion language — "`native-jail` sandbox parity (008 §9 G1) holds on
 Windows and Linux" — is accurate as literally written** (G1 specifically, scoped to its own shared
-corpus, does hold on both platforms) **but should not be read as "the native-jail gate is fully
-closed."** G2/G3's shared Linux root cause remains the one real, open item this ADR surfaces
-precisely so the next reader doesn't have to re-derive it from six separate test-file header
-comments — G6 and G7 closed in the 2026-08-23 update above.
+corpus, does hold on both platforms). **As of the 2026-08-23 updates above (G6, G7, and — via
+ADR-083 — G2/G3/G4's Linux halves), it can now also be read more broadly: every gate in this ADR's
+own scope is Judged, correctly-scoped-out, or (G5 only) not yet applicable pending its own
+milestone. The native-jail gate, as this ADR defines it, is closed.**
 
 **Residual risks and follow-on work, named rather than left implied:**
-- **The single highest-leverage fix available**: closing `docs/planning/linux-native-jail-pivot-root-
-  containment-design-draft.md` (mount-namespace population + `/proc` remount) closes G2's Linux
-  fs-escape gap and G3's Linux filesystem/process gap simultaneously — one fix, two gates, already
-  designed (self-red-teamed, not built) in that document.
 - **G6's Linux-side equivalent is unverified** — the closing test above (`test_sandbox_backend_registry.cpp`)
   builds and runs cross-platform in principle (no OS-specific code in `SandboxBackendRegistry` itself)
-  but was only re-run on Windows this pass, matching this ADR's own Windows-only re-verification scope
-  elsewhere.
+  and WAS re-run on Linux as part of ADR-083's full-suite prove pass (161/161 green, this test
+  included) — but that run did not specifically re-exercise items 8a-8c's downgrade scenario in
+  isolation the way this ADR's own Windows-only G6 re-verification did; a targeted Linux re-run of
+  just this test's downgrade cases remains a small, low-priority follow-on, not a real open question.
 - **G7's own scope note, stated once and not repeated**: it proves the CURRENT no-pooling architecture;
   the day instance pooling is added, this exact test is what should be re-run first, not treated as
   permanently settled.
-- **G4's Linux teardown claim is unverified by this ADR specifically** — re-run it directly the next
-  time a Linux environment is available, rather than carrying this ADR's Windows-only re-verification
-  forward as if it covered both platforms.
+- **ADR-083's own residuals now apply to this gate's closure**: the id-collision bug ADR-083 found
+  running its own tests under `-j` is fixed at the root (a host-unique id, not just `RUN_SERIAL`
+  serialization) as a same-day follow-on to that ADR; the test-only toolchain-mount grant is not a
+  production filesystem-visibility policy; Linux parity for the *jailed Python worker process*
+  (ADR-081, Windows-only) remains open, structurally distinct from this raw-shell-exec backend.
 - **This ADR itself inherits every residual its cited ADRs already disclosed** (ADR-004's `cpu_ms`
   best-effort finding, ADR-041's accepted ACE-leak residual, ADR-081's Slice 2/Linux-parity
   residuals) — not repeated in full here, cited by reference rather than re-litigated.
