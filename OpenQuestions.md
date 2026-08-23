@@ -6,56 +6,18 @@ shape of the project.
 
 **Legend:** 🔴 blocks a v1 decision · 🟠 needed before implementation of its area · 🟡 can wait
 
-**Four open cross-cutting questions as of 2026-08-23: OQ-19, OQ-20, OQ-21, OQ-25.** OQ-1 through
-OQ-18 and OQ-22 through OQ-24 are all resolved (OQ-22 was closed 2026-08-21 by ADR-066, ahead of this
-file's own stale "seven open" count; OQ-24 was scoped and resolved as a non-issue on 2026-08-23; OQ-23
-was closed the same day by `decisions/ADR-076-undeclared-tool-call-leak-refusal.md`, judged the same
-session it was first raised in). New questions are added here as they're identified; per-RFC open
-questions that don't change the shape of the project stay in their own RFC's §Open questions and are
-never promoted here by default.
+**Three open cross-cutting questions as of 2026-08-23: OQ-20, OQ-21, OQ-25.** OQ-1 through OQ-18 and
+OQ-22 through OQ-24 are all resolved (OQ-22 was closed 2026-08-21 by ADR-066, ahead of this file's own
+stale "seven open" count; OQ-24 was scoped and resolved as a non-issue on 2026-08-23; OQ-23 was closed
+the same day by `decisions/ADR-076-undeclared-tool-call-leak-refusal.md`, judged the same session it
+was first raised in; OQ-19 was closed the same day too, by `decisions/ADR-077-agent-executor-capabilityset-bridge.md`, once the project owner explicitly lifted this file's own prior "document
+only, do not implement yet" instruction). New questions are added here as they're identified;
+per-RFC open questions that don't change the shape of the project stay in their own RFC's §Open
+questions and are never promoted here by default.
 
 ---
 
 ## Open
-
-### OQ-19 — Where does an agent-executor's `CapabilitySet` come from? 🟠
-
-`executor_kind::agent` (014 §3/§7) is real at the graph-declaration layer but structurally refused at
-execution (`check_workflow_executable()`, `workflow/graph.hpp:431`) — no runtime bridge wraps a real
-`AgentSession` as a workflow node yet. Full gap analysis, current-state citations, and a source-grounded
-study of how MAF (.NET) built the equivalent bridge:
-`docs/planning/agent-as-workflow-executor-gap.md`, `docs/research/2026-08-13-maf-agent-as-workflow-executor.md`.
-A design draft exists and has been red-teamed twice:
-`docs/planning/agent-as-workflow-executor-design-draft.md`. First pass: the original "no core-seam
-change needed" claim was FALSE against real code (a genuine checkpoint/resume amnesia bug and a
-genuine concurrent double-resume race, both FATAL as originally scoped). Second pass (2026-08-13),
-resolving the punch list: capability sourcing reuses `WorkflowSupervisor::initialize()`'s already-
-present but unused `contexts` parameter (no new API needed for the grant itself, only a new
-`check_workflow_executable()` overload to verify it); the concurrent-hazard fix quarantines only the
-specific hazardous delivery through the EXISTING failure-policy channel, not a whole-round abort (the
-first attempt at this resolution was itself found too harsh); and a proposed `TaggedExecutorBody`
-wrapper was FATAL as scoped (breaks every real call site) — fixed via `std::function::target<T>()`,
-which has zero precedent anywhere in this codebase and needs its own positive-control test before
-being trusted. Read the design draft before implementing.
-
-MAF's own design gives no precedent for this question — it has no in-process capability/authority
-system analogous to `CapabilitySet`/`EffectContext::capabilities`. A future ADR must decide: does an
-agent-executor's capability ceiling come from the workflow's own declaration (analogous to a tool's
-`capability_ceiling`), a per-executor binding-time grant, or something derived from the invoking run's
-principal? Blocks 014 §3's `agent`-kind executor and, transitively, honest "multi-agent orchestration"
-(as opposed to multi-*function*-node orchestration with a model call inside one function, which is all
-that's demonstrated today, per the gap doc's `examples/16_group_chat_live.cpp` citation). **Explicit
-project-owner direction (2026-08-13): document only, do not implement yet.**
-
-**Note (`decisions/ADR-070-host-configurable-responsibility-boundary.md`, 2026-08-21):** that ADR's
-own "Delegated Decision Seam" pattern names the direction this question would resolve toward once
-unblocked — a per-executor binding-time grant, attenuation-bounded by the workflow's own ceiling,
-matching the already-red-teamed second-pass direction in `docs/planning/agent-as-workflow-executor-
-design-draft.md` (reuses `WorkflowSupervisor::initialize()`'s existing but unused `contexts`
-parameter) — never the principal-derived option, which would be closer to ambient authority than a
-host-explicit grant. This is a cross-reference, NOT a resolution: the 2026-08-13 "document only, do
-not implement yet" instruction stands, and ADR-070 does not touch `check_workflow_executable()`'s
-hard rejection of `agent`/`sub_workflow` executors.
 
 ### OQ-20 — Coalescing concurrent agents onto one vendor batch inference call 🟠
 
@@ -864,3 +826,43 @@ import machinery — of missing entry points, not a hypothetical risk. A future 
 CPython version should be specifically re-verified, never assumed covered by the existing skip-anchor
 set. Candidate resolution 2 (accept-and-document tiering, ADR-002 §10.2) remains the fallback for any
 gated name or package this mechanism has not been checked against.
+
+### OQ-19 — Where does an agent-executor's `CapabilitySet` come from?
+
+`executor_kind::agent` (014 §3/§7) was real at the graph-declaration layer but structurally refused at
+execution (`check_workflow_executable()`, `workflow/graph.hpp`) — no runtime bridge wrapped a real
+`AgentSession` as a workflow node. MAF's own design gave no precedent — it has no in-process
+capability/authority system analogous to `CapabilitySet`/`EffectContext::capabilities` at all. A design
+draft (`docs/planning/agent-as-workflow-executor-design-draft.md`) was red-teamed twice before any code
+existed: the first pass found the original "no core-seam change needed" claim FALSE against real code
+(a genuine checkpoint/resume amnesia bug and a genuine concurrent double-resume race, both FATAL as
+originally scoped); the second pass resolved the full punch list. Carried an explicit, dated
+project-owner instruction (2026-08-13): "document only, do not implement yet" — reaffirmed as still
+standing in `decisions/ADR-070-host-configurable-responsibility-boundary.md`'s own §7 cross-reference
+(2026-08-21), which named the eventual direction without resolving the question.
+
+**Resolved by `decisions/ADR-077-agent-executor-capabilityset-bridge.md` (Judged, 2026-08-23 — the
+project owner explicitly lifted the 2026-08-13 "document only" instruction this same session, then
+design → red-team → prove completed against the already-red-teamed second-pass design).** Capability
+sourcing: `Executor` (`workflow/graph.hpp`) gained a static, graph-declared `capability_ceiling` field;
+the actual granted `CapabilitySet` a node's `AgentSession` runs under comes from whatever
+`EffectContext` the caller populates into `WorkflowSupervisor::initialize()`'s previously-unused
+`contexts[i]`; a new `check_workflow_executable(graph, contexts)` overload verifies the grant satisfies
+the declared ceiling before accepting the graph as executable — never the principal-derived option,
+matching ADR-070 §7's own steer away from anything closer to ambient authority. A new
+`include/agentengine/rt/agent_workflow_executor.hpp` provides `agent_session_as_executor_body()`,
+returning a fixed, non-templated `AgentExecutorBodyTag` (`rt/workflow_supervisor.hpp`) that
+`initialize()` verifies via `std::function::target<T>()` — a real structural marker, not a data-only
+check on the graph's declared kind. The concurrent-same-node hazard is closed by a gather-time
+quarantine in `WorkflowSupervisor::execute()`: the second-and-later delivery to the same agent-kind
+node in one round is synthetically failed and routed through the EXISTING failure-policy machinery,
+never a whole-round abort. Checkpoint/resume is a documented, TESTED limitation (a resumed run's
+agent-kind node gets a fresh, history-less `AgentSession` — `restore_from_record()` never reconnects
+`bodies_`), not a design gap. YAML authoring of `capability_ceiling` is refused loudly
+(`yaml_compiler.executor_capability_ceiling_unsupported`), not silently dropped — I6-safe, pending the
+same per-kind capability registry work `agent_yaml_compiler.hpp`'s own `spec.capabilities` gap already
+names. 26 new passing tests across two new suites
+(`tests/test_workflow_agent_executor_gate.cpp`, `tests/test_rt_agent_workflow_executor.cpp`) prove
+every claim, including the two FATAL first-draft findings' fixes and the "every OTHER delivery
+completes normally" claim under two distinct edge failure policies. Full falsifiable-claims table and
+residuals: ADR-077 §6/§7.

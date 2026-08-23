@@ -31,8 +31,10 @@
 #include <type_traits>
 #include <vector>
 
+#include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/sharing_mode.hpp"
+#include "agentengine/trust/capability.hpp"
 
 namespace agentengine::workflow {
 
@@ -113,7 +115,27 @@ struct Executor {
     // siblings "is never reached by a plain default."
     sharing_mode  worktree_mode = sharing_mode::branch;
 
-    friend bool operator==(Executor const&, Executor const&) = default;
+    // OQ-19 (OpenQuestions.md; docs/planning/agent-as-workflow-executor-design-draft.md §5): a
+    // node's static capability ceiling -- "what THIS executor needs" -- mirroring
+    // `Tool<...>::declared_capabilities()`'s own empty-by-default shape (007 §3), consulted only for
+    // `kind == executor_kind::agent` today. The actual GRANTED CapabilitySet a node's AgentSession
+    // runs under is a separate, per-run thing (`WorkflowSupervisor::initialize()`'s `contexts`
+    // parameter, rt/workflow_supervisor.hpp) -- this field only declares the ceiling that grant must
+    // satisfy, the same "declare what you need, never what you're given" split `Tool`'s own ceiling
+    // already establishes.
+    std::vector<agentengine::Capability> capability_ceiling;
+
+    // Hand-written, NOT `= default`: agentengine::Capability's payload structs (trust/capability.hpp)
+    // have no operator== of their own yet, so a defaulted comparator here would be silently DELETED
+    // the moment capability_ceiling was added as a member, taking Workflow's own defaulted
+    // comparator down with it (014 §7's diffing property). Every pre-existing field stays
+    // structurally compared; capability_ceiling participates in neither == nor != until a real
+    // Capability equality exists (a separate, out-of-scope change) -- named here rather than
+    // silently gapped.
+    friend bool operator==(Executor const& a, Executor const& b) noexcept {
+        return a.id == b.id && a.kind == b.kind && a.input_type == b.input_type &&
+               a.output_type == b.output_type && a.worktree_mode == b.worktree_mode;
+    }
 };
 
 // -- Failure policy (014 §6) -------------------------------------------------------------------
@@ -465,6 +487,55 @@ struct Workflow {
     return {};
 }
 
+// OQ-19's contexts-aware sibling of the check above (design draft §5). `sub_workflow` stays refused
+// unconditionally -- no runtime bridge for it exists yet, out of OQ-19's scope. `agent`-kind is
+// accepted ONLY once `contexts[i]`'s granted capabilities (whatever `WorkflowSupervisor::
+// initialize()`'s caller populated there -- rt/workflow_supervisor.hpp) satisfy this node's own
+// declared `capability_ceiling`; this function sees only the graph and per-executor contexts, never
+// `bodies_` (an `rt::` type this `workflow::` header must not depend on) -- the SEPARATE structural
+// check that a bound body is genuinely agent-backed (not an ordinary function pretending to be one)
+// lives in `WorkflowSupervisor::initialize()` itself, the only place that has both a body and a
+// declared kind to compare.
+[[nodiscard]] inline result<void> check_workflow_executable(
+        Workflow const& wf, std::vector<agentengine::EffectContext> const& contexts) {
+    static agentengine::EffectContext const kEmptyContext{};
+    for (std::size_t i = 0; i < wf.executors.size(); ++i) {
+        Executor const& e = wf.executors[i];
+        if (e.kind == executor_kind::sub_workflow) {
+            return std::unexpected(error{
+                failure_class::contract,
+                "executor '" + e.id +
+                    "' declares an executor kind this build does not implement (014 §1's "
+                    "`sub_workflow` node is not built yet); running it would treat it as a plain "
+                    "function node, which is not what the graph says",
+                "workflow.executor_kind_unsupported"});
+        }
+        if (e.kind != executor_kind::agent) continue;
+
+        agentengine::EffectContext const& ctx = i < contexts.size() ? contexts[i] : kEmptyContext;
+        if (!ctx.capabilities) {
+            if (e.capability_ceiling.empty()) continue;
+            return std::unexpected(error{
+                failure_class::policy,
+                "agent-kind executor '" + e.id +
+                    "' declares a capability ceiling but the caller granted no CapabilitySet for it "
+                    "(WorkflowSupervisor::initialize()'s contexts[i])",
+                "workflow.agent_capability_ceiling_unmet"});
+        }
+        for (agentengine::Capability const& required : e.capability_ceiling) {
+            if (!ctx.capabilities->contains(required)) {
+                return std::unexpected(error{
+                    failure_class::policy,
+                    "agent-kind executor '" + e.id +
+                        "' declares a capability ceiling the caller's granted CapabilitySet does not "
+                        "satisfy",
+                    "workflow.agent_capability_ceiling_unmet"});
+            }
+        }
+    }
+    return {};
+}
+
 // -- The C++ authoring form (014 §1's "at compile time for the C++ form") ----------------------
 //
 // `TypedExecutor<In, Out>` carries the real C++ types, so `WorkflowBuilder::connect` can reject a
@@ -484,9 +555,13 @@ struct TypedExecutor {  // ae-naming-lint: allow TypedExecutor — the C++-form 
     // calling `WorkflowBuilder::add` -- no separate builder method needed, and `describe()` below
     // is the one place that has to remember to forward it.
     sharing_mode  worktree_mode = sharing_mode::branch;
+    // `Executor::capability_ceiling`'s escape hatch, reachable the same way `worktree_mode` above is:
+    // designated-initializer syntax before calling `WorkflowBuilder::add`. OQ-19.
+    std::vector<agentengine::Capability> capability_ceiling;
 
     [[nodiscard]] Executor describe() const {
-        return Executor{id, kind, message_type_id_of<In>(), message_type_id_of<Out>(), worktree_mode};
+        return Executor{id,     kind,          message_type_id_of<In>(), message_type_id_of<Out>(),
+                         worktree_mode, capability_ceiling};
     }
 };
 

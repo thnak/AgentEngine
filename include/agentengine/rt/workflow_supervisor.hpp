@@ -196,6 +196,33 @@ struct ExecutorOutcome {
 using ExecutorBody =
     std::function<agentengine::result<ExecutorOutcome>(agentengine::Message const&, agentengine::EffectContext&)>;
 
+// OQ-19 (OpenQuestions.md; docs/planning/agent-as-workflow-executor-design-draft.md §5 item 4): a
+// FIXED, non-templated functor type -- independent of rt::agent_workflow_executor.hpp's own adapter
+// template parameters (ChatClientT/StateT/HistoryProviderT) -- so `initialize()` below can
+// structurally tell a genuinely agent-backed body apart from an ordinary function closure via
+// `std::function`'s own built-in type erasure (`bodies_[i].target<AgentExecutorBodyTag>() !=
+// nullptr`), rather than trusting a data-only check on the graph's declared `kind` (which a caller
+// could satisfy by mistake with a plain function that never touches an `AgentSession` at all).
+// Defined HERE, not in the adapter header, specifically so this file never has to
+// `#include "agentengine/rt/agent_session.hpp"` (a much heavier header) just to name this type --
+// the adapter header includes both this file and agent_session.hpp and constructs one of these.
+// ae-naming-lint: allow AgentExecutorBodyTag — the structural marker OQ-19's design draft names verbatim
+class AgentExecutorBodyTag {
+public:
+    using Impl = std::function<agentengine::result<ExecutorOutcome>(agentengine::Message const&,
+                                                                      agentengine::EffectContext&)>;
+
+    explicit AgentExecutorBodyTag(Impl impl) : impl_(std::move(impl)) {}
+
+    agentengine::result<ExecutorOutcome> operator()(agentengine::Message const& in,
+                                                      agentengine::EffectContext& ctx) const {
+        return impl_(in, ctx);
+    }
+
+private:
+    Impl impl_;
+};
+
 // ae-naming-lint: allow ExecuteReply — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct ExecuteReply {
     agentengine::Message     payload;
@@ -535,6 +562,18 @@ public:
     // matching what every real caller in the current test suite already passes today (every
     // `FunctionExecutor::initialize()` call site uses a default-constructed one; nothing in this
     // codebase yet populates it meaningfully).
+    //
+    // OQ-19: for an `agent`-kind executor, `contexts[i].capabilities` is now genuinely consumed --
+    // `rt::agent_session_as_executor_body()` (rt/agent_workflow_executor.hpp) reads it on EVERY call
+    // via `AgentSession::set_capabilities()`, and `check_workflow_executable(graph_, contexts_)`
+    // below verifies it satisfies `graph_.executors[i].capability_ceiling` before the graph is
+    // accepted as runnable at all. LIFETIME CONTRACT (matching `EffectContext::capabilities`'s own
+    // documented borrowed-pointer contract, core/effect_context.hpp): whatever `CapabilitySet` a
+    // `contexts[i].capabilities` shared_ptr aliases must outlive every call this `WorkflowSupervisor`
+    // instance ever dispatches to that node -- `contexts_` itself (this object's own member, storing
+    // a COPY of that shared_ptr for the whole lifetime of this instance) is what keeps the pointee
+    // alive across rounds; a per-call `EffectContext` copy handed to `run_executor_job()` below is
+    // only ever a SHORT-LIVED alias of the same underlying object, never its owner.
     void initialize(agentengine::workflow::Workflow graph, std::vector<ExecutorBody> bodies,
                      std::vector<agentengine::EffectContext> contexts = {}) {
         graph_    = std::move(graph);
@@ -542,8 +581,9 @@ public:
         contexts_ = std::move(contexts);
         contexts_.resize(graph_.executors.size());
         valid_ = agentengine::workflow::validate_workflow(graph_).has_value() &&
-                 agentengine::workflow::check_workflow_executable(graph_).has_value() &&
-                 bodies_.size() == graph_.executors.size();
+                 bodies_.size() == graph_.executors.size() &&
+                 agentengine::workflow::check_workflow_executable(graph_, contexts_).has_value() &&
+                 agent_kind_bodies_are_structurally_agent_backed();
     }
 
     [[nodiscard]] agentengine::workflow::Workflow const& graph() const noexcept { return graph_; }
@@ -805,9 +845,53 @@ private:
                 }
             }
 
+            // OQ-19 design draft §5 item 2: two ordinary (non-fan_in) edges converging on the SAME
+            // agent-kind node in one round would otherwise submit two concurrent `Delivery` entries
+            // for the same `AgentSession` -- `AgentSession::start_run()`'s `session_mutex_.lock()`
+            // genuinely parks a contended waiter and resumes it from a DIFFERENT thread, which the
+            // naive "resume until done" drive loop `rt::agent_session_as_executor_body()` uses
+            // (rt/agent_workflow_executor.hpp) cannot survive. Detected HERE, at gather time, before
+            // any `pool_.submit()` -- `exec_deliveries` is built once, fully, above, so this cannot be
+            // evaded across the retry-attempt loop below. Only the SECOND-and-later delivery to a
+            // given agent-kind `executor_index` this round is quarantined (synthetically failed,
+            // `contract`-class -- never retried, since `is_retryable()` excludes that class -- and
+            // never dispatched at all); the FIRST still runs normally, and every OTHER unrelated
+            // delivery this round is completely unaffected. This reuses the EXISTING failure-policy/
+            // retry/fallback machinery (a quarantined entry is simply `!ok`, routed exactly like any
+            // other real executor failure per that node's own declared edge policy) rather than
+            // aborting the whole round -- an earlier "abort the round" resolution was rejected as
+            // strictly harsher than the existing `broke` failure path (see the design draft).
+            std::vector<bool> quarantined(exec_deliveries.size(), false);
+            {
+                std::vector<std::size_t> seen_agent_indices;
+                for (std::size_t i = 0; i < exec_deliveries.size(); ++i) {
+                    std::size_t const idx = exec_deliveries[i].executor_index;
+                    if (graph_.executors[idx].kind != agentengine::workflow::executor_kind::agent) {
+                        continue;
+                    }
+                    bool seen = false;
+                    for (std::size_t const s : seen_agent_indices) {
+                        if (s == idx) { seen = true; break; }
+                    }
+                    if (seen) {
+                        quarantined[i] = true;
+                        continue;
+                    }
+                    seen_agent_indices.push_back(idx);
+                }
+            }
+
             std::vector<ExecuteReply> replies(exec_deliveries.size());
-            std::vector<std::size_t>  todo(exec_deliveries.size());
-            for (std::size_t i = 0; i < exec_deliveries.size(); ++i) todo[i] = i;
+            std::vector<std::size_t>  todo;
+            todo.reserve(exec_deliveries.size());
+            for (std::size_t i = 0; i < exec_deliveries.size(); ++i) {
+                if (quarantined[i]) {
+                    replies[i] = ExecuteReply{agentengine::Message{}, {}, false,
+                                               agentengine::failure_class::contract};
+                } else {
+                    todo.push_back(i);
+                }
+            }
 
             for (std::uint32_t attempt = 0; !todo.empty(); ++attempt) {
                 // ---- decision 5, first half: ISSUE every job before awaiting any ----------------
@@ -1093,6 +1177,22 @@ private:
             if (sel == graph_.executors[executor_index].id) return true;
         }
         return false;
+    }
+
+    // OQ-19 design draft §5 item 4 -- the structural half of the check `check_workflow_executable()`
+    // (workflow/graph.hpp) cannot perform itself, since that function sees only graph DATA, never
+    // `bodies_`. Every `agent`-kind executor must be bound to a body `std::function`'s own type
+    // erasure confirms was actually produced by `agent_session_as_executor_body()`, not merely a
+    // plain closure that happens to satisfy `ExecutorBody`'s call signature.
+    [[nodiscard]] bool agent_kind_bodies_are_structurally_agent_backed() const {
+        for (std::size_t i = 0; i < graph_.executors.size(); ++i) {
+            if (graph_.executors[i].kind != agentengine::workflow::executor_kind::agent) continue;
+            if (i >= bodies_.size() || !bodies_[i] ||
+                bodies_[i].target<AgentExecutorBodyTag>() == nullptr) {
+                return false;
+            }
+        }
+        return true;
     }
 
     agentengine::workflow::Workflow         graph_;
