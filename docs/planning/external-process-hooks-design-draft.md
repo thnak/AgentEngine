@@ -304,3 +304,112 @@ synchronous, non-overriding form.
 Items 1-2 together are the minimum real, coherent slice: a tool-call gating hook that can deny, rewrite
 (with the provenance guard), or suspend-for-external-dispatch, without the session-wide blocking hazard
 the original draft missed. Everything else is real, named follow-on work, not silently dropped.
+
+## Addendum (2026-08-23) — re-grounding against real drift, not assumed stale, not assumed current
+
+This draft is nine days old. `agent_session.hpp` has been touched by ADR-066, ADR-067, ADR-069,
+ADR-070, ADR-071, ADR-073, ADR-074, ADR-075, and ADR-076 since it was written — re-verified against
+today's actual code before any implementation starts, per this project's own discipline (a citation is
+a claim about the code *when written*, not a standing fact). Findings, each independently checked, not
+assumed either way:
+
+**Stale, corrected:**
+- The "`run_rounds()` has seven distinct `co_return` exit points, only two emit `turn_finished`" claim
+  (Q1, Q7) is now **eleven exit points** (re-counted directly: `agent_session.hpp` lines 1846, 1914,
+  1957, 1966, 1974, 2007, 2015, 2056, 2109, 2151, 2171), still only **two** `turn_finished` emissions
+  (now at lines 1986 and 2164, not the draft's 953/1011). The ratio got WORSE, not better — four new
+  exit paths were added since this draft was written, none of them gained a matching `turn_finished`.
+  This *strengthens* Q7's motivating case (the "does every started turn eventually report how it
+  ended" gap is bigger now), even though every specific line number in the original Q7 text is dead.
+- `interaction_reason` (Q3a, Q4) is `{input, auth, approval, codeact_ask}` — four values, not the "the
+  current three" this draft's Q3a states. `codeact_ask` already existed when this draft was written;
+  the draft's own count was wrong at the time, not merely drifted since.
+- `session_mutex_`'s I1 discipline (Q3a's central finding) is unchanged in shape — still a
+  `co_await session_mutex_.lock()` `AsyncMutex::Guard` acquired once per public entry point
+  (`start_run()`, `resolve_interaction()`, and — confirmed newly during this pass —
+  `resolve_codeact_ask()`'s own `co_return co_await run_rounds()` tail-call, which weren't cross-
+  checked against Q3a's original claim before). The blocking hazard Q3a found is real, current, and
+  applies at every one of these re-entry points into `run_rounds()`, not only `start_run()`.
+
+**Confirmed still accurate, not re-derived from scratch:**
+- Q2's central claim — `SandboxBackend::exec` is still synchronous (`sandbox.hpp:200`:
+  `{ backend.exec(handle, request, ctx) } -> std::same_as<result<ExecOutcome>>;`, not a `task<T>`
+  return) — a reference dispatcher built on it today would still hard-block its calling thread. This
+  claim survived nine days of otherwise-heavy churn elsewhere in the codebase unchanged.
+- `ApprovalDecider`'s signature and call site (`tool_pipeline.hpp:317`, consulted at `invoke_tool()`
+  step 5) are unchanged.
+
+**The one finding that changes the DESIGN, not just a citation — `decisions/ADR-067-middleware-turn-
+point-pre-model-enforcement.md`'s `TurnMiddlewareHook` was Judged and wired (2026-08-20/21), four to
+seven days after this draft, closing 017 §4's `pre_model` filter gap for an unrelated reason. It is,
+structurally, exactly the run/turn-level gating hook Q1 concluded needed real restructuring to build:**
+
+- `AgentSession::set_turn_middleware_hook()` / `turn_middleware_hook_` — a real, optional,
+  `task<result<std::monostate>>`-returning (genuinely **async**, `co_await`-able) hook, called exactly
+  ONCE per round (`agent_session.hpp:1905-1916`), after context assembly and before the round's
+  `ChatRequest` is built. It can deny outright (`std::unexpected` → the model is never called that
+  round, a real pre-model refusal, proven by `tests/test_rt_agent_session_turn_middleware.cpp`) or
+  rewrite the tool surface via `ToolSurfaceView` (`redact()`/`reorder()`/`annotate_description()`).
+- **Why Q1's "needs restructuring" conclusion doesn't apply here, and this isn't a contradiction of
+  Q1's own reasoning, it's the same reasoning applied to a narrower, correctly-scoped point**: Q1
+  rejected `middleware.hpp`'s `run_before`/`run_after` *onion* pattern for run/turn hooks because that
+  pattern needs a real inner action to sandwich, and `run_rounds()`'s loop has no single inner action —
+  it has eleven exits. ADR-067's own mid-implementation finding (its §5, point 1) independently
+  discovered the exact same thing and drew the exact same conclusion Q1 did: no onion is possible here.
+  But `TurnMiddlewareHook` was never trying to wrap the whole round — it inserts at ONE fixed point
+  *before* the round's model call, forward-only, first-deny-stops. That doesn't need to know about or
+  survive eleven exit paths at all; it just needs to run once, early, every iteration — which
+  `run_rounds()`'s loop shape already provides trivially, with zero restructuring. Q1's "needs
+  restructuring" claim was correct for the mechanism it evaluated (an onion) and did not evaluate this
+  simpler shape, because it didn't exist yet as an example to generalize from.
+- **What this means for a Claude-Code-`UserPromptSubmit`-modify or `PreToolUse`-at-the-turn-level
+  analog, concretely**: it does not need new engine machinery. It needs a host-supplied
+  `TurnMiddlewareHook` body. The SAME Q3a constraint still applies to it exactly as written — this
+  hook runs while `session_mutex_` is held (confirmed above), so a body that dispatches to an external
+  process and is inline-`co_await`ed would reproduce Q3a's session-wide-stall hazard at this seam too.
+  An external-dispatching turn-level hook therefore needs the identical treatment Q3a already designed
+  for the tool-call point: never inline; suspend via `interaction_reason::hook_decision`, resume via
+  `resolve_interaction()`. This is not a new design question — it is Q3a's existing answer, reused.
+- **What `TurnMiddlewareHook` does NOT give this gap, so Q7 is not obsoleted, only partially
+  overlapped**: it is a *before*-model, single-shot, forward-only gate. It cannot express Q7's
+  `after_turn`/`after_run` observation goal (every turn reports how it ended, regardless of which of
+  the eleven exits was taken) — `TurnMiddlewareHook` only ever fires from inside the ONE branch that
+  reaches it, never from the other ten. `TurnBoundaryGuard`/`RunBoundaryGuard` (Q7, punch-list item 5)
+  remains real, unbuilt, necessary work — re-scoped against the current eleven-exit reality, not the
+  stale seven.
+- **`decisions/ADR-070-host-configurable-responsibility-boundary.md`'s `PolicyDecider`** (also new
+  since this draft, `tool_pipeline.hpp:318-335`) is a related-but-orthogonal seam — narrower than Q3's
+  proposed hook stage (only graduates `policy_driven` approval outcomes among `auto_approve`/
+  `auto_deny`/`require_approval`, never rewrites arguments, never runs for `never_require`/
+  `always_require`/`text_derived`). It does not replace or overlap Q3's tool-call hook-stage design;
+  worth naming in a future ADR simply so the three-seam sequencing (hook stage → `ApprovalDecider` OR
+  `PolicyDecider`, depending on `approval_mode`, never both) is stated explicitly rather than assumed.
+
+**Revised punch list, reflecting what's now free vs. what's still real work:**
+1. Tool-call hook stage (`ToolCallHookContext`, `enforce_hook_rewritten_tool_call_provenance()`) —
+   **unchanged, still real work**, Q3's design holds, insertion point (`tool_call_request_of()` →
+   `invoke_tool()`) needs re-locating against current line numbers before implementation, not assumed
+   from this draft's citations.
+2. `interaction_reason::hook_decision` + suspend/resume wiring — **unchanged, still real work**, now
+   confirmed to also be the right mechanism for an external-dispatching `TurnMiddlewareHook` body, not
+   only the tool-call hook stage — one mechanism, two call sites, not two mechanisms.
+3. `SandboxBackend` awaitability — **unchanged, still a real, confirmed-current prerequisite.**
+4. Reference dispatcher example — **unchanged, still deferred.**
+5. `TurnBoundaryGuard`/`RunBoundaryGuard` (Q7) — **still real work, but re-scope against eleven exit
+   paths, not seven**, before implementing; the `unwound_via_exception` sentinel and
+   `RunBoundaryGuard`-in-`start_run()` placement reasoning both still hold structurally.
+6. **New, not in the original punch list**: a host wanting a synchronous or async, deny/rewrite-
+   capable, run/turn-*before*-model gating hook does not need new engine work at all — wire a
+   `TurnMiddlewareHook`. Worth documenting as the answer to part of Q1, in whatever ADR eventually
+   picks this work up, rather than re-building it.
+7. Run/turn-level gating hooks that need to *override an already-decided outcome* (the Claude-Code-
+   `Stop`-hook-shaped "force another round" capability) — **unchanged, still genuinely unresolved**,
+   for the same reason Q7 originally found: no exit path re-enters the loop after `co_return` finalizes
+   a coroutine's result. `TurnMiddlewareHook`'s *before*-model position cannot help with this either —
+   it fires too early to know a round is about to end.
+8. A declarative/config-file-driven hook registration surface — **unchanged, still deferred.**
+
+**Method note, for whoever picks this up next**: none of the above was assumed correct OR assumed
+stale — every claim in this addendum was checked against the real, current file before being written
+down as fixed or confirmed. That is the standard this addendum was held to, and the standard any
+future update to this draft should be held to as well, given how fast `agent_session.hpp` is moving.
