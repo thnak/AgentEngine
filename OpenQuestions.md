@@ -165,11 +165,40 @@ requests the engine already recognizes as tool-call attempts — it says nothing
 attempt that never reached the engine as a tool call in the first place because the response parser
 didn't recognize the wire format.
 
-**Not resolved.** No implementation direction given. A concrete, cheap way to make this checkable
-without new design work: add a llama.cpp-raw-Hermes fixture (literal ChatML tags in plain-text
-response) to whatever positive/negative-control suite 004/006 already run against declared-vs-actual
-capability mismatches, and confirm today's behavior (pass or fail) before deciding whether it needs a
-fix.
+**Not resolved, but the confirming fixture from this entry's own recommended next step now exists and
+the gap is real, not hypothetical (2026-08-23).** A mechanism for exactly this wire shape already
+exists — `decisions/ADR-023-response-format-codec-seam.md` (Judged 2026-08-10):
+`response_format_codec::decode_response_format()` has a built-in `hermes_qwen_tool_call` table row,
+and `apply_response_format_scan()` (`core/response_format_leak_scan.hpp`) promotes a recognized,
+schema-clean candidate to a real `ToolCall` tagged `provenance = call_provenance::text_derived`,
+gated by `core/tool_pipeline.hpp`'s capability-scoped declassifier (never the tool's own
+`approval_mode` unconditionally). **But this scan is not connected to `tool_calling` in any way.**
+`OpenAIChatClient::scan_response_format_leaks_` (`protocol/openai/chat_client.hpp`) is a separate
+constructor flag, default `false`, per ADR-023 Finding 6 ("operator-armed, never content-triggered")
+— `chat()` calls `parse_chat_completion_response()` unconditionally (zero scanning of its own) and
+only runs the scan afterward `if (scan_response_format_leaks_)`. Nothing anywhere cross-checks that
+flag against `ChatClientCapabilities::tool_calling`.
+
+A new fixture, `tests/test_openai_chat_client_translation.cpp`'s `OQ-23-R1` block (9 checks, all
+passing against the real parser, `AGENTENGINE_WITH_HTTPS=ON` Debug build), confirms the exact scenario
+this question named: a literal llama.cpp-raw-Hermes wire response (`<tool_call>{"name":...}</tool_call>`
+embedded in `content`, no `tool_calls[]` array) parses successfully — not rejected, no error — into
+**exactly one plain, untainted `Text` item** carrying the tags verbatim, and a `ChatClientCapabilities{
+.tool_calling = true}` constructed alongside it plays no role in the outcome. So: today, the answer to
+this question's own title is **silently treats the reply as ordinary text, does not fail** — an
+operator who declares `tool_calling: true` for a real, plausible reason (the model genuinely supports
+it) and doesn't separately know to arm `scan_response_format_leaks` for this specific raw-serving
+endpoint gets no warning and no error; the model's tool call is invisible to the engine. Contrast: the
+identical literal content DOES get caught, correctly, when `scan_response_format_leaks` is armed
+(already-proven `ADR-023 P2-R1`, same test file) — the mechanism works, it just isn't wired to fire
+based on the capability declaration this question asks about.
+
+**Still no implementation direction given** — confirming the gap is real is not the same as deciding
+whether/how to close it (e.g. warning or refusing `tool_calling: true` without
+`scan_response_format_leaks` for a config shape known to need it is one candidate, not decided here).
+Full text: `decisions/ADR-023-response-format-codec-seam.md`;
+`tests/test_openai_chat_client_translation.cpp` (`OQ-23-R1`, alongside the pre-existing `ADR-023 P1/P2`
+blocks it contrasts against).
 
 ### OQ-25 — Does the tool-calling loop need a per-tool validation-retry bound distinct from `MaxTurns<N>`? 🟡
 

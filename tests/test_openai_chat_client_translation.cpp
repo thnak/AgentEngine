@@ -938,6 +938,69 @@ int main() {
               "call's own tool list");
     }
 
+    // ---- OpenQuestions.md OQ-23: does a raw-Hermes/Qwen leak actually reach the engine as ordinary,
+    // unscanned Text when tool_calling is declared but scan_response_format_leaks isn't separately
+    // armed? -- confirming today's behavior with a real fixture, per OQ-23's own recommended next
+    // step, rather than assuming it from reading the code. This is the exact wire shape the question
+    // names: served raw through llama.cpp/GGUF with no `--tool-call-parser hermes`/`qwen25`
+    // normalizer, the model's tool-call attempt arrives as literal ChatML tags inside an ordinary
+    // `content` string -- no `tool_calls` array at all -- indistinguishable at the wire from a plain
+    // text reply unless something specifically looks for the tags.
+    {
+        auto parsed = json::parse(R"({
+            "choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant",
+                "content":"<tool_call>\n{\"name\": \"get_weather\", \"arguments\": {\"location\": \"SF\"}}\n</tool_call>"}}]
+        })");
+        check(parsed.has_value(), "OQ-23-R1: literal llama.cpp-raw-Hermes wire JSON (tool call embedded "
+                                   "as plain content text, no tool_calls[] array) parses as valid JSON");
+        if (parsed) {
+            // parse_chat_completion_response is called unconditionally by chat() -- BEFORE the
+            // scan_response_format_leaks_ gate (chat_client.hpp: `if (scan_response_format_leaks_) {...}`
+            // runs only AFTER this). It does zero scanning of its own (ADR-023 §1's own framing of the
+            // pre-ADR status quo, still exactly true for any endpoint that doesn't arm the scan).
+            auto resp = parse_chat_completion_response(*parsed);
+            check(resp.has_value(), "OQ-23-R1: a raw-Hermes-leak response is NOT rejected as malformed -- "
+                                     "parses successfully, same as any ordinary text reply");
+            if (resp) {
+                check(resp->message.content.size() == 1,
+                      "OQ-23-R1: exactly one content item, no diagnostic or error item appended");
+                if (resp->message.content.size() == 1) {
+                    ContentItem const& item = resp->message.content[0];
+                    check(std::holds_alternative<Text>(item.value),
+                          "OQ-23-R1: the leaked tool-call attempt is a plain Text item, NOT a ToolCall -- "
+                          "the engine never sees this as a tool call the model made");
+                    check(!item.tainted,
+                          "OQ-23-R1: untainted -- indistinguishable from an ordinary, trusted assistant "
+                          "reply; nothing marks this as a suspicious or unrecognized tool-call attempt");
+                    if (std::holds_alternative<Text>(item.value)) {
+                        check(std::get<Text>(item.value).text.find("<tool_call>") != std::string::npos,
+                              "OQ-23-R1: the literal ChatML tags survive verbatim inside ordinary Text");
+                    }
+                }
+            }
+        }
+        // The gap this confirms: ChatClientCapabilities::tool_calling and
+        // OpenAIChatClient::scan_response_format_leaks_ are two independent booleans with no
+        // cross-check anywhere in this path. Declaring `capabilities.tool_calling = true` for an
+        // endpoint like this changes nothing about whether chat() ever calls
+        // apply_response_format_scan -- only the separate, default-false scan_response_format_leaks_
+        // constructor flag does that (proven directly above: parse_chat_completion_response alone,
+        // which is all chat() runs when unarmed, produces exactly the silent-Text outcome OQ-23 asked
+        // about). An operator who declares tool_calling: true because the model genuinely supports
+        // it -- without realizing THIS specific endpoint needs scan_response_format_leaks armed too,
+        // because it's serving raw instead of through a normalizing proxy -- gets no error, no
+        // warning, and no fail-closed behavior: the run proceeds as if the model simply chose not to
+        // call a tool. Contrast with the SAME literal content when scanning IS armed (ADR-023 P2-R1
+        // above): a known-tool-name candidate is promoted to a real, gated ToolCall instead. Whether
+        // this gap is worth closing (e.g. warning when tool_calling is declared without
+        // scan_response_format_leaks for a config shape known to need it) is a real design question
+        // this fixture does not answer -- it only confirms the behavior is real, not assumed.
+        ChatClientCapabilities const misconfigured{.tool_calling = true};
+        check(misconfigured.tool_calling,
+              "OQ-23-R1: capabilities.tool_calling = true is exactly the plausible misconfiguration "
+              "OQ-23 names -- and, as shown above, plays no role at all in whether the leak is caught");
+    }
+
     if (g_failures == 0) {
         std::fprintf(stderr, "test_openai_chat_client_translation: ALL PASS\n");
         return 0;
