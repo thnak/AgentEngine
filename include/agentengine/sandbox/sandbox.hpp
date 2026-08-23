@@ -37,6 +37,23 @@ enum class platform_id : std::uint8_t {  // ae-naming-lint: allow platform_id �
     return static_cast<std::uint8_t>(a | static_cast<std::uint8_t>(b));
 }
 
+// docs/planning/sandbox-backend-registry-design-draft.md Revision 2 finding #5: every real
+// `resolve_strict()` call site before this was a test passing a literal `platform_id` -- nothing in
+// this codebase answered "what platform am I actually running on" as a value. An ordinary
+// `#ifdef`-gated `constexpr` (compile-time-resolvable, no RTTI, matching this header's own
+// convention), not a runtime probe -- 021 §2's target platform set is closed to exactly Windows and
+// Linux (macOS dropped, §7 OQ-1), so a third target is a build-time error here, not a silent
+// fallback.
+[[nodiscard]] constexpr platform_id current_platform() noexcept {
+#if defined(_WIN32)
+    return platform_id::windows_x86_64;
+#elif defined(__linux__)
+    return platform_id::linux_x86_64;
+#else
+#error "current_platform(): unsupported target platform (021 §2 names only Windows and Linux)"
+#endif
+}
+
 // 008 §3's "Cold start" column, as a closed set a human reads off `ProfileTraits` rather than a
 // free-text field or a number — 023's actual budgets stay `TBD-baselined` until M8 (milestone-2
 // breakdown, "what's deferred"), so this is a coarse class, not something G5 measures against.

@@ -10,10 +10,13 @@
 //   3. SandboxProfile<ConformingBackend> declared -> is_strict=false and traits == the backend's own
 //      real, compile-time ProfileTraits -- not a copy that could drift from what the type itself
 //      declares.
-//   4. check_sandbox_profile_availability() (agent_registry.hpp) never rejects either shape: the
+//   4. check_sandbox_profile_availability() (agent_registry.hpp) never rejects either shape when no
+//      SandboxBackendRegistry is supplied (every register_agent<A>() call below is zero-arg): the
 //      concrete-backend case is already proven safe at compile time (SandboxProfileArg<P>), and the
-//      Strict case has nothing to resolve against yet (no Engine-level backend registry, M2 scope) --
-//      both compiled agents register cleanly.
+//      Strict case stays the honest "not evaluated" pre-registry stub -- both compiled agents
+//      register cleanly. The real, registry-backed Strict resolution path (docs/planning/sandbox-
+//      backend-registry-design-draft.md) is proven separately in test_sandbox_backend_registry.cpp
+//      and test_agent_registry_sandbox_backend_registry.cpp.
 
 #include <cstdio>
 #include <string>

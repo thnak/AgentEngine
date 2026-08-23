@@ -44,6 +44,7 @@
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/tool.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
+#include "agentengine/sandbox/sandbox_backend_registry.hpp"
 #include "agentengine/trust/capability.hpp"
 
 namespace agentengine {
@@ -349,19 +350,24 @@ template <class... Policies>
     return {};
 }
 
-// ADR-012: real for the case it CAN be real about. When `P` named a concrete backend type directly,
-// `SandboxProfileArg<P>` already required `SandboxBackend<P>` at `SandboxProfile<P>`'s own
-// declaration site (compile time) -- a type that doesn't satisfy the concept, or isn't even
-// includable in this build (e.g. a wasm backend type without AGENTENGINE_WITH_WASM), fails to compile
-// before `register_agent<A>()` is ever instantiated, so there is no runtime "unavailable" case left
-// to check for that branch; `profile.is_strict == false` here is proof enough by construction.
-// `Strict` is the branch genuinely deferred: resolving it to a concrete backend needs the real set of
-// backends *this deployment* has available, which needs an Engine-level backend registry M2 does not
-// build (same shape of gap as `check_chat_client_credentials` above) --
-// `resolve_strict()`/`ProfileTraits` (sandbox/sandbox.hpp) are the tested, real ranking logic already
-// waiting for that registry (tests/test_sandbox_backend_contract.cpp).
-[[nodiscard]] inline result<void> check_sandbox_profile_availability(SandboxProfileDescriptor const&) {
-    return {};
+// ADR-012, real per docs/planning/sandbox-backend-registry-design-draft.md (Revision 2). When `P`
+// named a concrete backend type directly, `SandboxProfileArg<P>` already required
+// `SandboxBackend<P>` at `SandboxProfile<P>`'s own declaration site (compile time) -- a type that
+// doesn't satisfy the concept, or isn't even includable in this build (e.g. a wasm backend type
+// without AGENTENGINE_WITH_WASM), fails to compile before `register_agent<A>()` is ever
+// instantiated, so there is no runtime "unavailable" case left to check for that branch;
+// `desc.is_strict == false` here is proof enough by construction. `Strict` is the branch genuinely
+// deferred until a registry is supplied: with none (`registry == nullptr`), this stays the pre-M2
+// always-pass stub -- an honest "not evaluated," not a silent pass dressed up as enforcement, the
+// same shape `check_chat_client_credentials` above already uses. With one supplied, `Strict`
+// resolves against the registry's real, registered candidates (`SandboxBackendRegistry::
+// resolve_strict()`, sandbox/sandbox_backend_registry.hpp) -- `nullopt`/error there becomes 008 §3's
+// "no fallback -> startup fails" case here, for real.
+[[nodiscard]] inline result<void> check_sandbox_profile_availability(
+        SandboxProfileDescriptor const& desc, SandboxBackendRegistry const* registry) {
+    if (registry == nullptr) return {};
+    if (!desc.is_strict) return {};
+    return registry->resolve_strict(current_platform()).transform([](auto*) { return; });
 }
 
 // Stubbed: needs a per-tool backend-declaration policy tag that does not exist yet
@@ -446,7 +452,8 @@ concept has_agent_version = requires { { A::version } -> std::convertible_to<std
 
 template <class A, class... Policies>
 struct compiler<A, Agent<A, Policies...>> {
-    [[nodiscard]] static result<AgentMetadata> run(ChatClientRegistry const* registry) {
+    [[nodiscard]] static result<AgentMetadata> run(ChatClientRegistry const* registry,
+                                                     SandboxBackendRegistry const* sandbox_registry) {
         AgentMetadata meta;
         meta.agent_name = std::string(A::name);
         meta.agent_instructions = std::string(A::instructions);
@@ -469,7 +476,7 @@ struct compiler<A, Agent<A, Policies...>> {
         }
 
         meta.sandbox_profile = sandbox_profile_of<Policies...>();
-        if (auto r = check_sandbox_profile_availability(meta.sandbox_profile); !r) {
+        if (auto r = check_sandbox_profile_availability(meta.sandbox_profile, sandbox_registry); !r) {
             return std::unexpected(r.error());
         }
         if (auto r = check_tool_sandbox_profile_compatibility(); !r) return std::unexpected(r.error());
@@ -511,9 +518,17 @@ struct compiler<A, Agent<A, Policies...>> {
 // (`register_agent<A>()`, no arguments) keeps compiling and keeps its pre-M5 stubbed-check
 // behavior unchanged -- passing a real `ChatClientRegistry` opts a caller into the real
 // credential/OutputSchema-enforceability checks (agent_detail::compiler::run, above).
+//
+// docs/planning/sandbox-backend-registry-design-draft.md (Revision 2): `sandbox_registry` is a
+// second, independent additive parameter, same "opts a caller into the real check, unaffected
+// otherwise" contract as `registry` above -- every existing one-arg or zero-arg call site is
+// unaffected; passing a real `SandboxBackendRegistry` opts a caller into `Strict` actually
+// resolving against real, registered backends (check_sandbox_profile_availability, above) instead
+// of the pre-registry always-pass stub.
 template <class A>
-[[nodiscard]] result<AgentMetadata> register_agent(ChatClientRegistry const* registry = nullptr) {
-    return agent_detail::compiler<A, agent_detail::agent_base_t<A>>::run(registry);
+[[nodiscard]] result<AgentMetadata> register_agent(ChatClientRegistry const* registry = nullptr,
+                                                     SandboxBackendRegistry const* sandbox_registry = nullptr) {
+    return agent_detail::compiler<A, agent_detail::agent_base_t<A>>::run(registry, sandbox_registry);
 }
 
 // M2 Phase E task E3: the milestone's own headline exit-criterion sentence, made real -- "an agent
