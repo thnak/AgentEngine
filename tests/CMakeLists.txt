@@ -815,6 +815,14 @@ if(AGENTENGINE_WITH_HTTPS)
   target_link_libraries(test_workflow_graph_validation PRIVATE agentengine::core agentengine_warnings)
   add_test(NAME test_workflow_graph_validation COMMAND test_workflow_graph_validation)
 
+  # ---- OQ-19: the graph-layer half of the agent-executor CapabilitySet gate -- Executor::
+  # capability_ceiling, check_workflow_executable(wf, contexts)'s contexts-aware overload, and the
+  # YAML compiler's explicit refusal of an authored capability_ceiling key (I6: refused loudly, never
+  # silently dropped). Pure data + the shared validator, no rt:: -- default suite.
+  add_executable(test_workflow_agent_executor_gate test_workflow_agent_executor_gate.cpp)
+  target_link_libraries(test_workflow_agent_executor_gate PRIVATE agentengine::core agentengine_warnings)
+  add_test(NAME test_workflow_agent_executor_gate COMMAND test_workflow_agent_executor_gate)
+
   # ---- Milestone 6 Phase G: 014 §7's rendering and diffing (introspection.hpp) -------------------
   # Render is a TOTAL function -- the falsifiable bar is "a valid workflow that cannot be drawn" --
   # proven against a graph exercising all four executor kinds, all six edge kinds, a fallback
@@ -1261,6 +1269,16 @@ add_test(NAME test_rt_workflow_supervisor COMMAND test_rt_workflow_supervisor)
 add_executable(test_rt_workflow_supervisor_request_port test_rt_workflow_supervisor_request_port.cpp)
 target_link_libraries(test_rt_workflow_supervisor_request_port PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_workflow_supervisor_request_port COMMAND test_rt_workflow_supervisor_request_port)
+
+# ---- OQ-19: the runtime half of the agent-executor CapabilitySet bridge (rt/agent_workflow_
+# executor.hpp) -- AgentExecutorBodyTag's positive control, WorkflowSupervisor::initialize()'s
+# structural-marker refusal (closing test_workflow_graph_validation.cpp's own stale-comment gap),
+# a real end-to-end dispatch through a scripted AgentSession, cyclic history accumulation within one
+# run, the concurrent-same-node duplicate-delivery quarantine (both the default `fail` and a
+# `propagate` failure policy), and the checkpoint/resume documented fresh-session limitation.
+add_executable(test_rt_agent_workflow_executor test_rt_agent_workflow_executor.cpp)
+target_link_libraries(test_rt_agent_workflow_executor PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_agent_workflow_executor COMMAND test_rt_agent_workflow_executor)
 
 # ---- ADR-037 Phase 3 -- 014 §7's live-view bullet (WorkflowSupervisor::enable_live_view) against
 # rt::WorkflowSupervisor -- supersedes the old Quark-actor-based test_workflow_live_view.cpp (LV1/LV2,

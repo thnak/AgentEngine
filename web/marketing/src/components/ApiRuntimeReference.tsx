@@ -107,10 +107,13 @@ const copy = {
         <code>SessionContext</code> — chaining so a later provider could react to an earlier
         one's merged output was designed, red-teamed, and rejected (
         <code>OpenQuestions.md</code> OQ-18). Need a provider to react to another's output
-        anyway? Write a purpose-built composite (like <code>HistoryAndSkillsProvider</code>)
-        that calls its sub-providers directly — it knows exactly what each one produced, by
-        construction. ADR-066, below, later closed OQ-18's own missing-provenance objection on
-        its own terms, without reopening the fan-out-vs-chaining decision itself.
+        anyway? Write a purpose-built composite that calls its sub-providers directly — it
+        knows exactly what each one produced, by construction. (An early proof of this pattern,{" "}
+        <code>HistoryAndSkillsProvider</code>, was a hand-written two-provider composite; ADR-074
+        later consolidated it into the general <code>ComposedContextProvider&lt;Ms...&gt;</code>{" "}
+        you'll see used throughout this page.) ADR-066, below, later closed OQ-18's own
+        missing-provenance objection on its own terms, without reopening the
+        fan-out-vs-chaining decision itself.
       </>
     ),
     s2bEyebrow: "ADR-066 — the OQ-18 prerequisite",
@@ -539,11 +542,14 @@ const copy = {
         nhìn thấy <code>SessionContext</code> — việc xâu chuỗi để một provider sau có thể phản
         ứng lại đầu ra đã gộp của provider trước đã được thiết kế, red-team, và bị bác bỏ (
         <code>OpenQuestions.md</code> OQ-18). Vẫn cần một provider phản ứng lại đầu ra của
-        provider khác? Hãy viết một composite chuyên biệt (như{" "}
-        <code>HistoryAndSkillsProvider</code>) gọi trực tiếp các sub-provider của nó — nó biết
-        chính xác mỗi cái tạo ra gì, ngay từ cấu trúc. ADR-066, ngay bên dưới, sau đó đã đóng
-        lại phản bác "thiếu provenance" của chính OQ-18 theo cách riêng của nó, mà không mở lại
-        quyết định fan-out-hay-xâu-chuỗi.
+        provider khác? Hãy viết một composite chuyên biệt gọi trực tiếp các sub-provider của nó
+        — nó biết chính xác mỗi cái tạo ra gì, ngay từ cấu trúc. (Bằng chứng ban đầu cho mẫu
+        này, <code>HistoryAndSkillsProvider</code>, là một composite viết tay cho đúng hai
+        provider; ADR-074 sau đó đã hợp nhất nó vào{" "}
+        <code>ComposedContextProvider&lt;Ms...&gt;</code> tổng quát mà bạn sẽ thấy dùng xuyên
+        suốt trang này.) ADR-066, ngay bên dưới, sau đó đã đóng lại phản bác "thiếu provenance"
+        của chính OQ-18 theo cách riêng của nó, mà không mở lại quyết định
+        fan-out-hay-xâu-chuỗi.
       </>
     ),
     s2bEyebrow: "ADR-066 — điều kiện tiên quyết của OQ-18",

@@ -222,7 +222,7 @@ const copy = {
         state can call it again for free.
       </>
     ),
-    s7Eyebrow: "core/history_and_skills_provider.hpp — wiring into AgentSession",
+    s7Eyebrow: "core/composed_context_provider.hpp — wiring into AgentSession",
     s7Heading: (
       <>
         One <code>HistoryProviderT</code> slot, two contributors — and a real ordering bug
@@ -232,11 +232,12 @@ const copy = {
     s7Body: (
       <>
         <code>AgentSession&lt;ChatClientT, StateT, HistoryProviderT&gt;</code> has exactly one
-        history-provider slot. <code>HistoryAndSkillsProvider&lt;H, S&gt;</code> composes a
+        history-provider slot. <code>ComposedContextProvider&lt;H, S&gt;</code> composes a
         history provider and a <code>SkillsProvider</code> into that one slot via{" "}
-        <code>assemble_context</code>, built once in its constructor — never rebuilt inside{" "}
-        <code>on_context()</code>, or <code>SkillsProvider</code>'s resolve-once/freeze
-        guarantee would silently break every turn.
+        <code>assemble_context</code>, engaged once via its constructor (or an explicit{" "}
+        <code>engage()</code> call) — never rebuilt inside <code>on_context()</code>, or{" "}
+        <code>SkillsProvider</code>'s resolve-once/freeze guarantee would silently break every
+        turn.
       </>
     ),
     wrongLabel: "Wrong — history pushed first",
@@ -262,10 +263,10 @@ const copy = {
     ),
     s7Trailing: (
       <>
-        <code>HistoryAndSkillsProvider&lt;H, S&gt;</code> is hand-written for exactly two
-        contributors. The generic version — any N real <code>ContextProvider</code>s (history,
-        skills, memory, …) in one slot, same <code>assemble_context</code> underneath — is{" "}
-        <code>ComposedContextProvider&lt;Ms...&gt;</code>, walked through on the{" "}
+        <code>ComposedContextProvider&lt;Ms...&gt;</code> is the one general composite type for
+        any N real <code>ContextProvider</code>s (history, skills, memory, …) in one slot, same{" "}
+        <code>assemble_context</code> underneath — declare <code>Ms...</code> in the wire order
+        you want, no separate hand-written composite needed. Walked through in more depth on the{" "}
         <a href={`${SITE_BASE}/api/runtime.html#context-providers`}>
           AgentSession &amp; ChatClient page
         </a>
@@ -508,7 +509,7 @@ const copy = {
         miễn phí.
       </>
     ),
-    s7Eyebrow: "core/history_and_skills_provider.hpp — đấu nối vào AgentSession",
+    s7Eyebrow: "core/composed_context_provider.hpp — đấu nối vào AgentSession",
     s7Heading: (
       <>
         Một slot <code>HistoryProviderT</code>, hai bên đóng góp — và một lỗi thứ tự có
@@ -518,11 +519,12 @@ const copy = {
     s7Body: (
       <>
         <code>AgentSession&lt;ChatClientT, StateT, HistoryProviderT&gt;</code> có đúng một
-        slot history-provider. <code>HistoryAndSkillsProvider&lt;H, S&gt;</code> kết hợp một
+        slot history-provider. <code>ComposedContextProvider&lt;H, S&gt;</code> kết hợp một
         history provider và một <code>SkillsProvider</code> vào slot duy nhất đó thông qua{" "}
-        <code>assemble_context</code>, được xây một lần trong constructor của nó — không bao
-        giờ xây lại bên trong <code>on_context()</code>, nếu không đảm bảo
-        resolve-once/freeze của <code>SkillsProvider</code> sẽ âm thầm bị phá vỡ ở mỗi lượt.
+        <code>assemble_context</code>, được engage một lần qua constructor (hoặc một lời gọi{" "}
+        <code>engage()</code> tường minh) — không bao giờ xây lại bên trong{" "}
+        <code>on_context()</code>, nếu không đảm bảo resolve-once/freeze của{" "}
+        <code>SkillsProvider</code> sẽ âm thầm bị phá vỡ ở mỗi lượt.
       </>
     ),
     wrongLabel: "Sai — đẩy history trước",
@@ -549,11 +551,11 @@ const copy = {
     ),
     s7Trailing: (
       <>
-        <code>HistoryAndSkillsProvider&lt;H, S&gt;</code> được viết tay cho đúng hai
-        contributor. Phiên bản tổng quát — bất kỳ N <code>ContextProvider</code> thật nào
-        (history, skill, memory, …) trong một slot, vẫn dùng <code>assemble_context</code>{" "}
-        bên dưới — là <code>ComposedContextProvider&lt;Ms...&gt;</code>, được đi qua chi tiết
-        ở{" "}
+        <code>ComposedContextProvider&lt;Ms...&gt;</code> là type composite tổng quát duy nhất
+        cho bất kỳ N <code>ContextProvider</code> thật nào (history, skill, memory, …) trong một
+        slot, vẫn dùng <code>assemble_context</code> bên dưới — khai báo <code>Ms...</code> theo
+        đúng thứ tự trên dây bạn muốn, không cần một composite viết tay riêng nữa. Được đi qua
+        chi tiết hơn ở{" "}
         <a href={`${SITE_BASE}/api/runtime.html#context-providers`}>
           trang AgentSession &amp; ChatClient
         </a>

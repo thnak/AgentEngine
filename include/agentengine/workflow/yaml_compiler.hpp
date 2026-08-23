@@ -85,6 +85,29 @@ namespace json = agentengine::json;
     if (json::Value const* it = node.find("input_type"); it && it->is_string()) ex.input_type = it->as_string();
     if (json::Value const* ot = node.find("output_type"); ot && ot->is_string()) ex.output_type = ot->as_string();
 
+    // OQ-19 (docs/planning/agent-as-workflow-executor-design-draft.md §5 item 3): `Executor::
+    // capability_ceiling` (graph.hpp) has no YAML counterpart yet -- parsing a capability LIST from
+    // YAML needs the same per-kind registry work `agent_yaml_compiler.hpp`'s own `spec.capabilities`
+    // already documents as a separate, not-yet-built gap (that file's own top comment: "capability_
+    // ceiling stays empty too... needs the same missing registry... PLUS real per-kind [parsing]").
+    // Silently dropping an authored `capability_ceiling:` key here (this compiler's own established
+    // convention for a field `Executor` doesn't declare -- "honestly dropped, not fabricated", above)
+    // would reproduce exactly the I6 drift hazard `test_workflow_graph_validation.cpp`'s own decision
+    // 6 exists to prevent: a YAML-authored agent node's declared ceiling silently vanishing while the
+    // C++ `WorkflowBuilder`/`TypedExecutor` form enforces it. Refused loudly instead -- a refused
+    // graph is recoverable, a quietly reinterpreted one is not (`check_workflow_executable()`'s own
+    // words, graph.hpp).
+    if (node.find("capability_ceiling") != nullptr) {
+        return std::unexpected(error{
+            failure_class::contract,
+            "executor '" + ex.id +
+                "' declares capability_ceiling, which the YAML compiler does not parse yet (needs "
+                "the same per-kind capability registry work agent_yaml_compiler.hpp's own "
+                "spec.capabilities gap already names) -- declare this executor's ceiling via the C++ "
+                "WorkflowBuilder/TypedExecutor form instead, or drop the key",
+            "yaml_compiler.executor_capability_ceiling_unsupported"});
+    }
+
     return ex;
 }
 
