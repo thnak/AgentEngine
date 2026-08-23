@@ -125,6 +125,23 @@ public:
         return {};
     }
 
+    // docs/planning/microvm-first-party-backend-design-draft.md Revision 2, red-team finding #1
+    // (security/I2-I3 lens): `register_backend()`'s `mode` parameter defaults to
+    // `strict_eligibility::eligible`, which is correct for the common case but is a landmine for a
+    // hardware-isolation-class backend (a future microVM-style `SandboxBackend`) -- a single call
+    // site that omits the third argument would silently make it `Strict`-eligible process-wide,
+    // exactly the blast-radius `named_only` exists to prevent. This overload closes that
+    // structurally rather than by convention: it never accepts a `mode` argument, so anything
+    // registered through it is `named_only` for the lifetime of this registry object. There is
+    // deliberately no promote-to-eligible operation here -- widening such a backend to compete in
+    // `Strict` resolution is a distinct, visible host decision made by calling `register_backend()`
+    // directly instead, not something this entry point can do by omission.
+    template <SandboxBackend B>
+    [[nodiscard]] result<void> register_hardware_isolation_backend(std::string name,
+                                                                     std::shared_ptr<B> instance) {
+        return register_backend(std::move(name), std::move(instance), strict_eligibility::named_only);
+    }
+
     // §1 Q2 (design draft): 008 §3's `Profile::Strict` resolution rule, applied to the real,
     // registered candidate set -- filters to `strict_eligible` entries only (`named_only` entries
     // never compete here), hands `sandbox::resolve_strict()` the real candidates in deterministic
