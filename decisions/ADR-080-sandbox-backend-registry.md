@@ -1,4 +1,4 @@
-# ADR-079 — Does `Strict` sandbox-profile resolution get a real, host-curated backend registry, or stay a permanent no-op?
+# ADR-080 — Does `Strict` sandbox-profile resolution get a real, host-curated backend registry, or stay a permanent no-op?
 
 **Status:** Proposed (design → red-team → prove phases complete; awaiting project-owner "Judged"
 sign-off, matching ADR-070/071/072's own flow).
