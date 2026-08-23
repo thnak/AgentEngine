@@ -34,10 +34,26 @@
 //         whatsoever (AgentSpawnToolProvider's own "never advertise a tool the model could never
 //         call" gate, mirroring ScheduleWakeupTool's precedent) -- the parent's own ChatRequest never
 //         even lists "agent.spawn" as a callable tool.
+//   T7 -- ADR-079 §7's own named residual, closed here: a REAL multi-OS-thread stress of
+//         SpawnPump::submit() itself (not tests/test_agent_spawn_worktree.cpp's own T10, which is
+//         explicitly that file's "narrower substitute for the not-yet-built SpawnPump" -- SpawnPump
+//         now exists, so this is the real thing). 16 real std::thread callers submit() concurrently
+//         against ONE shared SpawnPump/SpawnCostBudget pair, sized so the pool is exhausted
+//         mid-run (2000-token pool, 130-token cost, 16 callers -- exactly 15 can succeed): proves no
+//         double-spend (SpawnCostBudget::remaining() lands exactly on the arithmetic bound, not
+//         merely "<= pool", closing the exact RC-2/WT-2 double-spend hazard the file banner names),
+//         no lost/duplicate child_id (every successful mint's child_id is pairwise distinct, proving
+//         the pump's worker thread is the sole caller of allocate_spawn_seq()/derive_spawn_child_id()
+//         even under real concurrent submit() pressure), and every rejection carries the SAME real
+//         "spawn_cost_budget.exhausted" code (not a crash, not a wrong/generic error) -- repeated 25
+//         times with a fresh pump each round, since a single lucky pass proves little about a
+//         cross-thread-resume hazard.
 
 #include <cstdio>
 #include <memory>
+#include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "agentengine/core/agent_registry.hpp"
@@ -420,6 +436,93 @@ int main() {
                   agentengine::text_of(unarmed_response->message) == "no-tool-needed",
               "T6: with no cap::AgentCall grant, agent.spawn was never advertised as a callable tool "
               "at all -- the ordinary text response is all that happened");
+    }
+
+    // ---- T7: SpawnPump::submit() under REAL cross-thread contention (ADR-079 §7 residual) ---------
+    {
+        constexpr int kThreads          = 16;
+        constexpr std::uint64_t kPool   = 2000;
+        constexpr std::uint64_t kCost   = 130;
+        // floor(kPool / kCost) -- the exact number of the 16 concurrent submits that CAN succeed;
+        // computed, not eyeballed, so a future constant change here can't silently desync the
+        // asserted expectation from the arithmetic it's supposed to prove.
+        constexpr int kExpectedSuccesses = static_cast<int>(kPool / kCost);
+        static_assert(kExpectedSuccesses > 0 && kExpectedSuccesses < kThreads,
+                      "T7: the scenario must genuinely exhaust the pool mid-run, not merely satisfy "
+                      "or starve every caller -- otherwise this proves nothing about the boundary");
+
+        constexpr int kRounds = 25;  // one lucky pass proves little about a cross-thread-resume hazard
+        int rounds_with_wrong_success_count = 0;
+        int rounds_with_wrong_remaining     = 0;
+        int rounds_with_id_collision        = 0;
+        int rounds_with_bad_failure_code    = 0;
+
+        for (int round = 0; round < kRounds; ++round) {
+            InMemoryAppendLogStore ref_store;
+            SpawnCostBudget        cost_pool;
+            cost_pool.initialize(kPool);
+            SpawnPump<InMemoryAppendLogStore> pump(cost_pool, ref_store);
+
+            CapabilitySet const caller_held = CapabilitySet::grant_root({});  // scratch mode needs
+                                                                               // no FsRead/FsWrite
+            agentengine::Ref const caller_ref{"session:caller-t7", ""};
+
+            // Fixed-size, one slot per thread -- each thread writes ONLY its own index, so there is
+            // no shared-container race to reason about beyond SpawnPump's own internals, keeping this
+            // test's own signal isolated to the ONE thing it means to prove.
+            std::vector<agentengine::result<SpawnPump<InMemoryAppendLogStore>::SpawnMintResult>>
+                results(kThreads);
+
+            std::vector<std::thread> workers;
+            workers.reserve(kThreads);
+            for (int i = 0; i < kThreads; ++i) {
+                workers.emplace_back([&, i] {
+                    typename SpawnPump<InMemoryAppendLogStore>::SpawnMintRequest req;
+                    req.cost            = kCost;
+                    req.caller_ref      = caller_ref;
+                    req.caller_principal = Principal{"caller-t7", ""};
+                    req.caller_held      = &caller_held;
+                    req.worktree_mode    = agentengine::sharing_mode::scratch;
+                    req.caller_mount_id  = "/caller";
+                    results[static_cast<std::size_t>(i)] = pump.submit(std::move(req));
+                });
+            }
+            for (auto& t : workers) t.join();
+
+            int successes = 0;
+            std::set<std::string> child_ids;
+            bool all_failures_correctly_coded = true;
+            for (auto const& r : results) {
+                if (r.has_value()) {
+                    ++successes;
+                    child_ids.insert(r->child_id);
+                } else if (r.error().code != "spawn_cost_budget.exhausted") {
+                    all_failures_correctly_coded = false;
+                }
+            }
+
+            if (successes != kExpectedSuccesses) ++rounds_with_wrong_success_count;
+            if (cost_pool.remaining() != kPool - static_cast<std::uint64_t>(successes) * kCost)
+                ++rounds_with_wrong_remaining;
+            if (static_cast<int>(child_ids.size()) != successes) ++rounds_with_id_collision;
+            if (!all_failures_correctly_coded) ++rounds_with_bad_failure_code;
+        }
+
+        check(rounds_with_wrong_success_count == 0,
+              "T7: every round, exactly floor(pool/cost) of 16 REAL concurrent submit() callers "
+              "succeeded -- no round over- or under-granted under real cross-thread contention");
+        check(rounds_with_wrong_remaining == 0,
+              "T7: every round, SpawnCostBudget::remaining() landed EXACTLY on successes*cost "
+              "subtracted from the pool -- no double-spend and no lost update across 16 real threads "
+              "racing submit() against the same pool (the exact RC-2/WT-2 hazard this file's own top "
+              "comment names)");
+        check(rounds_with_id_collision == 0,
+              "T7: every round, every successful mint's child_id was pairwise distinct -- the pump's "
+              "single worker thread remained the sole caller of allocate_spawn_seq()/"
+              "derive_spawn_child_id() even under real concurrent submit() pressure");
+        check(rounds_with_bad_failure_code == 0,
+              "T7: every rejected submit(), every round, failed with the real "
+              "spawn_cost_budget.exhausted code -- not a crash, not a wrong/generic error");
     }
 
     if (g_failures == 0) {
