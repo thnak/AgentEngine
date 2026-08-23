@@ -2217,6 +2217,26 @@ if(NOT WIN32)
   endif()
 endif()
 
+# ---- KataBackend end-to-end test (src/backends/kata/) -- Linux only, requires a real Kata/-------
+# containerd deployment (kata_backend.hpp's own header comment has the exact precondition). Gated
+# behind its own flag, separate from AGENTENGINE_LINUX_SANDBOX_TESTS, since it needs a materially
+# heavier deployment (containerd + a pinned Kata Containers release + KVM) than that flag's own
+# namespace/cgroup-only precondition.
+if(NOT WIN32 AND AGENTENGINE_BUILD_KATA_BACKEND)
+  option(AGENTENGINE_KATA_SANDBOX_TESTS
+    "Build/run the KataBackend end-to-end test (needs a running containerd + Kata Containers deployment with a kata-clh runtime class already configured)"
+    OFF)
+  if(AGENTENGINE_KATA_SANDBOX_TESTS)
+    add_executable(test_kata_backend_linux test_kata_backend_linux.cpp)
+    target_link_libraries(test_kata_backend_linux PRIVATE
+      agentengine::core agentengine::kata_backend agentengine_warnings)
+    add_test(NAME test_kata_backend_linux COMMAND test_kata_backend_linux)
+    # Real VM boot + several `ctr` round trips per case -- generous but bounded, matching this
+    # suite's own Machine Safety discipline (CLAUDE.md) rather than an unbounded wait.
+    set_tests_properties(test_kata_backend_linux PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE)
+  endif()
+endif()
+
 # ---- Capability bearer-token prove phase (decisions/ADR-005-capability-bearer-tokens-cross-process.md)
 # Resolves OQ-3. Design A (capability_token.hpp) correctness + red-team, Design B
 # (capability_registry.hpp) red-team, and the verify()-vs-check() cost comparison §5 rests on.

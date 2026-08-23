@@ -205,6 +205,39 @@ if(NOT WIN32)
   add_library(agentengine::linux_native_jail_backend ALIAS agentengine_linux_native_jail_backend)
 endif()
 
+# ---- KataBackend (src/backends/kata/) -- OPTIONAL, OFF by default, Linux only -------------------
+# Implements agentengine::SandboxBackend (008 §2-3) via Kata Containers -- docs/planning/microvm-
+# first-party-backend-design-draft.md Design A, narrowed per that draft's own §7 C2 finding (ONE
+# pinned runtime class -- cloud-hypervisor/`kata-clh`, not QEMU -- to bound the CVE-tracking surface
+# the way `decisions/ADR-013-...mbedtls-vendoring.md` bounds mbedTLS's). Reopen condition (i)
+# (`native-jail`'s own 008 §9 gate reaching Judged on both platforms) was independently re-verified
+# met on 2026-08-23 before this option existed -- see `decisions/ADR-004-...md`/`ADR-083-...md`.
+#
+# No new C++ dependency is vendored here: this backend shells out to the `ctr` CLI already needed to
+# operate any Kata/containerd deployment at all (kata_backend.hpp's own header comment has the full
+# mechanism and residuals -- SLICE 1 only, `SandboxSpec::capabilities`/`mounts`/`limits`/`net` are
+# NOT yet enforced, named honestly there rather than silently assumed). OFF by default so a host that
+# never wants the KVM/Kata/containerd runtime dependency doesn't pay for it -- no new required
+# toolchain for the v1 completeness target (`native-jail`), mirroring
+# `AGENTENGINE_BUILD_PYTHON_RUNNER`'s own posture for this project's other opt-in heavy dependency.
+option(AGENTENGINE_BUILD_KATA_BACKEND
+  "Build the first-party KataBackend (Linux only; requires a running containerd + Kata Containers deployment with a kata-clh runtime class already configured -- see src/backends/kata/kata_backend.hpp)"
+  OFF)
+
+if(NOT WIN32 AND AGENTENGINE_BUILD_KATA_BACKEND)
+  add_library(agentengine_kata_backend STATIC
+    src/backends/kata/kata_backend.cpp)
+  target_include_directories(agentengine_kata_backend PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  target_link_libraries(agentengine_kata_backend PUBLIC agentengine::core)
+  target_link_libraries(agentengine_kata_backend PRIVATE agentengine_warnings)
+  add_library(agentengine::kata_backend ALIAS agentengine_kata_backend)
+elseif(WIN32 AND AGENTENGINE_BUILD_KATA_BACKEND)
+  message(FATAL_ERROR
+    "AGENTENGINE_BUILD_KATA_BACKEND=ON is Linux-only (kata_backend.hpp's own §1 platform split) -- "
+    "not buildable on WIN32.")
+endif()
+
 # ---- native_process backend (src/backends/native_process/) -- OPTIONAL, OFF by default ---------
 # Implements decisions/ADR-071-native-unsandboxed-process-execution-providers.md: real, UNSANDBOXED
 # host process spawning for NativeShellProvider/NativeBashProvider/NativePythonProvider/
