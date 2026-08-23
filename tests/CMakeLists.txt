@@ -2047,6 +2047,19 @@ if(WIN32)
   # already has its own bounded deadline.
   set_tests_properties(test_job_object_limits PROPERTIES TIMEOUT 90)
 
+  # ---- ADR-004 SS11 item 4 decision spike: LPAC vs regular AppContainer -------------------------
+  # Not a regression test (no ongoing "must pass" claim about LPAC itself) -- a one-time decision
+  # experiment, kept in the tree (unlike the ADR's own original ac_setup.cpp/ac_run.cpp spike,
+  # never committed) so the evidence is reproducible, not merely quoted in the ADR's prose.
+  add_executable(adr004_lpac_decision_spike adr004_lpac_decision_spike.cpp)
+  target_link_libraries(adr004_lpac_decision_spike PRIVATE
+    agentengine::core agentengine::native_jail_backend agentengine_warnings)
+  target_compile_definitions(adr004_lpac_decision_spike PRIVATE
+    AE_HOSTILE_CHILD_EXE="$<TARGET_FILE:job_object_hostile_child>")
+  add_dependencies(adr004_lpac_decision_spike job_object_hostile_child)
+  add_test(NAME adr004_lpac_decision_spike COMMAND adr004_lpac_decision_spike)
+  set_tests_properties(adr004_lpac_decision_spike PROPERTIES TIMEOUT 60)
+
   # ---- NativeJailBackend end-to-end (M2 Phase C task C2, 008 §1b/§2/§3) -------------------------
   add_executable(test_native_jail_backend_windows test_native_jail_backend_windows.cpp)
   target_link_libraries(test_native_jail_backend_windows PRIVATE

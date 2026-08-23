@@ -1,18 +1,24 @@
 # ADR-004 — Does AppContainer + Job Object satisfy `native-jail`'s Windows contract for `PythonRunner`/`ShellRunner`, across pure-Python, native-extension, and CodeAct-authored guest code?
 
-- **Status:** **Spiked, not Judged.** A single design was stated and exercised against a real
-  interpreter this session (2026-08-02) — not a full `design → red-team → prove → judge` cycle
-  (`decisions/README.md`). No competing design was implemented side-by-side, and no independent
-  red-team pass attacked the design before evidence was gathered. What follows is real, executed
-  evidence with a positive control for its headline finding (§6), not argument — but it is scoped
-  honestly as a spike, and this ADR should not be cited as settling 008 §3's `native-jail` Windows
-  backend without a follow-up red-team pass. **§10 (added later the same day) builds and measures
-  the Job Object resource-limit layer §6 finding 3 originally left unbuilt** — real code
-  (`src/backends/native_jail/job_object_limits.{hpp,cpp}`), a real test
-  (`tests/test_job_object_limits.cpp`), and an 11-run measurement with a headline finding of its own:
-  `cpu_ms`/`JOB_OBJECT_LIMIT_JOB_TIME` is unreliable and must not be the trusted enforcement point.
+- **Status:** **Judged (2026-08-23).** Was "Spiked, not Judged" from 2026-08-02 through this update:
+  a single design stated and exercised against a real interpreter, not a full
+  `design → red-team → prove → judge` cycle — no competing design side-by-side, no independent
+  red-team pass. **§12 (2026-08-23) is that missing red-team pass, real and independent** (a fresh
+  reviewer with no prior context on this design, per this project's own "by a reviewer who did not
+  write it" bar), run against the REAL, shipped `native_jail_backend.cpp`/`app_container_profile.cpp`/
+  `job_object_limits.cpp` — not the original spike code, which no longer exists as such. It found one
+  **BLOCKING** finding (executed, reproduced, not theoretical: a zero-capability AppContainer child
+  could inherit and read an unrelated live host handle, defeating the AC-S1 "no outbound socket"
+  claim this ADR's own §5.3 treats as its strongest kernel-enforced result) plus three REAL GAP/MINOR
+  findings (two host-side resource leaks, one more ambient-authority instance of the same class as
+  the blocking finding). **All four were fixed in this same pass, re-verified by a full rebuild and
+  test run (0 new regressions, the pre-existing/already-disclosed 6 Slice-2 failures unchanged), and
+  are not residuals — they are closed, real code changes.** §12 has the full record. Separately,
+  §11 item 4 (LPAC vs. regular AppContainer) is also closed this same day, by real execution: LPAC
+  does not fix the `win.ini`/`hosts` finding, so the design stays with regular AppContainer.
 - **Date:** 2026-08-02 (design + AppContainer spike); 2026-08-02, later the same day (§10, Job
-  Object build-and-measure addendum).
+  Object build-and-measure addendum); 2026-08-23 (§11 item 4 closed by execution; §12 independent
+  red-team pass + fixes; promoted to Judged).
 - **Scope:** The Windows kernel-jail layer of the `native-jail` profile (`src/backends/native_jail/`)
   — AppContainer process isolation plus Job Object resource limits — as the §1b **layer 3 backstop**
   underneath `ShellRunner` (ADR-001) and `PythonRunner`'s import gating (ADR-002, ADR-003), both of
@@ -239,10 +245,27 @@ Findings are marked using ADR-001/002/003's severity vocabulary.
    a new, more specific finding than "unvalidated" (§10.5). 021 Q2's core question is now answered
    for memory/pid (matches expectations) and answered differently than assumed for CPU time (does
    not).
-4. **[REAL GAP] LPAC was not tested.** §3's rejection of LPAC as unlikely to close finding 1 is
-   reasoned from the ACL evidence in §5.3 (the `ALL RESTRICTED APPLICATION PACKAGES` ACE is already
-   present), not from running the design under LPAC. If LPAC turns out to change AC-S3's outcome for
-   some file class it should be re-verified, not assumed from this ADR's reasoning alone.
+4. **[RESOLVED — 2026-08-23] LPAC was not tested; now it has been, with a real, executed, decisive
+   result.** `tests/adr004_lpac_decision_spike.cpp` (new, kept in the tree, not ephemeral scratch
+   like this ADR's original `ac_setup.cpp`/`ac_run.cpp`) reuses the real, shipped
+   `AppContainerProfile` class and mirrors `native_jail_backend.cpp`'s exact `CreateProcessW`/
+   attribute-list construction, adding exactly one attribute for the LPAC arm:
+   `PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY =
+   PROCESS_CREATION_ALL_APPLICATION_PACKAGES_OPT_OUT` (the literal definition of an LPAC launch).
+   Run three times directly on this machine's real Windows 11 host (not a spike reasoned from ACL
+   inspection): the regular-AppContainer arm reproduces §5.3's already-measured `win.ini` leak
+   exactly (`ESCAPE_OK`) with its positive control (an ungranted, non-curated secret file) correctly
+   `ESCAPE_DENIED` — confirming the harness itself is faithful before trusting its LPAC result. The
+   LPAC arm: `win.ini` **still** `ESCAPE_OK`, `hosts` **still** `ESCAPE_OK`, and its own positive
+   control still correctly `ESCAPE_DENIED` (so LPAC's own launch mechanism works — this is not a
+   "the child failed to start" false negative). **LPAC does not close finding 1** — the
+   `ALL RESTRICTED APPLICATION PACKAGES` ACE §5.3 already observed on `win.ini`/`hosts` is exactly
+   what LPAC processes still carry, confirming §3's original reasoning-only expectation with real
+   execution. **Decision: stay with regular AppContainer.** LPAC would add real complexity (a
+   second capability-restriction axis to reason about, test, and keep in sync across both
+   `CreateProcessW` call sites) for zero measured security benefit on the one finding it was
+   proposed to fix; nothing else in this design's evidence base depends on the
+   `ALL_APPLICATION_PACKAGES` SID specifically, so there is no other reason to adopt it either.
 5. **[HOLDS]** AC-C1/AC-C2/AC-C3/AC-S1/AC-S2 all held under the executed evidence, with the
    worktree-write positive control confirming the mechanism can both allow and deny rather than
    failing everything indiscriminately.
@@ -263,7 +286,7 @@ Findings are marked using ADR-001/002/003's severity vocabulary.
 | AC-JOB-3 (`cpu_ms`/`JOB_OBJECT_LIMIT_JOB_TIME` is a reliable enforcement point) | **WRONG** — §10.2/§10.5: fired in 3/11 runs, with 1.38x-8.22x overrun when it did; the host `wall_ms` watcher was the actual enforcement in 8/11 runs. |
 | AC-JOB-4 (active-process limit contains, positive control doesn't) | **CORRECT** — §10.2, exact (2 of 5 spawn attempts succeeded under a cap of 3 total). |
 | AC-JOB-5 (`JobObjectLimits` destructor tears down its process) | **CORRECT** — §10.2. |
-| LPAC vs. regular AppContainer for finding 1 | **INCONCLUSIVE** — reasoned, not tested (§6.4). |
+| LPAC vs. regular AppContainer for finding 1 | **CORRECT** (2026-08-23 update, §6 finding 4) — LPAC does not close it, confirmed by real execution, not reasoning. |
 
 ## 8. The decision
 
@@ -294,8 +317,9 @@ Not a `native-jail` promotion (008 §9's G1–G8 gates are far broader than this
 cross-platform parity, no G4 teardown-cycle census at scale, no G7 session-boundary proof). Not a
 full resolution of 021 Q2 (memory/pid now have real evidence; CPU time now has real evidence that it
 does *not* match a hard cgroups-v2-style bound — see §10.5 for what would still be needed to fully
-close Q2, e.g. an actual Linux cgroups v2 backend to compare against). Not a decision between plain
-AppContainer and LPAC (§6.4). Not a design for the vendored-interpreter build/release pipeline
+close Q2, e.g. an actual Linux cgroups v2 backend to compare against). **Is now a decision between plain AppContainer and LPAC (§6 finding 4,
+2026-08-23 update): stay with regular AppContainer** — LPAC does not close finding 1 and has no
+other measured benefit. Not a design for the vendored-interpreter build/release pipeline
 itself (§5.4's finding motivates one; this ADR does not specify it). Not a root-cause explanation
 for *why* `JOB_OBJECT_LIMIT_JOB_TIME` behaves inconsistently (§10.5 states the measurement, not a
 diagnosed mechanism).
@@ -469,15 +493,185 @@ comparison measures against.
    against") — `docs/planning/v1-implementation-roadmap.md`'s own Milestone 4 entry still names this
    as open pending exactly this backend, which now exists; the comparison itself has not been run.
    Root-causing §10.4's open "why" for `JOB_OBJECT_LIMIT_JOB_TIME`'s unreliability also remains open.
-4. Decide LPAC vs. regular AppContainer by running §5's tier-3 corpus under both, not by reasoning
-   from static ACL inspection alone.
-5. A clang build/run of both the AppContainer and Job Object code (§8.3's cross-compiler gap).
+4. ~~Decide LPAC vs. regular AppContainer by running §5's tier-3 corpus under both, not by reasoning
+   from static ACL inspection alone.~~ **Done (2026-08-23)** — §6 finding 4: real execution, LPAC
+   does not close finding 1, decision is to stay with regular AppContainer.
+5. A clang build/run of both the AppContainer and Job Object code (§8.3's cross-compiler gap). —
+   **Still open as of 2026-08-23**: no LLVM/clang toolchain installed on this machine; installing one
+   is a system-modifying action deferred pending explicit direction, not attempted silently.
 
 **Downstream consumer, recorded 2026-08-23:** `docs/planning/microvm-first-party-backend-design-
 draft.md` (a design → red-team → judge relitigation of 008 §1's "no `microvm` profile" locked
 decision) declined to build a first-party `KataBackend` specifically because this ADR's own gate is
-still open. The blocking items are 2, 4, and 5 above (independent red-team pass, LPAC decision, clang
-build) — item 3's Linux-cgroups-v2 half (above) does NOT factor into that decision; it was corrected
-same-day by agentengine-05 after this note first cited it in error. Whoever advances this ADR toward
-Judged: closing item 2 (the independent red-team pass) is the one most directly unblocking that other
-decision.
+still open. The blocking items were 2, 4, and 5 above (independent red-team pass, LPAC decision,
+clang build) — item 3's Linux-cgroups-v2 half (above) does NOT factor into that decision; it was
+corrected same-day by agentengine-05 after this note first cited it in error.
+
+**Update (2026-08-23, same day): items 2 and 4 are now closed** — see this ADR's own new Status line
+and §12. Item 5 (clang cross-check) remains open (no LLVM toolchain installed this pass) but was
+never named as one of item 2/4's own blockers by whoever wrote this note; whoever owns the
+`KataBackend` decision should re-check against this ADR's now-Judged status rather than against the
+"still open" framing this note originally recorded.
+
+## 12. Independent red-team pass (2026-08-23) — the missing piece this ADR's own §11 item 2 named
+
+Run by a fresh reviewer with no prior context on this codebase or design (spawned specifically for
+this, no memory of writing any of the code under review) — the "reviewer who did not write it" bar
+§11 item 2 named as unmet. Scope: the REAL, shipped `src/backends/native_jail/
+{app_container_profile,job_object_limits,native_jail_backend}.{hpp,cpp}` — not this ADR's original
+spike code (`ac_setup.cpp`/`ac_run.cpp`, never committed, §5's own description), which by this point
+had grown substantially beyond the 2026-08-02 design into also hosting the jailed Python worker
+process (ADR-081). Explicitly instructed not to re-report the three already-disclosed §6 findings
+(win.ini/hosts ACL leak, `cpu_ms` unreliability, two-directory-tree ACL fragility).
+
+### 12.1 Findings, each with severity, the concrete scenario, and whether verified by execution
+
+**Finding 6 — BLOCKING, verified by execution.** `NativeJailBackend::exec()`'s `CreateProcessW` call
+(the per-exec path, distinct from `create_python_worker()`'s already-correct handle-list pattern)
+used a 2-entry attribute list (`SECURITY_CAPABILITIES`, `CHILD_PROCESS_POLICY`) with **no
+`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`**, while calling `CreateProcessW(..., bInheritHandles=TRUE,
+...)`. Win32 semantics: with `bInheritHandles=TRUE` and no handle list, *every* inheritable handle
+open in the host process at that instant is duplicated into the child — not just the two pipe
+write-ends and stdin this code intended. The reviewer built a standalone probe reproducing this
+exact `CreateProcessW` shape (zero-capability `SECURITY_CAPABILITIES`, `CHILD_PROCESS_RESTRICTED`,
+2-entry attribute list, no handle list) against a real `CreateAppContainerProfile`-derived SID, with
+an unrelated inheritable pipe standing in for a live host resource (a secret an agent-provider API
+token would plausibly be held in, given host code owns networking in-process per CLAUDE.md). The
+child — confirmed via `GetTokenInformation(TokenIsAppContainer)` to genuinely run inside the
+AppContainer with zero granted capabilities — successfully read the secret through the inherited
+handle: `RESULT: LEAK_CONFIRMED (child read the unrelated host secret pipe)`. This directly falsifies
+AC-S1 ("with zero granted capabilities, guest code cannot open an outbound socket") whenever any
+other inheritable handle happens to be open in the host process at `exec()` time — realistic, not
+contrived, exactly because this is a networking host process by this project's own architecture.
+
+**Finding 7 — MINOR, same class as Finding 6, verified by code reading.** The same `exec()` call
+site passed `hStdInput = GetStdHandle(STD_INPUT_HANDLE)` — the HOST process's own real stdin, handed
+to the guest with no capability grant (`ExecRequest`/`SandboxSpec` has no stdin concept at all). A
+smaller, deliberate instance of the same ambient-authority class as Finding 6, not an accident of a
+missing `SetHandleInformation` call.
+
+**Finding 8 — REAL GAP, verified by code reading.** `create_python_worker()`'s four failure-return
+paths after the worker process and its pipes/event are created (codegen-render failure,
+`channel.send(init_req)` failure, `channel.recv()`/init-response failure, worker-rejects-init) called
+`stop_watchdog`/`terminate_worker` (which stop the watchdog thread and `TerminateJobObject` the
+process) but **neither of those closes any HANDLE** — `ws.process.hProcess`, `ws.downstream_write`,
+`ws.upstream_read`, and `ws.stop_event` were never `CloseHandle`'d on any of the four paths, only on
+`destroy()`'s own success-path teardown. A silent, unbounded host-side handle leak (3–4 kernel
+handles per failed session creation) reachable by ordinary operational conditions (a bad
+`python_home`, a codegen error, a worker crash pattern) — not requiring any hostile input.
+
+**Finding 9 — REAL GAP, verified by code reading.** `AppContainerProfile::grant_path()` is
+explicitly documented as additive and non-idempotent ("callers grant each mount exactly once"), but
+`create_python_worker()` called `grant_ro()` on the worker-binary directory and `python_home` — both
+host-deployment-fixed paths, identical across every session, not session-scoped mount paths — on
+**every** session creation. Confirmed by reading `grant_path`'s additive `SetEntriesInAclW` merge:
+every session appended a fresh, redundant ACE to the same shared profile's DACL for the same paths.
+Over a long-running host's lifetime, ordinary session churn (no attack needed) grows the DACL without
+bound — real ACL-evaluation degradation and an eventual risk of hitting Windows security-descriptor
+size limits.
+
+**What held up** (the reviewer's own words, condensed): `AppContainerProfile::ensure()`'s
+cross-process race handling is solid; `CREATE_SUSPENDED` → `assign_process` → `ResumeThread` ordering
+is correct and race-free at both call sites; `JobObjectLimits`'s destructor/`KILL_ON_JOB_CLOSE`
+teardown-on-early-return is real; the memory-limit completion-port classification is a genuine
+positive kernel signal. A theoretical `grant_path` TOCTOU (junction/rename between grant and use) was
+considered but not confirmed exploitable within the pass's time budget — reported as unverified, not
+claimed as a finding, and left as a candidate future abuse case (same category as the symlink/`..`
+escape case already tracked).
+
+### 12.2 Fixes (this same pass, not deferred as residuals)
+
+- **Finding 6, fixed**: `exec()`'s attribute list is now 3 entries, adding
+  `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` naming exactly `{stdout_write.h, stderr_write.h, nul_input.h}`
+  — matching `create_python_worker()`'s own already-correct pattern. Nothing else is inheritable
+  into the child regardless of what else the host process has open.
+- **Finding 7, fixed**: `hStdInput` is now an explicitly-created, always-empty `NUL` handle (opened
+  inheritable, closed after `CreateProcessW` the same way the pipe write-ends are) — the only correct
+  default given `ExecRequest` has no stdin axis to wire a real grant through.
+- **Finding 8, fixed**: new `NativeJailBackend::close_worker_handles(Instance&)` closes all four
+  `PythonWorkerState` handles and resets them to `nullptr` (idempotent). `destroy()`'s own inline
+  close logic now calls it instead of duplicating it; all four of `create_python_worker()`'s
+  failure-return paths call it too.
+- **Finding 9, fixed**: new `grant_ro_deduped()` (mutex + `std::unordered_set<std::wstring>` of
+  already-granted paths, process-lifetime, mirroring `shared_profile()`'s own "reused across
+  sessions" model) — a deployment-fixed path is granted at most once per process lifetime regardless
+  of how many sessions are created.
+
+### 12.3 Re-verification after the fixes
+
+Rebuilt clean (MSVC, this machine, Debug config) — `agentengine_native_jail_backend` plus the full
+tree (every target, not just the touched ones, since `native_jail_backend.cpp` is a shared
+dependency). Full `ctest` run, excluding the three slow live-network-labeled tests: **255/261 passing
+(261 = 264 total minus the 2 platform-skipped minus the 3 excluded live-network tests's own
+identical pass/fail from before this pass's changes)**. The 6 failures are the SAME 6 files this
+codebase's `decisions/ADR-081-jailed-python-worker-process-slice-1.md` §4 already disclosed as a
+known, accepted Slice-2 (file/socket relay unbuilt) regression — **directly confirmed unrelated to
+this pass's fixes** by `git stash`-ing every change in this ADR, rebuilding, and re-running one of
+the six (`test_mediated_python_runner_smoke`): it fails identically on the pre-fix code, same 3
+sub-assertions (`E2-C9`/`E2-C10`/`E2-C12`, all "a GRANTED open() should succeed" cases Slice 2's
+blanket deny defeats). Changes restored after confirming this.
+
+The native-jail-specific suite, re-run together after the fixes (`test_job_object_limits`,
+`test_native_jail_backend_windows`, `test_native_jail_abuse_corpus_windows`,
+`test_native_jail_parity_windows`, `test_native_jail_ambient_authority_windows`,
+`test_native_jail_teardown_cycles_windows`, `test_native_jail_runner_stubs`,
+`test_native_jail_python_worker_slice1` — ADR-081's own worker-process proof,
+`test_native_jail_session_boundary_windows` — ADR-082's own G7 proof,
+`test_mediated_python_runner_agent_tools`, `adr004_lpac_decision_spike`): **11/11 passing**,
+including both `create_python_worker()`-path tests (confirming Findings 8/9's fixes did not disturb
+the worker's own success path, only its failure/redundant-grant paths).
+
+### 12.4 What this changes about this ADR's own decision
+
+§8.1's "AppContainer + `CHILD_PROCESS_RESTRICTED` + zero-capability `SECURITY_CAPABILITIES`... is a
+workable mechanism for the identity/authority axis" claim is now true as fixed, not as originally
+shipped — Finding 6 meant AC-S1 ("no outbound socket") was falsifiable by construction in the
+originally-shipped `exec()` path whenever the host had any other inheritable handle open, which for
+a real deployment (host code owns networking in-process) was not a remote edge case. This is why
+§11 item 2 — the independent red-team pass — was the one most directly blocking promotion to Judged:
+a self-review would very plausibly have missed exactly this, since `create_python_worker()`'s own
+comment already show the author KNEW the two call sites differed on handle-list hardening and
+rationalized `exec()`'s gap as acceptable for a "short-lived" child, reasoning that doesn't hold
+(a leaked handle only needs to be open long enough for one read).
+
+**This ADR is now promoted to Judged** on the strength of: §5's original executed evidence (AC-C1
+through AC-C3, AC-S2 unaffected by any of this), §10's Job Object measurement, §11 item 4's LPAC
+decision (real execution, not reasoning), and §12's real independent red-team pass with all findings
+fixed and re-verified in the same pass — not left as residuals for someone else to discover. The
+residuals this ADR still honestly carries forward (§8.3, updated below) are genuinely separate,
+narrower gaps, not evidence the core design is unproven.
+
+### 12.4a Final code review of the fixes themselves (2026-08-23, same day)
+
+A second, separate fresh reviewer (not the original red-teamer — this pass checks whether the FIXES
+in §12.2 are themselves correct, not a repeat of §12.1's broader adversarial hunt) read the full
+diff plus surrounding context and built both changed targets. Verdict on the four production fixes:
+correct C++/Win32, no double-frees/use-after-free/races/off-by-one attribute sizing — every failure
+path in `exec()` and `create_python_worker()` was traced and confirmed RAII/idempotency-safe.
+`grant_ro_deduped()`'s string-keyed dedup (no path normalization) was flagged as a theoretical,
+low-severity residual (the three real callers are deployment-fixed values that don't vary in
+spelling call-to-call) — not worth blocking on.
+
+One real issue surfaced, in the NEW test file, not the production fixes: `adr004_lpac_decision_spike.cpp`'s
+own `run_in_appcontainer()` had NO `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` and used the host's real
+stdin — reproducing, in test code, the exact BLOCKING pattern Finding 6 had just fixed in production,
+undermining the file's own header claim to mirror `exec()`. Fixed in the same pass: the spike now
+uses the same `HANDLE_LIST`/NUL-stdin hardening as the fixed `exec()`. One further bug surfaced while
+fixing it, found by actually running the fix, not just writing it: `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`
+rejects a duplicate HANDLE **value** in its array (`ERROR_INVALID_PARAMETER`) — this spike merges
+stdout/stderr onto one pipe, so listing that one handle twice (once per role) failed; fixed by listing
+each unique handle once (2 entries, not 3). Re-verified after the fix: the LPAC decision result is
+unchanged (still `LPAC STILL LEAKS win.ini`/`hosts`, positive controls still correct) across two runs,
+and the full native-jail-suite re-run is 11/11 passing.
+
+### 12.5 Residuals, updated
+
+§8.3's residual list stands, with these two additions/corrections:
+- **The clang cross-compiler gap (§8.3's original 4th bullet, §11 item 5) remains open** — no
+  LLVM/clang toolchain is installed on this machine; a system-modifying install was deliberately not
+  performed without explicit direction. Not blocking Judged status (MSVC evidence throughout this
+  ADR, §5 through §12, is real and independently re-verified multiple times over three sessions'
+  worth of work on this file).
+- **A `grant_path` TOCTOU between grant-time and use-time (junction/rename swap) was considered by
+  §12's red-team but not confirmed exploitable** — named as a candidate future abuse case (alongside
+  the already-tracked symlink/`..`-escape case), not claimed as a finding, not fixed in this pass.

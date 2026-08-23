@@ -230,6 +230,16 @@ private:
     // thread running harmlessly against an already-dead process until destroy() tears it down for
     // real.
     void stop_watchdog(Instance& inst);
+    // Closes every raw HANDLE `PythonWorkerState` owns (process, both pipe ends, stop_event) and
+    // resets each to nullptr -- idempotent, safe to call more than once on the same instance.
+    // Correction (2026-08-23, independent red-team pass, REAL GAP finding): neither
+    // `terminate_worker` (kills the process via the Job Object, never closes the HANDLE referring
+    // to it) nor `stop_watchdog` (stops the watchdog thread only) ever closed these -- every one of
+    // `create_python_worker()`'s failure-return paths after the worker process is created leaked
+    // all four handles into the long-running host process. `destroy()` and every one of
+    // `create_python_worker()`'s post-creation failure paths now call this instead of duplicating
+    // (or omitting) the close logic inline.
+    void close_worker_handles(Instance& inst);
     // Dispatches one worker_query frame (call_tool live this pass; open/listdir/connect_* return the
     // fixed Slice-2 deny -- native_jail_backend.cpp's own header comment on this method has the full
     // per-kind breakdown) and sends the worker_query_response back over `inst.worker->downstream_write`.

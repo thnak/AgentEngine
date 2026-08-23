@@ -356,3 +356,22 @@ against; it stays a named open item for whenever a real hardware-isolation backe
 not something to shape speculatively today. **No `KataBackend` or other real backend was built** — the
 project owner's chosen scope for this pass was foundation-only; §7's reopen conditions (native-jail
 gate Judged, or an explicit decision to proceed despite it) still gate anything further.
+
+## 9. Status update (2026-08-23, same day): reopen condition (i) is now met
+
+§7 item 3's reopen condition (i) — "`native-jail`'s own 008 §9 gate reaches Judged on both
+platforms" — is the one this document's own §8 (C5) cited as still unmet ("`native-jail`'s own v1
+gate (`ADR-004`) being 'Spiked, not Judged' is a sequencing fact"). As of this same day:
+`decisions/ADR-004-appcontainer-native-jail-windows-backend.md` was independently red-teamed for
+real (a fresh reviewer with no prior context — the missing piece C5 implicitly required), found one
+BLOCKING and three REAL GAP/MINOR findings, fixed all four, re-verified, and is now **Judged**.
+`decisions/ADR-083-linux-native-jail-pivot-root-containment.md` closed the Linux filesystem/process-
+visibility gap the same way. `decisions/ADR-082-native-jail-promotion-gate-008-9.md` (the actual
+008 §9 G1-G8 synthesis) now shows every gate Judged or correctly-scoped-out on both platforms except
+G5 (deliberately out of scope pending 023's own M8 baseline, not a `native-jail` gap). **Condition
+(i) reads as met.** This does NOT itself decide to build `KataBackend` or reverse 008 §1's locked
+decision — that remains a separate call (condition (ii), a real sourced demand signal, was already
+addressed as "C4 answered" by project-owner direction in §8, so what's left is whether someone
+actually wants to spend the build). Recorded here so the next reader checking this document's own
+stated reopen conditions finds the current, correct answer rather than re-deriving it from three
+separate ADRs.

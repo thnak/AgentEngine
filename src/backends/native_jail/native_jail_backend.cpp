@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <mutex>
 #include <optional>
+#include <unordered_set>
 #include <vector>
 
 #include "backends/native_jail/agent_tools_codegen.hpp"
@@ -152,6 +153,28 @@ std::wstring build_minimal_environment_block() {
     return &*profile;
 }
 
+// Correction (2026-08-23, independent red-team pass, REAL GAP finding): `AppContainerProfile::
+// grant_path()` is explicitly documented as additive, non-idempotent -- "callers grant each mount
+// exactly once." `create_python_worker()`'s read-only grants on the worker binary directory,
+// `python_home`, and `extra_sys_path` are host-DEPLOYMENT-fixed paths, identical across every
+// session, not session-scoped mount paths -- calling `grant_path()` on them from every session
+// creation appended a fresh, redundant ACE to the SAME shared profile's DACL every time, growing it
+// without bound over a long-running host's lifetime purely from ordinary session churn (no attack
+// needed). Deduped here, matching `shared_profile()`'s own "one profile, reused across sessions"
+// lifetime model one field over -- a path is granted at most once for the life of this process.
+[[nodiscard]] result<void> grant_ro_deduped(AppContainerProfile const& profile, std::wstring const& path) {
+    if (path.empty()) return {};
+    static std::mutex granted_mutex;
+    static std::unordered_set<std::wstring> granted;
+
+    std::lock_guard<std::mutex> guard(granted_mutex);
+    if (granted.contains(path)) return {};
+    auto result = profile.grant_path(path, /*read_write=*/false);
+    if (!result.has_value()) return result;
+    granted.insert(path);
+    return {};
+}
+
 // Bounded pipe drain: reads until EOF (the write end closes once the child -- the only other
 // handle holder, our own duplicate having already been closed at launch time -- exits) or until
 // `cap_bytes` is reached, whichever first. Stops reading past the cap rather than buffering an
@@ -235,16 +258,58 @@ result<ExecOutcome> NativeJailBackend::exec(SandboxHandle& handle, ExecRequest c
     std::vector<wchar_t> mutable_cmdline(cmdline.begin(), cmdline.end());
     mutable_cmdline.push_back(L'\0');
 
+    // Separate pipes for stdout/stderr (not merged) so ExecOutcome's two fields are faithful, not
+    // interleaved. Explicit 1 MiB buffer (not the 0-means-"system default" size, historically a
+    // few KB) -- exec()'s own architecture drains AFTER wait_or_kill returns, not concurrently, so
+    // a hostile child that writes far more than the kernel pipe buffer holds simply blocks in
+    // write() until wall_ms kills it; a too-small buffer would make output_bytes containment
+    // (C3's unbounded-output abuse case, 008 §2 item 2) look artificially tight regardless of the
+    // configured cap, since only the OS's own small default would ever accumulate to drain.
+    constexpr DWORD kPipeBufferBytes = 1024 * 1024;
+    SECURITY_ATTRIBUTES pipe_sa{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
+    HandleGuard stdout_read, stdout_write, stderr_read, stderr_write;
+    if (!CreatePipe(&stdout_read.h, &stdout_write.h, &pipe_sa, kPipeBufferBytes) ||
+        !CreatePipe(&stderr_read.h, &stderr_write.h, &pipe_sa, kPipeBufferBytes)) {
+        return win32_error("CreatePipe", failure_class::fatal, "native_jail.pipe_create_failed");
+    }
+    SetHandleInformation(stdout_read.h, HANDLE_FLAG_INHERIT, 0);
+    SetHandleInformation(stderr_read.h, HANDLE_FLAG_INHERIT, 0);
+
+    // Correction (2026-08-23, independent red-team pass, BLOCKING finding): `hStdInput` used to be
+    // `GetStdHandle(STD_INPUT_HANDLE)` -- the HOST process's own real stdin, handed to the guest
+    // with no capability grant (ExecRequest/SandboxSpec has no stdin concept at all). An
+    // explicitly-created, always-empty NUL handle replaces it -- `ExecRequest` still has no stdin
+    // axis to wire a real one through, so "no input" is the only correct default, not "whatever the
+    // host happens to have open." Inheritable via the same `pipe_sa`, closed the same way the pipe
+    // write-ends are below.
+    HandleGuard nul_input;
+    nul_input.h = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ, &pipe_sa, OPEN_EXISTING, 0, nullptr);
+    if (nul_input.h == INVALID_HANDLE_VALUE) {
+        return win32_error("CreateFileW(NUL)", failure_class::fatal, "native_jail.nul_stdin_open_failed");
+    }
+
     SECURITY_CAPABILITIES sec_cap{};
     sec_cap.AppContainerSid = (*profile)->sid();
     sec_cap.Capabilities = nullptr;
     sec_cap.CapabilityCount = 0;
 
+    // Correction (2026-08-23, independent red-team pass, BLOCKING finding, AC-S1 falsified by
+    // execution): this attribute list used to be 2 entries (SECURITY_CAPABILITIES,
+    // CHILD_PROCESS_POLICY) with NO PROC_THREAD_ATTRIBUTE_HANDLE_LIST -- `CreateProcessW`'s
+    // `bInheritHandles=TRUE` with no handle list duplicates EVERY inheritable handle in the host
+    // process into the child, not just the three named below. A live, unrelated inheritable handle
+    // in the host at exec() time (a socket, another session's pipe) was reachable from inside a
+    // zero-capability AppContainer child with no grant at all -- reproduced directly: a
+    // zero-capability child inherited and read an unrelated secret through such a handle. Now 3
+    // entries, matching create_python_worker()'s own already-correct HANDLE_LIST pattern below --
+    // exactly {stdout_write.h, stderr_write.h, nul_input.h} are inheritable; nothing else is.
+    HANDLE inherit_list[3] = {stdout_write.h, stderr_write.h, nul_input.h};
+
     SIZE_T attr_list_size = 0;
-    InitializeProcThreadAttributeList(nullptr, 2, 0, &attr_list_size);
+    InitializeProcThreadAttributeList(nullptr, 3, 0, &attr_list_size);
     std::vector<std::byte> attr_buf(attr_list_size);
     auto* attr_list = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attr_buf.data());
-    if (!InitializeProcThreadAttributeList(attr_list, 2, 0, &attr_list_size)) {
+    if (!InitializeProcThreadAttributeList(attr_list, 3, 0, &attr_list_size)) {
         return win32_error("InitializeProcThreadAttributeList", failure_class::fatal,
                             "native_jail.attr_list_init_failed");
     }
@@ -266,30 +331,18 @@ result<ExecOutcome> NativeJailBackend::exec(SandboxHandle& handle, ExecRequest c
         return win32_error("UpdateProcThreadAttribute(CHILD_PROCESS_POLICY)", failure_class::fatal,
                             "native_jail.attr_child_process_policy_failed");
     }
-
-    // Separate pipes for stdout/stderr (not merged) so ExecOutcome's two fields are faithful, not
-    // interleaved. Explicit 1 MiB buffer (not the 0-means-"system default" size, historically a
-    // few KB) -- exec()'s own architecture drains AFTER wait_or_kill returns, not concurrently, so
-    // a hostile child that writes far more than the kernel pipe buffer holds simply blocks in
-    // write() until wall_ms kills it; a too-small buffer would make output_bytes containment
-    // (C3's unbounded-output abuse case, 008 §2 item 2) look artificially tight regardless of the
-    // configured cap, since only the OS's own small default would ever accumulate to drain.
-    constexpr DWORD kPipeBufferBytes = 1024 * 1024;
-    SECURITY_ATTRIBUTES pipe_sa{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
-    HandleGuard stdout_read, stdout_write, stderr_read, stderr_write;
-    if (!CreatePipe(&stdout_read.h, &stdout_write.h, &pipe_sa, kPipeBufferBytes) ||
-        !CreatePipe(&stderr_read.h, &stderr_write.h, &pipe_sa, kPipeBufferBytes)) {
-        return win32_error("CreatePipe", failure_class::fatal, "native_jail.pipe_create_failed");
+    if (!UpdateProcThreadAttribute(attr_list, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherit_list,
+                                    sizeof(inherit_list), nullptr, nullptr)) {
+        return win32_error("UpdateProcThreadAttribute(HANDLE_LIST)", failure_class::fatal,
+                            "native_jail.attr_handle_list_failed");
     }
-    SetHandleInformation(stdout_read.h, HANDLE_FLAG_INHERIT, 0);
-    SetHandleInformation(stderr_read.h, HANDLE_FLAG_INHERIT, 0);
 
     STARTUPINFOEXW si{};
     si.StartupInfo.cb = sizeof(si);
     si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
     si.StartupInfo.hStdOutput = stdout_write.h;
     si.StartupInfo.hStdError = stderr_write.h;
-    si.StartupInfo.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    si.StartupInfo.hStdInput = nul_input.h;
     si.lpAttributeList = attr_list;
 
     PROCESS_INFORMATION pi{};
@@ -306,9 +359,11 @@ result<ExecOutcome> NativeJailBackend::exec(SandboxHandle& handle, ExecRequest c
         reinterpret_cast<LPSTARTUPINFOW>(&si), &pi);
     // Our copies of the write ends must close regardless of outcome -- the child's own inherited
     // duplicates are what keep the pipes alive for it to write into; ours would otherwise wedge
-    // drain_pipe_bounded's EOF wait forever.
+    // drain_pipe_bounded's EOF wait forever. Same reasoning for nul_input: the child's own
+    // inherited duplicate (if it ever reads stdin at all) is what it actually uses.
     stdout_write.close_now();
     stderr_write.close_now();
+    nul_input.close_now();
     if (!created) {
         return win32_error("CreateProcessW", failure_class::fatal, "native_jail.create_process_failed");
     }
@@ -375,11 +430,8 @@ void NativeJailBackend::destroy(SandboxHandle& handle) {
         }
         if (ws.process.hProcess != nullptr) {
             WaitForSingleObject(ws.process.hProcess, 2000);
-            CloseHandle(ws.process.hProcess);
         }
-        if (ws.downstream_write != nullptr) CloseHandle(ws.downstream_write);
-        if (ws.upstream_read != nullptr) CloseHandle(ws.upstream_read);
-        if (ws.stop_event != nullptr) CloseHandle(ws.stop_event);
+        close_worker_handles(inst);
     }
 
     // Erasing the map entry destroys the Instance, whose JobObjectLimits destructor closes the
@@ -415,6 +467,27 @@ void NativeJailBackend::stop_watchdog(Instance& inst) {
     ws.phase.store(watchdog_phase::stopping);
     if (ws.stop_event != nullptr) SetEvent(ws.stop_event);
     if (ws.watchdog_thread.joinable()) ws.watchdog_thread.join();
+}
+
+void NativeJailBackend::close_worker_handles(Instance& inst) {
+    if (!inst.worker.has_value()) return;
+    PythonWorkerState& ws = *inst.worker;
+    if (ws.process.hProcess != nullptr) {
+        CloseHandle(ws.process.hProcess);
+        ws.process.hProcess = nullptr;
+    }
+    if (ws.downstream_write != nullptr) {
+        CloseHandle(ws.downstream_write);
+        ws.downstream_write = nullptr;
+    }
+    if (ws.upstream_read != nullptr) {
+        CloseHandle(ws.upstream_read);
+        ws.upstream_read = nullptr;
+    }
+    if (ws.stop_event != nullptr) {
+        CloseHandle(ws.stop_event);
+        ws.stop_event = nullptr;
+    }
 }
 
 void NativeJailBackend::session_watchdog_loop(Instance& inst) {
@@ -518,8 +591,7 @@ result<SandboxHandle> NativeJailBackend::create_python_worker(SandboxSpec const&
     // access to just to START, not guest-visible session data -- so they get their own grant_path()
     // calls here (008 §2's mount contract, applied one layer up from ordinary guest mounts).
     auto grant_ro = [&](std::wstring const& path) -> result<void> {
-        if (path.empty()) return {};
-        return (*profile)->grant_path(path, /*read_write=*/false);
+        return grant_ro_deduped(**profile, path);
     };
     {
         std::filesystem::path exe_dir = std::filesystem::path(session.worker_exe_path).parent_path();
@@ -642,6 +714,7 @@ result<SandboxHandle> NativeJailBackend::create_python_worker(SandboxSpec const&
         if (!rendered.has_value()) {
             stop_watchdog(*instance);
             terminate_worker(*instance);
+            close_worker_handles(*instance);
             return std::unexpected(rendered.error());
         }
         agent_tools_module_source = std::move(*rendered);
@@ -669,6 +742,7 @@ result<SandboxHandle> NativeJailBackend::create_python_worker(SandboxSpec const&
     if (auto sent = channel.send(init_req); !sent.has_value()) {
         stop_watchdog(*instance);
         terminate_worker(*instance);
+        close_worker_handles(*instance);
         return std::unexpected(sent.error());
     }
 
@@ -679,6 +753,7 @@ result<SandboxHandle> NativeJailBackend::create_python_worker(SandboxSpec const&
         ws.alive.store(false);
         job_kill_reason const reason = ws.kill_reason.load();
         stop_watchdog(*instance);
+        close_worker_handles(*instance);
         return std::unexpected(ae::error{
             failure_class::fatal,
             reason == job_kill_reason::wall_clock_timeout
@@ -691,6 +766,7 @@ result<SandboxHandle> NativeJailBackend::create_python_worker(SandboxSpec const&
         std::string const msg = wp::get_string(*init_resp, "error_message");
         stop_watchdog(*instance);
         terminate_worker(*instance);
+        close_worker_handles(*instance);
         return std::unexpected(ae::error{failure_class::fatal, "python worker initialize() failed: " + msg,
                                           "native_jail.worker_init_rejected"});
     }
