@@ -604,6 +604,50 @@ add_executable(test_spawn_budget test_spawn_budget.cpp)
 target_link_libraries(test_spawn_budget PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_spawn_budget COMMAND test_spawn_budget)
 
+# ---- agent.spawn budget wiring + child capability minting (items 4/5,
+# docs/planning/agent-spawn-runtime-design-draft.md; OpenQuestions.md OQ-14) ----------------------
+# Header-only (trust/agent_spawn_capability.hpp), core-tier -- links agentengine::core (which also
+# carries rt/spawn_cost_budget.hpp, ADR-031/ADR-037's AsyncMutex-serialized token pool this test
+# drives directly alongside trust::SpawnBudget/ADR-006).
+add_executable(test_agent_spawn_capability test_agent_spawn_capability.cpp)
+target_link_libraries(test_agent_spawn_capability PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_agent_spawn_capability COMMAND test_agent_spawn_capability)
+
+# ---- agent.spawn's nested-run invocation mechanism (item 2, docs/planning/
+# agent-spawn-runtime-design-draft.md §4.2; OpenQuestions.md OQ-14) ------------------------------
+# Header-only (rt/agent_spawn_child_run.hpp), rt-tier -- links agentengine::core (item 4/5's already-
+# landed trust/agent_spawn_capability.hpp) and rt::AgentSession (agent_session.hpp) directly.
+add_executable(test_rt_agent_spawn_child_run test_rt_agent_spawn_child_run.cpp)
+target_link_libraries(test_rt_agent_spawn_child_run PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_agent_spawn_child_run COMMAND test_rt_agent_spawn_child_run)
+
+# ---- agent.spawn's dynamic sub-worktree minting (item 3, docs/planning/
+# agent-spawn-runtime-design-draft.md §4.3; OpenQuestions.md OQ-14) ------------------------------
+# core/agent_spawn_worktree.hpp calls compute_digest() (derive_spawn_child_id) -- same Windows-only
+# real-crypto dependency every other worktree test above (test_workflow_worktree_scoping et al.)
+# already needs; also links item 2 (agentengine::core carries rt/agent_spawn_child_run.hpp) for T11's
+# end-to-end wiring proof.
+if(WIN32)
+  add_executable(test_agent_spawn_worktree test_agent_spawn_worktree.cpp)
+  target_link_libraries(test_agent_spawn_worktree PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_agent_spawn_worktree COMMAND test_agent_spawn_worktree)
+endif()
+
+# ---- agent.spawn's REAL, wired, end-to-end call path (item 1, docs/planning/
+# agent-spawn-runtime-design-draft.md §2/§4.1; OpenQuestions.md OQ-14) ---------------------------
+# Header-only (rt/agent_spawn.hpp), rt-tier -- composes items 2/3/4/5 above through the REAL
+# Tool<>-conforming AgentSpawnTool/AgentSpawnToolProvider/perform_agent_spawn() surface. Same
+# WIN32-only compute_digest dependency as test_agent_spawn_worktree (core/agent_spawn_worktree.hpp's
+# derive_spawn_child_id() is reached via SpawnPump::process(), not called directly by this file, but
+# still links against it).
+if(WIN32)
+  add_executable(test_rt_agent_spawn test_rt_agent_spawn.cpp)
+  target_link_libraries(test_rt_agent_spawn PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_rt_agent_spawn COMMAND test_rt_agent_spawn)
+endif()
+
 # ---- CodeAct discoverability manifest (resolves OQ-16, OpenQuestions.md) -----------------------
 # Header-only (trust/agent_library_manifest.hpp), core-tier -- links only agentengine::core.
 add_executable(test_agent_library_manifest test_agent_library_manifest.cpp)

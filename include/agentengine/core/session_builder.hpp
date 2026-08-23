@@ -274,6 +274,26 @@
 //    test at all (the base `QuickstartSessionBuilder` has had one, B6, since round 1) even though
 //    finding 11 changed the exact move machinery `build()`/`engage()` depend on.
 //
+// 2026-08-23 UPDATE (item 6, docs/planning/agent-spawn-runtime-design-draft.md §4.6, OQ-16 wired for
+// real per OpenQuestions.md): `build()` in BOTH `QuickstartSessionBuilder` and
+// `ComposedQuickstartSessionBuilder` now calls `session->set_static_instructions(agentengine::trust::
+// push_side_summary(*capabilities))` immediately after `session->set_capabilities(capabilities.get())`
+// -- `trust::push_side_summary()` (trust/agent_library_manifest.hpp) had zero callers anywhere in the
+// tree before this change (OQ-16's own "small-proved, never wired" finding). This is real,
+// engine-generated text, never model output, so it needs no `TaintedText` declassification the way a
+// `ContextProvider`'s own `.instructions` contribution does (see `set_static_instructions()`'s own
+// comment, rt/agent_session.hpp) -- it is derived entirely from the very `CapabilitySet` `build()`
+// just finished constructing for this session. `agent_library_manifest.hpp` needed NO changes of its
+// own: its `"spawn"` row is already gated on `capability_kind::agent_call`, so a session holding any
+// `cap::AgentCall` grant picks up "agent.spawn: Run a sub-agent and get its result." automatically.
+// Regression-proofed: `tests/test_session_builder.cpp`'s own "B23"/"B24" (built via a real, non-HTTPS
+// `AgentSession<...>::set_static_instructions()` call proving the exact materialization this builder
+// change wires into, since `QuickstartSessionBuilder` itself only compiles under
+// `AGENTENGINE_WITH_HTTPS`, off by default -- this pass's own build did not enable it, so the two new
+// lines below are reviewed for correctness against `set_static_instructions()`'s own already-built and
+// tested contract, not independently compiled under HTTPS in this pass; named here as a disclosed
+// residual, not silently claimed proven under that configuration).
+//
 // 2026-08-23 UPDATE, kept as a point-in-time record, not rewritten: everything above narrates real
 // history against a real type, `detail::LazyComposedContextProvider<Ms...>`, that lived in THIS file.
 // That type no longer exists here -- findings 9/11/15's fixes (move-only with a correct moved-from
@@ -316,6 +336,7 @@
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/pal/env.hpp"
 #include "agentengine/rt/agent_session.hpp"
+#include "agentengine/trust/agent_library_manifest.hpp"
 #include "agentengine/trust/capability.hpp"
 #include "agentengine/trust/principal.hpp"
 #include "agentengine/trust/secret.hpp"
@@ -793,6 +814,9 @@ public:
         // BreakerConfig) -- never a move of an already-built ChatClientT.
         session->emplace_chat_client(std::move(primary), std::tuple<>{});
         session->set_capabilities(capabilities.get());
+        // Item 6 (docs/planning/agent-spawn-runtime-design-draft.md §4.6, OQ-16) -- see this file's
+        // own top comment (2026-08-23 UPDATE) for the full account.
+        session->set_static_instructions(agentengine::trust::push_side_summary(*capabilities));
 
         // §2d: only touched if the host actually called .approve_tools()/.policy() -- an untouched
         // session keeps AgentSession's own true unset-decider default (see .approve_tools()'s own
@@ -991,6 +1015,9 @@ public:
         session->initialize(session_id_, principal_, token_budget_, max_turns_);
         session->emplace_chat_client(std::move(primary), std::tuple<>{});
         session->set_capabilities(capabilities.get());
+        // Item 6 (docs/planning/agent-spawn-runtime-design-draft.md §4.6, OQ-16) -- see this file's
+        // own top comment (2026-08-23 UPDATE) for the full account.
+        session->set_static_instructions(agentengine::trust::push_side_summary(*capabilities));
 
         // Move `providers_` out and clear the optional -- same single-use signal `store_` going null
         // gives the base builder's own double-build() check above, applied here since `providers_`

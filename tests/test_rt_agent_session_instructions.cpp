@@ -6,6 +6,16 @@
 // ONE explicit `.unsafe_view()` call site in `AgentSession::run_rounds()`, agent_session.hpp), and
 // that with no instructions contributed at all, behavior is byte-identical to before this fix (no
 // synthesized message, nothing regressed for the common case).
+//
+// 2026-08-23 addition (T4-T7): docs/planning/agent-spawn-runtime-design-draft.md item 6 / §4.6,
+// OpenQuestions.md OQ-16. Proves `AgentSession::set_static_instructions()` (new, additive) produces
+// its own, independent, unconditionally-untainted `role::system` message -- coexisting with (never
+// replacing) `contribution->instructions`' own materialization above -- and, using the REAL
+// `trust::push_side_summary()` (trust/agent_library_manifest.hpp), that this is the exact mechanism
+// `core/session_builder.hpp`'s `build()` now wires for real: a session constructed from a
+// `CapabilitySet` holding `cap::AgentCall` gets "agent.spawn" text materialized onto the wire; one
+// without does not (I2 -- nothing here widens what a session was actually granted, this only reports
+// it back).
 
 #include <algorithm>
 #include <cstdio>
@@ -14,6 +24,7 @@
 #include <vector>
 
 #include "agentengine/rt/agent_session.hpp"
+#include "agentengine/trust/agent_library_manifest.hpp"
 
 using agentengine::rt::AgentSession;
 using agentengine::rt::NoSessionState;
@@ -54,6 +65,10 @@ using agentengine::TurnView;
 using agentengine::Usage;
 using agentengine::content_origin;
 using agentengine::role;
+using agentengine::CapabilitySet;
+using agentengine::capability_from_kind;
+using agentengine::capability_kind;
+using agentengine::trust::push_side_summary;
 
 // Records every ChatRequest it receives, so a test can inspect exactly what reached the "wire" --
 // the same role the OpenAI/Anthropic translation layers play in real code, minus the actual network
@@ -210,6 +225,113 @@ int main() {
         for (auto const& req : client.requests()) {
             check(!req.messages.empty() && req.messages.front().role == role::system,
                   "T3: every round's request carries the synthesized system message, not just the first");
+        }
+    }
+
+    // T4: set_static_instructions() alone (no ContextProvider .instructions contributed) -> exactly
+    // one role::system message, unconditionally untainted, containing the exact text set.
+    {
+        AgentSession<RecordingChatClient, NoSessionState, NoInstructionsProvider> session;
+        session.initialize("t4", Principal{"p1", ""});
+        session.set_static_instructions("static text");
+        RecordingChatClient& client = session.emplace_chat_client();
+
+        auto outcome = drive(session.start_run(StartRun{user_message("hi")}));
+        check(outcome.has_value(), "T4: the run converges");
+        if (!client.requests().empty()) {
+            auto const& msgs = client.requests().front().messages;
+            auto system_count =
+                std::ranges::count_if(msgs, [](Message const& m) { return m.role == role::system; });
+            check(system_count == 1, "T4: exactly one synthesized role::system message");
+            auto it = std::ranges::find_if(msgs, [](Message const& m) { return m.role == role::system; });
+            if (it != msgs.end() && !it->content.empty()) {
+                auto const* t = std::get_if<Text>(&it->content.front().value);
+                check(t != nullptr && t->text == "static text",
+                      "T4: the message carries set_static_instructions()'s own text, verbatim");
+                check(!it->content.front().tainted,
+                      "T4: tainted == false -- host/engine-derived, never model output (I3)");
+            }
+        }
+    }
+
+    // T5: BOTH contribution->instructions AND set_static_instructions() are populated -> two
+    // independent role::system messages coexist, in order (contribution's own materialization first,
+    // matching the "already established, already safe" precedent named in agent_session.hpp).
+    {
+        AgentSession<RecordingChatClient, NoSessionState, InstructionsProvider> session;
+        session.initialize("t5", Principal{"p1", ""});
+        session.history_provider().text_to_wrap = "from provider";
+        session.set_static_instructions("from static");
+        RecordingChatClient& client = session.emplace_chat_client();
+
+        auto outcome = drive(session.start_run(StartRun{user_message("hi")}));
+        check(outcome.has_value(), "T5: the run converges");
+        if (!client.requests().empty()) {
+            auto const& msgs = client.requests().front().messages;
+            std::vector<Message const*> system_msgs;
+            for (auto const& m : msgs) {
+                if (m.role == role::system) system_msgs.push_back(&m);
+            }
+            check(system_msgs.size() == 2, "T5: two independent role::system messages, neither replaces the other");
+            if (system_msgs.size() == 2) {
+                auto const* t0 = std::get_if<Text>(&system_msgs[0]->content.front().value);
+                auto const* t1 = std::get_if<Text>(&system_msgs[1]->content.front().value);
+                check(t0 != nullptr && t0->text == "from provider",
+                      "T5: the FIRST role::system message is the ContextProvider's own contribution");
+                check(t1 != nullptr && t1->text == "from static",
+                      "T5: the SECOND role::system message is set_static_instructions()'s own text");
+            }
+        }
+    }
+
+    // T6/T7: docs/planning/agent-spawn-runtime-design-draft.md §4.6 -- the REAL wiring
+    // core/session_builder.hpp's build() now performs, reproduced directly against a real
+    // CapabilitySet (no HTTPS-gated QuickstartSessionBuilder needed to prove the mechanism itself):
+    // `session.set_static_instructions(trust::push_side_summary(capabilities))`.
+    {
+        // T6: a CapabilitySet holding cap::AgentCall -> "agent.spawn" text reaches the wire.
+        CapabilitySet granted_with_spawn =
+            CapabilitySet::grant_root({capability_from_kind(capability_kind::agent_call)});
+        AgentSession<RecordingChatClient, NoSessionState, NoInstructionsProvider> session;
+        session.initialize("t6", Principal{"p1", ""});
+        session.set_static_instructions(push_side_summary(granted_with_spawn));
+        RecordingChatClient& client = session.emplace_chat_client();
+
+        auto outcome = drive(session.start_run(StartRun{user_message("hi")}));
+        check(outcome.has_value(), "T6: the run converges");
+        if (!client.requests().empty()) {
+            auto const& msgs = client.requests().front().messages;
+            auto it = std::ranges::find_if(msgs, [](Message const& m) { return m.role == role::system; });
+            check(it != msgs.end(), "T6: a role::system message was synthesized (agent_call grants "
+                                     "spawn, so push_side_summary() is non-empty)");
+            if (it != msgs.end() && !it->content.empty()) {
+                auto const* t = std::get_if<Text>(&it->content.front().value);
+                check(t != nullptr && t->text.find("agent.spawn") != std::string::npos,
+                      "T6: a session built with an agent_call capability actually has \"agent.spawn\" "
+                      "text in its instructions");
+            }
+        }
+
+        // T7 (negative control, same mechanism): a CapabilitySet WITHOUT cap::AgentCall -> no
+        // "agent.spawn" text anywhere on the wire, even though other zero-capability modules
+        // (output/progress) still legitimately produce a non-empty summary.
+        CapabilitySet granted_without_spawn = CapabilitySet::grant_root({});
+        AgentSession<RecordingChatClient, NoSessionState, NoInstructionsProvider> session2;
+        session2.initialize("t7", Principal{"p1", ""});
+        session2.set_static_instructions(push_side_summary(granted_without_spawn));
+        RecordingChatClient& client2 = session2.emplace_chat_client();
+
+        auto outcome2 = drive(session2.start_run(StartRun{user_message("hi")}));
+        check(outcome2.has_value(), "T7: the run converges");
+        if (!client2.requests().empty()) {
+            auto const& msgs = client2.requests().front().messages;
+            bool found_spawn = std::ranges::any_of(msgs, [](Message const& m) {
+                if (m.content.empty()) return false;
+                auto const* t = std::get_if<Text>(&m.content.front().value);
+                return t != nullptr && t->text.find("agent.spawn") != std::string::npos;
+            });
+            check(!found_spawn, "T7 (I2): a session built WITHOUT an agent_call capability never has "
+                                 "\"agent.spawn\" text in its instructions");
         }
     }
 

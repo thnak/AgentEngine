@@ -548,6 +548,34 @@ production `AgentSession` tool-call loop able to host a spawned child; ADR-024 �
 machinery landing first — the same "small-proved standalone, not yet wired" shape ADR-006 already
 established for the depth half. Wall-clock/deadline budgeting stays fully open, unchanged.
 
+**Resolved 2026-08-23 — the "sharpest case" now has a real, wired, end-to-end call path
+(`decisions/ADR-079-agent-spawn-runtime-and-capability-minting.md`).** `agent.spawn` is a real
+`Tool<>` conformer (`rt::AgentSpawnTool`, `include/agentengine/rt/agent_spawn.hpp`) a running agent
+can actually invoke: `perform_agent_spawn()`'s nine-step pipeline constructs and drives a *fresh*
+`rt::AgentSession` to completion mid-run (`rt::run_child_agent_session()`,
+`rt/agent_spawn_child_run.hpp`), mints a caller-scoped sub-worktree for the dynamically-generated
+child id (`mint_spawn_worktree()`, `core/agent_spawn_worktree.hpp`), and wires both
+already-Judged, previously-zero-caller budget primitives (`trust::SpawnBudget`/ADR-006,
+`rt::SpawnCostBudget`/ADR-031) so a spawn fails closed on either exhaustion, before any child
+session is constructed (I8). Child capability minting ("Design B": the caller's own held
+`CapabilitySet` attenuated down to the target's declared ceiling, `cap::AgentCall` entries
+re-rooted to the tighter of live chain depth and the target's own declared depth) is
+`trust::mint_child_spawn_capabilities()`, `trust/agent_spawn_capability.hpp` — the child can never
+exceed what the caller itself holds (I2), and nothing in the model's own `AgentSpawnArgs` (just
+`agent_id`/`input`) is ever trusted as a ceiling (I3). Four independent red-team lenses (I2, I3,
+recursion/concurrency, worktree-isolation) found and closed 11 real findings before implementation,
+including a critical uncapped-branch-worktree-grant hole and a critical use-after-free from a
+spawned child's own `Backgroundable` tool outliving its stack-local session — both closed in the
+shipped code, both independently re-verified (136 checks across four new test binaries, all
+passing; full `ctest` 205/205 with zero regressions; clean under MSVC ASan). **Two residuals named
+honestly, not hidden**: the new `SpawnPump` serialization mechanism that closes the
+`AsyncMutex`/worktree-mint race is sound by code-level construction but has no test exercising real
+concurrent multi-thread `submit()` calls, and TSan was never run (no supported
+`-fsanitize=thread` in this MSVC/Windows toolchain) — see the ADR §5/§7 for the full, honest
+per-claim verdict table, including two claims corrected from the prove-phase report's own
+self-reported "CORRECT"/"verified under ASan/TSan" to **INCONCLUSIVE**. Wall-clock/deadline
+budgeting for spawn remains open, unchanged.
+
 ### OQ-16 — CodeAct has no discoverability story for its own granted surface
 
 026 §4 gives `agent.tools` a real introspection story — generated docstrings, a `.pyi` stub,
@@ -577,6 +605,25 @@ build.
 Naming caution carried through unchanged: this is engine-generated and per-session, never mounted
 or called a "skill" (009 §8's vocabulary is reserved for authored, distributable content). New gate:
 026 G7. Full text: 026 §5a/§5b, §7, §8 G7.
+
+**Resolved further 2026-08-23 — `push_side_summary()` now has real, non-test callers, wired into a
+real session (`decisions/ADR-079-agent-spawn-runtime-and-capability-minting.md`).** The small-proved
+mechanism above had zero callers anywhere in the tree; that gap is closed. `AgentSession` gained a
+new, additive, opt-in `set_static_instructions()` (`rt/agent_session.hpp`) — a second, independent,
+unconditionally-untainted `role::system` message (host/engine-derived from a `CapabilitySet`, never
+model output, so no `TaintedText` declassification applies). `core/session_builder.hpp`'s
+`QuickstartSessionBuilder::build()` and `ComposedQuickstartSessionBuilder::build()` both now call
+`session->set_static_instructions(trust::push_side_summary(*capabilities))` immediately after
+`set_capabilities()`, so a real session's own `instructions` now actually reflects which `agent.*`
+modules (including `agent.spawn`, gated on `capability_kind::agent_call`) are really granted — no
+changes needed to `agent_library_manifest.hpp` itself, since its module-gating was already correct.
+A spawned child (OQ-14's `agent.spawn`) gets the identical treatment from its *own* freshly-minted
+capabilities, never a copy of its parent's. **Residual, named not hidden**: the
+`session_builder.hpp` half of this wiring lives behind that file's pre-existing
+`AGENTENGINE_WITH_HTTPS` guard (off by default, off in the build this pass ran) — reviewed for
+correctness against `set_static_instructions()`'s own separately-tested contract, not independently
+compiled under that configuration in this pass. The embedded CPython `agent` module binding for
+`dir()`/`help()` (026 §5a) remains real future work, unattempted, unchanged — 026 is still Draft.
 
 ### OQ-7 — Wasmtime version pinning
 
