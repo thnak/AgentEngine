@@ -208,8 +208,20 @@ This also resolves 005 §5's "named `ContextProvider` after MAF" framing: the co
 divergence from MAF is confirmed real and is now a recorded, judged design choice, not an
 undisclosed gap.
 
+**Update (2026-08-23, non-reopening):** `history_and_skills_provider.hpp` and
+`HistoryAndSkillsProvider<H,S>`, cited above as the proof-of-pattern, were deleted by
+`decisions/ADR-074-composed-context-provider-consolidation.md` — their move-only/exception-safety
+fixes were absorbed into the general `ComposedContextProvider<Ms...>`
+(`include/agentengine/core/composed_context_provider.hpp`), which now serves as the ordering-composite
+example this entry originally pointed to (declare `Ms...` in the desired wire order). The decision
+above (fan-out stays generic, a *reactive* cross-provider need gets a purpose-built composite) is
+unchanged — no reactive composite type exists yet, built-in or otherwise. A concrete "write your own
+`ContextProvider`" on-ramp now also exists: `examples/18_custom_context_provider.cpp`
+(`docs/planning/2026-08-22-component-role-audit-tracker.md` Finding C).
+
 Full text: `docs/research/2026-08-11-maf-middleware-codeact-skills-deep-dive.md` §2;
-`include/agentengine/core/context_assembly.hpp`; `include/agentengine/core/history_and_skills_provider.hpp`.
+`include/agentengine/core/context_assembly.hpp`; `include/agentengine/core/composed_context_provider.hpp`;
+`decisions/ADR-074-composed-context-provider-consolidation.md`.
 
 ### OQ-22 — Should `ContextContribution` carry per-contributor provenance, independent of chaining?
 

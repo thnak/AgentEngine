@@ -149,9 +149,15 @@ generic pipeline/reactive mechanism was designed and red-teamed against this sea
 origin provider, a provenance mechanism this seam doesn't have and a bare accumulated-context
 parameter can't substitute for. The judged answer: fan-out stays generic; a concrete cross-provider
 reactive need (e.g. a future memory provider deduping against `SkillsProvider`) is solved with a
-purpose-built composite `ContextProvider` in the `HistoryAndSkillsProvider` idiom
-(`include/agentengine/core/history_and_skills_provider.hpp`) — which already proves the pattern for
-the ordering problem — not by extending this generic seam. Full reasoning: `OpenQuestions.md` OQ-18.
+purpose-built composite `ContextProvider` that owns its sub-providers directly and decides their
+composition itself, not by extending this generic seam. That pattern was originally proven by a
+hand-written, fixed two-provider type, `HistoryAndSkillsProvider<H,S>`; `decisions/ADR-074-composed-context-provider-consolidation.md`
+(2026-08-23) deleted that type and absorbed its fixes into the general
+`ComposedContextProvider<Ms...>` (`include/agentengine/core/composed_context_provider.hpp`) —
+declaring `Ms...` in the desired wire order now gets the same ordering guarantee the hand-written
+composite used to provide bespoke. A *reactive* composite (one whose sub-providers see each other's
+output, the case this paragraph is actually about) still has no built-in type and remains
+consumer-authored, same as before. Full reasoning: `OpenQuestions.md` OQ-18.
 
 Kinds: `HistoryProvider` (conversation history) · `SkillsProvider` (009 §8) · **working** memory
 (in-session scratch, this RFC's `state`) · **episodic** / **semantic** / **procedural** memory,
