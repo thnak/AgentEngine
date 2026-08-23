@@ -732,3 +732,32 @@ noticing as a pattern in its own right: this codebase accumulates real, tested, 
 that later work supersedes or never wires up, without a standing practice of marking them dead. Not
 proposing a fix for that meta-pattern here — flagging it as something worth raising when this tracker
 next gets reviewed as a whole.
+
+---
+
+## 2026-08-22 — Review pass: fact-checking this tracker's own citations and claims
+
+User asked to run a review pass over this file itself, not new components. Four parallel forks, each
+covering one section, re-verified every cited `file:line`, every quoted comment, and every behavioral
+claim (A–P plus every "no finding" paragraph) against real code rather than trusting the tracker's own
+prose — same discipline as every finding above, turned on this document. Result: everything holds.
+Two trivial citation-line drifts found and left uncorrected as not worth a diff (Finding H's
+`OpenQuestions.md` quote anchors at line 456; the quoted sentence actually starts at 454 — the quoted
+text itself is verbatim-accurate. The worktree section's `merge_subtrees` citation says `504-583`; the
+function actually runs `504-586` — 3 lines off at the tail). One real omission, corrected below.
+
+### Correction to Finding N — the reason `ShellRunner`/`RealFileSystemAdapter` stay in the default build was missing
+
+Finding N's own claim (zero non-test production instantiation, `MediatedFileSystemAdapter` supersedes
+it for every real path, stale top-comment) is all still accurate and unchanged. What Finding N did not
+say, and should have: staying in the default build target is not oversight, it's a **documented
+decision**. `CMakeLists.txt:86-113` builds `agentengine_shell_runner` as a deliberately separate STATIC
+library specifically so ADR-001 §7 finding 1's fix — Sh-S1's "zero references to a process-creation
+primitive" check — can be verified at link-target granularity against the actual built artifact
+(`tests/test_shell_runner_proof.cpp`), not against prose. Line 113's own comment calls out
+`real_filesystem_adapter.{hpp,cpp}` by name as "off-limits to reuse" — ADR-001 decision 4 — precisely
+because the mediated replacement (`agentengine_mediated_shell_runner`, same file, lines ~106-118) is
+required to share *no* source with this proof target. So "why is this still compiled" is not an open
+question — it's answered, just not in the header a reader of `real_filesystem_adapter.hpp` would
+actually see. Finding N's severity/disposition is unchanged (tracked, not closed) — this only fixes
+what would otherwise read as "nobody knows why this is still built."
