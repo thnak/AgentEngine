@@ -568,13 +568,23 @@ including a critical uncapped-branch-worktree-grant hole and a critical use-afte
 spawned child's own `Backgroundable` tool outliving its stack-local session — both closed in the
 shipped code, both independently re-verified (136 checks across four new test binaries, all
 passing; full `ctest` 205/205 with zero regressions; clean under MSVC ASan). **Two residuals named
-honestly, not hidden**: the new `SpawnPump` serialization mechanism that closes the
-`AsyncMutex`/worktree-mint race is sound by code-level construction but has no test exercising real
-concurrent multi-thread `submit()` calls, and TSan was never run (no supported
+honestly, not hidden** at judging time: the new `SpawnPump` serialization mechanism that closes the
+`AsyncMutex`/worktree-mint race was sound by code-level construction but had no test exercising real
+concurrent multi-thread `submit()` calls, and TSan had never been run (no supported
 `-fsanitize=thread` in this MSVC/Windows toolchain) — see the ADR §5/§7 for the full, honest
 per-claim verdict table, including two claims corrected from the prove-phase report's own
-self-reported "CORRECT"/"verified under ASan/TSan" to **INCONCLUSIVE**. Wall-clock/deadline
-budgeting for spawn remains open, unchanged.
+self-reported "CORRECT"/"verified under ASan/TSan" to **INCONCLUSIVE**.
+
+**Follow-up, 2026-08-23**: the multi-thread coverage gap is closed. `test_rt_agent_spawn.cpp` T7
+drives 16 real `std::thread` callers concurrently against one shared `SpawnPump`/`SpawnCostBudget`
+(sized so the pool genuinely exhausts mid-run), 25 repeated rounds, clean under MSVC ASan (400 real
+thread launches, zero findings) — `SpawnCostBudget::remaining()` lands exactly on the arithmetic
+bound every round (no double-spend/lost update) and every successful mint's `child_id` is pairwise
+distinct even under real contention. Full suite re-verified green (205/205, no regressions). ADR-079
+§5's C3 verdict is upgraded to CORRECT and C9 to PARTIALLY CORRECT (real concurrent evidence now
+exists; TSan itself still cannot run on this toolchain, so C9's own literal "verified under TSan"
+bar remains the one open half — a Linux/WSL TSan run of the same T7 scenario is the named follow-up).
+Wall-clock/deadline budgeting for spawn remains open, unchanged.
 
 ### OQ-16 — CodeAct has no discoverability story for its own granted surface
 
