@@ -616,21 +616,40 @@ int main() {
                 while (auto update = s.next()) received.push_back(std::move(*update));
                 if (!s.done()) std::this_thread::yield();
             }
-            check(received.size() == 3,
-                  "chat_stream()+tool_use: two text deltas + one assembled tool_use = 3 updates, "
-                  "delivered through a real TLS socket and the real detached worker");
-            if (received.size() == 3) {
+            // unified-streaming-design-draft.md §1 (Piece B), Findings 26/27: the companion
+            // tool-call-argument-chunk emission path (two input_json_delta fragments + one
+            // content_block_stop completion marker) adds 3 updates that didn't exist before this
+            // piece -- same shape test_anthropic_chat_client_translation.cpp's E-STREAM-R1 already
+            // proves offline; this is the real-backend plumbing proof for it.
+            check(received.size() == 6,
+                  "chat_stream()+tool_use: two text deltas + three argument-chunk updates + one "
+                  "assembled tool_use = 6 updates, delivered through a real TLS socket and the real "
+                  "detached worker");
+            if (received.size() == 6) {
                 auto const* t0 = std::get_if<Text>(&received[0].delta.value);
-                auto const* t1 = std::get_if<Text>(&received[1].delta.value);
-                auto const* tc = std::get_if<ToolCall>(&received[2].delta.value);
                 check(t0 && t0->text == "Hi ", "chat_stream()+tool_use: first text delta exact");
+
+                check(received[1].tool_call_argument_chunk.has_value() &&
+                          received[2].tool_call_argument_chunk.has_value() &&
+                          received[3].tool_call_argument_chunk.has_value(),
+                      "chat_stream()+tool_use: the two input_json_delta fragments AND the "
+                      "content_block_stop completion marker each get their own companion update, over "
+                      "a real TLS socket");
+                if (received[3].tool_call_argument_chunk.has_value()) {
+                    check(received[3].tool_call_argument_chunk->is_final,
+                          "chat_stream()+tool_use: content_block_stop is Anthropic's real per-index "
+                          "completion signal, real end to end");
+                }
+
+                auto const* t1 = std::get_if<Text>(&received[4].delta.value);
+                auto const* tc = std::get_if<ToolCall>(&received[5].delta.value);
                 check(t1 && t1->text == "there", "chat_stream()+tool_use: second text delta exact");
                 check(tc && tc->call_id == "call-1" && tc->tool_name == "get_weather" &&
                           tc->arguments_json == R"({"location":"Seattle"})",
                       "chat_stream()+tool_use: the tool_use's partial_json fragments (split across two "
                       "separate content_block_delta events on the wire) reassemble correctly end-to-end "
                       "through the real backend, not just the offline parser E-STREAM-R1 already proves");
-                check(received[2].is_final, "chat_stream()+tool_use: the assembled tool_use is final");
+                check(received[5].is_final, "chat_stream()+tool_use: the assembled tool_use is final");
             }
             check(s.terminal() == stream_terminal::closed,
                   "chat_stream()+tool_use: the stream reaches the success terminal");
