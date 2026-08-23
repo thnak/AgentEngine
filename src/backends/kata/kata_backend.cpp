@@ -15,6 +15,7 @@
 #include <cstring>
 #include <random>
 #include <sstream>
+#include <variant>
 #include <vector>
 
 extern char** environ;
@@ -43,8 +44,8 @@ struct ProcessOutcome {
     std::string stderr_text;
 };
 
-// Spawns `argv[0]` with `argv[1..]`, waits for exit (bounded by `kProcessTimeoutSeconds`), captures
-// stdout/stderr (each capped at `kOutputSafetyCapBytes`). Uses `posix_spawn_file_actions_t` to wire
+// Spawns `argv[0]` with `argv[1..]`, waits for exit (bounded by `timeout_seconds`), captures
+// stdout/stderr (each capped at `output_cap_bytes`). Uses `posix_spawn_file_actions_t` to wire
 // exactly three fds (stdin closed, stdout/stderr to fresh pipes) into the child -- POSIX_SPAWN gives
 // no equivalent of Win32's implicit "every inheritable handle crosses by default" hazard (a POSIX
 // child only inherits fds the parent hasn't marked `FD_CLOEXEC`), but this backend still opens every
@@ -57,7 +58,14 @@ struct ProcessOutcome {
 // stderr) -- a child writing substantial output to BOTH streams concurrently could otherwise block
 // on a full stderr pipe while this function is still fully draining stdout, a classic pipe deadlock
 // this function's own predecessor (sequential `drain()`) was silently exposed to.
-[[nodiscard]] result<ProcessOutcome> run_ctr(std::vector<std::string> const& args) {
+//
+// Slice 2: `timeout_seconds`/`output_cap_bytes` default to the Slice-1 red-team fix's own fixed
+// constants but are now caller-overridable -- `KataBackend::exec()`/`destroy()` pass
+// `SandboxSpec::limits.wall_ms`/`output_bytes` through when an `Instance` was created with them set
+// (kata_backend.hpp's own header comment has the full mapping).
+[[nodiscard]] result<ProcessOutcome> run_ctr(std::vector<std::string> const& args,
+                                              int timeout_seconds = kProcessTimeoutSeconds,
+                                              std::size_t output_cap_bytes = kOutputSafetyCapBytes) {
     std::array<int, 2> out_pipe{-1, -1};
     std::array<int, 2> err_pipe{-1, -1};
     if (pipe2(out_pipe.data(), O_CLOEXEC) != 0) {
@@ -116,7 +124,7 @@ struct ProcessOutcome {
         Stream{err_pipe[0], &outcome.stderr_text, true},
     };
 
-    auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(kProcessTimeoutSeconds);
+    auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeout_seconds);
     char buf[4096];
     for (;;) {
         bool const all_closed = !streams[0].open && !streams[1].open;
@@ -148,11 +156,11 @@ struct ProcessOutcome {
                 continue;
             }
             std::size_t const remaining =
-                kOutputSafetyCapBytes > stream_it->sink->size() ? kOutputSafetyCapBytes - stream_it->sink->size() : 0;
+                output_cap_bytes > stream_it->sink->size() ? output_cap_bytes - stream_it->sink->size() : 0;
             std::size_t const take = static_cast<std::size_t>(n) < remaining ? static_cast<std::size_t>(n) : remaining;
             stream_it->sink->append(buf, take);
             if (take < static_cast<std::size_t>(n)) outcome.output_truncated = true;
-            if (stream_it->sink->size() >= kOutputSafetyCapBytes) {
+            if (stream_it->sink->size() >= output_cap_bytes) {
                 // Real cap reached -- stop reading this stream (leaving the rest unread is fine:
                 // this fd is closed, `ctr`/the guest may see EPIPE/SIGPIPE on further writes, which
                 // is the correct backpressure signal for a runaway output producer).
@@ -199,20 +207,114 @@ struct ProcessOutcome {
 
 }  // namespace
 
-result<SandboxHandle> KataBackend::create(SandboxSpec const& /*spec*/, EffectContext& /*ctx*/) {
-    // `spec` is deliberately unused this pass -- see this file's header comment's "REAL GAP" note.
+result<SandboxHandle> KataBackend::create(SandboxSpec const& spec, EffectContext& /*ctx*/) {
+    // Slice 2: NetPolicy -- deny_all is the only value this backend can currently honor (see this
+    // file's header comment). Fail closed rather than silently granting deny_all anyway when a
+    // caller asked for something this backend cannot yet deliver.
+    if (!spec.net.deny_all || !spec.net.allowlist.empty()) {
+        return std::unexpected(error{
+            failure_class::policy,
+            "kata_backend: NetPolicy with deny_all=false or a nonempty allowlist is not supported "
+            "yet -- this backend has no CNI/egress-proxy wired to honor a real allowlist (Slice 2 "
+            "scope gap, see kata_backend.hpp)",
+            "kata_backend.net_allowlist_unsupported"});
+    }
+
+    // Slice 2: MountSpec -- each host-path grant becomes a real `--mount` flag; a BlobRef source
+    // fails closed, matching LinuxNativeJailBackend::create()'s identical posture for the same
+    // *check* -- but NOT the same safety margin: `LinuxNativeJailBackend` passes host/guest paths
+    // straight into a `::mount()` syscall (two separate arguments, no delimited-string grammar to
+    // exploit); this backend must instead build a SINGLE comma-delimited `ctr run --mount
+    // type=bind,src=...,dst=...,options=...` value, which `ctr`'s own parser reads as repeated
+    // `key=value` pairs with LAST-WINS semantics. Red-team finding #1 (BLOCKING, verified by
+    // execution): a `guest_path` (or `source`) containing an embedded `,src=...,dst=...` segment
+    // silently overrode the caller's own intended `src`/`dst`, mounting an ARBITRARY host path the
+    // caller never authorized (reproduced directly: `guest_path =
+    // "/mnt/intended,src=/etc,dst=/mnt/hijacked"` bind-mounted the host's real `/etc` into the
+    // guest, readable via `cat /mnt/hijacked/passwd`) -- a full I2 violation (ambient authority over
+    // any host path an attacker names) reachable through a spec field this backend claims to
+    // enforce. Fixed by rejecting a comma in either path outright: `ctr`'s mount-value grammar has
+    // no escaping mechanism, so refusing the one delimiter it splits on removes the injection
+    // surface entirely rather than trying to escape it. (The `options=rbind:<ro|rw>` segment itself
+    // is NOT similarly injectable -- it is always appended last, and `ctr`'s last-wins parsing means
+    // an embedded `options=` earlier in the string cannot escalate ro to rw. Only the source-path
+    // hijack was real.)
+    std::vector<std::string> mount_args;
+    for (MountSpec const& mount : spec.mounts) {
+        std::string const* host_path = std::get_if<std::string>(&mount.source);
+        if (host_path == nullptr) {
+            return std::unexpected(error{
+                failure_class::policy,
+                "kata_backend: MountSpec::source as a BlobRef is not supported by KataBackend yet "
+                "(host paths only, same scope gap as LinuxNativeJailBackend)",
+                "kata_backend.blob_mount_unsupported"});
+        }
+        if (host_path->find(',') != std::string::npos || mount.guest_path.find(',') != std::string::npos) {
+            return std::unexpected(error{
+                failure_class::policy,
+                "kata_backend: MountSpec host path or guest_path contains ',' -- rejected outright "
+                "rather than risking injection into ctr's comma-delimited --mount value grammar "
+                "(no legitimate absolute path needs a literal comma)",
+                "kata_backend.mount_path_invalid"});
+        }
+        mount_args.push_back("--mount");
+        mount_args.push_back("type=bind,src=" + *host_path + ",dst=" + mount.guest_path +
+                              ",options=rbind:" + (mount.read_write ? "rw" : "ro"));
+    }
+
+    // Slice 2: ResourceLimits -- memory_bytes maps directly to a real ctr flag; cpu_ms/pids/fds/
+    // disk_bytes/net_bytes have no mechanism wired this pass (kata_backend.hpp's header comment
+    // names each one honestly rather than silently ignoring them).
+    std::vector<std::string> limit_args;
+    if (spec.limits.memory_bytes > 0) {
+        limit_args.push_back("--memory-limit");
+        limit_args.push_back(std::to_string(spec.limits.memory_bytes));
+    }
+
     std::string const id = fresh_id("ae-kata");
-    auto outcome = run_ctr({"ctr", "run", "-d", "--runtime", runtime_type_, image_, id, "sleep",
-                             "infinity"});
+    std::vector<std::string> args{"ctr", "run", "-d", "--runtime", runtime_type_};
+    args.insert(args.end(), mount_args.begin(), mount_args.end());
+    args.insert(args.end(), limit_args.begin(), limit_args.end());
+    args.insert(args.end(), {image_, id, "sleep", "infinity"});
+
+    auto outcome = run_ctr(args);
     if (!outcome.has_value()) return std::unexpected(outcome.error());
     if (outcome->exit_code != 0) {
+        // Red-team finding #2 (REAL GAP, verified by execution -- e.g. a nonsensically tiny
+        // `memory_bytes` lets containerd register a container object before the Kata agent inside
+        // the guest fails to actually create it; `ctr run` then exits nonzero, but the container
+        // object itself is left behind on the host, unreachable by any code path here because NO
+        // `Instance`/`SandboxHandle` was ever minted for it -- not even a later `destroy()` call can
+        // find it). Best-effort cleanup on this exact path, mirroring `destroy()`'s own "at least
+        // try, log if it fails, never let a cleanup failure block returning the real error" posture,
+        // rather than leaving every `create()` failure to leak a containerd object silently.
+        (void)run_ctr({"ctr", "task", "kill", id});
+        (void)run_ctr({"ctr", "task", "rm", id});
+        auto cleanup = run_ctr({"ctr", "container", "rm", id});
+        if (!cleanup.has_value() || cleanup->exit_code != 0) {
+            std::fprintf(stderr,
+                          "kata_backend: create(%s) failed and its own cleanup attempt also did not "
+                          "succeed cleanly -- possible leaked Kata sandbox resource, see host "
+                          "containerd state directly\n",
+                          id.c_str());
+        }
         return std::unexpected(error{
             failure_class::fatal,
             "kata_backend: ctr run failed (exit " + std::to_string(outcome->exit_code) +
                 "): " + outcome->stderr_text,
             "kata_backend.create_failed"});
     }
-    instances_.emplace(id, Instance{id, 0});
+    // Slice 2: wall_ms/output_bytes carried onto the Instance -- every exec()/destroy() call this
+    // instance makes uses these instead of run_ctr()'s own fixed defaults, when the caller set them.
+    // NOTE (red-team finding #3, judgment call): this `create()` call's OWN `run_ctr(args)` above
+    // does NOT use wall_ms as its timeout -- it always uses run_ctr()'s fixed kProcessTimeoutSeconds
+    // default, deliberately: applying a caller's possibly-sub-second wall_ms (meant for a fast
+    // in-guest workload) to VM BOOT time itself would make create() fail spuriously for realistic
+    // small values, since cold start is "milliseconds" (traits, above) but not zero. `wall_ms` bounds
+    // exec()/destroy() calls on an already-created instance ONLY, not create()'s own boot -- stated
+    // explicitly here per the red-team's own recommendation, not left for a reader to infer.
+    Instance inst{id, 0, spec.limits.wall_ms, spec.limits.output_bytes};
+    instances_.emplace(id, std::move(inst));
     return SandboxHandle{id};
 }
 
@@ -227,8 +329,13 @@ result<ExecOutcome> KataBackend::exec(SandboxHandle& handle, ExecRequest const& 
     }
     Instance& inst = it->second;
     std::string const exec_id = "e" + std::to_string(++inst.exec_seq);
+    int const timeout_seconds =
+        inst.wall_ms > 0 ? static_cast<int>((inst.wall_ms + 999) / 1000) : kProcessTimeoutSeconds;
+    std::size_t const output_cap =
+        inst.output_cap_bytes > 0 ? static_cast<std::size_t>(inst.output_cap_bytes) : kOutputSafetyCapBytes;
     auto outcome = run_ctr({"ctr", "tasks", "exec", "--exec-id", exec_id, inst.container_id,
-                             "/bin/sh", "-c", request.source});
+                             "/bin/sh", "-c", request.source},
+                            timeout_seconds, output_cap);
     if (!outcome.has_value()) return std::unexpected(outcome.error());
 
     ExecOutcome result_out;
@@ -248,6 +355,12 @@ void KataBackend::destroy(SandboxHandle& handle) {
                                           // silent no-op, matching LinuxNativeJailBackend's own
                                           // destroy() posture (idempotent, never throws).
     std::string const id = it->second.container_id;
+    int const timeout_seconds = it->second.wall_ms > 0
+                                     ? static_cast<int>((it->second.wall_ms + 999) / 1000)
+                                     : kProcessTimeoutSeconds;
+    std::size_t const output_cap = it->second.output_cap_bytes > 0
+                                        ? static_cast<std::size_t>(it->second.output_cap_bytes)
+                                        : kOutputSafetyCapBytes;
     // Red-team finding #4 (MINOR/REAL GAP, no leak confirmed but no observability at all before this
     // fix): `destroy()` is `void` per the `SandboxBackend` concept -- no `EffectContext`/return value
     // to surface a failure through. A failed cleanup step is no longer fully silent: it's logged to
@@ -258,7 +371,7 @@ void KataBackend::destroy(SandboxHandle& handle) {
     for (auto const& step : {std::array<std::string, 3>{"ctr", "task", "kill"},
                               std::array<std::string, 3>{"ctr", "task", "rm"},
                               std::array<std::string, 3>{"ctr", "container", "rm"}}) {
-        auto step_outcome = run_ctr({step[0], step[1], step[2], id});
+        auto step_outcome = run_ctr({step[0], step[1], step[2], id}, timeout_seconds, output_cap);
         bool const failed = !step_outcome.has_value() || step_outcome->timed_out ||
                              step_outcome->exit_code != 0;
         if (failed) {
