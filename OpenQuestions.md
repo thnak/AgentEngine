@@ -6,12 +6,13 @@ shape of the project.
 
 **Legend:** 🔴 blocks a v1 decision · 🟠 needed before implementation of its area · 🟡 can wait
 
-**Five open cross-cutting questions as of 2026-08-23: OQ-19, OQ-20, OQ-21, OQ-23, OQ-25.** OQ-1
-through OQ-18, OQ-22, and OQ-24 are all resolved (OQ-22 was closed 2026-08-21 by ADR-066, ahead of
-this file's own stale "seven open" count; OQ-24 was scoped and resolved as a non-issue on 2026-08-23,
-the same pass that caught OQ-22's staleness). New questions are added here as they're identified;
-per-RFC open questions that don't change the shape of the project stay in their own RFC's §Open
-questions and are never promoted here by default.
+**Four open cross-cutting questions as of 2026-08-23: OQ-19, OQ-20, OQ-21, OQ-25.** OQ-1 through
+OQ-18 and OQ-22 through OQ-24 are all resolved (OQ-22 was closed 2026-08-21 by ADR-066, ahead of this
+file's own stale "seven open" count; OQ-24 was scoped and resolved as a non-issue on 2026-08-23; OQ-23
+was closed the same day by `decisions/ADR-074-undeclared-tool-call-leak-refusal.md`, judged the same
+session it was first raised in). New questions are added here as they're identified; per-RFC open
+questions that don't change the shape of the project stay in their own RFC's §Open questions and are
+never promoted here by default.
 
 ---
 
@@ -138,90 +139,6 @@ external-dispatching hook at run/turn level remain explicitly unresolved, now fo
 identified reason. Six remaining punch-list items, none implemented — real, named follow-on work, not
 silently dropped. **No project-owner implementation direction yet — this is a fresh design draft, not a
 standing "document only" instruction like OQ-19/OQ-20.**
-
-### OQ-23 — Does a misconfigured `tool_calling` capability declaration against a completion-only backend fail closed? 🟡
-
-Raised 2026-08-23 during a landscape survey of external harnesses/frameworks (Hermes, PydanticAI,
-OpenCode) requested to surface candidate cross-cutting questions:
-`docs/research/2026-08-23-harness-landscape-hermes-pydanticai-opencode.md` §1.
-
-004 §2's degradation rule already gets the *policy* right: `ChatClientCapabilities` is "a declared
-bitset, not a runtime probe" and capability sets are "discovered from config, not assumed" per
-endpoint (004 §3). The question is whether that policy has an enforced, tested boundary. NousResearch's
-Hermes model family (open-weight, ChatML-templated) is a real, concrete instance of a wire-shape trap:
-served through vLLM/SGLang with a normalizing parser (`--tool-call-parser hermes` / `qwen25`), tool
-calls arrive as a standard OpenAI-shaped `tool_calls` array; served raw through llama.cpp/GGUF with no
-such parser, the *same model weights* emit tool calls as literal `<tool_call>{"name":...}</tool_call>`
-text embedded in an ordinary completion — indistinguishable, at the wire, from `Content::Text` unless
-something specifically looks for the tags.
-
-If an operator declares `tool_calling: true` for such an endpoint's config (a real, plausible
-misconfiguration — the model genuinely "supports" tool calling, just not at that specific endpoint's
-wire shape), does the engine have any mechanism to notice the response doesn't actually contain a
-structured tool call and fail the run/capability check, or does it silently treat the reply as
-ordinary text and the agent never sees the tool call it (from the model's perspective) made? 006 §3's
-pipeline step 1 ("resolve name → declaration; unknown name → Contract error, never a guess") is about
-requests the engine already recognizes as tool-call attempts — it says nothing about a request-shaped
-attempt that never reached the engine as a tool call in the first place because the response parser
-didn't recognize the wire format.
-
-**Not resolved, but the confirming fixture from this entry's own recommended next step now exists and
-the gap is real, not hypothetical (2026-08-23).** A mechanism for exactly this wire shape already
-exists — `decisions/ADR-023-response-format-codec-seam.md` (Judged 2026-08-10):
-`response_format_codec::decode_response_format()` has a built-in `hermes_qwen_tool_call` table row,
-and `apply_response_format_scan()` (`core/response_format_leak_scan.hpp`) promotes a recognized,
-schema-clean candidate to a real `ToolCall` tagged `provenance = call_provenance::text_derived`,
-gated by `core/tool_pipeline.hpp`'s capability-scoped declassifier (never the tool's own
-`approval_mode` unconditionally). **But this scan is not connected to `tool_calling` in any way.**
-`OpenAIChatClient::scan_response_format_leaks_` (`protocol/openai/chat_client.hpp`) is a separate
-constructor flag, default `false`, per ADR-023 Finding 6 ("operator-armed, never content-triggered")
-— `chat()` calls `parse_chat_completion_response()` unconditionally (zero scanning of its own) and
-only runs the scan afterward `if (scan_response_format_leaks_)`. Nothing anywhere cross-checks that
-flag against `ChatClientCapabilities::tool_calling`.
-
-A new fixture, `tests/test_openai_chat_client_translation.cpp`'s `OQ-23-R1` block (9 checks, all
-passing against the real parser, `AGENTENGINE_WITH_HTTPS=ON` Debug build), confirms the exact scenario
-this question named: a literal llama.cpp-raw-Hermes wire response (`<tool_call>{"name":...}</tool_call>`
-embedded in `content`, no `tool_calls[]` array) parses successfully — not rejected, no error — into
-**exactly one plain, untainted `Text` item** carrying the tags verbatim, and a `ChatClientCapabilities{
-.tool_calling = true}` constructed alongside it plays no role in the outcome. So: today, the answer to
-this question's own title is **silently treats the reply as ordinary text, does not fail** — an
-operator who declares `tool_calling: true` for a real, plausible reason (the model genuinely supports
-it) and doesn't separately know to arm `scan_response_format_leaks` for this specific raw-serving
-endpoint gets no warning and no error; the model's tool call is invisible to the engine. Contrast: the
-identical literal content DOES get caught, correctly, when `scan_response_format_leaks` is armed
-(already-proven `ADR-023 P2-R1`, same test file) — the mechanism works, it just isn't wired to fire
-based on the capability declaration this question asks about.
-
-**A candidate fix now exists as a red-teamed, implemented, and tested design draft (2026-08-23) —
-still not judged.** `docs/planning/oq23-undeclared-tool-call-leak-design-draft.md`: a new detect-only,
-refuse-not-promote check (never promotes or invokes anything — structurally distinct from ADR-023's
-own declassifier, which it does not modify), gated on `tool_calling == true` AND
-`scan_response_format_leaks == false`, centralized at the same choke point
-(`AgentSession::run_model_call()`) `validate_outbound_media_capabilities` already uses for the
-symmetric outbound-direction check. Three competing designs (auto-arm scanning; construction-time
-validation; always-on unconditional sniff) were considered and rejected with reasons, including against
-steelmanned harder variants. An independent, fresh-context red-team pass (separate from the design's
-own author) found one real required revision (the detector must explicitly skip already-tainted
-diagnostic content, not merely rely on today's insertion points staying mutually exclusive) and three
-residuals not originally named (a cross-session refusal-amplification surface, a tool-name-enumeration
-oracle, and a domain-specific false-positive risk) — no finding was fatal to the design's central
-safety claim, which was traced against the real retry/turn-counting code, not assumed. All revisions
-were incorporated, then implemented for real:
-`detect_undeclared_tool_call_leak()` (`core/response_format_leak_scan.hpp`), wired into
-`rt/agent_session.hpp`'s `run_model_call()` at both real insertion points. 22 new tests across two
-files (9 function-level in `tests/test_openai_chat_client_translation.cpp`, 13 real `AgentSession`
-round trips in `tests/test_rt_agent_session_streaming_and_events.cpp`), all passing. Full-suite
-`ctest`: 227/229 real passes; the only 2 failures (`test_openai_chat_client_live`,
-`test_anthropic_chat_client_live`) were confirmed pre-existing and unrelated — reproduced identically
-against the pre-change baseline commit via `git stash`. **Still open**: project-owner judgment
-(024 §4.2) has not been sought — this is implementation-ahead-of-judging (this project's own "prove"
-step), not a substitute for it, so the question stays open until that happens.
-
-Full text: `decisions/ADR-023-response-format-codec-seam.md`;
-`docs/planning/oq23-undeclared-tool-call-leak-design-draft.md`;
-`tests/test_openai_chat_client_translation.cpp` (`OQ-23-R1`/`OQ-23-D1..D3`);
-`tests/test_rt_agent_session_streaming_and_events.cpp` (`OQ-M1..OQ-M4`).
 
 ### OQ-25 — Does the tool-calling loop need a per-tool validation-retry bound distinct from `MaxTurns<N>`? 🟡
 
@@ -410,6 +327,69 @@ testing purposes), PydanticAI's per-`.run()` ergonomic has no missing use case h
 **Decision: no new mechanism.** Possibility 1 from the original framing is correct — this is a
 deliberate, correct omission — and possibility 2's speculated gap is closed by mechanisms that already
 existed and were already load-bearing, just not previously cross-referenced against this question.
+
+### OQ-23 — Does a misconfigured `tool_calling` capability declaration against a completion-only backend fail closed?
+
+Raised 2026-08-23 during a landscape survey of external harnesses/frameworks (Hermes, PydanticAI,
+OpenCode): `docs/research/2026-08-23-harness-landscape-hermes-pydanticai-opencode.md` §1. NousResearch's
+Hermes model family is a real, concrete wire-shape trap: served through vLLM/SGLang with a normalizing
+parser, tool calls arrive as a standard `tool_calls[]` array; served raw through llama.cpp/GGUF, the
+*same weights* emit tool calls as literal `<tool_call>{"name":...}</tool_call>` text embedded in an
+ordinary completion, indistinguishable from plain `Text` unless something specifically looks for the
+tags. Confirmed real, not hypothetical, by a fixture (`tests/test_openai_chat_client_translation.cpp`'s
+`OQ-23-R1` block, same day): an operator declaring `tool_calling: true` for such an endpoint got no
+error and no warning — the leak was captured as ordinary, untainted `Text`, unless
+`AgentSession::scan_response_format_leaks` (a separate, default-`false` flag with no relationship to
+`tool_calling` anywhere in the code) was also armed.
+
+**Resolved by `decisions/ADR-074-undeclared-tool-call-leak-refusal.md` (Judged, 2026-08-23 — design,
+red-team, and prove all completed and judged the same session this question was raised in).** A new
+`detect_undeclared_tool_call_leak()` (`core/response_format_leak_scan.hpp`) — detect-only,
+refuse-not-promote, structurally distinct from and never touching ADR-023's own declassifier — is
+wired into `AgentSession::run_model_call()` at both real insertion points, gated on `tool_calling ==
+true` AND `scan_response_format_leaks == false`, as a structural `else if` sibling to the existing
+scan branch (mutual exclusivity by construction, not incidental wiring). On a match (a candidate's
+recipient matching a currently-live tool name, in one of `response_format_codec`'s known raw wire
+shapes), the response is refused with `failure_class::contract` — mirroring
+`validate_outbound_media_capabilities`'s existing outbound-direction gate shape exactly, for the
+symmetric inbound direction. Three competing designs (auto-arming the existing scan; a
+construction-time validation check; an always-on unconditional content sniff) were considered and
+rejected, including against red-team-steelmanned harder variants.
+
+An independent, fresh-context red-team pass (2026-08-23, before any code was written) found **one
+required revision**: the original justification for "doesn't fire when scanning is armed" only held
+for the case where a candidate gets promoted (nothing left to inspect), not the case where an
+unmatched candidate leaves a tainted diagnostic `Text` behind — fixed by making the detector explicitly
+skip `item.tainted` content as a structural property, independent of which call site invokes it, not
+merely because today's two insertion points happen to be mutually exclusive. Red-team also traced the
+design's self-identified DoS-shaped concern (a forged tool-call-shaped block in fetched content,
+addressed at a real tool name, causing a refusal when the model quotes it) against the REAL
+retry/turn-counting code rather than accepting the "bounded residual" framing on faith:
+`failure_class::contract` is retried nowhere in the engine (neither `ModelCallGateway`'s retry nor
+`WorkflowSupervisor`'s edge-level retry touch it), so a refusal costs exactly one wasted run, never a
+loop. Two further residuals were named, not fixed: a tool-name-enumeration oracle, and a
+domain-specific false-positive risk this project's own likely user population may hit more than a
+generic deployment would — both real, both bounded to "a refusal happens," never a promotion or grant.
+No finding was fatal to the design's central safety claim.
+
+Implemented and proven the same session: 22 new tests, all passing (9 function-level in
+`tests/test_openai_chat_client_translation.cpp`, including the exact tainted-diagnostic case the
+red-team's required revision targeted; 13 real `AgentSession::run_model_call()` round trips in
+`tests/test_rt_agent_session_streaming_and_events.cpp`). Full `ctest`: 227/229 real passes; the only 2
+failures (`test_openai_chat_client_live`, `test_anthropic_chat_client_live`) were confirmed
+pre-existing and unrelated to this change — reproduced identically against the untouched pre-change
+baseline via `git stash`, rebuild, and re-run. Amends `004-Model-Provider-Plane.md` §2 with the inbound
+half of "capabilities are declared, not probed."
+
+**Named residual, not closed:** a direct `OpenAIChatClient::chat()` call bypassing `AgentSession`
+entirely gets none of this protection — matching the identical, pre-existing scope of the *existing*
+`scan_response_format_leaks` mechanism at that same layer. Centralizing at `AgentSession` first (the
+same order ADR-035 already took) was a deliberate choice; porting down to the `ChatClient` layer is
+real, named follow-on work if judged valuable later.
+
+Full text: `decisions/ADR-074-undeclared-tool-call-leak-refusal.md`;
+`docs/planning/oq23-undeclared-tool-call-leak-design-draft.md` (the complete, uncompressed design →
+red-team → prove record); `decisions/ADR-023-response-format-codec-seam.md`.
 
 ### OQ-11 — Licence and governance
 

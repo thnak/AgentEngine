@@ -89,6 +89,23 @@ measured accepting `budget_tokens == max_tokens` and `budget_tokens < 1024` with
 violating its vendor's documented constraint fails closed rather than sending a request that works
 against the lenient hop and breaks against the strict one.
 
+**Amendment (2026-08-23, ADR-074 — inbound enforcement of a declared `tool_calling` bit).** The
+declaration/degradation rule above is stated for the outbound direction: what the engine sends
+against what a backend declares it can accept. It said nothing about the inbound direction — whether
+a *response* is checked against what `tool_calling` declared. `OpenQuestions.md` OQ-23 named a real,
+confirmed gap: an endpoint declaring `tool_calling: true` that in fact serves raw text (e.g.
+llama.cpp/GGUF Hermes/Qwen without a normalizing `--tool-call-parser`) leaks a tool-call attempt into
+an ordinary `content` string with no structured `tool_calls[]` entry — captured today as plain,
+untainted text, no error, no warning, unless the operator has *also* armed the separate
+`AgentSession::scan_response_format_leaks` recovery mechanism (`decisions/ADR-023-response-format-
+codec-seam.md`). ADR-074 adds the missing inbound check: when `tool_calling` is declared true and
+that recovery scan is not armed, a response whose content structurally matches a live tool name in
+one of `response_format_codec`'s known raw wire shapes is refused (`failure_class::contract`) rather
+than silently accepted — never promoted to a real tool call, never gated by anything other than
+"refuse or don't." This closes the last silent-acceptance gap in "capabilities are declared, not
+probed": a declared bit can no longer be quietly contradicted by what a response actually contains,
+in the one recoverable case this project's own codec already knows how to recognize.
+
 ## 3. Backends in v1
 
 | Backend | Reach | Notes |
