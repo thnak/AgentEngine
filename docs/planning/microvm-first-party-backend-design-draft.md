@@ -1,6 +1,8 @@
 # Design draft — does AgentEngine reverse 008 §1's "No `microvm` profile" locked decision?
 
-**Status:** Revision 1 (design phase, 2026-08-23). Not yet red-teamed. No code written.
+**Status:** Revision 2 (2026-08-23) — 4-lens red-team complete (security/I2-I3, maintenance-economics,
+architecture-fit/precedent, steelman-for-reversal). **Verdict: reversal declined for now.** See §7.
+No code written; this stays a design/decision document.
 **Branch:** `microvm-first-party-backend`. **Depends on:** `decisions/ADR-080-sandbox-backend-registry.md`
 (Proposed — the registry this design would register against).
 
@@ -212,3 +214,124 @@ already-permitted seam), or **Design C** (no reversal, document-only) is explici
 draft's own reading of the evidence in §2 leans toward Design C/D being better supported by what
 changed today than Design A/B — but that is a design-phase impression, not a conclusion, and red-team
 gets the real vote.
+
+## 7. Red-team synthesis (2026-08-23) and verdict
+
+Four independent lenses ran in parallel against Revision 1: security/I2-I3, maintenance-economics,
+architecture-fit/precedent, and a dedicated steelman-for-reversal pass explicitly tasked with making
+the strongest honest case *for* Design A. Full reports are preserved in this session's transcript;
+findings are synthesized below by claim.
+
+**Process note, fixed before synthesis:** the maintenance-economics lens found Revision 1's central
+citation — `docs/research/2026-08-23-microvm-sandbox-backend-landscape.md` — did not exist on this
+branch's own git history (it was committed on `sandbox-backend-registry`, a sibling branch, and this
+branch was cut from `main` before that work merged). The steelman lens independently hit the same gap
+and recovered the file manually. This violated CLAUDE.md's "research is dated and cited" discipline in
+the most literal sense — a cited source absent from the citing branch's own history. **Fixed**: the
+file is now committed on this branch (commit `3a3793a`) before this synthesis was written.
+
+### C1 (Windows-blast-radius-zero) — holds, with one landmine to close before prove
+
+The Linux-only compile gate and `named_only`-by-default framing are structurally sound *if enforced*.
+But the security lens found the actual mechanism doesn't enforce it: `SandboxBackendRegistry::register_backend<B>()`
+defaults its `mode` parameter to `strict_eligibility::eligible`, not `named_only` — the opposite of
+what Design A's safety story requires. A single call site omitting the third argument would silently
+make a linked-in hardware-isolation backend `Strict`-eligible fleet-wide. This is fixable (a
+hardware-isolation-class backend registration helper that doesn't expose a defaulted-`eligible`
+overload) but is not fixed by anything in Revision 1, and "provably unchanged" was too strong as
+written.
+
+### C2 (bounded maintenance surface) — does not hold as scoped
+
+The maintenance-economics lens's core finding: "track Kata's own CVE feed" undercounts the real
+surface by roughly 4-5x. Design A's own text commits to *two* runtime classes (`kata-clh`,
+`kata-qemu`), each pulling in an independently-CVE-streamed upstream VMM (cloud-hypervisor, QEMU —
+one of the largest CVE histories of any C codebase), plus a Kata-built guest kernel (its own stream,
+distinct from the host kernel), the `kata-agent`/vsock channel, and containerd shim-v2 integration.
+"One feed" is not an honest description of that surface. Compared against this project's own
+precedent for bounding exactly this class of risk — `ADR-013`'s exact-pinned, checksummed mbedTLS
+vendoring with a documented update cadence — Revision 1's C2 paragraph has no named owner, no
+re-certification cadence, and no itemized exclusion list. The steelman lens, arguing for Design A,
+converged on the same fix independently: pin one specific Kata LTS release, support exactly one
+runtime class (not two), and vendor it mbedTLS-style rather than "track upstream." That narrower
+slice is real and defensible — but it is not what Revision 1 proposed, and even the steelman lens
+did not conclude it should ship now (see C5).
+
+### C3 (I2/I3 unaffected) — mostly holds; one real gap named, not closed
+
+`HostSandboxSelection`'s explicit-constructor bar and the existing `SandboxHandle`/`ExecRequest`
+contract generalize to a VM backend cleanly — no implicit model-output path into backend selection
+was found. But the security lens surfaced a genuine gap Revision 1 didn't address: Kata's headline
+capability (GPU passthrough) has no home in `trust/capability.hpp`'s `capability_kind` enum. If GPU
+access were granted merely by landing on a particular backend rather than through an explicit
+`CapabilitySet` entry, that is a second, parallel authority-granting path — the textbook shape of an
+I2 violation, and one native-jail/WasmBackend never had to solve because neither exposes a physical-
+device axis. Any future revision of Design A must either add a real `capability_kind` for device
+passthrough or drop GPU passthrough from scope entirely; Revision 1 left it as an unexamined "pro."
+
+### C4 (real demand) — INCONCLUSIVE, as predicted
+
+No lens found a demand signal distinct from "the seam should exist" (already true, and already a
+differentiator per the research) or "a worked example should exist" (Design C/D). This was flagged in
+Revision 1 as the weakest claim and nothing in red-team strengthened it.
+
+### C5 (v1-priority-consistent) — does not hold; this is the deciding claim
+
+Two lenses independently checked the real, current status of `native-jail`'s own v1 completeness gate
+and reached different secondary sources but the same authoritative answer. The maintenance-economics
+lens cited a milestone-2 breakdown doc claiming G1 cross-platform parity is "done." The steelman lens
+cited `decisions/README.md`'s own ADR-004 row directly. **`decisions/README.md` is this project's
+authoritative status ledger** (per its own convention, cross-checked directly for this synthesis):
+ADR-004 (the Windows `native-jail` backend) is marked **"Spiked, not Judged"** — the full 008 §9
+promotion gate (G1-G8) has not cleared. Whichever secondary planning doc says otherwise is stale
+relative to the ADR ledger. This means Design A/B would be committing new scope (a second, harder
+isolation technology) ahead of already-committed, unfinished scope (`native-jail` itself) — exactly
+the ordering 008 §1's own priority statement forbids ("native-jail first... anything stronger and
+Linux-only is deliberately not something the engine commits to building or maintaining first"). This
+is not a maintenance-cost objection the steelman lens's scoping fixes (§ C2) touch — it's a
+sequencing fact, and it stands regardless of how disciplined Design A's scoping becomes.
+
+### Design D — real, but not quite the zero-cost "no ADR needed" escape Revision 1 hoped
+
+The architecture-fit lens confirmed the pure mechanism (008 §2a: a deployer-supplied `SandboxBackend`,
+never linked into the shipped library, never affecting `Strict` resolution) needs no ADR at all —
+that path is already open today, unconditionally. But Design D's specific proposal — an in-tree,
+CI-compiled, tested example authored by the engine team — is a real, if much lighter, maintenance
+commitment closer to "the engine building it" than to "a deployer supplies their own." It's a smaller
+exception to 008 §1's letter than Design A, not a non-exception. The same lens also surfaced a directly
+on-point precedent Revision 1 missed entirely: `decisions/ADR-008-wasm3-cold-start-vs-wasmtime.md`
+(2026-08-03/04, three weeks before this draft) evaluated a *quantified* alternative backend (wasm3,
+160-400x faster cold start) for first-party adoption and explicitly declined it in favor of the open
+seam, on nearly identical "two sandbox-escape surfaces, two conformance stories" reasoning. That
+precedent argues against Design A more directly than anything in Revision 1's own §2, and any future
+ADR text should cite it.
+
+### Verdict
+
+**Reversal declined.** Not because the security or economics case is unsalvageable in the abstract —
+the steelman lens showed a materially narrower version of Design A (one runtime class, exact-pinned,
+`named_only` permanently, gated behind `native-jail`'s own gate being Judged first) answers C1-C3
+credibly. It is declined because **C5 is a sequencing fact, not a scoping problem**: this project's
+own authoritative ledger shows the isolation work it already committed to (`native-jail` v1
+completeness) is not finished, and C4 supplies no demand signal to justify jumping the queue anyway.
+Both are independent of how well-scoped Design A gets.
+
+**Recommended path forward, none of it requiring code on this branch today:**
+1. **No locked-decision reversal.** 008 §1 stands as written; this ADR records why it was
+   re-examined and why it stands, closing the "relitigate without an ADR" gap CLAUDE.md's rule exists
+   to prevent, rather than leaving the question open for the next person to re-ask from scratch.
+2. **Design D, scoped down to what the architecture-fit lens actually cleared**: either (a) pure
+   documentation — a how-to guide with no in-tree example, which needs no ADR and no team maintenance
+   commitment at all (closest to Design C), or (b) an in-tree example accepted as the one deliberate,
+   named exception to 008 §1's "build or maintain" language, scoped explicitly (CI compile+test only,
+   no CVE-response SLA, "adapt yourself" framing) so it doesn't quietly become Design A by drift.
+   Which of (a)/(b) is worth the (small) difference in cost is a project-owner call, not resolved here.
+3. **Named reopen conditions for Design A**, so this isn't a dead end: (i) `native-jail`'s own 008 §9
+   gate reaches Judged on both platforms, and (ii) a real, sourced demand signal for AgentEngine-owned
+   hardware isolation exists (not merely "the seam is good," which is already true today). If both are
+   met, the steelman lens's narrow slice (§ C2 above) is the version worth building, not Revision 1's
+   broader one.
+4. Fix the `register_backend` default-argument landmine (C1) in `ADR-080`'s own registry regardless of
+   this ADR's outcome — it's a real gap independent of whether a microVM backend ever gets built,
+   since any future `strict_eligibility::eligible`-by-default registration of *any* stronger backend
+   has the same blast-radius risk.
