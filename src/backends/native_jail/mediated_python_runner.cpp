@@ -401,6 +401,7 @@ PyObject* Internal_open(PyObject* /*self*/, PyObject* args) {
     // against a quota-capped grant. `find_fs_write` is both the structural gate AND, when it
     // succeeds, the source of the grant's own quota_bytes/file_count_cap for the live check below.
     std::optional<cap::FsWrite> granted_write;
+    std::optional<cap::FsRead> granted_read;
     if (mode->for_write) {
         granted_write = g_current_ctx->capabilities->find_fs_write(mount_id, mount_relative);
         if (!granted_write) {
@@ -411,8 +412,10 @@ PyObject* Internal_open(PyObject* /*self*/, PyObject* args) {
         // Gap-12 fix (2026-08-10 audit #12, fixed 2026-08-14): the same nullopt-ceiling false-denial
         // bug the write branch above was already fixed for (Phase G4) -- `find_fs_read` is the pure
         // lookup, `contains()` against a synthetic uncapped `requested` is what a `size_cap_bytes`
-        // -capped grant used to fail against.
-        if (!g_current_ctx->capabilities->find_fs_read(mount_id, mount_relative)) {
+        // -capped grant used to fail against. Capturing the grant itself (not just checking
+        // truthiness) is what lets the size-cap check below (2026-08-23 fix) see `size_cap_bytes`.
+        granted_read = g_current_ctx->capabilities->find_fs_read(mount_id, mount_relative);
+        if (!granted_read) {
             raise_permission_error("no capability grants read access to '" + std::string(path_c) + "'");
             return nullptr;
         }
@@ -452,6 +455,25 @@ PyObject* Internal_open(PyObject* /*self*/, PyObject* args) {
         // identifier or a hand-authored approximation.
         raise_os_error(handle.error());
         return nullptr;
+    }
+
+    // 2026-08-23 fix (component-role-audit-tracker.md Finding F): `cap::FsRead.size_cap_bytes` used
+    // to be checked nowhere on this path -- `find_fs_read` above only ever answered "is this path
+    // covered at all," never "does the grant cap how much." Checked HERE, on the already-open handle
+    // before it is ever wrapped into a Python file object, not after a read like the mediated shell's
+    // own `cat` fix -- unlike `cat`, this call site already holds a real handle at exactly the point
+    // a cheap size probe is possible, so the oversized read itself is prevented, not just its escape
+    // into a buffer.
+    if (granted_read && granted_read->size_cap_bytes.has_value()) {
+        LARGE_INTEGER size{};
+        if (!GetFileSizeEx(handle->get(), &size)) {
+            PyErr_SetFromWindowsErr(static_cast<int>(GetLastError()));
+            return nullptr;
+        }
+        if (static_cast<std::uint64_t>(size.QuadPart) > *granted_read->size_cap_bytes) {
+            raise_permission_error("open: the requested file exceeds this capability's size cap");
+            return nullptr;
+        }
     }
 
     int crt_flags = mode->binary ? _O_BINARY : _O_TEXT;

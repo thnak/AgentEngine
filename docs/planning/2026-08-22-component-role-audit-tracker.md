@@ -833,12 +833,29 @@ suite plus its two dependents (`test_worktree_mount_sync`, `test_mediated_shell_
 still pass in full. **Known compromise, disclosed, not fixed here**: the check runs AFTER
 `fs.read_file()` returns, not before — `FileSystemAdapter` has no stat-only size probe, so (matching
 `mount_read`'s own identical precedent) the oversized read still happens in memory; only the escape
-into `stdout_text`/context is prevented. **Newly found while implementing, not fixed**: the SAME gap
-exists on `mediated_python_runner.cpp`'s `open()` read bridge — `size_cap_bytes` is referenced there
-only in a comment about the unrelated write-quota Gap-12 fix, never actually checked against a read.
-Grep confirms zero real enforcement of `size_cap_bytes` outside `mount_read` and the fix just made in
-`cat`. Finding F's remaining scope (Finding E's fail-closed-vs-trim design question, and this new
-Python-side twin gap) is still tracked, not closed.
+into `stdout_text`/context is prevented.
+
+**Finding F, Python twin gap — also closed (2026-08-23, same session, follow-up).** The SAME
+`size_cap_bytes`-unenforced gap found while implementing the `cat` fix above also existed on
+`mediated_python_runner.cpp`'s `open()` read bridge. Fixed there too, and actually more cleanly than
+`cat`'s own fix: `Internal_open`'s read branch now captures the resolved `cap::FsRead` grant (was
+previously discarded after a truthiness check, the same `find_fs_read`-return-value pattern `cat`'s fix
+already established), and — because this call site already holds a real, already-opened
+`SafeFileHandle` from `open_within_mount_root` before ever wrapping it into a Python file object —
+checks `GetFileSizeEx` on that handle against `granted_read.size_cap_bytes` and raises
+`PermissionError` BEFORE any bytes are read, not after. This closes the one disclosed compromise in the
+`cat` fix (reading fully into memory before the check can run) for this call site specifically; `cat`
+still has that residual (`FileSystemAdapter`'s interface has no stat-only probe, out of scope to widen
+that interface for this fix). New regression tests `E2-C11` (oversized file → `open()` itself raises
+`PermissionError`, content never reaches guest code) and `E2-C12` (positive control: a cap with
+headroom still succeeds) added to `tests/test_mediated_python_runner_smoke.cpp`; full suite re-run and
+passes (Release config — this target has no vendored Debug-mode CPython lib, a pre-existing,
+unrelated-to-this-fix build environment constraint, confirmed by reproducing the same link failure on
+the pre-fix tree via `git stash`).
+
+Finding F's remaining scope — Finding E's fail-closed-vs-trim design question for the per-contributor
+`ContextBudget` mechanism — is still tracked, not closed; that one needs a real design decision, not a
+wiring completion, so it stays out of this session's fix scope.
 
 **Finding N — comment fixed.** `real_filesystem_adapter.hpp`'s top comment no longer claims to be "the
 only `FileSystemAdapter` implementation this project builds today" or "this project's actual near-term

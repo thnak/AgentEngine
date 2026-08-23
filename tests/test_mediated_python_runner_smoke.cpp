@@ -237,6 +237,40 @@ int main() {
                      "E2-C10: open() for read with a granted FsRead capability succeeds and reads "
                      "the real content back");
         }
+
+        // E2-C11/E2-C12 (2026-08-23 fix, component-role-audit-tracker.md Finding F): `open()`'s read
+        // side now enforces `cap::FsRead.size_cap_bytes` -- before this fix the field was checked
+        // nowhere on this path (only `core/worktree.hpp::mount_read`, a separate, content-addressed-
+        // store path this Runner never uses, enforced it), so an oversized file could be opened and
+        // streamed into guest Python code completely ungated. "written by mediated python" (e2c9.txt,
+        // written above) is 27 bytes.
+        {
+            ExecState capped_state{};
+            CapabilitySet capped_caps =
+                CapabilitySet::grant_root({Capability{cap::FsRead{"work", "", std::uint64_t{5}}}});
+            EffectContext capped_ctx{};
+            capped_ctx.capabilities = agentengine::borrow_capabilities(capped_caps);
+            ExecRequest req{"python", "try:\n    open('/work/e2c9.txt', 'r')\n    print('SHOULD NOT REACH')\n"
+                                       "except PermissionError as e:\n    print('DENIED:', e)"};
+            auto out = runner.run(req, capped_state, capped_ctx);
+            AE_CHECK(out.has_value() && out->stdout_text.find("DENIED") != std::string::npos,
+                     "E2-C11: open() for read raises PermissionError when the file exceeds "
+                     "size_cap_bytes -- caught at the guest level, same shape as every other denial");
+            AE_CHECK(out.has_value() && out->stdout_text.find("SHOULD NOT REACH") == std::string::npos,
+                     "E2-C11: the oversized file's content never reached guest code");
+        }
+        {
+            ExecState capped_state{};
+            CapabilitySet capped_caps =
+                CapabilitySet::grant_root({Capability{cap::FsRead{"work", "", std::uint64_t{1000}}}});
+            EffectContext capped_ctx{};
+            capped_ctx.capabilities = agentengine::borrow_capabilities(capped_caps);
+            ExecRequest req{"python", "with open('/work/e2c9.txt', 'r') as f:\n    print('READ:', f.read())"};
+            auto out = runner.run(req, capped_state, capped_ctx);
+            AE_CHECK(out.has_value() && out->stdout_text.find("READ: written by mediated python") !=
+                                             std::string::npos,
+                     "E2-C12: open() for read still succeeds under a size_cap_bytes grant with headroom");
+        }
     }
 
     // ================================================================================
