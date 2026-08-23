@@ -59,12 +59,20 @@ result<void> require_capability(EffectContext const& ctx, Capability requested, 
 // `open()` bridge. These two helpers apply the same fix here: `find_fs_read`/`find_fs_write` are pure
 // lookups answering "what's the grant's OWN ceiling", not `contains()`'s "is a synthetic ceiling
 // covered" question.
-result<void> require_fs_read(EffectContext const& ctx, std::string const& mount_id, std::string const& target,
-                              char const* denial_message) {
-    if (!ctx.capabilities || !ctx.capabilities->find_fs_read(mount_id, target)) {
+// Returns the resolved grant (not just success/failure) so a caller that reads real file content --
+// today, only `cat` -- can enforce `cap::FsRead.size_cap_bytes` against what it actually read.
+// `find_fs_read`'s own comment names this exact field as existing "for a future per-call byte-budget
+// use" that nothing wired up yet; `cat` is the first caller to do so, see its own call site below.
+result<cap::FsRead> require_fs_read(EffectContext const& ctx, std::string const& mount_id, std::string const& target,
+                                     char const* denial_message) {
+    if (!ctx.capabilities) {
         return std::unexpected(error{failure_class::policy, denial_message, "shell.capability_denied"});
     }
-    return {};
+    auto granted = ctx.capabilities->find_fs_read(mount_id, target);
+    if (!granted) {
+        return std::unexpected(error{failure_class::policy, denial_message, "shell.capability_denied"});
+    }
+    return *granted;
 }
 
 // `enforce_quota`: true for operations that can grow this mount's usage (mkdir, `cp`, output
@@ -150,6 +158,16 @@ result<ExecOutcome> run_builtin(std::string const& name, std::vector<std::string
         if (!req) return std::unexpected(req.error());
         auto data = fs.read_file(target);
         if (!data) return std::unexpected(data.error());
+        // Checked after the read, not before: `FileSystemAdapter` has no stat-only size probe, so
+        // (like `core/worktree.hpp::mount_read`'s own identical post-fetch check) the size is only
+        // known once the bytes are already in memory. Still closes the real gap this guards against
+        // -- an oversized file reaching `stdout_text`, and from there a tool result and the model's
+        // context -- even though the read itself isn't pre-empted.
+        if (req->size_cap_bytes.has_value() && data->size() > *req->size_cap_bytes) {
+            return std::unexpected(error{failure_class::policy,
+                                          "cat: the requested file exceeds this capability's size cap",
+                                          "shell.cat_exceeds_size_cap"});
+        }
         out.stdout_text.assign(reinterpret_cast<char const*>(data->data()), data->size());
         return out;
     }

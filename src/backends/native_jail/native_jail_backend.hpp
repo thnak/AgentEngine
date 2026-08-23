@@ -15,13 +15,23 @@
 //   - AppContainer's ACL denial is the §1b layer-3 BACKSTOP for filesystem access, never the
 //     primary boundary (ADR-004 §6 finding 1 -- a curated set of OS files carry `ALL (RESTRICTED)
 //     APPLICATION PACKAGES` read ACEs by Windows' own default). Interpreter-level `open()`
-//     mediation (010, layers 1-2) is not built yet (M3) -- this backend alone does NOT close the
-//     filesystem boundary to the standard 008 §1b claims a full `native-jail` deployment makes;
-//     that composition happens once PythonRunner/ShellRunner route through this backend.
+//     mediation (010, layers 1-2) IS built now (`MediatedFileSystemAdapter`/`MediatedPythonRunner`,
+//     ADR-014, Judged) -- but NOT by routing through this backend's create/exec/destroy lifecycle
+//     the two paragraphs below originally predicted. Correction (2026-08-23, component-role-audit-
+//     tracker.md Finding O): real Python execution never reaches `NativeJailBackend` at all --
+//     `MediatedPythonRunner`'s `call_tool` goes straight to `core/tool_pipeline.hpp::invoke_tool`,
+//     consistent with CLAUDE.md's locked decision that the embedded CPython interpreter is the one
+//     mediated code-interpreter path, permanently, with no second local isolation technology. That
+//     closes the filesystem boundary for Python by an entirely different, now-permanent mechanism
+//     than "compose with this backend." Whether the real *shell* (`MediatedShellRunner`,
+//     `mediated_shell_dispatch.cpp`) is still meant to route through this backend for its own
+//     process-spawning case someday is NOT settled by that same rule (which is Python-interpreter-
+//     specific by its own wording) -- left open, not decided here.
 //
 // Scope, matching decision 3 of the M2 breakdown doc: this backend's M2 exec() target is a
 // compiled probe program, not the Python interpreter or a real shell -- 010's PythonRunner/
-// ShellRunner become real Runners plugging into this same SandboxBackend in M3, unchanged.
+// ShellRunner were originally expected to become real Runners plugging into this same SandboxBackend
+// in M3; per the correction above, that happened for neither in the way this sentence describes.
 // `ExecRequest::source` is therefore, for M2 only, a full Win32 command line (an already-resolved
 // executable path plus arguments) that the CALLER -- test code today, a closed Runner/Tool
 // registry from M3 onward (008 §1b layer 2, 010 §1a) -- is trusted to have already resolved from a

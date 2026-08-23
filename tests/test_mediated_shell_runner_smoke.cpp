@@ -398,7 +398,9 @@ int main() {
         }
 
         // E3-Q5: FsRead's twin false-denial fix -- a size_cap_bytes-capped read grant is usable at
-        // all (no live enforcement is paired with it -- a read never grows mount usage).
+        // all (`find_fs_read` itself pairs no live MOUNT-USAGE check with it, unlike `find_fs_write`
+        // -- a read never grows mount usage). E3-Q6 right below proves the separate, real PER-CALL
+        // byte-budget enforcement `cat` now does with that same field (2026-08-23 fix).
         {
             ExecState state{};
             CapabilitySet caps = full_caps();
@@ -415,7 +417,28 @@ int main() {
             ctx.capabilities = agentengine::borrow_capabilities(caps);
             auto cat_out = quota_shell.run(ExecRequest{"shell", "cat readable.txt"}, state, ctx);
             AE_CHECK(cat_out.has_value() && cat_out->stdout_text.find("hi") != std::string::npos,
-                     "E3-Q5: cat succeeds under a size_cap_bytes-capped FsRead grant");
+                     "E3-Q5: cat succeeds under a size_cap_bytes-capped FsRead grant with headroom");
+        }
+
+        // E3-Q6 (2026-08-23 fix, component-role-audit-tracker.md Finding F): a size_cap_bytes grant
+        // TOO SMALL for the real file is now actually enforced by `cat` -- before this fix, the field
+        // was checked nowhere on the real-OS-backed shell/Python read path (only
+        // `core/worktree.hpp::mount_read`'s separate, content-addressed-store path enforced it), so
+        // an oversized file could reach stdout, a tool result, and the model's context completely
+        // ungated by this already-declared capability field.
+        {
+            ExecState state{};
+            CapabilitySet caps =
+                CapabilitySet::grant_root({Capability{cap::FsRead{"work", "", std::uint64_t{2}}}});
+            EffectContext ctx{};
+            ctx.capabilities = agentengine::borrow_capabilities(caps);
+            auto cat_out = quota_shell.run(ExecRequest{"shell", "cat readable.txt"}, state, ctx);
+            AE_CHECK(cat_out.has_value() && cat_out->klass == exec_outcome_class::policy_violation &&
+                         cat_out->stderr_text.find("size cap") != std::string::npos,
+                     "E3-Q6: cat is refused (as an ordinary, catchable command failure, not a hard "
+                     "stop) when the file exceeds the grant's size_cap_bytes");
+            AE_CHECK(cat_out.has_value() && cat_out->stdout_text.empty(),
+                     "E3-Q6: the oversized content never reached stdout");
         }
 
         std::filesystem::remove_all(quota_scratch);

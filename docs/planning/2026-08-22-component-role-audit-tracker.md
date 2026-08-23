@@ -811,3 +811,45 @@ doesn't contradict Finding H's "no real call path" conclusion). Finding H cites 
 that the one real piece of spawn-adjacent glue that does exist just had a capability leak fixed in it,
 still awaiting judge sign-off. Not correcting the finding text for this (doesn't change its conclusion),
 recorded here as a completeness note for whoever next touches this area.
+
+---
+
+## 2026-08-23 — Fixes applied: Finding F (`cat` size-cap), Finding N (stale comment), Finding M (residual note)
+
+Project owner directed fixing the safe, no-ADR-needed items plus Finding F's `cat` gap specifically
+(explicitly accepting that the latter is a real runtime/security-relevant change, not deferring it
+behind a full design→red-team→prove→judge pass — a narrow, deliberate exception to CLAUDE.md's usual
+gate for security-critical changes, justified here because the fix only completes enforcement of a
+capability field (`cap::FsRead.size_cap_bytes`) that was already ADR-designed and already partially
+enforced elsewhere (`mount_read`), not because it invents new security policy).
+
+**Finding F — partially closed.** `mediated_shell_dispatch.cpp`'s `require_fs_read` now returns the
+resolved `cap::FsRead` grant (not just success/failure); `cat` checks `data->size()` against
+`granted.size_cap_bytes` after the read and fails closed with `shell.cat_exceeds_size_cap` (a
+catchable, ordinary command failure, not a hard stop — same treatment as the existing quota-exceeded
+errors) if exceeded. New regression test `E3-Q6` (`tests/test_mediated_shell_runner_smoke.cpp`) proves
+an oversized file is refused and never reaches `stdout_text`; the whole `test_mediated_shell_runner_smoke`
+suite plus its two dependents (`test_worktree_mount_sync`, `test_mediated_shell_runner_hostile_corpus`)
+still pass in full. **Known compromise, disclosed, not fixed here**: the check runs AFTER
+`fs.read_file()` returns, not before — `FileSystemAdapter` has no stat-only size probe, so (matching
+`mount_read`'s own identical precedent) the oversized read still happens in memory; only the escape
+into `stdout_text`/context is prevented. **Newly found while implementing, not fixed**: the SAME gap
+exists on `mediated_python_runner.cpp`'s `open()` read bridge — `size_cap_bytes` is referenced there
+only in a comment about the unrelated write-quota Gap-12 fix, never actually checked against a read.
+Grep confirms zero real enforcement of `size_cap_bytes` outside `mount_read` and the fix just made in
+`cat`. Finding F's remaining scope (Finding E's fail-closed-vs-trim design question, and this new
+Python-side twin gap) is still tracked, not closed.
+
+**Finding N — comment fixed.** `real_filesystem_adapter.hpp`'s top comment no longer claims to be "the
+only `FileSystemAdapter` implementation this project builds today" or "this project's actual near-term
+implementation target" — replaced with an accurate statement naming `MediatedFileSystemAdapter` as the
+real, production-used implementation and explaining (matching the already-correct account already
+recorded in this tracker's prior review-pass section) why this type still ships in the default build on
+purpose. `native_jail_backend.hpp`'s stale M3-unification comment corrected too, along the same lines as
+Finding O's own text. Nothing about WHY these files still build changed — only the comments a reader
+would actually see now say so.
+
+**Finding M — residual note added.** `decisions/README.md`'s ADR-005 row now states plainly that both
+Design A (`capability_token.hpp`) and Design B (`capability_registry.hpp`) have zero production
+consumers today. The designs themselves are unchanged and still unwired — this is a documentation fix,
+not a wiring fix, so Finding M's own disposition (tracked, not closed) is otherwise unchanged.
