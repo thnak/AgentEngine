@@ -1413,6 +1413,14 @@ add_executable(test_rt_spawn_cost_budget test_rt_spawn_cost_budget.cpp)
 target_link_libraries(test_rt_spawn_cost_budget PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_spawn_cost_budget COMMAND test_rt_spawn_cost_budget)
 
+# ---- ADR-079 §7's TSan residual on SpawnPump (rt/agent_spawn.hpp) -- a portable, test-local
+# reproduction of SpawnPump's own cost-consumption synchronization shape (rt::SpawnCostBudget only,
+# no worktree/compute_digest dependency), so it builds and links on every platform including Linux,
+# where the real SpawnPump (test_rt_agent_spawn.cpp, below, WIN32-only) cannot run under TSan.
+add_executable(test_rt_spawn_pump_concurrency test_rt_spawn_pump_concurrency.cpp)
+target_link_libraries(test_rt_spawn_pump_concurrency PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_spawn_pump_concurrency COMMAND test_rt_spawn_pump_concurrency)
+
 # ---- ADR-037 -- agentengine::rt::ProjectRegistry, the Quark-actor-free replacement for the
 # in-memory-index half (H1-H3) of 030 Sec6's ProjectRegistry (project/registry.hpp). H4/H5/G4 --
 # project/project.hpp's own manifest snapshot and archived-member tail -- are NOT covered here (a

@@ -170,7 +170,7 @@ path.
 | C6b (branch-mode grant is caller-bounded, I2-1) | **CORRECT** | T3: a path outside the caller's own held scope is rejected via the child's own granted capability even though physically present in the branched mount's content — the exact adversarial scenario the critical I2-1 finding described. |
 | C7 (I4 attribution — child Principal traces to caller via `derive_on_behalf_of`) | **CORRECT by code inspection**, not independently asserted by a new test | `run_child_agent_session()` unconditionally calls `agentengine::derive_on_behalf_of(req.principal, child_id)` — reusing 018 §2's already-proven, independently depth-bounded mechanism verbatim; no test in this change asserts the resulting `on_behalf_of` chain's content. Low-severity gap: the call site is a single, visibly-correct line, and the underlying primitive is separately Judged. |
 | C8 (child use-after-free impossible with backgrounding disabled; reproducible without it) | **PARTIALLY CORRECT** | The positive half is real and tested: `test_rt_agent_spawn_child_run.cpp` T5 proves `start_background_task()` fails closed with `standing_effect.background_execution_disabled` the moment the flag is set, *before* reaching `tool_pipeline.hpp`'s own `background_task()`/`thread::detach()` — verified by code read of `agent_session.hpp`'s guard placement (first check inside the function, ahead of dispatch authority resolution). The claim's own **negative control — a real `Backgroundable` tool detaching a thread, with the flag removed, reproducing an actual use-after-free under ASan/TSan — was never built.** T5's "negative control" only shows an *empty tool table* still fails for an unrelated reason, not the adversarial UAF repro C8 asks for. The fix is structurally sound (the guard is unconditional and sits ahead of every path to the detached thread, not conditional on tool shape), but this specific falsifiable claim's own empirical half is **INCONCLUSIVE**, not CORRECT as claimed by the prove-phase report. |
-| C9 (pump serialization closes the AsyncMutex hazard, verified under TSan) | **PARTIALLY CORRECT (2026-08-23 follow-up)** | `test_rt_agent_spawn.cpp` T7 (same evidence as C3) now empirically exercises the exact adversarial condition this claim names — 16 real OS threads racing `submit()` against one pump, 25 rounds, ASan-clean, every round's accounting exact — where previously nothing did. This is strong evidence the single-worker-thread serialization behaves correctly under real contention, not merely by construction. **Still not what the claim literally specifies**: `-fsanitize=thread` has no supported build on this MSVC/Windows toolchain, and no Linux/WSL TSan run was attempted, so the claim's own named verification method remains unmet. Upgraded from INCONCLUSIVE (zero concurrent evidence of any kind) to PARTIALLY CORRECT (real concurrent evidence via ASan, TSan itself still absent) — not to CORRECT, to avoid claiming more than what ran. |
+| C9 (pump serialization closes the AsyncMutex hazard, verified under TSan) | **CORRECT (2026-08-23, second follow-up)** | `tests/test_rt_spawn_pump_concurrency.cpp` T2, built and run on **Linux under clang `-fsanitize=thread`** (WSL Ubuntu, clang 21.1.8): 16 real OS threads racing `submit()` against one shared pump, 25 rounds, **zero TSan race reports, exit 0** — the literal verification method this claim names. Scope note: the production `SpawnPump` class itself still cannot link on non-Windows (an unrelated, pre-existing gap — `core/agent_spawn_worktree.hpp`'s `derive_spawn_child_id()` reaches `compute_digest()`, Windows CNG/BCrypt-only; see §7), so this test reproduces the IDENTICAL synchronization shape (one dedicated worker thread as the sole caller of `resume()` on a `consume()` coroutine; queue + `std::promise`/`future` per caller) using the real production `rt::SpawnCostBudget`/`rt::AsyncMutex` types, with the (unrelated, non-concurrency-critical) worktree-minting step omitted. This is the AsyncMutex/`consume()` hazard the claim names, closed under its own specified method; the worktree-mint step's own concurrency property (WT-2, child-id/mount-id collision freedom) is separately covered by `test_agent_spawn_worktree.cpp` T10 (ASan/Windows only, unchanged). |
 
 ## 6. The decision
 
@@ -232,17 +232,26 @@ standalone primitive with zero callers, closing the actual gap OQ-14 and OQ-16 b
 
 ## 7. Residual risks (named explicitly, not dropped)
 
-- **No TSan pass at all (unchanged; still the sole remaining gap for C3/C9).** MSVC's clang-cl
-  frontend has no supported `-fsanitize=thread` on this Windows toolchain; a real TSan run needs a
-  Linux/WSL build, still not attempted. **Closed as of 2026-08-23** (see C3/C9 above): `SpawnPump`
-  now DOES have real multi-OS-thread `submit()` coverage — `test_rt_agent_spawn.cpp` T7 drives 16
-  real `std::thread` callers against one shared pump, 25 rounds, clean under MSVC ASan, exact
-  token-conservation and child-id-uniqueness invariants every round. This is real evidence under
-  real cross-thread contention, not merely a construction argument — but it is ASan evidence, not
-  TSan evidence; TSan's own specific data-race detection (as opposed to the memory-safety +
-  invariant-correctness ASan-backed test now proves) still has not run anywhere on this mechanism.
-  A follow-on task should still run the same T7 scenario under TSan on Linux/WSL/clang for full
-  closure of C9's own literal claim.
+- **No TSan pass at all — closed in two steps, 2026-08-23.** First follow-up: `SpawnPump` gained
+  real multi-OS-thread `submit()` coverage — `test_rt_agent_spawn.cpp` T7 drives 16 real
+  `std::thread` callers against one shared pump, 25 rounds, clean under MSVC ASan, exact
+  token-conservation and child-id-uniqueness invariants every round — but ASan only; MSVC's clang-cl
+  frontend has no supported `-fsanitize=thread` on Windows. Second follow-up: attempting the Linux/
+  WSL TSan run this bullet asked for surfaced a genuine, pre-existing, unrelated blocker — the whole
+  `test_rt_agent_spawn` target (and `test_agent_spawn_worktree`) is `if(WIN32)`-gated in
+  `tests/CMakeLists.txt`, because `core/agent_spawn_worktree.hpp`'s `derive_spawn_child_id()` reaches
+  `compute_digest()`, which is Windows CNG/BCrypt-only (`src/core/worktree_digest.cpp`, "Windows-only
+  for now" — no Linux SHA-256 backend exists anywhere in this tree, 021 §2's own platform-priority
+  backlog). Rather than leave C9 permanently blocked on that separate, larger port, a new portable
+  test — `tests/test_rt_spawn_pump_concurrency.cpp` — reproduces `SpawnPump`'s exact
+  cost-consumption synchronization shape using only `rt::SpawnCostBudget` (zero platform dependency)
+  and runs it on Linux under real clang TSan: 16 threads, 25 rounds, zero race reports. This closes
+  C9's own literal "verified under TSan" bar for the AsyncMutex/`consume()` hazard specifically — see
+  C9's verdict above for the precise scope note (the worktree-mint step itself is not, and does not
+  need to be, part of this reproduction; it is covered separately by `test_agent_spawn_worktree.cpp`
+  T10, still ASan/Windows-only). **What remains genuinely open, not closed by either follow-up**:
+  porting `compute_digest()` to Linux, so the LITERAL production `SpawnPump`/`test_rt_agent_spawn.cpp`
+  can build and run there at all (TSan or otherwise) — a separate, larger, out-of-scope task.
 - **C8's adversarial negative control (a real `Backgroundable` tool detaching a thread, with
   `set_background_execution_disabled` removed, reproducing an actual use-after-free) was never
   built.** The shipped guard is structurally sound (verified by code read: it is unconditional and

@@ -586,6 +586,22 @@ exists; TSan itself still cannot run on this toolchain, so C9's own literal "ver
 bar remains the one open half — a Linux/WSL TSan run of the same T7 scenario is the named follow-up).
 Wall-clock/deadline budgeting for spawn remains open, unchanged.
 
+**Second follow-up, same day**: attempting that Linux/WSL TSan run surfaced a genuine, separate,
+pre-existing blocker — `test_rt_agent_spawn.cpp` (and `test_agent_spawn_worktree.cpp`) cannot even
+build on non-Windows, because `core/agent_spawn_worktree.hpp`'s `derive_spawn_child_id()` reaches
+`compute_digest()`, which is Windows CNG/BCrypt-only (no Linux SHA-256 backend exists anywhere in
+this tree yet — 021 §2's own platform-priority backlog, unrelated to spawn's own design). Rather than
+leave C9 blocked on that separate, larger port, `tests/test_rt_spawn_pump_concurrency.cpp` reproduces
+`SpawnPump`'s exact cost-consumption synchronization shape (one dedicated worker thread as the sole
+resumer of a `consume()` coroutine) using only the portable `rt::SpawnCostBudget`, and runs it on
+Linux (WSL Ubuntu, clang 21.1.8) under REAL `-fsanitize=thread`: 16 threads, 25 rounds, zero race
+reports, exit 0. ADR-079 §5's C9 verdict is upgraded to CORRECT for the AsyncMutex/`consume()` hazard
+the claim actually names (see the ADR for the precise scope note — the worktree-mint step itself
+stays ASan/Windows-only, covered separately by `test_agent_spawn_worktree.cpp` T10). Full suite
+re-verified green on both platforms (206/206 on Windows, no regressions). **Genuinely still open**:
+porting `compute_digest()` to Linux so the LITERAL production `SpawnPump` can build and run there at
+all — a separate, larger, out-of-scope task, named but not attempted here.
+
 ### OQ-16 — CodeAct has no discoverability story for its own granted surface
 
 026 §4 gives `agent.tools` a real introspection story — generated docstrings, a `.pyi` stub,
