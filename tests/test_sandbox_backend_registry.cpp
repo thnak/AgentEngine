@@ -16,11 +16,17 @@
 //   7. register_hardware_isolation_backend() -- introduced by
 //      docs/planning/microvm-first-party-backend-design-draft.md Revision 2's red-team finding #1 --
 //      always registers named_only, with no mode argument available to omit or get wrong.
+//   8. 008 SS9 G6 (downgrade visibility) -- decisions/ADR-082-native-jail-promotion-gate-008-9.md SS4's
+//      own finding that G6 was real, open work: SandboxBackendResolutionEvent::downgraded distinguishes
+//      "the winner is the strongest backend registered, full stop" from "a stronger backend is
+//      registered but does not support this platform, so this IS a fallback" -- the audit hook
+//      previously logged the winning name identically in both cases, with no way to tell them apart.
 
 #include <cstdio>
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/sandbox/sandbox_backend_registry.hpp"
@@ -241,6 +247,55 @@ int main() {
         auto named = registry.resolve_named(HostSandboxSelection{"strong-hw"});
         check(named.has_value() && (*named)->name == "strong-hw",
               "resolve_named: still directly reachable by its own name");
+    }
+
+    // ---- 8. 008 §9 G6: SandboxBackendResolutionEvent::downgraded distinguishes a real fallback from
+    //         an ordinary, undowngraded resolution -- both winning via the identical resolve_strict()
+    //         call, previously indistinguishable from the audit hook's own output. ---------------------
+    {
+        // 8a: a strictly stronger backend IS registered (LinuxOnlyBackend, strength 999) but does not
+        // support the platform being resolved for -- the weaker, Windows-supporting entry wins, and
+        // that win is a real fallback: downgraded must be true.
+        std::vector<SandboxBackendResolutionEvent> logged;
+        SandboxBackendRegistry registry{
+            [&logged](SandboxBackendResolutionEvent const& event) { logged.push_back(event); }};
+        auto weak = std::make_shared<StatefulBackend>();          // strength 42, Windows+Linux
+        auto strong_linux_only = std::make_shared<LinuxOnlyBackend>();  // strength 999, Linux only
+        check(registry.register_backend("weak", weak).has_value(), "8 setup: weak backend registers");
+        check(registry.register_backend("strong-linux-only", strong_linux_only).has_value(),
+              "8 setup: strong Linux-only backend registers");
+
+        auto win_on_windows = registry.resolve_strict(platform_id::windows_x86_64);
+        check(win_on_windows.has_value() && (*win_on_windows)->name == "weak",
+              "8a: the only Windows-supporting eligible entry wins, on Windows");
+        check(logged.size() == 1 && logged[0].downgraded,
+              "8a (G6): downgraded=true -- a stronger backend (999) IS registered, it just doesn't "
+              "support this platform, so 'weak' winning is a real fallback, not the honest best "
+              "choice");
+
+        // 8b: SAME registry, resolved for Linux instead -- the strong backend both exists AND
+        // supports this platform, so it wins outright. Not a downgrade: it IS the strongest
+        // registered candidate, full stop -- the negative control proving 8a's true result isn't
+        // just "always true once anything named_only-adjacent is registered."
+        logged.clear();
+        auto win_on_linux = registry.resolve_strict(platform_id::linux_x86_64);
+        check(win_on_linux.has_value() && (*win_on_linux)->name == "strong-linux-only",
+              "8b: the strong backend wins outright on the platform it actually supports");
+        check(logged.size() == 1 && !logged[0].downgraded,
+              "8b (G6 negative control): downgraded=false -- the winner IS the strongest backend "
+              "registered anywhere in this registry, not a fallback from something stronger");
+
+        // 8c: a registry with only ONE backend, nothing stronger ever registered -- also not a
+        // downgrade, the simplest possible negative case.
+        logged.clear();
+        SandboxBackendRegistry solo_registry{
+            [&logged](SandboxBackendResolutionEvent const& event) { logged.push_back(event); }};
+        auto solo = std::make_shared<StatefulBackend>();
+        check(solo_registry.register_backend("solo", solo).has_value(), "8c setup: registers");
+        auto solo_winner = solo_registry.resolve_strict(platform_id::windows_x86_64);
+        check(solo_winner.has_value(), "8c setup: resolves");
+        check(logged.size() == 1 && !logged[0].downgraded,
+              "8c (G6 negative control): downgraded=false when nothing stronger was ever registered");
     }
 
     if (g_failures == 0) {

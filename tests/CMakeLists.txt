@@ -2501,6 +2501,19 @@ if(AGENTENGINE_BUILD_PYTHON_RUNNER)
   set_tests_properties(test_native_jail_python_worker_slice1 PROPERTIES
     ENVIRONMENT "${AE_PYTHON_TEST_ENV}" TIMEOUT 60)
 
+  # ---- 008 SS9 G7 (session boundary) -- decisions/ADR-082-native-jail-promotion-gate-008-9.md SS4:
+  # a real, previously-untracked gap. Two jailed worker processes, live at once, prove a canary
+  # planted in one is unreachable from the other -- the kernel-enforced OS-process boundary Slice 1
+  # gave this claim, exercised for real for the first time.
+  add_executable(test_native_jail_session_boundary_windows test_native_jail_session_boundary_windows.cpp)
+  target_link_libraries(test_native_jail_session_boundary_windows PRIVATE
+    agentengine::core agentengine::mediated_python_runner agentengine_warnings)
+  target_compile_definitions(test_native_jail_session_boundary_windows PRIVATE
+    AE_PYTHON_HOME="${AGENTENGINE_PYTHON_HOME}")
+  add_test(NAME test_native_jail_session_boundary_windows COMMAND test_native_jail_session_boundary_windows)
+  set_tests_properties(test_native_jail_session_boundary_windows PROPERTIES
+    ENVIRONMENT "${AE_PYTHON_TEST_ENV}" TIMEOUT 60)
+
   # ---- Milestone 3 Phase G1: agent.tools generated-code execution proof (026 §4/§5) --------------
   # Generation-only correctness (no CPython dependency) is test_agent_tools_codegen.cpp, above.
   add_executable(test_mediated_python_runner_agent_tools test_mediated_python_runner_agent_tools.cpp)

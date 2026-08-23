@@ -45,9 +45,20 @@ enum class strict_eligibility { eligible, named_only };  // ae-naming-lint: allo
 // unauthorized). Optional, `nullptr` by default -- same idiom as `QuarantineAuditHook`
 // (trust/secret_quarantine.hpp) and `MiddlewareTraceHook`: a deployment that wires nothing gets no
 // durable record at all, a real named limitation, not a silent one.
+//
+// `downgraded` (008 §9 G6, decisions/ADR-082-native-jail-promotion-gate-008-9.md §4's own finding
+// that G6 was real, disclosed, open work, not silently claimed covered by this registry's mere
+// existence): true when some OTHER strict-eligible backend registered in this same registry has a
+// HIGHER `strength` than the one that actually won, i.e. a stronger candidate exists but does not
+// support `current` -- "the downgrade appears in diagnostics" made a checkable fact instead of
+// something a consumer of `resolved_name` alone has no way to tell from an ordinary, undowngraded
+// resolution. Platform-BLIND on purpose: it answers "is a stronger backend registered at all,"
+// independent of whether that stronger backend could ever have won on this platform -- the same
+// "what's registered vs. what's actually usable here" gap 008 §9's own text names.
 struct SandboxBackendResolutionEvent {  // ae-naming-lint: allow SandboxBackendResolutionEvent — new vocabulary from the sandbox-backend-registry design draft; 027 not yet updated
     platform_id current;
     std::string resolved_name;
+    bool downgraded = false;
 };
 using SandboxBackendResolutionAuditHook = std::function<void(SandboxBackendResolutionEvent const&)>;  // ae-naming-lint: allow SandboxBackendResolutionAuditHook — new vocabulary from the sandbox-backend-registry design draft; 027 not yet updated
 
@@ -153,8 +164,18 @@ public:
         std::vector<ProfileTraits> candidate_traits;
         eligible.reserve(entries_.size());
         candidate_traits.reserve(entries_.size());
+        // Platform-blind max, across every strict-eligible entry regardless of whether it supports
+        // `current` -- 008 §9 G6's own "downgrade" concept (SandboxBackendResolutionEvent's own
+        // comment): compared against the ACTUAL winner (platform-filtered, below) to answer "was
+        // something stronger available in this registry at all," not merely "did the strongest
+        // eligible-and-supported entry win" (which is trivially always true and would make every
+        // resolution look identical to an undowngraded one).
+        std::uint32_t strongest_registered = 0;
         for (auto const& [name, entry] : entries_) {
             if (entry.strict_mode != strict_eligibility::eligible) continue;
+            strongest_registered = entry.traits.strength > strongest_registered
+                                        ? entry.traits.strength
+                                        : strongest_registered;
             eligible.push_back(&entry);
             candidate_traits.push_back(entry.traits);
         }
@@ -168,7 +189,8 @@ public:
         }
         RegisteredSandboxBackend const* resolved = eligible[*winner];
         if (audit_hook_) {
-            audit_hook_(SandboxBackendResolutionEvent{current, resolved->name});
+            bool const downgraded = resolved->traits.strength < strongest_registered;
+            audit_hook_(SandboxBackendResolutionEvent{current, resolved->name, downgraded});
         }
         return resolved;
     }

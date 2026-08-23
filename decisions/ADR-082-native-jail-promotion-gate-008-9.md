@@ -8,7 +8,10 @@ breakdown.md` Phase C, tasks C1-C6, all marked "(done)" there) against `decision
 rule that an isolation boundary is security-critical and needs an ADR — none existed for this gate as
 a whole before this one. Re-verifies the Windows-side evidence directly, this pass; the Linux-side
 evidence is read and reported honestly, not re-executed (no Linux build/test environment available in
-this session — see §4's disclosure on each gate this affects).
+this session — see §4's disclosure on each gate this affects). **Updated same day (2026-08-23):** G6
+and G7, both originally found open, are closed by real new code + tests — see each gate's own "Update"
+note in §4 and the revised verdict table in §5. G2/G3's shared Linux gap is the one item from the
+original pass still open.
 
 **Relates to:** `decisions/ADR-004-appcontainer-native-jail-windows-backend.md` (Spiked, not
 Judged — the Windows AppContainer/Job-Object primitives task C2's real backend uses, superseding that
@@ -180,6 +183,31 @@ diagnostics/trace/metrics wiring for this specific claim has been verified eithe
 **Verdict: G6 does not hold. Correctly, honestly disclosed as deferred at the time M2 Phase C was
 scoped — but still open today, with no follow-on work tracked to close it.**
 
+**Update (2026-08-23) — closed.** `sandbox/sandbox_backend_registry.hpp`'s `SandboxBackendRegistry`
+(merged to `origin/main` after this ADR's original pass, `decisions/ADR-080-sandbox-backend-
+registry.md`) already closed G6's first half without naming it as such:
+`test_sandbox_backend_registry.cpp` item 5 is the real negative test G6 itself asks for — "no
+strict-eligible candidate supports the current platform" fails closed
+(`sandbox_backend_registry.no_strict_candidate`), never a silent fallback. The second half — "with a
+fallback, the downgrade appears in diagnostics" — was genuinely missing: `resolve_strict()`'s audit
+hook logged the winning name identically whether or not a stronger backend existed but couldn't run
+on this platform, so a consumer had no way to tell a downgrade from an ordinary win. Closed this
+pass: `SandboxBackendResolutionEvent` gained a `downgraded` field (true when some other registered
+strict-eligible backend has higher `strength` but does not support `current`), computed platform-blind
+against every registered entry, not just the eligible-and-supported subset. Proven by
+`test_sandbox_backend_registry.cpp` items 8a-8c: 8a is the real downgrade case (a strength-999
+Linux-only backend registered alongside a strength-42 cross-platform one, resolved on Windows —
+`downgraded=true`); 8b is the negative control on the SAME registry (the strong backend resolved on
+Linux, where it actually wins outright — `downgraded=false`, ruling out "always true once anything
+stronger exists anywhere" as a false-positive shape); 8c is the simplest negative case (nothing
+stronger ever registered). Re-run for this update: `test_sandbox_backend_registry` and
+`test_agent_registry_sandbox_backend_registry` both ALL PASS, no regression. **Scope, stated
+honestly**: this makes the downgrade fact available to whatever the host wires as its audit hook —
+the same "hook, not a built-in pipeline" shape `QuarantineAuditHook`/`MiddlewareTraceHook` already
+use elsewhere in this codebase. Whether it actually reaches a real diagnostics/trace/metrics backend
+is the deploying host's own wiring, unverified here, matching every other `*AuditHook` in this
+project.
+
 ### G7 (session boundary) — Open, and NOT among the gates M2 Phase C's own tracker named as deferred
 
 "A guest instance is never reused across sessions or principals; a canary written in session A is
@@ -207,6 +235,21 @@ Recommend this be tracked explicitly (unlike G6, it currently isn't tracked anyw
 this gate would start mattering is exactly the day someone adds instance pooling for a performance
 reason and forgets this property was never actually gated on a test.
 
+**Update (2026-08-23) — closed, upgraded from INCONCLUSIVE to CORRECT.**
+`tests/test_native_jail_session_boundary_windows.cpp`, new this pass: two `MediatedPythonRunner`
+instances (008-Sandbox-and-Isolation.md's `sandbox_lifetime::per_session` worker, `decisions/ADR-081-
+jailed-python-worker-process-slice-1.md`) held alive concurrently against the same `NativeJailBackend`.
+A canary planted in session A is read back from A itself both before and after session B's own probe
+for it (the sandwich structure rules out "A's own state merely reset around the same time" as an
+alternative explanation) — 7/7 checks pass. **Why this is now a real kernel-enforced fact, not the
+same code-level argument restated as a test**: since ADR-081 moved the interpreter into its own OS
+process per worker, two sessions are, by construction, two separate processes — memory cannot be
+shared between them by any code-level accident the way it could when both ran in-process in the host.
+This test is the first to actually exercise that boundary rather than argue from its absence of
+pooling code. Scope note carried forward honestly: this proves the CURRENT (no-pooling) architecture;
+the day pooling is added, this exact test is what would need to keep passing, and the reasoning above
+would need re-checking against whatever the pooling design actually shares.
+
 ### G8 (snapshot fidelity) — Not applicable to `native-jail`, by the RFC's own text
 
 008 §9 G8 is scoped to `wasm` explicitly: "Does not apply to `native-jail`'s interpreter/shell state,
@@ -225,27 +268,29 @@ It binds no new code — no implementation changed as part of this pass.
 | G3 (no ambient authority) | **Judged on Windows** (all 4 axes). **Judged on Linux minus filesystem/process** (same root cause as G2's Linux gap). |
 | G4 (teardown) | **Judged on Windows** at the bounded, disclosed 300-cycle/no-ASan scope. **Unverified this pass on Linux** (file exists, not re-run). |
 | G5 (cold start) | Correctly out of scope pending 023's M8 baseline — not evaluated. |
-| G6 (downgrade visibility) | **Open.** Deliberately, honestly deferred by M2 Phase C; still unclosed, no follow-on tracked. |
-| G7 (session boundary) | **Open, INCONCLUSIVE.** Not even named as deferred by M2 Phase C — a tracking gap, not just an implementation one. Plausible by code-level construction (no pooling exists), never proven by a test. |
+| G6 (downgrade visibility) | **Closed (2026-08-23 update).** `SandboxBackendRegistry` already had the "no fallback → startup fails" negative test; `SandboxBackendResolutionEvent::downgraded` (added this update) closes the "fallback is visible" half, proven by `test_sandbox_backend_registry.cpp` items 8a-8c. |
+| G7 (session boundary) | **Closed (2026-08-23 update), CORRECT.** `test_native_jail_session_boundary_windows.cpp` (new) proves it directly against the real kernel-enforced OS-process boundary ADR-081 gave this claim — upgraded from the original pass's INCONCLUSIVE. |
 | G8 (snapshot fidelity) | N/A to `native-jail` by 008's own text — not a gap. |
 
 **The roadmap's own exit-criterion language — "`native-jail` sandbox parity (008 §9 G1) holds on
 Windows and Linux" — is accurate as literally written** (G1 specifically, scoped to its own shared
 corpus, does hold on both platforms) **but should not be read as "the native-jail gate is fully
-closed."** G2/G3's shared Linux root cause, G6, and G7 remain real, open items this ADR surfaces
-precisely so the next reader doesn't have to re-derive them from six separate test-file header
-comments.
+closed."** G2/G3's shared Linux root cause remains the one real, open item this ADR surfaces
+precisely so the next reader doesn't have to re-derive it from six separate test-file header
+comments — G6 and G7 closed in the 2026-08-23 update above.
 
 **Residual risks and follow-on work, named rather than left implied:**
 - **The single highest-leverage fix available**: closing `docs/planning/linux-native-jail-pivot-root-
   containment-design-draft.md` (mount-namespace population + `/proc` remount) closes G2's Linux
   fs-escape gap and G3's Linux filesystem/process gap simultaneously — one fix, two gates, already
   designed (self-red-teamed, not built) in that document.
-- **G6 needs real work**: a negative test (unavailable profile, no fallback, startup fails) and,
-  separately, diagnostics/trace/metrics wiring for the fallback case — neither exists today.
-- **G7 needs a real positive control**: a canary-write-in-session-A / assert-unreachable-in-session-B
-  test, run today (it would almost certainly pass, per the code-level argument in §4) — turning an
-  argument into a fact before anyone adds pooling and quietly invalidates the argument's own premise.
+- **G6's Linux-side equivalent is unverified** — the closing test above (`test_sandbox_backend_registry.cpp`)
+  builds and runs cross-platform in principle (no OS-specific code in `SandboxBackendRegistry` itself)
+  but was only re-run on Windows this pass, matching this ADR's own Windows-only re-verification scope
+  elsewhere.
+- **G7's own scope note, stated once and not repeated**: it proves the CURRENT no-pooling architecture;
+  the day instance pooling is added, this exact test is what should be re-run first, not treated as
+  permanently settled.
 - **G4's Linux teardown claim is unverified by this ADR specifically** — re-run it directly the next
   time a Linux environment is available, rather than carrying this ADR's Windows-only re-verification
   forward as if it covered both platforms.
