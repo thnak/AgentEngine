@@ -1881,6 +1881,20 @@ add_executable(test_sandbox_backend_contract test_sandbox_backend_contract.cpp)
 target_link_libraries(test_sandbox_backend_contract PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_sandbox_backend_contract COMMAND test_sandbox_backend_contract)
 
+# ---- SandboxBackendRegistry (docs/planning/sandbox-backend-registry-design-draft.md, Revision 2) --
+# Closes check_sandbox_profile_availability()'s own "needs an Engine-level backend registry" gap.
+# Header-only, core-tier. test_sandbox_backend_registry.cpp proves the registry itself (including the
+# regression test for a real, confirmed Revision-1 per-call-default-construction bug);
+# test_agent_registry_sandbox_backend_registry.cpp proves its wiring into register_agent<A>().
+add_executable(test_sandbox_backend_registry test_sandbox_backend_registry.cpp)
+target_link_libraries(test_sandbox_backend_registry PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_sandbox_backend_registry COMMAND test_sandbox_backend_registry)
+
+add_executable(test_agent_registry_sandbox_backend_registry test_agent_registry_sandbox_backend_registry.cpp)
+target_link_libraries(test_agent_registry_sandbox_backend_registry PRIVATE
+  agentengine::core agentengine_warnings)
+add_test(NAME test_agent_registry_sandbox_backend_registry COMMAND test_agent_registry_sandbox_backend_registry)
+
 # ---- ExecState / SessionExecStateRegistry (010 §3a, Milestone 3 Phase E1) -----------------------
 # Header-only (sandbox/runner.hpp) -- no platform-specific dependency, proven with mock Runners
 # since PythonRunner/ShellRunner (Phase E2/E3) don't exist yet.
