@@ -392,9 +392,10 @@ void NativeJailBackend::destroy(SandboxHandle& handle) {
 }
 
 // ================================================================================================
-// Jailed-Python-worker surface (008 §1b/§3, 010 §2/§6 -- the ADR superseding this file's former
-// "Correction (2026-08-23)" comment on the header). See native_jail_backend.hpp's own comments for
-// the per-field rationale; this section is the design's §4-§8a made concrete.
+// Jailed-Python-worker surface (008 §1b/§3, 010 §2/§6 -- decisions/ADR-081-jailed-python-worker-
+// process-slice-1.md is the ADR superseding this file's former "Correction (2026-08-23)" comment on
+// the header). See native_jail_backend.hpp's own comments for the per-field rationale; this section
+// is the design's §4-§8a made concrete.
 // ================================================================================================
 
 namespace {

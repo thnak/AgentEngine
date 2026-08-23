@@ -88,10 +88,11 @@
 namespace agentengine::native_jail {
 
 // Jailed-Python-worker design (008-Sandbox-and-Isolation.md §1b/§3, 010-Python-Code-Interpreter.md
-// §2/§6 -- the ADR superseding this header's former "Correction (2026-08-23)" comment, which claimed
-// the CPython-interpreter/host-filesystem-boundary gap was closed "by an entirely different, now-
-// permanent mechanism" without any ADR amending 008/010's "locked to native-jail permanently"
-// requirement; it was not closed, and this design is the real fix). Host-configured, per-session
+// §2/§6 -- decisions/ADR-081-jailed-python-worker-process-slice-1.md is the ADR superseding this
+// header's former "Correction (2026-08-23)" comment, which claimed the CPython-interpreter/host-
+// filesystem-boundary gap was closed "by an entirely different, now-permanent mechanism" without any
+// ADR amending 008/010's "locked to native-jail permanently" requirement; it was not closed, and this
+// design is the real fix). Host-configured, per-session
 // inputs for a `sandbox_lifetime::per_session` Python worker -- the create_python_worker()/
 // exec_session() surface below, additive to the existing per_exec create()/exec()/destroy() (which
 // this design leaves byte-for-byte untouched; see native_jail_backend.cpp for the boundary).

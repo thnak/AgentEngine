@@ -457,8 +457,18 @@ comparison measures against.
 2. A real, adversarial red-team pass on this design — by a reviewer who did not write it — before any
    claim here is treated as more than a spike.
 3. ~~Build and measure the Job Object resource-limit layer against 021 Q2~~ **Done — §10.**
-   Remaining: a Linux cgroups v2 backend to give 021 Q2 its comparison point, and root-causing §10.4's
-   open "why" for `JOB_OBJECT_LIMIT_JOB_TIME`'s unreliability.
+   ~~Remaining: a Linux cgroups v2 backend to give 021 Q2 its comparison point~~ **Stale as of
+   2026-08-23 — a Linux cgroups v2 backend exists and is tested**: `src/backends/native_jail/
+   {linux_native_jail_backend.cpp, cgroup_limits.{hpp,cpp}}` (M2 Phase C task C2), exercised by
+   `tests/test_native_jail_{backend,abuse_corpus,parity,ambient_authority,teardown_cycles}_linux.cpp`
+   — re-confirmed by direct reading of those files in `decisions/ADR-082-native-jail-promotion-gate-
+   008-9.md`'s own G1-G4 pass. This item was stale before that check, the same pattern item 1 above
+   already had — not silently corrected, named here per that same entry's own precedent. **What is
+   still genuinely open**: 021 Q2's actual side-by-side CPU-time *measurement* (Windows Job Object
+   `cpu_ms` vs. Linux cgroups v2 `cpu.stat`, run and compared, not just "a backend exists to compare
+   against") — `docs/planning/v1-implementation-roadmap.md`'s own Milestone 4 entry still names this
+   as open pending exactly this backend, which now exists; the comparison itself has not been run.
+   Root-causing §10.4's open "why" for `JOB_OBJECT_LIMIT_JOB_TIME`'s unreliability also remains open.
 4. Decide LPAC vs. regular AppContainer by running §5's tier-3 corpus under both, not by reasoning
    from static ACL inspection alone.
 5. A clang build/run of both the AppContainer and Job Object code (§8.3's cross-compiler gap).

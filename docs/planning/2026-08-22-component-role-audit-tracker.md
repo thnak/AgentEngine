@@ -1194,5 +1194,9 @@ narrowed, not yet fully closed** — Slice 1 gives `execute_code` a genuine kern
 answering this finding's own live question in favor of "the requirement still holds, build the real thing"
 rather than a spec-downgrade ADR. Still open: Slice 2 (real file/socket relay, closing the six disclosed
 regressions above) and the Linux port (`LinuxNativeJailBackend` parity) — both named, scoped follow-on work,
-not silently dropped. No ADR has been written for this yet; the design/red-team/prove record lives in this
-tracker entry and the workflow's own transcript until one is.
+not silently dropped. **[2026-08-23: `decisions/ADR-081-jailed-python-worker-process-slice-1.md` Judged]** —
+formalizes this entry's design as a numbered ADR, independently re-builds and re-runs the evidence above
+rather than taking this entry's own account on self-report, and names on the record that the original
+design-phase candidate comparison was never preserved outside this tracker entry (a process gap for future
+passes, not a defect in the shipped design). Slice 2 and Linux parity remain open, tracked there now, not
+just here.
