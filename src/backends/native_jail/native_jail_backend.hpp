@@ -67,19 +67,31 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <vector>
+
+// pal/net.hpp (winsock2.h/ws2tcpip.h, guarded by WIN32_LEAN_AND_MEAN/NOMINMAX) MUST be included
+// before <windows.h> below -- windows.h's own unguarded internal `#include <winsock.h>` (the old,
+// pre-winsock2 header) would otherwise already be in effect by the time winsock2.h's
+// `_WINSOCKAPI_`-guarded include ran, which is the classic "WinSock.h has already been included"
+// conflict. `PythonWorkerState::live_sockets` (below, HandleRelay design draft §2) needs `pal::fd_t`,
+// so this header already has a real reason to see pal/net.hpp, not just a transitive-include workaround.
+#include "agentengine/pal/net.hpp"
 
 #include <windows.h>
 
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/json_value.hpp"
+#include "agentengine/core/worktree_mount_fs.hpp"  // SafeFileHandle -- PythonWorkerState::open_files
+#include "agentengine/sandbox/net_egress_proxy.hpp"  // VerifiedEndpoint -- set_test_connect_resolver_override
 #include "agentengine/sandbox/runner.hpp"
 #include "agentengine/sandbox/sandbox.hpp"
 #include "backends/native_jail/job_object_limits.hpp"
@@ -109,6 +121,14 @@ struct PythonWorkerSessionConfig {
     // state (core/tool_pipeline.hpp) that must never reach a jailed child (I2); only the rendered
     // TEXT crosses into `init_request`/`refresh_tools_request`.
     std::optional<ToolBridgeConfig> tool_bridge;
+    // Host-only, same "never sent to the worker" posture as `tool_bridge` above (I2) -- guest-visible
+    // mount_id -> real host directory, consulted by the "open"/"listdir" worker_query dispatch
+    // handlers (HandleRelay design draft §1) to resolve a guest-supplied mount_id before ever calling
+    // `open_within_mount_root`/`list_within_mount_root`. `MediatedPythonRunner::initialize()` already
+    // has this same map (`MediatedPythonConfig::mount_roots`) and forwards it here in addition to the
+    // existing `SandboxSpec::mounts` forwarding (the real ACL grant) -- this is wiring an
+    // already-host-owned value into a second place it needs to be read from, not a new grant surface.
+    std::unordered_map<std::string, std::wstring> mount_roots;
     bool   expose_agent_files_data = false;
     bool   expose_agent_ask = false;
     std::size_t output_cap_bytes = 0;  // 0 -> the worker's own default (output_discipline.hpp)
@@ -165,6 +185,26 @@ public:
     // MediatedPythonRunner::refresh_agent_tools()'s own "no interpreter teardown" contract).
     [[nodiscard]] result<void> refresh_python_tools(SandboxHandle const& handle, ToolBridgeConfig config);
 
+    // TEST-ONLY seam (HandleRelay design draft §2 item 1) -- mirrors `sandbox::HostEgressProxy::
+    // resolver`'s own established "testability seam, not a security bypass" precedent exactly:
+    // `dispatch_connect_authorize`'s own address-block check (`sandbox::resolve_and_validate`)
+    // categorically blocks loopback/private/link-local/CGNAT addresses BY DESIGN, which means no
+    // hermetic same-machine test target exists for proving the round trip's POST-resolution
+    // composition (does connect_authorize correctly connect to what the resolver reports, does
+    // connect_send/connect_recv correctly relay real bytes) -- exactly the same problem
+    // `HostEgressProxy::resolver`'s own header comment names for the tool-bridged path. Overrides the
+    // process-wide resolver every `dispatch_connect_authorize` call uses; `nullptr` (the default)
+    // means "use the real `sandbox::resolve_and_validate`". Production code never calls this --
+    // UNLIKE `HostEgressProxy::resolver` (a per-instance field, scoped to one object), this is a
+    // process-WIDE static, so setting it affects every worker session sharing the process, and
+    // "never used from production" is enforced by convention/review only, not the type system or a
+    // build flag. Callers MUST reset to `nullptr` unconditionally (an RAII guard, not a bare
+    // set-then-reset pair a thrown exception could skip) -- see
+    // `tests/test_native_jail_python_worker_handle_relay.cpp`'s own `TestResolverOverrideGuard` for
+    // the pattern every future caller should copy, not reinvent.
+    static void set_test_connect_resolver_override(
+        std::function<result<sandbox::VerifiedEndpoint>(std::string_view, std::uint16_t)> fn);
+
 private:
     // ae-naming-lint: allow watchdog_phase — this design's own new vocabulary, not yet in 027's registry
     enum class watchdog_phase { awaiting_init, idle, call_active, stopping };
@@ -183,6 +223,25 @@ private:
         // pairing device, minted worker-side; this one is invoke_tool()'s own request-id convention).
         std::uint64_t next_call_id = 0;
         std::uint64_t next_exec_seq = 1;
+
+        // HandleRelay design draft §2: the host-owned live sockets a "connect_authorize" worker_query
+        // has minted for this worker, keyed by a host-minted, strictly-increasing `socket_id` (never
+        // worker-chosen, mirroring `next_exec_seq`'s own "host mints, worker never originates an id"
+        // discipline). Every entry is force-closed by `terminate_worker`/`close_worker_handles`
+        // (design draft §4 item 5) -- no socket ever outlives the worker process it belongs to.
+        // `kMaxLiveSockets` bounds this map's growth regardless of whether the guest ever calls
+        // `connect_close` (design draft §4 item 5's own DoS lens).
+        std::unordered_map<std::uint64_t, agentengine::pal::fd_t> live_sockets;
+        std::uint64_t next_socket_id = 1;
+        static constexpr std::size_t kMaxLiveSockets = 16;
+
+        // HandleRelay design draft §1 (revised): open files, keyed the SAME way as `live_sockets` --
+        // real I/O against a DuplicateHandle'd file inside the AppContainer'd worker fails with
+        // ERROR_INVALID_HANDLE (a reproduced, documented finding, not a design choice), so the host
+        // keeps the real `SafeFileHandle` open here and relays read/write/close by id instead, sharing
+        // `next_socket_id`'s id space (files and sockets are never confused: each `dispatch_file_*`/
+        // `dispatch_connect_*` handler only ever looks its own id up in its own map).
+        std::unordered_map<std::uint64_t, agentengine::SafeFileHandle> open_files;
 
         std::atomic<std::uint64_t> active_exec_seq{0};  // 0 == no exec_request outstanding -- RT1 F1
         std::mutex call_mutex;                          // try_lock at exec_session() entry -- RT1 F2
@@ -240,10 +299,27 @@ private:
     // `create_python_worker()`'s post-creation failure paths now call this instead of duplicating
     // (or omitting) the close logic inline.
     void close_worker_handles(Instance& inst);
-    // Dispatches one worker_query frame (call_tool live this pass; open/listdir/connect_* return the
-    // fixed Slice-2 deny -- native_jail_backend.cpp's own header comment on this method has the full
-    // per-kind breakdown) and sends the worker_query_response back over `inst.worker->downstream_write`.
+    // Dispatches one worker_query frame -- call_tool (Slice 1) and open/listdir/connect_* (Slice 2,
+    // HandleRelay design draft) are all live; native_jail_backend.cpp's own comment on this method has
+    // the full per-kind breakdown -- and sends the worker_query_response back over
+    // `inst.worker->downstream_write`.
     void dispatch_worker_query(Instance& inst, json::Value const& query_frame, EffectContext& ctx);
+
+    // HandleRelay (docs/planning/jailed-python-worker-slice-2-handle-relay-design-draft.md) --
+    // per-kind handlers dispatch_worker_query routes to. `static` (no `this` needed): PRIVATE, not
+    // free functions, purely because `PythonWorkerState` itself is a private nested type these
+    // signatures name -- see native_jail_backend.cpp for the full per-function rationale.
+    using QueryFields = std::vector<std::pair<std::string, json::Value>>;
+    static QueryFields dispatch_open(PythonWorkerState& ws, EffectContext& ctx, json::Value const& payload);
+    static QueryFields dispatch_listdir(PythonWorkerState& ws, EffectContext& ctx, json::Value const& payload);
+    static QueryFields dispatch_file_read(PythonWorkerState& ws, json::Value const& payload);
+    static QueryFields dispatch_file_write(PythonWorkerState& ws, json::Value const& payload);
+    static QueryFields dispatch_file_close(PythonWorkerState& ws, json::Value const& payload);
+    static QueryFields dispatch_connect_authorize(PythonWorkerState& ws, EffectContext& ctx,
+                                                    json::Value const& payload);
+    static QueryFields dispatch_connect_send(PythonWorkerState& ws, json::Value const& payload);
+    static QueryFields dispatch_connect_recv(PythonWorkerState& ws, json::Value const& payload);
+    static QueryFields dispatch_connect_close(PythonWorkerState& ws, json::Value const& payload);
 };
 
 static_assert(SandboxBackend<NativeJailBackend>,

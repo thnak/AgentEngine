@@ -47,6 +47,11 @@ result<void> MediatedPythonRunner::initialize() {
     session.expose_agent_ask = config_.expose_agent_ask;
     session.output_cap_bytes = config_.output_cap_bytes;
     session.worker_exe_path = widen(std::string(AE_PYTHON_WORKER_EXE_PATH));
+    // HandleRelay design draft §1 item 2: the SAME map that seeds `spec.mounts` below (the OS-level
+    // ACL grant) also needs to reach `dispatch_worker_query`'s "open"/"listdir" handlers host-side, so
+    // it can resolve a guest-supplied mount_id before ever calling `open_within_mount_root` -- a
+    // second place this already-host-owned value is read from, not a new grant surface (I2).
+    session.mount_roots = config_.mount_roots;
 
     SandboxSpec spec;
     spec.mounts.reserve(config_.mount_roots.size());

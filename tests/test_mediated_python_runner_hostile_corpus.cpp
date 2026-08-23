@@ -388,11 +388,25 @@ int main() {
             // real unmediated primitive and cannot be used to reach one. Its presence here is an
             // ordinary consequence of every bootstrap-defined name sharing one exec() globals dict,
             // exactly like its four siblings already allowlisted below.
+            //
+            // HandleRelay design draft §2 (2026-08-23): `_ae_send`/`_ae_sendall`/`_ae_recv`/
+            // `_ae_socket_close`/`_AeRelayFile`/`_ae_socket_op_denied` are the SAME class of ordinary
+            // bootstrap-defined wrapper, added when the worker-process redesign made socket.send/recv/
+            // close and every relayed file object pure relays, and (the last one, added by the
+            // independent red-team pass's own finding 1) every OTHER socket.socket method
+            // (bind/listen/accept/connect_ex/sendto/recvfrom/makefile/dup/detach/share/shutdown) an
+            // explicit denial rather than the real, unmediated CPython implementation
+            // (python_worker_mediation.cpp's bootstrap source) -- none of them holds a reference to a
+            // real, unmediated primitive (there is no real socket.connect left to capture at all under
+            // this design, per that file's own comment), so their presence here is the identical
+            // "shares one exec() globals dict" consequence, not a new bypass.
             ExecRequest req{
                 "python",
                 "import socket\n"
                 "g = socket.socket.connect.__globals__\n"
-                "wrappers = {'_ae_open', '_ae_connect', '_ae_denied', 'call_tool', '_ae_fs_denied'}\n"
+                "wrappers = {'_ae_open', '_ae_connect', '_ae_denied', 'call_tool', '_ae_fs_denied', "
+                "'_ae_send', '_ae_sendall', '_ae_recv', '_ae_socket_close', '_AeRelayFile', "
+                "'_ae_socket_op_denied'}\n"
                 "leaked = [k for k in g if k not in ('__builtins__', '_ae_internal') and "
                 "k not in wrappers and not k.startswith('__') and callable(g.get(k))]\n"
                 "print('LEAKED_NAMES:', leaked)"};

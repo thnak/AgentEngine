@@ -571,6 +571,18 @@ if(NOT WIN32)
   add_library(agentengine::worktree_store ALIAS agentengine_worktree_store)
 endif()
 
+# HandleRelay (docs/planning/jailed-python-worker-slice-2-handle-relay-design-draft.md,
+# ADR-081 Slice 2): dispatch_worker_query's "open"/"listdir" handlers call
+# open_within_mount_root/list_within_mount_root/mount_root_usage (agentengine::worktree_store), and
+# its "connect_authorize" handler calls resolve_and_validate (agentengine::net_egress_proxy) -- both
+# targets already exist (defined above); this extra target_link_libraries call, not a change to the
+# native_jail_backend target's own original definition, is deliberately placed here so it comes after
+# both dependencies are declared.
+if(WIN32)
+  target_link_libraries(agentengine_native_jail_backend PUBLIC
+    agentengine::worktree_store agentengine::net_egress_proxy)
+endif()
+
 # ---- native_jail PythonRunner backend (src/backends/native_jail/) -- OPTIONAL, OFF by default ---
 # Implements decisions/ADR-002-pythonrunner-embedding-and-mediation.md (prove phase): the embedded
 # CPython interpreter, Layer 0's sys.modules sweep, and the sys.meta_path allowlist finder

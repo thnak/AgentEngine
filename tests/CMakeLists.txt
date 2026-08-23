@@ -2564,6 +2564,19 @@ if(AGENTENGINE_BUILD_PYTHON_RUNNER)
   set_tests_properties(test_native_jail_python_worker_slice1 PROPERTIES
     ENVIRONMENT "${AE_PYTHON_TEST_ENV}" TIMEOUT 60)
 
+  # ---- HandleRelay (ADR-081 Slice 2, decisions/ADR-085-jailed-python-worker-slice-2-handle-relay.md):
+  # the two positive/negative controls the design draft's own §6 named but the pre-existing suite never
+  # exercises -- a real successful socket relay round trip under a genuinely granted cap::NetOut, and a
+  # kernel-level (not merely Python-wrapper-level) read-only enforcement check.
+  add_executable(test_native_jail_python_worker_handle_relay test_native_jail_python_worker_handle_relay.cpp)
+  target_link_libraries(test_native_jail_python_worker_handle_relay PRIVATE
+    agentengine::core agentengine::mediated_python_runner agentengine_warnings)
+  target_compile_definitions(test_native_jail_python_worker_handle_relay PRIVATE
+    AE_PYTHON_HOME="${AGENTENGINE_PYTHON_HOME}")
+  add_test(NAME test_native_jail_python_worker_handle_relay COMMAND test_native_jail_python_worker_handle_relay)
+  set_tests_properties(test_native_jail_python_worker_handle_relay PROPERTIES
+    ENVIRONMENT "${AE_PYTHON_TEST_ENV}" TIMEOUT 60)
+
   # ---- 008 SS9 G7 (session boundary) -- decisions/ADR-082-native-jail-promotion-gate-008-9.md SS4:
   # a real, previously-untracked gap. Two jailed worker processes, live at once, prove a canary
   # planted in one is unreachable from the other -- the kernel-enforced OS-process boundary Slice 1

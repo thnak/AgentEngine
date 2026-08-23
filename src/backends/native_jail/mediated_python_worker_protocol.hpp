@@ -6,15 +6,15 @@
 // those tags and for the handful of fields both peers (native_jail_backend.cpp on the host side,
 // python_worker_main.cpp/python_worker_mediation.cpp on the worker side) need to agree on by NAME.
 //
-// SCOPE, stated plainly: this is Slice 1's catalog. `worker_query`/`worker_query_response`'s `kind`
-// field already accepts "open"/"listdir"/"connect_authorize"/"connect_send"/"connect_recv"/
-// "connect_close" as ordinary strings -- Slice 2 (file-open/listdir/socket relay, deferred whole, see
-// native_jail_backend.cpp's dispatch_worker_query) adds host-side HANDLING for those kinds, not a wire
-// SHAPE change here: the envelope (call_id/exec_seq/kind/payload) already covers them. This header
-// does not pre-declare typed payload structs for those five kinds (a reduction from the reviewed
-// design's own plan, made deliberately: nothing in Slice 1 constructs or consumes them, and every
-// field they would need is already expressible as a generic `json::Value` payload object) -- named
-// here as a stated scope reduction, not a silent one.
+// SCOPE, stated plainly: Slice 1 built the envelope and the `call_tool` kind only. Slice 2
+// (docs/planning/jailed-python-worker-slice-2-handle-relay-design-draft.md,
+// decisions/ADR-085-jailed-python-worker-slice-2-handle-relay.md) adds real host-side HANDLING for
+// "open"/"listdir"/"connect_authorize"/"connect_send"/"connect_recv"/"connect_close" --
+// native_jail_backend.cpp's dispatch_worker_query -- not a wire SHAPE change here: the envelope
+// (call_id/exec_seq/kind/payload) already covered them from Slice 1 onward. This header still does
+// not pre-declare typed payload structs for those five kinds -- every field they need is expressible
+// as a generic `json::Value` payload object, and dispatch_worker_query/python_worker_mediation.cpp
+// build/read them directly by key, matching kQueryCallTool's own existing shape.
 //
 // exec_seq (RT1 Finding 1's fix, both directions): a worker_query's exec_seq MUST equal the exec_seq
 // of the exec_request currently in flight -- the host enforces this (native_jail_backend.cpp's
@@ -44,22 +44,53 @@ inline constexpr char const* kShutdown = "shutdown";
 
 // ---- worker_query kinds -------------------------------------------------------------------------
 inline constexpr char const* kQueryCallTool = "call_tool";
-inline constexpr char const* kQueryOpen = "open";                        // Slice 2
-inline constexpr char const* kQueryListdir = "listdir";                  // Slice 2
-inline constexpr char const* kQueryConnectAuthorize = "connect_authorize";  // Slice 2
-inline constexpr char const* kQueryConnectSend = "connect_send";         // Slice 2
-inline constexpr char const* kQueryConnectRecv = "connect_recv";         // Slice 2
-inline constexpr char const* kQueryConnectClose = "connect_close";       // Slice 2
+inline constexpr char const* kQueryOpen = "open";
+inline constexpr char const* kQueryListdir = "listdir";
+inline constexpr char const* kQueryConnectAuthorize = "connect_authorize";
+inline constexpr char const* kQueryConnectSend = "connect_send";
+inline constexpr char const* kQueryConnectRecv = "connect_recv";
+inline constexpr char const* kQueryConnectClose = "connect_close";
+// HandleRelay design draft §1, revised during implementation: `open` returns an opaque `file_id`
+// (never a raw HANDLE -- DuplicateHandle into the AppContainer'd worker is real but I/O against it
+// fails with ERROR_INVALID_HANDLE, a reproduced Windows AppContainer limitation, not a design choice)
+// -- these three kinds relay the actual I/O, the same shape connect_send/connect_recv/connect_close
+// already use for sockets.
+inline constexpr char const* kQueryFileRead = "file_read";
+inline constexpr char const* kQueryFileWrite = "file_write";
+inline constexpr char const* kQueryFileClose = "file_close";
 
-// Slice 2's fixed deny, returned by the host's dispatch handler for every not-yet-implemented `kind`
-// (native_jail_backend.cpp's dispatch_worker_query) -- named once here so the worker-side translation
-// from "denied" to the right Python exception (python_worker_mediation.cpp) matches on the SAME
-// string the host emits, not a re-typed copy that could drift.
+// Returned by the host's dispatch handler for a `call_tool` query when no tool bridge is configured
+// for this session at all (native_jail_backend.cpp's dispatch_worker_query) -- named once here so the
+// worker-side translation to a Python exception (python_worker_mediation.cpp's raise_mapped_denial)
+// matches on the SAME string the host emits, not a re-typed copy that could drift. Slice 1 also used
+// this as a fixed deny for every open/listdir/connect_* kind; Slice 2 gives those kinds real handling
+// (see this header's own SCOPE note above), so this code's live use is now `call_tool`-only.
 inline constexpr char const* kErrorNotImplementedThisSlice = "not_implemented_this_slice";
 // RT1 Finding 1 / §8a: a protocol violation observed by the host (stale/mismatched exec_seq, an
 // unparseable frame, a frame of the wrong type for the current dispatch state) -- the worker is
 // terminated, never trusted to self-correct.
 inline constexpr char const* kErrorProtocolViolation = "protocol_violation";
+// Slice 2 (HandleRelay design draft §2/§4): a `connect_send`/`connect_recv`/`connect_close` naming a
+// `socket_id` this worker's own `live_sockets` map does not (or no longer) hold -- maps to `OSError`,
+// the ordinary Python exception for "you used an already-closed socket".
+inline constexpr char const* kErrorNetSocketClosed = "net.socket_closed";
+// Slice 2 (HandleRelay design draft §4 item 5): `connect_authorize` refused because this worker's
+// session already holds kMaxLiveSockets live relayed sockets -- maps to OSError ("Too many open
+// files"), the same errno CPython itself would raise for the analogous real-socket exhaustion case.
+inline constexpr char const* kErrorNetTooManySockets = "net.too_many_sockets";
+// Reused from the tool-bridged egress path (sandbox/net_egress_proxy.hpp's own error codes) for the
+// raw-socket relay's own denial/failure cases (HandleRelay design draft §2 item 1) -- named here so
+// both call sites (native_jail_backend.cpp's dispatch_worker_query, this project's tool-bridged
+// egress code) are visibly using the SAME vocabulary, not two independently-typed near-duplicates.
+inline constexpr char const* kErrorNetAddressBlocked = "net.address_blocked";
+inline constexpr char const* kErrorNetHostUnresolvable = "net.host_unresolvable";
+// Slice 2 (HandleRelay design draft §1): a host-side file-op failure with no more specific mapped
+// code -- `native_code` (see `get_native_code` below), when nonzero, takes priority over this string
+// in `raise_mapped_denial` (python_worker_mediation.cpp), matching the pre-worker-process design's own
+// `raise_os_error` ("a real, win32-code-sourced exception, never a hand-authored approximation").
+// `native_code == 0` with this error_code is the one synthetic, policy-decided case that has no win32
+// code at all (026 §3's "Quota exhausted" row, `OSError("No space left on device")`).
+inline constexpr char const* kErrorPythonOpenOsError = "python.open_os_error";
 
 // ---- small typed accessors (avoid repeating json::Value::find/as_* boilerplate at every call site) --
 
@@ -72,6 +103,12 @@ inline constexpr char const* kErrorProtocolViolation = "protocol_violation";
 [[nodiscard]] inline double get_number(json::Value const& obj, char const* key, double fallback = 0.0) {
     json::Value const* v = obj.find(key);
     return (v && v->is_number()) ? v->as_number() : fallback;
+}
+
+// `worker_query_response`'s optional Win32 `GetLastError()` value, when a host-side file operation
+// failed with a real OS error -- 0 means "no native code, use error_code's own mapping instead".
+[[nodiscard]] inline int get_native_code(json::Value const& obj) {
+    return static_cast<int>(get_number(obj, "native_code", 0.0));
 }
 
 [[nodiscard]] inline bool get_bool(json::Value const& obj, char const* key, bool fallback = false) {
