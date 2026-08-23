@@ -6,14 +6,17 @@ shape of the project.
 
 **Legend:** 🔴 blocks a v1 decision · 🟠 needed before implementation of its area · 🟡 can wait
 
-**Three open cross-cutting questions as of 2026-08-23: OQ-20, OQ-21, OQ-25.** OQ-1 through OQ-18 and
-OQ-22 through OQ-24 are all resolved (OQ-22 was closed 2026-08-21 by ADR-066, ahead of this file's own
-stale "seven open" count; OQ-24 was scoped and resolved as a non-issue on 2026-08-23; OQ-23 was closed
-the same day by `decisions/ADR-076-undeclared-tool-call-leak-refusal.md`, judged the same session it
-was first raised in; OQ-19 was closed the same day too, by `decisions/ADR-077-agent-executor-capabilityset-bridge.md`, once the project owner explicitly lifted this file's own prior "document
-only, do not implement yet" instruction). New questions are added here as they're identified;
-per-RFC open questions that don't change the shape of the project stay in their own RFC's §Open
-questions and are never promoted here by default.
+**Two open cross-cutting questions as of 2026-08-23: OQ-20, OQ-25.** OQ-1 through OQ-19 and OQ-21
+through OQ-24 are all resolved (OQ-22 was closed 2026-08-21 by ADR-066, ahead of this file's own stale
+"seven open" count; OQ-24 was scoped and resolved as a non-issue on 2026-08-23; OQ-23 was closed the
+same day by `decisions/ADR-076-undeclared-tool-call-leak-refusal.md`, judged the same session it was
+first raised in; OQ-19 was closed the same day too, by `decisions/ADR-077-agent-executor-
+capabilityset-bridge.md`, once the project owner explicitly lifted this file's own prior "document
+only, do not implement yet" instruction; OQ-21's minimum tool-call-point slice was closed the same day
+by `decisions/ADR-078-tool-call-hook-stage.md`, run/turn-level gating hooks and a reference external
+dispatcher left as named follow-on work). New questions are added here as they're identified; per-RFC
+open questions that don't change the shape of the project stay in their own RFC's §Open questions and
+are never promoted here by default.
 
 ---
 
@@ -45,118 +48,6 @@ as its own batch job, multiplying a turn's latency by however many rounds it tak
 PER round). This does not block the idea — it fits N independent single-shot calls (e.g. workflow
 fan-out nodes) well — but it means "batch mode" cannot be a blanket accelerator for arbitrary agents.
 **Explicit project-owner direction (2026-08-13): document only, do not implement yet.**
-
-### OQ-21 — External process hooks (Claude-Code-style lifecycle interception) 🟠
-
-User observation (2026-08-14): AgentEngine has no equivalent of Claude Code's Hooks feature, and MAF
-(this project's developer-model prior art) has no such concept either. Confirmed, not assumed: real
-vendor docs for both Claude Code's Hooks and the OpenAI Agents SDK's `RunHooks`/`AgentHooks` were
-fetched and cited — `docs/research/2026-08-14-claude-code-hooks-mechanics.md`. **Load-bearing finding:
-"Hooks" names two architecturally unrelated things across the industry.** The OpenAI Agents SDK's
-hooks are in-process, observation-only async callbacks — the same shape as 002 §5's own declared
-`Middleware<Ms...>`, which is already a strict superset (deny-capable at its one wired point, the
-model-call interception, ADR-033) of what OpenAI ships. Claude Code's Hooks are out-of-process,
-config-driven, deny/rewrite-capable external commands — and its own docs state plainly that a hook
-"runs with the full permissions of the user running Claude Code," unsandboxed. That execution model is
-exactly what **I2** and `009-Plugin-and-Extension-System.md` §5 (which names `subprocess` explicitly as
-unavailable to any plugin world) already rule out — the real gap is the event taxonomy and the
-allow/deny/rewrite decision shape, not Claude Code's ambient-authority process-exec model.
-
-Full gap analysis grounded in real code citations (`middleware.hpp`, `tool_pipeline.hpp`'s
-`ApprovalDecider`, `agent_session.hpp`'s `run_rounds()`, `run_event.hpp`'s already-real observation
-stream): `docs/planning/external-process-hooks-gap.md`. **Resolved, red-teamed once:**
-`docs/planning/external-process-hooks-design-draft.md` — scopes narrowly to the tool-call point (the
-one clean choke point `invoke_tool()` already provides) by extending the already-proven
-`ApprovalDecider` seam rather than adding a parallel Middleware chain; routes any hook that reaches an
-external process through the EXISTING suspend/resume `Interaction` mechanism (ADR-029, a new
-`interaction_reason::hook_decision`) instead of an inline blocking call; and leaves `RunEvent` untouched
-as the complete, already-real answer for every observational (non-gating) hook — 16 of Claude Code's 24
-named events are pure observation and need zero core change to serve externally today. Red-team found
-two fatal problems in the first-pass draft, both closed in the resolved version: (1) `start_run()` holds
-`session_mutex_` for the whole run with no timeout, so an inline-`co_await`ed external-dispatch hook
-would stall the entire session indefinitely — closed by the suspend/resume correction; (2) no concrete
-insertion point existed for a provenance-downgrade guard on a hook-rewritten tool call, reopening the
-exact confused-deputy hole ADR-023/ADR-033 already closed once — closed by
-`enforce_hook_rewritten_tool_call_provenance()`, diffing the request's arguments before/after the hook
-runs. Four must-fix gaps also closed (chain-runner mismatch against `run_rounds()`'s real seven-exit-path
-shape, so run/turn-level *gating* hooks are scoped out as separate future work; two-independent-gates
-ambiguity between `ApprovalDecider` and a naive new hook pair, closed by sequencing the hook stage
-strictly before `ApprovalDecider` rather than running them independently; the observation-vocabulary-vs-
-trigger-mechanism conflation; and the `RunContext`/`TurnContext` field list, narrowed away entirely once
-scope shrank to tool-call only). **Second pass (2026-08-14), run/turn-level internal (in-process)
-hooks:** an RAII `TurnBoundaryGuard`/`RunBoundaryGuard` mechanism was proposed to close Q1's own named
-gap (only 1 of `run_rounds()`'s 7 exit paths emits a matching `turn_finished`) without restructuring the
-loop — the firing mechanism itself is real and precedented (`AsyncMutex::Guard` already does exactly
-this to release `session_mutex_` across all 7 exits). Red-team found two of the capabilities proposed on
-top of it **structurally impossible**, not just hard: a destructor cannot be a coroutine (C++20 forbids
-it), so an async/external-dispatching hook cannot run from one; and `co_return` finalizes a coroutine's
-result before any local's destructor runs, so an "`after_turn` hook overrides the outcome and forces
-another round" capability (the Claude-Code-`Stop`-hook analog) cannot be delivered from a destructor
-either — both would need explicit calls placed before each `co_return`, the exact restructuring this
-approach tried to avoid. **Resolved narrower**: the guard survives scoped to synchronous, non-throwing,
-non-overriding, observation-only `after_turn`/`after_run`, closing the 5-of-7-exits-have-no-closing-
-event gap for real. `before_run`/`before_turn` **denial** (ordinary inline synchronous calls, unaffected
-by the destructor findings) stays available, confirmed clean. Gating/override power and any
-external-dispatching hook at run/turn level remain explicitly unresolved, now for a sharper, correctly-
-identified reason. Six remaining punch-list items, none implemented — real, named follow-on work, not
-silently dropped. **No project-owner implementation direction yet — this is a fresh design draft, not a
-standing "document only" instruction like OQ-19/OQ-20.**
-
-**Re-grounded (2026-08-23) against nine days of real drift** before any implementation started —
-`docs/planning/external-process-hooks-design-draft.md`'s own dated Addendum: `run_rounds()` now has
-eleven `co_return` exits (not seven), `interaction_reason` has four values (not three), but Q2's
-"`SandboxBackend::exec` is synchronous" claim held up unchanged. The one finding that changed the
-design, not just a citation: `decisions/ADR-067-middleware-turn-point-pre-model-enforcement.md`'s
-`TurnMiddlewareHook` (Judged 2026-08-20/21, built for an unrelated reason — closing 017 §4's
-`pre_model` filter gap) turned out to already be a real, wired, async, gating, pre-model turn-level
-hook — the exact thing this question's Q1 concluded needed `run_rounds()` restructuring to build. It
-doesn't, because it never tries to wrap the whole round (no onion, no inner action to sandwich) — one
-forward insertion point before the model call, which the loop already provides for free. Q3a's
-external-dispatch constraint (never inline, must suspend via `interaction_reason::hook_decision`)
-applies to it exactly as it does to the tool-call hook stage.
-
-**Implemented and proven the same day (2026-08-23), via a design → red-team → prove workflow** (8
-agents: 1 design, 3 parallel red-team lenses — safety/I2-I3, concurrency/blocking, completeness/
-regression — 1 judge/synthesis, 1 core implementation, 1 test implementation, 1 independent verify,
-plus the orchestrating session's own separate, independent re-verification). The design pass itself
-found a real coverage gap the prompt's own framing missed (inserting the hook stage only right before
-`invoke_tool()` would make a hook's rewrite invisible to the suspend-for-approval PRE-check one call
-site up, silently converting "should suspend for human approval" into "silently denied" for the
-specific combination of suspend-mode-with-no-decider plus a rewriting hook) — fixed by computing
-`any_needs_external_dispatch` and `any_needs_approval` from the SAME post-hook per-call state, in the
-same pass, before choosing which single `Interaction` to open. `core/tool_call_hook.hpp` (new):
-`ToolCallHookContext` (no `EffectContext&`, no capability type, matching `ModelCallContext`'s I2
-discipline exactly), `ToolCallHook`, `hook_call_outcome`, `HookProcessedCall`/
-`PendingHookDecisionRound` (carrying hook-processed state across a suspend/resume the same way
-`PendingCodeActAsk` does), `HookDispatchAnswer`. `core/tool_pipeline.hpp` gained
-`enforce_hook_rewritten_tool_call_provenance()`, mirroring `middleware.hpp`'s
-`enforce_backend_tool_call_provenance()` exactly. `core/interaction.hpp` gained
-`interaction_reason::hook_decision` (both directions of `rt/interaction_codec.hpp`'s JSON codec
-updated; `protocol/agui/projection.hpp`'s event-kind switch updated so an unmatched case doesn't
-silently fall through; `001-Execution-Model.md` amended, since `interaction_reason` is named there
-normatively). `rt/agent_session.hpp` gained the hook-stage block in `run_rounds()`,
-`resolve_hook_decision()`, and `finish_hook_processed_round()` — the last two deliberately do NOT
-reuse `resolve_codeact_ask()`'s `one_shot_approve` shape (a second, independently-found fatal finding,
-closed during implementation, not by the original red-team pass): an external hook's own dispatch
-answer is a different question from a human's approval, so a `hook_decision` resume re-checks approval
-need against the real `approval_decider_`/`policy_decider_` and cascades into a genuine
-`interaction_reason::approval` suspend if one is still needed, rather than ever treating the hook's
-answer as if a human had approved.
-
-`tests/test_rt_agent_session_tool_call_hook.cpp` (new, mirroring `test_rt_agent_session_suspend_
-approval.cpp`'s own precedent): H1 (denial stops the round before `ApprovalDecider`/the real tool ever
-run), H2 (a rewrite reaches the real dispatched call, downgrades provenance, and is refused with no
-decider even against a tool declaring `Approval<never_require>` — the same `ADR-023 P2-T2` shape, now
-proven at this call site too), H3 (byte-for-byte unchanged behavior with no hook registered — both the
-immediate-success and full suspend/resume paths), H4 (the `hook_decision` suspend/resume round trip,
-both an external approve and an external deny, plus a `PolicyDecider` correctly honored on resume) —
-46 checks, all passing. Full project build clean; full `ctest`: 229/231 real passes, the only 2
-failures the same pre-existing, unrelated live-TLS tests already confirmed independent of this
-session's other work; zero new regressions — independently re-verified by the orchestrating session
-itself (build + full test run + direct code review), not taken on the implementing agents' own report.
-
-**Still not judged** — matching the same "prove, then judge separately" order this project already
-used for OQ-23/ADR-076. Full record: `docs/planning/external-process-hooks-design-draft.md`.
 
 ### OQ-25 — Does the tool-calling loop need a per-tool validation-retry bound distinct from `MaxTurns<N>`? 🟡
 
@@ -934,3 +825,74 @@ names. 26 new passing tests across two new suites
 every claim, including the two FATAL first-draft findings' fixes and the "every OTHER delivery
 completes normally" claim under two distinct edge failure policies. Full falsifiable-claims table and
 residuals: ADR-077 §6/§7.
+
+### OQ-21 — External process hooks (Claude-Code-style lifecycle interception)
+
+User observation (2026-08-14): AgentEngine has no equivalent of Claude Code's Hooks feature, and MAF
+has no such concept either. Confirmed, not assumed: real vendor docs for both Claude Code's Hooks and
+the OpenAI Agents SDK's `RunHooks`/`AgentHooks` were fetched and cited
+(`docs/research/2026-08-14-claude-code-hooks-mechanics.md`). **Load-bearing finding: "Hooks" names two
+architecturally unrelated things across the industry.** The OpenAI Agents SDK's hooks are in-process,
+observation-only — already a strict subset of 002 §5's `Middleware<Ms...>`. Claude Code's Hooks are
+out-of-process, deny/rewrite-capable external commands running "with the full permissions of the user
+running Claude Code," unsandboxed — exactly the ambient-authority shape I2 and 009 §5 already rule
+out. The real gap is the event taxonomy and the allow/deny/rewrite decision shape, not Claude Code's
+process-exec model.
+
+**Resolved, design → red-team → prove → judge, across two sessions the same day (2026-08-23) after
+being first scoped 2026-08-14.** Full record: `docs/planning/external-process-hooks-gap.md`,
+`docs/planning/external-process-hooks-design-draft.md` (including a dated 2026-08-23 Addendum
+re-grounding every claim against nine days of code drift BEFORE implementation started — `run_rounds()`
+had grown to eleven `co_return` exits, not the original seven; `interaction_reason` had four values,
+not three — while `SandboxBackend::exec`'s synchronous-today claim held up unchanged). One finding
+changed the design, not just a citation: `decisions/ADR-067-middleware-turn-point-pre-model-
+enforcement.md`'s `TurnMiddlewareHook` (Judged 2026-08-20/21, built for an unrelated reason — closing
+017 §4's `pre_model` filter gap) turned out to already be a real, wired, async, gating, pre-model
+turn-level hook, the exact thing this question's Q1 originally concluded needed `run_rounds()`
+restructuring to build. It doesn't, because it never wraps the whole round — one forward insertion
+point before the model call, which the loop already provides. Documented as reusable rather than
+re-solved.
+
+**Resolved by `decisions/ADR-078-tool-call-hook-stage.md` (Judged, 2026-08-23)** for the minimum
+real, coherent slice — a gating hook at the tool-call point, Claude Code's own most-used
+`PreToolUse`/`PostToolUse` pair. Extends the already-proven `ApprovalDecider` seam (a new
+`ToolCallHook` stage runs once per round, per call, strictly before it) rather than adding a parallel
+Middleware chain; routes any hook that needs to reach an external process through the EXISTING
+suspend/resume `Interaction` mechanism (ADR-029, a new `interaction_reason::hook_decision`) instead of
+an inline blocking call — `session_mutex_` has no timeout and is held for the whole run, so an
+inline-`co_await`ed external-dispatch hook would stall the entire session. `enforce_hook_rewritten_
+tool_call_provenance()` (mirroring `middleware.hpp`'s `enforce_backend_tool_call_provenance()`)
+downgrades any hook-rewritten call to `call_provenance::text_derived`, closing the exact confused-
+deputy hole ADR-023/ADR-033 already closed once. `RunEvent` stays untouched as the complete,
+already-real answer for every observational hook (16 of Claude Code's 24 named events are pure
+observation).
+
+Run as an 8-agent design → red-team → prove workflow (1 design, 3 parallel red-team lenses — safety/
+I2-I3, concurrency/blocking, completeness/regression — 1 judge, 1 core implementation, 1 test
+implementation, 1 verify), then independently re-verified by the orchestrating session directly rather
+than trusting the agents' own reports. **The design pass itself found a real coverage gap** before any
+code was written: inserting the hook stage only right before `invoke_tool()` would leave a hook's
+rewrite invisible to the suspend-for-approval pre-check one call site up, silently turning "should
+suspend for human approval" into "silently denied" — closed by computing `any_needs_external_dispatch`
+and `any_needs_approval` from the same post-hook per-call state in one pass. **A second fatal finding
+was closed during implementation, not by any red-team pass**: `resolve_hook_decision()` deliberately
+does not reuse `resolve_codeact_ask()`'s `one_shot_approve` shape — an external process's own dispatch
+answer is a different question from a human's approval, so a `hook_decision` resume re-checks approval
+need against the real deciders and cascades into a genuine approval suspend if one is still needed,
+never treating the hook's answer as if a human had approved.
+
+`core/tool_call_hook.hpp` (new): `ToolCallHookContext` (no `EffectContext&`, no capability type,
+matching `ModelCallContext`'s I2 discipline exactly). 46 new tests
+(`tests/test_rt_agent_session_tool_call_hook.cpp`, H1-H4), all passing; full `ctest` 229/231, the same
+2 pre-existing, unrelated live-TLS failures already confirmed independent of this work, zero new
+regressions.
+
+**Explicitly still open, named rather than silently dropped**: run/turn-level gating/override hooks
+(an RAII `TurnBoundaryGuard`/`RunBoundaryGuard` survives only for synchronous, non-throwing,
+non-overriding, observation-only `after_turn`/`after_run` — a destructor cannot be a coroutine, C++20
+forbids it, and `co_return` finalizes a coroutine's result before any local's destructor runs, so an
+override-capable or external-dispatching run/turn hook cannot be built on it); a reference
+external-process dispatcher example under `examples/` (blocked on `SandboxBackend::exec` becoming
+genuinely awaitable, confirmed still synchronous); and a declarative/config-file-driven hook
+registration surface (registration stays compile-time, host-assembled, matching `ApprovalDecider`'s
+own convention). Full falsifiable-claims table, red-team findings, and residuals: ADR-078 §3/§4/§7.
