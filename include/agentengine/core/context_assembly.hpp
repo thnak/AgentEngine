@@ -18,7 +18,7 @@
 // what without MAF's message-source-stamping this seam doesn't have; reopens the same
 // cross-contributor coupling the budget rule below already refuses). If you need a later contributor
 // to react to an earlier one's output, write a purpose-built composite `ContextProvider` that owns
-// its sub-providers directly (see `history_and_skills_provider.hpp`'s `HistoryAndSkillsProvider` for
+// its sub-providers directly (see `composed_context_provider.hpp`'s `ComposedContextProvider` for
 // the proven shape) instead of extending this function -- read OQ-18 before reopening this.
 
 #include <algorithm>

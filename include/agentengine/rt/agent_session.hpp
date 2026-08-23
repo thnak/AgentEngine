@@ -1902,8 +1902,8 @@ private:
             // anything is safe -- that decision was already made, explicitly, by whichever
             // `ContextProvider` constructed the `TaintedText` (context_provider.hpp's own comment).
             // This just materializes an already-vetted value onto the wire, prepended so it establishes
-            // context ahead of everything else, matching `HistoryAndSkillsProvider`'s own
-            // system-message-first convention (tools/cli_chat.cpp) -- a second, independent role::system
+            // context ahead of everything else, matching a `ComposedContextProvider<Skills, History>`
+            // declaration's own system-message-first wire convention (tools/cli_chat.cpp) -- a second, independent role::system
             // message from another contributor coexists fine (both real backends already concatenate
             // every role::system message they see, not just the first).
             if (contribution->instructions.has_value()) {

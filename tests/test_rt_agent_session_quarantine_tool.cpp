@@ -104,11 +104,10 @@ Message user_message(std::string text) {
 int main() {
     using agentengine::Principal;
 
-    // `session.history_provider()` cannot be reassigned after construction (agent_session.hpp's own
-    // established constraint -- HistoryProviderT is a plain, default-constructed value member with
-    // no emplace_*/accessor pair, the same limitation history_and_skills_provider.hpp's own top
-    // comment documents; QuarantineSecretStore additionally holds a std::mutex, making it neither
-    // copy- nor move-assignable even if that constraint didn't exist), so this test exercises the
+    // `session.history_provider()` cannot be reassigned here -- `history_provider()` does return a
+    // mutable reference (agent_session.hpp), but `QuarantineSecretStore` holds a std::mutex, making
+    // it neither copy- nor move-assignable, so nothing wrapping it can be assigned into that slot
+    // either. This test therefore exercises the
     // provider's DEFAULT audit hook (nullptr) -- the store still records every quarantine correctly
     // with no hook configured (QuarantineSecretStore::quarantine() only conditionally invokes it).
     AgentSession<ScriptedChatClient, NoSessionState, agentengine::QuarantineToolProvider> session;

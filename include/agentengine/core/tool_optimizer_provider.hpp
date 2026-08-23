@@ -7,7 +7,7 @@
 //
 // NOT a reopening of OpenQuestions.md's OQ-18 (already resolved): this composes raw ToolDescriptor
 // SOURCES directly, as plain function calls inside its own on_context() -- never another
-// ContextProvider's ContextContribution -- the exact HistoryAndSkillsProvider idiom OQ-18's own
+// ContextProvider's ContextContribution -- the exact ComposedContextProvider idiom OQ-18's own
 // resolution prescribes for a real reactive need, not the rejected generic chained-provider seam
 // (context_assembly.hpp's own file-top comment). Confirmed against the real MAF source this
 // session re-read (D:\GitSrc\agent-framework's AIContextProvider.cs:174-176,
@@ -159,7 +159,7 @@ using ToolSourceFetch = std::function<result<std::vector<ToolDescriptor>>(Effect
 class ToolOptimizerProvider {
 public:
     // decisions/ADR-066-context-provider-attribution-provenance.md §3: required for this conformer
-    // to be composed via ComposedContextProvider<Ms...>/HistoryAndSkillsProvider (HasContextProviderName)
+    // to be composed via ComposedContextProvider<Ms...> (HasContextProviderName)
     // -- missed when this class first landed (ADR-065), caught by a full-tree rebuild against
     // ADR-066's own requirement.
     static constexpr std::string_view name = "tool_optimizer";  // ae-naming-lint: allow name — ADR-033's HasMiddlewareName precedent, reused verbatim per ADR-066 §3

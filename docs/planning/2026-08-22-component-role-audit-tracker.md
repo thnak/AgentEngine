@@ -40,9 +40,10 @@ own name/parameter order is not a reliable guide to wire order). That inversion 
 because a code comment says so; nothing in the type signature communicates it. `ComposedContextProvider
 <Ms...>` doesn't have this problem — declared order *is* wire order, always.
 
-**Disposition: tracked, not closed.** Low-severity (two known call sites, both tests), so not worth an
-isolated point-fix. Right move is to fold this into Finding B's redesign rather than patch it alone —
-see "Recommended follow-up" below.
+**Disposition: CLOSED (2026-08-23).** Folded into Finding B's redesign, exactly as the "Recommended
+follow-up" below anticipated — `HistoryAndSkillsProvider` deleted, its two call sites migrated to
+`ComposedContextProvider`. See the "Findings A and B closed" section near the end of this file and
+`decisions/ADR-074-composed-context-provider-consolidation.md`.
 
 ### Finding B — `ComposedContextProvider` still has the fork-aliasing bug `LazyComposedContextProvider` was fixed for
 
@@ -70,14 +71,22 @@ genuinely stateful provider (a memory provider, a skills provider, a RAG cache) 
 `ComposedContextProvider` and then forking that session inherits the same aliasing `LazyComposedContextProvider`
 was fixed for.
 
-**Disposition: tracked, deliberately deferred — not a bug to rush-fix.** This is exactly the kind of
+**Disposition: CLOSED (2026-08-23), superseding the "deliberately deferred" call below.** The original
+reasoning (ADR-070's ship-first/harden-later posture) held at the time, but the project owner later
+directed this be fixed for real once the blast radius was verified safe (zero real `fork_from()` caller
+touches this type) — `ComposedContextProvider` is now move-only, closing the aliasing gap at the
+source, not left for a host to work around. See the "Findings A and B closed" section near the end of
+this file and `decisions/ADR-074-composed-context-provider-consolidation.md`. Original reasoning kept
+below as a point-in-time record, not deleted:
+
+*This is exactly the kind of
 residual `ADR-070`'s ship-first/harden-later posture and the delegated-decision-seam already cover: the
 engine is not trying to make every composition path fork-safe by construction before shipping the
 feature surface; a host/consumer-dev composing stateful providers directly and calling `fork_from()`
 owns that isolation decision, same as other already-disclosed ADR-070/ADR-071 residuals. Not silently
-unaddressed — recorded here, plus already disclosed once in `session_builder.hpp`'s own finding 9 text.
+unaddressed — recorded here, plus already disclosed once in `session_builder.hpp`'s own finding 9 text.*
 
-### Recommended follow-up (not started)
+### Recommended follow-up — DONE (2026-08-23)
 
 Per standing project-owner guidance on design taste (prefer a clean redesign over patching around
 existing shapes for reuse's sake): when this cluster is next touched for real, the three-type shape
@@ -85,9 +94,13 @@ existing shapes for reuse's sake): when this cluster is next touched for real, t
 candidate for **one coherent redesign** — e.g. a single composite type that is always safely
 constructible in `AgentSession`'s plain value-member slot (closing the reason `LazyComposedContextProvider`
 had to exist as a separate type) and move-only by construction (closing Finding B at the source instead
-of per-conformer) — than for patching each layer separately. Not scheduled; no ADR opened yet.
+of per-conformer) — than for patching each layer separately.
 
-### Disposition policy applied to Finding B (per project-owner direction, 2026-08-22)
+*Originally recorded as "not scheduled; no ADR opened yet" — done, exactly as described above, in
+`decisions/ADR-074-composed-context-provider-consolidation.md`. See the "Findings A and B closed"
+section near the end of this file.*
+
+### Disposition policy applied to Finding B (per project-owner direction, 2026-08-22) — SUPERSEDED 2026-08-23
 
 `ComposedContextProvider`'s fork-aliasing gap is **not** being queued for an immediate point-fix. This
 project has already made a deliberate, ADR-backed trade (`ADR-070`): ship a broad feature surface and
@@ -96,6 +109,10 @@ delegated, rather than the engine closing every residual before shipping. Findin
 a disclosed, understood, low-current-blast-radius gap — so it stays *tracked*, not rushed. If/when the
 composition cluster gets its promised clean redesign (above), Finding B is closed at the source as a
 side effect, not as a separate patch.
+
+*Superseded: the project owner later directed the redesign actually happen this session, once the
+blast radius was independently verified safe. Kept as a point-in-time record of the reasoning that held
+at the time, not deleted — see the "Findings A and B closed" section near the end of this file.*
 
 ---
 
@@ -870,3 +887,52 @@ would actually see now say so.
 Design A (`capability_token.hpp`) and Design B (`capability_registry.hpp`) have zero production
 consumers today. The designs themselves are unchanged and still unwired — this is a documentation fix,
 not a wiring fix, so Finding M's own disposition (tracked, not closed) is otherwise unchanged.
+
+---
+
+## 2026-08-23 — Findings A and B closed: the ContextProvider composition cluster consolidated
+
+The tracker's own "Recommended follow-up" (end of the 2026-08-22 `ContextProvider` composition cluster
+section, above) — one coherent type instead of `HistoryAndSkillsProvider`/`ComposedContextProvider`/
+`LazyComposedContextProvider` as three separate ones — was implemented this session, following a plan
+reviewed and approved before any code was written, plus a new ADR
+(`decisions/ADR-074-composed-context-provider-consolidation.md`, Judged, project-owner sign-off).
+
+**Finding A (`HistoryAndSkillsProvider` redundant) — closed.** Deleted
+(`include/agentengine/core/history_and_skills_provider.hpp`). Its two real call sites
+(`tests/test_rt_agent_session_real_backend.cpp`, `tests/test_rt_agent_session_skills_live_e2e.cpp`)
+migrated to `ComposedContextProvider<Skills, History>` — args reordered (skills first), not left in the
+old `<History, Skills>` order, since `ComposedContextProvider`'s wire order is its declared order,
+always, unlike the old type's own hard-coded skills-first constructor. The real ordering regression
+check (`R3b`, `test_rt_agent_session_real_backend.cpp`) still passes: `skill_pos < history_pos` on the
+real wire body.
+
+**Finding B (`ComposedContextProvider`'s fork-aliasing bug) — closed at the source.**
+`ComposedContextProvider` is now move-only (copy ctor/assignment deleted), carrying forward
+`LazyComposedContextProvider`'s own already-red-teamed fix (round 5 finding A: a correct moved-from
+`engaged_`/`contributors_` reset, not a naive `=default` move) verbatim. `AgentSession::fork_from()`'s
+plain `history_provider_ = source.history_provider_;` is now a compile error for any session using this
+type as `HistoryProviderT`, closing the I1/I4-adjacent aliasing gap the tracker's own live-reproduced
+probe found. New regression test (`tests/test_composed_context_provider.cpp` Part 3) proves this
+directly on the type itself, not just through `ComposedQuickstartSessionBuilder`'s own indirection:
+`static_assert(!std::is_copy_constructible_v<...>)`, plus a runtime move-no-aliasing proof (mutate via
+one instance, move it, confirm the moved-from instance is genuinely `not_engaged` and the moved-to
+instance carries the real content).
+
+**A real bug found and fixed DURING implementation, not anticipated by the plan**: see
+`decisions/ADR-074-composed-context-provider-consolidation.md` §4 for the full account — an early
+"auto-engage the default constructor when every `Ms` is default-constructible" design silently broke
+`ComposedQuickstartSessionBuilder::build()` for any real caller whose chosen providers happened to all
+be default-constructible (`.engage()` would fail with `already_engaged`), caught by
+`tests/test_session_builder.cpp`'s own pre-existing B22 test cascading into 5 failures before the fix.
+Resolved by making default construction always start unengaged, unconditionally — matching
+`LazyComposedContextProvider`'s original, simpler behavior — with four call sites that relied on the old
+eager auto-engage ergonomics updated to call `.engage()` explicitly.
+
+**Verified clean**: every real/test call site in the tree rebuilt and re-run —
+`test_composed_context_provider`, `test_session_builder` (full B14–B22 suite), `test_tool_optimizer_provider`,
+`test_rt_agent_session_context_provenance`, `test_rt_agent_session_real_backend`,
+`test_native_capability_announcer` all pass; `test_rt_agent_session_skills_live_e2e` compiles and
+gracefully skips (no live OpenRouter key in this environment). `session_builder.hpp`'s own extensive
+round-4/5/8 red-team narrative (file-top comment) is preserved verbatim as a point-in-time historical
+record, with a short dated note redirecting a reader to where those same findings now live.

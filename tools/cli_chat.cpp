@@ -5,7 +5,7 @@
 // -- not the deterministic arithmetic stand-in tests/test_agent_session_skills_live_e2e.cpp uses.
 //
 // Same composition tests/test_agent_session_skills_live_e2e.cpp already proves automatically
-// (HistoryAndSkillsProvider<ToolDeclaringHistoryProvider, BuiltinSkillsProvider> driving a real
+// (ComposedContextProvider<BuiltinSkillsProvider, ToolDeclaringHistoryProvider> driving a real
 // agentengine::rt::AgentSession directly -- historical: originally via quark::TestKit, before
 // ADR-037 ported that test off quark::TestKit<Session>/quark::Ask<> onto rt::AgentSession, the same
 // pattern every live e2e test in tests/ already uses).

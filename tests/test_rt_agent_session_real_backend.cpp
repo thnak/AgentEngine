@@ -33,7 +33,7 @@
 //         whose ChatClientT was never emplaced fails closed (no fabricated response, I3); a declared
 //         tool reaches the wire's top-level `tools` array through a real run.
 //   R1-R4 (from test_agent_session_skills_real_backend.cpp): a real turn through
-//         `HistoryAndSkillsProvider<HistoryProvider<Window<0>>, BuiltinSkillsProvider>` still carries
+//         `ComposedContextProvider<BuiltinSkillsProvider, HistoryProvider<Window<0>>>` still carries
 //         ordinary history to the wire AND the skill advertisement (name+description) reaches the same
 //         wire request, ordered BEFORE history (the real regression this file's ordering check exists
 //         for), and the AgentResponse carries real server content.
@@ -58,7 +58,7 @@
 #include <vector>
 
 #include "agentengine/core/builtin_skills.hpp"
-#include "agentengine/core/history_and_skills_provider.hpp"
+#include "agentengine/core/composed_context_provider.hpp"
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/skill_provider.hpp"
 #include "agentengine/protocol/openai/chat_client.hpp"
@@ -295,13 +295,16 @@ using ToolSession = AgentSession<RealClient, NoSessionState, ToolDeclaringHistor
 static_assert(std::is_default_constructible_v<ToolSession>,
               "J1-R8: a tool-declaring HistoryProviderT stays default-constructible too");
 
+// Skills declared FIRST -- ComposedContextProvider's wire order is its declared template-arg order,
+// always (unlike the old HistoryAndSkillsProvider<H,S>, whose own constructor pushed skills first
+// regardless of its <H,S> parameter order -- see composed_context_provider.hpp's own top comment).
 using SkillsSession = AgentSession<RealClient, NoSessionState,
-                                    agentengine::HistoryAndSkillsProvider<
-                                        agentengine::HistoryProvider<agentengine::Window<0>>,
-                                        BuiltinSkillsProvider>>;
+                                    agentengine::ComposedContextProvider<
+                                        BuiltinSkillsProvider,
+                                        agentengine::HistoryProvider<agentengine::Window<0>>>>;
 static_assert(std::is_default_constructible_v<SkillsSession>,
-              "SkillsSession must stay default-constructible, matching HistoryAndSkillsProvider's own "
-              "conditional default ctor");
+              "SkillsSession must stay default-constructible, matching ComposedContextProvider's own "
+              "auto-engaging default ctor when every Ms is default-constructible");
 
 }  // namespace
 
@@ -463,12 +466,18 @@ int main() {
                 /*seed=*/std::nullopt, ProviderTransport::plaintext_http);
             session.initialize("session-with-skills", agentengine::Principal{"owner", "tenant-a"});
             session.set_capabilities(&held);
+            // Default-constructed history_provider() starts UNENGAGED unconditionally (2026-08-23:
+            // ComposedContextProvider's default ctor no longer auto-engages even when every Ms is
+            // default-constructible -- see composed_context_provider.hpp's own comment on why).
+            auto engaged = session.history_provider().engage(
+                std::tuple{BuiltinSkillsProvider{}, agentengine::HistoryProvider<agentengine::Window<0>>{}});
+            check(engaged.has_value(), "Skills setup: engage() succeeds");
 
             // ---- R1: a real turn through a real, skills-composed session ----------------------------
             agentengine::result<agentengine::rt::AgentResponse> r =
                 drive(session.start_run(StartRun{user_turn("hello with skills mounted")}));
             check(r.has_value(), "R1: a start_run() call completes through the real turn loop with a "
-                                  "HistoryAndSkillsProvider-composed session");
+                                  "ComposedContextProvider-composed session");
 
             std::string const sent = server.last_request_body();
             auto const history_pos = sent.find("hello with skills mounted");
@@ -478,13 +487,14 @@ int main() {
                   "skills did not break the ordinary history contribution");
             check(skill_pos != std::string::npos && sent.find("execute_code") != std::string::npos,
                   "R3: the SKILL ADVERTISEMENT (name + description, from the real builtin skill) ALSO "
-                  "reaches the wire request -- present here only because HistoryAndSkillsProvider "
+                  "reaches the wire request -- present here only because ComposedContextProvider "
                   "actually composed both contributors through the real assemble_context()");
             if (history_pos != std::string::npos && skill_pos != std::string::npos) {
                 check(skill_pos < history_pos,
                       "R3b: the skill advertisement is ORDERED BEFORE the conversation history on the "
-                      "wire, not just present somewhere in the body -- the regression test for a real "
-                      "bug where HistoryAndSkillsProvider pushed history before skills");
+                      "wire, not just present somewhere in the body -- SkillsSession declares "
+                      "BuiltinSkillsProvider first, matching ComposedContextProvider's declared-order-is"
+                      "-wire-order rule, the same real ordering bug this check regression-proofs against");
             }
 
             if (r.has_value()) {

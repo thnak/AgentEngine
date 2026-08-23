@@ -120,6 +120,47 @@ static_assert(ae::ContextProvider<ThreeWayProvider>,
 static_assert(std::is_default_constructible_v<ThreeWayProvider>,
               "must be default-constructible to occupy AgentSession's plain value-member provider slot");
 
+// -- Part 3 fixtures: a NON-default-constructible provider forces the lazy engage() path (as opposed
+// to ThreeWayProvider above, where every Ms is default-constructible and the default ctor auto-
+// engages) -- plus proof that ComposedContextProvider is move-only (2026-08-22 tracker Finding B;
+// decisions/ADR-074-composed-context-provider-consolidation.md).
+struct RequiredArgProvider {
+    static constexpr std::string_view name = "required-arg";  // ADR-066 §3
+
+    RequiredArgProvider(std::string text, std::shared_ptr<std::size_t> turn_end_calls)
+        : text_(std::move(text)), turn_end_calls_(std::move(turn_end_calls)) {}
+
+    [[nodiscard]] ae::task<ae::result<ae::ContextContribution>> on_context(ae::SessionContext&,
+                                                                             ae::EffectContext&) {
+        ae::ContextContribution c;
+        c.messages.push_back(make_msg(text_, "required-arg-msg"));
+        co_return c;
+    }
+    ae::task<std::monostate> on_turn_end(ae::TurnView, ae::EffectContext&) {
+        ++*turn_end_calls_;
+        co_return std::monostate{};
+    }
+
+private:
+    std::string text_;
+    std::shared_ptr<std::size_t> turn_end_calls_;
+};
+static_assert(ae::ContextProvider<RequiredArgProvider>);
+static_assert(!std::is_default_constructible_v<RequiredArgProvider>,
+              "the whole point: this Ms is deliberately NOT default-constructible");
+
+using LazyProvider = ae::ComposedContextProvider<RequiredArgProvider>;
+static_assert(std::is_default_constructible_v<LazyProvider>,
+              "ComposedContextProvider stays default-constructible (starts unengaged) even when its "
+              "own Ms is not -- the reason LazyComposedContextProvider used to have to exist as a "
+              "separate type; this type now closes that gap directly");
+static_assert(!std::is_copy_constructible_v<LazyProvider> && !std::is_copy_assignable_v<LazyProvider>,
+              "move-only -- Finding B closed at the source: fork_from()'s plain copy-assignment can "
+              "no longer silently alias two sessions' underlying providers, it fails to compile");
+static_assert(std::is_move_constructible_v<LazyProvider> && std::is_move_assignable_v<LazyProvider>,
+              "still move-constructible/assignable -- AgentSession's own internal moves (e.g. "
+              "clear_in_process_state()'s history_provider_ = HistoryProviderT{}) must keep working");
+
 // -- Part 2 fixtures: a real AgentSession driven with ThreeWayProvider in its provider slot --------
 
 class CapturingChatClient {
@@ -206,6 +247,14 @@ int main() {
     {
         ComposedSession session;
         session.initialize("s-session", principal);
+        // Default-constructed session.history_provider() starts UNENGAGED unconditionally now (2026-
+        // 08-23: the default ctor no longer auto-engages even when every Ms is default-constructible
+        // -- see composed_context_provider.hpp's own comment on why that changed), so an explicit
+        // engage() is required before start_run() can succeed.
+        auto engaged = session.history_provider().engage(
+            std::tuple{ae::HistoryProvider<ae::Window<0>>{}, FixedMessagesProvider{{make_msg("fixed-msg-p2", "f-2")}},
+                       ToolContributingProvider{}});
+        check(engaged.has_value(), "P2 setup: engage() succeeds");
         ae::CapabilitySet const held = ae::CapabilitySet::grant_root({});
         session.set_capabilities(&held);
         CapturingChatClient& client = session.emplace_chat_client();
@@ -227,6 +276,63 @@ int main() {
               "P2: the composite's THIRD (tool-contributing) provider reached the real outbound "
               "ChatRequest through AgentSession's provider slot -- not just through direct "
               "on_context() calls in Part 1");
+    }
+
+    // --- Part 3: the lazy engage() path, and move-only == Finding B actually closed --------------
+    {
+        ae::SessionContext session_ctx{"s-lazy", principal, {}};
+
+        // P3a: default-constructed (unengaged, since RequiredArgProvider is not default-constructible)
+        // fails closed on on_context() before engage().
+        LazyProvider lazy;
+        auto before_engage = ae::test_support::run_task_sync<ae::result<ae::ContextContribution>>(
+            lazy.on_context(session_ctx, ctx));
+        check(!before_engage.has_value() && before_engage.error().code == "composed_context.not_engaged",
+              "P3a: on_context() before engage() fails closed with 'not_engaged'");
+
+        auto counter = std::make_shared<std::size_t>(0);
+        auto engaged = lazy.engage(std::make_tuple(RequiredArgProvider{"lazy-content", counter}));
+        check(engaged.has_value(), "P3a: engage() with the real, non-default-constructible provider succeeds");
+
+        auto after_engage = ae::test_support::run_task_sync<ae::result<ae::ContextContribution>>(
+            lazy.on_context(session_ctx, ctx));
+        check(after_engage.has_value() && after_engage->messages.size() == 1 &&
+                  composed_text_of(after_engage->messages[0]) == "lazy-content",
+              "P3a: on_context() after engage() carries the real provider's content");
+
+        auto second_engage = lazy.engage(std::make_tuple(RequiredArgProvider{"duplicate", counter}));
+        check(!second_engage.has_value() && second_engage.error().code == "composed_context.already_engaged",
+              "P3a: a second engage() on the same instance fails closed instead of duplicating/replacing");
+
+        // P3b: move-only, Finding B's actual proof -- move a REAL, engaged instance into a fresh one;
+        // the moved-from instance must genuinely revert to not_engaged (not silently succeed empty),
+        // and must be engage()-able again (a real recovery path, not permanently bricked).
+        LazyProvider target;
+        target = std::move(lazy);
+
+        auto moved_from = ae::test_support::run_task_sync<ae::result<ae::ContextContribution>>(
+            lazy.on_context(session_ctx, ctx));
+        check(!moved_from.has_value() && moved_from.error().code == "composed_context.not_engaged",
+              "P3b: the MOVED-FROM instance is genuinely not_engaged, not aliasing the moved-to "
+              "instance's state");
+
+        auto moved_to = ae::test_support::run_task_sync<ae::result<ae::ContextContribution>>(
+            target.on_context(session_ctx, ctx));
+        check(moved_to.has_value() && moved_to->messages.size() == 1 &&
+                  composed_text_of(moved_to->messages[0]) == "lazy-content",
+              "P3b: the MOVED-TO instance carries the real, originally-engaged content");
+
+        auto re_engage = lazy.engage(std::make_tuple(RequiredArgProvider{"recovered", counter}));
+        check(re_engage.has_value(),
+              "P3b: the moved-from instance can be engage()d again -- a real recovery path");
+
+        // Self-move-assignment must be a safe no-op (the `if (this != &other)` guard).
+        target = std::move(target);
+        auto self_moved = ae::test_support::run_task_sync<ae::result<ae::ContextContribution>>(
+            target.on_context(session_ctx, ctx));
+        check(self_moved.has_value() && self_moved->messages.size() == 1 &&
+                  composed_text_of(self_moved->messages[0]) == "lazy-content",
+              "P3b: self-move-assignment leaves content intact, not self-cleared");
     }
 
     std::fprintf(stderr, g_failures == 0 ? "test_composed_context_provider: OK\n"
