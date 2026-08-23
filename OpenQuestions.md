@@ -6,10 +6,10 @@ shape of the project.
 
 **Legend:** 🔴 blocks a v1 decision · 🟠 needed before implementation of its area · 🟡 can wait
 
-**Four open cross-cutting questions as of 2026-08-20: OQ-19, OQ-20, OQ-21, OQ-22.** OQ-1 through OQ-18
-are all resolved. New questions are added here as they're identified; per-RFC open questions that don't
-change the shape of the project stay in their own RFC's §Open questions and are never promoted here by
-default.
+**Seven open cross-cutting questions as of 2026-08-23: OQ-19, OQ-20, OQ-21, OQ-22, OQ-23, OQ-24,
+OQ-25.** OQ-1 through OQ-18 are all resolved. New questions are added here as they're identified;
+per-RFC open questions that don't change the shape of the project stay in their own RFC's §Open
+questions and are never promoted here by default.
 
 ---
 
@@ -156,6 +156,89 @@ purposes. Whether that gap is worth closing — e.g. stamping each `Message`/`To
 contributor index/type name that produced it, purely for audit/forensics, at zero cost to a
 `ContextProvider` that doesn't care — is real and separate from the chaining question, and not designed
 here.
+
+### OQ-23 — Does a misconfigured `tool_calling` capability declaration against a completion-only backend fail closed? 🟡
+
+Raised 2026-08-23 during a landscape survey of external harnesses/frameworks (Hermes, PydanticAI,
+OpenCode) requested to surface candidate cross-cutting questions:
+`docs/research/2026-08-23-harness-landscape-hermes-pydanticai-opencode.md` §1.
+
+004 §2's degradation rule already gets the *policy* right: `ChatClientCapabilities` is "a declared
+bitset, not a runtime probe" and capability sets are "discovered from config, not assumed" per
+endpoint (004 §3). The question is whether that policy has an enforced, tested boundary. NousResearch's
+Hermes model family (open-weight, ChatML-templated) is a real, concrete instance of a wire-shape trap:
+served through vLLM/SGLang with a normalizing parser (`--tool-call-parser hermes` / `qwen25`), tool
+calls arrive as a standard OpenAI-shaped `tool_calls` array; served raw through llama.cpp/GGUF with no
+such parser, the *same model weights* emit tool calls as literal `<tool_call>{"name":...}</tool_call>`
+text embedded in an ordinary completion — indistinguishable, at the wire, from `Content::Text` unless
+something specifically looks for the tags.
+
+If an operator declares `tool_calling: true` for such an endpoint's config (a real, plausible
+misconfiguration — the model genuinely "supports" tool calling, just not at that specific endpoint's
+wire shape), does the engine have any mechanism to notice the response doesn't actually contain a
+structured tool call and fail the run/capability check, or does it silently treat the reply as
+ordinary text and the agent never sees the tool call it (from the model's perspective) made? 006 §3's
+pipeline step 1 ("resolve name → declaration; unknown name → Contract error, never a guess") is about
+requests the engine already recognizes as tool-call attempts — it says nothing about a request-shaped
+attempt that never reached the engine as a tool call in the first place because the response parser
+didn't recognize the wire format.
+
+**Not resolved.** No implementation direction given. A concrete, cheap way to make this checkable
+without new design work: add a llama.cpp-raw-Hermes fixture (literal ChatML tags in plain-text
+response) to whatever positive/negative-control suite 004/006 already run against declared-vs-actual
+capability mismatches, and confirm today's behavior (pass or fail) before deciding whether it needs a
+fix.
+
+### OQ-24 — Should tools have a typed, non-capability per-run dependency-injection seam? 🟡
+
+Raised 2026-08-23, same survey, `docs/research/2026-08-23-harness-landscape-hermes-pydanticai-opencode.md`
+§2. PydanticAI's `deps_type`/`RunContext[DepsT]` gives every tool/system-prompt/output-validator
+function a typed, per-run dependency object (an HTTP client, a DB pool, an auth token, or — the
+motivating case — a test double swapped in per run) that is explicitly *not* the same thing as
+authority: a `deps` object can hold data a tool needs without granting it anything.
+
+AgentEngine's tools receive `EffectContext&` (006 §2's own examples), which is the capability-handle
+carrier — deliberately the *only* channel a tool has, per I2 ("no ambient authority — every effect
+needs an explicitly passed capability"). No separate non-capability injection seam was found in 002 or
+006 during this pass. Two live possibilities, not distinguished yet:
+
+1. This is a deliberate, correct omission — any per-run data a tool needs should already be either an
+   `Args` field (caller-supplied, part of the declared schema) or a capability-mediated effect
+   (host-provided, authority-checked), and a bare side-channel "deps" object is exactly the kind of
+   thing that would let data smuggle past the capability model unexamined — the opposite of what
+   PydanticAI's DI is for, but a real risk in a system where I2 is load-bearing.
+2. There is a genuine gap: 022's testing/simulation story may need to substitute a fake dependency
+   (not a fake capability) per test run — e.g., a tool wrapping a rate-limited external SDK object that
+   isn't itself capability-shaped — and today that either doesn't have a clean seam, or is already
+   solved by swapping the bound implementation at registration time (build-time CRTP composition)
+   rather than per-run, which is a materially different ergonomic than PydanticAI's per-`.run()` swap.
+
+**Not resolved — not even fully scoped.** Needs a check against 022's actual test/simulation harness
+(does a real test today need to swap something that isn't a capability?) before this is even framed as
+a design question rather than a non-issue. No implementation direction given.
+
+### OQ-25 — Does the tool-calling loop need a per-tool validation-retry bound distinct from `MaxTurns<N>`? 🟡
+
+Raised 2026-08-23, same survey, `docs/research/2026-08-23-harness-landscape-hermes-pydanticai-opencode.md`
+§2. PydanticAI automatically re-prompts the model on a tool-argument validation failure (a Pydantic
+`ValidationError`, or an explicit `ModelRetry` raise), bounded by a **configurable, per-tool or
+agent-wide retry count** distinct from any overall turn limit — specifically to stop a model looping on
+the same malformed call without burning the run's entire turn budget on one stuck tool.
+
+006 §3's pipeline already reaches the same *value-level* shape: step 2 "validate arguments vs schema
+(reject; do not coerce)", step 9 "errors → structured `ToolResult{is_error}`", and §3.1's "a tool error
+is a value returned to the model (001 §6), not an exception" together mean a validation failure is
+already visible to the model as an ordinary result it can react to on the next round — no new mechanism
+is needed for the model to *see* the failure and retry. What wasn't found in 006 is any bound narrower
+than `MaxTurns<N>` on *how many times* a model may repeat the same failing call before something
+intervenes — today, a model stuck re-emitting one malformed call to one tool spends the whole run's
+turn budget doing that, indistinguishable (from a budget-accounting view) from a model making N turns
+of genuine progress.
+
+Whether this is worth a dedicated mechanism depends on whether it's been observed as a real cost driver
+or reliability issue in practice, which this survey has no evidence on either way — flagged as a
+question to check against real run traces/telemetry (016) before designing anything, not a confirmed
+gap. No implementation direction given.
 
 ---
 
