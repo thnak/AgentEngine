@@ -191,11 +191,27 @@ and documents "Model providers" (`ChatClient` backends) — an unrelated seam th
 English word "provider." Not confusing in code (distinct type names), but worth remembering if a future
 "Context providers" web page is added, so the two aren't titled ambiguously against each other.
 
-**Disposition: tracked, not closed.** Recommended next step (not started): add one real sample under
-`samples/` showing a minimal custom `ContextProvider` (e.g. a "hello world" provider contributing one
-instruction string) wired into an `AgentSession`, and/or a short "Writing a ContextProvider" page in the
-web docs, following the same pilot pattern already approved for `runtime.html`/`providers.html`
-(see the web-docs-overhaul project memory).
+**Disposition: PARTIALLY CLOSED (2026-08-23).** The "write your own `ContextProvider`" on-ramp now
+exists: `examples/18_custom_context_provider.cpp` — a minimal `PirateStyleProvider` contributing one
+instruction message, composed with the built-in `HistoryProvider` via `ComposedContextProvider`, wired
+into a real `AgentSession`, proven end-to-end (the instruction is asserted present in the real outbound
+`ChatRequest`, not just returned in isolation). Registered in `examples/CMakeLists.txt`, builds and
+passes via `ctest`.
+
+**Placed in `examples/`, not `samples/` as originally recommended** — a real, judgment-call deviation
+from this finding's own original text, worth recording: `samples/` (the location this finding named,
+per `CONVENTIONS.md`'s layout table) still contains only its own `README.md`, nothing else, ever.
+`examples/` is a SEPARATE, already-populated, already-`ctest`-registered directory (17 numbered
+"get-started" programs mirroring MAF's own sample progression) that is the tree's actual, live
+convention for exactly this kind of runnable demonstration — confirmed by reading several existing
+entries before adding a new one, not assumed. `CONVENTIONS.md`'s layout table naming `samples/` instead
+of `examples/` is itself a minor documentation drift this finding's closure surfaced but did not fix
+(out of this round's scope — a one-line table correction or a decision to retire one of the two
+directories, left for a future pass).
+
+Still open, not attempted this round: a "Writing a ContextProvider" web docs page (the second half of
+the original recommendation) — the example above is the runnable proof; a docs page walking through it
+in prose is separate, deferred work.
 
 ### Finding D — no declared limit on chain length (confirmed intentional); budget enforcement that exists is per-contributor and post-hoc, not aggregate/pre-flight
 
