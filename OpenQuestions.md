@@ -6,8 +6,10 @@ shape of the project.
 
 **Legend:** 🔴 blocks a v1 decision · 🟠 needed before implementation of its area · 🟡 can wait
 
-**Seven open cross-cutting questions as of 2026-08-23: OQ-19, OQ-20, OQ-21, OQ-22, OQ-23, OQ-24,
-OQ-25.** OQ-1 through OQ-18 are all resolved. New questions are added here as they're identified;
+**Five open cross-cutting questions as of 2026-08-23: OQ-19, OQ-20, OQ-21, OQ-23, OQ-25.** OQ-1
+through OQ-18, OQ-22, and OQ-24 are all resolved (OQ-22 was closed 2026-08-21 by ADR-066, ahead of
+this file's own stale "seven open" count; OQ-24 was scoped and resolved as a non-issue on 2026-08-23,
+the same pass that caught OQ-22's staleness). New questions are added here as they're identified;
 per-RFC open questions that don't change the shape of the project stay in their own RFC's §Open
 questions and are never promoted here by default.
 
@@ -137,26 +139,6 @@ identified reason. Six remaining punch-list items, none implemented — real, na
 silently dropped. **No project-owner implementation direction yet — this is a fresh design draft, not a
 standing "document only" instruction like OQ-19/OQ-20.**
 
-### OQ-22 — Should `ContextContribution` carry per-contributor provenance, independent of chaining? 🟡
-
-Separable side-question, split off from the `ToolOptimizerProvider` work (issue #15, ADR-065) rather
-than folded into it — flagged there, not designed there, and explicitly not a re-litigation of OQ-18's
-own already-judged "should composition become a chained pipeline" question (OQ-18 stays resolved as
-written; this is narrower and does not depend on its answer either way).
-
-Right now, if something bad lands in an assembled `ContextContribution` (a message, a tool), there is
-no way to attribute which contributor produced it after the fact — only by re-reading each
-contributor's own code. OQ-18's own resolution already noted the composite-provider pattern
-(`HistoryAndSkillsProvider`, `ComposedContextProvider<Ms...>`) gives *better* provenance than MAF's own
-message-stamping (`WithAgentRequestMessageSource`) would, because a composite's own code calls each
-sub-provider directly and knows exactly which one produced what by construction (C++ type identity) —
-but that provenance is only available to the composite's own author at compile time, never surfaced to
-a later reader of an assembled `ContextContribution`/transcript for I4 (every effect is attributable)
-purposes. Whether that gap is worth closing — e.g. stamping each `Message`/`ToolDescriptor` with the
-contributor index/type name that produced it, purely for audit/forensics, at zero cost to a
-`ContextProvider` that doesn't care — is real and separate from the chaining question, and not designed
-here.
-
 ### OQ-23 — Does a misconfigured `tool_calling` capability declaration against a completion-only backend fail closed? 🟡
 
 Raised 2026-08-23 during a landscape survey of external harnesses/frameworks (Hermes, PydanticAI,
@@ -189,34 +171,6 @@ response) to whatever positive/negative-control suite 004/006 already run agains
 capability mismatches, and confirm today's behavior (pass or fail) before deciding whether it needs a
 fix.
 
-### OQ-24 — Should tools have a typed, non-capability per-run dependency-injection seam? 🟡
-
-Raised 2026-08-23, same survey, `docs/research/2026-08-23-harness-landscape-hermes-pydanticai-opencode.md`
-§2. PydanticAI's `deps_type`/`RunContext[DepsT]` gives every tool/system-prompt/output-validator
-function a typed, per-run dependency object (an HTTP client, a DB pool, an auth token, or — the
-motivating case — a test double swapped in per run) that is explicitly *not* the same thing as
-authority: a `deps` object can hold data a tool needs without granting it anything.
-
-AgentEngine's tools receive `EffectContext&` (006 §2's own examples), which is the capability-handle
-carrier — deliberately the *only* channel a tool has, per I2 ("no ambient authority — every effect
-needs an explicitly passed capability"). No separate non-capability injection seam was found in 002 or
-006 during this pass. Two live possibilities, not distinguished yet:
-
-1. This is a deliberate, correct omission — any per-run data a tool needs should already be either an
-   `Args` field (caller-supplied, part of the declared schema) or a capability-mediated effect
-   (host-provided, authority-checked), and a bare side-channel "deps" object is exactly the kind of
-   thing that would let data smuggle past the capability model unexamined — the opposite of what
-   PydanticAI's DI is for, but a real risk in a system where I2 is load-bearing.
-2. There is a genuine gap: 022's testing/simulation story may need to substitute a fake dependency
-   (not a fake capability) per test run — e.g., a tool wrapping a rate-limited external SDK object that
-   isn't itself capability-shaped — and today that either doesn't have a clean seam, or is already
-   solved by swapping the bound implementation at registration time (build-time CRTP composition)
-   rather than per-run, which is a materially different ergonomic than PydanticAI's per-`.run()` swap.
-
-**Not resolved — not even fully scoped.** Needs a check against 022's actual test/simulation harness
-(does a real test today need to swap something that isn't a capability?) before this is even framed as
-a design question rather than a non-issue. No implementation direction given.
-
 ### OQ-25 — Does the tool-calling loop need a per-tool validation-retry bound distinct from `MaxTurns<N>`? 🟡
 
 Raised 2026-08-23, same survey, `docs/research/2026-08-23-harness-landscape-hermes-pydanticai-opencode.md`
@@ -239,6 +193,26 @@ Whether this is worth a dedicated mechanism depends on whether it's been observe
 or reliability issue in practice, which this survey has no evidence on either way — flagged as a
 question to check against real run traces/telemetry (016) before designing anything, not a confirmed
 gap. No implementation direction given.
+
+**Scoping pass (2026-08-23):** confirmed, not assumed, that no narrower bound exists —
+`include/agentengine/rt/agent_session.hpp`'s `max_turns_`/`turn_index` is a single run-wide counter
+checked at `run_rounds()`'s loop condition, with no per-tool or per-call-signature counter anywhere in
+`include/agentengine/`. Confirmed 006 §3's claim: `tool_pipeline.hpp`'s `invoke_tool()` genuinely
+returns a structured `ToolResult{is_error=true}` (not an exception) on a schema-validation failure, so
+the model already sees an ordinary result it can react to. `test_rt_agent_session_codeact_ask_max_turns.cpp`
+is real evidence the *coarse* run-wide bound has been fragile before (a codeact-ask branch once let a
+loop run 50 rounds past `max_turns_==3` before the bug was fixed) — that is evidence the existing
+mechanism needs care, not evidence of the narrower per-tool-retry gap this question asks about.
+Grepped `tests/` and `docs/research/` for retry/stuck/repeated-call patterns and RFC 016
+(Observability): 016 defines `execute_tool`/`chat` spans and per-run traces but no repeated-failed-
+call-signature metric, and no test or trace shows a model actually getting stuck on one malformed
+call. **Sharper parking reason than "no one has checked yet": this project is still pre-production
+(no real operational traffic), so the evidence this question's own resolution path calls for — real
+run traces/telemetry — cannot exist yet, not merely hasn't been gathered.** A synthetic test proving
+the pipeline *can* loop would not be evidence it *does* in deployment, which is the actual question.
+**Correct trigger to revisit:** the first real multi-round `AgentSession` deployment against a live
+model with tool-calling, or a specific incident report — not before. Still 🟡, no implementation
+direction.
 
 ---
 
@@ -305,6 +279,85 @@ undisclosed gap.
 
 Full text: `docs/research/2026-08-11-maf-middleware-codeact-skills-deep-dive.md` §2;
 `include/agentengine/core/context_assembly.hpp`; `include/agentengine/core/history_and_skills_provider.hpp`.
+
+### OQ-22 — Should `ContextContribution` carry per-contributor provenance, independent of chaining?
+
+Separable side-question, split off from the `ToolOptimizerProvider` work (issue #15, ADR-065) rather
+than folded into it. Right now, if something bad lands in an assembled `ContextContribution` (a
+message, a tool), there was no way to attribute which contributor produced it after the fact except by
+re-reading each contributor's own code — a gap against I4 (every effect is attributable) for a later
+transcript reader, not just the composite provider's own author.
+
+**Resolved by `decisions/ADR-066-context-provider-attribution-provenance.md` (Judged, 2026-08-21;
+that ADR's own text states it "creates and closes" this question) — closes as a targeted, per-seam
+stamp, exactly the minimal fix this entry originally speculated about, no generic mechanism added.**
+`ContributorProvenance{contributor_index, contributor_type}` (`content.hpp`) is stamped onto every
+`Message::attribution` and `ToolDescriptor::attribution` (both `std::optional<ContributorProvenance>`)
+unconditionally inside `assemble_context()`'s existing merge loop (`context_assembly.hpp`) — the one
+seam every contribution already flows through, chosen over MAF's per-contributor self-stamping shape
+specifically because self-stamping cannot survive a non-cooperating or malicious contributor (009 §2
+plugin threat model) simply never calling it. `ContextProviderDescriptor` now requires a declared
+`name` (`HasContextProviderName`, mirroring ADR-033's `HasMiddlewareName`). A real, mid-implementation
+finding corrected the design draft's own prose: forcing every contributor-sourced message to
+`content_origin::provider` would have regressed `SkillsProvider`'s already-shipped
+`content_origin::system` advertisement — fixed by narrowing the override to `content_origin::user`
+specifically (the one origin only a genuine, verbatim historical replay may truthfully claim).
+
+Proven: `tests/test_context_provenance.cpp` (16/16 checks, adversarial forging provider included) and
+`tests/test_rt_agent_session_context_provenance.cpp` (13/13, real `AgentSession` round through
+`ComposedContextProvider`, inspecting the actual outbound `ChatRequest`). **Named residual, not
+closed by this ADR:** `AgentSession`'s dominant single-`HistoryProviderT`-slot construction path
+(most of today's production usage) bypasses `assemble_context()` entirely and so carries no
+attribution at all — formalized by `decisions/ADR-070-host-configurable-responsibility-boundary.md`
+as a deliberate two-tier contract (a host choosing the simpler single-provider API is knowingly
+forgoing provenance, not hitting an undocumented gap), not a defect. Also named, not closed:
+`content_origin::system`/`::assistant`/`::tool` forgery by a genuinely *compromised* (not merely
+non-cooperating) conformer, and `HistoryProvider<Summarize<N,SummarizerT>>`'s synthesized summary
+inheriting `content_origin::assistant` with nothing marking it as a summary.
+
+Full text: `decisions/ADR-066-context-provider-attribution-provenance.md`;
+`docs/planning/context-provider-provenance-design-draft.md`; `tests/test_context_provenance.cpp`;
+`tests/test_rt_agent_session_context_provenance.cpp`.
+
+### OQ-24 — Should tools have a typed, non-capability per-run dependency-injection seam?
+
+Raised 2026-08-23 during a landscape survey of external harnesses/frameworks (Hermes, PydanticAI,
+OpenCode): `docs/research/2026-08-23-harness-landscape-hermes-pydanticai-opencode.md` §2. PydanticAI's
+`deps_type`/`RunContext[DepsT]` gives every tool a typed, per-`.run()` dependency object (an HTTP
+client, a test double, a rate-limited SDK handle) explicitly distinct from authority — a `deps` object
+can hold data a tool needs without granting it anything. AgentEngine's tools receive only
+`EffectContext&` (006 §2), the capability-handle carrier, per I2 — no separate non-capability
+injection seam was found in 002 or 006, leaving open whether that's a deliberate, correct omission or
+a genuine gap 022's testing/simulation story would hit.
+
+**Resolved 2026-08-23, non-issue: the real substitution need already exists and is already served by
+existing, wired, per-case mechanisms — no new generic DI seam needed, matching the "no grand
+mechanism, case-specific support" direction OQ-18 already set.** `Tool<>`'s invocation surface is
+exactly the two channels this question named (`static result<Reply> invoke(Args, EffectContext&)`,
+`tool.hpp`) — but that is not the only place a dependency can be bound. Two concrete, already-shipped
+precedents:
+
+1. `make_tool_descriptor_with_invoke<ToolT>()` (`core/tool_pipeline.hpp`) builds a `ToolDescriptor`
+   from a caller-supplied `custom_invoke` closure that can capture anything — session-scoped state, a
+   fake, a rate-limited SDK stand-in — entirely outside `EffectContext`, at tool-registration time.
+   `ToolDescriptor::captures_session_state` documents this as the intended escape hatch for exactly
+   this dependency shape.
+2. `CodeActRunnerBinding<RunnerT>` (`codeact_runner_binding.hpp`, proven in
+   `tests/test_codeact_runner_binding.cpp`) is a template binding wrapping a runner reference; tests
+   swap in a trivial `FakeRunner` at construction. Build-time CRTP composition, not per-`.run()`, but
+   the same substitution PydanticAI's DI achieves, just bound earlier in the object's lifetime.
+
+022's own testing story (`022-Testing-and-Evaluation.md` §2/§6) describes a `TestKit` with mock
+providers that was Quark-scheduler-based and was never rebuilt after ADR-037 removed Quark — today's
+tests are ordinary unit/integration tests over `rt::` primitives directly, which is exactly where
+these two idioms already operate. No test anywhere in the tree needs a swap that isn't expressible as
+an `Args` field, an `EffectContext` capability, or a build-time-bound closure/template parameter.
+Because AgentEngine constructs tools/bindings fresh per test (registration and "run" coincide for
+testing purposes), PydanticAI's per-`.run()` ergonomic has no missing use case here.
+
+**Decision: no new mechanism.** Possibility 1 from the original framing is correct — this is a
+deliberate, correct omission — and possibility 2's speculated gap is closed by mechanisms that already
+existed and were already load-bearing, just not previously cross-referenced against this question.
 
 ### OQ-11 — Licence and governance
 
