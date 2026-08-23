@@ -472,3 +472,12 @@ comparison measures against.
 4. Decide LPAC vs. regular AppContainer by running §5's tier-3 corpus under both, not by reasoning
    from static ACL inspection alone.
 5. A clang build/run of both the AppContainer and Job Object code (§8.3's cross-compiler gap).
+
+**Downstream consumer, recorded 2026-08-23:** `docs/planning/microvm-first-party-backend-design-
+draft.md` (a design → red-team → judge relitigation of 008 §1's "no `microvm` profile" locked
+decision) declined to build a first-party `KataBackend` specifically because this ADR's own gate is
+still open. The blocking items are 2, 4, and 5 above (independent red-team pass, LPAC decision, clang
+build) — item 3's Linux-cgroups-v2 half (above) does NOT factor into that decision; it was corrected
+same-day by agentengine-05 after this note first cited it in error. Whoever advances this ADR toward
+Judged: closing item 2 (the independent red-team pass) is the one most directly unblocking that other
+decision.
