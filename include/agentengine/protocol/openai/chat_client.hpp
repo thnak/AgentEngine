@@ -869,6 +869,16 @@ public:
                       // content-triggered (the ADR's Finding 6). Appended last, same "never insert
                       // earlier" convention this constructor's own file-top comment already documents
                       // for every optional param above.
+                      //
+                      // OQ-23 (OpenQuestions.md), docs/planning/oq23-undeclared-tool-call-leak-design-
+                      // draft.md: `AgentSession::run_model_call()` (rt/agent_session.hpp) refuses,
+                      // rather than silently passing through, a raw wire-format leak matching a live
+                      // tool name when `capabilities().tool_calling` is declared true and THIS flag is
+                      // left at its default `false` for the endpoint. That protection is NOT available
+                      // to a caller invoking `chat()` on this `OpenAIChatClient` directly, bypassing
+                      // `AgentSession` -- a scope gap named, not fixed, by that design (§6): calling
+                      // `chat()` here with `tool_calling` declared and this flag unarmed still returns
+                      // an ordinary, unscanned response, exactly as before that design existed.
                       bool scan_response_format_leaks = false,
                       // docs/research/2026-08-21-openrouter-session-id-header.md: OpenRouter's own
                       // prompt-cache sticky-routing key, sent as the `x-session-id` header -- NOT

@@ -193,8 +193,8 @@ identical literal content DOES get caught, correctly, when `scan_response_format
 (already-proven `ADR-023 P2-R1`, same test file) — the mechanism works, it just isn't wired to fire
 based on the capability declaration this question asks about.
 
-**A candidate fix now exists as a red-teamed design draft (2026-08-23), not yet implemented, not yet
-judged.** `docs/planning/oq23-undeclared-tool-call-leak-design-draft.md`: a new detect-only,
+**A candidate fix now exists as a red-teamed, implemented, and tested design draft (2026-08-23) —
+still not judged.** `docs/planning/oq23-undeclared-tool-call-leak-design-draft.md`: a new detect-only,
 refuse-not-promote check (never promotes or invokes anything — structurally distinct from ADR-023's
 own declassifier, which it does not modify), gated on `tool_calling == true` AND
 `scan_response_format_leaks == false`, centralized at the same choke point
@@ -207,14 +207,21 @@ diagnostic content, not merely rely on today's insertion points staying mutually
 residuals not originally named (a cross-session refusal-amplification surface, a tool-name-enumeration
 oracle, and a domain-specific false-positive risk) — no finding was fatal to the design's central
 safety claim, which was traced against the real retry/turn-counting code, not assumed. All revisions
-are incorporated into the draft. Remaining before this can go to judging: a real test implementing the
-design's falsifiable claims, a documentation update naming the scope gap this design leaves at the
-`ChatClient` level, and project-owner judgment (024 §4.2) — none done yet, so this question stays open.
+were incorporated, then implemented for real:
+`detect_undeclared_tool_call_leak()` (`core/response_format_leak_scan.hpp`), wired into
+`rt/agent_session.hpp`'s `run_model_call()` at both real insertion points. 22 new tests across two
+files (9 function-level in `tests/test_openai_chat_client_translation.cpp`, 13 real `AgentSession`
+round trips in `tests/test_rt_agent_session_streaming_and_events.cpp`), all passing. Full-suite
+`ctest`: 227/229 real passes; the only 2 failures (`test_openai_chat_client_live`,
+`test_anthropic_chat_client_live`) were confirmed pre-existing and unrelated — reproduced identically
+against the pre-change baseline commit via `git stash`. **Still open**: project-owner judgment
+(024 §4.2) has not been sought — this is implementation-ahead-of-judging (this project's own "prove"
+step), not a substitute for it, so the question stays open until that happens.
 
 Full text: `decisions/ADR-023-response-format-codec-seam.md`;
 `docs/planning/oq23-undeclared-tool-call-leak-design-draft.md`;
-`tests/test_openai_chat_client_translation.cpp` (`OQ-23-R1`, alongside the pre-existing `ADR-023 P1/P2`
-blocks it contrasts against).
+`tests/test_openai_chat_client_translation.cpp` (`OQ-23-R1`/`OQ-23-D1..D3`);
+`tests/test_rt_agent_session_streaming_and_events.cpp` (`OQ-M1..OQ-M4`).
 
 ### OQ-25 — Does the tool-calling loop need a per-tool validation-retry bound distinct from `MaxTurns<N>`? 🟡
 

@@ -1001,6 +1001,126 @@ int main() {
               "OQ-23 names -- and, as shown above, plays no role at all in whether the leak is caught");
     }
 
+    // ---- docs/planning/oq23-undeclared-tool-call-leak-design-draft.md, Design D (red-teamed
+    // 2026-08-23): detect_undeclared_tool_call_leak() (core/response_format_leak_scan.hpp) -- the
+    // fix for the OQ-23-R1 gap above. Falsifiable claims D1-D3, D5, tested directly at the function
+    // level (D4 -- never constructs a ToolCall -- is structural: the return type is result<void>,
+    // there is no ContentItem/ToolCall construction anywhere in the function, confirmed by reading
+    // core/response_format_leak_scan.hpp, not re-asserted here since a runtime test cannot observe
+    // the absence of a type that was never in scope).
+    {
+        // D1: the exact llama.cpp-raw-Hermes leak from OQ-23-R1, now fed through the new detector
+        // with a live "get_weather" tool declared -- must refuse, not silently accept.
+        Message message;
+        message.role = role::assistant;
+        ContentItem leaked;
+        leaked.origin = content_origin::assistant;
+        leaked.value = Text{"<tool_call>{\"name\":\"get_weather\",\"arguments\":{\"location\":\"SF\"}}</tool_call>"};
+        message.content.push_back(std::move(leaked));
+
+        ToolDescriptor live_tool;
+        live_tool.name = "get_weather";
+        std::vector<ToolDescriptor> tools{live_tool};
+
+        auto leak = detect_undeclared_tool_call_leak(message, tools);
+        check(!leak.has_value(),
+              "OQ-23-D1: a raw leak matching a live tool name is refused, not silently accepted");
+        check(leak.has_value() || leak.error().code == "chat_client.undeclared_tool_call_leak",
+              "OQ-23-D1: refused with the specific error code, not a generic contract failure");
+        check(leak.has_value() || leak.error().klass == failure_class::contract,
+              "OQ-23-D1: the error is failure_class::contract -- matches "
+              "validate_outbound_media_capabilities's own gate shape, and is NOT retried by "
+              "ModelCallGateway's attempt_with_retry (which only retries failure_class::transient)");
+    }
+    {
+        // D2a: run the detector on a message where apply_response_format_scan ALREADY promoted the
+        // candidate to a real ToolCall (same shape as ADR-023 P2-R1 above) -- nothing left to detect,
+        // must succeed silently.
+        Message message;
+        message.role = role::assistant;
+        ContentItem leaked;
+        leaked.origin = content_origin::assistant;
+        leaked.value = Text{"<tool_call>{\"name\":\"get_weather\",\"arguments\":{\"location\":\"SF\"}}</tool_call>"};
+        message.content.push_back(std::move(leaked));
+
+        ToolDescriptor live_tool;
+        live_tool.name = "get_weather";
+        std::vector<ToolDescriptor> tools{live_tool};
+
+        Message scanned = apply_response_format_scan(message, tools);
+        check(std::holds_alternative<ToolCall>(scanned.content[0].value),
+              "OQ-23-D2a setup: the leak was promoted to a real ToolCall by the existing scan");
+
+        auto leak = detect_undeclared_tool_call_leak(scanned, tools);
+        check(leak.has_value(),
+              "OQ-23-D2a: the new detector does NOT re-flag an already-promoted ToolCall -- it only "
+              "ever inspects plain Text items, and there is none left here");
+    }
+    {
+        // D2b: the load-bearing tainted-skip, tested by feeding the detector a message DIRECTLY --
+        // not via the mutually-exclusive if/else-if at the AgentSession call site -- containing the
+        // ADR-023 P2-R2 shape (an unmatched-candidate diagnostic Text, tainted == true, whose own
+        // body re-embeds the unrecognized recipient name verbatim). Required per the design draft's
+        // red-team finding: this must hold structurally, not merely because today's two call sites
+        // never both run.
+        Message message;
+        message.role = role::assistant;
+        ContentItem leaked;
+        leaked.origin = content_origin::assistant;
+        leaked.value = Text{"<tool_call>{\"name\":\"totally_unknown_tool\",\"arguments\":{}}</tool_call>"};
+        message.content.push_back(std::move(leaked));
+
+        ToolDescriptor unrelated_tool;
+        unrelated_tool.name = "get_weather";
+        std::vector<ToolDescriptor> tools{unrelated_tool};
+
+        Message scanned = apply_response_format_scan(message, tools);
+        check(scanned.content[0].tainted,
+              "OQ-23-D2b setup: an unmatched candidate leaves a tainted diagnostic Text behind "
+              "(ADR-023 P2-R2's own shape), not a promoted ToolCall");
+
+        auto leak = detect_undeclared_tool_call_leak(scanned, tools);
+        check(leak.has_value(),
+              "OQ-23-D2b: fed a tainted diagnostic Text directly, the detector's own tainted-skip "
+              "holds and does not misfire -- independent of which call site invoked it");
+    }
+    {
+        // D3: ordinary clean content with no format markers at all -- the overwhelmingly common,
+        // correctly-behaving case -- must never be flagged.
+        Message message;
+        message.role = role::assistant;
+        ContentItem clean;
+        clean.origin = content_origin::assistant;
+        clean.value = Text{"The weather in San Francisco is sunny."};
+        message.content.push_back(std::move(clean));
+
+        ToolDescriptor live_tool;
+        live_tool.name = "get_weather";
+        std::vector<ToolDescriptor> tools{live_tool};
+
+        auto leak = detect_undeclared_tool_call_leak(message, tools);
+        check(leak.has_value(), "OQ-23-D3: ordinary clean content is never refused");
+    }
+    {
+        // D3 (unrecognized-name variant): a tool-call-shaped block addressed at a name that is NOT
+        // in the live tool list -- not this function's job (matches apply_response_format_scan's own
+        // hygiene, not safety, distinction for the identical case).
+        Message message;
+        message.role = role::assistant;
+        ContentItem leaked;
+        leaked.origin = content_origin::assistant;
+        leaked.value = Text{"<tool_call>{\"name\":\"totally_unknown_tool\",\"arguments\":{}}</tool_call>"};
+        message.content.push_back(std::move(leaked));
+
+        ToolDescriptor unrelated_tool;
+        unrelated_tool.name = "get_weather";
+        std::vector<ToolDescriptor> tools{unrelated_tool};
+
+        auto leak = detect_undeclared_tool_call_leak(message, tools);
+        check(leak.has_value(),
+              "OQ-23-D3: a leak addressed at a name that isn't a live tool produces no signal here");
+    }
+
     if (g_failures == 0) {
         std::fprintf(stderr, "test_openai_chat_client_translation: ALL PASS\n");
         return 0;

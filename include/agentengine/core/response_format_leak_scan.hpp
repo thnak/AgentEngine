@@ -84,4 +84,54 @@ namespace agentengine {
     return message;
 }
 
+// OQ-23 (OpenQuestions.md), docs/planning/oq23-undeclared-tool-call-leak-design-draft.md, Design D
+// (red-teamed 2026-08-23). A detect-ONLY, refuse-not-promote sibling to `apply_response_format_scan`
+// above -- for the window that mechanism deliberately never covers: a `ChatClient` whose
+// `ChatClientCapabilities::tool_calling` is declared `true` but whose caller has NOT armed
+// `scan_response_format_leaks` for this endpoint (ADR-023 Finding 6's own default). Without this
+// function, a raw wire-format leak (e.g. llama.cpp-served Hermes/Qwen with no `--tool-call-parser`)
+// in that exact window is captured as ordinary, untainted `Text` -- no error, no warning, the model's
+// tool-call attempt is invisible to the engine (confirmed real by
+// `tests/test_openai_chat_client_translation.cpp`'s `OQ-23-R1` fixture before this function existed).
+//
+// Never constructs a `ToolCall`, never touches `call_provenance`, never reaches `invoke_tool` --
+// structurally distinct from, and does not modify, ADR-023's own capability-scoped declassifier. The
+// only decision this function can make is "refuse" or "don't"; per 007 §4, refusing based on tainted
+// content is NOT "deriving an approval decision from model-supplied text" (the forbidden shape) --
+// this never approves anything, it only ever declines to silently proceed.
+//
+// Reuses the SAME `decode_response_format`/recipient-match shape `apply_response_format_scan` already
+// uses (same specificity bar: a real, currently-live tool name AND syntactically-valid JSON in one of
+// the four built-in wire-format shapes -- design draft §5's red-team accepted this as the same bar
+// ADR-023's own promotion mechanism already relies on). Explicitly skips `item.tainted` content items,
+// mirroring `apply_response_format_scan`'s own load-bearing convention above -- required, per the
+// design draft's own red-team finding, as a structural property independent of whichever call site
+// happens to invoke this function, not merely because today's two `AgentSession::run_model_call()`
+// insertion points (armed vs. unarmed) happen to be mutually exclusive.
+[[nodiscard]] inline result<void> detect_undeclared_tool_call_leak(
+    Message const& message, std::vector<ToolDescriptor> const& tools) {
+    for (ContentItem const& item : message.content) {
+        if (item.tainted) continue;
+        auto const* text = std::get_if<Text>(&item.value);
+        if (!text) continue;
+        auto const decoded = response_format_codec::decode_response_format(text->text);
+        for (auto const& candidate : decoded.candidates) {
+            auto const tool_it = std::find_if(
+                tools.begin(), tools.end(),
+                [&candidate](ToolDescriptor const& t) { return t.name == candidate.recipient; });
+            if (tool_it == tools.end()) continue;  // not a live tool name: no signal, not this function's job
+            return std::unexpected(error{
+                failure_class::contract,
+                "response content contains an apparent tool-call attempt to '" + candidate.recipient +
+                    "' embedded as plain text (a raw wire-format leak, e.g. an unnormalized Harmony/"
+                    "DeepSeek/Hermes/Qwen serving layer) -- this ChatClient declares tool_calling "
+                    "capability but scan_response_format_leaks is not armed to recover it for this "
+                    "endpoint; refusing to silently treat the model's apparent tool call as an "
+                    "ordinary text reply",
+                "chat_client.undeclared_tool_call_leak"});
+        }
+    }
+    return {};
+}
+
 }  // namespace agentengine

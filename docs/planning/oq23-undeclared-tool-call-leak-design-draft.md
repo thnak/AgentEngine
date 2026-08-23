@@ -1,13 +1,14 @@
 # OQ-23 — Detecting a `tool_calling`-declared endpoint that silently leaks tool calls as text
 
-**Status:** Design draft, red-teamed once (2026-08-23, independent fresh-context pass — see §8).
-Recommendation was **(b) proceed with named required revisions**, all incorporated below (§3's
-Design D spec, §5's DoS analysis, §6's residuals). Not yet judged, not yet implemented. Relates to
-`OpenQuestions.md` OQ-23, `decisions/ADR-023-response-format-codec-seam.md` (the codec/declassifier
-this design sits beside without modifying), `decisions/ADR-035-chatclient-streaming-completeness.md`
-(the backend-agnostic `AgentSession::run_model_call()` centralization this design reuses as its
-insertion point). Confirming fixture for the underlying gap:
-`tests/test_openai_chat_client_translation.cpp`'s `OQ-23-R1` block (2026-08-23, 9/9 passing).
+**Status:** Design draft, red-teamed once (2026-08-23, independent fresh-context pass — see §8),
+**implemented and proven (2026-08-23, see §10).** Not yet judged (project-owner sign-off, 024 §4.2,
+still pending — implementation ahead of judging matches this project's own "design → red-team →
+prove → judge" order, prove being this step). Relates to `OpenQuestions.md` OQ-23,
+`decisions/ADR-023-response-format-codec-seam.md` (the codec/declassifier this design sits beside
+without modifying), `decisions/ADR-035-chatclient-streaming-completeness.md` (the backend-agnostic
+`AgentSession::run_model_call()` centralization this design reuses as its insertion point). Confirming
+fixture for the underlying gap: `tests/test_openai_chat_client_translation.cpp`'s `OQ-23-R1` block
+(2026-08-23, 9/9 passing).
 
 ## 1. The question
 
@@ -209,16 +210,20 @@ shape) is the same bar ADR-023's own red-team already accepted as sufficiently n
 - Does not decide whether the *existing* misconfiguration (declared `tool_calling`, unarmed scan,
   `vendor_structured`-only content — i.e. a backend that is behaving exactly as declared) should ever
   be flagged; only fires on content that structurally looks like a specific, addressed leak.
-- Does not cover a direct `OpenAIChatClient::chat()`/`AnthropicChatClient::chat()` call that bypasses
-  `AgentSession` entirely — matching today's status quo for the *existing* `scan_response_format_leaks`
-  mechanism (`OpenAIChatClient` keeps its own independent copy of that flag,
+- Does not cover a direct `OpenAIChatClient::chat()` call that bypasses `AgentSession` entirely —
+  matching today's status quo for the *existing* `scan_response_format_leaks` mechanism
+  (`OpenAIChatClient` keeps its own independent copy of that flag,
   `protocol/openai/chat_client.hpp:872,892,929-931`, for exactly this direct-call case). Red-team's
   opinion, adopted here: centralize at `AgentSession` first (the same order ADR-035 already took for
   `apply_response_format_scan` itself, from a `ChatClient`-local mechanism to a session-level one), and
   port down to the `ChatClient` layer only if judged valuable later — do not double the first pass's
-  surface. **Required, not deferred**: name this gap in the `ChatClient` header comment near
-  `scan_response_format_leaks_`, so a direct caller isn't misled into thinking `tool_calling=true` alone
-  gets them this protection.
+  surface. **Done, not deferred**: `protocol/openai/chat_client.hpp`'s `scan_response_format_leaks`
+  constructor parameter comment now names this gap explicitly. `AnthropicChatClient` needed no
+  equivalent comment — confirmed (grep, 2026-08-23) it never had its own per-backend scan flag at all
+  (ADR-035's own "closing Anthropic's total gap" framing already meant scanning was
+  `AgentSession`-only for that backend from the start, before this design existed) — so a direct
+  `AnthropicChatClient::chat()` call has the identical, pre-existing, unrelated-to-this-design lack of
+  coverage, not a new gap this design introduces or needs to annotate.
 - Does not provide cross-session or cross-tenant rate-limiting against repeated refusals from the same
   poisoned content (§5) — host-owned by this project's locked networking/admission architecture, not an
   oversight.
@@ -251,11 +256,32 @@ D's central safety claim (refuse-not-promote holds under I2/I3 given the real, t
 one real gap between a claim and what its own test plan proved (§3/§4's revision), plus three residuals
 not originally named (§5/§6), now folded in above rather than left as a separate report.
 
-## 9. Open items before this can go to judging
+## 9. Status of the three items §9 originally listed as blocking judging
 
-1. A real positive/negative-control test implementing D1-D5 (including the revised D2, two-scenario
-   version) against the actual codebase — not yet written, this draft is still text-only.
-2. The `ChatClient` header documentation update named in §6 (near `scan_response_format_leaks_` on both
-   `OpenAIChatClient` and `AnthropicChatClient`) — not yet written.
-3. Project-owner judgment on whether to proceed to implementation, matching this project's own
-   design → red-team → prove → judge → ADR sequence (024 §4.2) — not yet sought.
+1. **Done.** D1-D5 (including the revised, two-scenario D2) implemented as real, passing tests — §10.
+2. **Done.** `protocol/openai/chat_client.hpp`'s `scan_response_format_leaks` constructor parameter
+   comment names the `AgentSession`-only scope gap explicitly. `AnthropicChatClient` confirmed (§6) to
+   need no equivalent comment — it never had a per-backend scan flag to annotate.
+3. **Still open.** Project-owner judgment (024 §4.2) has not been sought. This document remains a
+   design draft, not an ADR, until that happens — implementation-ahead-of-judging here is this
+   project's own "prove" step, not a substitute for judging.
+
+## 10. Prove: implementation and evidence (2026-08-23)
+
+**Code:**
+- `include/agentengine/core/response_format_leak_scan.hpp` — new `detect_undeclared_tool_call_leak(Message const&, std::vector<ToolDescriptor> const&) -> result<void>`, sibling to `apply_response_format_scan`, with the required explicit `item.tainted` skip (§3's revision) built in from the start, not bolted on after a failing test.
+- `include/agentengine/rt/agent_session.hpp` — wired into `run_model_call()` at both real insertion points (the non-streaming early-return branch and the shared gateway/streaming tail), each as an `else if` sibling to the existing `scan_response_format_leaks_` branch — mutual exclusivity is now structural (the if/else-if), not merely today's-wiring happenstance, layered on top of (not instead of) the detector's own tainted-skip. On refusal, emits `run_event_kind::run_failed` with the specific error code, mirroring `validate_outbound_media_capabilities`'s existing gate exactly.
+- `include/agentengine/protocol/openai/chat_client.hpp` — comment-only change per §6/§9 item 2.
+
+**Tests, all passing, all newly written for this design:**
+- `tests/test_openai_chat_client_translation.cpp`: function-level tests for D1 (refuses the OQ-23-R1 leak, specific error code, `failure_class::contract`), D2a (silent on an already-promoted message), D2b (silent on a tainted diagnostic fed directly — the exact case red-team's must-fix targeted), D3 (clean content, and unrecognized-name leak) — 9 checks, all passing.
+- `tests/test_rt_agent_session_streaming_and_events.cpp`: four real `AgentSession::run_model_call()` round trips (`ScriptedChatClient` extended with a `caps_tool_calling` flag, default `false`, to reach the new branch without disturbing any existing S1-S4/L1-L4 test): OQ-M1 (streaming, refused, confirms D1 + D5's "exactly one round, no retry" claim + a `RunFailed` event carrying the specific code), OQ-M2 (streaming, scan armed, unaffected — D2a at the integration level), OQ-M3 (chat() path, unrecognized recipient, converges — D3), OQ-M4 (chat() path, clean content, converges — D3) — 13 checks, all passing.
+
+**Regression evidence:**
+- Full project build (`cmake --build build --config Debug`): clean, zero errors.
+- Full `ctest` run: 227/229 real tests passing (2 pre-existing, environment-specific skips unrelated to this work: `test_shell_runner_no_process_creation`, `test_mediated_shell_runner_no_process_creation`).
+- Exactly 2 failures, both in the SAME sub-check (`chat_stream()+tool_call`/`chat_stream()+tool_use`'s "two text deltas + one assembled tool call" assembly) of `test_openai_chat_client_live`/`test_anthropic_chat_client_live` — **confirmed pre-existing, not a regression**: `git stash`, rebuilt, and re-ran both targets against the untouched baseline commit (`086dc8f`) — both failed identically before any of this design's code existed. Restored via `git stash pop` and rebuilt back to the implemented state.
+- No other test in the 229-test suite was affected, including every other `response_format_codec`/`response_format_leak_scan`/`AgentSession` consumer.
+
+**What is deliberately still not done, named per §9's own discipline:** project-owner judgment (item 3
+above) — the code exists and is proven, but this stays a design draft, not an ADR, until that happens.

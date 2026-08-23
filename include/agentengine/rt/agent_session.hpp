@@ -1616,6 +1616,19 @@ private:
                     response = co_await chat_client_->chat(request, ctx);
                     if (response.has_value() && scan_response_format_leaks_) {
                         response->message = apply_response_format_scan(std::move(response->message), request.tools);
+                    } else if (response.has_value() && chat_client_->capabilities().tool_calling) {
+                        // OQ-23 (design draft: docs/planning/oq23-undeclared-tool-call-leak-design-
+                        // draft.md, Design D) -- reached only when the scan above did NOT run (its own
+                        // `else if` makes the two mutually exclusive by construction, not by
+                        // happenstance): a raw wire-format leak matching a live tool name, with no
+                        // scan armed to recover it, refuses the response instead of silently returning
+                        // it as an ordinary text reply.
+                        if (auto leak = detect_undeclared_tool_call_leak(response->message, request.tools);
+                            !leak) {
+                            emit_run_event(run_event_kind::run_failed,
+                                            run_event_payload::RunFailed{leak.error().code, leak.error().message});
+                            co_return std::unexpected(leak.error());
+                        }
                     }
                     co_return response;
                 }
@@ -1625,6 +1638,13 @@ private:
 
         if (response.has_value() && scan_response_format_leaks_) {
             response->message = apply_response_format_scan(std::move(response->message), request.tools);
+        } else if (response.has_value() && chat_client_->capabilities().tool_calling) {
+            // OQ-23 -- same check, same reasoning, as the non-streaming early-return branch above.
+            if (auto leak = detect_undeclared_tool_call_leak(response->message, request.tools); !leak) {
+                emit_run_event(run_event_kind::run_failed,
+                                run_event_payload::RunFailed{leak.error().code, leak.error().message});
+                co_return std::unexpected(leak.error());
+            }
         }
         co_return response;
     }

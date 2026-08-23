@@ -193,8 +193,14 @@ public:
     std::vector<ChatResponse> chat_rounds;
     std::size_t stream_call_count = 0;
     std::size_t chat_call_count = 0;
+    // OQ-23: false by default (preserves S1-S4/L1-L4's existing "tool_calling not declared" shape
+    // byte-for-byte) -- a test that needs the new undeclared-tool-call-leak check to be reachable at
+    // all sets this explicitly, matching how `set_scan_response_format_leaks` is opted into per-test.
+    bool caps_tool_calling = false;
 
-    [[nodiscard]] ChatClientCapabilities capabilities() const { return {}; }
+    [[nodiscard]] ChatClientCapabilities capabilities() const {
+        return ChatClientCapabilities{.tool_calling = caps_tool_calling};
+    }
 
     task<agentengine::result<ChatResponse>> chat(ChatRequest, EffectContext&) {
         if (chat_call_count >= chat_rounds.size()) {
@@ -590,6 +596,130 @@ int main() {
               "L4: a second scan of the SAME message (as happens when both OpenAIChatClient's own "
               "flag and AgentSession's flag are armed together) is a byte-for-byte no-op -- the "
               "tainted diagnostic from pass 1 is skipped whole, not re-decoded and re-promoted");
+    }
+
+    // ================================================================================================
+    // OQ-M1-OQ-M4 (OpenQuestions.md OQ-23, docs/planning/oq23-undeclared-tool-call-leak-design-
+    // draft.md, Design D) -- real AgentSession::run_model_call() round trips proving the new
+    // detect_undeclared_tool_call_leak() check, wired into rt/agent_session.hpp, behaves exactly as
+    // the design draft's falsifiable claims D1/D2/D3/D5 specify.
+    // ================================================================================================
+
+    // ---- OQ-M1: streaming, tool_calling declared, scan NOT armed, leak matches a live tool (D1/D5) ----
+    {
+        WeatherSession session;
+        session.initialize("s-oqm1", Principal{"p", ""});
+        ScriptedChatClient& client = session.emplace_chat_client();
+        client.caps_tool_calling = true;
+        client.stream_rounds = {
+            {text_delta(kHarmonyLeak, /*is_final=*/true, Usage{3, 4, 0, 0, 0.0})},
+        };
+        CapabilitySet const held = CapabilitySet::grant_root({});
+        session.set_capabilities(&held);
+        session.set_stream_model_calls(true);
+        check(!session.scan_response_format_leaks(),
+              "OQ-M1: scan stays at its default-false -- exactly the misconfiguration window this "
+              "check targets (tool_calling declared, scan unarmed)");
+
+        auto viewer = session.enable_event_stream(std::pmr::get_default_resource());
+        auto r = drive(session.start_run(StartRun{user_message("what's the weather?")}));
+        check(!r.has_value(),
+              "OQ-M1: the run is REFUSED, not silently converged with the leak as plain text -- this "
+              "is the behavior change from the pre-design status quo (OQ-23-R1's confirmed gap)");
+        check(r.has_value() || r.error().code == "chat_client.undeclared_tool_call_leak",
+              "OQ-M1: refused with the specific new error code, not a generic/unrelated failure");
+        check(client.stream_call_count == 1,
+              "OQ-M1 (D5): exactly ONE round happened -- the refusal does not retry, hammer, or "
+              "otherwise re-attempt the same content, matching the design draft's traced "
+              "retry-path analysis (failure_class::contract is not retried anywhere in the engine)");
+
+        auto events = drain(viewer);
+        bool saw_run_failed_with_code = false;
+        for (auto const& ev : events) {
+            if (ev.kind == run_event_kind::run_failed) {
+                auto const& f = std::get<agentengine::run_event_payload::RunFailed>(ev.payload);
+                if (f.error_code == "chat_client.undeclared_tool_call_leak") saw_run_failed_with_code = true;
+            }
+        }
+        check(saw_run_failed_with_code,
+              "OQ-M1: a RunFailed event carries the specific error code -- I4 attributability, not a "
+              "silent failure a caller could miss");
+    }
+
+    // ---- OQ-M2: streaming, tool_calling declared, scan ARMED -- new check does not fire/interfere (D2a) --
+    {
+        WeatherSession session;
+        session.initialize("s-oqm2", Principal{"p", ""});
+        ScriptedChatClient& client = session.emplace_chat_client();
+        client.caps_tool_calling = true;
+        client.stream_rounds = {
+            {text_delta(kHarmonyLeak, /*is_final=*/true, Usage{3, 4, 0, 0, 0.0})},
+            {text_delta("It's sunny in Seattle.", /*is_final=*/true, Usage{5, 3, 0, 0, 0.0})},
+        };
+        CapabilitySet const held = CapabilitySet::grant_root({});
+        session.set_capabilities(&held);
+        session.set_stream_model_calls(true);
+        session.set_scan_response_format_leaks(true);
+
+        auto r = drive(session.start_run(StartRun{user_message("what's the weather?")}));
+        check(r.has_value(),
+              "OQ-M2 (D2a): with scanning armed, the leak is promoted and invoked exactly like L1 -- "
+              "declaring tool_calling=true does not additionally refuse anything once the operator "
+              "has already armed the recovery mechanism");
+        if (r.has_value()) {
+            check(text_of(r->message) == "It's sunny in Seattle.",
+                  "OQ-M2: the converged answer proves the promoted call actually ran, unaffected by "
+                  "the new check existing alongside it");
+        }
+        check(client.stream_call_count == 2,
+              "OQ-M2: 2 rounds, same as L1 -- identical behavior to before this design existed");
+    }
+
+    // ---- OQ-M3: chat() path, tool_calling declared, scan NOT armed, unrecognized recipient (D3) --------
+    {
+        WeatherSession session;
+        session.initialize("s-oqm3", Principal{"p", ""});
+        ScriptedChatClient& client = session.emplace_chat_client();
+        client.caps_tool_calling = true;
+        std::string const decoy_leak =
+            "<|start|>assistant<|channel|>commentary to=functions.decoy_tool <|constrain|>json"
+            "<|message|>{\"x\":1}<|call|>";
+        client.chat_rounds = {ChatResponse{text_message(decoy_leak), Usage{3, 4, 0, 0, 0.0}}};
+        CapabilitySet const held = CapabilitySet::grant_root({});
+        session.set_capabilities(&held);
+
+        auto r = drive(session.start_run(StartRun{user_message("what's the weather?")}));
+        check(r.has_value(),
+              "OQ-M3 (D3): a leak addressed at a name that is NOT a live tool ('decoy_tool' -- only "
+              "'get_weather' is declared) is not this check's job -- the run converges normally, "
+              "same as apply_response_format_scan's own unrecognized-name hygiene rule");
+        if (r.has_value()) {
+            check(text_of(r->message).find("decoy_tool") != std::string::npos,
+                  "OQ-M3: the raw content reaches the final Message unrefused and unpromoted");
+        }
+        check(client.chat_call_count == 1, "OQ-M3: exactly 1 round -- no promotion, no refusal, converges");
+    }
+
+    // ---- OQ-M4: chat() path, tool_calling declared, scan NOT armed, ordinary clean content (D3) --------
+    {
+        WeatherSession session;
+        session.initialize("s-oqm4", Principal{"p", ""});
+        ScriptedChatClient& client = session.emplace_chat_client();
+        client.caps_tool_calling = true;
+        client.chat_rounds = {
+            ChatResponse{text_message("The weather in Seattle is sunny."), Usage{3, 4, 0, 0, 0.0}}};
+        CapabilitySet const held = CapabilitySet::grant_root({});
+        session.set_capabilities(&held);
+
+        auto r = drive(session.start_run(StartRun{user_message("what's the weather?")}));
+        check(r.has_value(),
+              "OQ-M4 (D3): ordinary clean content with no format markers at all is completely "
+              "unaffected by declaring tool_calling=true -- the overwhelmingly common, "
+              "correctly-behaving case never pays any cost from this check");
+        if (r.has_value()) {
+            check(text_of(r->message) == "The weather in Seattle is sunny.",
+                  "OQ-M4: byte-identical pass-through, same as ADR-023 P1-R2's own clean-content proof");
+        }
     }
 
     // ================================================================================================
