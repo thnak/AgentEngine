@@ -32,8 +32,10 @@ namespace agentengine::native_jail {
 // Installs PR_SET_NO_NEW_PRIVS (required before PR_SET_SECCOMP for an unprivileged caller, and
 // itself part of 008 §3's Linux profile description) plus the curated seccomp-BPF denylist, on the
 // CALLING thread. Must be called from inside the (already namespace-isolated) child, after any
-// setup that itself needs a denied syscall (there is none in this backend's own setup path) and
-// before `execve`-ing the guest.
+// setup that itself needs a denied syscall -- linux_native_jail_backend.cpp's own `setup_jail()`
+// (the pivot_root/bind-mount jail construction, 008 §9 G2/G3) calls `mount`/`umount2`/
+// `pivot_root`, all three in this file's own denylist below, and MUST finish before this function
+// is called -- and before `execve`-ing the guest.
 [[nodiscard]] result<void> install_seccomp_filter();
 
 }  // namespace agentengine::native_jail

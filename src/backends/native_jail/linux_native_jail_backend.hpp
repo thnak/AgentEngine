@@ -13,13 +13,24 @@
 //     CALLER is trusted to have already resolved from a name -- the Linux analogue of the Windows
 //     side treating `source` as a Win32 command line. Same "not yet Runner-mediated" scope.
 //   - `MountSpec::source` as a `BlobRef` fails closed (unsupported, same gap as Windows).
-//   - Full filesystem isolation (pivot_root / bind-mount jail) is NOT attempted here, matching the
-//     Windows side's ACL-grants-specific-paths-only scope: `CLONE_NEWNS` gives the guest a
-//     PRIVATE COPY of the mount table (its own mount/umount calls never affect the host) but does
-//     NOT by itself restrict which existing host paths remain visible inside it. Real filesystem
-//     containment is 010's interpreter-level `open()` mediation (§1b layers 1-2), not built until
-//     M3 on either platform -- this backend alone does not yet close the filesystem boundary any
-//     more completely on Linux than the Windows half does.
+//   - Filesystem and process-visibility containment (008 §9 G2/G3's Linux half): the child, after
+//     `clone()` returns there and before `execve`, makes its mount namespace private
+//     (`MS_REC|MS_PRIVATE` on `/`, unconditionally first -- otherwise every subsequent bind
+//     mount/`pivot_root` would leak into the host's own mount table, since a systemd-managed
+//     host's root mount is `MS_SHARED` by default), builds a fresh `tmpfs`-backed root under
+//     `jail_root_base_`, bind-mounts EXACTLY the granted `MountSpec` set into it (read-only grants
+//     get a required second `MS_REMOUNT|MS_RDONLY` call -- the initial `MS_BIND` call silently
+//     ignores `MS_RDONLY` on its own), `pivot_root()`s into it (not `chroot`, which a process
+//     holding a pre-existing fd to outside the new root can escape via `fchdir`), detaches the old
+//     root, and mounts a fresh `procfs` (namespace-local by construction, since this runs already
+//     inside the new `CLONE_NEWPID` namespace -- a bind-mounted `/proc` would keep showing the
+//     host's real process list). No implicit `/bin`/`/lib`/`/usr` mount of any kind -- a guest
+//     command needing a toolchain beyond its explicit grants needs its own explicit `MountSpec`,
+//     same as the Windows side's vendored-interpreter-tree precedent (ADR-004 §3 step 1). Proven
+//     against real Linux namespaces + cgroups v2 in `test_native_jail_fs_containment_linux.cpp` --
+//     `decisions/ADR-083-linux-native-jail-pivot-root-containment.md` is the closing ADR; design
+//     and self-red-team record in
+//     `docs/planning/linux-native-jail-pivot-root-containment-design-draft.md`.
 //
 // What this backend adds that the Windows half structurally cannot: cgroups v2's `memory.max`
 // triggers the kernel's own cgroup-scoped OOM killer, countable via `memory.events`' `oom_kill`
@@ -43,6 +54,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/error.hpp"
@@ -59,8 +71,10 @@ public:
         cold_start_class::milliseconds,
     };
 
-    explicit LinuxNativeJailBackend(std::string delegated_cgroup_root = "/sys/fs/cgroup/agentengine")
-        : delegated_cgroup_root_(std::move(delegated_cgroup_root)) {}
+    explicit LinuxNativeJailBackend(std::string delegated_cgroup_root = "/sys/fs/cgroup/agentengine",
+                                     std::string jail_root_base = "/tmp/agentengine-native-jail")
+        : delegated_cgroup_root_(std::move(delegated_cgroup_root)),
+          jail_root_base_(std::move(jail_root_base)) {}
     ~LinuxNativeJailBackend() = default;
     LinuxNativeJailBackend(LinuxNativeJailBackend const&) = delete;
     LinuxNativeJailBackend& operator=(LinuxNativeJailBackend const&) = delete;
@@ -75,10 +89,17 @@ private:
     struct Instance {
         CgroupLimits cgroup;
         ResourceLimits limits;
-        std::string cwd;  // first read-write mount's host path, if any; empty = inherit
+        std::vector<MountSpec> mounts;  // full grant set; host_path form only (BlobRef already
+                                         // rejected in create()) -- exec() rebuilds the jail from
+                                         // this on every call, since a mount namespace is
+                                         // per-process, not persisted on the Instance.
+        std::string cwd_guest_path;     // first read-write mount's GUEST path, if any; empty = "/"
+        std::uint64_t exec_seq = 0;     // monotonic per-instance counter -> a fresh, unique
+                                         // jail_root directory name per exec() call.
     };
 
     std::string delegated_cgroup_root_;
+    std::string jail_root_base_;
     std::unordered_map<std::string, std::unique_ptr<Instance>> instances_;
 };
 

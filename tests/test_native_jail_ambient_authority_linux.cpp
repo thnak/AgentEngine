@@ -3,12 +3,13 @@
 // processes finds exactly the granted set and nothing else, on each backend." This is the Linux
 // half against the real LinuxNativeJailBackend (C2).
 //
-// Filesystem is DELIBERATELY NOT covered here, for the same already-tracked reason C3's Linux
-// corpus (test_native_jail_abuse_corpus_linux.cpp) skips the fs-escape case: CLONE_NEWNS gives the
-// guest a private mount namespace but nothing populates it with a restricted view. Process
-// enumeration below turns out to be the SAME root cause (no /proc remount inside the new pid
-// namespace either) -- both are one tracked gap (GitHub issue #5, scope widened by this task), not
-// two.
+// Filesystem is covered in a DEDICATED file, not here: test_native_jail_fs_containment_linux.cpp.
+// Process enumeration below (axis 3) used to share its root cause with that gap (no /proc remount
+// inside the new pid namespace) -- both are now closed together by the same
+// LinuxNativeJailBackend::setup_jail() (008 SS9 G2/G3, pivot_root + a fresh, namespace-local
+// /proc). Every SandboxSpec below now needs an explicit toolchain grant
+// (helpers/native_jail_linux_toolchain_mounts.hpp) for `/bin/sh` itself to be reachable inside
+// that jail.
 //
 // Requires a delegated cgroup v2 root and CAP_SYS_ADMIN, same as C2/C3's Linux tests -- run via
 // tests/helpers/cgroup_v2_test_setup.sh.
@@ -29,6 +30,7 @@
 #include <vector>
 
 #include "backends/native_jail/linux_native_jail_backend.hpp"
+#include "helpers/native_jail_linux_toolchain_mounts.hpp"
 
 using namespace agentengine;
 using agentengine::native_jail::LinuxNativeJailBackend;
@@ -142,6 +144,7 @@ int main() {
         SandboxSpec spec;
         spec.mounts.push_back(
             MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
+        agentengine::native_jail::test::add_shell_toolchain_mounts(spec);
         spec.limits.wall_ms = 5000;
         spec.limits.memory_bytes = 32ull * 1024 * 1024;
         spec.limits.pids = 4;
@@ -187,6 +190,7 @@ int main() {
         SandboxSpec spec;
         spec.mounts.push_back(
             MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
+        agentengine::native_jail::test::add_shell_toolchain_mounts(spec);
         spec.limits.wall_ms = 5000;
         spec.limits.memory_bytes = 32ull * 1024 * 1024;
         spec.limits.pids = 4;
@@ -219,13 +223,12 @@ int main() {
         close(listener);
     }
 
-    // ---- Axis 3: process enumeration (008 SS9 G3) -- KNOWN GAP, same root cause as issue #5 ------
-    // CLONE_NEWPID puts the guest in a fresh pid namespace, but /proc is never remounted inside it
-    // (same missing "populate the new mount namespace" step the fs-escape gap is tracked under) --
-    // so /proc/[pid] entries the guest reads still come from the HOST's procfs instance and reflect
-    // the host's real process list, not a namespace-local view. Measured and asserted to match this
-    // known reality (not silently skipped), same treatment as the Windows half's
-    // CreateToolhelp32Snapshot finding.
+    // ---- Axis 3: process enumeration (008 SS9 G3) -- CLOSED by setup_jail()'s fresh /proc mount ---
+    // CLONE_NEWPID puts the guest in a fresh pid namespace; setup_jail() now additionally mounts a
+    // FRESH procfs inside it (after pivot_root, from a process already inside that namespace), so
+    // /proc/[pid] entries are namespace-local by construction, not the host's real process list.
+    // This axis used to be a known gap sharing its root cause with the fs-escape gap -- both closed
+    // together, matching the Windows half's own CreateToolhelp32Snapshot restriction (008 SS9 G3).
     {
         pid_t canary_pid = fork();
         if (canary_pid == 0) {
@@ -239,6 +242,7 @@ int main() {
         SandboxSpec spec;
         spec.mounts.push_back(
             MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
+        agentengine::native_jail::test::add_shell_toolchain_mounts(spec);
         spec.limits.wall_ms = 3000;
         spec.limits.memory_bytes = 32ull * 1024 * 1024;
         spec.limits.pids = 4;
@@ -255,11 +259,16 @@ int main() {
             if (outcome.has_value()) {
                 std::cout << "  measured: contained probe_proc stdout=" << outcome->stdout_text;
                 bool visible = outcome->stdout_text.find("target=yes") != std::string::npos;
-                AE_CHECK(visible,
-                          "C5-Linux proc KNOWN GAP (GitHub issue #5, scope widened by C5): the "
-                          "guest's /proc is the host's unremounted procfs instance, so it can "
-                          "enumerate host PIDs it was never granted (008 SS9 G3 is NOT met on this "
-                          "axis for native-jail/Linux; see planning doc)");
+                AE_CHECK(!visible,
+                          "C5-Linux proc: the guest's /proc is a fresh, namespace-local mount (not "
+                          "the host's unremounted procfs instance), so it cannot enumerate a host "
+                          "PID it was never granted (008 SS9 G3)");
+                bool self_visible = outcome->stdout_text.find("PROC_VISIBLE total=") != std::string::npos &&
+                                     outcome->stdout_text.find("total=0") == std::string::npos;
+                AE_CHECK(self_visible,
+                          "C5-Linux proc positive control: the guest's own /proc is NOT empty (it "
+                          "sees at least itself) -- proves the containment above is real "
+                          "namespace-local scoping, not /proc failing to mount at all");
             }
             backend.destroy(*handle);
         }

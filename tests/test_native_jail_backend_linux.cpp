@@ -19,6 +19,7 @@
 #include <string>
 
 #include "backends/native_jail/linux_native_jail_backend.hpp"
+#include "helpers/native_jail_linux_toolchain_mounts.hpp"
 #include "support/error_detail.hpp"
 
 using namespace agentengine;
@@ -53,6 +54,7 @@ int main() {
 
     SandboxSpec spec;
     spec.mounts.push_back(MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
+    agentengine::native_jail::test::add_shell_toolchain_mounts(spec);
     spec.limits.wall_ms = 2000;
     spec.limits.memory_bytes = 32ull * 1024 * 1024;  // 32 MB
     spec.limits.pids = 4;

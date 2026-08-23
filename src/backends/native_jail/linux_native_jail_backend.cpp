@@ -12,7 +12,9 @@
 #include <fcntl.h>
 #include <sched.h>
 #include <sys/mman.h>
+#include <sys/mount.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -23,8 +25,15 @@
 #include <cstring>
 #include <optional>
 #include <thread>
+#include <vector>
 
 #include "backends/native_jail/seccomp_filter.hpp"
+
+// glibc has no wrapper for pivot_root(2) (it is deliberately not exposed as a stable libc API --
+// every real container runtime invokes it via syscall() the same way this file does).
+#ifndef SYS_pivot_root
+#error "SYS_pivot_root not available -- this backend requires a Linux kernel with pivot_root(2)"
+#endif
 
 namespace agentengine::native_jail {
 
@@ -83,14 +92,118 @@ DelegatedRootState ensure_delegated_root(std::string const& root) {
 // dup2/execve) is limited to plain syscalls. This assumes a single-threaded caller at the moment
 // of `exec()` -- documented here as a residual scope limit (CLAUDE.md "explicit gaps, not
 // silent"), not solved by a fully async-signal-safe path (posix_spawn-style) in this pass.
+//
+// The mount/pivot_root sequence below (jail setup) DOES construct/concatenate std::strings in the
+// child -- safe under the same single-threaded-caller assumption as the rest of this file (a
+// `clone()` without `CLONE_VM`/`CLONE_THREAD` gives the child its own copy-on-write address space,
+// the same fork-safety shape as an ordinary single-threaded `fork()`, not the multithreaded-parent
+// hazard the async-signal-safety literature warns about).
+struct ChildMount {
+    std::string host_path;
+    std::string guest_path;  // always starts with '/'; joined onto jail_root below
+    bool read_write = false;
+};
+
 struct ChildArgs {
     int sync_read_fd = -1;
     int sync_write_fd = -1;  // child's own duplicate; must close before blocking on sync_read_fd
     int stdout_write_fd = -1;
     int stderr_write_fd = -1;
-    std::string cwd;
+    std::string jail_root;    // fresh, empty, host-created tmpfs mountpoint for this one exec()
+    std::string cwd_guest;    // chdir target AFTER pivot_root, e.g. "/work"; empty = stay at "/"
+    std::vector<ChildMount> mounts;
     std::string command;
 };
+
+// mkdir(2) with parents, tolerant of EEXIST at every level -- `path` must be absolute.
+bool mkdir_p(std::string const& path) {
+    if (path.empty() || path[0] != '/') return false;
+    std::string partial;
+    std::size_t pos = 1;
+    for (;;) {
+        std::size_t next = path.find('/', pos);
+        partial = (next == std::string::npos) ? path : path.substr(0, next);
+        if (!partial.empty() && ::mkdir(partial.c_str(), 0755) != 0 && errno != EEXIST) return false;
+        if (next == std::string::npos) break;
+        pos = next + 1;
+    }
+    return true;
+}
+
+// 008 SS9 G2/G3's Linux filesystem/process containment (see linux_native_jail_backend.hpp's own
+// header comment for the full rationale, docs/planning/linux-native-jail-pivot-root-containment-
+// design-draft.md for the design + self-red-team record this implements verbatim, and
+// decisions/ADR-083-linux-native-jail-pivot-root-containment.md for the closing ADR and its real
+// build/test evidence). Runs in the child, after the sync-pipe handshake
+// (cgroup membership already confirmed by the parent) and BEFORE `install_seccomp_filter()` --
+// `mount`/`umount2`/`pivot_root` are all in that filter's denylist, so this jail-construction code
+// (trusted backend code, not yet the untrusted guest) must finish before the filter goes on.
+// Returns false on ANY failure -- every caller treats that as `_exit()`, matching this file's
+// existing "fail closed on setup failure" posture (e.g. the cgroup add_process check in exec()).
+bool setup_jail(ChildArgs const& args) {
+    // MUST-FIX 1 (design draft SS3): unconditionally first, before any other mount/pivot_root call
+    // in this whole sequence. A systemd-managed host's root mount defaults to MS_SHARED; without
+    // this, every bind mount and the pivot_root call below would propagate into the HOST's own
+    // mount table (child-to-parent propagation direction), leaking real host /proc/mounts entries
+    // that ordinary per-process mount-namespace teardown would never clean up.
+    if (::mount(nullptr, "/", nullptr, MS_REC | MS_PRIVATE, nullptr) != 0) return false;
+
+    if (!mkdir_p(args.jail_root)) return false;
+    // A dedicated tmpfs, not a bind-mount of any host directory -- an isolated mount point to
+    // pivot into with no host-disk footprint beyond the mount itself (design draft SS2 step 2).
+    // Generous-but-finite size, matching this file's Machine Safety posture elsewhere.
+    if (::mount("tmpfs", args.jail_root.c_str(), "tmpfs", 0, "size=67108864,mode=0755") != 0) {
+        return false;
+    }
+
+    for (ChildMount const& m : args.mounts) {
+        std::string target = args.jail_root + m.guest_path;
+        if (!mkdir_p(target)) return false;
+        if (::mount(m.host_path.c_str(), target.c_str(), nullptr, MS_BIND | MS_REC, nullptr) != 0) {
+            return false;
+        }
+        if (!m.read_write) {
+            // MUST-FIX 2 (design draft SS3): the initial MS_BIND call silently ignores MS_RDONLY
+            // passed in the SAME call -- a read-only grant is only real after this second,
+            // MS_REMOUNT-flagged call.
+            if (::mount(m.host_path.c_str(), target.c_str(), nullptr,
+                        MS_BIND | MS_REMOUNT | MS_RDONLY | MS_REC, nullptr) != 0) {
+                return false;
+            }
+        }
+    }
+
+    // pivot_root(2) requires its new-root argument to already BE a mount point -- a self-bind-mount
+    // achieves that cheaply for a directory that otherwise wouldn't qualify (design draft SS2
+    // step 4). jail_root already IS a mount point (the tmpfs above), so this is technically
+    // redundant here, but kept for robustness against a future jail_root that isn't tmpfs-backed.
+    if (::mount(args.jail_root.c_str(), args.jail_root.c_str(), nullptr, MS_BIND | MS_REC, nullptr) !=
+        0) {
+        return false;
+    }
+
+    std::string old_root = args.jail_root + "/.old_root";
+    if (::mkdir(old_root.c_str(), 0700) != 0 && errno != EEXIST) return false;
+    if (::chdir(args.jail_root.c_str()) != 0) return false;
+    if (::syscall(SYS_pivot_root, ".", ".old_root") != 0) return false;
+    if (::chdir("/") != 0) return false;
+    // Lazily detach the old root -- nothing new is openable under it from here on, closing the
+    // `chroot`-style escape class structurally (pivot_root, not chroot, is why this is possible at
+    // all -- design draft SS2 step 4). Any fd the guest already held into the old root before this
+    // point stays valid (ordinary Unix fd semantics); nothing this backend does hands the guest
+    // such an fd.
+    if (::umount2("/.old_root", MNT_DETACH) != 0) return false;
+    ::rmdir("/.old_root");  // best-effort; now-empty from inside the new root
+
+    // Fresh procfs, not a bind-mounted one -- mounted AFTER pivot_root, from a process already
+    // inside the new CLONE_NEWPID namespace, gives a namespace-local view by construction (design
+    // draft SS2 step 5). A bind-mounted host /proc would keep showing the host's real process list.
+    if (::mkdir("/proc", 0555) != 0 && errno != EEXIST) return false;
+    if (::mount("proc", "/proc", "proc", 0, nullptr) != 0) return false;
+
+    if (!args.cwd_guest.empty() && ::chdir(args.cwd_guest.c_str()) != 0) return false;
+    return true;
+}
 
 int child_entry(void* raw) {
     auto* args = static_cast<ChildArgs*>(raw);
@@ -103,7 +216,7 @@ int child_entry(void* raw) {
     } while (rc < 0 && errno == EINTR);
     ::close(args->sync_read_fd);
 
-    if (!args->cwd.empty() && ::chdir(args->cwd.c_str()) != 0) _exit(125);
+    if (!setup_jail(*args)) _exit(125);
 
     ::dup2(args->stdout_write_fd, STDOUT_FILENO);
     ::dup2(args->stderr_write_fd, STDERR_FILENO);
@@ -166,9 +279,11 @@ result<SandboxHandle> LinuxNativeJailBackend::create(SandboxSpec const& spec, Ef
                 "linux_native_jail.blob_mount_unsupported",
             });
         }
-        std::string const& host_path = std::get<std::string>(mount.source);
-        if (mount.read_write && instance->cwd.empty()) instance->cwd = host_path;
+        if (mount.read_write && instance->cwd_guest_path.empty()) {
+            instance->cwd_guest_path = mount.guest_path;
+        }
     }
+    instance->mounts = spec.mounts;
 
     static std::atomic<std::uint64_t> counter{0};
     std::string id =
@@ -220,13 +335,38 @@ result<ExecOutcome> LinuxNativeJailBackend::exec(SandboxHandle& handle, ExecRequ
     // O_CLOEXEC (which would otherwise close them across the child's own later execve) -- dup2 in
     // child_entry targets STDOUT_FILENO/STDERR_FILENO, which are never O_CLOEXEC, so the *targets*
     // survive execve even though the original fds (closed right after dup2) do not need to.
+    //
+    // jail_root is a fresh, unique-per-exec()-call directory: a mount namespace is per-PROCESS, not
+    // persisted on Instance, so every exec() on the same SandboxHandle rebuilds its own jail from
+    // scratch. Created HOST-SIDE (here, before clone()) rather than by the child, so its lifetime
+    // brackets the child's the same way the cgroup directory's does -- and so it can be rmdir'd
+    // after the child is reaped even if the child died before finishing its own jail setup.
+    if (!mkdir_p(jail_root_base_)) {
+        return errno_error(("mkdir_p(" + jail_root_base_ + ")").c_str(), failure_class::fatal,
+                            "linux_native_jail.jail_root_base_mkdir_failed");
+    }
+    std::string jail_root =
+        jail_root_base_ + "/" + handle.opaque_id + "-" + std::to_string(inst.exec_seq++);
+    if (::mkdir(jail_root.c_str(), 0700) != 0 && errno != EEXIST) {
+        return errno_error(("mkdir(" + jail_root + ")").c_str(), failure_class::fatal,
+                            "linux_native_jail.jail_root_mkdir_failed");
+    }
+
     ChildArgs args;
     args.sync_read_fd = sync_read.fd;
     args.sync_write_fd = sync_write.fd;
     args.stdout_write_fd = stdout_write.fd;
     args.stderr_write_fd = stderr_write.fd;
-    args.cwd = inst.cwd;
+    args.jail_root = jail_root;
+    args.cwd_guest = inst.cwd_guest_path;
     args.command = request.source;
+    for (MountSpec const& m : inst.mounts) {
+        args.mounts.push_back(ChildMount{
+            .host_path = std::get<std::string>(m.source),
+            .guest_path = m.guest_path,
+            .read_write = m.read_write,
+        });
+    }
 
     constexpr std::size_t kStackSize = 1024 * 1024;
     void* stack_mem = ::mmap(nullptr, kStackSize, PROT_READ | PROT_WRITE,
@@ -241,6 +381,7 @@ result<ExecOutcome> LinuxNativeJailBackend::exec(SandboxHandle& handle, ExecRequ
     pid_t child_pid = ::clone(child_entry, stack_top, clone_flags, &args);
     if (child_pid < 0) {
         ::munmap(stack_mem, kStackSize);
+        ::rmdir(jail_root.c_str());
         return errno_error("clone", failure_class::fatal, "linux_native_jail.clone_failed");
     }
 
@@ -259,6 +400,7 @@ result<ExecOutcome> LinuxNativeJailBackend::exec(SandboxHandle& handle, ExecRequ
         ::waitpid(child_pid, &status, 0);
         sync_write.close_now();
         ::munmap(stack_mem, kStackSize);
+        ::rmdir(jail_root.c_str());
         return std::unexpected(added.error());
     }
     sync_write.close_now();  // releases the child's blocking read()
@@ -297,6 +439,12 @@ result<ExecOutcome> LinuxNativeJailBackend::exec(SandboxHandle& handle, ExecRequ
     outcome.stdout_text = drain_pipe_bounded(stdout_read.fd, inst.limits.output_bytes);
     outcome.stderr_text = drain_pipe_bounded(stderr_read.fd, inst.limits.output_bytes);
     ::munmap(stack_mem, kStackSize);
+    // The child (and with it, its private mount namespace and every mount/pivot_root this exec()
+    // call made) is fully reaped by this point (the poll loop above only exits after a successful
+    // waitpid) -- MS_PRIVATE (setup_jail's unconditional first step) means none of that ever
+    // propagated into the HOST's own mount table, so this directory is already just an ordinary,
+    // empty host directory again; rmdir is real cleanup, not racing a lazy unmount.
+    ::rmdir(jail_root.c_str());
 
     if (killed_for_timeout) {
         outcome.klass = exec_outcome_class::timeout;

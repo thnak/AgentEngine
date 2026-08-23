@@ -1,13 +1,23 @@
 # Design draft: Linux `native-jail` filesystem and process containment (`pivot_root` + bind mounts)
 
-**Status:** Design draft, self-red-teamed once (below) — **not an ADR, no code written, not built or
-executed**. This machine is Windows-only for this session (no Linux dev/test environment available),
-so unlike this pass's other two closed gaps (ADR-056, ADR-041 — both real code, built, tested,
-175/175 green), this document stops at design + red-team. Per the same project-owner posture already
-applied to OQ-19/OQ-20 (`OpenQuestions.md`): document what implementation needs, do not implement
-without the ability to prove it. Seeds a future ADR once a Linux build/test environment is available
-for this milestone. Companion: `docs/planning/2026-08-10-full-codebase-adr-gap-audit.md` gap #10 (the
-finding this document addresses).
+**Status: PROMOTED to `decisions/ADR-083-linux-native-jail-pivot-root-containment.md` (2026-08-23,
+same day this draft was written)** — a Linux build/test environment (WSL2/Ubuntu) was obtained
+specifically to prove this design; §2's design and §3's self-red-team below are unchanged and are
+what ADR-083 §2 cites as its own design phase. This document is kept as the detailed design/red-team
+record; ADR-083 is the authoritative Judged decision, including the real build/test evidence and the
+residuals this draft's own §4 could only name in advance. Companion:
+`docs/planning/2026-08-10-full-codebase-adr-gap-audit.md` gap #10 (the finding this document
+addresses).
+
+---
+
+**Original status line (superseded, kept for the record):** Design draft, self-red-teamed once
+(below) — not an ADR, no code written, not built or executed. This machine is Windows-only for this
+session (no Linux dev/test environment available), so unlike this pass's other two closed gaps
+(ADR-056, ADR-041 — both real code, built, tested, 175/175 green), this document stops at design +
+red-team. Per the same project-owner posture already applied to OQ-19/OQ-20 (`OpenQuestions.md`):
+document what implementation needs, do not implement without the ability to prove it. Seeds a future
+ADR once a Linux build/test environment is available for this milestone.
 
 ## 0. Correcting the audit before designing against it
 

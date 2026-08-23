@@ -2128,7 +2128,13 @@ if(NOT WIN32)
       COMMAND bash -c "source ${CMAKE_CURRENT_SOURCE_DIR}/helpers/cgroup_v2_test_setup.sh && $<TARGET_FILE:test_native_jail_backend_linux>")
     # Same Machine Safety backstop as the Windows test -- real child processes under real
     # namespace/cgroup isolation, real wall_ms kills under test.
-    set_tests_properties(test_native_jail_backend_linux PROPERTIES TIMEOUT 120)
+    # RUN_SERIAL on every test in this Linux native_jail group (not just this one): each
+    # LinuxNativeJailBackend defaults to the SAME host paths (delegated_cgroup_root_,
+    # jail_root_base_) and mints ids from a process-local, not host-unique, counter starting at 0 --
+    # two of these test BINARIES running concurrently (`ctest -j`) can independently compute the
+    # identical "linux_native_jail-0" id and collide creating the same cgroup/jail_root directory.
+    # Observed directly in this harness's own `ctest -j 4` run before this property existed.
+    set_tests_properties(test_native_jail_backend_linux PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE)
 
     # ---- 008 §7 abuse-case corpus + §9 G2 positive controls (M2 Phase C task C3, Linux half) -----
     # fs-escape attempt is deliberately NOT included here -- see the test file's own header for the
@@ -2143,7 +2149,7 @@ if(NOT WIN32)
       COMMAND bash -c "source ${CMAKE_CURRENT_SOURCE_DIR}/helpers/cgroup_v2_test_setup.sh && $<TARGET_FILE:test_native_jail_abuse_corpus_linux>")
     # The OOM case alone budgets wall_ms=25000 (C2-Linux's own measured worst case) -- 150s total
     # leaves headroom for the other four cases' shorter budgets plus real process/cgroup overhead.
-    set_tests_properties(test_native_jail_abuse_corpus_linux PROPERTIES TIMEOUT 150)
+    set_tests_properties(test_native_jail_abuse_corpus_linux PROPERTIES TIMEOUT 150 RUN_SERIAL TRUE)
 
     # ---- 008 §9 G1 cross-platform outcome-classification parity (M2 Phase C task C4, Linux half) --
     add_executable(test_native_jail_parity_linux test_native_jail_parity_linux.cpp)
@@ -2156,7 +2162,7 @@ if(NOT WIN32)
       COMMAND bash -c "source ${CMAKE_CURRENT_SOURCE_DIR}/helpers/cgroup_v2_test_setup.sh && $<TARGET_FILE:test_native_jail_parity_linux>")
     # The oom case alone budgets wall_ms=25000 -- same rationale as the abuse-corpus test above;
     # 90s leaves headroom for the other four cases plus real process/cgroup overhead.
-    set_tests_properties(test_native_jail_parity_linux PROPERTIES TIMEOUT 90)
+    set_tests_properties(test_native_jail_parity_linux PROPERTIES TIMEOUT 90 RUN_SERIAL TRUE)
 
     # ---- 008 §9 G3 no-ambient-authority probe (M2 Phase C task C5, Linux half) -------------------
     # fs axis is deliberately NOT included here -- see the test file's own header for why (same
@@ -2169,7 +2175,21 @@ if(NOT WIN32)
     add_dependencies(test_native_jail_ambient_authority_linux hostile_child_posix)
     add_test(NAME test_native_jail_ambient_authority_linux
       COMMAND bash -c "source ${CMAKE_CURRENT_SOURCE_DIR}/helpers/cgroup_v2_test_setup.sh && $<TARGET_FILE:test_native_jail_ambient_authority_linux>")
-    set_tests_properties(test_native_jail_ambient_authority_linux PROPERTIES TIMEOUT 60)
+    set_tests_properties(test_native_jail_ambient_authority_linux PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE)
+
+    # ---- 008 §9 G2/G3 filesystem containment (pivot_root + bind-mount jail, Linux half) ------------
+    # docs/planning/linux-native-jail-pivot-root-containment-design-draft.md's design + self-
+    # red-team record, now built and proven: fs-escape (Windows abuse corpus's Case 4 analogue) plus
+    # a read-only-bind-mount positive/negative pair (MUST-FIX 2).
+    add_executable(test_native_jail_fs_containment_linux test_native_jail_fs_containment_linux.cpp)
+    target_link_libraries(test_native_jail_fs_containment_linux PRIVATE
+      agentengine::core agentengine::linux_native_jail_backend agentengine_warnings)
+    target_compile_definitions(test_native_jail_fs_containment_linux PRIVATE
+      AE_HOSTILE_CHILD_POSIX_EXE="$<TARGET_FILE:hostile_child_posix>")
+    add_dependencies(test_native_jail_fs_containment_linux hostile_child_posix)
+    add_test(NAME test_native_jail_fs_containment_linux
+      COMMAND bash -c "source ${CMAKE_CURRENT_SOURCE_DIR}/helpers/cgroup_v2_test_setup.sh && $<TARGET_FILE:test_native_jail_fs_containment_linux>")
+    set_tests_properties(test_native_jail_fs_containment_linux PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE)
 
     # ---- 008 §9 G4 teardown-cycle census (M2 Phase C task C6, Linux half) --------------------------
     add_executable(test_native_jail_teardown_cycles_linux test_native_jail_teardown_cycles_linux.cpp)
@@ -2180,7 +2200,7 @@ if(NOT WIN32)
     add_dependencies(test_native_jail_teardown_cycles_linux hostile_child_posix)
     add_test(NAME test_native_jail_teardown_cycles_linux
       COMMAND bash -c "source ${CMAKE_CURRENT_SOURCE_DIR}/helpers/cgroup_v2_test_setup.sh && $<TARGET_FILE:test_native_jail_teardown_cycles_linux>")
-    set_tests_properties(test_native_jail_teardown_cycles_linux PROPERTIES TIMEOUT 150)
+    set_tests_properties(test_native_jail_teardown_cycles_linux PROPERTIES TIMEOUT 150 RUN_SERIAL TRUE)
   endif()
 endif()
 

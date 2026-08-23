@@ -7,14 +7,13 @@
 // (test_native_jail_backend_linux.cpp) already proves the backend's create/exec/destroy shape
 // works; this file is the abuse-case gate on top of it, with a positive control for every case.
 //
-// fs-escape attempt is DELIBERATELY NOT covered here: LinuxNativeJailBackend's CLONE_NEWNS gives
-// the guest a private mount namespace but nothing populates it with a restricted view (no
-// pivot_root/chroot/bind-mount jail) -- the guest can read/write anything the invoking user can,
-// anywhere on the host. This is a real, tracked gap (docs/planning/milestone-2-tools-capabilities-
-// sandbox-breakdown.md's C3 writeup and a filed GitHub issue), not a passing-but-vacuous test --
-// writing an escape probe here would either fail honestly or require building real path
-// containment first, and the project owner chose to defer that and scope C3's Linux half to the
-// four cases that ARE genuinely contained today.
+// fs-escape attempt is covered in a DEDICATED file, not here:
+// test_native_jail_fs_containment_linux.cpp -- LinuxNativeJailBackend now builds a real
+// pivot_root/bind-mount jail (setup_jail(), 008 SS9 G2/G3), closing the gap this comment used to
+// describe (docs/planning/milestone-2-tools-capabilities-sandbox-breakdown.md's C3 writeup / the
+// GitHub issue it was tracked under). Every SandboxSpec below now needs an explicit toolchain
+// grant (helpers/native_jail_linux_toolchain_mounts.hpp) for `/bin/sh` itself to be reachable
+// inside that jail -- see this backend's own header comment for why no such grant is implicit.
 //
 // Requires a delegated cgroup v2 root with memory/pids already enabled (see
 // linux_native_jail_backend.hpp's precondition note) and CAP_SYS_ADMIN -- run via
@@ -30,6 +29,7 @@
 #include <string>
 
 #include "backends/native_jail/linux_native_jail_backend.hpp"
+#include "helpers/native_jail_linux_toolchain_mounts.hpp"
 
 using namespace agentengine;
 using agentengine::native_jail::LinuxNativeJailBackend;
@@ -81,6 +81,7 @@ int main() {
         SandboxSpec contained_spec;
         contained_spec.mounts.push_back(
             MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
+        agentengine::native_jail::test::add_shell_toolchain_mounts(contained_spec);
         contained_spec.limits.wall_ms = 5000;
         contained_spec.limits.memory_bytes = 64ull * 1024 * 1024;
         contained_spec.limits.pids = 3;
@@ -138,6 +139,7 @@ int main() {
         SandboxSpec contained_spec;
         contained_spec.mounts.push_back(
             MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
+        agentengine::native_jail::test::add_shell_toolchain_mounts(contained_spec);
         // 25s: C2-Linux's own measured finding -- cgroups v2's reclaim-before-OOM-kill dance took
         // ~2-7.9s wall-clock in this harness's environment for this exact 512 MB-vs-32 MB shape; a
         // short wall_ms would make this backend's own timeout watcher pre-empt the real OOM kill
@@ -185,6 +187,7 @@ int main() {
         SandboxSpec short_spec;
         short_spec.mounts.push_back(
             MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
+        agentengine::native_jail::test::add_shell_toolchain_mounts(short_spec);
         short_spec.limits.wall_ms = 500;
         short_spec.limits.memory_bytes = 64ull * 1024 * 1024;
         short_spec.limits.pids = 4;
@@ -240,6 +243,7 @@ int main() {
         SandboxSpec contained_spec;
         contained_spec.mounts.push_back(
             MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
+        agentengine::native_jail::test::add_shell_toolchain_mounts(contained_spec);
         contained_spec.limits.wall_ms = 1000;
         contained_spec.limits.memory_bytes = 64ull * 1024 * 1024;
         contained_spec.limits.pids = 4;

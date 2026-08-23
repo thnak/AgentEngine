@@ -36,11 +36,18 @@
 // even one of exec()'s own 1 MiB child-stack mmaps per cycle would grow RSS by ~300 MiB against a
 // kMaxRssGrowthKb slack of 50 MiB -- 6x over).
 //
-// fs axis is deliberately NOT censused here -- LinuxNativeJailBackend does not create host temp
-// files or directories outside the cgroup hierarchy (mounts are directories the CALLER already
-// owns; the backend never materializes anything under them), matching this file's Windows
-// counterpart's own scope (no analogous "real filesystem containment" resource on either platform
-// yet -- 008 SS7/GitHub issue #5).
+// A 4th resource is censused, added once LinuxNativeJailBackend started building a real
+// pivot_root/bind-mount jail per exec() call (setup_jail(), 008 SS9 G2/G3):
+//   4. jail_root directory count under the backend's jail_root_base_ (default
+//      /tmp/agentengine-native-jail) -- catches a leaked per-exec jail directory. Each exec()
+//      mkdir's a fresh, uniquely-named directory before clone() and rmdir's it after the child is
+//      fully reaped (linux_native_jail_backend.cpp); this is the concrete, falsifiable form of the
+//      design draft's MUST-FIX 1 verification ("after N sandbox creations and teardowns, no leaked
+//      entries remain") for the ONE piece of that leak surface visible from the HOST side without
+//      inspecting another process's already-torn-down mount namespace -- MS_PRIVATE (setup_jail's
+//      unconditional first step) is what keeps the mounts THEMSELVES from ever reaching host
+//      /proc/mounts in the first place, so there is nothing to unmount from here; this loop instead
+//      proves the plain host-side mkdir/rmdir bracketing the mount setup doesn't leak.
 
 #include <dirent.h>
 #include <fcntl.h>
@@ -56,6 +63,7 @@
 #include <vector>
 
 #include "backends/native_jail/linux_native_jail_backend.hpp"
+#include "helpers/native_jail_linux_toolchain_mounts.hpp"
 #include "support/error_detail.hpp"
 
 using namespace agentengine;
@@ -111,6 +119,7 @@ long current_rss_kb() {
 
 int main() {
     std::string const kDelegatedRoot = "/sys/fs/cgroup/agentengine";
+    std::string const kJailRootBase = "/tmp/agentengine-native-jail";
 
     std::filesystem::path work_dir =
         std::filesystem::temp_directory_path() / "ae_native_jail_teardown_cycles_test_linux";
@@ -158,6 +167,7 @@ int main() {
     SandboxSpec spec;
     spec.mounts.push_back(
         MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
+    agentengine::native_jail::test::add_shell_toolchain_mounts(spec);
     spec.limits.wall_ms = 2000;
     spec.limits.memory_bytes = 32ull * 1024 * 1024;  // 32 MB
     spec.limits.pids = 4;
@@ -191,6 +201,10 @@ int main() {
     int fds_before = current_fd_count();
     long rss_before = current_rss_kb();
     int cgroup_dirs_before = dir_entry_count(kDelegatedRoot);
+    // 0, not -1: the kWarmupCycles loop above already ran, so kJailRootBase already exists (each
+    // exec() mkdir_p's it) but should be empty again -- every warmup cycle's own jail directory was
+    // already rmdir'd by the time its exec() call returned.
+    int jail_dirs_before = dir_entry_count(kJailRootBase);
 
     constexpr int kTeardownCycles = 300;  // see file header for the sensitivity rationale
     for (int i = 0; i < kTeardownCycles; i++) run_cycle(kWarmupCycles + i);
@@ -198,10 +212,12 @@ int main() {
     int fds_after = current_fd_count();
     long rss_after = current_rss_kb();
     int cgroup_dirs_after = dir_entry_count(kDelegatedRoot);
+    int jail_dirs_after = dir_entry_count(kJailRootBase);
 
     std::cout << "  census: fds " << fds_before << " -> " << fds_after << ", rss_kb " << rss_before
               << " -> " << rss_after << ", cgroup_dirs " << cgroup_dirs_before << " -> "
-              << cgroup_dirs_after << "\n";
+              << cgroup_dirs_after << ", jail_dirs " << jail_dirs_before << " -> " << jail_dirs_after
+              << "\n";
 
     constexpr int kMaxFdGrowth = 10;
     AE_CHECK(fds_after <= fds_before + kMaxFdGrowth,
@@ -216,6 +232,11 @@ int main() {
     AE_CHECK(cgroup_dirs_after == cgroup_dirs_before,
               "C6/G4: no leftover cgroup subdirectory remains under the delegated root after 300 "
               "create/exec/destroy cycles");
+
+    AE_CHECK(jail_dirs_before >= 0 && jail_dirs_after == jail_dirs_before,
+              "C6/G4 (pivot_root jail, design draft MUST-FIX 1's host-visible half): no leftover "
+              "jail_root directory remains under jail_root_base_ after 300 create/exec/destroy "
+              "cycles -- each exec()'s mkdir/rmdir bracket is symmetric even under repetition");
 
     std::filesystem::remove_all(work_dir, ec);
 

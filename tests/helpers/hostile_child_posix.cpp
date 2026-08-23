@@ -22,6 +22,13 @@
 //   probe_proc <pid>        -- enumerate all PIDs visible under /proc; report
 //                             "PROC_VISIBLE total=<n> target=yes|no" for whether <pid> (a host-side
 //                             process the launching test owns) shows up. C5's process axis probe.
+//   probe_read <path>       -- open(path, O_RDONLY) and read up to 256 bytes; report
+//                             "READ_OK bytes=<n> data=<...>" or "READ_DENIED err=<errno>". Linux
+//                             fs-escape/RO-bind-mount probe (008 SS9 G2/G3, pivot_root containment).
+//   probe_write <path>      -- open(path, O_WRONLY) (does NOT create -- the file must already
+//                             exist, so this proves whether an existing, granted-but-read-only
+//                             mount can be written through) and write a fixed marker; report
+//                             "WRITE_OK bytes=<n>" or "WRITE_DENIED err=<errno>".
 
 #include <dirent.h>
 #include <fcntl.h>
@@ -195,13 +202,52 @@ int mode_probe_proc(pid_t target_pid) {
     return 0;
 }
 
+int mode_probe_read(std::string const& path) {
+    int fd = open(path.c_str(), O_RDONLY);
+    if (fd < 0) {
+        printf("READ_DENIED err=%d\n", errno);
+        fflush(stdout);
+        return 0;
+    }
+    char buf[256];
+    ssize_t n = read(fd, buf, sizeof(buf));
+    close(fd);
+    if (n < 0) {
+        printf("READ_DENIED err=%d\n", errno);
+    } else {
+        printf("READ_OK bytes=%zd data=%.*s\n", n, static_cast<int>(n), buf);
+    }
+    fflush(stdout);
+    return 0;
+}
+
+int mode_probe_write(std::string const& path) {
+    int fd = open(path.c_str(), O_WRONLY);
+    if (fd < 0) {
+        printf("WRITE_DENIED err=%d\n", errno);
+        fflush(stdout);
+        return 0;
+    }
+    char const marker[] = "hostile_write_probe\n";
+    ssize_t n = write(fd, marker, sizeof(marker) - 1);
+    int write_errno = errno;
+    close(fd);
+    if (n < 0) {
+        printf("WRITE_DENIED err=%d\n", write_errno);
+    } else {
+        printf("WRITE_OK bytes=%zd\n", n);
+    }
+    fflush(stdout);
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     if (argc < 2) {
         fprintf(stderr,
                 "usage: hostile_child_posix <alloc|spin|sleep|spawn|fail|flood|probe_env|"
-                "probe_net|probe_proc> ...\n");
+                "probe_net|probe_proc|probe_read|probe_write> ...\n");
         return 2;
     }
     std::string mode = argv[1];
@@ -215,6 +261,8 @@ int main(int argc, char** argv) {
     if (mode == "probe_net" && argc >= 3) return mode_probe_net(std::atoi(argv[2]));
     if (mode == "probe_proc" && argc >= 3)
         return mode_probe_proc(static_cast<pid_t>(std::atoi(argv[2])));
+    if (mode == "probe_read" && argc >= 3) return mode_probe_read(argv[2]);
+    if (mode == "probe_write" && argc >= 3) return mode_probe_write(argv[2]);
     fprintf(stderr, "unrecognized mode/args\n");
     return 2;
 }

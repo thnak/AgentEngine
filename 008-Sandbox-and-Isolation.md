@@ -462,19 +462,18 @@ files (e.g. `win.ini`, `drivers\etc\hosts`) carry `ALL APPLICATION PACKAGES`/`AL
 APPLICATION PACKAGES` read grants by Windows' own default, independent of any capability this
 profile grants or withholds (`decisions/ADR-004-appcontainer-native-jail-windows-backend.md` §6.1) —
 this is exactly why §1b makes interpreter-level `open()` mediation primary rather than relying on the
-kernel jail's ACL model for reads · **no filesystem OR process-list containment yet on
-`native-jail`/Linux** — the M2 Phase C build gives the guest a private mount namespace
-(`CLONE_NEWNS`) but nothing populates it with a restricted view (no `pivot_root`/`chroot`/bind-mount
-jail), so the guest can read/write anything the invoking user can, anywhere on the host; the same
-root cause means `/proc` is never remounted inside the guest's own `CLONE_NEWPID` pid namespace
-either, so a guest enumerating `/proc` sees the HOST's real process list, not a namespace-local one
-(measured directly by task C5's G3 probe — the equivalent Windows probe against `NativeJailBackend`
-IS genuinely contained: AppContainer restricts `CreateToolhelp32Snapshot`, not just object access).
-Namespaces/cgroups/seccomp contain process count, memory, and syscalls, but not paths or process
-visibility. Tracked gap, not silently dropped (`docs/planning/milestone-2-tools-capabilities-
-sandbox-breakdown.md` C3/C5 writeups, GitHub issue #5, scope widened by C5 to cover both); the
-fs-escape-attempt abuse case below, and G3's process axis, are proven on Windows only until this
-closes.
+kernel jail's ACL model for reads.
+
+**Correction (2026-08-23):** this paragraph previously stated "no filesystem OR process-list
+containment yet on `native-jail`/Linux," describing `CLONE_NEWNS` giving the guest a private mount
+namespace with nothing populating it with a restricted view. That gap is now closed:
+`LinuxNativeJailBackend::setup_jail()` builds a real `pivot_root` + bind-mount jail (exactly the
+granted `MountSpec` set, read-only grants genuinely read-only, a fresh namespace-local `/proc`),
+proven against a real Linux kernel and measured directly (host-side `errno`/file-content checks, not
+guest self-report) in `decisions/ADR-083-linux-native-jail-pivot-root-containment.md`. The
+fs-escape-attempt abuse case below and G3's process axis are now proven on both platforms; see that
+ADR for the residual scope this closure does not claim (id-generation-scheme collision under
+concurrent processes, the test-only toolchain-mount grant's own guest-path scope note).
 
 Each has a test in the hostile suite. Per CONVENTIONS, hostile tests are themselves resource-capped
 so they cannot take the dev box down.
