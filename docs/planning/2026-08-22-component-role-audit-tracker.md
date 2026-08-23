@@ -724,7 +724,7 @@ of the same pattern rather than a new root cause. **Disposition: tracked, not cl
 
 ### Round summary
 
-Nine tracked findings this round (J-P, skipping none), zero closed, several substantial no-finding
+Seven tracked findings this round (J-P, skipping none), zero closed, several substantial no-finding
 confirmations recorded for future-round signal. Two findings (M, N) are "real but unwired/dead code,
 already-Judged or already-superseded" — the same shape this session has now found three times
 (`ComposedContextProvider`'s fork-aliasing residual, ADR-005's two designs, `ShellRunner`) — worth
@@ -761,3 +761,53 @@ required to share *no* source with this proof target. So "why is this still comp
 question — it's answered, just not in the header a reader of `real_filesystem_adapter.hpp` would
 actually see. Finding N's severity/disposition is unchanged (tracked, not closed) — this only fixes
 what would otherwise read as "nobody knows why this is still built."
+
+---
+
+## 2026-08-23 — Second review pass: a real correction to Finding F, and two trivial fixes
+
+Ran a fresh, independently-verified fact-check across the whole file (four parallel forks, one per
+dated section, each re-deriving claims from current code rather than trusting this file's own prior
+"everything holds" verdict). Result: one real factual error found and corrected below (changes a
+finding's conclusion, not just a citation), one arithmetic slip fixed, one completeness gap noted, all
+other citations/quotes/behavioral claims across A–P re-verified accurate.
+
+### Correction to Finding F — shell `cat`'s real read path has no size-cap mechanism at all, not "the same optional cap" as `mount_read`
+
+Finding F step 2 claims native `bash`'s `cat` builtin reads via "the same `mount_read` path, same
+optional cap" as `core/worktree.hpp::mount_read`. **This is wrong.** Traced the real call chain:
+`mediated_shell_dispatch.cpp`'s `cat` (lines 149-153) calls `require_fs_read()` (lines 62-67, checking
+only capability-grant authorization via `find_fs_read`, never a size cap) then
+`fs.read_file(target)`. The real `FileSystemAdapter` implementation backing that call is
+`MediatedFileSystemAdapter::read_file` (`mediated_filesystem_adapter.cpp:58-74`), which goes through
+`open_within_mount_root` — the real-OS-backed handle-based containment layer this tracker's own
+worktree section calls "layer 2" — and reads the whole file via `GetFileSizeEx`/`ReadFile`. It never
+calls `core/worktree.hpp::mount_read` (layer 1) at all, and confirmed by grep: `size_cap_bytes` is
+referenced in exactly two places in the whole `src/backends/native_jail/` tree —
+`core/worktree.hpp:1322` (`mount_read`'s own enforcement) and `mediated_python_runner.cpp` (Python's
+`open()` bridge) — **never** in `mediated_filesystem_adapter.cpp` or `mediated_shell_dispatch.cpp`.
+
+**Net effect on Finding F's own conclusion**: the tracker's original chain implied a host *could*
+mitigate the unbounded-`cat`-read risk by setting `cap::FsRead.size_cap_bytes` on the shell's read
+grant. That knob is never consulted on this path. The real gap is strictly worse than originally
+described — there is no existing size-cap mechanism reachable through shell `cat` at all, opt-in or
+otherwise, not merely an optional one that defaults off. Finding F's overall disposition (tracked, not
+closed, compounds Finding E) is unchanged; only the size of the gap it describes is corrected upward.
+
+### Fix to the parallel-sweep round summary — arithmetic error, not a citation drift
+
+"Nine tracked findings this round (J-P, skipping none)" (end of the parallel-sweep section) is wrong by
+simple count: J, K, L, M, N, O, P is seven letters, not nine, and the round's own body only ever
+describes seven findings. Corrected in place below (search "Nine tracked findings" if diffing).
+
+### Noted, not corrected — Finding H doesn't cite the closest adjacent artifact
+
+`decisions/ADR-059-invoke-agent-tool-capability-attenuation.md` (2026-08-14) is directly about
+`agent_registry.hpp::invoke_agent_tool()`, which its own text calls the mechanism a real
+`agent.spawn`/agent-to-agent call path would eventually build on, and it fixes a real I2
+ambient-authority bug there (ADR-059 §3 explicitly disclaims building `agent.spawn` itself, so this
+doesn't contradict Finding H's "no real call path" conclusion). Finding H cites only
+`OpenQuestions.md`/ADR-031 and never mentions ADR-059 — a reader relying on Finding H alone would miss
+that the one real piece of spawn-adjacent glue that does exist just had a capability leak fixed in it,
+still awaiting judge sign-off. Not correcting the finding text for this (doesn't change its conclusion),
+recorded here as a completeness note for whoever next touches this area.
