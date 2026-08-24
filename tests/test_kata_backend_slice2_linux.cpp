@@ -85,6 +85,62 @@ int main() {
               "kata_backend.blob_mount_unsupported");
     }
 
+    // ---- 3a. SLICE 11 (red-team finding, kata-backend-config-pipeline-pids-disk-net-redesign-
+    //          draft.md §5a'): a MountSpec host path targeting this backend's own workdir root is
+    //          rejected outright, unconditionally -- WITH ZERO cap::SandboxMount grant held, the
+    //          exact zero-grant condition the finding depends on (authorize_spec()'s own capability
+    //          check skips itself entirely for a caller holding no relevant grant at all, so this
+    //          check must NOT rely on that layer). Runs before any resource is acquired (same as the
+    //          BlobRef/',' checks above), so -- unlike most of this file's cases -- this one does NOT
+    //          require a live Kata/containerd deployment to prove for real. -----------------------
+    {
+        KataBackend backend;
+        SandboxSpec spec;  // deliberately NO spec.capabilities grant of any kind
+        MountSpec m;
+        m.source = std::string("/run/agentengine-kata");
+        m.guest_path = "/mnt/workdir";
+        m.read_write = true;
+        spec.mounts.push_back(m);
+        auto handle = backend.create(spec, ctx);
+        check(!handle.has_value() && handle.error().code == "kata_backend.workdir_mount_forbidden",
+              "create(): a MountSpec host path equal to this backend's own workdir root is rejected "
+              "with kata_backend.workdir_mount_forbidden, with ZERO cap::SandboxMount grant held");
+    }
+    {
+        KataBackend backend;
+        SandboxSpec spec;
+        MountSpec m;
+        m.source = std::string("/run/agentengine-kata/some-instance-id/upper.img");
+        m.guest_path = "/mnt/quota-file";
+        m.read_write = true;
+        spec.mounts.push_back(m);
+        auto handle = backend.create(spec, ctx);
+        check(!handle.has_value() && handle.error().code == "kata_backend.workdir_mount_forbidden",
+              "create(): a MountSpec host path CONTAINED WITHIN this backend's own workdir root "
+              "(e.g. a live disk-quota loop-backing file) is rejected the same way, not just an "
+              "exact-match on the root itself");
+    }
+    {
+        KataBackend backend;
+        SandboxSpec spec;
+        MountSpec m;
+        // A sibling directory that merely shares the workdir root as a STRING PREFIX (not a real
+        // path-component ancestor) must NOT be rejected -- proves the check is component-aware, not
+        // a naive substring match that would over-reject legitimate, unrelated host paths.
+        m.source = std::string("/run/agentengine-kata-unrelated-sibling");
+        m.guest_path = "/mnt/sibling";
+        m.read_write = false;
+        spec.mounts.push_back(m);
+        auto handle = backend.create(spec, ctx);
+        check(!handle.has_value() && handle.error().code != "kata_backend.workdir_mount_forbidden",
+              "create(): a host path that only shares the workdir root as a string PREFIX (a sibling "
+              "directory, not a real path-component descendant) is NOT rejected by the workdir "
+              "exclusion check -- it is component-aware, not a naive substring match "
+              "(this case still fails create() overall in this environment for the ordinary "
+              "no-live-deployment reason every other case in this file does -- only the DIAGNOSTIC "
+              "CODE is asserted here, not overall success)");
+    }
+
     // ---- 4. MountSpec: a real host-path grant is a REAL bind mount into the guest VM -- read-only
     //         grant is readable but not writable (EROFS), read-write grant is writable. -------------
     {

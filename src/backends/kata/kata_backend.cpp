@@ -15,9 +15,11 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <optional>
 #include <random>
 #include <sstream>
+#include <string_view>
 #include <tuple>
 #include <variant>
 #include <vector>
@@ -326,6 +328,8 @@ struct OciSpecInputs {
     std::vector<MountSpec> const* mounts;
     std::uint64_t memory_bytes;
     std::uint32_t fds;
+    std::uint32_t pids;  // SLICE 11: 0 = unset, same "0 means don't add this resources member" idiom
+                          // memory_bytes already uses.
     std::string cgroups_path;
     std::optional<std::string> netns_path;       // unset -> fresh, empty netns (deny_all posture);
                                                    // set -> join the pre-populated netns SLICE 10 built.
@@ -472,6 +476,14 @@ struct OciSpecInputs {
             "memory", Value::make_object(
                           {{"limit", Value::make_number(static_cast<double>(in.memory_bytes))}}));
     }
+    // SLICE 11 (docs/planning/kata-backend-config-pipeline-pids-disk-net-redesign-draft.md §3):
+    // reopens ADR-090's own negative decision -- that investigation correctly found no `ctr run`
+    // convenience flag for pids, and SLICE 9's own `--config` rewrite (unrelated motivation: the
+    // NetPolicy allowlist) makes this the identical shape memory_bytes already has, no new mechanism.
+    if (in.pids > 0) {
+        resources_members.emplace_back(
+            "pids", Value::make_object({{"limit", Value::make_number(static_cast<double>(in.pids))}}));
+    }
 
     Value const linux_section = Value::make_object({
         {"namespaces", Value::make_array(std::move(namespaces_json))},
@@ -495,6 +507,44 @@ struct OciSpecInputs {
 // duplicated at each of create()'s/destroy()'s several `cnitool` call sites.
 [[nodiscard]] std::vector<std::string> cni_env(std::string const& plugin_dir, std::string const& conf_dir) {
     return {"CNI_PATH=" + plugin_dir, "NETCONFPATH=" + conf_dir};
+}
+
+// SLICE 11: this backend's own per-instance workdir root -- named once so create()'s mount-exclusion
+// check (below) and the workdir path this function's own callers build cannot silently drift apart.
+constexpr std::string_view kKataWorkdirRoot = "/run/agentengine-kata";
+
+// SLICE 11 (red-team finding, BLOCKING, fixed before landing -- design draft §5a'): a MountSpec host
+// path targeting this backend's OWN workdir was never rejected by anything -- `authorize_spec()`
+// (sandbox.hpp) skips its own cap::SandboxMount coverage check entirely for a caller holding ZERO
+// SandboxMount grants at all (its own documented opt-out shape), and this backend's own mount
+// validation in create() (unchanged since SLICE 2) only ever rejected a BlobRef source and a literal
+// ','. Once disk_bytes > 0 makes `<workdir>/upper.img` the live backing file of an actively
+// loop-mounted, actively overlay-mounted filesystem, a bind mount straight into it bypasses the
+// loop/ext4 I/O path entirely -- a way to corrupt a filesystem mounted live through a different path,
+// reachable with NO capability grant at all. This check is therefore unconditional, independent of
+// any cap::SandboxMount grant, called for every MountSpec regardless of the caller's capabilities --
+// the backend's own bookkeeping directory was never meant to be nameable by a caller at all.
+[[nodiscard]] bool targets_own_workdir(std::string const& host_path) {
+    // Reject any lexical '.'/'..' component outright first -- the same "don't try to canonicalize
+    // through it, reject the injection surface instead" idiom
+    // sandbox_detail::has_dot_or_dotdot_component (sandbox.hpp) already establishes for exactly this
+    // reason: a path with an embedded '..' could otherwise defeat a naive prefix comparison with no
+    // filesystem access at all.
+    if (agentengine::sandbox_detail::has_dot_or_dotdot_component(host_path)) return true;
+    std::string const root(kKataWorkdirRoot);
+    if (host_path == root) return true;
+    std::string const prefix = root + "/";
+    return host_path.rfind(prefix, 0) == 0;
+}
+
+// SLICE 11: `losetup -f --show` prints the attached device path (e.g. "/dev/loop3") followed by a
+// single trailing newline -- the first place this file needs to parse a `ctr`/host-CLI call's stdout
+// as a VALUE to feed a later command, rather than only checking exit_code. A trailing '\n' (or '\r\n'
+// under no circumstance this backend runs on, but stripped anyway for cheap defense-in-depth) would
+// otherwise become part of a device path this function's caller later hands to `mount`/`losetup -d`.
+[[nodiscard]] std::string trim_trailing_newline(std::string s) {
+    while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back();
+    return s;
 }
 
 }  // namespace
@@ -526,6 +576,16 @@ result<SandboxHandle> KataBackend::create(SandboxSpec const& spec, EffectContext
                 "kata_backend: MountSpec host path or guest_path contains ',' -- rejected outright "
                 "(no legitimate absolute path needs a literal comma)",
                 "kata_backend.mount_path_invalid"});
+        }
+        // SLICE 11 (red-team finding, BLOCKING, fixed before landing -- see targets_own_workdir()'s
+        // own comment above): unconditional, independent of any cap::SandboxMount grant.
+        if (targets_own_workdir(host_path)) {
+            return std::unexpected(error{
+                failure_class::policy,
+                "kata_backend: MountSpec host path targets this backend's own workdir root (" +
+                    std::string(kKataWorkdirRoot) + ") -- rejected outright, independent of any "
+                    "cap::SandboxMount grant (this directory is never nameable by a caller)",
+                "kata_backend.workdir_mount_forbidden"});
         }
     }
 
@@ -602,16 +662,35 @@ result<SandboxHandle> KataBackend::create(SandboxSpec const& spec, EffectContext
 
     std::string const id = fresh_id("ae-kata");
     fs::path const workdir = fs::path("/run/agentengine-kata") / id;
+    fs::path const lower_dir = workdir / "lower";
     fs::path const rootfs_dir = workdir / "rootfs";
+    fs::path const quota_root = workdir / "quota_root";  // only populated when disk_bytes > 0, but
+                                                            // the path itself is cheap to compute
+                                                            // unconditionally -- cleanup_partial()
+                                                            // below needs it in scope regardless.
     std::error_code fs_ec;
 
-    // A cleanup lambda for every early-return path below -- rootfs/netns/CNI resources are acquired
-    // incrementally, and each failure path must unwind exactly what was acquired so far, never more
-    // (an `ip netns delete` before `ip netns add` ever ran is a harmless no-op error, but calling it
-    // unconditionally would mask a REAL failure's own error text in the logs with an irrelevant one).
+    // SLICE 11: a cleanup lambda for every early-return path below -- lower/loop/overlay/netns/CNI
+    // resources are acquired incrementally, and each failure path must unwind exactly what was
+    // acquired so far, IN REVERSE ORDER, never more (an `ip netns delete` before `ip netns add` ever
+    // ran is a harmless no-op error, but calling it unconditionally would mask a REAL failure's own
+    // error text in the logs with an irrelevant one). Red-team finding (BLOCKING, fixed before
+    // landing): the pre-SLICE-11 version of this lambda ran `fs::remove_all(workdir)` BEFORE its own
+    // `ctr images unmount` call -- harmless while rootfs_dir was always a read-only View() mount
+    // (remove_all recursing into it just yielded per-file EROFS, silently swallowed), but a real
+    // hazard once rootfs_dir/quota_root can be LIVE WRITABLE mounts (std::filesystem::remove_all has
+    // no "stay on one filesystem" guard) -- fixed by unmounting/detaching everything first, in exact
+    // reverse-acquisition order, before removing the workdir tree.
     bool netns_created = false;
     bool cni_added = false;
+    bool lower_mounted = false;
+    bool loop_attached = false;
+    bool loop_mounted = false;
+    bool overlay_mounted = false;  // covers BOTH the real disk_bytes>0 overlay mount and the plain
+                                    // disk_bytes==0 bind mount of lower_dir onto rootfs_dir -- both
+                                    // unwind identically (a plain `umount rootfs_dir`).
     std::optional<std::string> netns_path_for_cleanup;
+    std::string loop_device;
     auto const cleanup_partial = [&]() {
         if (cni_added) {
             (void)run_ctr({"cnitool", "del", cni_network_name_, *netns_path_for_cleanup},
@@ -619,24 +698,35 @@ result<SandboxHandle> KataBackend::create(SandboxSpec const& spec, EffectContext
                            cni_env(cni_plugin_dir_, cni_conf_dir_));
         }
         if (netns_created) (void)run_ctr({"ip", "netns", "delete", id});
+        if (overlay_mounted) (void)run_ctr({"umount", rootfs_dir.string()});
+        if (loop_mounted) (void)run_ctr({"umount", quota_root.string()});
+        if (loop_attached) (void)run_ctr({"losetup", "-d", loop_device});
+        if (lower_mounted) (void)run_ctr({"ctr", "images", "unmount", lower_dir.string()});
         std::error_code ec;
         fs::remove_all(workdir, ec);
-        (void)run_ctr({"ctr", "images", "unmount", rootfs_dir.string()});
     };
 
-    fs::create_directories(rootfs_dir, fs_ec);
+    fs::create_directories(lower_dir, fs_ec);
+    if (!fs_ec) fs::create_directories(rootfs_dir, fs_ec);
     if (fs_ec) {
+        std::error_code ec;
+        fs::remove_all(workdir, ec);
         return std::unexpected(error{failure_class::fatal,
-                                      "kata_backend: failed to create rootfs mount directory " +
-                                          rootfs_dir.string() + ": " + fs_ec.message(),
+                                      "kata_backend: failed to create rootfs mount directories under " +
+                                          workdir.string() + ": " + fs_ec.message(),
                                       "kata_backend.rootfs_dir_failed"});
     }
 
     // SLICE 9 (ADR-093 finding 2): `ctr images mount` pulls+unpacks `image_` if needed and mounts its
-    // rootfs at a caller-chosen path -- solves the exact chain-ID rootfs-prep gap ADR-090 found
-    // blocking `--config` mode for `pids`, via a subcommand that investigation's own session did not
-    // fetch (`cmd/ctr/commands/images/mount.go`).
-    auto mount_outcome = run_ctr({"ctr", "images", "mount", image_, rootfs_dir.string()});
+    // (read-only View()) rootfs at a caller-chosen path -- solves the exact chain-ID rootfs-prep gap
+    // ADR-090 found blocking `--config` mode for `pids`, via a subcommand that investigation's own
+    // session did not fetch (`cmd/ctr/commands/images/mount.go`). SLICE 11: this now targets
+    // `lower_dir`, never `rootfs_dir` directly -- `rootfs_dir` is always a SEPARATE mount on top of
+    // it (a real overlay when disk_bytes > 0, a plain bind mount otherwise, see below) -- fixes a
+    // real snapshot-leak red-team finding where `destroy()`'s own unmount call would otherwise
+    // silently mistarget the overlay mountpoint instead of the real `ctr images mount` target once
+    // the two stopped being the same path.
+    auto mount_outcome = run_ctr({"ctr", "images", "mount", image_, lower_dir.string()});
     if (!mount_outcome.has_value() || mount_outcome->exit_code != 0) {
         std::error_code ec;
         fs::remove_all(workdir, ec);
@@ -645,6 +735,148 @@ result<SandboxHandle> KataBackend::create(SandboxSpec const& spec, EffectContext
             "kata_backend: ctr images mount failed: " +
                 (mount_outcome.has_value() ? mount_outcome->stderr_text : mount_outcome.error().message),
             "kata_backend.rootfs_mount_failed"});
+    }
+    lower_mounted = true;
+
+    // SLICE 11 (docs/planning/kata-backend-config-pipeline-pids-disk-net-redesign-draft.md §5):
+    // `disk_bytes > 0` builds a backend-owned, loop-device-backed, fixed-size ext4 filesystem and
+    // uses it as a real overlay's writable half -- enforcement is a real guest-kernel ENOSPC once the
+    // loop filesystem fills, not a heuristic. `disk_bytes == 0` (unset) is a plain bind mount of
+    // `lower_dir` onto `rootfs_dir` -- behaviorally identical to the pre-SLICE-11 single-mount
+    // rootfs, byte-for-byte unchanged for a caller that doesn't opt in.
+    bool const disk_quota_active = spec.limits.disk_bytes > 0;
+    if (disk_quota_active) {
+        fs::create_directories(quota_root, fs_ec);
+        if (fs_ec) {
+            cleanup_partial();
+            return std::unexpected(error{failure_class::fatal,
+                                          "kata_backend: failed to create disk-quota staging directory " +
+                                              quota_root.string() + ": " + fs_ec.message(),
+                                          "kata_backend.disk_quota_dir_failed"});
+        }
+
+        fs::path const upper_img = workdir / "upper.img";
+        {
+            // SLICE 11 (red-team finding, resolved rather than left open): serializes ONLY this
+            // sequence -- fallocate/mkfs.ext4/losetup -f/loop-mount -- across concurrent create()
+            // calls. `losetup -f` (find a free loop device) has a TOCTOU race under concurrency that
+            // the kernel's own LOOP_SET_FD exclusivity makes benign for corruption (one racer gets
+            // EBUSY, never a double-attach) but real against this registry's own documented
+            // "tolerate concurrent create/exec/destroy calls from unrelated sessions" contract (a
+            // purely load-driven race would otherwise spuriously fail an unrelated caller's
+            // create()). Released before the overlay mount / `ctr run --config`, neither of which
+            // touch shared loop-device allocation state.
+            std::lock_guard<std::mutex> const disk_quota_lock(disk_quota_setup_mutex_);
+
+            // fallocate -l is an EAGER reservation (verified against fallocate(2)/ext4's own extent
+            // behavior, NOT the lazy/sparse truncate -s primitive) -- a considered choice, not an
+            // oversight: this makes disk_bytes a real, immediate host-disk-reserving admission cost
+            // at create() time, the safer multi-tenant behavior (an operator oversubscribing hosts
+            // around this backend's own declared budgets gets an honest, immediate ENOSPC here,
+            // rather than a later, harder-to-attribute one after several lazily-allocated quotas
+            // collide inside their guests).
+            auto fallocate_outcome =
+                run_ctr({"fallocate", "-l", std::to_string(spec.limits.disk_bytes), upper_img.string()});
+            if (!fallocate_outcome.has_value() || fallocate_outcome->exit_code != 0) {
+                cleanup_partial();
+                return std::unexpected(error{
+                    failure_class::fatal,
+                    "kata_backend: fallocate for disk-quota image failed: " +
+                        (fallocate_outcome.has_value() ? fallocate_outcome->stderr_text
+                                                        : fallocate_outcome.error().message),
+                    "kata_backend.disk_quota_fallocate_failed"});
+            }
+
+            // ext4, not a faster/simpler filesystem: the writable rootfs layer needs POSIX
+            // permissions/symlinks/hardlinks/special files, which a FAT-family filesystem does not
+            // support.
+            auto mkfs_outcome = run_ctr({"mkfs.ext4", "-q", upper_img.string()});
+            if (!mkfs_outcome.has_value() || mkfs_outcome->exit_code != 0) {
+                cleanup_partial();
+                return std::unexpected(error{
+                    failure_class::fatal,
+                    "kata_backend: mkfs.ext4 for disk-quota image failed: " +
+                        (mkfs_outcome.has_value() ? mkfs_outcome->stderr_text
+                                                   : mkfs_outcome.error().message),
+                    "kata_backend.disk_quota_mkfs_failed"});
+            }
+
+            auto losetup_outcome = run_ctr({"losetup", "-f", "--show", upper_img.string()});
+            if (!losetup_outcome.has_value() || losetup_outcome->exit_code != 0) {
+                cleanup_partial();
+                return std::unexpected(error{
+                    failure_class::fatal,
+                    "kata_backend: losetup -f --show for disk-quota image failed: " +
+                        (losetup_outcome.has_value() ? losetup_outcome->stderr_text
+                                                      : losetup_outcome.error().message),
+                    "kata_backend.disk_quota_losetup_failed"});
+            }
+            loop_device = trim_trailing_newline(losetup_outcome->stdout_text);
+            if (loop_device.empty()) {
+                cleanup_partial();
+                return std::unexpected(
+                    error{failure_class::fatal,
+                          "kata_backend: losetup -f --show reported success but printed no device path",
+                          "kata_backend.disk_quota_losetup_failed"});
+            }
+            loop_attached = true;
+
+            auto loop_mount_outcome = run_ctr({"mount", loop_device, quota_root.string()});
+            if (!loop_mount_outcome.has_value() || loop_mount_outcome->exit_code != 0) {
+                cleanup_partial();
+                return std::unexpected(error{
+                    failure_class::fatal,
+                    "kata_backend: mounting the disk-quota loop device failed: " +
+                        (loop_mount_outcome.has_value() ? loop_mount_outcome->stderr_text
+                                                         : loop_mount_outcome.error().message),
+                    "kata_backend.disk_quota_loop_mount_failed"});
+            }
+            loop_mounted = true;
+        }  // disk_quota_lock released here -- overlay mount below needs no serialization.
+
+        // overlayfs requires upperdir/workdir as two empty directories on the SAME filesystem
+        // (kernel requirement, not this design's choice) -- both live inside the just-mounted loop
+        // filesystem, not beside it.
+        fs::path const upper_subdir = quota_root / "upper";
+        fs::path const work_subdir = quota_root / "work";
+        fs::create_directories(upper_subdir, fs_ec);
+        if (!fs_ec) fs::create_directories(work_subdir, fs_ec);
+        if (fs_ec) {
+            cleanup_partial();
+            return std::unexpected(
+                error{failure_class::fatal,
+                      "kata_backend: failed to create overlay upper/work directories under " +
+                          quota_root.string() + ": " + fs_ec.message(),
+                      "kata_backend.disk_quota_dir_failed"});
+        }
+
+        std::string const overlay_opts = "lowerdir=" + lower_dir.string() +
+                                          ",upperdir=" + upper_subdir.string() +
+                                          ",workdir=" + work_subdir.string();
+        auto overlay_outcome =
+            run_ctr({"mount", "-t", "overlay", "overlay", "-o", overlay_opts, rootfs_dir.string()});
+        if (!overlay_outcome.has_value() || overlay_outcome->exit_code != 0) {
+            cleanup_partial();
+            return std::unexpected(error{
+                failure_class::fatal,
+                "kata_backend: overlay mount for disk-quota rootfs failed: " +
+                    (overlay_outcome.has_value() ? overlay_outcome->stderr_text
+                                                  : overlay_outcome.error().message),
+                "kata_backend.disk_quota_overlay_mount_failed"});
+        }
+        overlay_mounted = true;
+    } else {
+        auto bind_outcome = run_ctr({"mount", "--bind", lower_dir.string(), rootfs_dir.string()});
+        if (!bind_outcome.has_value() || bind_outcome->exit_code != 0) {
+            cleanup_partial();
+            return std::unexpected(error{
+                failure_class::fatal,
+                "kata_backend: bind mount of rootfs failed: " +
+                    (bind_outcome.has_value() ? bind_outcome->stderr_text : bind_outcome.error().message),
+                "kata_backend.rootfs_bind_failed"});
+        }
+        overlay_mounted = true;  // reuses the same cleanup step -- a plain bind mount unwinds via
+                                  // the identical `umount rootfs_dir` the real overlay case uses.
     }
 
     std::optional<std::string> netns_path;
@@ -699,6 +931,38 @@ result<SandboxHandle> KataBackend::create(SandboxSpec const& spec, EffectContext
                              "policy", "drop", ";", "}"});
         nft_cmds.push_back({"ip", "netns", "exec", id, "nft", "add", "rule", "inet", "ae_netpolicy",
                              "output", "oif", "lo", "accept"});
+        // SLICE 11 (docs/planning/kata-backend-config-pipeline-pids-disk-net-redesign-draft.md §4):
+        // `net_bytes` -- a NAMED quota object shared by a rule on BOTH `output` (egress, this table's
+        // pre-existing chain) and a NEW `input` chain (ingress) -- total bidirectional bytes, not
+        // egress-only (an egress-only counter would miss a large inbound response). Red-team finding
+        // (BLOCKING), fixed before landing: the quota-definition command needs `{ }` braces around
+        // the quota spec (`nft(8)`'s own grammar) -- a first draft that omitted them would have been
+        // a silent no-op (nft rejects it, create() correctly fails closed via nft_setup_failed below,
+        // but net_bytes would ship completely non-functional). Ordering matters and is the actual
+        // enforcement mechanism, not a style choice: nftables evaluates rules top-to-bottom per chain
+        // and stops at the first terminal verdict -- `quota over` only matches once the counter has
+        // ALREADY exceeded the budget, so the quota-drop rule must be added BEFORE the per-destination
+        // `accept` rules (while under budget, it doesn't match and falls through to them; once
+        // exceeded, it matches and drops before the allowlist rule below is ever reached). `input`'s
+        // policy is `accept` (not `drop`) deliberately: `NetPolicy` is a *destination* allowlist,
+        // already fully enforced by `output`'s own per-destination rules -- `input` here exists ONLY
+        // to feed the shared byte counter, not to filter a second time (and, as `output` already does
+        // today, this does not add any source/connection-tracking filter to `input` -- a pre-existing,
+        // unchanged gap, not a new one this rule introduces).
+        if (spec.limits.net_bytes > 0) {
+            nft_cmds.push_back({"ip", "netns", "exec", id, "nft", "add", "chain", "inet", "ae_netpolicy",
+                                 "input", "{", "type", "filter", "hook", "input", "priority", "0", ";",
+                                 "policy", "accept", ";", "}"});
+            nft_cmds.push_back({"ip", "netns", "exec", id, "nft", "add", "quota", "inet", "ae_netpolicy",
+                                 "ae_net_budget", "{", "over", std::to_string(spec.limits.net_bytes),
+                                 "bytes", "}"});
+            nft_cmds.push_back({"ip", "netns", "exec", id, "nft", "add", "rule", "inet", "ae_netpolicy",
+                                 "input", "iif", "lo", "accept"});
+            nft_cmds.push_back({"ip", "netns", "exec", id, "nft", "add", "rule", "inet", "ae_netpolicy",
+                                 "output", "quota", "name", "ae_net_budget", "drop"});
+            nft_cmds.push_back({"ip", "netns", "exec", id, "nft", "add", "rule", "inet", "ae_netpolicy",
+                                 "input", "quota", "name", "ae_net_budget", "drop"});
+        }
         for (auto const& [host, ip, port] : resolved) {
             (void)host;
             nft_cmds.push_back({"ip", "netns", "exec", id, "nft", "add", "rule", "inet", "ae_netpolicy",
@@ -725,6 +989,7 @@ result<SandboxHandle> KataBackend::create(SandboxSpec const& spec, EffectContext
                                      &spec.mounts,
                                      spec.limits.memory_bytes,
                                      spec.limits.fds,
+                                     spec.limits.pids,
                                      std::string("/agentengine-kata/") + id,
                                      netns_path,
                                      hosts_file_path};
@@ -774,6 +1039,9 @@ result<SandboxHandle> KataBackend::create(SandboxSpec const& spec, EffectContext
                   spec.limits.wall_ms,
                   spec.limits.output_bytes,
                   rootfs_dir.string(),
+                  lower_dir.string(),
+                  loop_device,
+                  disk_quota_active,
                   netns_created};
     instances_.emplace(id, std::move(inst));
     return SandboxHandle{id};
@@ -883,20 +1151,70 @@ void KataBackend::destroy(SandboxHandle& handle) {
         }
     }
 
-    // SLICE 9/10 cleanup, reverse creation order: rootfs unmount, then (if used) CNI del + netns
-    // delete. nftables rules inside the netns are discarded automatically when the netns itself is
-    // removed -- no separate `nft` cleanup call needed (SLICE 10's own header-comment claim, unverified
-    // against a live deployment this session, same disclosed posture as everything else here).
+    // SLICE 9/10/11 cleanup, reverse creation order: rootfs/overlay/loop teardown, then the real
+    // `ctr images unmount` of the snapshot, then (if used) CNI del + netns delete. nftables rules
+    // inside the netns are discarded automatically when the netns itself is removed -- no separate
+    // `nft` cleanup call needed (SLICE 10's own header-comment claim, unverified against a live
+    // deployment this session, same disclosed posture as everything else here).
+    fs::path const workdir = fs::path("/run/agentengine-kata") / id;
+    fs::path const quota_root = workdir / "quota_root";
+
+    // SLICE 11 (red-team finding, fixed before landing): the guest process is already dead by this
+    // point (the task kill/rm/container-rm loop above already ran) -- overlay/loop teardown must
+    // still happen in exact reverse-acquisition order (overlay -> loop mount -> loop detach) BEFORE
+    // the real snapshot unmount below, mirroring create()'s own cleanup_partial() discipline.
+    if (it->second.disk_quota_active) {
+        auto overlay_unmount = run_ctr({"umount", it->second.rootfs_dir}, timeout_seconds, output_cap);
+        if (!overlay_unmount.has_value() || overlay_unmount->exit_code != 0) {
+            std::fprintf(stderr,
+                          "kata_backend: destroy(%s): overlay unmount ('umount %s') did not succeed "
+                          "cleanly -- possible leaked host mount, see host state directly\n",
+                          id.c_str(), it->second.rootfs_dir.c_str());
+        }
+        auto loop_unmount = run_ctr({"umount", quota_root.string()}, timeout_seconds, output_cap);
+        if (!loop_unmount.has_value() || loop_unmount->exit_code != 0) {
+            std::fprintf(stderr,
+                          "kata_backend: destroy(%s): disk-quota loop filesystem unmount ('umount %s') "
+                          "did not succeed cleanly -- possible leaked host mount, see host state "
+                          "directly\n",
+                          id.c_str(), quota_root.string().c_str());
+        }
+        if (!it->second.loop_device.empty()) {
+            auto loop_detach =
+                run_ctr({"losetup", "-d", it->second.loop_device}, timeout_seconds, output_cap);
+            if (!loop_detach.has_value() || loop_detach->exit_code != 0) {
+                std::fprintf(stderr,
+                              "kata_backend: destroy(%s): 'losetup -d %s' did not succeed cleanly -- "
+                              "possible leaked host loop device, see host state directly\n",
+                              id.c_str(), it->second.loop_device.c_str());
+            }
+        }
+    } else {
+        // disk_bytes == 0 path (SLICE 11 §5 point 1): rootfs_dir is a plain bind mount of lower_dir.
+        auto bind_unmount = run_ctr({"umount", it->second.rootfs_dir}, timeout_seconds, output_cap);
+        if (!bind_unmount.has_value() || bind_unmount->exit_code != 0) {
+            std::fprintf(stderr,
+                          "kata_backend: destroy(%s): rootfs bind unmount ('umount %s') did not "
+                          "succeed cleanly -- possible leaked host mount, see host state directly\n",
+                          id.c_str(), it->second.rootfs_dir.c_str());
+        }
+    }
+
+    // SLICE 11 fix: the REAL snapshot mount/lease is always `lower_dir` now, never `rootfs_dir` --
+    // before this slice, once `rootfs_dir` stopped being the literal `ctr images mount` target,
+    // unmounting it here would have silently mistargeted and leaked the real snapshot every
+    // `disk_bytes > 0` create/destroy cycle (a red-team finding, fixed before this code landed).
     auto unmount_outcome =
-        run_ctr({"ctr", "images", "unmount", it->second.rootfs_dir}, timeout_seconds, output_cap);
+        run_ctr({"ctr", "images", "unmount", it->second.lower_dir}, timeout_seconds, output_cap);
     if (!unmount_outcome.has_value() || unmount_outcome->exit_code != 0) {
         std::fprintf(stderr,
-                      "kata_backend: destroy(%s): rootfs unmount ('ctr images unmount %s') did not "
-                      "succeed cleanly -- possible leaked host mount, see host state directly\n",
-                      id.c_str(), it->second.rootfs_dir.c_str());
+                      "kata_backend: destroy(%s): rootfs snapshot unmount ('ctr images unmount %s') "
+                      "did not succeed cleanly -- possible leaked host mount, see host state "
+                      "directly\n",
+                      id.c_str(), it->second.lower_dir.c_str());
     }
     std::error_code fs_ec;
-    fs::remove_all(fs::path("/run/agentengine-kata") / id, fs_ec);
+    fs::remove_all(workdir, fs_ec);
 
     if (it->second.net_created) {
         std::string const netns_path = std::string("/var/run/netns/") + id;

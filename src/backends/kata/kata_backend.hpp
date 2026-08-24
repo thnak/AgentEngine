@@ -274,6 +274,63 @@
 // (`kata_backend.net_capability_required` otherwise) -- see the fix site in `kata_backend.cpp` for
 // the full reasoning, and `tests/test_kata_backend_slice9_10_linux.cpp` cases 2a/2b/5 for the proof.
 //
+// SLICE 11 (2026-08-24, docs/planning/kata-backend-config-pipeline-pids-disk-net-redesign-draft.md,
+// design -> independent red-team (8 findings, 5 BLOCKING, all fixed pre-implementation) -> implement)
+// -- closes `pids`/`disk_bytes`/`net_bytes`, the three remaining unenforced `ResourceLimits` axes,
+// via the SAME `--config`-mode pipeline SLICE 9/10 already built (this project-owner-authorized
+// redesign, not a patch, per 2026-08-24 direction). Reopens and supersedes ADR-090's/ADR-092's own
+// negative decisions -- both were correct at the time given the information available then, not
+// wrong; SLICE 9's `ctr images mount` finding and SLICE 10's netns/nftables machinery independently
+// unblocked what those two ADRs each separately found closed.
+//
+//   - `pids`: `build_oci_spec_json()`'s `resources` object gains a `pids.limit` member, the identical
+//     shape `memory` already has -- no new mechanism, just a same-shape addition SLICE 9's own
+//     `--config` pipeline already made possible.
+//   - `net_bytes`: a NAMED `nft` quota object, shared by rules on BOTH the existing `output` chain
+//     and a new `input` chain in the same per-instance netns table SLICE 10 already creates -- total
+//     bidirectional bytes, not egress-only (an egress-only counter would miss a large inbound
+//     response). Entirely host-side; zero guest cooperation, zero attachment to the guest's own
+//     interpreter/shell the way 008 §1b's "interpreter-level mediation" framing correctly says this
+//     backend has no attachment point for. New deployment precondition: the host's `nft` build must
+//     support named quota objects (`nft_quota`).
+//   - `disk_bytes`: a backend-owned, loop-device-backed, fixed-size ext4 filesystem hosts the
+//     writable half of a REAL overlay mount (`ctr images mount`'s own read-only View() output as
+//     `lowerdir`, the loop-backed filesystem as `upperdir`/`workdir`) -- enforcement is a real guest
+//     kernel `ENOSPC` once the loop filesystem fills, not a heuristic. `fallocate -l` reserves the
+//     full `disk_bytes` on the HOST eagerly at `create()` time (a considered choice, not an oversight
+//     -- see the design draft §5 point 2 for why eager beats the lazier `truncate -s` alternative for
+//     a multi-tenant host). New deployment preconditions: `losetup`, `mkfs.ext4` (`e2fsprogs`), a
+//     loop-device-capable kernel.
+//
+// A REAL, capability-independent I2 gap was found and fixed by this slice's own red-team pass before
+// any of the above landed: `create()`'s existing `MountSpec` validation (unchanged since SLICE 2)
+// never rejected a host path targeting this backend's OWN `/run/agentengine-kata` workdir, and
+// `authorize_spec()`'s (`sandbox.hpp`) own capability check skips itself entirely for a caller
+// holding zero `cap::SandboxMount` grants -- meaning a caller with NO grant at all could bind-mount
+// this backend's own live loop-backed disk-quota file straight into a guest, corrupting a filesystem
+// mounted live through a different path (writes bypassing the loop/ext4 I/O path entirely). Fixed:
+// `create()` now rejects any `MountSpec` host path equal to, an ancestor of, or contained within its
+// own workdir root, unconditionally -- independent of any capability grant, `kata_backend.
+// workdir_mount_forbidden`.
+//
+// A second real gap this slice's own rootfs restructuring would otherwise have silently introduced,
+// also found and fixed by the same red-team pass: `rootfs_dir` previously did double duty as both
+// the literal `ctr images mount` target AND (with this slice) the final overlay mountpoint; without
+// a separately-tracked `lower_dir`, `destroy()`'s own `ctr images unmount` call would silently
+// mistarget the overlay mountpoint instead of the real snapshot, leaking a containerd snapshot
+// mount/lease on every `disk_bytes > 0` create/destroy cycle. Fixed: `Instance::lower_dir` is now
+// always tracked separately (whether `disk_bytes` is set or not -- when unset, `rootfs_dir` is a
+// plain `mount --bind` of `lower_dir`, preserving byte-for-byte prior behavior for callers who don't
+// opt in) and `destroy()`/the `create()` failure-path cleanup always unmount `lower_dir`, never
+// `rootfs_dir`, for the real snapshot release.
+//
+// A third finding, contract-shaped rather than security-shaped: `losetup -f` (find a free loop
+// device) has a benign-for-corruption but real-for-the-registry's-own-"tolerate concurrent calls"
+// TOCTOU under concurrent `create()` calls (the kernel's own `LOOP_SET_FD` exclusivity prevents
+// double-use, but a purely load-driven race could still spuriously fail an unrelated caller's
+// `create()`). Fixed with a `KataBackend`-private `std::mutex` serializing just the
+// `fallocate`/`mkfs.ext4`/`losetup -f`/loop-mount sequence, not `create()` as a whole.
+//
 // Still NOT done, named honestly rather than silently assumed:
 //
 //   - `ExecRequest::source` is treated as a shell command line (`/bin/sh -c <source>`) the caller is
@@ -291,20 +348,17 @@
 //     and deliberately declined to add without a real consumer.
 //   - `exec_outcome_class::oom` is unreachable for this backend -- investigated and rejected in SLICE
 //     4, not merely unattempted.
-//   - `ResourceLimits::pids` remains unenforced -- investigated and deferred in SLICE 6 above, not
-//     merely unattempted (a real information-gap finding, not a silently-unattempted gap). NOTE:
-//     SLICE 9's `ctr images mount` finding closes the SPECIFIC rootfs-prep obstacle ADR-090 named for
-//     `pids` too, but `pids` itself was not reopened this pass -- a real, undone follow-on, not
-//     silently resolved by SLICE 9's own unrelated NetPolicy work.
+//   - `ResourceLimits::pids`/`disk_bytes`/`net_bytes` are now ENFORCED as of SLICE 11 (ADR-095,
+//     reopening ADR-090's/ADR-092's own earlier negative decisions once ADR-093's unrelated findings
+//     made them stale) -- see this file's own SLICE 11 header comment above for the mechanism.
+//     Whether `linux.resources.pids.limit` is honored by `kata-agent` the way runc honors it on a
+//     shared host kernel, and every other SLICE 11 runtime-behavior claim, is compile-verified only
+//     this session (one exception: the workdir-mount-exclusion I2 fix is proven by real test
+//     execution, see ADR-095 §6) -- NOT independently verified against a live deployment.
 //   - `ResourceLimits::fds` maps to `--rlimit-nofile`-equivalent spec JSON (`process.rlimits`, SLICE
 //     9's spec builder) as of SLICE 7's original convenience-flag fix; whether it reaches a
 //     `ctr tasks exec`-spawned process (not just the container's own initial placeholder process) is
 //     still disclosed, not verified -- unchanged by SLICE 9's spec-authoring rewrite.
-//   - `ResourceLimits::disk_bytes`/`net_bytes` remain unenforced -- investigated and deferred in
-//     SLICE 8 above (008 §1b assigns these to interpreter-level mediation, which has no attachment
-//     point in this backend's raw-guest-shell execution model), not merely unattempted. SLICE 10's
-//     own network path does NOT change this: it enforces WHICH destinations are reachable, not how
-//     many bytes flow to them.
 //   - SLICE 9/10's entire `--config`-mode pipeline (spec-file authoring, `ctr images mount`, `ip
 //     netns`/`cnitool`/`nft` orchestration) is compile-verified only -- NOT independently verified
 //     against a live containerd/Kata/CNI/nftables deployment this session (none reachable), same
@@ -345,6 +399,7 @@
 // configure, or start any of that -- a one-time host/deployment bootstrap step, same posture as the
 // cgroup-delegation precondition on the native-jail Linux side.
 
+#include <mutex>
 #include <string>
 #include <unordered_map>
 
@@ -410,8 +465,24 @@ private:
                                        // instance's exec()/destroy() makes (SandboxSpec::limits).
         std::uint64_t output_cap_bytes = 0;  // Slice 2: 0 = use kOutputSafetyCapBytes; nonzero
                                               // overrides it (SandboxSpec::limits.output_bytes).
-        std::string rootfs_dir;       // SLICE 9: the `ctr images mount` target -- destroy() unmounts
-                                       // and removes this.
+        std::string rootfs_dir;       // SLICE 9: the final container root -- as of SLICE 11 this is
+                                       // ALWAYS a mount (a plain bind mount of lower_dir when
+                                       // disk_bytes is unset, or a real overlay when it is set), never
+                                       // the literal `ctr images mount` target directly (see
+                                       // lower_dir below) -- destroy() unmounts and removes this.
+        std::string lower_dir;        // SLICE 11: the REAL `ctr images mount` target -- destroy()/
+                                       // create()'s own failure-path cleanup always
+                                       // `ctr images unmount` THIS path, never rootfs_dir (fixes a
+                                       // real snapshot-leak red-team finding, see this file's own
+                                       // SLICE 11 header comment).
+        std::string loop_device;      // SLICE 11: the `/dev/loopN` device backing this instance's
+                                       // disk-quota filesystem -- disk_quota_active only, empty
+                                       // otherwise. Recorded here so destroy() detaches the EXACT
+                                       // device this instance attached, never re-discovered.
+        bool disk_quota_active = false;  // SLICE 11: true iff create() built the loop-device/overlay
+                                          // disk-quota stack for this instance (spec.limits.disk_bytes
+                                          // > 0) -- destroy() only reverses that stack when this is
+                                          // set; otherwise rootfs_dir is a plain bind mount.
         bool net_created = false;     // SLICE 10: true iff create() ran the ip-netns/cnitool/nft
                                        // sequence for this instance -- destroy() only reverses it
                                        // when this is set (deny_all instances never touch it).
@@ -423,6 +494,12 @@ private:
     std::string cni_plugin_dir_;
     std::string cni_conf_dir_;
     std::unordered_map<std::string, Instance> instances_;
+    // SLICE 11: serializes ONLY the fallocate/mkfs.ext4/losetup-f/loop-mount sequence of create()'s
+    // disk-quota setup across concurrent create() calls (released before ctr run --config itself,
+    // which needs no serialization) -- closes a real, if corruption-benign, TOCTOU against the
+    // sandbox_backend_registry.hpp-documented "tolerate concurrent create/exec/destroy calls from
+    // unrelated sessions" contract. See this file's own SLICE 11 header comment.
+    std::mutex disk_quota_setup_mutex_;
 };
 
 static_assert(SandboxBackend<KataBackend>,
