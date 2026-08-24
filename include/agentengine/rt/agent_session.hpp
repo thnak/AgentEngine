@@ -1008,8 +1008,17 @@ public:
         // assistant tool-call message -- same order/shape ADR-029's own finding #4 established),
         // BEFORE `resolve_interaction_record()` erases the interaction (the codeact_ask branch may
         // need to keep it open, if the script ask-pends again).
+        // Copied, not passed as `it->interaction_id` by reference: both callees below (via
+        // `resolve_interaction_record()`) erase the exact `open_interactions_` element `it` points
+        // at, then keep using their `interaction_id` parameter afterward (`resolve_hook_decision()`'s
+        // own `emit_run_event(..., InteractionRef{interaction_id})` right after its erase call) --
+        // a reference bound to `it->interaction_id` would dangle at that point (ASan container-
+        // overflow: reproduced live via the H4a hook-decision-resume test path). A copy is immune to
+        // the erase regardless of which callee's internal ordering changes later.
+        std::string const resolved_interaction_id = it->interaction_id;
+
         if (it->reason == interaction_reason::codeact_ask) {
-            co_return co_await resolve_codeact_ask(request, it->interaction_id);
+            co_return co_await resolve_codeact_ask(request, resolved_interaction_id);
         }
 
         // OQ-21: same branch-out shape as codeact_ask immediately above, for the identical reason --
@@ -1017,7 +1026,7 @@ public:
         // STORED, hook-processed per-call state (`pending_hook_decisions_`), never against
         // `pending_calls` rebuilt from `history_` -- see resolve_hook_decision()'s own comment.
         if (it->reason == interaction_reason::hook_decision) {
-            co_return co_await resolve_hook_decision(request, it->interaction_id);
+            co_return co_await resolve_hook_decision(request, resolved_interaction_id);
         }
 
         result<void> const resolved = resolve_interaction_record(it->interaction_id);
