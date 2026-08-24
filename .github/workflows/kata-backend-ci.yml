@@ -1,0 +1,98 @@
+# Runs KataBackend's real-deployment test suite (test_kata_backend_linux,
+# test_kata_backend_slice2_linux, test_kata_backend_abuse_corpus_linux,
+# test_kata_backend_slice9_10_linux) against a genuine Kata Containers sandbox. Every ADR from
+# decisions/ADR-084 through ADR-095 discloses these tests as compile-verified only -- no live
+# deployment was reachable in any session that wrote them. This workflow is that missing
+# verification.
+#
+# SELF-HOSTED ONLY, deliberately, not GitHub-hosted -- project-owner decision (2026-08-24):
+#   - nested KVM on a GitHub-hosted shared runner is not the trust/stability bar this backend's own
+#     hardware-isolation claim needs, and this backend's own timing-sensitive tests (wall_ms
+#     deadlines, VM boot latency) want a host whose performance doesn't vary with a shared runner's
+#     noisy-neighbor load.
+#   - a dedicated host lets the pinned Kata 4.1.0/cloud-hypervisor/containerd/CNI/nftables deployment
+#     stay provisioned between runs instead of being rebuilt from scratch on every job -- that
+#     provisioning is exactly the "real server" preparation already planned separately from this repo,
+#     see docs/planning/kata-backend-ci-runner-setup.md for the runbook.
+#
+# This workflow does NOT provision the runner itself -- standing up Kata Containers/containerd/CNI is
+# a slow, infrastructure-shaped, root-level operation this workflow should not silently re-run on
+# every dispatch. The "Verify runner preconditions" step below fails fast with a clear diagnostic
+# instead of half-running a suite against a host that was never actually provisioned.
+#
+# Manual trigger only (workflow_dispatch), not on every push/PR -- the self-hosted runner may not
+# always be online, and a Kata run has a real VM-boot cost, not a fast unit-test loop; the project
+# owner decides when to spend that cost, CI does not spend it on their behalf on every commit.
+name: KataBackend (self-hosted, live deployment)
+
+on:
+  workflow_dispatch: {}
+
+concurrency:
+  group: kata-backend-self-hosted
+  # A live Kata run mid-flight should finish or be cancelled deliberately by the person who triggered
+  # it, never silently pre-empted by a newer dispatch -- a cancelled-mid-run Kata instance can leave a
+  # containerd snapshot/netns/loop-device behind for a human to notice, unlike a cancelled ordinary
+  # unit test.
+  cancel-in-progress: false
+
+jobs:
+  kata-backend:
+    name: KataBackend live suite / self-hosted
+    # Adjust these labels to match whatever labels you actually register the self-hosted runner
+    # with (Settings -> Actions -> Runners -> New self-hosted runner, on the provisioned host from
+    # docs/planning/kata-backend-ci-runner-setup.md). Until such a runner is registered, this job
+    # queues as "Waiting for a runner..." rather than running anywhere -- it will not silently fall
+    # back to a GitHub-hosted runner (self-hosted labels never match hosted runners).
+    runs-on: [self-hosted, linux, kata]
+    # Bounds a hang -- same rationale ci.yml's own jobs already state (a stuck ctest run should not
+    # sit until GitHub's 6-hour default). 60 minutes, not 45, to leave headroom for real VM boot +
+    # image pull time on a fresh host, wider than the ordinary unit-test jobs in ci.yml need.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # Fails fast with a clear diagnostic naming the missing precondition, rather than letting the
+      # first real test failure look like a code defect when it is actually "the runner was never
+      # fully provisioned" -- see docs/planning/kata-backend-ci-runner-setup.md for how to satisfy
+      # each of these.
+      - name: Verify runner preconditions
+        run: |
+          set -euo pipefail
+          fail=0
+          for bin in ctr cnitool nft losetup mkfs.ext4; do
+            if ! command -v "$bin" >/dev/null 2>&1; then
+              echo "::error::$bin not on PATH -- see docs/planning/kata-backend-ci-runner-setup.md"
+              fail=1
+            fi
+          done
+          if ! sudo -n true 2>/dev/null; then
+            echo "::error::the runner's service account needs passwordless sudo -- every kata_backend.cpp host-side call (netns, loop devices, overlay mounts, ctr) needs root"
+            fail=1
+          fi
+          if [ "$fail" -ne 0 ]; then exit 1; fi
+          echo "Probing the kata-clh runtime type with a real, disposable container..."
+          sudo ctr run --rm --runtime io.containerd.kata-clh.v2 \
+            docker.io/library/busybox:latest ae-kata-ci-precheck true \
+            || { echo "::error::io.containerd.kata-clh.v2 is not usable -- see docs/planning/kata-backend-ci-runner-setup.md"; exit 1; }
+
+      - name: Configure
+        run: |
+          cmake -S . -B build-linux -DCMAKE_BUILD_TYPE=Release \
+            -DAGENTENGINE_BUILD_KATA_BACKEND=ON -DAGENTENGINE_KATA_SANDBOX_TESTS=ON
+
+      - name: Build KataBackend + its tests
+        run: |
+          cmake --build build-linux -j "$(nproc)" --target \
+            test_kata_backend_linux \
+            test_kata_backend_slice2_linux \
+            test_kata_backend_abuse_corpus_linux \
+            test_kata_backend_slice9_10_linux
+
+      # sudo, not a plain ctest -- the test binaries themselves make the same privileged host-side
+      # calls (ip netns, losetup, mount, ctr) kata_backend.cpp's own run_ctr() always has, same as
+      # running them by hand on the provisioned host.
+      - name: Run KataBackend live suite
+        run: sudo ctest --test-dir build-linux -R kata_backend --output-on-failure --timeout 300
