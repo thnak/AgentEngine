@@ -183,6 +183,24 @@
 // open question -- compile-verified only this session, so the answer itself remains unconfirmed until
 // it can run against a real deployment.
 //
+// SLICE 8 (2026-08-24) -- `ResourceLimits::disk_bytes`/`net_bytes` were investigated to a real
+// conclusion, like `pids` in SLICE 6, not left "uninvestigated" (decisions/ADR-092-kata-backend-disk-
+// net-bytes-investigated-and-deferred.md). Unlike `pids`/`fds`, these two are assigned by 008 §1b to
+// **interpreter-level mediation** (a mediating process AgentEngine itself controls, instrumenting
+// `open()`/`socket()` at the point of use), not a create-time backend resource cap -- confirmed
+// against this project's own spec and `cgroup_limits.hpp`'s own identical precedent for
+// `LinuxNativeJailBackend`. `KataBackend::exec()` shells `/bin/sh -c <source>` directly inside the
+// guest via `ctr tasks exec`, with NO AgentEngine-owned process inside the VM for such mediation to
+// attach to at all -- unlike `native-jail`, which pairs its OS jail with exactly this mediation via
+// `MediatedPythonRunner`/`HandleRelay` (ADR-081/ADR-085), entirely host-side. Building an equivalent
+// for Kata means a wholly new guest-side mediating subsystem, not a resource-limit wiring change. A
+// backend-level fallback for `disk_bytes` (a VM/snapshot quota, independent of mediation) was also
+// checked and is blocked by the IDENTICAL `--config`-rewrite obstacles SLICE 6 already found for
+// `pids` -- no `ctr run` convenience flag for disk quota exists either. `net_bytes` is additionally
+// moot right now regardless of mediation: this backend already fails closed on any `NetPolicy` beyond
+// `deny_all`, so there is no network path to meter in the first place -- it collapses into the
+// separately-named CNI gap below, not an independent problem. **Decision: both stay unenforced.**
+//
 // Still NOT done, named honestly rather than silently assumed:
 //
 //   - `ExecRequest::source` is, like `LinuxNativeJailBackend`'s own M2-only scope
@@ -198,7 +216,12 @@
 //   - `ResourceLimits::fds` maps to `--rlimit-nofile` as of SLICE 7 above, but whether it reaches a
 //     `ctr tasks exec`-spawned process (not just the container's own initial placeholder process) is
 //     disclosed, not verified -- see SLICE 7's own text and the fix site in `kata_backend.cpp`.
-//   - `ResourceLimits::disk_bytes`/`net_bytes` remain entirely unenforced and uninvestigated.
+//   - `ResourceLimits::disk_bytes`/`net_bytes` remain unenforced -- investigated and deferred in
+//     SLICE 8 above (008 §1b assigns these to interpreter-level mediation, which has no attachment
+//     point in this backend's raw-guest-shell execution model), not merely unattempted.
+//   - The real `NetPolicy` allowlist mechanism (CNI) remains unbuilt -- this backend still fails
+//     closed on anything beyond `deny_all` (Slice 2/3, unchanged); SLICE 8 above names this as the
+//     actual prerequisite for ever revisiting `net_bytes`, not just a parallel gap.
 //
 // Reachable only via `register_hardware_isolation_backend()` (`named_only`,
 // ADR-080/microvm-first-party-backend-design-draft.md finding #1) -- a host must opt a session into
