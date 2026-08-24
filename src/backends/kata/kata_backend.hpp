@@ -276,9 +276,16 @@
 //
 // Still NOT done, named honestly rather than silently assumed:
 //
-//   - `ExecRequest::source` is, like `LinuxNativeJailBackend`'s own M2-only scope
-//     (linux_native_jail_backend.hpp), treated as a shell command line (`/bin/sh -c <source>`) the
-//     caller is trusted to have already resolved from a name -- not yet Runner-mediated.
+//   - `ExecRequest::source` is treated as a shell command line (`/bin/sh -c <source>`) the caller is
+//     trusted to have already resolved and mediated -- 008-Sandbox-and-Isolation.md §2's "`ExecRequest`
+//     mediation is the caller's responsibility, not the backend's" clause is the canonical statement
+//     of this contract (shared verbatim with `LinuxNativeJailBackend`'s own identical M2-only scope,
+//     linux_native_jail_backend.hpp); investigated in
+//     docs/planning/sandbox-exec-request-capability-mediation-design-draft.md and found to be
+//     correct-by-design, not an unfinished wiring task -- that same investigation also surfaced a
+//     real, SEPARATE, still-open gap (`cap::Exec`, the top-level "may this caller create a sandbox of
+//     this profile" capability, currently unenforced by any backend) named there as a disclosed
+//     follow-on, not silently folded into this bullet.
 //   - GPU passthrough (Kata's headline capability) is explicitly OUT of scope -- the design draft's
 //     own C3 finding named this as needing a real `capability_kind` this codebase does not have yet
 //     and deliberately declined to add without a real consumer.

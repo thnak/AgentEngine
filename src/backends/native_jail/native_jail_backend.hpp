@@ -60,12 +60,15 @@
 // in M3; per the correction above, that happened for neither in the way this sentence describes.
 // `ExecRequest::source` is therefore, for M2 only, a full Win32 command line (an already-resolved
 // executable path plus arguments) that the CALLER -- test code today, a closed Runner/Tool
-// registry from M3 onward (008 §1b layer 2, 010 §1a) -- is trusted to have already resolved from a
-// name. This backend does not itself interpret `language`; it exists on ExecRequest for forward
-// compatibility with the Runner-routed shape 010 will need. A raw command line reaching this
-// backend from anywhere an agent's own output could shape unmediated would violate I2/I3 -- that
-// mediation is the caller's job, not this backend's, exactly as 008 §1b layer 2 already specifies
-// for `subprocess`/`ToolCall` dispatch generally.
+// registry from M3 onward (008 §1b layer 2, 010 §1a) -- is trusted to have already resolved and
+// mediated. This backend does not itself interpret `language`; it exists on ExecRequest for forward
+// compatibility with the Runner-routed shape 010 will need. 008-Sandbox-and-Isolation.md §2's
+// "`ExecRequest` mediation is the caller's responsibility, not the backend's" clause is the
+// canonical statement of why (docs/planning/sandbox-exec-request-capability-mediation-design-
+// draft.md investigated and confirmed this is correct-by-design, not unfinished, for every backend
+// alike -- that same investigation also surfaced a real, SEPARATE, still-open gap, `cap::Exec`, the
+// top-level "may this caller create a sandbox of this profile" capability, currently unenforced by
+// any backend -- named there as a disclosed follow-on, not silently folded into this scope note).
 //
 // NOT implemented here (see docs/issues/m2-phase-c-native-jail-sandbox.md): the abuse-case corpus
 // and its G2 positive controls (C3), cross-platform parity (C4), the no-ambient-authority probe

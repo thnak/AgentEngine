@@ -228,6 +228,19 @@ latency or an identical trustworthy mechanism per platform.
 **No backend is permitted to weaken the contract by configuration.** A profile that cannot enforce a
 limit does not offer it; it does not offer it and ignore it.
 
+**`ExecRequest` mediation is the caller's responsibility, not the backend's.** `SandboxBackend::exec()`
+receives `ExecRequest{language, source}` as fully-resolved, already-mediated input — a conforming
+backend is never responsible for interpreting `language` or safety-checking `source` itself. That
+responsibility belongs to whatever constructs the `ExecRequest`: 010 §1a's `Runner` layer, where one
+exists and is wired to a given backend, or trusted host/test code otherwise. A raw, unmediated
+model-output string reaching any backend's `exec()` would be an I2/I3 violation **at the call site
+that constructed the `ExecRequest`**, not inside the backend that trusted it — this mirrors the same
+"remove the ambient path at the point of use" idiom §1b already applies to `open`/`socket`/`subprocess`
+for the mediated interpreter case, generalized here to every profile, not only `native-jail`. This is
+deliberately not a claim that a `Runner` must sit between every caller and every backend — a caller
+may satisfy this contract by construction instead (e.g. trusted test code, or a host tool that already
+only ever passes fixed, non-model-derived commands).
+
 ## 2a. Custom backends — the seam is open, not a closed set
 
 §3's table is what the engine ships, not the exhaustive set of what `SandboxBackend` can be. Nothing

@@ -20,8 +20,11 @@
 // Scope parity with `NativeJailBackend` (the Windows half, native_jail_backend.hpp) -- read that
 // header's own scope note first, most of it applies here unchanged:
 //   - `ExecRequest::source` is, for M2 only, a shell command line (`/bin/sh -c <source>`) the
-//     CALLER is trusted to have already resolved from a name -- the Linux analogue of the Windows
-//     side treating `source` as a Win32 command line. Same "not yet Runner-mediated" scope.
+//     CALLER is trusted to have already resolved and mediated -- the Linux analogue of the Windows
+//     side treating `source` as a Win32 command line. 008-Sandbox-and-Isolation.md §2's
+//     "`ExecRequest` mediation is the caller's responsibility, not the backend's" clause is the
+//     canonical statement of this contract (docs/planning/sandbox-exec-request-capability-mediation-
+//     design-draft.md investigated and confirmed this is correct-by-design, not unfinished).
 //   - `MountSpec::source` as a `BlobRef` fails closed (unsupported, same gap as Windows).
 //   - Filesystem and process-visibility containment (008 §9 G2/G3's Linux half): the child, after
 //     `clone()` returns there and before `execve`, makes its mount namespace private
