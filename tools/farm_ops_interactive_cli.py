@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Interactive, real-terminal-input CLI mirroring tests/test_rt_agent_session_farm_ops_live_e2e.cpp's
-scenario -- two independently-mountable skills (crop-field-operations, livestock-care-operations), a
-separate five-tool "optimizer pool" (schedule_task/cancel_task/get_market_price/place_sell_order/
-execute_code) gated behind search_tools/mount_tool/unmount_tool, and REAL Python code execution for
-execute_code (genuine exec(), not a canned stand-in).
+scenario -- three independently-mountable skills (crop-field-operations, livestock-care-operations,
+harvest-planning-operations), a separate five-tool "optimizer pool" (schedule_task/cancel_task/
+get_market_price/place_sell_order/execute_code) gated behind search_tools/mount_tool/unmount_tool,
+and REAL Python code execution for execute_code (genuine exec(), not a canned stand-in).
 
 Why this script exists: the C++ live test drives four SCRIPTED turns and reduces every observation to
 a pass/fail assert. That is useful for CI but tells you nothing about WHY a run failed, and hides the
@@ -40,15 +40,24 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_MODEL = "stealth/ox-alpha"
 CROP_SKILL = "crop-field-operations"
 LIVESTOCK_SKILL = "livestock-care-operations"
+HARVEST_SKILL = "harvest-planning-operations"
 
+# Live evidence (dumps/dump-5.json, plus a cross-model check against openai/gpt-5.6-luna, both
+# reproducing the identical pattern): naming two required tools was not enough -- both models
+# consistently called only the tool that most directly produced the user's asked-for ANSWER and
+# skipped the more confirmatory one. Wording below is deliberately more forceful and explains why
+# neither tool substitutes for the other, rather than just listing both names once.
 CROP_SKILL_DESC = (
     "Decide irrigation and pesticide-spraying actions for a crop field, using real weather and "
     "pest-pressure data for that field. Use this for a farmer growing crops (rice, vegetables, and "
     "similar) asking about a named field."
 )
 CROP_SKILL_BODY = """\
-Before recommending irrigation or pesticide spraying for a named field, call `check_field_weather`
-with that field's name, AND `check_pest_pressure` with that field's name. Do not guess either value.
+Before recommending irrigation or pesticide spraying for a named field, you MUST call BOTH
+`check_field_weather` AND `check_pest_pressure` for that field's name. An answer based on only one
+of the two is incomplete and wrong -- do not skip either call, and do not treat one reading as a
+substitute for the other: pest pressure alone does not tell you the forecast, and the forecast
+alone does not tell you pest pressure. Do not guess either value.
 
 Reading the results:
 - If the forecast shows no rain and pest pressure is moderate or high: spraying is warranted, and
@@ -65,21 +74,45 @@ LIVESTOCK_SKILL_DESC = (
     "care for a named group."
 )
 LIVESTOCK_SKILL_BODY = """\
-Before recommending a feeding plan for a named herd or flock, call `check_animal_health` with that
-group's name, AND `calculate_feed_ration` with that group's name, its animal count, and its animal
-type. Do not guess either value.
+Before recommending a feeding plan for a named herd or flock, you MUST call BOTH
+`check_animal_health` AND `calculate_feed_ration` (with that group's name, its animal count, and
+its animal type). An answer based on only one of the two is incomplete and wrong -- do not skip
+either call, and do not treat one as a substitute for the other: the ration number alone does not
+tell you whether the flock is healthy, and a health status alone does not tell you how much to
+feed. Do not guess either value.
 
 Reading the results:
 - If health status is anything other than healthy: recommend addressing the health issue before
   changing the feeding plan.
 - Otherwise: report the computed daily ration and confirm it matches the group's normal schedule."""
 
+# THIRD independent farm model: harvest planning, covering yet another decision (timing + yield)
+# that structurally needs two tools together, same as the two skills above.
+HARVEST_SKILL_DESC = (
+    "Decide whether to harvest a named field this week and what yield to expect, using real "
+    "weather-window and yield-estimate data for that field. Use this for a farmer growing crops "
+    "asking about harvest timing or expected yield for a named field."
+)
+HARVEST_SKILL_BODY = """\
+Before recommending a harvest timing or reporting an expected yield for a named field, you MUST
+call BOTH `check_harvest_weather_window` AND `estimate_harvest_yield` for that field. An answer
+based on only one of the two is incomplete and wrong: the weather window tells you WHEN it is safe
+to harvest, and the yield estimate tells you HOW MUCH to expect -- neither substitutes for the
+other. Do not guess either value.
+
+Reading the results:
+- If the weather window is not dry enough: recommend waiting, regardless of the yield estimate.
+- If the weather window is dry enough: recommend harvesting now, and report the estimated yield."""
+
 SKILL_ALLOWED_TOOLS = {
     CROP_SKILL: ["check_field_weather", "check_pest_pressure"],
     LIVESTOCK_SKILL: ["check_animal_health", "calculate_feed_ration"],
+    HARVEST_SKILL: ["check_harvest_weather_window", "estimate_harvest_yield"],
 }
-SKILL_BODIES = {CROP_SKILL: CROP_SKILL_BODY, LIVESTOCK_SKILL: LIVESTOCK_SKILL_BODY}
-SKILL_DESCS = {CROP_SKILL: CROP_SKILL_DESC, LIVESTOCK_SKILL: LIVESTOCK_SKILL_DESC}
+SKILL_BODIES = {CROP_SKILL: CROP_SKILL_BODY, LIVESTOCK_SKILL: LIVESTOCK_SKILL_BODY,
+                 HARVEST_SKILL: HARVEST_SKILL_BODY}
+SKILL_DESCS = {CROP_SKILL: CROP_SKILL_DESC, LIVESTOCK_SKILL: LIVESTOCK_SKILL_DESC,
+               HARVEST_SKILL: HARVEST_SKILL_DESC}
 
 OPTIMIZER_POOL_TOOLS = ["schedule_task", "cancel_task", "get_market_price", "place_sell_order",
                         "execute_code"]
@@ -196,6 +229,34 @@ DOMAIN_TOOL_SCHEMAS = {
             },
         },
     },
+    "check_harvest_weather_window": {
+        "type": "function",
+        "function": {
+            "name": "check_harvest_weather_window",
+            "description": "Checks whether the coming days are dry enough to safely harvest a named field.",
+            "parameters": {
+                "type": "object",
+                "properties": {"field_name": {"type": "string"}},
+                "required": ["field_name"],
+            },
+        },
+    },
+    "estimate_harvest_yield": {
+        "type": "function",
+        "function": {
+            "name": "estimate_harvest_yield",
+            "description": "Estimates the harvest yield (kg) for a named field, given its area (hectares) and crop type.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "field_name": {"type": "string"},
+                    "hectares": {"type": "number"},
+                    "crop_type": {"type": "string"},
+                },
+                "required": ["field_name", "hectares", "crop_type"],
+            },
+        },
+    },
 }
 
 POOL_TOOL_SCHEMAS = {
@@ -274,6 +335,7 @@ POOL_TOOL_SCHEMAS = {
 
 FEED_RATE_PER_ANIMAL = {"chicken": 0.12, "poultry": 0.12, "cattle": 11.0, "cow": 11.0, "pig": 2.3}
 PRICE_PER_KG = {"rice": 0.42, "chicken": 3.10, "poultry": 3.10, "pork": 2.75, "pig": 2.75}
+YIELD_RATE_PER_HECTARE = {"rice": 4500.0, "vegetables": 12000.0, "vegetable": 12000.0}
 
 
 class FarmOpsState:
@@ -345,6 +407,17 @@ class FarmOpsState:
                  "notes": f"{herd_name}'s ration is based on {animal_count} {animal_type}(s) at the "
                           "standard per-animal rate."}
 
+    def check_harvest_weather_window(self, field_name: str) -> dict:
+        return {"dry_enough": True,
+                "advice": f"The next 5 days for {field_name} are dry -- safe to harvest now."}
+
+    def estimate_harvest_yield(self, field_name: str, hectares: float, crop_type: str) -> dict:
+        rate = YIELD_RATE_PER_HECTARE.get(crop_type, 3000.0)
+        total = hectares * rate
+        return {"estimated_yield_kg": total,
+                 "notes": f"{field_name}'s estimated yield is based on {hectares} hectares of "
+                          f"{crop_type} at the standard per-hectare rate."}
+
     def schedule_task(self, description: str, due_in_days: int) -> dict:
         self.scheduled_tasks.append(f"{description} (in {due_in_days} day(s))")
         return {"ok": True, "message": f"scheduled: {description}"}
@@ -394,6 +467,8 @@ TOOL_IMPLS = {
     "check_pest_pressure": lambda s, a: s.check_pest_pressure(**a),
     "check_animal_health": lambda s, a: s.check_animal_health(**a),
     "calculate_feed_ration": lambda s, a: s.calculate_feed_ration(**a),
+    "check_harvest_weather_window": lambda s, a: s.check_harvest_weather_window(**a),
+    "estimate_harvest_yield": lambda s, a: s.estimate_harvest_yield(**a),
     "schedule_task": lambda s, a: s.schedule_task(**a),
     "cancel_task": lambda s, a: s.cancel_task(**a),
     "get_market_price": lambda s, a: s.get_market_price(**a),
@@ -579,6 +654,7 @@ def main() -> None:
     print("Type a message and press Enter. Ctrl+C or an empty line + Ctrl+D to quit.")
     print("Try: \"I'm a rice farmer, field 'North Paddy' -- should I spray today?\"")
     print("Then: \"I raise 200 chickens in Coop A -- check their health and feed ration.\"")
+    print("Then: \"Should I harvest North Paddy (2.5ha of rice) this week, and what yield to expect?\"")
     print("Then: \"Compute 3 fields of 2.5ha at 40mm irrigation in liters, and check rice price.\"\n")
 
     try:

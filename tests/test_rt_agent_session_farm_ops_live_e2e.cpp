@@ -4,10 +4,11 @@
 // driven through a real remote model over OpenRouter.
 //
 // This is a deliberate expansion of test_rt_agent_session_farm_advisory_live_e2e.cpp's single-skill/
-// single-tool scenario into something closer to what tools/cli_chat.cpp actually offers: TWO
-// independent skills covering two different farm models (crop farming vs livestock), so a farmer
-// running a mixed operation can reach either capability by describing what they need, not by naming a
-// tool; a SEPARATE, larger scheduling/market tool pool gated through a real ToolOptimizerProvider
+// single-tool scenario into something closer to what tools/cli_chat.cpp actually offers: THREE
+// independent skills covering three different farm decisions (crop irrigation/spraying, livestock
+// care, harvest planning), so a farmer running a mixed operation can reach any of them by describing
+// what they need, not by naming a tool; a SEPARATE, larger scheduling/market tool pool gated through a
+// real ToolOptimizerProvider
 // (ADR-065's search_tools/mount_tool/unmount_tool) rather than always-on declaration, so that
 // mechanism has an actual reason to matter (five tools is few enough to read but enough that
 // "just declare them all" and "search, then mount only what's needed" are visibly different
@@ -116,6 +117,7 @@ constexpr char const* kSecretName = "openrouter-api-key";
 constexpr char const* kXTitle = "AgentEngine: farm-ops-live-e2e";
 constexpr char const* kCropSkillName = "crop-field-operations";
 constexpr char const* kLivestockSkillName = "livestock-care-operations";
+constexpr char const* kHarvestSkillName = "harvest-planning-operations";
 
 // ================= Call logs -- AgentSession::start_run() resolves the whole tool loop internally
 // (ADR-027), so what actually got invoked, and with what argument, is observed from inside the tool
@@ -137,6 +139,14 @@ constexpr char const* kLivestockSkillName = "livestock-care-operations";
     return called;
 }
 [[nodiscard]] bool& calculate_feed_ration_called_log() {
+    static bool called = false;
+    return called;
+}
+[[nodiscard]] bool& check_harvest_weather_called_log() {
+    static bool called = false;
+    return called;
+}
+[[nodiscard]] bool& estimate_yield_called_log() {
     static bool called = false;
     return called;
 }
@@ -164,6 +174,13 @@ constexpr char const* kLivestockSkillName = "livestock-care-operations";
 // ================= Two skills, one source, mirroring builtin_skills.hpp's own multi-skill pattern
 // (one make_*_source() eagerly parsing several SKILL.md literals into one std::vector<SkillSourceResult>).
 
+// Live evidence (dumps/dump-5.json and a cross-model check against openai/gpt-5.6-luna, both
+// reproducing the identical pattern): naming two required tools was not enough -- both models
+// consistently called only the tool that most directly produced the user's asked-for ANSWER (pest
+// pressure -> spray decision; feed ration -> the number asked for) and skipped the more
+// confirmatory tool, even though the skill said to call both. The wording below is deliberately
+// more forceful ("MUST call BOTH... incomplete and wrong") and explicitly names why neither tool
+// substitutes for the other, rather than just listing both names once.
 inline constexpr std::string_view kCropSkillMd = R"SKILL(---
 name: crop-field-operations
 description: Decide irrigation and pesticide-spraying actions for a crop field, using real weather and pest-pressure data for that field. Use this for a farmer growing crops (rice, vegetables, and similar) asking about a named field.
@@ -173,8 +190,11 @@ metadata:
 ---
 # Crop field operations
 
-Before recommending irrigation or pesticide spraying for a named field, call `check_field_weather`
-with that field's name, AND `check_pest_pressure` with that field's name. Do not guess either value.
+Before recommending irrigation or pesticide spraying for a named field, you MUST call BOTH
+`check_field_weather` AND `check_pest_pressure` for that field's name. An answer based on only one
+of the two is incomplete and wrong -- do not skip either call, and do not treat one reading as a
+substitute for the other: pest pressure alone does not tell you the forecast, and the forecast
+alone does not tell you pest pressure. Do not guess either value.
 
 ## Reading the results
 
@@ -196,15 +216,43 @@ metadata:
 ---
 # Livestock care operations
 
-Before recommending a feeding plan for a named herd or flock, call `check_animal_health` with that
-group's name, AND `calculate_feed_ration` with that group's name, its animal count, and its animal
-type. Do not guess either value.
+Before recommending a feeding plan for a named herd or flock, you MUST call BOTH
+`check_animal_health` AND `calculate_feed_ration` (with that group's name, its animal count, and
+its animal type). An answer based on only one of the two is incomplete and wrong -- do not skip
+either call, and do not treat one as a substitute for the other: the ration number alone does not
+tell you whether the flock is healthy, and a health status alone does not tell you how much to
+feed. Do not guess either value.
 
 ## Reading the results
 
 - If health status is anything other than healthy: recommend addressing the health issue before
   changing the feeding plan.
 - Otherwise: report the computed daily ration and confirm it matches the group's normal schedule.
+)SKILL";
+
+// THIRD independent farm model: harvest planning, covering yet another decision (timing + yield)
+// that structurally needs two tools together, same as the two skills above -- widens the scenario
+// per the project owner's own request to bring this test closer to a real multi-domain farm
+// operation, and gives a third, independent data point on the "call both tools" wording fix.
+inline constexpr std::string_view kHarvestSkillMd = R"SKILL(---
+name: harvest-planning-operations
+description: Decide whether to harvest a named field this week and what yield to expect, using real weather-window and yield-estimate data for that field. Use this for a farmer growing crops asking about harvest timing or expected yield for a named field.
+allowed-tools: check_harvest_weather_window, estimate_harvest_yield
+metadata:
+  version: "1"
+---
+# Harvest planning operations
+
+Before recommending a harvest timing or reporting an expected yield for a named field, you MUST
+call BOTH `check_harvest_weather_window` AND `estimate_harvest_yield` for that field. An answer
+based on only one of the two is incomplete and wrong: the weather window tells you WHEN it is safe
+to harvest, and the yield estimate tells you HOW MUCH to expect -- neither substitutes for the
+other. Do not guess either value.
+
+## Reading the results
+
+- If the weather window is not dry enough: recommend waiting, regardless of the yield estimate.
+- If the weather window is dry enough: recommend harvesting now, and report the estimated yield.
 )SKILL";
 
 [[nodiscard]] SkillSourceDescriptor make_farm_ops_skills_source() {
@@ -214,6 +262,7 @@ type. Do not guess either value.
         Entry const entries[] = {
             {kCropSkillMd, "crop-field-operations"},
             {kLivestockSkillMd, "livestock-care-operations"},
+            {kHarvestSkillMd, "harvest-planning-operations"},
         };
         for (auto const& e : entries) {
             auto skill = parse_skill_md(e.md, e.name);
@@ -354,8 +403,69 @@ struct CalculateFeedRationTool
     }
 };
 
-// mount_skill -- identical role/shape to the two files above (ADR-024 Phase 3 addendum), gating BOTH
-// skills through the same one tool: which skill gets mounted depends only on the `skill_name` argument.
+// harvest-planning-operations' two tools -- same canned-stand-in convention as the crop/livestock
+// pairs above.
+struct HarvestFieldArgs {
+    std::string field_name;
+};
+AE_JSON_SCHEMA(HarvestFieldArgs, field_name)
+
+struct HarvestWeatherWindowReply {
+    bool dry_enough = false;
+    std::string advice;
+};
+AE_JSON_SCHEMA(HarvestWeatherWindowReply, dry_enough, advice)
+
+struct CheckHarvestWeatherWindowTool
+    : Tool<CheckHarvestWeatherWindowTool, Capabilities<>, EffectClass<effect_class::pure>> {
+    static constexpr std::string_view name = "check_harvest_weather_window";
+    static constexpr std::string_view description =
+        "Checks whether the coming days are dry enough to safely harvest a named field.";
+    using Args = HarvestFieldArgs;
+    using Reply = HarvestWeatherWindowReply;
+    static result<Reply> invoke(Args a, EffectContext&) {
+        check_harvest_weather_called_log() = true;
+        return Reply{true, "The next 5 days for " + a.field_name + " are dry -- safe to harvest now."};
+    }
+};
+
+struct YieldEstimateArgs {
+    std::string field_name;
+    double hectares = 0.0;
+    std::string crop_type;
+};
+AE_JSON_SCHEMA(YieldEstimateArgs, field_name, hectares, crop_type)
+
+struct YieldEstimateReply {
+    double estimated_yield_kg = 0.0;
+    std::string notes;
+};
+AE_JSON_SCHEMA(YieldEstimateReply, estimated_yield_kg, notes)
+
+[[nodiscard]] double yield_rate_kg_per_hectare(std::string const& crop_type) {
+    if (crop_type == "rice") return 4500.0;
+    if (crop_type == "vegetables" || crop_type == "vegetable") return 12000.0;
+    return 3000.0;
+}
+
+struct EstimateHarvestYieldTool
+    : Tool<EstimateHarvestYieldTool, Capabilities<>, EffectClass<effect_class::pure>> {
+    static constexpr std::string_view name = "estimate_harvest_yield";
+    static constexpr std::string_view description =
+        "Estimates the harvest yield (kg) for a named field, given its area (hectares) and crop type.";
+    using Args = YieldEstimateArgs;
+    using Reply = YieldEstimateReply;
+    static result<Reply> invoke(Args a, EffectContext&) {
+        estimate_yield_called_log() = true;
+        double const total = a.hectares * yield_rate_kg_per_hectare(a.crop_type);
+        return Reply{total, a.field_name + "'s estimated yield is based on " + std::to_string(a.hectares) +
+                                 " hectares of " + a.crop_type + " at the standard per-hectare rate."};
+    }
+};
+
+// mount_skill -- identical role/shape to the two files above (ADR-024 Phase 3 addendum), gating ALL
+// THREE skills through the same one tool: which skill gets mounted depends only on the `skill_name`
+// argument.
 struct MountSkillArgs {
     std::string skill_name;
 };
@@ -643,6 +753,8 @@ public:
             make_tool_descriptor<CheckPestPressureTool>(),
             make_tool_descriptor<CheckAnimalHealthTool>(),
             make_tool_descriptor<CalculateFeedRationTool>(),
+            make_tool_descriptor<CheckHarvestWeatherWindowTool>(),
+            make_tool_descriptor<EstimateHarvestYieldTool>(),
             make_tool_descriptor_with_invoke<MountSkillTool>(
                 [this](MountSkillArgs a, EffectContext& ctx) { return real_mount_skill(std::move(a), ctx); }),
         };
@@ -672,7 +784,8 @@ private:
     }
 
     [[nodiscard]] result<MountSkillReply> real_mount_skill(MountSkillArgs a, EffectContext&) {
-        if (a.skill_name != kCropSkillName && a.skill_name != kLivestockSkillName) {
+        if (a.skill_name != kCropSkillName && a.skill_name != kLivestockSkillName &&
+            a.skill_name != kHarvestSkillName) {
             return std::unexpected(
                 error{failure_class::contract, "unknown skill: " + a.skill_name, "skill.unknown_name"});
         }
@@ -843,7 +956,28 @@ int main() {
     check(check_animal_health_called_log(), "TURN3: check_animal_health was actually called");
     check(calculate_feed_ration_called_log(), "TURN3: calculate_feed_ration was actually called");
 
-    // ==================== Turn 4: the ToolOptimizerProvider pool + REAL CPython computation =========
+    // ==================== Turn 4: the harvest-planning skill -- a THIRD independent farm model ======
+    result<AgentResponse> harvest_resp = drive(session.start_run(StartRun{user_message(
+        "One more thing about North Paddy -- it's 2.5 hectares of rice. Using whatever skill you have "
+        "for harvest planning, tell me whether I should harvest it this week and what yield to "
+        "expect.")}));
+    check(harvest_resp.has_value(), "TURN4: the harvest-planning round converges against the real provider");
+    if (harvest_resp.has_value()) {
+        check(has_text(harvest_resp->message), "TURN4: the converged response carries a harvest plan");
+    } else {
+        note("TURN4 error.code", harvest_resp.error().code);
+        note("TURN4 error.message", harvest_resp.error().message);
+    }
+    bool const harvest_skill_mounted =
+        std::find(mounted_skill_names_log().begin(), mounted_skill_names_log().end(),
+                  kHarvestSkillName) != mounted_skill_names_log().end();
+    check(harvest_skill_mounted,
+          "TURN4: mount_skill(harvest-planning-operations) was called -- the model activated the "
+          "THIRD, independently-mounted skill");
+    check(check_harvest_weather_called_log(), "TURN4: check_harvest_weather_window was actually called");
+    check(estimate_yield_called_log(), "TURN4: estimate_harvest_yield was actually called");
+
+    // ==================== Turn 5: the ToolOptimizerProvider pool + REAL CPython computation =========
     // Deliberately asks for BOTH an exact calculation (forcing execute_code, since the model cannot
     // guess an exact liter figure) and a market lookup (forcing get_market_price) -- neither tool is
     // declared until mount_tool runs (skill_tool_scoping's own enforcement), so a real call into
@@ -860,16 +994,16 @@ int main() {
         "of water needed (1 hectare = 10000 square meters, 1mm depth over 1 square meter = 1 liter). "
         "Second: look up today's market price for rice so I know what a sale would be worth. You may "
         "need to search for and activate tools you don't see yet before you can call them.")}));
-    check(ops_resp.has_value(), "TURN4: the tool-optimizer-pool round converges against the real provider");
+    check(ops_resp.has_value(), "TURN5: the tool-optimizer-pool round converges against the real provider");
     if (ops_resp.has_value()) {
-        check(has_text(ops_resp->message), "TURN4: the converged response carries both answers");
+        check(has_text(ops_resp->message), "TURN5: the converged response carries both answers");
     } else {
-        note("TURN4 error.code", ops_resp.error().code);
-        note("TURN4 error.message", ops_resp.error().message);
+        note("TURN5 error.code", ops_resp.error().code);
+        note("TURN5 error.message", ops_resp.error().message);
     }
 
     check(execute_code_called_log(),
-          "TURN4: execute_code was actually called -- reachable only after a real mount_tool call "
+          "TURN5: execute_code was actually called -- reachable only after a real mount_tool call "
           "into ToolOptimizerProvider's pool, since execute_code is never always-on");
     if (!observed_code_arg_log().empty()) {
         note("execute_code code argument", observed_code_arg_log());
@@ -889,11 +1023,11 @@ int main() {
         if (c != ',') digits_only_output += c;
     }
     check(execute_code_called_log() && digits_only_output.find("3000000") != std::string::npos,
-          "TURN4: the real embedded CPython interpreter's own output contains the exact expected "
+          "TURN5: the real embedded CPython interpreter's own output contains the exact expected "
           "answer (3,000,000 liters) -- live, behavioural proof of genuine sandboxed computation, "
           "not a canned or guessed number");
     check(get_market_price_called_log(),
-          "TURN4: get_market_price was actually called -- reachable only after a real mount_tool call "
+          "TURN5: get_market_price was actually called -- reachable only after a real mount_tool call "
           "into ToolOptimizerProvider's pool, since get_market_price is never always-on");
     if (!observed_commodity_log().empty()) {
         note("get_market_price commodity argument", observed_commodity_log());
