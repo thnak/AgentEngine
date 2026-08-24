@@ -82,6 +82,7 @@
 #include "agentengine/protocol/anthropic/chat_client.hpp"
 #include "agentengine/protocol/openai/chat_client.hpp"
 #include "agentengine/rt/agent_session.hpp"
+#include "agentengine/rt/repl_command.hpp"
 #include "agentengine/rt/thread_pool.hpp"
 #include "agentengine/trust/principal.hpp"
 #include "agentengine/trust/secret.hpp"
@@ -908,11 +909,30 @@ template <class Inner>
     print_skills_banner(materialized, startup_skills, actor.history_provider().mounted_skills());
     std::cout << "\nType a message and press Enter. Type 'exit' or 'quit' to stop.\n\n";
 
+    // rt/repl_command.hpp (docs/planning/repl-command-dispatch-design-draft.md): a small,
+    // first-match-wins dispatch table checked before a line reaches the agent -- `exit`/`quit` are
+    // its first two registrations, replacing what used to be two hardcoded literal checks here.
+    bool exit_requested = false;
+    rt::ReplCommandTable repl_commands;
+    auto const register_exit_command = [&](std::string name) {
+        repl_commands.register_command(rt::ReplCommand{
+            std::move(name), "",
+            [&exit_requested](rt::ReplCommandContext&) {
+                exit_requested = true;
+                return true;
+            }});
+    };
+    register_exit_command("exit");
+    register_exit_command("quit");
+
     std::string line;
     while (true) {
         std::cout << "You: ";
         if (!std::getline(std::cin, line)) break;
-        if (line == "exit" || line == "quit") break;
+        if (repl_commands.try_handle(line, [](std::string_view s) { std::cout << s; })) {
+            if (exit_requested) break;
+            continue;
+        }
         if (line.empty()) continue;
 
         // One start_run() now resolves the WHOLE multi-round tool conversation for this turn
