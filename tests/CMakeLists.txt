@@ -336,6 +336,12 @@ add_executable(test_context_provenance test_context_provenance.cpp)
 target_link_libraries(test_context_provenance PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_context_provenance COMMAND test_context_provenance)
 
+# ---- docs/planning/repl-command-dispatch-design-draft.md's prove phase: ReplCommandTable's
+# first-match-wins dispatch, help_text() joining, and the print-sink plumbing (rt/repl_command.hpp).
+add_executable(test_repl_command test_repl_command.cpp)
+target_link_libraries(test_repl_command PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_repl_command COMMAND test_repl_command)
+
 # ---- decisions/ADR-066-*.md §7 residual: Message::attribution now survives a round-trip through
 # rt/message_codec.hpp's JSON codec (previously confirmed absent).
 add_executable(test_message_codec_attribution test_message_codec_attribution.cpp)
