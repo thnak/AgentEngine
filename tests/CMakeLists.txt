@@ -2253,6 +2253,15 @@ if(NOT WIN32 AND AGENTENGINE_BUILD_KATA_BACKEND)
     # independent create()) plus a deliberate 10s guest sleep under a 3s wall_ms cap -- generous but
     # bounded.
     set_tests_properties(test_kata_backend_slice2_linux PROPERTIES TIMEOUT 180 RUN_SERIAL TRUE)
+
+    # ---- Slice 4 (008 §9 G1/G2 abuse-corpus promotion-gate evidence) end-to-end test ---------------
+    add_executable(test_kata_backend_abuse_corpus_linux test_kata_backend_abuse_corpus_linux.cpp)
+    target_link_libraries(test_kata_backend_abuse_corpus_linux PRIVATE
+      agentengine::core agentengine::kata_backend agentengine_warnings)
+    add_test(NAME test_kata_backend_abuse_corpus_linux COMMAND test_kata_backend_abuse_corpus_linux)
+    # Several real VM boots plus a deliberate positive-control wall_ms=3000 case -- generous but
+    # bounded, same posture as this suite's other Kata tests.
+    set_tests_properties(test_kata_backend_abuse_corpus_linux PROPERTIES TIMEOUT 180 RUN_SERIAL TRUE)
   endif()
 endif()
 

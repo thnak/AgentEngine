@@ -76,7 +76,51 @@
 // `cap::SandboxMount`/`cap::SandboxNetOut` gets byte-for-byte the same behavior as before this Slice,
 // unchanged.
 //
-// Still NOT done, unchanged from Slice 1/2, named honestly rather than silently assumed:
+// SLICE 4 (2026-08-24) -- 008 §9 G1/G2 promotion-gate evidence (partial): the first abuse-corpus test
+// for this backend, `tests/test_kata_backend_abuse_corpus_linux.cpp`. This slice began as an attempt
+// to close the `exec_outcome_class::oom` gap named below via an exit-code-137 heuristic (mirroring
+// `LinuxNativeJailBackend`'s own 128+signal fallback), but an independent red-team pass against that
+// design (`decisions/ADR-088-kata-backend-abuse-corpus.md` §3) found it FATAL: native-jail's heuristic
+// rests on a documented Linux kernel `wait()` fact about a process THIS backend's own `waitpid()`
+// directly reaps; KataBackend's `outcome.exit_code` instead reflects the HOST-side `ctr` CLI's own
+// exit, three RPC hops removed from the guest's actual death (guest kernel -> kata-agent ->
+// containerd-shim-kata-v2 -> containerd daemon -> `ctr`), with no source in this repo confirming any
+// hop preserves the 128+signal convention, no fallback for the SIGKILL-direct-to-`ctr` case (exit_code
+// stays -1, never 137), and no documented default guest-VM memory size to size a positive control
+// against. **Rejected, not shipped** -- `exec_outcome_class::oom` remains unreachable for this
+// backend, still a named REAL GAP below, now with the investigation recorded rather than silently
+// absent. `cap::SandboxMount`-shaped speculative fixes without a verifiable signal are exactly the
+// kind of decorative-not-real containment this project's "no vacuous claims" posture rejects.
+//
+// The SAME red-team pass surfaced a genuinely separate, previously-undisclosed BLOCKING gap while
+// reading `exec()`'s timeout path: `run_ctr()`'s own `kill(pid, SIGKILL)` on a `wall_ms` timeout only
+// terminates the HOST-side `ctr` CLI wrapper process -- it has no host-visible pid for the GUEST-side
+// process that CLI was attached to, which previously kept running orphaned inside the persistent
+// `sleep infinity` container until a LATER exec()/destroy() call happened to reap it.
+// `exec_outcome_class::timeout` was being returned without the workload having actually stopped --
+// undermining any G2 containment claim built on it. **Fixed this slice**: `exec()`'s timeout branch
+// now also issues a best-effort `ctr tasks kill --exec-id <id> --signal SIGKILL <container>` against
+// the SAME `--exec-id` the timed-out call minted, targeting the guest process directly rather than
+// only its host-side CLI wrapper. Like every `ctr` CLI surface this file assumes, the exact flag
+// syntax is NOT independently re-verified against a live Kata deployment this session (none
+// reachable) -- a wrong assumption here fails into a stderr log line, not silently.
+//
+// The new abuse-corpus test covers, each with a positive control per 008 §9 G2:
+//   - infinite loop / `wall_ms` timeout -- now also proves the guest-side kill above actually stops
+//     the workload (a heartbeat file the spin loop increments stops changing after the timeout fires),
+//     not merely that the host-side CLI call returned.
+//   - unbounded output / `output_bytes` -- captured-stdout-never-exceeds-cap only, the same claim
+//     shape as `LinuxNativeJailBackend`'s own corpus; does NOT claim the guest producer process itself
+//     is killed (closing the host read pipe likely surfaces as an RPC-layer error to `ctr`, not
+//     necessarily a guest-visible EPIPE -- the SAME class of host/guest orphan risk as the timeout
+//     case above, named here but NOT fixed this pass, scope-bounded to the timeout path only).
+//   - fork bomb / `pids` -- deliberately NOT a containment claim: `ResourceLimits::pids` has no
+//     mechanism wired for this backend (unchanged gap, see below), so the corpus documents the
+//     absence with a bounded, non-destructive probe rather than silently omitting the case or
+//     fabricating a containment assertion nothing backs.
+//   - OOM / `memory_bytes` -- NOT covered; no reliable classification signal exists (see above).
+//
+// Still NOT done, named honestly rather than silently assumed:
 //
 //   - `ExecRequest::source` is, like `LinuxNativeJailBackend`'s own M2-only scope
 //     (linux_native_jail_backend.hpp), treated as a shell command line (`/bin/sh -c <source>`) the
@@ -84,8 +128,11 @@
 //   - GPU passthrough (Kata's headline capability) is explicitly OUT of scope -- the design draft's
 //     own C3 finding named this as needing a real `capability_kind` this codebase does not have yet
 //     and deliberately declined to add without a real consumer.
-//   - No abuse-corpus/G1-G8 promotion-gate evidence exists for this backend yet -- that is real,
-//     separate work this Slice does not claim.
+//   - `exec_outcome_class::oom` is unreachable for this backend -- investigated and rejected this
+//     slice (see SLICE 4 above), not merely unattempted.
+//   - The unbounded-output guest-process orphan risk named in SLICE 4 above is disclosed, not fixed.
+//   - `ResourceLimits::pids`/`fds`/`disk_bytes`/`net_bytes` remain unenforced (Slice 2's own gap,
+//     unchanged) -- the abuse-corpus fork-bomb case documents this rather than closing it.
 //
 // Reachable only via `register_hardware_isolation_backend()` (`named_only`,
 // ADR-080/microvm-first-party-backend-design-draft.md finding #1) -- a host must opt a session into

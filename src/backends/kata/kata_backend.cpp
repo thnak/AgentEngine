@@ -351,6 +351,28 @@ result<ExecOutcome> KataBackend::exec(SandboxHandle& handle, ExecRequest const& 
     result_out.stderr_text = outcome->stderr_text;
     if (outcome->timed_out) {
         result_out.klass = exec_outcome_class::timeout;
+        // SLICE 4 (2026-08-24) fix -- real gap found by this pass's own red-team review
+        // (decisions/ADR-088-...md §3 finding #7, BLOCKING): the `kill(pid, SIGKILL)` inside
+        // run_ctr()'s own timeout path above only terminates the HOST-side `ctr` CLI wrapper
+        // process this backend posix_spawn'd -- it has no host-visible pid for the GUEST-side
+        // process that CLI was attached to. Before this fix, that guest process kept running
+        // orphaned inside the persistent `sleep infinity` container, invisible to the caller, until
+        // a LATER exec()/destroy() call happened to reap it -- `exec_outcome_class::timeout` was
+        // being returned without the workload actually having stopped, undermining any G2
+        // containment claim built on it. Best-effort: ask containerd to kill the guest-side process
+        // directly by the SAME --exec-id this call minted above. NOT independently re-verified
+        // against a live Kata deployment this session (none reachable) -- if the exact `ctr` CLI
+        // surface assumed here turns out wrong, this call fails into the log line below rather than
+        // blocking the (already-decided) `timeout` classification from being returned.
+        auto kill_outcome = run_ctr(
+            {"ctr", "tasks", "kill", "--exec-id", exec_id, "--signal", "SIGKILL", inst.container_id});
+        if (!kill_outcome.has_value() || kill_outcome->exit_code != 0) {
+            std::fprintf(stderr,
+                         "kata_backend: exec(%s) timed out and the best-effort guest-side kill of "
+                         "--exec-id %s also did not report success -- the guest workload may still "
+                         "be running orphaned inside container %s\n",
+                         handle.opaque_id.c_str(), exec_id.c_str(), inst.container_id.c_str());
+        }
     } else {
         result_out.klass = outcome->exit_code == 0 ? exec_outcome_class::ok : exec_outcome_class::crash;
     }
