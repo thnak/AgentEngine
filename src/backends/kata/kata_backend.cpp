@@ -13,16 +13,25 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <optional>
 #include <random>
 #include <sstream>
+#include <tuple>
 #include <variant>
 #include <vector>
+
+#include "agentengine/core/json_value.hpp"
+#include "agentengine/sandbox/net_egress_proxy.hpp"
 
 extern char** environ;
 
 namespace agentengine::kata {
 
 namespace {
+
+namespace fs = std::filesystem;
 
 // Red-team finding #1 (BLOCKING, verified by execution -- a 200MB guest `exec()` output landed in
 // full in host RSS with no cap): matches `LinuxNativeJailBackend::drain_pipe_bounded()`'s own
@@ -71,9 +80,19 @@ struct ProcessOutcome {
 // constants but are now caller-overridable -- `KataBackend::exec()`/`destroy()` pass
 // `SandboxSpec::limits.wall_ms`/`output_bytes` through when an `Instance` was created with them set
 // (kata_backend.hpp's own header comment has the full mapping).
+//
+// SLICE 9/10 (2026-08-24): despite the name, this helper is generic over any `argv[0]` -- SLICE 1-8
+// only ever spawned `ctr`, but `create()`/`destroy()` now also spawn `ip`, `cnitool`, and `nft` for
+// the `--config`-mode rootfs/netns/CNI/nftables pipeline (ADR-093). `extra_env`, when non-empty,
+// gives the child THIS backend's own explicit key=value pairs (e.g. `cnitool`'s `CNI_PATH`/
+// `NETCONFPATH`) IN ADDITION TO this process's ambient environment, rather than requiring the caller
+// to mutate this process's own `environ` (not thread-safe against concurrent `posix_spawn` calls, and
+// a wrong "the source of authority is inherited host env state" posture -- I2: this backend's own
+// configuration should be what selects a CNI plugin directory, not ambient process state).
 [[nodiscard]] result<ProcessOutcome> run_ctr(std::vector<std::string> const& args,
                                               int timeout_seconds = kProcessTimeoutSeconds,
-                                              std::size_t output_cap_bytes = kOutputSafetyCapBytes) {
+                                              std::size_t output_cap_bytes = kOutputSafetyCapBytes,
+                                              std::vector<std::string> const& extra_env = {}) {
     std::array<int, 2> out_pipe{-1, -1};
     std::array<int, 2> err_pipe{-1, -1};
     if (pipe2(out_pipe.data(), O_CLOEXEC) != 0) {
@@ -107,8 +126,19 @@ struct ProcessOutcome {
     for (auto const& a : args) argv.push_back(const_cast<char*>(a.c_str()));
     argv.push_back(nullptr);
 
+    // SLICE 9/10: build an explicit envp only when `extra_env` is non-empty -- every pre-existing
+    // call site (empty `extra_env`) keeps using `environ` directly, byte-for-byte the same spawn
+    // this function has always done, no behavior change for SLICE 1-8's own call sites.
+    std::vector<char*> envp;
+    if (!extra_env.empty()) {
+        for (char** e = environ; e != nullptr && *e != nullptr; ++e) envp.push_back(*e);
+        for (auto const& kv : extra_env) envp.push_back(const_cast<char*>(kv.c_str()));
+        envp.push_back(nullptr);
+    }
+    char** const envp_arg = extra_env.empty() ? environ : envp.data();
+
     pid_t pid = -1;
-    int const spawn_rc = posix_spawnp(&pid, argv[0], &actions, nullptr, argv.data(), environ);
+    int const spawn_rc = posix_spawnp(&pid, argv[0], &actions, nullptr, argv.data(), envp_arg);
     posix_spawn_file_actions_destroy(&actions);
     close(out_pipe[1]);
     close(err_pipe[1]);
@@ -116,8 +146,8 @@ struct ProcessOutcome {
         close(out_pipe[0]);
         close(err_pipe[0]);
         return std::unexpected(error{failure_class::fatal,
-                                      std::string("kata_backend: posix_spawnp(ctr) failed: ") +
-                                          std::strerror(spawn_rc),
+                                      std::string("kata_backend: posix_spawnp(") + argv[0] +
+                                          ") failed: " + std::strerror(spawn_rc),
                                       "kata_backend.spawn_failed"});
     }
 
@@ -243,6 +273,230 @@ struct ProcessOutcome {
     return oss.str();
 }
 
+// SLICE 10: `VerifiedEndpoint::ipv4_host_order` -> dotted-decimal, for both the `/etc/hosts` pin and
+// the `nft` rule's `ip daddr` match -- neither consumer wants the raw integer.
+[[nodiscard]] std::string ipv4_to_dotted(std::uint32_t host_order) {
+    std::ostringstream oss;
+    oss << ((host_order >> 24) & 0xFFu) << '.' << ((host_order >> 16) & 0xFFu) << '.'
+        << ((host_order >> 8) & 0xFFu) << '.' << (host_order & 0xFFu);
+    return oss.str();
+}
+
+// `NetPolicy::allowlist` entries are `"host:port:scheme"` (sandbox.hpp's own doc comment) -- exactly
+// two colons, `host` itself must not embed one (no IPv6-literal support in this grammar, matching
+// what the field's own comment promises; a bracketed `[::1]:port:scheme` form is not accepted).
+[[nodiscard]] result<std::tuple<std::string, std::uint16_t, std::string>> parse_allowlist_entry(
+    std::string const& raw) {
+    auto const fail = [&](char const* why) {
+        return std::unexpected(error{failure_class::policy,
+                                      "kata_backend: NetPolicy::allowlist entry '" + raw +
+                                          "' is not valid 'host:port:scheme': " + why,
+                                      "kata_backend.allowlist_entry_malformed"});
+    };
+    std::size_t const c1 = raw.find(':');
+    if (c1 == std::string::npos) return fail("missing ':' separators");
+    std::size_t const c2 = raw.find(':', c1 + 1);
+    if (c2 == std::string::npos) return fail("missing ':' separators");
+    if (raw.find(':', c2 + 1) != std::string::npos) return fail("more than two ':' separators");
+
+    std::string const host = raw.substr(0, c1);
+    std::string const port_str = raw.substr(c1 + 1, c2 - c1 - 1);
+    std::string const scheme = raw.substr(c2 + 1);
+    if (host.empty() || port_str.empty() || scheme.empty()) return fail("an empty host/port/scheme field");
+
+    std::uint16_t port = 0;
+    {
+        std::size_t consumed = 0;
+        unsigned long value = 0;
+        try {
+            value = std::stoul(port_str, &consumed);
+        } catch (...) {
+            return fail("port is not a number");
+        }
+        if (consumed != port_str.size() || value == 0 || value > 65535) return fail("port out of range");
+        port = static_cast<std::uint16_t>(value);
+    }
+    return std::make_tuple(host, port, scheme);
+}
+
+// SLICE 9: everything `--config` mode needs `create()` to have already decided, kept in one place
+// rather than threading eight separate parameters through `build_oci_spec_json()`.
+struct OciSpecInputs {
+    std::string rootfs_path;
+    std::vector<MountSpec> const* mounts;
+    std::uint64_t memory_bytes;
+    std::uint32_t fds;
+    std::string cgroups_path;
+    std::optional<std::string> netns_path;       // unset -> fresh, empty netns (deny_all posture);
+                                                   // set -> join the pre-populated netns SLICE 10 built.
+    std::optional<std::string> hosts_file_path;  // set only when SLICE 10's allowlist wrote DNS pins.
+};
+
+// Hand-authors a complete OCI runtime-spec JSON document -- `--config` mode's `oci.WithSpecFromFile`
+// (containerd's `run_unix.go`, confirmed this pass) applies NO other SpecOpts, so this function alone
+// is responsible for everything the convenience-flag path previously got from
+// `oci.WithDefaultSpecForPlatform`/`oci.WithDefaultUnixDevices` plus this backend's own `--mount`/
+// `--memory-limit`/`--rlimit-nofile` flags. Default namespaces/capabilities/masked-and-readonly-paths/
+// mounts/rlimits below are copied from containerd's real `pkg/oci/spec.go`
+// (`populateDefaultUnixSpec`/`defaultUnixCaps`/`defaultUnixNamespaces`) and `pkg/oci/mounts.go`
+// (`defaultMounts`), fetched and read directly this pass -- real parity with what every container
+// already gets via the convenience-flag path today, not a hand-invented, narrower security posture.
+// Device-cgroup allowlisting beyond the base default-deny rule (`oci.WithDefaultUnixDevices`) is
+// deliberately NOT reproduced -- for a Kata guest, `/dev` is populated by the GUEST's own kernel at
+// boot, not governed by the HOST's device-cgroup rules the way a runc container's shared-kernel `/dev`
+// is, so that specific default carries far less weight here; named as a scoped, deliberate difference
+// from byte-for-byte parity, not an oversight.
+[[nodiscard]] std::string build_oci_spec_json(OciSpecInputs const& in) {
+    using agentengine::json::Value;
+
+    std::vector<Value> caps;
+    for (char const* c : {"CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_FSETID", "CAP_FOWNER", "CAP_MKNOD",
+                           "CAP_NET_RAW", "CAP_SETGID", "CAP_SETUID", "CAP_SETFCAP", "CAP_SETPCAP",
+                           "CAP_NET_BIND_SERVICE", "CAP_SYS_CHROOT", "CAP_KILL", "CAP_AUDIT_WRITE"}) {
+        caps.push_back(Value::make_string(c));
+    }
+    Value const capabilities = Value::make_object({
+        {"bounding", Value::make_array(caps)},
+        {"permitted", Value::make_array(caps)},
+        {"effective", Value::make_array(caps)},
+    });
+
+    // SLICE 7's `fds` -> `RLIMIT_NOFILE` mapping, carried into the spec's own `process.rlimits`
+    // field instead of a `--rlimit-nofile` flag; 1024/1024 is containerd's own default when unset
+    // (`populateDefaultUnixSpec`), not a value this backend invented.
+    std::uint64_t const rlimit_nofile = in.fds > 0 ? in.fds : 1024;
+    Value const rlimits = Value::make_array({Value::make_object({
+        {"type", Value::make_string("RLIMIT_NOFILE")},
+        {"hard", Value::make_number(static_cast<double>(rlimit_nofile))},
+        {"soft", Value::make_number(static_cast<double>(rlimit_nofile))},
+    })});
+
+    Value const process = Value::make_object({
+        {"terminal", Value::make_bool(false)},
+        {"user", Value::make_object({{"uid", Value::make_number(0)}, {"gid", Value::make_number(0)}})},
+        {"args", Value::make_array({Value::make_string("sleep"), Value::make_string("infinity")})},
+        {"cwd", Value::make_string("/")},
+        {"env", Value::make_array({Value::make_string(
+             "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")})},
+        {"noNewPrivileges", Value::make_bool(true)},
+        {"capabilities", capabilities},
+        {"rlimits", rlimits},
+    });
+
+    Value const root = Value::make_object({
+        {"path", Value::make_string(in.rootfs_path)},
+        {"readonly", Value::make_bool(false)},
+    });
+
+    std::vector<Value> mounts_json;
+    auto const push_mount = [&](std::string dest, std::string type, std::string source,
+                                 std::vector<std::string> options) {
+        std::vector<Value> opts_json;
+        opts_json.reserve(options.size());
+        for (auto& o : options) opts_json.push_back(Value::make_string(std::move(o)));
+        mounts_json.push_back(Value::make_object({
+            {"destination", Value::make_string(std::move(dest))},
+            {"type", Value::make_string(std::move(type))},
+            {"source", Value::make_string(std::move(source))},
+            {"options", Value::make_array(std::move(opts_json))},
+        }));
+    };
+    push_mount("/proc", "proc", "proc", {"nosuid", "noexec", "nodev"});
+    push_mount("/dev", "tmpfs", "tmpfs", {"nosuid", "strictatime", "mode=755", "size=65536k"});
+    push_mount("/dev/pts", "devpts", "devpts",
+               {"nosuid", "noexec", "newinstance", "ptmxmode=0666", "mode=0620", "gid=5"});
+    push_mount("/dev/shm", "tmpfs", "shm", {"nosuid", "noexec", "nodev", "mode=1777", "size=65536k"});
+    push_mount("/dev/mqueue", "mqueue", "mqueue", {"nosuid", "noexec", "nodev"});
+    push_mount("/sys", "sysfs", "sysfs", {"nosuid", "noexec", "nodev", "ro"});
+    push_mount("/run", "tmpfs", "tmpfs", {"nosuid", "strictatime", "mode=755", "size=65536k"});
+    if (in.hosts_file_path.has_value()) {
+        // SLICE 10: pins the guest's OWN DNS resolution of each allowlisted hostname to the EXACT IP
+        // this backend resolved+validated+firewalled at create() time -- without this, the guest's
+        // independent resolution of the same hostname could legitimately return a DIFFERENT IP
+        // (round-robin/geo DNS, a different resolver), which the nftables allowlist (scoped to the
+        // create()-time-resolved IP specifically) would then correctly, but unhelpfully, block. A
+        // real correctness gap found during this design, not copied from an existing pattern.
+        push_mount("/etc/hosts", "bind", *in.hosts_file_path, {"rbind", "ro"});
+    }
+    if (in.mounts != nullptr) {
+        for (MountSpec const& m : *in.mounts) {
+            // `MountSpec::source` as a `BlobRef`, and any ',' in either path, are already rejected by
+            // `create()` before this function ever runs -- `std::get` here is safe by that contract,
+            // not re-validated. The ',' check is now VESTIGIAL for injection purposes specifically
+            // (each field is its own escaped JSON string; the old single delimited `--mount` value
+            // this defended is gone) but is kept anyway: no legitimate absolute path needs a literal
+            // comma, and silently widening what create() accepts without a reason is its own kind of
+            // regression risk.
+            std::string const& host_path = std::get<std::string>(m.source);
+            push_mount(m.guest_path, "bind", host_path, {"rbind", m.read_write ? "rw" : "ro"});
+        }
+    }
+
+    std::vector<Value> namespaces_json;
+    namespaces_json.push_back(Value::make_object({{"type", Value::make_string("pid")}}));
+    namespaces_json.push_back(Value::make_object({{"type", Value::make_string("ipc")}}));
+    namespaces_json.push_back(Value::make_object({{"type", Value::make_string("uts")}}));
+    namespaces_json.push_back(Value::make_object({{"type", Value::make_string("mount")}}));
+    // The network namespace entry is ALWAYS present -- omitting it entirely would join the HOST's
+    // own network namespace (OCI runtime-spec semantics: a namespace type absent from this list means
+    // "inherit the runtime's own", not "none"), a full ambient-network regression from today's
+    // behavior. `netns_path` unset -> a FRESH, empty netns (today's `deny_all` posture: isolated,
+    // nothing bridged in -- matches what `oci.WithDefaultSpecForPlatform`'s own default namespace
+    // list already produces for every container the convenience-flag path creates). `netns_path` set
+    // -> join the pre-created, CNI-populated netns SLICE 10 built before this spec was written.
+    if (in.netns_path.has_value()) {
+        namespaces_json.push_back(Value::make_object(
+            {{"type", Value::make_string("network")}, {"path", Value::make_string(*in.netns_path)}}));
+    } else {
+        namespaces_json.push_back(Value::make_object({{"type", Value::make_string("network")}}));
+    }
+
+    std::vector<Value> masked_paths;
+    for (char const* p : {"/proc/acpi", "/proc/asound", "/proc/kcore", "/proc/keys",
+                           "/proc/latency_stats", "/proc/timer_list", "/proc/timer_stats",
+                           "/proc/sched_debug", "/sys/firmware", "/sys/devices/virtual/powercap",
+                           "/proc/scsi"}) {
+        masked_paths.push_back(Value::make_string(p));
+    }
+    std::vector<Value> readonly_paths;
+    for (char const* p : {"/proc/bus", "/proc/fs", "/proc/irq", "/proc/sys", "/proc/sysrq-trigger"}) {
+        readonly_paths.push_back(Value::make_string(p));
+    }
+
+    std::vector<std::pair<std::string, Value>> resources_members;
+    resources_members.emplace_back(
+        "devices", Value::make_array({Value::make_object(
+                       {{"allow", Value::make_bool(false)}, {"access", Value::make_string("rwm")}})}));
+    if (in.memory_bytes > 0) {
+        resources_members.emplace_back(
+            "memory", Value::make_object(
+                          {{"limit", Value::make_number(static_cast<double>(in.memory_bytes))}}));
+    }
+
+    Value const linux_section = Value::make_object({
+        {"namespaces", Value::make_array(std::move(namespaces_json))},
+        {"maskedPaths", Value::make_array(std::move(masked_paths))},
+        {"readonlyPaths", Value::make_array(std::move(readonly_paths))},
+        {"cgroupsPath", Value::make_string(in.cgroups_path)},
+        {"resources", Value::make_object(std::move(resources_members))},
+    });
+
+    Value const spec = Value::make_object({
+        {"ociVersion", Value::make_string("1.0.2")},
+        {"process", process},
+        {"root", root},
+        {"mounts", Value::make_array(std::move(mounts_json))},
+        {"linux", linux_section},
+    });
+    return agentengine::json::dump(spec);
+}
+
+// SLICE 10: the env pair `cnitool` needs on every invocation -- built once per call site rather than
+// duplicated at each of create()'s/destroy()'s several `cnitool` call sites.
+[[nodiscard]] std::vector<std::string> cni_env(std::string const& plugin_dir, std::string const& conf_dir) {
+    return {"CNI_PATH=" + plugin_dir, "NETCONFPATH=" + conf_dir};
+}
+
 }  // namespace
 
 result<SandboxHandle> KataBackend::create(SandboxSpec const& spec, EffectContext& /*ctx*/) {
@@ -254,94 +508,233 @@ result<SandboxHandle> KataBackend::create(SandboxSpec const& spec, EffectContext
         return std::unexpected(authorized.error());
     }
 
-    // Slice 2: NetPolicy -- deny_all is the only value this backend can currently honor (see this
-    // file's header comment). Fail closed rather than silently granting deny_all anyway when a
-    // caller asked for something this backend cannot yet deliver.
-    if (!spec.net.deny_all || !spec.net.allowlist.empty()) {
-        return std::unexpected(error{
-            failure_class::policy,
-            "kata_backend: NetPolicy with deny_all=false or a nonempty allowlist is not supported "
-            "yet -- this backend has no CNI/egress-proxy wired to honor a real allowlist (Slice 2 "
-            "scope gap, see kata_backend.hpp)",
-            "kata_backend.net_allowlist_unsupported"});
-    }
-
-    // Slice 2: MountSpec -- each host-path grant becomes a real `--mount` flag; a BlobRef source
-    // fails closed, matching LinuxNativeJailBackend::create()'s identical posture for the same
-    // *check* -- but NOT the same safety margin: `LinuxNativeJailBackend` passes host/guest paths
-    // straight into a `::mount()` syscall (two separate arguments, no delimited-string grammar to
-    // exploit); this backend must instead build a SINGLE comma-delimited `ctr run --mount
-    // type=bind,src=...,dst=...,options=...` value, which `ctr`'s own parser reads as repeated
-    // `key=value` pairs with LAST-WINS semantics. Red-team finding #1 (BLOCKING, verified by
-    // execution): a `guest_path` (or `source`) containing an embedded `,src=...,dst=...` segment
-    // silently overrode the caller's own intended `src`/`dst`, mounting an ARBITRARY host path the
-    // caller never authorized (reproduced directly: `guest_path =
-    // "/mnt/intended,src=/etc,dst=/mnt/hijacked"` bind-mounted the host's real `/etc` into the
-    // guest, readable via `cat /mnt/hijacked/passwd`) -- a full I2 violation (ambient authority over
-    // any host path an attacker names) reachable through a spec field this backend claims to
-    // enforce. Fixed by rejecting a comma in either path outright: `ctr`'s mount-value grammar has
-    // no escaping mechanism, so refusing the one delimiter it splits on removes the injection
-    // surface entirely rather than trying to escape it. (The `options=rbind:<ro|rw>` segment itself
-    // is NOT similarly injectable -- it is always appended last, and `ctr`'s last-wins parsing means
-    // an embedded `options=` earlier in the string cannot escalate ro to rw. Only the source-path
-    // hijack was real.)
-    std::vector<std::string> mount_args;
+    // Slice 2 check, unchanged in substance (just no longer building a delimited `--mount` flag
+    // value out of it -- SLICE 9's spec builder takes structured MountSpec objects directly):
+    // MountSpec::source as a BlobRef fails closed, and a ',' in either path is rejected outright.
     for (MountSpec const& mount : spec.mounts) {
-        std::string const* host_path = std::get_if<std::string>(&mount.source);
-        if (host_path == nullptr) {
+        if (std::get_if<std::string>(&mount.source) == nullptr) {
             return std::unexpected(error{
                 failure_class::policy,
                 "kata_backend: MountSpec::source as a BlobRef is not supported by KataBackend yet "
                 "(host paths only, same scope gap as LinuxNativeJailBackend)",
                 "kata_backend.blob_mount_unsupported"});
         }
-        if (host_path->find(',') != std::string::npos || mount.guest_path.find(',') != std::string::npos) {
+        std::string const& host_path = std::get<std::string>(mount.source);
+        if (host_path.find(',') != std::string::npos || mount.guest_path.find(',') != std::string::npos) {
             return std::unexpected(error{
                 failure_class::policy,
                 "kata_backend: MountSpec host path or guest_path contains ',' -- rejected outright "
-                "rather than risking injection into ctr's comma-delimited --mount value grammar "
                 "(no legitimate absolute path needs a literal comma)",
                 "kata_backend.mount_path_invalid"});
         }
-        mount_args.push_back("--mount");
-        mount_args.push_back("type=bind,src=" + *host_path + ",dst=" + mount.guest_path +
-                              ",options=rbind:" + (mount.read_write ? "rw" : "ro"));
     }
 
-    // Slice 2: ResourceLimits -- memory_bytes maps directly to a real ctr flag. Slice 7 (2026-08-24)
-    // adds fds -> --rlimit-nofile (docs/research/2026-08-24-containerd-ctr-run-config-vs-convenience-
-    // flags.md and decisions/ADR-090-...md's own investigation confirmed this flag genuinely exists
-    // in `platformRunFlags`, unlike `pids`, and works within this SAME convenience-flag path -- no
-    // `--config` rewrite needed). cpu_ms/pids/disk_bytes/net_bytes still have no mechanism wired
-    // (kata_backend.hpp's header comment names each one honestly rather than silently ignoring them).
-    std::vector<std::string> limit_args;
-    if (spec.limits.memory_bytes > 0) {
-        limit_args.push_back("--memory-limit");
-        limit_args.push_back(std::to_string(spec.limits.memory_bytes));
+    // SLICE 9/10 ordering note: NetPolicy validation -- including allowlist parsing and DNS
+    // resolution -- runs BEFORE any resource is acquired (rootfs mount, netns, CNI). A caller who
+    // asked for something this backend cannot honor fails fast, the same low cost Slice 2's original
+    // convenience-flag-path check had, rather than paying for a full `ctr images mount` first only to
+    // reject the request afterward.
+    bool const wants_network = !spec.net.deny_all || !spec.net.allowlist.empty();
+    if (wants_network && spec.capabilities.sandbox_net_out_grants().empty()) {
+        // Red-team finding (BLOCKING, found against this exact Slice -- see decisions/ADR-093-
+        // kata-backend-netpolicy-allowlist-config-cni.md §5): `authorize_spec()` (sandbox.hpp)
+        // deliberately SKIPS its own `cap::SandboxNetOut` coverage check when a caller holds ZERO
+        // `SandboxNetOut` grants at all -- a documented "opt-out preserved" backward-compatibility
+        // shape for callers who never adopted the capability system at all (sandbox.hpp's own
+        // comment, proven live by `test_sandbox_capability_authorization.cpp`'s own G1 case). Before
+        // this Slice that vacuous skip was harmless HERE specifically, because `KataBackend::create()`
+        // itself ALWAYS failed closed on any non-`deny_all` `NetPolicy` regardless of capabilities
+        // (Slice 2/3) -- THIS backend's own unconditional check was the real backstop, not
+        // `authorize_spec()`'s. Slice 10 removed that backstop and replaced it with a mechanism that
+        // acts on `spec.net` directly: without this check, a caller could reach REAL network egress
+        // via `spec.net.allowlist` alone, with NO `cap::SandboxNetOut` grant ever held -- ambient
+        // authority over a real network path, a direct I2 violation. This restores this backend's own
+        // backstop, scoped to the zero-grant case only: `authorize_spec()` above already rejects a
+        // request that IS covered by some grant but not this exact one (`sandbox.net_not_authorized`),
+        // so only the "zero grants at all" gap needs closing here, not coverage logic again.
+        return std::unexpected(error{
+            failure_class::policy,
+            "kata_backend: NetPolicy requests real network access (deny_all=false or a nonempty "
+            "allowlist) but the caller holds no cap::SandboxNetOut grant at all -- this backend's "
+            "NetPolicy mechanism is real as of Slice 10 and can no longer rely on authorize_spec()'s "
+            "own opt-out-when-no-grants shape as an implicit backstop",
+            "kata_backend.net_capability_required"});
     }
-    if (spec.limits.fds > 0) {
-        // A single number (no `soft:hard` colon) sets BOTH the soft and hard RLIMIT_NOFILE to the
-        // same value -- confirmed against containerd's real `run_unix.go` parsing (`strings.Cut(c,
-        // ":")`; `!found` falls back to `hardS = softS`), not guessed from `ctr run --help` usage
-        // text alone. Governs the container's own initial process (this `create()` call's `sleep
-        // infinity`) for certain; whether a LATER `ctr tasks exec`-spawned process (this backend's
-        // real per-call workload path) inherits it is NOT independently verified against a live Kata
-        // deployment this session (none reachable) -- disclosed, not assumed, same posture as every
-        // other `ctr` CLI behavior this file depends on without a live deployment to confirm it
-        // against.
-        limit_args.push_back("--rlimit-nofile");
-        limit_args.push_back(std::to_string(spec.limits.fds));
+    // NOTE: "deny_all == false with an EMPTY allowlist" (unrestricted egress -- this backend can only
+    // ever enforce a positive allowlist) is NOT separately checked here. It is provably unreachable
+    // at this point: with zero cap::SandboxNetOut grants, the capability check just above already
+    // rejected it (kata_backend.net_capability_required); with any grant present, authorize_spec()
+    // itself (sandbox.hpp, called at the very top of this function, before this line ever runs) has
+    // its own identical rejection for exactly this shape ("sandbox.net_not_authorized" -- "deny_all
+    // == false with an EMPTY allowlist means unrestricted egress requested... no finite grant can
+    // authorize that"). A third, redundant check here would be dead code on every real call path --
+    // this project's own "don't validate scenarios that can't happen" discipline, not an oversight.
+    //
+    // SLICE 10 (ADR-093): resolve each allowlist entry to a verified IPv4 literal via the SAME
+    // resolve_and_validate() HostEgressProxy itself uses (SSRF-safe: blocks loopback/link-local/
+    // RFC1918/CGNAT/multicast/reserved/metadata-address ranges) -- reused, not re-implemented. Any
+    // entry that fails to parse or resolve fails create() closed, before any resource is acquired.
+    std::vector<std::tuple<std::string, std::string, std::uint16_t>> resolved;  // host, ip, port
+    std::ostringstream hosts_content;
+    hosts_content << "127.0.0.1 localhost\n::1 localhost\n";
+    if (wants_network) {
+        for (std::string const& raw_entry : spec.net.allowlist) {
+            auto parsed = parse_allowlist_entry(raw_entry);
+            if (!parsed.has_value()) return std::unexpected(parsed.error());
+            auto const& [host, port, scheme] = *parsed;
+            (void)scheme;  // this backend enforces TCP host:port reachability only -- the scheme
+                            // field is recorded in the allowlist entry for the caller's own
+                            // documentation, matching HostEgressProxy's own posture of trusting a
+                            // grant's scheme field rather than re-deriving it here.
+            auto verified = agentengine::sandbox::resolve_and_validate(host, port);
+            if (!verified.has_value()) {
+                return std::unexpected(error{
+                    failure_class::policy,
+                    "kata_backend: NetPolicy::allowlist entry '" + raw_entry +
+                        "' failed to resolve to a permitted address: " + verified.error().message,
+                    "kata_backend.allowlist_entry_blocked"});
+            }
+            std::string const ip = ipv4_to_dotted(verified->ipv4_host_order);
+            resolved.emplace_back(host, ip, verified->port);
+            hosts_content << ip << ' ' << host << '\n';
+        }
     }
 
     std::string const id = fresh_id("ae-kata");
-    std::vector<std::string> args{"ctr", "run", "-d", "--runtime", runtime_type_};
-    args.insert(args.end(), mount_args.begin(), mount_args.end());
-    args.insert(args.end(), limit_args.begin(), limit_args.end());
-    args.insert(args.end(), {image_, id, "sleep", "infinity"});
+    fs::path const workdir = fs::path("/run/agentengine-kata") / id;
+    fs::path const rootfs_dir = workdir / "rootfs";
+    std::error_code fs_ec;
 
-    auto outcome = run_ctr(args);
-    if (!outcome.has_value()) return std::unexpected(outcome.error());
-    if (outcome->exit_code != 0) {
+    // A cleanup lambda for every early-return path below -- rootfs/netns/CNI resources are acquired
+    // incrementally, and each failure path must unwind exactly what was acquired so far, never more
+    // (an `ip netns delete` before `ip netns add` ever ran is a harmless no-op error, but calling it
+    // unconditionally would mask a REAL failure's own error text in the logs with an irrelevant one).
+    bool netns_created = false;
+    bool cni_added = false;
+    std::optional<std::string> netns_path_for_cleanup;
+    auto const cleanup_partial = [&]() {
+        if (cni_added) {
+            (void)run_ctr({"cnitool", "del", cni_network_name_, *netns_path_for_cleanup},
+                           kProcessTimeoutSeconds, kOutputSafetyCapBytes,
+                           cni_env(cni_plugin_dir_, cni_conf_dir_));
+        }
+        if (netns_created) (void)run_ctr({"ip", "netns", "delete", id});
+        std::error_code ec;
+        fs::remove_all(workdir, ec);
+        (void)run_ctr({"ctr", "images", "unmount", rootfs_dir.string()});
+    };
+
+    fs::create_directories(rootfs_dir, fs_ec);
+    if (fs_ec) {
+        return std::unexpected(error{failure_class::fatal,
+                                      "kata_backend: failed to create rootfs mount directory " +
+                                          rootfs_dir.string() + ": " + fs_ec.message(),
+                                      "kata_backend.rootfs_dir_failed"});
+    }
+
+    // SLICE 9 (ADR-093 finding 2): `ctr images mount` pulls+unpacks `image_` if needed and mounts its
+    // rootfs at a caller-chosen path -- solves the exact chain-ID rootfs-prep gap ADR-090 found
+    // blocking `--config` mode for `pids`, via a subcommand that investigation's own session did not
+    // fetch (`cmd/ctr/commands/images/mount.go`).
+    auto mount_outcome = run_ctr({"ctr", "images", "mount", image_, rootfs_dir.string()});
+    if (!mount_outcome.has_value() || mount_outcome->exit_code != 0) {
+        std::error_code ec;
+        fs::remove_all(workdir, ec);
+        return std::unexpected(error{
+            failure_class::fatal,
+            "kata_backend: ctr images mount failed: " +
+                (mount_outcome.has_value() ? mount_outcome->stderr_text : mount_outcome.error().message),
+            "kata_backend.rootfs_mount_failed"});
+    }
+
+    std::optional<std::string> netns_path;
+    std::optional<std::string> hosts_file_path;
+
+    if (wants_network) {
+        fs::path const hosts_file = workdir / "hosts";
+        std::ofstream(hosts_file) << hosts_content.str();
+        hosts_file_path = hosts_file.string();
+
+        auto netns_outcome = run_ctr({"ip", "netns", "add", id});
+        if (!netns_outcome.has_value() || netns_outcome->exit_code != 0) {
+            cleanup_partial();
+            return std::unexpected(error{
+                failure_class::fatal,
+                "kata_backend: ip netns add failed: " +
+                    (netns_outcome.has_value() ? netns_outcome->stderr_text
+                                                : netns_outcome.error().message),
+                "kata_backend.netns_create_failed"});
+        }
+        netns_created = true;
+        netns_path = std::string("/var/run/netns/") + id;
+        netns_path_for_cleanup = netns_path;
+
+        // cnitool (github.com/containernetworking/cni/cnitool) -- a real, separately-installed
+        // reference CLI, NOT bundled with containerd/`ctr`. See this file's own header comment for
+        // why manual orchestration, run BEFORE `ctr run --config`, is required for Kata specifically.
+        auto cni_outcome = run_ctr({"cnitool", "add", cni_network_name_, *netns_path},
+                                    kProcessTimeoutSeconds, kOutputSafetyCapBytes,
+                                    cni_env(cni_plugin_dir_, cni_conf_dir_));
+        if (!cni_outcome.has_value() || cni_outcome->exit_code != 0) {
+            cleanup_partial();
+            return std::unexpected(error{
+                failure_class::fatal,
+                "kata_backend: cnitool add failed: " +
+                    (cni_outcome.has_value() ? cni_outcome->stderr_text : cni_outcome.error().message),
+                "kata_backend.cni_add_failed"});
+        }
+        cni_added = true;
+
+        // Default-deny egress inside the netns; loopback and the resolved allowlist IP:port pairs
+        // only. Rules live in this netns's own nftables namespace -- deleting the netns (destroy(),
+        // or this function's own cleanup_partial() on a later failure) discards them with it, no
+        // separate `nft delete` step needed. NOT independently verified against a live deployment
+        // this session (none reachable) -- the exact `nft` argv tokenization below (each clause as
+        // its own argv entry) is assumed to parse the same as a space-joined command line, matching
+        // every other `ctr` CLI assumption this file already discloses rather than hides.
+        std::vector<std::vector<std::string>> nft_cmds;
+        nft_cmds.push_back({"ip", "netns", "exec", id, "nft", "add", "table", "inet", "ae_netpolicy"});
+        nft_cmds.push_back({"ip", "netns", "exec", id, "nft", "add", "chain", "inet", "ae_netpolicy",
+                             "output", "{", "type", "filter", "hook", "output", "priority", "0", ";",
+                             "policy", "drop", ";", "}"});
+        nft_cmds.push_back({"ip", "netns", "exec", id, "nft", "add", "rule", "inet", "ae_netpolicy",
+                             "output", "oif", "lo", "accept"});
+        for (auto const& [host, ip, port] : resolved) {
+            (void)host;
+            nft_cmds.push_back({"ip", "netns", "exec", id, "nft", "add", "rule", "inet", "ae_netpolicy",
+                                 "output", "ip", "daddr", ip, "tcp", "dport", std::to_string(port),
+                                 "accept"});
+        }
+        for (auto const& cmd : nft_cmds) {
+            auto nft_outcome = run_ctr(cmd);
+            if (!nft_outcome.has_value() || nft_outcome->exit_code != 0) {
+                cleanup_partial();
+                return std::unexpected(error{
+                    failure_class::fatal,
+                    "kata_backend: nftables allowlist rule setup failed -- refusing to boot a guest "
+                    "with a requested network policy this backend could not actually install (fail "
+                    "closed, never fall back to unrestricted or silently-unenforced egress): " +
+                        (nft_outcome.has_value() ? nft_outcome->stderr_text
+                                                  : nft_outcome.error().message),
+                    "kata_backend.nft_setup_failed"});
+            }
+        }
+    }
+
+    OciSpecInputs const spec_inputs{rootfs_dir.string(),
+                                     &spec.mounts,
+                                     spec.limits.memory_bytes,
+                                     spec.limits.fds,
+                                     std::string("/agentengine-kata/") + id,
+                                     netns_path,
+                                     hosts_file_path};
+    std::string const spec_json = build_oci_spec_json(spec_inputs);
+    fs::path const spec_file = workdir / "config.json";
+    std::ofstream(spec_file) << spec_json;
+
+    auto outcome =
+        run_ctr({"ctr", "run", "-d", "--runtime", runtime_type_, "--config", spec_file.string(), id});
+    if (!outcome.has_value() || outcome->exit_code != 0) {
         // Red-team finding #2 (REAL GAP, verified by execution -- e.g. a nonsensically tiny
         // `memory_bytes` lets containerd register a container object before the Kata agent inside
         // the guest fails to actually create it; `ctr run` then exits nonzero, but the container
@@ -360,6 +753,7 @@ result<SandboxHandle> KataBackend::create(SandboxSpec const& spec, EffectContext
                           "containerd state directly\n",
                           id.c_str());
         }
+        cleanup_partial();
         return std::unexpected(error{
             failure_class::fatal,
             "kata_backend: ctr run failed (exit " + std::to_string(outcome->exit_code) +
@@ -375,7 +769,12 @@ result<SandboxHandle> KataBackend::create(SandboxSpec const& spec, EffectContext
     // small values, since cold start is "milliseconds" (traits, above) but not zero. `wall_ms` bounds
     // exec()/destroy() calls on an already-created instance ONLY, not create()'s own boot -- stated
     // explicitly here per the red-team's own recommendation, not left for a reader to infer.
-    Instance inst{id, 0, spec.limits.wall_ms, spec.limits.output_bytes};
+    Instance inst{id,
+                  0,
+                  spec.limits.wall_ms,
+                  spec.limits.output_bytes,
+                  rootfs_dir.string(),
+                  netns_created};
     instances_.emplace(id, std::move(inst));
     return SandboxHandle{id};
 }
@@ -483,6 +882,41 @@ void KataBackend::destroy(SandboxHandle& handle) {
                           id.c_str(), step[0].c_str(), step[1].c_str(), step[2].c_str());
         }
     }
+
+    // SLICE 9/10 cleanup, reverse creation order: rootfs unmount, then (if used) CNI del + netns
+    // delete. nftables rules inside the netns are discarded automatically when the netns itself is
+    // removed -- no separate `nft` cleanup call needed (SLICE 10's own header-comment claim, unverified
+    // against a live deployment this session, same disclosed posture as everything else here).
+    auto unmount_outcome =
+        run_ctr({"ctr", "images", "unmount", it->second.rootfs_dir}, timeout_seconds, output_cap);
+    if (!unmount_outcome.has_value() || unmount_outcome->exit_code != 0) {
+        std::fprintf(stderr,
+                      "kata_backend: destroy(%s): rootfs unmount ('ctr images unmount %s') did not "
+                      "succeed cleanly -- possible leaked host mount, see host state directly\n",
+                      id.c_str(), it->second.rootfs_dir.c_str());
+    }
+    std::error_code fs_ec;
+    fs::remove_all(fs::path("/run/agentengine-kata") / id, fs_ec);
+
+    if (it->second.net_created) {
+        std::string const netns_path = std::string("/var/run/netns/") + id;
+        auto cni_del = run_ctr({"cnitool", "del", cni_network_name_, netns_path}, timeout_seconds,
+                                output_cap, cni_env(cni_plugin_dir_, cni_conf_dir_));
+        if (!cni_del.has_value() || cni_del->exit_code != 0) {
+            std::fprintf(stderr,
+                          "kata_backend: destroy(%s): 'cnitool del' did not succeed cleanly -- "
+                          "possible leaked host network resource, see host state directly\n",
+                          id.c_str());
+        }
+        auto netns_del = run_ctr({"ip", "netns", "delete", id}, timeout_seconds, output_cap);
+        if (!netns_del.has_value() || netns_del->exit_code != 0) {
+            std::fprintf(stderr,
+                          "kata_backend: destroy(%s): 'ip netns delete' did not succeed cleanly -- "
+                          "possible leaked host network namespace, see host state directly\n",
+                          id.c_str());
+        }
+    }
+
     instances_.erase(it);
 }
 

@@ -2262,6 +2262,18 @@ if(NOT WIN32 AND AGENTENGINE_BUILD_KATA_BACKEND)
     # Several real VM boots plus a deliberate positive-control wall_ms=3000 case -- generous but
     # bounded, same posture as this suite's other Kata tests.
     set_tests_properties(test_kata_backend_abuse_corpus_linux PROPERTIES TIMEOUT 180 RUN_SERIAL TRUE)
+
+    # ---- Slice 9/10 (--config-mode OCI-spec pipeline + real NetPolicy allowlist via manual netns +
+    # cnitool + nftables, decisions/ADR-093-kata-backend-netpolicy-allowlist-config-cni.md) end-to-end
+    # test. Cases 3-5 need `cnitool`/a CNI plugin+config/`nft` on the host in addition to this block's
+    # own containerd+Kata precondition -- see kata_backend.hpp's own header comment.
+    add_executable(test_kata_backend_slice9_10_linux test_kata_backend_slice9_10_linux.cpp)
+    target_link_libraries(test_kata_backend_slice9_10_linux PRIVATE
+      agentengine::core agentengine::kata_backend agentengine_warnings)
+    add_test(NAME test_kata_backend_slice9_10_linux COMMAND test_kata_backend_slice9_10_linux)
+    # Real VM boots plus real netns/CNI/nftables setup and two live HTTPS exec() round trips
+    # (allowed + blocked) -- generous but bounded, same posture as this suite's other Kata tests.
+    set_tests_properties(test_kata_backend_slice9_10_linux PROPERTIES TIMEOUT 180 RUN_SERIAL TRUE)
   endif()
 endif()
 

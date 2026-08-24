@@ -201,6 +201,79 @@
 // `deny_all`, so there is no network path to meter in the first place -- it collapses into the
 // separately-named CNI gap below, not an independent problem. **Decision: both stay unenforced.**
 //
+// SLICE 9 (2026-08-24, decisions/ADR-093-kata-backend-netpolicy-allowlist-config-cni.md) -- replaces
+// `create()`'s convenience-flag `ctr run` invocation with `ctr run --config <path> <id>`, closing the
+// rootfs-preparation gap SLICE 6/ADR-090 found blocking `--config` mode for `pids`: that
+// investigation checked only the lower-level `ctr snapshot unpack`/`prepare` primitives (blocked by
+// an internal, undiscoverable chain ID) and missed `ctr images mount <ref> <target>` -- a separate
+// subcommand (`cmd/ctr/commands/images/mount.go`, fetched+read fresh this pass) that computes the
+// chain ID ITSELF, `Prepare`/`View`s a snapshot under a caller-chosen key, and `mount.All`s the
+// result at a caller-chosen host path -- a real, ready rootfs directory, zero chain-ID discovery
+// needed by this backend. `--config` mode's OCI spec is hand-authored (`build_oci_spec_json()` in
+// `kata_backend.cpp`) to real parity with what `oci.WithDefaultSpecForPlatform`/`defaultMounts()`
+// already grant every container via the convenience-flag path today (containerd's `pkg/oci/spec.go`/
+// `pkg/oci/mounts.go`, fetched+read this pass for the exact default namespaces/capabilities/
+// masked-and-readonly-paths/mounts/rlimits) -- not a hand-invented, narrower security posture.
+// `MountSpec`/`memory_bytes`/`fds` map onto structured spec JSON fields instead of `--mount`/
+// `--memory-limit`/`--rlimit-nofile` convenience flags; behavior is unchanged from Slice 2/7 for all
+// three. `exec()` is unchanged -- it already operates purely via `container_id`/`--exec-id`, never
+// touching `create()`'s spec-authoring machinery.
+//
+// SLICE 10 (2026-08-24, same ADR) -- the actual point of this pass: a REAL `NetPolicy` allowlist,
+// not the unconditional fail-closed Slice 2/3 left in place. Source-verified first that `ctr run
+// --cni` (a real flag, unlike `--pids-limit`) cannot be used for this: containerd's own CNI setup
+// runs AFTER task-CREATE (`run.go`), but Kata's network-endpoint discovery + VM boot both run
+// synchronously DURING task-CREATE (`virtcontainers/api.go`'s `CreateSandbox()`: `createNetwork()`
+// then `startVM()`, both inside the shim's `Create()` RPC) -- CNI would populate the netns too late
+// to be seen (full citations: `docs/research/2026-08-24-containerd-ctr-run-cni-kata-ordering.md`,
+// confirmed by contrast against containerd's own CRI plugin, which sets up CNI BEFORE
+// `controller.Create()` -- the order Kata's design actually needs, unreachable via `ctr run`'s own
+// convenience flag). So this backend does the SAME thing CRI does, manually: `ip netns add`, then
+// `cnitool add <network> <netns-path>` (a real, separately-installed reference CLI from
+// `github.com/containernetworking/cni/cnitool` -- NOT bundled with `containerd`/`ctr`, a NEW
+// deployment precondition, see below) with `CNI_PATH`/`NETCONFPATH` supplied per-call, BEFORE
+// `ctr run --config` ever runs, joining that pre-populated netns via the spec's own
+// `linux.namespaces` entry (exactly matching `internal/cri/server/sandbox_run.go`'s own ordering).
+//
+// `NetPolicy::allowlist` entries are hostnames, not IP literals -- CNI itself only provides L2/L3
+// connectivity, not an application-level `host:port:scheme` filter. Each entry is resolved ONCE, at
+// `create()` time, through the SAME `agentengine::sandbox::resolve_and_validate()`
+// (`net_egress_proxy.hpp`) `HostEgressProxy` itself uses -- SSRF-safe (blocks loopback/link-local/
+// RFC1918/CGNAT/multicast/reserved/metadata-address ranges), reused rather than re-implemented. A
+// default-deny nftables egress policy is then installed INSIDE the fresh netns (`ip netns exec <id>
+// nft ...` -- rules live in that netns's own nftables namespace, discarded automatically when the
+// netns itself is deleted, no separate `nft` cleanup step needed) permitting only the resolved
+// `IP:port` pairs. A real correctness gap found during this design (not copied from an existing
+// pattern): the GUEST's own DNS resolution of an allowlisted hostname could legitimately return a
+// DIFFERENT IP than this backend resolved host-side (round-robin/geo DNS, a different resolver),
+// which the IP-pinned nftables rule would then correctly but unhelpfully block -- closed by
+// generating a per-instance `/etc/hosts` bind mount pinning each allowlisted hostname to the EXACT
+// IP the firewall permits, so the guest's own resolution and the host-side firewall agree.
+//
+// **Disclosed residual, not hidden**: this pins each hostname's IP for the CONTAINER'S ENTIRE
+// LIFETIME at `create()` time, unlike `HostEgressProxy`'s own per-request fresh resolution. This is
+// NOT a rebinding/SSRF hole -- a later DNS change to an allowlisted hostname cannot admit new
+// traffic, the firewall stays pinned to the originally-validated IP -- the residual is purely
+// availability/correctness: if the legitimate destination's IP later rotates (CDN failover), the
+// guest silently loses connectivity to it until the container is recreated.
+//
+// **New deployment precondition** (mirrors this file's existing `containerd`/`kata-clh` precondition
+// below, stated rather than silently assumed): `cnitool`, a working CNI plugin binary directory, and
+// a CNI network config must already exist on the host and be named via the three new constructor
+// parameters (`cni_network_name`/`cni_plugin_dir`/`cni_conf_dir`) for SLICE 10's path to be reachable
+// at all -- `deny_all == true` with an empty allowlist (unchanged default) never touches any of this.
+//
+// **Red-team finding (BLOCKING), fixed before landing** (ADR-093 §5): before this fix, a caller with
+// ZERO `cap::SandboxNetOut` grants at all could still reach real network egress via `spec.net`
+// directly -- `authorize_spec()`'s own capability-coverage check (sandbox.hpp) deliberately SKIPS
+// itself when a caller holds no relevant grants at all (a documented cross-backend opt-out shape),
+// and this backend's OWN unconditional pre-Slice-10 fail-closed check (which used to be the real
+// backstop) was removed by Slice 10 in favor of a mechanism that acts on `spec.net` directly. Fixed:
+// `create()` now requires at least one `cap::SandboxNetOut` grant whenever `spec.net` requests
+// anything beyond `deny_all`, independent of `authorize_spec()`'s own opt-in scoping
+// (`kata_backend.net_capability_required` otherwise) -- see the fix site in `kata_backend.cpp` for
+// the full reasoning, and `tests/test_kata_backend_slice9_10_linux.cpp` cases 2a/2b/5 for the proof.
+//
 // Still NOT done, named honestly rather than silently assumed:
 //
 //   - `ExecRequest::source` is, like `LinuxNativeJailBackend`'s own M2-only scope
@@ -212,16 +285,29 @@
 //   - `exec_outcome_class::oom` is unreachable for this backend -- investigated and rejected in SLICE
 //     4, not merely unattempted.
 //   - `ResourceLimits::pids` remains unenforced -- investigated and deferred in SLICE 6 above, not
-//     merely unattempted (a real information-gap finding, not a silently-unattempted gap).
-//   - `ResourceLimits::fds` maps to `--rlimit-nofile` as of SLICE 7 above, but whether it reaches a
+//     merely unattempted (a real information-gap finding, not a silently-unattempted gap). NOTE:
+//     SLICE 9's `ctr images mount` finding closes the SPECIFIC rootfs-prep obstacle ADR-090 named for
+//     `pids` too, but `pids` itself was not reopened this pass -- a real, undone follow-on, not
+//     silently resolved by SLICE 9's own unrelated NetPolicy work.
+//   - `ResourceLimits::fds` maps to `--rlimit-nofile`-equivalent spec JSON (`process.rlimits`, SLICE
+//     9's spec builder) as of SLICE 7's original convenience-flag fix; whether it reaches a
 //     `ctr tasks exec`-spawned process (not just the container's own initial placeholder process) is
-//     disclosed, not verified -- see SLICE 7's own text and the fix site in `kata_backend.cpp`.
+//     still disclosed, not verified -- unchanged by SLICE 9's spec-authoring rewrite.
 //   - `ResourceLimits::disk_bytes`/`net_bytes` remain unenforced -- investigated and deferred in
 //     SLICE 8 above (008 §1b assigns these to interpreter-level mediation, which has no attachment
-//     point in this backend's raw-guest-shell execution model), not merely unattempted.
-//   - The real `NetPolicy` allowlist mechanism (CNI) remains unbuilt -- this backend still fails
-//     closed on anything beyond `deny_all` (Slice 2/3, unchanged); SLICE 8 above names this as the
-//     actual prerequisite for ever revisiting `net_bytes`, not just a parallel gap.
+//     point in this backend's raw-guest-shell execution model), not merely unattempted. SLICE 10's
+//     own network path does NOT change this: it enforces WHICH destinations are reachable, not how
+//     many bytes flow to them.
+//   - SLICE 9/10's entire `--config`-mode pipeline (spec-file authoring, `ctr images mount`, `ip
+//     netns`/`cnitool`/`nft` orchestration) is compile-verified only -- NOT independently verified
+//     against a live containerd/Kata/CNI/nftables deployment this session (none reachable), same
+//     disclosed posture as every prior slice's own `ctr` CLI assumptions. The exact `nft` argv
+//     tokenization (each clause as a separate argv entry rather than one shell-joined string) is
+//     assumed, not empirically confirmed.
+//   - The nftables allowlist targets the netns's own default output chain (not a named interface) --
+//     correct as long as the CNI network attaches exactly one non-loopback interface per netns
+//     (true for a single `cnitool add` call, this backend's only usage), but would need revisiting if
+//     a future change ever attaches more than one.
 //
 // Reachable only via `register_hardware_isolation_backend()` (`named_only`,
 // ADR-080/microvm-first-party-backend-design-draft.md finding #1) -- a host must opt a session into
@@ -278,11 +364,25 @@ public:
     // `runtime_type`: the containerd runtime type string (`io.containerd.kata-clh.v2` by default --
     // see this file's header comment on why cloud-hypervisor, not QEMU). `image`: the OCI image
     // reference used as every container's rootfs -- must already be pulled into containerd's default
-    // namespace, or `ctr run` will pull it itself the first time (network-dependent, not this
-    // backend's concern to police).
+    // namespace, or `ctr images mount` (SLICE 9) will pull it itself the first time (network-
+    // dependent, not this backend's concern to police).
+    //
+    // SLICE 10: `cni_network_name`/`cni_plugin_dir`/`cni_conf_dir` are only consulted when a
+    // `SandboxSpec::net` grant actually requests something beyond `deny_all` -- unused, and their
+    // defaults never touched, for every caller that doesn't opt into `NetPolicy::allowlist`.
+    // `cni_network_name` must match the `name` field inside a CNI config file already present under
+    // `cni_conf_dir`; `cni_plugin_dir` is where the named CNI plugin binaries themselves live (both
+    // passed to `cnitool` as `NETCONFPATH`/`CNI_PATH` per this file's own header comment).
     explicit KataBackend(std::string runtime_type = "io.containerd.kata-clh.v2",
-                          std::string image = "docker.io/library/busybox:latest")
-        : runtime_type_(std::move(runtime_type)), image_(std::move(image)) {}
+                          std::string image = "docker.io/library/busybox:latest",
+                          std::string cni_network_name = "ae-kata-net",
+                          std::string cni_plugin_dir = "/opt/cni/bin",
+                          std::string cni_conf_dir = "/etc/cni/net.d")
+        : runtime_type_(std::move(runtime_type)),
+          image_(std::move(image)),
+          cni_network_name_(std::move(cni_network_name)),
+          cni_plugin_dir_(std::move(cni_plugin_dir)),
+          cni_conf_dir_(std::move(cni_conf_dir)) {}
     ~KataBackend() = default;
     KataBackend(KataBackend const&) = delete;
     KataBackend& operator=(KataBackend const&) = delete;
@@ -303,10 +403,18 @@ private:
                                        // instance's exec()/destroy() makes (SandboxSpec::limits).
         std::uint64_t output_cap_bytes = 0;  // Slice 2: 0 = use kOutputSafetyCapBytes; nonzero
                                               // overrides it (SandboxSpec::limits.output_bytes).
+        std::string rootfs_dir;       // SLICE 9: the `ctr images mount` target -- destroy() unmounts
+                                       // and removes this.
+        bool net_created = false;     // SLICE 10: true iff create() ran the ip-netns/cnitool/nft
+                                       // sequence for this instance -- destroy() only reverses it
+                                       // when this is set (deny_all instances never touch it).
     };
 
     std::string runtime_type_;
     std::string image_;
+    std::string cni_network_name_;
+    std::string cni_plugin_dir_;
+    std::string cni_conf_dir_;
     std::unordered_map<std::string, Instance> instances_;
 };
 

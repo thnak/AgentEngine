@@ -230,6 +230,11 @@ if(NOT WIN32 AND AGENTENGINE_BUILD_KATA_BACKEND)
   target_include_directories(agentengine_kata_backend PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/src")
   target_link_libraries(agentengine_kata_backend PUBLIC agentengine::core)
+  # SLICE 10 (2026-08-24, ADR-093): reuses agentengine::net_egress_proxy's resolve_and_validate --
+  # the same SSRF-safe (loopback/link-local/RFC1918/CGNAT/multicast/reserved/metadata-address
+  # blocking) resolver HostEgressProxy itself uses -- to pin NetPolicy::allowlist hostnames to
+  # verified IPv4 literals at create() time, rather than re-implementing that vetted logic here.
+  target_link_libraries(agentengine_kata_backend PUBLIC agentengine::net_egress_proxy)
   target_link_libraries(agentengine_kata_backend PRIVATE agentengine_warnings)
   add_library(agentengine::kata_backend ALIAS agentengine_kata_backend)
 elseif(WIN32 AND AGENTENGINE_BUILD_KATA_BACKEND)
