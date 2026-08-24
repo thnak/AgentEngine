@@ -148,6 +148,27 @@
 // from the closed pipe, or `timeout` if it doesn't and the wall_ms deadline is reached instead, both
 // now correctly containing the guest side) a real deployment would actually produce.
 //
+// SLICE 6 (2026-08-24) -- `ResourceLimits::pids` enforcement was investigated to a real conclusion,
+// not merely deferred again: closing it would need `ctr run --config <path>`, the ONLY way to set
+// `linux.resources.pids.limit` (no `--pids-limit` convenience flag exists in the current `ctr` CLI,
+// checked against containerd's real source, `docs/research/2026-08-24-containerd-ctr-run-config-vs-
+// convenience-flags.md`) -- but `--config` mode is fully exclusive of every convenience flag this
+// backend's `create()` currently relies on (`--mount`, `--memory-limit`, implicit image pull/unpack),
+// does not prepare a rootfs at all (the caller must already have one on disk), and the only
+// CLI-only path to prepare one (`ctr images pull` + `ctr snapshot unpack <digest>` + `ctr snapshot
+// prepare`) hits a genuine information gap: `unpack` creates a snapshot keyed by an internal,
+// content-addressed chain ID containerd computes but does not expose through any stable `ctr`
+// CLI-level query -- discovering it would mean scraping `ctr snapshot list` against undocumented
+// internal naming conventions, not calling a documented API. No `ctr tasks update` command exists
+// either (checked: `attach/checkpoint/delete/exec/list/kill/metrics/pause/ps/resume/start`, no
+// `update`), closing off a lower-risk "create normally, patch pids after" alternative before it
+// could be attempted. **Decision (`decisions/ADR-090-kata-backend-pids-limit-investigated-and-
+// deferred.md`): `ResourceLimits::pids` stays unenforced.** This CLI-process-boundary limitation is
+// the direct, foreseeable cost of this backend's own deliberate architecture choice (shell out to
+// `ctr`, never embed containerd's gRPC/ttrpc client -- see "Mechanism" below); real enforcement would
+// mean reopening that choice, not writing more shell-out code against an information gap that exists
+// because the chain ID was never serialized to a CLI output surface at all.
+//
 // Still NOT done, named honestly rather than silently assumed:
 //
 //   - `ExecRequest::source` is, like `LinuxNativeJailBackend`'s own M2-only scope
@@ -158,8 +179,13 @@
 //     and deliberately declined to add without a real consumer.
 //   - `exec_outcome_class::oom` is unreachable for this backend -- investigated and rejected in SLICE
 //     4, not merely unattempted.
-//   - `ResourceLimits::pids`/`fds`/`disk_bytes`/`net_bytes` remain unenforced (Slice 2's own gap,
-//     unchanged) -- the abuse-corpus fork-bomb case documents this rather than closing it.
+//   - `ResourceLimits::pids` remains unenforced -- investigated and deferred in SLICE 6 above, not
+//     merely unattempted (a real information-gap finding, not a silently-unattempted gap).
+//   - `ResourceLimits::fds` remains unenforced, but is a real, much smaller, NOT-yet-implemented
+//     opportunity: `ctr run --rlimit-nofile` is a genuine convenience flag (`platformRunFlags`,
+//     unlike `pids`) that works within the existing convenience-flag `create()` path -- no `--config`
+//     rewrite needed. Named here so a future session does not have to rediscover this.
+//   - `ResourceLimits::disk_bytes`/`net_bytes` remain entirely unenforced and uninvestigated.
 //
 // Reachable only via `register_hardware_isolation_backend()` (`named_only`,
 // ADR-080/microvm-first-party-backend-design-draft.md finding #1) -- a host must opt a session into
