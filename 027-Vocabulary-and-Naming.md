@@ -52,6 +52,12 @@ Names verified against `agent_framework` (Python core) unless marked **ours**.
 | **`ContentReplayTrigger`** | The host-supplied callable producing a `ContentReplayDecision` (ADR-069 §3) | **ours** |
 | **`ContentReplayAttemptEvent`** | Fires once per attempt inside a `ContentReplayGateway::call()` retry loop, discarded or not, carrying that attempt's real `Usage` (ADR-069) | **ours** |
 | **`ContentReplayTraceHook`** | The optional hook receiving each `ContentReplayAttemptEvent`, so a host can account every attempt's true cost (ADR-069) | **ours** |
+| **`ToolCallArgumentChunk`** | A raw, possibly-incomplete fragment of one tool call's arguments, streamed ahead of (not instead of) a backend's own internal accumulation buffer (unified-streaming-design-draft.md §1 Piece B) | **ours** |
+| **`Bundle<ChatClientT, Store, HistoryProviderT>`** | `agentengine::quickstart`'s move-only owner of every long-lived object a constructed `AgentSession` references — the object `QuickstartSessionBuilder::build()` returns | **ours** |
+| **`QuickstartSessionBuilder<P, Store>`** | `agentengine::quickstart`'s fluent, single-backend session builder — `P` (a `quickstart::Provider`) picks the compile-time backend, matching `AgentSession`'s own backend-templated shape | **ours** |
+| **`OpenAiSessionBuilder`** | `QuickstartSessionBuilder<Provider::openai>` — the ready-to-use OpenAI alias most quickstart call sites reach for directly | **ours** |
+| **`AnthropicSessionBuilder`** | `QuickstartSessionBuilder<Provider::anthropic>` — the ready-to-use Anthropic alias most quickstart call sites reach for directly | **ours** |
+| **`ComposedQuickstartSessionBuilder<P, Store, Ms...>`** | `QuickstartSessionBuilder`'s multi-context-provider sibling — `Ms...` composes via `ComposedContextProvider<Ms...>` instead of the single-slot `HistoryProvider` default | **ours** |
 
 ### Why `Run` and `Turn` are ours
 
@@ -140,6 +146,20 @@ word is free, and we take it. §5 records the collision so nobody re-imports the
 | **`QuarantineSecretReply`** | The agent-initiated quarantine path's tool reply shape — the text with the secret replaced by an opaque reference (ADR-068 §2e) | **ours** |
 | **`QuarantineSecretTool`** | A zero-capability tool letting the model itself hide text it's about to say, always `agent_initiated` and so never grant-eligible (ADR-068 §2e) | **ours** |
 | **`QuarantineToolProvider`** | Wraps a `QuarantineSecretStore` as a real `ContextProvider` conformer, contributing the `quarantine_secret` tool (ADR-066/068) | **ours** |
+| **`AgentSpawnArgs`** | The `agent.spawn` tool's model-facing args — an `agent_id` from a host-curated registry, plus plain-text `input`. Deliberately no depth/budget/ceiling field: every numeric bound this mechanism enforces comes from the caller's already-held `CapabilitySet`/`SpawnBudget`, never the call's own args (I3) | **ours** |
+| **`AgentSpawnReply`** | The `agent.spawn` tool's model-facing reply — `output` plus input/output token counts | **ours** |
+| **`AgentSpawnTool`** | The `agent.spawn` tool's poison-sentinel `Tool<Derived>` conformer — its static `invoke()` never actually runs; real dispatch is `AgentSpawnToolProvider`'s host-bound closure | **ours** |
+| **`ChildRunner`** | The type-erased "construct a fresh child `AgentSession`, wire it, drive it to completion, tear it down" thunk a `SpawnTargetDescriptor` carries — host-authored only, at registry-build time, never derived from model output (I3) | **ours** |
+| **`SpawnTargetDescriptor`** | One `agent.spawn` registry entry: the spawnable agent's `AgentMetadata`, its host-configured spawn cost and child token budget, its worktree-sharing mode, and its `ChildRunner` | **ours** |
+| **`SpawnQuota`** | A host-configured, per-caller-`Principal` soft ceiling on spawn attempts, checked before the shared, non-refundable `SpawnCostBudget` pool is ever touched | **ours** |
+| **`SpawnQuotaTracker`** | The thread-safe counter map enforcing a `SpawnQuota` per caller `Principal` | **ours** |
+| **`SpawnTargetRegistry`** | The host-curated, closed table of spawnable `agent_id` → `SpawnTargetDescriptor` entries a model's `AgentSpawnArgs::agent_id` only ever indexes into, never widens (I3) | **ours** |
+| **`SpawnPump<StoreT>`** | The single-threaded serialization point for every spawn-time mutation of shared state (`SpawnCostBudget::consume()`, child-id minting, the worktree mint's read-then-write) — one dedicated worker thread per host process is the only thread that ever touches that state | **ours** |
+| **`AgentSpawnToolProvider<StoreT>`** | The `ContextProvider` conformer wiring `agent.spawn` into a session via the existing `ComposedContextProvider` composition seam | **ours** |
+| **`ChildSpawnRequest`** | A child run's inputs: the input `Message`, the capabilities minted for it (trusted exactly as given, never re-derived or widened), the re-derived caller `Principal`, and its token/turn budgets | **ours** |
+| **`SessionFactory<ChatClientT, StateT, HistoryProviderT>`** | `multi_agent.hpp`'s per-call factory producing a genuinely fresh, uniquely-owned child `AgentSession` — never one that memoizes or reuses a session across calls (that would reopen a concurrent double-resume race) | **ours** |
+| **`Budget`** | `multi_agent.hpp`'s not-copyable/movable spawn-fan-out budget — two independent ceilings (`max_spawns` a true reservation, `max_tokens` an honest backstop) plus `max_in_flight`, checked together under one mutex | **ours** |
+| **`SpawnWorktreeGrant`** | The data shape a real worktree mint hands a spawned child: a `SubWorktree`, optional `Mount`, and optional `FsRead`/`FsWrite` capabilities — never constructed from anything a model's tool-call output could influence (I3) | **ours** |
 | `Actor` · `Activation` · `Worker` · `Shard` · `Mailbox` · `ActorRef<A>` · `Policy` | **Retired vocabulary** — none of these names are used anywhere in AgentEngine's codebase today (historical: this was Quark's runtime vocabulary, used verbatim and unchanged, before `decisions/ADR-037-remove-quark-as-core-runtime.md` removed Quark as a dependency entirely; there is no actor model left to name) | Quark (historical) |
 | `ae::task<T>` · `ae::result<T>` | Coroutine return type · `std::expected<T, error>` | `agentengine::rt::` (historical: `task<T>` originated as a `quark::task<T>` alias before ADR-037; `core/task.hpp` now defines it directly, zero Quark dependency) |
 

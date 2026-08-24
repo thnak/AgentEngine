@@ -354,6 +354,10 @@
 
 namespace agentengine::quickstart {
 
+// A compile-time backend-vendor selector, the exact colloquial "provider means model vendor" usage
+// 027 §5's `Provider` collision-register row warns against (027 §5: "The inference seam is
+// ChatClient, never Provider"); renaming or reconciling this is separate follow-up work.
+// ae-naming-lint: allow Provider
 enum class Provider { openai, anthropic };
 
 namespace detail {
