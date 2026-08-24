@@ -146,33 +146,79 @@ int main() {
         }
     }
 
-    // ---- Case 2: unbounded output -- contained by ResourceLimits::output_bytes. Captured-bytes-only
-    //         claim (same shape as LinuxNativeJailBackend's own corpus) -- does NOT claim the guest
-    //         producer process itself is killed; kata_backend.hpp names that as a separate, disclosed,
-    //         NOT-fixed-this-pass risk (closing the host read pipe is not proven to propagate as a
-    //         guest-visible EPIPE the way it would for a directly-piped native child). -----------------
+    // ---- Case 2: unbounded output -- contained by ResourceLimits::output_bytes, AND (SLICE 5) proven
+    //         to actually stop the guest producer process, the same "not just that the host-side call
+    //         returned" proof Case 1 established for the wall_ms timeout path. kata_backend.hpp's own
+    //         SLICE 5 header section has the full story of the gap this closes and the red-team
+    //         findings that shaped the fix.
+    //
+    //         Deliberately does NOT assert a single expected `klass`: whether the host-side `ctr`
+    //         process dies fast from writing into the closed pipe (-> `policy_violation`, the new
+    //         output_capped-alone path) or keeps running until the wall_ms deadline (-> `timeout`, the
+    //         already-proven SLICE 4 path -- both streams get force-closed there too) depends on `ctr`
+    //         behavior this repo does not control and cannot verify without a live deployment (none
+    //         reachable this session, same disclosed limitation as every Kata test in this tree). The
+    //         fix (SLICE 5) makes BOTH paths trigger the guest-side kill identically, so the
+    //         heartbeat-stopped-changing proof below is valid regardless of which one actually fires --
+    //         that is the property this case needs to prove, not which classification wins the race.
+    //         `wall_ms` is set generously larger than a fast SIGPIPE-death would need, specifically so
+    //         a quick `policy_violation` return (if `ctr` does die fast) is NOT ambiguous with having
+    //         simply hit the same deadline the timeout path would anyway (Slice-5 red-team finding #4).
     {
         KataBackend backend;
         SandboxSpec contained_spec;
-        contained_spec.limits.wall_ms = 1000;
+        contained_spec.mounts.push_back(
+            MountSpec{.source = std::string(host_dir), .guest_path = "/work", .read_write = true});
+        contained_spec.limits.wall_ms = 2500;
         contained_spec.limits.output_bytes = 4096;
 
         auto handle = backend.create(contained_spec, ctx);
         check(handle.has_value(),
               "Kata-abuse unbounded-output: create() with output_bytes=4096 succeeds");
         if (handle.has_value()) {
+            std::string const heartbeat = std::string(host_dir) + "/heartbeat_case2";
+            auto t0 = std::chrono::steady_clock::now();
             ExecRequest req;
             req.language = "native";
-            req.source = "while true; do echo AAAAAAAAAA; done";
+            // Heartbeat write precedes the flooding write each iteration (Slice-5 red-team finding #6):
+            // if the flooding stdout write ever blocks/wedges rather than erroring once the host-side
+            // pipe is closed, the heartbeat write for THAT iteration must already be done, so "stopped
+            // changing" unambiguously means the whole loop iteration stopped, not just this one write.
+            req.source = "i=0; while true; do i=$((i+1)); echo $i > /work/heartbeat_case2; "
+                         "echo AAAAAAAAAA; done";
             auto outcome = backend.exec(*handle, req, ctx);
+            auto t1 = std::chrono::steady_clock::now();
             check(outcome.has_value(), "Kata-abuse unbounded-output: contained exec() returns a result");
             if (outcome.has_value()) {
-                std::fprintf(stderr, "  measured: unbounded-output contained, captured %zu bytes\n",
-                             outcome->stdout_text.size());
+                std::fprintf(stderr,
+                             "  measured: unbounded-output contained, captured %zu bytes, klass=%d, "
+                             "elapsed %lld ms\n",
+                             outcome->stdout_text.size(), static_cast<int>(outcome->klass),
+                             elapsed_ms(t0, t1));
                 check(outcome->stdout_text.size() <= 4096,
                       "Kata-abuse unbounded-output: captured stdout never exceeds the configured cap");
                 check(!outcome->stdout_text.empty(),
                       "Kata-abuse unbounded-output: something was actually captured (the flood ran)");
+                check(outcome->klass == exec_outcome_class::policy_violation ||
+                          outcome->klass == exec_outcome_class::timeout,
+                      "Kata-abuse unbounded-output: an output-cap breach classifies as either "
+                      "policy_violation (fast host-side death) or timeout (wall_ms deadline reached "
+                      "instead) -- both are correct SLICE 5 outcomes, never ok/crash");
+
+                // Proves the SLICE 5 fix: the guest-side process must actually stop, not just the
+                // host-side ctr call returning -- same proof shape as Case 1's timeout path above.
+                std::string const v1 = read_file(heartbeat);
+                std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+                std::string const v2 = read_file(heartbeat);
+                std::fprintf(stderr,
+                             "  measured: heartbeat after output-cap kill: v1=%s v2=%s (1s apart)\n",
+                             v1.c_str(), v2.c_str());
+                check(!v1.empty() && v1 == v2,
+                      "Kata-abuse unbounded-output: REAL containment -- the guest process's own "
+                      "heartbeat file stops changing after the output_bytes cap fires (proves the "
+                      "guest-side `ctr tasks kill --exec-id` actually stopped the workload, not "
+                      "merely that the host-side `ctr` CLI call returned -- the exact gap SLICE 5 "
+                      "fixed)");
             }
             backend.destroy(*handle);
         }

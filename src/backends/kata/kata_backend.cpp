@@ -40,6 +40,14 @@ struct ProcessOutcome {
     int exit_code = -1;
     bool timed_out = false;
     bool output_truncated = false;
+    // SLICE 5 (2026-08-24): distinct from `output_truncated` above -- see the red-teamed reasoning at
+    // this flag's own set-site below for why the two are NOT interchangeable (a read landing exactly
+    // on the cap boundary force-closes a stream without dropping any bytes on that particular read,
+    // so `output_truncated` alone silently misses it). `output_capped` is the reliable "this stream
+    // was force-closed because it hit its cap" signal `KataBackend::exec()` needs to decide whether a
+    // guest-side kill/classification is warranted; `output_truncated` keeps its original narrower
+    // meaning (bytes were actually dropped) for anyone reading it in the future.
+    bool output_capped = false;
     std::string stdout_text;
     std::string stderr_text;
 };
@@ -164,6 +172,17 @@ struct ProcessOutcome {
                 // Real cap reached -- stop reading this stream (leaving the rest unread is fine:
                 // this fd is closed, `ctr`/the guest may see EPIPE/SIGPIPE on further writes, which
                 // is the correct backpressure signal for a runaway output producer).
+                //
+                // SLICE 5 red-team finding #1 (BLOCKING): set `output_capped` HERE, unconditionally,
+                // not folded into the `take < n` check above -- a read that lands EXACTLY on the cap
+                // boundary (`take == n`, e.g. cap sizes that line up with normal read-chunk/pipe-
+                // buffering boundaries, very plausible with round numbers like 4096/65536 against this
+                // function's own 4096-byte `buf`) still force-closes the stream on this line but drops
+                // no bytes on THIS read, so `output_truncated` alone silently misses that this stream
+                // was capped -- the exact gap that would let the tail logic below fall through to an
+                // unconditional blocking waitpid() on realistic cap sizes, reopening the hang this
+                // slice exists to close.
+                outcome.output_capped = true;
                 close(fd);
                 stream_it->open = false;
             }
@@ -178,7 +197,26 @@ struct ProcessOutcome {
     }
 
     int status = 0;
-    if (outcome.timed_out) {
+    // SLICE 5 (2026-08-24): `outcome.output_capped` joins `outcome.timed_out` here -- an output-cap
+    // breach previously fell through to the unconditional blocking `waitpid(pid, &status, 0)` below,
+    // the same unbounded-host-side-wait shape ADR-088 already fixed for the wall_ms timeout case (see
+    // that fix's own comment in KataBackend::exec() below) but had explicitly disclosed as NOT fixed
+    // for this case. Real risk closed by folding it in here: if the host-side `ctr` process doesn't
+    // promptly die/error from writing into a pipe whose read end this function just closed (SIGPIPE
+    // ignored/handled, or blocked elsewhere in its own RPC layer), that blocking waitpid could hang
+    // this call indefinitely, defeating this function's own "every subprocess call is bounded"
+    // contract -- not just leaving the guest-side process orphaned (the risk ADR-088 named).
+    bool const force_terminate = outcome.timed_out || outcome.output_capped;
+    if (force_terminate) {
+        // Courtesy non-blocking check FIRST (SLICE 5 red-team finding, applies to the output_capped
+        // case specifically): if the host-side `ctr` process already exited on its own -- plausible
+        // if it does die from EPIPE/SIGPIPE on the write that raced this stream's closure -- prefer
+        // its real exit code over unconditionally discarding it to -1. This is NOT a blocking wait
+        // (that would reintroduce the exact bug above): a single WNOHANG poll, nothing more.
+        if (waitpid(pid, &status, WNOHANG) == pid) {
+            outcome.exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+            return outcome;
+        }
         kill(pid, SIGKILL);
         // Bounded reap of a process we just SIGKILL'd -- not an unconditional blocking waitpid().
         for (int i = 0; i < 50; ++i) {
@@ -349,30 +387,48 @@ result<ExecOutcome> KataBackend::exec(SandboxHandle& handle, ExecRequest const& 
     ExecOutcome result_out;
     result_out.stdout_text = outcome->stdout_text;
     result_out.stderr_text = outcome->stderr_text;
-    if (outcome->timed_out) {
-        result_out.klass = exec_outcome_class::timeout;
-        // SLICE 4 (2026-08-24) fix -- real gap found by this pass's own red-team review
-        // (decisions/ADR-088-...md §3 finding #7, BLOCKING): the `kill(pid, SIGKILL)` inside
-        // run_ctr()'s own timeout path above only terminates the HOST-side `ctr` CLI wrapper
-        // process this backend posix_spawn'd -- it has no host-visible pid for the GUEST-side
-        // process that CLI was attached to. Before this fix, that guest process kept running
-        // orphaned inside the persistent `sleep infinity` container, invisible to the caller, until
-        // a LATER exec()/destroy() call happened to reap it -- `exec_outcome_class::timeout` was
-        // being returned without the workload actually having stopped, undermining any G2
-        // containment claim built on it. Best-effort: ask containerd to kill the guest-side process
-        // directly by the SAME --exec-id this call minted above. NOT independently re-verified
-        // against a live Kata deployment this session (none reachable) -- if the exact `ctr` CLI
-        // surface assumed here turns out wrong, this call fails into the log line below rather than
-        // blocking the (already-decided) `timeout` classification from being returned.
+
+    // SLICE 4 (2026-08-24) fix, extended by SLICE 5 (2026-08-24) -- real gap found by this pass's own
+    // red-team review (decisions/ADR-088-...md §3 finding #7, BLOCKING): the `kill(pid, SIGKILL)`
+    // inside run_ctr()'s own force-terminate path only terminates the HOST-side `ctr` CLI wrapper
+    // process this backend posix_spawn'd -- it has no host-visible pid for the GUEST-side process
+    // that CLI was attached to. Before the SLICE 4 fix, a `wall_ms` timeout left that guest process
+    // running orphaned inside the persistent `sleep infinity` container, invisible to the caller,
+    // until a LATER exec()/destroy() call happened to reap it. SLICE 4 fixed this for the timeout
+    // case only; SLICE 5 closes the structurally identical, previously-disclosed-but-not-fixed gap
+    // for an `output_bytes` cap breach (`outcome->output_capped`) -- same orphan risk, same fix.
+    // Best-effort: ask containerd to kill the guest-side process directly by the SAME --exec-id this
+    // call minted above. NOT independently re-verified against a live Kata deployment this session
+    // (none reachable) -- if the exact `ctr` CLI surface assumed here turns out wrong, this call
+    // fails into the log line below rather than blocking the classification decided below it.
+    if (outcome->timed_out || outcome->output_capped) {
         auto kill_outcome = run_ctr(
             {"ctr", "tasks", "kill", "--exec-id", exec_id, "--signal", "SIGKILL", inst.container_id});
         if (!kill_outcome.has_value() || kill_outcome->exit_code != 0) {
             std::fprintf(stderr,
-                         "kata_backend: exec(%s) timed out and the best-effort guest-side kill of "
-                         "--exec-id %s also did not report success -- the guest workload may still "
-                         "be running orphaned inside container %s\n",
-                         handle.opaque_id.c_str(), exec_id.c_str(), inst.container_id.c_str());
+                         "kata_backend: exec(%s) was force-terminated host-side (%s) and the "
+                         "best-effort guest-side kill of --exec-id %s also did not report success -- "
+                         "the guest workload may still be running orphaned inside container %s\n",
+                         handle.opaque_id.c_str(),
+                         outcome->timed_out ? "wall_ms timeout" : "output_bytes cap exceeded",
+                         exec_id.c_str(), inst.container_id.c_str());
         }
+    }
+
+    // SLICE 5 red-team findings #2/#3 (BLOCKING): `output_capped` must be its own classification
+    // branch, not folded into the exit_code-only ok/crash check below -- leaving it unchecked let a
+    // run whose output was truncated and force-killed still report `ok` whenever the courtesy
+    // non-blocking reap above happened to observe a clean exit race. `policy_violation` (not `crash`)
+    // matches this codebase's own established idiom for "the HOST stopped this on policy grounds, not
+    // the workload's own fault" -- the identical class `LinuxNativeJailBackend`'s idle-phase
+    // CPU-budget kill and `MediatedPythonRunner`'s capability denials already use
+    // (native_jail_backend.cpp, python_runner.hpp) -- rather than `crash`, which risks a caller
+    // reading "the workload itself failed" and retrying unmodified, burning another full cap's worth
+    // of guest resources for the same predictable result.
+    if (outcome->timed_out) {
+        result_out.klass = exec_outcome_class::timeout;
+    } else if (outcome->output_capped) {
+        result_out.klass = exec_outcome_class::policy_violation;
     } else {
         result_out.klass = outcome->exit_code == 0 ? exec_outcome_class::ok : exec_outcome_class::crash;
     }

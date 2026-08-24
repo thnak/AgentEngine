@@ -120,6 +120,34 @@
 //     fabricating a containment assertion nothing backs.
 //   - OOM / `memory_bytes` -- NOT covered; no reliable classification signal exists (see above).
 //
+// SLICE 5 (2026-08-24) -- closes the unbounded-output guest-process orphan risk SLICE 4 disclosed but
+// did not fix: an `output_bytes` cap breach previously left `run_ctr()` falling through to an
+// UNCONDITIONAL BLOCKING `waitpid()` on the host-side `ctr` process (no bound at all if `ctr` didn't
+// promptly die/error from writing into the now-closed pipe), and never issued the guest-side kill
+// `exec()`'s own SLICE 4 fix already does for a `wall_ms` timeout. Independently red-teamed before
+// implementation (three real BLOCKING findings against the first draft, all fixed before landing):
+//   1. The naive signal for "a stream was force-closed at its cap" (`take < n` on the read that
+//      crossed the boundary) silently misses a read that lands EXACTLY on the cap -- a real, not
+//      edge-case-only, gap for round cap sizes. Fixed with a dedicated `output_capped` flag set
+//      unconditionally at the force-close site, not inferred from `output_truncated`.
+//   2/3. Classifying a capped-and-killed exec via the existing exit-code-only `ok`/`crash` check
+//      (which the initial draft left "unchanged") could report `ok` outright, or `crash` at best --
+//      neither honest. Fixed: a capped exec now classifies as `exec_outcome_class::policy_violation`,
+//      matching this codebase's own established idiom for "the host stopped this on policy grounds"
+//      (`LinuxNativeJailBackend`'s idle-phase CPU-budget kill, `MediatedPythonRunner`'s capability
+//      denials) rather than misleadingly implying success or workload-caused failure.
+// `run_ctr()`'s tail now treats `output_capped` the same as `timed_out` -- a courtesy non-blocking
+// reap first (preferring `ctr`'s real exit code if it already died on its own), then an unconditional
+// SIGKILL + bounded reap if it hasn't -- and `exec()` now issues the identical best-effort
+// `ctr tasks kill --exec-id` guest-side kill for both trigger conditions. Like SLICE 4's own fix, the
+// exact `ctr` CLI surface this depends on is NOT independently re-verified against a live Kata
+// deployment this session (none reachable). The abuse-corpus test's Case 2 (unbounded output) now
+// proves guest-side death the same way Case 1 (infinite loop) already did -- a heartbeat file the
+// flooding workload writes each iteration, checked to have stopped changing after `exec()` returns --
+// without assuming which of the two possible classifications (`policy_violation` if `ctr` dies fast
+// from the closed pipe, or `timeout` if it doesn't and the wall_ms deadline is reached instead, both
+// now correctly containing the guest side) a real deployment would actually produce.
+//
 // Still NOT done, named honestly rather than silently assumed:
 //
 //   - `ExecRequest::source` is, like `LinuxNativeJailBackend`'s own M2-only scope
@@ -128,9 +156,8 @@
 //   - GPU passthrough (Kata's headline capability) is explicitly OUT of scope -- the design draft's
 //     own C3 finding named this as needing a real `capability_kind` this codebase does not have yet
 //     and deliberately declined to add without a real consumer.
-//   - `exec_outcome_class::oom` is unreachable for this backend -- investigated and rejected this
-//     slice (see SLICE 4 above), not merely unattempted.
-//   - The unbounded-output guest-process orphan risk named in SLICE 4 above is disclosed, not fixed.
+//   - `exec_outcome_class::oom` is unreachable for this backend -- investigated and rejected in SLICE
+//     4, not merely unattempted.
 //   - `ResourceLimits::pids`/`fds`/`disk_bytes`/`net_bytes` remain unenforced (Slice 2's own gap,
 //     unchanged) -- the abuse-corpus fork-bomb case documents this rather than closing it.
 //
