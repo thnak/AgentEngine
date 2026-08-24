@@ -2234,6 +2234,16 @@ if(NOT WIN32 AND AGENTENGINE_BUILD_KATA_BACKEND)
     # Real VM boot + several `ctr` round trips per case -- generous but bounded, matching this
     # suite's own Machine Safety discipline (CLAUDE.md) rather than an unbounded wait.
     set_tests_properties(test_kata_backend_linux PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE)
+
+    # ---- Slice 2 (MountSpec/ResourceLimits/NetPolicy enforcement) end-to-end test ------------------
+    add_executable(test_kata_backend_slice2_linux test_kata_backend_slice2_linux.cpp)
+    target_link_libraries(test_kata_backend_slice2_linux PRIVATE
+      agentengine::core agentengine::kata_backend agentengine_warnings)
+    add_test(NAME test_kata_backend_slice2_linux COMMAND test_kata_backend_slice2_linux)
+    # Several real VM boots (one per case, deliberately not reused across cases so each is an
+    # independent create()) plus a deliberate 10s guest sleep under a 3s wall_ms cap -- generous but
+    # bounded.
+    set_tests_properties(test_kata_backend_slice2_linux PROPERTIES TIMEOUT 180 RUN_SERIAL TRUE)
   endif()
 endif()
 

@@ -10,34 +10,71 @@
 // `decisions/ADR-004-appcontainer-native-jail-windows-backend.md` and
 // `decisions/ADR-083-linux-native-jail-pivot-root-containment.md`.
 //
-// SLICE 1 -- deliberately narrow, mirrors ADR-081's own "Slice 1" precedent for the jailed Python
-// worker. What this proves: a real, working create()/exec()/destroy() round trip against a REAL
-// Kata sandbox (cloud-hypervisor VMM, a distinct guest kernel measured different from the host's
-// own, real state persistence across exec() calls into the same instance) -- not a mock, not a
-// design sketch. What this does NOT yet do, named honestly rather than silently assumed:
+// SLICE 1 (2026-08-23) -- mirrors ADR-081's own "Slice 1" precedent for the jailed Python worker.
+// Proved a real, working create()/exec()/destroy() round trip against a REAL Kata sandbox
+// (cloud-hypervisor VMM, a distinct guest kernel measured different from the host's own, real
+// state persistence across exec() calls into the same instance) -- not a mock, not a design
+// sketch. Independently red-teamed (decisions/ADR-084-kata-backend-slice-1.md §4) -- two BLOCKING
+// findings (unbounded host-side output capture, no subprocess timeout) fixed and re-verified there.
 //
-//   - `SandboxSpec::capabilities`/`mounts`/`limits`/`net` are NOT inspected or enforced by this
-//     backend at all this pass. Whatever a caller places in a `SandboxSpec` is currently a no-op --
-//     neither granted nor denied by anything THIS code does. What containment exists today comes
-//     entirely from Kata's own defaults: no CNI plugin configured means the guest VM has no route
-//     out (an absence-based default-deny, not a policy this backend enforces or could relax), and
-//     each container gets an ephemeral rootfs from the pulled OCI image with no host directory
-//     bind-mounted in (so there is no MountSpec-shaped grant to honor OR violate yet). This is a
-//     REAL GAP, not a design choice -- 008 §2's full contract (capability-scoped mounts, enforced
-//     resource limits, an explicit NetPolicy allowlist) is Slice 2+ work. Do not treat this backend
-//     as meeting 008 §2 in full; it is reachable only via `register_hardware_isolation_backend()`
-//     (`named_only`, ADR-080/microvm-first-party-backend-design-draft.md finding #1) specifically so
-//     a host must opt a session into it BY NAME, with these residuals known, never by `Strict`
-//     falling through to it.
+// SLICE 2 (2026-08-24) -- closes three of Slice 1's four named `SandboxSpec` gaps:
+// `mounts`/`limits`/`net` are now inspected and enforced (`capabilities` stays deliberately out of
+// scope this pass -- no `capability_kind` mapping exists for anything this backend could grant
+// beyond what `mounts`/`net` already cover, same posture as GPU passthrough below). Per-axis:
+//
+//   - `MountSpec`: each grant translates to a real `ctr run --mount type=bind,src=<host>,
+//     dst=<guest>,options=rbind:<ro|rw>` flag -- a real bind mount into the guest VM via virtiofs,
+//     not a no-op. `MountSpec::source` as a `BlobRef` fails closed at `create()`
+//     (`kata_backend.blob_mount_unsupported`), the identical posture and diagnostic-code shape
+//     `LinuxNativeJailBackend::create()` already has for the same case (host paths only, M2 scope).
+//     `MountSpec::quota_bytes` is NOT enforced -- named REAL GAP, no quota-aware mount mechanism
+//     wired this pass (a real follow-on, not silently assumed done).
+//   - `ResourceLimits`: `memory_bytes` -> `ctr run --memory-limit`; `wall_ms`, if nonzero, replaces
+//     `run_ctr()`'s own fixed `kProcessTimeoutSeconds` default for every `ctr` call this instance's
+//     `exec()`/`destroy()` makes (a REAL, host-side enforced deadline -- the exact class of
+//     property ADR-004's own `wall_ms`-is-the-dependable-bound finding treats as trustworthy, unlike
+//     `cpu_ms`). **Scope boundary, stated explicitly per Slice 2 red-team finding #3 rather than
+//     left for a reader to infer**: `wall_ms` bounds `exec()`/`destroy()` calls on an
+//     ALREADY-CREATED instance only -- `create()`'s own VM-boot `ctr run` call always uses the
+//     fixed default, deliberately: applying a caller's possibly-sub-second `wall_ms` to boot time
+//     itself (cold start is "milliseconds," not zero -- see `traits` below) would make `create()`
+//     fail spuriously for realistic small values. `output_bytes`, if nonzero, replaces the Slice-1
+//     red-team fix's fixed
+//     `kOutputSafetyCapBytes` per-stream cap, mirroring `LinuxNativeJailBackend::
+//     drain_pipe_bounded()`'s own "the safety cap, or `limits.output_bytes` if the caller set a
+//     tighter one" precedent exactly. `cpu_ms`/`pids`/`fds`/`disk_bytes`/`net_bytes` are NOT
+//     enforced -- named REAL GAPs: `cpu_ms` because a CFS quota (`ctr run --cpus`) is a RATE, not a
+//     total-time budget, and silently reinterpreting one as the other would misrepresent what is
+//     actually enforced (the same distinction ADR-004 draws for Windows' own `cpu_ms`); `pids` has
+//     no direct `ctr run` CLI flag this pass wires (would need a full OCI `config.json` via `ctr run
+//     --config` instead of the convenience flags used here -- a real, scoped-out follow-on);
+//     `fds`/`disk_bytes`/`net_bytes` have no mechanism at all wired this pass.
+//   - `NetPolicy`: `deny_all == true` (the only value Slice 1 silently accepted regardless) is now
+//     an EXPLICITLY VERIFIED property, not merely an artifact of "no CNI is configured." A caller
+//     requesting anything else (`deny_all == false`, or a nonempty `allowlist`) FAILS CLOSED at
+//     `create()` (`kata_backend.net_allowlist_unsupported`) -- this backend has no CNI/egress-proxy
+//     wired to honor a real allowlist yet, and silently granting no network while a caller believes
+//     they requested some would be a correctness footgun even though it happens to be safe. Stricter
+//     than `LinuxNativeJailBackend`'s own current posture (which silently ignores `NetPolicy`
+//     entirely, a pre-existing gap this file does not fix there) -- deliberately, not by oversight.
+//
+// Still NOT done, unchanged from Slice 1, named honestly rather than silently assumed:
+//
+//   - `SandboxSpec::capabilities` (the `CapabilitySet`) is not inspected -- nothing this backend
+//     grants today is gated behind a specific `Capability` token; `mounts`/`net` enforcement above
+//     is spec-shaped, not capability-shaped. A real capability-to-mount/network mapping is Slice 3+.
 //   - `ExecRequest::source` is, like `LinuxNativeJailBackend`'s own M2-only scope
 //     (linux_native_jail_backend.hpp), treated as a shell command line (`/bin/sh -c <source>`) the
 //     caller is trusted to have already resolved from a name -- not yet Runner-mediated.
 //   - GPU passthrough (Kata's headline capability) is explicitly OUT of scope -- the design draft's
 //     own C3 finding named this as needing a real `capability_kind` this codebase does not have yet
-//     and deliberately declined to add without a real consumer (ADR-004 §11's downstream-consumer
-//     note; this file is that consumer now existing, but still doesn't wire GPU passthrough itself).
+//     and deliberately declined to add without a real consumer.
 //   - No abuse-corpus/G1-G8 promotion-gate evidence exists for this backend yet -- that is real,
 //     separate work this Slice does not claim.
+//
+// Reachable only via `register_hardware_isolation_backend()` (`named_only`,
+// ADR-080/microvm-first-party-backend-design-draft.md finding #1) -- a host must opt a session into
+// it BY NAME, with all of the above residuals known, never by `Strict` falling through to it.
 //
 // Mechanism: shells out to the containerd CLI (`ctr`), not an embedded gRPC/ttrpc client -- keeps
 // this backend's own dependency footprint to "a `ctr`/containerd/kata-runtime install already on
@@ -108,8 +145,13 @@ public:
 private:
     struct Instance {
         std::string container_id;
-        std::uint64_t exec_seq = 0;  // -> a fresh --exec-id per exec() call (containerd requires a
-                                      // unique exec-id per additional process in one task).
+        std::uint64_t exec_seq = 0;   // -> a fresh --exec-id per exec() call (containerd requires a
+                                       // unique exec-id per additional process in one task).
+        std::uint64_t wall_ms = 0;    // Slice 2: 0 = use run_ctr()'s own kProcessTimeoutSeconds
+                                       // default; nonzero overrides it for every ctr call this
+                                       // instance's exec()/destroy() makes (SandboxSpec::limits).
+        std::uint64_t output_cap_bytes = 0;  // Slice 2: 0 = use kOutputSafetyCapBytes; nonzero
+                                              // overrides it (SandboxSpec::limits.output_bytes).
     };
 
     std::string runtime_type_;
