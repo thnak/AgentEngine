@@ -177,7 +177,48 @@ int main() {
         }
     }
 
-    // ---- 6. ResourceLimits::wall_ms overrides run_ctr()'s own fixed default timeout, per instance. -
+    // ---- 6. ResourceLimits::fds maps to a real `ctr run --rlimit-nofile` (SLICE 7,
+    //         kata_backend.hpp's own header comment has the full story). This is the ONE test in this
+    //         tree probing the exact open question that fix disclosed rather than assumed: does the
+    //         container's initial-process RLIMIT_NOFILE also reach a LATER `ctr tasks exec`-spawned
+    //         process (this backend's actual per-call workload path), or only the `sleep infinity`
+    //         placeholder `create()` itself starts? `ulimit -n` inside the exec'd shell reports the
+    //         open-file-descriptor limit of THAT process, directly answering the question -- not
+    //         guessed at, and not claimed either way ahead of a real run.
+    {
+        KataBackend backend;
+        SandboxSpec spec;
+        spec.limits.fds = 123;  // an unusual, specific number -- if it appears verbatim in the
+                                 // exec'd process's own ulimit output, that's real evidence of
+                                 // propagation, not a coincidence with some other default.
+        auto handle = backend.create(spec, ctx);
+        check(handle.has_value(), "create(): a ResourceLimits::fds cap creates cleanly");
+        if (handle.has_value()) {
+            ExecRequest fds_req;
+            fds_req.source = "ulimit -n";
+            auto fds_out = backend.exec(*handle, fds_req, ctx);
+            check(fds_out.has_value() && fds_out->klass == exec_outcome_class::ok,
+                  "exec(): reading the exec'd process's own RLIMIT_NOFILE succeeds");
+            if (fds_out.has_value()) {
+                std::fprintf(stderr,
+                             "  measured: exec'd process ulimit -n = '%s' (requested cap: 123) -- "
+                             "this is the open question SLICE 7 disclosed rather than assumed: does "
+                             "the container's own RLIMIT_NOFILE reach a LATER `ctr tasks exec` call, "
+                             "not just the initial `sleep infinity` process?\n",
+                             fds_out->stdout_text.c_str());
+                long const observed = std::strtol(fds_out->stdout_text.c_str(), nullptr, 10);
+                check(observed == 123,
+                      "SLICE 7's disclosed open question, answered by this run: the exec'd "
+                      "process's own RLIMIT_NOFILE matches the requested cap exactly -- real "
+                      "propagation to ctr tasks exec, not just the container's initial process "
+                      "(if this ever fails on a real run, it's real evidence the other way, not a "
+                      "flake -- the whole point of this case is to stop assuming either answer)");
+            }
+            backend.destroy(*handle);
+        }
+    }
+
+    // ---- 7. ResourceLimits::wall_ms overrides run_ctr()'s own fixed default timeout, per instance. -
     {
         KataBackend backend;
         SandboxSpec spec;

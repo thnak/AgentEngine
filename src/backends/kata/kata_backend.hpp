@@ -169,6 +169,20 @@
 // mean reopening that choice, not writing more shell-out code against an information gap that exists
 // because the chain ID was never serialized to a CLI output surface at all.
 //
+// SLICE 7 (2026-08-24) -- closes `ResourceLimits::fds`, the real, smaller opportunity SLICE 6's own
+// investigation surfaced: `ctr run --rlimit-nofile <n>` IS a genuine convenience flag
+// (`platformRunFlags`, unlike `pids`) that works within the EXISTING convenience-flag `create()` path
+// -- no `--config` rewrite, no snapshot/chain-ID problem. A bare `<n>` (no `soft:hard` colon) sets
+// both the soft and hard `RLIMIT_NOFILE` to the same value, confirmed against containerd's real
+// `run_unix.go` parsing, not guessed from CLI usage text. Governs the container's own initial process
+// (this backend's `sleep infinity` placeholder) for certain; whether a LATER `ctr tasks exec`-spawned
+// process (this backend's real per-call workload path) inherits it is **not independently verified
+// against a live Kata deployment this session** (none reachable) -- disclosed at the fix site in
+// `kata_backend.cpp`, not assumed. `tests/test_kata_backend_slice2_linux.cpp` gained a new case that
+// runs `ulimit -n` inside an `exec()` call under a tight `fds` cap specifically to test that exact
+// open question -- compile-verified only this session, so the answer itself remains unconfirmed until
+// it can run against a real deployment.
+//
 // Still NOT done, named honestly rather than silently assumed:
 //
 //   - `ExecRequest::source` is, like `LinuxNativeJailBackend`'s own M2-only scope
@@ -181,10 +195,9 @@
 //     4, not merely unattempted.
 //   - `ResourceLimits::pids` remains unenforced -- investigated and deferred in SLICE 6 above, not
 //     merely unattempted (a real information-gap finding, not a silently-unattempted gap).
-//   - `ResourceLimits::fds` remains unenforced, but is a real, much smaller, NOT-yet-implemented
-//     opportunity: `ctr run --rlimit-nofile` is a genuine convenience flag (`platformRunFlags`,
-//     unlike `pids`) that works within the existing convenience-flag `create()` path -- no `--config`
-//     rewrite needed. Named here so a future session does not have to rediscover this.
+//   - `ResourceLimits::fds` maps to `--rlimit-nofile` as of SLICE 7 above, but whether it reaches a
+//     `ctr tasks exec`-spawned process (not just the container's own initial placeholder process) is
+//     disclosed, not verified -- see SLICE 7's own text and the fix site in `kata_backend.cpp`.
 //   - `ResourceLimits::disk_bytes`/`net_bytes` remain entirely unenforced and uninvestigated.
 //
 // Reachable only via `register_hardware_isolation_backend()` (`named_only`,

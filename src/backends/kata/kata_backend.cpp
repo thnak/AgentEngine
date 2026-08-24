@@ -308,13 +308,29 @@ result<SandboxHandle> KataBackend::create(SandboxSpec const& spec, EffectContext
                               ",options=rbind:" + (mount.read_write ? "rw" : "ro"));
     }
 
-    // Slice 2: ResourceLimits -- memory_bytes maps directly to a real ctr flag; cpu_ms/pids/fds/
-    // disk_bytes/net_bytes have no mechanism wired this pass (kata_backend.hpp's header comment
-    // names each one honestly rather than silently ignoring them).
+    // Slice 2: ResourceLimits -- memory_bytes maps directly to a real ctr flag. Slice 7 (2026-08-24)
+    // adds fds -> --rlimit-nofile (docs/research/2026-08-24-containerd-ctr-run-config-vs-convenience-
+    // flags.md and decisions/ADR-090-...md's own investigation confirmed this flag genuinely exists
+    // in `platformRunFlags`, unlike `pids`, and works within this SAME convenience-flag path -- no
+    // `--config` rewrite needed). cpu_ms/pids/disk_bytes/net_bytes still have no mechanism wired
+    // (kata_backend.hpp's header comment names each one honestly rather than silently ignoring them).
     std::vector<std::string> limit_args;
     if (spec.limits.memory_bytes > 0) {
         limit_args.push_back("--memory-limit");
         limit_args.push_back(std::to_string(spec.limits.memory_bytes));
+    }
+    if (spec.limits.fds > 0) {
+        // A single number (no `soft:hard` colon) sets BOTH the soft and hard RLIMIT_NOFILE to the
+        // same value -- confirmed against containerd's real `run_unix.go` parsing (`strings.Cut(c,
+        // ":")`; `!found` falls back to `hardS = softS`), not guessed from `ctr run --help` usage
+        // text alone. Governs the container's own initial process (this `create()` call's `sleep
+        // infinity`) for certain; whether a LATER `ctr tasks exec`-spawned process (this backend's
+        // real per-call workload path) inherits it is NOT independently verified against a live Kata
+        // deployment this session (none reachable) -- disclosed, not assumed, same posture as every
+        // other `ctr` CLI behavior this file depends on without a live deployment to confirm it
+        // against.
+        limit_args.push_back("--rlimit-nofile");
+        limit_args.push_back(std::to_string(spec.limits.fds));
     }
 
     std::string const id = fresh_id("ae-kata");
