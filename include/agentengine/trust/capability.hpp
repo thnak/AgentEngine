@@ -61,6 +61,14 @@ enum class capability_kind {
                    // NativeShellProvider/NativeBashProvider/NativePythonProvider/NativeNodeProvider
                    // may invoke; distinct from `exec` (sandbox PROFILE selection for nested/managed
                    // execution, 008 §4) — this kind names a real host binary outside any sandbox.
+    sandbox_mount,   // docs/planning/sandbox-spec-capability-enforcement-design-draft.md — authorizes
+                     // a literal host-path bind mount for a mount/net-shaped SandboxBackend
+                     // (native-jail, Kata). Distinct from FsRead/FsWrite: those are `mount_id`-keyed,
+                     // resolved through a Worktree/FileSystemAdapter's own mount registry; this kind
+                     // names a raw host filesystem path directly, with no adapter indirection.
+    sandbox_net_out, // same design draft — authorizes SandboxSpec::net's allowlist entries for a
+                     // mount/net-shaped SandboxBackend. Distinct from cap::NetOut (WASM-imports/
+                     // mediated-egress shaped) for the identical reason.
 };
 // `memory` (029) is deliberately NOT its own kind: it is FsRead/FsWrite scoped to a `/memory` mount
 // (trust/agent_library_manifest.hpp's own comment already said so). The parameterized FsRead/FsWrite
@@ -156,6 +164,41 @@ struct NativeExec {
     std::optional<std::uint64_t> wall_ms_cap;
     std::optional<std::uint64_t> memory_bytes_cap;
 };
+// docs/planning/sandbox-spec-capability-enforcement-design-draft.md §3 — deliberately its own kind
+// rather than reusing FsRead/FsWrite (those are mount_id-keyed, resolved through a Worktree/
+// FileSystemAdapter's own mount registry; conflating the two would let a Worktree-scoped grant
+// silently authorize an unrelated raw host bind mount). Host-authored, never model-derived (I3 — no
+// constructor here takes a TaintedText, same posture as NativeExec above). `quota_bytes` is
+// deliberately NOT a field here yet: SandboxSpec::MountSpec::quota_bytes is a bare (non-optional)
+// uint64_t with no way to distinguish "0 = unspecified" from "0 = an explicit zero-byte request", and
+// no backend enforces it yet (decisions/ADR-086-kata-backend-slice-2-enforcement.md names it a REAL
+// GAP) -- adding an ambiguous check now, before there is anything real to check it against, would
+// risk inventing unsafe accept-by-default semantics for a comparison that does nothing today. Add it
+// once MountSpec::quota_bytes itself becomes std::optional<std::uint64_t> and a backend actually
+// enforces it, as a separate, contained follow-on.
+struct SandboxMount {
+    std::string host_path_prefix;   // required, non-empty -- a real path prefix. Coverage is decided
+                                     // by authorize_spec() (sandbox/sandbox.hpp), which rejects any
+                                     // '.'/'..' path component in the REQUESTED MountSpec path before
+                                     // ever comparing prefixes (a lexical `..` defeats a naive prefix
+                                     // check with no filesystem access needed) -- this field itself is
+                                     // trusted host input and is not re-validated for that, but should
+                                     // still never itself contain '..' by construction.
+    std::string guest_path_prefix;  // "" = no constraint on the MountSpec's guest_path
+    bool        read_write = false; // false covers only a read_write=false MountSpec request; true
+                                     // covers both -- a read grant must never silently authorize write.
+};
+// docs/planning/sandbox-spec-capability-enforcement-design-draft.md §3 — authorizes SandboxSpec::net
+// allowlist entries for a mount/net-shaped SandboxBackend; deliberately distinct from cap::NetOut
+// (WASM-imports/mediated-egress shaped) for the same reason SandboxMount is distinct from FsRead/
+// FsWrite. Host-authored, never model-derived (I3). `host_allowlist` uses the same "host:port:scheme"
+// grammar cap::NetOut already uses; matching is exact-string after lowercasing the whole entry
+// (hostnames are case-insensitive by convention; authorize_spec() rejects a literal '*' in either a
+// grant or a request outright rather than silently treating it as a wildcard -- no wildcard support
+// in this version).
+struct SandboxNetOut {
+    std::vector<std::string> host_allowlist;  // "host:port:scheme" entries
+};
 
 }  // namespace cap
 
@@ -166,7 +209,8 @@ struct NativeExec {
 using Capability = std::variant<cap::FsRead, cap::FsWrite, cap::NetOut, cap::NetListen, cap::Secret,
                                  cap::ToolCall, cap::RunnerCall, cap::Exec, cap::Clock, cap::Entropy,
                                  cap::EnvRead, cap::EnvWrite, cap::AgentCall, cap::Schedule,
-                                 cap::Background, cap::Elicit, cap::NativeExec>;
+                                 cap::Background, cap::Elicit, cap::NativeExec, cap::SandboxMount,
+                                 cap::SandboxNetOut>;
 
 [[nodiscard]] inline capability_kind capability_kind_of(Capability const& c) {
     return std::visit(
@@ -188,6 +232,8 @@ using Capability = std::variant<cap::FsRead, cap::FsWrite, cap::NetOut, cap::Net
             else if constexpr (std::is_same_v<T, cap::Background>) return capability_kind::background;
             else if constexpr (std::is_same_v<T, cap::Elicit>) return capability_kind::elicit;
             else if constexpr (std::is_same_v<T, cap::NativeExec>) return capability_kind::native_exec;
+            else if constexpr (std::is_same_v<T, cap::SandboxMount>) return capability_kind::sandbox_mount;
+            else if constexpr (std::is_same_v<T, cap::SandboxNetOut>) return capability_kind::sandbox_net_out;
             else static_assert(sizeof(T) == 0, "unhandled Capability alternative in capability_kind_of");
         },
         c);
@@ -218,6 +264,8 @@ using Capability = std::variant<cap::FsRead, cap::FsWrite, cap::NetOut, cap::Net
         case capability_kind::background:  return cap::Background{};
         case capability_kind::elicit:      return cap::Elicit{};
         case capability_kind::native_exec: return cap::NativeExec{};
+        case capability_kind::sandbox_mount:   return cap::SandboxMount{};
+        case capability_kind::sandbox_net_out: return cap::SandboxNetOut{};
     }
     return cap::Entropy{};  // unreachable (every enumerator handled above) — a defined fallback
                              // rather than UB if the enum is ever extended without updating this
@@ -269,6 +317,8 @@ using Capability = std::variant<cap::FsRead, cap::FsWrite, cap::NetOut, cap::Net
         case capability_kind::native_exec: return false;  // subprocess execution outside any
                                                             // sandbox — same reasoning as `exec`,
                                                             // strictly stronger (no jail at all)
+        case capability_kind::sandbox_mount:   return false;  // grants filesystem reachability
+        case capability_kind::sandbox_net_out: return false;  // egress
     }
     return false;  // unreachable (every enumerator handled above) -- fails CLOSED if the enum is
                     // ever extended without updating this switch, the opposite direction from
@@ -558,6 +608,32 @@ template <class T>
            cap_covers(parent.wall_ms_cap, requested.wall_ms_cap) &&
            cap_covers(parent.memory_bytes_cap, requested.memory_bytes_cap);
 }
+// docs/planning/sandbox-spec-capability-enforcement-design-draft.md -- attenuation between two
+// HOST-AUTHORED grants (e.g. deriving a narrower SandboxMount from a broader one); this is NOT the
+// function that decides whether a concrete SandboxSpec::MountSpec is authorized -- that is
+// sandbox::authorize_spec() (sandbox/sandbox.hpp), which additionally rejects any '.'/'..' path
+// component in the REQUESTED MountSpec path before ever reaching a prefix comparison (see that
+// function's own comment for why: a lexical '..' defeats path_prefix_covers()'s plain string check
+// with no filesystem access at all). Reusing path_prefix_covers() here for grant-to-grant attenuation
+// is safe: both sides are host-authored by construction (I3), not requests derived from guest input.
+[[nodiscard]] inline bool subsumes_payload(cap::SandboxMount const& parent, cap::SandboxMount const& requested) {
+    return path_prefix_covers(parent.host_path_prefix, requested.host_path_prefix) &&
+           path_prefix_covers(parent.guest_path_prefix, requested.guest_path_prefix) &&
+           (parent.read_write || !requested.read_write);
+}
+[[nodiscard]] inline bool subsumes_payload(cap::SandboxNetOut const& parent, cap::SandboxNetOut const& requested) {
+    // Same widening-hole fix cap::NetOut's own subsumes_payload above documents: an empty REQUESTED
+    // allowlist must mean "unrestricted" and be rejected against any non-unrestricted parent, not
+    // trivially pass through an empty loop.
+    if (!parent.host_allowlist.empty() && requested.host_allowlist.empty()) return false;
+    for (auto const& host : requested.host_allowlist) {
+        if (std::find(parent.host_allowlist.begin(), parent.host_allowlist.end(), host) ==
+            parent.host_allowlist.end()) {
+            return false;
+        }
+    }
+    return true;
+}
 
 struct InvocationTicket {
     std::atomic<bool> live{true};
@@ -792,6 +868,30 @@ public:
             if (auto const* fw = std::get_if<cap::FsWrite>(&c)) {
                 if (fw->mount_id == mount_id) out.push_back(*fw);
             }
+        }
+        return out;
+    }
+
+    // docs/planning/sandbox-spec-capability-enforcement-design-draft.md — the SAME "return ALL
+    // matches, verbatim, no filtering" shape native_exec_grants()/fs_read_grants() above establish: a
+    // caller may hold several independent SandboxMount grants (distinct host_path_prefix each), and
+    // sandbox::authorize_spec() needs to check every MountSpec against the full set, not just the
+    // first match. Also doubles as the presence check that mechanism uses to decide whether mount
+    // enforcement is engaged at all for a given spec (empty = not engaged — see that function's own
+    // comment on why this is scoped to THIS capability kind specifically, not CapabilitySet::size()).
+    [[nodiscard]] std::vector<cap::SandboxMount> sandbox_mount_grants() const {
+        std::vector<cap::SandboxMount> out;
+        for (Capability const& c : granted_) {
+            if (auto const* sm = std::get_if<cap::SandboxMount>(&c)) out.push_back(*sm);
+        }
+        return out;
+    }
+    // Same shape, for cap::SandboxNetOut — also the presence check authorize_spec() uses to decide
+    // whether NetPolicy enforcement is engaged for a given spec.
+    [[nodiscard]] std::vector<cap::SandboxNetOut> sandbox_net_out_grants() const {
+        std::vector<cap::SandboxNetOut> out;
+        for (Capability const& c : granted_) {
+            if (auto const* sn = std::get_if<cap::SandboxNetOut>(&c)) out.push_back(*sn);
         }
         return out;
     }

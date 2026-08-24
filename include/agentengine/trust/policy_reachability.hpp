@@ -113,6 +113,8 @@ enum class finding_kind {
         case capability_kind::background: return "background";
         case capability_kind::elicit: return "elicit";
         case capability_kind::native_exec: return "native_exec";
+        case capability_kind::sandbox_mount: return "sandbox_mount";
+        case capability_kind::sandbox_net_out: return "sandbox_net_out";
     }
     return "unknown";
 }

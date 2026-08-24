@@ -1889,6 +1889,15 @@ add_executable(test_sandbox_backend_contract test_sandbox_backend_contract.cpp)
 target_link_libraries(test_sandbox_backend_contract PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_sandbox_backend_contract COMMAND test_sandbox_backend_contract)
 
+# ---- authorize_spec() (docs/planning/sandbox-spec-capability-enforcement-design-draft.md, ADR-087) -
+# Pure-logic coverage of the capability<->mounts/net enforcement mechanism every mount/net-shaped
+# SandboxBackend (KataBackend, LinuxNativeJailBackend, NativeJailBackend) now calls first. No OS
+# dependency -- runs on every platform, unlike the Linux/Windows-specific backend suites that prove
+# the real end-to-end wiring.
+add_executable(test_sandbox_capability_authorization test_sandbox_capability_authorization.cpp)
+target_link_libraries(test_sandbox_capability_authorization PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_sandbox_capability_authorization COMMAND test_sandbox_capability_authorization)
+
 # ---- SandboxBackendRegistry (docs/planning/sandbox-backend-registry-design-draft.md, Revision 2) --
 # Closes check_sandbox_profile_availability()'s own "needs an Engine-level backend registry" gap.
 # Header-only, core-tier. test_sandbox_backend_registry.cpp proves the registry itself (including the

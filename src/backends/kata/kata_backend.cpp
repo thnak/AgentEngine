@@ -208,6 +208,14 @@ struct ProcessOutcome {
 }  // namespace
 
 result<SandboxHandle> KataBackend::create(SandboxSpec const& spec, EffectContext& /*ctx*/) {
+    // Slice 3 (docs/planning/sandbox-spec-capability-enforcement-design-draft.md): capabilities are
+    // the real authority behind mounts/net, checked FIRST, before any of this backend's own
+    // mount/net logic below runs. A no-op for every caller that doesn't hold a SandboxMount/
+    // SandboxNetOut grant (the mechanism's own opt-in scoping) -- see authorize_spec()'s own comment.
+    if (auto authorized = authorize_spec(spec); !authorized.has_value()) {
+        return std::unexpected(authorized.error());
+    }
+
     // Slice 2: NetPolicy -- deny_all is the only value this backend can currently honor (see this
     // file's header comment). Fail closed rather than silently granting deny_all anyway when a
     // caller asked for something this backend cannot yet deliver.

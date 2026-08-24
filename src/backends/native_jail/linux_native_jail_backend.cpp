@@ -264,6 +264,26 @@ std::string drain_pipe_bounded(int read_fd, std::uint64_t cap_bytes) {
 }  // namespace
 
 result<SandboxHandle> LinuxNativeJailBackend::create(SandboxSpec const& spec, EffectContext&) {
+    // docs/planning/sandbox-spec-capability-enforcement-design-draft.md (Slice 3): capabilities are
+    // the real authority behind mounts/net, checked FIRST -- a no-op for every caller that doesn't
+    // hold a SandboxMount/SandboxNetOut grant (see authorize_spec()'s own comment, sandbox.hpp).
+    if (auto authorized = authorize_spec(spec); !authorized.has_value()) {
+        return std::unexpected(authorized.error());
+    }
+    // decisions/ADR-087-sandbox-spec-capability-enforcement.md: closes a real per-backend divergence
+    // this design's own red-team pass found (finding B3) -- KataBackend::create() already fails
+    // closed on any NetPolicy beyond deny_all=true (ADR-086); this backend previously ignored
+    // NetPolicy entirely. Independent of capabilities/authorize_spec() above: this backend has no
+    // CNI/egress-proxy of any kind wired to honor a real allowlist, so the same identical spec would
+    // otherwise silently mean two different things depending on which backend a host selected.
+    if (!spec.net.deny_all || !spec.net.allowlist.empty()) {
+        return std::unexpected(error{
+            failure_class::policy,
+            "linux_native_jail: NetPolicy with deny_all=false or a nonempty allowlist is not "
+            "supported yet -- this backend has no CNI/egress-proxy wired to honor a real allowlist",
+            "linux_native_jail.net_allowlist_unsupported"});
+    }
+
     DelegatedRootState root_state = ensure_delegated_root(delegated_cgroup_root_);
     if (!root_state.ready) return std::unexpected(*root_state.init_error);
 

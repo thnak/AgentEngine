@@ -58,11 +58,26 @@
 //     than `LinuxNativeJailBackend`'s own current posture (which silently ignores `NetPolicy`
 //     entirely, a pre-existing gap this file does not fix there) -- deliberately, not by oversight.
 //
-// Still NOT done, unchanged from Slice 1, named honestly rather than silently assumed:
+// SLICE 3 (2026-08-24) -- closes the `SandboxSpec::capabilities` gap named below: `create()` now
+// calls `agentengine::authorize_spec()` (sandbox/sandbox.hpp) first, before any of Slice 2's own
+// mount/net logic. Generalized project-wide, not Kata-only, per project-owner direction (2026-08-24)
+// -- see `docs/planning/sandbox-spec-capability-enforcement-design-draft.md` for the full design,
+// its red-team pass, and why a Kata-only fix would itself have been wrong (per-backend divergence in
+// what `SandboxSpec` fields mean). `LinuxNativeJailBackend`/`NativeJailBackend` (Windows) got the
+// identical call in the same pass -- `decisions/ADR-087-sandbox-spec-capability-enforcement.md` is
+// the closing ADR for all three. Two new capability kinds, `cap::SandboxMount`/`cap::SandboxNetOut`
+// (`trust/capability.hpp`) -- deliberately NOT a reuse of `cap::FsRead`/`FsWrite`/`NetOut` (those are
+// `mount_id`-keyed, Worktree/FileSystemAdapter-mediated; `SandboxSpec::MountSpec` names a raw host
+// path directly, with no adapter indirection -- conflating the two would be a real capability-
+// confusion hazard, ADR-071's precedent for why `NativeExec` is its own kind rather than overloading
+// `Exec`). Opt-in, scoped to presence of the relevant grant kind (not `CapabilitySet::size()` --
+// scoping to whole-set emptiness would fail open the moment any unrelated capability appeared on the
+// same spec, a real finding from this design's own red-team pass): a caller that never grants
+// `cap::SandboxMount`/`cap::SandboxNetOut` gets byte-for-byte the same behavior as before this Slice,
+// unchanged.
 //
-//   - `SandboxSpec::capabilities` (the `CapabilitySet`) is not inspected -- nothing this backend
-//     grants today is gated behind a specific `Capability` token; `mounts`/`net` enforcement above
-//     is spec-shaped, not capability-shaped. A real capability-to-mount/network mapping is Slice 3+.
+// Still NOT done, unchanged from Slice 1/2, named honestly rather than silently assumed:
+//
 //   - `ExecRequest::source` is, like `LinuxNativeJailBackend`'s own M2-only scope
 //     (linux_native_jail_backend.hpp), treated as a shell command line (`/bin/sh -c <source>`) the
 //     caller is trusted to have already resolved from a name -- not yet Runner-mediated.

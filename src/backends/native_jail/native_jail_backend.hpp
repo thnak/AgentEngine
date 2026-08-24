@@ -40,6 +40,20 @@
 //     `FramedChannel`/message-catalog split (`jailed_worker_rpc.hpp`,
 //     `mediated_python_worker_protocol.hpp`) is shaped to compose with, not solved.
 //
+// docs/planning/sandbox-spec-capability-enforcement-design-draft.md (2026-08-24, decisions/ADR-087-
+// sandbox-spec-capability-enforcement.md): both `create()` and `create_python_worker()` below now
+// call `agentengine::authorize_spec()` (sandbox/sandbox.hpp) first -- a real, opt-in check that
+// `spec.mounts`/`spec.net` are covered by `spec.capabilities`' `cap::SandboxMount`/`cap::SandboxNetOut`
+// grants, a no-op for every caller that doesn't hold one. `create_python_worker()` needed its OWN
+// call, not just `create()`'s -- it is a structurally separate mount-granting entry point
+// (`MediatedPythonRunner::initialize()` calls it directly, never `create()`), which this design's own
+// red-team pass flagged (finding B1) as the one path that matters most in production. Same pass also
+// closes a real per-backend divergence in `create()` (finding B3): it now fails closed on any
+// `NetPolicy` beyond `deny_all=true`, matching `KataBackend`'s existing identical posture (ADR-086)
+// -- this backend has no CNI/egress-proxy of any kind (AppContainer already denies `NetOut`/socket by
+// construction regardless, ADR-004 AC-S1), so a caller's spec previously meant two different things
+// depending on which backend was selected.
+//
 // Scope, matching decision 3 of the M2 breakdown doc: this backend's M2 exec() target is a
 // compiled probe program, not the Python interpreter or a real shell -- 010's PythonRunner/
 // ShellRunner were originally expected to become real Runners plugging into this same SandboxBackend

@@ -4,12 +4,15 @@
 // implements `SandboxBackend` and is where the actual isolation logic — and its own design ->
 // red-team -> prove -> judge cycle — lives.
 
+#include <algorithm>
 #include <bit>
+#include <cctype>
 #include <concepts>
 #include <cstdint>
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <variant>
 #include <vector>
 
@@ -147,6 +150,146 @@ struct SandboxSpec {  // ae-naming-lint: allow SandboxSpec — pre-existing M0 s
     Determinism       determinism;
     sandbox_lifetime  lifetime = sandbox_lifetime::per_session;
 };
+
+namespace sandbox_detail {
+
+// Rejects a lexical '.'/'..' path component -- checks BOTH slash and backslash separators, since
+// MountSpec::source/guest_path values cross both Linux (native_jail, Kata) and Windows (native_jail)
+// backends and this check must not depend on which one is compiling. A raw prefix comparison
+// (capability_detail::path_prefix_covers) has no defense against a '..' segment lexically escaping a
+// granted prefix with no filesystem access at all -- this check closes that at the string level, the
+// same "reject the injection surface outright" move KataBackend::create() already uses for a literal
+// comma in its own --mount grammar (decisions/ADR-086-kata-backend-slice-2-enforcement.md).
+[[nodiscard]] inline bool has_dot_or_dotdot_component(std::string const& path) {
+    std::size_t start = 0;
+    for (std::size_t i = 0; i <= path.size(); ++i) {
+        if (i == path.size() || path[i] == '/' || path[i] == '\\') {
+            std::string_view const component(path.data() + start, i - start);
+            if (component == "." || component == "..") return true;
+            start = i + 1;
+        }
+    }
+    return false;
+}
+
+// Lowercases for "host:port:scheme" comparison -- hostnames are case-insensitive by convention; a
+// literal IP address happens to be unaffected. No wildcard support in this version (authorize_spec()
+// below rejects a literal '*' in an allowlist entry outright, design draft §6 M2).
+[[nodiscard]] inline std::string lowercased(std::string_view s) {
+    std::string out(s);
+    std::transform(out.begin(), out.end(), out.begin(),
+                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return out;
+}
+
+}  // namespace sandbox_detail
+
+// docs/planning/sandbox-spec-capability-enforcement-design-draft.md -- the real authority behind
+// SandboxSpec::mounts/net for every mount/net-shaped SandboxBackend (native-jail Linux/Windows,
+// Kata). Called first-thing by each backend's own create() (and, on Windows, ALSO
+// NativeJailBackend::create_python_worker() -- the mediated Python worker's own, separate
+// mount-granting entry point, design draft §6 finding B1), before any backend-specific mount/net
+// logic runs.
+//
+// Enforcement is scoped to the SPECIFIC capability kinds this mechanism defines
+// (`sandbox_mount_grants()`/`sandbox_net_out_grants()` presence), never to whole-`CapabilitySet`
+// emptiness (design draft §6 finding B2): checking whole-set emptiness would (a) fail OPEN the
+// moment a caller holds ANY unrelated capability (e.g. cap::Background) on a spec that also carries
+// real mounts, since the decision would flip on with zero SandboxMount grants existing for those
+// mounts, and (b) accidentally engage as a side effect of an unrelated feature composing onto the
+// same spec -- neither is a real "opt in". Scoping to presence of the RELEVANT grant kind means
+// enforcement engages exactly when a caller actually populated a grant of that kind, independent of
+// anything else in the set.
+//
+// Every existing call site today builds a SandboxSpec with NO SandboxMount/SandboxNetOut grants at
+// all (confirmed by reading every real construction site: mediated_python_runner.cpp, every
+// native-jail/Kata test) -- for those, both checks below are skipped entirely and behavior is
+// byte-for-byte unchanged, preserving full backward compatibility (ADR-070's Delegated Decision Seam
+// shape: explicit host opt-in, fails closed once engaged, changes nothing for a caller that hasn't
+// opted in).
+[[nodiscard]] inline result<void> authorize_spec(SandboxSpec const& spec) {
+    std::vector<cap::SandboxMount> const mount_grants = spec.capabilities.sandbox_mount_grants();
+    if (!mount_grants.empty()) {
+        for (MountSpec const& mount : spec.mounts) {
+            std::string const* host_path = std::get_if<std::string>(&mount.source);
+            // A BlobRef source has no host path for a SandboxMount grant to cover at all -- each
+            // backend's own existing, pre-existing check (kata_backend.blob_mount_unsupported /
+            // linux_native_jail.blob_mount_unsupported / native_jail.blob_mount_unsupported) already
+            // unconditionally rejects it downstream; this function does not duplicate that rejection,
+            // it simply has nothing to authorize here and lets that check fire.
+            if (host_path == nullptr) continue;
+
+            if (sandbox_detail::has_dot_or_dotdot_component(*host_path) ||
+                sandbox_detail::has_dot_or_dotdot_component(mount.guest_path)) {
+                return std::unexpected(error{
+                    failure_class::policy,
+                    "sandbox mount host or guest path contains a '.' or '..' path component -- "
+                    "rejected outright rather than risking a lexical prefix-check bypass (a literal "
+                    "'..' can escape a granted prefix with no filesystem access at all)",
+                    "sandbox.mount_path_invalid"});
+            }
+
+            bool covered = false;
+            for (cap::SandboxMount const& grant : mount_grants) {
+                if (!capability_detail::path_prefix_covers(grant.host_path_prefix, *host_path)) continue;
+                if (!capability_detail::path_prefix_covers(grant.guest_path_prefix, mount.guest_path)) continue;
+                if (mount.read_write && !grant.read_write) continue;  // a read grant never authorizes write
+                covered = true;
+                break;
+            }
+            if (!covered) {
+                // Deliberately the SAME diagnostic regardless of why coverage failed (no grant at
+                // all vs. a grant with the wrong read_write polarity vs. a grant with a
+                // non-covering prefix) -- design draft §6 finding S2: distinguishing them would leak
+                // grant existence/shape to a caller that might not be trusted to know it.
+                return std::unexpected(error{
+                    failure_class::policy,
+                    "sandbox mount '" + mount.guest_path + "' is not covered by any granted "
+                    "cap::SandboxMount",
+                    "sandbox.mount_not_authorized"});
+            }
+        }
+    }
+
+    std::vector<cap::SandboxNetOut> const net_grants = spec.capabilities.sandbox_net_out_grants();
+    if (!net_grants.empty() && (!spec.net.deny_all || !spec.net.allowlist.empty())) {
+        for (std::string const& entry : spec.net.allowlist) {
+            if (entry.find('*') != std::string::npos) {
+                return std::unexpected(error{
+                    failure_class::policy,
+                    "sandbox net allowlist entry '" + entry + "' contains '*' -- no wildcard support",
+                    "sandbox.net_entry_invalid"});
+            }
+            std::string const wanted = sandbox_detail::lowercased(entry);
+            bool covered = false;
+            for (cap::SandboxNetOut const& grant : net_grants) {
+                for (std::string const& allowed : grant.host_allowlist) {
+                    if (sandbox_detail::lowercased(allowed) == wanted) { covered = true; break; }
+                }
+                if (covered) break;
+            }
+            if (!covered) {
+                return std::unexpected(error{
+                    failure_class::policy,
+                    "sandbox net entry '" + entry + "' is not covered by any granted cap::SandboxNetOut",
+                    "sandbox.net_not_authorized"});
+            }
+        }
+        // deny_all == false with an EMPTY allowlist means "unrestricted egress requested" -- no
+        // finite set of allowlist entries could ever satisfy that against a real (necessarily finite)
+        // grant, so this is unconditionally rejected rather than silently treated as "nothing to
+        // check" (an empty for-loop above would otherwise pass this vacuously).
+        if (!spec.net.deny_all && spec.net.allowlist.empty()) {
+            return std::unexpected(error{
+                failure_class::policy,
+                "sandbox net policy requests unrestricted egress (deny_all=false, empty allowlist) -- "
+                "no finite cap::SandboxNetOut grant can authorize that",
+                "sandbox.net_not_authorized"});
+        }
+    }
+
+    return {};
+}
 
 struct SandboxHandle {  // ae-naming-lint: allow SandboxHandle — pre-existing M0 scaffolding, reconcile at owning milestone
     std::string opaque_id;  // backend-owned; the core never interprets this

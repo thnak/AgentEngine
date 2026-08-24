@@ -7,6 +7,16 @@
 // leak across this backend's other calls) + cgroups v2 (`cgroup_limits.hpp`, already built) +
 // seccomp-BPF (`seccomp_filter.hpp`, already built) + `no_new_privs`.
 //
+// docs/planning/sandbox-spec-capability-enforcement-design-draft.md (2026-08-24, decisions/ADR-087-
+// sandbox-spec-capability-enforcement.md): `create()` now calls `agentengine::authorize_spec()`
+// (sandbox/sandbox.hpp) first -- a real, opt-in check that `spec.mounts`/`spec.net` are covered by
+// `spec.capabilities`' `cap::SandboxMount`/`cap::SandboxNetOut` grants, a no-op for every caller that
+// doesn't hold one. Same pass also closes a real per-backend divergence (that design's own red-team
+// finding B3): `create()` now fails closed on any `NetPolicy` beyond `deny_all=true`, matching
+// `KataBackend`'s existing identical posture (ADR-086) -- this backend has no CNI/egress-proxy of
+// any kind, so a caller's spec previously meant two different things depending on which backend was
+// selected.
+//
 // Scope parity with `NativeJailBackend` (the Windows half, native_jail_backend.hpp) -- read that
 // header's own scope note first, most of it applies here unchanged:
 //   - `ExecRequest::source` is, for M2 only, a shell command line (`/bin/sh -c <source>`) the
