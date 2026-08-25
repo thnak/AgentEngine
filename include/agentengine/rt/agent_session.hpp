@@ -243,10 +243,12 @@
 #include "agentengine/core/tool_call_hook.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/core/turn_middleware.hpp"
+#include "agentengine/rt/agent_session_trust.hpp"
 #include "agentengine/rt/async_mutex.hpp"
 #include "agentengine/rt/interaction_codec.hpp"
 #include "agentengine/rt/message_codec.hpp"
 #include "agentengine/rt/session_store.hpp"
+#include "agentengine/rt/standing_effect_registry.hpp"
 #include "agentengine/rt/task.hpp"
 #include "agentengine/trust/principal.hpp"
 
@@ -343,28 +345,10 @@ struct AgentResponse {
     std::optional<std::string> structured_output_json;
 };
 
-// Slice 3 -- what a completed background native tool call hands back. See file banner's "SLICE 3
-// ADDITION" paragraph for the full delivery-path design. Deliberately NOT the original's Quark
-// message type (no Ask/tell shape here -- this is plain data pushed into a BackgroundCompletionQueue,
-// never routed through anything actor-shaped).
-// ae-naming-lint: allow BackgroundTaskDone — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
-struct BackgroundTaskDone {
-    std::string handle_id;
-    std::string call_id;
-    ToolResult  result;  // was: bool ok. ok is now !result.is_error. unified-streaming-design-draft.md §2.
-};
-
-// The thread-safe handoff point between a detached worker thread (tool_pipeline.hpp's
-// background_task() step 8) and whichever coroutine later drains it under session_mutex_. Its OWN
-// mutex, never session_mutex_ -- a plain std::thread cannot co_await anything, so the one lock it
-// touches must be acquirable synchronously. Held behind a shared_ptr on AgentSession specifically so
-// a worker's completion closure can capture a weak_ptr instead of a reference into the (possibly by
-// then destroyed) AgentSession itself -- see file banner for the full lifetime rationale.
-// ae-naming-lint: allow BackgroundCompletionQueue — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
-struct BackgroundCompletionQueue {
-    std::mutex                     m;
-    std::deque<BackgroundTaskDone> pending;
-};
+// Slice 3's `BackgroundTaskDone`/`BackgroundCompletionQueue` now live in
+// rt/standing_effect_registry.hpp (docs/planning/agent-session-decomposition-design-draft.md §2a)
+// -- included above, same `agentengine::rt` namespace, so every existing reference to either name
+// in this file keeps compiling unchanged.
 
 // ADR-053 §5's own named follow-up, closed here: `schedule_wakeup` exposed as a real, MODEL-callable
 // declared tool (006 §6b: "declared tools gated by a new capability... `Schedule<max_horizon,
@@ -1147,7 +1131,7 @@ public:
             // -- the same per-call bracketing discipline `codeact_preseeded_answers` uses one function
             // down, applied independently here since that field's own bracket doesn't cover this site.
             effect_context_.report_progress = [this, call_id = req.call_id](ContentItem item) {
-                force_tainted(item);
+                detail::force_tainted(item);
                 emit_run_event(run_event_kind::tool_call_delta,
                                 run_event_payload::ToolCallDelta{call_id, std::move(item)});
             };
@@ -1202,8 +1186,7 @@ public:
         // Same "no run identity of its own" rationale open_interactions_ above already documents --
         // a fresh fork inherits none of the source's (or *this*'s own prior) outstanding background
         // work. Same fix category as clear_in_process_state()'s own comment below.
-        standing_effects_.clear();
-        standing_effect_counter_ = 0;
+        standing_effects_registry_.reset();
     }
 
     [[nodiscard]] result<void> redact(std::string const& message_id, std::string reason, std::string actor) {
@@ -1257,13 +1240,13 @@ public:
         // state() never resets standing_effects_/standing_effect_counter_): this function's own
         // contract is "no residue left to read back through ANY of this class's own accessors" (005
         // §6), which list_standing_effects() would otherwise silently violate after a delete. Fixed
-        // here rather than ported forward unchanged -- background_completions_ is deliberately NOT
-        // reset (a shared_ptr whose identity a worker thread may already hold a weak_ptr to; dropping
-        // and reallocating it would not by itself invalidate anything, but a queue full of stale
-        // entries for effects that no longer exist is intentionally harmless -- the drain loop's own
-        // find_if() already no-ops on an unknown handle_id, same as a canceled one).
-        standing_effects_.clear();
-        standing_effect_counter_ = 0;
+        // here rather than ported forward unchanged -- StandingEffectRegistry::reset() deliberately
+        // does NOT reset its completion-queue shared_ptr's identity (a worker thread may already hold
+        // a weak_ptr to it; dropping and reallocating it would not by itself invalidate anything, but
+        // a queue full of stale entries for effects that no longer exist is intentionally harmless --
+        // the drain loop's own find_if() already no-ops on an unknown handle_id, same as a canceled
+        // one).
+        standing_effects_registry_.reset();
     }
 
     [[nodiscard]] Interaction const& open_interaction(std::string run_id, interaction_reason reason) {
@@ -1369,18 +1352,14 @@ public:
                                              "session has no granted capabilities",
                                              "standing_effect.no_capabilities"});
         }
-        std::size_t const current_count = static_cast<std::size_t>(std::count_if(
-            standing_effects_.begin(), standing_effects_.end(),
-            [](agentengine::StandingEffect const& e) {
-                return e.kind == agentengine::standing_effect_kind::background_task;
-            }));
+        std::size_t const current_count =
+            standing_effects_registry_.count_of(agentengine::standing_effect_kind::background_task);
 
-        std::string const handle_id =
-            session_id_ + ":standing:" + std::to_string(++standing_effect_counter_);
+        std::string const handle_id = standing_effects_registry_.mint_handle_id(session_id_);
         std::string const owner_run_id       = effect_context_.run_id;
         std::string const owner_principal_id = effect_context_.principal.id;
 
-        std::weak_ptr<BackgroundCompletionQueue> weak_queue = background_completions_;
+        std::weak_ptr<BackgroundCompletionQueue> weak_queue = standing_effects_registry_.completion_queue();
         result<void> submitted = background_task(
             table, *effect_context_.capabilities, request, effect_context_, approve, current_count,
             [weak_queue, handle_id, call_id = request.call_id](ToolResult result_out,
@@ -1401,7 +1380,7 @@ public:
         effect.run_id       = owner_run_id;
         effect.kind         = agentengine::standing_effect_kind::background_task;
         effect.label        = request.tool_name;
-        standing_effects_.push_back(effect);
+        standing_effects_registry_.add(effect);
 
         emit_run_event_for(owner_run_id, run_event_kind::tool_call_started,
                             run_event_payload::ToolCallStarted{request.call_id, request.tool_name});
@@ -1409,7 +1388,7 @@ public:
     }
 
     [[nodiscard]] std::vector<agentengine::StandingEffect> const& list_standing_effects() const noexcept {
-        return standing_effects_;
+        return standing_effects_registry_.list();
     }
 
     // Cancels the BOOKKEEPING only -- background_task() names no mechanism to interrupt an
@@ -1418,19 +1397,7 @@ public:
     // original.
     [[nodiscard]] result<void> cancel_standing_effect(std::string const& handle_id,
                                                        agentengine::Principal const& caller_principal) {
-        auto it = std::find_if(standing_effects_.begin(), standing_effects_.end(),
-                                [&](agentengine::StandingEffect const& e) { return e.handle_id == handle_id; });
-        if (it == standing_effects_.end()) {
-            return std::unexpected(
-                error{failure_class::contract, "no such standing effect", "standing_effect.not_found"});
-        }
-        if (it->principal_id != caller_principal.id) {
-            return std::unexpected(error{failure_class::policy,
-                                          "cannot cancel a standing effect owned by a different principal",
-                                          "standing_effect.cross_principal_denied"});
-        }
-        standing_effects_.erase(it);
-        return {};
+        return standing_effects_registry_.cancel(handle_id, caller_principal);
     }
 
     // ---- Slice 4: schedule_wakeup (file banner has the design writeup) -----------------------
@@ -1452,20 +1419,20 @@ public:
         CapabilitySet const empty_caps = CapabilitySet::grant_root({});
         CapabilitySet const& held =
             effect_context_.capabilities ? *effect_context_.capabilities : empty_caps;
-        co_return schedule_wakeup_impl(delay, std::move(label), now, held, effect_context_.principal,
-                                        effect_context_.run_id);
+        // `label` is passed by value (not moved) -- the registry's own copy is independent of this
+        // one, which the state_changed emission below still needs after the call returns.
+        result<agentengine::StandingEffect> effect = standing_effects_registry_.schedule_wakeup_impl(
+            delay, label, now, held, effect_context_.principal, effect_context_.run_id, session_id_);
+        if (effect) {
+            emit_run_event(run_event_kind::state_changed,
+                            run_event_payload::StateChanged{"schedule_wakeup armed: " + label});
+        }
+        co_return effect;
     }
 
     [[nodiscard]] std::vector<agentengine::StandingEffect> due_standing_effects(
         std::chrono::steady_clock::time_point now) const {
-        std::vector<agentengine::StandingEffect> due;
-        for (agentengine::StandingEffect const& e : standing_effects_) {
-            if (e.kind == agentengine::standing_effect_kind::schedule_wakeup && e.fire_at.has_value() &&
-                *e.fire_at <= now) {
-                due.push_back(e);
-            }
-        }
-        return due;
+        return standing_effects_registry_.due(now);
     }
 
     // Explicit host-callable drain, for a host that wants to flush completions between runs rather
@@ -1481,24 +1448,16 @@ private:
     // Caller must already hold session_mutex_ (start_run()/resolve_interaction() call this as their
     // first step; drain_background_completions() -- public, above -- is the explicit-call path). See
     // file banner's "SLICE 3 ADDITION" paragraph for the full design.
+    // Caller (this function's own two callers, both already inside session_mutex_'s held scope --
+    // see this method's own top comment above) must keep that guard alive across BOTH the
+    // drain_ready() call below AND this emit loop, in this same function scope -- see
+    // rt/standing_effect_registry.hpp's DrainedCompletion comment and the design draft's §3 item 4
+    // for why factoring this loop out from under the guard would reopen a real I1 window. This
+    // function IS that single scope; nothing here may be pulled into a separately-called helper.
     void drain_background_completions_locked() {
-        std::vector<BackgroundTaskDone> ready;
-        {
-            std::lock_guard<std::mutex> lock(background_completions_->m);
-            ready.assign(std::make_move_iterator(background_completions_->pending.begin()),
-                         std::make_move_iterator(background_completions_->pending.end()));
-            background_completions_->pending.clear();
-        }
-        for (BackgroundTaskDone& m : ready) {
-            auto it = std::find_if(standing_effects_.begin(), standing_effects_.end(),
-                                    [&](agentengine::StandingEffect const& e) {
-                                        return e.handle_id == m.handle_id;
-                                    });
-            if (it == standing_effects_.end()) continue;  // canceled or already resolved -- no-op
-            std::string const owner_run_id = it->run_id;
-            standing_effects_.erase(it);
-            emit_run_event_for(owner_run_id, run_event_kind::tool_call_finished,
-                                run_event_payload::ToolCallFinished{m.call_id, std::move(m.result)});
+        for (DrainedCompletion& d : standing_effects_registry_.drain_ready()) {
+            emit_run_event_for(d.owner_run_id, run_event_kind::tool_call_finished,
+                                run_event_payload::ToolCallFinished{d.call_id, std::move(d.result)});
         }
     }
 
@@ -1531,57 +1490,15 @@ private:
         return {};
     }
 
-    // ADR-061 §20.5/§20.6/§19.6: the real schedule_wakeup logic, UNLOCKED, taking exactly what it
-    // needs as parameters instead of reading capabilities_/effect_context_ directly -- called both by
-    // the public schedule_wakeup() wrapper above (already resolved authority, already locked) and by
-    // the offer-gate closure in run_rounds() (below), which runs already locked via its own caller and
-    // must not re-lock. Deliberately outside tool_pipeline.hpp's held.bind() mechanism -- see
-    // ScheduleWakeupTool's own comment (above) for why: the real enforcement (does the session hold a
-    // live cap::Schedule grant, does delay fit max_horizon, is max_active already at capacity) is a
-    // live, per-call check a static capability_ceiling can't express, mirroring Background<
-    // max_concurrent>'s own in-body check for the same reason.
-    [[nodiscard]] result<agentengine::StandingEffect> schedule_wakeup_impl(
-        std::chrono::milliseconds delay, std::string label, std::chrono::steady_clock::time_point now,
-        CapabilitySet const& held, agentengine::Principal const& principal, std::string const& run_id) {
-        auto const schedule_cap = held.find_schedule();
-        if (!schedule_cap.has_value()) {
-            return std::unexpected(error{failure_class::policy,
-                                          "Schedule<max_horizon, max_active> not granted",
-                                          "schedule_wakeup.not_granted"});
-        }
-        if (delay < std::chrono::milliseconds{0} ||
-            std::chrono::duration_cast<std::chrono::seconds>(delay) > schedule_cap->max_horizon) {
-            return std::unexpected(error{failure_class::policy,
-                                          "delay exceeds the granted Schedule<max_horizon>",
-                                          "schedule_wakeup.horizon_exceeded"});
-        }
-        std::size_t const current_count = static_cast<std::size_t>(std::count_if(
-            standing_effects_.begin(), standing_effects_.end(),
-            [](agentengine::StandingEffect const& e) {
-                return e.kind == agentengine::standing_effect_kind::schedule_wakeup;
-            }));
-        if (current_count >= schedule_cap->max_active) {
-            return std::unexpected(error{failure_class::resource, "Schedule<max_active> ceiling reached",
-                                          "schedule_wakeup.capacity_exceeded"});
-        }
-
-        std::string const handle_id =
-            session_id_ + ":standing:" + std::to_string(++standing_effect_counter_);
-
-        agentengine::StandingEffect effect;
-        effect.handle_id    = handle_id;
-        effect.session_id   = session_id_;
-        effect.principal_id = principal.id;
-        effect.run_id       = run_id;
-        effect.kind         = agentengine::standing_effect_kind::schedule_wakeup;
-        effect.label        = label;
-        effect.fire_at      = now + delay;
-        standing_effects_.push_back(effect);
-
-        emit_run_event_for(run_id, run_event_kind::state_changed,
-                            run_event_payload::StateChanged{"schedule_wakeup armed: " + label});
-        return effect;
-    }
+    // ADR-061 §20.5/§20.6/§19.6: schedule_wakeup's real logic is now `StandingEffectRegistry::
+    // schedule_wakeup_impl()` (rt/standing_effect_registry.hpp) -- UNLOCKED, taking exactly what it
+    // needs as parameters, called both by the public schedule_wakeup() wrapper above (already
+    // resolved authority, already locked) and by the offer-gate closure in run_rounds() (below),
+    // which runs already locked via its own caller and must not re-lock. That type's own comment has
+    // the rest of this rationale (deliberately outside tool_pipeline.hpp's held.bind() mechanism,
+    // mirroring Background<max_concurrent>'s own in-body check for the identical reason). This
+    // AgentSession no longer needs its own copy of that logic; see this method's own top comment for
+    // the state-changed event AND state.
 
     void emit_run_event(run_event_kind kind, RunEventPayload payload = run_event_payload::Empty{}) {
         emit_run_event_for(effect_context_.run_id, kind, std::move(payload));
@@ -1597,116 +1514,13 @@ private:
         (void)run_event_producer_.push(std::move(ev));
     }
 
-    // unified-streaming-design-draft.md §5 (Piece E). A tool-pushed `ContentItem` (via
-    // `EffectContext::report_progress`) gets `tainted = true` unconditionally, same convention
-    // `tool_pipeline.hpp`'s own `invoke_tool()` already follows for its return-value content -- a
-    // tool author does not get to unilaterally mark its own mid-call content trusted. Recursive
-    // (not a flat assignment): a pushed `ContentItem` can itself hold a `ToolResult`, which nests its
-    // own `std::vector<ContentItem>`, each independently serialized with its own `tainted` flag
-    // downstream (`rt/message_codec.hpp`) -- a non-recursive fix would leave a nested item's own
-    // `tainted = false` surviving verbatim into AG-UI/MCP output. Inherits the same unbounded-
-    // recursion-depth risk `message_codec.hpp`/`chat_recording.hpp`'s own content-item codecs already
-    // accept for this identical structure -- not a new risk class.
-    static void force_tainted(ContentItem& item) {
-        item.tainted = true;
-        if (auto* tr = std::get_if<ToolResult>(&item.value)) {
-            for (ContentItem& child : tr->content) force_tainted(child);
-        }
-    }
-
-    // unified-streaming-design-draft.md §3 (Piece A), Rev 7. Drains ANY `stream<ChatResponseUpdate>` --
-    // whether produced by a plain `ChatClientT::chat_stream()` or a gateway's `call_stream()` -- into a
-    // `result<ChatResponse>`, firing live `model_delta` events along the way exactly as the pre-Piece-A
-    // non-gateway branch already did. Factored out so both branches share ONE drain loop rather than two
-    // copies that could drift (the non-gateway branch is the one this was extracted from, unchanged in
-    // behavior; the gateway-streaming branch is new, Piece A).
-    [[nodiscard]] result<ChatResponse> drain_streaming_response(stream<ChatResponseUpdate> s) {
-        Message accumulated;
-        accumulated.role = role::assistant;
-        std::optional<Usage> usage;
-        while (!s.done()) {
-            while (std::optional<ChatResponseUpdate> upd = s.next()) {
-                if (stream_model_calls_) {
-                    if (auto const* t = std::get_if<Text>(&upd->delta.value);
-                        t != nullptr && !t->text.empty()) {
-                        emit_run_event(run_event_kind::model_delta,
-                                        run_event_payload::ModelDelta{
-                                            run_event_payload::ModelTextDelta{t->text}});
-                    } else if (upd->tool_call_argument_chunk.has_value()) {
-                        auto const& chunk = *upd->tool_call_argument_chunk;
-                        emit_run_event(run_event_kind::model_delta,
-                                        run_event_payload::ModelDelta{
-                                            run_event_payload::ModelToolCallArgumentDelta{
-                                                chunk.call_id, chunk.tool_name,
-                                                chunk.arguments_fragment, chunk.is_final}});
-                    }
-                }
-                // A pure argument-chunk update carries no real content in `delta` (it's left at its
-                // default) -- appending it would push a spurious placeholder ContentItem into the
-                // accumulated message. unified-streaming-design-draft.md §1, Finding 14.
-                if (!upd->tool_call_argument_chunk.has_value()) {
-                    accumulated.content.push_back(upd->delta);
-                }
-                if (upd->is_final && upd->usage.has_value()) usage = upd->usage;
-            }
-            if (!s.done()) std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        }
-        if (s.terminal() != stream_terminal::closed) {
-            return std::unexpected(error{failure_class::transient,
-                                          "chat_stream() did not reach a clean terminal",
-                                          "run.stream_incomplete"});
-        }
-        if (!usage.has_value()) {
-            return std::unexpected(
-                error{failure_class::contract,
-                      "streaming chat call completed with no reported token usage — refusing "
-                      "to treat it as zero-cost against the per-run token budget (004 §5)",
-                      "run.usage_unavailable"});
-        }
-        return ChatResponse{std::move(accumulated), *usage};
-    }
-
-    // Gap-audit finding 20 / 003 §8 Q2. Drops every `Reasoning` content item whose
-    // `producer_chat_client_id` does not exactly match `current_chat_client_id` -- including an
-    // EMPTY stamp (a record written before this field existed, or a `text_derived` leak-scan
-    // extraction, core/response_format_codec.hpp, whose provenance is already untrustworthy by
-    // construction): Q2's own rule is an allowlist ("included only when it originated from..."),
-    // not a denylist, so unknown provenance is excluded, never assumed safe. A message that becomes
-    // empty SOLELY because of this filter is dropped entirely (never sent as an empty-content
-    // message); a message that was already empty for an unrelated reason is left alone. The excluded
-    // item is not deleted from anything durable -- `contribution` is this turn's own transient
-    // ContextContribution, not `history_`, so the original item stays intact there for audit/replay
-    // (Q2's own "excluded... not deleted" wording), and each exclusion fires a real
-    // `run_event_kind::policy_decision` (013 §1's own vocabulary; this is its first real producer).
-    void filter_cross_provider_reasoning(ContextContribution& contribution,
-                                          std::string const& current_chat_client_id) {
-        std::vector<Message> filtered;
-        filtered.reserve(contribution.messages.size());
-        for (Message& m : contribution.messages) {
-            bool const originally_empty = m.content.empty();
-            std::vector<ContentItem> kept;
-            kept.reserve(m.content.size());
-            for (ContentItem& item : m.content) {
-                auto const* r = std::get_if<Reasoning>(&item.value);
-                if (r != nullptr && r->producer_chat_client_id != current_chat_client_id) {
-                    emit_run_event(
-                        run_event_kind::policy_decision,
-                        run_event_payload::PolicyDecision{
-                            "excluded a Reasoning content item from message '" + m.message_id +
-                            "' -- produced by '" +
-                            (r->producer_chat_client_id.empty() ? "(unknown)" : r->producer_chat_client_id) +
-                            "', currently bound backend is '" + current_chat_client_id +
-                            "' (003 §8 Q2: reasoning is vendor-specific, never translated across "
-                            "providers)"});
-                    continue;
-                }
-                kept.push_back(std::move(item));
-            }
-            m.content = std::move(kept);
-            if (!m.content.empty() || originally_empty) filtered.push_back(std::move(m));
-        }
-        contribution.messages = std::move(filtered);
-    }
+    // `force_tainted()`, `filter_cross_provider_reasoning()`, and `drain_streaming_response()` now
+    // live as free functions in `rt::detail` (rt/agent_session_trust.hpp, included above) --
+    // docs/planning/agent-session-decomposition-design-draft.md §2b. Each takes an `EmitFn`
+    // callback in place of directly calling `emit_run_event()`; this class's own `emit_run_event()`/
+    // `emit_run_event_for()` are unchanged and unmoved (§2c of that draft) -- every call site below
+    // constructs a thin `[this](k, p){ emit_run_event(k, std::move(p)); }` closure at the point of
+    // use.
 
     // Same shape as core/agent_session.hpp's own run_model_call(), ported to rt::task<T>, with ONE
     // real consolidation (not a byte-for-byte port): the original had three branches (gateway /
@@ -1734,6 +1548,9 @@ private:
 
         result<ChatResponse> response = std::unexpected(
             error{failure_class::contract, "unreachable: neither call path executed", "run.internal"});
+        detail::EmitFn const emit = [this](run_event_kind k, RunEventPayload p) {
+            emit_run_event(k, std::move(p));
+        };
 
         if constexpr (agentengine::ModelCallGatewayLike<ChatClientT>) {
             // unified-streaming-design-draft.md §3 (Piece A), Rev 7 (Finding 4-new, 5th red-team pass):
@@ -1746,7 +1563,8 @@ private:
             // `stream_model_calls_`'s value.
             if constexpr (agentengine::ModelCallGatewayStreamLike<ChatClientT>) {
                 if (stream_model_calls_) {
-                    response = drain_streaming_response(chat_client_->call_stream(request, ctx));
+                    response = detail::drain_streaming_response(chat_client_->call_stream(request, ctx),
+                                                                  stream_model_calls_, emit);
                 } else {
                     response = co_await chat_client_->call(request, ctx);
                 }
@@ -1780,7 +1598,8 @@ private:
                     co_return response;
                 }
             }
-            response = drain_streaming_response(chat_client_->chat_stream(request, ctx));
+            response = detail::drain_streaming_response(chat_client_->chat_stream(request, ctx),
+                                                          stream_model_calls_, emit);
         }
 
         if (response.has_value() && scan_response_format_leaks_) {
@@ -1882,7 +1701,7 @@ private:
         // own independent set/clear pair around this same call -- both fields are per-call, neither
         // implies the other.
         effect_context_.report_progress = [this, call_id = req.call_id](ContentItem item) {
-            force_tainted(item);
+            detail::force_tainted(item);
             emit_run_event(run_event_kind::tool_call_delta,
                             run_event_payload::ToolCallDelta{call_id, std::move(item)});
         };
@@ -2013,7 +1832,7 @@ private:
             // ADR-060: same per-call bracketing discipline every other invoke_tool() call site in
             // this file already uses.
             effect_context_.report_progress = [this, call_id = hc.request.call_id](ContentItem item) {
-                force_tainted(item);
+                detail::force_tainted(item);
                 emit_run_event(run_event_kind::tool_call_delta,
                                 run_event_payload::ToolCallDelta{call_id, std::move(item)});
             };
@@ -2196,7 +2015,9 @@ private:
             // runtime branch, so every existing mock/test ChatClientT is completely unaffected.
             if constexpr (agentengine::HasProducerChatClientId<ChatClientT>) {
                 if (chat_client_) {
-                    filter_cross_provider_reasoning(*contribution, chat_client_->producer_chat_client_id());
+                    detail::filter_cross_provider_reasoning(
+                        *contribution, chat_client_->producer_chat_client_id(),
+                        [this](run_event_kind k, RunEventPayload p) { emit_run_event(k, std::move(p)); });
                 }
             }
 
@@ -2222,11 +2043,16 @@ private:
                         CapabilitySet const empty_caps = CapabilitySet::grant_root({});
                         CapabilitySet const& call_held =
                             ctx.capabilities ? *ctx.capabilities : empty_caps;
-                        auto effect = schedule_wakeup_impl(std::chrono::milliseconds(args.delay_ms),
-                                                            std::move(args.label),
-                                                            std::chrono::steady_clock::now(), call_held,
-                                                            ctx.principal, ctx.run_id);
+                        // `args.label` passed by value (not moved) -- the state_changed emission
+                        // below still needs it after the registry call returns.
+                        auto effect = standing_effects_registry_.schedule_wakeup_impl(
+                            std::chrono::milliseconds(args.delay_ms), args.label,
+                            std::chrono::steady_clock::now(), call_held, ctx.principal, ctx.run_id,
+                            session_id_);
                         if (!effect) return std::unexpected(effect.error());
+                        emit_run_event_for(ctx.run_id, run_event_kind::state_changed,
+                                            run_event_payload::StateChanged{
+                                                "schedule_wakeup armed: " + args.label});
                         return ScheduleWakeupReply{effect->handle_id};
                     }));
             }
@@ -2548,7 +2374,7 @@ private:
                 // outcome -- rebinding every loop iteration is what makes two sequential calls in the
                 // same round each get their own correctly-tagged call_id, never a leaked prior binding.
                 effect_context_.report_progress = [this, call_id = req.call_id](ContentItem item) {
-                    force_tainted(item);
+                    detail::force_tainted(item);
                     emit_run_event(run_event_kind::tool_call_delta,
                                     run_event_payload::ToolCallDelta{call_id, std::move(item)});
                 };
@@ -2757,13 +2583,16 @@ private:
     std::uint64_t                                         admission_denied_count_ = 0;
     stream_producer<RunEvent>                             run_event_producer_;
     std::unordered_map<std::string, std::uint64_t>        run_event_seq_by_run_;
-    // Slice 3 -- see file banner's "SLICE 3 ADDITION" paragraph. Never null, never reassigned after
-    // construction -- a background worker's weak_ptr capture is only meaningful if this shared_ptr's
-    // identity stays stable for the AgentSession instance's whole lifetime.
-    std::shared_ptr<BackgroundCompletionQueue>            background_completions_ =
-        std::make_shared<BackgroundCompletionQueue>();
-    std::vector<agentengine::StandingEffect>              standing_effects_;
-    std::uint64_t                                         standing_effect_counter_ = 0;
+    // Slice 3 -- see file banner's "SLICE 3 ADDITION" paragraph, and
+    // docs/planning/agent-session-decomposition-design-draft.md §2a. Owns the standing-effect
+    // storage and the background-completion queue (rt/standing_effect_registry.hpp); its own
+    // completion-queue shared_ptr is never null, never reassigned after construction -- a
+    // background worker's weak_ptr capture is only meaningful if that identity stays stable for
+    // the AgentSession instance's whole lifetime, which it does: AgentSession is structurally
+    // immovable (rt::AsyncMutex's deleted copy ctor with no declared move ctor suppresses every
+    // implicit move member on this class), so this member subobject is pinned for the session's
+    // whole life exactly as its absorbed fields were when they lived directly here.
+    StandingEffectRegistry                                standing_effects_registry_;
     // I1 -- see file banner. Every public async entry point acquires this for its whole duration.
     AsyncMutex                                            session_mutex_;
 };
