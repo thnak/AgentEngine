@@ -687,3 +687,16 @@ above, writing the actual ADR with these findings carried forward as named resid
 implementation of the pieces already confirmed safe (the `EffectContext` ordering contract, the
 `clear_in_process_state()` re-arm requirement) as small, precedented additions similar to §2 item
 5's already-shipped fix.
+
+## `SandboxToolProvider` implemented (2026-08-25, post-ADR)
+
+`SandboxToolProvider` itself — the design's central type, unimplemented when the ADR above was
+first written — is now real code: `src/backends/native_jail/sandbox_tool_provider.hpp`, proven by
+`tests/test_sandbox_tool_provider.cpp` (19 checks), full project rebuild + full `ctest` suite
+(252/252) green. It matches Design B exactly, including the C8 digest-based subdirectory-naming
+defense-in-depth check and the idempotent host-directory creation the fifth red-team round (above)
+found missing. See ADR-096 §5 and §8 for the updated evidence and residual list — the implementation
+independently re-corroborated C1/C3/C6/C8 (no new error found) but did not re-touch C2/C4/C5/C7,
+which still rest entirely on the five red-team rounds' original verification. This still needs a
+real host caller (nothing today composes it into a production `AgentSession`) and its own `Judged`
+sign-off before being treated as more than "implemented, self-tested."

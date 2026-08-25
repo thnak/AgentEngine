@@ -1,11 +1,18 @@
 # ADR-096 — Does session→sandbox lifecycle wiring for Shell go through `SandboxBackendRegistry`/`SandboxHandle`, or through a `ContextProvider` composed via the existing `Ms...` mechanism?
 
 **Status:** Proposed — design and red-team phases complete (5 independent rounds, 2026-08-25);
-**prove/implement phase has NOT started.** This deviates from this file's usual convention (every
-other `Proposed` entry in `decisions/README.md` ships real, tested code awaiting sign-off) — stated
-explicitly so a reader does not assume otherwise. The only code that has actually shipped from this
-line of work is one small, precedented, independently-red-team-exempt fix (§5). `SandboxToolProvider`
-itself — the design's central new type — does not exist as code anywhere in this tree yet.
+**`SandboxToolProvider` itself is now implemented and tested (2026-08-25, post-ADR), still awaiting
+Judged sign-off.** `src/backends/native_jail/sandbox_tool_provider.hpp` is real code: a
+`ContextProvider` conformer matching Design B exactly (§2), proven by `tests/
+test_sandbox_tool_provider.cpp` (19 checks — concept conformance, the non-copyable/move-only
+property C2 depends on, lazy sandbox construction + `ctx.sandbox_fs` population + `run_shell`
+contribution on `on_context()`, reuse across a later round with no directory recreated, the real
+`invoke_tool()` pipeline actually running a command against the created directory, and C8's
+digest-validation helper both against synthetic and real `compute_digest()` output). Full project
+rebuild + full `ctest` suite (252/252) green, zero regressions. This still deviates from this file's
+usual convention in one respect: implementation exists but this ADR has not yet been marked
+`Judged` by the project owner — do not treat that sign-off step as already satisfied. §8's residual
+list is updated to reflect what closing implementation did and did not resolve.
 
 **Relates to:** `decisions/ADR-080-sandbox-backend-registry.md` (Proposed, awaiting Judged — this
 ADR's own residual, "no real production consumption of a resolved backend," is the gap this ADR's
@@ -207,24 +214,44 @@ full blow-by-blow in the design draft.
 
 ## 5. Design evidence (not "executed evidence" — see Status)
 
-Only one piece of this design has shipped as real, tested code: **C6**, the `background_task()`
-`sandbox_fs` reset. `EffectContext::sandbox_fs` is a raw pointer into session-owned state, the same
-dangling-pointer/unsynchronized-race hazard `ADR-060` already closed for `report_progress` in this
-exact function (a caller's `EffectContext` is copied by value onto a detached thread with no
-synchronization against `fork_from()`/`clear_in_process_state()`). Judged safe to implement without
-its own red-team pass, given how closely it mirrors an already-Judged line: `ctx.sandbox_fs =
-nullptr;` added immediately next to the existing `ctx.report_progress = [](ContentItem) {};` reset
-in `tool_pipeline.hpp::background_task()`. Regression-proofed with a new case "E" in
-`tests/test_agent_session_tool_call_progress.cpp`, mirroring that file's existing case "D" for
-`report_progress` exactly — a `Backgroundable` tool given a live, non-null `sandbox_fs` in the
-caller's `EffectContext` observes `nullptr` on the detached thread. Full project rebuild green; the
-affected test subset (7 tests) green.
+Two pieces of this design have shipped as real, tested code, added at different times:
 
-`SandboxToolProvider` itself, the design's central type, is **not implemented**. C1-C5, C7, C8 are
-verified against real, already-existing code (an empirical compile probe for C2; direct reads of
-`context_provider.hpp`/`composed_context_provider.hpp`/`agent_registry.hpp`/real test files for the
-rest) — this is real verification of the design's *premises*, not proof the finished type behaves
-as designed, since it doesn't exist to test yet.
+- **C6**, the `background_task()` `sandbox_fs` reset (shipped before this ADR was written).
+  `EffectContext::sandbox_fs` is a raw pointer into session-owned state, the same dangling-pointer/
+  unsynchronized-race hazard `ADR-060` already closed for `report_progress` in this exact function
+  (a caller's `EffectContext` is copied by value onto a detached thread with no synchronization
+  against `fork_from()`/`clear_in_process_state()`). Judged safe to implement without its own
+  red-team pass, given how closely it mirrors an already-Judged line: `ctx.sandbox_fs = nullptr;`
+  added immediately next to the existing `ctx.report_progress = [](ContentItem) {};` reset in
+  `tool_pipeline.hpp::background_task()`. Regression-proofed with a new case "E" in `tests/
+  test_agent_session_tool_call_progress.cpp`, mirroring that file's existing case "D" for
+  `report_progress` exactly — a `Backgroundable` tool given a live, non-null `sandbox_fs` in the
+  caller's `EffectContext` observes `nullptr` on the detached thread.
+- **`SandboxToolProvider` itself** (shipped 2026-08-25, after this ADR's initial version was
+  written): `src/backends/native_jail/sandbox_tool_provider.hpp`, exactly matching Design B's
+  construction (§2) — lazy `SessionShellSandbox` construction on first `on_context()`, `run_shell`
+  contribution plus `ctx.sandbox_fs` assignment on every call, digest-based per-session subdirectory
+  naming with the C8 defense-in-depth check, and idempotent host-directory creation (closing the
+  round-5 residual named below, §8). Proven by `tests/test_sandbox_tool_provider.cpp`: static
+  `ContextProvider` concept conformance and non-copyable/move-only proofs (C1, C2's premise), a real
+  `on_context()` call constructing the sandbox and populating `ctx.sandbox_fs`, the contributed
+  `ToolDescriptor` running a real command through the actual `invoke_tool()` ten-step pipeline
+  (mirroring `test_session_shell_wiring.cpp`'s own end-to-end shape) with the write landing on the
+  real host filesystem at the digest-named directory, a second `on_context()` call (a later round)
+  reusing the same sandbox with no new directory created and the shell's state still showing the
+  first call's file, and direct unit coverage of `check_session_digest` (empty, wrong-length,
+  uppercase, non-hex all rejected; a real `compute_digest()` output accepted). Full project rebuild
+  and the full `ctest` suite (252/252) green — zero regressions, including the pre-existing suite
+  this ADR did not touch.
+
+C1-C5, C7, C8 were originally verified against real, already-existing code (an empirical compile
+probe for C2; direct reads of `context_provider.hpp`/`composed_context_provider.hpp`/
+`agent_registry.hpp`/real test files for the rest) — that verification of the design's *premises*
+is now corroborated by the finished type itself actually compiling, composing, and running as
+designed (C1, C3's freshness premise, C6, and C8 all directly exercised by `test_sandbox_tool_
+provider.cpp`; C2, C4, C5, C7 remain proven the way §4/§6 originally record, not re-proven here,
+since nothing about implementing `SandboxToolProvider` touched `fork_from()`, another real
+`ContextProvider`'s own code, `clear_in_process_state()`, or the registry).
 
 ## 6. Per-claim verdicts
 
@@ -276,15 +303,26 @@ ready without closing §8's residuals first.
 
 ## 8. Residual risks
 
-- **`SandboxToolProvider` is unimplemented.** This ADR documents an accepted, five-times-red-teamed
-  design, not shipped code. The gap between "design accepted" and "code exists" is itself the
-  largest residual — implementation is real, non-trivial follow-on work, not a formality.
+- **`SandboxToolProvider` was unimplemented at this ADR's original writing; it is now implemented
+  and tested (2026-08-25, §5), still awaiting `Judged` sign-off.** The gap between "design accepted"
+  and "code exists" that used to be this section's largest residual is closed. What remains open:
+  whoever reviews this for `Judged` status should independently re-verify §3's claims against the
+  real code (per the standing caution below), and no host application anywhere actually composes
+  `SandboxToolProvider` into a real, production `AgentSession` yet — only the test file does. That
+  last gap (a real caller) is not itself designed or scoped here.
 - **Nothing today creates the per-session scratch directory or handles a pre-existing one at that
-  path** (Round 5 finding, C8's own gap). `MediatedFileSystemAdapter::create()` requires the root to
-  already exist; `SessionShellSandbox::create()`'s own comment states the caller owns creating it.
-  A real implementation must add idempotent directory creation (mirroring `cli_chat.cpp:239`'s own
-  idiom) and decide what happens on a leftover directory from an abandoned prior session sharing the
-  same digest — not designed here.
+  path** (Round 5 finding, C8's own gap) — **closed by the implementation**:
+  `SandboxToolProvider::ensure_sandbox()` calls `std::filesystem::create_directories()` idempotently
+  before constructing `SessionShellSandbox`, mirroring `cli_chat.cpp:239`'s own idiom, proven by
+  `test_sandbox_tool_provider.cpp`'s Part 1 (constructs against a scratch root that does not exist
+  yet) and Part 3 (a second round reuses the same directory, nothing is recreated). What is still
+  genuinely undecided, not merely untested: what SHOULD happen on a leftover directory from an
+  abandoned prior session sharing the same digest (impossible today only because `compute_digest` is
+  deterministic and no two live sessions can share one `session_id` — an abandoned-then-reused
+  `session_id` is not ruled out at this layer). `create_directories()` on an existing path is a
+  harmless no-op either way; whether that is the RIGHT behavior for a leftover directory with stale
+  content inside it (silently reuse vs. refuse vs. clean first) was not decided, is not enforced,
+  and is not tested.
 - **Windows `MAX_PATH`/full-path-length budget for `host_root` + digest subdirectory** was not
   checked this pass — named as unverified, not assumed safe.
 - **`session_id`'s own admission-path trust tier** (whether it can ever be influenced by anything
@@ -300,9 +338,17 @@ ready without closing §8's residuals first.
   design's own self-directed reasoning wrong or overstated, always in a "grep-confirmed"/empirical
   claim specifically (§4). The two rounds that found nothing wrong (rounds 4 and — partially — 5)
   are evidence those specific corrections happened to be right, not evidence the process has become
-  more reliable. **Whoever implements this design should independently re-verify every claim in §3
-  against the real code at implementation time**, not trust this ADR's own verdicts in §6 by
-  default — especially C5, C7, and C8, each of which is itself a correction of an earlier, wrong
-  self-directed claim.
+  more reliable. The implementation pass (§5) independently re-verified C1, C3, C6, and C8 by
+  actually building and testing against them, and found no new error in any of the four — real
+  corroboration, not just another self-directed claim, but **still not independent red-team
+  scrutiny**: the same person who designed and red-teamed this ADR also wrote the implementation and
+  its own tests, so it cannot rule out a shared blind spot the way a genuinely independent round
+  could. **C2, C4, C5, and C7 were NOT re-touched by implementation at all** — nothing in
+  `SandboxToolProvider`'s own code path exercises `fork_from()`, another real `ContextProvider`'s
+  own `EffectContext` reads, `clear_in_process_state()`, or the registry, so those four claims still
+  rest entirely on §4/§6's original verification. Whoever reviews this for `Judged` status should
+  weigh all of this — not trust this ADR's own verdicts in §6 by default, and treat C2/C4/C5/C7
+  as the ones most worth independently re-checking, since C5, C7, and C8 already each started as a
+  correction of an earlier, wrong self-directed claim.
 - **`ADR-080`'s "selection without consumption" residual is narrowed, not closed** (§7) — carried
   forward exactly as that ADR's own §8 already names it, unchanged by this work.

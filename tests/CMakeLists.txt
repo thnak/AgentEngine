@@ -2017,6 +2017,17 @@ if(WIN32)
     agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store agentengine_warnings)
   add_test(NAME test_session_shell_wiring COMMAND test_session_shell_wiring)
 
+  # ---- ADR-096 Design B: SandboxToolProvider (backends/native_jail/sandbox_tool_provider.hpp) --
+  # -- a ContextProvider composed via ComposedContextProvider<Ms...>, giving Shell a real,
+  # reusable, per-session lifecycle. Proven end to end: composition/concept conformance, lazy
+  # sandbox construction + ctx.sandbox_fs population + run_shell contribution on on_context(),
+  # reuse across a later round, the real invoke_tool() pipeline, and the digest-subdirectory
+  # defense-in-depth check (C8).
+  add_executable(test_sandbox_tool_provider test_sandbox_tool_provider.cpp)
+  target_link_libraries(test_sandbox_tool_provider PRIVATE
+    agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_sandbox_tool_provider COMMAND test_sandbox_tool_provider)
+
   # ---- Milestone 3 Phase E4: hostile-corpus/mediation proof (010 §9 G2/G7) ---------------------
   add_executable(test_mediated_shell_runner_hostile_corpus test_mediated_shell_runner_hostile_corpus.cpp)
   target_link_libraries(test_mediated_shell_runner_hostile_corpus PRIVATE
