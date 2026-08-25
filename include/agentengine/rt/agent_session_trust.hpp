@@ -24,6 +24,7 @@
 
 namespace agentengine::rt::detail {
 
+// ae-naming-lint: allow EmitFn — ADR-097's own new vocabulary (agent-session-decomposition-design-draft.md §2b), 027 not yet updated
 using EmitFn = std::function<void(agentengine::run_event_kind, agentengine::RunEventPayload)>;
 
 // unified-streaming-design-draft.md §5 (Piece E). A tool-pushed `ContentItem` (via

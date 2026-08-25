@@ -61,6 +61,7 @@ struct BackgroundCompletionQueue {
 // both the drain_ready() call that produces these AND the loop that emits for them, in the same
 // function scope; see the design draft §3 item 4 for why factoring the emit loop out from under the
 // guard would reopen a real I1 window.
+// ae-naming-lint: allow DrainedCompletion — ADR-097's own new vocabulary (agent-session-decomposition-design-draft.md §2a), 027 not yet updated
 struct DrainedCompletion {
     std::string              owner_run_id;
     std::string              call_id;
@@ -75,6 +76,7 @@ struct DrainedCompletion {
 // §20.5/§24.2's own deliberate choice, unchanged by this move) and no knowledge of ToolTable/
 // ApprovalDecider/capability checking (that stays in AgentSession, which resolves per-call
 // authority/capabilities itself and calls in here only for the bookkeeping half).
+// ae-naming-lint: allow StandingEffectRegistry — ADR-097's own new vocabulary (agent-session-decomposition-design-draft.md §2a), 027 not yet updated
 class StandingEffectRegistry {
 public:
     StandingEffectRegistry() : completions_(std::make_shared<BackgroundCompletionQueue>()) {}
