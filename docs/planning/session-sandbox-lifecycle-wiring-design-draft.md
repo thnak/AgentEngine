@@ -5,7 +5,11 @@
 gap 1 and gap 3 resolutions, but REFUTED gap 2's stated evidence: "no second caller of
 `clear_in_process_state()` exists" was false, the same overclaim-from-an-incomplete-grep pattern
 this draft has now repeated three times (Rev 1's fabrication, Rev 3's unproven claim, now this).
-Gap 2 is reopened and corrected below, not dismissed. Still not an ADR — see §4. Written as the direct
+Gap 2 is reopened and corrected below, not dismissed. **A fourth red-team pass, same day, then
+independently re-verified Revision 6's own correction against the real test files and
+`composed_context_provider.hpp` directly and found it accurate on every point checked** — the
+first round of four on this draft to confirm a self-directed revision without finding a new error.
+Still not an ADR — see §4. Written as the direct
 follow-on to two things that are now real, built, and tested in this
 tree: the `sandbox-backend-registry-design-draft.md` / `ADR-080` pair (Proposed, awaiting Judged
 — resolves *which* `SandboxBackend` a deployment picks, explicitly does **not** wire any real
@@ -644,21 +648,31 @@ Option A should be triggered by a real second-backend need, not by this draft's 
 
 Per this project's own rule (`CLAUDE.md`: *"Contested, hot-path, or security-critical designs go
 through design → red-team → prove → judge and produce an ADR, not an ad-hoc change"*) — this draft
-has now been through THREE red-team passes (2026-08-25: 3 agents on Revision 1→2, 2 agents on
-Revision 3→4 including a real compile probe, 1 agent on Revision 5→6) plus one small piece actually
-implemented and tested (§2 item 5). The pattern across all three passes is worth stating plainly,
-not glossed over: **every red-team round on this draft has found this draft's own self-directed
+has now been through FOUR red-team passes (2026-08-25: 3 agents on Revision 1→2, 2 agents on
+Revision 3→4 including a real compile probe, 1 agent on Revision 5→6, 1 agent independently
+re-verifying Revision 6's own correction) plus one small piece actually implemented and tested
+(§2 item 5). The pattern across the first three passes is worth stating plainly, not glossed over:
+**every one of the first three red-team rounds on this draft found this draft's own self-directed
 reasoning wrong or overstated at least once** — Revision 1's fabricated `CodeActRunnerBinding`
-claim, Revision 3's unproven-until-compiled `fork_from()` claim, and now Revision 5's false "no
-second caller of `clear_in_process_state()`" claim. Two of those three self-directed revisions
-(3 and 5) got at least one real thing wrong despite careful-sounding reasoning against real code.
-**This is the load-bearing lesson for whoever picks this up next**: this draft's own confidence in
-its own revisions should count for very little without independent verification — every claim that
-sounds like "I checked the real code and confirmed X" should still be re-checked, especially the
-empirical/"grep-confirmed" ones, which is exactly where both real mistakes lived.
+claim, Revision 3's unproven-until-compiled `fork_from()` claim, and Revision 5's false "no second
+caller of `clear_in_process_state()`" claim. The fourth pass is the first to check a self-directed
+revision (Revision 6's correction of Revision 5) and find it accurate on every point, including one
+detail (`ComposedContextProvider::engage()` having no hidden precondition beyond its own
+`engaged_` flag) that hadn't been checked before. **This does not mean the pattern is over** — one
+clean pass after three dirty ones is evidence the correction happened to be right, not evidence the
+underlying reasoning process has become more trustworthy. **The load-bearing lesson for whoever
+picks this up next is unchanged**: this draft's own confidence in its own revisions should count
+for very little without independent verification — every claim that sounds like "I checked the
+real code and confirmed X" should still be re-checked, especially empirical/"grep-confirmed" ones,
+which is exactly where all three real mistakes lived and exactly what the fourth pass had to
+re-verify from scratch rather than take on faith.
 
 **What genuinely remains before this is ready for an ADR** (§3): the re-`engage()`-after-
-`clear_in_process_state()` documentation requirement (reinstated, Revision 6); the per-session
-subdirectory sanitization algorithm (still unwritten); Python's own composition question (Revision
-4 finding 4, explicitly deferred). Revision 6's own correction has not itself been re-verified by
-a fourth pass — the same caveat applies to it that applied to Revision 5.
+`clear_in_process_state()` documentation requirement (reinstated, Revision 6, now independently
+verified); the per-session subdirectory sanitization algorithm (still unwritten); Python's own
+composition question (Revision 4 finding 4, explicitly deferred). No further red-team pass is
+pending on the current text — the next step is either a fifth pass on the two still-open items
+above, writing the actual ADR with these findings carried forward as named residuals, or starting
+implementation of the pieces already confirmed safe (the `EffectContext` ordering contract, the
+`clear_in_process_state()` re-arm requirement) as small, precedented additions similar to §2 item
+5's already-shipped fix.
