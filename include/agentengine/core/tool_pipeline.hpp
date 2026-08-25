@@ -744,6 +744,15 @@ using BackgroundTaskCompletion = std::function<void(ToolResult, ToolInvocationAu
     // because nobody has tried yet.
     ctx.report_progress = [](ContentItem) {};
 
+    // Same hazard class as `report_progress` above, same fix: `sandbox_fs` is a raw pointer into
+    // session-owned mediated-filesystem state (docs/planning/session-sandbox-lifecycle-wiring-
+    // design-draft.md), not synchronized against `fork_from()`/`clear_in_process_state()`/session
+    // teardown racing this function's own detached thread below. `captures_session_state` (checked
+    // above) only refuses a stateful-descriptor TOOL -- it says nothing about an ordinary tool that
+    // merely reads `ctx.sandbox_fs` directly, so that guard does not cover this pointer. Reset
+    // unconditionally, on this function's own local copy, before step 8 ever runs a tool against it.
+    ctx.sandbox_fs = nullptr;
+
     // -- step 4/7: authorize + bind (the tool's own capability ceiling) -----------------------------
     std::vector<BoundCapability> bound;
     bound.reserve(tool->capability_ceiling.size());

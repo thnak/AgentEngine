@@ -23,6 +23,13 @@
 //         agentengine::background_task() itself, the one function that ever detaches that thread,
 //         rather than trying to reproduce a genuine data race through AgentSession's own public
 //         surface (which has no way to observe or force the exact interleaving from a test).
+//   E  -- same hazard class as D, for EffectContext::sandbox_fs (the session→sandbox seam added
+//         alongside docs/planning/session-sandbox-lifecycle-wiring-design-draft.md): a caller's
+//         EffectContext carrying a LIVE, non-null sandbox_fs pointer into session-owned mediated-
+//         filesystem state must never reach a Backgroundable tool's invoke() on background_task()'s
+//         detached thread either -- `captures_session_state` (checked earlier in that function) only
+//         refuses a stateful-descriptor TOOL, not an ordinary tool that merely reads ctx.sandbox_fs,
+//         so it does not cover this pointer. Proven the same direct way as D.
 
 #include <algorithm>
 #include <atomic>
@@ -38,6 +45,7 @@
 #include "agentengine/core/tool.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/rt/agent_session.hpp"
+#include "agentengine/sandbox/filesystem_adapter.hpp"
 
 using agentengine::rt::AgentSession;
 using agentengine::rt::NoSessionState;
@@ -131,6 +139,46 @@ struct BackgroundableProgressTool : agentengine::Tool<BackgroundableProgressTool
         ctx.report_progress(agentengine::ContentItem{
             agentengine::Text{"should never be observed by the caller's own closure"}});
         return Reply{true};
+    }
+};
+
+// A live, constructible FileSystemAdapter conformer -- E's own regression check needs a real,
+// non-null pointer to set ctx.sandbox_fs to before calling background_task() (unlike report_progress
+// above, sandbox_fs has no "did it fire" signal of its own -- the tool below reports what it saw
+// directly in its Reply). Behavior of the individual methods is irrelevant; E never expects any of
+// them to actually be called.
+class DummyFileSystemAdapter final : public agentengine::FileSystemAdapter {
+public:
+    agentengine::result<std::vector<std::byte>> read_file(std::string_view) override {
+        return std::vector<std::byte>{};
+    }
+    agentengine::result<void> write_file(std::string_view, std::span<std::byte const>, bool) override {
+        return {};
+    }
+    agentengine::result<void> remove(std::string_view, bool) override { return {}; }
+    agentengine::result<void> rename(std::string_view, std::string_view) override { return {}; }
+    agentengine::result<void> copy_file(std::string_view, std::string_view) override { return {}; }
+    agentengine::result<void> make_directory(std::string_view, bool) override { return {}; }
+    agentengine::result<std::vector<agentengine::DirEntry>> list_directory(std::string_view) override {
+        return std::vector<agentengine::DirEntry>{};
+    }
+    agentengine::result<bool> exists(std::string_view) override { return true; }
+    agentengine::result<std::string> canonicalize(std::string_view path) override {
+        return std::string(path);
+    }
+};
+
+// Backgroundable; reports (via its own Reply, reusing ProgressReply::ok) whether ctx.sandbox_fs was
+// null when its invoke() ran on background_task()'s detached thread -- E's own regression check.
+struct BackgroundableSandboxFsTool
+    : agentengine::Tool<BackgroundableSandboxFsTool, agentengine::Backgroundable> {
+    static constexpr std::string_view name = "bg_sandbox_fs_tool";
+    static constexpr std::string_view description =
+        "Backgroundable; reports whether ctx.sandbox_fs was null when invoke() ran.";
+    using Args  = ProgressArgs;
+    using Reply = ProgressReply;
+    static agentengine::result<Reply> invoke(Args, EffectContext& ctx) {
+        return Reply{ctx.sandbox_fs == nullptr};
     }
 };
 
@@ -385,6 +433,54 @@ int main() {
               "into this function's by-value EffectContext copy -- never fires; the cross-thread "
               "hazard ADR-060 par.4 found is closed at its one reachable choke point, not merely "
               "documented");
+    }
+
+    // ---- E: same hazard class as D, for EffectContext::sandbox_fs -----------------------------------
+    // `ctx` below carries a LIVE, non-null sandbox_fs pointer into real (if inert, for this test)
+    // FileSystemAdapter state, standing in for whatever a genuinely racing bracket window could copy
+    // into background_task()'s by-value EffectContext, exactly as D does for report_progress. If that
+    // pointer ever reached BackgroundableSandboxFsTool::invoke() running on this function's own
+    // detached thread, the tool would see a non-null sandbox_fs -- reachable with no tool misuse at
+    // all, just the intended use of the session-sandbox seam this pointer exists for.
+    {
+        DummyFileSystemAdapter adapter;
+        EffectContext ctx;
+        ctx.principal   = Principal{"p", ""};
+        ctx.run_id      = "bg-race-run-sandbox-fs";
+        ctx.sandbox_fs  = &adapter;
+
+        CapabilitySet const held = CapabilitySet::grant_root({agentengine::cap::Background{1}});
+        ctx.capabilities = agentengine::borrow_capabilities(held);
+
+        auto const table = agentengine::ToolTable::from_tools<BackgroundableSandboxFsTool>();
+        agentengine::ToolCallRequest const req{"call-bg-fs", "bg_sandbox_fs_tool",
+                                                *json::parse(R"({"noop":true})"), false};
+
+        std::atomic<bool> completed{false};
+        std::atomic<bool> saw_null{false};
+        auto submitted = agentengine::background_task(
+            table, held, req, ctx, agentengine::ApprovalDecider{}, /*current_background_count=*/0,
+            [&completed, &saw_null](agentengine::ToolResult result, agentengine::ToolInvocationAudit) {
+                if (!result.content.empty()) {
+                    if (auto const* data = std::get_if<agentengine::Data>(&result.content[0].value)) {
+                        auto parsed = json::parse(data->json);
+                        saw_null.store(parsed.has_value() && parsed->find("ok") != nullptr &&
+                                        parsed->find("ok")->as_bool());
+                    }
+                }
+                completed.store(true);
+            });
+        check(submitted.has_value(), "E setup: the Backgroundable tool call is accepted");
+
+        check(wait_until([&] { return completed.load(); }, std::chrono::seconds(2)),
+              "E setup: the detached thread actually finishes");
+
+        check(saw_null.load(),
+              "E: BackgroundableSandboxFsTool ran on background_task()'s own detached thread and saw "
+              "ctx.sandbox_fs == nullptr, even though the CALLER's EffectContext carried a live, "
+              "non-null pointer into session-owned mediated-filesystem state -- the same dangling-"
+              "pointer/unsynchronized-race hazard ADR-060 par.4 already closed for report_progress "
+              "(case D above) is closed the same way, at the same choke point, for sandbox_fs");
     }
 
     if (g_failures != 0) {
