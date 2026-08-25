@@ -1,10 +1,12 @@
 # Design draft: real session→sandbox lifecycle wiring (Phase 2 of the "every session gets a
 # real sandbox" roadmap)
 
-**Status:** Design draft, Revision 4 — Revision 3's central claim empirically verified by an actual
-compile probe, plus a second red-team pass that found real new gaps Revision 3 didn't consider
-(2026-08-25); still not an ADR. Written as the direct follow-on to two things that are now real,
-built, and tested in this
+**Status:** Design draft, Revision 6 — a third red-team pass (2026-08-25) CONFIRMED Revision 5's
+gap 1 and gap 3 resolutions, but REFUTED gap 2's stated evidence: "no second caller of
+`clear_in_process_state()` exists" was false, the same overclaim-from-an-incomplete-grep pattern
+this draft has now repeated three times (Rev 1's fabrication, Rev 3's unproven claim, now this).
+Gap 2 is reopened and corrected below, not dismissed. Still not an ADR — see §4. Written as the direct
+follow-on to two things that are now real, built, and tested in this
 tree: the `sandbox-backend-registry-design-draft.md` / `ADR-080` pair (Proposed, awaiting Judged
 — resolves *which* `SandboxBackend` a deployment picks, explicitly does **not** wire any real
 consumer), and this session's own Tier-1 work (`EffectContext::sandbox_fs`, `SessionShellSandbox`
@@ -282,6 +284,92 @@ holds structurally, not just by design intent.
    `ctx.sandbox_fs = nullptr;` (§2 item 5's fix) has now actually been implemented and tested (see
    this section's opening paragraph) — no longer a "must reset," now a "done, proven by test E."
 
+## Revision 5 (2026-08-25) — closing Revision 4's three open gaps
+
+**Gap 1 (`EffectContext` cross-provider chaining) — resolved with an explicit contract, not new
+mechanism.** The hazard is real (`assemble_context()` threads the same mutable `EffectContext&`
+through every composed provider's `on_context()` sequentially, in `Ms...` order — confirmed
+Revision 4), but nothing in this design actually *needs* a second provider to read
+`ctx.sandbox_fs` — only `Tool::invoke()` does (`ReadSandboxFile`, Tier-1's own worked example),
+and every `Tool::invoke()` call happens strictly *after* every provider's `on_context()` has
+already run for that round (`ToolTable::from_descriptors(contribution->tools)` is built only once
+all contributors have returned). **Resolution**: state this as a hard rule, not a disclosed risk —
+*fields a `ContextProvider` writes onto `EffectContext` inside `on_context()` may be relied on only
+by code that runs after every provider's `on_context()` has returned for that round (i.e.
+`Tool::invoke()`); a `ContextProvider`'s own `on_context()` must never depend on another
+provider's `EffectContext` write, regardless of declared order.* This converts an order-dependent
+correctness bug into an ordinary, statable API contract — the same discipline this project already
+applies elsewhere (e.g. `ReadSandboxFile`'s own "do your own dynamic check, never trust ambient
+state" rule). **New test obligation for the real implementation**: a positive control composing
+`SandboxToolProvider` with a second, order-varied dummy provider that DOES try to read
+`ctx.sandbox_fs` from its own `on_context()`, proving the read is unreliable (present or absent
+depending on declared order) — makes the hazard visible in a test rather than only in a comment,
+the same "don't just document a footgun, prove it's a footgun" standard `HostSandboxSelection`'s
+own file already sets.
+
+**Gap 2 (`clear_in_process_state()`'s unengaged-provider gap) — REOPENED in Revision 6: Revision
+5's resolution rested on a false empirical claim, the same overclaim-from-incomplete-grep pattern
+this draft has now made three times (Revision 1's fabricated `CodeActRunnerBinding` claim,
+Revision 3's unproven-until-compiled `fork_from()` claim, now this).** Revision 5 claimed
+`clear_in_process_state_locked()`'s call from `delete_session()` was the function's *only* real
+caller, grep-confirmed. A third red-team pass actually ran that grep properly and found this false:
+`tests/test_rt_agent_session_codeact_ask_max_turns.cpp:283` calls the **unlocked**
+`clear_in_process_state()` directly, with its own comment explicitly framing the fix at that site
+around **"a pooled/reused session object"** — this codebase's own commentary already treats
+post-clear reuse as a real, contemplated scenario, not a hypothetical Revision 5 could dismiss.
+More directly: `tests/test_rt_agent_session_tooling_and_delegation.cpp`'s case S5 (line ~519) calls
+`fork.clear_in_process_state()` and then **actually reuses the object** — `fork.initialize(...)`
+followed by a second, successful `fork.start_run(...)`. Session reuse after
+`clear_in_process_state()` is a real, exercised, currently-passing pattern in this codebase, not
+something that "never happens." Revision 5's `delete_session()`-only framing was wrong.
+
+**What survives, narrowed and now honestly qualified**: S5's `StatefulSession` uses
+`StatefulCounterProvider` directly as `HistoryProviderT` — NOT `ComposedContextProvider<Ms...>` —
+so it does not actually exercise the specific `composed_context.not_engaged` hazard this draft is
+reasoning about; no current test proves reuse after `clear_in_process_state()` against a
+`ComposedContextProvider<Ms...>`-based session specifically. But given that reuse-after-clear is
+already a real, live, tested pattern in this codebase for OTHER `HistoryProviderT` shapes, it
+cannot be assumed away for a `ComposedContextProvider<Ms...>`-based one (which is exactly what
+`SandboxToolProvider`'s design requires) — the honest position is the opposite of Revision 5's:
+**assume session reuse after `clear_in_process_state()` is a real possibility for any session
+type, `SandboxToolProvider`-composed ones included, until proven otherwise.** If a
+`ComposedContextProvider<Ms...>`-based session is ever reused this way, it WOULD hit
+`composed_context.not_engaged` with no re-arm story, exactly as Revision 4 originally found.
+**Real requirement, reinstated**: the real ADR must document that any code reusing a session after
+`clear_in_process_state()` must re-`engage()` `history_provider()` with a fresh provider tuple
+(`SandboxToolProvider` included) before that session's next `on_context()` call — mirroring
+`capabilities_`'s own already-documented "re-call `set_capabilities()` after `fork_from()`"
+contract exactly. The `engage()` API to do this already exists and is already proven as "a real
+recovery path" (`test_composed_context_provider.cpp`'s own P3b case) — the requirement is
+documenting the obligation, not building new mechanism, but it IS a real, disclosed, testable
+requirement, not something this draft may strike as a non-issue.
+
+**Gap 3 (`SandboxBackendRegistry` connection) — the exact structural reason it doesn't exist,
+found.** `check_sandbox_profile_availability()` (`agent_registry.hpp:366-371`) is the only place
+`SandboxBackendRegistry::resolve_strict()`'s result is ever consulted at registration time, and its
+real body **discards the resolved backend entirely**: `registry->resolve_strict(current_platform())
+.transform([](auto*) { return; })` — the `RegisteredSandboxBackend const*` `resolve_strict()`
+actually returns is thrown away, keeping only success/failure. `AgentMetadata.sandbox_profile`
+(a `SandboxProfileDescriptor{is_strict, traits}`) therefore never learns *which* backend won, only
+*that* one exists for this platform — so there is no data available anywhere past
+`register_agent<A>()`'s own call for a session-construction-time call site to read, even in
+principle. **What actually connecting them would require, concretely, none of which exists today**:
+(a) `check_sandbox_profile_availability()` (or a sibling) would need to retain and return the
+winning backend's name, not just discard it into a `result<void>`; (b) `AgentMetadata` (or a new
+field beside `sandbox_profile`) would need to carry that name forward past registration; (c) host
+code building a session would need to read that field and pass a value derived from it into
+`SandboxToolProvider`'s constructor — no automatic wiring, since `register_agent<A>()` (once, per
+agent *type*) and `SandboxToolProvider` construction (once, per session *instance*, at
+`.providers(...)` call time) are different lifecycle points with no existing bridge between them.
+**Recommendation, not yet decided**: don't build (a)-(c) speculatively — nothing today needs it,
+since `native_jail` is the only real backend implementing Python/Shell either way (Option A/B/C's
+own analysis), and the registry mostly matters for choosing among *alternate* backends, none of
+which implement Python/Shell yet. Accept Option B, as concretely specified, as **two genuinely
+separate decisions** — which backend name `Strict`/named resolution picks, and whether/how a
+session gets a sandbox at all — rather than one connected pipeline. §2 item 1's "reachable from...
+wiring" framing is corrected below to state this plainly instead of asserting a connection that
+isn't there.
+
 ## 0. Re-grounding the question against real, current code (2026-08-25)
 
 Verified directly, not assumed from the roadmap plan that named this phase:
@@ -411,13 +499,15 @@ Option A should be triggered by a real second-backend need, not by this draft's 
 
 ## 2. What Option B concretely requires (if this is the direction taken) — Revision 2, substantially corrected
 
-1. **A per-session sandbox *policy* resolution step**, reachable from `register_agent<A>()`'s
-   already-real `sandbox_profile`/`SandboxBackendRegistry` wiring (`ADR-080`'s code): given a
-   resolved `RegisteredSandboxBackend const*` (today, effectively always `native_jail` for
-   Python/Shell — `wasm`'s registry entry, if any, is for tool-bridge calls, a different surface),
-   decide the concrete host scratch directory / mount policy for *this* session. This is new —
-   today `cli_chat.cpp` and `SessionShellSandbox`'s callers each pick their own scratch directory
-   ad hoc; nothing central owns "which real host path does session `s-123` get."
+1. **A per-session sandbox *policy* resolution step, independent of `SandboxBackendRegistry` in
+   practice (Revision 5 correction — the earlier "reachable from `register_agent<A>()`'s wiring"
+   framing was asserted, not real; see Revision 5 above, gap 3, for the exact structural reason):**
+   given that `native_jail` is, in practice, the only real backend implementing Python/Shell today,
+   decide the concrete host scratch directory / mount policy for *this* session directly — no data
+   path exists from a resolved `RegisteredSandboxBackend` to this decision, and building one is not
+   recommended speculatively (Revision 5, gap 3). This is new regardless — today `cli_chat.cpp` and
+   `SessionShellSandbox`'s callers each pick their own scratch directory ad hoc; nothing central
+   owns "which real host path does session `s-123` get."
    **Revision 3 correction (supersedes Revision 2's "needs a `HostSandboxSelection`-style wrapper
    type" suggestion)**: the host-root argument itself needs no new wrapper type — it's an ordinary
    constructor argument written in host source at `SandboxToolProvider{host_root}`'s own
@@ -486,13 +576,29 @@ Option A should be triggered by a real second-backend need, not by this draft's 
    case "E" — a `Backgroundable` tool given a live, non-null `sandbox_fs` in the caller's
    `EffectContext` observes `nullptr` on `background_task()`'s own detached thread. Full project
    rebuild and test suite green after this change.
-6. **New (Revision 4)**: `EffectContext`'s chaining across composed providers in `Ms...` order
-   (unlike `ContextContribution`) — `SandboxToolProvider` must not assume another provider ever sees
-   `ctx.sandbox_fs`; only `Tool::invoke()` (strictly after every provider's `on_context()`) may rely
-   on it.
-7. **New (Revision 4)**: `clear_in_process_state()` leaves a `ComposedContextProvider<Ms...>`-based
-   `HistoryProviderT` unengaged with nothing to re-`engage()` it — whatever reuses/pools a session
-   after calling this must also re-wire its providers, `SandboxToolProvider` included.
+6. **RESOLVED (Revision 5)**: `EffectContext`'s chaining across composed providers in `Ms...` order
+   (unlike `ContextContribution`) is closed by an explicit contract, not new mechanism — `EffectContext`
+   fields a provider writes in `on_context()` may be relied on only by code that runs after every
+   provider's `on_context()` has returned for that round (i.e. `Tool::invoke()`), never by another
+   `ContextProvider`'s own `on_context()`. `SandboxToolProvider` only needs `Tool::invoke()` to see
+   `ctx.sandbox_fs`, which this rule already guarantees. A positive-control test proving the read is
+   order-dependent from a second provider is a required test obligation for the real implementation
+   (Revision 5 above).
+7. **REOPENED (Revision 6, correcting Revision 5's false empirical claim)**: session reuse after
+   `clear_in_process_state()` is a REAL, tested pattern in this codebase
+   (`tests/test_rt_agent_session_tooling_and_delegation.cpp`'s case S5;
+   `tests/test_rt_agent_session_codeact_ask_max_turns.cpp:283`'s own comment names "a pooled/reused
+   session object" directly) — Revision 5's "only caller is `delete_session()`, grep-confirmed" was
+   wrong. No current test reuses a session with a `ComposedContextProvider<Ms...>`-based
+   `HistoryProviderT` specifically, so the exact `composed_context.not_engaged` hazard isn't proven
+   to fire today — but it must be assumed reachable, not assumed away. **Real requirement**: the
+   ADR must document that any code reusing a session after `clear_in_process_state()` re-
+   `engage()`s `history_provider()` with a fresh provider tuple (`SandboxToolProvider` included)
+   before that session's next `on_context()` call — mirroring `capabilities_`'s own already-
+   documented "re-call `set_capabilities()` after `fork_from()`" contract. The `engage()` API
+   already exists and is already proven as "a real recovery path"
+   (`tests/test_composed_context_provider.cpp`'s own P3b case) — the gap is the documented
+   obligation, not new mechanism, but it is real and must be named, not struck.
 
 ## 3. What this draft deliberately does not decide
 
@@ -514,14 +620,20 @@ Option A should be triggered by a real second-backend need, not by this draft's 
   working, non-test consumer) should also be threaded through this same per-session lifecycle hook,
   or stays exactly as it is today (its own `WasmToolBridge` construction, independent of
   Python/Shell's session lifecycle) — genuinely orthogonal, deferred.
-- **New (Revision 4)**: whether/how `SandboxBackendRegistry`'s resolved backend should actually
-  connect to `SandboxToolProvider`'s construction — found to be asserted, not designed (§2 item 1,
-  Revision 4 finding 3). Either sketch a real connecting mechanism, or accept Option B as two
-  separate decisions (which backend name vs. whether/how a session gets a sandbox) rather than one.
-- **New (Revision 4)**: `EffectContext`'s cross-provider chaining in `Ms...` order (finding 1 above)
-  — needs an explicit ordering contract or a design that never depends on it, not just a note.
-- **New (Revision 4)**: `clear_in_process_state()`'s unengaged-provider gap (finding 2 above) —
-  needs a real re-engage/re-construct story for any session-reuse/pooling path that calls it.
+- **Resolved this pass, confirmed by a third red-team pass (Revision 5/6)**: whether/how
+  `SandboxBackendRegistry`'s resolved backend should connect to `SandboxToolProvider`'s
+  construction — it structurally can't today (`check_sandbox_profile_availability()` discards the
+  resolved backend, keeping only success/failure, confirmed by an independent grep of every
+  `resolve_strict`/`resolve_named` call site in the tree), and building the three pieces that would
+  change that is not recommended speculatively. Accepted as two separate decisions (Revision 5
+  above, gap 3). Whether `EffectContext`'s cross-provider chaining needs an explicit contract —
+  resolved with one (Revision 5 above, gap 1), confirmed sufficient against every real
+  `ContextProvider` conformer in the tree (none reads a field another provider wrote).
+- **Reopened (Revision 6)**: whether `clear_in_process_state()` needs a re-engage story — Revision
+  5 said no ("only real caller is a terminal deletion"); a third red-team pass found this false
+  (real, tested session-reuse-after-clear exists in this codebase for other `HistoryProviderT`
+  shapes) and reinstated the requirement (§2 item 7 above): document the re-`engage()` obligation
+  for any code reusing a `ComposedContextProvider<Ms...>`-based session after this call.
 - The exact per-session subdirectory naming/sanitization rule (Revision 3, §2 item 1) — the
   *requirement* (sanitize `session_id` against traversal) is now pinned down; the concrete
   algorithm is not. Also still open: whether a subdirectory of a durable per-session worktree,
@@ -532,18 +644,21 @@ Option A should be triggered by a real second-backend need, not by this draft's 
 
 Per this project's own rule (`CLAUDE.md`: *"Contested, hot-path, or security-critical designs go
 through design → red-team → prove → judge and produce an ADR, not an ad-hoc change"*) — this draft
-has now been through two red-team passes (2026-08-25: 3 agents on Revision 1→2, 2 agents on
-Revision 3→4, one of which empirically compiled a real probe rather than only reading code) plus
-one small piece actually implemented and tested (§2 item 5). The central design
-(`SandboxToolProvider` as a `ContextProvider` composed via `ComposedContextProvider<Ms...>`) has
-now survived a real compile-time check of its most safety-load-bearing claim, not just reasoning.
+has now been through THREE red-team passes (2026-08-25: 3 agents on Revision 1→2, 2 agents on
+Revision 3→4 including a real compile probe, 1 agent on Revision 5→6) plus one small piece actually
+implemented and tested (§2 item 5). The pattern across all three passes is worth stating plainly,
+not glossed over: **every red-team round on this draft has found this draft's own self-directed
+reasoning wrong or overstated at least once** — Revision 1's fabricated `CodeActRunnerBinding`
+claim, Revision 3's unproven-until-compiled `fork_from()` claim, and now Revision 5's false "no
+second caller of `clear_in_process_state()`" claim. Two of those three self-directed revisions
+(3 and 5) got at least one real thing wrong despite careful-sounding reasoning against real code.
+**This is the load-bearing lesson for whoever picks this up next**: this draft's own confidence in
+its own revisions should count for very little without independent verification — every claim that
+sounds like "I checked the real code and confirmed X" should still be re-checked, especially the
+empirical/"grep-confirmed" ones, which is exactly where both real mistakes lived.
 
-**What remains before this is ready for an ADR**, all named in §3: the `EffectContext` cross-
-provider ordering hazard needs an explicit contract, not just a disclosure; `clear_in_process_
-state()`'s unengaged-provider gap needs a real fix story; `SandboxBackendRegistry`'s actual
-connection to `SandboxToolProvider` (if any) needs to be designed for real, not asserted; the
-per-session subdirectory sanitization algorithm is still unwritten; and Python's own composition
-question (finding 4, Revision 4) is explicitly left for a separate design if ever pursued. None of
-these invalidate Option B's core direction for Shell, but none are implementation-ready either —
-the next step is closing these in a Revision 5, or carrying them into the ADR itself as named,
-tracked residuals rather than silently resolving them by writing code first.
+**What genuinely remains before this is ready for an ADR** (§3): the re-`engage()`-after-
+`clear_in_process_state()` documentation requirement (reinstated, Revision 6); the per-session
+subdirectory sanitization algorithm (still unwritten); Python's own composition question (Revision
+4 finding 4, explicitly deferred). Revision 6's own correction has not itself been re-verified by
+a fourth pass — the same caveat applies to it that applied to Revision 5.
