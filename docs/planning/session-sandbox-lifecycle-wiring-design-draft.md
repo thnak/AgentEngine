@@ -667,6 +667,17 @@ real code and confirmed X" should still be re-checked, especially empirical/"gre
 which is exactly where all three real mistakes lived and exactly what the fourth pass had to
 re-verify from scratch rather than take on faith.
 
+## Promoted to `decisions/ADR-096-session-sandbox-lifecycle-context-provider-wiring.md` (2026-08-25)
+
+A fifth red-team round (on the two remaining open items: per-session subdirectory sanitization,
+Python composition) found real corrections to both (a double-hex-encoding error and an overclaimed
+"no filtering needed" framing on the first; an understated integration cost and a missed
+`fork_from()`-compile-error consequence on the second) — folded directly into the ADR rather than
+into a Revision 7 here, since the ADR is now this design's authoritative record. This draft stays
+as the full revision-by-revision history (six revisions, five red-team rounds); the ADR is the
+consolidated decision, falsifiable claims, per-claim verdicts, and residuals. Read the ADR first;
+come back here only for the blow-by-blow of how each claim was reached.
+
 **What genuinely remains before this is ready for an ADR** (§3): the re-`engage()`-after-
 `clear_in_process_state()` documentation requirement (reinstated, Revision 6, now independently
 verified); the per-session subdirectory sanitization algorithm (still unwritten); Python's own
