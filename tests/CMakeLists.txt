@@ -2002,6 +2002,21 @@ if(WIN32)
   add_test(NAME test_mediated_shell_runner_smoke COMMAND test_mediated_shell_runner_smoke)
   set_tests_properties(test_mediated_shell_runner_smoke PROPERTIES TIMEOUT 60)
 
+  # ---- EffectContext::sandbox_fs seam (first-party-tools follow-up, Phase 0): tools/
+  # read_sandbox_file.hpp's worked example, proven against a real MediatedFileSystemAdapter.
+  add_executable(test_effect_context_sandbox_fs test_effect_context_sandbox_fs.cpp)
+  target_link_libraries(test_effect_context_sandbox_fs PRIVATE
+    agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_effect_context_sandbox_fs COMMAND test_effect_context_sandbox_fs)
+
+  # ---- Session-scoped shell wiring (every-session-gets-a-sandbox roadmap, Phase 1):
+  # backends/native_jail/session_shell_wiring.hpp's SessionShellSandbox, proven end to end through
+  # the real invoke_tool pipeline against a real host directory.
+  add_executable(test_session_shell_wiring test_session_shell_wiring.cpp)
+  target_link_libraries(test_session_shell_wiring PRIVATE
+    agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_session_shell_wiring COMMAND test_session_shell_wiring)
+
   # ---- Milestone 3 Phase E4: hostile-corpus/mediation proof (010 §9 G2/G7) ---------------------
   add_executable(test_mediated_shell_runner_hostile_corpus test_mediated_shell_runner_hostile_corpus.cpp)
   target_link_libraries(test_mediated_shell_runner_hostile_corpus PRIVATE
@@ -2343,12 +2358,13 @@ if(WIN32)
 endif()
 
 # ---- Worktree content-addressed object store (025 §2, Milestone 3 Phase A1) --------------------
-if(WIN32)
-  add_executable(test_worktree_object_store test_worktree_object_store.cpp)
-  target_link_libraries(test_worktree_object_store PRIVATE
-    agentengine::core agentengine::worktree_store agentengine_warnings)
-  add_test(NAME test_worktree_object_store COMMAND test_worktree_object_store)
-endif()
+# agentengine::worktree_store now provides compute_digest on both WIN32 (BCrypt) and NOT WIN32 (a
+# self-contained SHA-256, src/core/worktree_digest_posix.cpp) -- no platform guard needed here
+# anymore; the two branches share this one known-answer-tested proof.
+add_executable(test_worktree_object_store test_worktree_object_store.cpp)
+target_link_libraries(test_worktree_object_store PRIVATE
+  agentengine::core agentengine::worktree_store agentengine_warnings)
+add_test(NAME test_worktree_object_store COMMAND test_worktree_object_store)
 
 # ---- Worktree Ref persistence over Quark's Store seam (025 §2, Milestone 3 Phase A2) -----------
 # Header-only (core/worktree.hpp's commit_ref/read_ref) -- links only agentengine::core, no

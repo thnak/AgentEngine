@@ -156,6 +156,29 @@ int main() {
                  "A-R1: hashing an empty tree succeeds with a well-formed digest");
     }
 
+    // A-C8 (known-answer test): compute_digest against the FIPS 180-4 / RFC 6234 published SHA-256
+    // test vectors for the empty string and "abc" -- a fixed, independently-verifiable expected
+    // digest, not just digest-of-X == digest-of-X twice. This file's other checks (A-C1..A-R1) only
+    // prove internal self-consistency: a hash function that is deterministic but computes the wrong
+    // thing (e.g. a subtly broken from-scratch SHA-256) would still pass every one of them. This
+    // check also runs on Windows against the BCrypt implementation (worktree_digest.cpp) as well as
+    // on Linux against the self-contained implementation (worktree_digest_posix.cpp), proving both
+    // platforms agree with the real standard, not just with each other.
+    {
+        auto empty_digest = compute_digest(std::span<std::byte const>{});
+        AE_CHECK(empty_digest.has_value() &&
+                     *empty_digest ==
+                         "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                 "A-C8: SHA-256(\"\") matches the published FIPS 180-4 known-answer value");
+
+        auto abc_bytes = bytes_of("abc");
+        auto abc_digest = compute_digest(abc_bytes);
+        AE_CHECK(abc_digest.has_value() &&
+                     *abc_digest ==
+                         "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+                 "A-C8: SHA-256(\"abc\") matches the published FIPS 180-4 known-answer value");
+    }
+
     if (g_failures != 0) {
         std::cerr << g_failures << " check(s) failed.\n";
         return 1;

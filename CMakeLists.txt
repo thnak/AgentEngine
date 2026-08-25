@@ -546,12 +546,15 @@ if(WIN32)
   add_library(agentengine::capability_token ALIAS agentengine_capability_token)
 endif()
 
-# ---- Worktree content-addressed object store (src/core/) -- Windows only ----------------------
+# ---- Worktree content-addressed object store (src/core/) ---------------------------------------
 # Implements 025-Worktree-and-Virtual-Filesystem.md §2, Milestone 3 Phase A1
 # (docs/planning/milestone-3-worktree-interpreter-codeact-breakdown.md): SHA-256 content digests
 # for Blob/Tree objects via Windows CNG/BCrypt, a system API -- not a third-party dependency, same
-# posture as ADR-005's capability_token.cpp. A Linux SHA-256 provider is a named, tracked gap (the
-# breakdown doc's own decision 2), not silently assumed available.
+# posture as ADR-005's capability_token.cpp. The Linux SHA-256 provider (worktree_digest_posix.cpp,
+# below) closes the breakdown doc's own decision-2 gap with a self-contained, dependency-free FIPS
+# 180-4 implementation rather than pulling in a new mandatory third-party dependency -- see that
+# file's own top comment for why (mbedTLS is vendored but off by default behind
+# AGENTENGINE_WITH_HTTPS, and OpenSSL/AF_ALG were both considered and rejected).
 if(WIN32)
   add_library(agentengine_worktree_store STATIC
     src/core/worktree_digest.cpp
@@ -564,12 +567,12 @@ endif()
 # ---- Worktree mount path-escape primitive (src/core/) -- Linux half, Milestone 3 Phase C4 --------
 # Implements 025 §5's OS-level path-escape corpus, Linux parity for `worktree_mount_fs.hpp`'s
 # Windows-only `open_within_mount_root` (Phase C2, ADR-014, Judged) -- an ordinary follow-on task
-# per the breakdown doc's decision 6, not a second ADR. No digest provider is linked here (unlike
-# the WIN32 branch above): nothing in worktree_mount_fs_posix.cpp needs compute_digest/the
-# content-addressed store, and a Linux SHA-256 provider stays the separate, still-open decision-2
-# gap this task does not need to close.
+# per the breakdown doc's decision 6, not a second ADR. worktree_digest_posix.cpp supplies this
+# branch's compute_digest -- the decision-2 gap the comment above used to describe as "still open"
+# is closed as of this pass.
 if(NOT WIN32)
   add_library(agentengine_worktree_store STATIC
+    src/core/worktree_digest_posix.cpp
     src/core/worktree_mount_fs_posix.cpp)
   target_link_libraries(agentengine_worktree_store PUBLIC agentengine::core)
   target_link_libraries(agentengine_worktree_store PRIVATE agentengine_warnings)

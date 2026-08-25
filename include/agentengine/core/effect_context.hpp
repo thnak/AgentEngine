@@ -15,6 +15,7 @@
 
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/error.hpp"
+#include "agentengine/sandbox/filesystem_adapter.hpp"
 #include "agentengine/trust/capability.hpp"
 #include "agentengine/trust/principal.hpp"
 
@@ -134,6 +135,26 @@ struct EffectContext {
     // mechanism exists to prevent (see `tool_pipeline.hpp`'s own comment on this decision).
     std::function<result<BlobRef>(std::span<std::byte const> bytes, std::string const& media_type)>
         blob_sink;
+
+    // The session's own mediated filesystem view into its sandbox mount, if one is currently live
+    // (008 §6's `per_session` sandbox lifetime: "created on first use, retained while the session
+    // is active" -- `nullptr` means no sandbox exists yet for this session, the same "no wiring
+    // means no behavior change" default every other opt-in field on this type already uses).
+    // Borrowed, never owned here -- same discipline `capabilities`/`bound_capabilities` above
+    // already carry: the caller (whatever constructs and keeps the session's real
+    // `FileSystemAdapter` implementation alive, e.g. `MediatedFileSystemAdapter`,
+    // `src/backends/native_jail/`) must outlive every call this pointer is read during.
+    //
+    // Deliberately NOT gated by any capability check of its own -- reaching this pointer grants a
+    // native `Tool` nothing by itself (I2). A tool that wants to use it must still perform its OWN
+    // dynamic capability check against `capabilities` above before calling anything on it, the same
+    // "real, path/host-scoped check against `EffectContext::capabilities`, not a static `Tool<>`
+    // ceiling" pattern `mediated_shell_dispatch.hpp` and `tools/read_content.hpp` already establish
+    // for exactly this reason: which mount/path a call needs is a per-call question, never knowable
+    // at a tool's compile-time `Capabilities<...>` declaration the way a fixed-mount `FsRead<"...">`
+    // would require. See `tools/read_content.hpp`'s own file-top comment for why that gap existed in
+    // the first place -- this field is what closes it.
+    FileSystemAdapter* sandbox_fs = nullptr;
 };
 
 } // namespace agentengine
