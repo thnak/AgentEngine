@@ -1,6 +1,8 @@
 # A clean design — every session mandatorily bound to a worktree, sandbox materialized from it
 
-**Status: Revision 2. Not yet red-teamed.** Revision 1 (kept in git history, not reproduced here —
+**Status: Revision 3 — addresses §12's round-2 red-team findings directly (fixes below, in the
+sections they belong to; §12 itself is left intact as the historical record, not deleted).**
+Revision 1 (kept in git history, not reproduced here —
 this file is meant to stay clean, not accumulate a revision log) routed the worktree/sandbox binding
 through a `ContextProvider` (a composite class replacing `ADR-096`'s `SandboxToolProvider`). This
 revision replaces that with a structurally different, simpler answer, per project-owner direction:
@@ -87,36 +89,101 @@ separate `bind_sandbox()` setter, no mutable rebinding. Propagation, precisely:
   produces no `ContextContribution`, so "propagation" here just means calling
   `sandbox_->harvest_and_checkpoint()` directly through the same pointer. Pure side effect, same
   shape `MemoryProvider::on_turn_end` already has for writing memory.
-- `fork_from()`: constructs a FRESH `SandboxToolReflector` (pointing at `this->sandbox_`, the
-  newly-branched `Sandbox`) and `engage()`s it onto the target session's `ComposedContextProvider<
-  Ms...>` — never repoints `source`'s instance. Because the reflector holds no live resource of its
-  own (only a pointer into `AgentSession`-owned state), constructing a fresh one costs nothing —
-  the entire "rebuild" for this provider on fork is one cheap constructor call.
+- **`fork_from()` — CORRECTED in Revision 3 (§12's first BLOCKING finding, found twice now across
+  two different design shapes).** Revision 2's claim ("constructs a fresh reflector and `engage()`s
+  it onto the target's `ComposedContextProvider<Ms...>`") does not survive contact with `engage()`'s
+  real contract: it takes the WHOLE `std::tuple<Ms...>` at once, not one member, and any session
+  actually composed with OTHER providers (`SkillsProvider`, `HistoryProvider`, ...) alongside the
+  reflector cannot have "just the reflector" rebuilt — `engage()` demands fresh instances of every
+  `Ms`, and the ORIGINAL typed instances behind an already-engaged composite are unrecoverable
+  (type-erased into `shared_ptr<Ms>`-capturing closures, `context_assembly.hpp`). There is no way to
+  partially rebuild a `ComposedContextProvider<Ms...>` — this is not a bug to work around, it is the
+  type's own one-shot-`engage()` design, already-Judged (ADR-074), not something this document gets
+  to wish away.
 
-`ADR-096`'s C2 property ("composing the sandbox-owning type makes `fork_from()` fail to compile") is
-no longer load-bearing the same way: the reflector holds no live resource to alias, so a plain field
-copy of it during `fork_from()` is not a session-isolation hazard the way copying a real
-`SessionShellSandbox`-owning object was — it's simply WRONG (points at the wrong session's Sandbox)
-until corrected, not unsafe. `fork_from()` still needs to explicitly repoint it (§5), but this is now
-a correctness fix, not a safety-critical compile-time guard being relied on to prevent aliasing.
+  **The actual fix: stop trying to make `fork_from()` rebuild the composite at all.** `fork_from()`
+  already has a real, working precedent for exactly this situation — `capabilities_` is
+  "deliberately still NOT copied... needs `set_capabilities()` re-called after `fork_from()`"
+  (`agent_session.hpp:1168-1171`, unchanged, pre-existing). Extend the SAME contract to
+  `history_provider_`: `fork_from()` does **not** touch `child.history_provider_` at all — a freshly
+  constructed `AgentSession` already starts with an unengaged `ComposedContextProvider<Ms...>` (its
+  own default constructor, ADR-074), and `fork_from()` leaves it exactly that way. `fork_from()`'s
+  only new responsibility (§5) is preparing `this->sandbox_` (the branched `Sandbox`, ready to be
+  pointed at). **The host, not `fork_from()`, calls `child.history_provider().engage(std::tuple{
+  SkillsProvider{...}, HistoryProvider<Window<N>>{}, SandboxToolReflector{&child.sandbox()}, ...})`
+  afterward** — the identical shape a host already uses at INITIAL session construction (matching
+  `ComposedQuickstartSessionBuilder`'s own `.engage()` call after `build()`), just called again,
+  explicitly, post-fork. This is not a workaround — it is applying `fork_from()`'s own existing,
+  already-correct pattern (for `capabilities_`) to a second field that has the identical shape of
+  problem, instead of inventing a special-case auto-rebuild mechanism that `ComposedContextProvider`
+  was never designed to support.
 
-## 4. Where "the worktree store" lives
+**Corrected in Revision 3 (§12's C2 finding).** Revision 2 claimed `ADR-096`'s C2 property ("composing
+the sandbox-owning type makes `fork_from()` fail to compile") was "no longer load-bearing... simply
+WRONG until corrected, not unsafe." Round 2's security review found this unearned: it is only true
+if the concrete `Sandbox` type stays genuinely non-copyable — a property this document never actually
+required. **Requirement, stated explicitly, not left implicit**: `Sandbox` MUST be non-copyable by
+construction — e.g. `AgentSession` holds `std::unique_ptr<SandboxBase> sandbox_`, and `SandboxBase`'s
+copy constructor/assignment are deleted, mirroring `SessionShellSandbox`'s own already-established
+"heap-allocated, must never move" discipline (`session_shell_wiring.hpp:101-104`). Given this,
+`sandbox_ = source.sandbox_` in a stray `fork_from()` edit is a compile error again — the SAME safety
+property C2 always provided, now enforced by `Sandbox`'s own ownership shape instead of by
+`ComposedContextProvider<Ms...>`'s copy-deletion (since, per §3's fix above, `Sandbox` is no longer
+inside that composite at all). The guarantee moves, it does not disappear — but only if this
+requirement is honored by whoever implements `Sandbox`, which is why it is stated as a MUST here
+rather than assumed automatic.
 
-Unchanged from Revision 1's own answer, still needed regardless of where `Sandbox` lives: a
-type-erased `WorktreeStoreHandle` (`std::function`-wrapped `commit_ref`/`read_ref`/`get_tree`/
-`put_tree`/`get_blob`/`put_blob`, mirroring `borrow_capabilities()`'s own store-bridging idiom),
-built once via `make_worktree_store_handle(ObjectStoreT&, AppendLogStoreT&)` against any real
-conforming store. `AgentSession` gets exactly one new, ordinary (non-template) member:
-`std::shared_ptr<WorktreeStoreHandle const> worktree_store_` — avoids widening `AgentSession`'s
-template signature (`<ChatClientT, StateT, HistoryProviderT>`) and the ~104-file blast radius that
-would come with a fourth template parameter. Defaults to `nullptr`; a session with no store bound
-gets a `Sandbox` that cannot actually construct a `Ref` (fails closed, not silently degrades) — this
-is where "mandatory" is enforced, once a host opts in by calling `set_worktree_store(...)`.
+## 4. Where "the worktree store" lives — CORRECTED in Revision 3 (§12's second BLOCKING finding)
+
+Revision 2 type-erased the wrong six operations. `commit_ref`/`read_ref` are free functions built ON
+TOP OF `rt::AppendLogStore`'s real concept — they are not what `rewind_to_turn`/`turn_digest_at`/
+`commit_turn` (`worktree_ref_store.hpp:137,150,174`) or `materialize_mount`/`harvest_mount`
+(`worktree_mount_sync.hpp:139,161`) actually require as their template parameter. All of them are
+templated directly on the RAW concept:
+
+```cpp
+template <class T>
+concept AppendLogStore = requires(T& store, T const& const_store, LogId const& id,
+                                   std::vector<std::byte> bytes, SeqNo from) {
+    { store.append(id, std::move(bytes)) } -> std::same_as<result<SeqNo>>;
+    { const_store.read_from(id, from) } -> std::same_as<result<std::vector<std::vector<std::byte>>>>;
+    { const_store.last_seq(id) } -> std::same_as<SeqNo>;
+};
+```
+(`rt/append_log_store.hpp:67-72`, verbatim.) `WorktreeObjectStore`'s concept (`put_blob`/`get_blob`/
+`put_tree`/`get_tree`, `worktree_types.hpp:99-105`) was already correctly identified in Revision 2 —
+only the ref-store half was wrong.
+
+**Fixed shape: two separate type-erased wrappers, one per real concept, each satisfying its concept
+directly** (not a single handle exposing a hand-picked, wrong subset):
+
+- `ErasedAppendLogStore` — a concrete class implementing `append`/`read_from`/`last_seq` by
+  delegating to `std::function`-wrapped closures captured over a real `AppendLogStore`-conforming
+  instance. Built via `make_erased_append_log_store(StoreT&)`, mirroring `borrow_capabilities()`'s
+  "non-owning bridge" idiom. Because it implements the concept's exact three methods, it CAN be
+  passed directly wherever `rewind_to_turn<StoreT>`/`materialize_mount<..., RS>`/`harvest_mount<...,
+  RS>` expect a `StoreT`/`RS` satisfying `AppendLogStore` — this is the fix: the erased type itself
+  models the concept, rather than exposing a different, incompatible surface.
+- `ErasedWorktreeObjectStore` — the same idiom for `WorktreeObjectStore`'s four methods
+  (`put_blob`/`get_blob`/`put_tree`/`get_tree`), built via `make_erased_worktree_object_store(StoreT&)`.
+  Kept as Revision 2 designed it (correct as originally scoped).
+
+`AgentSession` gets two new, ordinary (non-template) members —
+`std::shared_ptr<ErasedAppendLogStore const> ref_store_` and
+`std::shared_ptr<ErasedWorktreeObjectStore const> object_store_` — instead of one wrong-shaped
+handle. Same blast-radius avoidance as Revision 2 (no fourth/fifth template parameter on
+`AgentSession<ChatClientT, StateT, HistoryProviderT>`, no ~104-file churn). Both default to
+`nullptr`; a session with either unset gets a `Sandbox` that cannot construct a `Ref` (fails closed).
+"Mandatory" is enforced once a host opts in via `set_worktree_store(ref_store, object_store)`.
+
+**Not fully resolved here, named as real follow-on scrutiny (unchanged from Revision 2's own §11 open
+item)**: exact lifetime/thread-safety of the underlying concrete store the erased wrapper borrows
+from, especially once multiple sessions (and, per §8, cross-session GC) share one store instance.
 
 ## 5. `fork_from()` and `agent.spawn` — branch the ONE canonical `Ref`, not something buried in a provider
 
-`fork_from()` (`agent_session.hpp:1161`) gains one real step, gated on `worktree_store_` being
-bound: branch `this->sandbox_`'s `Ref` from `source.sandbox_`'s `Ref` via `create_sub_worktree(...,
+`fork_from()` (`agent_session.hpp:1161`) gains one real step, gated on `ref_store_`/`object_store_`
+(§4) being bound: branch `this->sandbox_`'s `Ref` from `source.sandbox_`'s `Ref` via `create_sub_worktree(...,
 sharing_mode::branch)`, constructing `this->sandbox_` fresh (never copying `source.sandbox_`, whose
 concrete backend — if not `NullSandbox` — may own a live `SessionShellSandbox` that must not be
 aliased across sessions, the same underlying hazard `ADR-096` C2 was protecting against, now
@@ -130,6 +197,21 @@ call (matching `fork_from()`'s existing, unchanged "capabilities_ deliberately n
 `caller_worktree_ref` constructor parameter — real, shaped plumbing, only ever exercised in tests
 today. Once a session has `sandbox_->ref()` to hand it, wiring a real production construction site
 is the remaining concrete step — no new design needed here.
+
+**New in Revision 3 — protects a branch's `base_digest` from §8's GC (closes part of §12's
+cross-session hazard finding).** `create_sub_worktree`'s `branch` mode captures `base_digest`
+(`worktree_sub.hpp:35-39`) — the common ancestor `merge_trees()` needs for a real three-way merge
+(`worktree_merge.hpp:158-160`). This digest is reachable ONLY via the PARENT's own ref-log entry at
+branch time; a per-Ref `max_retained_turns` GC scan on the PARENT's own retention window has no
+reason to know a CHILD still depends on it. Fix: the same branch step that mints `base_digest` also
+registers it as PROTECTED — `object_store_`'s eviction path (§8) must never collect a digest present
+in a live protected set, checked before any `evict_oldest` pass runs. Protection is released when
+the child either merges back (successfully folding its changes into the parent) or is explicitly
+abandoned (a host-driven "discard this branch" call, not yet named as its own operation — a real gap
+this note surfaces but does not fully design). **Not fully resolved**: this protected-set mechanism
+itself needs its own scrutiny (where does it live — per-store, shared across every session using that
+store, given eviction happens at the store level, not per-session; what happens if the HOST process
+crashes with a child still unmerged and the protection registration was only ever in-memory).
 
 ## 6. Materialize once, harvest at turn boundaries
 
@@ -163,7 +245,7 @@ same `Sandbox` object §2 already made mandatory session structure. Mechanics, i
 `rewind_to_turn(store, name, turn)` doing exactly that pair (`turn_digest_at` then `commit_turn`
 reassignment) — `reset_to_turn()` calls it directly rather than re-deriving it:
 
-1. Call `rewind_to_turn(*worktree_store_, sandbox_->ref_name(), turn_index)` — resolves the target
+1. Call `rewind_to_turn(*ref_store_, sandbox_->ref_name(), turn_index)` — resolves the target
    tree digest from the Ref's own commit log AND commits a new log entry equal to it in one call
    (content-addressed "rollback" is always "commit a new state equal to an old one," the same shape
    `git revert` uses — the Ref's history is never erased, only moved forward to match a prior point).
@@ -174,21 +256,34 @@ reassignment) — `reset_to_turn()` calls it directly rather than re-deriving it
    it does not go through `FileSystemAdapter`'s mediated write path.
 3. Re-run `materialize_mount()` against the target digest (from step 1's `TurnCommit::ref.tree_digest`)
    to refill the now-empty directory.
-4. **`ExecState` reset, named explicitly rather than left as a landmine**: cwd/env may now reference
+4. **`ExecState` reset, named explicitly rather than left as a landmine.** cwd/env may now reference
    paths that no longer exist post-rollback (cwd was `sub/`, which the rollback just removed).
    `reset_to_turn()` resets `ExecState` to its default (cwd = mount root, default env) as part of the
    same operation — a real, deliberate consequence of rollback, not a side effect a caller has to
    remember. Does NOT touch `SessionShellSandbox`'s own object identity — `fs_`/`registry_`/`shell_`
    stay alive at the same addresses (only the files under `fs_`'s fixed root, and the `ExecState`
-   VALUE, change), so this is fully compatible with `SessionShellSandbox`'s "must never move after
-   construction" constraint (§6) — nothing here reconstructs it.
+   VALUE, change), so this is fully compatible with `SessionShellSandbox`'s own "must never move
+   after construction" constraint (`session_shell_wiring.hpp:101-104` — corrected citation, Revision
+   3: Revision 2 mis-cited this as "(§6)"; that constraint lives in the real source file/`ADR-096`,
+   not in this document's own §6) — nothing here reconstructs it.
+   **Gap disclosed, not fixed in Revision 2, fixed here**: `SessionShellSandbox`'s real public
+   surface today is exactly `tool_descriptor()` and `filesystem_adapter()` — no accessor to its own
+   `state_` (`ExecState`) exists. This design REQUIRES a new public method,
+   `SessionShellSandbox::reset_exec_state()`, resetting `state_` to its default — small, additive,
+   same shape as every other opt-in accessor this class already has, but genuinely new surface, not
+   something Revision 2 could silently assume already existed.
 
-**Trigger**: both host-driven (a direct `AgentSession`/`Sandbox` call — e.g. after a host-side policy
-decision) and model-facing (a new tool, `reset_sandbox`, contributed by the same
-`SandboxToolReflector` §3 already builds `run_shell` through) — reuses the SAME `cap::FsWrite` grant
-`run_shell` already needs on the "work" mount, rather than inventing a new capability type: a caller
-already trusted to write anywhere in the sandbox is already trusted to reset it, matching this
-codebase's existing mount-level (not path-level) capability granularity for this kind of operation.
+**Trigger and capability — CORRECTED in Revision 3 (§12's under-scoped-capability finding)**:
+both host-driven (a direct `AgentSession`/`Sandbox` call — e.g. after a host-side policy decision)
+and model-facing (a new tool, `reset_sandbox`, contributed by the same `SandboxToolReflector` §3
+already builds `run_shell` through). Revision 2 gated this on `cap::FsWrite` alone; round 2's
+security review found that insufficient — `reset_to_turn()` doesn't just write, it RESURRECTS an
+entire past tree, disclosing host-directory content a caller may never have held `FsRead` authority
+over (the same shape `read_sandbox_file.hpp`'s own `find_fs_read` check exists to gate). **Fixed
+requirement**: `reset_sandbox` requires BOTH `cap::FsRead<"work">` AND `cap::FsWrite<"work">` — the
+identical ceiling `RunShellTool` itself already declares
+(`Capabilities<cap::decl::FsRead<"work">, cap::decl::FsWrite<"work">>`, `session_shell_wiring.hpp:77`)
+— not a narrower, write-only gate for a strictly more powerful operation.
 
 **Scope, stated precisely**: this resets ONE session's own `Sandbox`/`Ref`. A `fork_from()`-branched
 child's rollback never touches the parent's Ref (COW branches are independent commit logs from the
@@ -237,10 +332,15 @@ new shape:
 - **`max_retained_turns`** (per session/`Ref`) — a rollback horizon. Checkpoints older than this many
   turns back become eligible for eviction. Optional; unset means "no per-session horizon" (still
   bounded by the store-wide quota below).
-- **`max_store_bytes`** (per `WorktreeStoreHandle`, i.e. per underlying store instance, shared across
-  every session bound to it) — the actual disk-protecting ceiling; bounds AGGREGATE usage across
-  every session sharing one store, not just one session's own history, since most real deployments
-  share one store process-wide (§4).
+- **`max_store_bytes`** (per `ErasedWorktreeObjectStore` instance, §4 — corrected from Revision 2's
+  now-split `WorktreeStoreHandle`, shared across every session bound to it) — the actual
+  disk-protecting ceiling; bounds AGGREGATE usage across every session sharing one store, not just
+  one session's own history, since most real deployments share one store process-wide (§4).
+  **Interacts with §5's new protected-digest set**: `evict_oldest` must consult that set before
+  collecting anything — a digest still referenced as a live, unmerged child's `base_digest` is
+  never evicted regardless of age/quota pressure, even under `evict_oldest`. If honoring every
+  protected digest would itself exceed `max_store_bytes`, that is a real, disclosed limit of
+  `evict_oldest` as a policy — not resolved here, named for the next pass.
 
 **Policy when a write would exceed either bound — host-configured, not silently decided by the
 engine**, an explicit `retention_policy` choice, same "host declares, engine enforces" shape I8
@@ -306,6 +406,18 @@ session-lifecycle wiring, explicitly out of scope per §10 below), or (b) some i
 detection/audit mechanism for a native tool writing outside its declared mount — neither attempted
 here.
 
+**Sharper than originally stated (§12's I4 finding, round 2) — a bypass write is worse than
+"invisible," it is silently laundered as if it were an ordinary, attributable commit.**
+`harvest_and_checkpoint()` (§6) must scan the real `mount_root` directory wholesale to build the
+tree it commits — it has no way to tell a mediated write from a bypassing tool's raw write; both
+physically land in the same directory. The bypass write is therefore swept into the NEXT
+turn-boundary commit with no capability check and no attribution at all — the opposite of §8's own
+"every eviction is attributable (I4)" standard, applied here to an ordinary commit rather than a GC
+decision. Also unanalyzed until now: `reset_to_turn()`'s `remove_all` (§7 step 2) racing a bypassing
+tool's still-open file handle on the same directory could produce a torn commit or an OS
+sharing-violation failure mid-rollback. Neither is fixed here — both are real, sharper versions of
+this same §9 gap, recorded rather than smoothed over.
+
 ## 10. What this design explicitly does NOT do
 
 - Does not reopen `OpenQuestions.md` OQ-18 — `Sandbox` isn't a `ContextProvider` at all, so the
@@ -313,8 +425,8 @@ here.
   completely ordinary fan-out member, no different in kind from `SkillsProvider`.
 - Does not modify `turn_middleware.hpp`/`ADR-067`, `middleware.hpp`/`ADR-033`, `ADR-066`'s provenance
   stamping, or `ADR-074`'s `ComposedContextProvider<Ms...>` mechanics.
-- Does not build a durable `WorktreeObjectStore` (still deliberately deferred; `WorktreeStoreHandle`
-  is store-agnostic specifically so this can close later without touching this design).
+- Does not build a durable `WorktreeObjectStore` (still deliberately deferred; §4's erased wrappers
+  are store-agnostic specifically so this can close later without touching this design).
 - Does not design Python's own session-lifecycle wiring — same scope boundary `ADR-096` drew.
 - Does not implement anything yet.
 
@@ -363,10 +475,13 @@ here.
   fail-closed default — is decided; the actual eviction implementation is genuinely blocked on
   Phase 4a's durable `WorktreeObjectStore` existing).
 - §6's (a) vs (b) choice for where turn-boundary harvest is triggered from.
-- Exact shape of `WorktreeStoreHandle` and `fork_from()`'s new capability-template return value —
-  both still sketches, not finished interfaces.
-- Whether `clear_in_process_state()` should reset `sandbox_`/`worktree_store_`, and what that means
-  for a pooled/reused session — not analyzed.
+- Exact shape of `fork_from()`'s new capability-template return value — still a sketch.
+- Whether `clear_in_process_state()` should reset `sandbox_`/`ref_store_`/`object_store_`, and what
+  that means for a pooled/reused session — not analyzed.
+- §5's new protected-digest set (Revision 3) — where it lives, its own thread-safety/crash-recovery
+  story — named, not designed.
+- The "explicitly abandon a branch" operation §5's protected-digest note assumes exists — it doesn't
+  yet; releasing protection currently has only one real trigger (a successful merge), not two.
 
 ## 12. Round 2 red-team findings (2026-08-25) — the fork/engage story is broken again, not fixed
 
@@ -450,3 +565,78 @@ composed alongside other providers — `engage()`'s all-or-nothing contract has 
 around yet, in either revision; (b) `WorktreeStoreHandle`'s real shape, matched against
 `rt::AppendLogStore`'s actual concept; (c) `reset_sandbox`'s capability requirement; (d) cross-session
 GC/merge interaction; (e) `Sandbox`'s non-copyability as an explicit, stated requirement.
+
+## 13. Revision 3 — per-finding disposition
+
+| §12 finding | Severity | Disposition |
+|---|---|---|
+| `fork_from()`/`engage()` story impossible with other providers composed | BLOCKING | **Fixed (§3)**: `fork_from()` no longer touches `history_provider_` at all — extends the existing `capabilities_` "host re-supplies after fork" contract instead of inventing an auto-rebuild mechanism `ComposedContextProvider` doesn't support. |
+| `WorktreeStoreHandle` type-erases the wrong six operations | BLOCKING | **Fixed (§4)**: split into `ErasedAppendLogStore` (matches the real `AppendLogStore` concept: `append`/`read_from`/`last_seq`) and `ErasedWorktreeObjectStore` (unchanged, was already correct). |
+| `SessionShellSandbox` has no `ExecState` accessor | Real-but-fixable | **Named as a required new method (§7)**: `reset_exec_state()` — not yet implemented, but no longer silently assumed to exist. |
+| `reset_sandbox`'s capability gate weaker than `run_shell`'s | Real, security | **Literal claim fixed, deeper issue still open (§14)**: does require both `FsRead`+`FsWrite` now (verbatim match, correctness-verified) — but round 3 found this treats a categorically more destructive operation as if an ordinary file-access grant already authorizes it, and `turn_index` is unbounded. |
+| `evict_oldest` can strand an unmerged child's `base_digest` | Real, security | **Partially fixed, and a NEW gap found (§14)**: protected-digest mechanism named — but round 3 found it's a real, model-reachable DoS on the storage quota (unbounded `agent.spawn` branches, no release valve), not just "under-specified." |
+| C2 dismissal ("simply WRONG, not unsafe") unearned | Real, security | **Requirement stated, NOT yet equivalent to C2 (§14)**: "MUST be non-copyable" is a design-doc sentence, not a compiled guard — round 3 found this is strictly weaker than C2's real, MSVC-proven compile error until an actual `Sandbox`/`SandboxBase` type ships with a real `static_assert`/deleted-copy-ctor. |
+| Bypass writes silently laundered into audited commits (I4) | Real, not previously named this sharply | **Not fixed, sharpened (§9)**: still an open, disclosed gap — no mechanism proposed in this revision. |
+
+**Not yet re-verified by an independent round**: everything in this section is this document's own
+claim to have fixed round 2's findings — matching this project's own established caution (ADR-096
+§8's own words apply here too: "the two rounds that found nothing wrong are evidence those specific
+corrections happened to be right, not evidence the process has become more reliable"). A third
+red-team round against Revision 3 specifically should not be skipped just because the fixes look
+right on this document's own re-reading.
+
+## 14. Round 3 red-team findings (2026-08-25) — verifying Revision 3's own fixes
+
+Two independent agents (correctness-verification, security-verification), run specifically against
+§13's disposition claims, not the whole document again. Recorded plainly.
+
+**Correctness round — the two BLOCKING fixes are real at the design level, genuinely consistent
+with `ComposedContextProvider`'s actual contract, but NOT yet implemented.** `agent_session.hpp:1178`
+still contains the offending `history_provider_ = source.history_provider_;` line unconditionally —
+the design's fix is a plan, not a landed change. Confirmed correct: a fresh `AgentSession`'s
+`ComposedContextProvider<Ms...>` really does start unengaged (`composed_context_provider.hpp:76`)
+and nothing touches `history_provider_` before `fork_from()` runs today, so removing that one line
+and letting the host `engage()` afterward really would work as designed. `ErasedAppendLogStore`
+confirmed buildable against the real concept with no signature obstacle. **§5's protected-digest set
+is not just under-specified — it's incoherent with §4's own `ErasedWorktreeObjectStore` shape as
+written**: a pure 4-method, non-owning forwarding bridge has nowhere to hold shared,
+cross-session mutable protection state; a real design needs either a new method on that wrapper or
+an entirely separate registry, neither named.
+
+**Security round — three of the "fixed" rows in §13 do not actually close what they claim to,
+found independently of the correctness round.**
+- **§3's `Sandbox` non-copyability "MUST"** is a sentence in a document, not a compiled guard.
+  `ADR-096`'s C2 was empirically proven by a real MSVC compile failure at an exact line; nothing
+  today would catch a future implementer writing `Sandbox` as copyable (several other `AgentSession`
+  members are still plain-copied in `fork_from()` today, `agent_session.hpp:1176-1178`) — the
+  safety property has NOT actually moved yet, only been asserted as a requirement for when
+  implementation starts.
+- **§7's `reset_sandbox` capability fix closes the literal read/write-axis gap round 2 found, but
+  not the deeper one.** Matching `run_shell`'s own `FsRead`+`FsWrite` ceiling assumes that ceiling
+  is ITSELF sufficient authority for "discard N turns of real work in one call" — an unbounded
+  `turn_index`, no check anywhere. This codebase already has precedent for giving a
+  qualitatively-different operation its OWN capability kind (`cap::Schedule`, `cap::Background`) —
+  "rollback authority" has no equivalent kind here; reusing an ordinary file-access grant for a
+  wholesale-discard operation was asserted sufficient, never argued.
+- **§5's protected-digest mechanism has a real, model-reachable DoS angle, not just missing
+  detail.** `agent.spawn` is bounded by `cap::AgentCall`'s depth budget, not by any spawn-count/rate
+  budget. A model that repeatedly branches (never merging) permanently protects one digest per
+  spawn, forever — no release valve exists (the "abandon a branch" operation §11 already flagged as
+  unbuilt is the ONLY named way to release protection, and it doesn't exist). This is a structural
+  attack on §8's own storage-quota mechanism, reachable through ordinary, sanctioned tool use, not
+  an edge case.
+
+**Confirmed genuinely solid, both rounds agree**: the `fork_from()`/`history_provider_` fix's
+DESIGN (not yet its implementation) and the `ErasedAppendLogStore`/`ErasedWorktreeObjectStore` split
+are both real, correctly-cited, structurally sound. §9's bypass-write gap remains honestly
+unfixed, not smuggled in as solved.
+
+**Verdict**: Revision 3 is honest — no row in §13 overclaims something the real code contradicts —
+but it is not yet "ready." Two of round 2's blocking findings are genuinely resolved AT THE DESIGN
+LEVEL; the three security fixes are, on independent re-examination, closer to "identified and
+partially addressed" than "fixed." A Revision 4 would need: a real bound on `reset_sandbox`'s
+`turn_index` (or a dedicated capability kind for rollback authority); a real answer to the
+protected-digest DoS (a spawn-rate/count budget, a mandatory abandon-on-timeout, or rejecting the
+mechanism entirely in favor of accepting §8's original unbounded-growth-is-the-cost framing); and,
+whenever implementation actually starts, `Sandbox`'s non-copyability proven the same way C2 was —
+by a real compile probe, not by restating the requirement.
