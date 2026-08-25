@@ -9,6 +9,7 @@
 #include <variant>
 #include <vector>
 
+#include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/tainted.hpp"
 
 namespace agentengine {
@@ -70,6 +71,12 @@ struct BlobRef {  // ae-naming-lint: allow BlobRef — pre-existing M0 scaffoldi
 
     friend bool operator==(BlobRef const&, BlobRef const&) = default;
 };
+// First real JSON-Schema codec for BlobRef -- nothing has needed one until 006 §7's tool-result
+// promotion mechanism (core/tool_pipeline.hpp) started handing BlobRefs across the Tool boundary
+// inside a Reply. Registered here, next to the type, matching this codebase's own established
+// convention (RecallReply next to RecallArgs in memory_provider.hpp, etc.) rather than at each
+// tool's own call site.
+AE_JSON_SCHEMA(BlobRef, digest, media_type, size, store)
 
 struct Media {  // ae-naming-lint: allow Media — pre-existing M0 scaffolding, reconcile at owning milestone
     std::variant<std::vector<std::byte>, std::string /*uri*/, BlobRef> payload;

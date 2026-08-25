@@ -31,9 +31,11 @@
 #include <cstddef>
 #include <functional>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "agentengine/core/content.hpp"
@@ -380,6 +382,61 @@ namespace tool_pipeline_detail {
     return r;
 }
 
+// Step 9 (006 §3), the success path: turns a tool's raw JSON reply into the `ToolResult` the model
+// actually sees, applying 006 §7 / 028 §2's promotion rule -- shared by `invoke_tool()` and
+// `background_task()` below so the rule can never drift between the synchronous and backgrounded
+// paths (this file's own established "single source of truth" discipline, e.g.
+// `tool_call_requires_approval`'s own comment for the identical reason on step 5).
+//
+// Under `ctx.tool_result_byte_threshold` (or when no threshold is set at all): an ordinary `Data`
+// content item, byte-for-byte the same shape this pipeline has always produced -- a caller that
+// never wires the two `EffectContext` fields this reads sees no behavior change whatsoever.
+//
+// At or above the threshold: promoted to a `Media` item carrying a `BlobRef` (003 §3), written via
+// `ctx.blob_sink`. No sink configured is treated as "cannot promote" and fails closed
+// (`tool.result_oversized_no_sink`) rather than falling back to inlining the oversized result anyway
+// -- inlining exactly what crossed the threshold is the hazard 006 §7 exists to prevent, so silently
+// doing it as a fallback would defeat the whole mechanism the moment a caller forgot to wire a sink.
+[[nodiscard]] inline result<std::pair<ToolResult, std::size_t>> normalize_success(
+        std::string call_id, json::Value const& reply_value, EffectContext& ctx) {
+    std::string reply_json = json::dump(reply_value);
+    std::size_t const reply_bytes = reply_json.size();
+
+    ContentItem item;
+    item.origin = content_origin::tool;
+    // A tool result is external content and the primary prompt-injection vector (006 §7) --
+    // provenance-marked regardless of whether the CALL's own arguments were tainted, and regardless
+    // of which branch below runs.
+    item.tainted = true;
+
+    if (ctx.tool_result_byte_threshold.has_value() && reply_bytes > *ctx.tool_result_byte_threshold) {
+        if (!ctx.blob_sink) {
+            return std::unexpected(error{
+                failure_class::resource,
+                "tool result (" + std::to_string(reply_bytes) + " bytes) exceeds the run's byte "
+                "threshold (" + std::to_string(*ctx.tool_result_byte_threshold) + ") and no blob "
+                "sink is configured to promote it",
+                "tool.result_oversized_no_sink"});
+        }
+        std::span<std::byte const> const bytes{
+            reinterpret_cast<std::byte const*>(reply_json.data()), reply_json.size()};
+        auto blob = ctx.blob_sink(bytes, "application/json");
+        if (!blob) return std::unexpected(blob.error());
+        item.value = Media{*blob, "application/json"};
+    } else {
+        // `Data::schema_id` is a schema *reference* (a registry id/URI), not the schema body itself
+        // -- this milestone has no schema registry (that's 011 MCP-conformance territory), so it
+        // stays unset rather than misusing the field to carry `reply_schema_json`'s full text.
+        item.value = Data{std::move(reply_json), std::nullopt};
+    }
+
+    ToolResult ok_result;
+    ok_result.call_id = std::move(call_id);
+    ok_result.is_error = false;
+    ok_result.content.push_back(std::move(item));
+    return std::make_pair(std::move(ok_result), reply_bytes);
+}
+
 // ADR-023 §6 point 4 / 007 §4 amendment, declassifier (a′): a `text_derived` call auto-declassifies
 // (skips step 5's approval entirely) ONLY when the target tool's declared capability ceiling is
 // made ENTIRELY of kinds `trust::is_inert_for_text_derived_declassification` proves safe (read-only/
@@ -597,23 +654,12 @@ inline void enforce_hook_rewritten_tool_call_provenance(ToolCallRequest& req,
         return finish(make_error_result(request.call_id, e), &e);
     }
 
-    std::string reply_json = json::dump(*invoke_result);
-    std::size_t const reply_bytes = reply_json.size();
-
-    ToolResult ok_result;
-    ok_result.call_id = request.call_id;
-    ok_result.is_error = false;
-    ContentItem item;
-    // `Data::schema_id` is a schema *reference* (a registry id/URI), not the schema body itself --
-    // this milestone has no schema registry (that's 011 MCP-conformance territory), so it stays
-    // unset rather than misusing the field to carry `reply_schema_json`'s full text.
-    item.value = Data{std::move(reply_json), std::nullopt};
-    item.origin = content_origin::tool;
-    // A tool result is external content and the primary prompt-injection vector (006 §7) --
-    // provenance-marked regardless of whether the CALL's own arguments were tainted.
-    item.tainted = true;
-    ok_result.content.push_back(std::move(item));
-    return finish(std::move(ok_result), nullptr, reply_bytes);
+    auto normalized = normalize_success(request.call_id, *invoke_result, ctx);
+    if (!normalized) {
+        error const& e = normalized.error();
+        return finish(make_error_result(request.call_id, e), &e);
+    }
+    return finish(std::move(normalized->first), nullptr, normalized->second);
 }
 
 // Milestone 7 Phase B (006 §6b): "Still runs the full 10-step tool pipeline (§3); only step 8
@@ -765,19 +811,17 @@ using BackgroundTaskCompletion = std::function<void(ToolResult, ToolInvocationAu
             return;
         }
 
-        std::string reply_json  = json::dump(*invoke_result);
-        audit.ok                = true;
-        audit.result_bytes      = reply_json.size();
-
-        ToolResult ok_result;
-        ok_result.call_id  = request.call_id;
-        ok_result.is_error = false;
-        ContentItem item;
-        item.value   = Data{std::move(reply_json), std::nullopt};
-        item.origin  = content_origin::tool;
-        item.tainted = true;
-        ok_result.content.push_back(std::move(item));
-        on_complete(std::move(ok_result), std::move(audit));
+        auto normalized = normalize_success(request.call_id, *invoke_result, ctx);
+        if (!normalized) {
+            error const& e = normalized.error();
+            audit.ok         = false;
+            audit.error_code = e.code;
+            on_complete(make_error_result(request.call_id, e), std::move(audit));
+            return;
+        }
+        audit.ok           = true;
+        audit.result_bytes = normalized->second;
+        on_complete(std::move(normalized->first), std::move(audit));
     });
     worker.detach();
 

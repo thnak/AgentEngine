@@ -764,6 +764,30 @@ public:
         return std::nullopt;
     }
 
+    // Read-side twin of `find_fs_read` above, for network egress instead of the filesystem: a
+    // caller about to invoke `sandbox::HostEgressProxy::fetch()` (net_egress_proxy.hpp) needs the
+    // ACTUAL granted `cap::NetOut` -- its own `byte_cap`/`method_restrictions` -- not merely a
+    // yes/no, the identical reason `find_fs_read`/`find_fs_write` return the grant object rather
+    // than a bool. `host_port_scheme` is compared literally against each granted entry
+    // (`cap::NetOut`'s own "host:port:scheme" grammar, `net_egress_proxy.cpp`'s
+    // `parse_allowlist_entry` — no wildcard/prefix matching: unlike a filesystem path prefix, a
+    // partial host match is never "narrower," so exact-string is the only sound comparison here).
+    // The returned `cap::NetOut` is narrowed to exactly this one host entry (never the full,
+    // possibly-multi-host original grant) — `HostEgressProxy::fetch()`'s own C1 gate requires
+    // exactly one `host_allowlist` entry, and handing back only the matched one is what makes that
+    // gate satisfiable by a caller that itself never inspects the grant's other entries.
+    [[nodiscard]] std::optional<cap::NetOut> find_net_out(std::string const& host_port_scheme) const {
+        for (Capability const& c : granted_) {
+            if (auto const* no = std::get_if<cap::NetOut>(&c)) {
+                if (std::find(no->host_allowlist.begin(), no->host_allowlist.end(), host_port_scheme) !=
+                    no->host_allowlist.end()) {
+                    return cap::NetOut{{host_port_scheme}, no->byte_cap, no->method_restrictions};
+                }
+            }
+        }
+        return std::nullopt;
+    }
+
     // A strictly-narrower derived set (007 §3 property 2 — attenuation only). Fails closed the
     // moment ANY requested entry isn't subsumed by something in this set: an all-or-nothing
     // derivation, never a partial grant a caller might mistake for "the rest was silently dropped".

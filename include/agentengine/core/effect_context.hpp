@@ -3,9 +3,12 @@
 // carried into every effect. Never an ambient thread-local (CONVENTIONS.md "Security rules").
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -107,6 +110,30 @@ struct EffectContext {
     // before constructing the event -- a tool never gets to mark its own pushed content trusted; see
     // `rt/agent_session.hpp`'s `force_tainted()`.
     std::function<void(ContentItem)> report_progress = [](ContentItem) {};
+
+    // 006 §7 / 028 §2: an oversized tool result is promoted to a `BlobRef` rather than inlined into
+    // the model's context. Both fields below default OFF (`nullopt` / an empty `std::function`) --
+    // every existing caller that never sets them keeps today's behavior (`tool_pipeline.hpp`'s step
+    // 9 always builds a `Data` item) byte for byte, the same "optional-but-always-safe-to-call, no
+    // wiring means no behavior change" idiom `report_progress`/`ApprovalDecider` above already use.
+    //
+    // The threshold this call's raw result bytes are compared against. 006 §7's own anti-pattern
+    // warning ("a fixed byte constant... applied uniformly regardless of model" is explicitly
+    // rejected) is why this is never a compiled-in default: a caller derives it from whatever
+    // effective per-turn token budget it is tracking (005 §3's `TokenBudget`, scaled to a declared
+    // fraction) and sets it here per call -- the same per-call-hint shape 006 §6b Q5 already
+    // established for `watch_resource`'s poll interval, applied to this seam instead.
+    std::optional<std::uint64_t> tool_result_byte_threshold;
+
+    // Where an oversized result's bytes actually go once step 9 decides to promote -- content-
+    // addressed storage is the named seam (025's worktree object store; 003 §3's own `BlobRef::store`
+    // field comment: "which blob store seam resolves this digest"). A caller wires this to a real
+    // `WorktreeObjectStore::put_blob` call (core/worktree.hpp) for the run's own worktree. Unset
+    // means "no sink available" -- step 9 treats that as "cannot promote" and fails closed rather
+    // than silently inlining an over-threshold result anyway, which is exactly the hazard this
+    // mechanism exists to prevent (see `tool_pipeline.hpp`'s own comment on this decision).
+    std::function<result<BlobRef>(std::span<std::byte const> bytes, std::string const& media_type)>
+        blob_sink;
 };
 
 } // namespace agentengine

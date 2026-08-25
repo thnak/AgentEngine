@@ -1808,6 +1808,21 @@ add_executable(test_tool_pipeline test_tool_pipeline.cpp)
 target_link_libraries(test_tool_pipeline PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_tool_pipeline COMMAND test_tool_pipeline)
 
+# ---- Tool-result-to-BlobRef promotion (006 §7 / 028 §2), first-party-tools Track A --------------
+# Header-only (core/tool_pipeline.hpp's normalize_success, shared by invoke_tool/background_task),
+# core-tier -- links only agentengine::core.
+add_executable(test_tool_result_blob_promotion test_tool_result_blob_promotion.cpp)
+target_link_libraries(test_tool_result_blob_promotion PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_tool_result_blob_promotion COMMAND test_tool_result_blob_promotion)
+
+# ---- ReadContent, the first shipped first-party tool (009 §7's "Content reading" catalog entry,
+# first-party-tools Track A) -- URL-source only, gated by NetOut via sandbox::HostEgressProxy, so it
+# needs the real egress-proxy static library even though the tests themselves exercise a fake
+# NetEgressBackend conformer (tools/read_content.hpp's own file-top comment explains the scope cut).
+add_executable(test_read_content test_read_content.cpp)
+target_link_libraries(test_read_content PRIVATE agentengine::core agentengine::net_egress_proxy agentengine_warnings)
+add_test(NAME test_read_content COMMAND test_read_content)
+
 # ---- Skills Phase 2: core/skill_tool_scoping.hpp -- pure ToolTable filtering plus the negative
 # control proving invoke_tool actually rejects a real tool absent from the scoped table (not just
 # cosmetic list-shortening). No skills/sandbox dependency -- core-tier only.
