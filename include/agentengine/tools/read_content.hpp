@@ -47,6 +47,7 @@ namespace agentengine::tools {
 // `NetOut` grant lookup plus a `NetEgressRequest` require. No IPv6 literal-host support (`[::1]`) --
 // out of scope for the identical reason `net_egress_proxy.cpp`'s own "host:port:scheme" allowlist
 // grammar has never needed it either.
+// ae-naming-lint: allow ParsedUrl — a minimal hand-rolled URL split, not a vetted library type; 027 not yet updated
 struct ParsedUrl {
     std::string scheme;
     std::string host;
@@ -153,6 +154,7 @@ AE_JSON_SCHEMA(ReadContentReply, preview, truncated, total_bytes, media_type, bl
 // This is still I2-compliant: authority is still gated by an explicit, pre-granted capability,
 // checked before any effect -- only the pipeline STEP that checks it moves from 4 (generic, static)
 // to inside `invoke()` (specific, dynamic); nothing here ever grants itself anything.
+// ae-naming-lint: allow ReadContent — 009 §7's read_content candidate tool; 027 not yet updated
 struct ReadContent : Tool<ReadContent, Capabilities<>, Approval<approval_mode::never_require>,
                            EffectClass<effect_class::pure>> {
     static constexpr std::string_view name = "read_content";

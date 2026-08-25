@@ -46,6 +46,7 @@ struct ReadSandboxFileReply {
 };
 AE_JSON_SCHEMA(ReadSandboxFileReply, content)
 
+// ae-naming-lint: allow ReadSandboxFile — new tool, matches every other Tool<> conformer's own naming; 027 not yet updated
 struct ReadSandboxFile : Tool<ReadSandboxFile, Capabilities<>, Approval<approval_mode::never_require>,
                                EffectClass<effect_class::pure>> {
     static constexpr std::string_view name = "read_sandbox_file";
