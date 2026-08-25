@@ -1927,6 +1927,22 @@ target_link_libraries(test_agent_registry_sandbox_backend_registry PRIVATE
   agentengine::core agentengine_warnings)
 add_test(NAME test_agent_registry_sandbox_backend_registry COMMAND test_agent_registry_sandbox_backend_registry)
 
+# ---- build_default_sandbox_registry() (docs/planning/default-sandbox-registry-wiring-design-draft.md) --
+# Proves the real, compiled-in SandboxBackend conformers register with the right names/eligibility --
+# unlike the two tests above, which prove the registry MECHANISM against fake conformers, this one
+# exercises the real NativeJailBackend/LinuxNativeJailBackend, and WasmBackend/KataBackend whenever
+# this build was actually configured with AGENTENGINE_WITH_WASM/AGENTENGINE_BUILD_KATA_BACKEND.
+add_executable(test_default_sandbox_registry test_default_sandbox_registry.cpp)
+target_link_libraries(test_default_sandbox_registry PRIVATE
+  agentengine::default_sandbox_registry agentengine_warnings)
+add_test(NAME test_default_sandbox_registry COMMAND test_default_sandbox_registry)
+if(AGENTENGINE_WITH_WASM AND WIN32)
+  # Windows has no rpath; wasmtime.dll must be reachable via PATH at run time -- same wiring
+  # test_wasmtime_smoke already needs (tests/CMakeLists.txt's own AGENTENGINE_WITH_WASM block).
+  set_tests_properties(test_default_sandbox_registry PROPERTIES
+    ENVIRONMENT "PATH=${AGENTENGINE_WASMTIME_DLL_DIR};$ENV{PATH}")
+endif()
+
 # ---- ExecState / SessionExecStateRegistry (010 §3a, Milestone 3 Phase E1) -----------------------
 # Header-only (sandbox/runner.hpp) -- no platform-specific dependency, proven with mock Runners
 # since PythonRunner/ShellRunner (Phase E2/E3) don't exist yet.

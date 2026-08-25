@@ -410,6 +410,40 @@ if(AGENTENGINE_WITH_WASM)
   add_library(agentengine::wasm_backend ALIAS agentengine_wasm_backend)
 endif()
 
+# ---- Default sandbox-backend registry wiring (src/sandbox/) -------------------------------------
+# docs/planning/default-sandbox-registry-wiring-design-draft.md: build_default_sandbox_registry(),
+# real host-callable code that registers whichever SandboxBackend conformers this build was
+# actually compiled with into a SandboxBackendRegistry (include/agentengine/sandbox/
+# sandbox_backend_registry.hpp) -- the "how does a backend get into the registry at all" half of
+# the gap the prior sandbox-backend-registry-design-draft.md named and deliberately deferred.
+# Always built (the native-jail leg has no off switch); the wasm/kata legs are compiled in only
+# when their own options are already ON, via AGENTENGINE_HAVE_WASM_BACKEND/
+# AGENTENGINE_HAVE_KATA_BACKEND (PRIVATE -- only this target's own .cpp reads them).
+add_library(agentengine_default_sandbox_registry STATIC
+  src/sandbox/default_sandbox_registry.cpp)
+target_include_directories(agentengine_default_sandbox_registry PUBLIC
+  "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(agentengine_default_sandbox_registry PUBLIC agentengine::core)
+target_link_libraries(agentengine_default_sandbox_registry PRIVATE agentengine_warnings)
+if(WIN32)
+  target_link_libraries(agentengine_default_sandbox_registry PUBLIC agentengine::native_jail_backend)
+elseif(UNIX)
+  target_link_libraries(agentengine_default_sandbox_registry PUBLIC agentengine::linux_native_jail_backend)
+endif()
+if(AGENTENGINE_WITH_WASM)
+  target_link_libraries(agentengine_default_sandbox_registry PUBLIC agentengine::wasm_backend)
+  # PUBLIC, not PRIVATE (self-caught correction after the correctness red-team's PRIVATE suggestion
+  # -- true for the .cpp alone, but test_default_sandbox_registry.cpp also needs to see this macro
+  # to conditionally compile its own wasm/kata assertions; PRIVATE would silently skip those checks
+  # even when the backend is actually built in).
+  target_compile_definitions(agentengine_default_sandbox_registry PUBLIC AGENTENGINE_HAVE_WASM_BACKEND)
+endif()
+if(NOT WIN32 AND AGENTENGINE_BUILD_KATA_BACKEND)
+  target_link_libraries(agentengine_default_sandbox_registry PUBLIC agentengine::kata_backend)
+  target_compile_definitions(agentengine_default_sandbox_registry PUBLIC AGENTENGINE_HAVE_KATA_BACKEND)
+endif()
+add_library(agentengine::default_sandbox_registry ALIAS agentengine_default_sandbox_registry)
+
 # ---- HTTPS/TLS client for the egress proxy (src/sandbox/) -- Windows + Linux -------------------
 # decisions/ADR-013-https-egress-tls-client.md (M2 residual, ADR-011 section 9's named follow-up):
 # mbedTLS as the egress proxy's one CONVENTIONS.md tier-2 heavy dependency for ordinary outbound
