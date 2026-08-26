@@ -2083,6 +2083,24 @@ if(WIN32)
     # Windows-has-no-rpath reason those tests need it.
     set_tests_properties(test_mediated_shell_runner_python_composition PROPERTIES
       ENVIRONMENT "PATH=${AGENTENGINE_PYTHON_DLL_DIR};$ENV{PATH}" TIMEOUT 60)
+
+    # PROVE-PHASE test (docs/planning/identity-native-sandbox-worktree-design.md §30's own disclosed
+    # gap: Shell and Python are never pointed at the same real host directory in the shipped
+    # tools/cli_chat.cpp wiring) -- proves that explicitly setting Python's mount_roots["work"] to
+    # the SAME directory Shell's own MediatedFileSystemAdapter uses gives them genuine cross-visible
+    # file sharing, with no accidental authority widening. Additive only -- tools/cli_chat.cpp's own
+    # real wiring is untouched by this test.
+    add_executable(test_shell_python_shared_mount_prove
+      test_shell_python_shared_mount_prove.cpp)
+    target_link_libraries(test_shell_python_shared_mount_prove PRIVATE
+      agentengine::core agentengine::mediated_shell_runner agentengine::mediated_python_runner
+      agentengine::worktree_store agentengine_warnings)
+    target_compile_definitions(test_shell_python_shared_mount_prove PRIVATE
+      AE_PYTHON_HOME="${AGENTENGINE_PYTHON_HOME}")
+    add_test(NAME test_shell_python_shared_mount_prove
+      COMMAND test_shell_python_shared_mount_prove)
+    set_tests_properties(test_shell_python_shared_mount_prove PROPERTIES
+      ENVIRONMENT "PATH=${AGENTENGINE_PYTHON_DLL_DIR};$ENV{PATH}" TIMEOUT 60)
   endif()
 endif()
 
