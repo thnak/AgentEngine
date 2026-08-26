@@ -1,7 +1,6 @@
 # A clean design — every session mandatorily bound to a worktree, sandbox materialized from it
 
-**Status: Revision 3 — addresses §12's round-2 red-team findings directly (fixes below, in the
-sections they belong to; §12 itself is left intact as the historical record, not deleted).**
+**Status: Revision 4 — closes §14's round-3 findings (new §15); §12/§13/§14 left intact as history.**
 Revision 1 (kept in git history, not reproduced here —
 this file is meant to stay clean, not accumulate a revision log) routed the worktree/sandbox binding
 through a `ContextProvider` (a composite class replacing `ADR-096`'s `SandboxToolProvider`). This
@@ -640,3 +639,170 @@ protected-digest DoS (a spawn-rate/count budget, a mandatory abandon-on-timeout,
 mechanism entirely in favor of accepting §8's original unbounded-growth-is-the-cost framing); and,
 whenever implementation actually starts, `Sandbox`'s non-copyability proven the same way C2 was —
 by a real compile probe, not by restating the requirement.
+
+## 15. Revision 4 — closing §14's two fixable gaps; the third is not a design-doc problem
+
+Two of §14's three findings have real fixes below, reusing already-real machinery rather than
+inventing new mechanism (the discipline this whole document has tried to follow throughout). The
+third (`Sandbox` non-copyability) is stated honestly as NOT closeable by a design revision at all.
+
+### 15.1 `reset_sandbox`'s unbounded `turn_index` — a new, dedicated capability kind
+
+Round 3's own comparison was the right one: this codebase already gives qualitatively different
+operations their OWN capability kind rather than overloading an unrelated one — `cap::Schedule`
+(`std::chrono::seconds max_horizon; std::uint32_t max_active;`) and `cap::Background` (`std::uint32_t
+max_concurrent;`) are the real, existing precedent (`trust/capability.hpp:145-151`, with matching
+compile-time `cap::decl::Schedule<MaxHorizonSeconds, MaxActive>`/`to_capability()` conversions,
+`capability.hpp:390-391,455-458`). `reset_sandbox` gets the same treatment, not a reused `FsWrite`:
+
+```cpp
+// runtime (trust/capability.hpp, alongside Schedule/Background)
+struct SandboxReset {
+    std::uint32_t max_turns_back = 0;  // 0 == held but authorizes nothing; a real grant sets this
+};
+
+// compile-time declaration (cap::decl)
+template <std::uint32_t MaxTurnsBack>
+struct SandboxReset {};
+
+template <std::uint32_t MaxTurnsBack>
+[[nodiscard]] inline Capability to_capability(cap::decl::SandboxReset<MaxTurnsBack> const&) {
+    return cap::SandboxReset{MaxTurnsBack};
+}
+```
+
+`Sandbox::reset_to_turn(turn_index, EffectContext const& ctx)` now requires finding a held
+`cap::SandboxReset` grant (a new `CapabilitySet::sandbox_reset_grant()` accessor, mirroring
+`find_fs_read`/`find_schedule`'s own existing shape) AND checks `current_turn_index - turn_index <=
+grant->max_turns_back` — fails closed (`sandbox.rollback_exceeds_grant`) otherwise. `run_shell`'s own
+`FsRead`/`FsWrite` ceiling is UNCHANGED and no longer consulted for this operation at all — an
+ordinary file-access grant no longer implies any rollback authority, closing round 3's actual
+finding (not just the read/write-axis asymmetry Revision 3 closed). A host wanting "no rollback
+beyond the last 5 turns" grants `cap::decl::SandboxReset<5>`; a host wanting no model-facing rollback
+at all simply never grants it — `reset_sandbox` then isn't even contributed by `SandboxToolReflector`
+(mirroring how `run_shell` itself is never contributed for a `NullSandbox`).
+
+### 15.2 The protected-digest DoS — bound the rate via an already-real, already-unwired budget; add the missing release valve
+
+Round 3 found the real gap correctly: `agent.spawn` has a depth budget (`trust::SpawnBudget`,
+"strictly decreasing... every attenuation consumes exactly one level") but nothing bounding COUNT —
+a session can branch without limit, each branch permanently protecting one digest with no way to
+release it short of a full merge. Two closes, not one, because bounding the rate alone still leaves
+"protected forever" once the (now-finite) budget is spent:
+
+- **Bound the rate**: `agentengine::rt::SpawnCostBudget` (`rt/spawn_cost_budget.hpp`) already exists,
+  is already real and tested, and is explicitly self-described as "proven standalone, NOT wired to
+  any real `agent.spawn` call path — none exists yet in this codebase." This is the SAME shape of
+  gap `ADR-098` closed for `SandboxBackendRegistry` (a real, tested mechanism with no production
+  consumer) — reuse it rather than inventing a new counter: every `branch`-mode `fork_from()`/
+  `agent.spawn` call consumes a fixed cost from the session's own `SpawnCostBudget` (host-initialized
+  once, per `initialize(...)`, via `SpawnCostBudget::initialize(total_tokens)`) BEFORE
+  `create_sub_worktree`/`mint_spawn_worktree` runs; exhausted budget fails the spawn/fork closed
+  (`spawn_cost_budget.exhausted`, already a real error code). This bounds how many protected digests
+  ANY ONE session can ever create, closing the "unbounded" half of round 3's finding with zero new
+  mechanism — only a new call site for an already-Judged type.
+- **Add the release valve** (§11's own previously-unbuilt "explicitly abandon a branch" operation,
+  now designed): `Sandbox::abandon_branch(child_ref_name) -> result<void>` — releases that child's
+  `base_digest` from the protected set WITHOUT requiring a merge, for the case where a branch's work
+  is simply discarded, not folded back. Authorized by whoever could have spawned the branch in the
+  first place (the same capability check `mint_spawn_worktree`'s own caller-side gate already
+  performs) — not a new, separate capability kind, since abandoning a branch is strictly LESS
+  powerful than having created it (discarding authority you already exercised, not gaining new
+  authority). Once both `SpawnCostBudget` bounds creation rate AND `abandon_branch()` gives a real
+  way to release a spent slot, a long-running session is never permanently stuck at its own budget
+  ceiling the way an abandon-less design would leave it.
+
+**Not fully resolved**: `SpawnCostBudget`'s own `initialize(total_tokens)` is host-configured, once,
+per session — this design does not specify what a sensible default cost-per-branch or total budget
+looks like (a product/tuning question, not an architectural one); and `abandon_branch()`'s
+interaction with a merge ALREADY in flight (can a branch be abandoned mid-merge-attempt?) is not
+analyzed.
+
+### 15.3 `Sandbox` non-copyability — explicitly NOT closeable here; restated, not re-claimed
+
+Round 3's finding stands as stated: a design document's "MUST be non-copyable" is not equivalent to
+`ADR-096`'s C2, which was proven by an actual failed MSVC compile of real code. **This is not a gap
+this document can close by writing more text** — the only real closure is implementation-time: when
+`Sandbox`/`SandboxBase` actually ships, it must be proven non-copyable the same way C2 was (a
+`static_assert(!std::is_copy_constructible_v<SandboxBase>)` at minimum, ideally the same kind of
+throwaway compile-probe test ADR-096's own round 2 used). Recorded here as a REQUIRED verification
+step for whoever implements this design, not something Revision 4 pretends to have resolved.
+
+## 16. Round 4 red-team findings (2026-08-25) — §15's own fixes have new, real gaps
+
+Two independent agents (correctness, security) against §15 specifically. Recorded plainly, not
+silently fixed — matching this document's own now-established pattern (every prior "fix" round has
+introduced or left at least one new real gap; this one is no exception).
+
+**§15.1 `cap::SandboxReset` — STILL BROKEN, two independent problems.**
+1. *(correctness)* The proposed `to_capability()` snippet doesn't compile as written: `Capability`
+   is a closed `std::variant<cap::FsRead, cap::FsWrite, ...>` (`trust/capability.hpp:209`), and
+   `capability_kind_of()`/`subsumes_payload()` are EXHAUSTIVE over every variant member
+   (`capability_kind_of()` has a `static_assert(sizeof(T)==0, ...)` fallback that hard-fails to
+   compile for any unhandled alternative, `:215-237`; `subsumes_payload()` needs its own overload,
+   `:495-624`). Adding `cap::SandboxReset` requires touching the variant, the kind-switch, AND the
+   subsumes overload set — §15.1 named none of this.
+2. *(security)* Even granting that plumbing, §15.1 never states what happens to `reset_sandbox`'s
+   own `Tool<>` declaration. Revision 3 declared `Capabilities<cap::decl::FsRead<"work">,
+   cap::decl::FsWrite<"work">>` on it. `SandboxReset<MaxTurnsBack>` cannot cleanly replace that as a
+   STATIC `Capabilities<...>` ceiling — `MaxTurnsBack` would be a single compile-time literal baked
+   into one shared `Tool` type, not a host/session-configurable value. The real, closer precedent
+   this design should have cited is `ScheduleWakeupTool` (`agent_session.hpp:385-394`), which
+   declares **no** `Capabilities<>` at all for exactly this reason ("a compile-time ceiling could
+   only check bare existence, never the live count") and enforces `cap::Schedule`'s horizon/count
+   entirely via a dynamic `find_schedule()` check inside the tool body. If a real implementer instead
+   LEAVES Revision 3's `FsRead`/`FsWrite` declaration in place and merely ADDS the new dynamic check,
+   `tool_pipeline.hpp`'s capability-ceiling binding is AND, not OR (`:585-599`) — so a host would
+   still need to grant ordinary file access just to unlock a tool this design claims is "no longer"
+   gated by it, directly contradicting §15.1's own central claim.
+
+**§15.2 `SpawnCostBudget` reuse — STILL BROKEN, three independent problems.**
+1. *(correctness)* `SpawnCostBudget::consume()` is `task<result<SpawnTokenGrant>>` — a real
+   coroutine (`rt/spawn_cost_budget.hpp:58`) — but `fork_from()` is a plain synchronous `void` method
+   (`agent_session.hpp:1161`). §15.2 never states how a synchronous caller drives an async consume()
+   call safely. The codebase's own real driving idiom (`agent_spawn_detail::drive()`,
+   `rt/agent_spawn_child_run.hpp:94-97`) has an explicit safety precondition — a single worker thread
+   guarantees only that thread can ever contend the budget's internal `AsyncMutex` — that `fork_from()`
+   has no equivalent of. Naively driving `consume()` from an arbitrary, potentially-concurrent
+   `fork_from()` call site risks resuming an already-parked coroutine handle out of turn, the exact
+   hazard `SpawnPump` was built to rule out by construction. Not addressed.
+2. *(correctness)* `SpawnPump`'s real constructor takes `SpawnCostBudget& cost_pool`
+   (`agent_spawn.hpp:241`) — ONE shared instance across whatever flows through that pump, not
+   "the session's own" as §15.2 describes. The design asks one mechanism to serve two different real
+   ownership shapes without reconciling them.
+3. *(security)* Even setting sync/async and ownership aside, a per-session budget is confirmed
+   insufficient for what it claims to close: it has no cross-session or store-wide awareness at all
+   (§8's real ceiling, `max_store_bytes`, is store-wide), and the design never states whether a
+   session that itself calls `fork_from()` recursively gives each child a FRESH budget (per §15.2's
+   own "host-initialized once, per `initialize(...)`" wording, this reads as yes) or a split share of
+   the parent's remaining budget. If fresh, the "bounded" claim only holds for a single,
+   non-recursively-forking session — materially weaker than §15.2 asserts.
+
+**`abandon_branch()`'s capability claim — STILL BROKEN, a real cross-principal griefing vector.**
+§15.2 said this reuses "the same capability check `mint_spawn_worktree`'s own caller-side gate
+already performs." Verified false on two counts: (a) `mint_spawn_worktree`
+(`agent_spawn_worktree.hpp:208-292`) performs no admission/denial check of its own at all — it only
+reads `caller_held.fs_read_grants()`/`fs_write_grants()` to compute what grant to hand back; the
+REAL gate is one layer up, in `perform_agent_spawn()`'s steps [2]/[3] (`check_and_consume_spawn_
+depth`, `ctx.capabilities->attenuate(...)`, `rt/agent_spawn.hpp:376-396`) — a different function
+than the one cited. (b) More seriously: `CapabilitySet` (`trust/capability.hpp`) has NO identity
+field anywhere — every grant-lookup method (`find_fs_read`/`find_fs_write`/`contains`) checks
+capability SHAPE only, never WHO is asking. So "authorized by whoever could have spawned the branch"
+as designed actually authorizes ANYONE holding an equivalent `FsRead`/`FsWrite` grant on the SAME
+`mount_id` — a sibling agent, or the branch's own child, can call `abandon_branch()` on a DIFFERENT
+principal's still-useful branch and permanently destroy its ability to ever merge back. §15.2's own
+"strictly less powerful than having created it" framing answers a capability-WIDENING question; it
+never considers the identity/authorization question I2 also covers, and the real mechanism it cites
+provides no identity check to lean on.
+
+**Confirmed accurate**: §15.3's admission (non-copyability isn't closeable by a design document)
+stands unchallenged by round 4 — the one part of §15 that wasn't found broken, because it never
+claimed to be fixed in the first place.
+
+**Verdict**: every mechanism §15 proposed to close round 3's findings has its own real,
+independently-found gap — the `SandboxReset`/`Tool<>` interaction, the `SpawnCostBudget` sync/async
+and ownership mismatch, and `abandon_branch()`'s missing identity check are not restatements of old
+problems, they are NEW ones this revision's own fixes introduced. This is not implemented anywhere
+in the tree today (no `SandboxReset`, `abandon_branch`, or updated `reset_sandbox` symbols exist) —
+everything here is a forward-looking gap in the design text, not yet a shipped defect. A Revision 5
+is not started here per instruction — recorded, then pushed as-is.
