@@ -3417,9 +3417,14 @@ own review scope) was separately confirmed to still compile clean against every 
 ### 34.10 A3 and A9 — explicitly out of scope, not silently dropped
 
 **A3** (concrete execution-surface technology, §11 item 2, this document's own "single largest
-remaining engineering unknown") remains deliberately untouched: it overlaps the engine's existing,
-separately-Judged `native_jail`/`wasm`/`kata` backends, and this design's `SandboxSession`/
-`MediatedFileSystem` was always meant to compose with one of those, not invent a new one.
+remaining engineering unknown") remains deliberately untouched. It overlaps the engine's existing,
+separately-Judged `native_jail`/`wasm`/`kata` backends, and the working assumption is that
+`SandboxSession`/`MediatedFileSystem` will end up composing with one of those rather than a fourth
+backend appearing beside them — but that is a preference for A3's own eventual implementation
+decision, not a constraint on the design/prove work itself. Reuse-of-existing-machinery only
+becomes a real concern once A3 is actually being wired into the live engine; until then, whatever
+is cleanest to design and prove standalone — a new primitive, or a rewrite of an existing one — is
+in scope, exactly as the rest of this document's own design/prove work has already been conducted.
 
 **A9** (real integration into `AgentSession`/`ContextProvider`/`Tool<>`, §9) remains deliberately
 untouched: §9's own text already states this needs its own design → red-team → prove → judge pass and
