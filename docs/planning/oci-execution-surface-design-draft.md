@@ -3,10 +3,17 @@
 Prompted directly by the project owner: the identity-native design's A3 execution-surface work
 (`docs/planning/identity-native-sandbox-worktree-design.md` §36) has exactly one real `ExecutionSurface`
 conformer, and it is Docker-CLI-specific rather than grounded in the OCI standard this codebase's own
-shipped, Judged-track code (`KataBackend`) already builds on. Design document only this pass, per
-explicit user direction — no C++ conformer, no environment provisioning, no live proof. Also per
-explicit user direction: treat this the same way the identity-native design itself was built — a
-fresh, first-principles design, not a minimal-diff retrofit of what already exists.
+shipped, Judged-track code (`KataBackend`) already builds on. Design document only, per explicit user
+direction — no `ContainerdExecutionSurface` C++ conformer. Also per explicit user direction: treat this
+the same way the identity-native design itself was built — a fresh, first-principles design, not a
+minimal-diff retrofit of what already exists.
+
+**Revision note**: this document's first version also deferred all environment provisioning and live
+proof. §4/§5 now include one deliberate exception — after a design-only red-team round found a real,
+load-bearing risk in the bind-mount architecture that reasoning alone couldn't settle, `containerd`+
+`runc` were provisioned into the pre-existing WSL2 environment specifically to answer that ONE
+question empirically, per explicit user direction to pursue it. This does not mean the conformer
+itself is now being built — see §5's own honest scope statement.
 
 ## 0. What already exists, and what's actually missing
 
@@ -175,29 +182,31 @@ anywhere else changes as a result of this document by itself, per explicit user 
 One independent, adversarial pass, run against this draft's first version and the real, cited sources
 directly (not this draft's paraphrase of them).
 
-- **Finding 1 (REAL, load-bearing, not fixed here — see §5): a genuine ordering hazard between
-  `SandboxRuntime::run()`'s fixed step sequence and a bind-mount conformer, that Docker's copy-based
-  conformer structurally never had to face.** `sandbox_runtime.hpp`'s `run()` calls `io_fs_.materialize()`
-  (step 2) unconditionally BEFORE `surface.reset()` (step 3) — confirmed by direct read of both files.
-  `real_io_filesystem.hpp`'s `materialize()` does `remove_all(host_root_)` then
-  `create_directories(host_root_)` — a full delete-and-recreate, not an in-place rewrite (confirmed,
-  lines 299-301). For `DockerExecutionSurface`, this is harmless: a container's filesystem is never
-  aliased to `host_root_`, so recreating the host directory before the old container is even destroyed
-  changes nothing about correctness. For a bind-mount `ctr` conformer, the PREVIOUS turn's container
-  may still be alive and still bind-mounted to `host_root_` at the exact moment `materialize()`'s
-  `remove_all`/recreate fires — `reset()` (which would destroy that old container) hasn't run yet, it's
-  the very next step. On real Linux, this does not fail or corrupt the fresh directory `materialize()`
-  just wrote (a bind mount holds its own reference to the underlying dentry, the same way an open file
-  survives `unlink` — the host-side `remove_all`/`mkdir` succeeds cleanly regardless), but the OLD,
-  soon-to-be-destroyed container's own `/workspace` view silently orphans onto now-unlinked content for
-  the brief window until `reset()` destroys it one step later. Given the NATURAL implementation of
-  `reset()` for this conformer (destroy the old container FIRST, exactly mirroring
-  `DockerExecutionSurface::reset()`'s own real code, THEN create+bind-mount the new one), this reasons
-  through as benign — nothing reads the orphaned view in that window, and the new container's mount is
-  established fresh, after `materialize()`, seeing correct content — but this is REASONING, not a real
-  test on real Linux against containerd's own actual snapshotter/filesystem stack, which this design
-  has not run. **Elevated to §5 as the single most important unverified item**, not waved away by the
-  architecture's own elegance.
+- **Finding 1 — a genuine ordering hazard between `SandboxRuntime::run()`'s fixed step sequence and a
+  bind-mount conformer, that Docker's copy-based conformer structurally never had to face.**
+  `sandbox_runtime.hpp`'s `run()` calls `io_fs_.materialize()` (step 2) unconditionally BEFORE
+  `surface.reset()` (step 3) — confirmed by direct read of both files. `real_io_filesystem.hpp`'s
+  `materialize()` does `remove_all(host_root_)` then `create_directories(host_root_)` — a full
+  delete-and-recreate, not an in-place rewrite (confirmed, lines 299-301). For
+  `DockerExecutionSurface`, this is harmless: a container's filesystem is never aliased to
+  `host_root_`. For a bind-mount `ctr` conformer, the PREVIOUS turn's container may still be alive and
+  still bind-mounted to `host_root_` at the exact moment `materialize()`'s `remove_all`/recreate
+  fires — `reset()` (which would destroy that old container) hasn't run yet, it's the very next step.
+  **UPDATE (2026-08-27, real, empirical proof — no longer reasoning): a real containerd 2.2.2/runc
+  1.4.0 deployment was provisioned (Ubuntu 26.04, WSL2 — this repo's own established
+  `KataBackend`-precedent environment, nothing existed here before this pass) specifically to test
+  this. `docs/planning/proofs/execution_surface/probe_bind_mount_ordering_hazard.sh` reproduces the
+  exact sequence — a real container bind-mounted at a host path, a host-side `rm -rf`+`mkdir` while
+  that container is still running, then destroy-and-replace — and the real, recorded result (quoted
+  verbatim in that file's own header comment) confirms the reasoning WAS right, precisely: the
+  host-side recreate succeeds cleanly (no error, no hang) while the old container survives; the old
+  container's bind-mounted view becomes a genuinely EMPTY, orphaned directory (not stale-with-old-
+  content, not leaking the new content either — `rm -rf`'s own recursive unlink empties the orphaned
+  inode the mount still references); destroying the old container and starting a fresh one at the
+  recreated path sees ONLY the fresh content, no leakage either direction; a write from the fresh
+  container round-trips correctly onto the real host disk. **This is now a proven result for this
+  containerd/runc/kernel combination, not an assumption** — see §5 for the honest scope of what this
+  one real run does and does not generalize to.
 - **Finding 2 (REAL correction, folded into §2/§3 above): the "never a shell string" claim overstated
   what `posix_spawn` actually closes.** `kata_backend.cpp:1065` genuinely runs `ctr tasks exec ...
   /bin/sh -c <command>` — a real, second, inner shell, identical in shape to
@@ -225,37 +234,37 @@ directly (not this draft's paraphrase of them).
 
 ## 5. What this document does NOT establish
 
-- **The most important open item (design red-team finding 1, §4): whether `materialize()`'s
-  `remove_all`/recreate of `host_root_` is genuinely safe against a bind-mount conformer's PREVIOUS
-  turn's container still being alive and still mounted at that exact path, one step before `reset()`
-  would destroy it.** Reasoned through above as plausibly benign for the natural "destroy-old-then-
-  create-new" `reset()` ordering, on real Linux's own bind-mount/unlink semantics — but this is
-  reasoning, not a real test against a real containerd snapshotter and a real bind mount, which this
-  design has not run. Before this design is trusted enough to implement against, a real, dedicated
-  check (materialize() a directory that's currently the bind-mount source for a live, not-yet-
-  destroyed container; confirm no error, no hang, and no corruption of either the fresh host-side
-  content or the old container's own still-in-flight I/O) should be the FIRST thing proven, before
-  anything else in this design — a targeted probe smaller than the whole conformer.
+- **Finding 1's ordering hazard is now proven, not merely reasoned (see §4's update) — but only for
+  ONE real environment**: WSL2 Ubuntu 26.04's own filesystem stack backing `/tmp` (ext4-on-virtio, per
+  WSL2's own architecture), containerd 2.2.2, runc 1.4.0. This does NOT establish the same result for
+  every filesystem a real deployment's staging directory might sit on (a network filesystem, a
+  different overlay/snapshotter configuration, a different kernel version) — the underlying mechanism
+  (a bind mount holding its own dentry reference independent of the path's own directory-entry churn)
+  is standard Linux VFS behavior, not a WSL2-specific quirk, but this pass verified exactly one
+  concrete instance of it, not the general case across every possible backing filesystem. A real
+  implementation should still re-run `probe_bind_mount_ordering_hazard.sh`-equivalent verification
+  against whatever real deployment filesystem it actually targets, not assume this one result travels
+  automatically.
 - **No C++ written.** `ContainerdExecutionSurface` does not exist as code — this is an architecture
-  decision and a real, cited command sequence, not an implementation.
-- **No environment provisioned.** This host has no `ctr`/containerd/runc/podman reachable anywhere,
-  checked directly: absent from the Windows host PATH, absent from the one existing WSL2 "Ubuntu"
-  distro (confirmed via `wsl -d Ubuntu -- command -v ctr nerdctl podman runc` returning nothing), and
-  Docker Desktop's own bundled containerd (confirmed running underneath it — `docker info` reports
-  `containerd version ...`, runtime `io.containerd.runc.v2 runc`) is not exposed as a host-level `ctr`
-  binary reachable from outside Docker Desktop's own VM. A real build/live-proof needs `containerd`+
-  `runc` (or an `nerdctl`-bundled install) provisioned into that WSL2 distro, or an equivalent Linux
-  environment — named as real, deferred follow-on work requiring its own go-ahead (this project's own
-  precedent: ADR-098's explicit project-owner go-ahead before its own real network-fetch of a pinned
-  wasmtime release).
-- **`--mount`'s exact flag-value grammar is not independently verified against containerd's real
-  source in this pass.** This repo's own research doc (`...-config-vs-convenience-flags.md`) confirms
-  `--mount` exists as a real convenience flag (`commands.go`'s `ContainerFlags`) but never needed to
-  quote its parser, since `KataBackend` never uses it. The Docker/containerd-convention
-  `type=bind,src=...,dst=...,options=rbind:rw` shape assumed above is plausible, not confirmed — a
-  concrete, named verification step (fetch and read `commands.go`'s `--mount` flag parser directly, the
-  same way this repo's existing research notes already did for `--config`) before any real
-  implementation, not something to discover by trial and error against a live daemon.
+  decision and a real, cited command sequence, not an implementation. (§4/§5 above are the one
+  deliberate exception: the single riskiest architectural question was worth answering empirically
+  even before the conformer itself exists, rather than carrying it as unverified risk into an
+  implementation built on top of it.)
+- **UPDATE (2026-08-27): the environment gap named in this bullet's original version is closed.**
+  `containerd` 2.2.2 + `runc` 1.4.0 were apt-installed into the pre-existing WSL2 "Ubuntu" distro
+  (Ubuntu 26.04 LTS) — the exact environment class `KataBackend`'s own real proofs already used —
+  confirmed live (`ctr version`, a real `docker.io/library/alpine:latest` OCI Distribution Spec pull).
+  This closes the provisioning gap for THIS design's own targeted ordering-hazard probe; it does not
+  by itself mean a full `ContainerdExecutionSurface` conformer is ready to build and prove — that is
+  still real, larger, not-yet-started work.
+- **`--mount`'s exact flag-value grammar — CONFIRMED, empirically, not merely plausible.**
+  `--mount type=bind,src=<host_dir>,dst=/workspace,options=rbind:rw` was run for real against
+  containerd 2.2.2 (`probe_bind_mount_ordering_hazard.sh`, steps 1 and 7) and produced exactly the
+  bind-mounted, read-write container view this design assumed — closing what was originally an
+  unverified-from-memory assumption with a real, reproduced result instead of a citation of
+  `commands.go`'s parser source (which this pass still did not read directly — the empirical run
+  answers the practical question just as well for this design's purposes, but a future implementation
+  wanting the parser-level guarantee `--config`'s own exclusivity finding had should still fetch it).
 - **Whether this conformer's bind-mount approach interacts safely with `SandboxRuntime::run()`'s own
   materialize→reset→run→drain→scan→commit sequence (§36) is reasoned about here, not proven.** In
   particular: whether a live bind mount could let the contained process's writes become visible to

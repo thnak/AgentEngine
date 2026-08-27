@@ -272,11 +272,16 @@ prove → judge cycle:**
   (not built — design document only, per explicit user direction) — a `ctr`/containerd-based
   `ContainerdExecutionSurface` using a bind mount instead of Docker's copy-in/copy-out, closing this
   codebase's own gap where the A3 prove-phase work never drew on `KataBackend`'s already-real,
-  already-Judged-track OCI/`ctr` experience. One design-only red-team round found a real, unresolved
-  ordering question (`SandboxRuntime::run()`'s fixed `materialize()`-before-`reset()` sequence against
-  a bind mount whose previous container may still be live) — reasoned through as plausibly benign but
-  explicitly not proven, named as the first thing a real implementation must verify empirically. No
-  code, no environment provisioning, no live proof yet — full record in
+  already-Judged-track OCI/`ctr` experience. One design-only red-team round found a real ordering
+  question (`SandboxRuntime::run()`'s fixed `materialize()`-before-`reset()` sequence against a bind
+  mount whose previous container may still be live) — **now empirically proven, not just reasoned**:
+  `containerd`+`runc` were provisioned into WSL2 (the same environment class `KataBackend`'s own real
+  proofs use) and a real, checked-in probe
+  (`docs/planning/proofs/execution_surface/probe_bind_mount_ordering_hazard.sh`) confirmed the hazard
+  is benign for real (host-side recreate succeeds cleanly, old container survives, its bind-mounted
+  view becomes a genuinely empty orphan, a fresh container sees only fresh content with zero leakage
+  either direction) — for this one real environment, not proven universal. Still no
+  `ContainerdExecutionSurface` C++ conformer — full record in
   `docs/planning/oci-execution-surface-design-draft.md`. How/whether either conformer composes with
   `full_stack::SandboxSession` (a separate, pre-existing type this work did not modify) remains an A9/
   implementation-time question, not decided here.

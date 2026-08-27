@@ -3931,30 +3931,42 @@ attempted. Podman and raw `runc` were both considered and rejected (mainly on pr
 `ctr` is already this project's second, real, deeply-understood container tool; a technically weaker
 argument than the rest of the design, named as such rather than dressed up).
 
-**One design-only red-team round** (no code exists yet — the pass attacked the reasoning and its
-citations against `kata_backend.cpp`/this repo's own sourced containerd research directly) found one
-real, load-bearing gap the bind-mount architecture's own elegance had obscured: `SandboxRuntime::run()`
-calls `materialize()` (a full `remove_all`+recreate of the staging directory) BEFORE `reset()`, on
-every turn, unconditionally — for Docker's copy-based conformer this is harmless, but for a bind-mount
-conformer the PREVIOUS turn's container may still be alive and still mounted at that exact path one
-step earlier than its own teardown. Reasoned through as plausibly benign (Linux bind-mount/unlink
-semantics mean the host-side recreate succeeds cleanly; the old, about-to-be-destroyed container's view
-just orphans harmlessly for one step) but **explicitly NOT proven** — named as the single most
-important thing a real implementation must verify empirically, first, before anything else, matching
-this whole document's own standing lesson that reasoning about a shared primitive's interaction is not
-a substitute for actually running it. Two other findings corrected real overclaims in the draft's first
-version (an inner `sh -c` layer this design still needs `docker_backend.hpp`'s own
+**One design-only red-team round** (no code existed yet at that point — the pass attacked the
+reasoning and its citations against `kata_backend.cpp`/this repo's own sourced containerd research
+directly) found one real, load-bearing gap the bind-mount architecture's own elegance had obscured:
+`SandboxRuntime::run()` calls `materialize()` (a full `remove_all`+recreate of the staging directory)
+BEFORE `reset()`, on every turn, unconditionally — for Docker's copy-based conformer this is harmless,
+but for a bind-mount conformer the PREVIOUS turn's container may still be alive and still mounted at
+that exact path one step earlier than its own teardown. Two other findings corrected real overclaims in
+the draft's first version (an inner `sh -c` layer this design still needs `docker_backend.hpp`'s own
 `reject_chars()`/`reject_shell_breakout()` reused against, not eliminated by the outer argv-vector
 discipline; and a `ctr task`/`ctr tasks` split that turned out to be a real, deliberate distinction, not
 an unexplained inconsistency to merely tolerate) — all folded into the draft visibly, not silently.
 
-**What this does NOT establish**: no C++ conformer exists; no environment is provisioned (a real
-`containerd`+`runc` install into WSL2, or equivalent, is real, deferred follow-on work needing its own
-go-ahead, matching ADR-098's own precedent); the `materialize()`/bind-mount ordering question above is
-unverified by any real test; `--mount`'s exact flag-value grammar was never independently confirmed
-against containerd's own parser source the way this repo's other `ctr` claims were. This is a design
-decision, not an implementation — matching every other A-numbered item's own "authorizes the design,
-not a merge" convention.
+**Update, same day: the ordering hazard is now empirically proven, not just reasoned about.** Per
+explicit user direction to pursue exactly this, `containerd` 2.2.2 + `runc` 1.4.0 were provisioned into
+the pre-existing WSL2 Ubuntu distro (the same environment class `KataBackend`'s own real proofs already
+used) and a real, checked-in probe
+(`docs/planning/proofs/execution_surface/probe_bind_mount_ordering_hazard.sh`) reproduced the exact
+sequence: a real container bind-mounted at a host path, a host-side `rm -rf`+`mkdir` while that
+container is still running, then destroy-and-replace with a fresh container at the same path. The real
+result, quoted verbatim in that script's own header: the host-side recreate succeeds cleanly (no error,
+no hang) while the old container survives; the old container's bind-mounted view becomes a genuinely
+EMPTY, orphaned directory (not stale-with-old-content, not leaking the new content either); the fresh
+container sees only the fresh content, no leakage either direction; a write from the fresh container
+round-trips correctly onto the real host disk. The `--mount type=bind,src=...,dst=...,options=rbind:rw`
+flag-value grammar this design assumed was also confirmed working exactly as written, against real
+containerd, closing that separate open item too. **Scoped honestly**: this proves the ONE riskiest
+architectural question for one real environment (WSL2/ext4/containerd 2.2.2/runc 1.4.0) — the
+underlying mechanism is standard Linux VFS bind-mount behavior, not a WSL2-specific quirk, but a real
+implementation targeting a different deployment filesystem should still re-verify, not assume this one
+result travels automatically.
+
+**What this does NOT establish**: no `ContainerdExecutionSurface` C++ conformer exists — the ordering
+hazard was worth answering empirically even before the conformer itself is built, but that is a
+narrower, deliberate exception, not a signal that full implementation has started. This is still a
+design decision, not an implementation — matching every other A-numbered item's own "authorizes the
+design, not a merge" convention.
 
 ## 37. A9 — mandatory per-session sandbox binding, against the REAL `AgentSession`
 
