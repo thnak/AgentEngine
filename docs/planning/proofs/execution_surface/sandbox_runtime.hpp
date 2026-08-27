@@ -236,6 +236,38 @@ public:
         co_return co_await ledger_->merge(std::move(branch_), parent.branch_, requested_by);
     }
 
+    // A10 fix (2026-08-27, closing the "stranded loser" gap `merge_into()`'s own comment named as a
+    // disclosed, deliberate scope boundary rather than an oversight): reclaims a branch this
+    // runtime's own `merge_into()` just orphaned via a REJECTED merge (or any other orphan
+    // `requested_by` is authorized for) and returns it as a live, addressable `SandboxRuntime`
+    // again. Thin wrapper around the already-proven, ACL-gated A7 `Ledger::reclaim_orphaned_branch()`
+    // -- never a raw handle-construction bypass (that stays `Ledger`-friend-only), and never widens
+    // authority: `reclaim_orphaned_branch()` itself requires `requested_by` be ALREADY authorized
+    // for the orphaned branch's current head tree, the identical check every other read uses. `const`
+    // for the same reason `spawn_child_branch()` is: this touches only `ledger_` (a pointer, not the
+    // pointee) and never `this->branch_`, so a caller holding only a `SandboxRuntime const&` (e.g.
+    // `main_` inside `TaskBranchSandbox`, held exactly that way per its own header comment) can still
+    // call this. Deliberately NOT a method on `Ledger` directly reachable from `TaskBranchSandbox` --
+    // routing it through `SandboxRuntime` keeps `Ledger` itself unreachable from the tool-surface
+    // layer, matching this whole design's "possession of a `SandboxRuntime`, never a raw `Ledger&`,
+    // is what a tool-facing wrapper is trusted with" discipline.
+    [[nodiscard]] agentengine::rt::task<result<SandboxRuntime>> reclaim_orphaned_child(
+        std::string const& branch_name, Principal requested_by,
+        std::filesystem::path staging_parent_dir) const {
+        auto reclaimed = ledger_->reclaim_orphaned_branch(branch_name, requested_by);
+        if (!reclaimed.has_value()) co_return std::unexpected(reclaimed.error());
+        std::vector<std::byte> name_bytes(branch_name.size());
+        for (std::size_t i = 0; i < branch_name.size(); ++i) {
+            name_bytes[i] = static_cast<std::byte>(branch_name[i]);
+        }
+        auto digest = agentengine::compute_digest(name_bytes);
+        if (!digest) {
+            co_return std::unexpected(error{digest.error().message,
+                                              "sandbox_runtime.staging_digest_failed"});
+        }
+        co_return SandboxRuntime(*ledger_, std::move(*reclaimed), staging_parent_dir / *digest);
+    }
+
     // A10: the "discard" half. Consumes `this`, abandons the branch outright -- `Ledger::abandon()`
     // performs no authorization check of its own (by design: possessing the `BranchHandle` at all
     // already required an authorized `spawn_child_branch()` call to obtain it -- possession IS the

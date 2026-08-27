@@ -1,0 +1,268 @@
+# A real, OCI-standard `ExecutionSurface` conformer — a fresh design, not a Docker-CLI-syntax swap
+
+Prompted directly by the project owner: the identity-native design's A3 execution-surface work
+(`docs/planning/identity-native-sandbox-worktree-design.md` §36) has exactly one real `ExecutionSurface`
+conformer, and it is Docker-CLI-specific rather than grounded in the OCI standard this codebase's own
+shipped, Judged-track code (`KataBackend`) already builds on. Design document only this pass, per
+explicit user direction — no C++ conformer, no environment provisioning, no live proof. Also per
+explicit user direction: treat this the same way the identity-native design itself was built — a
+fresh, first-principles design, not a minimal-diff retrofit of what already exists.
+
+## 0. What already exists, and what's actually missing
+
+`DockerExecutionSurface` (`docs/planning/proofs/execution_surface/docker_execution_surface.hpp`) wraps
+`docs/planning/proofs/docker_sandbox/docker_backend.hpp`, which shells out to the real `docker` CLI
+via `_popen` (a single, shell-interpreted command string — the reason `docker_backend.hpp` needed its
+own `reject_chars()` denylist fix after a real code-review pass found unescaped values could break out
+of the surrounding quoting). §36's own residual: *"whether the three-verb `ExecutionSurface` shape
+generalizes past Docker to a `native_jail`-shaped mediated-syscall backend... unverified — only one
+conformer exists."*
+
+This codebase already has a second, more mature, OCI-native container-tooling lineage that A3's own
+work never drew on: `KataBackend` (`src/backends/kata/kata_backend.{hpp,cpp}`, `decisions/ADR-084`
+through `ADR-093`, Judged/Proposed real production code) shells out to `ctr` (containerd's own CLI) via
+`posix_spawn` with a real argv vector — never a shell string, so there is no shell-metacharacter
+injection surface to defend against in the first place, a stronger posture than `docker_backend.hpp`'s
+own denylist fix. This repo also has two dated, sourced research notes
+(`docs/research/2026-08-24-containerd-ctr-run-config-vs-convenience-flags.md`,
+`...-cni-kata-ordering.md`) that fetched and read containerd's own real source
+(`cmd/ctr/commands/run/run_unix.go`, `run.go`, `commands.go`) to pin down exactly what `ctr run`'s
+convenience flags and `--config` mode each do.
+
+## 1. The question, stated so it has a wrong answer
+
+Does closing A3's own "only one conformer, does the shape generalize" residual, and making the
+execution-surface layer genuinely OCI-standard rather than Docker-proprietary, mean **(a)** building a
+second conformer that still copies files in and out of a container the way `DockerExecutionSurface`
+does, just against a different CLI's syntax — or **(b)** designing a second conformer fresh, on its own
+merits, using this codebase's own already-proven `ctr`/OCI lineage, discovering along the way whether
+the `ExecutionSurface` concept's own three verbs (`reset`/`run`/`drain_to`) actually required a
+copy-based implementation at all, or whether that was only ever an artifact of Docker being the first
+conformer anyone happened to write?
+
+## 2. The competing designs
+
+### Design A (rejected) — Podman, Docker-CLI-compatible
+
+**Steelman.** Podman is explicitly marketed as the OCI-native alternative to Docker: daemonless,
+directly OCI Runtime Spec + OCI Image Spec compliant, and its CLI is close enough to Docker's own that
+`docker_backend.hpp`'s existing command-building logic could largely be reused with different flag
+names.
+
+**Rejected because:** zero prior experience anywhere in this codebase. Adopting it would make THREE
+distinct container-tooling dependency classes real in this project at once (`docker`, `ctr`, `podman`)
+when `ctr` is already this project's own established second one, with 6+ real ADRs and 2 sourced
+research notes worth of hard-won knowledge about exactly how its CLI maps to the OCI spec, ready to
+reuse directly. Podman would require redoing that whole investigation from scratch for no compensating
+benefit — this design doesn't need anything podman offers that `ctr` doesn't already give it.
+
+### Design B (rejected) — raw `runc`, no containerd at all
+
+**Steelman.** The purest possible OCI-Runtime-Spec-only implementation: no daemon, no image-management
+layer, just a `config.json` bundle and `runc create`/`start`/`kill`/`delete`. Nothing could be more
+directly "the OCI standard" than talking to a reference OCI runtime with nothing else in between.
+
+**Rejected because:** `runc` alone has no concept of OCI images at all — pulling, unpacking, and
+snapshotting an image into a rootfs bundle is exactly the hard part containerd's `ctr images
+pull`/`ctr images mount` already solves, and that this repo's own research already investigated deeply
+at the containerd-source level. Going to raw `runc` would mean reimplementing OCI Distribution Spec
+image-fetching from nothing, discarding real, already-invested research for a purity argument this
+design doesn't actually need to make (containerd, and everything it drives, already IS the OCI
+standard end to end — `ctr` is not a step away from OCI the way Docker's own daemon/CLI historically
+was perceived to be).
+
+### Design C (accepted) — a `ctr`-based conformer, built fresh, using the SIMPLER of `ctr`'s own two real modes
+
+`KataBackend` was forced into `ctr run --config <spec.json>` specifically because it needs pids-limit
+enforcement, VM-boot/CNI ordering control, and Kata-runtime annotations — none of which the
+`ExecutionSurface` concept (`execution_surface.hpp`) has any dimension for at all: its three verbs are
+`reset(host_dir)`/`run(command)`/`drain_to(host_dir)`, no `ResourceLimits`, no `NetPolicy`, no
+lifecycle beyond "give me an isolated place, run one command, give me back what changed." Per this
+repo's own sourced research (`...-config-vs-convenience-flags.md` §2), `ctr run`'s **convenience-flag
+path** (i.e. NOT `--config`) already does image pull, unpack, and snapshot-rootfs creation
+automatically, and already supports a `--mount` flag (confirmed present in containerd's own
+`commands.go` `ContainerFlags`, alongside `--memory-limit`/`--net-host`/`--gpus`, though this repo's
+research never needed to quote `--mount`'s own exact value grammar, since `KataBackend` never uses it —
+named as a real, open verification item below, not assumed).
+
+This means a plain-container `ExecutionSurface` conformer needs **no hand-authored OCI spec JSON at
+all** — a real simplification `KataBackend`'s own forced complexity obscured until this design actually
+tried the simpler path:
+
+- **Image + rootfs**: handled automatically by `ctr run`'s own convenience-flag path — no separate
+  `ctr images pull`/`ctr images mount` step needed (unlike Kata, which needs the rootfs pre-materialized
+  specifically because `--config` mode skips all of that).
+- **The bind mount, not a copy**: `--mount` (Docker/containerd-convention key-value flag — real
+  syntax TBD, see §5) pointed directly at the real host staging directory
+  (`RealIoFileSystem::host_root()`) as `/workspace`, read-write. This is the actual architectural
+  finding this design surfaces, not a minor implementation detail: **`reset()`'s copy-in and
+  `drain_to()`'s copy-out both disappear entirely.** A bind-mounted container writes directly to the
+  real host directory the whole time it runs — there is no separate "pull the bytes back" step because
+  they were never anywhere else. `execution_surface.hpp`'s own concept comment ("`T::drain_to(host_dir)`
+  -- pull everything the surface's own view currently holds back onto real disk") is satisfied
+  TRIVIALLY by a bind-mount conformer (already true by construction) — a real degree of freedom the
+  concept always had, that `DockerExecutionSurface` being the only conformer ever built never had
+  reason to expose. Also a closer architectural match to this codebase's own `NativeJailBackend`/
+  `MountSpec` bind-mount philosophy than Docker's copy-based approach is.
+- **Run**: `ctr tasks exec --exec-id <id> <container_id> <command...>` — the real, already-shipped
+  `ctr tasks exec` verb `kata_backend.cpp` itself uses twice (lines 1065, 1089) for exactly this
+  purpose, run against a long-lived, already-`ctr run -d`-started container (mirroring
+  `DockerExecutionSurface`'s own `docker exec`-against-a-detached-container shape, and `KataBackend`'s
+  own `-d` convention at line 1001).
+- **Teardown**: the real, already-shipped three-step sequence `kata_backend.cpp` uses twice (lines
+  1011-1013, 1140-1142) — `ctr task kill`, `ctr task rm`, `ctr container rm` — reused verbatim, not
+  reinvented. **Confirmed by design red-team (§4 finding 3), not merely an unexplained quirk**:
+  singular `ctr task kill`/`ctr task rm` (the top-level container's own primary task) and plural `ctr
+  tasks exec`/`ctr tasks kill --exec-id` (a distinct, `--exec-id`-addressed exec'd sub-process within
+  an already-running task) are two different, deliberately-distinct real operations, not two
+  interchangeable spellings of the same one — an earlier version of this document hedged this as an
+  unexplained inconsistency to preserve rather than a confirmed, correct pattern to follow; keep both
+  forms exactly as `kata_backend.cpp` uses them for the corresponding verb.
+- **Never a shell string for the OUTER `ctr` invocation itself** — every `ctr` invocation via a real
+  argv vector and `posix_spawn` (`run_ctr()`'s own already-proven pattern, `kata_backend.cpp:94-128`,
+  confirmed by direct read: no shell anywhere in that function), not `_popen` over a concatenated
+  command string. This structurally removes the injection surface `docker_backend.hpp`'s own
+  `reject_chars()`/`reject_shell_breakout()` was added to patch AFTER THE FACT, by construction, from
+  the first line of code — for the image name, container id, mount spec, and every other `ctr`-level
+  argument.
+  **Correction (design red-team, see §4 finding 2): the `command` argument itself is a real, different
+  case, not a lesser one.** `kata_backend.cpp:1065` runs `ctr tasks exec ... /bin/sh -c
+  <request.source>` — a genuine, second, INNER shell, the identical shape `docker_backend.hpp:150-155`
+  already uses (`docker exec <id> sh -c "<command>"`) for the identical reason (letting the caller's
+  command use pipes/redirects/etc., matching what `ExecutionSurface::run(command)`'s own contract
+  promises). This conformer needs the EXACT SAME defense `docker_backend.hpp` already built and
+  proved for this exact problem — `reject_chars()`/`reject_shell_breakout()` reused verbatim against
+  `command` before it reaches the inner `sh -c`, not a new mechanism, and not something the outer
+  argv-vector/`posix_spawn` discipline makes unnecessary the way the first draft of this document
+  claimed. The outer/inner distinction is real and worth keeping straight: `posix_spawn` closes host-
+  side injection through `ctr`'s OWN arguments; it does nothing for what happens after containerd
+  hands `command` to a shell one process boundary further in.
+
+**Falsifiable claims (Design C):**
+- **C1**: no hand-authored OCI runtime-spec JSON is needed for this conformer, unlike `KataBackend`.
+  *Disproof: implementing this conformer turns out to require `--config` mode after all — e.g. because
+  the convenience-flag path's automatic image/rootfs handling can't be combined with a bind mount the
+  way this design assumes.*
+- **C2**: a bind-mount-based conformer satisfies the EXACT SAME `ExecutionSurface` concept
+  (`execution_surface.hpp`) `DockerExecutionSurface` already conforms to, with no concept changes.
+  *Disproof: `reset()`/`run()`/`drain_to()`'s existing signatures or documented contract turn out to
+  assume a copy-based implementation somewhere this design missed.*
+- **C3 (revised post-red-team, §4 finding 2)**: routing every OUTER `ctr` argument through a real argv
+  vector (never a shell string) closes host-side shell injection through `ctr`'s own arguments, by
+  construction — but does NOT eliminate the need for `docker_backend.hpp`'s own
+  `reject_chars()`/`reject_shell_breakout()`, reused verbatim, against the `command` string that still
+  reaches a genuine INNER `sh -c` one process boundary further in (`ctr tasks exec ... sh -c
+  <command>`, matching `kata_backend.cpp:1065`'s own real shape). *Disproof: either the outer
+  `ctr`-invocation path concatenates caller-influenced values into a shell-interpreted string somewhere
+  (would reopen the closed class), or the inner `command` string reaches `sh -c` without the reused
+  `reject_chars()`-equivalent check (would leave the still-open class unpatched).*
+
+## 3. The decision
+
+**Design C is accepted**: a new, Linux-only `ContainerdExecutionSurface` (name TBD at implementation
+time — `platform_mask = linux_x86_64` only, matching `KataBackend`'s own real scope; `ctr` only
+meaningfully talks to a local containerd Unix socket, so this conformer's own C++ code would need to
+compile and run AS a Linux binary, not a Windows binary talking to a remote daemon the way
+`DockerBackend`'s Windows-native `_popen`-over-Docker-Desktop's-client-daemon-split currently does),
+built on `ctr run`'s convenience-flag path with a bind mount, never `--config` mode, reusing
+`KataBackend`'s own real `run_ctr()`-shaped argv-vector `posix_spawn` pattern for every invocation.
+
+**This authorizes the design, not an implementation.** No file under `docs/planning/proofs/` or
+anywhere else changes as a result of this document by itself, per explicit user direction this pass.
+
+## 4. Independent red-team round (design-only — no code exists yet to attack)
+
+One independent, adversarial pass, run against this draft's first version and the real, cited sources
+directly (not this draft's paraphrase of them).
+
+- **Finding 1 (REAL, load-bearing, not fixed here — see §5): a genuine ordering hazard between
+  `SandboxRuntime::run()`'s fixed step sequence and a bind-mount conformer, that Docker's copy-based
+  conformer structurally never had to face.** `sandbox_runtime.hpp`'s `run()` calls `io_fs_.materialize()`
+  (step 2) unconditionally BEFORE `surface.reset()` (step 3) — confirmed by direct read of both files.
+  `real_io_filesystem.hpp`'s `materialize()` does `remove_all(host_root_)` then
+  `create_directories(host_root_)` — a full delete-and-recreate, not an in-place rewrite (confirmed,
+  lines 299-301). For `DockerExecutionSurface`, this is harmless: a container's filesystem is never
+  aliased to `host_root_`, so recreating the host directory before the old container is even destroyed
+  changes nothing about correctness. For a bind-mount `ctr` conformer, the PREVIOUS turn's container
+  may still be alive and still bind-mounted to `host_root_` at the exact moment `materialize()`'s
+  `remove_all`/recreate fires — `reset()` (which would destroy that old container) hasn't run yet, it's
+  the very next step. On real Linux, this does not fail or corrupt the fresh directory `materialize()`
+  just wrote (a bind mount holds its own reference to the underlying dentry, the same way an open file
+  survives `unlink` — the host-side `remove_all`/`mkdir` succeeds cleanly regardless), but the OLD,
+  soon-to-be-destroyed container's own `/workspace` view silently orphans onto now-unlinked content for
+  the brief window until `reset()` destroys it one step later. Given the NATURAL implementation of
+  `reset()` for this conformer (destroy the old container FIRST, exactly mirroring
+  `DockerExecutionSurface::reset()`'s own real code, THEN create+bind-mount the new one), this reasons
+  through as benign — nothing reads the orphaned view in that window, and the new container's mount is
+  established fresh, after `materialize()`, seeing correct content — but this is REASONING, not a real
+  test on real Linux against containerd's own actual snapshotter/filesystem stack, which this design
+  has not run. **Elevated to §5 as the single most important unverified item**, not waved away by the
+  architecture's own elegance.
+- **Finding 2 (REAL correction, folded into §2/§3 above): the "never a shell string" claim overstated
+  what `posix_spawn` actually closes.** `kata_backend.cpp:1065` genuinely runs `ctr tasks exec ...
+  /bin/sh -c <command>` — a real, second, inner shell, identical in shape to
+  `docker_backend.hpp:150-155`'s own `sh -c "<command>"`. The outer `ctr`-invocation argv-vector
+  discipline closes host-side injection through `ctr`'s OWN arguments; it does nothing for the inner
+  shell `command` itself reaches. Corrected: this conformer needs `docker_backend.hpp`'s own
+  `reject_chars()`/`reject_shell_breakout()` reused verbatim against `command`, not a claim that the
+  problem doesn't exist here.
+- **Finding 3 (REAL correction, folded into §2/§3 above): `ctr task` vs `ctr tasks` is not an
+  unexplained inconsistency to merely preserve.** Confirmed via both real call sites
+  (`kata_backend.cpp:1009-1013`, `1140-1142`): singular `ctr task kill`/`ctr task rm` control the
+  top-level container's own primary task; plural `ctr tasks exec`/`ctr tasks kill --exec-id` address a
+  distinct, `--exec-id`-scoped exec'd sub-process. Two different, deliberately correct operations, not
+  two spellings of one.
+- **Podman/runc rejection (§2, Designs A/B)**: confirmed reasoned but under-argued technically — the
+  rejection rests on precedent-reuse ("this codebase already has `ctr` experience"), not on a
+  capability `ctr` has that podman or raw `runc` genuinely lack for this specific use case. Not fatal
+  (precedent-reuse is a legitimate, if not the strongest possible, argument — this document's own
+  §34.10/A9 already establishes "reuse is real, disclosed reasoning, not required to be the ONLY
+  possible reasoning" as an accepted standard elsewhere in this design), but named honestly as the
+  weaker of this draft's arguments rather than dressed up as a technical necessity it isn't.
+- **Everything else checked** — C1's premise (the convenience-flag path's automatic image/rootfs
+  handling), and every other citation against `kata_backend.cpp`/the sourced research doc — confirmed
+  accurate.
+
+## 5. What this document does NOT establish
+
+- **The most important open item (design red-team finding 1, §4): whether `materialize()`'s
+  `remove_all`/recreate of `host_root_` is genuinely safe against a bind-mount conformer's PREVIOUS
+  turn's container still being alive and still mounted at that exact path, one step before `reset()`
+  would destroy it.** Reasoned through above as plausibly benign for the natural "destroy-old-then-
+  create-new" `reset()` ordering, on real Linux's own bind-mount/unlink semantics — but this is
+  reasoning, not a real test against a real containerd snapshotter and a real bind mount, which this
+  design has not run. Before this design is trusted enough to implement against, a real, dedicated
+  check (materialize() a directory that's currently the bind-mount source for a live, not-yet-
+  destroyed container; confirm no error, no hang, and no corruption of either the fresh host-side
+  content or the old container's own still-in-flight I/O) should be the FIRST thing proven, before
+  anything else in this design — a targeted probe smaller than the whole conformer.
+- **No C++ written.** `ContainerdExecutionSurface` does not exist as code — this is an architecture
+  decision and a real, cited command sequence, not an implementation.
+- **No environment provisioned.** This host has no `ctr`/containerd/runc/podman reachable anywhere,
+  checked directly: absent from the Windows host PATH, absent from the one existing WSL2 "Ubuntu"
+  distro (confirmed via `wsl -d Ubuntu -- command -v ctr nerdctl podman runc` returning nothing), and
+  Docker Desktop's own bundled containerd (confirmed running underneath it — `docker info` reports
+  `containerd version ...`, runtime `io.containerd.runc.v2 runc`) is not exposed as a host-level `ctr`
+  binary reachable from outside Docker Desktop's own VM. A real build/live-proof needs `containerd`+
+  `runc` (or an `nerdctl`-bundled install) provisioned into that WSL2 distro, or an equivalent Linux
+  environment — named as real, deferred follow-on work requiring its own go-ahead (this project's own
+  precedent: ADR-098's explicit project-owner go-ahead before its own real network-fetch of a pinned
+  wasmtime release).
+- **`--mount`'s exact flag-value grammar is not independently verified against containerd's real
+  source in this pass.** This repo's own research doc (`...-config-vs-convenience-flags.md`) confirms
+  `--mount` exists as a real convenience flag (`commands.go`'s `ContainerFlags`) but never needed to
+  quote its parser, since `KataBackend` never uses it. The Docker/containerd-convention
+  `type=bind,src=...,dst=...,options=rbind:rw` shape assumed above is plausible, not confirmed — a
+  concrete, named verification step (fetch and read `commands.go`'s `--mount` flag parser directly, the
+  same way this repo's existing research notes already did for `--config`) before any real
+  implementation, not something to discover by trial and error against a live daemon.
+- **Whether this conformer's bind-mount approach interacts safely with `SandboxRuntime::run()`'s own
+  materialize→reset→run→drain→scan→commit sequence (§36) is reasoned about here, not proven.** In
+  particular: whether a live bind mount could let the contained process's writes become visible to
+  `RealIoFileSystem`'s own staging area before a turn's `run()` call is considered complete, in any way
+  that matters, is a real question a red-team round should check (§4) — not assumed safe by the
+  architecture's own elegance.
+- **Resource limits, network policy, and every other `SandboxSpec`-shaped dimension** are out of scope
+  for this conformer for the same reason they were out of scope for `DockerExecutionSurface` — the
+  `ExecutionSurface` concept itself has no such dimensions; a future conformer needing them is a
+  different, larger design question this document does not attempt.

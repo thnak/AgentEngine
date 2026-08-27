@@ -3900,6 +3900,62 @@ Whether/how this composes with `full_stack::SandboxSession` (a separate, pre-exi
 section deliberately did not modify) remains an A9/implementation-time decision, unchanged by this
 section.
 
+### 36.5 A real, OCI-standard second conformer — designed fresh, not built this pass (2026-08-27)
+
+Prompted directly by the project owner: `DockerExecutionSurface` is Docker-CLI-specific
+(`docker run`/`docker cp`/`docker exec`/`docker rm` via `_popen`), not grounded in the OCI standard the
+way this codebase's own shipped, real `KataBackend` (`decisions/ADR-084` through `ADR-093`) already is
+— `ctr` (containerd's own CLI) against real OCI runtime-spec/image-spec/distribution-spec machinery,
+via `posix_spawn` with a real argv vector, never a shell string. §36.4's own residual — "whether the
+three-verb shape generalizes past Docker... unverified" — is exactly what a second, differently-built
+conformer would close, and closing it with an OCI-native tool this project already has deep, real
+experience with (not a fresh dependency) is both the more useful and the more consistent choice.
+
+Per explicit user direction: a **fresh, first-principles design**, not a minimal-diff retrofit of
+Docker's own shape — and, separately, **design document only this pass**, since this host has no
+`ctr`/containerd/runc/podman reachable anywhere (checked directly: absent from the Windows PATH,
+absent from the one existing WSL2 Ubuntu distro, and Docker Desktop's own bundled containerd — real,
+confirmed running underneath it — isn't exposed as a host-level `ctr` binary). Full record:
+`docs/planning/oci-execution-surface-design-draft.md`.
+
+**The decision**: a new, Linux-only `ContainerdExecutionSurface` conformer (name TBD at
+implementation), built on `ctr run`'s convenience-flag path (never `--config` mode — that's what
+`KataBackend` needs for pids/CNI/VM-boot ordering control, none of which `ExecutionSurface`'s own
+three-verb concept has any dimension for) with a **bind mount** replacing Docker's copy-in/copy-out
+model entirely. The real architectural finding this surfaces: a bind mount pointed at
+`RealIoFileSystem::host_root()` makes `reset()`'s copy-in and `drain_to()`'s copy-out both disappear —
+writes inside the container land directly on the real host directory the whole time it runs — which
+reveals that `ExecutionSurface`'s own three-verb concept never actually required a copy-based
+implementation at all, a degree of freedom only visible once a second, differently-shaped conformer was
+attempted. Podman and raw `runc` were both considered and rejected (mainly on precedent-reuse grounds —
+`ctr` is already this project's second, real, deeply-understood container tool; a technically weaker
+argument than the rest of the design, named as such rather than dressed up).
+
+**One design-only red-team round** (no code exists yet — the pass attacked the reasoning and its
+citations against `kata_backend.cpp`/this repo's own sourced containerd research directly) found one
+real, load-bearing gap the bind-mount architecture's own elegance had obscured: `SandboxRuntime::run()`
+calls `materialize()` (a full `remove_all`+recreate of the staging directory) BEFORE `reset()`, on
+every turn, unconditionally — for Docker's copy-based conformer this is harmless, but for a bind-mount
+conformer the PREVIOUS turn's container may still be alive and still mounted at that exact path one
+step earlier than its own teardown. Reasoned through as plausibly benign (Linux bind-mount/unlink
+semantics mean the host-side recreate succeeds cleanly; the old, about-to-be-destroyed container's view
+just orphans harmlessly for one step) but **explicitly NOT proven** — named as the single most
+important thing a real implementation must verify empirically, first, before anything else, matching
+this whole document's own standing lesson that reasoning about a shared primitive's interaction is not
+a substitute for actually running it. Two other findings corrected real overclaims in the draft's first
+version (an inner `sh -c` layer this design still needs `docker_backend.hpp`'s own
+`reject_chars()`/`reject_shell_breakout()` reused against, not eliminated by the outer argv-vector
+discipline; and a `ctr task`/`ctr tasks` split that turned out to be a real, deliberate distinction, not
+an unexplained inconsistency to merely tolerate) — all folded into the draft visibly, not silently.
+
+**What this does NOT establish**: no C++ conformer exists; no environment is provisioned (a real
+`containerd`+`runc` install into WSL2, or equivalent, is real, deferred follow-on work needing its own
+go-ahead, matching ADR-098's own precedent); the `materialize()`/bind-mount ordering question above is
+unverified by any real test; `--mount`'s exact flag-value grammar was never independently confirmed
+against containerd's own parser source the way this repo's other `ctr` claims were. This is a design
+decision, not an implementation — matching every other A-numbered item's own "authorizes the design,
+not a merge" convention.
+
 ## 37. A9 — mandatory per-session sandbox binding, against the REAL `AgentSession`
 
 Per explicit project-owner direction: A9 (real engine integration) is designed fresh here too, on
@@ -4407,7 +4463,175 @@ same section's own first draft.
 **NOT established**: wiring into the real, production `include/agentengine/` `Tool<>`/`AgentSession`
 build — deliberately, matching A3/A9/every other A-numbered item's own scope boundary; a real
 `cap::decl::TaskBranch<...>`-shaped capability declaration; conversation-history coupling (or its
-deliberate absence) as anything more than a disclosed, reasoned choice; automatic reattachment of a
-conflict-rejected branch to a fresh handle through this tool surface, rather than only through the
-lower-level A7 API; and — the standing caveat every review round in this document carries forward —
-convergence for THIS pass, not exemption from whatever the next one finds.
+deliberate absence) as anything more than a disclosed, reasoned choice; and — the standing caveat
+every review round in this document carries forward — convergence for THIS pass, not exemption from
+whatever the next one finds. **Update, §40**: "automatic reattachment of a conflict-rejected branch
+to a fresh handle through this tool surface" — named above as NOT established — is now real; §40.2
+closes it.
+
+## 40. A8 and A10 fixes — closing two real gaps a fresh reconciliation pass surfaced, both adversarially re-verified
+
+Prompted by explicit project-owner direction to continue prove-phase work after `ADR-100` (the
+ADR-096/ADR-098 reconciliation, a separate, already-shipped-code line of work — see
+`decisions/ADR-100-adr-096-098-sandbox-layering-reconciliation.md`) closed with a candid account of
+its own first draft getting a causal claim backwards. That same session, re-reading this design's own
+residuals with fresh eyes, found two real gaps neither A8 (§34.3) nor A10 (§39) had actually closed,
+despite both looking finished on their own terms — the exact "two proven pieces, never checked
+together" pattern this whole document keeps re-discovering (§26/§29, §32, §33), this time between an
+already-shipped mechanism (A8's ACL cap) and a newly-built one (A10's task-branch tool) that had never
+been traced against each other.
+
+### 40.1 A8 — the ACL cap's real failure mode was worse than disclosed, and now has a real escape hatch
+
+**The gap.** §34.3/§29.6's own text called `kMaxAclRootsPerDigest = 64` "a deliberately generous,
+documented-not-tuned default... real usage data is needed before treating it as final" — true, but
+incomplete. Tracing every real `insert_acl_root_bounded()` call site (`write()`, `commit()`,
+`branch_from()` at §34.3's own line, `merge()`) against A10's own real calling pattern surfaced the
+actual failure mode: this cap is not merely untuned, it is a PERMANENT, non-evictable ceiling (eviction
+was already, deliberately, rejected — see §34.3's own text) with NO escape hatch at all. Once 64
+distinct, non-descendant principals have ever touched one digest — the realistic driver being many
+independent sessions forking from an identical, differently-owned SHARED base (a common onboarding
+template, say) via `branch_from()`'s or `merge()`'s own ACL insertions — the 65th legitimate session is
+denied forever, with no tuning knob available at runtime and no way for a content owner to say "this
+is meant to be read by anyone." (A10's own dominant pattern — one session repeatedly forking from its
+OWN already-owned main line — turns out NOT to trigger this: `insert_acl_root_bounded`'s own
+already-existing "root id already present is a no-op" short-circuit means a session's own owner
+principal, already a root on its own content, adds nothing new on repeat forks. The real driver is
+cross-session sharing of a common, differently-owned base, a narrower but still real and plausible
+production pattern.)
+
+**The fix, two parts:**
+
+1. **The cap is now a real, per-instance constructor parameter** (`Ledger(Store, durable_dir,
+   max_acl_roots_per_digest = kMaxAclRootsPerDigest)`), not a compile-time-only constant — every
+   existing call site (`Ledger<> ledger;`, `Ledger<>(store)`, `Ledger<>(store, durable_dir)`) is
+   byte-for-byte unaffected via the new parameter's default.
+2. **`mark_digest_shared(Digest, is_tree, requested_by)`**: an explicit, principal-gated escape hatch.
+   `requested_by` must already pass the SAME `authorized_for()` check every read uses before they can
+   mark a digest shared (I2: narrows/decides among authority `requested_by` already possesses, never
+   mints new authority from nothing) — reuses the existing ACL `std::set<uint64_t>` itself as the
+   storage, via a reserved sentinel id (`kPubliclySharedSentinelRootId = 0`, verified unreachable by
+   any real principal: `IdentityAuthority` mints starting at 1 and `Principal` has no public
+   constructor at all, `friend`-gated to `IdentityAuthority` alone) rather than a second, parallel data
+   structure. `authorized_for()` grants any principal read access once the sentinel is present;
+   `insert_acl_root_bounded()` becomes a genuine no-op for a publicly-shared digest — the real fix for
+   the GROWTH vector, not merely a workaround for the denial: a publicly-shared digest's ACL set never
+   grows again, fully exempt from the cap rather than merely allowed to exceed it once. PERMANENT,
+   deliberately: no `unmark_digest_shared()` exists, matching this whole ACL mechanism's "no eviction,
+   no silent revocation" posture with a one-way ratchet instead.
+
+Real, adversarial proof, first run (`docs/planning/proofs/worktree_io/probe_acl_public_share.cpp`):
+
+```
+[1] a Ledger constructed with max_acl_roots_per_digest=2 admits exactly 2 distinct roots and rejects
+the 3rd (ledger.acl_root_cap_exceeded) -- the cap is a REAL runtime constructor parameter -- PASS
+[2] an UNRELATED principal ('stranger') cannot mark someone else's content shared
+(ledger.mark_shared_unauthorized), and still cannot read it -- PASS
+[3] the legitimate owner marked the digest publicly shared; a completely UNRELATED principal can now
+read the REAL content back byte-for-byte -- PASS
+[4] REAL EXEMPTION CONFIRMED: with max_acl_roots_per_digest=1 already exhausted, marking the digest
+publicly shared lets 5 completely NEW, unrelated principals read it AND a 6th successfully
+write-reference the same digest -- the cap is genuinely bypassed, not merely allowed to be exceeded
+once -- PASS
+
+ALL CHECKS PASSED
+```
+
+**Independent security/I2-I3/concurrency red-team round (2026-08-27, fresh reviewer)**: exhaustively
+traced every `Principal`-minting path (not just `mint_root`) to confirm the sentinel is genuinely
+unreachable, including the durable-restart path (`load_durable_state()` guards against a corrupted
+high-water-mark reintroducing a low id); confirmed `authorized_for()`'s existing `it == acl.end() ->
+false` early-return makes `mark_digest_shared()` structurally unable to create a fresh ACL entry for a
+digest nobody legitimately wrote; confirmed the whole check-then-insert sequence runs under one
+uninterrupted `mutex_` critical section (no TOCTOU); confirmed none of the five `insert_acl_root_bounded`
+call sites depend on the skipped insert having grown the set. **One real, disclosed-not-fixed finding**:
+unlike `HostSandboxSelection` (`sandbox_backend_registry.hpp`), `mark_digest_shared()`'s `Digest`
+parameter has no structural, non-implicitly-constructible defense-in-depth against a future caller
+passing a model-influenced value — dormant today (zero production callers; `requested_by` still needs
+real, pre-existing authorization regardless of what `digest` names), named for whoever eventually wires
+a real caller, not assumed safe by omission.
+
+Full regression: every probe touching `worktree_ledger.hpp` (14 files: attack simulation, Docker
+sandbox, case-collision, full-stack, crash-reclaim and durable-ledger read/write pairs — re-run in
+correct process order after an earlier same-session mistake running a read before its write sibling was
+caught and corrected — concurrent ACL, concurrent ledger, ledger-merge, worktree I/O) plus
+`probe_execution_surface.cpp` and `probe_mandatory_sandbox.cpp` (both depend on `sandbox_runtime.hpp`,
+touched in §40.2) — all green, zero regressions.
+
+### 40.2 A10 — closing the "stranded loser" gap for real, using the already-proven A7 API
+
+**The gap**, named honestly in §39's own header comment as "disclosed, not fixed": a rejected
+`commit_task_branch()` (a real merge conflict, most commonly) erased the caller's handle before the
+merge even ran and never re-surfaced anything on rejection — the branch's real work was NOT lost
+(`Ledger::merge()` already registers every rejection into `orphaned_from_restart_`, §32.4's fix), but
+was reachable only through the lower-level A7 `reclaim_orphaned_branch()` API, which this tool's own
+caller has no path to.
+
+**The fix**: a new `SandboxRuntime::reclaim_orphaned_child()` — a thin wrapper around the already-
+proven, ACL-gated A7 API, returning a live, addressable `SandboxRuntime` again — and
+`commit_task_branch()` now calls it on any merge rejection, re-inserting the reclaimed branch into
+`active_` under the SAME `handle_id`. The caller still sees the original rejection error (e.g.
+`ledger.merge_conflict`); what changes is that the handle keeps working afterward — retry, run more
+work, or discard — through this tool's own surface, never forced to know about or reach the
+lower-level Ledger API.
+
+Real proof, following directly from §39's own conflict check (`probe_task_branch_tool.cpp`, check
+`[9b]`, first run — after fixing one real ordering bug this pass introduced and caught by actually
+running the probe, not by reasoning: the recovery check was originally placed at the end of the file,
+where the reclaimed handle's continued liveness silently broke check `[13]`'s own hardcoded
+`active_count() == 2` assertion by leaving an extra live handle in the table; moved immediately after
+check `[9]` and cleaned up there instead):
+
+```
+[9] REAL MERGE CONFLICT: branch A commits cleanly (config.txt="FROM-A"); branch B's later commit of a
+conflicting rewrite of the SAME file is REJECTED (ledger.merge_conflict) through this tool surface --
+main's head still reads exactly "FROM-A" -- PASS
+[9b] A10 FIX CONFIRMED: check [9]'s rejected commit (branch B) is NOT stranded -- its handle_id is
+still live in THIS session's own table, its real work ('FROM-B') is still readable through a fresh
+run_in_task_branch call on the SAME handle, and it discards cleanly through this tool's own surface --
+the lower-level A7 orphan-reclaim API is never needed by a caller of this tool -- PASS
+```
+
+**Independent correctness/concurrency red-team round (2026-08-27, fresh reviewer)**: confirmed the
+existing `exclusivity_` lock (held for `commit_task_branch()`'s full body since an earlier round's own
+fatal finding) covers the whole reclaim-and-reinsert sequence with no new race; confirmed capturing
+`branch_name` as a real `std::string` copy before `merge_into()`'s move is safe (a fully sequenced
+statement, no dangling-reference hazard); confirmed a SECOND rejected commit on an already-reclaimed
+handle correctly re-orphans and re-reclaims with no state corruption (`Ledger::merge()` unconditionally
+re-registers into `orphaned_from_restart_` on every rejection, regardless of how many times the same
+branch name has been through this cycle); confirmed the common path still returns the ORIGINAL
+rejection error unchanged, no caller-visible ambiguity introduced. **One real, non-fatal observation**:
+during the reclaim, the moved-from `child` and the freshly reclaimed `SandboxRuntime` briefly both
+address the identical staging directory (same `compute_digest(branch_name)` path, since the name is
+unchanged) — confirmed benign (`RealIoFileSystem` has no user-declared destructor and performs no
+cleanup or cross-instance mutex aliasing on destruction) but non-obvious on a first read; noted in the
+code, not fixed (nothing to fix — it isn't a bug).
+
+Full regression: the full 13-check `probe_task_branch_tool.cpp` suite (now 14 checks with `[9b]`),
+`probe_execution_surface.cpp`, and `probe_mandatory_sandbox.cpp` (all three real, live-Docker
+consumers of `sandbox_runtime.hpp`) — all green.
+
+### 40.3 What this pass does and does not establish
+
+**Established**: A8's cap is now a real deployment knob with a real, adversarially-gated escape hatch
+for legitimately shared content, closing a permanent-denial failure mode the original design
+understated rather than merely re-disclosing it with a bigger number. A10's best-of-N-vs-sequential-
+conflict distinction (§39's own finding 3) is now fully closed on the "stranded loser" side — a
+rejected commit's real work stays reachable through this tool's own handle, not just through a lower
+API this tool's caller cannot reach. Both fixes were built on a real, previously-uncovered interaction
+this pass found by tracing call sites against each other, not by revisiting either A8 or A10 in
+isolation — matching this document's own repeated lesson that convergence has to be checked between
+pieces, not assumed from each piece's own standalone proof. Both got independent adversarial review
+(not just self-verification) before being written up here, and both survived it with zero fatal
+findings — a real, if modest, break from this document's own historical pattern where nearly every
+independent round found something (§35.4's own honest expectation stands: don't read two clean rounds
+as evidence the process has become more reliable, only as evidence these two specific fixes happened
+to be right).
+
+**NOT established**: whether 64 (now just the default, not a hard ceiling) is itself a reasonable
+number for any real deployment — still real usage data this document does not have. Whether
+`mark_digest_shared()` needs the same non-implicitly-constructible defense-in-depth
+`HostSandboxSelection` has — named, not built, since there is no real caller yet to protect. Whether A8's
+cross-session-sharing scenario (the actual driver, once isolated from A10's own dominant same-owner
+pattern) is common enough in practice to matter — plausible, not measured. Production wiring for either
+fix — unchanged from every other A-numbered item's own scope boundary, not attempted here.

@@ -7,6 +7,7 @@
 // avoid colliding with the untouched spike's own class name in the same `agentengine` namespace
 // (the same naming discipline `MediatedPythonRunner`, E2, already established).
 
+#include <chrono>
 #include <cstdint>
 #include <string>
 #include <utility>
@@ -37,9 +38,17 @@ public:
     // is not Python-only by design" posture, made concrete for this one cross-cutting concern. Shell
     // has no REPL-style last-expression semantics, so `ExecOutcome::result_repr` is simply never set
     // here -- a legitimate empty, not a gap (see that field's own comment in sandbox.hpp).
+    // `wall_clock_budget` (ADR-100 §4 F3, default `mediated_shell_dispatch.hpp`'s
+    // `kDefaultShellWallClockBudget`): the same host-configured, per-session override pattern
+    // `output_cap_bytes` above already uses -- a real, present-day DoS gap (a nested `for` loop
+    // re-executes its body per item, with no cap on total wall-clock time) closed by measuring one
+    // real deadline per `run()` call and checking it once per statement inside `evaluate()`, never
+    // re-measured mid-script.
     MediatedShellRunner(FileSystemAdapter& fs, CommandRegistry const& registry, std::string mount_id,
-                         std::uint64_t output_cap_bytes = kDefaultOutputCapBytes)
-        : fs_(fs), registry_(registry), mount_id_(std::move(mount_id)), output_cap_bytes_(output_cap_bytes) {}
+                         std::uint64_t output_cap_bytes = kDefaultOutputCapBytes,
+                         std::chrono::milliseconds wall_clock_budget = kDefaultShellWallClockBudget)
+        : fs_(fs), registry_(registry), mount_id_(std::move(mount_id)), output_cap_bytes_(output_cap_bytes),
+          wall_clock_budget_(wall_clock_budget) {}
 
     [[nodiscard]] result<ExecOutcome> run(ExecRequest request, ExecState& state, EffectContext& ctx) {
         if (!request.language.empty() && request.language != "shell") {
@@ -53,14 +62,27 @@ public:
             return std::unexpected(error{failure_class::fatal, "parse succeeded with no script",
                                           "shell.internal_error"});
         }
-        auto outcome = evaluate(*parsed->script, registry_, fs_, mount_id_, state, ctx);
-        if (!outcome) return outcome;
+        auto const deadline = std::chrono::steady_clock::now() + wall_clock_budget_;
+        auto outcome = evaluate(*parsed->script, registry_, fs_, mount_id_, state, ctx, deadline);
 
-        auto stdout_capped = cap_output(std::move(outcome->stdout_text), output_cap_bytes_);
-        auto stderr_capped = cap_output(std::move(outcome->stderr_text), output_cap_bytes_);
-        outcome->stdout_text = std::move(stdout_capped.text);
-        outcome->stderr_text = std::move(stderr_capped.text);
-        return outcome;
+        ExecOutcome resolved;
+        if (!outcome) {
+            // `shell.wall_clock_timeout` is a legitimate OUTCOME (`exec_outcome_class::timeout`
+            // already exists for exactly this, matching how `NativeJailBackend`'s own watchdog-kill
+            // classifies a real wall-clock kill, `native_jail_backend.cpp`), never an error the
+            // caller has to specially handle -- every OTHER evaluate() error still propagates as-is.
+            if (outcome.error().code != "shell.wall_clock_timeout") return std::unexpected(outcome.error());
+            resolved.klass = exec_outcome_class::timeout;
+            resolved.stderr_text = outcome.error().message;
+        } else {
+            resolved = std::move(*outcome);
+        }
+
+        auto stdout_capped = cap_output(std::move(resolved.stdout_text), output_cap_bytes_);
+        auto stderr_capped = cap_output(std::move(resolved.stderr_text), output_cap_bytes_);
+        resolved.stdout_text = std::move(stdout_capped.text);
+        resolved.stderr_text = std::move(stderr_capped.text);
+        return resolved;
     }
 
 private:
@@ -68,6 +90,7 @@ private:
     CommandRegistry const& registry_;
     std::string mount_id_;
     std::uint64_t output_cap_bytes_;
+    std::chrono::milliseconds wall_clock_budget_;
 };
 
 }  // namespace agentengine::native_jail::mediated_shell

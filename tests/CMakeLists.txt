@@ -2018,6 +2018,13 @@ if(WIN32)
   add_test(NAME test_mediated_shell_runner_smoke COMMAND test_mediated_shell_runner_smoke)
   set_tests_properties(test_mediated_shell_runner_smoke PROPERTIES TIMEOUT 60)
 
+  # ---- ADR-100 §4 F3 fix: the mediated-shell evaluation loop's wall-clock budget -----------------
+  add_executable(test_mediated_shell_runner_wall_clock_timeout test_mediated_shell_runner_wall_clock_timeout.cpp)
+  target_link_libraries(test_mediated_shell_runner_wall_clock_timeout PRIVATE
+    agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_mediated_shell_runner_wall_clock_timeout COMMAND test_mediated_shell_runner_wall_clock_timeout)
+  set_tests_properties(test_mediated_shell_runner_wall_clock_timeout PROPERTIES TIMEOUT 60)
+
   # ---- EffectContext::sandbox_fs seam (first-party-tools follow-up, Phase 0): tools/
   # read_sandbox_file.hpp's worked example, proven against a real MediatedFileSystemAdapter.
   add_executable(test_effect_context_sandbox_fs test_effect_context_sandbox_fs.cpp)

@@ -202,6 +202,33 @@ int main() {
                 "overwritten or corrupted by the rejected commit -- PASS\n",
                 commit_b.error().code.c_str());
 
+    // === [9b] A10 fix (2026-08-27): check [9]'s rejected commit does NOT strand the caller's handle
+    // === at the lower-level Ledger API -- the SAME handle_id (conflict_b->handle_id) is genuinely
+    // === usable again through THIS tool surface, not just theoretically reachable via a lower-level
+    // === API this tool's own caller cannot see. Cleaned up here (before check [10] starts) so later
+    // === checks' own active_count() assertions are unaffected by this handle's now-longer lifetime.
+    CHECK(session.has_active_handle(conflict_b->handle_id));  // re-surfaced by commit_task_branch's
+                                                                  // own reclaim-on-rejection fix --
+                                                                  // the pre-fix version of this file
+                                                                  // left this FALSE.
+    auto reclaimed_run = run(session.run_in_task_branch(
+        TaskBranchRunArgs{conflict_b->handle_id, "cat config.txt"}));
+    CHECK(reclaimed_run.has_value());  // a genuinely LIVE SandboxRuntime, not a dead map entry --
+    CHECK(reclaimed_run->stdout_text.find("FROM-B") != std::string::npos);  // B's own real work,
+                                                                                 // never lost, still
+                                                                                 // reachable through
+                                                                                 // ITS OWN handle.
+    auto reclaimed_discard = run(session.discard_task_branch(TaskBranchDiscardArgs{conflict_b->handle_id}));
+    CHECK(reclaimed_discard.has_value());  // discarded through THIS tool's own surface -- never
+                                              // needed the lower-level A7 orphan-reclaim API at all.
+    auto reclaimed_gone = run(session.discard_task_branch(TaskBranchDiscardArgs{conflict_b->handle_id}));
+    CHECK(!reclaimed_gone.has_value());  // one-shot discipline still holds for the reclaimed handle.
+    std::printf("[9b] A10 FIX CONFIRMED: check [9]'s rejected commit (branch B) is NOT stranded -- "
+                "its handle_id is still live in THIS session's own table, its real work ('FROM-B') is "
+                "still readable through a fresh run_in_task_branch call on the SAME handle, and it "
+                "discards cleanly through this tool's own surface -- the lower-level A7 orphan-reclaim "
+                "API is never needed by a caller of this tool -- PASS\n");
+
     // === [10] BranchCost quota genuinely gates start_task_branch. ====================================
     auto tiny_branch_quota = AsyncQuota<BranchCost>::mint_root(authority, owner, 0);
     CHECK(tiny_branch_quota.has_value());

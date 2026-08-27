@@ -192,12 +192,79 @@ public:
     // question would need real usage data to size correctly.
     static constexpr std::size_t kMaxAclRootsPerDigest = 64;
 
-    explicit Ledger(Store store = Store{}, std::optional<std::filesystem::path> durable_dir = std::nullopt)
-        : store_(std::move(store)), durable_dir_(std::move(durable_dir)) {
+    // A8 fix (2026-08-27, design doc §40): `kMaxAclRootsPerDigest` above is kept, unchanged, as the
+    // class-level DEFAULT (every existing probe/call site referencing `Ledger<>::kMaxAclRootsPerDigest`
+    // directly is unaffected) -- real enforcement now reads this per-INSTANCE value instead, closing
+    // the "not a tuned production value" residual by making the bound a real deployment knob rather
+    // than a recompile-only constant. Reserved, never issued to a real `Principal` (`IdentityAuthority`
+    // mints starting at 1, `identity_authority.hpp`'s own `next_id_ = 1`, and `Principal` has no
+    // public default constructor at all) -- safe to use as a sentinel that can never collide with a
+    // real principal id.
+    static constexpr std::uint64_t kPubliclySharedSentinelRootId = 0;
+
+    explicit Ledger(Store store = Store{}, std::optional<std::filesystem::path> durable_dir = std::nullopt,
+                     std::size_t max_acl_roots_per_digest = kMaxAclRootsPerDigest)
+        : store_(std::move(store)), durable_dir_(std::move(durable_dir)),
+          max_acl_roots_per_digest_(max_acl_roots_per_digest) {
         if (durable_dir_) {
             std::filesystem::create_directories(*durable_dir_);
             load_durable_state();
         }
+    }
+
+    // A8 fix (2026-08-27): the real, previously-uncovered gap this closes -- §29.6/§34's own
+    // "generous, documented-not-tuned default" framing understated the cap's actual failure mode.
+    // It is not merely "untuned," it is a PERMANENT, non-evictable ceiling (eviction was already,
+    // deliberately, rejected as an option -- see this class's own header comment above) with NO
+    // escape hatch: once 64 distinct, non-descendant principals have ever touched one digest (the
+    // realistic case is many independent sessions forking from an identical, differently-owned
+    // SHARED base -- e.g. a common onboarding template -- `branch_from()`'s own ACL insertion at
+    // line ~451 and `merge()`'s at line ~592 are the two real growth drivers found by tracing every
+    // `insert_acl_root_bounded()` call site against A10's own real calling pattern), the 65th
+    // legitimate session is permanently denied, forever, with no tuning knob available at runtime
+    // (closed by the constructor parameter above) and no way for a content owner to say "this is
+    // meant to be read by anyone" (closed here).
+    //
+    // Deliberately an EXPLICIT, principal-gated ratchet, never automatic and never inferable from
+    // model output (I2/I3): `requested_by` must ALREADY be authorized for `digest` (the identical
+    // `authorized_for()` check every read uses) before they can mark it shared -- this narrows/
+    // decides among authority `requested_by` already possesses (their own already-legitimate read
+    // access), it never mints new authority from nothing. Once marked, `authorized_for()` grants
+    // EVERY principal (not just existing/future descendants of some root) read access to `digest`,
+    // and -- the actual fix for the growth vector, not just the denial -- every future
+    // `insert_acl_root_bounded()` call for that digest becomes a real no-op (see that function's own
+    // comment): a publicly-shared digest's ACL set never grows again, so it is fully exempt from the
+    // cap it would otherwise keep consuming headroom against, not merely allowed to exceed it once.
+    // PERMANENT: matching this whole ACL mechanism's "no eviction, no silent revocation" posture,
+    // there is no `unmark_digest_shared()` -- sharing content is a one-way ratchet, like every other
+    // mutation this Ledger already only allows to move in one direction. `is_tree` disambiguates
+    // which of `tree_acl_`/`blob_acl_` `digest` belongs to -- the same split every other ACL-touching
+    // method here already requires, since a tree digest and a blob digest are never authorized
+    // through the same set.
+    //
+    // REAL FINDING, disclosed not fixed (security red-team, 2026-08-27): unlike `HostSandboxSelection`
+    // elsewhere in this codebase (`sandbox_backend_registry.hpp`), `digest` here is a bare
+    // `agentengine::Digest` with no structural, non-implicitly-constructible defense-in-depth against
+    // a future caller accidentally passing a model-influenced value. Dormant today (zero production
+    // callers, and `requested_by` still needs genuine, already-existing authorization regardless of
+    // what `digest` names), but a future integration layer wiring a real caller to this should not
+    // assume the signature itself provides any I3 protection -- it does not.
+    [[nodiscard]] result<void> mark_digest_shared(agentengine::Digest digest, bool is_tree,
+                                                     Principal requested_by) {
+        std::lock_guard<std::mutex> g(mutex_);
+        auto& acl = is_tree ? tree_acl_ : blob_acl_;
+        if (!authorized_for(acl, digest, requested_by)) {
+            return std::unexpected(error{
+                "requester is not authorized for this digest -- only a principal already "
+                "authorized for it may mark it publicly shared",
+                "ledger.mark_shared_unauthorized"});
+        }
+        // Direct insertion, deliberately bypassing insert_acl_root_bounded()'s own cap check -- this
+        // IS the cap's escape hatch, so it must never itself be subject to the cap it exists to let
+        // an owner opt out of.
+        acl[digest].insert(kPubliclySharedSentinelRootId);
+        persist_snapshot_locked();
+        return {};
     }
 
     [[nodiscard]] result<agentengine::Digest> put_blob_safe(std::span<std::byte const> bytes,
@@ -205,7 +272,7 @@ public:
         std::lock_guard<std::mutex> g(mutex_);
         auto d = store_.put_blob(bytes);
         if (!d) return std::unexpected(error{d.error().message, "worktree_ledger.put_blob_failed"});
-        auto acl_ok = insert_acl_root_bounded(blob_acl_, *d, writer.id());
+        auto acl_ok = insert_acl_root_bounded(blob_acl_, *d, writer.id(), max_acl_roots_per_digest_);
         if (!acl_ok.has_value()) return std::unexpected(acl_ok.error());
         persist_snapshot_locked();
         return *d;
@@ -272,7 +339,8 @@ public:
             auto put = store_.put_tree(agentengine::Tree{});
             if (!put) co_return std::unexpected(error{put.error().message, "worktree_ledger.put_tree_failed"});
             empty_tree_digest = *put;
-            auto acl_ok = insert_acl_root_bounded(tree_acl_, empty_tree_digest, owner.id());
+            auto acl_ok = insert_acl_root_bounded(tree_acl_, empty_tree_digest, owner.id(),
+                                                     max_acl_roots_per_digest_);
             if (!acl_ok.has_value()) co_return std::unexpected(acl_ok.error());
             branches_.insert_or_assign(
                 name, BranchState{owner.id(), {}, empty_tree_digest, 0, {}, empty_tree_digest});
@@ -359,7 +427,8 @@ public:
             }
             auto tree_digest = store_.put_tree(std::move(tree));
             if (!tree_digest) return std::unexpected(error{tree_digest.error().message, "worktree_ledger.put_tree_failed"});
-            auto acl_ok = insert_acl_root_bounded(tree_acl_, *tree_digest, authored_by.id());
+            auto acl_ok = insert_acl_root_bounded(tree_acl_, *tree_digest, authored_by.id(),
+                                                     max_acl_roots_per_digest_);
             if (!acl_ok.has_value()) return std::unexpected(acl_ok.error());
 
             auto it = branches_.find(branch.name());
@@ -448,7 +517,8 @@ public:
             std::string child_name =
                 parent.name() + "/child-" + std::to_string(created_by.id()) + "-" +
                 std::to_string(branch_seq_++);
-            auto acl_ok = insert_acl_root_bounded(tree_acl_, parent_state.head_tree_digest, created_by.id());
+            auto acl_ok = insert_acl_root_bounded(tree_acl_, parent_state.head_tree_digest,
+                                                     created_by.id(), max_acl_roots_per_digest_);
             if (!acl_ok.has_value()) return std::unexpected(acl_ok.error());
             BranchState child_state = parent_state;
             child_state.created_by_id = created_by.id();
@@ -589,7 +659,8 @@ public:
             co_return std::unexpected(error{merged_tree_digest.error().message,
                                               "worktree_ledger.put_tree_failed"});
         }
-        auto acl_ok = insert_acl_root_bounded(tree_acl_, *merged_tree_digest, requested_by.id());
+        auto acl_ok = insert_acl_root_bounded(tree_acl_, *merged_tree_digest, requested_by.id(),
+                                                 max_acl_roots_per_digest_);
         if (!acl_ok.has_value()) {
             orphaned_from_restart_.insert(child.name());
             child.resolved_ = true;
@@ -786,13 +857,17 @@ private:
     }
 
     // True iff `caller` (or an ancestor of `caller`, via the real IdentityAuthority ancestry table)
-    // is in `acl[digest]`'s recorded set of principals authorized for that digest. Must be called
-    // with mutex_ already held (this is a private helper, never a public entry point of its own).
+    // is in `acl[digest]`'s recorded set of principals authorized for that digest -- OR the digest
+    // has been explicitly, deliberately marked publicly shared (A8 fix, `mark_digest_shared()`
+    // below, checked via the reserved `kPubliclySharedSentinelRootId` sentinel actually present in
+    // the SAME set, not a second parallel structure). Must be called with mutex_ already held (this
+    // is a private helper, never a public entry point of its own).
     [[nodiscard]] static bool authorized_for(
         std::unordered_map<agentengine::Digest, std::set<std::uint64_t>> const& acl,
         agentengine::Digest const& digest, Principal const& caller) {
         auto it = acl.find(digest);
         if (it == acl.end()) return false;
+        if (it->second.contains(kPubliclySharedSentinelRootId)) return true;
         for (std::uint64_t allowed_root : it->second) {
             if (allowed_root == caller.id() ||
                 IdentityAuthority::bootstrap().is_ancestor_of(allowed_root, caller.id())) {
@@ -802,23 +877,30 @@ private:
         return false;
     }
 
-    // A8 (§29.6/§34): bounded ACL insertion. Must be called with mutex_ already held. A root id
-    // already present is a no-op success (re-touching content you already have access to must
-    // never fail just because the set happens to be at its cap) -- only a genuinely NEW distinct
-    // root id past the cap fails, and it fails CLOSED (the whole calling operation is rejected)
-    // rather than silently dropping the id (which would let the write "succeed" while producing a
-    // digest the writer then can't read back -- a confusing, unsafe partial-success state).
+    // A8 (§29.6/§34, cap now per-instance-configurable and given a real escape hatch -- see
+    // `mark_digest_shared()` above and design doc §40): bounded ACL insertion. Must be called with
+    // mutex_ already held. A root id already present is a no-op success (re-touching content you
+    // already have access to must never fail just because the set happens to be at its cap) -- only
+    // a genuinely NEW distinct root id past the cap fails, and it fails CLOSED (the whole calling
+    // operation is rejected) rather than silently dropping the id (which would let the write
+    // "succeed" while producing a digest the writer then can't read back -- a confusing, unsafe
+    // partial-success state). A8 fix: a digest already marked publicly shared is a real, permanent
+    // no-op here too -- not just readable-by-anyone despite the cap, but genuinely EXEMPT from ever
+    // growing again, since `authorized_for()` no longer needs a per-principal entry for it at all.
     [[nodiscard]] static result<void> insert_acl_root_bounded(
         std::unordered_map<agentengine::Digest, std::set<std::uint64_t>>& acl,
-        agentengine::Digest const& digest, std::uint64_t root_id) {
+        agentengine::Digest const& digest, std::uint64_t root_id, std::size_t cap) {
         auto& set = acl[digest];
         if (set.contains(root_id)) return result<void>{};
-        if (set.size() >= kMaxAclRootsPerDigest) {
+        if (set.contains(kPubliclySharedSentinelRootId)) return result<void>{};
+        if (set.size() >= cap) {
             return std::unexpected(error{
                 "digest '" + digest.substr(0, 12) + "...' has reached its maximum of " +
-                    std::to_string(kMaxAclRootsPerDigest) +
+                    std::to_string(cap) +
                     " distinct authorized root principals; a new, unrelated root cannot be added "
-                    "(a deliberate, disclosed bound, not an accidental limit)",
+                    "(a deliberate, disclosed bound, not an accidental limit -- an already-authorized "
+                    "principal may call mark_digest_shared() to exempt this digest from the bound "
+                    "entirely, if it is genuinely meant to be read by anyone)",
                 "ledger.acl_root_cap_exceeded"});
         }
         set.insert(root_id);
@@ -980,6 +1062,8 @@ private:
     std::unordered_map<agentengine::Digest, std::set<std::uint64_t>> tree_acl_;
     std::optional<std::filesystem::path> durable_dir_;   // nullopt => pure in-memory branches_/ACL
                                                              // bookkeeping, today's existing behavior
+    std::size_t max_acl_roots_per_digest_;   // A8 fix: per-instance, constructor-configurable --
+                                                 // see kMaxAclRootsPerDigest's own comment above
 };
 
 template <class Store>

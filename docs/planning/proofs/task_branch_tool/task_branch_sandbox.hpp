@@ -57,19 +57,24 @@
 //      a self-inflicted quota exhaustion contradicting the design's own established refund-on-
 //      "nothing kept" discipline (`RunCost`'s own precedent, `sandbox_runtime.hpp`). FIXED: a
 //      successful discard now refunds 1 unit.
-//   3. [Disclosed, not fixed -- a real usability gap, named precisely rather than overclaimed] The
-//      classic "best-of-N" pattern (spawn N children from the SAME still-unmoved base, evaluate,
-//      commit exactly ONE, discard the rest) commits with ZERO conflict risk through this surface,
-//      proven in probe_task_branch_tool.cpp's own dedicated check -- `merge_trees(base, ours=base,
-//      theirs=child)` is a pure fast-forward when `main` has not moved since the children were
-//      spawned. What does NOT work cleanly is a DIFFERENT, also-real pattern: sequential/interleaved
-//      commits of two branches that both modify the same path, where the second's `base` goes stale
-//      the moment the first commits -- proven in probe_task_branch_tool.cpp's conflict check, this
-//      correctly REJECTS rather than corrupts anything, but the rejected branch's real work becomes
-//      addressable ONLY through the lower-level A7 orphan-reclaim API, not through this tool surface
-//      -- this surface does not automatically re-mint a fresh handle_id pointing at it. An earlier
-//      draft of this file's own comments conflated these two patterns; they are now named
-//      separately and precisely, matching what is actually proven for each.
+//   3. [FIXED, 2026-08-27, second pass] The classic "best-of-N" pattern (spawn N children from the
+//      SAME still-unmoved base, evaluate, commit exactly ONE, discard the rest) commits with ZERO
+//      conflict risk through this surface, proven in probe_task_branch_tool.cpp's own dedicated
+//      check -- `merge_trees(base, ours=base, theirs=child)` is a pure fast-forward when `main` has
+//      not moved since the children were spawned. A DIFFERENT, also-real pattern -- sequential/
+//      interleaved commits of two branches that both modify the same path, where the second's
+//      `base` goes stale the moment the first commits -- correctly REJECTS rather than corrupting
+//      anything (proven in probe_task_branch_tool.cpp's conflict check), but the ORIGINAL version of
+//      this file left the rejected branch's real work addressable ONLY through the lower-level A7
+//      orphan-reclaim API, not through this tool surface, since `commit_task_branch()` erased the
+//      handle before the merge ran and never re-surfaced anything on rejection. FIXED:
+//      `commit_task_branch()` now calls the new `SandboxRuntime::reclaim_orphaned_child()` (thin
+//      wrapper around the already-proven A7 `Ledger::reclaim_orphaned_branch()`) on any rejection
+//      and re-inserts the reclaimed branch into `active_` under the SAME `handle_id` -- the caller
+//      still sees the original rejection error, but the handle keeps working afterward (retry, run
+//      more work, or discard) instead of becoming "unknown handle" on the very next call. Proven in
+//      probe_task_branch_tool.cpp's own dedicated check, following directly from the existing
+//      conflict check.
 //   4. [Disclosed, not fixed -- real, deliberately deferred] No capability-declaration design exists
 //      for who may call `start_task_branch`/`commit_task_branch`/`discard_task_branch` at all,
 //      unlike `RunShellTool`'s real `Capabilities<cap::decl::FsRead<"work">, ...>` precedent. The
@@ -210,9 +215,41 @@ public:
         }
         SandboxRuntime child = std::move(it->second);
         active_.erase(it);
+        std::string const branch_name = child.branch_name();  // captured BEFORE merge_into() moves child
         auto cp = co_await std::move(child).merge_into(*main_, owner_);
-        if (!cp.has_value()) co_return std::unexpected(cp.error());
-        co_return TaskBranchCommitReply{cp->turn_index};
+        if (cp.has_value()) co_return TaskBranchCommitReply{cp->turn_index};
+
+        // A10 fix (2026-08-27, closing header-comment finding 3 for real): `Ledger::merge()` already
+        // registers `branch_name` into its own `orphaned_from_restart_` set on EVERY rejection path
+        // (§32.4's fix, worktree_ledger.hpp) -- reclaim it immediately via the already-proven A7 API
+        // and re-surface it under the SAME `handle_id`, so a rejected commit (a real merge conflict,
+        // most commonly -- see this file's own header comment on the best-of-N vs. sequential-
+        // conflict distinction) no longer strands the caller at the lower-level Ledger API. The
+        // caller sees the ORIGINAL rejection error either way; what changes is that `handle_id`
+        // keeps working afterward (retry, run more work, or discard through THIS surface) instead of
+        // becoming "unknown handle" on the very next call.
+        // Correctness note (correctness/concurrency red-team, 2026-08-27): between this call and
+        // the already-moved-from `child` finally going out of scope at this coroutine frame's own
+        // destruction, both objects briefly hold a `RealIoFileSystem` addressing the IDENTICAL
+        // staging directory (same `compute_digest(branch_name)`-derived path, since `branch_name` is
+        // unchanged by a reclaim). Confirmed benign: `RealIoFileSystem` has no user-declared
+        // destructor and performs no filesystem cleanup or cross-instance mutex aliasing on
+        // destruction, so the moved-from `child`'s later destruction is inert -- but this is
+        // non-obvious on a first read, hence this note.
+        auto reclaimed = co_await main_->reclaim_orphaned_child(branch_name, owner_, staging_parent_dir_);
+        if (!reclaimed.has_value()) {
+            // A genuine internal inconsistency, not the ordinary conflict case -- merge() registers
+            // every rejection as an orphan unconditionally, so a reclaim failure here means something
+            // else is wrong (e.g. an authorization mismatch this class's own invariants should have
+            // prevented). Surfaced distinctly so it is never mistaken for an ordinary conflict.
+            co_return std::unexpected(error{
+                "commit was rejected (" + cp.error().message +
+                    ") and the branch could not be reclaimed for retry (" + reclaimed.error().message +
+                    ") -- the work may be reachable only via the lower-level Ledger orphan-reclaim API",
+                "task_branch.commit_rejected_and_reclaim_failed"});
+        }
+        active_.insert_or_assign(args.handle_id, std::move(*reclaimed));
+        co_return std::unexpected(cp.error());
     }
 
     // discard_task_branch: one-shot, same erase-before-act discipline as commit, same `exclusivity_`

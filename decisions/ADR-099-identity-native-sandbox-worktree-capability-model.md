@@ -267,11 +267,19 @@ prove → judge cycle:**
   move-semantics leaks, a reintroduced ACL-batch-persist bug) before converging clean. This is
   deliberately NOT built as a conforming `SandboxBackend` (`sandbox.hpp`, 008 §2a) or wired to any of
   the four real backends — per explicit project-owner direction, designed fresh on this design's own
-  primitives rather than around reuse. What remains genuinely open: whether the three-verb
-  `ExecutionSurface` shape generalizes past Docker to a `native_jail`-shaped mediated-syscall backend
-  (unverified — only one conformer exists), and how/whether this composes with `full_stack::
-  SandboxSession` (a separate, pre-existing type this work did not modify) — both still A9/
-  implementation-time questions, not decided here.
+  primitives rather than around reuse. **Update, §36.5 (2026-08-27)**: the "does the three-verb shape
+  generalize past Docker" question above now has a real, fresh, OCI-standard SECOND conformer designed
+  (not built — design document only, per explicit user direction) — a `ctr`/containerd-based
+  `ContainerdExecutionSurface` using a bind mount instead of Docker's copy-in/copy-out, closing this
+  codebase's own gap where the A3 prove-phase work never drew on `KataBackend`'s already-real,
+  already-Judged-track OCI/`ctr` experience. One design-only red-team round found a real, unresolved
+  ordering question (`SandboxRuntime::run()`'s fixed `materialize()`-before-`reset()` sequence against
+  a bind mount whose previous container may still be live) — reasoned through as plausibly benign but
+  explicitly not proven, named as the first thing a real implementation must verify empirically. No
+  code, no environment provisioning, no live proof yet — full record in
+  `docs/planning/oci-execution-surface-design-draft.md`. How/whether either conformer composes with
+  `full_stack::SandboxSession` (a separate, pre-existing type this work did not modify) remains an A9/
+  implementation-time question, not decided here.
 - **A9 — real integration into `AgentSession`/`ContextProvider`/`Tool<>`.** **Update, §37 of the
   design record**: the core mechanical question — how does a mandatory per-session sandbox binding
   actually work against the REAL, unmodified `AgentSession<ChatClientT, StateT, HistoryProviderT>`
@@ -296,6 +304,20 @@ prove → judge cycle:**
      here either).
   3. **`SandboxBackendRegistry`** (`ADR-080`/`ADR-098`) — real, tested backend-selection
      infrastructure with, as of both of those ADRs' own writing, **zero real production consumers**.
+
+  **Update (`ADR-100`, 2026-08-27, per explicit project-owner direction to reconcile #1 and #3
+  before any further implementation here): they were never actually uncoordinated.** `ADR-080`'s own
+  Finding O already, correctly, decided neither Python nor Shell routes through
+  `SandboxBackendRegistry` — both `ADR-096` and `ADR-098` already cited this. `ADR-100`'s first draft
+  claimed otherwise (that Python reaches its real OS jail via the registry) and three independent
+  red-team rounds found that claim false against the real code before it shipped as an ADR — recorded
+  honestly in `ADR-100` §2 rather than smoothed over. The real, corrected finding: `run_shell` has
+  zero OS-level containment where `execute_code` has one (via a direct `NativeJailBackend&`
+  dependency, never the registry), plus a live, unmitigated wall-clock/iteration DoS gap in the
+  mediated-shell evaluation loop — named as concrete future work (an immediate in-process mitigation,
+  and a deferred `create_shell_worker()` mirroring `create_python_worker()`), not built by `ADR-100`
+  itself. Relationship #2 below (`CodeActRunnerBinding` vs. `SandboxToolProvider`) and this design's
+  own eventual `Grant<T>`/`Ledger` integration remain untouched by that reconciliation.
 
   This design, if implemented naively without ever being aware of them, would become a **fourth**
   disconnected mechanism in the same space, not a unification of the first three. **Per explicit
@@ -326,9 +348,18 @@ prove → judge cycle:**
   explicitly — accepting Design B here does not retroactively make `SandboxToolProvider`'s
   `CapabilitySet`-based approach wrong, and does not by itself decide which one (or what combination)
   production code should actually use going forward.
-- **A8's bound (`kMaxAclRootsPerDigest = 64`) is a deliberately generous, arbitrary-but-documented
-  prove-phase default, not a tuned production value** (§29.6/§34) — real usage data is needed before
-  treating it as final.
+- **A8's bound (`kMaxAclRootsPerDigest = 64`)**: originally disclosed here as merely "not a tuned
+  production value" (§29.6/§34) — **update, §40.1 (2026-08-27)**: that framing understated the real
+  failure mode. Tracing every ACL-insertion call site against A10's own real calling pattern found the
+  cap is a PERMANENT, non-evictable ceiling with no escape hatch — once 64 distinct, non-descendant
+  principals ever touch one digest (the realistic driver: many sessions forking from a common,
+  differently-owned shared base), the 65th legitimate session is denied forever. Closed for real, not
+  just re-disclosed: the cap is now a per-instance constructor parameter, and `mark_digest_shared()`
+  gives an already-authorized principal a real, permanently-ratcheted escape hatch that also closes
+  the underlying ACL-growth vector, not just the denial. Independently red-teamed (security/I2-I3/
+  concurrency), zero fatal findings; one dormant, disclosed residual (`mark_digest_shared()`'s
+  `Digest` parameter lacks `HostSandboxSelection`-style structural I3 defense-in-depth — moot today,
+  no production caller exists). Real usage data for what the DEFAULT should be is still not available.
 - **Docker-as-execution-surface (§31) does NOT establish**: resource-limit enforcement
   (`--memory`/`--cpus`/`--pids-limit`), network isolation, a live bind-mount round trip (this
   environment's Docker Desktop configuration prevented testing it), or whether
@@ -353,5 +384,10 @@ prove → judge cycle:**
   them. `TaskBranchSandbox` (start/run/commit/discard, `docs/planning/proofs/task_branch_tool/`)
   closes this at the same standalone-prove-phase bar as everything else in this document — three
   independent red-team rounds, one fatal finding (an unsynchronized handle table) corroborated by
-  all three, all fixed and re-proven (13/13 checks against live Docker). Still governed by every
-  residual above: no production wiring, no capability-decl design, not Judged.
+  all three, all fixed and re-proven (13/13 checks against live Docker). **Update, §40.2 (2026-08-27)**:
+  the one usability gap that round left disclosed-not-fixed — a rejected commit's real work reachable
+  only via the lower-level A7 API, not through this tool's own handle — is now closed for real, using
+  that same A7 `reclaim_orphaned_branch()` API: `commit_task_branch()` reclaims and re-surfaces the
+  branch under its original `handle_id` on any merge rejection (14/14 checks). Independently
+  red-teamed (correctness/concurrency), zero fatal findings. Still governed by every residual above:
+  no production wiring, no capability-decl design, not Judged.

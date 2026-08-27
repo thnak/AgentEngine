@@ -166,3 +166,12 @@ themselves — this ADR is purely a new caller of already-settled, already-Judge
 - `AGENTENGINE_HAVE_WASM_BACKEND`/`AGENTENGINE_HAVE_KATA_BACKEND` are new feature-detection macros —
   the first of their kind in this codebase. If a future backend needs the same treatment, reuse this
   pattern rather than inventing a third one.
+- **`ADR-100` (2026-08-27) reconciled this ADR against `ADR-096`, per explicit project-owner
+  direction: no real gap found between them** — both this ADR and `ADR-096` already correctly cite
+  `ADR-080`'s Finding O (Python/Shell both bypass this registry entirely), so there was no bridge to
+  build. The real finding that reconciliation pass surfaced belongs to `ADR-096`'s space, not this
+  one: `run_shell` has no OS-level containment and a live, unmitigated wall-clock/iteration DoS gap;
+  the correct future integration point for fixing it is a direct `NativeJailBackend&` dependency
+  (mirroring `MediatedPythonRunner`'s real precedent), never this registry — `RegisteredSandboxBackend`'s
+  type erasure structurally cannot carry `create_python_worker`/`exec_session`-shaped additive,
+  persistent-state surfaces, by design, not by oversight. See `ADR-100`.

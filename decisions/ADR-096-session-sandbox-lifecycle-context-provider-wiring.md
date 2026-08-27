@@ -352,3 +352,18 @@ ready without closing §8's residuals first.
   correction of an earlier, wrong self-directed claim.
 - **`ADR-080`'s "selection without consumption" residual is narrowed, not closed** (§7) — carried
   forward exactly as that ADR's own §8 already names it, unchanged by this work.
+- **`ADR-100` (2026-08-27) reconciled this ADR against `ADR-098`, per explicit project-owner
+  direction, and found no real gap between them** — `ADR-080`'s own Finding O already correctly
+  decided neither Python nor Shell routes through `SandboxBackendRegistry`, so there was never a
+  bridge to build here. What that reconciliation pass actually surfaced, worth more than the
+  reconciliation itself: `run_shell` has zero OS-level containment (Python's own
+  `NativeJailBackend::create_python_worker()` jail is reached via a direct `NativeJailBackend&`
+  dependency, never the registry — the real precedent for any future Shell equivalent), and the
+  mediated-shell evaluation loop (`mediated_shell_grammar.hpp`) had no wall-clock/iteration cap,
+  a live, model-reachable DoS gap this `SandboxToolProvider`'s own capability grants (`FsRead`/
+  `FsWrite`, path-scope only) do not offset. **That specific gap is now closed** (same day):
+  `MediatedShellRunner`'s `wall_clock_budget` parameter + a per-statement deadline check in
+  `evaluate_statement()`, proven against a real 3^20-body-execution exponential-blowup script in
+  `tests/test_mediated_shell_runner_wall_clock_timeout.cpp`. Shell's broader OS-level-containment gap
+  (no AppContainer/Job Object at all) is unchanged — see `ADR-100`'s still-deferred
+  `create_shell_worker()` follow-on.
