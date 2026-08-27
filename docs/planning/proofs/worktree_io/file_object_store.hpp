@@ -51,8 +51,17 @@ public:
         std::lock_guard<std::mutex> guard(*mutex_);
         std::filesystem::path path = root_ / "blobs" / *digest;
         if (!std::filesystem::exists(path)) {   // real dedup: an existing blob file is never rewritten
-            std::ofstream out(path, std::ios::binary | std::ios::trunc);
-            out.write(reinterpret_cast<char const*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+            // Temp-file + atomic-rename, same discipline as put_tree() below -- a crash mid-write
+            // must never leave a HALF-WRITTEN file sitting at the final digest-named path, where a
+            // later get_blob() would happily return truncated content under a digest that no longer
+            // matches its own bytes.
+            std::filesystem::path temp = root_ / "blobs" / (*digest + ".tmp");
+            {
+                std::ofstream out(temp, std::ios::binary | std::ios::trunc);
+                out.write(reinterpret_cast<char const*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+            }
+            std::error_code ec;
+            std::filesystem::rename(temp, path, ec);
         }
         return *digest;
     }
@@ -87,9 +96,22 @@ public:
         // differing bytes would be a real hash collision (astronomically unlikely for SHA-256), so
         // this is a harmless no-op rewrite, not a correctness issue; kept simple rather than adding
         // an existence check with no real benefit here.
+        //
+        // REAL FINDING a code-review pass caught: this used to write straight to `path` via a plain
+        // truncating ofstream -- a crash mid-write leaves a truncated file at the final digest-named
+        // location, and decode_tree() (see below) previously had NO bounds checking at all, so a
+        // later get_tree() on that digest would read past the end of the byte vector: undefined
+        // behavior, not a clean error. Fixed with the same temp-file + atomic-rename discipline this
+        // document already established for exactly this reason (persist_snapshot_locked(),
+        // identity_authority.hpp's persist_high_water_mark()).
         {
-            std::ofstream out(path, std::ios::binary | std::ios::trunc);
-            out.write(reinterpret_cast<char const*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+            std::filesystem::path temp = root_ / "trees" / (*digest + ".tmp");
+            {
+                std::ofstream out(temp, std::ios::binary | std::ios::trunc);
+                out.write(reinterpret_cast<char const*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+            }
+            std::error_code ec;
+            std::filesystem::rename(temp, path, ec);
         }
         return *digest;
     }
@@ -124,26 +146,49 @@ private:
     // function writes. Kept private/local to this store (not shared with the real project's own
     // internal decode logic, which this probe never needed to read since canonical_tree_bytes()'s
     // own encoding is fully specified in its real, public doc comment).
+    //
+    // REAL FINDING a code-review pass caught: every read below used to index into `bytes` with NO
+    // bounds check at all -- a truncated/corrupt file (a crash mid-write, before this file's own
+    // put_tree() fix made writes atomic) drove `read_u32()`/`read_str()` past the end of the vector,
+    // undefined behavior/a crash instead of a clean, attributable error. Every read now checks
+    // remaining length first and fails closed with a normal `result` error.
     [[nodiscard]] static agentengine::result<agentengine::Tree> decode_tree(std::vector<std::byte> const& bytes) {
         std::size_t pos = 0;
-        auto read_u32 = [&]() -> std::uint32_t {
+        auto has_remaining = [&](std::size_t n) { return bytes.size() - pos >= n; };
+        auto read_u32 = [&](std::uint32_t& out) -> bool {
+            if (!has_remaining(4)) return false;
             std::uint32_t v = 0;
             for (int i = 0; i < 4; ++i) v |= static_cast<std::uint32_t>(bytes[pos + i]) << (8 * i);
             pos += 4;
-            return v;
+            out = v;
+            return true;
         };
-        auto read_str = [&]() -> std::string {
-            std::uint32_t len = read_u32();
+        auto read_str = [&](std::string& out) -> bool {
+            std::uint32_t len = 0;
+            if (!read_u32(len)) return false;
+            if (!has_remaining(len)) return false;
             std::string s(len, '\0');
             for (std::uint32_t i = 0; i < len; ++i) s[i] = static_cast<char>(bytes[pos + i]);
             pos += len;
-            return s;
+            out = std::move(s);
+            return true;
         };
+        auto corrupt = [] {
+            return std::unexpected(agentengine::error{
+                agentengine::failure_class::contract,
+                "tree bytes are truncated or malformed (likely a crash mid-write before this store's "
+                "atomic-rename fix, or corruption)",
+                "worktree.tree_decode_failed"});
+        };
+
         agentengine::Tree tree;
-        std::uint32_t count = read_u32();
+        std::uint32_t count = 0;
+        if (!read_u32(count)) return corrupt();
         for (std::uint32_t i = 0; i < count; ++i) {
-            std::string name = read_str();
-            std::string digest = read_str();
+            std::string name, digest;
+            if (!read_str(name)) return corrupt();
+            if (!read_str(digest)) return corrupt();
+            if (!has_remaining(1)) return corrupt();
             bool is_tree = static_cast<unsigned char>(bytes[pos]) != 0;
             pos += 1;
             tree.entries.push_back(agentengine::TreeEntry{name, digest, is_tree});

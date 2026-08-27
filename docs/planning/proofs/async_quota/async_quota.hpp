@@ -62,13 +62,20 @@ public:
 
     [[nodiscard]] agentengine::rt::task<result<void>> try_consume(std::uint64_t amount, Principal spender) {
         agentengine::rt::AsyncMutex::Guard guard = co_await mutex_->lock();
+        // §13.3's own spec (design doc line 292-294): fails closed unless spender is this quota's
+        // owner, or a descendant it was split to via allocate_child_share() on THIS instance --
+        // identity-scoped consumption, closing the "any Principal can drain a shared quota" gap a
+        // real code-review pass found (the check was previously discarded via `(void)spender;`).
+        bool const is_owner = spender.id() == owner_.id();
+        bool const is_child_share = children_.find(spender.id()) != children_.end();
+        if (!is_owner && !is_child_share) {
+            co_return std::unexpected(error{"spender is not this quota's owner or a split-to descendant",
+                                              "quota.unauthorized_spender"});
+        }
         if (amount > remaining_) {
             co_return std::unexpected(error{"spawn cost budget exhausted", "quota.exhausted"});
         }
         remaining_ -= amount;
-        (void)spender;  // real design attributes consumption to spender; omitted here for brevity --
-                          // orthogonal to what this probe exists to prove (the race + anti-replay
-                          // mechanisms)
         co_return result<void>{};
     }
 
@@ -85,6 +92,19 @@ public:
                                               "quota.release_not_owed"});
         }
         children_.erase(it);
+        remaining_ += amount;
+        co_return result<void>{};
+    }
+
+    // A compensating action for a caller whose OWN try_consume() succeeded but whose surrounding
+    // operation subsequently failed for an unrelated reason (e.g. Ledger::commit()'s later
+    // per-entry ACL check) -- reverses exactly the amount that same caller already deducted, closing
+    // a real "quota burned on every rejected attempt, even ones with zero side effects" DoS a code
+    // review pass found. Not a general-purpose credit grant: callers must only ever refund an amount
+    // they themselves just consumed, the same discipline release_child_share() already applies to
+    // undoing an allocate_child_share().
+    [[nodiscard]] agentengine::rt::task<result<void>> refund(std::uint64_t amount) {
+        agentengine::rt::AsyncMutex::Guard guard = co_await mutex_->lock();
         remaining_ += amount;
         co_return result<void>{};
     }

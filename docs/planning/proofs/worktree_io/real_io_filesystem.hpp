@@ -198,15 +198,37 @@ public:
         Ledger<>& ledger, agentengine::Digest const& tree_digest, Principal caller) {
         agentengine::rt::AsyncMutex::Guard commit_guard = co_await commit_lock_->lock();
 
+        auto tree = ledger.get_tree_safe(tree_digest, caller);
+        if (!tree.has_value()) co_return std::unexpected(tree.error());
+
+        // A REAL FINDING a code-review pass caught: unlike write()/read_real_file(), this loop used to
+        // write straight to `host_root_ / entry.name` with no path-safety check at all -- a committed
+        // Tree entry named "../../evil.txt" (commit() only ACL-gates the entry's DIGEST, never its
+        // NAME) would escape the sandbox root on rollback. Validate every entry BEFORE touching disk,
+        // same discipline write() already had.
+        for (auto const& entry : tree->entries) {
+            auto safe = reject_unsafe_relative_path(entry.name);
+            if (!safe.has_value()) co_return std::unexpected(safe.error());
+        }
+
+        // A SECOND real finding: write() takes `sync_mutex_` for its own critical section, but this
+        // method previously took only `commit_lock_` (a DIFFERENT mutex) around its remove_all()/
+        // rewrite of host_root_ -- the two were never mutually exclusive despite mutating the same
+        // real directory tree. Take the SAME lock write() uses for the actual filesystem mutation, so
+        // a concurrent write() cannot land mid-remove_all() or mid-rewrite.
+        std::lock_guard<std::mutex> guard(*sync_mutex_);
+
         std::error_code ec;
         std::filesystem::remove_all(host_root_, ec);
         std::filesystem::create_directories(host_root_);
 
-        auto tree = ledger.get_tree_safe(tree_digest, caller);
-        if (!tree.has_value()) co_return std::unexpected(tree.error());
         for (auto const& entry : tree->entries) {
             auto bytes = ledger.get_blob_safe(entry.digest, caller);
             if (!bytes.has_value()) co_return std::unexpected(bytes.error());
+            // Re-check symlink escape against the just-recreated host_root_ right before each write --
+            // weakly_canonical is safe to call even though the target file doesn't exist yet.
+            auto no_symlink_escape = reject_symlink_escape(host_root_, entry.name);
+            if (!no_symlink_escape.has_value()) co_return std::unexpected(no_symlink_escape.error());
             std::filesystem::path full = host_root_ / entry.name;
             std::filesystem::create_directories(full.parent_path());
             std::ofstream out(full, std::ios::binary | std::ios::trunc);

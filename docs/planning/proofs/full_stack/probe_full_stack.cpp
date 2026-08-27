@@ -115,8 +115,9 @@ int main() {
     {
         Principal outsider = authority.mint_root("full-stack-outsider");   // NOT a descendant of
                                                                               // bridged_owner
-        agentengine::Digest const restored_tree = session.ledger().head_tree_digest(session.branch_name());
-        CHECK(!restored_tree.empty());
+        auto restored_tree_r = session.ledger().head_tree_digest(session.branch_name(), bridged_owner);
+        CHECK(restored_tree_r.has_value());
+        agentengine::Digest const restored_tree = *restored_tree_r;
 
         auto leak_attempt = session.ledger().get_tree_safe(restored_tree, outsider);
         CHECK(!leak_attempt.has_value());

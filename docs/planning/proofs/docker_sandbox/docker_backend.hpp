@@ -44,6 +44,43 @@ namespace docker_detail {
 }
 }  // namespace docker_detail
 
+// REAL FINDING a code-review pass caught: every method below built a `cmd.exe`-interpreted command
+// STRING by raw concatenation of caller-supplied values (image, paths, command) with NO escaping at
+// all -- a value containing a double-quote, `&`, `|`, `^`, or similar can break out of the intended
+// quoting and execute attacker-controlled commands on the HOST via `_popen`, defeating the very
+// isolation boundary this probe exists to demonstrate. Fixed by REJECTING (not attempting to
+// escape) any caller-supplied string containing a character with special meaning to `cmd.exe` or
+// that could otherwise break out of the surrounding double-quotes -- a NECESSARY, not sufficient,
+// defense, the same "fail closed on anything suspicious" spirit as this document's own
+// reject_unsafe_relative_path()/reject_symlink_escape(): a probe demonstrating an OS-level jail
+// boundary must not itself be a hole in that boundary, but a fully general cmd.exe escaper is its
+// own hard problem this probe does not attempt to solve in full.
+[[nodiscard]] inline result<void> reject_chars(std::string const& value, char const* what,
+                                                  char const* dangerous) {
+    if (value.find_first_of(dangerous) != std::string::npos) {
+        return std::unexpected(error{std::string("refusing to build a shell command: '") + what +
+                                          "' contains a character that could break out of the "
+                                          "surrounding quoting",
+                                      "docker_backend.unsafe_shell_argument"});
+    }
+    return result<void>{};
+}
+
+// For image names/paths: NONE of `"&|<>^%` are ever legitimately needed, so reject the whole set.
+[[nodiscard]] inline result<void> reject_unsafe_for_shell(std::string const& value, char const* what) {
+    return reject_chars(value, what, "\"&|<>^%\r\n");
+}
+
+// For exec()'s own `command` argument specifically: it is legitimately a shell command meant for
+// the CONTAINER's inner `sh` and needs `&|<>` for its own real use (pipes/redirects/backgrounding)
+// -- rejecting those would defeat exec()'s whole purpose. The character that actually breaks the
+// OUTER cmd.exe quoting this string sits inside (`sh -c "<command>"`) is a literal double-quote
+// (prematurely closes the quote cmd.exe is parsing); `%`/`^` are cmd.exe's own escape/expansion
+// quirks that can defeat quoting even without one. Only these are rejected here.
+[[nodiscard]] inline result<void> reject_shell_breakout(std::string const& value, char const* what) {
+    return reject_chars(value, what, "\"%^\r\n");
+}
+
 class DockerBackend {
 public:
     struct Instance {
@@ -61,6 +98,8 @@ public:
     // deposits into it) is still real, still isolated by the kernel's own mount/pid/network
     // namespaces -- only the LIVE bind-mount convenience is unavailable in this specific environment.
     [[nodiscard]] result<Instance> create(std::string const& image = "alpine:latest") {
+        if (auto safe = reject_unsafe_for_shell(image, "image"); !safe.has_value())
+            return std::unexpected(safe.error());
         std::ostringstream cmd;
         cmd << "docker run -d --rm -w /workspace " << image << " sh -c \"mkdir -p /workspace && sleep infinity\"";
         auto r = docker_detail::run_capture(cmd.str());
@@ -77,6 +116,10 @@ public:
     // disk into the container's own isolated filesystem.
     [[nodiscard]] result<void> copy_to_container(Instance const& inst, std::filesystem::path const& host_path,
                                                     std::string const& container_path) {
+        if (auto safe = reject_unsafe_for_shell(host_path.string(), "host_path"); !safe.has_value())
+            return std::unexpected(safe.error());
+        if (auto safe = reject_unsafe_for_shell(container_path, "container_path"); !safe.has_value())
+            return std::unexpected(safe.error());
         std::ostringstream cmd;
         cmd << "docker cp \"" << host_path.string() << "\" " << inst.container_id << ":" << container_path;
         auto r = docker_detail::run_capture(cmd.str());
@@ -92,6 +135,10 @@ public:
     // design's own RealIoFileSystem/Ledger stack, which only ever reads real host paths).
     [[nodiscard]] result<void> copy_from_container(Instance const& inst, std::string const& container_path,
                                                       std::filesystem::path const& host_path) {
+        if (auto safe = reject_unsafe_for_shell(container_path, "container_path"); !safe.has_value())
+            return std::unexpected(safe.error());
+        if (auto safe = reject_unsafe_for_shell(host_path.string(), "host_path"); !safe.has_value())
+            return std::unexpected(safe.error());
         std::ostringstream cmd;
         cmd << "docker cp " << inst.container_id << ":" << container_path << " \"" << host_path.string() << "\"";
         auto r = docker_detail::run_capture(cmd.str());
@@ -105,6 +152,8 @@ public:
     // Real `docker exec <id> sh -c "<command>"` -- runs INSIDE the container's own isolated
     // filesystem/process namespace, never in this process at all.
     [[nodiscard]] result<ExecOutcome> exec(Instance const& inst, std::string const& command) {
+        if (auto safe = reject_shell_breakout(command, "command"); !safe.has_value())
+            return std::unexpected(safe.error());
         std::ostringstream cmd;
         cmd << "docker exec " << inst.container_id << " sh -c \"" << command << "\"";
         auto r = docker_detail::run_capture(cmd.str());

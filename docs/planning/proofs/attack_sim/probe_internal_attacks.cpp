@@ -58,6 +58,12 @@ int main() {
                                                                              // all -- the strongest,
                                                                              // most adversarial case
     auto storage_quota = AsyncQuota<StorageBytes>::mint_root(authority, victim_owner, 10'000'000);
+    // Attacker gets its OWN, legitimate quota -- AsyncQuota::try_consume()'s own spender-identity
+    // check (a real gap a code review pass found and fixed: it used to accept ANY Principal as
+    // spender) would otherwise block Attack 2 below for an unrelated reason (spending from a quota
+    // it was never granted a share of) before it ever reaches the per-digest ACL check that attack
+    // is actually meant to test.
+    auto attacker_quota = AsyncQuota<StorageBytes>::mint_root(authority, attacker_owner, 10'000'000);
 
     auto victim_branch_r = run(shared_ledger.create_root_branch(victim_owner));
     BranchHandle victim_branch = std::move(*victim_branch_r);
@@ -130,7 +136,7 @@ int main() {
                                                                                        // never
                                                                                        // attacker's own
         auto commit_result = run(shared_ledger.commit(attacker_branch, malicious_tree, attacker_owner,
-                                                          *storage_quota));
+                                                          *attacker_quota));
         bool const adopted = commit_result.has_value();
         REPORT(adopted ? "CONFIRMED LEAK" : "FIXED -- blocked",
                "Attack 2: committing a tree that references another session's blob digest",

@@ -3570,3 +3570,183 @@ multi-caller work — that this was the ONLY latent hazard waiting in that direc
 was thorough about the ONE bug it found, not a general clearance of "the coroutine substrate is ready
 for genuine multi-threaded session dispatch," which nothing here claims and ADR-061 itself does not
 yet attempt.
+
+## 35. Second code review of the prove phase — 10 real findings, fixed and re-verified
+
+A second independent adversarial code-review pass (fresh agent, no memory of this document's own
+narration) was run against `docs/planning/proofs/`, this time including `docker_sandbox/` (§31 had
+its own separate review at the time; this pass covers it too). Mandate: find real bugs, not style
+issues, ranked by severity. It found 10, none previously named anywhere in this document. Every one
+was fixed in code and re-verified by recompiling and re-running the actual probes each fix touches
+(`clang 22.1.5`, target `x86_64-pc-windows-msvc`, `-std=c++23`) — not merely re-read.
+
+### 35.1 The findings, most severe first
+
+1. **`AsyncQuota<T>::try_consume()` silently discarded its own spender-identity check**
+   (`async_quota.hpp`) — the design's own spec (§13.3, this document's line ~292: "fails closed ...
+   if spender is not this quota's owner or a descendant it was split to") was never implemented; the
+   parameter was discarded via `(void)spender;`. Under the store-wide-ceiling deployment pattern
+   §34/A5 itself recommends (one shared root quota, every session a `derive_child()`), ANY session
+   holding a reference to that shared quota could drain any OTHER session's budget by passing any
+   `Principal` — a real I2/I8 violation once multiple tenants share one quota, not a theoretical one.
+2. **`RealIoFileSystem::materialize()` had no path-safety check on Tree entry names**
+   (`real_io_filesystem.hpp`) — `write()`/`read_real_file()` both call
+   `reject_unsafe_relative_path()`/`reject_symlink_escape()` before touching disk; `materialize()`
+   (the rollback path) did not, and `Ledger::commit()` only ever ACL-gates an entry's *digest*, never
+   its *name*. A committed entry named `"../../evil.txt"` would escape the sandbox root on rollback.
+3. **`Ledger::merge()` permanently stranded the child branch on every rejection path** — a real
+   merge conflict (an *expected* outcome, not just an adversarial one, per §11's own explicit
+   "conflict resolution is out of scope" boundary) set `child.resolved_ = true` on rejection, which
+   suppresses `BranchHandle`'s destructor-time `maybe_queue_abandon()`, with no registration as an
+   orphan either — leaving the branch present in `branches_` (readable) but with no live handle
+   anywhere and no way back into it via `reclaim_orphaned_branch()`/`abandon_orphaned_branch()`
+   (both correctly reject it as "not a recognized orphan"). `probe_ledger_merge.cpp`'s own Scenario 2
+   comment claimed the branch was "still there for a real caller to retry or explicitly abandon" —
+   true only for reads, never actually demonstrated for a real handle back.
+4. **Quota consumed before validation, with no refund on failure** — `commit()`/`branch_from()`
+   both call `quota.try_consume()` before the branch/ACL checks that can still reject the operation,
+   with no failure path refunding what was already deducted. A caller whose commit is rejected for
+   an unrelated reason (stale branch, unauthorized reference) permanently loses budget for zero
+   stored content — a self-inflicted or adversarial quota-exhaustion DoS.
+5. **`materialize()` and `write()` used two different, unrelated locks** on the same real directory
+   tree (`commit_lock_` vs. `sync_mutex_`) — never mutually exclusive despite both mutating
+   `host_root_`; a concurrent `write()` could land mid-`remove_all()` or mid-rewrite.
+6. **`IdentityAuthority::persist_high_water_mark()` was not crash-atomic** — a plain truncating
+   `ofstream`, unlike `worktree_ledger.hpp`'s own `persist_snapshot_locked()` (temp file + atomic
+   rename) built for exactly this reason. Since `allocate_id()` calls this on *every* mint, a crash
+   mid-write leaves a truncated file `load_durable_state()` cannot distinguish from "no file yet,"
+   silently resetting `next_id_` to 1 and re-issuing already-live principal ids — directly
+   undermining A1's own durable-identity goal (§33/§34).
+7. **`FileWorktreeObjectStore::decode_tree()` had no bounds checking; `put_tree()`/`put_blob()`
+   were not crash-atomic** — a crash mid-write leaves a truncated file at the final digest-named
+   path; a later `get_tree()` on that digest then drove `decode_tree()` past the end of the byte
+   vector (undefined behavior), not a clean error.
+8. **`Ledger::checkpoint_at()`/`head_tree_digest()` performed no identity check at all** — every
+   other Ledger accessor (`get_blob_safe`/`get_tree_safe`) gates on `authorized_for()`; these two did
+   not, and since branch names are deterministically guessable
+   (`root-<owner_id>`/`<parent>/child-<id>-<seq>`), any caller could enumerate an arbitrary branch's
+   current head digest, and — worse, since `checkpoint_at()` returns `authored_by_id` and turn-index
+   history, not merely a digest — who authored each turn and how many turns occurred.
+9. **Shell injection in `docker_backend.hpp`** — every method built a `cmd.exe`-interpreted command
+   string by raw concatenation of caller-supplied values (image, host/container paths, `exec()`'s
+   own `command`) with no escaping before `_popen`. A value containing a double-quote or a cmd.exe
+   escape character could break out of the intended quoting and execute attacker-controlled commands
+   on the HOST — defeating the exact isolation boundary this probe exists to demonstrate (§31).
+10. **`combine_into_tree()`/`harvest_and_checkpoint()` had no rollback on a partial ACL-cap
+    failure** (`real_sandbox_session.hpp`) — each staged write is durably persisted via
+    `put_blob_safe()` in a loop; if the Nth blob's digest hit the ACL-root cap (A8), blobs `1..N-1`
+    were already durably stored with no Tree/Checkpoint ever referencing them, and the caller saw
+    only a clean error with no indication that partial content had already reached disk.
+
+### 35.2 The fixes
+
+1. `try_consume()` now checks `spender.id() == owner_.id() || children_.contains(spender.id())`
+   before consuming, matching the spec exactly — a spender must be the quota's owner or a principal
+   THIS quota instance itself split a share to via `allocate_child_share()`.
+2. `materialize()` now runs every entry through `reject_unsafe_relative_path()` before writing
+   anything, and `reject_symlink_escape()` per-entry right before each write (host_root_ having just
+   been recreated by the rollback itself).
+3. Every rejection path in `merge()` now calls `orphaned_from_restart_.insert(child.name())` before
+   marking the handle resolved — reusing A7's own existing orphan-reclaim machinery (the same set a
+   restart already populates) instead of inventing a parallel mechanism. `probe_ledger_merge.cpp`
+   was extended to prove this for real: after a rejected conflict merge, the child branch now shows
+   up in `orphaned_branches()`, `reclaim_orphaned_branch()` returns a genuinely fresh, live
+   `BranchHandle`, and that handle can commit and be abandoned normally.
+4. `commit()`/`branch_from()` now compute their outcome in a plain (non-coroutine) closure so
+   `mutex_` is fully released before any `co_await` (this also fixes a second, independent latent
+   bug the restructuring surfaced: holding a `std::lock_guard<std::mutex>` across a coroutine
+   suspension point is undefined behavior if the coroutine resumes on a different thread than it
+   suspended on), then call `quota.refund(amount)` — a new `AsyncQuota<T>` method, symmetric with
+   the already-proven `release_child_share()` — on any failure.
+5. `materialize()` now takes the SAME `sync_mutex_` `write()` uses around its own filesystem
+   mutation, making the two genuinely mutually exclusive.
+6. `persist_high_water_mark()` now uses the same temp-file-then-atomic-rename discipline as
+   `worktree_ledger.hpp`'s `persist_snapshot_locked()`.
+7. `decode_tree()`'s `read_u32()`/`read_str()` now check remaining length before every read and
+   fail closed with `worktree.tree_decode_failed` instead of indexing out of bounds; `put_tree()`
+   and `put_blob()` both now write to a `.tmp` sibling and atomically rename into place.
+8. `head_tree_digest()` and `checkpoint_at()` both now take a `Principal caller` and return
+   `result<T>` instead of a bare value/`optional`, gated through the same `authorized_for()` every
+   other accessor uses (`checkpoint_at()` gates on the SPECIFIC checkpoint's own tree digest, not
+   the branch's current head, so access to one historical state doesn't require — or imply — access
+   to whatever the branch has since become). Five call sites across `full_stack/`, `attack_sim/`,
+   and `worktree_io/` were updated to pass a real, already-in-scope `Principal`.
+9. Two new guard functions reject (never attempt to escape) dangerous input before it reaches
+   `_popen`: `reject_unsafe_for_shell()` (image/paths — none of `"&|<>^%` are ever legitimately
+   needed there) and the narrower `reject_shell_breakout()` for `exec()`'s own `command` (which
+   legitimately needs `&|<>` for the CONTAINER's inner shell; only `"`/`%`/`^` — the characters that
+   actually defeat the OUTER cmd.exe quoting — are rejected). Explicitly disclosed as a NECESSARY,
+   not sufficient, defense, matching this document's own established posture for
+   `reject_symlink_escape()` — a fully general `cmd.exe` escaper is its own hard problem this fix
+   does not claim to solve.
+10. A new read-only `Ledger::would_accept_blob_write()` lets `combine_into_tree()` validate an
+    ENTIRE batch of staged writes against the ACL-root cap before writing any of them, so a
+    rejection is discovered before anything is written, not partway through.
+
+### 35.3 Re-verification — every touched probe recompiled and re-run
+
+Fixing (1) changed real behavior for two existing probes that had, until now, unknowingly relied on
+the missing check: `worktree_io/probe_concurrent_io.cpp` and `worktree_io/probe_concurrent_ledger.cpp`
+both had every session spend directly from a shared ROOT quota via a `derive_child()`'d principal
+that was never granted a share of it — exactly the gap (1) closes. Both were fixed to allocate a real
+per-session child share first (the same §34/A5 store-wide-ceiling pattern `probe_store_wide_ceiling.cpp`
+already established), then re-verified. `ledger/probe_positive.cpp` (the OLDER, still-compiled Ledger
+that shares the same `async_quota.hpp`) had the identical gap in two places (steps 8 and 10) — fixed
+the same way. `attack_sim/probe_internal_attacks.cpp`'s own Attack 2 had, by accident, been spending
+from the VICTIM's quota as the attacker — also blocked by fix (1), but for the wrong stated reason;
+given the attacker its own legitimate quota so the probe's narrative (the tree-content ACL check,
+not the quota check) matches what actually blocks it again.
+
+Real re-run output, this pass, every probe (28 positive + 5 negative-must-fail-to-compile), full
+recompile from clean object files:
+
+```
+async_quota/probe_positive.exe                 -- ALL CHECKS PASSED
+async_quota/probe_store_wide_ceiling.exe       -- ALL CHECKS PASSED
+worktree_io/probe_worktree_io.exe              -- ALL CHECKS PASSED
+worktree_io/probe_concurrent_io.exe            -- ALL CHECKS PASSED (after fix 1's probe update)
+worktree_io/probe_durability.exe               -- ALL CHECKS PASSED
+worktree_io/probe_path_traversal.exe           -- ALL CHECKS PASSED
+worktree_io/probe_acl_bound.exe                -- ALL CHECKS PASSED
+worktree_io/probe_concurrent_acl.exe           -- ALL CHECKS PASSED
+worktree_io/probe_concurrent_ledger.exe        -- ALL CHECKS PASSED (after fix 1's probe update)
+worktree_io/probe_merge.exe                    -- ALL CHECKS PASSED
+worktree_io/probe_ledger_merge.exe             -- ALL CHECKS PASSED (extended: reclaim proof, see 35.2.3)
+identity_authority/probe_positive.exe          -- ALL CHECKS PASSED
+identity_authority/probe_concurrent_adopt.exe  -- ALL CHECKS PASSED
+identity_authority/durable_restart_write.exe -> durable_restart_read.exe (real 2-process restart) -- ALL CHECKS PASSED
+worktree_io/durable_ledger_write.exe -> durable_ledger_read.exe (real 2-process restart)          -- ALL CHECKS PASSED
+worktree_io/crash_reclaim_write.exe -> crash_reclaim_read.exe (real 2-process restart)             -- ALL CHECKS PASSED
+attack_sim/probe_attack_merge_by_name.exe      -- ALL CHECKS PASSED
+attack_sim/probe_internal_attacks.exe          -- attack narrative corrected (fix 1), all 5 attacks still blocked/disclosed as before
+full_stack/probe_full_stack.exe                -- ALL CHECKS PASSED
+integration/probe_integration.exe              -- ALL CHECKS PASSED
+grant_set/probe_positive.exe                   -- ALL CHECKS PASSED
+sandbox_session/probe_exclusivity.exe          -- ALL CHECKS PASSED
+sandbox_session/probe_two_lock_safe.exe        -- ALL CHECKS PASSED
+ledger/probe_positive.exe                      -- ALL CHECKS PASSED (after fix 1's probe update, steps 8+10)
+docker_sandbox/probe_docker_sandbox.cpp        -- compiles clean (fix 9); not re-run this pass, needs a live Docker daemon
+5 negative (must-fail-to-compile) probes       -- all 5 still fail to compile exactly as before, unaffected
+```
+
+Zero regressions: every probe that passed before this pass still passes after it, and the two probes
+that needed updating (their own latent reliance on finding 1's bug) were fixed at the same time, not
+silently left broken.
+
+### 35.4 What this pass does and does not establish
+
+**Established**: 10 real, independently-verified defects — one (finding 1) a genuine I2/I8-shaped
+authorization gap, several real correctness/durability bugs (2, 3, 5, 6, 7, 10), one real DoS surface
+(4), one real information-disclosure gap (8), and one real injection vulnerability confined to the
+`docker_sandbox/` probe (9) — found, fixed in code, and re-verified against the actual probe suite,
+not just re-read. That fixing finding 1 exposed two further, previously-passing probes as having
+unknowingly depended on the bug (a real instance of this document's own recurring "an
+independently-plausible piece was quietly wrong in a way nothing had exercised" pattern, per §26/
+§32/§33) — caught here because re-running the FULL suite after a fix is this document's own standing
+discipline, not skipped because the fix "looked contained."
+
+**NOT established**: that this is the last review pass this prove-phase code will ever need. This
+document's own history (§26, §32, §33, this section) is four consecutive reviews that each found a
+real, previously-undisclosed defect nothing before it had caught — the honest expectation is that a
+fifth pass would likely find an eleventh. A3 (concrete execution-surface technology) and A9 (real
+engine integration) remain untouched by this pass, as scoped in §34.10.

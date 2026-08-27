@@ -97,8 +97,14 @@ int main() {
     // abandon() call queues a pending abandon via its destructor -- purely synchronously, no
     // coroutine ever attempted (§13.2's actual fix, proven here, not asserted).
     {
-        auto leaked_result = block_on(
-            ledger.branch_from(root, authority.derive_child(owner, "leaked"), *branch_quota));
+        // Same pattern as step 6 above: a derived-child principal must spend from a SHARE its
+        // parent explicitly allocated (AsyncQuota::try_consume()'s own spender-identity check --
+        // a real gap a code review pass found and fixed -- rejects a derived child spending
+        // straight from a quota it was never granted a share of).
+        Principal leaked_principal = authority.derive_child(owner, "leaked");
+        auto leaked_share = block_on(branch_quota->allocate_child_share(leaked_principal, 1));
+        CHECK(leaked_share.has_value());
+        auto leaked_result = block_on(ledger.branch_from(root, leaked_principal, *leaked_share));
         CHECK(leaked_result.has_value());
         std::string const leaked_name = leaked_result->name();
         CHECK(ledger.has_branch(leaked_name));
@@ -126,7 +132,12 @@ int main() {
     auto merge_branch_result = block_on(ledger.branch_from(root, merge_child_principal, *merge_child_share));
     CHECK(merge_branch_result.has_value());
     BranchHandle merge_branch = std::move(*merge_branch_result);
-    auto merge_cp = block_on(ledger.commit(merge_branch, "tree-from-child", merge_child_principal, *storage_quota));
+    // Same pattern again: merge_child_principal must spend from its OWN share of storage_quota, not
+    // straight from owner's root quota (AsyncQuota::try_consume()'s real spender-identity check).
+    auto merge_storage_share = block_on(storage_quota->allocate_child_share(merge_child_principal, 1'000));
+    CHECK(merge_storage_share.has_value());
+    auto merge_cp = block_on(
+        ledger.commit(merge_branch, "tree-from-child", merge_child_principal, *merge_storage_share));
     CHECK(merge_cp.has_value());
     std::string const merge_branch_name = merge_branch.name();
     auto merged = block_on(ledger.merge(std::move(merge_branch), root));

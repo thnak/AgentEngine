@@ -80,7 +80,9 @@ int main() {
     auto victim_root_r = run(ledger.create_root_branch(victim_owner));
     CHECK(victim_root_r.has_value());
     BranchHandle<> victim_branch = std::move(*victim_root_r);
-    agentengine::Digest const victim_head_before = ledger.head_tree_digest(victim_branch.name());
+    auto victim_head_before_r = ledger.head_tree_digest(victim_branch.name(), victim_owner);
+    CHECK(victim_head_before_r.has_value());
+    agentengine::Digest const victim_head_before = *victim_head_before_r;
     std::printf("[setup] victim's EMPTY branch '%s' created, head=%s\n", victim_branch.name().c_str(),
                 victim_head_before.c_str());
 
@@ -116,7 +118,9 @@ int main() {
     // The victim's branch is, and remains, completely untouched -- not because of a runtime check
     // that happened to catch this specific case, but because the attacker structurally never had
     // any way to name it as a merge target in the first place.
-    CHECK(ledger.head_tree_digest(victim_branch.name()) == victim_head_before);
+    auto victim_head_after_r = ledger.head_tree_digest(victim_branch.name(), victim_owner);
+    CHECK(victim_head_after_r.has_value());
+    CHECK(*victim_head_after_r == victim_head_before);
     std::printf("[2] the victim's branch head is UNCHANGED -- the attacker never had a `BranchHandle`"
                 " for it and merge() no longer accepts a bare name, so the original attack shape "
                 "cannot even be EXPRESSED anymore, let alone attempted -- PASS\n");

@@ -43,8 +43,9 @@ int main() {
     Ledger<FileWorktreeObjectStore> ledger(FileWorktreeObjectStore(root / "objects"), root / "ledger");
 
     std::string const branch_name = "root-" + std::to_string(owner.id());
-    agentengine::Digest const restored_head = ledger.head_tree_digest(branch_name);
-    CHECK(!restored_head.empty());
+    auto restored_head_r = ledger.head_tree_digest(branch_name, owner);
+    CHECK(restored_head_r.has_value());
+    agentengine::Digest const restored_head = *restored_head_r;
     std::printf("[read] restored branch=%s head_tree=%s\n", branch_name.c_str(), restored_head.c_str());
 
     // (1) The restored tree really is turn 2's content (a.txt + b.txt), read back through the
@@ -71,7 +72,7 @@ int main() {
     // BranchHandle-granting one -- reset_to() itself still requires a live handle, which this
     // probe deliberately has none of across the restart, exactly A7's own still-open question,
     // §11 item 6; proving reset_to() ITSELF post-restart is A7's job, not A2's).
-    auto turn1_cp = ledger.checkpoint_at(branch_name, 1);
+    auto turn1_cp = ledger.checkpoint_at(branch_name, 1, owner);
     CHECK(turn1_cp.has_value());
     CHECK(turn1_cp->tree != restored_head);   // turn 1's tree must differ from turn 2's head
     auto turn1_tree = ledger.get_tree_safe(turn1_cp->tree, owner);

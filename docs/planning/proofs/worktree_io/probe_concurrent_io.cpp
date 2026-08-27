@@ -64,6 +64,13 @@ int main() {
     for (int s = 0; s < kSessions; ++s) {
         threads.emplace_back([&, s]() {
             Principal owner = authority.derive_child(root_owner, "io-session-" + std::to_string(s));
+            // A REAL FINDING a code-review pass caught elsewhere (AsyncQuota::try_consume() used to
+            // silently skip its own spender-identity check) means this probe must now do what the
+            // design always specified: a derived-child principal spends from a SHARE its parent
+            // explicitly allocated (§21/§34's own store-wide-ceiling pattern), never straight from a
+            // quota it was never granted a share of.
+            auto session_quota = block_on(quota->allocate_child_share(owner, 10'000'000));
+            if (!session_quota.has_value()) return;
             auto root_branch = block_on(ledger.create_root_branch(owner));
             if (!root_branch.has_value()) return;
             BranchHandle branch = std::move(*root_branch);
@@ -76,7 +83,7 @@ int main() {
                 if (!w.has_value()) { ok = false; break; }
                 auto tree = block_on(fs.drain_into_tree(ledger, owner));
                 if (!tree.has_value()) { ok = false; break; }
-                auto cp = block_on(ledger.commit(branch, *tree, owner, *quota));
+                auto cp = block_on(ledger.commit(branch, *tree, owner, *session_quota));
                 if (!cp.has_value()) { ok = false; break; }
             }
             session_ok[s] = ok;

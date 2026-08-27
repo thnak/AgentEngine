@@ -85,6 +85,21 @@ private:
 // before hashing (worktree_types.hpp's own documented precondition), not a hand-rolled string.
 [[nodiscard]] inline result<agentengine::Tree> combine_into_tree(std::vector<StagedWrite> const& writes,
                                                                     Ledger<>& ledger, Principal author) {
+    // REAL FINDING a code-review pass caught: this loop used to call put_blob_safe() (which durably
+    // persists on success) for each write in turn -- if the Nth blob's digest hit the ACL-root cap,
+    // blobs 1..N-1 were already durably stored with no Tree/Checkpoint ever referencing them, and
+    // the caller saw only a clean error with no sign that partial content had already been written
+    // to disk. Fixed by validating the WHOLE batch first via `would_accept_blob_write()` (a
+    // read-only check, no writes at all) so a rejection is discovered before anything is written,
+    // not partway through.
+    for (auto const& w : writes) {
+        if (!ledger.would_accept_blob_write(w.bytes, author)) {
+            return std::unexpected(error{
+                "staged write '" + w.path + "' would exceed its digest's ACL-root cap -- rejecting "
+                "the whole batch before writing any of it, not partway through",
+                "ledger.acl_root_cap_exceeded"});
+        }
+    }
     agentengine::Tree tree;
     for (auto const& w : writes) {
         auto digest = ledger.put_blob_safe(w.bytes, author);

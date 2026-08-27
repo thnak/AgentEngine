@@ -6,6 +6,7 @@
 
 #include "worktree_ledger.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 
@@ -101,7 +102,9 @@ int main() {
 
         auto a_parent_side = ledger.put_blob_safe(to_bytes("A-changed-by-parent"), owner);
         CHECK(a_parent_side.has_value());
-        agentengine::Digest const current_root_tree = ledger.head_tree_digest(root.name());
+        auto current_root_tree_r = ledger.head_tree_digest(root.name(), owner);
+        CHECK(current_root_tree_r.has_value());
+        agentengine::Digest const current_root_tree = *current_root_tree_r;
         auto current_tree = ledger.get_tree_safe(current_root_tree, owner);
         CHECK(current_tree.has_value());
         agentengine::Tree t_parent2;
@@ -130,10 +133,25 @@ int main() {
         // The child branch must still exist (a rejected merge must not consume/erase it) -- since
         // conflict resolution is out of scope, the caller needs the branch to still be there to
         // retry or abandon explicitly.
-        agentengine::Digest const still_there = ledger.head_tree_digest(child_name_before);
-        CHECK(!still_there.empty());
-        std::printf("[4] the child branch was NOT erased by the rejected merge -- still resolvable "
-                    "for a real caller to retry or explicitly abandon -- PASS\n");
+        auto still_there_r = ledger.head_tree_digest(child_name_before, owner);
+        CHECK(still_there_r.has_value());
+        std::printf("[4] the child branch was NOT erased by the rejected merge -- still readable "
+                    "for a real caller to inspect -- PASS\n");
+
+        // REAL FIX PROOF (a code-review pass found the merge-rejection paths used to strand the
+        // branch with no LIVE HANDLE anywhere and no reclaim registration -- "still resolvable to
+        // retry or abandon" was previously only true for READS, not for actually getting a handle
+        // back). Confirm the rejected merge's child branch is now a genuine, reclaimable A7 orphan.
+        auto orphans = ledger.orphaned_branches();
+        CHECK(std::find(orphans.begin(), orphans.end(), child_name_before) != orphans.end());
+        auto reclaimed = ledger.reclaim_orphaned_branch(child_name_before, owner);
+        CHECK(reclaimed.has_value());
+        CHECK(reclaimed->name() == child_name_before);
+        std::printf("[5] the rejected merge's child branch is a REAL reclaimable orphan -- the "
+                    "owner got a genuinely fresh, live BranchHandle back via reclaim_orphaned_branch(), "
+                    "not just read-only introspection -- PASS\n");
+        auto abandon_r = run(ledger.abandon(std::move(*reclaimed)));
+        CHECK(abandon_r.has_value());
     }
 
     std::printf("\nALL CHECKS PASSED -- Ledger::merge() now performs a REAL three-way merge "

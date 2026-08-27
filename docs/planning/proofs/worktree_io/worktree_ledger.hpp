@@ -236,6 +236,23 @@ public:
         return store_.blob_count();
     }
 
+    // Read-only dry-run for a caller (e.g. `combine_into_tree()`) that needs to write SEVERAL blobs
+    // as one logical batch: true iff a blob with this exact byte content, written by `writer`, would
+    // be accepted -- either because `writer` already holds an ACL entry for this digest, or because
+    // inserting a new one would stay within `kMaxAclRootsPerDigest`. Performs NO mutation. Lets a
+    // caller validate the WHOLE batch before writing any of it, instead of discovering an ACL-cap
+    // rejection partway through with earlier blobs already durably persisted and unreferenced by any
+    // Tree/Checkpoint (a real "silent partial persist" gap a code review pass found).
+    [[nodiscard]] bool would_accept_blob_write(std::span<std::byte const> bytes, Principal writer) {
+        auto digest = agentengine::compute_digest(bytes);
+        if (!digest) return false;
+        std::lock_guard<std::mutex> g(mutex_);
+        auto it = blob_acl_.find(*digest);
+        if (it == blob_acl_.end()) return true;         // brand-new digest, nothing to exceed yet
+        if (it->second.contains(writer.id())) return true;  // no-op re-touch, always allowed
+        return it->second.size() < kMaxAclRootsPerDigest;
+    }
+
     [[nodiscard]] agentengine::rt::task<result<BranchHandle<Store>>> create_root_branch(Principal owner) {
         std::string name = "root-" + std::to_string(owner.id());
         agentengine::Digest empty_tree_digest;
@@ -279,39 +296,60 @@ public:
         auto consumed = co_await quota.try_consume(approx_bytes, authored_by);
         if (!consumed.has_value()) co_return std::unexpected(consumed.error());
 
-        std::lock_guard<std::mutex> g(mutex_);
-        for (auto const& entry : tree.entries) {
-            auto const& acl = entry.is_tree ? tree_acl_ : blob_acl_;
-            if (!authorized_for(acl, entry.digest, authored_by)) {
-                co_return std::unexpected(error{
-                    "commit references digest '" + entry.digest.substr(0, 12) +
-                        "...' (path '" + entry.name +
-                        "') that the committing principal is not authorized for -- every entry a "
-                        "commit references must already be legitimately accessible to the "
-                        "committing principal (via a prior put_blob_safe()/commit() of its own, or "
-                        "inheritance from an ancestor principal)",
-                    "ledger.commit_unauthorized_reference"});
+        // A REAL FINDING a code-review pass caught: every failure path below used to `co_return`
+        // straight out of this coroutine with the quota already debited above and no refund --
+        // a caller whose commit was rejected for an unrelated reason (stale branch, unauthorized
+        // reference) permanently lost budget for zero stored content, a self-inflicted or
+        // adversarial quota-exhaustion DoS. Fixed by computing the outcome in a plain (non-
+        // coroutine) helper first -- so `mutex_` is fully released before any `co_await` -- then
+        // refunding exactly what was consumed on any failure. This also avoids holding a
+        // `std::lock_guard<std::mutex>` across a coroutine suspension point (a real correctness
+        // hazard on its own: AsyncMutex's coroutine may resume on a different thread than it
+        // suspended on, and unlocking a `std::mutex` from a different thread than locked it is UB).
+        result<Checkpoint> outcome = [&]() -> result<Checkpoint> {
+            std::lock_guard<std::mutex> g(mutex_);
+            for (auto const& entry : tree.entries) {
+                auto const& acl = entry.is_tree ? tree_acl_ : blob_acl_;
+                if (!authorized_for(acl, entry.digest, authored_by)) {
+                    return std::unexpected(error{
+                        "commit references digest '" + entry.digest.substr(0, 12) +
+                            "...' (path '" + entry.name +
+                            "') that the committing principal is not authorized for -- every entry "
+                            "a commit references must already be legitimately accessible to the "
+                            "committing principal (via a prior put_blob_safe()/commit() of its own, "
+                            "or inheritance from an ancestor principal)",
+                        "ledger.commit_unauthorized_reference"});
+                }
             }
-        }
-        auto tree_digest = store_.put_tree(std::move(tree));
-        if (!tree_digest) co_return std::unexpected(error{tree_digest.error().message, "worktree_ledger.put_tree_failed"});
-        auto acl_ok = insert_acl_root_bounded(tree_acl_, *tree_digest, authored_by.id());
-        if (!acl_ok.has_value()) co_return std::unexpected(acl_ok.error());
+            auto tree_digest = store_.put_tree(std::move(tree));
+            if (!tree_digest) return std::unexpected(error{tree_digest.error().message, "worktree_ledger.put_tree_failed"});
+            auto acl_ok = insert_acl_root_bounded(tree_acl_, *tree_digest, authored_by.id());
+            if (!acl_ok.has_value()) return std::unexpected(acl_ok.error());
 
-        auto it = branches_.find(branch.name());
-        if (it == branches_.end())
-            co_return std::unexpected(error{"unknown branch", "ledger.unknown_branch"});
-        auto& state = it->second;
-        std::uint64_t const new_turn = state.head_turn_index + 1;
-        auto self = compute_self_digest(*tree_digest, state.head_self_digest, authored_by.id(), new_turn);
-        if (!self.has_value()) co_return std::unexpected(self.error());
-        Checkpoint cp{*self, *tree_digest, state.head_self_digest, authored_by.id(), new_turn};
-        state.head_self_digest = *self;
-        state.head_tree_digest = *tree_digest;
-        state.head_turn_index = new_turn;
-        state.checkpoints.insert_or_assign(new_turn, cp);
-        persist_snapshot_locked();
-        co_return cp;
+            auto it = branches_.find(branch.name());
+            if (it == branches_.end())
+                return std::unexpected(error{"unknown branch", "ledger.unknown_branch"});
+            auto& state = it->second;
+            std::uint64_t const new_turn = state.head_turn_index + 1;
+            auto self = compute_self_digest(*tree_digest, state.head_self_digest, authored_by.id(), new_turn);
+            if (!self.has_value()) return std::unexpected(self.error());
+            Checkpoint cp{*self, *tree_digest, state.head_self_digest, authored_by.id(), new_turn};
+            state.head_self_digest = *self;
+            state.head_tree_digest = *tree_digest;
+            state.head_turn_index = new_turn;
+            state.checkpoints.insert_or_assign(new_turn, cp);
+            persist_snapshot_locked();
+            return cp;
+        }();
+
+        if (!outcome.has_value()) {
+            // refund() only fails if the quota's own AsyncMutex is somehow unusable -- nothing this
+            // caller can act on differently than the commit failure it's already returning; the
+            // [[nodiscard]] result is deliberately discarded via (void), not swallowed silently.
+            (void)co_await quota.refund(approx_bytes);
+            co_return std::unexpected(outcome.error());
+        }
+        co_return *outcome;
     }
 
     [[nodiscard]] agentengine::rt::task<result<Checkpoint>> reset_to(BranchHandle<Store> const& branch,
@@ -363,28 +401,38 @@ public:
         auto consumed = co_await quota.try_consume(1, created_by);
         if (!consumed.has_value()) co_return std::unexpected(consumed.error());
 
-        std::lock_guard<std::mutex> g(mutex_);
-        auto it = branches_.find(parent.name());
-        if (it == branches_.end())
-            co_return std::unexpected(error{"unknown parent branch", "ledger.unknown_branch"});
-        BranchState const& parent_state = it->second;
-        std::string child_name =
-            parent.name() + "/child-" + std::to_string(created_by.id()) + "-" +
-            std::to_string(branch_seq_++);
-        auto acl_ok = insert_acl_root_bounded(tree_acl_, parent_state.head_tree_digest, created_by.id());
-        if (!acl_ok.has_value()) co_return std::unexpected(acl_ok.error());
-        BranchState child_state = parent_state;
-        child_state.created_by_id = created_by.id();
-        // The child's merge `base` is the PARENT's tree AT THIS EXACT MOMENT -- not copied from
-        // parent_state.base_tree_digest (that would be the PARENT's own ancestor, wrong common
-        // ancestor entirely). child_state.head_tree_digest (already correctly copied from
-        // parent_state above) IS the right value here, since a fresh child's head starts equal to
-        // its base by definition; the two fields diverge only once the child (or parent) commits
-        // further.
-        child_state.base_tree_digest = parent_state.head_tree_digest;
-        branches_.insert_or_assign(child_name, child_state);
-        persist_snapshot_locked();
-        co_return BranchHandle<Store>(this, child_name, created_by.id(), parent_state.head_tree_digest);
+        // Same fix as commit() above: compute the outcome with `mutex_` released before any
+        // co_await, and refund the branch-cost unit on any failure rather than burning it silently.
+        result<BranchHandle<Store>> outcome = [&]() -> result<BranchHandle<Store>> {
+            std::lock_guard<std::mutex> g(mutex_);
+            auto it = branches_.find(parent.name());
+            if (it == branches_.end())
+                return std::unexpected(error{"unknown parent branch", "ledger.unknown_branch"});
+            BranchState const& parent_state = it->second;
+            std::string child_name =
+                parent.name() + "/child-" + std::to_string(created_by.id()) + "-" +
+                std::to_string(branch_seq_++);
+            auto acl_ok = insert_acl_root_bounded(tree_acl_, parent_state.head_tree_digest, created_by.id());
+            if (!acl_ok.has_value()) return std::unexpected(acl_ok.error());
+            BranchState child_state = parent_state;
+            child_state.created_by_id = created_by.id();
+            // The child's merge `base` is the PARENT's tree AT THIS EXACT MOMENT -- not copied
+            // from parent_state.base_tree_digest (that would be the PARENT's own ancestor, wrong
+            // common ancestor entirely). child_state.head_tree_digest (already correctly copied
+            // from parent_state above) IS the right value here, since a fresh child's head starts
+            // equal to its base by definition; the two fields diverge only once the child (or
+            // parent) commits further.
+            child_state.base_tree_digest = parent_state.head_tree_digest;
+            branches_.insert_or_assign(child_name, child_state);
+            persist_snapshot_locked();
+            return BranchHandle<Store>(this, child_name, created_by.id(), parent_state.head_tree_digest);
+        }();
+
+        if (!outcome.has_value()) {
+            (void)co_await quota.refund(1);
+            co_return std::unexpected(outcome.error());
+        }
+        co_return std::move(*outcome);
     }
 
     // §34/A4: REAL three-way merge, wired to the actual, previously-standalone-only `merge_trees()`
@@ -423,6 +471,19 @@ public:
     // other mutating method already requires -- `parent.name()` replaces the caller-supplied
     // string entirely, so resolving which branch to merge into now depends on ALREADY HOLDING it,
     // never on merely knowing or guessing its name.
+    // REAL FINDING a code-review pass caught: every rejection path below used to set
+    // `child.resolved_ = true` directly, which suppresses `BranchHandle`'s own destructor-time
+    // `maybe_queue_abandon()` -- since `child` is taken BY VALUE (the caller's own handle is
+    // consumed regardless of outcome), a rejected merge permanently stranded the branch: still
+    // present in `branches_` (so `head_tree_digest()`/`checkpoint_at()` could still read it, which
+    // is what `probe_ledger_merge.cpp`'s own Scenario 2 checked) but with NO live handle anywhere
+    // and NOT registered as an orphan, so `reclaim_orphaned_branch()`/`abandon_orphaned_branch()`
+    // both reject it as "not a recognized orphan" -- a real dead end, not the "still there for a
+    // real caller to retry or explicitly abandon" that same probe's own comment claimed. Fixed by
+    // registering the branch into `orphaned_from_restart_` on every rejection path instead: it is,
+    // by A7's own definition, a branch with no live handle in this process -- the exact condition
+    // that set already exists to track -- so the caller now gets a real, working reclaim path via
+    // the already-proven A7 API, not silent, permanent loss.
     [[nodiscard]] agentengine::rt::task<result<Checkpoint>> merge(BranchHandle<Store> child,
                                                                       BranchHandle<Store> const& parent,
                                                                       Principal requested_by) {
@@ -430,6 +491,9 @@ public:
         auto child_it = branches_.find(child.name());
         auto parent_it = branches_.find(parent.name());
         if (child_it == branches_.end() || parent_it == branches_.end()) {
+            // The child branch itself may still be unknown too (a stale/already-consumed handle) --
+            // only register it as a reclaimable orphan if it genuinely still exists.
+            if (child_it != branches_.end()) orphaned_from_restart_.insert(child.name());
             child.resolved_ = true;
             co_return std::unexpected(error{"unknown branch in merge()", "ledger.unknown_branch"});
         }
@@ -440,6 +504,7 @@ public:
         agentengine::Digest const base_digest = child_state.base_tree_digest;
 
         if (!authorized_for(tree_acl_, theirs_digest, requested_by)) {
+            orphaned_from_restart_.insert(child.name());
             child.resolved_ = true;
             co_return std::unexpected(error{
                 "merge requester is not authorized for the child branch's head tree digest",
@@ -450,6 +515,7 @@ public:
         auto ours_tree = store_.get_tree(ours_digest);
         auto theirs_tree = store_.get_tree(theirs_digest);
         if (!base_tree.has_value() || !ours_tree.has_value() || !theirs_tree.has_value()) {
+            orphaned_from_restart_.insert(child.name());
             child.resolved_ = true;
             co_return std::unexpected(error{"merge could not load base/ours/theirs from the object "
                                               "store", "ledger.merge_tree_load_failed"});
@@ -457,6 +523,7 @@ public:
 
         MergeResult merged = merge_trees(*base_tree, *ours_tree, *theirs_tree);
         if (!merged.conflicts.empty()) {
+            orphaned_from_restart_.insert(child.name());
             child.resolved_ = true;
             co_return std::unexpected(error{
                 "merge produced " + std::to_string(merged.conflicts.size()) +
@@ -469,6 +536,7 @@ public:
         for (auto const& entry : merged.merged.entries) {
             auto const& acl = entry.is_tree ? tree_acl_ : blob_acl_;
             if (!authorized_for(acl, entry.digest, requested_by)) {
+                orphaned_from_restart_.insert(child.name());
                 child.resolved_ = true;
                 co_return std::unexpected(error{
                     "merge result references digest '" + entry.digest.substr(0, 12) +
@@ -480,12 +548,14 @@ public:
 
         auto merged_tree_digest = store_.put_tree(std::move(merged.merged));
         if (!merged_tree_digest.has_value()) {
+            orphaned_from_restart_.insert(child.name());
             child.resolved_ = true;
             co_return std::unexpected(error{merged_tree_digest.error().message,
                                               "worktree_ledger.put_tree_failed"});
         }
         auto acl_ok = insert_acl_root_bounded(tree_acl_, *merged_tree_digest, requested_by.id());
         if (!acl_ok.has_value()) {
+            orphaned_from_restart_.insert(child.name());
             child.resolved_ = true;
             co_return std::unexpected(acl_ok.error());
         }
@@ -494,6 +564,7 @@ public:
         auto self = compute_self_digest(*merged_tree_digest, parent_state.head_self_digest,
                                           requested_by.id(), new_turn);
         if (!self.has_value()) {
+            orphaned_from_restart_.insert(child.name());
             child.resolved_ = true;
             co_return std::unexpected(self.error());
         }
@@ -550,27 +621,54 @@ public:
         co_return processed;
     }
 
-    [[nodiscard]] agentengine::Digest head_tree_digest(std::string const& branch_name) const {
+    // REAL FINDING a code-review pass caught: this method used to take no `Principal` at all and
+    // perform no `authorized_for()` check, unlike every other Ledger accessor -- since branch names
+    // are deterministically guessable (`root-<owner_id>`, `<parent>/child-<id>-<seq>`), ANY caller
+    // could enumerate an arbitrary branch's current head digest with zero identity check. The
+    // digest itself is metadata, not content, but it is still gated the same way `get_tree_safe()`
+    // gates the tree it names -- knowing a branch's name must not be enough on its own.
+    [[nodiscard]] result<agentengine::Digest> head_tree_digest(std::string const& branch_name,
+                                                                   Principal caller) const {
         std::lock_guard<std::mutex> g(mutex_);
         auto it = branches_.find(branch_name);
-        return it == branches_.end() ? agentengine::Digest{} : it->second.head_tree_digest;
+        if (it == branches_.end())
+            return std::unexpected(error{"unknown branch", "ledger.unknown_branch"});
+        if (!authorized_for(tree_acl_, it->second.head_tree_digest, caller)) {
+            return std::unexpected(error{"caller is not authorized to read this branch's head tree "
+                                          "digest", "ledger.tree_access_denied"});
+        }
+        return it->second.head_tree_digest;
     }
 
-    // Read-only checkpoint-history introspection, mirroring `head_tree_digest()`'s own existing
-    // "digest metadata is not identity-gated, only the CONTENT a digest addresses is" precedent
-    // (already true of `head_tree_digest()` before this method existed) -- deliberately NOT a
-    // "resolve a branch by name into a mutation-capable handle" capability, which would reopen
-    // exactly the object-possession security property §29's own Attack 4 analysis confirmed this
-    // Ledger's real public API deliberately lacks. Added to let a caller that has lost its live
-    // `BranchHandle` (e.g. across a process restart, before A7's own reservation mechanism exists)
-    // still verify checkpoint HISTORY survived durably, without granting it any new mutating power.
-    [[nodiscard]] std::optional<Checkpoint> checkpoint_at(std::string const& branch_name,
-                                                             std::uint64_t turn_index) const {
+    // Read-only checkpoint-history introspection -- deliberately NOT a "resolve a branch by name
+    // into a mutation-capable handle" capability, which would reopen exactly the object-possession
+    // security property §29's own Attack 4 analysis confirmed this Ledger's real public API
+    // deliberately lacks. Added to let a caller that has lost its live `BranchHandle` (e.g. across
+    // a process restart, before A7's own reservation mechanism exists) still verify checkpoint
+    // HISTORY survived durably, without granting it any new mutating power.
+    //
+    // REAL FINDING a code-review pass caught: this method, like `head_tree_digest()` above, used to
+    // take no `Principal` and perform no `authorized_for()` check -- since `checkpoint_at()` returns
+    // `authored_by_id` and turn-index history, not merely a digest, "digest metadata isn't identity-
+    // gated" never actually covered it: any caller could enumerate WHO authored each turn of an
+    // arbitrary branch and how many turns occurred, by guessable name alone. Gated on the SPECIFIC
+    // checkpoint's own tree digest (not the branch's current head), so access to one historical
+    // checkpoint doesn't require -- or imply -- access to whatever the branch's head has since
+    // become.
+    [[nodiscard]] result<Checkpoint> checkpoint_at(std::string const& branch_name,
+                                                      std::uint64_t turn_index,
+                                                      Principal caller) const {
         std::lock_guard<std::mutex> g(mutex_);
         auto it = branches_.find(branch_name);
-        if (it == branches_.end()) return std::nullopt;
+        if (it == branches_.end())
+            return std::unexpected(error{"unknown branch", "ledger.unknown_branch"});
         auto cp_it = it->second.checkpoints.find(turn_index);
-        if (cp_it == it->second.checkpoints.end()) return std::nullopt;
+        if (cp_it == it->second.checkpoints.end())
+            return std::unexpected(error{"no such checkpoint", "ledger.no_such_checkpoint"});
+        if (!authorized_for(tree_acl_, cp_it->second.tree, caller)) {
+            return std::unexpected(error{"caller is not authorized to read this checkpoint's tree "
+                                          "digest", "ledger.tree_access_denied"});
+        }
         return cp_it->second;
     }
 

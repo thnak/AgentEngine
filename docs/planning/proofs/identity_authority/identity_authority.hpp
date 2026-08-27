@@ -252,11 +252,27 @@ private:
         }
     }
 
+    // REAL FINDING a code-review pass caught: this used to write the high-water-mark via a plain
+    // truncating ofstream -- since `allocate_id()` calls this on EVERY mint, a crash mid-write
+    // leaves a truncated/unparseable file that `load_durable_state()` cannot tell apart from "no
+    // file yet," silently resetting `next_id_` to 1 and re-issuing already-live principal ids --
+    // directly undermining A1's own durable-identity goal. Fixed with the same temp-file + atomic-
+    // rename discipline `worktree_ledger.hpp`'s `persist_snapshot_locked()` already uses for
+    // exactly this reason: `std::filesystem::rename` is atomic at the filesystem level, so a reader
+    // after a crash sees either the complete OLD value or the complete NEW one, never a partial file.
     void persist_high_water_mark(std::uint64_t next_id) const {
         if (!durable_dir_) return;
-        std::ofstream out(*durable_dir_ / "identity_next_id.txt", std::ios::trunc);
-        out << next_id;
-        out.flush();
+        std::filesystem::path const final_path = *durable_dir_ / "identity_next_id.txt";
+        std::filesystem::path const temp_path = *durable_dir_ / "identity_next_id.txt.tmp";
+        {
+            std::ofstream out(temp_path, std::ios::trunc);
+            out << next_id;
+            out.flush();
+        }
+        std::error_code ec;
+        std::filesystem::rename(temp_path, final_path, ec);
+        // A rename failure here is intentionally not escalated -- same best-effort durability
+        // posture this document already established for persist_snapshot_locked()/put_tree().
     }
 
     void append_adopted_record(std::string const& real_id, std::uint64_t id) const {
