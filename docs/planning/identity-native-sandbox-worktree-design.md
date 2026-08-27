@@ -4647,3 +4647,57 @@ number for any real deployment — still real usage data this document does not 
 cross-session-sharing scenario (the actual driver, once isolated from A10's own dominant same-owner
 pattern) is common enough in practice to matter — plausible, not measured. Production wiring for either
 fix — unchanged from every other A-numbered item's own scope boundary, not attempted here.
+
+## 41. A10's own finding 4, closed — `cap::decl::TaskBranch`/`TaskBranchCommit`, a real capability declaration
+
+§39's own header comment named a real, deliberately-deferred gap: no capability-declaration design
+existed for who may call `start_task_branch`/`run_in_task_branch`/`commit_task_branch`/
+`discard_task_branch` at all, unlike `RunShellTool`'s real, shipped `Capabilities<cap::decl::FsRead
+<"work">, ...>` precedent. Prompted by the user asking directly for this design.
+
+**The decision, confirmed with the user before building it**: two tags, not one.
+`cap::decl::TaskBranch` gates `start`/`run`/`discard` — fully isolated on a child branch, never
+touching the session's own main line. `cap::decl::TaskBranchCommit`, required ADDITIONALLY, gates
+`commit` — merging real work INTO main, a meaningfully more consequential authority, mirroring
+`cap::FsRead`/`cap::FsWrite`'s own read-vs-write split on one mount. **Precision the design states
+plainly rather than leaving implicit** (correctness red-team finding): the analogy is real but
+imperfect — FsRead/FsWrite are each independently meaningful; `TaskBranchCommit` alone is never
+independently meaningful, since `commit_task_branch()` can only operate on a handle
+`start_task_branch()` (itself gated by `TaskBranch`) produced. The dependency is enforced entirely by
+the TOOL's own declared ceiling (a real `TaskBranchCommitTool` must declare both tags together), never
+by any relationship between the grants themselves — a host granting `TaskBranchCommit` alone would
+simply find no real tool accepts that combination, an inert grant, not an exploitable gap.
+
+**Built deliberately in prove-phase code, not production**: `docs/planning/proofs/task_branch_tool/
+task_branch_capability.hpp` mirrors the real `agentengine::cap::decl::*` shape (compile-time
+declaration tag, distinct runtime marker type, a `to_capability()` bridge) exactly, but lives under
+`docs/planning/proofs/`, never `include/agentengine/` — extending the real, closed `Capability`
+variant/`capability_kind` enum/exhaustive switches for a feature with no real caller yet would be
+exactly the premature-production-surgery this whole design track has consistently declined (ADR-099's
+own "no production code has been written or merged from this design," confirmed explicitly to the user
+mid-session: "production wiring isn't something to fear here... deliberately NOT part of this phase").
+
+**Real, adversarially-checked proof — including a real, honestly-diagnosed negative result, not just
+a positive one.** `probe_task_branch_capability.cpp` confirms both tags compile as ordinary type
+arguments to the REAL, unmodified production `agentengine::Capabilities<...>` container. It ALSO
+confirms — by an actual isolated compile attempt against the real `Tool<>`/`declared_capabilities()`
+machinery, not by assumption — that driving these tags all the way through a real `Tool<>` does NOT
+compile today, for two precise reasons: an ADL/namespace-nesting gap (real, but self-inflicted by this
+file's own choice to mirror the real system's exact nesting for a smaller eventual promotion diff —
+confirmed fixable within prove-phase code alone, not fundamental), and the real `Capability` variant
+being closed with no `TaskBranch` alternative (confirmed by direct read: 19 real alternatives, none
+named `TaskBranch` — this one IS genuinely unavoidable without editing production code). Both findings
+came from an independent correctness/security red-team round that reproduced the compile failure
+itself, checked the FsRead/FsWrite analogy's own precision, confirmed the constructor-injected
+`AsyncQuota` references and the new capability tags are separate host responsibilities with no bad
+interaction, and confirmed no model-influenced value comes anywhere near a capability decision in this
+design — zero fatal findings, two wording corrections, both folded into the design visibly.
+
+**What this closes**: §39's finding 4 is now `[FIXED, at the design level]` in `task_branch_sandbox.hpp`'s
+own header comment — the declarative, host-auditable shape exists, is real, and is proven, both what
+it establishes and what it doesn't. **What this does NOT close**: real `Tool<>` wiring (four separate
+tools — `TaskBranchStartTool`/`TaskBranchRunTool`/`TaskBranchDiscardTool`/`TaskBranchCommitTool` — the
+commit tool alone declaring both tags), and promoting these tags into `agentengine::cap::decl` for
+real (inheriting the `Capability` variant/`capability_kind` extension every other real `cap::X`
+addition already required) — both explicitly deferred, matching every other A-numbered item's own
+scope boundary, not attempted here.

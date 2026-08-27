@@ -394,5 +394,14 @@ prove → judge cycle:**
   only via the lower-level A7 API, not through this tool's own handle — is now closed for real, using
   that same A7 `reclaim_orphaned_branch()` API: `commit_task_branch()` reclaims and re-surfaces the
   branch under its original `handle_id` on any merge rejection (14/14 checks). Independently
-  red-teamed (correctness/concurrency), zero fatal findings. Still governed by every residual above:
-  no production wiring, no capability-decl design, not Judged.
+  red-teamed (correctness/concurrency), zero fatal findings. **Update, §41 (2026-08-27)**: the
+  capability-decl gap is also now closed, at the design level — `cap::decl::TaskBranch`/
+  `TaskBranchCommit` (`task_branch_capability.hpp`), a real, two-tag declaration mirroring the
+  production `cap::decl::*` shape exactly, kept in prove-phase code deliberately (extending the real,
+  closed `Capability` variant for a feature with no real caller yet would be premature production
+  surgery). Proven for real, including an honestly-diagnosed NEGATIVE result: driving these tags
+  through a real `Tool<>`'s `declared_capabilities()` does not compile today, for two precise reasons,
+  one self-inflicted-but-fixable (an ADL/namespace gap), one genuinely unavoidable without editing
+  production code (the closed `Capability` variant has no `TaskBranch` alternative). Independently
+  red-teamed, zero fatal findings, two wording corrections folded in. Still governed by every residual
+  above: no production wiring, no real `Tool<>` binding, not Judged.

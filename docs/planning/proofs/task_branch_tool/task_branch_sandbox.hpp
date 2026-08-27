@@ -75,14 +75,26 @@
 //      more work, or discard) instead of becoming "unknown handle" on the very next call. Proven in
 //      probe_task_branch_tool.cpp's own dedicated check, following directly from the existing
 //      conflict check.
-//   4. [Disclosed, not fixed -- real, deliberately deferred] No capability-declaration design exists
-//      for who may call `start_task_branch`/`commit_task_branch`/`discard_task_branch` at all,
-//      unlike `RunShellTool`'s real `Capabilities<cap::decl::FsRead<"work">, ...>` precedent. The
-//      constructor-injected `AsyncQuota<BranchCost>&`/etc. references likely ARE a sufficient
-//      runtime gate under this project's own "possession is authorization" idiom (mirroring how
-//      `Ledger::abandon()` itself needs no separate check, per this file's own comment below), but
-//      a declarative, host-auditable `cap::decl::TaskBranch<...>`-shaped tag is real, unbuilt design
-//      work, named here rather than silently assumed solved.
+//   4. [FIXED, 2026-08-27, at the design level -- real Tool<> wiring still deferred] No
+//      capability-declaration design existed for who may call `start_task_branch`/
+//      `run_in_task_branch`/`commit_task_branch`/`discard_task_branch` at all, unlike `RunShellTool`'s
+//      real `Capabilities<cap::decl::FsRead<"work">, ...>` precedent. Closed by
+//      `task_branch_capability.hpp`: TWO tags, not one -- `cap::decl::TaskBranch` (required by
+//      start/run/discard, which stay isolated on a child branch and never touch main) and
+//      `cap::decl::TaskBranchCommit` (required ADDITIONALLY by commit, which merges real work INTO
+//      main -- a meaningfully more consequential authority, confirmed as the right split with the
+//      project owner before building it, mirroring `cap::FsRead`/`cap::FsWrite`'s own read-vs-write
+//      distinction on one mount). Proven real, both what it establishes and what it does not:
+//      `probe_task_branch_capability.cpp` confirms both tags compile as ordinary type arguments to
+//      the REAL production `agentengine::Capabilities<...>`, AND confirms (by an actual isolated
+//      compile attempt, not assumption) that driving them through a real `Tool<>`'s
+//      `declared_capabilities()` does NOT compile today -- for two precise, documented reasons
+//      (an ADL/namespace-nesting gap, and the real `Capability` variant being closed with no
+//      `TaskBranch` alternative) that promotion into `agentengine::cap::decl` would close as a normal
+//      consequence, not a surprise. The constructor-injected `AsyncQuota<BranchCost>&`/etc.
+//      references remain the real, already-proven RATE gate (§39/§40); these two tags are the
+//      separate, host-auditable MEMBERSHIP gate ("may this agent have task-branch tooling, and commit
+//      with it, at all") that was actually missing.
 //   5. [Disclosed, not fixed -- likely a non-issue] Whether `commit_task_branch`/`discard_task_branch`
 //      should touch an `AgentSession`'s own conversation/turn history at all is unaddressed.
 //      Claude Code's own `/rewind` (per the 2026-08-27 research) treats file-restore and
