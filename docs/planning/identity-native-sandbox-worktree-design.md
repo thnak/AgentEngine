@@ -4256,3 +4256,158 @@ justified, repeatedly, not merely theoretical.
 §38.4's remaining four leads are still not acted on. This is an ongoing external-validation
 practice for this design, not its completion — the honest expectation, consistent with every other
 review round in this document, is that continuing it would find more.
+
+## 39. A10 — a real, agent-callable task-branch surface, closing the use-case research's own #1 finding
+
+A second, complementary external-validation pass (2026-08-27, `docs/research/2026-08-27-real-
+world-agent-use-case-coverage.md`) asked a different question from §38's: not "can this design be
+attacked," but "does this design actually support the real workflows shipped AI agent products
+support." Five context-free research agents surveyed coding-agent sandboxes, long-running/crash-
+recoverable agents, multi-agent delegation, enterprise tool governance, and computer-use agents,
+against real, named, currently-shipping products — then a context-aware pass cross-checked six
+concrete mechanisms against AgentEngine's actual, current `include/agentengine/`/`src/` code (not
+this document's own prove-phase sketches). The single highest-confidence finding: **every actively-
+developed coding agent surveyed — Claude Code (`--worktree`), Cursor (`/worktree`, `/best-of-n`),
+GitHub Copilot's coding agent (per-session worktree, `copilot/*`-branch-only push) — ships git-
+worktree-per-task isolation as its PRIMARY mechanism**, and this design had every underlying
+primitive (`Ledger::branch_from`/`merge`/`abandon`, §34; `SandboxRuntime::spawn_child_branch`, §36)
+proven standalone but genuinely zero agent/tool-facing call path — confirmed by direct grep of the
+real, current codebase, not assumed. This section closes that gap: not by wiring into the real
+production `Tool<>`/`AgentSession` build (an implementation-time decision, matching every other
+A-numbered item in this document), but by designing and proving, at the same standalone-C++23 bar
+this whole document holds itself to, the tool-facing surface that was missing.
+
+### 39.1 The mechanism — `TaskBranchSandbox`, a real try/commit/discard verb
+
+Grounded first in the real, shipped precedent (a dedicated research pass read
+`src/backends/native_jail/session_shell_wiring.hpp`/`sandbox_tool_provider.hpp` directly): a real
+`Tool<>` declares schema/capability shape, while the actual behavior lives in a session-scoped
+object constructed once per session (`SessionShellSandbox`'s own real role) — `RunShellTool`'s own
+`invoke()` is an unreachable stub; the real dispatch is a closure over that session object. This
+section's new `TaskBranchSandbox<Surface>` (`docs/planning/proofs/task_branch_tool/
+task_branch_sandbox.hpp`) follows the identical shape, and needed almost no new lower-level
+machinery: `SandboxRuntime::spawn_child_branch()` (§36, already proven) is `start_task_branch`
+verbatim. Two small, genuinely new additions to `SandboxRuntime` itself close the loop —
+`merge_into(SandboxRuntime const&, Principal) &&` (consumes the child, folds its work into a
+parent's branch via `Ledger::merge()`'s already-proven, §34.4/§34.7, real three-way merge) and
+`discard() &&` (consumes the child, abandons its branch via `Ledger::abandon()`, no authorization
+check needed since possessing the `BranchHandle` at all already required an authorized
+`spawn_child_branch()` call — possession IS the authorization, the same discipline every other
+mutating Ledger call in this design already follows). Four tool-shaped verbs result:
+`start_task_branch` (fork an isolated child from the session's current main head),
+`run_in_task_branch` (the SAME `SandboxRuntime::run()` every other execution path already uses,
+addressed at the child), `commit_task_branch` (fold the child's real work into main), and
+`discard_task_branch` (throw the child's work away, main untouched) — a `handle_id`-based,
+one-shot-consumption API, deliberately carrying no caller-suppliable path/principal/authority field
+anywhere in its `Args` (I3): every operation's authority comes from the calling session's own
+already-bound `TaskBranchSandbox` and already-held quota, never from anything a tool call's own
+arguments could name.
+
+### 39.2 Real, live proof, first pass — 10/10 checks pass against a real Docker daemon on the first run
+
+`probe_task_branch_tool.cpp`'s first version compiled clean and passed all 10 of its own checks
+against a live Docker daemon on the first execution — isolation (a task branch's real work is
+invisible to main until committed), commit (main genuinely gains the committed content), discard
+(main is byte-for-byte unaffected, even though the discarded work genuinely ran and genuinely
+committed to the child branch), one-shot consumption (a repeated commit or discard on an
+already-consumed handle fails closed), a fabricated handle fails closed, cross-session isolation (a
+SECOND, independent `TaskBranchSandbox` instance presented with the first session's real, live
+handle is rejected on both run and commit, proving the `handle_id` string's own unguessability was
+never the security boundary — per-instance map scoping is), a real merge conflict (two branches
+that both modify the same file: the first commits cleanly, the second's later commit is REJECTED,
+main is never corrupted), and real `BranchCost` quota gating.
+
+### 39.3 Three independent, parallel red-team rounds — one fatal, corroborated by all three; three more real, fixed or precisely disclosed
+
+Matching this document's own established practice (§36.3, §37.2) for a first design pass: three
+independent adversarial agents (security/I2-I3, C++ correctness, architecture-fit) attacked the
+first version in parallel, with no coordination between them.
+
+**Finding 1 — FATAL, found independently by all three passes**: `TaskBranchSandbox::active_` (the
+`std::map<std::string, SandboxRuntime>` naming every live task branch) had no synchronization of
+its own, unlike every sibling mutable structure in this whole design (`Ledger::mutex_`,
+`RealIoFileSystem::sync_mutex_`, `SandboxRuntime::exclusivity_` — §36's own text records the
+IDENTICAL bug class being found and fixed for `SandboxRuntime::run()` itself: "two concurrent
+`run()` calls on the SAME instance... could interleave mid-turn"). A concurrent `commit_task_branch`
+or `discard_task_branch` on a handle another coroutine was still using mid-`co_await` inside
+`run_in_task_branch` could erase-then-consume the exact map entry the first call's `it` iterator
+still pointed at — real memory corruption, not a benign race, and a real possibility given this
+substrate's own documented property that a coroutine "may resume on a different OS thread than it
+suspended on" and given that modern tool-calling APIs routinely dispatch multiple tool calls from
+one model turn concurrently. **Fixed**: an `exclusivity_` guard, identical in kind to
+`SandboxRuntime`'s own, now wraps the full body of every method that touches `active_`.
+
+**Finding 2 — MUST-FIX, security pass**: `discard_task_branch()` never refunded the `BranchCost`
+unit `start_task_branch()` spent — an agent trying and discarding N approaches paid for N branches
+with nothing kept, a self-inflicted quota exhaustion contradicting this design's own established
+refund-on-"nothing kept" discipline (`RunCost`'s own precedent, §36). **Fixed**: a successful
+discard now refunds 1 unit, proven by a dedicated check (a quota of exactly 1: a second
+`start_task_branch` is rejected while the first is live, succeeds immediately after discarding it).
+
+**Finding 3 — MUST-FIX, architecture-fit pass, closed for real rather than merely disclosed**: the
+stated composition with A9's `MandatorySandboxProvider` ("the session's main `SandboxRuntime` an
+already-existing binding mechanism would have already established") was asserted, not designed —
+`MandatorySandboxProvider` follows the same "no raw reference out" discipline as `SandboxRuntime`
+itself, and nothing in its real interface handed an external collaborator a `SandboxRuntime&` to
+compose with. Traced to the root cause: `merge_into`'s `parent` parameter only ever needed
+`Ledger::merge()`'s own read-only `BranchHandle const&` requirement — re-typing it from
+`SandboxRuntime&` to `SandboxRuntime const&` means `TaskBranchSandbox` now composes DIRECTLY with
+`MandatorySandboxProvider::runtime()`, which already, deliberately, only ever hands back a
+`SandboxRuntime const*` (§37) — no new accessor needed on that class at all. A real integration gap
+closed by a signature choice, not left as an assertion.
+
+**Finding 4 — MUST-FIX, architecture-fit pass, precisely disclosed rather than overclaimed or
+fixed**: an earlier draft's own comments conflated two genuinely different real-world patterns under
+one "commit" verb. The classic **best-of-N** pattern (Cursor's own `/best-of-n`: spawn N children
+from the SAME still-unmoved base, evaluate, commit exactly ONE, discard the rest) commits with ZERO
+conflict risk — `merge_trees(base, ours=base, theirs=child)` is a pure fast-forward when main has
+not moved since the children were spawned, proven by a dedicated three-attempt check regardless of
+which of the three is chosen. A DIFFERENT, also-real pattern — **sequential/interleaved commits**
+of two branches that both modify the same path, where the second's `base` goes stale the moment the
+first commits — correctly REJECTS rather than corrupts anything (§39.2's conflict check), but the
+rejected branch's real work becomes addressable only through the lower-level A7 orphan-reclaim API,
+never through this tool surface's own handle again. These are now named separately and precisely,
+each with its own proof, rather than one conflated, overclaimed "closes it" comment.
+
+**Two further items, disclosed rather than fixed, matching this document's own repeated "close what's
+closable now, disclose the rest honestly" practice**: no capability-declaration design exists yet
+for who may call these four verbs at all (unlike `RunShellTool`'s real `Capabilities<...>`
+precedent — the constructor-injected `AsyncQuota` references likely ARE a sufficient runtime gate
+under this project's "possession is authorization" idiom, but a declarative, host-auditable tag is
+real, unbuilt work); and whether `commit_task_branch`/`discard_task_branch` should touch an
+`AgentSession`'s own conversation/turn history is unaddressed — Claude Code's own `/rewind` (per
+the 2026-08-27 research) treats file-restore and conversation-restore as independently selectable
+by default, the strongest real precedent found, suggesting leaving these decoupled here too is the
+industry-accepted choice, stated explicitly now rather than left to silence.
+
+### 39.4 Full re-verification — 13/13 checks (3 new, proving the round-2 fixes), zero regressions across every other consumer
+
+The fixed version was recompiled clean and rerun against a live Docker daemon: all 10 original
+checks still pass, plus three new ones proving the fixes specifically — real `BranchCost` refund on
+discard (check 11), a genuine three-attempt best-of-N committing with zero conflict risk regardless
+of which attempt is chosen (check 12, distinct from and unaffected by the sequential-conflict check),
+and true interleaved multi-handle usage (two task branches held open simultaneously in one session,
+real work alternating between them, each branch's own state undisturbed by the other's — check 13).
+Every other real consumer of `sandbox_runtime.hpp` (`probe_execution_surface.cpp`'s A3 suite,
+`probe_mandatory_sandbox.cpp`'s A9 suite) was recompiled and rerun to completion with zero
+regressions from the `merge_into`/`discard` additions or the `const`-reference retyping.
+
+### 39.5 What this pass does and does not establish
+
+**Established**: a real, adversarially-proven, tool-shaped surface for the git-worktree-per-task
+pattern the 2026-08-27 use-case research found every actively-developed coding agent ships as its
+primary isolation mechanism — not merely disconnected lower-level primitives, and not merely
+designed on paper: 13 real checks against a live Docker daemon, three independent red-team rounds
+converging on the same fatal finding from three different angles (a strong signal, not a lucky
+guess), every real finding either fixed with a new proof or disclosed with the same precision this
+whole document applies everywhere else. The stated composition with A9's `MandatorySandboxProvider`
+is now real (a signature choice, not an assertion), closing a gap an independent pass found in this
+same section's own first draft.
+
+**NOT established**: wiring into the real, production `include/agentengine/` `Tool<>`/`AgentSession`
+build — deliberately, matching A3/A9/every other A-numbered item's own scope boundary; a real
+`cap::decl::TaskBranch<...>`-shaped capability declaration; conversation-history coupling (or its
+deliberate absence) as anything more than a disclosed, reasoned choice; automatic reattachment of a
+conflict-rejected branch to a fresh handle through this tool surface, rather than only through the
+lower-level A7 API; and — the standing caveat every review round in this document carries forward —
+convergence for THIS pass, not exemption from whatever the next one finds.

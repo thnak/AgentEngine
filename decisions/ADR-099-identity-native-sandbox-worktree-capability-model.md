@@ -15,9 +15,12 @@ to future ADRs of their own, matching this project's own convention (e.g. ADR-01
 ADR-086 → ADR-087) — do not treat their absence here as an oversight.
 
 **Full design record** (the actual "the full record — N revisions, N red-team rounds" this ADR
-summarizes, not duplicates): `docs/planning/identity-native-sandbox-worktree-design.md` (3,700+
-lines, §0–§35) and its superseded predecessor `docs/planning/mandatory-session-worktree-design.md`
-(4 revisions, 4 red-team rounds, kept as-is per that document's own header — Design A below).
+summarizes, not duplicates): `docs/planning/identity-native-sandbox-worktree-design.md` (grown past
+§35 to §39 as of 2026-08-27 — A3/A9 execution-surface and mandatory-sandbox-binding work, external
+CVE/incident validation, and A10's task-branch tool surface, all post-dating this ADR's own last
+edit; check the design doc's own section list rather than trusting a stale line count here) and its
+superseded predecessor `docs/planning/mandatory-session-worktree-design.md` (4 revisions, 4
+red-team rounds, kept as-is per that document's own header — Design A below).
 
 **Relates to:** `007-Capability-and-Trust-Model.md` (`CapabilitySet`, I2/I3 — the model Design A
 retrofits onto and Design B replaces), `008-Sandbox-and-Isolation.md` (the mandatory-sandbox
@@ -342,3 +345,13 @@ prove → judge cycle:**
   pieces quietly failing to converge" risk (the original motivating concern for the entire 9-step
   closure pass that produced §34). Any future change to a shared primitive in this stack should
   re-run the FULL probe suite, not just the probes it appears to touch, as a matter of course.
+- **A10 (§39, 2026-08-27)**: a real-world-use-case research pass (`docs/research/2026-08-27-real-
+  world-agent-use-case-coverage.md`, separate from §38's attack-focused external validation) found
+  this design's central gap wasn't a security defect but a missing tool-facing surface: every
+  actively-developed coding agent surveyed ships git-worktree-per-task isolation as its primary
+  mechanism, and this design had the underlying primitives proven but zero agent-callable path to
+  them. `TaskBranchSandbox` (start/run/commit/discard, `docs/planning/proofs/task_branch_tool/`)
+  closes this at the same standalone-prove-phase bar as everything else in this document — three
+  independent red-team rounds, one fatal finding (an unsynchronized handle table) corroborated by
+  all three, all fixed and re-proven (13/13 checks against live Docker). Still governed by every
+  residual above: no production wiring, no capability-decl design, not Judged.
