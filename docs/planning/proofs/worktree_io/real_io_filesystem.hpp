@@ -10,7 +10,6 @@
 // restores real bytes on real disk, not just an in-memory record of "what the tree contains."
 
 #include <filesystem>
-#include <fstream>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -18,6 +17,7 @@
 #include <utility>
 #include <vector>
 
+#include "agentengine/core/worktree_mount_fs.hpp"
 #include "agentengine/core/worktree_types.hpp"
 #include "agentengine/rt/async_mutex.hpp"
 #include "agentengine/rt/task.hpp"
@@ -26,6 +26,14 @@
 #include "worktree_ledger.hpp"
 
 namespace probe {
+
+// §38: bridges a real `agentengine::error` (klass/message/code/native_code) from
+// `open_within_mount_root` down to this file's own probe::error(message, code) shape -- verbatim,
+// not relabeled, so a caller inspecting `.code` sees the REAL underlying mechanism's own error
+// code (e.g. "worktree.mount_path_escapes_root"), not a synthetic string invented to look familiar.
+[[nodiscard]] inline error to_probe_error(agentengine::error const& e) {
+    return error{e.message, e.code};
+}
 
 // A REAL, previously-missing safety check: this design's own no-reuse-of-Mount/mount_read framing
 // (§27) means path safety is THIS file's own responsibility, not inherited from the real
@@ -52,16 +60,18 @@ namespace probe {
     return result<void>{};
 }
 
-// A SECOND, independent check for a DIFFERENT attack the lexical check above cannot see: a
-// pre-existing symlink somewhere in the path (no literal ".." in `relative_path` at all -- e.g. a
-// directory entry named "link" that is itself a symlink to an out-of-tree location, then
-// "link/evil.txt" resolves outside host_root_ with no ".." token anywhere). Resolves the full path
-// through any existing symlinks (weakly_canonical -- safe to call even if the final path component
-// doesn't exist yet, which real writes need) and verifies the result still lives under host_root_'s
-// own canonical form. HONEST RESIDUAL, not closed here: this is a check-then-use gap (TOCTOU) --  a
-// symlink created AFTER this check returns but BEFORE the actual open() call races it, the same class
-// of gap this design's own §11/§22 already disclose for native-shell mediation rather than claim
-// solved.
+// §38 TOCTOU replay (probe_toctou_symlink_race.cpp) proved this function's own disclosed residual
+// is a REAL, deterministically-reproducible vulnerability -- the identical Design-A shape ADR-014
+// already found and fixed for a sibling mediation primitive in this exact codebase
+// (`agentengine::redteam::naive_check_within_root`): canonicalize a path into a STRING, check the
+// STRING, return -- with nothing tying that answer to what the filesystem looks like at the moment
+// a caller later re-derives and reopens the same string. `write()`/`read_real_file()`/`materialize()`
+// no longer call this function for that reason -- they use `agentengine::open_within_mount_root()`
+// (ADR-014's accepted Design B: one handle-based open, verify from the RESOLVED HANDLE, never a
+// re-parsed string) instead. This function is kept, deliberately, as the known-vulnerable reference
+// implementation `probe_toctou_symlink_race.cpp` uses to demonstrate the vulnerability class
+// empirically -- the same permanent-deliberate-control treatment ADR-014's own
+// `redteam::naive_check_within_root` gets in production. NEVER call this from new mediation code.
 [[nodiscard]] inline result<void> reject_symlink_escape(std::filesystem::path const& host_root,
                                                           std::string const& relative_path) {
     std::error_code ec;
@@ -95,23 +105,69 @@ public:
     // read-only, no new mutation capability granted by exposing it.
     [[nodiscard]] std::filesystem::path const& host_root() const noexcept { return host_root_; }
 
+    // §38 fix: the real, handle-based open+verify step -- ADR-014's own accepted Design B, reused
+    // verbatim from production (`agentengine::open_within_mount_root`), not re-derived. The object
+    // `GetFinalPathNameByHandleW` verifies inside that call IS the object `WriteFile` below writes
+    // to -- no window between "checked" and "used" for anything this function itself does.
+    [[nodiscard]] result<void> write_verified(std::string const& relative_path,
+                                                std::vector<std::byte> const& bytes) {
+        auto handle = agentengine::open_within_mount_root(host_root_.wstring(), relative_path,
+                                                             GENERIC_WRITE, CREATE_ALWAYS);
+        if (!handle.has_value()) return std::unexpected(to_probe_error(handle.error()));
+        DWORD written = 0;
+        BOOL const ok = bytes.empty()
+            ? TRUE
+            : WriteFile(handle->get(), bytes.data(), static_cast<DWORD>(bytes.size()), &written, nullptr);
+        if (!ok || (!bytes.empty() && written != bytes.size())) {
+            return std::unexpected(error{"WriteFile failed on a verified handle: " + relative_path,
+                                          "real_io.write_failed"});
+        }
+        return result<void>{};
+    }
+
+    [[nodiscard]] result<std::vector<std::byte>> read_verified(std::string const& relative_path) const {
+        auto handle = agentengine::open_within_mount_root(host_root_.wstring(), relative_path,
+                                                             GENERIC_READ, OPEN_EXISTING);
+        if (!handle.has_value()) return std::unexpected(to_probe_error(handle.error()));
+        LARGE_INTEGER size{};
+        if (!GetFileSizeEx(handle->get(), &size) || size.QuadPart < 0) {
+            return std::unexpected(error{"GetFileSizeEx failed on a verified handle: " + relative_path,
+                                          "real_io.read_failed"});
+        }
+        std::vector<std::byte> out(static_cast<std::size_t>(size.QuadPart));
+        if (!out.empty()) {
+            DWORD read_bytes = 0;
+            BOOL const ok = ReadFile(handle->get(), out.data(), static_cast<DWORD>(out.size()),
+                                       &read_bytes, nullptr);
+            if (!ok || read_bytes != out.size()) {
+                return std::unexpected(error{"ReadFile failed on a verified handle: " + relative_path,
+                                              "real_io.read_failed"});
+            }
+        }
+        return out;
+    }
+
     // REAL write: bytes actually land on real disk, at a real path under host_root_. Fails closed on
     // an unsafe path BEFORE ever touching the filesystem -- the real check, not a comment promising
     // one.
     [[nodiscard]] result<void> write(std::string const& relative_path, std::vector<std::byte> const& bytes) {
         auto safe = reject_unsafe_relative_path(relative_path);
         if (!safe.has_value()) return std::unexpected(safe.error());
-        auto no_symlink_escape = reject_symlink_escape(host_root_, relative_path);
-        if (!no_symlink_escape.has_value()) return std::unexpected(no_symlink_escape.error());
         std::lock_guard<std::mutex> guard(*sync_mutex_);
-        std::filesystem::path full = host_root_ / relative_path;
-        std::filesystem::create_directories(full.parent_path());
-        std::ofstream out(full, std::ios::binary | std::ios::trunc);
-        if (!out) {
-            return std::unexpected(error{"failed to open real file for writing: " + full.string(),
-                                          "real_io.write_failed"});
-        }
-        out.write(reinterpret_cast<char const*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+        // HONEST, DISCLOSED, NARROWER residual: create_directories() still resolves the parent as a
+        // STRING, ahead of write_verified()'s real handle-based check below. Unlike the file-content
+        // gap §38 fixed, the worst this can do is misdirect WHERE a brand-new, empty directory gets
+        // created if an intermediate segment is swapped for a junction mid-call -- it cannot forge or
+        // leak file CONTENT, because write_verified()'s own containment check runs independently,
+        // against whatever CreateFileW actually resolved, and rejects the write regardless of what
+        // create_directories() did. open_within_mount_root's own header states it deliberately does
+        // not offer directory creation -- closing this narrower residual needs its own primitive, not
+        // something this fix can absorb for free.
+        std::filesystem::path const parent = (host_root_ / relative_path).parent_path();
+        std::error_code ec;
+        std::filesystem::create_directories(parent, ec);
+        auto written = write_verified(relative_path, bytes);
+        if (!written.has_value()) return std::unexpected(written.error());
         touched_.insert(relative_path);
         return result<void>{};
     }
@@ -119,18 +175,7 @@ public:
     [[nodiscard]] result<std::vector<std::byte>> read_real_file(std::string const& relative_path) const {
         auto safe = reject_unsafe_relative_path(relative_path);
         if (!safe.has_value()) return std::unexpected(safe.error());
-        auto no_symlink_escape = reject_symlink_escape(host_root_, relative_path);
-        if (!no_symlink_escape.has_value()) return std::unexpected(no_symlink_escape.error());
-        std::filesystem::path full = host_root_ / relative_path;
-        std::ifstream in(full, std::ios::binary);
-        if (!in) {
-            return std::unexpected(error{"failed to open real file for reading: " + full.string(),
-                                          "real_io.read_failed"});
-        }
-        std::vector<char> raw((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-        std::vector<std::byte> out(raw.size());
-        for (std::size_t i = 0; i < raw.size(); ++i) out[i] = static_cast<std::byte>(raw[i]);
-        return out;
+        return read_verified(relative_path);
     }
 
     // Walks every path touched since the last drain, reads each one back OFF REAL DISK (a genuine
@@ -258,14 +303,14 @@ public:
         for (auto const& entry : tree->entries) {
             auto bytes = ledger.get_blob_safe(entry.digest, caller);
             if (!bytes.has_value()) co_return std::unexpected(bytes.error());
-            // Re-check symlink escape against the just-recreated host_root_ right before each write --
-            // weakly_canonical is safe to call even though the target file doesn't exist yet.
-            auto no_symlink_escape = reject_symlink_escape(host_root_, entry.name);
-            if (!no_symlink_escape.has_value()) co_return std::unexpected(no_symlink_escape.error());
-            std::filesystem::path full = host_root_ / entry.name;
-            std::filesystem::create_directories(full.parent_path());
-            std::ofstream out(full, std::ios::binary | std::ios::trunc);
-            out.write(reinterpret_cast<char const*>(bytes->data()), static_cast<std::streamsize>(bytes->size()));
+            // §38 fix: same handle-based verify-then-write primitive as write() above, not the old
+            // weakly_canonical-then-separate-ofstream shape probe_toctou_symlink_race.cpp proved
+            // exploitable. Same disclosed, narrower create_directories()-is-string-based residual too.
+            std::filesystem::path const full_parent = (host_root_ / entry.name).parent_path();
+            std::error_code mkdir_ec;
+            std::filesystem::create_directories(full_parent, mkdir_ec);
+            auto written = write_verified(entry.name, *bytes);
+            if (!written.has_value()) co_return std::unexpected(written.error());
         }
         co_return result<void>{};
     }

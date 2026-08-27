@@ -25,6 +25,7 @@
 // rather than growing forever) -- see `persist_snapshot_locked()`/`load_durable_state()` and
 // `kMaxAclRootsPerDigest` below, and §34 of the design doc for the real, twice-verified proof.
 
+#include <cctype>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -306,6 +307,41 @@ public:
         // `std::lock_guard<std::mutex>` across a coroutine suspension point (a real correctness
         // hazard on its own: AsyncMutex's coroutine may resume on a different thread than it
         // suspended on, and unlocking a `std::mutex` from a different thread than locked it is UB).
+        // REAL FINDING an external-validation pass caught, cross-referencing git's own real
+        // CVE-2014-9390 (a tree entry named e.g. ".Git" case-folds to the SAME real path as ".git"
+        // on a case-insensitive filesystem -- Windows NTFS/FAT, default macOS HFS+ -- letting one
+        // silently overwrite the other on checkout): this design's own `commit()`/`put_tree()`
+        // never rejected two entries whose NAMES case-fold to the same real path (e.g.
+        // "readme.txt" and "README.txt" -- two perfectly legal, genuinely distinct digests/content
+        // as far as the content-addressed store is concerned). `materialize()` writing such a tree
+        // to a REAL Windows filesystem was empirically confirmed to silently drop one entry's
+        // content with NO error, NO warning, and a plain successful `result<void>{}` -- a real,
+        // previously-undiscovered content-integrity gap, not a hypothetical one. Fixed by rejecting
+        // the commit outright if any two entries case-fold to the same name, matching git's own
+        // eventual fix DIRECTION for CVE-2014-9390 (reject rather than silently materialize).
+        // HONEST RESIDUAL, not claimed solved: this checks ASCII case-folding only (`tolower` per
+        // byte) -- git's own real CVE-2014-9390 fix additionally had to handle HFS+'s Unicode
+        // "ignorable" codepoints (characters that fold to nothing at all under certain Unicode
+        // normalizations), a materially harder problem this check does not attempt.
+        for (std::size_t i = 0; i < tree.entries.size(); ++i) {
+            std::string folded_i = tree.entries[i].name;
+            for (char& c : folded_i) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            for (std::size_t j = i + 1; j < tree.entries.size(); ++j) {
+                std::string folded_j = tree.entries[j].name;
+                for (char& c : folded_j) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                if (folded_i == folded_j && tree.entries[i].name != tree.entries[j].name) {
+                    (void)co_await quota.refund(approx_bytes);
+                    co_return std::unexpected(error{
+                        "tree contains two entries that case-fold to the same real path ('" +
+                            tree.entries[i].name + "' and '" + tree.entries[j].name +
+                            "') -- rejected before materialize() could silently drop one of them "
+                            "on a case-insensitive filesystem, matching git's own real CVE-2014-9390 "
+                            "fix direction",
+                        "ledger.case_folding_collision"});
+                }
+            }
+        }
+
         result<Checkpoint> outcome = [&]() -> result<Checkpoint> {
             std::lock_guard<std::mutex> g(mutex_);
             for (auto const& entry : tree.entries) {

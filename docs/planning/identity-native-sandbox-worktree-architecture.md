@@ -1,0 +1,219 @@
+# Identity-native sandbox/worktree architecture — diagrams
+
+Companion to `docs/planning/identity-native-sandbox-worktree-design.md` (§0–§37) and
+`decisions/ADR-099-identity-native-sandbox-worktree-capability-model.md`. This file only
+visualizes the CURRENT, converged design — it carries no new decisions. Nodes/steps marked
+**(gap)** are real, named, still-open items (from §11/§34.10/§36.5/§37.5, or ADR-099's own
+residuals) — shown here so the diagrams don't quietly imply more is settled than actually is.
+
+This is a **different, unrelated design** from `mandatory-session-worktree-architecture.md`
+(the companion to `mandatory-session-worktree-design.md`, Design A — rejected after four
+revisions, per ADR-099 §2, and kept as historical record, not updated here). Nothing in this
+file reuses that design's primitives; only `WorktreeObjectStore`'s pure content-addressing is
+shared, per the design doc's own §0 no-reuse framing.
+
+## 1. Structure — what owns what
+
+Every primitive here lives only as standalone, compiler-verified C++23 under
+`docs/planning/proofs/` — **nothing on this page is linked into `include/agentengine/` yet.**
+`MandatorySandboxProvider` is designed to compose as `AgentSession`'s real `HistoryProviderT`,
+but has only been proven against `FakeAgentSession`, a faithful stand-in — not the real class
+itself (§37.5's own disclosed gap).
+
+```mermaid
+graph TD
+    IA["IdentityAuthority<br/>(bootstrap singleton, durable identity)"]
+    PR["Principal<br/>(identity-only, no minting power)"]
+    GR["Grant&lt;Payload&gt;<br/>(template, not a closed variant)"]
+    LED["Ledger&lt;Store&gt;<br/>(default: InMemoryWorktreeObjectStore;<br/>FileWorktreeObjectStore for durability)"]
+    BH["BranchHandle&lt;Store&gt;<br/>(move-only, RAII abandon-on-drop)"]
+    AQB["AsyncQuota&lt;BranchCost&gt;"]
+    AQR["AsyncQuota&lt;RunCost&gt;"]
+    AQS["AsyncQuota&lt;StorageBytes&gt;"]
+    SR["SandboxRuntime<br/>(materialize→seed→run→drain→scan→commit)"]
+    ES["ExecutionSurface concept<br/>(reset/run/drain_to)"]
+    DES["DockerExecutionSurface<br/>(the ONE real conformer — gap, §36.5:<br/>genericity to a native_jail-shaped<br/>backend unverified)"]
+    MSP["MandatorySandboxProvider&lt;Surface&gt;<br/>(ContextProvider conformer)"]
+    RCT["RunCommandTool<br/>(no static Capabilities&lt;&gt;, dynamic check only)"]
+    AS["AgentSession&lt;ChatClientT, StateT, HistoryProviderT&gt;<br/>(gap, §37.5: never actually instantiated<br/>with MandatorySandboxProvider as the<br/>real HistoryProviderT — proven only<br/>against FakeAgentSession)"]
+
+    IA -->|mints| PR
+    IA -->|mints, host-only| GR
+    PR -.->|scopes| AQB
+    PR -.->|scopes| AQR
+    PR -.->|scopes| AQS
+    LED -->|issues| BH
+    LED -->|content-addressing only, no capability entanglement| OBJ["WorktreeObjectStore<br/>(the ONE thing reused from Design A's world)"]
+
+    MSP -->|owns, per session| SR
+    MSP -->|owns, per session| DES
+    MSP -->|consumes before running| AQR
+    MSP -->|consumes at commit| AQS
+    MSP -->|consumes on fork| AQB
+    MSP -->|contributes, if bound| RCT
+    SR -->|owns one| BH
+    SR -->|drives one| ES
+    DES -.->|conforms to| ES
+
+    AS -.->|composed as HistoryProviderT — gap, see above| MSP
+
+    classDef gap stroke:#c33,stroke-width:2px,stroke-dasharray: 4 2;
+    class DES gap;
+    class AS gap;
+```
+
+## 2. Session init — `bind_sandbox()`, mandatory but not compile-enforced
+
+"Mandatory" is enforced the same way `AgentSession::initialize()` already enforces
+`session_id_`/`principal_` — a host-discipline convention, not a compiler guarantee. A
+default-constructed `MandatorySandboxProvider` is a well-defined, safe "no sandbox bound yet"
+state (required so `clear_in_process_state()`'s real, unmodifiable `HistoryProviderT{}`
+statement compiles at all) — **not** the design's own stronger §1 item 2 guarantee ("a session
+with no execution capability still owns a branch"); the unbound state here owns no branch at
+all **(gap, §37.5)**.
+
+```mermaid
+sequenceDiagram
+    participant Host
+    participant IA as IdentityAuthority
+    participant L as Ledger
+    participant MSP as MandatorySandboxProvider
+
+    Host->>IA: adopt(real_principal.id, on_behalf_of)
+    IA-->>Host: Principal (bridged, identity-scoped)
+    Host->>L: create_root_branch(owner)
+    L-->>Host: BranchHandle
+    Note over MSP: default-constructed here = "no sandbox bound yet"<br/>(safe, but NOT the same as "owns a branch, no execution" — gap)
+    Host->>MSP: bind_sandbox(ledger, branch, owner, staging_root,<br/>branch_quota, run_quota, storage_quota)
+    MSP->>MSP: runtime_.emplace(...); surface_.emplace()
+    Note over Host,MSP: mirrors AgentSession::initialize()'s own convention —<br/>a host that forgets this call gets zero execution<br/>capability, never a crash, never aliasing
+```
+
+## 3. Turn boundary — `SandboxRuntime::run()`, one call commits one turn
+
+Unlike the earlier (also-standalone) `SandboxSession::harvest_and_checkpoint()` model (stage
+writes across a turn, commit once at turn end), A3's `run()` is self-contained per invocation —
+materialize, seed, run, drain, scan, commit, all in one call, gated by a **separate** `RunCost`
+quota checked *before* the command executes (§36.3, the first-version-had-this-wrong finding).
+
+```mermaid
+sequenceDiagram
+    participant Model
+    participant MSP as MandatorySandboxProvider
+    participant SR as SandboxRuntime
+    participant DES as DockerExecutionSurface
+    participant L as Ledger
+
+    Model->>MSP: run_command tool call
+    MSP->>MSP: caller = IdentityAuthority.adopt(ctx.principal)
+    MSP->>SR: run(surface, command, caller, run_quota, storage_quota)
+    SR->>SR: run_quota.try_consume(1, caller) — BEFORE the command ever executes
+    alt quota exhausted
+        SR-->>MSP: quota.exhausted (real Docker container never created)
+    else
+        SR->>L: head_tree_digest(branch, caller) — identity-gated
+        SR->>SR: materialize(head_digest) → real host staging dir
+        SR->>DES: reset(staging_dir) — real docker run + docker cp
+        DES->>DES: run(command) — REAL exec, inside the container, never this process
+        DES-->>SR: ExecOutcome (non-zero exit is a normal result, not an error)
+        SR->>DES: drain_to(staging_dir)
+        SR->>SR: scan_and_drain_into_tree() — batch-validated against ACL-root cap
+        SR->>L: commit(branch, tree, caller, storage_quota)
+        L-->>SR: Checkpoint (real SHA-256 tree digest, turn_index)
+        SR->>L: reap_pending_abandons()
+        SR-->>MSP: RunOutcome{exec, checkpoint}
+    end
+```
+
+## 4. `fork_from()` — every copy is self-contained, no shared mutable state
+
+The central fix of §37.2/§37.3: the first version split fork creation into a `prepare_fork()`
+step stashed in a shared, mutable member — found structurally unsound (any incidental copy
+through `AgentSession::history_provider()`'s real mutable accessor could silently corrupt it).
+The redesign makes every copy-assignment independently self-contained.
+
+```mermaid
+sequenceDiagram
+    participant Host
+    participant P as AgentSession (parent)
+    participant C as AgentSession (child)
+    participant SRp as SandboxRuntime (parent)
+    participant L as Ledger
+
+    Host->>C: fork_from(parent, "child-id")
+    Note over C: the REAL, unmodified engine statement:<br/>history_provider_ = source.history_provider_;
+    C->>C: operator=(other) — this == &other? → genuine no-op (§37.3 fix)
+    alt other.runtime_ unbound
+        C->>C: reset ALL fields — byte-identical to default-construction
+    else
+        C->>SRp: spawn_child_branch(owner, branch_quota, staging_parent_dir) [const]
+        SRp->>L: branch_from(parent_branch, owner, branch_quota)
+        alt BranchCost exhausted or any failure
+            L-->>SRp: error
+            SRp-->>C: error
+            C->>C: fails closed — same state as "unbound", never aliases parent
+        else
+            L-->>SRp: fresh child BranchHandle (name unique via branch_seq_)
+            SRp->>SRp: digest(child_branch.name()) → unique staging dir (ADR-096 C8 precedent)
+            SRp-->>C: fresh, independent SandboxRuntime
+            C->>C: runtime_.emplace(child); surface_.emplace()
+        end
+    end
+    Note over Host,C: any number of forks — sequential, incidental, or concurrent —<br/>each independently succeeds or fails on its own merits;<br/>NOTHING shared between calls to race on or steal from
+```
+
+## 5. Rollback — proven at the `Ledger` layer, not yet composed with A3/A9
+
+`Ledger::reset_to()` (real, checkpoint-DAG-preserving rollback) and
+`full_stack::SandboxSession::reset_to_turn()` are both real and proven (§23/§26) — but
+**(gap)**: `SandboxRuntime` (A3)
+and `MandatorySandboxProvider` (A9) have no rollback method of their own yet. A
+`run_command`-composed session today has no way to roll back its own sandbox to an earlier
+checkpoint; this is a real, disclosed omission, not a silently-assumed-solved one.
+
+```mermaid
+graph LR
+    L["Ledger::reset_to(branch, turn_index, principal)<br/>real, proven, §23"] -->|"NOT wired to"| SR["SandboxRuntime (A3)<br/>(gap: no reset method)"]
+    SSS["full_stack::SandboxSession<br/>::reset_to_turn()<br/>real, proven, §26"] -->|"a DIFFERENT, pre-existing type —<br/>never modified by A3/A9"| SR2["SandboxRuntime / MandatorySandboxProvider<br/>(a separate composition — §36.1, §37 banner)"]
+
+    classDef gap stroke:#c33,stroke-width:2px,stroke-dasharray: 4 2;
+    class SR gap;
+```
+
+## 6. Quota model — one primitive, three instantiations, three distinct gates
+
+```mermaid
+graph TD
+    BC["AsyncQuota&lt;BranchCost&gt;<br/>gates: branch_from() — before the mutation"]
+    RC["AsyncQuota&lt;RunCost&gt;<br/>gates: surface.run() — before the command executes<br/>(§36.3: the fix for 'run it for free' bug, found twice)"]
+    SB["AsyncQuota&lt;StorageBytes&gt;<br/>gates: Ledger::commit() — sized by the REAL output,<br/>only knowable after the run/write completes"]
+
+    BC -->|try_consume, refund-on-failure| L1["Ledger::branch_from()"]
+    RC -->|try_consume BEFORE run, refund on ANY<br/>non-execution failure incl. surface rejection| L2["SandboxRuntime::run()"]
+    SB -->|try_consume AFTER real output is known| L3["Ledger::commit()"]
+
+    Note1["Spender-identity check (§35 finding 1):<br/>a spender must be the quota's owner or a<br/>principal split a share to — closed a real<br/>I2/I8 gap where any session sharing a<br/>store-wide quota could drain another's budget"]
+    Note1 -.-> BC
+    Note1 -.-> RC
+    Note1 -.-> SB
+```
+
+## Status legend
+
+- Solid, no note → real primitive, already implemented as standalone C++23 and proven by a real
+  probe compiled with `clang 22.1.5`/`-std=c++23` and run to completion (including, for A3/A9,
+  live against a real Docker daemon) — see the design doc's own §20–§37 for the exact evidence
+  per primitive.
+- **(gap)** annotations → open findings named in §11, §34.10, §36.5, §37.5, or ADR-099's own
+  residuals — not fixed, not hidden. See the design doc / ADR for the full text of each.
+- **Nothing on this page is implemented in `include/agentengine/`/`src/` today.** Every type
+  shown lives only under `docs/planning/proofs/`, deliberately never linked into the live
+  engine — this design has completed design → red-team → prove (multiple rounds each for the
+  core primitives, A3, and A9) but has **not** been Judged (`decisions/ADR-099` is Proposed,
+  not Judged) and has not begun implementation.
+- Reconciliation with the three real, already-shipped mechanisms occupying overlapping territory
+  (`SandboxToolProvider`/`decisions/ADR-096`, `CodeActRunnerBinding`/`decisions/ADR-030`, the
+  zero-consumer `SandboxBackendRegistry`/`decisions/ADR-080`/`ADR-098`) is deliberately not
+  shown here — per explicit project-owner direction, this design was built fresh rather than
+  designed around reuse; reuse-vs-replace against those is an implementation-time decision, not
+  a design-time one.

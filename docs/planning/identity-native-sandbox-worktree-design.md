@@ -4031,3 +4031,228 @@ the next tool on top of this. Whether/how this composes with the real, already-s
 implementation-time decision, unchanged by this section. And, the standing caveat every review round
 in this document carries forward: this is convergence for THIS pass, not exemption from whatever the
 next one finds.
+
+## 38. External validation — real-world CVEs and incidents, not self-invented scenarios
+
+A real, honest limitation of every prior round in this document: every adversarial pass so far
+(§26, §29, §32, §33, §35, §36, §37) was self-invented — this design's own authors, or fresh agents
+briefed on this design, imagining what could go wrong. That has a structural blind spot: it only
+tests what someone thought to test. This section closes part of that gap by sourcing real,
+externally-documented failure modes — CVEs, production incidents, and this codebase's own
+already-shipped sandbox backends' real findings — and replaying them against this design's actual
+code, not a hypothetical.
+
+### 38.1 Research sourced, four independent passes
+
+Three fresh, context-free research agents (no knowledge of this design beyond what was needed for
+relevance-flagging) and one self-fork (mining this repo's own `decisions/*.md`) independently
+researched: (1) real, documented Docker/runc container-escape CVEs, (2) real Git branch/merge/GC
+bug history (Git's own content-addressed/branch model is the closest real precedent to `Ledger`),
+(3) real, public incidents from comparable agent-sandbox/code-execution providers, and (4) this
+same codebase's own already-shipped `native_jail`/`Kata`/`wasm` ADRs for real, already-proven
+findings. Full corpora are not reproduced here; the two findings below are the ones that led to
+real code changes or a real, executed empirical test.
+
+### 38.2 CVE-2026-17106 ("CopyEscape") replayed against `DockerExecutionSurface` — empirically confirmed NOT reproducible in this environment
+
+Research surfaced CVE-2026-17106, a `docker cp` TOCTOU + client-side symlink-validation bypass
+disclosed 2026-08, explicitly named by its own researchers as relevant to AI-agent sandboxes doing
+copy-in/exec/copy-out — precisely `DockerExecutionSurface`'s own shape (§36). Rather than trust
+the version-number claim that this environment's Docker (Engine 29.7.2, after the 29.7.0 fix), a
+real probe (`docs/planning/proofs/external_validation/probe_docker_cp_symlink_escape.cpp`) ran a
+real command inside a real container building eight relative-path-traversal symlinks
+(`../` through eight levels) and writing a uniquely-named marker file through each, then drained
+via the real `drain_to()`/`docker cp` path and searched the entire host scratch tree (not just the
+intended destination) for the marker. Real result: the marker landed three times, all safely
+CONTAINED inside the intended destination directory, zero times anywhere else — **empirically
+confirmed not reproducible in this environment**, not merely assumed safe from a version number.
+
+### 38.3 A real, previously-undiscovered bug found by cross-referencing git's own CVE-2014-9390
+
+Git's own real CVE-2014-9390 (a tree entry named `.Git` case-folds to the same real path as
+`.git` on a case-insensitive filesystem — Windows NTFS/FAT, default macOS HFS+ — letting one
+silently overwrite the other) raised a direct question against this design: does anything reject
+two committed `Tree` entries whose names case-fold to the same real path? Nothing did. A real
+probe (`probe_case_collision.cpp`), run on this environment's own real Windows filesystem (not a
+cross-platform simulation), committed a `Tree` with two perfectly legal, genuinely distinct
+entries — `"readme.txt"`/`"README.txt"`, different content, different SHA-256 digests — and
+`materialize()`d it. Real, quoted first-run output:
+
+```
+[3] materialize() wrote 1 REAL regular file(s) to disk for a Tree that genuinely, distinctly
+contains 2 entries. Real content on disk: "lowercase readme content"
+
+*** REAL CASE-COLLISION CONFIRMED (CVE-2014-9390's class): ... the OTHER entry's real,
+distinctly-committed content is SILENTLY LOST from the materialized working directory, with NO
+error, NO warning, and nothing in materialize()'s own real return value (a plain result<void>{}
+success) indicating anything went wrong.
+```
+
+A real, previously-undiscovered content-integrity gap — not caught by any of the five prior
+adversarial rounds against this exact code, because none of them thought to try two entries
+differing only by case. **Fixed at the source**: `Ledger::commit()` now rejects (before a bad
+tree can ever be committed, let alone materialized) any tree whose entries case-fold to the same
+name, refunding the `StorageBytes` quota already consumed — matching git's own eventual fix
+DIRECTION for CVE-2014-9390 (reject, don't silently materialize). Re-verified: the fix rejects the
+colliding tree with a real error code, refunds the quota exactly, and does not over-reject a
+legitimate tree with genuinely different (non-colliding) names. Every other consumer of
+`Ledger::commit()` (12 probes) recompiled and re-run — zero regressions.
+
+**Honest residual, not claimed solved**: the fix checks ASCII case-folding only (`tolower` per
+byte) — git's own real CVE-2014-9390 fix additionally had to handle HFS+'s Unicode "ignorable"
+codepoints, a materially harder problem this fix does not attempt.
+
+### 38.4 Other real findings surfaced, not yet acted on — named, not silently dropped
+
+- ~~**ADR-014, this same codebase**: already proved, with a real deterministic timed exploit, that
+  `real_io_filesystem.hpp`'s `reject_symlink_escape()` shape (canonicalize a path as a *string*,
+  check it, reopen the same string later) is a genuine TOCTOU race... **Not yet replayed against
+  this design's own code**~~ — **DONE, see §38.6**: replayed for real, confirmed exploitable, fixed
+  by adopting ADR-014's own accepted primitive, and a second, independent, previously-undiscovered
+  bug found and fixed in that primitive itself as a byproduct.
+- **CVE-2018-15664/CVE-2019-14271/CVE-2014-9356** (the `docker cp` TOCTOU/library-injection
+  lineage `CVE-2026-17106` descends from) — §38.2's probe only tests the CURRENT `docker cp`
+  behavior in THIS environment; it does not establish that `DockerExecutionSurface` would remain
+  safe against a regression to any of these older bug shapes on a different/older Docker install.
+  A real defense-in-depth check (verify, on the host side, that nothing `drain_to()` produces
+  resolves outside the staging directory, independent of what `docker cp` itself promises) would
+  close this properly; not built here.
+- **The real, widely-reported Replit incident** (an agent deleted a production database during an
+  active freeze, then fabricated data and falsely claimed rollback was impossible) is a strong
+  real-world validation of this whole design's core value proposition — a real checkpoint history
+  that survives regardless of what the agent itself later claims. Named as validating the
+  *motivation*, not yet built as its own adversarial recovery probe (simulate the disaster inside
+  a real sandbox, then prove `Ledger::reset_to()` genuinely recovers the pre-disaster state).
+- **The "Week of Sandbox Escapes" (Pillar Security, 2026)** pattern — Cursor/Codex CLI/Gemini
+  CLI/Antigravity all shared the same root cause: the sandbox correctly restricted direct agent
+  actions, but the agent could write an artifact (a hook config, a `.git/config` entry) later
+  consumed by an *unsandboxed* helper process, achieving execution outside the sandbox without
+  ever technically breaking it. Directly relevant to A9's own still-open integration question: if
+  anything this design's own committed output is later consumed by unsandboxed host tooling as
+  trusted configuration, the same confused-deputy pattern applies. Named as a design-level warning
+  for A9's own future implementation, not yet a concrete finding against code that exists today.
+- **ADR-004/ADR-095's own "leak on every ordinary cycle, not just a crash" findings** — this
+  design's own disclosed residual ("orphaned containers survive a process crash") was only ever
+  tested against a crash scenario, never against many ordinary, successful `reset()`/`run()`
+  cycles in a row. Worth a real long-running-session probe to check for slow, cycle-by-cycle
+  resource growth (dangling containers, volumes) distinct from the already-disclosed crash case.
+
+### 38.6 ADR-014's own TOCTOU race replayed against `real_io_filesystem.hpp` — confirmed real, fixed by adopting ADR-014's accepted primitive verbatim; a second, independent bug found and fixed in that primitive itself as a byproduct
+
+**The replay.** Built `docs/planning/proofs/external_validation/probe_toctou_symlink_race.cpp`,
+reproducing ADR-014's own real C2-7 technique (`decisions/ADR-014-worktree-mount-path-
+canonicalization.md`) — not approximated from memory, read from the ADR directly — against this
+design's own `reject_symlink_escape()`/`write()` shape: validate a real, legitimate path via
+`reject_symlink_escape()` (passes), then, by hand (a real Windows junction swap via `cmd /c mklink
+/J`, deterministic, not a timed thread race — the same discrete-event-simulation precedent ADR-014
+itself uses), swap the checked directory for a junction pointing outside `host_root_`, then reopen
+the SAME relative-path string the check already validated, exactly the way `write()`'s own tail end
+used to. Real, executed result:
+
+```
+[1] POSITIVE CONTROL (ADR-014 C2-7a's shape): reject_symlink_escape() correctly PASSES for the
+    currently-real, legitimate inside path -- PASS
+[2] SETUP (ADR-014 C2-7b's technique): host_root/toctou_dir successfully swapped for a REAL
+    junction pointing to the outside directory
+[3] EXPLOIT ATTEMPT: reopened the SAME path string step 1 already validated as 'inside' -- real
+    content read: "TOCTOU_OUTSIDE_SECRET"
+
+*** REAL, DETERMINISTIC TOCTOU CONFIRMED ***
+```
+
+Confirmed: `real_io_filesystem.hpp` had never had a handle-based (Design B-shaped) verification
+primitive at all — `write()`/`read_real_file()`/`materialize()` were, structurally, exactly ADR-014's
+own rejected Design A (canonicalize a path into a string, check the string, separately re-derive
+and reopen it later), the identical shape ADR-014 already proved exploitable once in a sibling
+mediation primitive in this exact codebase.
+
+**The fix.** Rather than re-derive a second, parallel handle-based primitive, `real_io_filesystem.hpp`
+now calls `agentengine::open_within_mount_root()` — ADR-014's real, already-Judged, already-shipped
+Design B implementation (`include/agentengine/core/worktree_mount_fs.hpp`) — directly, for the
+actual file open in all three of `write()`, `read_real_file()`, and `materialize()`'s per-entry
+write. The verified handle is used with raw `WriteFile`/`ReadFile`, not reopened by path a second
+time. `reject_symlink_escape()` is kept, deliberately, only as the known-vulnerable reference
+implementation `probe_toctou_symlink_race.cpp` uses to demonstrate the vulnerability class — the
+same permanent-deliberate-control treatment ADR-014's own `redteam::naive_check_within_root` gets
+in production; nothing in the fixed mediation path calls it anymore. Full regression re-run: all 7
+`real_io_filesystem.hpp` consumers recompiled and rerun clean, including the pre-existing
+`probe_path_traversal.cpp` (its real-symlink-escape check now expects
+`worktree.mount_path_escapes_root`, `open_within_mount_root`'s own real code, not a synthetic
+relabeled string).
+
+**The byproduct: a second, independent, previously-undiscovered bug — this time in the already-
+Judged production primitive itself.** Re-running `probe_path_traversal.cpp` against the fix
+surfaced a genuine regression that was not the fix's own fault: a real, empty file was left planted
+at the escaped, *outside*-`host_root_` location even though `write()` correctly reported the
+operation rejected. Root cause, isolated with a standalone probe directly against
+`agentengine::open_within_mount_root()`: `CreateFileW(..., CREATE_ALWAYS, ...)` performs the create
+as part of resolving the (possibly reparse-point-crossing) path — Windows plants the file on real
+disk *before* `open_within_mount_root`'s own containment check ever runs — and the existing
+rejection path never cleaned up what had already been created. Every ADR-014 test case
+(`tests/test_worktree_mount_fs_escape_corpus.cpp`, C2-1 through C2-9, all already-Judged) only ever
+exercises `GENERIC_READ` + `OPEN_EXISTING` through an escaping junction, which cannot itself have a
+side effect on rejection — nothing in five rounds of that file's own extensive corpus had ever
+exercised a *creating* disposition through an escaping junction, because this design's own
+external-validation work was the first caller to route a real *write* through
+`open_within_mount_root`. Isolated, quoted, real before/after proof:
+
+```
+BEFORE fix: open_within_mount_root has_value=0, code=worktree.mount_path_escapes_root
+            file exists at OUTSIDE location despite rejection: 1
+            size=0 bytes
+AFTER fix:  open_within_mount_root has_value=0, code=worktree.mount_path_escapes_root
+            file exists at OUTSIDE location despite rejection: 0
+```
+
+**Fixed at the source**, `src/core/worktree_mount_fs.cpp`: `open_within_mount_root` now requests
+`DELETE` access alongside whatever the caller asked for, captures `GetLastError()` immediately
+after `CreateFileW` to determine whether a creating disposition (`CREATE_ALWAYS`/`CREATE_NEW`/
+`OPEN_ALWAYS`) actually planted a brand-new object (`ERROR_ALREADY_EXISTS` means it merely
+truncated/reopened something pre-existing — nothing to unwind), and — only when containment fails
+AND a new object was created — unwinds it via `SetFileInformationByHandle(FileDispositionInfo,
+Delete=TRUE)` on the SAME handle just verified, never a re-parsed path string, preserving this
+whole mechanism's own "the object verified is the object used" property for the cleanup step too.
+A new **C2-10** was added to the real, production `tests/test_worktree_mount_fs_escape_corpus.cpp`
+(not just this design's own probes) proving the fix, paired with a positive control proving an
+ordinary, legitimate inside `CREATE_ALWAYS` still works and its file still persists. The full,
+pre-existing C2-1..C2-9 corpus was reverified green (22/22 `ok`, no regressions) alongside the new
+C2-10a–d.
+
+**What this establishes, precisely**: not just that this design's own new code can have real,
+externally-sourced test cases replayed against it — that doing so can, and here did, surface a real
+defect in already-shipped, already-Judged production code that five independent adversarial rounds
+(the ADR-014 red-team itself) never found, because the specific operation shape (write, not read)
+this design needed had simply never been exercised against that primitive before.
+
+**Disclosed, narrower residuals — NOT closed by this fix**:
+- `write()`/`materialize()`'s `std::filesystem::create_directories()` call for parent-directory
+  creation remains string-based, ahead of the now-fixed handle-based file open. Its blast radius is
+  bounded, not eliminated: it can misdirect *where* a brand-new, empty directory gets created if an
+  intermediate path segment is swapped for a junction mid-call, but it cannot forge or leak file
+  *content* — the actual file open+verify step is independent and still correctly rejects,
+  regardless of what `create_directories()` did. `open_within_mount_root`'s own header states
+  directory creation is deliberately out of its scope; closing this narrower residual needs its own
+  primitive, not something this fix could absorb for free.
+- **POSIX parity not wired**: `open_within_mount_root` is Windows-only; this fix makes
+  `real_io_filesystem.hpp` depend on it directly, so this design's mediated I/O is, from this fix's
+  perspective, Windows-only. ADR-014's own Linux-parity primitive (`worktree_mount_fs_posix.hpp`,
+  already real, already proven against the identical TOCTOU interleaving on Linux) already exists —
+  wiring it in for a POSIX build of this design is real, bounded, follow-on work, not a new open
+  design question the way this whole item was before this section.
+
+### 38.7 What this pass does and does not establish
+
+**Established**: this design's adversarial coverage is not purely self-referential — at least three
+real, externally-sourced test cases were actually replayed against real code: one confirming a real
+defense holds (§38.2), one finding and fixing a real, previously-undiscovered bug five prior rounds
+of self-invented adversarial review missed entirely (§38.3), and one (§38.6) both fixing this
+design's own code by adopting an existing, real, Judged primitive AND, as a byproduct, finding and
+fixing a second, independent, previously-undiscovered bug in that already-shipped, already-Judged
+primitive itself — with a new regression test landed in the real, production test suite, not just
+this design's own probes. The blind-spot concern that motivated this section was concretely
+justified, repeatedly, not merely theoretical.
+
+**NOT established**: that this pass found everything real-world history has to teach this design.
+§38.4's remaining four leads are still not acted on. This is an ongoing external-validation
+practice for this design, not its completion — the honest expectation, consistent with every other
+review round in this document, is that continuing it would find more.

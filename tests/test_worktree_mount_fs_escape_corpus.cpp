@@ -343,6 +343,52 @@ int main() {
                  "C2-9c: double slash rejected");
     }
 
+    // ============================================================================================
+    // C2-10: a CREATING disposition (CREATE_ALWAYS) through an escaping junction. Every prior case
+    // in this corpus opens GENERIC_READ + OPEN_EXISTING, which cannot itself have a side effect on
+    // rejection -- it either legitimately reads existing content or fails outright. A creating
+    // disposition is different: Windows performs the create as PART OF resolving `joined`, before
+    // this function's own containment check ever runs, so a real, previously-undiscovered gap let a
+    // rejected write still plant a brand-new (empty) object at the escaped, outside-the-mount-root
+    // location -- found by a sibling design's external-validation pass replaying this exact ADR's
+    // own C2-7 technique against a DIFFERENT mediation primitive, then noticing the same creating-
+    // disposition shape had never been exercised against THIS primitive either. Fixed by unwinding
+    // the just-created object through the SAME handle just verified (never a re-parsed path string,
+    // preserving this whole file's "the object verified is the object used" property for the
+    // cleanup step too), not merely by detecting and rejecting the escape.
+    // ============================================================================================
+    if (have_junction_support) {
+        std::wstring const planted_path = join(outside_root, L"c2_10_planted.txt");
+        remove_file(planted_path);  // in case a prior interrupted run left one behind
+
+        auto create_escape =
+            open_within_mount_root(mount_root, "escape_link/c2_10_planted.txt", GENERIC_WRITE, CREATE_ALWAYS);
+        AE_CHECK(!create_escape.has_value() && create_escape.error().code == "worktree.mount_path_escapes_root",
+                 "C2-10a: a CREATING open through an escaping junction is still rejected");
+
+        DWORD attrs = GetFileAttributesW(planted_path.c_str());
+        bool const nothing_planted = (attrs == INVALID_FILE_ATTRIBUTES);
+        AE_CHECK(nothing_planted,
+                 "C2-10b: the rejected create left NOTHING planted at the escaped outside location "
+                 "(previously: a real, empty file WAS left behind despite the rejection)");
+
+        // Positive control: the identical creating disposition, for a path that legitimately stays
+        // inside the root, must still work -- proving the cleanup-on-reject path does not make
+        // ordinary inside creates spuriously fail or get cleaned up too.
+        auto create_inside =
+            open_within_mount_root(mount_root, "inside/c2_10_created.txt", GENERIC_WRITE, CREATE_ALWAYS);
+        AE_CHECK(create_inside.has_value(), "C2-10c (positive control): an ordinary inside CREATE_ALWAYS still works");
+        if (create_inside.has_value()) {
+            DWORD written = 0;
+            WriteFile(create_inside->get(), "OK", 2, &written, nullptr);
+        }
+        DWORD inside_attrs = GetFileAttributesW(join(mount_root, L"inside\\c2_10_created.txt").c_str());
+        AE_CHECK(inside_attrs != INVALID_FILE_ATTRIBUTES,
+                 "C2-10d (positive control): the legitimately-created inside file actually persists");
+    } else {
+        std::cerr << "SKIP: C2-10 (no junction support on this machine)\n";
+    }
+
     // ---- Best-effort cleanup ------------------------------------------------------------------
     {
         std::wstring cmdline = L"cmd.exe /c rmdir /s /q \"" + g_scratch_root + L"\"";

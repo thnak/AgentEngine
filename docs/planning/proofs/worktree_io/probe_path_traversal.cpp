@@ -74,7 +74,11 @@ int main() {
                     (int)r5.has_value(), r5.has_value() ? "" : r5.error().code.c_str(),
                     (int)really_escaped);
         CHECK(!r5.has_value());
-        CHECK(r5.error().code == "real_io.symlink_escape_rejected");
+        // §38: write() now rejects this via agentengine::open_within_mount_root()'s real, handle-
+        // based containment check (ADR-014 Design B), not the old (now-superseded, kept only as a
+        // deliberately-vulnerable reference control) reject_symlink_escape() -- hence this design's
+        // OWN error code, "worktree.mount_path_escapes_root", not "real_io.symlink_escape_rejected".
+        CHECK(r5.error().code == "worktree.mount_path_escapes_root");
         CHECK(!really_escaped);
         std::printf("    CONFIRMED: real symlink escape attempt REJECTED, nothing written outside "
                     "the sandbox root\n");
