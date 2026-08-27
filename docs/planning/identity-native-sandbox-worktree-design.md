@@ -3750,3 +3750,152 @@ document's own history (§26, §32, §33, this section) is four consecutive revi
 real, previously-undisclosed defect nothing before it had caught — the honest expectation is that a
 fifth pass would likely find an eleventh. A3 (concrete execution-surface technology) and A9 (real
 engine integration) remain untouched by this pass, as scoped in §34.10.
+
+## 36. A3 — a concrete execution-surface technology, built and red-teamed for the first time
+
+Per explicit project-owner direction: A3 (§11/§34.10's own "single largest remaining engineering
+unknown") is designed and proven FRESH here, on this design's own primitives, deliberately not
+designed around reusing the real, already-shipped `SandboxBackend`/`SandboxBackendRegistry`/
+`SandboxToolProvider` machinery (`decisions/ADR-080`/`ADR-096`/`ADR-098`) — reuse-vs-replace against
+those is named as an implementation-time decision for a future ADR (`decisions/ADR-099`), not
+designed here. Until this section, nothing in this design had a `run(command)`-shaped verb at all:
+`full_stack::SandboxSession` only ever drains staged writes and commits; §31's Docker integration
+proved a real container could bridge into the real `Ledger`/`RealIoFileSystem` stack, but only as an
+ad hoc sequence of manual calls in one probe's own `main()`, never as a reusable verb.
+
+### 36.1 The mechanism — `ExecutionSurface`, `DockerExecutionSurface`, `SandboxRuntime`
+
+Source: `docs/planning/proofs/execution_surface/`. A fresh, three-verb concept —
+`reset(host_dir)`/`run(command)`/`drain_to(host_dir)` — deliberately narrower than the real
+`SandboxBackend` concept (008 §2a): this design's own `SandboxSession` only ever needs "give me an
+isolated place, put this tree's content in it, run one command, give me back whatever changed," not
+the full generic `ExecRequest`/`SandboxHandle` lifecycle shape. `DockerExecutionSurface` is the one
+real conformer, wrapping the already-proven, already-injection-fixed (§35 finding 9) `DockerBackend`
+via `docker cp`'s own native whole-directory copy convention (a trailing `/.` copies CONTENTS, not
+the directory itself). `SandboxRuntime::run()` composes `Ledger`+`RealIoFileSystem`+any
+`ExecutionSurface` into one real coroutine: read the branch's current head (identity-gated) ->
+materialize it onto real disk -> seed the surface -> run the real command inside it -> drain the
+result back -> scan-and-commit through the real Ledger.
+
+### 36.2 Real, live proof — `probe_execution_surface.cpp`
+
+Compiled clean (`clang 22.1.5`, `-std=c++23`, target `x86_64-pc-windows-msvc`) and run against a
+REAL, live Docker daemon, not a mock. Deliberately not a toy: two real turns, where the SECOND
+turn's command reads a file the FIRST turn's command wrote, and `reset()` destroys and recreates a
+genuinely fresh container between them — the only possible path for that content to survive is the
+real `Ledger` checkpoint chain via `materialize()`, not anything the execution surface itself
+remembers (there is nothing to remember; the container is gone). Confirmed via the real, committed
+tree read back through the identity-gated Ledger API, byte-for-byte, both turns. A non-zero real
+exit code is confirmed to be a normal `RunOutcome`, not a `result<>`-level failure — the turn still
+commits.
+
+### 36.3 Three rounds of independent adversarial review, real bugs found and fixed at every round
+
+Matching this document's own established discipline (§26/§32/§33/§35): brand-new code gets
+red-teamed before being trusted, not assumed correct because it compiled and ran once.
+
+**Round 1 — three independent, parallel, adversarial passes** (security/I2-I3, C++ correctness,
+architecture-fit), each with no knowledge of the others' work. Real findings, strongly corroborated
+by independent rediscovery across 2-3 different lenses:
+- **The load-bearing one, found by all three independently**: `SandboxRuntime::run()`'s own doc
+  comment claimed the storage quota was "consumed BEFORE the real command ever runs" — false. The
+  real command executed at step 4; `AsyncQuota<StorageBytes>::try_consume()` was only ever reached
+  inside `Ledger::commit()` at the very last step. A caller with zero remaining quota could run an
+  arbitrary real command in a real container, for free, indefinitely, discovering the rejection only
+  at commit. Fixed by introducing a SEPARATE `AsyncQuota<RunCost>` gate, consumed before the command
+  ever runs (mirroring `AsyncQuota<BranchCost>`'s own established role gating `branch_from()`),
+  refunded on failure per §35 finding 4's own established discipline.
+- `RealIoFileSystem::scan_and_drain_into_tree()` (which `SandboxRuntime::run()` calls as its own
+  core persistence step) had the EXACT SAME "partial durable persist across an ACL-root-cap
+  rejection" bug §35 finding 10 fixed in the sibling function `combine_into_tree()` — the fix was
+  never applied to this second function doing the identical scan-then-persist pattern. Fixed the
+  same way: collect every file first, validate the whole batch via `would_accept_blob_write()`,
+  THEN write.
+- No exclusivity lock spanned `SandboxRuntime::run()`'s whole turn (unlike the sibling
+  `SandboxSession::harvest_and_checkpoint()`'s own `exclusivity_` AsyncMutex) — two concurrent
+  `run()` calls on one instance could interleave and corrupt which tree gets seeded/committed. Fixed
+  by adding the identical lock, held for the whole call.
+- `reap_pending_abandons()` was never called, unlike the sibling turn-boundary operation. Fixed to
+  match.
+- The "generic over any `ExecutionSurface`, not just Docker" claim was asserted but never
+  demonstrated — exactly one conformer exists, and the three-verb shape may be Docker/container-
+  specific rather than isolation-technology-agnostic (it would fit awkwardly against a
+  `native_jail`-style mediated-syscall backend with no separate filesystem namespace to copy into).
+  Corrected to an honest claim: the interface doesn't NAME Docker, but genericity is unverified
+  against a second conformer.
+- Two Critical, real C++ bugs in `DockerExecutionSurface`'s move semantics: the default move
+  constructor left the moved-from `instance_` still engaged (a spurious empty-id `docker rm -f`
+  call on its destructor); the default move ASSIGNMENT never destroyed `this`'s own pre-existing
+  container before overwriting it, silently leaking it. Both fixed with real move operations.
+- `reset()` unconditionally cleared its `instance_` reference even when the underlying
+  `docker_.destroy()` call itself failed, permanently orphaning a possibly-still-running container
+  on a transient failure. Fixed to only clear on confirmed success.
+- Disclosed, not fixed: orphaned containers survive a genuine process crash (Docker's `--rm` never
+  fires without a clean container exit) — real, but requires an actual crash, and would need a new
+  persisted-container-id-plus-reclaim-sweep mechanism (an A7-shaped mechanism for Docker containers)
+  this pass does not build.
+
+Every fix re-verified live against the Docker daemon, plus two new real adversarial checks added to
+the probe itself: an exhausted `RunCost` quota is confirmed to block execution BEFORE any container
+is created (verified via the real host container count, not just the returned error), and every
+other `real_io_filesystem.hpp` consumer was recompiled and re-run to confirm zero regression from
+the `scan_and_drain_into_tree()` fix.
+
+**Round 2 — independent verification that round 1's fixes actually hold.** Confirmed all of round
+1's findings genuinely fixed by tracing the current code directly, not trusting the comments — and,
+matching this document's own repeatedly-observed "the fix has its own new bug" pattern, found two
+NEW issues the fixes themselves introduced:
+- The new `RunCost` refund logic refunded every early-failure path except one: when `surface.run()`
+  itself returned an error (meaning, per `ExecutionSurface`'s own contract, the command was never
+  even attempted — e.g. an ordinary command containing a double-quote, rejected by the existing
+  shell-injection guard before ever reaching `_popen`). An entirely ordinary command would silently
+  burn `RunCost` budget for zero real execution — the mirror image of the bug the fix existed to
+  close. Fixed by adding the missing refund on that path.
+- The move-assignment fix's own `destroy()` call discarded its result via `(void)` and proceeded to
+  overwrite `instance_` regardless — reintroducing finding 3's exact bug class at a different call
+  site (a transient `destroy()` failure during move-assignment would still silently orphan the
+  original container). Fixed properly this time with a SWAP-based assignment: no possibly-failing
+  `destroy()` call happens inside the operator at all; whatever `this` used to own is left with
+  `other`, whose own already-correct destructor cleans it up when `other` itself goes out of scope.
+
+Both fixes re-verified live, with two more new adversarial probe checks: a command containing a
+double-quote is confirmed rejected AND `run_quota.remaining()` is confirmed exactly unchanged
+(genuinely refunded, not merely claimed); and a swap-based move-assignment is confirmed to leave
+NEITHER side leaked once both objects have actually left scope (container count returns to
+baseline), specifically distinguishing this from a broken assignment that would also happen to pass
+a naive "no immediate leak" check.
+
+**Round 3 — a fresh convergence check.** Traced every failure path in `SandboxRuntime::run()` from
+scratch (confirmed: every pre-execution failure refunds exactly once, no double-refund, no
+under-refund, and — correctly — no refund on any of the three POST-execution failure paths, since
+the command genuinely ran by then); confirmed the swap-based assignment is self-assignment-safe and
+leaves both objects correctly destructible; confirmed the two new probe checks are sound, not
+vacuous, proofs of the specific properties claimed. **Came back clean** — no new blocking finding,
+only two cosmetic observations (an intentional, necessary asymmetry between the move constructor's
+"reset to empty" and the move assignment's "leave holding the swapped value" — the latter is
+REQUIRED for the swap idiom to work, not a bug; and `DockerBackend` — currently stateless — wasn't
+swapped alongside `image_`/`instance_`, harmless today but fragile if that type ever gains state).
+Both closed with a trivial, behavior-neutral fix (confirmed via an identical passing re-run):
+`docker_` is now swapped too, via `std::swap` (no `.swap()` member exists on the stateless type).
+
+### 36.4 What this pass does and does not establish
+
+**Established**: a real, generically-typed execution-surface mechanism, proven end to end against a
+live Docker daemon across genuine multi-turn persistence through the actual checkpoint chain — the
+first time anything in this design has actually run code, not merely staged/committed writes to it.
+Three rounds of independent adversarial review, each round's fixes re-verified by recompiling and
+re-running the affected probes (not by re-reading comments), converging to a clean round with no new
+blocking finding after two rounds of real bugs.
+
+**NOT established**: that `ExecutionSurface`'s three-verb shape actually generalizes to an
+isolation technology other than Docker (only one conformer exists — the claim is now honestly
+scoped, not overstated, but still unverified against a second real conformer, e.g. a
+`native_jail`-shaped mediated-syscall backend with no separate filesystem namespace); Docker
+resource-limit enforcement, network isolation, or drain performance at real working-tree scale
+(§31's own already-disclosed residuals, unchanged by this section); a reclaim mechanism for a
+container orphaned by a genuine process crash (disclosed, not built); and — the standing caveat this
+whole document carries forward from §35.4 — that three rounds is enough to call this code done. It
+is enough to call it CONVERGED for this pass, not exempt from whatever the next one finds.
+Whether/how this composes with `full_stack::SandboxSession` (a separate, pre-existing type this
+section deliberately did not modify) remains an A9/implementation-time decision, unchanged by this
+section.

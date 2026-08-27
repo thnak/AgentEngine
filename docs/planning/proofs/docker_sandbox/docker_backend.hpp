@@ -18,14 +18,10 @@
 #include <sstream>
 #include <string>
 
+#include "../common/exec_outcome.hpp"
 #include "../common/result.hpp"
 
 namespace probe {
-
-struct ExecOutcome {
-    int exit_code = -1;
-    std::string stdout_text;
-};
 
 namespace docker_detail {
 // Runs a command, captures stdout, returns the real process exit code. Windows CRT `_popen`/

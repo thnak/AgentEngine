@@ -15,6 +15,7 @@
 #include <mutex>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "agentengine/core/worktree_types.hpp"
@@ -87,6 +88,12 @@ public:
           commit_lock_(std::make_unique<agentengine::rt::AsyncMutex>()) {
         std::filesystem::create_directories(host_root_);
     }
+
+    // A5/execution_surface: a real caller composing this object with something OUTSIDE its own
+    // write()/materialize() API (e.g. an `ExecutionSurface` conformer that needs a real host
+    // directory to seed from and drain back into) needs the real path this object already owns --
+    // read-only, no new mutation capability granted by exposing it.
+    [[nodiscard]] std::filesystem::path const& host_root() const noexcept { return host_root_; }
 
     // REAL write: bytes actually land on real disk, at a real path under host_root_. Fails closed on
     // an unsafe path BEFORE ever touching the filesystem -- the real check, not a comment promising
@@ -168,21 +175,47 @@ public:
     // omitted because no write() call happened to track it. Still cannot attribute WHICH specific
     // caller produced an untracked file (that information was never recorded) -- only that turn's
     // owner is credited, the same disclosed limitation §17.4/§29 already name for a bypassing write.
+    // REAL FINDING an independent architecture-fit red-team pass caught (against A3's new
+    // `SandboxRuntime`, which calls this method as its own core persistence step): this used to
+    // call `ledger.put_blob_safe()` in a raw loop, exactly the shape §35 finding 10 found and
+    // fixed in the sibling function `combine_into_tree()` (full_stack/real_sandbox_session.hpp) --
+    // if the Nth file's digest hit the ACL-root cap, files 1..N-1 were already durably persisted
+    // with no Tree/Checkpoint ever referencing them, and the caller saw only a clean error with no
+    // sign that partial content had already reached disk. That fix (`would_accept_blob_write()`)
+    // was applied to `combine_into_tree()` only -- this sibling, doing the identical
+    // scan-then-persist pattern, was never updated, a real previously-undisclosed regression this
+    // pass caught before it shipped anywhere. Fixed the same way: collect every file's bytes
+    // first, validate the WHOLE batch against the ACL-root cap, THEN write.
     [[nodiscard]] agentengine::rt::task<result<agentengine::Tree>> scan_and_drain_into_tree(Ledger<>& ledger,
                                                                                                 Principal author) {
         agentengine::rt::AsyncMutex::Guard commit_guard = co_await commit_lock_->lock();
-        agentengine::Tree tree;
+
+        std::vector<std::pair<std::string, std::vector<std::byte>>> collected;
         if (std::filesystem::exists(host_root_)) {
             for (auto const& entry : std::filesystem::recursive_directory_iterator(host_root_)) {
                 if (!entry.is_regular_file()) continue;
                 std::string rel = std::filesystem::relative(entry.path(), host_root_).generic_string();
                 auto bytes = read_real_file(rel);
                 if (!bytes.has_value()) co_return std::unexpected(bytes.error());
-                auto blob_digest = ledger.put_blob_safe(*bytes, author);
-                if (!blob_digest.has_value()) co_return std::unexpected(blob_digest.error());
-                tree.entries.push_back(agentengine::TreeEntry{rel, *blob_digest, false});
+                collected.emplace_back(std::move(rel), std::move(*bytes));
             }
         }
+        for (auto const& [rel, bytes] : collected) {
+            if (!ledger.would_accept_blob_write(bytes, author)) {
+                co_return std::unexpected(error{
+                    "scanned file '" + rel + "' would exceed its digest's ACL-root cap -- "
+                    "rejecting the whole scan before writing any of it, not partway through",
+                    "ledger.acl_root_cap_exceeded"});
+            }
+        }
+
+        agentengine::Tree tree;
+        for (auto const& [rel, bytes] : collected) {
+            auto blob_digest = ledger.put_blob_safe(bytes, author);
+            if (!blob_digest.has_value()) co_return std::unexpected(blob_digest.error());
+            tree.entries.push_back(agentengine::TreeEntry{rel, *blob_digest, false});
+        }
+
         {
             std::lock_guard<std::mutex> guard(*sync_mutex_);
             touched_.clear();   // a full scan supersedes anything the tracked set still held
