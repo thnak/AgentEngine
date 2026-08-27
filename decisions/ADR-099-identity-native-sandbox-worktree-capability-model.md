@@ -269,9 +269,20 @@ prove → judge cycle:**
   (unverified — only one conformer exists), and how/whether this composes with `full_stack::
   SandboxSession` (a separate, pre-existing type this work did not modify) — both still A9/
   implementation-time questions, not decided here.
-- **A9 — real integration into `AgentSession`/`ContextProvider`/`Tool<>`, including reconciliation
-  with THREE real, already-shipped, uncoordinated mechanisms this design's own §34.10 named only in
-  the abstract at the time it was written, and which have since become concrete, real code:**
+- **A9 — real integration into `AgentSession`/`ContextProvider`/`Tool<>`.** **Update, §37 of the
+  design record**: the core mechanical question — how does a mandatory per-session sandbox binding
+  actually work against the REAL, unmodified `AgentSession<ChatClientT, StateT, HistoryProviderT>`
+  class's own fixed `fork_from()`/`clear_in_process_state()` statements — is now designed, built, and
+  proven live: `MandatorySandboxProvider`, composed as `HistoryProviderT`, went through three rounds
+  of independent adversarial review (the first finding the initial design was structurally unsound —
+  a shared, mutable "prepared fork" slot any incidental copy through `AgentSession::history_provider(
+  )`'s real mutable accessor could silently corrupt — closed by a full redesign making every copy-
+  assignment self-contained; the second finding one new gap the redesign itself introduced, a
+  self-copy failure path that could wipe an already-bound session, now fixed and proven). Real,
+  compiler-verified, live-Docker-tested code, not a sketch. Still real, still deferred, still
+  reconciliation with THREE real, already-shipped, uncoordinated mechanisms this design's own §34.10
+  named only in the abstract at the time it was written, and which have since become concrete, real
+  code:**
   1. **`SandboxToolProvider`** (`ADR-096`, implemented and tested 2026-08-25) — a real `ContextProvider`
      giving Shell a per-session sandbox lifecycle, authorized via `CapabilitySet`, with **zero**
      connection to `SandboxBackendRegistry` (confirmed by that ADR's own C7) and **zero** connection

@@ -3899,3 +3899,135 @@ is enough to call it CONVERGED for this pass, not exempt from whatever the next 
 Whether/how this composes with `full_stack::SandboxSession` (a separate, pre-existing type this
 section deliberately did not modify) remains an A9/implementation-time decision, unchanged by this
 section.
+
+## 37. A9 — mandatory per-session sandbox binding, against the REAL `AgentSession`
+
+Per explicit project-owner direction: A9 (real engine integration) is designed fresh here too, on
+this design's own primitives, not designed around reusing the real, already-shipped
+`SandboxToolProvider`/`CapabilitySet` machinery (`decisions/ADR-096`) — reuse-vs-replace against
+that remains an implementation-time decision. This section closes the concrete mechanical question
+A9 was named for: how does §1 item 1's "every session — no exceptions, no opt-out — is bound to
+exactly one SandboxSession from the instant it exists" actually hold against the REAL
+`agentengine::rt::AgentSession<ChatClientT, StateT, HistoryProviderT>` class, whose own
+`fork_from()`/`clear_in_process_state()` bodies (read directly from `include/agentengine/rt/
+agent_session.hpp`, not assumed) are fixed, unmodifiable statements this design has to fit around,
+not redesign.
+
+### 37.1 A real, structural tension found and resolved before writing code, not after
+
+The real class does exactly this, for the field a composed `ContextProvider` occupies:
+
+```
+fork_from():              history_provider_ = source.history_provider_;   // plain copy-assignment
+clear_in_process_state(): history_provider_ = HistoryProviderT{};          // plain default-ctor
+```
+
+A first design instinct — "no default constructor == compiler-enforced mandatory," mirroring
+ADR-096's own C2 property for `SandboxToolProvider` (non-copyable, so `fork_from()` fails to
+COMPILE for any session composed with it, correct for Shell's narrower scope) — directly breaks
+`clear_in_process_state()`'s own fixed `HistoryProviderT{}` statement, which requires
+default-constructibility. This design makes the OPPOSITE requirement from ADR-096's own scope: §1
+item 3 requires `fork_from()` to keep compiling AND produce a real, independent child branch, not
+fail to compile. Resolved by making `MandatorySandboxProvider` default-constructible into a
+well-defined, safe "no sandbox bound yet" state, with "mandatory" enforced the same way
+`session_id_`/`principal_` already are on the real class (a host-discipline convention via a new
+`bind_sandbox()` method mirroring `AgentSession::initialize()` itself) — honestly weaker than
+compile-time enforcement, and named as such, not oversold.
+
+### 37.2 A second, deeper tension — found by independent review of this section's own first version, closed by a real redesign
+
+The first working version split fork creation into a `prepare_fork()` step (called explicitly,
+before `fork_from()`, via `AgentSession::history_provider()`'s real, already-existing public
+accessor) that stashed the resulting child in a `mutable pending_fork_` member, consumed later by
+the copy-assignment `fork_from()`'s own fixed statement triggers. Three independent, parallel
+adversarial passes (security/I2-I3, C++ correctness, architecture-fit — matching §36's own process
+exactly) found this unsound, with strong cross-agent corroboration:
+
+- **The deepest finding**: `AgentSession::history_provider()` returns a plain MUTABLE reference —
+  so ANY incidental copy of the provider through that reference (not just the intended `fork_from()`
+  call) silently consumed and discarded the prepared fork, corrupting a completely unrelated future
+  `fork_from()` call with no error, no warning, nothing.
+- The single `pending_fork_` slot structurally could not support a session forking more than one
+  child — an entirely ordinary pattern this design's own §1 items 3/4 both require, not an edge case.
+- The slot had zero synchronization, a genuine, demonstrable data race under real concurrent access
+  (`common/block_on.hpp`'s own banner already documents that this substrate's coroutines
+  legitimately resume on a different OS thread than they suspended on).
+- Child staging directories were opaque, caller-supplied paths with no uniqueness guarantee — two
+  children forked from one parent could collide on the same real host directory.
+- A double-`prepare_fork()` call silently discarded a still-pending, already-quota-charged child
+  with no diagnostic; the "unprepared fork" fail-closed state left some fields aliasing the parent's
+  while others were reset, an inconsistent partial state; a tool citation named a never-shipped
+  prototype as "real, established" precedent instead of the actual shipped analog
+  (`RunShellTool`, which has a static `Capabilities<>` ceiling this design deliberately diverges
+  from); and the contributed tool's own description text overclaimed "no way to opt out."
+
+**The redesign, not a patch**: `prepare_fork()`/`pending_fork_`/`cancel_pending_fork()` were removed
+entirely. Every copy-assignment is now fully self-contained: it performs its OWN real
+`Ledger::branch_from()` call (via a new, `const`-qualified `SandboxRuntime::spawn_child_branch()`),
+synchronously driven through the already-ASan-proven `block_on()`, and EITHER succeeds (a genuinely
+fresh, independent child, every field consistently updated) OR fails closed to the field-for-field
+EXACT same state real default-construction produces. This has no shared mutable state left to race
+on, be stolen from, or grow stale — any number of forks, sequential, incidental, or concurrent, each
+independently succeed or fail on their own merits. Child staging directories are now derived
+internally via `compute_digest()` of the child branch's own name (unique by construction, via
+`Ledger::branch_from()`'s own real `branch_seq_` counter) — the SAME digest-based per-session
+subdirectory naming precedent `decisions/ADR-096` (C8) already established and shipped, cited
+correctly this time. An optional, side-effect-free `would_fork_succeed()` gives back most of
+`prepare_fork()`'s early-rejection value without any of its statefulness. The tool's citation and
+description text were corrected to name the real shipped precedent honestly.
+
+### 37.3 A third round found the redesign itself introduced one real gap, now closed
+
+An independent verification pass confirmed every one of §37.2's findings was genuinely fixed by the
+redesign (traced, not assumed — e.g. confirmed the copy-assignment operator never writes to `other`
+at all, confirmed the fail-closed state is field-for-field identical to default-construction,
+confirmed staging-directory uniqueness traces to `Ledger::branch_from()`'s own real, mutex-guarded
+counter) — but, with fresh eyes, found the redesign's own new failure-path reset had no `this ==
+&other` guard: a **self-copy** (`AgentSession::fork_from(source, id)` takes `source` as a plain
+`const&` with no identity check, so nothing structurally prevents a future caller passing the same
+session as its own source) whose internal fork attempt would FAIL (e.g. BranchCost exhausted)
+unconditionally reset every field — silently wiping an already-bound, already-working session's real
+sandbox on a failed self-fork attempt. Fixed with the conventional C++ self-assignment guard: self-
+copy is now a genuine no-op. Re-verified with a real adversarial probe check: self-assignment on a
+session whose own would-be fork is pre-arranged to fail (a zero-remaining `BranchCost` quota) leaves
+the session completely unaffected, still fully functional.
+
+### 37.4 Real, live proof — `probe_mandatory_sandbox.cpp`
+
+Compiled clean and run against a REAL, live Docker daemon, all 9 checks passing: a
+freshly-default-constructed session has zero execution capability; `bind_sandbox()` establishes a
+real sandbox whose contributed tool genuinely executes and commits; a `fork_from()`-shaped copy of a
+bound parent produces a genuinely isolated child with BOTH positive and negative controls verified
+on both sides (not merely absence checks) through independent Ledger reads; copying an unbound
+session fails closed; TWO SEQUENTIAL children forked from one parent are mutually isolated from each
+other, not just from the parent, each with its own unique staging directory; `clear_in_process_
+state()` relinquishes the old branch via `BranchHandle`'s own already-proven RAII with zero new
+plumbing and the session is re-bindable afterward; `would_fork_succeed()` genuinely reflects live
+quota state; an INCIDENTAL copy (not a `fork_from()`-shaped one) is safe and leaves the source
+completely unaffected; and a self-copy whose internal fork would fail leaves the session completely
+unaffected.
+
+### 37.5 What this pass does and does not establish
+
+**Established**: a real, working mechanism for binding every session to a mandatory sandbox against
+the REAL, unmodified `AgentSession` class's own fixed `fork_from()`/`clear_in_process_state()`
+statements — not a redesign of that class, a composition that makes those exact statements do the
+right thing. Three rounds of independent adversarial review (matching §36's own process), the first
+finding real, structural unsoundness in the initial design (not just bugs in its implementation),
+the second confirming the redesign's fixes held while finding one new, real gap the redesign itself
+introduced, now closed and proven.
+
+**NOT established**: §1 item 2's stronger requirement — "a session with no execution capability
+still owns a branch; it just never writes to the working tree." The default-constructed "no sandbox
+bound yet" state this section produces owns no branch at all, not a branch-with-no-execution. A
+`bind_branch_only()` variant giving a session a real branch with no execution surface (for a
+deliberately read-only agent) would close this properly; named as a real, honestly-disclosed gap,
+not silently assumed solved. Also not established: a real-thread reentrant self-deadlock risk is
+named (not solved) if fork machinery were ever called reentrantly from within an in-flight `run()`
+call on the same session/thread — not reachable through `RunCommandTool` as built, and not this
+design's own established tool-invocation model, but a real structural constraint for whoever builds
+the next tool on top of this. Whether/how this composes with the real, already-shipped
+`SandboxToolProvider`/`CapabilitySet` machinery (§34.10/`decisions/ADR-096`) remains an
+implementation-time decision, unchanged by this section. And, the standing caveat every review round
+in this document carries forward: this is convergence for THIS pass, not exemption from whatever the
+next one finds.

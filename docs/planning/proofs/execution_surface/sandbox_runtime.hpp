@@ -21,8 +21,10 @@
 // implementation folds this INTO `full_stack::SandboxSession`, replaces it, or keeps it separate is
 // an implementation-time decision, not designed here.
 
+#include <cstddef>
 #include <filesystem>
 #include <string>
+#include <vector>
 
 #include "../async_quota/async_quota.hpp"
 #include "../common/result.hpp"
@@ -159,6 +161,52 @@ public:
     }
 
     [[nodiscard]] std::string const& branch_name() const noexcept { return branch_.name(); }
+
+    // A9: lets a caller minting a SIBLING staging directory for a spawned child (e.g.
+    // `mandatory_sandbox/`'s own fork-via-copy-assignment) derive it relative to this instance's
+    // own root, without this class needing to know anything about session-naming schemes itself.
+    [[nodiscard]] std::filesystem::path const& staging_root() const noexcept {
+        return io_fs_.host_root();
+    }
+
+    // A9: the real COW-branch verb a mandatory-sandbox-per-session design needs for fork_from()/
+    // agent.spawn to create a genuinely fresh child sandbox, never aliasing the parent's. Thin
+    // wrapper around the already-proven `Ledger::branch_from()` -- deliberately does not expose
+    // `branch_` itself (no raw reference out), matching this design's "possession, not reference"
+    // discipline for `BranchHandle` everywhere else.
+    //
+    // REAL FINDING an independent architecture-fit red-team pass caught: this used to take an
+    // opaque, caller-supplied `child_staging_root` verbatim -- nothing derived it uniquely, so two
+    // children forked from the same parent with the same (or colliding) caller-supplied path would
+    // have their `RealIoFileSystem`s materialize/scan/drain into the SAME real host directory,
+    // corrupting each other. Fixed by deriving the child's staging directory INTERNALLY from the
+    // real, just-minted child branch's own name -- unique by construction (`branch_seq_` in
+    // `Ledger::branch_from()`) -- via `compute_digest()`, the SAME digest-based per-session
+    // subdirectory naming precedent `decisions/ADR-096-...:147-153` (C8) already established and
+    // shipped in this codebase for the identical hazard class, reused correctly this time (an
+    // earlier version of this file cited a DIFFERENT, never-shipped prototype as its precedent
+    // instead of this real one -- fixed).
+    // `const`: legitimately so, not a cast-away -- `Ledger::branch_from()` takes its parent
+    // `BranchHandle` by `const&`, and locking `exclusivity_` (a `unique_ptr<AsyncMutex>`) mutates
+    // the pointee, not the pointer, so nothing this method touches actually needs `*this` mutable.
+    // Lets a caller holding only a `SandboxRuntime const&` (e.g. `MandatorySandboxProvider::
+    // operator=(T const&)`'s own `other` parameter) still spawn a child from it.
+    [[nodiscard]] agentengine::rt::task<result<SandboxRuntime>> spawn_child_branch(
+        Principal creator, AsyncQuota<BranchCost>& branch_quota,
+        std::filesystem::path staging_parent_dir) const {
+        agentengine::rt::AsyncMutex::Guard guard = co_await exclusivity_->lock();
+        auto child_branch = co_await ledger_->branch_from(branch_, creator, branch_quota);
+        if (!child_branch.has_value()) co_return std::unexpected(child_branch.error());
+        std::string const& name = child_branch->name();
+        std::vector<std::byte> name_bytes(name.size());
+        for (std::size_t i = 0; i < name.size(); ++i) name_bytes[i] = static_cast<std::byte>(name[i]);
+        auto digest = agentengine::compute_digest(name_bytes);
+        if (!digest) {
+            co_return std::unexpected(error{digest.error().message,
+                                              "sandbox_runtime.staging_digest_failed"});
+        }
+        co_return SandboxRuntime(*ledger_, std::move(*child_branch), staging_parent_dir / *digest);
+    }
 
 private:
     Ledger<>* ledger_;
