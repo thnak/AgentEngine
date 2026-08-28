@@ -4701,3 +4701,47 @@ commit tool alone declaring both tags), and promoting these tags into `agentengi
 real (inheriting the `Capability` variant/`capability_kind` extension every other real `cap::X`
 addition already required) — both explicitly deferred, matching every other A-numbered item's own
 scope boundary, not attempted here.
+
+### 41.1 A second round: the GATING BEHAVIOR itself, executed, not just the tag types compiling
+
+The proof above (`probe_task_branch_capability.cpp`) only ever exercised whether the two tags compile
+as type arguments — it never exercised whether the two-tag scheme actually *gates* the way §41's own
+prose claims (isolation-only grant binds start/run/discard but not commit; commit-only grant is
+genuinely inert; order and duplication don't matter). Those were reasoned claims, not run ones. A
+second red-team round (2026-08-28, adversarial, targeted specifically at this gap) was asked to attack
+exactly that, plus re-check `task_branch_capability.hpp`'s own already-once-reviewed comments for
+anything the first round missed.
+
+**New proof, real, executed**: `docs/planning/proofs/task_branch_tool/task_branch_capability_enforcement.hpp`
+mirrors the REAL `agentengine::CapabilitySet::contains()`/`bind()`/`subsumes()` (`capability.hpp`
+lines 648/705/923) and the real `tool_pipeline.hpp` step-4/7 loop (lines 589-599) at matching fidelity
+— over a local, two-alternative variant scoped to just `TaskBranch`/`TaskBranchCommit`, since the real
+`Capability` variant is closed and this track still declines to extend it before a real caller exists.
+`probe_task_branch_capability_enforcement.cpp` runs 12 checks against it: isolation-only grant binds
+the isolated ceiling but not the commit ceiling; both-tags grant binds both; **commit-only grant binds
+neither** (the "inert grant" claim, now executed rather than asserted); empty grant binds neither;
+grant order and duplication don't change the verdict. 12/12 pass.
+
+**Red-team result on this new proof**: zero fatal findings. The mirror's fidelity was checked line by
+line against the real primitives (including that discarding partially-bound tickets on early failure
+is a faithful simplification, not an omission — the real pipeline never exposes a `BoundCapability` to
+invoked code until the *whole* ceiling binds, so nothing needs revoking on a short-circuit reject) and
+attenuation was checked for a hidden failure mode in the "inert grant" claim (none found — attenuation
+only narrows, so a child session ending up holding `TaskBranchCommit` alone is still consistent with
+that grant being inert, not a new gap). Two REAL, pre-existing errors were found in
+`task_branch_capability.hpp` itself — missed by the first red-team round — and fixed: (1) the comment
+citing `cap::Entropy`/`cap::Elicit`/`cap::NetListen` together as "fieldless, no further parameter to
+narrow" precedent was wrong about `NetListen`, which genuinely carries a `port_allowlist` field and
+its own real `subsumes_payload()` narrowing logic (`capability.hpp` lines 107-109/536-548) — fixed by
+removing `NetListen` from the citation, leaving the genuinely fieldless `Entropy`/`Elicit` precedent
+intact; (2) the comment attributing `Background<MaxConcurrent>`'s live-count check to
+`tool_pipeline.hpp::invoke_tool()` was wrong — that check lives in a separate function,
+`background_task()` (lines ~768-777) — fixed to name the correct function. Both wording-only, neither
+affecting the design's own conclusions.
+
+**What this does NOT establish**: that the REAL `tool_pipeline.hpp`, compiled against a REAL extended
+`Capability` variant with `TaskBranch`/`TaskBranchCommit` alternatives added, behaves this way — that
+still requires the production-code edit this design track defers. What it DOES establish: the
+enforcement *algorithm* this design proposes — same subsumption rule, same short-circuit order, same
+no-leaked-reason-on-failure shape — produces exactly the gating behavior claimed, checked by running
+it against the two real ceilings this design proposes, not by reasoning about it in prose alone.

@@ -38,7 +38,8 @@
 //
 // What this declaration is NOT: a live concurrent-branch-count limiter. `cap::decl::Background
 // <MaxConcurrent>` (the closest real precedent for a NUMERIC capability parameter) is checked by a
-// SPECIAL-CASED step inside `tool_pipeline.hpp::invoke_tool()` (its own G9 comment: "the CALLER's own
+// SPECIAL-CASED step inside `tool_pipeline.hpp::background_task()` -- a separate function from
+// `invoke_tool()`, lines ~768-777 (its own G9 comment: "the CALLER's own
 // Background<max_concurrent> ceiling, checked against a LIVE count"), not the ordinary
 // `capability_ceiling`/`held.bind()` membership check every other capability gets. Adding an
 // equivalent live-count special case for TaskBranch would mean touching that same real, shipped
@@ -54,7 +55,7 @@
 namespace probe {
 
 // Runtime capability instances -- both markers, no fields, matching the real system's own
-// `cap::Entropy`/`cap::Elicit`/`cap::NetListen` precedent for a capability whose entire authority is
+// `cap::Entropy`/`cap::Elicit` precedent for a capability whose entire authority is
 // "may this be invoked at all," with no further parameter to narrow.
 namespace cap {
 struct TaskBranch {};

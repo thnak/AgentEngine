@@ -403,5 +403,16 @@ prove → judge cycle:**
   through a real `Tool<>`'s `declared_capabilities()` does not compile today, for two precise reasons,
   one self-inflicted-but-fixable (an ADL/namespace gap), one genuinely unavoidable without editing
   production code (the closed `Capability` variant has no `TaskBranch` alternative). Independently
-  red-teamed, zero fatal findings, two wording corrections folded in. Still governed by every residual
-  above: no production wiring, no real `Tool<>` binding, not Judged.
+  red-teamed, zero fatal findings, two wording corrections folded in. **Update, §41.1 (2026-08-28)**:
+  a second round moved the two-tag GATING BEHAVIOR itself (not just the tags' types) from prose to a
+  real, executed proof — `task_branch_capability_enforcement.hpp`/`probe_task_branch_capability_
+  enforcement.cpp` mirror the real `CapabilitySet::contains()`/`bind()`/`subsumes()` and the real
+  `tool_pipeline.hpp` step-4/7 loop at matching fidelity, over a local two-alternative variant (the
+  real `Capability` variant is still closed). 12/12 checks pass, including the "commit-only grant is
+  genuinely inert" claim, now executed rather than asserted. Independently red-teamed a second time;
+  zero fatal findings; two real, pre-existing wording/citation errors in the ORIGINAL
+  `task_branch_capability.hpp` comment (missed by the first round) found and fixed — a wrong
+  `cap::NetListen` citation (it is not fieldless, unlike the `Entropy`/`Elicit` precedent actually
+  needed) and a wrong function attribution for `Background<MaxConcurrent>`'s live-count check
+  (`background_task()`, not `invoke_tool()`). Still governed by every residual above: no production
+  wiring, no real `Tool<>` binding, not Judged.
