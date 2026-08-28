@@ -277,6 +277,38 @@ public:
         return runtime_.has_value() ? &*runtime_ : nullptr;
     }
 
+    // Rollback (2026-08-28): exposes the now-real `SandboxRuntime::reset_to_turn()` at THIS class's
+    // own level -- required because `runtime()` above deliberately only ever hands back a
+    // `SandboxRuntime const*` (§37's own, already-established rule: no mutable reference to the
+    // owned runtime ever leaves this class), so a caller reaching in through that accessor could
+    // never call a mutating verb on it. `requested_by` is taken explicitly, not defaulted to
+    // `owner_`, matching this class's OWN established pattern for who a call's real principal is
+    // (`on_context()`'s tool closure re-derives its `caller` from `ctx.principal` on every call
+    // rather than assuming `owner_` -- see that method's own comment) -- a host wiring this into a
+    // future `ResetSandboxTool` supplies whatever real, ctx-derived principal is calling, the same
+    // way `run_command`'s own closure already does.
+    //
+    // `reset_quota` is taken as an explicit PER-CALL parameter, deliberately NOT a fourth
+    // constructor-injected member `bind_sandbox()` would need to grow to carry (unlike
+    // `branch_quota_`/`run_quota_`/`storage_quota_`, which genuinely must be pre-stored because the
+    // contributed `run_command` TOOL CLOSURE has no way to receive one through a model-facing JSON
+    // call). `reset_to_turn()` is explicitly NOT tool-facing today (no `Tool<>` wires it -- see this
+    // method's own banner) -- it is a direct, host-callable method, so nothing forces it to share
+    // `bind_sandbox()`'s pre-storage discipline, and taking it as a parameter avoids changing that
+    // constructor's signature (and every existing call site) for a verb `bind_sandbox()` itself never
+    // needs to know about. See `SandboxRuntime::reset_to_turn()`'s own comment for the real
+    // resource-exhaustion finding `ResetCost` closes and the ADR-099 §7 residual this composition
+    // still inherits unchanged.
+    [[nodiscard]] agentengine::rt::task<result<Checkpoint>> reset_to_turn(
+        std::uint64_t target_turn_index, Principal requested_by, AsyncQuota<ResetCost>& reset_quota) {
+        if (!runtime_.has_value()) {
+            co_return std::unexpected(error{
+                "cannot reset a session whose own sandbox was never bound",
+                "mandatory_sandbox.not_bound"});
+        }
+        co_return co_await runtime_->reset_to_turn(target_turn_index, requested_by, reset_quota);
+    }
+
 private:
     Ledger<>* ledger_ = nullptr;
     // `Principal` deliberately has NO default constructor of its own (§20's own "identity-only, no

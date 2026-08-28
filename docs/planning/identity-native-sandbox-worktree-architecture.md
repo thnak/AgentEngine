@@ -1,13 +1,14 @@
 # Identity-native sandbox/worktree architecture — diagrams
 
-Companion to `docs/planning/identity-native-sandbox-worktree-design.md` (§0–§41.1) and
+Companion to `docs/planning/identity-native-sandbox-worktree-design.md` (§0–§42.5) and
 `decisions/ADR-099-identity-native-sandbox-worktree-capability-model.md`. This file only
 visualizes the CURRENT, converged design — it carries no new decisions. Nodes/steps marked
 **(gap)** are real, named, still-open items (from §11/§34.10/§36.5/§37.5/§39.5/§40.3/§41's own
-"what this does NOT close", or ADR-099's own residuals) — shown here so the diagrams don't
+"what this does NOT close"/§42.5, or ADR-099's own residuals) — shown here so the diagrams don't
 quietly imply more is settled than actually is. Sections 1–6 cover the core stack and A3/A9
-(§20–§37); sections 7–9 (added 2026-08-28) cover A10's task-branch tool surface, its A8 fix, and
-the `cap::decl::TaskBranch`/`TaskBranchCommit` capability design (§39–§41.1).
+(§20–§37, §5 updated 2026-08-28 to reflect §42's rollback closure); sections 7–9 (added
+2026-08-28) cover A10's task-branch tool surface, its A8 fix, and the `cap::decl::TaskBranch`/
+`TaskBranchCommit` capability design (§39–§41.1).
 
 This is a **different, unrelated design** from `mandatory-session-worktree-architecture.md`
 (the companion to `mandatory-session-worktree-design.md`, Design A — rejected after four
@@ -171,22 +172,30 @@ sequenceDiagram
     Note over Host,C: any number of forks — sequential, incidental, or concurrent —<br/>each independently succeeds or fails on its own merits;<br/>NOTHING shared between calls to race on or steal from
 ```
 
-## 5. Rollback — proven at the `Ledger` layer, not yet composed with A3/A9
+## 5. Rollback — now composed with A3/A9, quota-gated (design doc §42, 2026-08-28)
 
-`Ledger::reset_to()` (real, checkpoint-DAG-preserving rollback) and
-`full_stack::SandboxSession::reset_to_turn()` are both real and proven (§23/§26) — but
-**(gap)**: `SandboxRuntime` (A3)
-and `MandatorySandboxProvider` (A9) have no rollback method of their own yet. A
-`run_command`-composed session today has no way to roll back its own sandbox to an earlier
-checkpoint; this is a real, disclosed omission, not a silently-assumed-solved one.
+`Ledger::reset_to()` (real, checkpoint-DAG-preserving rollback, §23) is now wired to BOTH
+`SandboxRuntime` (A3) and `MandatorySandboxProvider` (A9) via a real `reset_to_turn()` on each,
+closing what used to be this section's own disclosed gap. `full_stack::SandboxSession::
+reset_to_turn()` (§26) remains a DIFFERENT, pre-existing, unmodified composition — the two are still
+never folded together (§36.1's own "never folds into the existing type" decision stands).
+
+A red-team round on this composition found the first version took NO `AsyncQuota` at all — unlike
+every other mutating verb on `SandboxRuntime` — letting a caller already holding a bound sandbox call
+it for free, causing unbounded `Ledger` checkpoint growth and, under a durable `Store`, a full-ledger
+re-serialize on every call. Fixed with `AsyncQuota<ResetCost>`, consumed before the mutation and
+refunded on failure, proven live against a real Docker daemon at both layers (12 checks total)
+including a quota-exhaustion adversarial check at each layer.
 
 ```mermaid
 graph LR
-    L["Ledger::reset_to(branch, turn_index, principal)<br/>real, proven, §23"] -->|"NOT wired to"| SR["SandboxRuntime (A3)<br/>(gap: no reset method)"]
-    SSS["full_stack::SandboxSession<br/>::reset_to_turn()<br/>real, proven, §26"] -->|"a DIFFERENT, pre-existing type —<br/>never modified by A3/A9"| SR2["SandboxRuntime / MandatorySandboxProvider<br/>(a separate composition — §36.1, §37 banner)"]
+    L["Ledger::reset_to(branch, turn_index, principal)<br/>real, proven, §23"] -->|wraps| SR["SandboxRuntime::reset_to_turn()<br/>(A3, §42.1 — quota-gated by<br/>AsyncQuota&lt;ResetCost&gt;, §42.2)"]
+    SR -->|exposed at session level, since runtime()<br/>only ever hands back a const*| MSP2["MandatorySandboxProvider::reset_to_turn()<br/>(A9, §42.1)"]
+    SSS["full_stack::SandboxSession<br/>::reset_to_turn()<br/>real, proven, §26"] -->|"a DIFFERENT, pre-existing type —<br/>never folded together, §36.1"| SR2["SandboxRuntime / MandatorySandboxProvider<br/>(a separate composition — §36.1, §37 banner)"]
 
-    classDef gap stroke:#c33,stroke-width:2px,stroke-dasharray: 4 2;
-    class SR gap;
+    Note2["Still NOT established (§42.5): any Tool&lt;&gt;/capability-<br/>declaration story — host-level only, not model-reachable.<br/>ADR-099 §7's Ledger::reset_to() authorization residual<br/>(no authorized_for() check of its own) remains open,<br/>inherited unchanged — possession is still the whole<br/>authorization boundary here"]
+    Note2 -.-> SR
+    Note2 -.-> MSP2
 ```
 
 ## 6. Quota model — one primitive, three instantiations, three distinct gates
@@ -341,7 +350,7 @@ graph LR
 - Solid, no note → real primitive, already implemented as standalone C++23 and proven by a real
   probe compiled with `clang 22.1.5`/`-std=c++23` and run to completion (including, for A3/A9/A10,
   live against a real Docker daemon; for the §9 capability-gating mirror, run to 12/12 green rather
-  than against a daemon) — see the design doc's own §20–§41.1 for the exact evidence per primitive.
+  than against a daemon) — see the design doc's own §20–§42.5 for the exact evidence per primitive.
 - **(gap)** annotations → open findings named in §11, §34.10, §36.5, §37.5, §39.5, §40.3, §41's own
   "what this does NOT close", or ADR-099's own residuals — not fixed, not hidden. See the design
   doc / ADR for the full text of each. Two gaps sections 7–9 add: `TaskBranchSandbox` requires one

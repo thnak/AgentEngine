@@ -20,6 +20,13 @@
 // an implicit assumption. Per explicit project-owner direction: whether a future real
 // implementation folds this INTO `full_stack::SandboxSession`, replaces it, or keeps it separate is
 // an implementation-time decision, not designed here.
+//
+// Rollback (2026-08-28, ADR-099 §8's own residual: "Ledger::reset_to() is real and proven... but
+// SandboxRuntime (A3) has no reset method"): `reset_to_turn()` below closes it -- the SAME verb name
+// `full_stack::SandboxSession::reset_to_turn()` already uses (deliberately, matching that sibling's
+// own naming, not a coincidence), on THIS type, wired to the SAME already-proven `Ledger::reset_to()`
+// underneath. Two, still separate compositions, per this design's own explicit choice not to fold
+// them together yet (see this file's own banner above).
 
 #include <cstddef>
 #include <filesystem>
@@ -49,6 +56,21 @@ namespace probe {
 // mutation), consumed before `surface.run()`, refunded (§35 finding 4's own established discipline)
 // if the run's real output later fails to commit.
 struct RunCost {};
+
+// A distinct Kind tag for `AsyncQuota<ResetCost>`, gating `reset_to_turn()` -- REAL GAP an
+// adversarial red-team pass on this file's own rollback addition found (2026-08-28): the initial
+// version of `reset_to_turn()` below took no quota at all, unlike every OTHER mutating verb on this
+// class (`run()`/`RunCost`, `spawn_child_branch()`/`BranchCost`, the `commit()` path/`StorageBytes`).
+// A caller already possessing a bound `SandboxRuntime` -- host-level today, but exactly the kind of
+// authority a future `ResetSandboxTool` would hand to a session -- could call `reset_to_turn()` in a
+// tight loop for free: each call inserts a NEW, never-evicted entry into `Ledger`'s own
+// `state.checkpoints` map (unbounded growth), and when a durable `Store` is configured, triggers a
+// FULL re-serialization of every branch and every checkpoint of every branch
+// (`persist_snapshot_locked()`) on every single call -- a real, unbudgeted resource-exhaustion vector
+// this project's own I8 invariant ("budgets are enforced") exists to prevent. Mirrors `BranchCost`'s
+// own role exactly: gates "is this principal allowed to reset AT ALL" before the mutation, consumed
+// first, refunded on any failure (the same discipline `run()`/`spawn_child_branch()` already use).
+struct ResetCost {};
 
 struct RunOutcome {
     ExecOutcome exec;       // the real command's own exit_code/stdout -- a non-zero exit_code here
@@ -158,6 +180,55 @@ public:
         (void)co_await ledger_->reap_pending_abandons();
 
         co_return RunOutcome{*exec_r, *cp};
+    }
+
+    // Rollback (2026-08-28): closes this design's own disclosed §5/ADR-099 residual -- "Ledger::
+    // reset_to() is real and proven, but SandboxRuntime has no rollback method of its own yet." Thin
+    // wrapper, matching every other verb on this class (spawn_child_branch/reclaim_orphaned_child/
+    // merge_into/discard): the REAL work is `Ledger::reset_to()`'s (already-proven, §23) job, this
+    // method only supplies the branch this runtime owns, the `ResetCost` quota gate (see that tag's
+    // own comment above -- a real red-team finding, not present in this method's first version), and
+    // the concurrency discipline `run()` itself established. Deliberately does NOT touch `io_fs_`/the
+    // real staging directory on disk -- moving the Ledger's own HEAD pointer back is the whole of
+    // what "rollback" means at this layer; the NEXT `run()` call's own step 2
+    // (`io_fs_.materialize(*ledger_, *head_digest, author)`) already, unconditionally, re-seeds
+    // staging from whatever the CURRENT head tree is, so a stale on-disk staging directory left over
+    // from before the reset is not read from by anything in THIS codebase today. Stated precisely,
+    // not as a stronger structural claim (a red-team finding on an earlier version of this comment):
+    // `RealIoFileSystem` exposes `host_root()`/`read_real_file()`/`read_verified()` as ordinary public
+    // methods with no "staging is stale until materialize()" guard of their own -- the property holds
+    // because no current caller reads `io_fs_` directly outside the `run()`/`scan_and_drain_into_tree()`
+    // cycle, not because the type structurally prevents a future one from doing so.
+    //
+    // `exclusivity_` is taken for the same reason `run()` takes it: a concurrent `run()` racing this
+    // call could otherwise materialize from a head that is moving out from under it mid-turn (the
+    // identical hazard class the fatal finding fixed for `run()` itself already named). Same
+    // reentrancy caveat `spawn_child_branch()`'s own comment already states for itself applies here
+    // identically, disclosed rather than left implicit a second time: calling `reset_to_turn()`
+    // reentrantly, on the same OS thread, from code already running inside an in-flight `run()` (or
+    // `spawn_child_branch()`) call on the SAME instance would self-deadlock `block_on()`'s busy-wait
+    // on the same, already-held, non-reentrant `exclusivity_` lock -- not reachable through any real
+    // caller this design has built (a host-level API, no tool body synchronously re-enters it), but a
+    // real structural constraint worth stating rather than assuming.
+    //
+    // ADR-099 §7's own, still-unsolved residual applies here unchanged, not silently repeated by
+    // omission: `Ledger::reset_to()` performs no `authorized_for()` check of its own (confirmed by
+    // direct read) -- possession of this `SandboxRuntime` is the entire authorization boundary, the
+    // same discipline `discard()`/`abandon()` already rely on. Not a regression this pass introduced,
+    // and not currently reachable from anything derived from model output (no `Tool<>` wires this
+    // yet, I2/I3), but the ADR's own "not solved by anything built so far" framing stays true after
+    // this composition too -- a real caller of a future `ResetSandboxTool` would inherit it verbatim.
+    [[nodiscard]] agentengine::rt::task<result<Checkpoint>> reset_to_turn(
+        std::uint64_t target_turn_index, Principal requested_by, AsyncQuota<ResetCost>& reset_quota) {
+        agentengine::rt::AsyncMutex::Guard guard = co_await exclusivity_->lock();
+        auto consumed = co_await reset_quota.try_consume(1, requested_by);
+        if (!consumed.has_value()) co_return std::unexpected(consumed.error());
+        auto outcome = co_await ledger_->reset_to(branch_, target_turn_index, requested_by);
+        if (!outcome.has_value()) {
+            (void)co_await reset_quota.refund(1);
+            co_return std::unexpected(outcome.error());
+        }
+        co_return *outcome;
     }
 
     [[nodiscard]] std::string const& branch_name() const noexcept { return branch_.name(); }

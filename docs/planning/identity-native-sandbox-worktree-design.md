@@ -4745,3 +4745,111 @@ still requires the production-code edit this design track defers. What it DOES e
 enforcement *algorithm* this design proposes — same subsumption rule, same short-circuit order, same
 no-leaked-reason-on-failure shape — produces exactly the gating behavior claimed, checked by running
 it against the two real ceilings this design proposes, not by reasoning about it in prose alone.
+
+## 42. A3/A9 rollback — `SandboxRuntime`/`MandatorySandboxProvider` gain a real `reset_to_turn()`, quota-gated after a real red-team finding
+
+`docs/planning/identity-native-sandbox-worktree-architecture.md` §5 disclosed a real, standing gap:
+`Ledger::reset_to()` (real, checkpoint-DAG-preserving rollback, §23) was real and proven, but neither
+`SandboxRuntime` (A3) nor `MandatorySandboxProvider` (A9) had a rollback method of their own — a
+`run_command`-composed session had no way to roll its own sandbox back to an earlier checkpoint. This
+is a DIFFERENT composition from `full_stack::SandboxSession::reset_to_turn()` (§26, its own real,
+grant-scoped rollback against `MediatedFileSystem` — unmodified by this section, per §36.1's own
+"never folds into the existing type" decision).
+
+### 42.1 The mechanism — a thin wrapper at each layer, matching every sibling verb's own shape
+
+`SandboxRuntime::reset_to_turn(target_turn_index, requested_by, reset_quota)` (`sandbox_runtime.hpp`)
+takes `exclusivity_` (the same lock `run()` takes, closing the identical race class: a concurrent
+`run()` must not materialize from a head this call is moving out from under it) and delegates the
+real work to `Ledger::reset_to()`. Deliberately does not touch the on-disk staging directory itself —
+the next `run()`'s own `materialize()` step already, unconditionally, re-seeds from whatever the
+current head is. `MandatorySandboxProvider::reset_to_turn()` exposes this at the session level,
+required because `runtime()` deliberately only ever hands back a `SandboxRuntime const*` (§37) — a
+caller reaching in through that accessor could never call a mutating verb on it.
+
+### 42.2 A real red-team finding: the first version had no quota gate at all
+
+An adversarial red-team round on this composition (2026-08-28) found the initial `reset_to_turn()`
+took no `AsyncQuota` of any kind — unlike every OTHER mutating verb on `SandboxRuntime` (`run()`/
+`RunCost`, `spawn_child_branch()`/`BranchCost`, the `commit()` path/`StorageBytes`). Concretely: each
+call inserts a new, never-evicted entry into `Ledger`'s own `checkpoints` map (unbounded growth), and
+under a durable `Store`, triggers a FULL re-serialization of every branch and every checkpoint of
+every branch (`persist_snapshot_locked()`) on every single call. A caller already possessing a bound
+`SandboxRuntime` — host-level today, but exactly the authority a future `ResetSandboxTool` would hand
+to a session — could call this in a tight loop for free: a real, unbudgeted resource-exhaustion
+vector directly touching I8 ("budgets are enforced"). Not a live issue before this pass (`reset_to()`
+had zero real callers when proven standalone, §23); composing it into two new reachable call sites
+without a quota gate was a genuine new gap this pass introduced, not merely a re-disclosed old one.
+
+**Fixed**: a new `AsyncQuota<ResetCost>` Kind tag, consumed before the real `Ledger::reset_to()` call
+and refunded on any failure — mirroring `BranchCost`'s own role gating `branch_from()` before its
+mutation. Threaded as an explicit PER-CALL parameter at both layers, deliberately NOT a new
+`bind_sandbox()`-stored member: `reset_to_turn()` is not tool-facing (no `Tool<>` wires it), so
+nothing forces it to share `branch_quota_`/`run_quota_`/`storage_quota_`'s pre-storage discipline
+(those three exist only because the contributed `run_command` tool closure has no way to receive a
+quota through a model-facing JSON call) — taking it as a parameter closes the gap without changing
+`bind_sandbox()`'s signature or any of its existing call sites.
+
+### 42.3 Real, live proof — both layers, against a real Docker daemon, including the quota-exhaustion adversarial check
+
+`docs/planning/proofs/execution_surface/probe_sandbox_rollback.cpp` (6 checks): three real turns
+(v1→v2→v3), `reset_to_turn(1)` moves HEAD back as a new forward checkpoint (never an in-place
+rewrite), and — the load-bearing check — the NEXT `run()` against a genuinely FRESH container reads
+back "v1", proving materialize() really picks up the rolled-back tree, not that only Ledger
+bookkeeping moved. A reset to a nonexistent turn fails cleanly AND refunds its `ResetCost` unit. A
+reset to the branch's own current turn produces a genuinely NEW, incremented checkpoint (not a
+no-op — an earlier version of this check only asserted the tree matched, which a broken no-op
+short-circuit would have passed too; fixed to assert `turn_index` actually advanced). With
+`ResetCost` exhausted, the call is REJECTED and the branch's real HEAD digest is verified unchanged
+before/after — the reset genuinely never reaches `Ledger::reset_to()` at all, closing §42.2's finding
+for real.
+
+`docs/planning/proofs/mandatory_sandbox/probe_mandatory_sandbox_rollback.cpp` (6 checks): the SAME
+shape, driven through the REAL `run_command` tool closure (never a direct `SandboxRuntime` shortcut)
+— an unbound session's `reset_to_turn()` fails closed; three real turns via the tool; provider-level
+`reset_to_turn()` succeeds; the tool's NEXT call sees the rolled-back content through the exact
+closure a model-facing call would use; a bad turn index fails cleanly leaving the session fully
+intact; `ResetCost` exhaustion is rejected at the provider level too, confirmed by the tool still
+reading the pre-reset content afterward. Zero regressions: `probe_execution_surface.cpp` (8/8) and
+`probe_mandatory_sandbox.cpp` (9/9) re-run unchanged and still pass.
+
+### 42.4 Other red-team findings — one real documentation gap fixed, one residual re-disclosed rather than silently repeated, two claims confirmed sound
+
+- **A real staleness gap** (this design doc and `identity-native-sandbox-worktree-architecture.md`
+  §5 both still said, in prose and in a red-dashed Mermaid "gap" node, that neither A3 nor A9 had a
+  rollback method — no longer true as of this section; fixed in both places, including the
+  architecture doc's own diagram.
+- **ADR-099 §7's inherited residual restated, not silently repeated by omission**: `Ledger::reset_to()`
+  performs no `authorized_for()` check of its own (confirmed by direct read) — possession of the
+  `SandboxRuntime`/`MandatorySandboxProvider` is the entire authorization boundary here, the same
+  discipline `discard()`/`abandon()` already rely on. Not a regression this pass introduced, and not
+  reachable from model output today (no `Tool<>` wires this), but a future `ResetSandboxTool` would
+  inherit this unsolved residual verbatim — named explicitly in both wrapper's own comments, not left
+  implicit a second time.
+- **Confirmed sound, not a real issue**: taking `requested_by` as a plain `Principal` parameter
+  (rather than re-deriving it via `IdentityAuthority::adopt()` the way `on_context()`'s tool closure
+  does) is not an inconsistency — that bridging step exists specifically to convert from the
+  DIFFERENT, string-keyed `agentengine::Principal` type; `reset_to_turn()` never receives one, so
+  there is nothing analogous to bridge, and `Principal`'s own unforgeability (friend-gated
+  construction, §20) makes taking one directly exactly as safe as `spawn_child_branch()`'s `creator`
+  or `merge_into()`'s `requested_by` already are.
+- **Confirmed sound**: the `exclusivity_` locking is correct and closes the intended race; the
+  `merge_into()`/`discard()` asymmetry (they don't take the lock at all) predates this section,
+  is orthogonal to it, and does not retroactively make `reset_to_turn()`'s own locking suspect.
+
+### 42.5 What this pass does and does not establish
+
+**Established**: a real rollback verb exists at both A3 and A9, quota-gated against the exact
+resource-exhaustion shape a red-team round found in this pass's own first version, proven live
+against a real Docker daemon at both layers including that the rollback genuinely changes what a
+subsequent execution sees (not just Ledger bookkeeping) and that quota exhaustion genuinely blocks
+the call before any real mutation.
+
+**NOT established**: any `Tool<>`/capability-declaration story for a rollback verb (matching
+`TaskBranchSandbox`'s own §39/§41 precedent — the composition is proven first, deliberately, before
+any Tool<>/capability binding is attempted) — `reset_to_turn()` remains host-level only, not
+model-reachable, at both layers. ADR-099 §7's `reset_to()` authorization residual (§42.4) remains
+open, inherited unchanged. Whether `ResetCost`'s specific unit cost (1 per call, matching
+`BranchCost`/`RunCost`'s own precedent) is the right DEFAULT for a real deployment is not established
+— no real usage data exists yet, the same honestly-disclosed gap `BranchCost`'s own residual (ADR-099
+§8) already states for itself.

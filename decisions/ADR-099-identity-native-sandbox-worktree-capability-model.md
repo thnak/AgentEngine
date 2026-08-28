@@ -416,3 +416,24 @@ prove → judge cycle:**
   needed) and a wrong function attribution for `Background<MaxConcurrent>`'s live-count check
   (`background_task()`, not `invoke_tool()`). Still governed by every residual above: no production
   wiring, no real `Tool<>` binding, not Judged.
+- **Rollback (§42, 2026-08-28)**: `identity-native-sandbox-worktree-architecture.md` §5's own
+  disclosed gap — `Ledger::reset_to()` is real and proven (§23), but neither `SandboxRuntime` (A3)
+  nor `MandatorySandboxProvider` (A9) had a rollback method of their own — is now closed. Both gained
+  a real `reset_to_turn()`, thin wrappers matching every sibling verb's own shape, proven live against
+  a real Docker daemon at both layers (12 checks total across two probes), including that a subsequent
+  `run()`/`run_command` call genuinely sees the rolled-back content, not just that Ledger bookkeeping
+  moved. A red-team round on this composition found a real, new gap: the first version took no
+  `AsyncQuota` at all, unlike every other mutating verb on `SandboxRuntime` — a caller already holding
+  a bound sandbox could call it in a tight loop for free, causing unbounded `Ledger` checkpoint growth
+  and, under a durable `Store`, a full-ledger re-serialize on every call, a real I8 gap. Fixed with a
+  new `AsyncQuota<ResetCost>`, consumed before the real mutation and refunded on failure, taken as an
+  explicit per-call parameter at both layers (deliberately not a new `bind_sandbox()`-stored member,
+  since this verb is not tool-facing and nothing forces it to share that constructor's pre-storage
+  discipline). Independently red-teamed a second time; the fix and both probes' quota-exhaustion
+  checks confirmed real (the exhausted call never reaches `Ledger::reset_to()` at all — verified by
+  the branch's real HEAD digest being unchanged before/after, not merely that the boolean check said
+  no). One residual re-disclosed, not solved: `Ledger::reset_to()` still performs no `authorized_for()`
+  check of its own — possession of the runtime/provider is the entire authorization boundary, the
+  same discipline `discard()`/`abandon()` already rely on; not reachable from model output today (no
+  `Tool<>` wires this), but a future `ResetSandboxTool` would inherit it verbatim. Still host-level
+  only, no capability-declaration story, not Judged.
