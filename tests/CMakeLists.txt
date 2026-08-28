@@ -253,6 +253,85 @@ if(WIN32)
     "real one-argument signatures compile)")
 endif()
 
+# ---- ADR-096 C2 compile-fail proof (SandboxToolProvider composed into a session makes
+# AgentSession::fork_from() a compile error) -- ADR-102 Phase 5 residual -----------------------------
+# `ComposedContextProvider<Ms...>`'s own copy-assignment operator is UNCONDITIONALLY `= delete`d
+# (core/composed_context_provider.hpp:119-120, ADR-074) -- for ANY `Ms`, not specifically because
+# `SandboxToolProvider` (src/backends/native_jail/sandbox_tool_provider.hpp, non-copyable by
+# construction, holds `std::unique_ptr<SessionShellSandbox>`) happens to be non-copyable itself; this
+# gate composes the REAL, production `SandboxToolProvider` (rather than a synthetic minimal stand-in)
+# to exercise the exact composed type tools/sandboxed_shell_chat.cpp and
+# tests/test_composed_sandbox_providers_live.cpp both use as a real session's `HistoryProviderT`. That
+# unconditionally-deleted copy-assignment is load-bearing at `AgentSession::fork_from()`'s
+# `history_provider_ = source.history_provider_;` statement, which must therefore fail to compile for
+# that session type. ADR-096 §6 already recorded a claim shaped like this one "CORRECT, empirically
+# proven" via a throwaway MSVC probe compiled once during that ADR's own red-team round and then
+# discarded -- never preserved as a durable, checked-in regression guard. This pair closes that
+# residual, same two-file idiom as every other tests/compile_fail/*.cpp pair in this file. It does NOT
+# close (and does not claim to close) a separate, disclosed residual found by this same gate's own
+# 2026-08-28 red-team round: `ComposedContextProvider<Ms...>`'s move-assignment is not deleted, so
+# `target.history_provider() = std::move(source.history_provider());` still compiles and still aliases
+# live provider state across sessions -- see that class's own comment and ADR-102 §48.
+#
+# WIN32-gated (SandboxToolProvider's own current platform scope, matching every other block in this
+# section) and links the real `SandboxToolProvider` dependency chain directly as extra SOURCES --
+# same reason as the Milestone 3 A3 block above: try_compile() runs in an isolated mini-project with
+# no visibility into this build's own ALIAS targets (agentengine::mediated_shell_runner,
+# agentengine::worktree_store do not exist there), so the three .cpp files
+# `agentengine_mediated_shell_runner` is built from (top-level CMakeLists.txt) plus the two
+# `agentengine_worktree_store` is built from are compiled alongside the probe itself, with `bcrypt`
+# linked directly for `compute_digest`'s real Windows implementation -- deliberately, even for the
+# probe that is EXPECTED to fail, so a permanently-missing link dependency can never masquerade as
+# "correctly rejected."
+if(WIN32)
+  set(AE_SANDBOX_TOOL_PROVIDER_FORK_FROM_DEPS
+    "${PROJECT_SOURCE_DIR}/src/backends/native_jail/mediated_shell_parser.cpp"
+    "${PROJECT_SOURCE_DIR}/src/backends/native_jail/mediated_shell_dispatch.cpp"
+    "${PROJECT_SOURCE_DIR}/src/backends/native_jail/mediated_filesystem_adapter.cpp"
+    "${PROJECT_SOURCE_DIR}/src/core/worktree_digest.cpp"
+    "${PROJECT_SOURCE_DIR}/src/core/worktree_mount_fs.cpp")
+
+  try_compile(AE_SANDBOX_TOOL_PROVIDER_REJECTS_FORK_FROM
+    "${CMAKE_CURRENT_BINARY_DIR}/compile_fail_checks/sandbox_tool_provider_rejects_fork_from"
+    SOURCES
+      "${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/sandbox_tool_provider_rejects_fork_from.cpp"
+      ${AE_SANDBOX_TOOL_PROVIDER_FORK_FROM_DEPS}
+    CMAKE_FLAGS
+      "-DINCLUDE_DIRECTORIES=${PROJECT_SOURCE_DIR}/include;${PROJECT_SOURCE_DIR}/src"
+      "-DCMAKE_CXX_STANDARD=23" "-DCMAKE_CXX_STANDARD_REQUIRED=ON"
+    LINK_LIBRARIES bcrypt
+    OUTPUT_VARIABLE AE_SANDBOX_TOOL_PROVIDER_REJECTS_FORK_FROM_LOG)
+  if(AE_SANDBOX_TOOL_PROVIDER_REJECTS_FORK_FROM)
+    message(FATAL_ERROR
+      "ADR-096 C2 VIOLATED: tests/compile_fail/sandbox_tool_provider_rejects_fork_from.cpp compiled, "
+      "but composing SandboxToolProvider into a session's HistoryProviderT (via "
+      "ComposedContextProvider<Ms...>) must make AgentSession::fork_from() fail to compile -- a fork "
+      "must never alias one session's live sandbox filesystem view with another's. "
+      "Build log:\n${AE_SANDBOX_TOOL_PROVIDER_REJECTS_FORK_FROM_LOG}")
+  endif()
+
+  try_compile(AE_SANDBOX_TOOL_PROVIDER_FORK_FROM_POSITIVE_CONTROL
+    "${CMAKE_CURRENT_BINARY_DIR}/compile_fail_checks/sandbox_tool_provider_fork_from_positive_control"
+    SOURCES
+      "${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/sandbox_tool_provider_fork_from_positive_control.cpp"
+      ${AE_SANDBOX_TOOL_PROVIDER_FORK_FROM_DEPS}
+    CMAKE_FLAGS
+      "-DINCLUDE_DIRECTORIES=${PROJECT_SOURCE_DIR}/include;${PROJECT_SOURCE_DIR}/src"
+      "-DCMAKE_CXX_STANDARD=23" "-DCMAKE_CXX_STANDARD_REQUIRED=ON"
+    LINK_LIBRARIES bcrypt
+    OUTPUT_VARIABLE AE_SANDBOX_TOOL_PROVIDER_FORK_FROM_POSITIVE_CONTROL_LOG)
+  if(NOT AE_SANDBOX_TOOL_PROVIDER_FORK_FROM_POSITIVE_CONTROL)
+    message(FATAL_ERROR
+      "ADR-096 C2 positive control FAILED: tests/compile_fail/"
+      "sandbox_tool_provider_fork_from_positive_control.cpp must compile and link (the same Session "
+      "type, minus the fork_from() call, is otherwise ordinary and legitimate) but did not. "
+      "Build log:\n${AE_SANDBOX_TOOL_PROVIDER_FORK_FROM_POSITIVE_CONTROL_LOG}")
+  endif()
+  message(STATUS
+    "ADR-096 C2 compile-fail proof: OK (composing SandboxToolProvider into a session makes "
+    "fork_from() fail to compile; the same session type minus that call compiles and links cleanly)")
+endif()
+
 # ---- ADR-071 compile-fail proof (native-execution family distinctness) -------------------------
 # `NativeCapabilityAnnouncer<Ps...>` (src/backends/native_process/native_capability_announcer.hpp)
 # must reject composing two providers sharing the same declared family name (e.g. two

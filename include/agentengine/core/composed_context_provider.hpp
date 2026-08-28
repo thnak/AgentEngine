@@ -97,6 +97,27 @@ public:
     // instead -- `fork_from()` is only compiled when actually called, so this has zero effect on any
     // already-passing construction/`engage()`/`on_context()`/`on_turn_end()` path.
     //
+    // NECESSARY, NOT SUFFICIENT (2026-08-28 red-team, ADR-102 §41-48's own follow-on round on
+    // `tests/compile_fail/sandbox_tool_provider_rejects_fork_from.cpp`) -- the identical hazard shape
+    // this comment describes for `fork_from()`'s COPY is still fully reachable through the public
+    // `history_provider()` accessor's plain MOVE-assignment, which this class deliberately keeps
+    // `=default`-shaped, not deleted: `target.history_provider() = std::move(source.history_provider());`
+    // compiles cleanly and transfers a live, already-`engage()`d contributor set (e.g. a real
+    // `SandboxToolProvider`, whose `unique_ptr<SessionShellSandbox>` is rooted at a host directory
+    // named after `source`'s OWN `session_id` digest) into `target`, while `target`'s `session_id_`/
+    // `principal_` stay untouched -- the same I1/I4-adjacent identity/effect-attribution mismatch the
+    // deleted copy above exists to prevent, reached through a second, undisclosed route. Not a new
+    // discovery in kind: `core/session_builder.hpp`'s sibling `LazyComposedContextProvider` already
+    // named this EXACT bypass route for itself (that file's own finding 9/11 comments, "the exact
+    // bypass route `on_context()`'s own comment below already names") -- this type was simply never
+    // updated to carry the same disclosure once ADR-074's consolidation made it move-only too. Not
+    // fixed here: closing it needs either a non-assignable accessor shape (a real API change to every
+    // caller of `history_provider()`, several of which rely on ordinary mutation, e.g.
+    // `ComposedQuickstartSessionBuilder::build()`'s own `engage()` call) or an owning-session-identity
+    // check inside `operator=` itself (this type has no back-reference to its owning `AgentSession` to
+    // check against) -- real, contained follow-on work, named as a residual, not attempted in this
+    // pass.
+    //
     // Declared explicitly (not `=default`): a defaulted move would trivially copy the plain `bool
     // engaged_`, leaving it `true` on the moved-from side even though its `contributors_` is now
     // empty -- desyncing the class's own "`engaged_ == true` iff `contributors_` is populated"

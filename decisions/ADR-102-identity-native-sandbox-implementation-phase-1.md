@@ -4,22 +4,25 @@
 implementation complete and independently red-teamed (2026-08-28), plus closing `AgentSession::
 fork_from()`'s own long-disclosed session-serialization gap (Phase 3 §22/Phase 4 §29), plus a second
 Phase 5 slice (2026-08-28) making `ComposedContextProvider<Ms...>` a real production consumer for the
-first time anywhere in this codebase (§41 onward). **This ADR does not authorize the whole
+first time anywhere in this codebase (§41 onward), plus a third Phase 5 slice (2026-08-28) turning
+ADR-096 C2's own `fork_from`-becomes-compile-error claim into a durable, checked-in `try_compile()`
+regression guard for the first time (§48 onward). **This ADR does not authorize the whole
 identity-native design's production merge** — it authorizes Phases 1-4 (identity/quota primitives,
 then `Ledger`, then `SandboxRuntime`/`ExecutionSurface`, then a session-wired `MandatorySandboxProvider`)
-plus two specific slices of Phase 5 (`tools/cli_chat.cpp` wiring plus the `fork_from()` fix; and
+plus three specific slices of Phase 5 (`tools/cli_chat.cpp` wiring plus the `fork_from()` fix;
 `ComposedContextProvider<Ms...>` composing `SandboxToolProvider`+`MandatorySandboxProvider` into a real
-session for the first time — `ContainerdExecutionSurface`/ADR-101 promotion, Windows/Linux parity, and
-`SandboxToolProvider`'s own `fork_from`-becomes-compile-error negative probe remain deferred,
+session for the first time; and the `SandboxToolProvider` `fork_from`-becomes-compile-error negative
+probe — `ContainerdExecutionSurface`/ADR-101 promotion and Windows/Linux parity remain deferred,
 unauthorized follow-on work), matching this project's own precedent of narrow implementation ADRs
 following a broad design-acceptance ADR (ADR-012→ADR-080, ADR-086→ADR-087, both cited approvingly
 inside ADR-099 itself). `ADR-099` §7 states explicitly: "this ADR authorizes the design, not an
 implementation merge... binds once a future implementation ADR (or ADRs) actually wires this in." This
-is that ADR, for Phases 1-5's `cli_chat.cpp` slice, the `fork_from()` fix, and the `ComposedContextProvider
-<Ms...>` slice (this file's own name still reads "phase-1" — kept for URL/citation stability now that
-other work references it; §9 onward covers Phase 2, §16 onward covers Phase 3, §23 onward covers Phase 4,
-§30 onward covers Phase 5's `cli_chat.cpp` slice, §37 onward covers the `fork_from()` fix, §41 onward
-covers the `ComposedContextProvider<Ms...>` slice).
+is that ADR, for Phases 1-5's `cli_chat.cpp` slice, the `fork_from()` fix, the `ComposedContextProvider
+<Ms...>` slice, and the `fork_from`-becomes-compile-error negative-probe slice (this file's own name
+still reads "phase-1" — kept for URL/citation stability now that other work references it; §9 onward
+covers Phase 2, §16 onward covers Phase 3, §23 onward covers Phase 4, §30 onward covers Phase 5's
+`cli_chat.cpp` slice, §37 onward covers the `fork_from()` fix, §41 onward covers the
+`ComposedContextProvider<Ms...>` slice, §48 onward covers the negative-probe slice).
 Real, compiled, tested:
 - **Phase 1**: `include/agentengine/trust/identity_authority.hpp`, `include/agentengine/rt/
   async_quota.hpp`, `tests/test_identity_authority_grant.cpp` (14 checks, passing), two
@@ -1398,6 +1401,154 @@ matching the accepted convention, named here for the record rather than left imp
   `Ledger::merge()`'s missing `AsyncQuota` gate, `fork_from()`'s self-deadlock hazard, this whole
   design's own pending `Judged` sign-off) is unchanged and out of this slice's own scope; none of them
   are touched or worsened by either new file.
-- **Still out of scope, named not dropped** (§7): `ContainerdExecutionSurface`/ADR-101 promotion,
-  Windows/Linux parity, and `SandboxToolProvider`'s own `fork_from`-becomes-compile-error negative
-  probe (asserted only in a comment, never actually triggered anywhere in this codebase).
+- **Still out of scope, named not dropped** (§7): `ContainerdExecutionSurface`/ADR-101 promotion and
+  Windows/Linux parity. `SandboxToolProvider`'s own `fork_from`-becomes-compile-error negative probe —
+  previously listed here as out of scope — is closed by the third Phase 5 slice, §48 onward.
+
+## 48. A third Phase 5 slice: turning ADR-096 C2 into a durable, checked-in regression guard
+
+**The question.** ADR-096 §6 already recorded claim C2 ("composing `SandboxToolProvider` into a
+session's `HistoryProviderT` makes `AgentSession::fork_from()` fail to compile") as "CORRECT,
+empirically proven" — but only via a throwaway MSVC probe compiled once, by hand, during that ADR's
+own red-team round, then discarded. Nothing in this codebase re-verifies that claim on every build;
+a future refactor of `ComposedContextProvider<Ms...>`, `SandboxToolProvider`, or `AgentSession::
+fork_from()` itself could silently reopen the exact aliasing hazard C2 was written to prevent, and no
+CI signal would catch it. §47 named this explicitly as still-open, deferred work. Does turning that
+one-time claim into a real, checked-in `try_compile()` gate — this repo's own established idiom for
+compile-fail proofs (7 existing pairs in `tests/CMakeLists.txt` before this slice) — actually work,
+and does it prove what it claims to prove?
+
+**Design.** Two new files, following the exact two-file idiom every other `tests/compile_fail/*.cpp`
+pair in this repo already uses (a fail-only probe cannot distinguish "correctly rejected" from
+"nothing here compiles for an unrelated reason"):
+- `tests/compile_fail/sandbox_tool_provider_rejects_fork_from.cpp` — composes the real, production
+  `SandboxToolProvider` via `ComposedContextProvider<SandboxToolProvider>` as an `AgentSession`'s
+  `HistoryProviderT` (mirroring `tools/sandboxed_shell_chat.cpp`'s own real shape, not a synthetic
+  stand-in), then calls `fork_from()`. MUST NOT compile.
+- `tests/compile_fail/sandbox_tool_provider_fork_from_positive_control.cpp` — byte-identical except it
+  never calls `fork_from()`. MUST compile and link.
+
+Wired into `tests/CMakeLists.txt` via a new `try_compile()` block (WIN32-gated, `SandboxToolProvider`'s
+own current platform scope), placed after the existing "Milestone 3 Phase A3" block. Because
+`try_compile()` runs in an isolated mini-project with no visibility into this build's own ALIAS targets
+(a fact that exact preceding block already documents), the gate compiles the probe alongside the same
+five `.cpp` files `agentengine_mediated_shell_runner` and `agentengine_worktree_store` (WIN32) are built
+from, confirmed by direct comparison against their real `add_library()` source lists in the top-level
+`CMakeLists.txt` — not a hand-guessed subset — and links `bcrypt` directly for `compute_digest`'s real
+Windows implementation, deliberately including it in BOTH the probe expected to fail and the positive
+control (this repo's own established defense against a permanently-missing link dependency
+masquerading as "correctly rejected," per the Milestone 3 A3 block's own precedent comment).
+
+**Falsifiable claims.**
+- **C13 (the negative probe fails to compile, for the right reason).** Composing `SandboxToolProvider`
+  via `ComposedContextProvider<Ms...>` into a session and calling `fork_from()` on it fails to compile
+  with a diagnostic naming `ComposedContextProvider<Ms...>::operator=`'s deleted copy-assignment at the
+  exact `history_provider_ = source.history_provider_;` statement — not some unrelated missing-header,
+  wrong-path, or link failure. *Disproof: the probe fails to compile for any other reason, or compiles
+  successfully.*
+- **C14 (the positive control is non-vacuous).** The identical `Session`/`Provider` setup, minus the
+  `fork_from()` call, compiles AND links to a real executable. *Disproof: it fails to compile or link.*
+
+**The red-team attack (2026-08-28, independent, fresh `general-purpose` subagent, not a fork).** Given
+this instruction and confirmed access to the real build toolchain, the round did real, executed
+verification — not just static reading — including reproducing the MSVC error directly via `cl.exe`,
+diffing the two new files, comparing the CMake `SOURCES` list against the real target definitions, and
+(most valuably) an actual experiment: temporarily changing `ComposedContextProvider`'s copy-assignment
+from `= delete` to `= default` and recompiling the negative probe directly, confirming it then compiles
+clean — proving the gate is genuinely load-bearing on the real invariant, not passing for an unrelated
+reason (the exact "permanently missing link dependency" trap this repo's own Milestone 3 A3 block
+warns about). The experimental edit was reverted before the round finished; `git diff` confirmed clean.
+
+Two real findings, both fixed same day:
+
+1. **SHOULD-FIX — the new files' and CMake block's comments misattributed *why* the compile fails.**
+   Both claimed `SandboxToolProvider`'s own non-copyability (holding a `unique_ptr`) is what "makes" or
+   is "load-bearing" for `ComposedContextProvider<Ms...>`'s deleted copy-assignment. Untrue:
+   `composed_context_provider.hpp:119-120`'s `= delete` is a plain, unconditional declaration, not
+   SFINAE-gated on `Ms`'s own copyability — LIVE-REPRODUCED: the round wrote a scratch probe composing
+   a fully trivially-copyable dummy `ContextProvider` conformer (no `unique_ptr`, no non-copyable
+   members at all) and got the IDENTICAL `error C2280` at the IDENTICAL line. `SandboxToolProvider`'s
+   own non-copyability is irrelevant to whether this specific compile failure occurs; the probe uses
+   the real provider to exercise the exact type used in production, not because that provider's
+   copy-semantics are what causes the deletion. **Fixed**: reworded the causal claim in both `.cpp`
+   files and the CMake block to state the real mechanism (unconditional deletion, for any `Ms`) and the
+   real reason for using `SandboxToolProvider` specifically (production fidelity, not necessity).
+2. **SHOULD-FIX (the round itself called this "arguably MUST-FIX by this repo's own precedent") — an
+   undisclosed, still-compiling bypass of the underlying hazard.** The gate only blocks the COPY path
+   inside `fork_from()`. It does not block, and was never claimed to block, the publicly-reachable MOVE
+   path: `target.history_provider() = std::move(source.history_provider());` compiles cleanly (verified
+   directly against the exact `Session`/`Provider` types the new probe uses) because
+   `ComposedContextProvider<Ms...>`'s move-assignment is deliberately not deleted. This silently
+   transfers a live, already-`engage()`d `SandboxToolProvider` — including its `unique_ptr<
+  SessionShellSandbox>` rooted at a directory named after the SOURCE session's own `session_id` digest
+   — into a session with a DIFFERENT `session_id`/`principal_`: the exact I1/I4-adjacent
+   identity/effect-attribution mismatch C2 exists to prevent, reached through a second, undisclosed
+   route. Not a new discovery in kind — `core/session_builder.hpp`'s sibling `LazyComposedContextProvider`
+   already named this EXACT bypass shape for itself (that file's own findings 9/11) — but
+   `ComposedContextProvider<Ms...>` itself was never updated to carry the same disclosure once ADR-074's
+   consolidation made it move-only too, and neither the new probe files nor the CMake `FATAL_ERROR` text
+   ("a fork must never alias one session's live sandbox filesystem view with another's") qualified that
+   claim. **Fixed as a disclosure, not a code change** (matching how `session_builder.hpp` finding 9
+   handled the same shape for its own sibling type — named as a real, disclosed residual, not silently
+   left for the next caller to rediscover): `composed_context_provider.hpp`'s own comment now states
+   this explicitly, cross-referencing `session_builder.hpp`'s own prior finding; both new `.cpp` files
+   and the CMake block's own comments now say so too. Genuinely closing it needs either a
+   non-assignable-from-outside accessor shape (a real API change touching every `history_provider()`
+   caller, several of which rely on ordinary mutation, e.g. `ComposedQuickstartSessionBuilder::build()`'s
+   own `engage()` call) or an owning-session-identity check inside `operator=` itself (this type has no
+   back-reference to its owning `AgentSession` to check against) — real, contained follow-on work, named
+   here and at the code site, not attempted in this pass.
+
+Everything else the round checked came back clean: no vacuous-failure risk (the real C2280 was
+independently reproduced via direct `cl.exe`, at the correct line, correct type, correct operator); no
+positive-control drift (diffed identical except comments and the forbidden call); CMake variable-name
+consistency across `try_compile()`/`if()`/`message()`; `SOURCES` completeness (direct comparison against
+the real target definitions, not assumed); no other `history_provider_` COPY path exists anywhere in
+`agent_session.hpp` (`restore_from_record()` never touches it; `clear_in_process_state()`'s reset is a
+move from a temporary, not a copy).
+
+## 49. Executed evidence
+
+- `try_compile()` gate: real MSVC reconfigure (`cmake -S . -B build`) confirmed both checks pass —
+  `AE_SANDBOX_TOOL_PROVIDER_REJECTS_FORK_FROM` is `FALSE` (compile fails) and
+  `AE_SANDBOX_TOOL_PROVIDER_FORK_FROM_POSITIVE_CONTROL` is `TRUE` (compiles and links) — confirmed not
+  just from the `message(STATUS ...)` line but by reading `build/CMakeFiles/CMakeConfigureLog.yaml`
+  directly: the negative probe's real diagnostic is `error C2280: '...ComposedContextProvider<
+  agentengine::SandboxToolProvider>::operator =(...)': attempting to reference a deleted function` at
+  `agent_session.hpp(1246)` (the exact `history_provider_ = source.history_provider_;` statement inside
+  `fork_from()`), and the positive control's own build log shows a successful `link.exe` invocation
+  producing a real `.exe`.
+- Full project rebuild: clean, zero errors (including after the post-red-team comment fixes to
+  `composed_context_provider.hpp` and both new `.cpp` files — a widely-included header, rebuilt in
+  full).
+- Full `ctest` suite: 287/287 passing, zero regressions (unchanged from before this slice — `try_compile()`
+  checks run at CMake configure time, not as `ctest` targets, so this slice adds zero new `ctest` entries
+  by design).
+
+## 50. Per-claim verdicts
+
+| Claim | Verdict | Evidence |
+|---|---|---|
+| C13 — negative probe fails to compile, for the right reason | **CORRECT** | Real MSVC `error C2280` at the exact predicted statement, confirmed via `CMakeConfigureLog.yaml`; independently reproduced by the red-team round via direct `cl.exe`. |
+| C14 — positive control is non-vacuous | **CORRECT** | Real successful `link.exe` invocation in the configure log; independently diffed against the negative probe by the red-team round. |
+
+## 51. Residual risks (Phase 5, `fork_from`-becomes-compile-error negative-probe slice)
+
+- **`ComposedContextProvider<Ms...>`'s move-assignment bypass (§48 finding 2)** — the central residual
+  of this slice: the compile-fail gate proves the COPY path is closed, not that the underlying
+  aliasing hazard is closed in general. `target.history_provider() = std::move(source.history_provider());`
+  remains a real, disclosed, not-yet-closed route to the same hazard, now documented at three sites
+  (`composed_context_provider.hpp`, both new `.cpp` files) rather than silently undiscovered. Real,
+  contained follow-on work (a non-assignable accessor shape, or an owning-session-identity check) is
+  named but not attempted here.
+- **This gate is specific to `SandboxToolProvider`+`ComposedContextProvider<Ms...>`** — it does not
+  generalize to every possible non-copyable `ContextProvider` a future session might compose;
+  `LazyComposedContextProvider` (`session_builder.hpp`) already carries its own, separately-maintained
+  version of both the compile-time fix and its move-bypass disclosure (findings 9/11), not shared
+  machinery with this gate.
+- Every residual already named at the ADR level (§8/§15/§36/§40/§47) is unchanged and out of this
+  slice's own scope; none are touched or worsened by this slice's comment-only production-code change
+  (`composed_context_provider.hpp`) or its two new test-only files.
+- **Now fully closed** (§7/§47's own prior listing): `SandboxToolProvider`'s own
+  `fork_from`-becomes-compile-error claim is no longer "asserted only in a comment" — it is a real,
+  checked-in, CI-enforced `try_compile()` gate as of this slice.
