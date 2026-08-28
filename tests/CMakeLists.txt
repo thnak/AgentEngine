@@ -73,6 +73,41 @@ endif()
 message(STATUS
   "007 §9 G1 compile-fail proof: OK (CapabilitySet rejects direct construction; grant_root() compiles)")
 
+# ---- ADR-102 §3 C1 compile-fail proof (IdentityHandle/IdentityAuthority construction discipline) --
+# Same try_compile() idiom as the CapabilitySet gate above: `IdentityHandle` has no public
+# constructor (friend-gated to IdentityAuthority only), and `IdentityAuthority` itself is
+# non-copyable (the one real singleton for this whole authority model). The main runtime test
+# (test_identity_authority_grant.cpp) already exercises the legitimate mint_root()/adopt() paths for
+# real, serving as this pair's own positive control -- no separate positive-control compile_fail file
+# needed.
+try_compile(AE_IDENTITY_HANDLE_REJECTS_DIRECT_CONSTRUCTION
+  "${CMAKE_CURRENT_BINARY_DIR}/compile_fail_checks/identity_handle_no_direct_construction"
+  "${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/identity_handle_no_direct_construction.cpp"
+  CXX_STANDARD 23
+  CMAKE_FLAGS "-DINCLUDE_DIRECTORIES=${PROJECT_SOURCE_DIR}/include"
+  OUTPUT_VARIABLE AE_IDENTITY_HANDLE_REJECTS_DIRECT_CONSTRUCTION_LOG)
+if(AE_IDENTITY_HANDLE_REJECTS_DIRECT_CONSTRUCTION)
+  message(FATAL_ERROR
+    "ADR-102 §3 C1 VIOLATED: tests/compile_fail/identity_handle_no_direct_construction.cpp compiled, "
+    "but IdentityHandle must have NO public constructor. "
+    "Build log:\n${AE_IDENTITY_HANDLE_REJECTS_DIRECT_CONSTRUCTION_LOG}")
+endif()
+
+try_compile(AE_IDENTITY_AUTHORITY_REJECTS_COPY
+  "${CMAKE_CURRENT_BINARY_DIR}/compile_fail_checks/identity_authority_no_copy"
+  "${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/identity_authority_no_copy.cpp"
+  CXX_STANDARD 23
+  CMAKE_FLAGS "-DINCLUDE_DIRECTORIES=${PROJECT_SOURCE_DIR}/include"
+  OUTPUT_VARIABLE AE_IDENTITY_AUTHORITY_REJECTS_COPY_LOG)
+if(AE_IDENTITY_AUTHORITY_REJECTS_COPY)
+  message(FATAL_ERROR
+    "ADR-102 §3 C1 VIOLATED: tests/compile_fail/identity_authority_no_copy.cpp compiled, but "
+    "IdentityAuthority must be non-copyable (the one real singleton for this authority model). "
+    "Build log:\n${AE_IDENTITY_AUTHORITY_REJECTS_COPY_LOG}")
+endif()
+message(STATUS
+  "ADR-102 §3 C1 compile-fail proof: OK (IdentityHandle rejects direct construction; IdentityAuthority rejects copy)")
+
 # ---- ADR-012 compile-fail proof (SandboxProfile<P>'s template-parameter kind) -------------------
 # Same try_compile() idiom as the two gates above: `SandboxProfile<P>` (core/agent.hpp) constrains
 # `P` via `SandboxProfileArg` (sandbox/sandbox.hpp) -- a real `SandboxBackend`, or the `Strict`
@@ -2932,3 +2967,65 @@ if(AGENTENGINE_BUILD_PYTHON_RUNNER)
   set_tests_properties(test_python_trusted_loader_proxy_heap_type_negative_control PROPERTIES
     ENVIRONMENT "${AE_PYTHON_TEST_ENV}" TIMEOUT 60)
 endif()
+
+# ---- ADR-102 Phase 1 (decisions/ADR-102-identity-native-sandbox-implementation-phase-1.md) ------
+# IdentityAuthority/IdentityHandle/Grant<T> (trust/identity_authority.hpp) and AsyncQuota<T>
+# (rt/async_quota.hpp) -- the identity-native sandbox/worktree design's (ADR-099) first primitives
+# ported into production. Header-only; agentengine::core alone provides the include path.
+add_executable(test_identity_authority_grant test_identity_authority_grant.cpp)
+target_link_libraries(test_identity_authority_grant PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_identity_authority_grant COMMAND test_identity_authority_grant)
+
+# ---- ADR-102 Phase 2 -- Ledger<Store>/BranchHandle/Checkpoint (core/ledger.hpp) ------------------
+# Built on the real agentengine::WorktreeObjectStore/InMemoryWorktreeObjectStore/compute_digest --
+# needs agentengine::worktree_store (real SHA-256 via Windows CNG/BCrypt or the Linux FIPS 180-4
+# fallback), not just agentengine::core.
+add_executable(test_ledger test_ledger.cpp)
+target_link_libraries(test_ledger PRIVATE agentengine::worktree_store agentengine_warnings)
+add_test(NAME test_ledger COMMAND test_ledger)
+
+# ---- ADR-102 Phase 3 -- ExecutionSurface/SandboxRuntime/DockerExecutionSurface/RealIoFileSystem ---
+# (sandbox/{execution_surface,docker_execution_surface,real_io_filesystem,sandbox_runtime}.hpp).
+# Needs agentengine::worktree_store the same way test_ledger does (real Ledger/compute_digest), plus
+# RealIoFileSystem's own real open_within_mount_root/WriteFile/ReadFile use, from the same target.
+# REQUIRES a running Docker daemon reachable via `docker` on PATH -- every check shells out to a real
+# container, matching this phase's own "never a mock" discipline; not run in an environment without one.
+add_executable(test_sandbox_runtime test_sandbox_runtime.cpp)
+target_link_libraries(test_sandbox_runtime PRIVATE agentengine::worktree_store agentengine_warnings)
+add_test(NAME test_sandbox_runtime COMMAND test_sandbox_runtime)
+
+# ---- ADR-102 Phase 4 -- MandatorySandboxProvider<Surface>/RunCommandTool
+# (sandbox/mandatory_sandbox_provider.hpp), composed as a REAL agentengine::rt::AgentSession's actual
+# HistoryProviderT, driven through the real, unmodified invoke_tool() 10-step pipeline for the first
+# time in this design's history. Needs agentengine::worktree_store the same way test_ledger/
+# test_sandbox_runtime do (real Ledger/compute_digest/open_within_mount_root).
+# REQUIRES a running Docker daemon reachable via `docker` on PATH.
+add_executable(test_mandatory_sandbox_provider test_mandatory_sandbox_provider.cpp)
+target_link_libraries(test_mandatory_sandbox_provider PRIVATE agentengine::worktree_store agentengine_warnings)
+add_test(NAME test_mandatory_sandbox_provider COMMAND test_mandatory_sandbox_provider)
+
+# ---- ADR-102 Phase 4 -- agentengine::rt::block_on<T>() (rt/block_on.hpp), the real fix for a real,
+# independent-red-team-found, empirically-proven AsyncMutex mutual-exclusion violation the naive
+# "while (!t.done()) t.resume();" drive loop has under genuine cross-thread contention. Real OS threads
+# (<thread>), no Docker/Ledger needed -- agentengine::core alone provides AsyncMutex/task<T>.
+add_executable(test_rt_block_on test_rt_block_on.cpp)
+target_link_libraries(test_rt_block_on PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_block_on COMMAND test_rt_block_on)
+
+# ---- ADR-102 Phase 5 -- the real cli_chat.cpp composition pattern (one ContextProvider embedding
+# MandatorySandboxProvider and merging its contribution outside any skill-scoping), against a FAKE
+# ExecutionSurface -- no Docker daemon needed, this proves the DECLARATION-time composition, not
+# run_command's real execution (already proven against real Docker by test_sandbox_runtime/
+# test_mandatory_sandbox_provider). Closes a real gap an independent red-team pass found: this exact
+# composition had zero automated coverage before this file.
+add_executable(test_mandatory_sandbox_provider_composed test_mandatory_sandbox_provider_composed.cpp)
+target_link_libraries(test_mandatory_sandbox_provider_composed PRIVATE agentengine::worktree_store agentengine_warnings)
+add_test(NAME test_mandatory_sandbox_provider_composed COMMAND test_mandatory_sandbox_provider_composed)
+
+# ---- ADR-102 Phase 5 (agent_session.hpp fix) -- AgentSession::fork_from() now acquires
+# source.session_mutex_ (I1) for the whole copy, closing a real, twice-independently-disclosed
+# structural gap (ADR-102 Phase 3 SandboxRuntime::merge_into()/discard(), Phase 4's own residual naming
+# fork_from() itself). Real two-thread race, not merely a re-run of the existing suite.
+add_executable(test_rt_agent_session_fork_from_serialization test_rt_agent_session_fork_from_serialization.cpp)
+target_link_libraries(test_rt_agent_session_fork_from_serialization PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_agent_session_fork_from_serialization COMMAND test_rt_agent_session_fork_from_serialization)

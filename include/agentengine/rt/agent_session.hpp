@@ -245,6 +245,7 @@
 #include "agentengine/core/turn_middleware.hpp"
 #include "agentengine/rt/agent_session_trust.hpp"
 #include "agentengine/rt/async_mutex.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/rt/interaction_codec.hpp"
 #include "agentengine/rt/message_codec.hpp"
 #include "agentengine/rt/session_store.hpp"
@@ -548,6 +549,23 @@ struct AgentSessionRecord {
     if (!parsed) return std::unexpected(parsed.error());
     return agent_session_record_from_json(*parsed);
 }
+
+namespace agent_session_detail {
+// ADR-102 Phase 5: `fork_from()`'s own synchronous acquisition of `source.session_mutex_` --
+// `AsyncMutex::lock()` is `co_await`-only, and `fork_from()` itself stays a plain, synchronous
+// function (no call site anywhere in this codebase should need to change), so the acquisition is
+// driven through `agentengine::rt::block_on()`, matching the same "drive an AsyncMutex-guarded
+// operation from a non-coroutine call site" discipline `sandbox/mandatory_sandbox_provider.hpp`
+// already established for the identical shape of problem, and safe for the identical reason: unlike a
+// naive "resume until done" loop (a real, ASan-confirmed use-after-free hazard under genuine
+// cross-thread contention, `rt/block_on.hpp`'s own top comment), `block_on()`'s dedicated
+// final-suspend-as-last-touch driver survives a lock that genuinely parks and is later resumed by a
+// DIFFERENT thread's `unlock()` -- exactly the scenario this fix exists to make `fork_from()` safe
+// under.
+[[nodiscard]] inline agentengine::rt::task<AsyncMutex::Guard> acquire_session_mutex(AsyncMutex& m) {
+    co_return co_await m.lock();
+}
+}  // namespace agent_session_detail
 
 template <class ChatClientT, class StateT = NoSessionState,
           class HistoryProviderT = agentengine::HistoryProvider<agentengine::Window<0>>>
@@ -1158,8 +1176,58 @@ public:
     // ---- Pure bookkeeping, unchanged in behavior from core/agent_session.hpp -----------------
     // (no Quark dependency in the original either -- ported verbatim, not redesigned)
 
+    // ADR-102 Phase 5 fix, closing a real, twice-independently-found structural gap (ADR-102 Phase 3
+    // §22's `SandboxRuntime::merge_into()`/`discard()` finding, and Phase 4 §29's own disclosed-not-
+    // fixed residual naming this exact function): `fork_from()` used to run with NO serialization
+    // against `source`'s own in-flight `start_run()`/`resolve_interaction()` at all -- unlike every
+    // OTHER public entry point on this class, which all acquire `session_mutex_` (I1) for their whole
+    // duration. Without it, `history_provider_ = source.history_provider_;` below (a plain copy-
+    // assignment) can run CONCURRENTLY with a `source.start_run()` round already in flight on a
+    // different thread: for a `MandatorySandboxProvider`-shaped `HistoryProviderT`, that
+    // copy-assignment triggers a real `SandboxRuntime::spawn_child_branch()` call, which takes
+    // `SandboxRuntime`'s own `exclusivity_` lock -- the SAME lock an in-flight `run()` call on
+    // `source` may already hold. `rt/block_on.hpp` makes that specific race SURVIVABLE (no more
+    // coroutine-frame use-after-free under contention), but survivable is not the same as CORRECT:
+    // without locking `source.session_mutex_` here, `source`'s other fields (`history_`/`state_`/
+    // `metadata_`) could also be read mid-mutation by a concurrent round. Fixed by acquiring
+    // `source.session_mutex_` for the whole copy, matching every other public entry point's own I1
+    // discipline -- driven synchronously via `agent_session_detail::acquire_session_mutex()` +
+    // `block_on()` (see that helper's own comment) so `fork_from()` itself stays a plain, synchronous
+    // function; no call site anywhere in this codebase needs to change.
+    //
+    // SCOPE, deliberately narrow: only `source`'s own mutex is acquired, not `*this`'s. Every real
+    // call site in this codebase (and this design's own established usage) forks INTO a fresh,
+    // not-yet-`start_run()`-able target -- forking into an already-live, concurrently-running session
+    // is not a documented or supported operation this class offers anywhere else, so guarding against
+    // it here would invent new semantics for a usage pattern nothing else in this codebase exercises,
+    // rather than closing the specific, real, already-named hazard.
+    //
+    // REAL, EMPIRICALLY-CONFIRMED HAZARD this fix itself introduces, found by an independent red-team
+    // pass and disclosed here rather than left implicit: `AsyncMutex` has no reentrancy check (`held_`
+    // is a plain bool, no owner-thread tracking, `rt/async_mutex.hpp`). Before this fix, `fork_from()`
+    // touched no lock at all, so it could never deadlock. Now, calling `fork_from(source, ...)` (self-
+    // fork included, `source == *this`) from code ALREADY running on the same OS thread inside an
+    // in-flight `start_run()`/`resolve_interaction()` round on `source` -- e.g. synchronously, from a
+    // tool closure's own body, the exact shape `schedule_wakeup`'s own closure already has to route
+    // around via an internal `_impl` bypass for this identical reason (see that closure's own comment)
+    // -- would genuinely, reproducibly self-deadlock: `block_on()`'s own busy-wait spins forever,
+    // because the only thing that could ever call `unlock()` is the very `start_run()`/
+    // `resolve_interaction()` Guard already parked one frame up on the SAME stack, waiting for this
+    // call to return. Confirmed via a real, targeted repro (a `ChatClient::chat()` that calls
+    // `self->fork_from(*self, ...)` from inside a live round, same thread) -- 100% reproducible hang,
+    // not a rare race. NOT reachable through any real call site in this codebase today (every
+    // `fork_from()` caller is a top-level `main()`, never a tool closure or `ChatClient::chat()` body)
+    // -- but exactly the shape a near-future `agent.spawn`-style tool wired to call `fork_from()`
+    // directly from its own closure would hit, silently (an indefinite CPU-spinning hang, no crash, no
+    // diagnostic -- a materially worse failure mode than a clean, fast error). Not fixed in this pass:
+    // doing so correctly needs either owner-thread tracking on `AsyncMutex` itself (a broader change to
+    // a low-level primitive several other real call sites also rely on, out of this fix's own narrow
+    // scope) or a `fork_from()`-local reentrancy guard -- real, contained follow-on work for whichever
+    // future session wires a caller that could reach this path, not a same-pass mechanical addition.
     void fork_from(AgentSession const& source, std::string new_session_id,
                     std::optional<std::size_t> history_prefix_len = std::nullopt) {
+        AsyncMutex::Guard source_guard = agentengine::rt::block_on(
+            agent_session_detail::acquire_session_mutex(source.session_mutex_));
         session_id_ = std::move(new_session_id);
         principal_  = source.principal_;
         // ADR-061 §22.1/§21a Finding 1: fail-closed carry-forward -- a fork of a Tier-3 session must
@@ -2594,7 +2662,12 @@ private:
     // whole life exactly as its absorbed fields were when they lived directly here.
     StandingEffectRegistry                                standing_effects_registry_;
     // I1 -- see file banner. Every public async entry point acquires this for its whole duration.
-    AsyncMutex                                            session_mutex_;
+    // `mutable` (ADR-102 Phase 5): `fork_from()` below locks `source.session_mutex_` through a
+    // `AgentSession const&` -- the same, already-established rationale `core/ledger.hpp`'s own
+    // `mutable std::mutex mutex_` uses for the identical shape (a real synchronization primitive that
+    // must remain lockable from a conceptually-const access path; taking the lock itself does not
+    // change anything externally observable about `source`).
+    mutable AsyncMutex                                    session_mutex_;
 };
 
 // Save `session`'s narrowed durable record under its own session_id() -- see file banner and
