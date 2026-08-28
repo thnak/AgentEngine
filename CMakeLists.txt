@@ -855,6 +855,21 @@ if(AGENTENGINE_WITH_HTTPS AND AGENTENGINE_BUILD_PYTHON_RUNNER)
   endif()
 endif()
 
+# ---- ADR-102 Phase 5 slice: ComposedContextProvider<Ms...> real production consumer -------------
+# tools/sandboxed_shell_chat.cpp -- the first real, user-reachable CLI wiring of
+# ComposedContextProvider<Ms...> anywhere in this codebase, composing SandboxToolProvider (ADR-096)
+# and MandatorySandboxProvider<DockerExecutionSurface> (ADR-102 Phases 1-4) into ONE session. Needs no
+# Python embed (unlike agentengine_cli_chat above), so gated only on AGENTENGINE_WITH_HTTPS (real
+# OpenAI network calls) and WIN32 (agentengine::mediated_shell_runner/SandboxToolProvider's own current
+# platform scope) -- not AGENTENGINE_BUILD_PYTHON_RUNNER.
+if(AGENTENGINE_WITH_HTTPS AND WIN32)
+  add_executable(agentengine_sandboxed_shell_chat tools/sandboxed_shell_chat.cpp)
+  target_link_libraries(agentengine_sandboxed_shell_chat PRIVATE
+    agentengine::core agentengine::provider_http_client agentengine::mediated_shell_runner
+    agentengine::worktree_store agentengine_warnings MbedTLS::mbedtls MbedTLS::mbedx509
+    MbedTLS::mbedcrypto)
+endif()
+
 # ---- Standalone batch inference (tools/batch_infer.cpp) -- submits N independent prompts to
 # OpenRouter's real Batch API (beta) and polls to completion. See that file's own top comment for
 # why this is scoped OUTSIDE docs/planning/batch-inference-coalescing-gap.md's standing "do not wire

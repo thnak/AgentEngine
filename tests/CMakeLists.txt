@@ -2086,6 +2086,16 @@ if(WIN32)
     agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store agentengine_warnings)
   add_test(NAME test_sandbox_tool_provider COMMAND test_sandbox_tool_provider)
 
+  # ---- ADR-102 Phase 5 (ComposedContextProvider<Ms...> real production consumer slice):
+  # SandboxToolProvider (above) and MandatorySandboxProvider<DockerExecutionSurface> (ADR-102 Phase 4)
+  # composed into ONE real AgentSession's actual HistoryProviderT via ComposedContextProvider<Ms...> --
+  # the first time ComposedContextProvider<Ms...> is driven through a real session.start_run() anywhere
+  # in this codebase. REQUIRES Windows (SandboxToolProvider's own scope) AND a real Docker daemon.
+  add_executable(test_composed_sandbox_providers_live test_composed_sandbox_providers_live.cpp)
+  target_link_libraries(test_composed_sandbox_providers_live PRIVATE
+    agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_composed_sandbox_providers_live COMMAND test_composed_sandbox_providers_live)
+
   # ---- Milestone 3 Phase E4: hostile-corpus/mediation proof (010 §9 G2/G7) ---------------------
   add_executable(test_mediated_shell_runner_hostile_corpus test_mediated_shell_runner_hostile_corpus.cpp)
   target_link_libraries(test_mediated_shell_runner_hostile_corpus PRIVATE

@@ -2,19 +2,24 @@
 
 **Status:** Proposed — design scoped, Phases 1 through 5 (the first real, user-reachable host wiring)
 implementation complete and independently red-teamed (2026-08-28), plus closing `AgentSession::
-fork_from()`'s own long-disclosed session-serialization gap (Phase 3 §22/Phase 4 §29). **This ADR does
-not authorize the whole identity-native design's production merge** — it authorizes Phases 1-4
-(identity/quota primitives, then `Ledger`, then `SandboxRuntime`/`ExecutionSurface`, then a
-session-wired `MandatorySandboxProvider`) plus this specific slice of Phase 5 (`tools/cli_chat.cpp`
-wiring, plus the `fork_from()` fix — `ContainerdExecutionSurface`/ADR-101 promotion and Windows/Linux
-parity remain deferred, unauthorized follow-on work), matching this project's own precedent of narrow
-implementation ADRs following a broad design-acceptance ADR (ADR-012→ADR-080, ADR-086→ADR-087, both
-cited approvingly inside ADR-099 itself). `ADR-099` §7 states explicitly: "this ADR authorizes the
-design, not an implementation merge... binds once a future implementation ADR (or ADRs) actually wires
-this in." This is that ADR, for Phases 1-5's `cli_chat.cpp` slice plus the `fork_from()` fix (this
-file's own name still reads "phase-1" — kept for URL/citation stability now that other work references
-it; §9 onward covers Phase 2, §16 onward covers Phase 3, §23 onward covers Phase 4, §30 onward covers
-Phase 5, §37 onward covers the `fork_from()` fix).
+fork_from()`'s own long-disclosed session-serialization gap (Phase 3 §22/Phase 4 §29), plus a second
+Phase 5 slice (2026-08-28) making `ComposedContextProvider<Ms...>` a real production consumer for the
+first time anywhere in this codebase (§41 onward). **This ADR does not authorize the whole
+identity-native design's production merge** — it authorizes Phases 1-4 (identity/quota primitives,
+then `Ledger`, then `SandboxRuntime`/`ExecutionSurface`, then a session-wired `MandatorySandboxProvider`)
+plus two specific slices of Phase 5 (`tools/cli_chat.cpp` wiring plus the `fork_from()` fix; and
+`ComposedContextProvider<Ms...>` composing `SandboxToolProvider`+`MandatorySandboxProvider` into a real
+session for the first time — `ContainerdExecutionSurface`/ADR-101 promotion, Windows/Linux parity, and
+`SandboxToolProvider`'s own `fork_from`-becomes-compile-error negative probe remain deferred,
+unauthorized follow-on work), matching this project's own precedent of narrow implementation ADRs
+following a broad design-acceptance ADR (ADR-012→ADR-080, ADR-086→ADR-087, both cited approvingly
+inside ADR-099 itself). `ADR-099` §7 states explicitly: "this ADR authorizes the design, not an
+implementation merge... binds once a future implementation ADR (or ADRs) actually wires this in." This
+is that ADR, for Phases 1-5's `cli_chat.cpp` slice, the `fork_from()` fix, and the `ComposedContextProvider
+<Ms...>` slice (this file's own name still reads "phase-1" — kept for URL/citation stability now that
+other work references it; §9 onward covers Phase 2, §16 onward covers Phase 3, §23 onward covers Phase 4,
+§30 onward covers Phase 5's `cli_chat.cpp` slice, §37 onward covers the `fork_from()` fix, §41 onward
+covers the `ComposedContextProvider<Ms...>` slice).
 Real, compiled, tested:
 - **Phase 1**: `include/agentengine/trust/identity_authority.hpp`, `include/agentengine/rt/
   async_quota.hpp`, `tests/test_identity_authority_grant.cpp` (14 checks, passing), two
@@ -331,7 +336,8 @@ async_quota.hpp`, `namespace agentengine::rt` (matching `SpawnCostBudget`'s real
   driven through the real 10-step `invoke_tool()` pipeline for the first time.
 - **Phase 5** — `ContainerdExecutionSurface`/ADR-101 promotion (ADR-101 is itself Proposed, not
   Judged — stacking two unjudged designs in one landing is avoidable risk); Windows/Linux parity;
-  `tools/cli_chat.cpp` wiring; `ComposedContextProvider<Ms...>` becoming a real production consumer.
+  `tools/cli_chat.cpp` wiring (closed, §30 onward); `ComposedContextProvider<Ms...>` becoming a real
+  production consumer (closed, §41 onward).
 - **`SandboxToolProvider` (ADR-096, uncopyable, `fork_from()`-becomes-compile-error) vs. this design's
   own `MandatorySandboxProvider` (copyable, fork-on-copy via `Ledger::branch_from()`) copy-semantics
   divergence is a decided, disclosed COEXISTENCE, not reconciled by this ADR.** They manage genuinely
@@ -1189,3 +1195,209 @@ plausibly exactly what a near-future `agent.spawn`-style tool would reach for. R
 either owner-thread-aware reentrancy detection on `AsyncMutex` itself, or a narrower, `fork_from()`-local
 guard — named explicitly here so whoever wires that future caller does not rediscover this the hard way
 (a silent, undiagnosed hang, not a clean error).
+
+## 41. The question (Phase 5, `ComposedContextProvider<Ms...>` real production consumer slice)
+
+**Stated so it has a wrong answer:** ADR-102's own §7 named a real, disclosed cost of Phase 4's
+"bare `HistoryProviderT`" wiring choice: `agentengine::ComposedContextProvider<Ms...>`
+(`core/composed_context_provider.hpp`, ADR-074's consolidation) had, before this slice, **zero real
+production consumers anywhere in this codebase** — every use was either a unit test driving
+`on_context()`/`on_turn_end()` directly (`tests/test_session_builder.cpp`'s own top comment: "no
+`.raw_client_only()` escape hatch... driven DIRECTLY instead") or `docs/planning/proofs/` probe code.
+`SandboxToolProvider` (ADR-096, `src/backends/native_jail/sandbox_tool_provider.hpp`) — the ONE real
+conformer this codebase ships specifically *for* composing via `ComposedContextProvider<Ms...>` — had
+the identical gap: zero real callers beyond its own test. Does composing `SandboxToolProvider` and
+`MandatorySandboxProvider<DockerExecutionSurface>` together, through `ComposedContextProvider<Ms...>`,
+into ONE real `AgentSession`, actually work when driven through a real `session.start_run()` round for
+the first time — or does combining two independently-red-teamed providers, and a composition mechanism
+that has never carried a real session through a real tool-calling round, surface a new gap none of the
+three, alone, could have shown (the same shape of question Phase 3 asked of its own four
+previously-standalone files, and answered "yes, a new gap" — §16-19)?
+
+## 42. Design
+
+Two new files, no changes to any Phase 1-4 file:
+
+- `tests/test_composed_sandbox_providers_live.cpp` — a real, Docker-and-Windows-requiring test proving
+  `agentengine::rt::AgentSession<ScriptedChatClient, NoSessionState, ComposedContextProvider<
+  SandboxToolProvider, MandatorySandboxProvider<DockerExecutionSurface>>>` end to end: [1] one
+  `on_context()` call from the composed provider contributes BOTH tools; [2] a scripted `run_command`
+  tool call, driven through the real, unmodified `session.start_run()` -> `invoke_tool()` pipeline,
+  genuinely executes in a real Docker container and commits a real `Ledger` checkpoint; [3] a scripted
+  `run_shell` tool call, in the SAME session, right after [2], genuinely executes against the real host
+  filesystem via `SandboxToolProvider`'s own native jail. Mirrors `tests/test_mandatory_sandbox_
+  provider.cpp`'s (Phase 4) `ScriptedChatClient`/`tool_call_message()`/`drive()` fixtures verbatim (no
+  shared header exports these — every file that needs them defines its own copy, the established
+  convention in this test suite) and `tests/test_sandbox_tool_provider.cpp`'s own digest-based
+  scratch-directory verification.
+- `tools/sandboxed_shell_chat.cpp` — a new, small, real, user-reachable CLI binary (`agentengine_
+  sandboxed_shell_chat`), the first genuinely production host wiring of `ComposedContextProvider<Ms...>`
+  anywhere in this codebase. Deliberately NOT a change to `tools/cli_chat.cpp` itself: that file's own
+  `ToolDeclaringHistoryProvider` stays a session's BARE `HistoryProviderT` specifically so `AgentSession::
+  fork_from()` keeps compiling for the flagship interactive CLI's own session type — wrapping it in
+  `ComposedContextProvider<Ms...>` (unconditionally move-only, ADR-074 Finding B) would make `fork_from()`
+  a compile error there, an avoidable regression this design does not risk for a tool with no forking
+  feature to lose. This new tool's own session type never calls `fork_from()`, so the cost is free here.
+  Reuses, rather than re-implements, `quickstart::ComposedQuickstartSessionBuilder<Provider, Store,
+  Ms...>` (`core/session_builder.hpp` §2b) for credential/capability/session wiring and `Bundle::ask()`
+  (same file) for its REPL loop — both already-shipped, already-tested machinery that, like
+  `ComposedContextProvider<Ms...>` itself, had no real production caller before this file. Exits via an
+  ordinary `return 0;`, not `cli_chat.cpp`'s own `std::_Exit(0)` (a disclosed, unrelated fix for a real
+  CPython thread-affinity crash this tool never triggers, having no Python embed) — so
+  `DockerExecutionSurface`'s destructor reclaims its container on every ordinary exit here, closing, for
+  THIS tool specifically, the container-leak residual §19/§30 disclosed for `cli_chat.cpp`.
+
+`MandatorySandboxProvider::bind_sandbox()` is called on the LOCAL value in both new files, BEFORE the
+provider is moved into `ComposedContextProvider::engage()`/the builder's `.providers()` tuple — a real,
+disclosed divergence from `cli_chat.cpp`'s own Phase 5 pattern (which reaches back into an already-
+composed provider via a dedicated `run_command_provider()` accessor, AFTER construction): once engaged,
+`ComposedContextProvider<Ms...>`'s own descriptor factory (`context_assembly.hpp::make_context_provider_
+descriptor()`) type-erases each `Ms` into a `shared_ptr<Ms>` reachable only through its own `on_context`/
+`on_turn_end` closures, with no accessor back to the concrete instance — binding first, then composing,
+needs no such accessor and is the only order that works for this composition shape.
+
+## 43. Falsifiable claims (Phase 5, `ComposedContextProvider<Ms...>` slice)
+
+- **C10 (structural coexistence).** One `on_context()` call from the composed provider contributes
+  BOTH `run_shell` and `run_command`, in the declared order. *Disproof: either tool is missing, or a
+  third, phantom tool appears.*
+- **C11 (functional coexistence, `run_command`).** A `run_command` tool call, driven through the real
+  `invoke_tool()` pipeline in a session where `SandboxToolProvider` is ALSO composed, genuinely executes
+  in a real Docker container and commits a real `Ledger` checkpoint — unaffected by the sibling
+  provider now sharing its `ContextContribution`. *Disproof: the command does not execute, or the
+  checkpoint is missing/wrong, when composed vs. Phase 4's own already-proven bare-provider case.*
+- **C12 (functional coexistence, `run_shell`).** A `run_shell` tool call, in the SAME session, right
+  after a `run_command` call, genuinely executes against the real host filesystem — the two providers'
+  genuinely different resource shapes (a live OS process vs. a content-addressed ledger branch) do not
+  interfere with each other. *Disproof: `run_shell` fails, writes to the wrong location, or corrupts/
+  is corrupted by `run_command`'s own state.*
+
+## 44. The red-team attack
+
+One independent, fresh-agent adversarial round (2026-08-28), against the actually-landed, compiled,
+live-Docker-tested code (not the plan): read this ADR in full including §1-40 for context, read both
+new files completely, traced `ComposedContextProvider::engage()` -> `build_contributors()` ->
+`make_context_provider_descriptor()` (`context_assembly.hpp`), `MandatorySandboxProvider::
+bind_sandbox()`, `BranchHandle::~BranchHandle()`/`maybe_queue_abandon()`,
+`ComposedQuickstartSessionBuilder::providers()`/`build()`, `invoke_tool()`'s 10-step pipeline, and
+`RunShellTool`/`RunCommandTool`'s own capability declarations. Then went further than static tracing:
+did a REAL build with real MSVC, ran the new test against the real Docker daemon on this machine (all
+15 checks passing), then additionally built and ran the SAME test under a **clang AddressSanitizer
+build** against the same real Docker daemon — the strongest empirical check available for the
+lifetime/dangling-pointer claim §42's whole "bind before compose" design rests on — and separately ran
+the CLI tool's own early-return path (`OPENAI_API_KEY` unset) to exercise "the temporary `Builder` is
+destroyed, with an already-bound `MandatorySandboxProvider` inside it, while `cli_ledger`/quotas are
+still alive in the enclosing scope" directly, not just reasoned about.
+
+**No MUST-FIX found.** The round went in assuming a real defect existed (this design's own established
+track record, cited to it explicitly) and could not find one after real build + real ASan-instrumented
+execution + a full static trace of every claim in §42-43.
+
+**Two real SHOULD-FIX findings, both fixed same day (disclosure-only, no behavior change):**
+1. `tools/sandboxed_shell_chat.cpp`'s own container-leak-closed claim overreached: it covered only the
+   contrast against `cli_chat.cpp`'s deliberate `std::_Exit(0)`, saying nothing about Ctrl+C — this
+   codebase installs no `SetConsoleCtrlHandler`/`SIGINT` handler anywhere (grep-confirmed, zero hits
+   including in `cli_chat.cpp`), so Windows' own default console handler calls `ExitProcess()` directly
+   on Ctrl+C, never unwinding `main()`'s stack (and therefore never running `DockerExecutionSurface`'s
+   destructor) — an entirely ordinary way an interactive user ends a REPL session, not an edge case.
+   **Fixed**: the file's own top comment now states this explicitly, scoped correctly to "ordinary
+   `return` paths only," with the missing-SIGINT-handler gap named as real, disclosed, not-attempted-
+   in-this-pass follow-on work.
+2. `Principal const cli_principal{"cli-user", ""}` uses an empty `tenant_id` with no comment warning a
+   future reader against copying this literal pattern into a real multi-tenant host — doing so would
+   silently reproduce the exact cross-tenant identity-collision class Phase 1's own §4 MUST-FIX fixed
+   (`adopt()` keying on `(tenant_id, id)`, not `id` alone). **Fixed**: a comment now states this
+   explicitly at the declaration site.
+
+**One SHOULD-FIX-level observation, disclosed rather than changed**: `session_digest_of()`
+(`tests/test_composed_sandbox_providers_live.cpp`) is a hand-duplicated copy of `SandboxToolProvider::
+ensure_sandbox()`'s own digest computation, not a call into shared code — matching this test suite's
+own established "every file defines its own copy" convention (confirmed not a new pattern by the
+red-team round itself), but a real, named drift risk: if `ensure_sandbox()`'s own byte-encoding of
+`session_id` ever changes, this test's independent copy could silently fall out of sync. Left as-is,
+matching the accepted convention, named here for the record rather than left implicit a second time.
+
+**Checked, no finding**:
+- **The lifetime/dangling-pointer claim (§42's central claim)**: `ContextProviderDescriptor`
+  (`context_assembly.hpp`) exposes only `name`/`budget`/`on_context`/`on_turn_end` — confirmed there is
+  genuinely no accessor back to the concrete provider instance once engaged, so "bind before compose"
+  is not merely asserted, it is the only order that works. Reverse-declaration-order destruction
+  confirmed correct in both files by direct trace AND by a real ASan-instrumented run reaching full
+  program teardown (session destruction -> `shared_ptr` refcount to zero -> `SandboxRuntime`/
+  `BranchHandle` destruction -> the real `Ledger*`/quota-pointer dereferences this design's whole
+  lifetime argument depends on) with zero ASan diagnostics.
+- **The CLI tool's early-return-before-`built`-succeeds path**: run live with `OPENAI_API_KEY` unset —
+  clean `FATAL:` message, exit 1, no crash, and `docker ps -a` confirmed unchanged before/after (no new
+  leaked container from the temporary `Builder`'s own destruction while holding an already-bound
+  `MandatorySandboxProvider`).
+- **I2/I3, capability confusion between the two composed providers**: traced `invoke_tool()`'s own
+  capability-binding step and confirmed it binds ONLY the individual tool's own static ceiling, never
+  the session's whole held set — `RunShellTool`'s declared `Capabilities<cap::decl::FsRead<"work">,
+  cap::decl::FsWrite<"work">>` exactly matches both new files' own grants (not too broad, not too
+  narrow); `RunCommandTool`'s ceiling is genuinely empty (zero policy parameters), matching its
+  "authorizes via `IdentityAuthority`/`Grant<T>`/`AsyncQuota<T>` instead" design — no static-capability
+  path exists for it to be widened or confused by. Confirmed neither provider's `on_context()` touches
+  the `EffectContext` field the other one owns (`ctx.principal` vs. `ctx.sandbox_fs`) — no
+  cross-provider interference in either direction.
+- **Test rigor**: all three claims' checks (C10/C11/C12) are real positive controls, not vacuous —
+  independently confirmed each reads back real, independently-derived state (the real `Ledger` entry,
+  a real `std::filesystem::exists()` check on an independently-computed path), never merely the tool's
+  own self-reported reply.
+- **CMake correctness**: confirmed by nesting-depth trace (not just visual indentation) that the new
+  test's registration genuinely sits inside the same `if(WIN32)` block as its sibling
+  `test_sandbox_tool_provider`, with an identical, correctly-scoped link line; confirmed the new tool
+  target's `AGENTENGINE_WITH_HTTPS AND WIN32` gate is correct for what it actually includes/links
+  (genuinely no Python-runner dependency). Both targets re-built a second time and got ninja's own
+  "no work to do" — avoiding the exact shell-wrapper-masked-failure trap this ADR's own §32 finding 1
+  already named as a real, previously-hit hazard in this same effort.
+
+## 45. Executed evidence
+
+- `tests/test_composed_sandbox_providers_live.cpp`: 15 checks, 100% passing, run against a REAL Docker
+  daemon on Windows — three times independently (this session's own first run, the independent
+  red-team round's plain-MSVC run, and that same round's clang-ASan-instrumented run), zero failures
+  and zero ASan diagnostics across all three.
+- `tools/sandboxed_shell_chat.cpp`: compiled clean under MSVC 19.51, zero new warnings. A real, live
+  smoke test against a genuine OpenRouter-backed model (not a scripted fixture — this codebase's own
+  only reachable real credential) confirmed the REPL/tool-dispatch plumbing works end to end: the
+  composed session's `run_shell` tool was genuinely discovered and repeatedly, successfully invoked
+  by an unscripted model across a real multi-turn tool-calling loop, with real `ToolResult`s round-
+  tripping back into history each time (the specific free-tier model available did not also exercise
+  `run_command` in this particular run and looped on `run_shell` past a useful final answer -- model
+  behavior, not a defect in the wiring already proven deterministically by the automated test above).
+  Independently, the red-team round's own early-return smoke test (`OPENAI_API_KEY` unset) confirmed
+  the tool's fail-closed path is clean and leak-free.
+- `python tools/naming_lint.py`: `027 naming-lint: OK` — no new public C++ types were introduced by
+  this slice (pure composition of already-registered names), so no new vocabulary rows were needed.
+- Full project rebuild: clean, zero errors, including both new targets
+  (`agentengine_sandboxed_shell_chat`, `test_composed_sandbox_providers_live`).
+- Full `ctest` suite: 287/287 passing (286 + the new test), zero regressions, one genuinely clean run
+  with no flakes at all (a first for this whole multi-phase effort's own `-j4` parallel-execution
+  history).
+
+## 46. Per-claim verdicts
+
+| Claim | Verdict | Evidence |
+|---|---|---|
+| C10 — structural coexistence (one `on_context()` contributes both tools) | **CORRECT** | Check [1], independently confirmed a real positive control by the red-team round. |
+| C11 — functional coexistence, `run_command` unaffected by a composed sibling | **CORRECT** | Check [2]: real Docker execution + independent `Ledger` read-back, unchanged from Phase 4's own already-proven bare-provider behavior. |
+| C12 — functional coexistence, `run_shell` unaffected by a composed sibling | **CORRECT** | Check [3]: real host-filesystem read-back, independently verified path computation. |
+
+## 47. Residual risks (Phase 5, `ComposedContextProvider<Ms...>` slice)
+
+- **No `SetConsoleCtrlHandler`/`SIGINT` handling anywhere in this codebase** (not introduced by this
+  slice — a pre-existing, whole-codebase gap this slice's own red-team round is the first to name
+  explicitly): an interactive user's Ctrl+C on either `tools/cli_chat.cpp` or the new
+  `tools/sandboxed_shell_chat.cpp` bypasses all C++ destructors via Windows' own default handler,
+  leaking any live `DockerExecutionSurface` container the same way `std::_Exit(0)`/an unhandled crash
+  already does. Real, contained follow-on work — a real signal handler that at minimum attempts a
+  best-effort `DockerExecutionSurface` teardown before `ExitProcess()`.
+- **`session_digest_of()`'s hand-duplicated-vs.-`SandboxToolProvider` drift risk** (§44) — matches an
+  already-accepted test-suite convention, not a new pattern, named for the record.
+- Every residual already named at the ADR level (§8/§15/§36/§40 — the blob-content-level ACL gap,
+  `Ledger::merge()`'s missing `AsyncQuota` gate, `fork_from()`'s self-deadlock hazard, this whole
+  design's own pending `Judged` sign-off) is unchanged and out of this slice's own scope; none of them
+  are touched or worsened by either new file.
+- **Still out of scope, named not dropped** (§7): `ContainerdExecutionSurface`/ADR-101 promotion,
+  Windows/Linux parity, and `SandboxToolProvider`'s own `fork_from`-becomes-compile-error negative
+  probe (asserted only in a comment, never actually triggered anywhere in this codebase).
