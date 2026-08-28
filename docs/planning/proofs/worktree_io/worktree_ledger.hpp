@@ -321,8 +321,38 @@ public:
         return it->second.size() < kMaxAclRootsPerDigest;
     }
 
-    [[nodiscard]] agentengine::rt::task<result<BranchHandle<Store>>> create_root_branch(Principal owner) {
+    // REAL, PREVIOUSLY-UNDETECTED GAP an A9 red-team pass found (2026-08-28), verified empirically not
+    // just by inspection: this method's own name is PURELY `"root-" + owner.id()`, with no further
+    // uniqueness -- unlike `branch_from()`'s own genuinely-unique `parent.name() + "/child-<id>-
+    // <seq>"` naming. A caller that mints TWO OR MORE root branches for the SAME owner on the SAME
+    // Ledger (an entirely ordinary pattern: multiple independent sessions sharing one Principal, or a
+    // test probe reusing one `owner` across several logically-independent setups) collides on the
+    // IDENTICAL `branches_` map key -- `insert_or_assign()` below then SILENTLY OVERWRITES the prior
+    // root branch's own ledger record. Confirmed by actually re-reading an EARLIER session's own
+    // committed content after a LATER same-owner `create_root_branch()` call and finding it genuinely
+    // gone (`docs/planning/proofs/mandatory_sandbox/probe_mandatory_sandbox_real_agent_session.cpp`'s
+    // own check [10]) -- this affected `probe_mandatory_sandbox.cpp` itself too, unnoticed until then,
+    // since no existing check re-verified an OLDER session's content survived a LATER one being minted.
+    //
+    // NOT a simple bug to "just fix" by adding a counter unconditionally: the deterministic,
+    // purely-owner-derived name is ALSO load-bearing, on purpose, for the real, already-proven
+    // cross-process crash-recovery reattachment this design relies on (`durable_ledger_read.cpp`/
+    // `crash_reclaim_read.cpp`, §34) -- a genuinely SEPARATE OS process, with no `BranchHandle` object
+    // to carry across the crash/restart boundary, has to RECOMPUTE the exact same name from only the
+    // owner identity it already holds. Making the name non-deterministic by default would silently
+    // break that already-proven mechanism.
+    //
+    // FIXED, resolving the real tension rather than picking one side: an OPTIONAL `disambiguator`,
+    // empty by default. Every EXISTING call site (this whole tree's crash-recovery probes included)
+    // is 100% unaffected -- omitting it reproduces the EXACT prior name, byte for byte. A caller that
+    // genuinely needs several independent root branches for one owner (this file's own
+    // `probe_mandatory_sandbox*.cpp` siblings, fixed to do exactly this) opts in explicitly by
+    // supplying one, making its own intent-to-be-independent an explicit, visible choice at the call
+    // site rather than an invisible landmine.
+    [[nodiscard]] agentengine::rt::task<result<BranchHandle<Store>>> create_root_branch(
+        Principal owner, std::string disambiguator = {}) {
         std::string name = "root-" + std::to_string(owner.id());
+        if (!disambiguator.empty()) name += "-" + disambiguator;
         agentengine::Digest empty_tree_digest;
         {
             // REAL BUG this probe's own first concurrent run caught (a segfault, not a hang or a

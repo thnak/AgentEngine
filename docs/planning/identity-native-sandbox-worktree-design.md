@@ -4853,3 +4853,136 @@ open, inherited unchanged. Whether `ResetCost`'s specific unit cost (1 per call,
 `BranchCost`/`RunCost`'s own precedent) is the right DEFAULT for a real deployment is not established
 — no real usage data exists yet, the same honestly-disclosed gap `BranchCost`'s own residual (ADR-099
 §8) already states for itself.
+
+## 43. Three more punch-list gaps closed in parallel (2026-08-28) — real AgentSession, dispatch wiring, and a second live conformer
+
+Three independent fresh agents, briefed separately and run concurrently (each scoped to disjoint
+files, none touching `sandbox_runtime.hpp`/`mandatory_sandbox_provider.hpp` while §42's rollback fix
+was still in review), closed three more items from this design's own open punch list. Each was
+independently red-teamed after landing.
+
+### 43.1 A9, for real: the REAL `agentengine::rt::AgentSession`, not `FakeAgentSession`
+
+§37.5's own disclosed gap — `MandatorySandboxProvider` "has only been proven against
+`FakeAgentSession`... not the real class itself" — is closed.
+`docs/planning/proofs/mandatory_sandbox/probe_mandatory_sandbox_real_agent_session.cpp` instantiates
+the REAL, production `agentengine::rt::AgentSession<ChatClientT, StateT,
+MandatorySandboxProvider<DockerExecutionSurface>>` (a minimal `ChatClientT` copied in shape from
+`tests/test_rt_agent_session.cpp`'s own `ScriptedChatClient`, this codebase's own simplest real
+instantiation) and re-runs `probe_mandatory_sandbox.cpp`'s [1]-[8] one-for-one against the real
+`fork_from()`/`clear_in_process_state()`/`history_provider()` (agent_session.hpp:1161/1210/657), plus
+two new checks only meaningful against the real class: [9] a genuine self-fork
+(`session.fork_from(session, id)`, reachable since the real signature takes `source` as a plain
+`const&` with no identity check) — the sandbox survives unaffected, but surfaces a real, honestly-
+disclosed asymmetry: `fork_from()` unconditionally overwrites `session_id_` even on self-fork (not
+guarded the way `history_provider_` is) — safe for the sandbox, not a no-op for session identity, not
+previously observable against the byte-identical `FakeAgentSession` mirror since no prior test drove
+this exact scenario through the real method. 10/10 checks pass live against Docker.
+
+### 43.2 A real, previously-undetected `Ledger::create_root_branch()` naming collision, found by 43.1 and fixed at its source
+
+Check [10] of 43.1's own probe found a genuine, previously-undetected bug in shared Ledger
+infrastructure, not a defect in `MandatorySandboxProvider`/`AgentSession`: `create_root_branch()`
+named every root branch PURELY from `"root-" + owner.id()`, no further uniqueness — unlike
+`branch_from()`'s own genuinely-unique `parent.name() + "/child-<id>-<seq>"`. Any caller minting two
+or more root branches for the SAME owner on the SAME `Ledger` (an entirely ordinary pattern — this
+exact probe, and `probe_mandatory_sandbox.cpp` itself, both already did it) collided on the identical
+`branches_` map key, and `insert_or_assign()` silently overwrote the earlier record. Verified
+empirically, not by inspection: re-reading `parent_only.txt` (committed by an earlier session) after
+three more same-owner `create_root_branch()` calls came back genuinely gone.
+
+**Not a simple bug to patch by adding a counter unconditionally**: the purely-owner-derived name is
+ALSO load-bearing, deliberately, for this design's own already-proven cross-process crash-recovery
+reattachment (`durable_ledger_read.cpp`/`crash_reclaim_read.cpp`, §34) — a genuinely separate OS
+process, with no `BranchHandle` to carry across the crash boundary, has to RECOMPUTE the exact same
+name from only the owner identity it already holds. Making the name non-deterministic by default
+would have silently broken that already-proven mechanism.
+
+**Fixed by resolving the tension, not picking a side**: `create_root_branch()` gained an OPTIONAL
+`disambiguator` parameter, empty by default. Every existing call site (crash-recovery probes
+included) is 100% unaffected — omitting it reproduces the exact prior name. `probe_mandatory_sandbox.cpp`
+and the new `probe_mandatory_sandbox_real_agent_session.cpp` were both fixed to pass a distinct
+disambiguator per logically-independent session, and both gained a new adversarial check ([10] in
+each) proving an earlier session's own committed content genuinely survives several further same-owner
+`create_root_branch()` calls afterward — both green. A full compile sweep of every other consumer of
+`worktree_ledger.hpp` (16 files) confirmed zero regressions, and all four crash-recovery/durability
+probes (`durable_ledger_write/read`, `crash_reclaim_write/read`) were re-run in the correct order and
+still pass unchanged, including reproducing the exact same deterministic `root-1` branch name as
+before the fix.
+
+### 43.3 A10: the dispatch pipeline itself, not just the gating logic in isolation
+
+§41.1's enforcement mirror proved the two-tag GATING LOGIC was correct in isolation; it never proved a
+call that should be rejected genuinely never reaches the real, mutating `TaskBranchSandbox` verb at
+all. `docs/planning/proofs/task_branch_tool/task_branch_dispatch.hpp` closes that gap: four
+tool-shaped types (`TaskBranchStartTool`/`RunTool`/`DiscardTool`/`CommitTool`, matching
+`task_branch_capability.hpp`'s own usage sketch) with declared ceilings from the mirrored capability
+system, and `dispatch_tool_call<ToolT>()`, mirroring `tool_pipeline.hpp`'s real step-4/7 loop
+(authorize every requirement first, first failure rejects immediately with a generic error, invoke
+only on success). `probe_task_branch_dispatch.cpp` (6 checks, live Docker): a `TaskBranch`-only caller
+dispatches start/run/discard for real; that SAME caller's commit dispatch is REJECTED before
+`TaskBranchSandbox::commit_task_branch()` is ever reached — verified via the real Ledger head digest,
+real Docker container count, and `active_count()`/`has_active_handle()` all unchanged, not merely that
+the boolean check said no; a caller holding both tags commits for real, verified by reading the work
+back through `Ledger::get_tree_safe()`/`get_blob_safe()`; a `TaskBranchCommit`-only caller is rejected
+even for start (the "inert grant" claim, now proven end to end against a real object, not just
+booleans). Independently red-teamed: the "rejected call structurally cannot reach the real verb" claim
+was verified airtight (straight-line loop, immediate `co_return` on first failure, no other call
+site) — solid, no findings. Zero regressions (`probe_task_branch_tool.cpp` 13/13,
+`probe_task_branch_capability_enforcement.cpp` 12/12). Still not the real `agentengine::Tool<>` —
+§41's own negative result stands, not re-attempted; this narrows the "real Tool<> wiring" gap, it does
+not close it.
+
+### 43.4 A second, real, live `ExecutionSurface` conformer — `ContainerdExecutionSurface`, standalone tier
+
+§36.5's design (`docs/planning/oci-execution-surface-design-draft.md`) is now backed by real code, not
+just a cited command sequence and an empirically-proven ordering hazard. `docs/planning/proofs/
+execution_surface/containerd_ctr_backend.hpp`/`containerd_execution_surface.hpp` satisfy the real
+`ExecutionSurface` concept (`static_assert`-checked) via `posix_spawn`+argv-vector `ctr` invocation and
+a live bind mount, matching `KataBackend`'s own real, shipped `ctr` precedent rather than Docker's
+copy-in/copy-out. Compiled (`g++ 15.2.0`, WSL2 — no `clang++` present there) and run for real against
+live containerd 2.2.2/runc 1.4.0: 16/16 checks, including a live bind-mount round trip needing zero
+`drain_to()` call and a second, C++-side reconfirmation of the ordering-hazard finding §36.5 already
+proved via bash.
+
+**A real design correction, found and fixed in the same pass**: the design doc's own C3 claimed
+`docker_backend.hpp`'s `reject_chars()`/`reject_shell_breakout()` must be "reused verbatim" against
+the command reaching the container's inner `sh -c`. Building the real code found this doesn't
+transfer: that defense exists specifically because Docker's `_popen` hands a CONCATENATED STRING to a
+real host shell a literal `"` can break out of; `posix_spawn`+argv never concatenates anything into a
+host-parsed string, so that injection class genuinely does not exist on this path — confirmed against
+`kata_backend.cpp`'s own real, shipped precedent (zero equivalent defense there either, by the
+identical reasoning) and independently re-verified by a second red-team round. Built
+`reject_embedded_nul()` instead — the real POSIX-correct analog (argv truncation-at-NUL) — and left
+the container's own inner-shell interpretation as the SAME already-accepted risk boundary
+`kata_backend.cpp`'s own `ExecRequest::source` documentation already establishes, not a new hole. C3
+itself updated in the design doc to record this rather than left silently stale (CLAUDE.md's "spec vs
+code disagree, fix the spec" rule).
+
+**Tier reached**: standalone only (`probe_docker_sandbox.cpp`'s own original bar for Docker, before
+`SandboxRuntime` unified anything) — NOT yet integrated with the real `Ledger`/`SandboxRuntime`/
+`RealIoFileSystem` stack, which currently assumes Windows-specific real production APIs
+(`bcrypt.h`/Windows file handles) this conformer's own Linux/WSL2 environment can't use directly;
+POSIX siblings for those already exist in this repo (`worktree_digest_posix.cpp`, `worktree_mount_fs_
+posix.{hpp,cpp}`), making that integration plausible for a future pass, not attempted here. Also
+disclosed, not defended against: `drain_to()` to a directory OTHER than the one bind-mounted falls
+back to an implemented-but-unexercised plain host copy; a host path containing a literal comma breaks
+`ctr`'s own `--mount` flag grammar (confirmed by direct test to fail cleanly — no container created,
+no silent mis-mount, a correctness limitation not a security hole).
+
+### 43.5 What this pass does and does not establish
+
+**Established**: A9's own composition now proven against the REAL `AgentSession`, not a stand-in; a
+real, previously-undetected Ledger-level naming collision found and fixed at its source, with the fix
+proven not to disturb the crash-recovery mechanism it was in tension with; the dispatch PIPELINE
+(authorize-before-invoke, reject-with-no-side-effect) proven real for the task-branch tool surface,
+narrowing (not closing) the real-`Tool<>` gap; a second, real, live `ExecutionSurface` conformer,
+proven standalone against live containerd/runc, with a real design correction folded back into the
+spec that proposed it.
+
+**NOT established**: `ContainerdExecutionSurface` integrated with the real `Ledger`/`SandboxRuntime`
+stack; the real `agentengine::Tool<>`/`Capabilities<>` machinery accepting `cap::decl::TaskBranch`
+(§41's negative result, unchanged); whether `fork_from()`'s `session_id_` self-fork asymmetry (§43.1)
+matters for any real caller (host-level only today, no real caller exists); any of this pass's four
+new/fixed files has been Judged. All four remain prove-phase only, per this document's own standing
+scope.

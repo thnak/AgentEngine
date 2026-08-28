@@ -437,3 +437,24 @@ prove → judge cycle:**
   same discipline `discard()`/`abandon()` already rely on; not reachable from model output today (no
   `Tool<>` wires this), but a future `ResetSandboxTool` would inherit it verbatim. Still host-level
   only, no capability-declaration story, not Judged.
+- **Three more punch-list gaps closed in parallel (§43, 2026-08-28)**: (1) §37.5's own disclosed
+  gap — `MandatorySandboxProvider` proven only against `FakeAgentSession`, not the real
+  `agentengine::rt::AgentSession` — is closed; 10/10 checks against the real class's own
+  `fork_from()`/`clear_in_process_state()`, including a new, honestly-disclosed finding (real
+  self-fork overwrites `session_id_` unconditionally, unlike the sandbox's own self-assignment guard).
+  (2) That same pass found a real, previously-undetected `Ledger::create_root_branch()` naming
+  collision — root branches named purely `"root-<owner_id>"`, no further uniqueness, so any caller
+  minting two for the same owner silently overwrote the first — fixed with a backward-compatible
+  optional `disambiguator` parameter (preserving the deterministic naming the real, already-proven
+  crash-recovery reattachment mechanism depends on), proven not to disturb it (all 4 durability probes
+  re-run, unchanged), with a 16-file compile sweep confirming zero regressions elsewhere. (3) A10's
+  two-tag gating logic (§41.1) is now proven through a real DISPATCH pipeline, not just in isolation —
+  a rejected commit call is proven structurally unable to reach `TaskBranchSandbox::commit_task_branch()`
+  at all (6 checks, live Docker); still not the real `Tool<>` (§41's negative result unchanged), this
+  narrows that gap, does not close it. (4) A second, real, live `ExecutionSurface` conformer —
+  `ContainerdExecutionSurface` — built and proven standalone (16 checks) against live containerd/runc,
+  with a real design correction folded back into `oci-execution-surface-design-draft.md` (C3's
+  "`reject_chars()` must be reused verbatim" claim does not transfer to a `posix_spawn`+argv-only
+  invocation path — no host-side shell-injection surface exists there by construction); not yet
+  integrated with the real `Ledger`/`SandboxRuntime` stack. All four independently red-teamed; no
+  fatal findings. All still prove-phase only, not Judged.

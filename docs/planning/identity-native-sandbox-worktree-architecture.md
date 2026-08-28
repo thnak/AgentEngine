@@ -1,6 +1,6 @@
 # Identity-native sandbox/worktree architecture — diagrams
 
-Companion to `docs/planning/identity-native-sandbox-worktree-design.md` (§0–§42.5) and
+Companion to `docs/planning/identity-native-sandbox-worktree-design.md` (§0–§43.5) and
 `decisions/ADR-099-identity-native-sandbox-worktree-capability-model.md`. This file only
 visualizes the CURRENT, converged design — it carries no new decisions. Nodes/steps marked
 **(gap)** are real, named, still-open items (from §11/§34.10/§36.5/§37.5/§39.5/§40.3/§41's own
@@ -37,7 +37,7 @@ graph TD
     SR["SandboxRuntime<br/>(materialize→seed→run→drain→scan→commit)"]
     ES["ExecutionSurface concept<br/>(reset/run/drain_to)"]
     DES["DockerExecutionSurface<br/>(the ONE real, compiled conformer — gap, §36.5:<br/>genericity to a native_jail-shaped<br/>backend unverified)"]
-    CES["ContainerdExecutionSurface<br/>(designed, NOT built — gap, §36.5:<br/>ctr/containerd bind-mount conformer,<br/>ordering hazard empirically proven benign,<br/>no C++ written)"]
+    CES["ContainerdExecutionSurface<br/>(real, standalone C++ — gap, §43.4:<br/>16 checks vs live containerd/runc,<br/>NOT yet integrated with Ledger/SandboxRuntime)"]
     MSP["MandatorySandboxProvider&lt;Surface&gt;<br/>(ContextProvider conformer)"]
     RCT["RunCommandTool<br/>(no static Capabilities&lt;&gt;, dynamic check only)"]
     AS["AgentSession&lt;ChatClientT, StateT, HistoryProviderT&gt;<br/>(gap, §37.5: never actually instantiated<br/>with MandatorySandboxProvider as the<br/>real HistoryProviderT — proven only<br/>against FakeAgentSession)"]
@@ -357,8 +357,10 @@ graph LR
   instance per session, a host-discipline convention (not compiler-enforced, matching
   `MandatorySandboxProvider::bind_sandbox()`'s own precedent — §39 header comment); and
   `ContainerdExecutionSurface` (the second `ExecutionSurface` conformer added to §1's
-  structure diagram, design doc §36.5) is designed and its one open ordering risk empirically
-  proven benign in a real WSL2 containerd deployment, but has no C++ written at all.
+  structure diagram, design doc §36.5/§43.4) now has real, standalone C++ (16 checks against live
+  containerd/runc) but is not yet integrated with the real `Ledger`/`SandboxRuntime` stack — the
+  §1 diagram's own gap marking now means "not yet composed with the rest of this stack," not
+  "no code exists."
 - **Nothing on this page is implemented in `include/agentengine/`/`src/` today.** Every type
   shown lives only under `docs/planning/proofs/`, deliberately never linked into the live
   engine — this design has completed design → red-team → prove (multiple rounds each for the

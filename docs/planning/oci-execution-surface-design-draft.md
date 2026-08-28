@@ -164,6 +164,32 @@ tried the simpler path:
   (would reopen the closed class), or the inner `command` string reaches `sh -c` without the reused
   `reject_chars()`-equivalent check (would leave the still-open class unpatched).*
 
+  **DISPROVEN, by the real implementation (`containerd_ctr_backend.hpp`/`containerd_execution_surface.hpp`,
+  2026-08-28) — recorded here per this track's own "spec vs. code disagree, fix the spec" rule
+  (CLAUDE.md), not silently left stale.** The real code passes `command` as ONE exact `argv[]` element
+  to `posix_spawn` (`kata_backend.cpp`'s own `run_ctr()` pattern, extended to `exec` the same way) —
+  never concatenated into a string a HOST shell parses. Re-examined against `docker_backend.hpp`'s own
+  `reject_shell_breakout()` comment: that defense exists specifically because `_popen` hands a
+  concatenated string to a real host shell (`cmd.exe`), which a literal `"` can break out of — a defense
+  against HOST-side string concatenation, not against the container's own inner shell per se.
+  `posix_spawn`+argv never concatenates anything into a host-parsed string, so that specific injection
+  class genuinely does not exist on this path — confirmed empirically (`grep -c
+  "reject_chars|reject_shell_breakout" kata_backend.cpp` → 0, the real, shipped precedent this design
+  already cites carries no such defense either, by the identical reasoning) and independently verified
+  by a second, adversarial red-team round. **What C3's disproof condition actually triggered was real —
+  the inner `command` string does reach `sh -c` with no `reject_chars()`-equivalent — but does NOT
+  reopen the class C3 was written to prevent**, because that class requires a host-side shell to break
+  out of, which never exists here. The REAL, POSIX-correct analog built instead:
+  `reject_embedded_nul()` (argv truncation-at-NUL — the actual class of bug an argv-vector call can
+  still have, proven to reject rather than silently truncate). The container's own inner `/bin/sh -c`
+  interpretation of `command` is the SAME accepted-risk boundary `kata_backend.cpp`'s own `ExecRequest::
+  source` documentation already establishes ("trusted to have already resolved and mediated") — not a
+  new hole this conformer introduces. C3 itself is retired as originally stated; the real property this
+  conformer establishes is: no HOST-side shell-injection surface exists anywhere in the outer `ctr`
+  invocation OR the inner command delivery, by construction (argv-only throughout), and the inner
+  container-shell interpretation is an already-accepted, already-documented risk layer this conformer
+  inherits rather than introduces.
+
 ## 3. The decision
 
 **Design C is accepted**: a new, Linux-only `ContainerdExecutionSurface` (name TBD at implementation
@@ -245,11 +271,23 @@ directly (not this draft's paraphrase of them).
   implementation should still re-run `probe_bind_mount_ordering_hazard.sh`-equivalent verification
   against whatever real deployment filesystem it actually targets, not assume this one result travels
   automatically.
-- **No C++ written.** `ContainerdExecutionSurface` does not exist as code — this is an architecture
-  decision and a real, cited command sequence, not an implementation. (§4/§5 above are the one
-  deliberate exception: the single riskiest architectural question was worth answering empirically
-  even before the conformer itself exists, rather than carrying it as unverified risk into an
-  implementation built on top of it.)
+- **UPDATE (2026-08-28): a real, standalone C++ conformer now exists and is proven live.**
+  `docs/planning/proofs/execution_surface/containerd_ctr_backend.hpp`/`containerd_execution_surface.hpp`
+  satisfy the real `ExecutionSurface` concept (`static_assert`-checked) and were compiled (`g++ 15.2.0`,
+  `-std=c++23`, inside WSL2 — no `clang++` present there) and run for real against live
+  containerd/runc: 16/16 checks pass, including a live bind-mount round trip with zero `drain_to()`
+  call needed (a container write lands on real host disk immediately) and a second, C++-side
+  reconfirmation of the ordering-hazard finding just below. Independently red-teamed; verdict solid,
+  one doc-sync gap (C3, above) found and fixed here. **Still NOT established**: integration with the
+  real `Ledger`/`SandboxRuntime`/`RealIoFileSystem` stack (this conformer is proven standalone, the
+  same bar `probe_docker_sandbox.cpp` originally proved Docker's own mechanics at, before
+  `SandboxRuntime` unified anything — POSIX siblings for the Windows-specific real production APIs
+  that stack currently assumes DO exist in this repo, `worktree_digest_posix.cpp`/
+  `worktree_mount_fs_posix.{hpp,cpp}`, making that integration plausible for a future pass, not
+  attempted here); `drain_to()` to a directory OTHER than the one bind-mounted falls back to an
+  implemented-but-unexercised plain host copy; a host path containing a literal comma breaks `ctr`'s
+  own `--mount` flag grammar (confirmed by direct test: `ctr` rejects the invocation cleanly, no
+  container created, no silent mis-mount — a correctness limitation, not a security hole).
 - **UPDATE (2026-08-27): the environment gap named in this bullet's original version is closed.**
   `containerd` 2.2.2 + `runc` 1.4.0 were apt-installed into the pre-existing WSL2 "Ubuntu" distro
   (Ubuntu 26.04 LTS) — the exact environment class `KataBackend`'s own real proofs already used —

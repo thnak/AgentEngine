@@ -142,7 +142,11 @@ int main() {
     Session parent;
     parent.initialize("parent-session");
     {
-        auto root_r = run(ledger.create_root_branch(owner));
+        // Disambiguator (2026-08-28 fix, worktree_ledger.hpp's own comment): this probe mints
+        // several logically-independent root branches for the SAME `owner` -- without an explicit
+        // disambiguator per call, every one of them collides on the identical "root-<id>" ledger key
+        // and silently overwrites the prior one (a real, previously-undetected gap an A9 pass found).
+        auto root_r = run(ledger.create_root_branch(owner, "parent"));
         CHECK(root_r.has_value());
         parent.history_provider().bind_sandbox(ledger, std::move(*root_r), owner,
                                                   scratch_root / "parent", *branch_quota, *run_quota,
@@ -299,7 +303,7 @@ int main() {
                     (unsigned long long)processed);
 
         // Re-bindable: a pooled/reused session gets a genuinely fresh sandbox.
-        auto new_root = run(ledger.create_root_branch(owner));
+        auto new_root = run(ledger.create_root_branch(owner, "child-reused"));
         CHECK(new_root.has_value());
         child.history_provider().bind_sandbox(ledger, std::move(*new_root), owner,
                                                  scratch_root / "child-reused", *branch_quota,
@@ -317,7 +321,7 @@ int main() {
         CHECK(tiny_branch_quota.has_value());
         Session temp_parent;
         temp_parent.initialize("temp-parent-for-would-fork-test");
-        auto temp_root = run(ledger.create_root_branch(owner));
+        auto temp_root = run(ledger.create_root_branch(owner, "temp-parent-would-fork"));
         CHECK(temp_root.has_value());
         temp_parent.history_provider().bind_sandbox(ledger, std::move(*temp_root), owner,
                                                         scratch_root / "temp-parent",
@@ -376,7 +380,7 @@ int main() {
         CHECK(tiny_quota.has_value());
         Session self_fork_session;
         self_fork_session.initialize("self-fork-session");
-        auto self_root = run(ledger.create_root_branch(owner));
+        auto self_root = run(ledger.create_root_branch(owner, "self-fork"));
         CHECK(self_root.has_value());
         self_fork_session.history_provider().bind_sandbox(ledger, std::move(*self_root), owner,
                                                               scratch_root / "self-fork",
@@ -401,6 +405,26 @@ int main() {
                     "COMPLETELY UNAFFECTED (same branch '%s', still fully functional) -- the exact "
                     "self-copy-wipes-itself bug a round-2 verification pass found is now closed -- "
                     "PASS\n", branch_before_self_copy.c_str());
+    }
+
+    // === [10] REAL ADVERSARIAL PROOF closing the gap an A9 red-team pass found in this exact file: ===
+    // === checks [6b]/[7]/[9] above each minted an ADDITIONAL root branch for the SAME `owner` on the =
+    // === SAME `ledger` this check [2]'s own `parent` session used -- before the disambiguator fix, ===
+    // === each one SILENTLY OVERWROTE the ledger's "root-<id>" record `parent` was still holding a ====
+    // === live handle to, and `parent_only.txt` (committed back in check [3]) would come back gone. ===
+    // === Re-read it now, through the SAME parent branch name, after three more same-owner root ========
+    // === branches have been minted -- it must still be exactly what check [3] committed. =============
+    {
+        std::string const parent_branch_still = parent.history_provider().runtime()->branch_name();
+        auto parent_only_survived = read_entry(ledger, parent_branch_still, owner, "parent_only.txt");
+        CHECK(parent_only_survived.has_value());
+        CHECK(*parent_only_survived == "parent only, post-fork");
+        std::printf("[10] REAL ADVERSARIAL PROOF: after THREE further same-owner create_root_branch() "
+                    "calls (checks [6b]/[7]/[9]), parent's own 'parent_only.txt' (committed in check "
+                    "[3]) still reads back exactly \"%s\" -- the disambiguator fix genuinely stops "
+                    "same-owner root branches from silently overwriting each other's ledger records, "
+                    "closing a real, previously-undetected latent bug in THIS file's own established "
+                    "pattern, not merely a hypothetical -- PASS\n", parent_only_survived->c_str());
     }
 
     std::filesystem::remove_all(scratch_root, ec);
