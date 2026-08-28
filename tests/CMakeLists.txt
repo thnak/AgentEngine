@@ -2124,47 +2124,73 @@ add_test(NAME test_shell_runner_no_process_creation COMMAND test_shell_runner_no
 set_tests_properties(test_shell_runner_no_process_creation PROPERTIES SKIP_RETURN_CODE 77)
 
 # ---- Milestone 3 Phase E3's real ShellRunner (mediated_shell_*.{hpp,cpp}) -----------------------
-# Windows only (matches agentengine_mediated_shell_runner's own scope, CMakeLists.txt).
+# Portable across Windows and Linux (2026-08-28, ADR-103, the Linux-parity pass) -- moved OUT of the
+# surrounding `if(WIN32)` block below, since `agentengine::mediated_shell_runner` (CMakeLists.txt's
+# own WIN32/`NOT WIN32` split) and every test in this section now build and run on both platforms.
+# Registered unconditionally, matching how `agentengine::worktree_store`'s own already-portable
+# consumers are registered. (Was "Windows only, matches agentengine_mediated_shell_runner's own
+# scope" before this pass -- that scope itself is what changed.)
+add_executable(test_mediated_shell_runner_smoke test_mediated_shell_runner_smoke.cpp)
+target_link_libraries(test_mediated_shell_runner_smoke PRIVATE
+  agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store agentengine_warnings)
+add_test(NAME test_mediated_shell_runner_smoke COMMAND test_mediated_shell_runner_smoke)
+set_tests_properties(test_mediated_shell_runner_smoke PROPERTIES TIMEOUT 60)
+
+# ---- ADR-100 §4 F3 fix: the mediated-shell evaluation loop's wall-clock budget -----------------
+add_executable(test_mediated_shell_runner_wall_clock_timeout test_mediated_shell_runner_wall_clock_timeout.cpp)
+target_link_libraries(test_mediated_shell_runner_wall_clock_timeout PRIVATE
+  agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store agentengine_warnings)
+add_test(NAME test_mediated_shell_runner_wall_clock_timeout COMMAND test_mediated_shell_runner_wall_clock_timeout)
+set_tests_properties(test_mediated_shell_runner_wall_clock_timeout PROPERTIES TIMEOUT 60)
+
+# ---- EffectContext::sandbox_fs seam (first-party-tools follow-up, Phase 0): tools/
+# read_sandbox_file.hpp's worked example, proven against a real MediatedFileSystemAdapter.
+add_executable(test_effect_context_sandbox_fs test_effect_context_sandbox_fs.cpp)
+target_link_libraries(test_effect_context_sandbox_fs PRIVATE
+  agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store agentengine_warnings)
+add_test(NAME test_effect_context_sandbox_fs COMMAND test_effect_context_sandbox_fs)
+
+# ---- Session-scoped shell wiring (every-session-gets-a-sandbox roadmap, Phase 1):
+# backends/native_jail/session_shell_wiring.hpp's SessionShellSandbox, proven end to end through
+# the real invoke_tool pipeline against a real host directory.
+add_executable(test_session_shell_wiring test_session_shell_wiring.cpp)
+target_link_libraries(test_session_shell_wiring PRIVATE
+  agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store agentengine_warnings)
+add_test(NAME test_session_shell_wiring COMMAND test_session_shell_wiring)
+
+# ---- ADR-096 Design B: SandboxToolProvider (backends/native_jail/sandbox_tool_provider.hpp) --
+# -- a ContextProvider composed via ComposedContextProvider<Ms...>, giving Shell a real,
+# reusable, per-session lifecycle. Proven end to end: composition/concept conformance, lazy
+# sandbox construction + ctx.sandbox_fs population + run_shell contribution on on_context(),
+# reuse across a later round, the real invoke_tool() pipeline, and the digest-subdirectory
+# defense-in-depth check (C8).
+add_executable(test_sandbox_tool_provider test_sandbox_tool_provider.cpp)
+target_link_libraries(test_sandbox_tool_provider PRIVATE
+  agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store agentengine_warnings)
+add_test(NAME test_sandbox_tool_provider COMMAND test_sandbox_tool_provider)
+
+# ---- Milestone 3 Phase E4: hostile-corpus/mediation proof (010 §9 G2/G7), platform-adapted
+# (2026-08-28, ADR-103): SH7-SH10's backslash-leaf payloads have genuinely different, correctly
+# adapted expected outcomes per platform (Windows: rejected escape; Linux: harmless in-mount
+# create, backslash having no separator meaning there) -- see that test file's own top-of-block
+# comment for the full reasoning, not silently ported or silently skipped.
+add_executable(test_mediated_shell_runner_hostile_corpus test_mediated_shell_runner_hostile_corpus.cpp)
+target_link_libraries(test_mediated_shell_runner_hostile_corpus PRIVATE
+  agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store agentengine_warnings)
+add_test(NAME test_mediated_shell_runner_hostile_corpus COMMAND test_mediated_shell_runner_hostile_corpus)
+set_tests_properties(test_mediated_shell_runner_hostile_corpus PROPERTIES TIMEOUT 60)
+
+# ---- Everything below stays WIN32-only, named residuals for later, not silently dropped
+# (ADR-103's own "Residual risks" section): test_composed_sandbox_providers_live/
+# tools/sandboxed_shell_chat.cpp/the two ADR-096 C2 compile_fail probes all also pull in
+# MandatorySandboxProvider<DockerExecutionSurface>, and this pass's own real Linux verification
+# environment (WSL2 Ubuntu) has no Docker daemon reachable -- untested on Linux, deliberately not
+# claimed. test_mediated_shell_runner_no_process_creation's own Windows-specific process-creation
+# symbol list (CreateProcessA/W etc.) needs its own, separately-reasoned Linux symbol list
+# (fork/execve/posix_spawn/clone) to mean anything on that platform -- a real, bounded, but
+# separate task, not attempted here. The embedded-CPython Python-runner composition tests
+# (AGENTENGINE_BUILD_PYTHON_RUNNER) are a materially larger, unrelated platform-parity question.
 if(WIN32)
-  add_executable(test_mediated_shell_runner_smoke test_mediated_shell_runner_smoke.cpp)
-  target_link_libraries(test_mediated_shell_runner_smoke PRIVATE
-    agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store agentengine_warnings)
-  add_test(NAME test_mediated_shell_runner_smoke COMMAND test_mediated_shell_runner_smoke)
-  set_tests_properties(test_mediated_shell_runner_smoke PROPERTIES TIMEOUT 60)
-
-  # ---- ADR-100 §4 F3 fix: the mediated-shell evaluation loop's wall-clock budget -----------------
-  add_executable(test_mediated_shell_runner_wall_clock_timeout test_mediated_shell_runner_wall_clock_timeout.cpp)
-  target_link_libraries(test_mediated_shell_runner_wall_clock_timeout PRIVATE
-    agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store agentengine_warnings)
-  add_test(NAME test_mediated_shell_runner_wall_clock_timeout COMMAND test_mediated_shell_runner_wall_clock_timeout)
-  set_tests_properties(test_mediated_shell_runner_wall_clock_timeout PROPERTIES TIMEOUT 60)
-
-  # ---- EffectContext::sandbox_fs seam (first-party-tools follow-up, Phase 0): tools/
-  # read_sandbox_file.hpp's worked example, proven against a real MediatedFileSystemAdapter.
-  add_executable(test_effect_context_sandbox_fs test_effect_context_sandbox_fs.cpp)
-  target_link_libraries(test_effect_context_sandbox_fs PRIVATE
-    agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store agentengine_warnings)
-  add_test(NAME test_effect_context_sandbox_fs COMMAND test_effect_context_sandbox_fs)
-
-  # ---- Session-scoped shell wiring (every-session-gets-a-sandbox roadmap, Phase 1):
-  # backends/native_jail/session_shell_wiring.hpp's SessionShellSandbox, proven end to end through
-  # the real invoke_tool pipeline against a real host directory.
-  add_executable(test_session_shell_wiring test_session_shell_wiring.cpp)
-  target_link_libraries(test_session_shell_wiring PRIVATE
-    agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store agentengine_warnings)
-  add_test(NAME test_session_shell_wiring COMMAND test_session_shell_wiring)
-
-  # ---- ADR-096 Design B: SandboxToolProvider (backends/native_jail/sandbox_tool_provider.hpp) --
-  # -- a ContextProvider composed via ComposedContextProvider<Ms...>, giving Shell a real,
-  # reusable, per-session lifecycle. Proven end to end: composition/concept conformance, lazy
-  # sandbox construction + ctx.sandbox_fs population + run_shell contribution on on_context(),
-  # reuse across a later round, the real invoke_tool() pipeline, and the digest-subdirectory
-  # defense-in-depth check (C8).
-  add_executable(test_sandbox_tool_provider test_sandbox_tool_provider.cpp)
-  target_link_libraries(test_sandbox_tool_provider PRIVATE
-    agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store agentengine_warnings)
-  add_test(NAME test_sandbox_tool_provider COMMAND test_sandbox_tool_provider)
-
   # ---- ADR-102 Phase 5 (ComposedContextProvider<Ms...> real production consumer slice):
   # SandboxToolProvider (above) and MandatorySandboxProvider<DockerExecutionSurface> (ADR-102 Phase 4)
   # composed into ONE real AgentSession's actual HistoryProviderT via ComposedContextProvider<Ms...> --
@@ -2174,13 +2200,6 @@ if(WIN32)
   target_link_libraries(test_composed_sandbox_providers_live PRIVATE
     agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store agentengine_warnings)
   add_test(NAME test_composed_sandbox_providers_live COMMAND test_composed_sandbox_providers_live)
-
-  # ---- Milestone 3 Phase E4: hostile-corpus/mediation proof (010 §9 G2/G7) ---------------------
-  add_executable(test_mediated_shell_runner_hostile_corpus test_mediated_shell_runner_hostile_corpus.cpp)
-  target_link_libraries(test_mediated_shell_runner_hostile_corpus PRIVATE
-    agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store agentengine_warnings)
-  add_test(NAME test_mediated_shell_runner_hostile_corpus COMMAND test_mediated_shell_runner_hostile_corpus)
-  set_tests_properties(test_mediated_shell_runner_hostile_corpus PROPERTIES TIMEOUT 60)
 
   # G2's ShellRunner-specific "must not exist as a reachable code path" bar, structural half,
   # against the REAL agentengine_mediated_shell_runner artifact (test_shell_runner_no_process_

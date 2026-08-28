@@ -24,10 +24,18 @@ void SafeFileHandlePosix::reset() {
 
 namespace {
 
+// `native_code = err` (2026-08-28, ADR-103, the SandboxToolProvider Linux-parity pass): mirrors
+// `worktree_mount_fs.cpp`'s own Windows `win_error()`, which already sets `native_code` so a
+// caller (there, `mediated_python_runner.cpp`'s `raise_os_error`; here,
+// `MediatedFileSystemAdapter`'s POSIX implementation) can classify a failure (e.g. "not found" via
+// `ENOENT`) without string-matching `message`. This field did not exist here before -- the ORIGINAL
+// (ADR-014, Judged) version of this function never needed it, since nothing yet called through it
+// wanting anything more than pass/fail. Purely additive: every existing caller that only checked
+// `has_value()`/`.error().message` is unaffected.
 result<void> posix_error(char const* what, int err) {
     return std::unexpected(error{failure_class::fatal,
                                   std::string(what) + " failed: " + std::strerror(err),
-                                  "worktree.mount_fs_posix_failure"});
+                                  "worktree.mount_fs_posix_failure", err});
 }
 
 template <class T>
@@ -143,8 +151,12 @@ result<SafeFileHandlePosix> open_within_mount_root(std::string const& mount_root
     auto target_canonical = resolved_path_of_fd(target.get());
     if (!target_canonical) return std::unexpected(target_canonical.error());
     if (!is_within_root(*root_canonical, *target_canonical)) {
-        return std::unexpected(
-            error{failure_class::policy, "resolved path escapes the mount root", "worktree.mount_path_escapes_root"});
+        // native_code = EACCES (2026-08-28, ADR-103): mirrors the Windows sibling's own
+        // ERROR_ACCESS_DENIED sentinel for the identical situation -- a mount escape is a policy
+        // denial, not a real OS-level lookup failure, so there is no genuine errno behind it; EACCES
+        // is the closest real occurrence of "you may not reach this."
+        return std::unexpected(error{failure_class::policy, "resolved path escapes the mount root",
+                                      "worktree.mount_path_escapes_root", EACCES});
     }
     return target;
 }

@@ -123,6 +123,29 @@ if(WIN32)
   add_library(agentengine::mediated_shell_runner ALIAS agentengine_mediated_shell_runner)
 endif()
 
+# Linux half of the same target (2026-08-28, ADR-103, the SandboxToolProvider Linux-parity pass) --
+# `mediated_shell_parser.cpp`/`mediated_shell_dispatch.cpp` are unchanged, already-portable C++ (no
+# Windows API dependency of their own, confirmed by direct reading before this pass); only
+# `mediated_filesystem_adapter.cpp` (genuinely Win32 API-dependent -- CreateFileW/ReadFile/WriteFile/
+# SetFileInformationByHandle/GetFileInformationByHandleEx/GetFinalPathNameByHandleW) needed a real
+# Linux twin, `mediated_filesystem_adapter_posix.cpp`, built on `worktree_mount_fs_posix.hpp`'s
+# already-Judged `open_within_mount_root` (ADR-014 Phase C4) exactly the way the Windows branch above
+# is built on its own Phase C2 twin. Same target name, same public surface
+# (`agentengine::mediated_shell_runner`, `MediatedFileSystemAdapter`/`SessionShellSandbox`/
+# `SandboxToolProvider` all unchanged) on both platforms, mirroring
+# `agentengine_worktree_store`'s own WIN32/`NOT WIN32` split just above in this file.
+if(NOT WIN32)
+  add_library(agentengine_mediated_shell_runner STATIC
+    src/backends/native_jail/mediated_shell_parser.cpp
+    src/backends/native_jail/mediated_shell_dispatch.cpp
+    src/backends/native_jail/mediated_filesystem_adapter_posix.cpp)
+  target_include_directories(agentengine_mediated_shell_runner PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  target_link_libraries(agentengine_mediated_shell_runner PUBLIC agentengine::core agentengine::worktree_store)
+  target_link_libraries(agentengine_mediated_shell_runner PRIVATE agentengine_warnings)
+  add_library(agentengine::mediated_shell_runner ALIAS agentengine_mediated_shell_runner)
+endif()
+
 # ---- Milestone 3 Phase E5 / decisions/ADR-015: libFuzzer harness for MediatedShellRunner's grammar
 # parser (010 SS9 G8). Off by default (matches AGENTENGINE_WITH_WASM/AGENTENGINE_BUILD_PYTHON_
 # RUNNER's own posture for an opt-in, toolchain-specific target) -- only buildable with a real Clang

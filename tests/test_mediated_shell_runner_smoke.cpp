@@ -21,7 +21,6 @@
 #include <string>
 
 #include "agentengine/core/effect_context.hpp"
-#include "agentengine/pal/env.hpp"
 #include "agentengine/sandbox/runner.hpp"
 #include "agentengine/trust/capability.hpp"
 #include "backends/native_jail/mediated_command_registry.hpp"
@@ -60,11 +59,11 @@ CapabilitySet full_caps() {
 }  // namespace
 
 int main() {
-    std::string const scratch = ::agentengine::pal::env_var("TEMP").value_or("C:/Windows/Temp") +
-                                 "/ae_e3_mount";
+    // std::filesystem::temp_directory_path() (portable) rather than a hand-read TEMP env var with a
+    // Windows-only fallback path (2026-08-28, ADR-103, the Linux-parity pass).
+    std::string const scratch = (std::filesystem::temp_directory_path() / "ae_e3_mount").string();
     std::filesystem::remove_all(scratch);
     std::filesystem::create_directories(scratch);
-    std::wstring scratch_w(scratch.begin(), scratch.end());
 
     // ---- Parser bounds (adversarial input rejected before any AST is built) -----------------
     {
@@ -93,7 +92,7 @@ int main() {
                  "E3-R1: registering a Runner under an existing builtin's name is rejected");
     }
 
-    auto adapter = MediatedFileSystemAdapter::create(scratch_w);
+    auto adapter = MediatedFileSystemAdapter::create(scratch);
     AE_CHECK(adapter.has_value(), "E3-C0: setup -- MediatedFileSystemAdapter::create succeeds");
 
     DefaultCommandRegistry registry;
@@ -304,8 +303,7 @@ int main() {
         std::string const quota_scratch = scratch + "_quota";
         std::filesystem::remove_all(quota_scratch);
         std::filesystem::create_directories(quota_scratch);
-        std::wstring quota_scratch_w(quota_scratch.begin(), quota_scratch.end());
-        auto quota_adapter = MediatedFileSystemAdapter::create(quota_scratch_w);
+        auto quota_adapter = MediatedFileSystemAdapter::create(quota_scratch);
         AE_CHECK(quota_adapter.has_value(), "E3-Q0: setup -- a fresh mount for the quota tests");
         MediatedShellRunner quota_shell(*quota_adapter, registry, "work");
 

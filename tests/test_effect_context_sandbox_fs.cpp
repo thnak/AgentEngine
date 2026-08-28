@@ -4,10 +4,10 @@
 // docs' own build order for that work: mirrors how tools/read_content.hpp proved
 // blob_sink/tool_result_byte_threshold end to end.
 //
-// Windows-only this pass: the one real FileSystemAdapter conformer available to construct against
-// an actual mount (MediatedFileSystemAdapter, src/backends/native_jail/) is Windows-only today
-// (matches every other native_jail-dependent test's own scope) -- the seam itself (EffectContext::
-// sandbox_fs, an abstract FileSystemAdapter*) is platform-agnostic.
+// Platform-portable as of 2026-08-28 (ADR-103, the Linux-parity pass): the seam itself
+// (EffectContext::sandbox_fs, an abstract FileSystemAdapter*) was always platform-agnostic; the one
+// real conformer this test constructs against an actual mount (MediatedFileSystemAdapter,
+// src/backends/native_jail/) now has a real Linux implementation alongside the Windows one.
 
 #include <cstdio>
 #include <filesystem>
@@ -17,7 +17,6 @@
 #include <string>
 #include <vector>
 
-#include "agentengine/pal/env.hpp"
 #include "agentengine/tools/read_sandbox_file.hpp"
 #include "backends/native_jail/mediated_filesystem_adapter.hpp"
 
@@ -107,17 +106,18 @@ void test_capability_denied_never_touches_adapter() {
 }
 
 void test_real_adapter_reads_a_real_file() {
+    // std::filesystem::temp_directory_path() (portable) rather than a hand-read TEMP env var with a
+    // Windows-only fallback path (2026-08-28, ADR-103, the Linux-parity pass).
     std::string const scratch =
-        agentengine::pal::env_var("TEMP").value_or("C:/Windows/Temp") + "/ae_sandbox_fs_seam_test";
+        (std::filesystem::temp_directory_path() / "ae_sandbox_fs_seam_test").string();
     std::filesystem::remove_all(scratch);
     std::filesystem::create_directories(scratch);
     {
         std::ofstream f(scratch + "/hello.txt", std::ios::binary);
         f << "hello from the sandbox mount";
     }
-    std::wstring const scratch_w(scratch.begin(), scratch.end());
 
-    auto adapter = agentengine::native_jail::mediated_shell::MediatedFileSystemAdapter::create(scratch_w);
+    auto adapter = agentengine::native_jail::mediated_shell::MediatedFileSystemAdapter::create(scratch);
     check(adapter.has_value(), "setup: MediatedFileSystemAdapter::create succeeds");
     if (!adapter) return;
 

@@ -20,7 +20,6 @@
 #include <string>
 
 #include "agentengine/core/effect_context.hpp"
-#include "agentengine/pal/env.hpp"
 #include "agentengine/trust/capability.hpp"
 #include "backends/native_jail/mediated_command_registry.hpp"
 #include "backends/native_jail/mediated_filesystem_adapter.hpp"
@@ -66,13 +65,14 @@ std::string exponential_blowup_script() {
 }  // namespace
 
 int main() {
+    // std::filesystem::temp_directory_path() (portable) rather than a hand-read TEMP env var with a
+    // Windows-only fallback path (2026-08-28, ADR-103, the Linux-parity pass).
     std::string const scratch =
-        ::agentengine::pal::env_var("TEMP").value_or("C:/Windows/Temp") + "/ae_wall_clock_timeout";
+        (std::filesystem::temp_directory_path() / "ae_wall_clock_timeout").string();
     std::filesystem::remove_all(scratch);
     std::filesystem::create_directories(scratch);
-    std::wstring scratch_w(scratch.begin(), scratch.end());
 
-    auto adapter = MediatedFileSystemAdapter::create(scratch_w);
+    auto adapter = MediatedFileSystemAdapter::create(scratch);
     AE_CHECK(adapter.has_value(), "WCT-0: setup -- MediatedFileSystemAdapter::create succeeds");
     DefaultCommandRegistry registry;
 

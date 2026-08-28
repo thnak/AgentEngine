@@ -43,11 +43,13 @@ std::string narrow(std::wstring const& s) {
 
 }  // namespace
 
-result<MediatedFileSystemAdapter> MediatedFileSystemAdapter::create(std::wstring root) {
+result<MediatedFileSystemAdapter> MediatedFileSystemAdapter::create(std::filesystem::path root) {
     // Prove the root itself is a real, existing directory -- open_within_mount_root's own
     // "trusted baseline" step re-does this on every call anyway, but failing fast here at
     // construction (matching RealFileSystemAdapter's own fallible-factory shape) surfaces a
     // misconfigured root immediately, not on the adapter's first real use.
+    // `root.c_str()` is already `const wchar_t*` here -- `std::filesystem::path::value_type` is
+    // `wchar_t` on Windows, so this needs no explicit `.wstring()` conversion.
     HANDLE h = CreateFileW(root.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                             nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
     if (h == INVALID_HANDLE_VALUE) return win_error<MediatedFileSystemAdapter>("CreateFileW(root)", GetLastError());
@@ -56,7 +58,7 @@ result<MediatedFileSystemAdapter> MediatedFileSystemAdapter::create(std::wstring
 }
 
 result<std::vector<std::byte>> MediatedFileSystemAdapter::read_file(std::string_view path) {
-    auto h = open_within_mount_root(root_, std::string(path), GENERIC_READ, OPEN_EXISTING);
+    auto h = open_within_mount_root(root_.wstring(), std::string(path), GENERIC_READ, OPEN_EXISTING);
     if (!h) return std::unexpected(h.error());
 
     LARGE_INTEGER size{};
@@ -78,7 +80,7 @@ result<std::vector<std::byte>> MediatedFileSystemAdapter::read_file(std::string_
 
 result<void> MediatedFileSystemAdapter::write_file(std::string_view path, std::span<std::byte const> data,
                                                      bool append) {
-    auto h = open_within_mount_root(root_, std::string(path), GENERIC_WRITE,
+    auto h = open_within_mount_root(root_.wstring(), std::string(path), GENERIC_WRITE,
                                      append ? OPEN_ALWAYS : CREATE_ALWAYS);
     if (!h) return std::unexpected(h.error());
     if (append) {
@@ -103,7 +105,7 @@ result<bool> MediatedFileSystemAdapter::exists(std::string_view path) {
     // succeeding means the path names something real; a policy-class error (escapes the mount, a
     // malformed segment) is propagated as a real error rather than silently reported as "false",
     // since that is a POLICY fact, not an "absent" fact.
-    auto h = open_within_mount_root(root_, std::string(path), GENERIC_READ, OPEN_EXISTING);
+    auto h = open_within_mount_root(root_.wstring(), std::string(path), GENERIC_READ, OPEN_EXISTING);
     if (h) return true;
     if (h.error().klass == failure_class::policy || h.error().klass == failure_class::contract) {
         return std::unexpected(h.error());
@@ -112,7 +114,7 @@ result<bool> MediatedFileSystemAdapter::exists(std::string_view path) {
 }
 
 result<void> MediatedFileSystemAdapter::remove(std::string_view path, bool recursive) {
-    auto h = open_within_mount_root(root_, std::string(path), DELETE | FILE_LIST_DIRECTORY | GENERIC_READ,
+    auto h = open_within_mount_root(root_.wstring(), std::string(path), DELETE | FILE_LIST_DIRECTORY | GENERIC_READ,
                                      OPEN_EXISTING);
     if (!h) return std::unexpected(h.error());
 
@@ -245,14 +247,14 @@ result<void> create_one_directory(std::wstring const& root, std::string const& r
 }  // namespace
 
 result<void> MediatedFileSystemAdapter::make_directory(std::string_view path, bool parents) {
-    if (!parents) return create_one_directory(root_, std::string(path));
+    if (!parents) return create_one_directory(root_.wstring(), std::string(path));
 
     auto segments = split_mount_path(std::string(path));
     if (!segments) return std::unexpected(segments.error());
     std::string prefix;
     for (auto const& seg : *segments) {
         prefix += (prefix.empty() ? "" : "/") + seg;
-        auto probe = open_within_mount_root(root_, prefix, GENERIC_READ, OPEN_EXISTING);
+        auto probe = open_within_mount_root(root_.wstring(), prefix, GENERIC_READ, OPEN_EXISTING);
         if (probe) continue;  // already exists
         // Code-review fix (2026-08-07): a probe failure for any reason OTHER than "this segment
         // doesn't exist on disk yet" -- a forbidden character, an out-of-mount escape, any other
@@ -264,7 +266,7 @@ result<void> MediatedFileSystemAdapter::make_directory(std::string_view path, bo
                                     (probe.error().native_code == ERROR_FILE_NOT_FOUND ||
                                      probe.error().native_code == ERROR_PATH_NOT_FOUND);
         if (!not_found_yet) return std::unexpected(probe.error());
-        auto created = create_one_directory(root_, prefix);
+        auto created = create_one_directory(root_.wstring(), prefix);
         if (!created) return std::unexpected(created.error());
     }
     return {};
@@ -284,7 +286,7 @@ result<std::vector<DirEntry>> MediatedFileSystemAdapter::list_directory(std::str
         if (rh == INVALID_HANDLE_VALUE) return win_error<std::vector<DirEntry>>("CreateFileW(root)", GetLastError());
         h = SafeFileHandle(rh);
     } else {
-        auto opened = open_within_mount_root(root_, std::string(path), FILE_LIST_DIRECTORY | GENERIC_READ, OPEN_EXISTING);
+        auto opened = open_within_mount_root(root_.wstring(), std::string(path), FILE_LIST_DIRECTORY | GENERIC_READ, OPEN_EXISTING);
         if (!opened) return std::unexpected(opened.error());
         h = std::move(*opened);
     }
@@ -318,7 +320,7 @@ result<std::vector<DirEntry>> MediatedFileSystemAdapter::list_directory(std::str
 }
 
 result<std::string> MediatedFileSystemAdapter::canonicalize(std::string_view path) {
-    auto h = open_within_mount_root(root_, std::string(path), GENERIC_READ, OPEN_EXISTING);
+    auto h = open_within_mount_root(root_.wstring(), std::string(path), GENERIC_READ, OPEN_EXISTING);
     if (!h) return std::unexpected(h.error());
 
     DWORD needed = GetFinalPathNameByHandleW(h->get(), nullptr, 0, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
@@ -356,7 +358,7 @@ result<std::string> MediatedFileSystemAdapter::canonicalize(std::string_view pat
 // so `mediated_shell_dispatch.cpp`'s live-quota check shares the exact scanning logic rather than
 // a second, independently-reasoned copy.
 result<std::optional<MountUsage>> MediatedFileSystemAdapter::usage() {
-    auto u = mount_root_usage(root_);
+    auto u = mount_root_usage(root_.wstring());
     if (!u) return std::unexpected(u.error());
     return std::optional<MountUsage>(*u);
 }
