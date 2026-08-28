@@ -1,10 +1,13 @@
 # Identity-native sandbox/worktree architecture — diagrams
 
-Companion to `docs/planning/identity-native-sandbox-worktree-design.md` (§0–§37) and
+Companion to `docs/planning/identity-native-sandbox-worktree-design.md` (§0–§41.1) and
 `decisions/ADR-099-identity-native-sandbox-worktree-capability-model.md`. This file only
 visualizes the CURRENT, converged design — it carries no new decisions. Nodes/steps marked
-**(gap)** are real, named, still-open items (from §11/§34.10/§36.5/§37.5, or ADR-099's own
-residuals) — shown here so the diagrams don't quietly imply more is settled than actually is.
+**(gap)** are real, named, still-open items (from §11/§34.10/§36.5/§37.5/§39.5/§40.3/§41's own
+"what this does NOT close", or ADR-099's own residuals) — shown here so the diagrams don't
+quietly imply more is settled than actually is. Sections 1–6 cover the core stack and A3/A9
+(§20–§37); sections 7–9 (added 2026-08-28) cover A10's task-branch tool surface, its A8 fix, and
+the `cap::decl::TaskBranch`/`TaskBranchCommit` capability design (§39–§41.1).
 
 This is a **different, unrelated design** from `mandatory-session-worktree-architecture.md`
 (the companion to `mandatory-session-worktree-design.md`, Design A — rejected after four
@@ -32,10 +35,12 @@ graph TD
     AQS["AsyncQuota&lt;StorageBytes&gt;"]
     SR["SandboxRuntime<br/>(materialize→seed→run→drain→scan→commit)"]
     ES["ExecutionSurface concept<br/>(reset/run/drain_to)"]
-    DES["DockerExecutionSurface<br/>(the ONE real conformer — gap, §36.5:<br/>genericity to a native_jail-shaped<br/>backend unverified)"]
+    DES["DockerExecutionSurface<br/>(the ONE real, compiled conformer — gap, §36.5:<br/>genericity to a native_jail-shaped<br/>backend unverified)"]
+    CES["ContainerdExecutionSurface<br/>(designed, NOT built — gap, §36.5:<br/>ctr/containerd bind-mount conformer,<br/>ordering hazard empirically proven benign,<br/>no C++ written)"]
     MSP["MandatorySandboxProvider&lt;Surface&gt;<br/>(ContextProvider conformer)"]
     RCT["RunCommandTool<br/>(no static Capabilities&lt;&gt;, dynamic check only)"]
     AS["AgentSession&lt;ChatClientT, StateT, HistoryProviderT&gt;<br/>(gap, §37.5: never actually instantiated<br/>with MandatorySandboxProvider as the<br/>real HistoryProviderT — proven only<br/>against FakeAgentSession)"]
+    TBS["TaskBranchSandbox<br/>(§39/§40, try/commit/discard —<br/>see §7 below for detail)"]
 
     IA -->|mints| PR
     IA -->|mints, host-only| GR
@@ -54,11 +59,15 @@ graph TD
     SR -->|owns one| BH
     SR -->|drives one| ES
     DES -.->|conforms to| ES
+    CES -.->|conforms to, designed only — gap| ES
 
     AS -.->|composed as HistoryProviderT — gap, see above| MSP
+    TBS -->|takes MSP's own runtime() as main, const&, §39 header comment| MSP
+    TBS -.->|constructor-injected AQB/AQR/AQS references —<br/>same instances as MSP's or separate is a<br/>host-wiring choice, not specified by this design| AQB
 
     classDef gap stroke:#c33,stroke-width:2px,stroke-dasharray: 4 2;
     class DES gap;
+    class CES gap;
     class AS gap;
 ```
 
@@ -198,14 +207,149 @@ graph TD
     Note1 -.-> SB
 ```
 
+## 7. A10 — `TaskBranchSandbox`: try/commit/discard on the SAME `Ledger`/`SandboxRuntime`
+
+The primary mechanism every actively-developed coding agent surveyed ships (§39.1's own
+real-world-use-case research citation): fork an isolated child branch, run in it, then either fold
+it into main or throw it away — matching `RunShellTool`/`SessionShellSandbox`'s own real, shipped
+shape (`src/backends/native_jail/`), not a new pattern invented for this design. `main_` is the
+SAME `SandboxRuntime const*` `MandatorySandboxProvider::runtime()` already, deliberately, hands
+back (§37) — no new accessor was needed on that class.
+
+```mermaid
+graph TD
+    TBS["TaskBranchSandbox<br/>(one instance per session — a host-discipline<br/>convention, not compiler-enforced, §39 header comment)"]
+    MAIN["main_: SandboxRuntime const*<br/>(the session's own main branch — never mutated<br/>except via commit_task_branch's real merge)"]
+    ACT["active_: map&lt;handle_id, SandboxRuntime&gt;<br/>(THIS object's own table — a handle from one<br/>TaskBranchSandbox is meaningless to another, §39 header)"]
+    EXC["exclusivity_ guard<br/>(A10 fatal finding 1, all 3 red-team passes: fixed —<br/>wraps every method that touches active_)"]
+    BQ["AsyncQuota&lt;BranchCost&gt;&<br/>(consumed by start, refunded by discard —<br/>finding 2 fix)"]
+    RQ["AsyncQuota&lt;RunCost&gt;&<br/>(consumed by run_in_task_branch, same gate<br/>as MSP's own run() path)"]
+    SQ["AsyncQuota&lt;StorageBytes&gt;&<br/>(consumed by commit_task_branch)"]
+
+    TBS --> MAIN
+    TBS --> ACT
+    TBS --> EXC
+    TBS --> BQ
+    TBS --> RQ
+    TBS --> SQ
+```
+
+```mermaid
+sequenceDiagram
+    participant Model
+    participant TBS as TaskBranchSandbox
+    participant Child as SandboxRuntime (child)
+    participant Main as SandboxRuntime (main)
+    participant L as Ledger
+
+    Model->>TBS: start_task_branch()
+    TBS->>Main: spawn_child_branch(owner, branch_quota, staging_dir)
+    Main->>L: branch_from(main_branch, owner, branch_quota) — BranchCost consumed
+    L-->>Main: fresh child BranchHandle
+    Main-->>TBS: fresh, independent SandboxRuntime
+    TBS->>TBS: active_.insert_or_assign(handle_id, child)
+    TBS-->>Model: handle_id
+
+    Model->>TBS: run_in_task_branch(handle_id, command)
+    TBS->>Child: run(...) — the SAME SandboxRuntime::run() every other path uses (§3)
+    Child-->>TBS: RunOutcome{exec, checkpoint}
+    TBS-->>Model: TaskBranchRunReply
+
+    Model->>TBS: commit_task_branch(handle_id)
+    TBS->>TBS: active_.erase(handle_id) — one-shot, before the merge even runs
+    TBS->>Child: std::move(child).merge_into(main_, owner) — real Ledger::merge() three-way merge
+    alt merge succeeds
+        Child-->>TBS: Checkpoint (folded into main)
+        TBS-->>Model: TaskBranchCommitReply{committed}
+    else merge rejected (main moved since fork — a real, non-corrupting outcome)
+        Note over TBS,Main: A10 §40.2 fix — the branch is not lost
+        TBS->>Main: reclaim_orphaned_child(branch_name, owner, staging_dir)
+        Main->>L: reclaim_orphaned_branch() (A7, already-proven)
+        L-->>Main: reclaimed BranchHandle
+        Main-->>TBS: reclaimed SandboxRuntime
+        TBS->>TBS: active_.insert_or_assign(SAME handle_id, reclaimed) — §41.1's probe [9b]
+        TBS-->>Model: original rejection error, but handle_id still usable afterward
+    end
+```
+
+## 8. A8 — the ACL cap's escape hatch, a one-way sharing ratchet
+
+`Ledger`'s per-digest ACL root cap (`kMaxAclRootsPerDigest`, default 64) was originally a PERMANENT,
+non-evictable ceiling — cross-session sharing of a common base could exhaust it forever, with no
+recovery (§40.1's own "worse than disclosed" finding). Fixed with a per-instance constructor
+parameter plus `mark_digest_shared()`, gated by the SAME `authorized_for()` check every ordinary
+read already uses, and a reserved sentinel principal id (`kPubliclySharedSentinelRootId = 0`,
+confirmed unreachable by any real principal — `IdentityAuthority` mints starting at 1).
+
+```mermaid
+graph TD
+    CALL["caller (already authorized_for the digest)"] -->|mark_digest_shared digest, is_tree, requested_by| MDS["Ledger::mark_digest_shared()"]
+    MDS -->|inserts, bypassing insert_acl_root_bounded's own cap check| SENT["kPubliclySharedSentinelRootId = 0<br/>(unreachable by any real Principal)"]
+    SENT -->|present in the ACL set| AF["authorized_for()<br/>checks the sentinel FIRST → universal read"]
+    SENT -->|present in the ACL set| IARB["insert_acl_root_bounded()<br/>short-circuits to a no-op —<br/>real growth EXEMPTION, not just a bypass of denial"]
+    MDS -.->|one-way ratchet — no unmark_digest_shared| NOTE["§40.1: sharing content is one-way,<br/>like every other Ledger authorization move"]
+```
+
+## 9. `cap::decl::TaskBranch`/`TaskBranchCommit` — capability gating (prove-phase only, §41/§41.1)
+
+Closes A10's own finding 4: no capability-declaration design existed for who may call these four
+verbs at all. Two tags, not one — `TaskBranch` gates start/run/discard (isolated, never touches
+main); `TaskBranchCommit`, required ADDITIONALLY, gates commit (merges into main). Built entirely
+under `docs/planning/proofs/` — the real `agentengine::Capability` variant is closed (19
+alternatives, none named `TaskBranch`) and this design track declines to extend it before a real
+caller exists (§41's own scope statement).
+
+```mermaid
+graph TD
+    DECL1["cap::decl::TaskBranch<br/>(compile-time declaration tag)"]
+    DECL2["cap::decl::TaskBranchCommit<br/>(compile-time declaration tag)"]
+    RT1["cap::TaskBranch<br/>(runtime marker, fieldless)"]
+    RT2["cap::TaskBranchCommit<br/>(runtime marker, fieldless)"]
+    TC["to_capability() bridge<br/>(gap: works today only against the REAL<br/>agentengine::Capabilities&lt;...&gt; container as a<br/>type argument — NOT through a real Tool&lt;&gt;'s<br/>declared_capabilities(), §41's own negative result)"]
+
+    DECL1 -->|to_capability| RT1
+    DECL2 -->|to_capability| RT2
+    DECL1 -.-> TC
+    DECL2 -.-> TC
+
+    StartTool["TaskBranchStartTool/RunTool/DiscardTool<br/>(sketch — NOT built, §41's own usage sketch)<br/>ceiling = {TaskBranch}"] -.->|would declare| DECL1
+    CommitTool["TaskBranchCommitTool<br/>(sketch — NOT built)<br/>ceiling = {TaskBranch, TaskBranchCommit}"] -.->|would declare| DECL1
+    CommitTool -.->|would declare| DECL2
+
+    classDef gap stroke:#c33,stroke-width:2px,stroke-dasharray: 4 2;
+    class TC gap;
+    class StartTool gap;
+    class CommitTool gap;
+```
+
+**Gating behavior, executed not just asserted (§41.1)** — a structural mirror of the real
+`CapabilitySet::contains()`/`bind()` and the real `tool_pipeline.hpp` step-4/7 loop, run against
+the two ceilings above, 12/12 checks:
+
+```mermaid
+graph LR
+    G1["grant: {TaskBranch}"] -->|binds| C1["isolated ceiling ✓"]
+    G1 -.->|does NOT bind| C2["commit ceiling ✗"]
+    G2["grant: {TaskBranch, TaskBranchCommit}"] -->|binds| C1
+    G2 -->|binds| C2b["commit ceiling ✓"]
+    G3["grant: {TaskBranchCommit} ONLY<br/>(the 'inert grant' claim)"] -.->|does NOT bind| C1b["isolated ceiling ✗"]
+    G3 -.->|does NOT bind| C2c["commit ceiling ✗<br/>(TaskBranch still missing)"]
+```
+
 ## Status legend
 
 - Solid, no note → real primitive, already implemented as standalone C++23 and proven by a real
-  probe compiled with `clang 22.1.5`/`-std=c++23` and run to completion (including, for A3/A9,
-  live against a real Docker daemon) — see the design doc's own §20–§37 for the exact evidence
-  per primitive.
-- **(gap)** annotations → open findings named in §11, §34.10, §36.5, §37.5, or ADR-099's own
-  residuals — not fixed, not hidden. See the design doc / ADR for the full text of each.
+  probe compiled with `clang 22.1.5`/`-std=c++23` and run to completion (including, for A3/A9/A10,
+  live against a real Docker daemon; for the §9 capability-gating mirror, run to 12/12 green rather
+  than against a daemon) — see the design doc's own §20–§41.1 for the exact evidence per primitive.
+- **(gap)** annotations → open findings named in §11, §34.10, §36.5, §37.5, §39.5, §40.3, §41's own
+  "what this does NOT close", or ADR-099's own residuals — not fixed, not hidden. See the design
+  doc / ADR for the full text of each. Two gaps sections 7–9 add: `TaskBranchSandbox` requires one
+  instance per session, a host-discipline convention (not compiler-enforced, matching
+  `MandatorySandboxProvider::bind_sandbox()`'s own precedent — §39 header comment); and
+  `ContainerdExecutionSurface` (the second `ExecutionSurface` conformer added to §1's
+  structure diagram, design doc §36.5) is designed and its one open ordering risk empirically
+  proven benign in a real WSL2 containerd deployment, but has no C++ written at all.
 - **Nothing on this page is implemented in `include/agentengine/`/`src/` today.** Every type
   shown lives only under `docs/planning/proofs/`, deliberately never linked into the live
   engine — this design has completed design → red-team → prove (multiple rounds each for the
