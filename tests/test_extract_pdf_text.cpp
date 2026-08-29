@@ -259,7 +259,10 @@ void test_companion_skill_parses_for_real() {
                   "the parsed skill's own name matches");
             auto const& allowed = loaded->front().skill.frontmatter.allowed_tools;
             check(std::find(allowed.begin(), allowed.end(), "extract_pdf_text") != allowed.end(),
-                  "allowed-tools names the real tool this skill teaches");
+                  "allowed-tools names extract_pdf_text");
+            check(std::find(allowed.begin(), allowed.end(), "extract_pdf_toc") != allowed.end(),
+                  "allowed-tools also names extract_pdf_toc -- one skill, two tools, not a second "
+                  "skill duplicating this one");
         }
     }
 }

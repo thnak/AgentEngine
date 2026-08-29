@@ -277,7 +277,8 @@ inline constexpr std::uint64_t kWorkerOutputBytes = 1024 * 1024;
 
 #if defined(_WIN32)
 
-[[nodiscard]] inline result<std::string> invoke_worker(std::filesystem::path const& pdf_file,
+[[nodiscard]] inline result<std::string> invoke_worker(std::string_view mode,
+                                                         std::filesystem::path const& pdf_file,
                                                          EffectContext& ctx) {
     // Process-wide by construction: shared_profile()/the AppContainer SID underneath NativeJailBackend
     // are already deployment-scoped statics (native_jail_backend.cpp), so a second, tool-owned
@@ -308,8 +309,8 @@ inline constexpr std::uint64_t kWorkerOutputBytes = 1024 * 1024;
     auto handle = backend.create(spec, ctx);
     if (!handle) return std::unexpected(handle.error());
 
-    std::string const cmdline =
-        "\"" + std::string(AE_PDF_WORKER_EXE_PATH) + "\" \"" + pdf_file.string() + "\"";
+    std::string const cmdline = "\"" + std::string(AE_PDF_WORKER_EXE_PATH) + "\" " +
+                                 std::string(mode) + " \"" + pdf_file.string() + "\"";
     ExecRequest const req{.language = "native", .source = cmdline};
     auto outcome = backend.exec(*handle, req, ctx);
     backend.destroy(*handle);
@@ -325,7 +326,8 @@ inline constexpr std::uint64_t kWorkerOutputBytes = 1024 * 1024;
 
 #else  // Linux
 
-[[nodiscard]] inline result<std::string> invoke_worker(std::filesystem::path const& pdf_file,
+[[nodiscard]] inline result<std::string> invoke_worker(std::string_view mode,
+                                                         std::filesystem::path const& pdf_file,
                                                          EffectContext& ctx) {
     static native_jail::LinuxNativeJailBackend backend;
 
@@ -356,8 +358,8 @@ inline constexpr std::uint64_t kWorkerOutputBytes = 1024 * 1024;
     auto handle = backend.create(spec, ctx);
     if (!handle) return std::unexpected(handle.error());
 
-    std::string const cmdline =
-        "\"" + std::string(AE_PDF_WORKER_EXE_PATH) + "\" \"" + pdf_file.string() + "\"";
+    std::string const cmdline = "\"" + std::string(AE_PDF_WORKER_EXE_PATH) + "\" " +
+                                 std::string(mode) + " \"" + pdf_file.string() + "\"";
     ExecRequest const req{.language = "native", .source = cmdline};
     auto outcome = backend.exec(*handle, req, ctx);
     backend.destroy(*handle);
@@ -439,7 +441,7 @@ struct ExtractPdfText : Tool<ExtractPdfText, Capabilities<>, Approval<approval_m
             }
         }
 
-        auto raw_output = extract_pdf_text_detail::invoke_worker(file, ctx);
+        auto raw_output = extract_pdf_text_detail::invoke_worker("text", file, ctx);
         std::filesystem::remove(file, ec);  // best-effort cleanup regardless of outcome below
 
         if (!raw_output) return std::unexpected(raw_output.error());
@@ -461,34 +463,50 @@ struct ExtractPdfText : Tool<ExtractPdfText, Capabilities<>, Approval<approval_m
 // alongside it, the same way any other non-builtin skill source gets added to a `SkillsProvider`.
 inline constexpr std::string_view kExtractingDocumentTextSkillMd = R"SKILL(---
 name: extracting-document-text
-description: When and how to use extract_pdf_text instead of reading a PDF's raw bytes -- it returns decoded text, not a file to parse yourself, and reports how far it got on a document too large or complex to fully process in one call, with no automatic continuation. Use this before calling extract_pdf_text.
-allowed-tools: extract_pdf_text
+description: When and how to use extract_pdf_text/extract_pdf_toc instead of reading a PDF's raw bytes -- they return decoded text and outline structure, not a file to parse yourself, and report how far they got on a document too large or complex to fully process in one call, with no automatic continuation. Use this before working with a PDF.
+allowed-tools: extract_pdf_text extract_pdf_toc
 metadata:
   version: "1"
 ---
 # Extracting document text
 
-`extract_pdf_text(url=... | path=...) -> preview, truncated, total_bytes, total_page_count,
-pages_processed, truncated_pages, blob` extracts DECODED TEXT from a PDF -- it does not hand you the
-PDF's raw bytes. Never fetch a PDF via `read_content`'s `url`/`path` source and try to parse it
-yourself in the code interpreter; call `extract_pdf_text` instead.
+Two tools cover PDF content, both through the same sandboxed extraction path, never by fetching raw
+PDF bytes and parsing them yourself in the code interpreter:
 
-## The byte-threshold preview is pageable
+- `extract_pdf_text(url=... | path=...) -> preview, truncated, total_bytes, total_page_count,
+  pages_processed, truncated_pages, blob` -- the page TEXT.
+- `extract_pdf_toc(url=... | path=...) -> entries, entries_processed, truncated` -- the table of
+  contents/bookmark outline, each entry carrying `depth` (0-based nesting) and an optional
+  `page_index` pointing into the same page numbering `extract_pdf_text` uses.
+
+Reach for `extract_pdf_toc` FIRST when you only need to know a document's structure or find which
+page covers a topic -- it is far cheaper than extracting every page's full text just to locate one
+section, and its `page_index` values compose directly with `extract_pdf_text` if you then need that
+one section's actual content (a capability that tool itself does not yet offer page-range selection
+for -- narrowing to one page still means requesting a smaller/split source document, per the
+truncation guidance below).
+
+## The byte-threshold preview is pageable (extract_pdf_text only)
 
 When the extracted text itself is large, `truncated`/`blob` behave exactly like every other oversized
 tool result (see `reading-large-content`): a bounded preview, plus a real, openable reference to the
-rest. That guidance applies here unchanged.
+rest. That guidance applies here unchanged. `extract_pdf_toc`'s own result has no such preview/blob
+split -- an outline is a list of short entries, not one long text blob.
 
-## `total_page_count`/`pages_processed`/`truncated_pages` are a DIFFERENT signal -- read this carefully
+## `total_page_count`/`pages_processed`/`truncated_pages` (extract_pdf_text) and
+## `entries_processed`/`truncated` (extract_pdf_toc) are a DIFFERENT signal -- read this carefully
 
-These three fields mean the DOCUMENT ITSELF was too large or complex to fully process in ONE call --
-not that the text was long. `truncated_pages` is true when `pages_processed < total_page_count`.
+These fields mean the DOCUMENT ITSELF was too large or complex to fully process in ONE call -- not
+that a single field's own content was long. `extract_pdf_text`'s `truncated_pages` is true when
+`pages_processed < total_page_count`; `extract_pdf_toc` has no cheap way to know a document's real
+total bookmark count ahead of time (unlike page count), so its own `truncated` simply means "the
+worker's own cap stopped a traversal that likely had more to give."
 
-Unlike the byte-threshold preview above, there is NO follow-up call that resumes where extraction
-stopped -- no page offset, no continuation token, nothing to page through. If you see
-`truncated_pages: true`, the right move is narrowing the request (a smaller or split source
-document) or treating the returned pages as genuinely partial, not requesting "the rest" as if one
-more call would fetch it -- that call does not exist.
+Unlike the byte-threshold preview above, there is NO follow-up call that resumes where either tool
+stopped -- no page offset, no continuation token, nothing to page through. If you see either tool's
+own truncation signal, the right move is narrowing the request (a smaller or split source document)
+or treating the returned pages/entries as genuinely partial, not requesting "the rest" as if one more
+call would fetch it -- that call does not exist.
 )SKILL";
 
 [[nodiscard]] inline SkillSourceDescriptor make_extracting_document_text_skill_source() {

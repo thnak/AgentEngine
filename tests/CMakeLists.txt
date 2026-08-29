@@ -1836,6 +1836,14 @@ if(AGENTENGINE_WITH_PDF)
   # Spawns a real sandboxed child process (AppContainer/Job Object on Windows, namespaces/cgroups on
   # Linux) and runs a real PDFium decode -- generous but finite headroom over ordinary run time.
   set_tests_properties(test_extract_pdf_text PROPERTIES TIMEOUT 60)
+
+  # ---- ExtractPdfToc, a second candidate sharing the same sandboxed worker (extract_pdf_toc.hpp's
+  # own file-top comment explains why this one shares rather than duplicates).
+  add_executable(test_extract_pdf_toc test_extract_pdf_toc.cpp)
+  target_link_libraries(test_extract_pdf_toc PRIVATE
+    agentengine::core agentengine::net_egress_proxy agentengine::extract_pdf_text agentengine_warnings)
+  add_test(NAME test_extract_pdf_toc COMMAND test_extract_pdf_toc)
+  set_tests_properties(test_extract_pdf_toc PROPERTIES TIMEOUT 60)
 endif()
 
 # ---- Skills Phase 2: core/skill_tool_scoping.hpp -- pure ToolTable filtering plus the negative
