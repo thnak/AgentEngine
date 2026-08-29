@@ -1,13 +1,18 @@
 # ADR-107 — Does `trust::hmac_sha256()` need a real Linux implementation, and if so, does giving it one accidentally widen ADR-005's deliberately Windows-only cross-process-token scope?
 
 - **Status:** Proposed — implemented, verified against RFC 4231, and independently red-teamed
-  (2026-08-29), real builds and real test runs on Linux (WSL2 Ubuntu/gcc). The red-team round found and
-  fixed one real bug (an unguarded `size_t` overflow in the new code, latent/unreachable in practice but
-  a genuine defect). Full Linux `ctest` (207 tests): 206/207 passed both before and after the red-team
+  (2026-08-29), real builds and real test runs on BOTH platforms. The red-team round found and fixed
+  one real bug (an unguarded `size_t` overflow in the new code, latent/unreachable in practice but a
+  genuine defect). Full Linux `ctest` (207 tests): 206/207 passed both before and after the red-team
   fix; the one failure is the same pre-existing, already-disclosed, unrelated `test_provider_
-  egress_address_policy` finding named in `decisions/ADR-105-*.md` §7. Windows side verified by static
-  CMake review only — no MSVC toolchain was available in this session's environment to rebuild it live
-  (disclosed as a residual, §7).
+  egress_address_policy` finding named in `decisions/ADR-105-*.md` §7. **WINDOWS SIDE SINCE VERIFIED
+  (2026-08-29, same day, by the coordinating session)**: this ADR was originally authored without
+  Windows toolchain access (disclosed below, §7, as it was written) — closed the same day once merged
+  into a session with real MSVC access: full Windows rebuild (348/348 targets, `ninja -k 0`, zero
+  errors) and full `ctest` (**288/288, 100%**, including `test_hmac_sha256` and every target this ADR
+  un-gated), zero regressions. This ADR was also renumbered from its original ADR-106 to ADR-107 during
+  merge, having been developed in parallel with (and independently of) ADR-106
+  (`ContainerdExecutionSurface` promotion), which claimed that number first.
 - **Date:** 2026-08-29.
 - **Scope:** New `include/agentengine/detail/sha256_posix.hpp` (a shared, header-only SHA-256 primitive
   factored OUT of `src/core/worktree_digest_posix.cpp`, not newly invented), new `src/trust/hmac_posix.cpp`
@@ -25,9 +30,10 @@
   **Excludes**: `agentengine_capability_token`'s other three files (`capability_token.cpp`,
   `capability_registry.cpp`, `bearer_token.cpp`) — these call `BCryptGenRandom` directly for
   cross-process bearer-token key generation, a genuinely Windows-only concern, deliberately NOT ported
-  (see §2); a live Windows/MSVC rebuild (no toolchain available, §7); `ContainerdExecutionSurface`/
-  ADR-101, `native_jail`/`kata` backends, and anything under `docs/planning/proofs/execution_surface/`
-  (a parallel session's active scope, untouched, confirmed via `git status`).
+  (see §2); `ContainerdExecutionSurface`/ADR-106 (a parallel effort within the same session, developed
+  independently and merged same day — see the Status line's own renumbering note), `native_jail`/`kata`
+  backends, and anything under `docs/planning/proofs/execution_surface/` (untouched, confirmed via
+  `git status`).
 - **Related specs:** `decisions/ADR-005-capability-bearer-tokens-cross-process.md` (the deliberately
   Windows-only design `hmac_sha256` was originally built for; this ADR does NOT widen that design's own
   scope — see §2) · `decisions/ADR-021-inbound-protocol-trust-boundary.md` (Milestone 7, the second
@@ -263,16 +269,17 @@ since it was unambiguously a real bug with an obvious, low-risk fix.
 
 ## 7. Residual risks
 
-- **No live Windows/MSVC rebuild performed.** This session's environment had no MSVC toolchain
-  (`vcvars64.bat` not found under the installed Visual Studio 2022 instance) reachable to rebuild
-  `agentengine_hmac`/`agentengine_capability_token` on Windows after this ADR's CMake restructuring.
-  The change is a mechanical, low-risk static-library split (`hmac.cpp`'s own contents are completely
-  unchanged; `agentengine_capability_token` now links `agentengine::hmac` PUBLIC instead of compiling
-  the same file inline) — verified correct by hand-tracing the `if(WIN32)`/`if(NOT WIN32)`/`endif()`
-  structure in both `CMakeLists.txt` and `tests/CMakeLists.txt` (balanced, no orphaned targets, no lost
-  dependencies) — but this is static review, not an executed build, and is named here rather than
-  silently assumed. Whoever next has Windows/MSVC access should do a from-scratch Windows configure +
-  full rebuild + `ctest` as a follow-up confirmation.
+- **SINCE CLOSED (2026-08-29, same day)**: No live Windows/MSVC rebuild had been performed by the
+  session that wrote this ADR (no MSVC toolchain reachable there — `vcvars64.bat` not found under the
+  installed Visual Studio 2022 instance) — the hand-traced `if(WIN32)`/`if(NOT WIN32)`/`endif()`
+  structure was static review only, not an executed build. Closed the same day once this ADR's branch
+  was merged into the coordinating session (real MSVC access): full Windows reconfigure + `ninja -k 0`
+  rebuild — **348/348 targets, zero `error C`/`LNK` lines** — and full `ctest` — **288/288, 100%**,
+  including `test_hmac_sha256` (the new dedicated RFC 4231 regression test) and every target this ADR
+  un-gated (`test_secret_quarantine`, `test_rt_agent_session_quarantine_tool`,
+  `agentengine_sandboxed_shell_chat`, `test_session_builder`'s missing-link fix). Zero regressions
+  confirmed on both platforms, both before this merge (Linux 206/207, Windows 287/287 pre-merge
+  baseline from ADR-105/106) and after (Linux unaffected, Windows 288/288 with one new test added).
 - **`test_provider_egress_address_policy`'s pre-existing `G3` octal-address failure** (ADR-016 residual,
   first surfaced by ADR-105) remains open and unrelated to this ADR — not investigated further here,
   named again for whoever picks up ADR-105's own residual list.
