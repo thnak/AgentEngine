@@ -5,6 +5,18 @@
   findings from the independent red-team round, both pre-existing on Windows too (not introduced by
   this port), fixed on both platforms same day and re-verified. Zero regressions on either platform's
   full test suite, confirmed before and after the fixes.
+
+  **SAME-DAY FOLLOW-ON (2026-08-29)**: widened `docker_cli_reject_leading_dash`'s CLI-argument-
+  injection defense (§7's own residual) — added `docker_cli_reject_empty()` (shared) and a real
+  Windows-only whitespace/argv-boundary check (`docker_cli_reject_unsafe_for_unquoted_arg()`), both
+  proven live against a real Docker Desktop daemon on Windows and WSL2 Ubuntu. Re-audited the Windows
+  `cmd.exe` blacklist against real `cmd.exe` execution (§7's other residual) — found the whitespace gap
+  above, ruled out `()`/comma/semicolon as non-issues via live tests rather than assumption. A second,
+  independent `general-purpose` red-team round on this specific widening found no bypass or regression,
+  but surfaced one adjacent real bug (a trailing-backslash-before-closing-quote quoting defect,
+  Windows-only, in the previously-unchanged `host_path`/`command` quoting) — fixed and re-verified live
+  same day. See §7 for full detail on all three fixes. Zero regressions on the full Windows suite
+  (225/225) before and after.
 - **Date:** 2026-08-29.
 - **Scope:** `include/agentengine/sandbox/real_io_filesystem.hpp` (made portable: `write_verified()`/
   `read_verified()` split from inline-in-header to platform-specific out-of-line definitions), new
@@ -267,6 +279,73 @@ on both platforms, before the existing character-set check runs.
   function actually gates today (none of which are attacker/model-reachable in the current, single
   production caller) — a future caller passing genuinely untrusted `image`/`host_path`/`container_path`
   values should re-examine this before relying on it as a complete defense.
+
+  **SINCE WIDENED (2026-08-29, same day, follow-on pass)**: two more real, empirically-proven gaps
+  beyond the leading-dash shape were closed, on both platforms.
+  1. `docker_cli_reject_empty()` (new, shared) — an EMPTY `image`/`host_path`/`container_path` passed
+     every existing check cleanly (the allowlist's `for` loop and the blacklist's `find_first_of` both
+     vacuously succeed on `""`), yet for the two values embedded UNQUOTED in the generated command
+     (`image` in `create()`, `container_path` in `copy_to_container()`/`copy_from_container()`), an
+     empty value collapses the two literal spaces surrounding it into one, SHIFTING every token after
+     it by one slot — proven live against a real Docker Desktop daemon: `create("")` made `docker run`
+     attempt to pull a nonexistent `sh:latest` image (`sh`, the next literal token, slid into the IMAGE
+     slot), confirming the token-count shift reaches the real CLI, not just a reasoned-about string.
+  2. `docker_cli_reject_unsafe_for_unquoted_arg()` (new, per-platform, same name on both so the shared
+     call sites need no `#ifdef`) — on POSIX this is a proven no-op alias (the allowlist already
+     excludes whitespace); on **Windows it is a real, necessary second check**: the existing
+     `"&|<>^%\r\n"` blacklist never rejected a space or tab, so `container_path = "tmp --archive"`
+     passed cleanly and, once embedded unquoted in `docker cp <id>:tmp --archive <dest>`, made the
+     real `docker cp` CLI's own interspersed-flag parser (Cobra/pflag) consume `--archive` as a
+     genuine flag rather than part of the path — proven live end-to-end (both a direct `docker.exe`
+     invocation and a `cmd.exe /c "docker cp ..."` invocation matching the real `_popen()` code path)
+     against a live daemon and a real running container, with the destination directory actually
+     populated as proof the flag was consumed. A more consequential flag in the same family
+     (`-L`/`--follow-link`) would let a value shaped this way follow a symlink an attacker planted
+     inside the container during a copy — a real path-escape primitive, not just a cosmetic
+     argument-count mismatch. `host_path` was deliberately EXEMPTED from this new check on Windows —
+     it stays quoted at both its call sites, and a real Windows path can legitimately contain a space
+     (a username with a space in it is real; rejecting it would be the over-broad-rejection failure
+     mode this project's own conventions warn against).
+
+  An INDEPENDENT red-team round (fresh `general-purpose` subagent, zero context from the session that
+  made this widening) found no bypass of either new check and no over-broad rejection of a legitimate
+  value on either platform (re-verified with live compiled repros against the real header and, where
+  relevant, the real daemon), but surfaced one adjacent, real, previously-undisclosed finding in the
+  UNCHANGED `docker_cli_reject_unsafe_for_shell`/quoting logic (Windows): `host_path` and `command` are
+  both wrapped in a closing double-quote (`"...<value>\""`), and neither function ever accounted for
+  the Microsoft C-runtime/Go-runtime argv-parsing rule that a run of N backslashes immediately before a
+  `"` is special (odd N swallows the closing quote instead of terminating it; nonzero even N silently
+  drops half the value's own trailing backslashes) — proven live: `copy_to_container()` with a
+  `host_path` ending in exactly one backslash (the literal shape `std::filesystem::
+  temp_directory_path()` itself returns on this platform) produced `docker: 'docker cp' requires 2
+  arguments`, the SRC_PATH/DEST_PATH tokens having merged into one. A correctness/availability defect
+  (the copy silently fails), not an RCE — the red-team's own assessment, independently re-confirmed.
+  **FIXED same day**: a new `docker_cli_win_double_trailing_backslashes()` (Windows: doubles a value's
+  trailing backslash run before it is embedded, so the appended closing quote always sees an EVEN count
+  and always toggles correctly; POSIX: a proven no-op, since both real callers — `host_path`'s
+  allowlist, `command`'s blacklist — already reject a literal backslash outright there) is now applied
+  at all three closing-quote call sites (`host_path` in both `copy_to_container()`/
+  `copy_from_container()`, `command` in `exec()` — the latter is the one value in this file that IS
+  live-reachable from session-derived input, making this the most consequential of the three sites).
+  Re-verified live against the real daemon with the exact failing shape: `copy_to_container()` with a
+  trailing-single-backslash `host_path` now succeeds, and the copied file lands at the correct
+  container path (7/7 checks, including the unit-level odd/even-count transform itself).
+
+  **Reachability, all three findings in this update**: `image`/`host_path`/`container_path` remain
+  hardcoded/non-attacker-influenced in the one production caller
+  (`MandatorySandboxProvider::bind_sandbox()`, confirmed unchanged) — the empty-value and
+  whitespace-argument-injection fixes are the same "not live-reachable today, fixed anyway because the
+  function is shared and reusable" class as the original leading-dash fix. The trailing-backslash fix
+  is different: `command` (`exec()`'s argument) IS the one live-reachable value in this whole file,
+  so that specific application of the fix closes a real, currently-reachable availability bug, not
+  merely a defense-in-depth one.
+
+  **Still open, honestly narrower than a complete defense**: this pass closed every CONCRETE attack
+  shape found (leading-dash, empty-value token shift, whitespace argument injection, trailing-
+  backslash quote-swallowing) via real repros, not a formal grammar model of either `cmd.exe` or
+  `docker`'s own CLI parser — a future caller passing genuinely untrusted values should still treat
+  this as "known gaps closed," not "proven complete," exactly as the original leading-dash finding's
+  own residual already said.
 - **`remove(recursive=true)`'s shared recursion-depth hazard (ADR-103 §7)** — different files from this
   ADR's own scope, so left untouched here; **SINCE FIXED (2026-08-29)**, same day, as a small, separate,
   bounded follow-on (see ADR-103 §7's own updated entry) — noted here for anyone reading this ADR's
@@ -277,3 +356,37 @@ on both platforms, before the existing character-set check runs.
   stay unchanged, C22); the leading-dash finding was the one exception fixed on both platforms because
   it was found live, proven live, and directly analogous to a POSIX-side finding already being fixed
   in the same pass.
+
+  **SINCE RE-AUDITED (2026-08-29, same day, same follow-on pass as above)**: `cmd.exe`'s real grammar
+  was checked element-by-element against the existing blacklist, using REAL `cmd.exe` (native execution
+  via the PowerShell tool, not reasoning from memory, per this project's own research-citation
+  convention). Findings, each checked against real `cmd.exe` behavior, not assumed:
+  - `%`-expansion: already fully covered (any single `%` is already blacklisted, and `%VAR%` expansion
+    needs a pair).
+  - `&&`/`||` chaining: already fully covered (both need `&`/`|`, both already blacklisted individually).
+  - `^`-escaping: already blacklisted; confirmed this also closes any attempt to use `^` to smuggle a
+    blacklisted character past the check by escaping it.
+  - Parenthesis grouping `(...)`: checked live (`cmd /c "echo before(whoami)after"` printed the text
+    literally, `whoami` never ran — `cmd.exe` has no POSIX-style command-substitution syntax, and bare
+    parens without a preceding block keyword or an un-escaped `&`/`|` inside them are inert) — NOT
+    added to the blacklist, since it would be a redundant restriction against an input that was already
+    harmless, not a real fix (this project's own "verify first, don't assume" standard, applied to
+    ruling a check OUT as much as ruling one in).
+  - Comma/semicolon: checked live against a real Windows console app (`docker.exe` itself, both via a
+    direct invocation and via `cmd /c`) — neither splits into a separate argv element the way space/tab
+    do (only space and tab are argv-boundary characters for the MSVC-CRT/Go-runtime argv-reconstruction
+    convention `docker.exe` uses) — also NOT added, same "don't over-engineer against an already-
+    impossible input" reasoning.
+  - **The one real, missing element**: whitespace (space/tab) itself, for the two UNQUOTED-context
+    values — this is the `docker_cli_reject_unsafe_for_unquoted_arg()` finding described above, the
+    actual gap this re-audit was looking for.
+  - **Also found, adjacent to the blacklist itself rather than the character set** (same pass): the
+    trailing-backslash-before-closing-quote quoting bug described above, found by the independent
+    red-team rather than by this element-by-element check — disclosed here rather than only in the
+    leading-dash entry above, since it is squarely a `cmd.exe`/CRT-grammar finding in its own right.
+
+  **Disclosed scope of this re-audit**: element-by-element against the specific quirks this residual
+  named (`%`-expansion, `&&`/`||`, `()`, `^`-escaping) plus whatever the independent red-team's own
+  adversarial pass surfaced — not an exhaustive, formally-derived enumeration of every `cmd.exe`
+  metacharacter. Treat "re-audited" as "checked against the known candidate list plus one hostile
+  external pass," not "mathematically proven complete."
