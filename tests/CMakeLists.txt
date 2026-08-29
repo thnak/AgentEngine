@@ -2183,6 +2183,14 @@ if(WIN32)
   # RUN_SERIAL: minimizes overlap with sibling tests that share job_object_hostile_child.exe (a
   # real -j4 run surfaced this -- see the test file's own comment on hostile_child_name_lower).
   set_tests_properties(test_native_jail_teardown_cycles_windows PROPERTIES TIMEOUT 150 RUN_SERIAL TRUE)
+
+  # ---- NativeJailBackend::grant_ro_path_once() (docs/planning/pdf-text-extraction-design-draft.md
+  # Revision 6/7 -- the public entry point round-5/round-6 red-team found missing) -----------------
+  add_executable(test_native_jail_grant_ro_path_once_windows test_native_jail_grant_ro_path_once_windows.cpp)
+  target_link_libraries(test_native_jail_grant_ro_path_once_windows PRIVATE
+    agentengine::core agentengine::native_jail_backend agentengine_warnings)
+  add_test(NAME test_native_jail_grant_ro_path_once_windows COMMAND test_native_jail_grant_ro_path_once_windows)
+  set_tests_properties(test_native_jail_grant_ro_path_once_windows PROPERTIES TIMEOUT 30)
 endif()
 
 # ---- LinuxNativeJailBackend end-to-end (M2 Phase C task C2's Linux follow-up, 008 §1b/§2/§3) ---
