@@ -30,15 +30,26 @@
 // see their own comments below for why.
 
 #include <array>
+#include <atomic>
+#include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <filesystem>
+#include <limits>
 #include <optional>
 #include <sstream>
 #include <string>
 #include <utility>
+#include <vector>
 
-#ifndef _WIN32
+#ifdef _WIN32
+#include <process.h>
+#include <windows.h>
+#else
+#include <csignal>
+#include <cerrno>
 #include <sys/wait.h>
+#include <unistd.h>
 #endif
 
 #include "agentengine/core/error.hpp"
@@ -89,6 +100,111 @@ namespace docker_cli_detail {
 #endif
     return out;
 }
+[[nodiscard]] inline long current_pid() {
+#ifdef _WIN32
+    return static_cast<long>(_getpid());
+#else
+    return static_cast<long>(::getpid());
+#endif
+}
+
+// Monotonic per-process counter, not per-instance: `create()` is a non-static member, but two
+// `DockerCliBackend` instances in the same process must never mint the same `pid_seq` pair (that
+// would make two live containers indistinguishable to `reap_orphans()`'s own name-parsing below).
+//
+// SEEDED from a wall-clock nanosecond timestamp, not a fixed 0 -- fixes a REAL name-collision
+// regression an independent red-team round found (ADR-108 §5): a purely 0-based counter means TWO
+// DIFFERENT process instances compute the IDENTICAL name on each one's own FIRST create() call. That
+// is exactly the scenario this whole ADR exists to clean up after -- process P1 creates
+// `ae_des_<pid>_1`, crashes before its own destructor runs (orphaning it), the OS later reuses P1's
+// exact pid for an unrelated process P2, and P2's own first create() call computes the SAME name
+// while P1's still-alive orphan occupies it, so `docker run --name` fails outright instead of
+// creating cleanly. Seeding from nanoseconds-since-epoch means two independent process starts collide
+// only by an astronomically unlikely coincidence, without needing to parse docker's own error text to
+// detect and retry a collision.
+inline std::atomic<std::uint64_t> g_next_container_seq{
+    static_cast<std::uint64_t>(std::chrono::system_clock::now().time_since_epoch().count())};
+
+// The discoverable marker every container `DockerCliBackend::create()` starts now carries via
+// `docker run --name`, mirroring the naming scheme `ContainerdExecutionSurface::reset()` already uses
+// for `ctr` container ids (`ae_ces_<pid>_<seq>`) -- kept a DIFFERENT prefix (`ae_des_`, not `ae_ces_`)
+// so `reap_orphans()` on one backend can never accidentally match a name only the OTHER backend's own
+// scheme produced, even though nothing stops both from running against the same host.
+inline constexpr char const* kOrphanNamePrefix = "ae_des_";
+
+// POSIX counterpart of the pid-liveness check `reap_orphans()` needs -- see the Windows overload
+// below (under `#ifdef _WIN32`) for why this exists on both platforms, unlike most of this file's
+// other platform splits. `kill(pid, 0)` sends no signal, only asks the kernel whether `pid` could be
+// signaled at all; `ESRCH` is the one answer that actually means "no such process" -- every other
+// outcome (success, or a failure this process lacks permission to fully diagnose, e.g. `EPERM` for a
+// pid reused by a different, differently-owned process) is treated as "still alive", failing CLOSED:
+// this function is the one gate standing between a caller and destroying a real container, so a wrong
+// "dead" answer is the only wrong answer that has a real consequence.
+#ifndef _WIN32
+[[nodiscard]] inline bool process_is_alive(long pid) {
+    if (pid <= 0) return true;
+    if (::kill(static_cast<::pid_t>(pid), 0) == 0) return true;
+    return errno != ESRCH;
+}
+#else
+// Windows analog: `OpenProcess()` failing with `ERROR_INVALID_PARAMETER` is the one answer Microsoft
+// documents as meaning the pid names no process at all; every other failure (most commonly
+// `ERROR_ACCESS_DENIED` for a pid this process cannot fully query) fails closed as "assume alive",
+// same posture as the POSIX side. A handle that DOES open is further checked via
+// `GetExitCodeProcess()` -- a pid can remain a valid, openable handle for a zombie-equivalent
+// not-yet-reaped exited process on Windows too, and `STILL_ACTIVE` is the only value that actually
+// means "running". DISCLOSED, not solved: pid reuse (the kernel recycling a dead process's pid for an
+// unrelated new one before this check runs) is a real, inherent race in ANY pid-liveness check on any
+// platform, not specific to this function -- narrowing it further (e.g. a boot-id-scoped identity)
+// is real follow-on work, not attempted here.
+[[nodiscard]] inline bool process_is_alive(long pid) {
+    if (pid <= 0) return true;
+    HANDLE const h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, static_cast<DWORD>(pid));
+    if (h == nullptr) {
+        return GetLastError() != ERROR_INVALID_PARAMETER;
+    }
+    DWORD exit_code = 0;
+    bool const got = GetExitCodeProcess(h, &exit_code) != 0;
+    CloseHandle(h);
+    return !got || exit_code == STILL_ACTIVE;
+}
+#endif
+
+// Extracts the pid `create()` embedded in `name` (the segment between `kOrphanNamePrefix` and the
+// next `_`). Returns nullopt -- not a best-effort partial parse -- for anything that isn't a plain,
+// purely decimal run of digits there: a name sharing this prefix by coincidence (never actually
+// produced by this class, but not provably impossible on a shared host) must never be treated as one
+// of ours just because it starts with the right characters. Fails closed (skip, don't reap) rather
+// than guessing.
+[[nodiscard]] inline std::optional<long> parse_orphan_pid(std::string const& name) {
+    std::string const prefix = kOrphanNamePrefix;
+    if (name.rfind(prefix, 0) != 0) return std::nullopt;
+    std::string const rest = name.substr(prefix.size());
+    std::string::size_type const sep = rest.find('_');
+    std::string const pid_str = (sep == std::string::npos) ? rest : rest.substr(0, sep);
+    if (pid_str.empty()) return std::nullopt;
+    for (char const c : pid_str) {
+        if (c < '0' || c > '9') return std::nullopt;
+    }
+    try {
+        long const pid = std::stol(pid_str);
+        // REAL, independent-red-team-found finding (ADR-108 §5): `process_is_alive()` casts this
+        // value to `pid_t` (POSIX, 32-bit) / `DWORD` (Windows, 32-bit), but `long` is 64-bit on
+        // LP64 Linux -- a decimal run that fits in `long` yet exceeds INT32_MAX (no real pid ever
+        // reaches that range) silently TRUNCATES on that cast, and the truncated value can
+        // coincidentally read as a dead pid even when the original, untruncated value was never a
+        // pid at all. Empirically proven exploitable: a foreign container on a shared daemon named
+        // e.g. `ae_des_10000000000_x` (a value no real create() call could ever produce, but nothing
+        // stops another party from naming a container that on a shared host) got misclassified
+        // "confirmed dead" and destroyed. Rejecting anything outside a real pid's possible 32-bit
+        // range closes this before the value ever reaches a liveness check, not after.
+        if (pid <= 0 || pid > std::numeric_limits<std::int32_t>::max()) return std::nullopt;
+        return pid;
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
 }  // namespace docker_cli_detail
 
 // Every method below builds a HOST-shell-interpreted command STRING by concatenation (`cmd.exe` on
@@ -382,8 +498,18 @@ public:
     [[nodiscard]] agentengine::result<Instance> create(std::string const& image = "alpine:latest") {
         if (auto safe = docker_cli_reject_unsafe_for_unquoted_arg(image, "image"); !safe.has_value())
             return std::unexpected(safe.error());
+        // A discoverable NAME (distinct from the docker-assigned `container_id` this method returns
+        // below) -- exists purely so a later process can find and `reap_orphans()` this container if
+        // THIS process dies before its own destructor runs (see that method's own comment). Built
+        // entirely from this process's own pid and an internal counter, never caller/model input, so
+        // it already trivially satisfies every character-set check above; no validation call needed
+        // for a value this function itself constructs from only digits and literal underscores
+        // (CLAUDE.md: don't add a check for an input that's already impossible).
+        std::string const name = std::string(docker_cli_detail::kOrphanNamePrefix) +
+                                  std::to_string(docker_cli_detail::current_pid()) + "_" +
+                                  std::to_string(++docker_cli_detail::g_next_container_seq);
         std::ostringstream cmd;
-        cmd << "docker run -d --rm -w /workspace " << image
+        cmd << "docker run -d --rm -w /workspace --name " << name << " " << image
             << " sh -c \"mkdir -p /workspace && sleep infinity\"";
         auto r = docker_cli_detail::run_capture(cmd.str());
         if (r.exit_code != 0) {
@@ -460,6 +586,57 @@ public:
         }
         return agentengine::result<void>{};
     }
+
+    // Closes the "container orphaned on abrupt host-process death or a destructor-time transient
+    // `docker rm -f` failure" residual this class's own accompanying `DockerExecutionSurface` comment
+    // (ADR-104/ADR-106) has disclosed since it was first written -- true, and unchanged by this
+    // method: nothing can run a destructor for a process that no longer exists, and this doesn't
+    // retry a failed destructor-time `destroy()` either. What it adds is the "persisting instance ids
+    // somewhere reclaimable" follow-on that comment itself pointed at: `create()` now names every
+    // container `ae_des_<pid>_<seq>`, so a LATER process (the next invocation of this same tool, a
+    // cron-style maintenance call, or a test) can list docker's own container table, find names
+    // matching that scheme whose embedded pid is no longer alive, and destroy them for real --
+    // exactly `Ledger`'s own orphan-branch precedent (`reclaim_orphaned_branch()`), adapted: there,
+    // reclaiming hands back a live handle for continued use; here, nobody is left to continue using an
+    // orphaned CONTAINER (no in-process handle ever referenced it), so this is `Ledger::abandon()`'s
+    // shape, not `reclaim_orphaned_branch()`'s -- garbage-collection, not resumption.
+    //
+    // Deliberately NOT called automatically from any constructor/reset()/destructor -- an explicit,
+    // caller-invoked maintenance operation (this codebase's own Delegated Decision Seam framing,
+    // CLAUDE.md "Feature vs. safety balance"): reaping touches OTHER processes' containers (by
+    // definition -- this instance's own live container is never a candidate, `Instance` isn't even
+    // consulted here), which is a side effect no `ExecutionSurface` verb's own contract promises.
+    struct OrphanReapReport {
+        std::size_t inspected = 0;              // ae_des_-prefixed names with a parseable embedded pid
+        std::size_t reaped = 0;                  // of those, confirmed dead and destroyed
+        std::vector<std::string> reap_failures;  // confirmed dead, but `docker rm -f` itself failed
+    };
+
+    [[nodiscard]] agentengine::result<OrphanReapReport> reap_orphans() {
+        auto listed = docker_cli_detail::run_capture("docker ps -a --format \"{{.Names}}\"");
+        if (listed.exit_code != 0) {
+            return std::unexpected(agentengine::error{agentengine::failure_class::fatal,
+                                                          "docker ps failed: " + listed.stdout_text,
+                                                          "docker_cli_backend.reap_list_failed"});
+        }
+        OrphanReapReport report;
+        std::istringstream lines(listed.stdout_text);
+        std::string name;
+        while (std::getline(lines, name)) {
+            while (!name.empty() && (name.back() == '\r' || name.back() == '\n')) name.pop_back();
+            auto const pid = docker_cli_detail::parse_orphan_pid(name);
+            if (!pid) continue;  // not one of ours (wrong prefix, or only coincidentally similar)
+            ++report.inspected;
+            if (docker_cli_detail::process_is_alive(*pid)) continue;  // still owned -- not an orphan
+            auto rm = docker_cli_detail::run_capture("docker rm -f " + name);
+            if (rm.exit_code == 0) {
+                ++report.reaped;
+            } else {
+                report.reap_failures.push_back(name);
+            }
+        }
+        return report;
+    }
 };
 
 // The one real `ExecutionSurface` conformer this phase ports -- wraps `DockerCliBackend` behind the
@@ -484,6 +661,17 @@ public:
 // with no crash known to have produced it). Not fixed in this pass -- the fix (persisting instance
 // ids somewhere reclaimable, mirroring `Ledger`'s own orphan-branch design) is real follow-on work,
 // named accurately here rather than left understated a second time.
+//
+// SINCE ADDED (ADR-108): `DockerCliBackend::reap_orphans()` is exactly that follow-on work.
+// `create()` now names every container `ae_des_<pid>_<seq>`; `reap_orphans()` lists them back,
+// checks each embedded pid for liveness, and destroys the ones that are dead. Both classes of orphan
+// this comment names (real crash, and an ordinary-exit `destroy()` that transiently failed) are
+// reachable by it identically -- the container's own name persists on the daemon regardless of which
+// path produced it. Deliberately NOT wired to run automatically (see `reap_orphans()`'s own comment
+// for why) -- a caller (e.g. `tools/sandboxed_shell_chat.cpp`'s own startup) must invoke it
+// explicitly. Still a real residual after this: a container from a run where `reap_orphans()` is
+// never subsequently invoked by anything stays leaked forever, same as before -- this closes the
+// "no reclaim mechanism exists at all" gap, not "orphans can never accumulate".
 class DockerExecutionSurface {
 public:
     explicit DockerExecutionSurface(std::string image = "alpine:latest") : image_(std::move(image)) {}

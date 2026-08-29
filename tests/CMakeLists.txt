@@ -3188,6 +3188,14 @@ add_executable(test_sandbox_runtime test_sandbox_runtime.cpp)
 target_link_libraries(test_sandbox_runtime PRIVATE agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)
 add_test(NAME test_sandbox_runtime COMMAND test_sandbox_runtime)
 
+# ---- ADR-108 -- DockerCliBackend::reap_orphans(), the real orphan-container garbage-collection fix
+# for the residual DockerExecutionSurface's own header comment has disclosed since ADR-104/ADR-106.
+# REQUIRES a running Docker daemon reachable via `docker` on PATH, same posture as test_sandbox_runtime
+# above.
+add_executable(test_docker_orphan_reap test_docker_orphan_reap.cpp)
+target_link_libraries(test_docker_orphan_reap PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_docker_orphan_reap COMMAND test_docker_orphan_reap)
+
 # ---- ADR-102 Phase 4 -- MandatorySandboxProvider<Surface>/RunCommandTool
 # (sandbox/mandatory_sandbox_provider.hpp), composed as a REAL agentengine::rt::AgentSession's actual
 # HistoryProviderT, driven through the real, unmodified invoke_tool() 10-step pipeline for the first

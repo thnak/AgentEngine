@@ -39,13 +39,17 @@
 #include <unistd.h>
 #include <poll.h>
 #include <fcntl.h>
+#include <csignal>
 
 #include <array>
+#include <cerrno>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <limits>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -265,6 +269,58 @@ struct ProcessOutcome {
     return agentengine::result<void>{};
 }
 
+// The naming scheme `ContainerdExecutionSurface::reset()` already uses for every container id it
+// creates (`"ae_ces_" + pid + "_" + seq`, unchanged by this addition) -- reused here, not invented,
+// as the discoverable marker `reap_orphans()` below scans `ctr containers list` for. Any id NOT
+// starting with this exact prefix is never touched by reap_orphans(), regardless of what else is
+// running on the host (I2: this mechanism only ever acts on containers this class's own naming
+// scheme produced).
+inline constexpr char const* kOrphanIdPrefix = "ae_ces_";
+
+// Extracts the pid `reset()` embedded in `id` (the segment between `kOrphanIdPrefix` and the next
+// `_`). Returns nullopt -- not a best-effort partial parse -- for anything that isn't a plain, purely
+// decimal run of digits there: a name sharing this prefix by coincidence (never actually produced by
+// this class, but not provably impossible on a shared host) must never be treated as one of ours
+// just because it starts with the right characters. Fails closed (skip, don't reap) rather than
+// guessing.
+[[nodiscard]] inline std::optional<long> parse_orphan_pid(std::string const& id) {
+    std::string const prefix = kOrphanIdPrefix;
+    if (id.rfind(prefix, 0) != 0) return std::nullopt;
+    std::string const rest = id.substr(prefix.size());
+    std::string::size_type const sep = rest.find('_');
+    std::string const pid_str = (sep == std::string::npos) ? rest : rest.substr(0, sep);
+    if (pid_str.empty()) return std::nullopt;
+    for (char const c : pid_str) {
+        if (c < '0' || c > '9') return std::nullopt;
+    }
+    try {
+        long const pid = std::stol(pid_str);
+        // REAL, independent-red-team-found finding (ADR-108 §5), identical to the Docker side's own
+        // fix: `process_is_alive()` below casts this value to `pid_t` (32-bit), but `long` is 64-bit
+        // on LP64 Linux -- a decimal run that fits in `long` yet exceeds INT32_MAX (no real pid ever
+        // reaches that range) silently TRUNCATES on that cast, and the truncated value can
+        // coincidentally read as a dead pid even though the original value was never a real pid.
+        // Rejecting anything outside a real pid's possible 32-bit range closes this before the value
+        // ever reaches a liveness check, not after.
+        if (pid <= 0 || pid > std::numeric_limits<std::int32_t>::max()) return std::nullopt;
+        return pid;
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
+// Real `kill(pid, 0)` liveness probe -- sends no signal, only asks the kernel whether `pid` could be
+// signaled at all. `ESRCH` is the one answer that actually means "no such process" -- every other
+// outcome (success, or a failure this process lacks permission to fully diagnose e.g. `EPERM` for a
+// pid now reused by a different, differently-owned process) is treated as "still alive", failing
+// CLOSED: this function is the one gate standing between a caller and destroying a real container, so
+// a wrong "dead" answer is the only wrong answer that has a real consequence.
+[[nodiscard]] inline bool process_is_alive(long pid) {
+    if (pid <= 0) return true;
+    if (::kill(static_cast<::pid_t>(pid), 0) == 0) return true;
+    return errno != ESRCH;
+}
+
 }  // namespace ctr_cli_detail
 
 // A thin, real wrapper over the `ctr` CLI (containerd's own client) -- create()/exec()/destroy() over
@@ -368,6 +424,63 @@ public:
         return agentengine::result<void>{};
     }
 
+    // Closes the "container orphaned on abrupt host-process death" residual this class's own
+    // production header comment (ADR-106 §7) and ADR-106 §5's own red-team round both named as
+    // structurally unavoidable AT DESTRUCT TIME -- true, and unchanged by this method: nothing can run
+    // a destructor for a process that no longer exists. What this method adds is the "persisting
+    // instance ids somewhere reclaimable" follow-on ADR-106 §7 itself pointed at: `reset()` already
+    // names every container `ae_ces_<pid>_<seq>`, so a LATER process (the next invocation of this same
+    // tool, a cron-style maintenance call, or a test) can list containerd's own container table, find
+    // ids matching that scheme whose embedded pid is no longer alive, and destroy them for real --
+    // exactly `Ledger`'s own orphan-branch precedent (`reclaim_orphaned_branch()`), adapted: there,
+    // reclaiming hands back a live handle for continued use; here, nobody is left to continue using an
+    // orphaned CONTAINER (no in-process handle ever referenced it), so this is `Ledger::abandon()`'s
+    // shape, not `reclaim_orphaned_branch()`'s -- garbage-collection, not resumption.
+    //
+    // Deliberately NOT called automatically from any constructor/reset()/destructor -- an explicit,
+    // caller-invoked maintenance operation (this codebase's own Delegated Decision Seam framing,
+    // CLAUDE.md "Feature vs. safety balance"): reaping touches OTHER processes' containers (by
+    // definition -- this instance's own live container is never a candidate, `Instance` isn't even
+    // consulted here), which is a side effect no `ExecutionSurface` verb's own contract promises, and
+    // running it unconditionally on every construction would race harmlessly but pointlessly against
+    // every other concurrent instance doing the same full table scan.
+    struct OrphanReapReport {
+        std::size_t inspected = 0;              // ae_ces_-prefixed ids with a parseable embedded pid
+        std::size_t reaped = 0;                  // of those, confirmed dead and destroyed
+        std::vector<std::string> reap_failures;  // confirmed dead, but the destroy sequence itself failed
+    };
+
+    [[nodiscard]] agentengine::result<OrphanReapReport> reap_orphans() {
+        auto listed = ctr_cli_detail::run_argv({"ctr", "containers", "list", "-q"});
+        if (!listed.has_value()) return std::unexpected(listed.error());
+        if (listed->exit_code != 0) {
+            return std::unexpected(agentengine::error{
+                agentengine::failure_class::fatal,
+                "ctr containers list failed (exit " + std::to_string(listed->exit_code) +
+                    "): " + listed->stderr_text,
+                "ctr_cli_backend.reap_list_failed"});
+        }
+        OrphanReapReport report;
+        std::istringstream lines(listed->stdout_text);
+        std::string id;
+        while (std::getline(lines, id)) {
+            while (!id.empty() && (id.back() == '\r' || id.back() == '\n')) id.pop_back();
+            auto const pid = ctr_cli_detail::parse_orphan_pid(id);
+            if (!pid) continue;  // not one of ours (wrong prefix, or a name only coincidentally similar)
+            ++report.inspected;
+            if (ctr_cli_detail::process_is_alive(*pid)) continue;  // still owned -- not an orphan
+            (void)ctr_cli_detail::run_argv({"ctr", "task", "kill", "--signal", "SIGKILL", id});
+            (void)ctr_cli_detail::run_argv({"ctr", "task", "rm", id});
+            auto rm = ctr_cli_detail::run_argv({"ctr", "container", "rm", id});
+            if (rm.has_value() && rm->exit_code == 0) {
+                ++report.reaped;
+            } else {
+                report.reap_failures.push_back(id);
+            }
+        }
+        return report;
+    }
+
 private:
     std::uint64_t exec_seq_ = 0;
 };
@@ -398,10 +511,32 @@ private:
 // recreated path sees ONLY the fresh content, no leakage either direction. This is proven for ONE real
 // environment, not the general case across every possible backing filesystem (design doc §5) -- a real
 // deployment targeting a different filesystem/snapshotter/kernel combination should re-verify.
+//
+// ORPHAN RESIDUAL (ADR-106 §7): if the host process dies (SIGKILL, abrupt crash) between a successful
+// `reset()` and this class's own destructor ever running, the container is orphaned and keeps running
+// indefinitely -- confirmed structurally unavoidable at DESTRUCT time (nothing can run a destructor
+// for a process that no longer exists), same residual class `DockerExecutionSurface`'s own header
+// comment discloses for itself. SINCE ADDED (ADR-108): `ContainerdCliBackend::reap_orphans()` is the
+// follow-on "persisting instance ids somewhere reclaimable" fix ADR-106 §7 itself pointed at --
+// `reset()` already names every container `ae_ces_<pid>_<seq>`; `reap_orphans()` lists them back,
+// checks each embedded pid for liveness, and destroys the ones that are dead. Deliberately NOT wired
+// to run automatically (see `reap_orphans()`'s own comment for why); still a real residual after this
+// addition: a container from a run where `reap_orphans()` is never subsequently invoked by anything
+// stays leaked forever.
 class ContainerdExecutionSurface {
 public:
+    // `seq_` seeded from a wall-clock nanosecond timestamp, not a fixed 0 -- fixes a REAL,
+    // independent-red-team-found finding (ADR-108 §5): a purely 0-based counter means TWO instances
+    // (whether two `ContainerdExecutionSurface`s alive concurrently in one process, or the exact
+    // "P1 orphaned, then a later process reuses P1's now-dead pid" scenario this whole ADR exists to
+    // clean up after) can compute the IDENTICAL id on each one's own first `reset()` call, so `ctr
+    // run`'s mandatory-unique id argument fails outright while the still-alive prior container
+    // occupies it. Mirrors `DockerCliBackend`'s own identical fix -- this asymmetry (Docker already
+    // had this before ADR-108, Containerd did not) was itself a red-team finding: ADR-108 §2 claimed
+    // the two naming schemes "mirror" each other without this piece actually matching.
     explicit ContainerdExecutionSurface(std::string image = "docker.io/library/alpine:latest")
-        : image_(std::move(image)) {}
+        : image_(std::move(image)),
+          seq_(static_cast<std::uint64_t>(std::chrono::system_clock::now().time_since_epoch().count())) {}
 
     ~ContainerdExecutionSurface() {
         if (instance_) { (void)ctr_.destroy(*instance_); }

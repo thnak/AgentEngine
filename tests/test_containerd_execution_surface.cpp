@@ -19,6 +19,9 @@
 
 #include "agentengine/sandbox/containerd_execution_surface.hpp"
 
+#include <sys/wait.h>
+#include <unistd.h>
+
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -54,9 +57,43 @@ void write_file(std::filesystem::path const& p, std::string const& content) {
     f << content;
 }
 
+// Forks a real child that exits immediately and reaps it -- a pid this test can PROVE is dead by the
+// time it's used, not merely assumed to be. Deterministic on Linux's own default pid-reuse posture
+// (a large, monotonically-advancing pid space); the tiny residual pid-reuse race this shares with
+// `process_is_alive()` itself is the same inherent limitation that function's own header comment
+// already discloses, not a new one this test introduces.
+[[nodiscard]] long make_confirmed_dead_pid() {
+    pid_t const pid = fork();
+    if (pid == 0) { _exit(0); }
+    int status = 0;
+    waitpid(pid, &status, 0);
+    return static_cast<long>(pid);
+}
+
+[[nodiscard]] bool ctr_container_exists(std::string const& id) {
+    auto r = agentengine::ctr_cli_detail::run_argv({"ctr", "containers", "list", "-q"});
+    if (!r.has_value()) return false;
+    std::istringstream lines(r->stdout_text);
+    std::string line;
+    while (std::getline(lines, line)) {
+        while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) line.pop_back();
+        if (line == id) return true;
+    }
+    return false;
+}
+
 }  // namespace
 
 int main() {
+    // REGRESSION CHECK for a REAL, independent-red-team-found finding (ADR-108 §5): a decimal run
+    // that fits in `long` (64-bit on LP64) but exceeds what `pid_t` (32-bit) can hold used to silently
+    // TRUNCATE on the cast inside process_is_alive(), letting a foreign container carrying such a
+    // value be misclassified "confirmed dead". No daemon needed -- pure parsing logic.
+    check(!agentengine::ctr_cli_detail::parse_orphan_pid("ae_ces_10000000000_x").has_value(),
+          "parse_orphan_pid() rejects a pid segment too large to fit in pid_t without truncating");
+    check(agentengine::ctr_cli_detail::parse_orphan_pid("ae_ces_1234_x").has_value(),
+          "parse_orphan_pid() still accepts a normal, in-range pid segment");
+
     namespace fs = std::filesystem;
     fs::path const root = "/tmp/ae_containerd_execution_surface_test";
     fs::path const host_dir = root / "hostdir";
@@ -170,6 +207,65 @@ int main() {
         }
 
         // Destructor runs here -- destroys the turn-2 instance for real.
+    }
+
+    // ================================================================================
+    // ADR-108: ContainerdCliBackend::reap_orphans() -- real positive AND negative controls, matching
+    // CLAUDE.md's "security claims need positive controls: a test that cannot fail proves nothing".
+    // Every container this block creates directly via ContainerdCliBackend (not through
+    // ContainerdExecutionSurface -- reap_orphans() only reads containerd's own container table, it
+    // never needs a live ExecutionSurface instance) so the embedded pid can be fully controlled.
+    // ================================================================================
+    std::printf("--- ADR-108: reap_orphans() positive/negative controls ---\n");
+    {
+        fs::path const reap_host_dir = root / "reap_hostdir";
+        fs::create_directories(reap_host_dir, ec);
+        agentengine::ContainerdCliBackend backend;
+
+        // (a) A container whose embedded pid is THIS TEST PROCESS's own -- unambiguously alive for
+        // the whole duration of this block -- must survive reap_orphans() untouched.
+        std::string const alive_id =
+            "ae_ces_" + std::to_string(static_cast<long>(::getpid())) + "_reaptest_alive";
+        auto alive_created = backend.create(alive_id, reap_host_dir);
+        check(alive_created.has_value(), "reap setup: create() a container with THIS process's own pid");
+
+        // (b) A container whose embedded pid is CONFIRMED dead -- the real target reap_orphans() must
+        // find and destroy.
+        long const dead_pid = make_confirmed_dead_pid();
+        std::string const dead_id = "ae_ces_" + std::to_string(dead_pid) + "_reaptest_dead";
+        auto dead_created = backend.create(dead_id, reap_host_dir);
+        check(dead_created.has_value(), "reap setup: create() a container with a confirmed-dead pid");
+
+        // (c) A container that does NOT carry the ae_ces_ prefix at all -- reap_orphans() must never
+        // touch it regardless of any pid it might coincidentally look like it embeds. Name includes
+        // this process's own pid -- a fixed literal here would collide with a leftover from a prior
+        // interrupted run (found by ADR-108's own red-team round).
+        std::string const foreign_id =
+            "not-our-prefix-reaptest-" + std::to_string(static_cast<long>(::getpid()));
+        auto foreign_created = backend.create(foreign_id, reap_host_dir);
+        check(foreign_created.has_value(), "reap setup: create() a non-ae_ces_-prefixed container");
+
+        if (alive_created.has_value() && dead_created.has_value() && foreign_created.has_value()) {
+            auto report = backend.reap_orphans();
+            check(report.has_value(), "reap_orphans() itself succeeds (ctr containers list works)");
+            if (report.has_value()) {
+                check(report->reap_failures.empty(),
+                      "reap_orphans() reports zero destroy failures");
+                check(ctr_container_exists(alive_id),
+                      "POSITIVE CONTROL: the live-pid container was NOT reaped");
+                check(!ctr_container_exists(dead_id),
+                      "the confirmed-dead-pid container WAS reaped");
+                check(ctr_container_exists(foreign_id),
+                      "NEGATIVE CONTROL: the non-prefixed container was never touched");
+            }
+        }
+
+        // Cleanup: destroy whichever of the three survived reap_orphans() (the dead-pid one should
+        // already be gone; destroy() on an already-gone container is the same best-effort posture
+        // this class's own destructor already relies on).
+        (void)backend.destroy(agentengine::ContainerdCliBackend::Instance{alive_id});
+        (void)backend.destroy(agentengine::ContainerdCliBackend::Instance{dead_id});
+        (void)backend.destroy(agentengine::ContainerdCliBackend::Instance{foreign_id});
     }
 
     fs::remove_all(root, ec);
