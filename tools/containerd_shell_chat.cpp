@@ -25,6 +25,10 @@
 // unprivileged containerd-socket ACL -- containerd's default socket permissions require it, matching
 // tests/test_containerd_execution_surface.cpp's own disclosed precondition), and OPENAI_API_KEY set
 // in the environment.
+//
+// ADR-108 §7 residual, closed here: main() now runs `ContainerdCliBackend::reap_orphans()` as an
+// explicit, best-effort startup sweep before building the session -- see
+// tools/sandboxed_shell_chat.cpp's own identical comment for the full reasoning.
 
 #include "agentengine/core/composed_context_provider.hpp"
 #include "agentengine/core/session_builder.hpp"
@@ -42,6 +46,22 @@
 
 int main(int argc, char** argv) {
     using namespace agentengine;
+
+    // ADR-108 §7 residual, closed here: an explicit, best-effort startup sweep for containers this
+    // same naming scheme orphaned on a PRIOR run of this tool -- see tools/sandboxed_shell_chat.cpp's
+    // own identical comment for the full reasoning (deliberately non-fatal; only ever finds what an
+    // EARLIER invocation left behind, never this one).
+    {
+        ContainerdCliBackend orphan_sweep;
+        auto swept = orphan_sweep.reap_orphans();
+        if (swept.has_value() && (swept->reaped > 0 || !swept->reap_failures.empty())) {
+            std::cerr << "startup orphan sweep: inspected " << swept->inspected << ", reaped "
+                      << swept->reaped << ", " << swept->reap_failures.size()
+                      << " destroy failure(s)\n";
+        } else if (!swept.has_value()) {
+            std::cerr << "startup orphan sweep skipped (non-fatal): " << swept.error().message << "\n";
+        }
+    }
 
     std::string const model = argc > 1 ? argv[1] : "gpt-4o-mini";
     std::string const session_id = "containerd-shell-chat-session";

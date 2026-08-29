@@ -47,6 +47,7 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <limits>
 #include <optional>
 #include <sstream>
@@ -277,20 +278,107 @@ struct ProcessOutcome {
 // scheme produced).
 inline constexpr char const* kOrphanIdPrefix = "ae_ces_";
 
-// Extracts the pid `reset()` embedded in `id` (the segment between `kOrphanIdPrefix` and the next
-// `_`). Returns nullopt -- not a best-effort partial parse -- for anything that isn't a plain, purely
-// decimal run of digits there: a name sharing this prefix by coincidence (never actually produced by
-// this class, but not provably impossible on a shared host) must never be treated as one of ours
-// just because it starts with the right characters. Fails closed (skip, don't reap) rather than
-// guessing.
-[[nodiscard]] inline std::optional<long> parse_orphan_pid(std::string const& id) {
+// Real `kill(pid, 0)` liveness probe -- sends no signal, only asks the kernel whether `pid` could be
+// signaled at all. `ESRCH` is the one answer that actually means "no such process" -- every other
+// outcome (success, or a failure this process lacks permission to fully diagnose e.g. `EPERM` for a
+// pid now reused by a different, differently-owned process) is treated as "still alive", failing
+// CLOSED: this function is the one gate standing between a caller and destroying a real container, so
+// a wrong "dead" answer is the only wrong answer that has a real consequence.
+[[nodiscard]] inline bool process_is_alive(long pid) {
+    if (pid <= 0) return true;
+    if (::kill(static_cast<::pid_t>(pid), 0) == 0) return true;
+    return errno != ESRCH;
+}
+
+// ADR-108 §7 pid-reuse-race fix (narrows, not just disclosed) -- identical rationale and shape to
+// `docker_execution_surface.hpp`'s own fix: a plain pid-liveness check alone cannot tell "the
+// ORIGINAL process that created this container is still running" from "the pid was later reused by
+// a completely unrelated process" -- the second case reads as "alive" under `process_is_alive()`
+// alone, so a genuinely orphaned container silently stays unreapable forever once its pid happens to
+// get recycled by something else. Fixed by embedding, alongside the pid, a per-process-INSTANCE
+// "start key" read from `/proc/<pid>/stat`'s own `starttime` field (ticks since boot -- man proc(5)),
+// which is (for all practical purposes) never the same across two different process instances, even
+// ones sharing the same pid. Field 2 (`comm`, the process name) is the one field in that file that can
+// itself contain spaces or parentheses -- every robust parser's own convention, reused here, is to
+// find the LAST `)` in the line and count fields from there, rather than naively splitting on
+// whitespace from the start. After that `)`, `state` (field 3) is the first token; `starttime` (field
+// 22) is therefore the 20th token counting from there.
+[[nodiscard]] inline std::optional<std::uint64_t> read_process_start_ticks(long pid) {
+    if (pid <= 0) return std::nullopt;
+    std::ifstream f("/proc/" + std::to_string(pid) + "/stat");
+    std::string line;
+    if (!f || !std::getline(f, line)) return std::nullopt;
+    auto const close_paren = line.rfind(')');
+    if (close_paren == std::string::npos) return std::nullopt;
+    std::istringstream rest(line.substr(close_paren + 1));
+    std::string token;
+    for (int i = 0; i < 19; ++i) {
+        if (!(rest >> token)) return std::nullopt;
+    }
+    if (!(rest >> token)) return std::nullopt;
+    try {
+        return static_cast<std::uint64_t>(std::stoull(token));
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+[[nodiscard]] inline std::uint64_t current_process_start_key() {
+    return read_process_start_ticks(static_cast<long>(::getpid())).value_or(0);
+}
+// nullopt here means "could not read a start-key for this pid right now" -- deliberately NOT the
+// same thing as "no such process" (`process_is_alive()`, unchanged, is still the one function that
+// answers that). A transient read failure (the process exiting between the caller's own
+// `process_is_alive()` check and this call) must resolve to "unknown", not "gone" --
+// `check_process_identity()` below is the one place that decides what an unreadable key means.
+[[nodiscard]] inline std::optional<std::uint64_t> process_start_key_for(long pid) {
+    return read_process_start_ticks(pid);
+}
+
+enum class ProcessMatch { kAliveSameProcess, kGoneOrReplaced, kUnknown };
+
+// The real, narrowed identity check `reap_orphans()` uses in place of plain `process_is_alive()`.
+// Layered ON TOP of that already-audited function, not a replacement for its own "ESRCH is the one
+// unambiguous 'gone' signal" logic: if no process at all is alive at `pid`, the creator is
+// unambiguously gone regardless of any key comparison. Only when a process genuinely IS alive at that
+// exact pid does the start-key comparison run, to tell "still the same process" apart from "the pid
+// got recycled by something else" -- and if THAT read itself fails (e.g. a race where the process
+// exits between the two checks), the outcome is `kUnknown`, which `reap_orphans()` treats exactly
+// like `kAliveSameProcess` -- fail closed, never destroy on an ambiguous answer.
+[[nodiscard]] inline ProcessMatch check_process_identity(long pid, std::uint64_t recorded_start_key) {
+    if (!process_is_alive(pid)) return ProcessMatch::kGoneOrReplaced;
+    auto const current_key = process_start_key_for(pid);
+    if (!current_key.has_value()) return ProcessMatch::kUnknown;
+    return *current_key == recorded_start_key ? ProcessMatch::kAliveSameProcess
+                                               : ProcessMatch::kGoneOrReplaced;
+}
+
+// Extracts the (pid, start_key) `reset()` embedded in `id` -- the two decimal segments between
+// `kOrphanIdPrefix` and the SECOND following `_` (anything after that, including a third `_`, is the
+// free-form seq suffix and not parsed further). Returns nullopt -- not a best-effort partial parse --
+// for anything that isn't a plain, purely decimal run of digits in EITHER segment: a name sharing this
+// prefix by coincidence (never actually produced by this class, but not provably impossible on a
+// shared host) must never be treated as one of ours just because it starts with the right characters.
+// Fails closed (skip, don't reap) rather than guessing.
+struct OrphanIdentity {
+    long pid = 0;
+    std::uint64_t start_key = 0;
+};
+
+[[nodiscard]] inline std::optional<OrphanIdentity> parse_orphan_identity(std::string const& id) {
     std::string const prefix = kOrphanIdPrefix;
     if (id.rfind(prefix, 0) != 0) return std::nullopt;
     std::string const rest = id.substr(prefix.size());
-    std::string::size_type const sep = rest.find('_');
-    std::string const pid_str = (sep == std::string::npos) ? rest : rest.substr(0, sep);
-    if (pid_str.empty()) return std::nullopt;
+    std::string::size_type const sep1 = rest.find('_');
+    if (sep1 == std::string::npos) return std::nullopt;
+    std::string const pid_str = rest.substr(0, sep1);
+    std::string const rest2 = rest.substr(sep1 + 1);
+    std::string::size_type const sep2 = rest2.find('_');
+    std::string const key_str = (sep2 == std::string::npos) ? rest2 : rest2.substr(0, sep2);
+    if (pid_str.empty() || key_str.empty()) return std::nullopt;
     for (char const c : pid_str) {
+        if (c < '0' || c > '9') return std::nullopt;
+    }
+    for (char const c : key_str) {
         if (c < '0' || c > '9') return std::nullopt;
     }
     try {
@@ -303,22 +391,11 @@ inline constexpr char const* kOrphanIdPrefix = "ae_ces_";
         // Rejecting anything outside a real pid's possible 32-bit range closes this before the value
         // ever reaches a liveness check, not after.
         if (pid <= 0 || pid > std::numeric_limits<std::int32_t>::max()) return std::nullopt;
-        return pid;
+        std::uint64_t const key = std::stoull(key_str);
+        return OrphanIdentity{pid, key};
     } catch (...) {
         return std::nullopt;
     }
-}
-
-// Real `kill(pid, 0)` liveness probe -- sends no signal, only asks the kernel whether `pid` could be
-// signaled at all. `ESRCH` is the one answer that actually means "no such process" -- every other
-// outcome (success, or a failure this process lacks permission to fully diagnose e.g. `EPERM` for a
-// pid now reused by a different, differently-owned process) is treated as "still alive", failing
-// CLOSED: this function is the one gate standing between a caller and destroying a real container, so
-// a wrong "dead" answer is the only wrong answer that has a real consequence.
-[[nodiscard]] inline bool process_is_alive(long pid) {
-    if (pid <= 0) return true;
-    if (::kill(static_cast<::pid_t>(pid), 0) == 0) return true;
-    return errno != ESRCH;
 }
 
 }  // namespace ctr_cli_detail
@@ -445,9 +522,9 @@ public:
     // running it unconditionally on every construction would race harmlessly but pointlessly against
     // every other concurrent instance doing the same full table scan.
     struct OrphanReapReport {
-        std::size_t inspected = 0;              // ae_ces_-prefixed ids with a parseable embedded pid
-        std::size_t reaped = 0;                  // of those, confirmed dead and destroyed
-        std::vector<std::string> reap_failures;  // confirmed dead, but the destroy sequence itself failed
+        std::size_t inspected = 0;              // ae_ces_-prefixed ids with a parseable identity
+        std::size_t reaped = 0;                  // of those, confirmed gone/replaced and destroyed
+        std::vector<std::string> reap_failures;  // confirmed gone/replaced, but the destroy sequence failed
     };
 
     [[nodiscard]] agentengine::result<OrphanReapReport> reap_orphans() {
@@ -465,10 +542,16 @@ public:
         std::string id;
         while (std::getline(lines, id)) {
             while (!id.empty() && (id.back() == '\r' || id.back() == '\n')) id.pop_back();
-            auto const pid = ctr_cli_detail::parse_orphan_pid(id);
-            if (!pid) continue;  // not one of ours (wrong prefix, or a name only coincidentally similar)
+            auto const identity = ctr_cli_detail::parse_orphan_identity(id);
+            if (!identity) continue;  // not one of ours (wrong prefix, or only coincidentally similar)
             ++report.inspected;
-            if (ctr_cli_detail::process_is_alive(*pid)) continue;  // still owned -- not an orphan
+            // kAliveSameProcess AND kUnknown both fail closed here -- only a CONFIRMED gone-or-replaced
+            // creator is ever reaped (see check_process_identity()'s own comment for why kUnknown must
+            // never be treated as reapable).
+            if (ctr_cli_detail::check_process_identity(identity->pid, identity->start_key) !=
+                ctr_cli_detail::ProcessMatch::kGoneOrReplaced) {
+                continue;
+            }
             (void)ctr_cli_detail::run_argv({"ctr", "task", "kill", "--signal", "SIGKILL", id});
             (void)ctr_cli_detail::run_argv({"ctr", "task", "rm", id});
             auto rm = ctr_cli_detail::run_argv({"ctr", "container", "rm", id});
@@ -587,7 +670,13 @@ public:
             instance_.reset();
         }
         std::filesystem::create_directories(host_dir);
-        std::string const id = "ae_ces_" + std::to_string(::getpid()) + "_" + std::to_string(++seq_);
+        // Carries this process's own pid AND its start-key (ADR-108 §7 pid-reuse fix -- see
+        // `check_process_identity()`'s own comment): a plain pid alone cannot tell "still the same
+        // process" from "the pid was later reused by something unrelated", which would otherwise let
+        // a genuinely orphaned container stay permanently unreapable.
+        std::string const id = "ae_ces_" + std::to_string(::getpid()) + "_" +
+                                std::to_string(ctr_cli_detail::current_process_start_key()) + "_" +
+                                std::to_string(++seq_);
         auto inst = ctr_.create(id, host_dir, image_);
         if (!inst.has_value()) return std::unexpected(inst.error());
         instance_ = *inst;

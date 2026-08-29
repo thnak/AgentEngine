@@ -8,7 +8,12 @@
   to do with this ADR — `src/backends/kata/kata_backend.cpp` untouched) and one confirmed parallel-
   execution flake in `test_provider_egress_address_policy` (a live-network-binding test contending
   with this ADR's own live-daemon reap tests under `-j 4`; re-run standalone: `ALL PASS`, and this ADR
-  touches no networking/egress code at all).
+  touches no networking/egress code at all). **§7's own "not wired into either tool's startup" AND
+  "pid-reuse race, inherent, not solved" residuals are SINCE CLOSED (2026-08-29, same session)** — see
+  §8 for the full follow-on work: a real `check_process_identity()`/start-key mechanism narrows the
+  pid-reuse gap (proven via a new, direct positive control: same live pid, wrong start-key, correctly
+  reaped), and both `tools/sandboxed_shell_chat.cpp`/`tools/containerd_shell_chat.cpp` now run a
+  best-effort startup sweep, verified end to end against real daemons with a manually planted orphan.
 - **Date:** 2026-08-29.
 - **Scope:** `include/agentengine/sandbox/docker_execution_surface.hpp` (adds `--name` to `docker run`,
   a POSIX/Windows `process_is_alive()` pair, `DockerCliBackend::reap_orphans()`), `include/agentengine/
@@ -96,6 +101,7 @@ into either tool's own startup** — named as a residual below, not silently lef
 | C3 | A container that does not carry either backend's own naming prefix is never touched, regardless of what its name might otherwise look like. |
 | C4 | `reap_orphans()`'s own listing/destroy calls never mutate or interact with the calling `DockerExecutionSurface`/`ContainerdExecutionSurface` instance's own live container. |
 | C5 | No existing `reset()`/`run()`/`drain_to()` behavior, and no existing test, regresses. |
+| C6 (added §8) | A container whose embedded pid is alive but belongs to a DIFFERENT process than the one that created it (a pid-reuse scenario) IS still found and destroyed by `reap_orphans()`, via the start-key mismatch — not misclassified "still alive" by the plain pid check alone. |
 
 ## 4. Verification
 
@@ -182,16 +188,101 @@ work (§7), not silently bundled in.
 
 ## 7. Residuals
 
-- **Not wired into `tools/sandboxed_shell_chat.cpp` or `tools/containerd_shell_chat.cpp`'s own startup**
-  — a caller must invoke `reap_orphans()` explicitly today; neither tool does yet. Real, tractable
-  follow-on work, not attempted in this pass to keep this ADR's own diff reviewable and its own claims
-  narrowly falsifiable.
-- **Pid-reuse race, inherent, not solved:** between `process_is_alive()` sampling a pid as dead and
-  `reap_orphans()` issuing the actual destroy, the OS could in principle recycle that exact pid for an
-  unrelated new process. This is a real, universally-known limitation of ANY pid-liveness check on any
-  platform, disclosed in both `process_is_alive()` functions' own header comments — narrowing it further
-  (e.g. a boot-id-scoped or `/proc/<pid>/starttime`-scoped identity on Linux) is real, separate,
-  deliberately-out-of-scope follow-on work.
+- ~~Not wired into `tools/sandboxed_shell_chat.cpp` or `tools/containerd_shell_chat.cpp`'s own
+  startup~~ — **SINCE CLOSED, see §8.**
+- ~~Pid-reuse race, inherent, not solved~~ — **SINCE NARROWED, see §8** (real fix, not merely disclosed
+  further — a residual TOCTOU window remains, disclosed in §8's own fix description, not eliminated).
 - **No automatic/scheduled invocation exists** — `reap_orphans()` only ever runs when a caller explicitly
-  calls it. A deployment that never calls it accumulates orphans exactly as before this ADR; this closes
-  "no reclaim mechanism exists at all", not "orphans can never accumulate".
+  calls it. §8's tool-startup wiring means every real, user-reachable invocation of either tool now
+  sweeps for orphans left by a PRIOR invocation, but nothing runs it on any other schedule (a
+  long-lived host process that starts one session and never restarts still accumulates orphans from
+  its OWN crashes until something else invokes the sweep) — this closes "no reclaim mechanism exists
+  at all, ever", not "orphans can never accumulate under any usage pattern".
+- **Multi-pid-namespace daemon sharing, discovered during §8's own verification, disclosed not fixed:**
+  `reap_orphans()` implicitly assumes every caller reaping a given daemon shares ONE OS pid namespace.
+  This assumption held for every scenario this ADR's own tests exercise, but broke during ad hoc manual
+  verification of the tool wiring: Docker Desktop's single daemon is reachable simultaneously from BOTH
+  native Windows and its WSL2 integration, two DIFFERENT pid namespaces pointed at the SAME daemon. A
+  container `reap_orphans()` running in one namespace created can be reaped by a concurrent
+  `reap_orphans()` call running in the OTHER namespace, because a pid that is alive in the creator's own
+  namespace may correspond to nothing (or something unrelated) when checked via the OTHER namespace's
+  own `process_is_alive()`/`OpenProcess()` — observed directly: a container from a WSL2-side
+  `test_docker_orphan_reap` run was destroyed by a concurrently-running native-Windows `ctest` suite's
+  own `test_docker_orphan_reap` invocation, both against the one shared Docker Desktop daemon; re-run in
+  isolation (not concurrent with the other platform), both pass cleanly. NOT the same problem as the
+  pid-reuse race §8 fixes (that is about the SAME namespace's pid being recycled over TIME; this is
+  about pid NUMBERS meaning different things across two DIFFERENT namespaces at the SAME time) and not
+  fixed here — a real fix would need embedding a namespace/machine-scoped identifier alongside the pid,
+  which is real, separate, deliberately-out-of-scope follow-on work. Low real-world severity: a genuine
+  single-host production deployment does not typically run two OS pid-namespaces' worth of AgentEngine
+  tooling against one shared daemon simultaneously the way this ADR's own dual-platform verification
+  methodology did — `ContainerdCliBackend` is immune (only ever reachable from one pid namespace, WSL2,
+  in this environment) and this was confirmed via the containerd side passing cleanly even when run
+  concurrently with the Windows suite.
+
+## 8. Follow-on work (2026-08-29, same session): pid-reuse narrowing + tool-startup wiring
+
+Closes the two §7 residuals above (tool wiring, pid-reuse) at the user's explicit request, after the
+initial red-team round landed. Both closures got their own build+run verification on both platforms;
+no second independent red-team round was requested for this follow-on pass (a narrower, more
+mechanical extension of already-red-teamed machinery, not a new design) — flagged here rather than
+silently implied as equally scrutinized.
+
+**Pid-reuse narrowing.** The plain pid-liveness check `reap_orphans()` used could not tell "the
+ORIGINAL process that created this container is still running" from "the pid was later reused by a
+completely unrelated process" — the second case reads as "alive" under `process_is_alive()` alone, so
+a genuinely orphaned container could silently stay unreapable forever once its pid happened to get
+recycled by something else (a real, not merely theoretical, false-negative class — pid reuse over a
+long-lived host's uptime is routine, not exotic). Fixed by embedding a per-process-INSTANCE "start
+key" alongside the pid in the naming scheme (now `ae_des_<pid>_<start_key>_<seq>` /
+`ae_ces_<pid>_<start_key>_<seq>`): POSIX reads `/proc/<pid>/stat`'s own `starttime` field (ticks since
+boot, man proc(5), the last-`)`-then-20th-token parse every robust `/proc/[pid]/stat` reader uses to
+handle a `comm` field that can itself contain spaces/parens); Windows reads `GetProcessTimes()`'s
+`lpCreationTime`. `check_process_identity()` layers this ON TOP of the existing, already-audited
+`process_is_alive()` (never replacing its own "ESRCH/`ERROR_INVALID_PARAMETER` is the one unambiguous
+'gone' signal" logic) — only when a process genuinely IS alive at the exact pid does the start-key
+comparison run, and if THAT read itself fails, the outcome is `kUnknown`, treated exactly like
+"alive" (fail closed, never destroy on an ambiguous answer). This is a strict improvement, not a new
+risk: every path that now resolves to "reap" also unambiguously means the ORIGINAL creating process
+is really gone (either no process at all, or a different process now holds that pid) — no new class of
+incorrect destroy is introduced, only false negatives (orphans that silently never got reaped because
+their pid got recycled by something unrelated) become correct positives. The disclosed pid-reuse
+residual is NARROWED, not eliminated: a tiny, irreducible TOCTOU window remains between
+`check_process_identity()` returning "gone" and the actual `docker rm -f`/`ctr container rm` call
+running a moment later — the same original process cannot un-die in that window, and a coincidental
+pid+start-key collision from a brand-new unrelated process in that exact window is astronomically
+unlikely, but not provably impossible.
+
+Verified with a NEW, direct positive control added to both test files, proving the fix rather than
+just its absence of regression: a container embedding THIS test process's own real, live pid but a
+DELIBERATELY WRONG start-key (simulating exactly the pid-reuse scenario) is confirmed REAPED, while
+the identical pid with its OWN correct start-key survives. `tests/test_docker_orphan_reap.cpp`:
+**14/14** (Windows and, separately, WSL2/Linux Docker, each run in isolation — a real, disclosed
+cross-daemon interference finding from running both concurrently is its own new residual above, not a
+regression in the fix itself). `tests/test_containerd_execution_surface.cpp`: **31/31** (WSL2 root).
+
+**Tool-startup wiring.** `main()` in both `tools/sandboxed_shell_chat.cpp` and
+`tools/containerd_shell_chat.cpp` now runs a `DockerCliBackend`/`ContainerdCliBackend::reap_orphans()`
+sweep before building the session — best-effort, non-fatal (a daemon that's briefly unreachable never
+blocks the tool's own real purpose), silent unless something was actually reaped or a destroy failed.
+Verified end to end, not just at the unit level: a real orphan-shaped container was manually planted
+against each live daemon (`docker run --name ae_des_999999_1_manualtest ...` / `ctr run ...
+ae_ces_999999_1_manualtest ...`, pid 999999 confirmed via `kill -0`/`/proc` to correspond to no real
+process), the actual tool binary was run with no `OPENAI_API_KEY` set (so it fails cleanly after the
+sweep, matching the tool's own already-established sanity-check posture), and the planted orphan was
+confirmed gone afterward on both platforms — `startup orphan sweep: inspected 1, reaped 1, 0 destroy
+failure(s)` printed by the Windows tool; the WSL2 tool's own sweep confirmed via the container's
+disappearance from `ctr containers list -q`. A real, previously-undiagnosed STALE-BUILD artifact was
+found and worked around during this verification (not a logic bug): the WSL2 build directory sits on
+a `/mnt/d` 9p-mounted cross-filesystem mount between the Windows host and the WSL2 guest, and at least
+one incremental `cmake --build` there silently skipped recompiling `containerd_shell_chat.cpp` despite
+a genuinely newer source mtime (most likely a host/guest clock or mtime-granularity mismatch across
+that mount) — resolved by force-deleting the stale `.o`/binary before rebuilding; disclosed here as a
+real environment gotcha for any future WSL2 work against a `/mnt/*`-hosted build tree, not specific to
+this ADR's own code.
+
+**Post-follow-on full-suite re-verification:** Full Windows `ctest`: **289/289 passed, 100%.** Full
+Linux `ctest` (WSL2, root): 214 total, only the same 4 pre-existing Kata image-pull failures (unrelated
+environment gap, unchanged from §4) — `test_sandbox_runtime`, which flaked under `-j 4` parallel
+Docker-daemon contention during an earlier verification pass in this same session, passed cleanly here.
+Zero real regressions from this follow-on work on either platform.

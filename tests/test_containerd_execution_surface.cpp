@@ -22,6 +22,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -89,10 +90,10 @@ int main() {
     // that fits in `long` (64-bit on LP64) but exceeds what `pid_t` (32-bit) can hold used to silently
     // TRUNCATE on the cast inside process_is_alive(), letting a foreign container carrying such a
     // value be misclassified "confirmed dead". No daemon needed -- pure parsing logic.
-    check(!agentengine::ctr_cli_detail::parse_orphan_pid("ae_ces_10000000000_x").has_value(),
-          "parse_orphan_pid() rejects a pid segment too large to fit in pid_t without truncating");
-    check(agentengine::ctr_cli_detail::parse_orphan_pid("ae_ces_1234_x").has_value(),
-          "parse_orphan_pid() still accepts a normal, in-range pid segment");
+    check(!agentengine::ctr_cli_detail::parse_orphan_identity("ae_ces_10000000000_1_x").has_value(),
+          "parse_orphan_identity() rejects a pid segment too large to fit in pid_t without truncating");
+    check(agentengine::ctr_cli_detail::parse_orphan_identity("ae_ces_1234_1_x").has_value(),
+          "parse_orphan_identity() still accepts a normal, in-range pid segment");
 
     namespace fs = std::filesystem;
     fs::path const root = "/tmp/ae_containerd_execution_surface_test";
@@ -214,7 +215,8 @@ int main() {
     // CLAUDE.md's "security claims need positive controls: a test that cannot fail proves nothing".
     // Every container this block creates directly via ContainerdCliBackend (not through
     // ContainerdExecutionSurface -- reap_orphans() only reads containerd's own container table, it
-    // never needs a live ExecutionSurface instance) so the embedded pid can be fully controlled.
+    // never needs a live ExecutionSurface instance) so the embedded pid/start-key can be fully
+    // controlled.
     // ================================================================================
     std::printf("--- ADR-108: reap_orphans() positive/negative controls ---\n");
     {
@@ -222,37 +224,59 @@ int main() {
         fs::create_directories(reap_host_dir, ec);
         agentengine::ContainerdCliBackend backend;
 
-        // (a) A container whose embedded pid is THIS TEST PROCESS's own -- unambiguously alive for
-        // the whole duration of this block -- must survive reap_orphans() untouched.
-        std::string const alive_id =
-            "ae_ces_" + std::to_string(static_cast<long>(::getpid())) + "_reaptest_alive";
-        auto alive_created = backend.create(alive_id, reap_host_dir);
-        check(alive_created.has_value(), "reap setup: create() a container with THIS process's own pid");
+        long const my_pid = static_cast<long>(::getpid());
+        std::uint64_t const my_start_key = agentengine::ctr_cli_detail::current_process_start_key();
+        check(my_start_key != 0,
+              "current_process_start_key() returns a real, nonzero value for THIS process");
 
-        // (b) A container whose embedded pid is CONFIRMED dead -- the real target reap_orphans() must
-        // find and destroy.
+        // (a) A container whose embedded pid/start-key are BOTH THIS TEST PROCESS's own, real ones --
+        // unambiguously alive for the whole duration of this block -- must survive reap_orphans()
+        // untouched.
+        std::string const alive_id = "ae_ces_" + std::to_string(my_pid) + "_" +
+                                      std::to_string(my_start_key) + "_reaptest_alive";
+        auto alive_created = backend.create(alive_id, reap_host_dir);
+        check(alive_created.has_value(),
+              "reap setup: create() a container with THIS process's own pid + start-key");
+
+        // (b) A container whose embedded pid is THIS process's own (alive) but whose start-key is
+        // WRONG -- simulates exactly the pid-reuse scenario ADR-108 §7/§5 disclosed: a later process
+        // that reused a dead process's pid. Plain process_is_alive(my_pid) alone would say "alive"
+        // (it's literally this test's own pid) -- proving reap_orphans() must still reap it via the
+        // start-key mismatch is the whole point of this scenario.
+        std::string const wrong_key_id = "ae_ces_" + std::to_string(my_pid) + "_" +
+                                          std::to_string(my_start_key + 1) + "_reaptest_wrongkey";
+        auto wrong_key_created = backend.create(wrong_key_id, reap_host_dir);
+        check(wrong_key_created.has_value(),
+              "reap setup: create() a container with THIS process's pid but a WRONG start-key");
+
+        // (c) A container whose embedded pid is CONFIRMED dead -- the real target reap_orphans() must
+        // find and destroy. The start-key segment's own value doesn't matter here:
+        // process_is_alive(dead_pid) alone already resolves to "gone", short-circuiting before any
+        // start-key comparison.
         long const dead_pid = make_confirmed_dead_pid();
-        std::string const dead_id = "ae_ces_" + std::to_string(dead_pid) + "_reaptest_dead";
+        std::string const dead_id = "ae_ces_" + std::to_string(dead_pid) + "_1_reaptest_dead";
         auto dead_created = backend.create(dead_id, reap_host_dir);
         check(dead_created.has_value(), "reap setup: create() a container with a confirmed-dead pid");
 
-        // (c) A container that does NOT carry the ae_ces_ prefix at all -- reap_orphans() must never
+        // (d) A container that does NOT carry the ae_ces_ prefix at all -- reap_orphans() must never
         // touch it regardless of any pid it might coincidentally look like it embeds. Name includes
         // this process's own pid -- a fixed literal here would collide with a leftover from a prior
         // interrupted run (found by ADR-108's own red-team round).
-        std::string const foreign_id =
-            "not-our-prefix-reaptest-" + std::to_string(static_cast<long>(::getpid()));
+        std::string const foreign_id = "not-our-prefix-reaptest-" + std::to_string(my_pid);
         auto foreign_created = backend.create(foreign_id, reap_host_dir);
         check(foreign_created.has_value(), "reap setup: create() a non-ae_ces_-prefixed container");
 
-        if (alive_created.has_value() && dead_created.has_value() && foreign_created.has_value()) {
+        if (alive_created.has_value() && wrong_key_created.has_value() && dead_created.has_value() &&
+            foreign_created.has_value()) {
             auto report = backend.reap_orphans();
             check(report.has_value(), "reap_orphans() itself succeeds (ctr containers list works)");
             if (report.has_value()) {
                 check(report->reap_failures.empty(),
                       "reap_orphans() reports zero destroy failures");
                 check(ctr_container_exists(alive_id),
-                      "POSITIVE CONTROL: the live-pid container was NOT reaped");
+                      "POSITIVE CONTROL: the matching-start-key container was NOT reaped");
+                check(!ctr_container_exists(wrong_key_id),
+                      "PID-REUSE FIX PROOF: same live pid but a WRONG start-key WAS reaped");
                 check(!ctr_container_exists(dead_id),
                       "the confirmed-dead-pid container WAS reaped");
                 check(ctr_container_exists(foreign_id),
@@ -260,10 +284,11 @@ int main() {
             }
         }
 
-        // Cleanup: destroy whichever of the three survived reap_orphans() (the dead-pid one should
+        // Cleanup: destroy whichever survived reap_orphans() (the wrong-key and dead-pid ones should
         // already be gone; destroy() on an already-gone container is the same best-effort posture
         // this class's own destructor already relies on).
         (void)backend.destroy(agentengine::ContainerdCliBackend::Instance{alive_id});
+        (void)backend.destroy(agentengine::ContainerdCliBackend::Instance{wrong_key_id});
         (void)backend.destroy(agentengine::ContainerdCliBackend::Instance{dead_id});
         (void)backend.destroy(agentengine::ContainerdCliBackend::Instance{foreign_id});
     }

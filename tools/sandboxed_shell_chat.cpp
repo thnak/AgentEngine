@@ -47,6 +47,13 @@
 // every real way this process can end. A real SIGINT handler is contained, disclosed follow-on work,
 // not attempted in this pass.
 //
+// ADR-108 §7 residual, closed here: main() now runs `DockerCliBackend::reap_orphans()` as an explicit,
+// best-effort startup sweep before building the session -- closing containers a PRIOR run of this
+// exact tool orphaned (a crash, a SIGKILL, or the ordinary-exit destructor-time `docker rm -f` failure
+// this file's own comment above already discloses). This is exactly the case the Ctrl+C caveat above
+// leaves unclosed on its OWN run -- the sweep only ever finds and reaps what an EARLIER invocation
+// left behind, never the current one (which is still live while this sweep runs).
+//
 // REQUIRES: Windows, a running Docker daemon reachable via the `docker` CLI on PATH, and
 // OPENAI_API_KEY set in the environment. NOT for the reason this comment previously gave
 // (SandboxToolProvider's own platform scope -- stale as of ADR-103): decisions/ADR-105-sandbox-tool-
@@ -71,6 +78,23 @@
 
 int main(int argc, char** argv) {
     using namespace agentengine;
+
+    // ADR-108 §7 residual, closed here: an explicit, best-effort startup sweep for containers this
+    // same naming scheme orphaned on a PRIOR run of this tool (a crash, a SIGKILL, or an ordinary exit
+    // whose destructor-time `docker rm -f` transiently failed). Deliberately non-fatal -- a daemon
+    // that's briefly unreachable or a sweep that finds nothing must never block this tool's own real
+    // purpose (the interactive session below); only reported, never treated as an error.
+    {
+        DockerCliBackend orphan_sweep;
+        auto swept = orphan_sweep.reap_orphans();
+        if (swept.has_value() && (swept->reaped > 0 || !swept->reap_failures.empty())) {
+            std::cerr << "startup orphan sweep: inspected " << swept->inspected << ", reaped "
+                      << swept->reaped << ", " << swept->reap_failures.size()
+                      << " destroy failure(s)\n";
+        } else if (!swept.has_value()) {
+            std::cerr << "startup orphan sweep skipped (non-fatal): " << swept.error().message << "\n";
+        }
+    }
 
     std::string const model = argc > 1 ? argv[1] : "gpt-4o-mini";
     std::string const session_id = "sandboxed-shell-chat-session";
