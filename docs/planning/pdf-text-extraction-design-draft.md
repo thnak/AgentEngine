@@ -1,11 +1,26 @@
 # Design draft — a first-party PDF text-extraction tool, and its companion skill
 
-**Status: Revision 2 — closes round-1 red-team's 4 MUST-FIX findings, addresses its 5 SHOULD-FIX
-findings.** No code yet; the central open question (whether the isolation design in §3a is actually
-implementable the way this revision assumes) still needs a second red-team round before an
-implementation ADR builds against this. Continues 009 §7's "Document extraction" catalog row after
-ADR-106 settled the license question (PDFium, BSD-3-Clause, not poppler/mupdf). Covers the PDF-text-
-layer slice only — DOCX/PPTX/XLSX stays explicitly out of scope, per ADR-106 §3.
+**Status: Revision 3 — replaces Revision 2's §3a wholesale after round 2 found its central citation
+FABRICATED (neither `MediatedPythonRunner` nor `MediatedShellRunner` actually uses
+`native_process_spawn`) and its host-memory-exhaustion claim a non-sequitur against its own text. No
+code yet; not yet re-attacked.** Continues 009 §7's "Document extraction" catalog row after ADR-106
+settled the license question (PDFium, BSD-3-Clause, not poppler/mupdf). Covers the PDF-text-layer
+slice only — DOCX/PPTX/XLSX stays explicitly out of scope, per ADR-106 §3.
+
+**Round-2 red-team's verdict on Revision 2**, verbatim summary: not ready, and its findings were more
+serious than round 1's — not omissions but affirmative false claims that survived a revision cycle
+meant to close exactly that class of defect. Two MUST-FIX: (1) §3a's citation of `native_process_
+spawn` as what `MediatedPythonRunner`/`MediatedShellRunner` use is checkably false — `MediatedShellRunner`
+spawns no OS process at all (in-process dispatch); `MediatedPythonRunner` uses `NativeJailBackend::
+create_python_worker()`, which has its own independent `CreateProcessW`/AppContainer path.
+`native_process_spawn` is used ONLY by ADR-071's deliberately-unsandboxed native providers — reusing
+it would give the PDFium child NO AppContainer/seccomp confinement, a regression from what round-1
+finding 1 actually wanted. (2) §3a's own text has `fetch_source_bytes` reading the whole `path`-source
+file into HOST-process memory via `FileSystemAdapter::read_file()` (still size-unlimited, confirmed)
+BEFORE any child process exists — so the child's OS resource limit cannot bound that read; §4's
+"blast radius bounded by the child's own OS resource limit" claim does not follow from §3a's own
+architecture. This revision corrects both by citing and reusing the REAL mechanism (below), not the
+false one.
 
 Scope was widened before round 1, at the project owner's own direction: a first-party *tool* this size
 should ship with a first-party *skill* alongside it, not the tool alone. §8f's five generic skills
@@ -83,77 +98,101 @@ stopped the run. `truncated_pages` is `pages_processed < total_page_count`, kept
 the same reason `ReadContentReply::truncated` is its own bool rather than requiring a caller to
 compare two counts.
 
-### 3a. Isolation posture (closes round-1 MUST-FIX 1 and 2 together)
+### 3a. Isolation posture (Revision 3, replaces the false Revision-2 citation)
 
-**The actual PDFium decode runs in a dedicated child process, not in the host `agentengine` process,
-and not on a worker thread inside it.** Spawned via the real, already-shipped `native_process_spawn`
-machinery `MediatedPythonRunner`/`MediatedShellRunner` already use for exactly this reason — process
-isolation for untrusted-input-handling code, with a safe, OS-level kill as the cancellation primitive.
-This directly answers round-1 finding 1 (a PDFium memory-corruption bug now corrupts a throwaway
-child process's address space, not the address space that holds every session's `CapabilitySet`/
-`BoundCapability` state) and finding 2 (round 1 correctly showed Revision 1's "worker thread +
-cancellation" claim did NOT actually match its own cited precedent — this revision fixes that by
-making the mechanism ACTUALLY match: a real child process, killed by the OS, the same as those two
-runners already do, not a thread-termination primitive that risks corrupting PDFium's process-global
-`FPDF_InitLibrary` state for concurrent calls).
+**Verified this revision, by reading the real code, not assumed:** `MediatedPythonRunner`'s real
+isolation mechanism is `NativeJailBackend::create_python_worker()` (`src/backends/native_jail/
+native_jail_backend.cpp`) — a long-lived worker process, launched with a real `SECURITY_CAPABILITIES`
+AppContainer profile on Windows (`grant_path()`-based mount grants, exactly the primitive this design
+needs for the `path` source below) and, confirmed via `linux_native_jail_backend.cpp`/`seccomp_
+filter.hpp`/`cgroup_limits.hpp`, a real Linux parity path (`clone()` + seccomp + cgroups v2 — NOT the
+Windows-only mechanism round 2 assumed was the only option). Resource enforcement is `JobObjectLimits`
+(Windows) / cgroups v2 (Linux): `job_object_limits.hpp`'s own MEASURED FINDING (11-run sample,
+`tests/test_job_object_limits.cpp`) is load-bearing for this design and must be inherited, not
+re-discovered — `wall_ms` fired within a few ms of its deadline in every run and is the mechanism this
+whole design's timing guarantee rests on; `cpu_ms`/`JOB_OBJECT_LIMIT_JOB_TIME` fired in only 3/11 runs
+(1.38x-8.22x over budget when it did) and must NOT be relied on alone. `memory_bytes` has a real
+kernel signal (`JOB_OBJECT_MSG_JOB_MEMORY_LIMIT` via an I/O completion port), not a heuristic.
+Communication is a duplex anonymous-pipe pair (`down_read`/`up_write`, handle values passed on the
+child's command line, non-inherited otherwise), carrying a JSON-envelope protocol (`call_id`/
+`exec_seq`/`kind`/`payload` — `mediated_python_worker_protocol.hpp`) already designed to be extended
+with new `kind` values (its own file-top comment: "Slice 2... does not pre-declare typed payload
+structs for those five kinds — every field they need is expressible" through the existing envelope).
 
-Consequence for §2's shared helper: `fetch_source_bytes` still runs in the HOST process (it only
-touches already-mediated `FileSystemAdapter`/`HostEgressProxy` seams, no untrusted-format parsing) —
-only the PDFium call itself crosses the process boundary, host process → child, fetched bytes as
-input, extracted text as output.
+**Design: a new sibling worker type, `create_pdf_worker()`, on the SAME `Instance`/pipe/AppContainer-
+or-seccomp/`JobObjectLimits`-or-cgroup/watchdog machinery `create_python_worker()` already uses** — not
+a new isolation mechanism invented from scratch, and explicitly NOT `native_process_spawn` (ADR-071's
+deliberately-unsandboxed native providers — the wrong precedent, as round 2 established). This gives
+real AppContainer/seccomp confinement (closes round-1 finding 1's actual concern — a PDFium memory-
+corruption bug now runs inside a worker with no ambient filesystem/network reach beyond its explicit
+grants, not merely a separate address space) and the measured-reliable `wall_ms` cancellation
+primitive (closes round-1 finding 2 for real this time, against a mechanism actually verified to
+provide it).
 
-**Not decided by this revision**: the exact process-boundary mechanics (a new small dedicated helper
-binary this project builds and ships alongside `agentengine`, vs. some other shape); how bytes/text
-cross the boundary (a pipe, a temp file, shared memory) and what mediation that crossing itself needs;
-whether `MediatedPythonRunner`/`MediatedShellRunner`'s spawn machinery is directly reusable as-is or
-needs its own extension for a "spawn a helper, feed it bytes, get text back" shape distinct from
-"spawn an interactive interpreter/shell." This is real, non-trivial implementation-ADR work, not a
-detail — flagged honestly rather than glossed as "just reuse the existing spawn code."
+**Lifecycle: per-SESSION, not per-call** — one PDF worker created lazily on a session's first
+`extract_pdf_text` call and reused for subsequent calls in that session, mirroring `create_python_
+worker()`'s own per-session `Instance` lifetime (`exec_session()` is called repeatedly against one
+long-lived handle, not re-spawned per call). This is a deliberate design choice, not an oversight:
+spawning a fresh AppContainer/seccomp process PER CALL would introduce a real, uncapped spawn-rate
+cost (many cheap calls, each paying full process-creation overhead) that Revision 2 left as an open
+question and round 2 correctly flagged as a new, unnamed I8 target. Per-session reuse amortizes that
+cost the same way the Python worker already does, with no new cap needed for it.
 
-## 4. Resource caps (I8) — revised around the process boundary, still not sized
+**The host-memory-exhaustion fix (closes round-1 MUST-FIX 3 and round-2 MUST-FIX 2 together, this
+time by actually changing where the read happens, not by asserting a boundary that didn't reach it):**
+for the `path` source, the HOST does not call `FileSystemAdapter::read_file()` at all. Instead, the
+PDF worker's own AppContainer/seccomp profile is granted read access to the specific source path (via
+`grant_path()`, the exact mechanism `create_python_worker()` already uses for `python_home`/`extra_
+sys_path` grants) and the WORKER reads the file itself, inside its own `JobObjectLimits`/cgroup-capped
+process — an oversized file now blows up the WORKER's memory limit (a real, kernel-signaled,
+completion-port-observed event, §4), not the host's. For the `url` source, the existing host-side
+`HostEgressProxy` fetch (`net_egress_proxy.hpp`, already a real streaming byte-cap independent of
+grant `byte_cap`) is unaffected and safe as before — those already-size-bounded bytes are shipped to
+the worker over the downstream pipe as an inline payload, not re-read from anywhere.
 
-The child-process boundary (§3a) changes what these caps are FOR: they are no longer the only thing
-standing between a hostile PDF and the host process — the process boundary already bounds worst-case
-BLAST RADIUS (a runaway/corrupted child can be killed with no risk to the host). They are still needed
-to bound COST (a legitimate caller shouldn't be able to tie up unbounded child-process CPU/memory/
-wall-clock even without any exploit involved — I8 is about budget enforcement, not just crash safety).
+**Not decided by this revision**: the new `kind` value(s) `mediated_python_worker_protocol.hpp` needs
+for "extract this PDF" requests/responses (a real protocol-design task — see §4 item 3 for why this
+also needs to be a STREAMING kind, not one request/response pair); whether `create_pdf_worker()`
+shares `Instance`'s struct shape with `create_python_worker()`'s `PythonWorkerState` or needs its own
+sibling state struct; the worker binary itself (a new, small, PDFium-linked executable this project
+builds and ships, analogous to the existing Python worker binary `AE_PYTHON_WORKER_EXE_PATH` points
+at) — real, non-trivial implementation-ADR work, named honestly rather than glossed over.
 
-1. **Input byte cap — revised, round-1 MUST-FIX 3.** Round 1 found this was false as stated in
-   Revision 1: `FileSystemAdapter::read_file()` (`filesystem_adapter.hpp`) has no size parameter and
-   reads a whole file unconditionally, and `cap::FsRead::size_cap_bytes` is explicitly documented in
-   `capability.hpp` as unenforced anywhere in this codebase today — so for the `path` source, the
-   "reject before any PDFium call" cap cannot fire before the whole file is already loaded into host-
-   process memory via `fetch_source_bytes`. This revision does NOT claim that gap is closed — it
-   is explicitly NOT closed by this design, and is not this tool's gap to fix (it is `read_source`/
-   `FileSystemAdapter`'s). What §3a's process boundary DOES change: the byte cap's role shifts from
-   "the only protection" to "avoid needlessly spawning a child process for an obviously-oversized
-   input" — a cheap optimization, not the safety property. The url source remains fine as before
-   (`net_egress_proxy.hpp` already enforces a real streaming byte ceiling regardless of grant
-   `byte_cap`). A real size-limited read primitive for `FileSystemAdapter` is named here as a
-   worthwhile, separately-scoped follow-up (it would benefit `ReadContent`'s existing `path` source
-   too, not just this tool) — not required to unblock this design, since §3a's isolation already
-   bounds the worse outcome (host-process memory exhaustion) that made this a MUST-FIX in Revision 1.
-2. **Child-process OS resource limits — revised, replaces Revision 1's worker-thread wall-clock cap
-   (round-1 MUST-FIX 2).** The child process gets a real OS-enforced ceiling — a Job Object memory/
-   time limit on Windows, an `rlimit`/cgroup equivalent on Linux — sized from real measurement (not
-   guessed), covering memory AND wall-clock in one mechanism tied to the process itself rather than a
-   heuristic over PDFium's own page-by-page progress. This also directly closes round-1 SHOULD-FIX 6
-   (a single pathological page, or an expensive document-open/xref-parse step before any page is even
-   reached, is now bounded by the SAME process-wide ceiling — no separate per-page heuristic needed to
-   catch a cost concentrated in one place rather than spread across pages).
-3. **Page-count cap, now `pages_processed`-driven** — extraction proceeds page-by-page; if the
-   process-level ceiling (#2) fires mid-document, `pages_processed` (§3) reports exactly how far it
-   got, and `truncated_pages` is `true`. Needs to be a real, tested, fail-**visible** behavior — a
-   killed child process must produce a real partial reply with `pages_processed` accurately reflecting
-   what was actually returned before the kill, not a bare tool-call error that discards a partial
-   result the child had already produced and could have returned.
+## 4. Resource caps (I8) — grounded in `job_object_limits.hpp`'s real, measured mechanism
 
-None of this is optional per CLAUDE.md's "Machine safety" section. §3a/§4 together give a follow-up
-red-team round concrete targets: whether the process-spawn-per-call overhead itself is an acceptable
-cost, whether the OS resource-limit mechanism is actually correctly applied on both platforms, and
-whether a killed child can genuinely still hand back a valid partial `pages_processed` result or
-whether killing it necessarily loses everything (a real, unresolved implementation question this
-revision does not claim to have answered).
+§3a's redesign changes where the memory risk from an oversized `path`-source file actually lands (the
+worker, not the host) — but the cap that bounds it needs to be the ALREADY-MEASURED-RELIABLE one, not
+an assumed one.
+
+1. **Worker `ResourceLimits::memory_bytes`, enforced by `JobObjectLimits`/cgroups v2, is the real cap
+   on both sources.** For `path`: the worker's own read of the granted file is bounded by its process's
+   memory ceiling — a real kernel signal (`JOB_OBJECT_MSG_JOB_MEMORY_LIMIT` via completion port on
+   Windows; `memory.events`' `oom_kill` on Linux cgroups v2), not a heuristic, per `job_object_limits.
+   hpp`'s own documented mechanism. For `url`: `net_egress_proxy.hpp`'s existing streaming byte cap
+   still applies before the (already-bounded) bytes are shipped to the worker at all — belt-and-
+   suspenders, not the only protection either way. A real size-limited read primitive for
+   `FileSystemAdapter` (benefiting `ReadContent`'s own `path` source too) remains a worthwhile,
+   separately-scoped follow-up, but is no longer this design's blocking gap — the worker's memory cap
+   is the actual, measured backstop now, not an aspirational one.
+2. **`wall_ms` is the trustworthy timing cap; `cpu_ms` is NOT, per `job_object_limits.hpp`'s own
+   11-run measured finding (3/11 fired, 1.38x-8.22x over budget when it did).** This design's wall-
+   clock guarantee rests on `wall_ms` alone, inherited directly from `wait_or_kill()`'s own already-
+   proven contract — not a new, unverified mechanism this draft would otherwise have had to invent and
+   measure itself. Also closes round-1 SHOULD-FIX 6 (a single pathological page, or an expensive
+   document-open/xref-parse step before any page is reached, is bounded by the SAME process-wide
+   `wall_ms`/memory ceiling — no separate per-page heuristic needed).
+3. **`pages_processed` via a STREAMING protocol `kind`, not a single request/response.** For a killed
+   worker to yield an accurate partial `pages_processed` (§3), the extraction protocol must emit one
+   message per completed page over the upstream pipe as it goes, not buffer the whole result and send
+   it once at the end — the host counts completed-page messages received before `wait_or_kill()`
+   reports a `wall_clock_timeout`/`memory_limit` kill, and that count IS `pages_processed`. This is a
+   real, named protocol-design task (§3a's "not decided" list) — flagged as a requirement here
+   precisely because round 2 found Revision 2 silently assumed a single "extracted text as output"
+   response could serve this purpose, which it structurally cannot.
+
+Per-session worker reuse (§3a) means spawn cost is NOT a per-call I8 target — closes round-2's
+spawn-rate-DoS finding by design rather than by adding a fourth cap. CLAUDE.md's "Machine safety"
+section still applies to all three items above; none are optional.
 
 ## 5. The companion skill: `extracting-document-text`
 
@@ -191,20 +230,27 @@ were one call away.
 ## 6. What this draft does NOT decide
 
 - §2: whether sharing `fetch_source_bytes` is worth `ReadContent`'s own error-code migration cost, vs.
-  accepting duplication (option (a)).
-- §3a: the concrete process-boundary mechanics (new helper binary vs. some other shape; how bytes/
-  text cross the boundary; whether existing spawn machinery needs its own extension) — real,
-  non-trivial implementation-ADR work.
-- §4: exact OS resource-limit values (memory ceiling, wall-clock ceiling) — needs real measurement
-  against representative and adversarial PDFs, on both platforms.
-- Whether a killed child process can still yield a valid, accurately-reported partial
-  `pages_processed` result, or whether that turns out to be unreliable enough that a killed call must
-  instead be a hard failure with no partial reply at all (a real open question, not assumed either way).
+  accepting duplication (option (a)) — unchanged from Revision 2; §3a's redesign doesn't bear on this.
+- §3a/§4: the new `mediated_python_worker_protocol.hpp` `kind` value(s) for PDF extraction requests
+  and STREAMING per-page responses — a real protocol-design task, not yet designed field-by-field.
+- §3a: whether `create_pdf_worker()`'s state struct shares shape with `PythonWorkerState` or needs its
+  own; the actual new PDFium-linked worker binary this project would build and ship.
+- §3a: whether per-session worker reuse (chosen to avoid round-2's spawn-rate-DoS finding) introduces
+  its OWN new question — e.g. can two concurrent `extract_pdf_text` calls in the same session share
+  one worker safely, or does this need the same kind of single-flight serialization `exec_session()`
+  already has for the Python worker (`"exec_session() is already in progress on this handle"`,
+  confirmed in the real code) — not yet checked against this design's own needs.
+- §4: exact `ResourceLimits::memory_bytes`/`wall_ms` VALUES — needs real measurement against
+  representative and adversarial PDFs, on both platforms, the same way `job_object_limits.hpp`'s own
+  cited 11-run finding was real measurement, not a guess.
 - PDFium vendoring specifics (pin, `FetchContent` source, WASI-SDK buildability) — ADR-106 §3
   territory, unchanged.
 - The skill's final prose beyond fixing round 1's factual error — still not to be shipped verbatim
   without the same review weight the existing five skills got.
-- **Round 2 of red-team.** This revision closes round 1's findings; it has not yet been attacked
-  itself. §3a's isolation design in particular — brand new this revision, the single biggest structural
-  change — is exactly the kind of claim ("this actually matches the cited precedent now") that needs
-  independent verification, not self-certification, before an implementation ADR builds against it.
+- **Round 3 of red-team.** This revision replaces Revision 2's fabricated isolation citation with a
+  verified real one and redesigns the memory-exhaustion fix to actually change where the read happens
+  — but "verified this time" was also Revision 2's own claim about Revision 1, and was wrong. §3a's
+  Linux-parity claim, the per-session-reuse concurrency question just named above, and whether
+  `create_pdf_worker()` is actually as mechanical an extension of `create_python_worker()` as this
+  draft assumes all need independent adversarial verification before an implementation ADR builds
+  against this, not self-certification from the same process that produced Revision 2's errors.
