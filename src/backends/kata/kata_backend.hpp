@@ -465,11 +465,17 @@ private:
                                        // instance's exec()/destroy() makes (SandboxSpec::limits).
         std::uint64_t output_cap_bytes = 0;  // Slice 2: 0 = use kOutputSafetyCapBytes; nonzero
                                               // overrides it (SandboxSpec::limits.output_bytes).
-        std::string rootfs_dir;       // SLICE 9: the final container root -- as of SLICE 11 this is
-                                       // ALWAYS a mount (a plain bind mount of lower_dir when
-                                       // disk_bytes is unset, or a real overlay when it is set), never
-                                       // the literal `ctr images mount` target directly (see
-                                       // lower_dir below) -- destroy() unmounts and removes this.
+        std::string rootfs_dir;       // SLICE 9: the final container root -- as of SLICE 12 this is
+                                       // ALWAYS a real overlay mount (lower_dir read-only, plus a
+                                       // writable upper layer -- loop-device-backed ext4 when
+                                       // disk_quota_active, a plain tmpfs otherwise), never a plain
+                                       // read-only bind mount and never the literal `ctr images mount`
+                                       // target directly (see lower_dir below) -- a real, empirically-
+                                       // reproduced ENOENT against a live Kata deployment forced this:
+                                       // Kata's guest agent does not auto-create a missing mount-point
+                                       // directory (unlike runc), so this class needs SOME writable
+                                       // layer to pre-create them into, in every case, not just the
+                                       // disk-quota one. destroy() unmounts and removes this.
         std::string lower_dir;        // SLICE 11: the REAL `ctr images mount` target -- destroy()/
                                        // create()'s own failure-path cleanup always
                                        // `ctr images unmount` THIS path, never rootfs_dir (fixes a
@@ -477,12 +483,18 @@ private:
                                        // SLICE 11 header comment).
         std::string loop_device;      // SLICE 11: the `/dev/loopN` device backing this instance's
                                        // disk-quota filesystem -- disk_quota_active only, empty
-                                       // otherwise. Recorded here so destroy() detaches the EXACT
-                                       // device this instance attached, never re-discovered.
-        bool disk_quota_active = false;  // SLICE 11: true iff create() built the loop-device/overlay
-                                          // disk-quota stack for this instance (spec.limits.disk_bytes
-                                          // > 0) -- destroy() only reverses that stack when this is
-                                          // set; otherwise rootfs_dir is a plain bind mount.
+                                       // otherwise (the no-quota case's writable layer is a plain
+                                       // tmpfs, no loop device involved). Recorded here so destroy()
+                                       // detaches the EXACT device this instance attached, never
+                                       // re-discovered.
+        bool disk_quota_active = false;  // SLICE 11: true iff create() built the loop-device-backed,
+                                          // fixed-size ext4 writable layer for this instance
+                                          // (spec.limits.disk_bytes > 0) rather than the plain,
+                                          // unbounded tmpfs every other instance gets (SLICE 12) --
+                                          // destroy() only attempts a loop-device detach when this is
+                                          // set; the overlay/writable-layer unmounts themselves happen
+                                          // unconditionally either way (rootfs_dir is always a real
+                                          // overlay now, never a plain bind mount).
         bool net_created = false;     // SLICE 10: true iff create() ran the ip-netns/cnitool/nft
                                        // sequence for this instance -- destroy() only reverses it
                                        // when this is set (deny_all instances never touch it).

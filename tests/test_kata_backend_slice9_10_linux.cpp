@@ -239,7 +239,15 @@ int main() {
                   "past the declared budget");
 
             ExecRequest fits_req;
-            fits_req.source = "dd if=/dev/zero of=/tmp/small.bin bs=1M count=1 2>&1; echo EXIT_CODE=$?";
+            // STALE-TEST-BUG FIX (found via this session's first-ever real deployment run): the prior
+            // case's `dd` writes in 1 MiB blocks and fails partway through (ENOSPC), but a failed `dd`
+            // does not clean up its own PARTIAL output -- `/tmp/fill.bin` is left behind holding
+            // however many whole blocks it managed to write before the cap hit, which can be close to
+            // the ENTIRE 8 MiB quota on its own. Without removing it first, this "well within the cap"
+            // write was racing the PRIOR case's own leftover usage, not a fresh budget -- fixed by
+            // removing the failed fill's partial output before measuring a clean, fresh write.
+            fits_req.source = "rm -f /tmp/fill.bin; dd if=/dev/zero of=/tmp/small.bin bs=1M count=1 "
+                               "2>&1; echo EXIT_CODE=$?";
             auto fits_out = backend.exec(*handle, fits_req, ctx);
             check(fits_out.has_value() && fits_out->klass == exec_outcome_class::ok &&
                       fits_out->stdout_text.find("EXIT_CODE=0") != std::string::npos,
