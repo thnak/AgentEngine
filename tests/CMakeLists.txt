@@ -2253,6 +2253,21 @@ target_link_libraries(test_composed_sandbox_providers_live PRIVATE
   agentengine::sandbox_io agentengine_warnings)
 add_test(NAME test_composed_sandbox_providers_live COMMAND test_composed_sandbox_providers_live)
 
+# ---- ADR-106 (ContainerdExecutionSurface promotion): the SECOND real ExecutionSurface conformer,
+# closing the identity-native design's own "only one conformer exists, does the three-verb shape
+# generalize" residual. Linux-only (agentengine/sandbox/containerd_execution_surface.hpp's own top
+# comment -- `ctr` only meaningfully talks to a local containerd Unix socket), header-only (no new
+# CMake library target needed, matching DockerExecutionSurface's own shape). REQUIRES a running
+# containerd daemon reachable via the `ctr` CLI on PATH -- same "test just fails cleanly if the daemon
+# isn't reachable" posture as every other ExecutionSurface conformer's own test, not a special opt-in
+# flag (unlike test_kata_backend_linux, which needs a materially heavier KVM/Kata deployment).
+if(NOT WIN32)
+  add_executable(test_containerd_execution_surface test_containerd_execution_surface.cpp)
+  target_link_libraries(test_containerd_execution_surface PRIVATE agentengine::core agentengine_warnings)
+  add_test(NAME test_containerd_execution_surface COMMAND test_containerd_execution_surface)
+  set_tests_properties(test_containerd_execution_surface PROPERTIES TIMEOUT 60)
+endif()
+
 # ---- Everything below stays WIN32-only, a real, disclosed platform-parity gap (not a stale gate):
 # the embedded-CPython Python-runner composition tests (AGENTENGINE_BUILD_PYTHON_RUNNER) need the
 # embedded native CPython interpreter, itself Windows-only for reasons unrelated to SandboxToolProvider
