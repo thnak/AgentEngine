@@ -834,6 +834,119 @@ if(AGENTENGINE_BUILD_PYTHON_RUNNER)
     "Directory containing python3<minor>.dll, prepended to PATH for tests" FORCE)
 endif()
 
+# ---- PDF text extraction (009 §7's "Document extraction" catalog row; ADR-106 settled the license
+# question -- PDFium, BSD-3-Clause, not poppler/mupdf) -- docs/planning/pdf-text-extraction-design-
+# draft.md Revision 7. Off by default, matching AGENTENGINE_WITH_WASM/AGENTENGINE_BUILD_PYTHON_RUNNER's
+# own posture for a big, opt-in, untrusted-input-handling dependency.
+option(AGENTENGINE_WITH_PDF
+  "Vendor PDFium and build the agentengine_pdf_worker sandboxed PDF text-extraction binary + the extract_pdf_text tool"
+  OFF)
+
+if(AGENTENGINE_WITH_PDF)
+  # Default (AGENTENGINE_VENDOR_PDFIUM=ON): a pinned, checksummed, prebuilt PDFium release from
+  # bblanchon/pdfium-binaries (BSD-3-Clause wrapper around Google's own PDFium build -- ADR-106's own
+  # citation) is fetched directly from its GitHub releases. Building PDFium from source requires
+  # Chromium's own `gn`/`ninja`/`depot_tools` toolchain and a multi-GB checkout -- genuinely
+  # infeasible to do as part of this project's own build, the same reason wasmtime/CPython above are
+  # vendored as prebuilt releases, not built from source here either. Both archives' SHA256 verified
+  # by hand against a fresh download during this task (matching AGENTENGINE_VENDOR_WASMTIME/
+  # AGENTENGINE_VENDOR_PYTHON's own provenance posture above).
+  #
+  # Override: pass -DAGENTENGINE_VENDOR_PDFIUM=OFF and -DAGENTENGINE_PDFIUM_ROOT=<path to an
+  # already-extracted PDFium release> to point at any other install instead.
+  option(AGENTENGINE_VENDOR_PDFIUM
+    "Fetch a pinned, checksummed PDFium release instead of using a local install"
+    ON)
+
+  set(AE_VENDORED_PDFIUM_VERSION "chromium%2F8021")  # bblanchon/pdfium-binaries tag; %2F = URL-escaped '/'
+
+  if(AGENTENGINE_VENDOR_PDFIUM)
+    include(FetchContent)
+    if(WIN32)
+      FetchContent_Declare(ae_vendored_pdfium
+        URL "https://github.com/bblanchon/pdfium-binaries/releases/download/${AE_VENDORED_PDFIUM_VERSION}/pdfium-win-x64.tgz"
+        URL_HASH SHA256=adac8ce034015427b5daa81f8eeddfcc8e84bc2a9f036f007890ff18bd4388c4
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+      FetchContent_MakeAvailable(ae_vendored_pdfium)
+      set(AGENTENGINE_PDFIUM_ROOT "${ae_vendored_pdfium_SOURCE_DIR}" CACHE PATH
+        "Root of the vendored PDFium install" FORCE)
+    elseif(UNIX)
+      FetchContent_Declare(ae_vendored_pdfium
+        URL "https://github.com/bblanchon/pdfium-binaries/releases/download/${AE_VENDORED_PDFIUM_VERSION}/pdfium-linux-x64.tgz"
+        URL_HASH SHA256=685f7930cd184ea22cd77afe707c1cf53b173d18118b6e16cb213c9277d7cdc3
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+      FetchContent_MakeAvailable(ae_vendored_pdfium)
+      set(AGENTENGINE_PDFIUM_ROOT "${ae_vendored_pdfium_SOURCE_DIR}" CACHE PATH
+        "Root of the vendored PDFium install" FORCE)
+    else()
+      message(FATAL_ERROR
+        "AGENTENGINE_VENDOR_PDFIUM=ON has no fetch wired up on this platform. Pass "
+        "-DAGENTENGINE_VENDOR_PDFIUM=OFF and -DAGENTENGINE_PDFIUM_ROOT=<path to an extracted PDFium "
+        "release> instead.")
+    endif()
+  endif()
+
+  set(AGENTENGINE_PDFIUM_ROOT "${AGENTENGINE_PDFIUM_ROOT}" CACHE PATH
+    "Root of the PDFium install (must contain include/fpdfview.h)")
+
+  if(NOT AGENTENGINE_PDFIUM_ROOT OR NOT EXISTS "${AGENTENGINE_PDFIUM_ROOT}/include/fpdfview.h")
+    message(FATAL_ERROR
+      "AGENTENGINE_WITH_PDF is ON but AGENTENGINE_PDFIUM_ROOT ('${AGENTENGINE_PDFIUM_ROOT}') does not "
+      "contain include/fpdfview.h. Either leave AGENTENGINE_VENDOR_PDFIUM=ON (the default) or pass "
+      "-DAGENTENGINE_PDFIUM_ROOT=<path to an extracted PDFium release> with "
+      "-DAGENTENGINE_VENDOR_PDFIUM=OFF.")
+  endif()
+
+  add_library(pdfium SHARED IMPORTED GLOBAL)
+  set_target_properties(pdfium PROPERTIES
+    INTERFACE_INCLUDE_DIRECTORIES "${AGENTENGINE_PDFIUM_ROOT}/include")
+  if(WIN32)
+    set_target_properties(pdfium PROPERTIES
+      IMPORTED_LOCATION "${AGENTENGINE_PDFIUM_ROOT}/bin/pdfium.dll"
+      IMPORTED_IMPLIB   "${AGENTENGINE_PDFIUM_ROOT}/lib/pdfium.dll.lib")
+  else()
+    set_target_properties(pdfium PROPERTIES
+      IMPORTED_LOCATION "${AGENTENGINE_PDFIUM_ROOT}/lib/libpdfium.so")
+  endif()
+
+  # ---- The sandboxed worker binary (pdf_worker_main.cpp) -- reads one PDF path (argv[1], already
+  # placed by the host into a scratch directory it granted read-only access to -- see
+  # NativeJailBackend::grant_ro_path_once()/LinuxNativeJailBackend's ordinary SandboxSpec.mounts,
+  # docs/planning/pdf-text-extraction-design-draft.md §3a), extracts text page-by-page via PDFium's
+  # C API, and writes delimited records to stdout under its own self-queried output-byte ceiling
+  # (§3a/§4 item 5) -- NEVER initializes PDFium's FormFill/V8 engine (round-1 red-team's own
+  # mitigating-fact finding: plain FPDFText_* extraction does not execute embedded PDF JavaScript).
+  add_executable(agentengine_pdf_worker src/backends/native_jail/pdf_worker_main.cpp)
+  target_link_libraries(agentengine_pdf_worker PRIVATE pdfium agentengine_warnings)
+  if(WIN32)
+    # pdfium.dll must sit next to the worker's own .exe -- same reason agentengine_python_worker.exe
+    # needs python3<minor>.dll copied alongside it above (CREATE_SUSPENDED inside an AppContainer with
+    # a fixed, minimal environment block that does not inherit the launching process's own PATH).
+    add_custom_command(TARGET agentengine_pdf_worker POST_BUILD
+      COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+        "${AGENTENGINE_PDFIUM_ROOT}/bin/pdfium.dll" "$<TARGET_FILE_DIR:agentengine_pdf_worker>"
+      COMMENT "Copying pdfium.dll next to agentengine_pdf_worker.exe")
+  endif()
+
+  # ---- extract_pdf_text tool (include/agentengine/tools/extract_pdf_text.hpp) -- spawns the worker
+  # above via NativeJailBackend::create()/exec() (Windows) or LinuxNativeJailBackend::create()/exec()
+  # (Linux), never links PDFium into the host process itself (§3a's whole isolation point).
+  add_library(agentengine_extract_pdf_text INTERFACE)
+  target_include_directories(agentengine_extract_pdf_text INTERFACE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include" "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  if(WIN32)
+    target_link_libraries(agentengine_extract_pdf_text INTERFACE
+      agentengine::core agentengine::native_jail_backend)
+  else()
+    target_link_libraries(agentengine_extract_pdf_text INTERFACE
+      agentengine::core agentengine::linux_native_jail_backend)
+  endif()
+  target_compile_definitions(agentengine_extract_pdf_text INTERFACE
+    AE_PDF_WORKER_EXE_PATH="$<TARGET_FILE:agentengine_pdf_worker>")
+  add_dependencies(agentengine_extract_pdf_text agentengine_pdf_worker)
+  add_library(agentengine::extract_pdf_text ALIAS agentengine_extract_pdf_text)
+endif()
+
 # ---- CLI chat (interactive validation of 009 §8's skill mechanism against a real model + real code
 # execution) -- only buildable when both a real chat backend (HTTPS) and a real Python embed
 # (AGENTENGINE_BUILD_PYTHON_RUNNER) are available; needs python3<minor>.dll reachable via PATH at run
