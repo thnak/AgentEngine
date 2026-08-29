@@ -243,8 +243,10 @@ on both platforms, before the existing character-set check runs.
   function actually gates today (none of which are attacker/model-reachable in the current, single
   production caller) — a future caller passing genuinely untrusted `image`/`host_path`/`container_path`
   values should re-examine this before relying on it as a complete defense.
-- **`remove(recursive=true)`'s shared recursion-depth hazard (ADR-103 §7) remains open**, untouched by
-  this ADR (different files).
+- **`remove(recursive=true)`'s shared recursion-depth hazard (ADR-103 §7)** — different files from this
+  ADR's own scope, so left untouched here; **SINCE FIXED (2026-08-29)**, same day, as a small, separate,
+  bounded follow-on (see ADR-103 §7's own updated entry) — noted here for anyone reading this ADR's
+  residuals list in isolation.
 - **The Windows-side `docker_cli_reject_unsafe_for_shell`/`docker_cli_reject_shell_breakout` blacklist
   itself was not re-audited character-by-character against `cmd.exe`'s full grammar in this pass** —
   out of scope (this ADR's job was Linux parity, and the Windows behavior is explicitly required to

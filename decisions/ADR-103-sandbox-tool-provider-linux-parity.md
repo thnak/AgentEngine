@@ -254,7 +254,11 @@ pre-existing gap.
   makes newly credible (rather than theoretical) for BOTH platforms. Converting it needs the identical
   explicit-stack treatment on both the Windows and Linux files for real parity — genuinely out of this
   pass's Linux-parity scope (it would mean editing the already-shipped Windows file too), named as
-  real, contained follow-on work.
+  real, contained follow-on work. **SINCE FIXED (2026-08-29)**: converted to the identical iterative,
+  explicit-path-string-stack pattern on both platforms, independently red-teamed (no new defect found;
+  the round additionally closed a Windows-side verification gap left open at fix time, and sharpened —
+  without changing — this section's own pre-existing symlink-follow disclosure, now in this function's
+  own top-of-file comment).
 - **Docker-dependent consumers remain untested on Linux**: `tools/sandboxed_shell_chat.cpp`,
   `tests/test_composed_sandbox_providers_live.cpp`, and the two ADR-096 C2 `compile_fail` probes all
   compose `SandboxToolProvider` alongside `MandatorySandboxProvider<DockerExecutionSurface>`, and this

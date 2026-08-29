@@ -32,15 +32,33 @@
 // already-accepted narrowing this codebase's own `create_one_directory` (Windows sibling) documents
 // for directory creation, not a new kind of gap this file introduces.
 //
-// NOT FIXED, disclosed (2026-08-28 red-team round): `remove(path, recursive=true)`'s own descent
-// (below) recurses one C++ stack frame per directory-tree level -- the IDENTICAL structural hazard
-// `accumulate_usage()` above was just fixed for, discovered by analogy while fixing that one, not
-// independently confirmed to crash. This is NOT a Linux-specific regression: the Windows sibling's
-// own `remove()` (`mediated_filesystem_adapter.cpp`) has the exact same recursive shape, and this
-// file's own `remove()` deliberately mirrors it. Left unfixed here -- converting it needs the
-// identical explicit-stack treatment on BOTH platforms for real parity, a real, contained, but
-// separate follow-on task (touching the already-shipped Windows file too, out of THIS pass's
-// Linux-parity scope), not attempted in this pass.
+// FIXED (2026-08-29, decisions/ADR-104-real-io-filesystem-linux-parity.md's own named follow-on):
+// `remove(path, recursive=true)` used to recurse one C++ stack frame per directory-tree level --
+// the IDENTICAL structural hazard `accumulate_usage()` above was fixed for (ADR-103's own real,
+// twice-reproduced segfault). `remove(recursive=true)` is guest-reachable the same way `usage()`
+// is (`mediated_shell_dispatch.cpp`'s `rm -r` builtin), so the same guest-created-arbitrarily-deep-
+// tree attack applies here too -- not independently re-reproduced as a crash this time (the shape
+// is identical to the already-proven one), but fixed proactively rather than left as a second,
+// now-credible instance of the same bug. This was NOT a Linux-specific regression: the Windows
+// sibling's own `remove()` (`mediated_filesystem_adapter.cpp`) had the exact same recursive shape,
+// fixed the identical way in the same pass, for real parity on both platforms (touching the
+// already-shipped Windows file too, deliberately, rather than leaving it as a disclosed-but-unfixed
+// asymmetry). See `remove()`'s own comment below for the iterative replacement and the one
+// observable-behavior residual it deliberately PRESERVES rather than silently changes while fixing
+// the unrelated recursion-depth issue: a symlink pointing to a directory is followed (not skipped
+// the way `accumulate_usage()`'s own, separately-reasoned policy skips symlinks), so its target's
+// contents are recursively deleted too -- unchanged from the pre-fix behavior on both platforms, a
+// real, if narrow, pre-existing hazard, disclosed here rather than silently fixed OR silently kept
+// unexamined. MORE PRECISELY CHARACTERIZED (2026-08-29, independent red-team round against this
+// exact fix, empirically confirmed unchanged from the pre-fix behavior via a rebuilt pre-fix binary
+// run against the identical scenario): the overall `remove()` call does NOT merely delete the
+// target's contents and otherwise succeed -- it deletes them, then FAILS overall (`ENOTDIR` on
+// Linux, `ERROR_DIR_NOT_EMPTY` on Windows) trying to remove the symlink/junction entry itself via
+// the directory-disposition path (a symlink is never a genuine directory to `AT_REMOVEDIR`/
+// `FileDispositionInfo`'s own directory-removal semantics). So a guest hitting this case sees
+// content it never asked to touch silently destroyed AND an overall failure report -- worse-shaped
+// than either "silently ignored" or "cleanly rejected up front," not a new hazard this pass
+// introduces, but real enough to flag more sharply than the original one-line disclosure did.
 //
 // `rename()`/`copy_file()`: implemented as copy-then-delete via `read_file`/`write_file`/`remove`,
 // identical in shape and in its own disclosed non-atomic residual to the Windows sibling's own
@@ -55,6 +73,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <cstring>
 #include <utility>
@@ -309,21 +328,66 @@ result<void> MediatedFileSystemAdapter::remove(std::string_view path, bool recur
     if (::fstat(h->get(), &st) != 0) return posix_error_v("fstat", errno);
     bool const is_dir = S_ISDIR(st.st_mode);
 
-    if (is_dir && recursive) {
-        auto entries = list_directory(path);
+    if (!is_dir || !recursive) {
+        auto [parent, leaf] = split_leaf(std::string(path));
+        auto parent_handle = open_dir_within_mount_root(root_, parent);
+        if (!parent_handle) return std::unexpected(parent_handle.error());
+        if (::unlinkat(parent_handle->get(), leaf.c_str(), is_dir ? AT_REMOVEDIR : 0) != 0) {
+            return posix_error_v("unlinkat", errno);
+        }
+        return {};
+    }
+
+    // Iterative post-order removal -- an explicit stack of MOUNT-RELATIVE PATH STRINGS (never open
+    // fds, never C++ recursion), matching `accumulate_usage()`'s own fix exactly: Phase 1 walks the
+    // tree breadth-first, deleting every non-directory entry immediately (no ordering dependency)
+    // and collecting every directory's own relative path into `dirs_to_remove`; Phase 2 removes
+    // those directories DEEPEST FIRST (sorted by '/' count, descending) so a directory's own
+    // `unlinkat(..., AT_REMOVEDIR)` never runs before everything inside it is already gone.
+    //
+    // Each child's type is determined by a FRESH `open_within_mount_root(child)` + `fstat` -- the
+    // exact same method the pre-fix recursive call used (not `list_directory()`'s own `DirEntry::
+    // is_directory`, which is `lstat`-based and would silently change this function's own symlink-
+    // following behavior; see this function's own top-of-file residual note for why that specific
+    // behavior is deliberately PRESERVED, not fixed, in this pass).
+    std::vector<std::string> stack{std::string(path)};
+    std::vector<std::string> dirs_to_remove{std::string(path)};
+    while (!stack.empty()) {
+        std::string const dir_path = std::move(stack.back());
+        stack.pop_back();
+
+        auto entries = list_directory(dir_path);
         if (!entries) return std::unexpected(entries.error());
         for (auto const& e : *entries) {
-            std::string child = std::string(path) + (path.empty() ? "" : "/") + e.name;
-            auto r = remove(child, true);
-            if (!r) return r;
+            std::string const child = dir_path.empty() ? e.name : dir_path + "/" + e.name;
+            auto child_h = open_within_mount_root(root_.string(), child, O_RDONLY);
+            if (!child_h) return std::unexpected(child_h.error());
+            struct stat child_st {};
+            if (::fstat(child_h->get(), &child_st) != 0) return posix_error_v("fstat", errno);
+            if (S_ISDIR(child_st.st_mode)) {
+                stack.push_back(child);
+                dirs_to_remove.push_back(child);
+            } else {
+                auto [child_parent, child_leaf] = split_leaf(child);
+                auto child_parent_handle = open_dir_within_mount_root(root_, child_parent);
+                if (!child_parent_handle) return std::unexpected(child_parent_handle.error());
+                if (::unlinkat(child_parent_handle->get(), child_leaf.c_str(), 0) != 0) {
+                    return posix_error_v("unlinkat", errno);
+                }
+            }
         }
     }
 
-    auto [parent, leaf] = split_leaf(std::string(path));
-    auto parent_handle = open_dir_within_mount_root(root_, parent);
-    if (!parent_handle) return std::unexpected(parent_handle.error());
-    if (::unlinkat(parent_handle->get(), leaf.c_str(), is_dir ? AT_REMOVEDIR : 0) != 0) {
-        return posix_error_v("unlinkat", errno);
+    std::sort(dirs_to_remove.begin(), dirs_to_remove.end(), [](std::string const& a, std::string const& b) {
+        return std::count(a.begin(), a.end(), '/') > std::count(b.begin(), b.end(), '/');
+    });
+    for (auto const& dir_path : dirs_to_remove) {
+        auto [parent, leaf] = split_leaf(dir_path);
+        auto parent_handle = open_dir_within_mount_root(root_, parent);
+        if (!parent_handle) return std::unexpected(parent_handle.error());
+        if (::unlinkat(parent_handle->get(), leaf.c_str(), AT_REMOVEDIR) != 0) {
+            return posix_error_v("unlinkat", errno);
+        }
     }
     return {};
 }

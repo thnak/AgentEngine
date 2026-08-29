@@ -120,22 +120,78 @@ result<void> MediatedFileSystemAdapter::remove(std::string_view path, bool recur
 
     BY_HANDLE_FILE_INFORMATION info{};
     if (!GetFileInformationByHandle(h->get(), &info)) return win_error_v("GetFileInformationByHandle", GetLastError());
-    bool is_dir = (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    bool const is_dir = (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
 
-    if (is_dir && recursive) {
-        auto entries = list_directory(path);
+    if (!is_dir || !recursive) {
+        FILE_DISPOSITION_INFO disp{};
+        disp.DeleteFile = TRUE;
+        if (!SetFileInformationByHandle(h->get(), FileDispositionInfo, &disp, sizeof(disp))) {
+            return win_error_v("SetFileInformationByHandle(FileDispositionInfo)", GetLastError());
+        }
+        return {};
+    }
+
+    // Iterative post-order removal (2026-08-29, decisions/ADR-104-real-io-filesystem-linux-parity.md's
+    // own named follow-on) -- this used to recurse one C++ stack frame per directory-tree level, the
+    // IDENTICAL structural hazard ADR-103's own MUST-FIX closed for the Linux sibling's `usage()`
+    // (a real, twice-reproduced segfault against a guest-created, arbitrarily-deep directory tree --
+    // `remove(recursive=true)` is guest-reachable the exact same way, via `rm -r`). Fixed here the
+    // same way the Linux sibling's `remove()` was fixed in the same pass, for real parity on both
+    // platforms: an explicit stack of MOUNT-RELATIVE PATH STRINGS, never open handles and never C++
+    // recursion. Phase 1 walks the tree, deleting every non-directory entry immediately (no ordering
+    // dependency) and collecting every directory's own relative path; Phase 2 removes those
+    // directories DEEPEST FIRST (sorted by '/' count, descending) so a directory is always empty by
+    // the time its own deletion runs.
+    //
+    // Each child's type is determined by a FRESH `open_within_mount_root(child)` +
+    // `GetFileInformationByHandle` -- the exact same method the pre-fix recursive call used (not
+    // `list_directory()`'s own listing), so this fix changes ONLY the recursion mechanism, not any
+    // other observable behavior: a symlink/reparse-point-to-directory is still followed and its
+    // TARGET's contents recursively deleted too, unchanged from the pre-fix behavior on both
+    // platforms -- a real, if narrow, pre-existing hazard, disclosed rather than silently fixed or
+    // silently left unexamined (see the Linux sibling's own top-of-file comment for the fuller note).
+    std::vector<std::string> stack{std::string(path)};
+    std::vector<std::string> dirs_to_remove{std::string(path)};
+    while (!stack.empty()) {
+        std::string const dir_path = std::move(stack.back());
+        stack.pop_back();
+
+        auto entries = list_directory(dir_path);
         if (!entries) return std::unexpected(entries.error());
         for (auto const& e : *entries) {
-            std::string child = std::string(path) + (path.empty() ? "" : "/") + e.name;
-            auto r = remove(child, true);
-            if (!r) return r;
+            std::string const child = dir_path.empty() ? e.name : dir_path + "/" + e.name;
+            auto child_h = open_within_mount_root(root_.wstring(), child,
+                                                   DELETE | FILE_LIST_DIRECTORY | GENERIC_READ, OPEN_EXISTING);
+            if (!child_h) return std::unexpected(child_h.error());
+            BY_HANDLE_FILE_INFORMATION child_info{};
+            if (!GetFileInformationByHandle(child_h->get(), &child_info)) {
+                return win_error_v("GetFileInformationByHandle", GetLastError());
+            }
+            if ((child_info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+                stack.push_back(child);
+                dirs_to_remove.push_back(child);
+            } else {
+                FILE_DISPOSITION_INFO child_disp{};
+                child_disp.DeleteFile = TRUE;
+                if (!SetFileInformationByHandle(child_h->get(), FileDispositionInfo, &child_disp, sizeof(child_disp))) {
+                    return win_error_v("SetFileInformationByHandle(FileDispositionInfo)", GetLastError());
+                }
+            }
         }
     }
 
-    FILE_DISPOSITION_INFO disp{};
-    disp.DeleteFile = TRUE;
-    if (!SetFileInformationByHandle(h->get(), FileDispositionInfo, &disp, sizeof(disp))) {
-        return win_error_v("SetFileInformationByHandle(FileDispositionInfo)", GetLastError());
+    std::sort(dirs_to_remove.begin(), dirs_to_remove.end(), [](std::string const& a, std::string const& b) {
+        return std::count(a.begin(), a.end(), '/') > std::count(b.begin(), b.end(), '/');
+    });
+    for (auto const& dir_path : dirs_to_remove) {
+        auto dir_h = open_within_mount_root(root_.wstring(), dir_path, DELETE | FILE_LIST_DIRECTORY | GENERIC_READ,
+                                             OPEN_EXISTING);
+        if (!dir_h) return std::unexpected(dir_h.error());
+        FILE_DISPOSITION_INFO disp{};
+        disp.DeleteFile = TRUE;
+        if (!SetFileInformationByHandle(dir_h->get(), FileDispositionInfo, &disp, sizeof(disp))) {
+            return win_error_v("SetFileInformationByHandle(FileDispositionInfo)", GetLastError());
+        }
     }
     return {};
 }
