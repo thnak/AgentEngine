@@ -288,9 +288,10 @@ public:
     // a silent gap in this class's own stated locking discipline, ahead of Phase 4/5 wiring a real
     // concurrent caller to it.
     [[nodiscard]] agentengine::rt::task<agentengine::result<agentengine::Checkpoint>> merge_into(
-        SandboxRuntime const& parent, agentengine::IdentityHandle requested_by) && {
+        SandboxRuntime const& parent, agentengine::IdentityHandle requested_by,
+        agentengine::rt::AsyncQuota<MergeCost>& merge_quota) && {
         agentengine::rt::AsyncMutex::Guard guard = co_await exclusivity_->lock();
-        co_return co_await ledger_->merge(std::move(branch_), parent.branch_, requested_by);
+        co_return co_await ledger_->merge(std::move(branch_), parent.branch_, requested_by, merge_quota);
     }
 
     // Reclaims a branch this runtime's own `merge_into()` just orphaned via a REJECTED merge (or any

@@ -8,9 +8,13 @@
 //   [2]  get_tree_safe()/get_blob_safe() succeed for the authorized owner, fail closed for an
 //        unrelated identity.
 //   [3]  branch_from() produces a real child that inherits read access to the parent's head tree.
-//   [4]  A clean three-way merge succeeds and folds the child's real commit into the parent.
+//   [4]  A clean three-way merge succeeds, folds the child's real commit into the parent, genuinely
+//        consumes 1 unit of AsyncQuota<MergeCost> (ADR-111), and gives the parent branch's own owner
+//        real, content-level access (get_blob_safe(), not just tree structure) to a blob the child
+//        alone wrote -- scoped to that owner specifically, not widened to an unrelated caller (ADR-112).
 //   [5]  A real merge CONFLICT (both sides changed the same path to different values) is rejected
-//        closed (ledger.merge_conflict), and the child branch becomes a real, reclaimable orphan.
+//        closed (ledger.merge_conflict), the child branch becomes a real, reclaimable orphan, and the
+//        AsyncQuota<MergeCost> unit it consumed is genuinely refunded (ADR-111).
 //   [6]  reset_to() rolls a branch's head back to an earlier real checkpoint.
 //   [7]  Dropping a BranchHandle out of scope queues a real abandon; reap_pending_abandons() collects
 //        it and the branch becomes genuinely unknown afterward.
@@ -21,6 +25,11 @@
 //        (ledger.case_folding_collision).
 //   [11] Durability round-trip: a real process-local Ledger destruction + reconstruction against the
 //        SAME durable_dir restores the branch as a real, reclaimable orphan.
+//   [12] merge()'s own AsyncQuota<MergeCost> gate (ADR-111): an exhausted quota refuses the merge
+//        BEFORE any lock/mutation (async_quota.exhausted), and registers the child as a real,
+//        reclaimable orphan -- the same contract every other merge() rejection already honors, not
+//        silently left to the handle's own destructor-triggered abandon (which would otherwise
+//        genuinely erase it on the next reap_pending_abandons()).
 //
 // Each distinct IdentityHandle that spends from an AsyncQuota gets its OWN quota, minted for that
 // exact identity -- AsyncQuota::try_consume() is identity-scoped (ADR-102 Phase 1 C3), so sharing one
@@ -73,8 +82,11 @@ int main() {
     auto owner_storage_quota_r =
         agentengine::rt::AsyncQuota<StorageBytes>::mint_root(authority, owner, 1'000'000);
     check(owner_storage_quota_r.has_value(), "AsyncQuota<StorageBytes>::mint_root(owner) succeeds");
+    auto owner_merge_quota_r = agentengine::rt::AsyncQuota<MergeCost>::mint_root(authority, owner, 100);
+    check(owner_merge_quota_r.has_value(), "AsyncQuota<MergeCost>::mint_root(owner) succeeds");
     auto& owner_branch_quota = *owner_branch_quota_r;
     auto& owner_storage_quota = *owner_storage_quota_r;
+    auto& owner_merge_quota = *owner_merge_quota_r;
 
     // `child_identity` is a genuine IDENTITY descendant of `owner` (authority.derive_child()), NOT a
     // second independent mint_root() -- matching how this system is actually meant to be used (a
@@ -94,8 +106,12 @@ int main() {
         agentengine::rt::AsyncQuota<StorageBytes>::mint_root(authority, child_identity, 1'000'000);
     check(child_storage_quota_r.has_value(),
           "AsyncQuota<StorageBytes>::mint_root(child_identity) succeeds");
+    auto child_merge_quota_r =
+        agentengine::rt::AsyncQuota<MergeCost>::mint_root(authority, child_identity, 100);
+    check(child_merge_quota_r.has_value(), "AsyncQuota<MergeCost>::mint_root(child_identity) succeeds");
     auto& child_branch_quota = *child_branch_quota_r;
     auto& child_storage_quota = *child_storage_quota_r;
+    auto& child_merge_quota = *child_merge_quota_r;
 
     // ---- [1] create_root_branch() + commit() through the real object store. --------------------
     auto root_r = drive(ledger.create_root_branch(owner));
@@ -167,11 +183,15 @@ int main() {
     // owner_)`) -- `derive_child()`/a real second identity never appears there at all, so A10
     // sidesteps this exact scenario entirely rather than answering it. This test is the first real
     // exercise of a genuine two-identity orchestrator/sub-agent merge flow against this Ledger.
-    auto merge_r = drive(ledger.merge(std::move(child), root, child_identity));
+    std::uint64_t const merge_quota_before = child_merge_quota.remaining();
+    auto merge_r = drive(ledger.merge(std::move(child), root, child_identity, child_merge_quota));
     check(merge_r.has_value(), "a clean merge (child only ADDED a new file) succeeds");
     if (!merge_r.has_value()) {
         std::fprintf(stderr, "  error: %s\n", merge_r.error().message.c_str());
     }
+    check(merge_r.has_value() && child_merge_quota.remaining() == merge_quota_before - 1,
+          "a successful merge() genuinely consumes 1 unit of AsyncQuota<MergeCost> (ADR-111) -- not "
+          "merely a quota parameter it silently ignores");
     if (merge_r.has_value()) {
         auto merged_tree_r = ledger.get_tree_safe(merge_r->tree, child_identity);
         check(merged_tree_r.has_value() && merged_tree_r->entries.size() == 2,
@@ -192,6 +212,25 @@ int main() {
         check(owner_head_r.has_value() && *owner_head_r == merge_r->tree,
               "head_tree_digest() for the branch's own owner also succeeds post-merge, not just "
               "get_tree_safe() by coincidence of a shared digest elsewhere");
+
+        // ADR-112: content-level access, not just structural. Before this fix, `owner` could list the
+        // merged tree's structure (checks above) but NOT fetch the actual bytes of `blob2` -- the
+        // child's OWN write, never touched by `owner` directly -- which still failed
+        // `ledger.blob_access_denied` even after the tree-level grant above. Proves the per-entry grant
+        // this fix adds actually reaches blob-level ACL, not merely the top-level tree digest.
+        auto owner_blob_r = ledger.get_blob_safe(*blob2_r, owner);
+        check(owner_blob_r.has_value(),
+              "ADR-112: the PARENT branch's own creator can now fetch the actual BYTES of a blob the "
+              "child alone wrote and merged in -- 'the orchestrator resumes' is restored content-wise, "
+              "not merely structurally");
+        // Negative control: the new per-entry grant is scoped to `parent_state.created_by_id`
+        // specifically, not accidentally widened to every caller. `unrelated` has no relationship to
+        // `owner`/`child_identity` at all and must still be refused.
+        auto unrelated_blob_r = ledger.get_blob_safe(*blob2_r, unrelated);
+        check(!unrelated_blob_r.has_value() &&
+                  unrelated_blob_r.error().code == "ledger.blob_access_denied",
+              "ADR-112: the new per-entry grant is scoped to the parent branch's own owner -- a "
+              "genuinely unrelated identity is still refused the same blob");
     }
 
     // ---- [5] a real merge CONFLICT is rejected closed, and the child becomes a reclaimable orphan. -
@@ -216,9 +255,14 @@ int main() {
     check(conflicting_child_commit_r.has_value(), "the child's own conflicting commit succeeds");
 
     std::string const conflict_child_name = conflict_child.name();
-    auto conflict_merge_r = drive(ledger.merge(std::move(conflict_child), root, owner));
+    std::uint64_t const conflict_merge_quota_before = owner_merge_quota.remaining();
+    auto conflict_merge_r =
+        drive(ledger.merge(std::move(conflict_child), root, owner, owner_merge_quota));
     check(!conflict_merge_r.has_value() && conflict_merge_r.error().code == "ledger.merge_conflict",
           "a real conflicting merge is rejected closed, never silently picking a side");
+    check(owner_merge_quota.remaining() == conflict_merge_quota_before,
+          "a REJECTED merge refunds the AsyncQuota<MergeCost> unit it consumed (ADR-111) -- a caller "
+          "is never charged for a merge that failed");
 
     auto orphans = ledger.orphaned_branches();
     bool const found_orphan =
@@ -360,6 +404,70 @@ int main() {
         (void)durable_tree_digest;
     }
     fs::remove_all(durable_dir, ec);
+
+    // ---- [12] merge()'s own AsyncQuota<MergeCost> gate (ADR-111): an exhausted quota refuses the
+    //           merge BEFORE any lock/mutation, and registers the child as a real, reclaimable
+    //           orphan -- the same contract every other merge() rejection path already honors. -------
+    {
+        IdentityHandle quota_test_owner = authority.mint_root("ledger-test-quota-owner");
+        auto qt_branch_quota_r =
+            agentengine::rt::AsyncQuota<BranchCost>::mint_root(authority, quota_test_owner, 10);
+        check(qt_branch_quota_r.has_value(),
+              "AsyncQuota<BranchCost>::mint_root(quota_test_owner) succeeds");
+        auto qt_storage_quota_r =
+            agentengine::rt::AsyncQuota<StorageBytes>::mint_root(authority, quota_test_owner, 1'000'000);
+        check(qt_storage_quota_r.has_value(),
+              "AsyncQuota<StorageBytes>::mint_root(quota_test_owner) succeeds");
+        auto qt_exhausted_merge_quota_r =
+            agentengine::rt::AsyncQuota<MergeCost>::mint_root(authority, quota_test_owner, 0);
+        check(qt_exhausted_merge_quota_r.has_value(),
+              "AsyncQuota<MergeCost>::mint_root(quota_test_owner, 0) succeeds -- minting a quota of "
+              "zero is legal, it just refuses every real consumption");
+
+        auto qt_root_r = drive(ledger.create_root_branch(quota_test_owner));
+        check(qt_root_r.has_value(), "create_root_branch() for the quota-exhaustion scenario succeeds");
+        if (!qt_root_r.has_value()) { return EXIT_FAILURE; }
+        BranchHandle<> qt_root = std::move(*qt_root_r);
+        auto qt_child_r = drive(ledger.branch_from(qt_root, quota_test_owner, *qt_branch_quota_r));
+        check(qt_child_r.has_value(), "branch_from() for the quota-exhaustion scenario succeeds");
+        if (!qt_child_r.has_value()) { return EXIT_FAILURE; }
+        BranchHandle<> qt_child = std::move(*qt_child_r);
+        std::string const qt_child_name = qt_child.name();
+
+        // A clean, non-conflicting change on the child -- if the merge gate below were bypassed (a
+        // real gap this case exists to catch), this would otherwise merge in cleanly.
+        auto qt_blob_r = ledger.put_blob_safe(to_bytes("quota test content"), quota_test_owner);
+        Tree qt_tree;
+        qt_tree.entries.push_back(TreeEntry{"quota.txt", *qt_blob_r, false});
+        auto qt_commit_r = drive(ledger.commit(qt_child, qt_tree, quota_test_owner, *qt_storage_quota_r));
+        check(qt_commit_r.has_value(), "the quota-exhaustion scenario's own child commit() succeeds");
+
+        auto qt_merge_r = drive(
+            ledger.merge(std::move(qt_child), qt_root, quota_test_owner, *qt_exhausted_merge_quota_r));
+        check(!qt_merge_r.has_value() && qt_merge_r.error().code == "async_quota.exhausted",
+              "merge() with an exhausted AsyncQuota<MergeCost> is refused closed BEFORE performing any "
+              "real merge work -- the exact I8 gap ADR-111 closes");
+
+        // A quota-refused merge must register `child` as a real, reclaimable orphan -- the SAME
+        // contract every other merge() rejection path already honors (case [5] above proves the
+        // conflict-rejection shape of this same contract). This is deliberate, not incidental: an
+        // independent red-team pass on this exact fix caught an EARLIER version of this code that
+        // left `child` unresolved on the quota-exhaustion path, which instead queued a REAL abandon
+        // via `BranchHandle::~BranchHandle()` -- silently scheduling the branch for genuine erasure on
+        // the next unrelated `reap_pending_abandons()` call, a real data-loss bug this test now
+        // guards against directly rather than merely by accident.
+        auto qt_orphans = ledger.orphaned_branches();
+        bool const qt_registered_as_orphan =
+            std::find(qt_orphans.begin(), qt_orphans.end(), qt_child_name) != qt_orphans.end();
+        check(qt_registered_as_orphan,
+              "a merge refused for quota exhaustion registers the child as a real, reclaimable orphan "
+              "-- never silently left to the handle's own destructor-triggered abandon path");
+        auto qt_reclaim_r = ledger.reclaim_orphaned_branch(qt_child_name, quota_test_owner);
+        check(qt_reclaim_r.has_value(),
+              "the quota-exhaustion orphan is genuinely reclaimable by its own authorized owner -- the "
+              "caller's real work (the clean commit made just above) is not lost, only requires a "
+              "fresh merge attempt with a topped-up quota");
+    }
 
     if (g_failures == 0) {
         std::printf("test_ledger: all checks passed\n");
