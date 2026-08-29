@@ -19,9 +19,12 @@
 //
 // Same "REQUIRES a real Kata/containerd deployment" precondition as test_kata_backend_linux.cpp; see
 // that file's own header comment for the exact setup. Gated behind the same
-// AGENTENGINE_KATA_SANDBOX_TESTS flag. NOT independently executed against a live deployment this
-// session (none reachable) -- compile-checked only; same disclosed limitation as every other Kata
-// test file in this tree until a real deployment is available to a session working on this backend.
+// AGENTENGINE_KATA_SANDBOX_TESTS flag. Run live for the first time under ADR-109 (2026-08-29):
+// 25/26, one real failure -- the Case 1 heartbeat check raced `virtio_fs_cache = "auto"`'s own
+// writeback-timer semantics, not a containment gap (ADR-109 SS8). ADR-110 diagnosed and applied the
+// `sync`-per-write fix below, reasoned from the active Kata config, but could NOT re-verify it live
+// -- a separate, newly-found `ctr images mount` environment defect blocked every KataBackend
+// create() call in that same pass. Still disclosed, not silently assumed fixed.
 
 #include <chrono>
 #include <cstdio>
@@ -90,7 +93,16 @@ int main() {
             auto t0 = std::chrono::steady_clock::now();
             ExecRequest req;
             req.language = "native";
-            req.source = "i=0; while true; do i=$((i+1)); echo $i > /work/heartbeat; done";
+            // `sync` after every write (ADR-109 SS8 residual, ADR-110): `virtio_fs_cache = "auto"`
+            // (the active Kata clh config) gives close-to-open consistency via the guest kernel's own
+            // FUSE writeback path, not a synchronous flush on close -- a dirty page can sit uncommitted
+            // until the periodic writeback timer fires, independent of whether the writing process is
+            // still alive. ADR-109's own live run observed exactly this: v1=v2=empty, read <1s apart,
+            // never diagnosed there. `sync` forces the write visible to the host every iteration, so
+            // "stopped changing" is evidence about the guest process, not about virtiofs cache timing.
+            // Reasoned from the active config and documented FUSE writeback semantics, NOT re-verified
+            // against a live deployment this pass (ADR-110 SS4 has the environment blocker that stopped it).
+            req.source = "i=0; while true; do i=$((i+1)); echo $i > /work/heartbeat; sync; done";
             auto outcome = backend.exec(*handle, req, ctx);
             auto t1 = std::chrono::steady_clock::now();
             short_elapsed = elapsed_ms(t0, t1);
@@ -184,7 +196,10 @@ int main() {
             // if the flooding stdout write ever blocks/wedges rather than erroring once the host-side
             // pipe is closed, the heartbeat write for THAT iteration must already be done, so "stopped
             // changing" unambiguously means the whole loop iteration stopped, not just this one write.
-            req.source = "i=0; while true; do i=$((i+1)); echo $i > /work/heartbeat_case2; "
+            // `sync` immediately after, before the flood write -- same ADR-110 virtio_fs_cache="auto"
+            // writeback-timer reasoning as Case 1 above, so the heartbeat's host-visibility doesn't
+            // depend on cache timing here either.
+            req.source = "i=0; while true; do i=$((i+1)); echo $i > /work/heartbeat_case2; sync; "
                          "echo AAAAAAAAAA; done";
             auto outcome = backend.exec(*handle, req, ctx);
             auto t1 = std::chrono::steady_clock::now();
