@@ -5,8 +5,8 @@
 // bug now runs inside a throwaway, resource-capped child, never the address space holding every
 // session's CapabilitySet/BoundCapability state).
 //
-// argv[1] is the mode ("text" or "toc"); argv[2] is a path to a PDF file already placed by the host
-// into a scratch directory it granted this process read access to (NativeJailBackend::
+// argv[1] is the mode ("text", "toc", or "images"); argv[2] is a path to a PDF file already placed
+// by the host into a scratch directory it granted this process read access to (NativeJailBackend::
 // grant_ro_path_once() on Windows; an ordinary SandboxSpec.mounts read-only bind on Linux -- S3a(ii)
 // explains why the two platforms differ here). This binary trusts nothing about the PDF's CONTENTS
 // (untrusted input, PDFium's own job to parse safely) but the PATH itself is host-controlled, never
@@ -18,22 +18,28 @@
 // themselves contain arbitrary bytes including 0x01. Each record is a fixed 16-byte little-endian
 // header followed by `payload_len` bytes of payload:
 //
-//   [4] magic ('A','E','P','1')   [4] kind (0=META, 1=PAGE, 2=TOC_ENTRY)
+//   [4] magic ('A','E','P','1')   [4] kind (0=META, 1=PAGE, 2=TOC_ENTRY, 3=IMAGE_ENTRY)
 //   [4] index (META: total page count; PAGE: 0-based page index; TOC_ENTRY: 0-based, contiguous
-//              entry sequence number -- the SAME "must match the count already emitted" contiguity
-//              discipline PAGE records already use)
-//   [4] payload_len (bytes following; 0 for META)
+//              entry sequence number; IMAGE_ENTRY: 0-based, contiguous entry sequence number
+//              across the WHOLE document -- the SAME "must match the count already emitted"
+//              contiguity discipline PAGE/TOC_ENTRY records already use)
+//   [4] payload_len (bytes following; 0 for META, always 16 for IMAGE_ENTRY)
 //   [payload_len] UTF-8 page text (PAGE), or [4-byte int32 depth][4-byte int32 page_index, -1 if
-//              none][remaining bytes: UTF-8 title] (TOC_ENTRY)
+//              none][remaining bytes: UTF-8 title] (TOC_ENTRY), or [4-byte uint32 page_index]
+//              [4-byte uint32 width][4-byte uint32 height][4-byte uint32 bits_per_pixel]
+//              (IMAGE_ENTRY -- metadata only, from FPDFImageObj_GetImageMetadata; never the image's
+//              own decoded pixel bytes, see this worker's own images-mode comment below for why)
 //
 // TOC mode never emits a META record -- unlike FPDF_GetPageCount() (an O(1) query), PDFium has no
 // equivalent O(1) "total bookmark count" -- finding out would cost the same traversal as emitting
 // the entries themselves, so this worker just emits TOC_ENTRY records directly; the host learns
-// "how many" from how many contiguous entries actually arrived.
+// "how many" from how many contiguous entries actually arrived. Images mode is the same: no META,
+// for the same reason (a page's image count is only known by actually enumerating its objects).
 //
 // Never initializes PDFium's FormFill/V8 engine (round-1 red-team's own mitigating-fact finding:
 // plain FPDFText_* extraction does not execute embedded PDF JavaScript) -- only FPDF_InitLibrary(),
-// FPDF_LoadDocument(), FPDF_LoadPage(), and the FPDFText_* text-extraction API are ever called.
+// FPDF_LoadDocument(), FPDF_LoadPage(), and the FPDFText_*/FPDFPage_*/FPDFPageObj_*/FPDFImageObj_*
+// (metadata-only, never FPDFImageObj_GetBitmap) extraction APIs are ever called.
 //
 // Output-byte ceiling (S3a/S4 item 5): `exec()` drains stdout only AFTER this process exits
 // (native_jail_backend.cpp's own documented, intentional architecture) with a fixed pipe buffer --
@@ -55,6 +61,7 @@
 #include <vector>
 
 #include "fpdf_doc.h"
+#include "fpdf_edit.h"
 #include "fpdf_text.h"
 #include "fpdfview.h"
 
@@ -72,6 +79,7 @@ constexpr std::uint32_t kMagic = 0x31504541u;  // 'A','E','P','1' as a little-en
 constexpr std::uint32_t kKindMeta = 0;
 constexpr std::uint32_t kKindPage = 1;
 constexpr std::uint32_t kKindTocEntry = 2;
+constexpr std::uint32_t kKindImageEntry = 3;
 
 // Cycle/DoS guards for the outline traversal (PDFDium's own FPDFBookmark_GetNextSibling() doc
 // comment: "the caller is responsible for handling circular bookmark references, as may arise from
@@ -80,6 +88,12 @@ constexpr std::uint32_t kKindTocEntry = 2;
 // malformed-outline input.
 constexpr int kMaxTocEntries = 5000;
 constexpr int kMaxTocDepth = 32;
+
+// Same discipline for image enumeration: a hostile document can pack in thousands of tiny/degenerate
+// image XObjects across its pages purely to make a host iterate forever. exec()'s own wall_ms is
+// still the real backstop, but this bounds the total number of IMAGE_ENTRY records this worker will
+// ever emit, the same way kMaxTocEntries bounds the outline traversal above.
+constexpr int kMaxImageEntries = 2000;
 
 #if defined(_WIN32)
 // CreatePipe's requested size is a real floor on Windows (not a hint) -- native_jail_backend.cpp's
@@ -257,6 +271,74 @@ constexpr std::size_t kFallbackOutputCeilingBytes = 48ull * 1024;
     return emit_toc_subtree(doc, root, 0, entries_emitted, bytes_written, ceiling) ? 0 : 3;
 }
 
+// Binary IMAGE_ENTRY payload: [uint32 page_index][uint32 width][uint32 height][uint32 bits_per_pixel]
+// -- always exactly 16 bytes, no variable-length title (images have none). Metadata only, via
+// FPDFImageObj_GetImageMetadata -- NEVER FPDFImageObj_GetBitmap/FPDFBitmap_GetBuffer, which would
+// decode the full pixel buffer (can be hundreds of KB to several MB) and is fundamentally
+// incompatible with this worker's own output-byte-ceiling discipline (see this file's own top
+// comment); a real image's raw bytes need a scratch-file/BlobRef mechanism that does not exist yet,
+// deliberately out of scope for this metadata-only listing.
+[[nodiscard]] std::string make_image_entry_payload(std::uint32_t page_index, std::uint32_t width,
+                                                     std::uint32_t height,
+                                                     std::uint32_t bits_per_pixel) {
+    std::string out;
+    out.resize(16);
+    std::uint32_t const fields[4] = {page_index, width, height, bits_per_pixel};
+    std::memcpy(out.data(), fields, 16);
+    return out;
+}
+
+// Loops pages (bounded by FPDF_GetPageCount, same as run_text_mode), enumerates each page's objects
+// via FPDFPage_CountObjects/FPDFPage_GetObject, filters to FPDF_PAGEOBJ_IMAGE, and emits one
+// IMAGE_ENTRY record per image found via FPDFImageObj_GetImageMetadata -- the metadata-only path
+// that does NOT decode the full bitmap. Mirrors run_toc_mode's own shape: a total-entry cap
+// (kMaxImageEntries) AND the output-ceiling check (bytes_written + record_bytes > ceiling), stopping
+// cleanly -- not erroring -- once either is hit.
+[[nodiscard]] int run_images_mode(FPDF_DOCUMENT doc, std::size_t ceiling) {
+    int const total_pages = FPDF_GetPageCount(doc);
+    int entries_emitted = 0;
+    std::size_t bytes_written = 0;
+
+    for (int page_index = 0; page_index < total_pages; ++page_index) {
+        if (entries_emitted >= kMaxImageEntries) break;
+
+        FPDF_PAGE const page = FPDF_LoadPage(doc, page_index);
+        if (page == nullptr) break;  // a corrupt page -- stop here, same fail-visible posture as text mode
+
+        int const object_count = FPDFPage_CountObjects(page);
+        for (int object_index = 0; object_index < object_count; ++object_index) {
+            if (entries_emitted >= kMaxImageEntries) break;
+
+            FPDF_PAGEOBJECT const object = FPDFPage_GetObject(page, object_index);
+            if (object == nullptr) continue;
+            if (FPDFPageObj_GetType(object) != FPDF_PAGEOBJ_IMAGE) continue;
+
+            FPDF_IMAGEOBJ_METADATA metadata{};
+            if (!FPDFImageObj_GetImageMetadata(object, page, &metadata)) continue;
+
+            std::string const payload = make_image_entry_payload(
+                static_cast<std::uint32_t>(page_index), metadata.width, metadata.height,
+                metadata.bits_per_pixel);
+
+            std::size_t const record_bytes = 16 + payload.size();
+            if (bytes_written + record_bytes > ceiling) {
+                FPDF_ClosePage(page);
+                return 0;  // stop before writing -- never a partial record
+            }
+
+            if (!write_record(kKindImageEntry, static_cast<std::uint32_t>(entries_emitted), payload)) {
+                FPDF_ClosePage(page);
+                return 3;
+            }
+            bytes_written += record_bytes;
+            ++entries_emitted;
+        }
+
+        FPDF_ClosePage(page);
+    }
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -267,12 +349,13 @@ int main(int argc, char** argv) {
 #endif
 
     if (argc != 3) {
-        std::fprintf(stderr, "usage: agentengine_pdf_worker <text|toc> <pdf-path>\n");
+        std::fprintf(stderr, "usage: agentengine_pdf_worker <text|toc|images> <pdf-path>\n");
         return 1;
     }
     std::string_view const mode = argv[1];
-    if (mode != "text" && mode != "toc") {
-        std::fprintf(stderr, "agentengine_pdf_worker: unknown mode '%s' (expected 'text' or 'toc')\n",
+    if (mode != "text" && mode != "toc" && mode != "images") {
+        std::fprintf(stderr,
+                     "agentengine_pdf_worker: unknown mode '%s' (expected 'text', 'toc', or 'images')\n",
                      argv[1]);
         return 1;
     }
@@ -289,7 +372,14 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    int const rc = (mode == "text") ? run_text_mode(doc, ceiling) : run_toc_mode(doc, ceiling);
+    int rc = 0;
+    if (mode == "text") {
+        rc = run_text_mode(doc, ceiling);
+    } else if (mode == "toc") {
+        rc = run_toc_mode(doc, ceiling);
+    } else {
+        rc = run_images_mode(doc, ceiling);
+    }
 
     FPDF_CloseDocument(doc);
     FPDF_DestroyLibrary();

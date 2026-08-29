@@ -463,14 +463,14 @@ struct ExtractPdfText : Tool<ExtractPdfText, Capabilities<>, Approval<approval_m
 // alongside it, the same way any other non-builtin skill source gets added to a `SkillsProvider`.
 inline constexpr std::string_view kExtractingDocumentTextSkillMd = R"SKILL(---
 name: extracting-document-text
-description: When and how to use extract_pdf_text/extract_pdf_toc instead of reading a PDF's raw bytes -- they return decoded text and outline structure, not a file to parse yourself, and report how far they got on a document too large or complex to fully process in one call, with no automatic continuation. Use this before working with a PDF.
-allowed-tools: extract_pdf_text extract_pdf_toc
+description: When and how to use extract_pdf_text/extract_pdf_toc/extract_pdf_images instead of reading a PDF's raw bytes -- they return decoded text, outline structure, and embedded-image metadata, not a file to parse yourself, and report how far they got on a document too large or complex to fully process in one call, with no automatic continuation. Use this before working with a PDF.
+allowed-tools: extract_pdf_text extract_pdf_toc extract_pdf_images
 metadata:
   version: "1"
 ---
 # Extracting document text
 
-Two tools cover PDF content, both through the same sandboxed extraction path, never by fetching raw
+Three tools cover PDF content, all through the same sandboxed extraction path, never by fetching raw
 PDF bytes and parsing them yourself in the code interpreter:
 
 - `extract_pdf_text(url=... | path=...) -> preview, truncated, total_bytes, total_page_count,
@@ -478,6 +478,9 @@ PDF bytes and parsing them yourself in the code interpreter:
 - `extract_pdf_toc(url=... | path=...) -> entries, entries_processed, truncated` -- the table of
   contents/bookmark outline, each entry carrying `depth` (0-based nesting) and an optional
   `page_index` pointing into the same page numbering `extract_pdf_text` uses.
+- `extract_pdf_images(url=... | path=...) -> images, images_processed, truncated` -- embedded-image
+  METADATA (page index, pixel width/height, bits per pixel), NOT the image bytes themselves -- see
+  the dedicated section below.
 
 Reach for `extract_pdf_toc` FIRST when you only need to know a document's structure or find which
 page covers a topic -- it is far cheaper than extracting every page's full text just to locate one
@@ -490,23 +493,37 @@ truncation guidance below).
 
 When the extracted text itself is large, `truncated`/`blob` behave exactly like every other oversized
 tool result (see `reading-large-content`): a bounded preview, plus a real, openable reference to the
-rest. That guidance applies here unchanged. `extract_pdf_toc`'s own result has no such preview/blob
-split -- an outline is a list of short entries, not one long text blob.
+rest. That guidance applies here unchanged. `extract_pdf_toc`/`extract_pdf_images`'s own results have
+no such preview/blob split -- each is a list of short, fixed-shape entries, not one long text blob.
+
+## `extract_pdf_images` returns METADATA ONLY -- there is no way to get the actual image bytes
+
+`extract_pdf_images` tells you WHERE images are and HOW BIG they are (`page_index`, `width`,
+`height`, `bits_per_pixel`) -- it never returns the image's own pixel/file content, and there is
+currently no first-party tool in this engine that does. This is a deliberate scope limit, not a bug:
+an embedded image can be hundreds of KB to several MB, and the sandboxed worker this tool spawns
+communicates over a small, self-limited stdout channel that real image bytes would either truncate
+garbage through or block on -- returning bytes properly would need a different, not-yet-built
+mechanism. If a task genuinely needs an image's pixel content and not just its existence/size/
+position, say so honestly rather than fabricating a description of image content you were never
+given -- this tool cannot supply it.
 
 ## `total_page_count`/`pages_processed`/`truncated_pages` (extract_pdf_text) and
-## `entries_processed`/`truncated` (extract_pdf_toc) are a DIFFERENT signal -- read this carefully
+## `entries_processed`/`truncated` (extract_pdf_toc) and `images_processed`/`truncated`
+## (extract_pdf_images) are a DIFFERENT signal -- read this carefully
 
 These fields mean the DOCUMENT ITSELF was too large or complex to fully process in ONE call -- not
 that a single field's own content was long. `extract_pdf_text`'s `truncated_pages` is true when
-`pages_processed < total_page_count`; `extract_pdf_toc` has no cheap way to know a document's real
-total bookmark count ahead of time (unlike page count), so its own `truncated` simply means "the
-worker's own cap stopped a traversal that likely had more to give."
+`pages_processed < total_page_count`; `extract_pdf_toc`/`extract_pdf_images` have no cheap way to
+know a document's real total bookmark/image count ahead of time (unlike page count), so their own
+`truncated` simply means "the worker's own cap stopped a traversal/listing that likely had more to
+give."
 
-Unlike the byte-threshold preview above, there is NO follow-up call that resumes where either tool
-stopped -- no page offset, no continuation token, nothing to page through. If you see either tool's
-own truncation signal, the right move is narrowing the request (a smaller or split source document)
-or treating the returned pages/entries as genuinely partial, not requesting "the rest" as if one more
-call would fetch it -- that call does not exist.
+Unlike the byte-threshold preview above, there is NO follow-up call that resumes where any of these
+tools stopped -- no page offset, no continuation token, nothing to page through. If you see a
+truncation signal, the right move is narrowing the request (a smaller or split source document) or
+treating the returned pages/entries/images as genuinely partial, not requesting "the rest" as if one
+more call would fetch it -- that call does not exist.
 )SKILL";
 
 [[nodiscard]] inline SkillSourceDescriptor make_extracting_document_text_skill_source() {

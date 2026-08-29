@@ -1844,6 +1844,15 @@ if(AGENTENGINE_WITH_PDF)
     agentengine::core agentengine::net_egress_proxy agentengine::extract_pdf_text agentengine_warnings)
   add_test(NAME test_extract_pdf_toc COMMAND test_extract_pdf_toc)
   set_tests_properties(test_extract_pdf_toc PROPERTIES TIMEOUT 60)
+
+  # ---- ExtractPdfImages, a third candidate sharing the same sandboxed worker -- embedded-image
+  # METADATA listing only (position/dimensions/format, never bytes; extract_pdf_images.hpp's own
+  # file-top comment explains the scope cut and why this shares rather than duplicates).
+  add_executable(test_extract_pdf_images test_extract_pdf_images.cpp)
+  target_link_libraries(test_extract_pdf_images PRIVATE
+    agentengine::core agentengine::net_egress_proxy agentengine::extract_pdf_text agentengine_warnings)
+  add_test(NAME test_extract_pdf_images COMMAND test_extract_pdf_images)
+  set_tests_properties(test_extract_pdf_images PROPERTIES TIMEOUT 60)
 endif()
 
 # ---- Skills Phase 2: core/skill_tool_scoping.hpp -- pure ToolTable filtering plus the negative
