@@ -1,20 +1,20 @@
 # Design draft — a first-party PDF text-extraction tool, and its companion skill
 
-**Status: Revision 6 — closes round 5's two findings on Revision 5's two fixes.** Round 5 confirmed
-Revision 5's REASONING was sound on both counts (the right function to target for dedup; the right
-architecture for the output-ceiling fix) but found each fix unreachable/incomplete as literally
-specified: `grant_ro_deduped()` has internal linkage, uncallable from outside `native_jail_backend.
-cpp`; Linux's `F_SETPIPE_SZ` pipe-enlargement is unchecked best-effort, so "confirmed identical on
-Linux" was false. **Five real, independent red-team rounds so far. Round 4 was the first to confirm
-most of a predecessor's claims under direct verification; round 5 confirmed even more — the WINDOWS
-half of Revision 5's design (the `create()`/`exec()` pivot, `wait_or_kill()`/`wall_ms`, the output-
-ceiling mechanism's interaction with `exec()`'s real exit handling, `drain_pipe_bounded`'s record-
-reassembly) is now independently verified sound; what remained were two narrow, correctly-diagnosed-
-but-incompletely-executed fixes, not new structural problems.** No code yet; not yet re-attacked.
-Prior revisions' findings are recorded in git history (`git log -p -- docs/planning/pdf-text-
-extraction-design-draft.md`), not reproduced here. Continues 009 §7's "Document extraction" catalog
-row after ADR-106 settled the license question (PDFium, BSD-3-Clause, not poppler/mupdf). Covers the
-PDF-text-layer slice only — DOCX/PPTX/XLSX stays explicitly out of scope, per ADR-106 §3.
+**Status: Revision 7 — closes round 6's remaining finding and a stale self-contradiction round 6 also
+caught.** Round 6 confirmed Revision 6's `grant_ro_path_once()` fix is real and mechanically correct
+(new public method, forwards to already-working internals — closed for good). It found the OTHER fix
+(dynamic Linux pipe-size query) correctly diagnosed but wrongly sequenced: `ExecRequest::source` is
+fixed by the caller before `exec()` ever creates the pipe, so a host-measures-then-passes-to-worker
+design cannot work against the real code. Round 6's own proposed correction — the WORKER queries its
+own stdout pipe directly, no host involvement — is adopted here. **Six real, independent red-team
+rounds so far. Round 5 gave the broadest confirmation of the Windows-side design; round 6 confirmed
+even more of it (including that dropping the scratch directory from `SandboxSpec.mounts` doesn't
+silently break anything else) while finding the LAST remaining defect was a sequencing problem in a
+fix that was otherwise correctly aimed.** No code yet; not yet re-attacked. Prior revisions' findings
+are recorded in git history (`git log -p -- docs/planning/pdf-text-extraction-design-draft.md`), not
+reproduced here. Continues 009 §7's "Document extraction" catalog row after ADR-106 settled the
+license question (PDFium, BSD-3-Clause, not poppler/mupdf). Covers the PDF-text-layer slice only —
+DOCX/PPTX/XLSX stays explicitly out of scope, per ADR-106 §3.
 
 Scope was widened before round 1, at the project owner's own direction: a first-party *tool* this size
 should ship with a first-party *skill* alongside it, not the tool alone. §8f's five generic skills
@@ -192,15 +192,21 @@ primary"). This design does not fight that scope — it stays inside it:
   effort... failure here... just leaves the OS default in place," typically 64 KiB). A real, plausible
   host (a hardened sysctl profile, a container base image capping `/proc/sys/fs/pipe-max-size`) gets a
   pipe buffer over 12x smaller than the 768 KiB ceiling assumed safe — reproducing the exact deadlock
-  this fix exists to prevent, on Linux specifically. **Fix**: the ceiling is no longer a single fixed
-  constant. The host, after creating the stdout pipe and attempting `F_SETPIPE_SZ` (Linux) — Windows'
-  `CreatePipe` `nSize` is a real floor, not a hint, so no equivalent check is needed there — reads back
-  the ACTUAL negotiated size (`fcntl(fd, F_GETPIPE_SZ)`) and passes a safe fraction of THAT real number
-  to the worker (one integer, via `argv`/an environment variable on the worker's command line) as its
-  output-byte ceiling, rather than the worker assuming a fixed value. Windows keeps the illustrative
-  768-under-1-MiB margin (a real floor, verified sound); Linux computes its own real margin from
-  whatever `F_GETPIPE_SZ` actually reports, safe even when the enlargement silently failed and the OS
-  default held. A NEW, named resource cap (§4 item 5), distinct from `ctx.tool_result_byte_threshold`
+  this fix exists to prevent, on Linux specifically. **Revision 7 correction**: Revision 6 proposed
+  the HOST measuring the real pipe size (`fcntl(fd, F_GETPIPE_SZ)`) and passing it down to the worker
+  via `argv`/an environment variable — round 6 found this unsequenceable against the real code:
+  `ExecRequest::source` (the full command line) is built and fixed by the CALLER strictly before
+  `exec()` ever creates the pipe (confirmed on both platforms — Windows builds `mutable_cmdline` before
+  `CreatePipe`; Linux's `pipe2()`/`F_SETPIPE_SZ` run inside `exec()`, after `request.source` was
+  already finalized), and `ExecOutcome` has no field to report the real size back to the caller
+  afterward either. There is no point in this data flow where the host could know the real size in
+  time to inject it into the command line it already had to build first. **Fix**: no host-side
+  measurement or handoff at all. The WORKER queries its OWN stdout directly — `fcntl(STDOUT_FILENO,
+  F_GETPIPE_SZ)`, valid on either end of a pipe since Linux 2.6.35 — immediately after its own
+  `dup2()` setup, and derives its output ceiling from whatever that call actually reports, with no
+  host coordination needed. Windows keeps the illustrative 768-under-1-MiB margin (`CreatePipe`'s
+  `nSize` is a real floor, not a hint, so no query is needed there — a compile-time/config constant is
+  sound). A NEW, named resource cap (§4 item 5), distinct from `ctx.tool_result_byte_threshold`
   (which governs what the REPLY hands back to the model, already handled by `build_reply` on whatever
   the worker returns). Once the worker's own cumulative stdout output would cross ITS ceiling, it stops
   emitting pages and exits cleanly (not killed) — the SAME `truncated_pages`/`pages_processed`
@@ -215,13 +221,12 @@ primary"). This design does not fight that scope — it stays inside it:
 
 **Not decided by this revision**: the exact scratch-directory location and per-call filename scheme
 (collision-safety across concurrent calls, cleanup-on-crash); the worker binary itself; the exact
-page-delimiter wire format and the worker's own output-ceiling exact value (768 KiB is illustrative,
-needs real measurement against the 1 MiB pipe buffer's actual safe margin — does the delimiter/framing
-overhead, or OS-level pipe buffering behavior, eat into that margin in a way that needs a bigger gap);
-whether the scratch-directory `grant_ro_deduped()` call needs its own new host-side entry point (this
-revision assumes the free function is reachable from wherever `ExtractPdfText`'s implementation would
-live, not yet checked against the real namespace/linkage boundaries between `tools/` and
-`backends/native_jail/`).
+page-delimiter wire format and the worker's own output-ceiling exact value (768 KiB on Windows is
+illustrative, needs real measurement against `CreatePipe`'s actual safe margin; Linux's own margin is
+now derived at runtime per the worker-side `F_GETPIPE_SZ` fix above, not a value this draft needs to
+guess); `NativeJailBackend::grant_ro_path_once()`'s exact signature/error mapping (§3a(ii) above
+resolves WHETHER it's callable — round 5 found it wasn't, round 6 confirmed the new public-method fix
+is real and mechanically sound — but not its final header text).
 
 ## 4. Resource caps (I8) — grounded in `exec()`'s real, measured mechanism; spawn-rate now a named gap
 
@@ -300,9 +305,9 @@ were one call away.
 - §2: whether sharing `fetch_source_bytes` is worth `ReadContent`'s own error-code migration cost, vs.
   accepting duplication (option (a)) — unchanged since Revision 2; §3a's redesign doesn't bear on this.
 - §3a: `NativeJailBackend::grant_ro_path_once()`'s exact signature/error mapping; scratch-directory
-  location/filename scheme; the new worker binary; the page-delimiter wire format; the exact
-  worker-argv/env-var shape for passing the host-measured pipe-size-derived ceiling down to the
-  worker — real implementation-ADR work, not finalized.
+  location/filename scheme; the new worker binary; the page-delimiter wire format; the exact fallback
+  behavior if the worker's own `F_GETPIPE_SZ` query itself fails (a real syscall that can error) —
+  real implementation-ADR work, not finalized.
 - §4 item 3: the call-rate/spawn-rate cap this revision still does not solve, now more precisely
   costed (a fresh Job Object/cgroup and `Instance` per call, not merely process-spawn overhead).
 - §4: exact `ResourceLimits::memory_bytes`/`wall_ms` VALUES on Windows, and Linux's own wall-clock
@@ -313,13 +318,13 @@ were one call away.
   territory, unchanged.
 - The skill's final prose beyond fixing round 1's factual error — still not to be shipped verbatim
   without the same review weight the existing five skills got.
-- **Round 6 of red-team.** Round 5 independently verified the WINDOWS half of this design end to end
-  (the `create()`/`exec()` pivot, `wait_or_kill()`/`wall_ms`, the output-ceiling mechanism's interaction
-  with `exec()`'s real exit handling, `drain_pipe_bounded`'s record-reassembly, and that dropping the
-  scratch directory from `SandboxSpec.mounts` doesn't silently break anything else in `create()`) —
-  the broadest confirmation any round has given this design so far. What's left, by round 5's own
-  precise diagnosis: `grant_ro_path_once()` as a real new public method (not merely re-exposing
-  existing internals) and the dynamic Linux pipe-size query. Both need independent verification that
-  the NEW code this revision proposes (not previously-existing code this revision merely cited) is
-  itself correct — a header change and an `F_GETPIPE_SZ` call are simple in isolation, but "simple in
-  isolation" was also true of several claims earlier rounds found broken in practice.
+- **Round 7 of red-team.** Round 6 confirmed `grant_ro_path_once()` closed for real (direct check of
+  `NativeJailBackend`'s real header/anonymous-namespace call pattern) and found the pipe-size fix's
+  diagnosis correct but its delivery mechanism unsequenceable against `exec()`'s real, caller-builds-
+  the-command-line-first control flow — the same "correctly targeted, incompletely executed" pattern
+  as round 5's own finding on the SAME fix, one layer deeper. This revision's worker-self-queries
+  redesign removes the host↔worker handoff that caused that problem, rather than repairing its
+  sequencing — needs independent verification that this simpler shape is itself sound (does a
+  `dup2()`'d pipe fd genuinely support `F_GETPIPE_SZ` from the child side the way this revision
+  assumes; does the worker binary's own startup sequence have a real point to call it at) before an
+  implementation ADR builds against it.
