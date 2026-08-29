@@ -7,7 +7,10 @@
   (`host_dir_str`'s embedded-NUL guard), and one real, structurally-unavoidable residual newly
   disclosed (container orphaning on abrupt process death, mirroring `DockerExecutionSurface`'s own
   known residual) — see §5/§7. 18/18 checks pass against a live daemon; full Linux test suite shows
-  zero regressions caused by this ADR.
+  zero regressions caused by this ADR. **§7's own "not wired into any real tool surface" residual is
+  SINCE CLOSED (2026-08-29, same session)**: `tools/containerd_shell_chat.cpp` + `tests/test_composed_
+  containerd_providers_live.cpp`, both real, both independently red-teamed and empirically verified
+  against a live daemon (`ALL CHECKS PASSED`) — see §7's own updated entry for the full evidence.
 - **Date:** 2026-08-29.
 - **Scope:** new `include/agentengine/sandbox/containerd_execution_surface.hpp` (header-only, matching
   `docker_execution_surface.hpp`'s own shape — no new CMake library target), new
@@ -221,12 +224,48 @@ over the `ExecutionSurface` concept, `include/agentengine/sandbox/mandatory_sand
 
 ## 7. Residual risks
 
-- **Not wired into `tools/cli_chat.cpp`/`tools/sandboxed_shell_chat.cpp` or any real session builder**
-  — this ADR promotes the CONFORMER, matching exactly the bar `DockerExecutionSurface`'s own ADR-102
-  Phase 3 promotion reached before later phases wired it into a real session
-  (`MandatorySandboxProvider`/`ComposedContextProvider<Ms...>`, ADR-102 Phases 4-5). A future pass
-  wiring `ContainerdExecutionSurface` into a real, user-reachable tool surface is real, contained,
-  disclosed follow-on work, not attempted here.
+- ~~**Not wired into `tools/cli_chat.cpp`/`tools/sandboxed_shell_chat.cpp` or any real session
+  builder**~~ **Closed (2026-08-29, same session)**: `tools/containerd_shell_chat.cpp`, a near-verbatim
+  port of `tools/sandboxed_shell_chat.cpp` swapping `MandatorySandboxProvider<DockerExecutionSurface>`
+  for `MandatorySandboxProvider<ContainerdExecutionSurface>` (the one template argument — everything
+  else, down to the composed-provider structure and the `ComposedQuickstartSessionBuilder` wiring, is
+  unchanged), new `agentengine_containerd_shell_chat` CMake target (`AGENTENGINE_WITH_HTTPS AND NOT
+  WIN32`). Also closed the deeper half of this residual — proof that the COMPOSITION actually works
+  through the real pipeline, not just that a tool file compiles: `tests/test_composed_containerd_
+  providers_live.cpp`, a near-verbatim port of `tests/test_composed_sandbox_providers_live.cpp`, run
+  as root against a real containerd/runc daemon — **`ALL CHECKS PASSED`**, the first real production
+  use of `MandatorySandboxProvider<ContainerdExecutionSurface>` through the actual, unmodified
+  `session.start_run() -> invoke_tool()` 10-step pipeline anywhere in this codebase (confirmed via
+  `grep -rl "MandatorySandboxProvider<ContainerdExecutionSurface>"` returning only these two new
+  files). An independent red-team round `diff -u`'d both new files against their templates line by
+  line and found the port genuinely faithful — every non-comment difference is exactly the template
+  argument, session/branch-name string literals, scratch-directory paths, and banner text; zero silent
+  logic changes (unlike ADR-104's `pclose()` finding or ADR-106's own earlier move-semantics finding,
+  this port introduced none). It also independently reproduced every empirical claim (rebuilt both
+  targets from scratch; re-ran the composed test as root, `ALL CHECKS PASSED`; ran it twice
+  back-to-back with no cleanup between runs, both passed, since containers are named
+  `ae_ces_<pid>_<seq>` with no cross-run collision; sanity-checked the tool binary with no
+  `OPENAI_API_KEY` set, clean failure); confirmed the CMake link lists are correct and complete by
+  tracing what `mandatory_sandbox_provider.hpp`/`sandbox_runtime.hpp` actually need (`agentengine::
+  sandbox_io` is genuinely required — `sandbox_runtime.hpp` embeds a real `RealIoFileSystem` member —
+  not blindly copied); confirmed both surfaces' default container image
+  (`docker.io/library/alpine:latest`, `ContainerdExecutionSurface`'s own constructor default) flows
+  through unmodified; and confirmed zero new authority path (same two `FsRead`/`FsWrite` capability
+  grants as the Docker sibling, `run_command` still authorizes purely through `IdentityAuthority`/
+  `Grant<T>`/`AsyncQuota<T>`, nothing in the diff touches capability/policy logic). It ALSO
+  independently reproduced the already-disclosed container-orphan residual (just below) for the
+  COMPOSED case specifically, via a real SIGKILL-mid-run test — confirmed not worse than the standalone
+  case, same class, same cause. Two real but minor, PRE-EXISTING findings faithfully replicated from
+  the template (not introduced by this port, and left as-is rather than fixed here since fixing them
+  would mean also touching the already-shipped Docker sibling, a separate, tiny, disclosed cleanup):
+  both tools `#include` `trust/secret_quarantine.hpp` but never actually use `QuarantineSecretStore`
+  in code (a dead include — `InMemorySecretStore`, the type actually used, lives in `trust/secret.hpp`
+  and arrives transitively via `session_builder.hpp`); both tools leave a small empty `/tmp` directory
+  behind even on the clean "no API key" failure path, since ledger setup runs before the `build()`
+  check that fails. Full Linux suite after this closure: 207/213 (97%) — the 6 failures are the same 5
+  pre-existing, already-disclosed, environment-dependent ones plus `test_composed_containerd_
+  providers_live` itself failing cleanly as a normal (non-root) `ctest` user, the identical expected
+  posture `test_containerd_execution_surface` already has.
 - **The bind-mount ordering hazard is proven for ONE real environment** (WSL2 Ubuntu 26.04's ext4-on-
   virtio, containerd 2.2.2, runc 1.4.0) — the design doc's own §5 already disclosed this does not
   generalize to every possible backing filesystem/snapshotter/kernel combination a real deployment

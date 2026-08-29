@@ -2282,6 +2282,17 @@ if(NOT WIN32)
   target_link_libraries(test_containerd_execution_surface PRIVATE agentengine::core agentengine_warnings)
   add_test(NAME test_containerd_execution_surface COMMAND test_containerd_execution_surface)
   set_tests_properties(test_containerd_execution_surface PROPERTIES TIMEOUT 60)
+
+  # ---- ADR-106 §7 residual, closed: the ContainerdExecutionSurface counterpart to
+  # test_composed_sandbox_providers_live above -- proves MandatorySandboxProvider<
+  # ContainerdExecutionSurface> (not just ContainerdExecutionSurface standalone) works through the
+  # real, unmodified session.start_run() -> invoke_tool() pipeline, composed alongside
+  # SandboxToolProvider. Same REQUIRES as test_containerd_execution_surface above.
+  add_executable(test_composed_containerd_providers_live test_composed_containerd_providers_live.cpp)
+  target_link_libraries(test_composed_containerd_providers_live PRIVATE
+    agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store
+    agentengine::sandbox_io agentengine_warnings)
+  add_test(NAME test_composed_containerd_providers_live COMMAND test_composed_containerd_providers_live)
 endif()
 
 # ---- Everything below stays WIN32-only, a real, disclosed platform-parity gap (not a stale gate):

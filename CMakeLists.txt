@@ -949,6 +949,21 @@ if(AGENTENGINE_WITH_HTTPS)
     MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
 endif()
 
+# ---- ADR-106 §7 residual, closed: tools/containerd_shell_chat.cpp -- the ContainerdExecutionSurface
+# counterpart to tools/sandboxed_shell_chat.cpp just above, composing SandboxToolProvider and
+# MandatorySandboxProvider<ContainerdExecutionSurface> into ONE session the same way. Linux-only
+# (ContainerdExecutionSurface's own scope: `ctr` only meaningfully talks to a local containerd Unix
+# socket) -- unlike its Windows sibling, it never needed a Linux-parity fix of its own (SandboxToolProvider
+# has been portable since ADR-103; hmac_sha256/QuarantineSecretStore has been portable since ADR-107),
+# it simply never existed until this pass.
+if(AGENTENGINE_WITH_HTTPS AND NOT WIN32)
+  add_executable(agentengine_containerd_shell_chat tools/containerd_shell_chat.cpp)
+  target_link_libraries(agentengine_containerd_shell_chat PRIVATE
+    agentengine::core agentengine::provider_http_client agentengine::mediated_shell_runner
+    agentengine::worktree_store agentengine::sandbox_io agentengine::hmac agentengine_warnings
+    MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+endif()
+
 # ---- Standalone batch inference (tools/batch_infer.cpp) -- submits N independent prompts to
 # OpenRouter's real Batch API (beta) and polls to completion. See that file's own top comment for
 # why this is scoped OUTSIDE docs/planning/batch-inference-coalescing-gap.md's standing "do not wire
