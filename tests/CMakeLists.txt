@@ -1823,6 +1823,21 @@ add_executable(test_read_content test_read_content.cpp)
 target_link_libraries(test_read_content PRIVATE agentengine::core agentengine::net_egress_proxy agentengine_warnings)
 add_test(NAME test_read_content COMMAND test_read_content)
 
+# ---- ExtractPdfText, 009 §7's PDF-text-layer document-extraction candidate (ADR-106, docs/planning/
+# pdf-text-extraction-design-draft.md Revision 7) -- only built when AGENTENGINE_WITH_PDF is
+# explicitly turned ON (root CMakeLists.txt), the same opt-in posture AGENTENGINE_WITH_WASM/
+# AGENTENGINE_BUILD_PYTHON_RUNNER already have for a big, untrusted-input-handling dependency. Real
+# end-to-end: spawns the REAL sandboxed agentengine_pdf_worker against a real, embedded minimal PDF.
+if(AGENTENGINE_WITH_PDF)
+  add_executable(test_extract_pdf_text test_extract_pdf_text.cpp)
+  target_link_libraries(test_extract_pdf_text PRIVATE
+    agentengine::core agentengine::net_egress_proxy agentengine::extract_pdf_text agentengine_warnings)
+  add_test(NAME test_extract_pdf_text COMMAND test_extract_pdf_text)
+  # Spawns a real sandboxed child process (AppContainer/Job Object on Windows, namespaces/cgroups on
+  # Linux) and runs a real PDFium decode -- generous but finite headroom over ordinary run time.
+  set_tests_properties(test_extract_pdf_text PROPERTIES TIMEOUT 60)
+endif()
+
 # ---- Skills Phase 2: core/skill_tool_scoping.hpp -- pure ToolTable filtering plus the negative
 # control proving invoke_tool actually rejects a real tool absent from the scoped table (not just
 # cosmetic list-shortening). No skills/sandbox dependency -- core-tier only.
