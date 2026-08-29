@@ -312,6 +312,64 @@ effect, proven against the real compiled fixture, not a hand-crafted test double
   (`chat_stream()`/`sandbox::perform_provider_streaming_exchange`) was touched; it uses the separate
   incremental `sandbox::ChunkedBodyDecoder`, which this fix deliberately does not reach. Full suite
   195/195 after both rounds of fixes, confirmed clean (not just the one target).
+- ~~**`test_provider_egress_address_policy`'s G3 check failed on Linux (2026-08-29)**~~ **Fixed
+  (2026-08-29) — a TEST bug, not a security bug; claim C5 itself holds, unaffected.** First surfaced
+  as a disclosed, out-of-scope residual across three unrelated same-day passes
+  (`decisions/ADR-105-sandbox-tool-provider-composed-linux-parity.md`,
+  `decisions/ADR-106-containerd-execution-surface-promotion.md`,
+  `decisions/ADR-107-hmac-sha256-linux-parity.md`), each of which found it purely as a byproduct of
+  turning `AGENTENGINE_WITH_HTTPS` on for a Linux build for the first time and correctly declined to
+  investigate it further. Root cause, empirically traced: the failing check asserted BOTH
+  `resolve_and_validate` AND `resolve_host` reject `"0177.0.0.1"` (an octal-encoded loopback literal),
+  on the theory that `inet_pton`'s strict dotted-quad-only fast path rejecting the string (true) meant
+  the whole resolution pipeline would treat it as unparseable. That assumption was wrong: a standalone
+  compiled repro against real glibc confirmed `getaddrinfo("0177.0.0.1", ...)` resolves it — via its
+  own, more lenient internal numeric-address recognition, independent of `inet_pton` — to 127.0.0.1
+  (octal `0177` = decimal 127), once the fast path falls through to it. **This does NOT reopen claim
+  C5**: C5 is that the blocked-range check runs on the RESOLVED binary address, never the input
+  string (`net_egress_proxy.hpp`'s own comment on `is_blocked_address`) — and that remains true and
+  unaffected regardless of how leniently `getaddrinfo` parses a numeric-looking string, because
+  `resolve_and_validate` checks whatever numeric address comes out, not the string that went in.
+  Confirmed directly: with the fix, `resolve_and_validate("0177.0.0.1", 80)` still correctly rejects
+  it (`net.address_blocked`) — the octal spelling does not bypass anything. The ONE genuinely
+  surprising thing was that `resolve_host` (the host-initiated provider path, no filtering by design,
+  ADR-016) also resolves it successfully to 127.0.0.1 — which is CORRECT, not a bug: an operator's own
+  configured provider endpoint is legitimately allowed to be loopback, however it is spelled, matching
+  every other value `resolve_host` already accepts unfiltered. Fixed by correcting the test's own wrong
+  assumption: `tests/test_provider_egress_address_policy.cpp`'s G3 block now asserts the two resolvers'
+  actually-correct, actually-different outcomes separately (`resolve_and_validate` rejects with
+  `net.address_blocked`; `resolve_host` resolves to 127.0.0.1), with a comment explaining why they
+  differ. Verified via a real negative control: temporarily removing `is_blocked_address`'s loopback
+  range from `kBlockedRanges` and rebuilding made the corrected `resolve_and_validate` check (and two
+  unrelated, already-existing loopback checks) fail exactly as expected, proving the corrected
+  assertion is actually load-bearing, not vacuously true — then the file was restored and confirmed
+  byte-identical (`git diff` empty) before rebuilding clean.
+
+  **SECOND CORRECTION, same day**: the fix above was itself written from glibc's behavior alone and,
+  when rebuilt on Windows, both new checks failed there — a genuine, real PLATFORM DIFFERENCE
+  (CONVENTIONS.md: "isolation parity is a gate, not a goal") in the underlying system resolver, not a
+  second test bug. A standalone MSVC-compiled probe against the real winsock `getaddrinfo` confirmed
+  `getaddrinfo("0177.0.0.1", ...)` fails outright on Windows (`WSAHOST_NOT_FOUND`, winsock error
+  11001) — Windows has no lenient numeric-address fallback the way glibc does. Both platforms are
+  correct and safe (claim C5 unaffected either way: on Linux the resolved address gets filtered; on
+  Windows resolution fails before a filtering decision is even reachable, failing closed by a
+  different, earlier mechanism) — the two system resolvers simply disagree on whether the string
+  resolves at all. Fixed with a real `#ifdef _WIN32`/`#else` split (matching this codebase's own
+  established precedent for platform-conditional expected outcomes,
+  `tests/test_mediated_shell_runner_hostile_corpus.cpp`'s SH7-SH10 block): Windows asserts BOTH
+  resolvers fail with `net.host_unresolvable`; Linux asserts the split outcome the first correction
+  already established. Re-verified clean on both platforms after this second fix (Windows: rebuilt and
+  ran directly, `ALL PASS`; Linux: rebuilt and ran directly, `ALL PASS`), then confirmed with a full
+  suite run on each platform. A bug fix against this ADR's own already-decided design (claim C5
+  unchanged, no new competing design), not a new ADR — per the ADR-062 removal precedent
+  (`decisions/README.md`, "an ADR for everything is an ADR for nothing"), matching this section's own
+  chunked-transfer-encoding entry just above. **Real evidence, both platforms**: full Linux `ctest`
+  (212 tests, WSL2 Ubuntu): **207/212 passed** — the 5 failures are all pre-existing and
+  environment-dependent (`test_containerd_execution_surface` needs root/an ACL for the containerd
+  socket, `decisions/ADR-106-containerd-execution-surface-promotion.md`; the 4
+  `test_kata_backend_*_linux` tests need a working Kata/KVM runtime this environment doesn't have),
+  none newly broken by this fix. Full Windows `ctest` (288 tests): **288/288 passed, 100%**, zero
+  regressions. `test_provider_egress_address_policy` itself: `ALL PASS` on both platforms.
 - **`method_restrictions`/`byte_cap` are the only two of `cap::NetOut`'s three parameters this ADR
   exercises against a live target in the WASM path** — the third, `host_allowlist`, is exercised
   structurally (C1) but every M2-era `NetOut<Host>` declaration tag only ever produces a single-entry

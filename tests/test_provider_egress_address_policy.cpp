@@ -213,15 +213,53 @@ int main() {
                   validated->port == plain->port,
               "G3: on a non-blocked literal both resolvers return the identical VerifiedEndpoint");
 
-        // ADR-011 claim C5: the strict dotted-quad `inet_pton` fast path means a non-canonical
-        // encoding fails to PARSE rather than needing to be filtered. That property is part of the
-        // shared resolution half, so it must hold on both sides -- if `resolve_host` had been written
-        // as a separate lenient parser, this is what would expose it.
+        // CORRECTED (2026-08-29, decisions/ADR-011-first-party-egress-proxy.md §9): this check
+        // originally asserted BOTH resolvers reject "0177.0.0.1" outright, on the theory that
+        // `inet_pton`'s strict dotted-quad-only fast path rejecting the string (true, confirmed just
+        // above, on BOTH platforms) meant the whole resolution pipeline would treat it as unparseable.
+        // That assumption was empirically wrong on Linux, and the real behavior turns out to be a
+        // genuine PLATFORM DIFFERENCE in the underlying `getaddrinfo`, not an AgentEngine bug on
+        // either side (CONVENTIONS.md: "isolation parity is a gate, not a goal" -- the two platforms'
+        // own system resolvers genuinely differ here, upstream of anything this codebase controls):
+        //   - Linux (glibc): `getaddrinfo`'s own internal numeric-address recognition is more lenient
+        //     than `inet_pton` and DOES resolve "0177.0.0.1" -- via octal interpretation of the
+        //     leading zero -- to 127.0.0.1, once the fast path falls through to it. Reproduced
+        //     directly: a standalone `getaddrinfo("0177.0.0.1", ...)` call returns 127.0.0.1.
+        //   - Windows: `getaddrinfo("0177.0.0.1", ...)` fails outright with `WSAHOST_NOT_FOUND`
+        //     (winsock error 11001) -- no lenient numeric-address fallback exists here. Reproduced
+        //     directly with a standalone MSVC-compiled probe against the real winsock `getaddrinfo`.
+        //
+        // Neither behavior is an SSRF hole: claim C5 (net_egress_proxy.hpp's own comment on
+        // `is_blocked_address`: "runs on the resolved 32-bit address... never a string") is about what
+        // happens to whatever numeric address DOES come out of resolution, and holds unaffected on
+        // both platforms -- on Linux, `resolve_and_validate` correctly blocks the resolved 127.0.0.1;
+        // on Windows, resolution fails before the blocked-range check is even reached, which is failing
+        // closed by a different, earlier mechanism, not a weaker one. `resolve_host` (host-initiated
+        // provider path, no filtering by design) has no reason to differ from `resolve_and_validate`'s
+        // own resolution outcome here, since NEITHER applies a filter to a string that never yields
+        // a resolved address on Windows in the first place -- only Linux's lenient resolution ever
+        // reaches the point where a filtering decision is even possible.
+#ifdef _WIN32
         auto validated_octal = sandbox::resolve_and_validate("0177.0.0.1", 80);
+        check(!validated_octal.has_value() && validated_octal.error().code == "net.host_unresolvable",
+              "G3 (Windows): resolve_and_validate fails to resolve an octal-encoded loopback literal at "
+              "all -- winsock's own getaddrinfo has no lenient numeric-address fallback for this form");
         auto plain_octal = sandbox::resolve_host("0177.0.0.1", 80);
-        check(!validated_octal.has_value() && !plain_octal.has_value(),
-              "G3: an octal-encoded address is not a dotted quad and does not resolve as a hostname "
-              "either -- both resolvers reject it, neither silently normalises it to 127.0.0.1");
+        check(!plain_octal.has_value() && plain_octal.error().code == "net.host_unresolvable",
+              "G3 (Windows): resolve_host fails identically -- the two resolvers share one resolution "
+              "half, so an unresolvable string is unresolvable through EITHER, filtered or not");
+#else
+        auto validated_octal = sandbox::resolve_and_validate("0177.0.0.1", 80);
+        check(!validated_octal.has_value() && validated_octal.error().code == "net.address_blocked",
+              "G3 (Linux): resolve_and_validate blocks an octal-encoded loopback literal -- glibc's "
+              "getaddrinfo resolves it to 127.0.0.1, and the blocked-range check runs on that RESOLVED "
+              "address, not the input string, so the unusual spelling does not bypass it");
+        auto plain_octal = sandbox::resolve_host("0177.0.0.1", 80);
+        check(plain_octal.has_value() && plain_octal->ipv4_host_order == kLoopbackHostOrder,
+              "G3 (Linux): resolve_host resolves an octal-encoded loopback literal to 127.0.0.1, "
+              "unfiltered -- correct per its own documented no-filtering contract (an operator's own "
+              "configured provider endpoint may legitimately be loopback, however it is spelled)");
+#endif
     }
 
     PlainHttpTestServer server;
