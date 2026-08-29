@@ -463,14 +463,14 @@ struct ExtractPdfText : Tool<ExtractPdfText, Capabilities<>, Approval<approval_m
 // alongside it, the same way any other non-builtin skill source gets added to a `SkillsProvider`.
 inline constexpr std::string_view kExtractingDocumentTextSkillMd = R"SKILL(---
 name: extracting-document-text
-description: When and how to use extract_pdf_text/extract_pdf_toc/extract_pdf_images instead of reading a PDF's raw bytes -- they return decoded text, outline structure, and embedded-image metadata, not a file to parse yourself, and report how far they got on a document too large or complex to fully process in one call, with no automatic continuation. Use this before working with a PDF.
-allowed-tools: extract_pdf_text extract_pdf_toc extract_pdf_images
+description: When and how to use extract_pdf_text/extract_pdf_toc/extract_pdf_images/extract_pdf_metadata instead of reading a PDF's raw bytes -- they return decoded text, outline structure, embedded-image metadata, and document metadata, not a file to parse yourself, and report how far they got on a document too large or complex to fully process in one call, with no automatic continuation. Use this before working with a PDF.
+allowed-tools: extract_pdf_text extract_pdf_toc extract_pdf_images extract_pdf_metadata
 metadata:
   version: "1"
 ---
 # Extracting document text
 
-Three tools cover PDF content, all through the same sandboxed extraction path, never by fetching raw
+Four tools cover PDF content, all through the same sandboxed extraction path, never by fetching raw
 PDF bytes and parsing them yourself in the code interpreter:
 
 - `extract_pdf_text(url=... | path=...) -> preview, truncated, total_bytes, total_page_count,
@@ -481,6 +481,9 @@ PDF bytes and parsing them yourself in the code interpreter:
 - `extract_pdf_images(url=... | path=...) -> images, images_processed, truncated` -- embedded-image
   METADATA (page index, pixel width/height, bits per pixel), NOT the image bytes themselves -- see
   the dedicated section below.
+- `extract_pdf_metadata(url=... | path=...) -> title, author, subject, keywords, creator, producer,
+  creation_date, mod_date, total_page_count` -- the document information dictionary (each field unset,
+  not an empty string, when the PDF does not set it) plus the page count alone.
 
 Reach for `extract_pdf_toc` FIRST when you only need to know a document's structure or find which
 page covers a topic -- it is far cheaper than extracting every page's full text just to locate one
@@ -488,6 +491,11 @@ section, and its `page_index` values compose directly with `extract_pdf_text` if
 one section's actual content (a capability that tool itself does not yet offer page-range selection
 for -- narrowing to one page still means requesting a smaller/split source document, per the
 truncation guidance below).
+
+Reach for `extract_pdf_metadata` when you need to decide whether a PDF is even the right document
+before spending a call on its content -- checking `title`/`author` against what you're looking for,
+or reading `total_page_count` cheaply (no text or outline extraction at all) to gauge how big a
+document is before choosing whether to call `extract_pdf_text` on it.
 
 ## The byte-threshold preview is pageable (extract_pdf_text only)
 

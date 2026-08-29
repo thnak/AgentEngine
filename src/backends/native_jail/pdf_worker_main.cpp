@@ -5,8 +5,8 @@
 // bug now runs inside a throwaway, resource-capped child, never the address space holding every
 // session's CapabilitySet/BoundCapability state).
 //
-// argv[1] is the mode ("text", "toc", or "images"); argv[2] is a path to a PDF file already placed
-// by the host into a scratch directory it granted this process read access to (NativeJailBackend::
+// argv[1] is the mode ("text", "toc", "images", or "meta"); argv[2] is a path to a PDF file already
+// placed by the host into a scratch directory it granted this process read access to (NativeJailBackend::
 // grant_ro_path_once() on Windows; an ordinary SandboxSpec.mounts read-only bind on Linux -- S3a(ii)
 // explains why the two platforms differ here). This binary trusts nothing about the PDF's CONTENTS
 // (untrusted input, PDFium's own job to parse safely) but the PATH itself is host-controlled, never
@@ -18,23 +18,37 @@
 // themselves contain arbitrary bytes including 0x01. Each record is a fixed 16-byte little-endian
 // header followed by `payload_len` bytes of payload:
 //
-//   [4] magic ('A','E','P','1')   [4] kind (0=META, 1=PAGE, 2=TOC_ENTRY, 3=IMAGE_ENTRY)
-//   [4] index (META: total page count; PAGE: 0-based page index; TOC_ENTRY: 0-based, contiguous
-//              entry sequence number; IMAGE_ENTRY: 0-based, contiguous entry sequence number
-//              across the WHOLE document -- the SAME "must match the count already emitted"
-//              contiguity discipline PAGE/TOC_ENTRY records already use)
+//   [4] magic ('A','E','P','1')   [4] kind (0=META, 1=PAGE, 2=TOC_ENTRY, 3=IMAGE_ENTRY, 4=META_FIELD)
+//   [4] index (META: total page count; PAGE: 0-based page index; TOC_ENTRY/IMAGE_ENTRY: 0-based,
+//              contiguous entry sequence number across the WHOLE document -- the SAME "must match
+//              the count already emitted" contiguity discipline PAGE records already use;
+//              META_FIELD: a fixed tag index, see below)
 //   [4] payload_len (bytes following; 0 for META, always 16 for IMAGE_ENTRY)
 //   [payload_len] UTF-8 page text (PAGE), or [4-byte int32 depth][4-byte int32 page_index, -1 if
 //              none][remaining bytes: UTF-8 title] (TOC_ENTRY), or [4-byte uint32 page_index]
 //              [4-byte uint32 width][4-byte uint32 height][4-byte uint32 bits_per_pixel]
 //              (IMAGE_ENTRY -- metadata only, from FPDFImageObj_GetImageMetadata; never the image's
-//              own decoded pixel bytes, see this worker's own images-mode comment below for why)
+//              own decoded pixel bytes, see this worker's own images-mode comment below for why),
+//              or UTF-8 tag value (META_FIELD)
 //
 // TOC mode never emits a META record -- unlike FPDF_GetPageCount() (an O(1) query), PDFium has no
 // equivalent O(1) "total bookmark count" -- finding out would cost the same traversal as emitting
 // the entries themselves, so this worker just emits TOC_ENTRY records directly; the host learns
 // "how many" from how many contiguous entries actually arrived. Images mode is the same: no META,
 // for the same reason (a page's image count is only known by actually enumerating its objects).
+//
+// META mode (kind=4, META_FIELD) reads the PDF's document information dictionary (ISO 32000-1:2008
+// §14.3.3's "Document Information Dictionary", the SAME 8 standard tags FPDF_GetMetaText's own doc
+// comment names) via one FPDF_GetMetaText() call per tag, plus a single kKindMeta (0) record carrying
+// the total page count -- the exact same O(1) FPDF_GetPageCount() call `run_text_mode` already makes,
+// reused here rather than re-derived, so metadata mode gets a page count "for free" via an
+// already-proven, already-shared record kind. The `index` field on a META_FIELD record identifies
+// WHICH tag it carries, via a fixed mapping this worker owns (`kMetaTagTable` below):
+//
+//   0=Title  1=Author  2=Subject  3=Keywords  4=Creator  5=Producer  6=CreationDate  7=ModDate
+//
+// Sparse output: a tag PDFium reports as empty/absent gets NO record at all (not an empty-payload
+// record) -- the host side leaves that field unset rather than treating "" as a real value.
 //
 // Never initializes PDFium's FormFill/V8 engine (round-1 red-team's own mitigating-fact finding:
 // plain FPDFText_* extraction does not execute embedded PDF JavaScript) -- only FPDF_InitLibrary(),
@@ -80,6 +94,15 @@ constexpr std::uint32_t kKindMeta = 0;
 constexpr std::uint32_t kKindPage = 1;
 constexpr std::uint32_t kKindTocEntry = 2;
 constexpr std::uint32_t kKindImageEntry = 3;
+constexpr std::uint32_t kKindMetaField = 4;
+
+// Fixed tag-index mapping for META_FIELD records -- see this file's own top comment. Order here
+// fixes the `index` value each tag maps to; do not reorder without also updating the top comment and
+// the host-side parser (extract_pdf_metadata.hpp).
+constexpr struct { std::uint32_t index; char const* tag; } kMetaTagTable[] = {
+    {0, "Title"},    {1, "Author"},   {2, "Subject"},      {3, "Keywords"},
+    {4, "Creator"},  {5, "Producer"}, {6, "CreationDate"}, {7, "ModDate"},
+};
 
 // Cycle/DoS guards for the outline traversal (PDFDium's own FPDFBookmark_GetNextSibling() doc
 // comment: "the caller is responsible for handling circular bookmark references, as may arise from
@@ -168,6 +191,23 @@ constexpr std::size_t kFallbackOutputCeilingBytes = 48ull * 1024;
     FPDFBookmark_GetTitle(bookmark, buf.data(), byte_len);
     // buf's last unit is the NUL terminator -- exclude it, same "-1" ucs2_to_utf8's own PAGE-text
     // caller already applies for FPDFText_GetText's own trailing-terminator convention.
+    int const unit_count = static_cast<int>(buf.size()) - 1;
+    return unit_count > 0 ? ucs2_to_utf8(buf.data(), unit_count) : std::string{};
+}
+
+// Same UCS-2-to-UTF-8 contract as bookmark_title_utf8 above: FPDF_GetMetaText fills a UTF-16LE
+// buffer and returns the byte count INCLUDING the terminating NUL, not a character count (FPDF_
+// GetMetaText's own doc comment, fpdf_doc.h -- the SAME contract FPDFBookmark_GetTitle has, verified
+// by re-reading both doc comments directly rather than assumed identical without checking). A
+// parallel helper rather than a shared one -- the two PDFium calls have different signatures
+// (FPDF_DOCUMENT+tag vs. FPDF_BOOKMARK) and this keeps each call site trivial to read.
+[[nodiscard]] std::string meta_text_utf8(FPDF_DOCUMENT doc, char const* tag) {
+    unsigned long const byte_len = FPDF_GetMetaText(doc, tag, nullptr, 0);
+    if (byte_len <= 2) return {};  // 0, or just the 2-byte NUL terminator -- no real value
+    std::vector<unsigned short> buf(byte_len / 2);
+    FPDF_GetMetaText(doc, tag, buf.data(), byte_len);
+    // buf's last unit is the NUL terminator -- exclude it, same convention bookmark_title_utf8 and
+    // the PAGE-text caller both already apply for their own respective trailing-terminator units.
     int const unit_count = static_cast<int>(buf.size()) - 1;
     return unit_count > 0 ? ucs2_to_utf8(buf.data(), unit_count) : std::string{};
 }
@@ -339,6 +379,34 @@ constexpr std::size_t kFallbackOutputCeilingBytes = 48ull * 1024;
     return 0;
 }
 
+// Emits the page count via the SAME kKindMeta record run_text_mode already uses (reused, not
+// re-derived), then one kKindMetaField record per non-empty standard document-info tag (sparse --
+// a tag PDFium reports empty/absent gets no record at all, see this file's own top comment). The 8
+// tags are cheap (one FPDF_GetMetaText call each), so no output-ceiling early-exit loop is needed the
+// way run_text_mode/emit_toc_subtree need one for a document with many pages/bookmarks -- the ceiling
+// check before each write is still applied defensively, in case a pathological tag value is huge.
+[[nodiscard]] int run_meta_mode(FPDF_DOCUMENT doc, std::size_t ceiling) {
+    std::size_t bytes_written = 0;
+
+    int const total_pages = FPDF_GetPageCount(doc);
+    if (!write_record(kKindMeta, static_cast<std::uint32_t>(total_pages < 0 ? 0 : total_pages), {})) {
+        return 3;
+    }
+    bytes_written += 16;  // the META record's own header
+
+    for (auto const& entry : kMetaTagTable) {
+        std::string const value = meta_text_utf8(doc, entry.tag);
+        if (value.empty()) continue;  // sparse -- PDFium reports this tag empty/absent, skip it
+
+        std::size_t const record_bytes = 16 + value.size();
+        if (bytes_written + record_bytes > ceiling) break;  // stop BEFORE writing -- never a partial record
+
+        if (!write_record(kKindMetaField, entry.index, value)) return 3;
+        bytes_written += record_bytes;
+    }
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -349,14 +417,15 @@ int main(int argc, char** argv) {
 #endif
 
     if (argc != 3) {
-        std::fprintf(stderr, "usage: agentengine_pdf_worker <text|toc|images> <pdf-path>\n");
+        std::fprintf(stderr, "usage: agentengine_pdf_worker <text|toc|images|meta> <pdf-path>\n");
         return 1;
     }
     std::string_view const mode = argv[1];
-    if (mode != "text" && mode != "toc" && mode != "images") {
-        std::fprintf(stderr,
-                     "agentengine_pdf_worker: unknown mode '%s' (expected 'text', 'toc', or 'images')\n",
-                     argv[1]);
+    if (mode != "text" && mode != "toc" && mode != "images" && mode != "meta") {
+        std::fprintf(
+            stderr,
+            "agentengine_pdf_worker: unknown mode '%s' (expected 'text', 'toc', 'images', or 'meta')\n",
+            argv[1]);
         return 1;
     }
 
@@ -372,13 +441,15 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    int rc = 0;
+    int rc = 3;
     if (mode == "text") {
         rc = run_text_mode(doc, ceiling);
     } else if (mode == "toc") {
         rc = run_toc_mode(doc, ceiling);
-    } else {
+    } else if (mode == "images") {
         rc = run_images_mode(doc, ceiling);
+    } else {
+        rc = run_meta_mode(doc, ceiling);
     }
 
     FPDF_CloseDocument(doc);

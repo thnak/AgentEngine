@@ -1853,6 +1853,15 @@ if(AGENTENGINE_WITH_PDF)
     agentengine::core agentengine::net_egress_proxy agentengine::extract_pdf_text agentengine_warnings)
   add_test(NAME test_extract_pdf_images COMMAND test_extract_pdf_images)
   set_tests_properties(test_extract_pdf_images PROPERTIES TIMEOUT 60)
+
+  # ---- ExtractPdfMetadata, a fourth candidate sharing the same sandboxed worker
+  # (extract_pdf_metadata.hpp's own file-top comment explains why this one shares rather than
+  # duplicates).
+  add_executable(test_extract_pdf_metadata test_extract_pdf_metadata.cpp)
+  target_link_libraries(test_extract_pdf_metadata PRIVATE
+    agentengine::core agentengine::net_egress_proxy agentengine::extract_pdf_text agentengine_warnings)
+  add_test(NAME test_extract_pdf_metadata COMMAND test_extract_pdf_metadata)
+  set_tests_properties(test_extract_pdf_metadata PROPERTIES TIMEOUT 60)
 endif()
 
 # ---- Skills Phase 2: core/skill_tool_scoping.hpp -- pure ToolTable filtering plus the negative
