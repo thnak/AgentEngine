@@ -17,6 +17,10 @@ feature-comparison.md` (names the built-in-tools gap this whole first-party-tool
 `include/agentengine/tools/read_content.hpp` (this catalog's first shipped candidate, Track A/B,
 `e6d7b2a`/this branch's own prior commit — the `read_content`-class shape a document-extraction tool
 should plausibly reuse: bounded preview + `BlobRef` promotion, dynamic capability check).
+`docs/planning/pdf-text-extraction-design-draft.md` (the follow-on design draft this ADR's §3/§4
+explicitly deferred to — covers the `ExtractPdfText` tool shape, resource caps, and, at the project
+owner's own direction, a companion `extracting-document-text` builtin skill per §8f's already-real
+tool+skill pairing pattern; still pre-red-team, same as this ADR).
 
 ## 1. The question
 
