@@ -35,12 +35,26 @@ namespace {
 
 constexpr int kSkipReturnCode = 77;
 
+// PLATFORM-SPECIFIC, NOT a mechanical port (2026-08-29,
+// decisions/ADR-104-real-io-filesystem-linux-parity.md's own named follow-on, ADR-103 §7's
+// original residual) -- see `test_shell_runner_no_process_creation.cpp`'s own identical comment
+// for the full reasoning (Windows and POSIX name genuinely different APIs for the same underlying
+// property; `system` is the one symbol name shared verbatim by both lists, not a duplicate by
+// accident).
+#ifdef _WIN32
 constexpr std::array<char const*, 14> kHostileSymbols = {
     "CreateProcessA", "CreateProcessW", "CreateProcessAsUserA", "CreateProcessAsUserW",
     "_wspawnv",       "_wspawnve",       "_spawnv",             "_spawnve",
     "system",         "_wsystem",        "LoadLibraryA",        "LoadLibraryW",
     "WinExec",         "ShellExecuteA",
 };
+#else
+constexpr std::array<char const*, 13> kHostileSymbols = {
+    "fork",         "vfork",   "execve",        "execv",  "execvp",
+    "execvpe",      "execl",   "execlp",        "execle", "posix_spawn",
+    "posix_spawnp", "system",  "clone",
+};
+#endif
 
 } // namespace
 
@@ -56,7 +70,14 @@ int main() {
             .string();
     std::string inner = "\"" + nm_path + "\" --undefined-only \"" + AE_MEDIATED_SHELL_RUNNER_LIB_PATH +
                          "\" > \"" + tmp_out + "\" 2>&1";
+    // See `test_shell_runner_no_process_creation.cpp`'s own identical comment: the extra quote-wrap
+    // is a `cmd.exe`-only re-quoting workaround, wrong (not just unneeded) on POSIX where
+    // `std::system()` hands this string to `/bin/sh -c` directly with no such second layer.
+#ifdef _WIN32
     std::string cmd = "\"" + inner + "\"";
+#else
+    std::string cmd = inner;
+#endif
     int rc = std::system(cmd.c_str());
     if (rc != 0) {
         std::cout << "SKIP: llvm-nm invocation failed (rc=" << rc << "), cmd=" << cmd << "\n";

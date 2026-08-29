@@ -43,12 +43,27 @@ constexpr int kSkipReturnCode = 77;
 // Symbols that, if they appear as an UNDEFINED reference in this library's object code, would
 // mean something in ShellRunner's own call graph could reach process creation — the property
 // §9 G2 requires to not exist at all, not merely to be checked correctly every time.
+//
+// PLATFORM-SPECIFIC, NOT a mechanical port (2026-08-29,
+// decisions/ADR-104-real-io-filesystem-linux-parity.md's own named follow-on, ADR-103 §7's
+// original residual): Windows and POSIX name genuinely different APIs for the identical
+// underlying property this check exists to prove. `system` is the one symbol name shared
+// verbatim by both lists — ISO C's `system()` is spelled identically in MSVCRT and glibc, so it
+// is not a duplicate by accident, just a real coincidence of naming.
+#ifdef _WIN32
 constexpr std::array<char const*, 14> kHostileSymbols = {
     "CreateProcessA", "CreateProcessW", "CreateProcessAsUserA", "CreateProcessAsUserW",
     "_wspawnv",       "_wspawnve",       "_spawnv",             "_spawnve",
     "system",         "_wsystem",        "LoadLibraryA",        "LoadLibraryW",
     "WinExec",         "ShellExecuteA",
 };
+#else
+constexpr std::array<char const*, 13> kHostileSymbols = {
+    "fork",         "vfork",   "execve",        "execv",  "execvp",
+    "execvpe",      "execl",   "execlp",        "execle", "posix_spawn",
+    "posix_spawnp", "system",  "clone",
+};
+#endif
 
 } // namespace
 
@@ -62,14 +77,24 @@ int main() {
     std::string tmp_out =
         (std::filesystem::temp_directory_path() / "ae_shell_runner_no_process_creation_nm.txt")
             .string();
-    // cmd.exe's quoting rule: when a command line both starts with a quote and contains further
-    // quoted arguments, the ENTIRE line must be wrapped in an extra pair of quotes or cmd.exe
-    // mis-parses the executable path itself (observed: "'C:/Program' is not recognized..." — it
-    // split on the space inside "C:/Program Files/..." despite the inner quotes).
     std::string inner =
         "\"" + nm_path + "\" --undefined-only \"" + AE_SHELL_RUNNER_LIB_PATH + "\" > \"" + tmp_out +
         "\" 2>&1";
+    // `std::system()` on Windows hands this string to `cmd.exe /c`, which has its own, separate
+    // quoting rule: when a command line both starts with a quote and contains further quoted
+    // arguments, the ENTIRE line must be wrapped in an extra pair of quotes or cmd.exe mis-parses
+    // the executable path itself (observed: "'C:/Program' is not recognized..." — it split on the
+    // space inside "C:/Program Files/..." despite the inner quotes). On POSIX, `std::system()`
+    // hands this string to `/bin/sh -c` directly, with no such re-quoting layer -- applying the
+    // SAME extra wrap there is wrong, not merely unneeded: it makes `sh` treat the whole
+    // already-quoted string as one unparseable token (empirically confirmed: this is exactly what
+    // broke this check's own first Linux port attempt, 2026-08-29 -- a real, novel bug, not a
+    // mechanical port of a pre-existing one, since this whole test never ran on Linux before now).
+#ifdef _WIN32
     std::string cmd = "\"" + inner + "\"";
+#else
+    std::string cmd = inner;
+#endif
     int rc = std::system(cmd.c_str());
     if (rc != 0) {
         std::cout << "SKIP: llvm-nm invocation failed (rc=" << rc << "), cmd=" << cmd << "\n";
