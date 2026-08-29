@@ -1136,10 +1136,16 @@ if(AGENTENGINE_WITH_HTTPS)
   # never instantiated -- linked against provider_http_client only because session_builder.hpp's own
   # file-wide AGENTENGINE_WITH_HTTPS guard requires the real OpenAIChatClient/AnthropicChatClient types
   # to be visible at all, same reason test_json_schema_described above needs the same link with no live
-  # network call either.
+  # network call either. Also links agentengine::hmac (decisions/ADR-107-hmac-sha256-linux-parity.md):
+  # B7 below builds a real session against QuarantineSecretStore (trust/secret_quarantine.hpp), whose
+  # quarantine() ODR-uses trust::hmac_sha256 -- a real, pre-existing missing-link-dependency bug this
+  # target carried on EVERY platform (not just Linux), only ever masked because nothing had linked
+  # AGENTENGINE_WITH_HTTPS on for a from-scratch Linux configure before ADR-105/106 to surface it, and
+  # apparently never exercised as a from-scratch relink on Windows either; fixed here, not merely
+  # disclosed, since it is a one-line addition with no design question attached.
   add_executable(test_session_builder test_session_builder.cpp)
   target_link_libraries(test_session_builder PRIVATE
-    agentengine::core agentengine::provider_http_client agentengine_warnings)
+    agentengine::core agentengine::provider_http_client agentengine::hmac agentengine_warnings)
   add_test(NAME test_session_builder COMMAND test_session_builder)
 
   # ---- unified-streaming-design-draft.md §4 (Piece D), live proof: Bundle::ask()/ask_stream() against
@@ -1194,17 +1200,27 @@ target_link_libraries(test_secret_store PRIVATE agentengine::core agentengine_wa
 add_test(NAME test_secret_store COMMAND test_secret_store)
 
 # decisions/ADR-068-runtime-secret-quarantine-host-delegated-detection.md's prove phase.
-# QuarantineSecretStore's content-addressed naming reuses trust::hmac_sha256 (trust/hmac.cpp,
-# ADR-021) rather than a second, unaudited digest implementation -- that primitive lives in the
-# Windows-only agentengine::capability_token library (CMakeLists.txt's own "Cross-process capability
-# tokens -- Windows only" section), so this test needs the same link, same as that section's own
-# consumers (capability_token.cpp/bearer_token.cpp).
-if(WIN32)
-  add_executable(test_secret_quarantine test_secret_quarantine.cpp)
-  target_link_libraries(test_secret_quarantine PRIVATE
-    agentengine::core agentengine::capability_token agentengine_warnings)
-  add_test(NAME test_secret_quarantine COMMAND test_secret_quarantine)
-endif()
+# QuarantineSecretStore's content-addressed naming reuses trust::hmac_sha256 (trust/hmac.cpp/
+# hmac_posix.cpp, ADR-021, Linux parity ADR-107) rather than a second, unaudited digest
+# implementation -- that primitive now lives in the portable agentengine::hmac library
+# (CMakeLists.txt's own "HMAC-SHA256 primitive -- Windows AND Linux" section), built on both
+# platforms, so this test needs no platform gate any more (previously WIN32-only, when hmac_sha256
+# was only reachable via the Windows-only agentengine::capability_token library).
+add_executable(test_secret_quarantine test_secret_quarantine.cpp)
+target_link_libraries(test_secret_quarantine PRIVATE
+  agentengine::core agentengine::hmac agentengine_warnings)
+add_test(NAME test_secret_quarantine COMMAND test_secret_quarantine)
+
+# ---- decisions/ADR-107-hmac-sha256-linux-parity.md's own direct regression test -----------------
+# A dedicated RFC 4231 known-answer test for trust::hmac_sha256()/constant_time_equal() -- prior
+# coverage of this primitive was only INDIRECT (test_capability_token_proof/redteam.cpp,
+# test_secret_quarantine.cpp, test_rt_agent_session_quarantine_tool.cpp above). Portable: only calls
+# the platform-independent hmac.hpp interface, so it is wired unconditionally against
+# agentengine::hmac (Windows: hmac.cpp/CNG-BCrypt; Linux: hmac_posix.cpp/RFC 2104-from-scratch) --
+# the same source proves both backends agree with the real published standard.
+add_executable(test_hmac_sha256 test_hmac_sha256.cpp)
+target_link_libraries(test_hmac_sha256 PRIVATE agentengine::core agentengine::hmac agentengine_warnings)
+add_test(NAME test_hmac_sha256 COMMAND test_hmac_sha256)
 
 # ---- Milestone 5 Phase B1/B2/B5/B6 -- the ChatClient concept made real -------------------------
 # ChatRequest.tools/output_schema_json, the completed ChatClientCapabilities bitset,
@@ -1281,12 +1297,12 @@ add_test(NAME test_rt_agent_session_context_provenance COMMAND test_rt_agent_ses
 # ---- decisions/ADR-068-runtime-secret-quarantine-host-delegated-detection.md wired for real:
 # QuarantineToolProvider (trust/secret_quarantine.hpp) occupies AgentSession's HistoryProviderT slot;
 # a real tool-call round reaches the quarantine store through the actual invoke_tool() pipeline.
-# Windows-only (QuarantineSecretStore depends on trust::hmac_sha256, agentengine::capability_token).
-if(WIN32)
-  add_executable(test_rt_agent_session_quarantine_tool test_rt_agent_session_quarantine_tool.cpp)
-  target_link_libraries(test_rt_agent_session_quarantine_tool PRIVATE agentengine::core agentengine::capability_token agentengine_warnings)
-  add_test(NAME test_rt_agent_session_quarantine_tool COMMAND test_rt_agent_session_quarantine_tool)
-endif()
+# QuarantineSecretStore depends on trust::hmac_sha256, now the portable agentengine::hmac library
+# (decisions/ADR-107-hmac-sha256-linux-parity.md) -- previously WIN32-only when hmac_sha256 was only
+# reachable via agentengine::capability_token.
+add_executable(test_rt_agent_session_quarantine_tool test_rt_agent_session_quarantine_tool.cpp)
+target_link_libraries(test_rt_agent_session_quarantine_tool PRIVATE agentengine::core agentengine::hmac agentengine_warnings)
+add_test(NAME test_rt_agent_session_quarantine_tool COMMAND test_rt_agent_session_quarantine_tool)
 
 # ---- decisions/ADR-069-content-triggered-model-response-replay.md §7's own open question, answered
 # with real evidence: ADR-067's turn/pre_model hook and ADR-069's ContentReplayGateway, both wired

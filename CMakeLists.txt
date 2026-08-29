@@ -581,24 +581,53 @@ if(AGENTENGINE_WITH_HTTPS)
   add_library(agentengine::provider_http_client ALIAS agentengine_provider_http_client)
 endif()
 
+# ---- HMAC-SHA256 primitive (src/trust/) -- Windows AND Linux -----------------------------------
+# Implements trust/hmac.hpp: trust/hmac.cpp (Milestone 7, ADR-021) extracted the shared HMAC-SHA256/
+# constant-time-compare primitive out of capability_token.cpp so a SECOND, unrelated component
+# (ADR-021's bearer-token validator) could reuse the identical audited implementation instead of a
+# second one -- see hmac.hpp's own top comment. decisions/ADR-107-hmac-sha256-linux-parity.md gave it
+# a real Linux twin (hmac_posix.cpp, a from-scratch RFC 2104 construction built on
+# worktree_digest_posix.cpp's SHA-256 primitive) after finding a THIRD, unrelated consumer --
+# trust/secret_quarantine.hpp's QuarantineSecretStore, a core turn-boundary secret-quarantine feature
+# with no connection to ADR-005/021's cross-process/bearer-token designs -- also needs hmac_sha256,
+# and having it available on Windows only broke every AGENTENGINE_WITH_HTTPS-gated Linux target that
+# touches QuarantineSecretStore (decisions/ADR-105-sandbox-tool-provider-composed-linux-parity.md §7).
+# Deliberately its own small library, separate from agentengine_capability_token below: that library's
+# OTHER three files (capability_token.cpp/capability_registry.cpp/bearer_token.cpp) call
+# BCryptGenRandom directly for cross-process bearer-token key generation -- a genuinely Windows-only
+# concern (ADR-005 §2's own deliberate scope), unrelated to the HMAC primitive itself and NOT ported
+# here. Windows: hmac.cpp via CNG/BCrypt, a system API, not a third-party dependency (bcrypt.lib).
+# Linux: hmac_posix.cpp, no extra system library, same posture agentengine_worktree_store's own
+# WIN32/NOT WIN32 split already established for SHA-256.
+if(WIN32)
+  add_library(agentengine_hmac STATIC src/trust/hmac.cpp)
+  target_link_libraries(agentengine_hmac PUBLIC agentengine::core)
+  target_link_libraries(agentengine_hmac PRIVATE agentengine_warnings bcrypt)
+  add_library(agentengine::hmac ALIAS agentengine_hmac)
+endif()
+if(NOT WIN32)
+  add_library(agentengine_hmac STATIC src/trust/hmac_posix.cpp)
+  target_link_libraries(agentengine_hmac PUBLIC agentengine::core)
+  target_link_libraries(agentengine_hmac PRIVATE agentengine_warnings)
+  add_library(agentengine::hmac ALIAS agentengine_hmac)
+endif()
+
 # ---- Cross-process capability tokens (src/trust/) -- Windows only ------------------------------
 # Implements decisions/ADR-005-capability-bearer-tokens-cross-process.md (resolves OQ-3): both
 # competing designs it prove-phases -- Design A (trust/capability_token.hpp, a self-verifying
 # macaroon-style bearer token) and Design B (trust/capability_registry.hpp, the status-quo
-# host-side-registry alternative it is measured against). HMAC-SHA256 and randomness come from
-# Windows CNG/BCrypt, a system API (bcrypt.lib) -- not a third-party dependency, same posture as
-# job_object_limits.cpp's direct use of Job Objects, so this needs no CMake option gate beyond the
-# platform check. trust/hmac.cpp (Milestone 7, ADR-021) extracted the shared HMAC-SHA256/constant-
-# time-compare primitive so bearer_token.cpp (ADR-021's own inbound-auth token, a DIFFERENT concept
-# from this file's cross-process capability token) reuses the identical audited implementation
-# rather than a second one.
+# host-side-registry alternative it is measured against). Randomness comes from Windows CNG/BCrypt, a
+# system API (bcrypt.lib) -- not a third-party dependency, same posture as job_object_limits.cpp's
+# direct use of Job Objects -- via BCryptGenRandom, called directly in capability_token.cpp/
+# capability_registry.cpp/bearer_token.cpp, a genuinely Windows-only concern this library stays gated
+# on (ADR-107 did NOT port this: see the agentengine_hmac library just above, which now supplies the
+# HMAC-SHA256 primitive these three files also use, portably, on both platforms).
 if(WIN32)
   add_library(agentengine_capability_token STATIC
-    src/trust/hmac.cpp
     src/trust/capability_token.cpp
     src/trust/capability_registry.cpp
     src/trust/bearer_token.cpp)
-  target_link_libraries(agentengine_capability_token PUBLIC agentengine::core)
+  target_link_libraries(agentengine_capability_token PUBLIC agentengine::core agentengine::hmac)
   target_link_libraries(agentengine_capability_token PRIVATE agentengine_warnings bcrypt)
   add_library(agentengine::capability_token ALIAS agentengine_capability_token)
 endif()
@@ -902,19 +931,22 @@ endif()
 # ComposedContextProvider<Ms...> anywhere in this codebase, composing SandboxToolProvider (ADR-096)
 # and MandatorySandboxProvider<DockerExecutionSurface> (ADR-102 Phases 1-4) into ONE session. Needs no
 # Python embed (unlike agentengine_cli_chat above), so gated only on AGENTENGINE_WITH_HTTPS (real
-# OpenAI network calls) and WIN32. NOT for the reason previously stated here (SandboxToolProvider's
-# own platform scope -- stale as of ADR-103, see decisions/ADR-105-sandbox-tool-provider-composed-
-# linux-parity.md): the REAL Linux blocker, found empirically while investigating that stale claim, is
-# unrelated -- this file's use of QuarantineSecretStore (trust/secret_quarantine.hpp) pulls in
-# agentengine::trust::hmac_sha256, which has NO Linux implementation at all (only built inside
-# agentengine_capability_token below, itself WIN32-only per ADR-005's own deliberate BCrypt/CNG scope).
-# A real, disclosed, separate residual -- not attempted here (see ADR-105 §7).
-if(AGENTENGINE_WITH_HTTPS AND WIN32)
+# network calls) -- previously ALSO WIN32-gated because this file's use of QuarantineSecretStore
+# (trust/secret_quarantine.hpp) pulls in agentengine::trust::hmac_sha256, which had no Linux
+# implementation at all (decisions/ADR-105-sandbox-tool-provider-composed-linux-parity.md §4 point 3 /
+# §7's disclosed residual -- itself a correction of an even earlier, stale "SandboxToolProvider's own
+# platform scope" claim this comment used to make). decisions/ADR-107-hmac-sha256-linux-parity.md
+# closed that gap for real (agentengine::hmac, both platforms) -- confirmed empirically that
+# hmac_sha256 was the ONLY reason this target couldn't build on Linux (every other dependency --
+# session_builder.hpp, composed_context_provider.hpp, docker_execution_surface.hpp,
+# mandatory_sandbox_provider.hpp, sandbox_tool_provider.hpp -- was already portable per ADR-103/104/105
+# and this file itself has zero _WIN32/windows.h references), so the WIN32 gate is removed here.
+if(AGENTENGINE_WITH_HTTPS)
   add_executable(agentengine_sandboxed_shell_chat tools/sandboxed_shell_chat.cpp)
   target_link_libraries(agentengine_sandboxed_shell_chat PRIVATE
     agentengine::core agentengine::provider_http_client agentengine::mediated_shell_runner
-    agentengine::worktree_store agentengine::sandbox_io agentengine_warnings MbedTLS::mbedtls
-    MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+    agentengine::worktree_store agentengine::sandbox_io agentengine::hmac agentengine_warnings
+    MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
 endif()
 
 # ---- Standalone batch inference (tools/batch_infer.cpp) -- submits N independent prompts to

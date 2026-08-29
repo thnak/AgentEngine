@@ -26,10 +26,12 @@
 // Content-addressed naming (`quarantine()` below) reuses `trust::hmac_sha256` (trust/hmac.hpp,
 // ADR-021) as the one audited MAC primitive already in this codebase, rather than a second,
 // unaudited digest implementation for the same job -- this makes the header link-dependent on the
-// Windows-only `agentengine::capability_token` library (CMakeLists.txt), not just `agentengine::
-// core`, unlike `trust/secret.hpp` itself. A portable/cross-platform digest is a named, deferred gap
-// (same posture as `worktree_digest.cpp`'s own "Windows only... a Linux SHA-256 provider is a named,
-// tracked gap" comment), not silently assumed away.
+// portable `agentengine::hmac` library (CMakeLists.txt), not just `agentengine::core`, unlike
+// `trust/secret.hpp` itself. `agentengine::hmac` builds on both platforms (Windows: CNG/BCrypt;
+// Linux: a from-scratch RFC 2104 construction, decisions/ADR-107-hmac-sha256-linux-parity.md) -- this
+// WAS a Windows-only link dependency (a real, previously-undiscovered gap: it broke every
+// AGENTENGINE_WITH_HTTPS-gated Linux target touching QuarantineSecretStore, found and disclosed by
+// decisions/ADR-105-sandbox-tool-provider-composed-linux-parity.md §7, closed by ADR-107), now fixed.
 //
 // Fixed here by splitting the concern instead of granting inline: `quarantine()` NEVER mutates any
 // capability set, ever. It records `quarantine_trigger` (how the extraction happened) purely as
