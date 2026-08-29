@@ -39,7 +39,7 @@
   primitive `write_verified()`/`read_verified()` build on, unchanged by this ADR) ·
   `decisions/ADR-102-identity-native-sandbox-implementation-phase-1.md` (Phase 3, the ADR that
   originally shipped `RealIoFileSystem`/`DockerExecutionSurface` as Windows-only) ·
-  `CONVENTIONS.md` ("isolation parity is a gate, not identical shape" — the POSIX shell-injection
+  `CONVENTIONS.md` ("isolation parity is a gate, not a goal" — the POSIX shell-injection
   defenses below are the clearest instance of this principle in either ADR-103 or this one: same
   CONTRACT, deliberately different MECHANISM, because the interpreting shell genuinely differs).
 

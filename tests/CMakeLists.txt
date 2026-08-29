@@ -273,16 +273,20 @@ endif()
 # `target.history_provider() = std::move(source.history_provider());` still compiles and still aliases
 # live provider state across sessions -- see that class's own comment and ADR-102 §48.
 #
-# WIN32-gated (SandboxToolProvider's own current platform scope, matching every other block in this
-# section) and links the real `SandboxToolProvider` dependency chain directly as extra SOURCES --
-# same reason as the Milestone 3 A3 block above: try_compile() runs in an isolated mini-project with
-# no visibility into this build's own ALIAS targets (agentengine::mediated_shell_runner,
-# agentengine::worktree_store do not exist there), so the three .cpp files
-# `agentengine_mediated_shell_runner` is built from (top-level CMakeLists.txt) plus the two
-# `agentengine_worktree_store` is built from are compiled alongside the probe itself, with `bcrypt`
-# linked directly for `compute_digest`'s real Windows implementation -- deliberately, even for the
-# probe that is EXPECTED to fail, so a permanently-missing link dependency can never masquerade as
-# "correctly rejected."
+# Portable across Windows and Linux (2026-08-29, decisions/ADR-105-sandbox-tool-provider-composed-
+# linux-parity.md) -- previously WIN32-gated on the same stale "SandboxToolProvider's own current
+# platform scope" claim already corrected above; `agentengine_mediated_shell_runner`/
+# `agentengine_worktree_store` have both had real Linux twins since ADR-103/ADR-014 Phase C4. Links
+# the real `SandboxToolProvider` dependency chain directly as extra SOURCES -- same reason as the
+# Milestone 3 A3 block above: try_compile() runs in an isolated mini-project with no visibility into
+# this build's own ALIAS targets (agentengine::mediated_shell_runner, agentengine::worktree_store do
+# not exist there), so the three .cpp files `agentengine_mediated_shell_runner` is built from
+# (top-level CMakeLists.txt) plus the two `agentengine_worktree_store` is built from are compiled
+# alongside the probe itself -- the Windows sources link `bcrypt` directly for `compute_digest`'s real
+# Windows implementation, the Linux sources need no extra system library (the Linux `compute_digest`
+# is a self-contained FIPS 180-4 implementation, `worktree_digest_posix.cpp`) -- deliberately, even
+# for the probe that is EXPECTED to fail, so a permanently-missing link dependency can never
+# masquerade as "correctly rejected."
 if(WIN32)
   set(AE_SANDBOX_TOOL_PROVIDER_FORK_FROM_DEPS
     "${PROJECT_SOURCE_DIR}/src/backends/native_jail/mediated_shell_parser.cpp"
@@ -290,47 +294,56 @@ if(WIN32)
     "${PROJECT_SOURCE_DIR}/src/backends/native_jail/mediated_filesystem_adapter.cpp"
     "${PROJECT_SOURCE_DIR}/src/core/worktree_digest.cpp"
     "${PROJECT_SOURCE_DIR}/src/core/worktree_mount_fs.cpp")
-
-  try_compile(AE_SANDBOX_TOOL_PROVIDER_REJECTS_FORK_FROM
-    "${CMAKE_CURRENT_BINARY_DIR}/compile_fail_checks/sandbox_tool_provider_rejects_fork_from"
-    SOURCES
-      "${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/sandbox_tool_provider_rejects_fork_from.cpp"
-      ${AE_SANDBOX_TOOL_PROVIDER_FORK_FROM_DEPS}
-    CMAKE_FLAGS
-      "-DINCLUDE_DIRECTORIES=${PROJECT_SOURCE_DIR}/include;${PROJECT_SOURCE_DIR}/src"
-      "-DCMAKE_CXX_STANDARD=23" "-DCMAKE_CXX_STANDARD_REQUIRED=ON"
-    LINK_LIBRARIES bcrypt
-    OUTPUT_VARIABLE AE_SANDBOX_TOOL_PROVIDER_REJECTS_FORK_FROM_LOG)
-  if(AE_SANDBOX_TOOL_PROVIDER_REJECTS_FORK_FROM)
-    message(FATAL_ERROR
-      "ADR-096 C2 VIOLATED: tests/compile_fail/sandbox_tool_provider_rejects_fork_from.cpp compiled, "
-      "but composing SandboxToolProvider into a session's HistoryProviderT (via "
-      "ComposedContextProvider<Ms...>) must make AgentSession::fork_from() fail to compile -- a fork "
-      "must never alias one session's live sandbox filesystem view with another's. "
-      "Build log:\n${AE_SANDBOX_TOOL_PROVIDER_REJECTS_FORK_FROM_LOG}")
-  endif()
-
-  try_compile(AE_SANDBOX_TOOL_PROVIDER_FORK_FROM_POSITIVE_CONTROL
-    "${CMAKE_CURRENT_BINARY_DIR}/compile_fail_checks/sandbox_tool_provider_fork_from_positive_control"
-    SOURCES
-      "${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/sandbox_tool_provider_fork_from_positive_control.cpp"
-      ${AE_SANDBOX_TOOL_PROVIDER_FORK_FROM_DEPS}
-    CMAKE_FLAGS
-      "-DINCLUDE_DIRECTORIES=${PROJECT_SOURCE_DIR}/include;${PROJECT_SOURCE_DIR}/src"
-      "-DCMAKE_CXX_STANDARD=23" "-DCMAKE_CXX_STANDARD_REQUIRED=ON"
-    LINK_LIBRARIES bcrypt
-    OUTPUT_VARIABLE AE_SANDBOX_TOOL_PROVIDER_FORK_FROM_POSITIVE_CONTROL_LOG)
-  if(NOT AE_SANDBOX_TOOL_PROVIDER_FORK_FROM_POSITIVE_CONTROL)
-    message(FATAL_ERROR
-      "ADR-096 C2 positive control FAILED: tests/compile_fail/"
-      "sandbox_tool_provider_fork_from_positive_control.cpp must compile and link (the same Session "
-      "type, minus the fork_from() call, is otherwise ordinary and legitimate) but did not. "
-      "Build log:\n${AE_SANDBOX_TOOL_PROVIDER_FORK_FROM_POSITIVE_CONTROL_LOG}")
-  endif()
-  message(STATUS
-    "ADR-096 C2 compile-fail proof: OK (composing SandboxToolProvider into a session makes "
-    "fork_from() fail to compile; the same session type minus that call compiles and links cleanly)")
+  set(AE_SANDBOX_TOOL_PROVIDER_FORK_FROM_LINK_LIBRARIES bcrypt)
+else()
+  set(AE_SANDBOX_TOOL_PROVIDER_FORK_FROM_DEPS
+    "${PROJECT_SOURCE_DIR}/src/backends/native_jail/mediated_shell_parser.cpp"
+    "${PROJECT_SOURCE_DIR}/src/backends/native_jail/mediated_shell_dispatch.cpp"
+    "${PROJECT_SOURCE_DIR}/src/backends/native_jail/mediated_filesystem_adapter_posix.cpp"
+    "${PROJECT_SOURCE_DIR}/src/core/worktree_digest_posix.cpp"
+    "${PROJECT_SOURCE_DIR}/src/core/worktree_mount_fs_posix.cpp")
+  set(AE_SANDBOX_TOOL_PROVIDER_FORK_FROM_LINK_LIBRARIES)
 endif()
+
+try_compile(AE_SANDBOX_TOOL_PROVIDER_REJECTS_FORK_FROM
+  "${CMAKE_CURRENT_BINARY_DIR}/compile_fail_checks/sandbox_tool_provider_rejects_fork_from"
+  SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/sandbox_tool_provider_rejects_fork_from.cpp"
+    ${AE_SANDBOX_TOOL_PROVIDER_FORK_FROM_DEPS}
+  CMAKE_FLAGS
+    "-DINCLUDE_DIRECTORIES=${PROJECT_SOURCE_DIR}/include;${PROJECT_SOURCE_DIR}/src"
+    "-DCMAKE_CXX_STANDARD=23" "-DCMAKE_CXX_STANDARD_REQUIRED=ON"
+  LINK_LIBRARIES ${AE_SANDBOX_TOOL_PROVIDER_FORK_FROM_LINK_LIBRARIES}
+  OUTPUT_VARIABLE AE_SANDBOX_TOOL_PROVIDER_REJECTS_FORK_FROM_LOG)
+if(AE_SANDBOX_TOOL_PROVIDER_REJECTS_FORK_FROM)
+  message(FATAL_ERROR
+    "ADR-096 C2 VIOLATED: tests/compile_fail/sandbox_tool_provider_rejects_fork_from.cpp compiled, "
+    "but composing SandboxToolProvider into a session's HistoryProviderT (via "
+    "ComposedContextProvider<Ms...>) must make AgentSession::fork_from() fail to compile -- a fork "
+    "must never alias one session's live sandbox filesystem view with another's. "
+    "Build log:\n${AE_SANDBOX_TOOL_PROVIDER_REJECTS_FORK_FROM_LOG}")
+endif()
+
+try_compile(AE_SANDBOX_TOOL_PROVIDER_FORK_FROM_POSITIVE_CONTROL
+  "${CMAKE_CURRENT_BINARY_DIR}/compile_fail_checks/sandbox_tool_provider_fork_from_positive_control"
+  SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/sandbox_tool_provider_fork_from_positive_control.cpp"
+    ${AE_SANDBOX_TOOL_PROVIDER_FORK_FROM_DEPS}
+  CMAKE_FLAGS
+    "-DINCLUDE_DIRECTORIES=${PROJECT_SOURCE_DIR}/include;${PROJECT_SOURCE_DIR}/src"
+    "-DCMAKE_CXX_STANDARD=23" "-DCMAKE_CXX_STANDARD_REQUIRED=ON"
+  LINK_LIBRARIES ${AE_SANDBOX_TOOL_PROVIDER_FORK_FROM_LINK_LIBRARIES}
+  OUTPUT_VARIABLE AE_SANDBOX_TOOL_PROVIDER_FORK_FROM_POSITIVE_CONTROL_LOG)
+if(NOT AE_SANDBOX_TOOL_PROVIDER_FORK_FROM_POSITIVE_CONTROL)
+  message(FATAL_ERROR
+    "ADR-096 C2 positive control FAILED: tests/compile_fail/"
+    "sandbox_tool_provider_fork_from_positive_control.cpp must compile and link (the same Session "
+    "type, minus the fork_from() call, is otherwise ordinary and legitimate) but did not. "
+    "Build log:\n${AE_SANDBOX_TOOL_PROVIDER_FORK_FROM_POSITIVE_CONTROL_LOG}")
+endif()
+message(STATUS
+  "ADR-096 C2 compile-fail proof: OK (composing SandboxToolProvider into a session makes "
+  "fork_from() fail to compile; the same session type minus that call compiles and links cleanly)")
 
 # ---- ADR-071 compile-fail proof (native-execution family distinctness) -------------------------
 # `NativeCapabilityAnnouncer<Ps...>` (src/backends/native_process/native_capability_announcer.hpp)
@@ -2221,25 +2234,31 @@ add_test(NAME test_mediated_shell_runner_no_process_creation
   COMMAND test_mediated_shell_runner_no_process_creation)
 set_tests_properties(test_mediated_shell_runner_no_process_creation PROPERTIES SKIP_RETURN_CODE 77)
 
-# ---- Everything below stays WIN32-only, named residuals for later, not silently dropped
-# (ADR-103's own "Residual risks" section): test_composed_sandbox_providers_live/
-# tools/sandboxed_shell_chat.cpp/the two ADR-096 C2 compile_fail probes all also pull in
-# MandatorySandboxProvider<DockerExecutionSurface>, and this pass's own real Linux verification
-# environment (WSL2 Ubuntu) has no Docker daemon reachable -- untested on Linux, deliberately not
-# claimed. The embedded-CPython Python-runner composition tests (AGENTENGINE_BUILD_PYTHON_RUNNER)
-# are a materially larger, unrelated platform-parity question.
-if(WIN32)
-  # ---- ADR-102 Phase 5 (ComposedContextProvider<Ms...> real production consumer slice):
-  # SandboxToolProvider (above) and MandatorySandboxProvider<DockerExecutionSurface> (ADR-102 Phase 4)
-  # composed into ONE real AgentSession's actual HistoryProviderT via ComposedContextProvider<Ms...> --
-  # the first time ComposedContextProvider<Ms...> is driven through a real session.start_run() anywhere
-  # in this codebase. REQUIRES Windows (SandboxToolProvider's own scope) AND a real Docker daemon.
-  add_executable(test_composed_sandbox_providers_live test_composed_sandbox_providers_live.cpp)
-  target_link_libraries(test_composed_sandbox_providers_live PRIVATE
-    agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store
-    agentengine::sandbox_io agentengine_warnings)
-  add_test(NAME test_composed_sandbox_providers_live COMMAND test_composed_sandbox_providers_live)
+# ---- ADR-102 Phase 5 (ComposedContextProvider<Ms...> real production consumer slice):
+# SandboxToolProvider (above) and MandatorySandboxProvider<DockerExecutionSurface> (ADR-102 Phase 4)
+# composed into ONE real AgentSession's actual HistoryProviderT via ComposedContextProvider<Ms...> --
+# the first time ComposedContextProvider<Ms...> is driven through a real session.start_run() anywhere
+# in this codebase.
+#
+# Portable across Windows and Linux (2026-08-29, decisions/ADR-105-sandbox-tool-provider-composed-
+# linux-parity.md) -- moved OUT of the surrounding `if(WIN32)` block below, same reasoning as
+# test_mediated_shell_runner_no_process_creation above: `agentengine::mediated_shell_runner`
+# (SandboxToolProvider/SessionShellSandbox/MediatedFileSystemAdapter) has built on both platforms
+# since ADR-103; this target's own WIN32 gate was a stale leftover from before that parity landed,
+# never a real dependency of this test's own code. REQUIRES a real Docker daemon on PATH, same as
+# every other MandatorySandboxProvider<DockerExecutionSurface> consumer, on either platform.
+add_executable(test_composed_sandbox_providers_live test_composed_sandbox_providers_live.cpp)
+target_link_libraries(test_composed_sandbox_providers_live PRIVATE
+  agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store
+  agentengine::sandbox_io agentengine_warnings)
+add_test(NAME test_composed_sandbox_providers_live COMMAND test_composed_sandbox_providers_live)
 
+# ---- Everything below stays WIN32-only, a real, disclosed platform-parity gap (not a stale gate):
+# the embedded-CPython Python-runner composition tests (AGENTENGINE_BUILD_PYTHON_RUNNER) need the
+# embedded native CPython interpreter, itself Windows-only for reasons unrelated to SandboxToolProvider
+# (CLAUDE.md's locked "embedded native CPython interpreter" decision) -- a materially larger, unrelated
+# platform-parity question, not attempted here.
+if(WIN32)
   # RunnerCall<python> composition against the REAL MediatedPythonRunner (E2) -- only built when
   # AGENTENGINE_BUILD_PYTHON_RUNNER is also ON (needs a real CPython install).
   if(AGENTENGINE_BUILD_PYTHON_RUNNER)

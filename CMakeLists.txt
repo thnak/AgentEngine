@@ -902,8 +902,13 @@ endif()
 # ComposedContextProvider<Ms...> anywhere in this codebase, composing SandboxToolProvider (ADR-096)
 # and MandatorySandboxProvider<DockerExecutionSurface> (ADR-102 Phases 1-4) into ONE session. Needs no
 # Python embed (unlike agentengine_cli_chat above), so gated only on AGENTENGINE_WITH_HTTPS (real
-# OpenAI network calls) and WIN32 (agentengine::mediated_shell_runner/SandboxToolProvider's own current
-# platform scope) -- not AGENTENGINE_BUILD_PYTHON_RUNNER.
+# OpenAI network calls) and WIN32. NOT for the reason previously stated here (SandboxToolProvider's
+# own platform scope -- stale as of ADR-103, see decisions/ADR-105-sandbox-tool-provider-composed-
+# linux-parity.md): the REAL Linux blocker, found empirically while investigating that stale claim, is
+# unrelated -- this file's use of QuarantineSecretStore (trust/secret_quarantine.hpp) pulls in
+# agentengine::trust::hmac_sha256, which has NO Linux implementation at all (only built inside
+# agentengine_capability_token below, itself WIN32-only per ADR-005's own deliberate BCrypt/CNG scope).
+# A real, disclosed, separate residual -- not attempted here (see ADR-105 §7).
 if(AGENTENGINE_WITH_HTTPS AND WIN32)
   add_executable(agentengine_sandboxed_shell_chat tools/sandboxed_shell_chat.cpp)
   target_link_libraries(agentengine_sandboxed_shell_chat PRIVATE

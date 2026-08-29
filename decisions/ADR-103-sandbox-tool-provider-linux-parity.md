@@ -28,7 +28,7 @@
   (Judged; the containment primitive this whole port reuses, both the Windows Phase C2 half and the
   already-Judged Linux Phase C4 half) · `021-Platform-Support-and-Portability.md` §6 G3 (the
   path-escape corpus every containment claim in this codebase is measured against) ·
-  `CONVENTIONS.md` ("isolation parity is a gate, not identical shape" — cited repeatedly below, since
+  `CONVENTIONS.md` ("isolation parity is a gate, not a goal" — cited repeatedly below, since
   several real findings in this pass were exactly a Windows/Linux shape mismatch, not a security
   escape) · `decisions/ADR-102-identity-native-sandbox-implementation-phase-1.md` (a separate,
   adjacent sandbox stack whose own, unrelated Linux gap this pass discovered as a byproduct, §7).

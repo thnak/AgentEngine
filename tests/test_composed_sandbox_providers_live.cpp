@@ -19,9 +19,13 @@
 // reachable only through its own on_context/on_turn_end closures -- there is no public accessor back
 // to the concrete instance once engaged. Binding first, then composing, needs no such accessor.
 //
-// REQUIRES: Windows (SandboxToolProvider/SessionShellSandbox's own current platform scope, backends/
-// native_jail/sandbox_tool_provider.hpp's file-top comment) and a running Docker daemon reachable via
-// the `docker` CLI on PATH (MandatorySandboxProvider<DockerExecutionSurface>).
+// REQUIRES: a running Docker daemon reachable via the `docker` CLI on PATH
+// (MandatorySandboxProvider<DockerExecutionSurface>). Portable across Windows and Linux (2026-08-29,
+// decisions/ADR-105-sandbox-tool-provider-composed-linux-parity.md) -- this comment previously said
+// "REQUIRES Windows (SandboxToolProvider/SessionShellSandbox's own current platform scope)", which was
+// already stale by the time it was written: `agentengine::mediated_shell_runner`
+// (SandboxToolProvider's own dependency chain) has built on both platforms since ADR-103. Verified:
+// this test builds, links, and passes against a real Docker daemon on Linux.
 //
 //   [1] a freshly-engaged composed provider contributes BOTH tools (run_shell, run_command) from ONE
 //       on_context() call, driven directly -- the structural half of the coexistence claim.

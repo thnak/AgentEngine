@@ -47,8 +47,13 @@
 // every real way this process can end. A real SIGINT handler is contained, disclosed follow-on work,
 // not attempted in this pass.
 //
-// REQUIRES: Windows (SandboxToolProvider's own current platform scope), a running Docker daemon
-// reachable via the `docker` CLI on PATH, and OPENAI_API_KEY set in the environment.
+// REQUIRES: Windows, a running Docker daemon reachable via the `docker` CLI on PATH, and
+// OPENAI_API_KEY set in the environment. NOT for the reason this comment previously gave
+// (SandboxToolProvider's own platform scope -- stale as of ADR-103): decisions/ADR-105-sandbox-tool-
+// provider-composed-linux-parity.md traced the real Linux blocker to this file's use of
+// QuarantineSecretStore (trust/secret_quarantine.hpp), which needs agentengine::trust::hmac_sha256 --
+// a symbol with no Linux implementation at all (ADR-005's own deliberately Windows-only BCrypt/CNG
+// scope), unrelated to SandboxToolProvider.
 
 #include "agentengine/core/composed_context_provider.hpp"
 #include "agentengine/core/session_builder.hpp"
