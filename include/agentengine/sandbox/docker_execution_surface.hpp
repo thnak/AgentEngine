@@ -31,6 +31,10 @@
 #include <string>
 #include <utility>
 
+#ifndef _WIN32
+#include <sys/wait.h>
+#endif
+
 #include "agentengine/core/error.hpp"
 #include "agentengine/sandbox/execution_surface.hpp"
 
@@ -57,7 +61,25 @@ namespace docker_cli_detail {
 #ifdef _WIN32
     out.exit_code = _pclose(pipe);
 #else
-    out.exit_code = pclose(pipe);
+    // REAL, previously-undiscovered bug (2026-08-29, found the hard way -- a real Docker daemon
+    // became reachable in this session's WSL2 environment for the first time, and
+    // test_sandbox_runtime's `check(r3->exec.exit_code == 7, ...)` genuinely failed): unlike
+    // Windows' `_pclose`, which returns the child's plain exit code directly, POSIX `pclose()`
+    // returns the same wait-status ENCODING `waitpid()` does (`WEXITSTATUS(status)` extracts the
+    // real 0-255 exit code; the raw status is NOT that value -- for `exit 7`, `pclose()`'s raw
+    // return was 1792, not 7). This is exactly why the `_popen`->`popen` port could not be a
+    // mechanical rename for THIS call either, same reasoning as the shell-injection guards above.
+    int const status = pclose(pipe);
+    if (status < 0) {
+        out.exit_code = -1;  // pclose() itself failed (e.g. the child was never reaped)
+    } else if (WIFEXITED(status)) {
+        out.exit_code = WEXITSTATUS(status);
+    } else {
+        // Signal-terminated or otherwise abnormal -- matches this codebase's own existing
+        // "abnormal/never-truly-ran" sentinel convention (DockerExecutionSurface's own `-1` use
+        // for "never launched"), rather than inventing a second, differently-shaped sentinel.
+        out.exit_code = -1;
+    }
 #endif
     return out;
 }

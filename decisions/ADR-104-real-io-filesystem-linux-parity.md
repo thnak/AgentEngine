@@ -242,8 +242,25 @@ on both platforms, before the existing character-set check runs.
   `test_mandatory_sandbox_provider_composed`, `test_composed_sandbox_providers_live`) ran for real —
   this session's own `docker_execution_surface.hpp` shell-injection-guard rewrite (§2-§4 above),
   including the leading-dash and NUL-byte fixes, driven through real `docker run`/`exec`/`cp`/`rm`
-  calls for the first time — and passed, 287/287 on the full Windows suite. The Linux half of this
-  residual remains open (WSL2 Docker integration, a Docker Desktop setting, not a code gap).
+  calls for the first time — and passed, 287/287 on the full Windows suite.
+
+  **LINUX SIDE SINCE VERIFIED TOO (2026-08-29, same day)**, once the project owner enabled Docker
+  Desktop's WSL integration for this distro: `test_sandbox_runtime` failed for real on the FIRST run
+  against a live Linux daemon — `check(r3->exec.exit_code == 7, "non-zero exit_code passed through
+  as a normal result")` — a genuine, previously-undiscovered bug this ADR's own `_popen`->`popen`
+  port introduced and neither platform's test suite could have caught without a real daemon. Root
+  cause: unlike Windows' `_pclose` (returns the child's plain exit code), POSIX `pclose()` returns
+  the same wait-status ENCODING `waitpid()` does — `run_capture()` was assigning that raw encoded
+  status directly to `exit_code` (1792 for `exit 7`, not 7). Fixed with the standard
+  `WIFEXITED`/`WEXITSTATUS` extraction, falling back to this codebase's own existing `-1`
+  "abnormal/never-launched" sentinel for a signal-terminated or unreaped child. Re-verified: the
+  same test now passes, and the full Linux suite went 174/174, 100%, for the first time ever — this
+  is the strongest evidence in this whole ADR that "compiles and passes a standalone repro" and
+  "actually correct against the real daemon" are genuinely different claims, exactly the gap this
+  residual named before it was closed. Confirmed scoped: grepped the whole `include`/`src` tree for
+  every other `pclose`/`std::system` call site — none else compares a captured exit code to a
+  specific value (the two `no_process_creation` tests' own `std::system()` calls only check
+  `!= 0`, which the wait-status encoding doesn't affect), so this was the only live instance.
 - **`docker_cli_reject_leading_dash`'s fix is narrower than a full CLI-argument-injection defense** —
   it blocks a LEADING dash specifically (the concrete, proven attack shape), not every conceivable way
   a crafted value could confuse `docker`'s own argument parser. Judged sufficient for the values this
