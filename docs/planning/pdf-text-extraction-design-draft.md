@@ -1,20 +1,20 @@
 # Design draft — a first-party PDF text-extraction tool, and its companion skill
 
-**Status: Revision 5 — two narrow, mechanical fixes after round 4 confirmed Revision 4's core pivot
-(one-shot `create()`/`exec()`, real on both platforms) but found its scratch-directory dedup claim
-false against the actual code, plus a new, independent MUST-FIX Revision 4 introduced: `exec()`'s
-drain-after-exit architecture with a fixed 1 MiB pipe buffer would deadlock/misreport as a timeout on
-an ordinary, non-adversarial, moderately large PDF.** No code yet; not yet re-attacked. Prior
-revisions' findings are recorded in git history (`git log -p -- docs/planning/pdf-text-extraction-
-design-draft.md`), not reproduced here. **Four real, independent red-team rounds so far — round 4 was
-the first to explicitly confirm most of its predecessor's claims held up under direct code
-verification** (the `create()`/`exec()` pivot itself, the `wait_or_kill()`/`wall_ms` citation, the
-host-read-size residual's honest framing, `drain_pipe_bounded`'s record-reassembly correctness), a
-real signal of convergence, not merely another round of defects — but round 4's own two remaining
-findings are still real and still unfixed as of the start of this revision. Continues 009 §7's
-"Document extraction" catalog row after ADR-106 settled the license question (PDFium, BSD-3-Clause,
-not poppler/mupdf). Covers the PDF-text-layer slice only — DOCX/PPTX/XLSX stays explicitly out of
-scope, per ADR-106 §3.
+**Status: Revision 6 — closes round 5's two findings on Revision 5's two fixes.** Round 5 confirmed
+Revision 5's REASONING was sound on both counts (the right function to target for dedup; the right
+architecture for the output-ceiling fix) but found each fix unreachable/incomplete as literally
+specified: `grant_ro_deduped()` has internal linkage, uncallable from outside `native_jail_backend.
+cpp`; Linux's `F_SETPIPE_SZ` pipe-enlargement is unchecked best-effort, so "confirmed identical on
+Linux" was false. **Five real, independent red-team rounds so far. Round 4 was the first to confirm
+most of a predecessor's claims under direct verification; round 5 confirmed even more — the WINDOWS
+half of Revision 5's design (the `create()`/`exec()` pivot, `wait_or_kill()`/`wall_ms`, the output-
+ceiling mechanism's interaction with `exec()`'s real exit handling, `drain_pipe_bounded`'s record-
+reassembly) is now independently verified sound; what remained were two narrow, correctly-diagnosed-
+but-incompletely-executed fixes, not new structural problems.** No code yet; not yet re-attacked.
+Prior revisions' findings are recorded in git history (`git log -p -- docs/planning/pdf-text-
+extraction-design-draft.md`), not reproduced here. Continues 009 §7's "Document extraction" catalog
+row after ADR-106 settled the license question (PDFium, BSD-3-Clause, not poppler/mupdf). Covers the
+PDF-text-layer slice only — DOCX/PPTX/XLSX stays explicitly out of scope, per ADR-106 §3.
 
 Scope was widened before round 1, at the project owner's own direction: a first-party *tool* this size
 should ship with a first-party *skill* alongside it, not the tool alone. §8f's five generic skills
@@ -145,17 +145,25 @@ primary"). This design does not fight that scope — it stays inside it:
   mounts` (Revision 4's design) would therefore call the UNDEDUPED `grant_path()` on every single
   `extract_pdf_text` call — reproducing, on a new path, the exact unbounded-DACL-growth defect this
   same file's own `grant_ro_deduped()` comment (lines 160-168) already documents finding and fixing
-  once for `python_home`/`extra_sys_path`/`exe_dir`. **Fix**: do not put the scratch directory in
-  `SandboxSpec.mounts` at all. Grant it exactly the way `python_home` is granted — a direct,
-  out-of-band call to the existing free function `grant_ro_deduped(*shared_profile(), scratch_dir_
-  path)` (real dedup: one ACE for the life of the process, verified against its own cited fix), made
-  once, before the FIRST `extract_pdf_text` call ever needs it, independent of any particular `create()`
-  invocation's `SandboxSpec`. The worker can still read a file under an already-ACL-granted directory
-  whether or not that directory appears in the `SandboxSpec.mounts` that spawned it — the grant lives
-  on the AppContainer SID's DACL, not in `SandboxSpec` bookkeeping. This is a materially smaller,
-  correctly-precedented exposure than Revision 3's per-arbitrary-caller-path grant: one fixed,
-  low-sensitivity scratch directory, granted exactly once, not one growing grant per call and not
-  every real file any session ever names.
+  once for `python_home`/`extra_sys_path`/`exe_dir`. **Revision 6 correction**: round 5 verified
+  `grant_ro_deduped()` and `shared_profile()` both sit inside `native_jail_backend.cpp`'s own anonymous
+  namespace (lines 27-210) — INTERNAL LINKAGE. Neither is declared in `native_jail_backend.hpp`, and
+  the only real call site (`create_python_worker()`) works exclusively because that's a same-TU member
+  function. "Call the existing free function" from a separate `tools/` translation unit does not
+  compile — Revision 5's fix was correctly TARGETED (the right function, the right precedent) but not
+  actually reachable as written. **Fix**: `NativeJailBackend` gains one new, small, PUBLIC method —
+  `grant_ro_path_once(std::wstring const& path) -> result<void>` — declared in `native_jail_backend.
+  hpp`, implemented in the .cpp by forwarding to the SAME existing dedup machinery (`grant_ro_deduped`
+  becomes this method's private implementation, called with `shared_profile()`'s result, both already
+  correct — only their VISIBILITY changes, not their logic). `ExtractPdfText`'s implementation calls
+  this new public method once, before its first use, exactly the same call shape Revision 5 already
+  described, now through a real, compilable API rather than an unreachable internal one. This is
+  genuine new API surface (unlike Revision 5's framing, "a real, disclosed implementation-ADR task"
+  undersold how much: a header change and a new public entry point, not merely wiring up an existing
+  one) but a small, mechanical one — no change to `grant_ro_deduped`'s own already-correct dedup
+  behavior, no change to `create()`/`create_python_worker()`'s existing call sites. Same materially
+  smaller, correctly-precedented exposure as before: one fixed, low-sensitivity scratch directory,
+  granted exactly once, not one growing grant per call and not every real file any session ever names.
   **Windows-only residual, disclosed precisely this time** (round 4 found Revision 4's own disclosure
   was written as platform-general and wrong): on Windows, the scratch directory, once granted, is
   still reachable by any OTHER session's `native_jail` process sharing the same AppContainer SID for
@@ -173,26 +181,34 @@ primary"). This design does not fight that scope — it stays inside it:
   (now safely bounded by ITS OWN `JobObjectLimits`/cgroup memory cap, since decode-time memory blow-up
   — as opposed to the pre-existing host-read-size gap above — IS this design's own new risk to bound,
   and now genuinely is, via the real, measured `wait_or_kill()`/Job Object mechanism).
-- **Output — revised this revision after round 4's second MUST-FIX.** Round 4 traced `exec()`'s real
-  architecture on both platforms and found it drains stdout/stderr ONLY AFTER the process exits or is
-  killed (`native_jail_backend.cpp`'s own comment: a child that writes more than the pipe buffer holds
-  simply blocks in `write()` until `wall_ms` kills it — confirmed identical on Linux, both with a fixed
-  1 MiB pipe buffer). Revision 4 proposed streaming extracted text through this exact channel without
-  noticing that an ordinary, non-adversarial, moderately large PDF (a few hundred text-dense pages)
-  can easily exceed 1 MiB of extracted text — which would deadlock the worker and misreport a
-  legitimate extraction as a `wall_clock_timeout`, precisely the case `total_page_count`/
-  `pages_processed` exist to describe correctly. **Fix, without touching `exec()`'s own shared,
-  intentional architecture** (a cross-cutting change affecting every other `exec()` caller, out of
-  scope for this tool's own design): the worker enforces its OWN output-byte ceiling, well under the
-  1 MiB pipe buffer (e.g. 768 KiB, leaving real margin for the delimiter/framing overhead) — a NEW,
-  named resource cap (§4 item 5), distinct from `ctx.tool_result_byte_threshold` (which governs what
-  the REPLY hands back to the model, already handled by `build_reply` on whatever the worker returns).
-  Once the worker's own cumulative stdout output would cross that ceiling, it stops emitting pages and
-  exits cleanly (not killed) — the SAME `truncated_pages`/`pages_processed` reporting path §3 already
-  has, now covering "stopped because of the pipe-safe output ceiling" as a third, equally legitimate
-  reason alongside "stopped because of `wall_ms`" and "stopped because of `memory_bytes`". Text: one
-  page per line prefixed with a fixed delimiter (e.g. `\x01PAGE\x01<n>\x01`) the host parses after
-  `drain_pipe_bounded()` returns; `pages_processed` counts only COMPLETE delimited records (a record
+- **Output — revised again this revision after round 5 found the Windows/Linux pipe-buffer parity
+  claim false.** Round 4 traced `exec()`'s real architecture on both platforms and found it drains
+  stdout/stderr ONLY AFTER the process exits or is killed — Revision 5's fix (worker self-limits its
+  own output well under the pipe buffer, stops and exits cleanly instead of blocking) is architecturally
+  sound and round-5-verified correct against `exec()`'s real exit-code/outcome handling on the platform
+  it was actually checked against. **What round 5 found wrong**: Revision 5 claimed the 1 MiB pipe
+  buffer was "confirmed identical on Linux" — false. `linux_native_jail_backend.cpp` sets it via
+  `fcntl(..., F_SETPIPE_SZ, 1024*1024)` and DISCARDS the return value (the code's own comment: "best-
+  effort... failure here... just leaves the OS default in place," typically 64 KiB). A real, plausible
+  host (a hardened sysctl profile, a container base image capping `/proc/sys/fs/pipe-max-size`) gets a
+  pipe buffer over 12x smaller than the 768 KiB ceiling assumed safe — reproducing the exact deadlock
+  this fix exists to prevent, on Linux specifically. **Fix**: the ceiling is no longer a single fixed
+  constant. The host, after creating the stdout pipe and attempting `F_SETPIPE_SZ` (Linux) — Windows'
+  `CreatePipe` `nSize` is a real floor, not a hint, so no equivalent check is needed there — reads back
+  the ACTUAL negotiated size (`fcntl(fd, F_GETPIPE_SZ)`) and passes a safe fraction of THAT real number
+  to the worker (one integer, via `argv`/an environment variable on the worker's command line) as its
+  output-byte ceiling, rather than the worker assuming a fixed value. Windows keeps the illustrative
+  768-under-1-MiB margin (a real floor, verified sound); Linux computes its own real margin from
+  whatever `F_GETPIPE_SZ` actually reports, safe even when the enlargement silently failed and the OS
+  default held. A NEW, named resource cap (§4 item 5), distinct from `ctx.tool_result_byte_threshold`
+  (which governs what the REPLY hands back to the model, already handled by `build_reply` on whatever
+  the worker returns). Once the worker's own cumulative stdout output would cross ITS ceiling, it stops
+  emitting pages and exits cleanly (not killed) — the SAME `truncated_pages`/`pages_processed`
+  reporting path §3 already has, now covering "stopped because of the pipe-safe output ceiling" as a
+  third, equally legitimate reason alongside "stopped because of `wall_ms`" and "stopped because of
+  `memory_bytes`". Text: one page per line prefixed with a fixed delimiter (e.g. `\x01PAGE\x01<n>\x01`)
+  the host parses after `drain_pipe_bounded()` returns; `pages_processed` counts only COMPLETE
+  delimited records (a record
   cut off by an actual kill is discarded, not counted — `drain_pipe_bounded`'s own read loop correctly
   reassembles a record split across multiple `ReadFile` calls, round 4 verified, so this is a real,
   not merely asserted, distinction).
@@ -283,10 +299,10 @@ were one call away.
 
 - §2: whether sharing `fetch_source_bytes` is worth `ReadContent`'s own error-code migration cost, vs.
   accepting duplication (option (a)) — unchanged since Revision 2; §3a's redesign doesn't bear on this.
-- §3a: scratch-directory location/filename scheme, the new worker binary, the page-delimiter wire
-  format, the exact output-byte-ceiling value and its real safe margin under the 1 MiB pipe buffer,
-  and whether `grant_ro_deduped()` is reachable from `ExtractPdfText`'s own implementation location
-  without new plumbing — real implementation-ADR work, not finalized.
+- §3a: `NativeJailBackend::grant_ro_path_once()`'s exact signature/error mapping; scratch-directory
+  location/filename scheme; the new worker binary; the page-delimiter wire format; the exact
+  worker-argv/env-var shape for passing the host-measured pipe-size-derived ceiling down to the
+  worker — real implementation-ADR work, not finalized.
 - §4 item 3: the call-rate/spawn-rate cap this revision still does not solve, now more precisely
   costed (a fresh Job Object/cgroup and `Instance` per call, not merely process-spawn overhead).
 - §4: exact `ResourceLimits::memory_bytes`/`wall_ms` VALUES on Windows, and Linux's own wall-clock
@@ -297,11 +313,13 @@ were one call away.
   territory, unchanged.
 - The skill's final prose beyond fixing round 1's factual error — still not to be shipped verbatim
   without the same review weight the existing five skills got.
-- **Round 5 of red-team.** Round 4 was the first round to confirm most of a predecessor's claims held
-  up under direct verification rather than finding them false — real evidence of convergence, not
-  proof the design is finished. Its two remaining findings (illusory dedup, `exec()`-drain deadlock)
-  are addressed above by name, with the exact code lines round 4 cited as the reason each fix is
-  needed. This revision's own biggest unverified claim: that `grant_ro_deduped()`, called out-of-band
-  from wherever `ExtractPdfText` actually lives, and a worker-side output ceiling under `exec()`'s
-  pipe buffer, are both as mechanically simple to wire up as this text assumes — needs independent
-  adversarial verification, not self-certification, before an implementation ADR builds against this.
+- **Round 6 of red-team.** Round 5 independently verified the WINDOWS half of this design end to end
+  (the `create()`/`exec()` pivot, `wait_or_kill()`/`wall_ms`, the output-ceiling mechanism's interaction
+  with `exec()`'s real exit handling, `drain_pipe_bounded`'s record-reassembly, and that dropping the
+  scratch directory from `SandboxSpec.mounts` doesn't silently break anything else in `create()`) —
+  the broadest confirmation any round has given this design so far. What's left, by round 5's own
+  precise diagnosis: `grant_ro_path_once()` as a real new public method (not merely re-exposing
+  existing internals) and the dynamic Linux pipe-size query. Both need independent verification that
+  the NEW code this revision proposes (not previously-existing code this revision merely cited) is
+  itself correct — a header change and an `F_GETPIPE_SZ` call are simple in isolation, but "simple in
+  isolation" was also true of several claims earlier rounds found broken in practice.
