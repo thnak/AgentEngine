@@ -38,30 +38,59 @@ namespace agentengine {
 
 namespace docker_cli_detail {
 // Runs a command, captures stdout+stderr (merged), returns the real process exit code. Windows CRT
-// `_popen`/`_pclose` -- matching this whole phase's own disclosed Windows-only scope (see
-// `real_io_filesystem.hpp`'s own top comment for the same disclosure on its own Win32 dependency).
+// `_popen`/`_pclose` on Windows; POSIX `popen`/`pclose` (same shape, invokes `/bin/sh -c` instead of
+// `cmd.exe /c`) on Linux -- decisions/ADR-104-real-io-filesystem-linux-parity.md §2. The HOST shell
+// this spawns differs by platform, which is exactly why the rejection functions below are NOT a
+// mechanical rename of the Windows character set -- see their own comments.
 [[nodiscard]] inline SurfaceRunOutcome run_capture(std::string const& command) {
     SurfaceRunOutcome out;
+#ifdef _WIN32
     FILE* pipe = _popen((command + " 2>&1").c_str(), "r");
+#else
+    FILE* pipe = popen((command + " 2>&1").c_str(), "r");
+#endif
     if (!pipe) { out.exit_code = -1; return out; }
     std::array<char, 4096> buffer{};
     while (std::fgets(buffer.data(), static_cast<int>(buffer.size()), pipe)) {
         out.stdout_text += buffer.data();
     }
+#ifdef _WIN32
     out.exit_code = _pclose(pipe);
+#else
+    out.exit_code = pclose(pipe);
+#endif
     return out;
 }
 }  // namespace docker_cli_detail
 
-// Every method below builds a `cmd.exe`-interpreted command STRING by concatenation -- a
-// caller-supplied value containing a double-quote, `&`, `|`, `^`, or similar could otherwise break
-// out of the intended quoting and execute attacker-controlled commands on the HOST via `_popen`,
-// defeating the very isolation boundary this type exists to provide. Defended by REJECTING (not
-// attempting to escape) any such value outright -- a NECESSARY, not sufficient, defense; a fully
-// general cmd.exe escaper is its own hard problem this type does not attempt to solve in full.
+// Every method below builds a HOST-shell-interpreted command STRING by concatenation (`cmd.exe` on
+// Windows, `/bin/sh` on Linux, since `popen`/`_popen` both invoke the platform's own shell) -- a
+// caller-supplied value could otherwise break out of the intended quoting and execute
+// attacker-controlled commands on the HOST, defeating the very isolation boundary this type exists
+// to provide. Defended by REJECTING (not attempting to escape) any such value outright -- a
+// NECESSARY, not sufficient, defense; a fully general shell escaper is its own hard problem this
+// type does not attempt to solve in full.
+// A caller-supplied `std::string` CAN legally hold an embedded NUL byte (it's length-based, not
+// null-terminated); every caller below ultimately feeds the built command through `.c_str()` into
+// `popen`/`_popen`, which silently truncates at the first NUL -- so a value the guard "approved"
+// could differ from what the shell actually runs. Rejected here, once, for every caller, rather than
+// folded into each platform's own `dangerous` character set (a plain C-string literal can't itself
+// contain a NUL to add to that set). REAL, independent-red-team-found finding (2026-08-29): proven
+// non-exploitable for `command` specifically (a NUL there always lands inside the still-open
+// `sh -c "..."` region this file builds, so `dash`'s lexer fails closed on the resulting unterminated
+// quote rather than running anything) -- fixed anyway as defense-in-depth, since "approved but not
+// what actually ran" is a real correctness gap on its own, independent of whether today's specific
+// callers happen to make it unexploitable.
 [[nodiscard]] inline agentengine::result<void> docker_cli_reject_chars(std::string const& value,
                                                                            char const* what,
                                                                            char const* dangerous) {
+    if (value.find('\0') != std::string::npos) {
+        return std::unexpected(agentengine::error{
+            agentengine::failure_class::policy,
+            std::string("refusing to build a shell command: '") + what +
+                "' contains an embedded NUL byte (would silently truncate at the C-string boundary)",
+            "docker_cli_backend.unsafe_shell_argument"});
+    }
     if (value.find_first_of(dangerous) != std::string::npos) {
         return std::unexpected(agentengine::error{
             agentengine::failure_class::policy,
@@ -72,10 +101,45 @@ namespace docker_cli_detail {
     return agentengine::result<void>{};
 }
 
+// A value that is entirely alnum/`-` (e.g. `--privileged`) satisfies EVERY character-set check below
+// on both platforms yet is emitted as a bare, unquoted token positioned exactly where the real
+// `docker` CLI parses its own flags (`docker run -d --rm -w /workspace <image> ...`) -- CWE-88
+// argument/flag injection, a different and in some ways worse class than a shell-quoting escape,
+// since it needs no shell metacharacter at all. REAL, independent-red-team-found finding
+// (2026-08-29), empirically proven against the real `docker` CLI on this host: `--privileged` is
+// parsed as a flag (proceeds past arg-parsing to a daemon-dial error), while a bogus
+// `--not-a-real-flag` is rejected immediately with `unknown flag`. Not live-reachable today (the one
+// production caller, `MandatorySandboxProvider::bind_sandbox()`, always hardcodes `image`/
+// `container_path` and derives `host_path` from `std::filesystem::temp_directory_path()`, never from
+// attacker/model input) -- fixed anyway since this is a shared, reusable function.
+//
+// Rejects a LEADING DASH specifically, not "must start with alnum": `container_path`/`host_path`
+// (POSIX) legitimately start with `/` (e.g. `/workspace`) and are ALSO checked by this same shared
+// function at every call site -- an alnum-start requirement (correct for Docker's own image-reference
+// grammar) would have broken those real, legitimate values. Only `image` actually needs the stricter
+// reference-grammar rule; this weaker, shared rule is what's safe to apply uniformly at every
+// call site without a false-positive rejection of a real path.
+[[nodiscard]] inline agentengine::result<void> docker_cli_reject_leading_dash(std::string const& value,
+                                                                                  char const* what) {
+    if (!value.empty() && value[0] == '-') {
+        return std::unexpected(agentengine::error{
+            agentengine::failure_class::policy,
+            std::string("refusing to build a shell command: '") + what +
+                "' starts with '-', which could be parsed as a docker CLI flag instead of a value",
+            "docker_cli_backend.unsafe_shell_argument"});
+    }
+    return agentengine::result<void>{};
+}
+
+#ifdef _WIN32
 // For image names/paths: NONE of `"&|<>^%` are ever legitimately needed, so reject the whole set.
+// Also anchors against leading-dash flag injection (see `docker_cli_reject_leading_dash`'s own
+// comment) -- real on this platform too, not Linux-specific.
 [[nodiscard]] inline agentengine::result<void> docker_cli_reject_unsafe_for_shell(
         std::string const& value, char const* what) {
-    return docker_cli_reject_chars(value, what, "\"&|<>^%\r\n");
+    if (auto safe = docker_cli_reject_chars(value, what, "\"&|<>^%\r\n"); !safe.has_value())
+        return safe;
+    return docker_cli_reject_leading_dash(value, what);
 }
 
 // For exec()'s own `command` argument specifically: it is legitimately a shell command meant for the
@@ -87,6 +151,57 @@ namespace docker_cli_detail {
         std::string const& value, char const* what) {
     return docker_cli_reject_chars(value, what, "\"%^\r\n");
 }
+#else
+// POSIX parity, NOT a mechanical port of the Windows character set -- `/bin/sh`'s injection surface
+// is structurally different from `cmd.exe`'s, so blacklisting the same characters here would be a
+// real, exploitable gap (e.g. a value containing `` ` `` or `$(...)`  triggers HOST-side command
+// substitution on Linux even though neither character is special to cmd.exe).
+//
+// `docker_cli_reject_unsafe_for_shell` covers `image` and `container_path` -- both interpolated
+// UNQUOTED into the generated `sh -c` string (see create()/copy_to_container()/copy_from_container()
+// below). An unquoted POSIX shell word treats almost every non-alphanumeric character as meaningful
+// (word-splitting, globbing, redirection, substitution, ...), so this is a POSITIVE allowlist --
+// exactly the grammar Docker's own image-name/path reference already restricts itself to -- rather
+// than an attempted blacklist of "every POSIX shell metacharacter", which is the class of bug this
+// project treats as a real defect, not an acceptable residual (CLAUDE.md: "security claims need
+// positive controls -- a test that cannot fail proves nothing"). DISCLOSED, narrower than the
+// Windows side: a `host_path` containing a space is rejected here even though it is legitimate on
+// Windows (host_path is quoted below, but reuses this same allowlist-based check for both platforms'
+// call sites rather than forking the call site itself) -- fails closed on an unusual path rather than
+// silently mishandling it.
+[[nodiscard]] inline agentengine::result<void> docker_cli_reject_unsafe_for_shell(
+        std::string const& value, char const* what) {
+    for (char const c : value) {
+        bool const safe = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+                           c == '.' || c == '_' || c == '-' || c == '/' || c == ':' || c == '@';
+        if (!safe) {
+            return std::unexpected(agentengine::error{
+                agentengine::failure_class::policy,
+                std::string("refusing to build a shell command: '") + what +
+                    "' contains a character outside the safe image/path allowlist",
+                "docker_cli_backend.unsafe_shell_argument"});
+        }
+    }
+    // See `docker_cli_reject_leading_dash`'s own comment -- an all-allowlisted value like
+    // `--privileged` would otherwise pass this function cleanly and be emitted as a bare docker CLI
+    // flag, not a value.
+    return docker_cli_reject_leading_dash(value, what);
+}
+
+// Covers exec()'s own `command` argument, embedded inside escaped double quotes in the generated
+// string (`docker exec <id> sh -c "<command>"`) -- deliberately NOT applied to `host_path` (that one
+// goes through the stricter allowlist above at both call sites, unchanged from the Windows version,
+// which is why the allowlist function's own comment discloses the host_path residual). Inside POSIX
+// double quotes, only `` ` ``, `$`, `"`, and `\` remain special (word-splitting/globbing/`&|<>(){}`
+// do NOT apply inside double quotes) -- rejecting exactly those four (plus CR/LF for hygiene,
+// matching the Windows side) blocks HOST-shell command substitution and quote breakout while still
+// letting `command` use `&|<>` for the CONTAINER's own inner `sh`, preserving this function's
+// original intent unchanged from the Windows version.
+[[nodiscard]] inline agentengine::result<void> docker_cli_reject_shell_breakout(
+        std::string const& value, char const* what) {
+    return docker_cli_reject_chars(value, what, "\"$`\\\r\n");
+}
+#endif
 
 // A thin, real wrapper over the `docker` CLI -- create()/exec()/destroy() over `docker run`/
 // `docker exec`/`docker rm`, `copy_to_container()`/`copy_from_container()` over `docker cp`.

@@ -636,6 +636,25 @@ if(NOT WIN32)
   add_library(agentengine::worktree_store ALIAS agentengine_worktree_store)
 endif()
 
+# ---- RealIoFileSystem's platform-specific verified I/O (src/sandbox/) --------------------------
+# Implements decisions/ADR-104-real-io-filesystem-linux-parity.md: `RealIoFileSystem::write_verified()`/
+# `read_verified()` (sandbox/real_io_filesystem.hpp) are the only two methods on that class that need
+# a real, verified OS handle -- split out-of-line per platform, mirroring `agentengine_worktree_store`'s
+# own WIN32/`NOT WIN32` split just above. Every other method on `RealIoFileSystem` stays inline in the
+# header (pure std::filesystem/Ledger/AsyncMutex, no OS-specific symbol).
+if(WIN32)
+  add_library(agentengine_sandbox_io STATIC src/sandbox/real_io_filesystem.cpp)
+  target_link_libraries(agentengine_sandbox_io PUBLIC agentengine::core agentengine::worktree_store)
+  target_link_libraries(agentengine_sandbox_io PRIVATE agentengine_warnings)
+  add_library(agentengine::sandbox_io ALIAS agentengine_sandbox_io)
+endif()
+if(NOT WIN32)
+  add_library(agentengine_sandbox_io STATIC src/sandbox/real_io_filesystem_posix.cpp)
+  target_link_libraries(agentengine_sandbox_io PUBLIC agentengine::core agentengine::worktree_store)
+  target_link_libraries(agentengine_sandbox_io PRIVATE agentengine_warnings)
+  add_library(agentengine::sandbox_io ALIAS agentengine_sandbox_io)
+endif()
+
 # HandleRelay (docs/planning/jailed-python-worker-slice-2-handle-relay-design-draft.md,
 # ADR-081 Slice 2): dispatch_worker_query's "open"/"listdir" handlers call
 # open_within_mount_root/list_within_mount_root/mount_root_usage (agentengine::worktree_store), and
@@ -865,7 +884,7 @@ if(AGENTENGINE_WITH_HTTPS AND AGENTENGINE_BUILD_PYTHON_RUNNER)
   add_executable(agentengine_cli_chat tools/cli_chat.cpp)
   target_link_libraries(agentengine_cli_chat PRIVATE
     agentengine::core agentengine::provider_http_client agentengine::mediated_python_runner
-    agentengine::mediated_shell_runner agentengine::worktree_store
+    agentengine::mediated_shell_runner agentengine::worktree_store agentengine::sandbox_io
     agentengine_warnings MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
   target_compile_definitions(agentengine_cli_chat PRIVATE
     AE_PYTHON_HOME="${AGENTENGINE_PYTHON_HOME}")
@@ -889,8 +908,8 @@ if(AGENTENGINE_WITH_HTTPS AND WIN32)
   add_executable(agentengine_sandboxed_shell_chat tools/sandboxed_shell_chat.cpp)
   target_link_libraries(agentengine_sandboxed_shell_chat PRIVATE
     agentengine::core agentengine::provider_http_client agentengine::mediated_shell_runner
-    agentengine::worktree_store agentengine_warnings MbedTLS::mbedtls MbedTLS::mbedx509
-    MbedTLS::mbedcrypto)
+    agentengine::worktree_store agentengine::sandbox_io agentengine_warnings MbedTLS::mbedtls
+    MbedTLS::mbedx509 MbedTLS::mbedcrypto)
 endif()
 
 # ---- Standalone batch inference (tools/batch_infer.cpp) -- submits N independent prompts to

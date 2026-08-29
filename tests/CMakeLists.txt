@@ -2198,7 +2198,8 @@ if(WIN32)
   # in this codebase. REQUIRES Windows (SandboxToolProvider's own scope) AND a real Docker daemon.
   add_executable(test_composed_sandbox_providers_live test_composed_sandbox_providers_live.cpp)
   target_link_libraries(test_composed_sandbox_providers_live PRIVATE
-    agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store agentengine_warnings)
+    agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store
+    agentengine::sandbox_io agentengine_warnings)
   add_test(NAME test_composed_sandbox_providers_live COMMAND test_composed_sandbox_providers_live)
 
   # G2's ShellRunner-specific "must not exist as a reachable code path" bar, structural half,
@@ -3099,7 +3100,7 @@ add_test(NAME test_ledger COMMAND test_ledger)
 # REQUIRES a running Docker daemon reachable via `docker` on PATH -- every check shells out to a real
 # container, matching this phase's own "never a mock" discipline; not run in an environment without one.
 add_executable(test_sandbox_runtime test_sandbox_runtime.cpp)
-target_link_libraries(test_sandbox_runtime PRIVATE agentengine::worktree_store agentengine_warnings)
+target_link_libraries(test_sandbox_runtime PRIVATE agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)
 add_test(NAME test_sandbox_runtime COMMAND test_sandbox_runtime)
 
 # ---- ADR-102 Phase 4 -- MandatorySandboxProvider<Surface>/RunCommandTool
@@ -3109,7 +3110,7 @@ add_test(NAME test_sandbox_runtime COMMAND test_sandbox_runtime)
 # test_sandbox_runtime do (real Ledger/compute_digest/open_within_mount_root).
 # REQUIRES a running Docker daemon reachable via `docker` on PATH.
 add_executable(test_mandatory_sandbox_provider test_mandatory_sandbox_provider.cpp)
-target_link_libraries(test_mandatory_sandbox_provider PRIVATE agentengine::worktree_store agentengine_warnings)
+target_link_libraries(test_mandatory_sandbox_provider PRIVATE agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)
 add_test(NAME test_mandatory_sandbox_provider COMMAND test_mandatory_sandbox_provider)
 
 # ---- ADR-102 Phase 4 -- agentengine::rt::block_on<T>() (rt/block_on.hpp), the real fix for a real,
@@ -3127,7 +3128,7 @@ add_test(NAME test_rt_block_on COMMAND test_rt_block_on)
 # test_mandatory_sandbox_provider). Closes a real gap an independent red-team pass found: this exact
 # composition had zero automated coverage before this file.
 add_executable(test_mandatory_sandbox_provider_composed test_mandatory_sandbox_provider_composed.cpp)
-target_link_libraries(test_mandatory_sandbox_provider_composed PRIVATE agentengine::worktree_store agentengine_warnings)
+target_link_libraries(test_mandatory_sandbox_provider_composed PRIVATE agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)
 add_test(NAME test_mandatory_sandbox_provider_composed COMMAND test_mandatory_sandbox_provider_composed)
 
 # ---- ADR-102 Phase 5 (agent_session.hpp fix) -- AgentSession::fork_from() now acquires

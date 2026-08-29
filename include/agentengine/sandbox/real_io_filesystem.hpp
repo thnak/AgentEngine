@@ -14,12 +14,20 @@
 // now refer to this phase's own real, ported `agentengine::Ledger<>`/`agentengine::IdentityHandle`
 // (core/ledger.hpp, ADR-102 Phase 2) rather than the prove-phase standalone types.
 //
-// WINDOWS-ONLY, disclosed not silently assumed: this file calls `agentengine::open_within_mount_root`
-// (core/worktree_mount_fs.hpp) and raw Win32 `WriteFile`/`ReadFile`/`GetFileSizeEx` directly, matching
-// CLAUDE.md's own "Windows 11/x86-64 is v1" default and the prove-phase original's own disclosed
-// build-environment scope. A Linux port would need `core/worktree_mount_fs_posix.hpp`'s own
-// equivalent primitive (a real, separate header already exists for that half) -- not attempted in
-// this phase, named as real follow-on work, not assumed to already work.
+// PLATFORM-PORTABLE (2026-08-29, decisions/ADR-104-real-io-filesystem-linux-parity.md): this class's
+// two methods that need a real, verified OS handle -- `write_verified()`/`read_verified()` -- are
+// declared here but defined out-of-line, once per platform (src/sandbox/real_io_filesystem.cpp for
+// Windows' `open_within_mount_root`+`WriteFile`/`ReadFile`/`GetFileSizeEx`,
+// src/sandbox/real_io_filesystem_posix.cpp for Linux's own `open_within_mount_root`+`::write`/
+// `::read`/`::fstat`) -- the same "portable declaration, two platform .cpp files" split
+// `core/worktree_digest.hpp`'s `compute_digest()` and ADR-103's `MediatedFileSystemAdapter` already
+// use, rather than `#ifdef`-ing inside one file. Every other method on this class (write(),
+// read_real_file(), drain_into_tree(), scan_and_drain_into_tree(), materialize(), the constructor)
+// is 100% portable already -- pure `std::filesystem`/`Ledger`/`AsyncMutex` calls with no OS-specific
+// symbol anywhere -- so it stays inline, right here, unchanged. Was previously Windows-only
+// (unconditionally including `core/worktree_mount_fs.hpp`, which pulls in `<windows.h>`); this pass
+// removes that transitive include from the portable header entirely -- each platform `.cpp` includes
+// only the mount-root header its own platform needs.
 
 #include <filesystem>
 #include <memory>
@@ -31,7 +39,6 @@
 
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/ledger.hpp"
-#include "agentengine/core/worktree_mount_fs.hpp"
 #include "agentengine/core/worktree_types.hpp"
 #include "agentengine/rt/async_mutex.hpp"
 #include "agentengine/rt/task.hpp"
@@ -78,52 +85,15 @@ public:
     [[nodiscard]] std::filesystem::path const& host_root() const noexcept { return host_root_; }
 
     // The real, handle-based open+verify step -- ADR-014's own accepted Design B, reused verbatim
-    // from production (`agentengine::open_within_mount_root`), not re-derived. The object
-    // `GetFinalPathNameByHandleW` verifies inside that call IS the object `WriteFile`/`ReadFile`
-    // below act on -- no window between "checked" and "used" for anything this function itself does.
+    // from production (`agentengine::open_within_mount_root`), not re-derived. The object each
+    // platform's own mount-root primitive verifies IS the object the platform-specific write/read
+    // syscalls below act on -- no window between "checked" and "used" for anything this function
+    // itself does. Defined out-of-line, once per platform (see this header's own top comment).
     [[nodiscard]] agentengine::result<void> write_verified(std::string const& relative_path,
-                                                               std::vector<std::byte> const& bytes) {
-        auto handle = agentengine::open_within_mount_root(host_root_.wstring(), relative_path,
-                                                             GENERIC_WRITE, CREATE_ALWAYS);
-        if (!handle.has_value()) return std::unexpected(handle.error());
-        DWORD written = 0;
-        BOOL const ok = bytes.empty()
-            ? TRUE
-            : WriteFile(handle->get(), bytes.data(), static_cast<DWORD>(bytes.size()), &written, nullptr);
-        if (!ok || (!bytes.empty() && written != bytes.size())) {
-            return std::unexpected(agentengine::error{agentengine::failure_class::fatal,
-                                                          "WriteFile failed on a verified handle: " + relative_path,
-                                                          "real_io.write_failed"});
-        }
-        return agentengine::result<void>{};
-    }
+                                                               std::vector<std::byte> const& bytes);
 
     [[nodiscard]] agentengine::result<std::vector<std::byte>> read_verified(
-            std::string const& relative_path) const {
-        auto handle = agentengine::open_within_mount_root(host_root_.wstring(), relative_path,
-                                                             GENERIC_READ, OPEN_EXISTING);
-        if (!handle.has_value()) return std::unexpected(handle.error());
-        LARGE_INTEGER size{};
-        if (!GetFileSizeEx(handle->get(), &size) || size.QuadPart < 0) {
-            return std::unexpected(agentengine::error{agentengine::failure_class::fatal,
-                                                          "GetFileSizeEx failed on a verified handle: " +
-                                                              relative_path,
-                                                          "real_io.read_failed"});
-        }
-        std::vector<std::byte> out(static_cast<std::size_t>(size.QuadPart));
-        if (!out.empty()) {
-            DWORD read_bytes = 0;
-            BOOL const ok = ReadFile(handle->get(), out.data(), static_cast<DWORD>(out.size()),
-                                       &read_bytes, nullptr);
-            if (!ok || read_bytes != out.size()) {
-                return std::unexpected(agentengine::error{agentengine::failure_class::fatal,
-                                                              "ReadFile failed on a verified handle: " +
-                                                                  relative_path,
-                                                              "real_io.read_failed"});
-            }
-        }
-        return out;
-    }
+            std::string const& relative_path) const;
 
     // REAL write: bytes actually land on real disk, at a real path under host_root_. Fails closed on
     // an unsafe path BEFORE ever touching the filesystem.
