@@ -2111,9 +2111,27 @@ set_tests_properties(test_shell_parser_adversarial PROPERTIES TIMEOUT 60)
 
 # Sh-S1's static half: no process-creation symbol is referenced anywhere in the
 # agentengine_shell_runner library's compiled object code (ADR-001 §7 finding 1's link-target-
-# granularity fix). Checked via llvm-nm against the actual built artifact; skips (CTest
-# SKIP_RETURN_CODE) if llvm-nm isn't found rather than silently passing.
-find_program(AE_LLVM_NM_EXECUTABLE NAMES llvm-nm llvm-nm.exe)
+# granularity fix). Checked via llvm-nm (or, when that specific LLVM tool isn't installed, plain
+# GNU binutils `nm` -- both implement the same `--undefined-only` output shape this check's own
+# parser relies on; ADR-103 §7's own residual note named this gap: a dev/CI Linux box very often has
+# `nm` without ever having `llvm-nm`, and this check should not be silently vacuous there) against
+# the actual built artifact; skips (CTest SKIP_RETURN_CODE) if neither is found rather than silently
+# passing.
+#
+# PLATFORM-ORDERED search, not just a wider NAMES list: on a genuine Windows host only `llvm-nm`/
+# `llvm-nm.exe` is ever a real option (GNU `nm` doesn't exist there), unchanged from before this
+# pass. On Linux, `nm` is searched FIRST -- a real, ordinary Linux dev/CI box almost always has GNU
+# binutils `nm` and often has no LLVM toolchain at all; `llvm-nm` stays a fallback for the (rarer)
+# clang-only environment. Discovered the hard way in THIS session's own WSL2 test environment: WSL's
+# default Windows-PATH interop makes a cross-mounted `llvm-nm.exe` reachable from inside Linux too,
+# which would otherwise get picked over the native tool by pure NAMES-list ordering -- an artifact of
+# this one dev box, not representative of a real, Windows-less Linux CI runner this check must also
+# work correctly on.
+if(WIN32)
+  find_program(AE_LLVM_NM_EXECUTABLE NAMES llvm-nm llvm-nm.exe)
+else()
+  find_program(AE_LLVM_NM_EXECUTABLE NAMES nm llvm-nm)
+endif()
 add_executable(test_shell_runner_no_process_creation test_shell_runner_no_process_creation.cpp)
 target_link_libraries(test_shell_runner_no_process_creation PRIVATE
   agentengine::core agentengine_warnings)
@@ -2180,16 +2198,36 @@ target_link_libraries(test_mediated_shell_runner_hostile_corpus PRIVATE
 add_test(NAME test_mediated_shell_runner_hostile_corpus COMMAND test_mediated_shell_runner_hostile_corpus)
 set_tests_properties(test_mediated_shell_runner_hostile_corpus PROPERTIES TIMEOUT 60)
 
+# G2's ShellRunner-specific "must not exist as a reachable code path" bar, structural half, against
+# the REAL agentengine_mediated_shell_runner artifact (test_shell_runner_no_process_creation.cpp
+# already covers the untouched spike). Reuses the same llvm-nm/nm discovered above.
+#
+# Portable across Windows and Linux (2026-08-29, decisions/ADR-104-real-io-filesystem-linux-parity.md's
+# own named follow-on) -- moved OUT of the surrounding `if(WIN32)` block below, same reasoning as the
+# other mediated_shell_runner tests just above. The hardcoded Windows-only hostile-symbol list
+# (CreateProcessA/W etc.) is now `#ifdef _WIN32`/`#else`-branched in the test source itself, with a
+# separately-reasoned POSIX process-creation symbol list (fork/exec*/posix_spawn*/clone) -- NOT a
+# mechanical rename, since the Windows list and the POSIX list name genuinely different platform
+# APIs for the identical underlying property this check exists to prove ("no reachable code path to
+# process creation").
+add_executable(test_mediated_shell_runner_no_process_creation
+  test_mediated_shell_runner_no_process_creation.cpp)
+target_link_libraries(test_mediated_shell_runner_no_process_creation PRIVATE
+  agentengine::core agentengine_warnings)
+target_compile_definitions(test_mediated_shell_runner_no_process_creation PRIVATE
+  AE_MEDIATED_SHELL_RUNNER_LIB_PATH="$<TARGET_FILE:agentengine_mediated_shell_runner>"
+  AE_LLVM_NM_PATH="${AE_LLVM_NM_EXECUTABLE}")
+add_test(NAME test_mediated_shell_runner_no_process_creation
+  COMMAND test_mediated_shell_runner_no_process_creation)
+set_tests_properties(test_mediated_shell_runner_no_process_creation PROPERTIES SKIP_RETURN_CODE 77)
+
 # ---- Everything below stays WIN32-only, named residuals for later, not silently dropped
 # (ADR-103's own "Residual risks" section): test_composed_sandbox_providers_live/
 # tools/sandboxed_shell_chat.cpp/the two ADR-096 C2 compile_fail probes all also pull in
 # MandatorySandboxProvider<DockerExecutionSurface>, and this pass's own real Linux verification
 # environment (WSL2 Ubuntu) has no Docker daemon reachable -- untested on Linux, deliberately not
-# claimed. test_mediated_shell_runner_no_process_creation's own Windows-specific process-creation
-# symbol list (CreateProcessA/W etc.) needs its own, separately-reasoned Linux symbol list
-# (fork/execve/posix_spawn/clone) to mean anything on that platform -- a real, bounded, but
-# separate task, not attempted here. The embedded-CPython Python-runner composition tests
-# (AGENTENGINE_BUILD_PYTHON_RUNNER) are a materially larger, unrelated platform-parity question.
+# claimed. The embedded-CPython Python-runner composition tests (AGENTENGINE_BUILD_PYTHON_RUNNER)
+# are a materially larger, unrelated platform-parity question.
 if(WIN32)
   # ---- ADR-102 Phase 5 (ComposedContextProvider<Ms...> real production consumer slice):
   # SandboxToolProvider (above) and MandatorySandboxProvider<DockerExecutionSurface> (ADR-102 Phase 4)
@@ -2201,20 +2239,6 @@ if(WIN32)
     agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store
     agentengine::sandbox_io agentengine_warnings)
   add_test(NAME test_composed_sandbox_providers_live COMMAND test_composed_sandbox_providers_live)
-
-  # G2's ShellRunner-specific "must not exist as a reachable code path" bar, structural half,
-  # against the REAL agentengine_mediated_shell_runner artifact (test_shell_runner_no_process_
-  # creation.cpp already covers the untouched spike). Reuses the same llvm-nm discovered above.
-  add_executable(test_mediated_shell_runner_no_process_creation
-    test_mediated_shell_runner_no_process_creation.cpp)
-  target_link_libraries(test_mediated_shell_runner_no_process_creation PRIVATE
-    agentengine::core agentengine_warnings)
-  target_compile_definitions(test_mediated_shell_runner_no_process_creation PRIVATE
-    AE_MEDIATED_SHELL_RUNNER_LIB_PATH="$<TARGET_FILE:agentengine_mediated_shell_runner>"
-    AE_LLVM_NM_PATH="${AE_LLVM_NM_EXECUTABLE}")
-  add_test(NAME test_mediated_shell_runner_no_process_creation
-    COMMAND test_mediated_shell_runner_no_process_creation)
-  set_tests_properties(test_mediated_shell_runner_no_process_creation PROPERTIES SKIP_RETURN_CODE 77)
 
   # RunnerCall<python> composition against the REAL MediatedPythonRunner (E2) -- only built when
   # AGENTENGINE_BUILD_PYTHON_RUNNER is also ON (needs a real CPython install).
