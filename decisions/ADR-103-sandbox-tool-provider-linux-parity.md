@@ -264,6 +264,12 @@ pre-existing gap.
   compose `SandboxToolProvider` alongside `MandatorySandboxProvider<DockerExecutionSurface>`, and this
   session's WSL2 verification environment has no Docker daemon reachable (Docker Desktop's WSL
   integration is not enabled for this distro) — untested on Linux, deliberately not claimed either way.
+  **WINDOWS SIDE SINCE VERIFIED (2026-08-29)**: once the project owner started Docker Desktop on this
+  host, `test_composed_sandbox_providers_live` (the real `ComposedContextProvider<SandboxToolProvider,
+  MandatorySandboxProvider<DockerExecutionSurface>>` composition) ran for real against a live daemon
+  and passed — the full Windows suite went 287/287, 100%, for the first time in this whole multi-phase
+  effort's history. The Linux half of this residual (WSL2 Docker integration) remains open — a Docker
+  Desktop setting outside this session's control, not a code gap.
 - **`test_mediated_shell_runner_no_process_creation`'s own Windows-specific symbol list** (`CreateProcessA`/
   `CreateProcessW`/etc., checked via `llvm-nm --undefined-only` against the built artifact) needs its
   own, separately-reasoned Linux symbol list (`fork`/`execve`/`posix_spawn`/`vfork`/`clone`) to mean

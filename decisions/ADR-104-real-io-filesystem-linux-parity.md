@@ -236,7 +236,14 @@ on both platforms, before the existing character-set check runs.
   neither test's own real Docker-container assertions have ever run on Linux in this environment (no
   `docker` binary on `PATH` in this WSL2 distro). Identical in kind to ADR-103 §7's own disclosed gap
   for `tools/sandboxed_shell_chat.cpp`/`test_composed_sandbox_providers_live` — not newly introduced,
-  just now additionally true for two more targets this ADR made compile for the first time.
+  just now additionally true for two more targets this ADR made compile for the first time. **WINDOWS
+  SIDE SINCE VERIFIED (2026-08-29)**: once Docker Desktop's daemon was reachable on this host, all
+  four Docker-dependent tests (`test_sandbox_runtime`, `test_mandatory_sandbox_provider`,
+  `test_mandatory_sandbox_provider_composed`, `test_composed_sandbox_providers_live`) ran for real —
+  this session's own `docker_execution_surface.hpp` shell-injection-guard rewrite (§2-§4 above),
+  including the leading-dash and NUL-byte fixes, driven through real `docker run`/`exec`/`cp`/`rm`
+  calls for the first time — and passed, 287/287 on the full Windows suite. The Linux half of this
+  residual remains open (WSL2 Docker integration, a Docker Desktop setting, not a code gap).
 - **`docker_cli_reject_leading_dash`'s fix is narrower than a full CLI-argument-injection defense** —
   it blocks a LEADING dash specifically (the concrete, proven attack shape), not every conceivable way
   a crafted value could confuse `docker`'s own argument parser. Judged sufficient for the values this
