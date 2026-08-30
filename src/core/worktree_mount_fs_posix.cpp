@@ -161,15 +161,30 @@ result<SafeFileHandlePosix> open_within_mount_root(std::string const& mount_root
     // "new." This is a materially different, stronger threat model (a live concurrent process racing
     // this exact mount, not the model-output-as-untrusted-data threat this mediation layer defends
     // against today) and is not attempted to be closed here.
+    // ADR-138 follow-on (found by this fix's own Linux-verify pass, not assumed): O_TRUNC is
+    // destructive at open()-time -- the kernel truncates an EXISTING target as an unconditional side
+    // effect of a successful open(), before this function's own containment check ever runs. A
+    // symlink inside the mount pointing to an EXISTING file outside it (the non-dangling counterpart
+    // of the create-and-plant case this whole ADR closes -- reachable through the identical
+    // `write_file()` -> O_CREAT|O_TRUNC path, since `append=false` is this codebase's own default
+    // write mode) would have its real content silently wiped to zero bytes even though the call is
+    // ultimately, correctly rejected as an escape. This predates ADR-138 (the original, single-open
+    // design had the identical exposure) -- not introduced by this fix, but found while verifying it,
+    // and closed in the same pass rather than left disclosed-only. O_TRUNC is stripped from every
+    // open() call below and applied via a real `ftruncate()` ONLY after the containment check below
+    // confirms the target is genuinely inside `mount_root` -- deferring the destructive effect past
+    // the point where it is known to be safe, rather than letting the kernel perform it speculatively.
+    bool const wants_trunc = (open_flags & O_TRUNC) != 0;
+    int const effective_open_flags = open_flags & ~O_TRUNC;
     bool created_new_object = false;
     int target_fd = -1;
-    if (open_flags & O_CREAT) {
-        if (open_flags & O_EXCL) {
-            target_fd = ::open(joined.c_str(), open_flags, create_mode);
+    if (effective_open_flags & O_CREAT) {
+        if (effective_open_flags & O_EXCL) {
+            target_fd = ::open(joined.c_str(), effective_open_flags, create_mode);
             if (target_fd < 0) return posix_error_t<SafeFileHandlePosix>("open(target)", errno);
             created_new_object = true;
         } else {
-            target_fd = ::open(joined.c_str(), open_flags | O_EXCL, create_mode);
+            target_fd = ::open(joined.c_str(), effective_open_flags | O_EXCL, create_mode);
             if (target_fd >= 0) {
                 created_new_object = true;
             } else if (errno == EEXIST) {
@@ -192,7 +207,7 @@ result<SafeFileHandlePosix> open_within_mount_root(std::string const& mount_root
                 // window), not a new one.
                 struct stat pre_stat{};
                 bool const target_already_exists = ::stat(joined.c_str(), &pre_stat) == 0;
-                target_fd = ::open(joined.c_str(), open_flags, create_mode);
+                target_fd = ::open(joined.c_str(), effective_open_flags, create_mode);
                 if (target_fd < 0) return posix_error_t<SafeFileHandlePosix>("open(target)", errno);
                 created_new_object = !target_already_exists;
             } else {
@@ -200,7 +215,7 @@ result<SafeFileHandlePosix> open_within_mount_root(std::string const& mount_root
             }
         }
     } else {
-        target_fd = ::open(joined.c_str(), open_flags, create_mode);
+        target_fd = ::open(joined.c_str(), effective_open_flags, create_mode);
         if (target_fd < 0) return posix_error_t<SafeFileHandlePosix>("open(target)", errno);
     }
     SafeFileHandlePosix target(target_fd);
@@ -225,6 +240,13 @@ result<SafeFileHandlePosix> open_within_mount_root(std::string const& mount_root
         // is the closest real occurrence of "you may not reach this."
         return std::unexpected(error{failure_class::policy, "resolved path escapes the mount root",
                                       "worktree.mount_path_escapes_root", EACCES});
+    }
+    // Containment is confirmed -- now safe to perform the caller's requested truncation, deferred
+    // from open()-time for the real reason given above.
+    if (wants_trunc) {
+        if (::ftruncate(target.get(), 0) != 0) {
+            return posix_error_t<SafeFileHandlePosix>("ftruncate(target)", errno);
+        }
     }
     return target;
 }

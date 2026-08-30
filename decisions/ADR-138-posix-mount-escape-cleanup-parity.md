@@ -1,10 +1,12 @@
 # ADR-138 — POSIX `open_within_mount_root` gets the same creation-escape cleanup its Windows sibling already has
 
-- **Status:** Proposed — implemented (Linux-only file, `if(NOT WIN32)` gated, so this pass could not
-  compile or execute it on this Windows session). **Independent red-team round (§7) found and fixed
-  one real, deterministic logic bug in the first draft.** Full static verification done by hand
-  (every branch traced); real compilation/execution verification deferred to the Linux-verify pass
-  this ADR names as still outstanding.
+- **Status:** Proposed — implemented and **Linux-verified, ADR-143**: builds clean on real GCC
+  14.2.0, the full `test_worktree_mount_fs_escape_corpus_linux` suite passes with zero regression, and
+  a dedicated targeted probe confirms both the create-and-unwind fix (§7) and the deferred-truncate
+  fix (§8) genuinely hold on real Linux. **Independent red-team round (§7) found and fixed one real,
+  deterministic logic bug in the first draft; the Linux-verify pass itself (§8) found and fixed one
+  further real, previously-undiscovered data-loss bug, independent of and predating both this ADR and
+  its own red-team round.**
 - **Date:** 2026-08-30/31.
 - **Scope:** `src/core/worktree_mount_fs_posix.cpp` only (`open_within_mount_root()`).
 - **Related specs:** `decisions/ADR-014-worktree-mount-fs-toctou.md` and its own addendum (the
@@ -45,16 +47,22 @@ caller).
 
 ## 4. Verification
 
-**Not compiled or executed this pass** — `src/core/worktree_mount_fs_posix.cpp` is gated
-`if(NOT WIN32)` in `CMakeLists.txt` and does not build on this Windows session at all. Verified by hand:
-every branch of the `(O_CREAT present/absent) x (O_EXCL present/absent)` matrix traced for correct
+Initially could not be compiled or executed on the Windows session that authored this fix
+(`src/core/worktree_mount_fs_posix.cpp` is `if(NOT WIN32)` gated) — verified by hand at the time: every
+branch of the `(O_CREAT present/absent) x (O_EXCL present/absent)` matrix traced for correct
 `created_new_object` assignment; compared line-for-line against the Windows sibling's own equivalent
-logic to confirm the two platforms' fixes are actually equivalent in effect, not merely in intent; the
-unrelated `redteam::naive_check_within_root`/`naive_open_checked_path` control functions confirmed
-untouched and unaffected.
+logic; the unrelated `redteam::naive_check_within_root`/`naive_open_checked_path` control functions
+confirmed untouched and unaffected.
 
-Real compilation and execution verification is deferred to a dedicated Linux-verify ADR (not yet run as
-of this writing) — see §6.
+**Real compilation and execution verification completed in ADR-143**: full incremental build clean on
+GCC 14.2.0 (zero errors); `test_worktree_mount_fs_escape_corpus_linux` (the existing, pre-ADR-138
+corpus) passes completely, zero regression; a dedicated targeted probe (built and run, then deleted —
+not part of the permanent suite) directly confirmed both (a) a dangling symlink inside the mount
+pointing outside it, opened with `O_CREAT` and no caller `O_EXCL`, is rejected AND the newly-created
+file at the escaped-to target is genuinely unlinked, not left behind, and (b) a symlink to an EXISTING
+outside file is rejected WITHOUT deleting that pre-existing file — the exact two properties §7's
+red-team round reasoned about but could not execute. See §8 for a third, real, previously-undiscovered
+bug that same probe run surfaced and this ADR's own fix closed in the same pass.
 
 ## 5. Not done
 
@@ -65,13 +73,7 @@ of this writing) — see §6.
 
 ## 6. Residuals
 
-- **Not yet compiled or run on any real Linux system** — this whole file only exists in the `NOT WIN32`
-  build. A dedicated Linux-verify pass must: (a) confirm the code compiles clean on GCC, (b) build a
-  concrete repro (a dangling symlink inside a mount, pointing outside root, reached through
-  `write_file()`) and confirm a file is NOT planted outside the mount and IS correctly unlinked when the
-  first draft's bug (see §7) would have missed it, (c) run the existing
-  `test_worktree_mount_fs_escape_corpus` suite and confirm no regression.
-- The disclosed TOCTOU residual named in §5.
+- The disclosed TOCTOU residual named in §5 — unchanged, not attempted.
 
 ## 7. Independent red-team round (same day, this session's own consolidated final-review pass)
 
@@ -100,7 +102,36 @@ and the fallback `open()` is a strictly narrower instance of this function's own
 residual (§5/§6), not a new one.
 
 This fix is included in the diff described in §3 above (i.e., §3 already describes the corrected,
-post-red-team logic) — it could not be verified by execution for the reason given throughout this ADR;
-the Linux-verify pass named in §6 must specifically exercise this exact branch (a dangling symlink
-pointing outside the mount, reached with `O_CREAT` and no caller `O_EXCL`) to confirm the fix holds on
-real Linux, not merely on paper.
+post-red-team logic). Confirmed by real execution in ADR-143 — see §4.
+
+## 8. A real, previously-undiscovered bug found by this fix's OWN Linux-verify pass (ADR-143)
+
+While building the targeted probe named in §4, its second scenario (a symlink to an EXISTING outside
+file, confirming the §7 fix does not over-delete) surfaced a real, separate, previously-undiscovered
+data-loss bug: `O_TRUNC` is destructive at `open()`-time — the kernel truncates an existing target as
+an unconditional side effect of a successful `open()` call, before this function's own containment
+check ever runs. A symlink inside the mount pointing to an EXISTING file outside it (the non-dangling
+counterpart of the create-and-plant case §7 closes) had its real content silently wiped to zero bytes
+even though the call was ultimately, correctly rejected as an escape. Reachable through the identical
+`write_file()` path §1 already names, since `append=false` is this codebase's own default write mode
+(`O_WRONLY | O_CREAT | O_TRUNC`).
+
+**This predates ADR-138 entirely** — the original, pre-existing, single-`open()` design (before this
+ADR's own fix existed at all) had the identical exposure, since `open_flags` (including any caller
+`O_TRUNC`) was always passed straight through to the one real `open()` call. Not introduced by this
+ADR's own create-and-unwind fix — found only because this fix's own verification probe happened to
+test the non-dangling, EXISTING-target case for a different reason (confirming no over-deletion) and
+incidentally exercised the truncation path too.
+
+**Fixed in the same pass, not merely disclosed**: `O_TRUNC` is now stripped from `open_flags` before
+every `open()` call in this function (`effective_open_flags = open_flags & ~O_TRUNC`) and applied via a
+real `ftruncate()` on the resulting descriptor ONLY after the containment check confirms the target is
+genuinely inside `mount_root` — deferring the destructive effect past the point where it is known to be
+safe, rather than letting the kernel perform it speculatively before any application-level check can
+run. Behavior-preserving for every legitimate in-mount caller: `open()` without `O_TRUNC` still
+positions the file offset at 0 (POSIX guarantees this for non-`O_APPEND` opens regardless of
+truncation), and a subsequent `ftruncate(fd, 0)` before any write reaches an identical end state.
+Verified via the probe's own updated assertion (the pre-existing outside file's content, not merely its
+existence, is confirmed untouched after a rejected escape attempt) — failed before this fix (content
+wiped to empty despite the file surviving), passed after. Full `test_worktree_mount_fs_escape_corpus_
+linux` and the whole Linux `ctest` suite re-run clean after this fix, zero regression (see ADR-143).
