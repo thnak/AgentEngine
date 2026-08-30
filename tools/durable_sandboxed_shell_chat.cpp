@@ -26,6 +26,24 @@
 // REQUIRES: Windows or Linux, a running Docker daemon reachable via the `docker` CLI on PATH, and
 // OPENAI_API_KEY set in the environment -- the same real-world requirements
 // tools/sandboxed_shell_chat.cpp already documents for the identical DockerExecutionSurface it also uses.
+//
+// CTRL+C/SIGINT, DISCLOSED HERE EXPLICITLY -- INHERITED, NOT NEW (independent red-team round,
+// 2026-08-30): this file's own original comment said nothing about interrupt handling at all, unlike
+// tools/sandboxed_shell_chat.cpp's own extensive disclosure of the identical gap. This tool inherits the
+// SAME limitation, not a stronger one: this codebase installs no SetConsoleCtrlHandler/SIGINT handler
+// anywhere, so a user's Ctrl+C while blocked on std::getline or a real network call runs the platform's
+// own default handler (ExitProcess() on Windows), and this process's stack -- including `built`'s
+// DockerExecutionSurface -- is never unwound. A container left running by that path is reclaimed the
+// same way tools/sandboxed_shell_chat.cpp's own container is: the next invocation's startup orphan sweep
+// (`DockerCliBackend::reap_orphans()`, above) finds and destroys it.
+// FOR THIS TOOL SPECIFICALLY, the durable-content story is UNAFFECTED by an interrupt at any point:
+// `Ledger<Store>::create_root_branch()`/`commit()` (`include/agentengine/core/ledger.hpp`) call
+// `persist_snapshot_locked()` SYNCHRONOUSLY, before returning -- there is no batched/deferred/at-exit
+// flush for a Ctrl+C to race against or leave torn. A Ctrl+C here loses only whatever work was in flight
+// and never reached a completed commit, exactly the "crash or a clean exit, indistinguishable and both
+// fine" case `bind_root_branch()`'s own reclaim-if-orphaned logic exists to handle on the next run --
+// verified for real by this same red-team round (`tests/test_durable_sandboxed_shell_chat_cross_process.
+// cpp`), not merely asserted here.
 
 #include "agentengine/core/file_worktree_object_store.hpp"
 #include "agentengine/core/session_builder.hpp"

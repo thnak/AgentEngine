@@ -3298,3 +3298,24 @@ add_test(NAME test_rt_agent_session_fork_from_serialization COMMAND test_rt_agen
 add_executable(test_task_branch_content_durability_integration test_task_branch_content_durability_integration.cpp)
 target_link_libraries(test_task_branch_content_durability_integration PRIVATE agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)
 add_test(NAME test_task_branch_content_durability_integration COMMAND test_task_branch_content_durability_integration)
+
+# ---- ADR-134 independent red-team round -- tools/durable_sandboxed_shell_chat.cpp had ZERO automated
+# coverage of its own (ADR-134 §3's own evidence was a human manually re-running the compiled binary
+# twice and eyeballing the filesystem). This turns that same claim into a permanent regression guard:
+# invokes the REAL, already-built agentengine_durable_sandboxed_shell_chat.exe TWICE via std::system(),
+# as two genuinely separate OS process invocations, and checks THE CORE CLAIM directly on real disk (the
+# on-disk tree-object count stays at exactly 1, not 2). Gated identically to the tool target itself
+# (AGENTENGINE_WITH_HTTPS) -- the target this test invokes does not exist otherwise.
+if(AGENTENGINE_WITH_HTTPS)
+  add_executable(test_durable_sandboxed_shell_chat_cross_process
+    test_durable_sandboxed_shell_chat_cross_process.cpp)
+  target_link_libraries(test_durable_sandboxed_shell_chat_cross_process PRIVATE agentengine_warnings)
+  target_compile_definitions(test_durable_sandboxed_shell_chat_cross_process PRIVATE
+    AE_DURABLE_SHELL_CHAT_EXE="$<TARGET_FILE:agentengine_durable_sandboxed_shell_chat>")
+  add_dependencies(test_durable_sandboxed_shell_chat_cross_process agentengine_durable_sandboxed_shell_chat)
+  add_test(NAME test_durable_sandboxed_shell_chat_cross_process
+    COMMAND test_durable_sandboxed_shell_chat_cross_process)
+  # Two real subprocess launches plus real filesystem I/O -- generous but finite, matching this design
+  # line's own established TIMEOUT posture for cross-process proofs of this shape.
+  set_tests_properties(test_durable_sandboxed_shell_chat_cross_process PROPERTIES TIMEOUT 60)
+endif()
