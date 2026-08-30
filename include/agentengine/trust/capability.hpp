@@ -69,6 +69,19 @@ enum class capability_kind {
     sandbox_net_out, // same design draft — authorizes SandboxSpec::net's allowlist entries for a
                      // mount/net-shaped SandboxBackend. Distinct from cap::NetOut (WASM-imports/
                      // mediated-egress shaped) for the identical reason.
+    task_branch,        // ADR-117 (promoted from the prove-phase task_branch_capability.hpp design,
+                        // itself ADR-099 §7 A10 / ADR-114 finding 4) — may start/run/discard a task
+                        // branch: fully isolated on a child SandboxRuntime, never touches the
+                        // session's own main branch.
+    task_branch_commit, // same promotion — may fold a task branch's work INTO the main branch
+                        // (SandboxRuntime::merge_into()). A meaningfully more consequential authority
+                        // than task_branch alone, the same read-vs-write split cap::FsRead/cap::
+                        // FsWrite already draw on one mount; never independently meaningful (a real
+                        // commit_task_branch tool must also declare task_branch, since it can only
+                        // ever operate on a handle start_task_branch produced), enforced by the
+                        // TOOL's own declared ceiling, not by any relationship between the two kinds
+                        // themselves (a grant of this alone, without task_branch, is simply inert —
+                        // no real tool ever accepts that combination).
 };
 // `memory` (029) is deliberately NOT its own kind: it is FsRead/FsWrite scoped to a `/memory` mount
 // (trust/agent_library_manifest.hpp's own comment already said so). The parameterized FsRead/FsWrite
@@ -150,6 +163,12 @@ struct Background {
     std::uint32_t max_concurrent = 0;
 };
 struct Elicit {};
+// ADR-117 — promoted verbatim (fieldless markers, matching Entropy/Elicit's own "no further
+// parameter to narrow" shape) from the prove-phase probe::cap::TaskBranch/TaskBranchCommit
+// (docs/planning/proofs/task_branch_tool/task_branch_capability.hpp), the real production
+// alternatives that design's own header comment named as the eventual promotion path.
+struct TaskBranch {};
+struct TaskBranchCommit {};
 struct NativeExec {
     // Host-authored, never model-derived (I3 — no constructor here takes a TaintedText). May end in
     // '*' for a prefix grant (e.g. "python*" covers "python3.11"); a REQUESTED NativeExec (the
@@ -210,7 +229,7 @@ using Capability = std::variant<cap::FsRead, cap::FsWrite, cap::NetOut, cap::Net
                                  cap::ToolCall, cap::RunnerCall, cap::Exec, cap::Clock, cap::Entropy,
                                  cap::EnvRead, cap::EnvWrite, cap::AgentCall, cap::Schedule,
                                  cap::Background, cap::Elicit, cap::NativeExec, cap::SandboxMount,
-                                 cap::SandboxNetOut>;
+                                 cap::SandboxNetOut, cap::TaskBranch, cap::TaskBranchCommit>;
 
 [[nodiscard]] inline capability_kind capability_kind_of(Capability const& c) {
     return std::visit(
@@ -234,6 +253,8 @@ using Capability = std::variant<cap::FsRead, cap::FsWrite, cap::NetOut, cap::Net
             else if constexpr (std::is_same_v<T, cap::NativeExec>) return capability_kind::native_exec;
             else if constexpr (std::is_same_v<T, cap::SandboxMount>) return capability_kind::sandbox_mount;
             else if constexpr (std::is_same_v<T, cap::SandboxNetOut>) return capability_kind::sandbox_net_out;
+            else if constexpr (std::is_same_v<T, cap::TaskBranch>) return capability_kind::task_branch;
+            else if constexpr (std::is_same_v<T, cap::TaskBranchCommit>) return capability_kind::task_branch_commit;
             else static_assert(sizeof(T) == 0, "unhandled Capability alternative in capability_kind_of");
         },
         c);
@@ -266,6 +287,8 @@ using Capability = std::variant<cap::FsRead, cap::FsWrite, cap::NetOut, cap::Net
         case capability_kind::native_exec: return cap::NativeExec{};
         case capability_kind::sandbox_mount:   return cap::SandboxMount{};
         case capability_kind::sandbox_net_out: return cap::SandboxNetOut{};
+        case capability_kind::task_branch:        return cap::TaskBranch{};
+        case capability_kind::task_branch_commit: return cap::TaskBranchCommit{};
     }
     return cap::Entropy{};  // unreachable (every enumerator handled above) — a defined fallback
                              // rather than UB if the enum is ever extended without updating this
@@ -319,6 +342,9 @@ using Capability = std::variant<cap::FsRead, cap::FsWrite, cap::NetOut, cap::Net
                                                             // strictly stronger (no jail at all)
         case capability_kind::sandbox_mount:   return false;  // grants filesystem reachability
         case capability_kind::sandbox_net_out: return false;  // egress
+        case capability_kind::task_branch:        return false;  // runs commands (even if isolated
+                                                                    // on a child branch) -- mutation
+        case capability_kind::task_branch_commit: return false;  // mutates the session's main branch
     }
     return false;  // unreachable (every enumerator handled above) -- fails CLOSED if the enum is
                     // ever extended without updating this switch, the opposite direction from
@@ -392,6 +418,12 @@ struct Schedule {};
 template <std::uint32_t MaxConcurrent>
 struct Background {};
 struct Elicit {};
+// ADR-117 — promoted verbatim from the prove-phase probe::cap::decl::TaskBranch/TaskBranchCommit
+// (task_branch_capability.hpp): fieldless, matching Entropy/Elicit's own shape -- no further
+// parameter to narrow. Two tags, not one: start/run/discard stay isolated on a child branch and
+// never touch main; commit merges real work INTO main, a meaningfully more consequential authority.
+struct TaskBranch {};
+struct TaskBranchCommit {};
 template <agentengine::fixed_string ProgramPattern, agentengine::fixed_string WorktreeMount>
 struct NativeExec {
     static constexpr std::string_view program_pattern = std::string_view{ProgramPattern};
@@ -461,6 +493,10 @@ template <std::uint32_t MaxConcurrent>
     return cap::Background{MaxConcurrent};
 }
 [[nodiscard]] inline Capability to_capability(cap::decl::Elicit const&) { return cap::Elicit{}; }
+[[nodiscard]] inline Capability to_capability(cap::decl::TaskBranch const&) { return cap::TaskBranch{}; }
+[[nodiscard]] inline Capability to_capability(cap::decl::TaskBranchCommit const&) {
+    return cap::TaskBranchCommit{};
+}
 template <agentengine::fixed_string ProgramPattern, agentengine::fixed_string WorktreeMount>
 [[nodiscard]] inline Capability to_capability(cap::decl::NativeExec<ProgramPattern, WorktreeMount> const&) {
     return cap::NativeExec{std::string(std::string_view{ProgramPattern}),
@@ -582,6 +618,10 @@ template <class T>
     return requested.max_concurrent <= parent.max_concurrent;
 }
 [[nodiscard]] inline bool subsumes_payload(cap::Elicit const&, cap::Elicit const&) { return true; }
+[[nodiscard]] inline bool subsumes_payload(cap::TaskBranch const&, cap::TaskBranch const&) { return true; }
+[[nodiscard]] inline bool subsumes_payload(cap::TaskBranchCommit const&, cap::TaskBranchCommit const&) {
+    return true;
+}
 
 // decisions/ADR-071-native-unsandboxed-process-execution-providers.md — the narrowing rule for
 // `cap::NativeExec::program_pattern`. `parent` is host-granted (may end in a single trailing '*'

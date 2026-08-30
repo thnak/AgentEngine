@@ -115,6 +115,8 @@ enum class finding_kind {
         case capability_kind::native_exec: return "native_exec";
         case capability_kind::sandbox_mount: return "sandbox_mount";
         case capability_kind::sandbox_net_out: return "sandbox_net_out";
+        case capability_kind::task_branch: return "task_branch";
+        case capability_kind::task_branch_commit: return "task_branch_commit";
     }
     return "unknown";
 }

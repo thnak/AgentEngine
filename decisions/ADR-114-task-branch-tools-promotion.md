@@ -155,8 +155,11 @@ gate holds in the composed setting too, not just standalone.
   REAL containerd runtime there (31/31). Still NOT run for real: `tests/test_task_branch_tools.cpp`
   itself is hardcoded to `DockerExecutionSurface`, and no Linux-native Docker daemon was reachable in
   that environment — a disclosed, environment-caused gap, not a code defect, but not yet eliminated.
-- **The `Capability`-variant widening question (§2) remains open**, named explicitly as follow-on
-  work rather than resolved or silently skipped.
+- ~~The `Capability`-variant widening question (§2) remains open~~ **Closed by ADR-117** (2026-08-30,
+  same day): the real, closed `Capability` variant now carries `cap::TaskBranch`/`cap::TaskBranchCommit`,
+  and all four tools declare a real `Capabilities<...>` ceiling -- see that ADR for the real behavior
+  change this introduces (a genuine double gate, not a straight swap) and why it was judged worth doing
+  the same day rather than deferred again.
 - **Concurrency across MULTIPLE task branches on the SAME `MandatorySandboxProvider` instance is
   exercised sequentially, not under genuine concurrent dispatch** — `task_branch_mutex_` guarding the
   whole body of every method is the same discipline `TaskBranchSandbox`'s own header comment (finding

@@ -169,28 +169,51 @@ struct TaskBranchDiscardReply {
 };
 AE_JSON_SCHEMA(TaskBranchDiscardReply, ok)
 
-// CAPABILITY-GATING DECISION for all four tools below (this promotion's own, not silently inherited):
-// mirrors `RunCommandTool`'s own precedent exactly -- zero static `Capabilities<...>` ceiling,
-// authorized entirely through this design's `Grant<T>`/`AsyncQuota<T>`/`is_bound()`-based model (this
-// file's own top comment). The prove-phase original (`task_branch_capability.hpp`) designed a real,
-// two-tag `CapabilitySet` membership gate (`cap::decl::TaskBranch`/`cap::decl::TaskBranchCommit`,
-// confirmed with the project owner) as the intended REAL gate for these verbs -- but that tag pair
-// was never promoted into the real, closed `agentengine::Capability` variant (19 alternatives,
-// exhaustive switches throughout `core/capability*.hpp`), and widening that variant is real,
-// security-critical surgery this design line has consistently declined absent a real caller to design
-// it against. This promotion's own scope is "give `merge_into()` a real caller," not "widen the
-// `Capability` variant." Note for whoever does that follow-on work: a task-branch commit is
-// arguably LESS consequential per call than what `RunCommandTool` already ships ungated today --
-// `run_command` grants unconditional, ungated main-branch-write authority on EVERY call (no
-// isolation step at all), where `commit_task_branch` requires an explicit prior `start_task_branch`
-// plus an explicit, separate commit call before anything reaches main. Not a justification for
-// leaving the `Capability`-variant gap unclosed forever, only for not blocking this promotion on it.
+// CAPABILITY-GATING DECISION for all four tools below, UPDATED by ADR-117 (2026-08-30, same day as
+// this file's own ADR-114 promotion): the real, closed `agentengine::Capability` variant now carries
+// `cap::TaskBranch`/`cap::TaskBranchCommit` (promoted verbatim from the prove-phase original's
+// `task_branch_capability.hpp` design, confirmed with the project owner back when THAT file was
+// written), so these four tools now declare a REAL static `Capabilities<...>` ceiling -- no longer
+// mirroring `RunCommandTool`'s zero-ceiling precedent. `StartTaskBranchTool`/`RunInTaskBranchTool`/
+// `DiscardTaskBranchTool` each declare `Capabilities<cap::decl::TaskBranch>`; `CommitTaskBranchTool`
+// alone declares BOTH `cap::decl::TaskBranch` and `cap::decl::TaskBranchCommit` (a commit can only
+// ever operate on a handle `start_task_branch` produced, so it needs both tags -- enforced by the
+// TOOL's own declared ceiling, per `capability.hpp`'s own comment on the pair, not by any
+// relationship between the two capability kinds themselves).
 //
-// The REAL, dynamic gate for all four: `MandatorySandboxProvider::is_bound()` AND
-// `bind_task_branch_tools()` having been called (checked together, `merge_quota_ != nullptr`, before
-// any of the four tools is even contributed to `on_context()`'s table) -- see that method's own
-// comment for why this is a second, deliberately separate opt-in from `bind_sandbox()` itself.
-struct StartTaskBranchTool : agentengine::Tool<StartTaskBranchTool> {
+// THIS IS NOW A DOUBLE GATE, not a replacement of the old one -- both must hold for a call to reach
+// `call_sandbox()`'s real verb through the REAL `session.start_run() -> invoke_tool()` pipeline:
+//   1. The EXISTING dynamic gate, unchanged: `MandatorySandboxProvider::is_bound()` AND
+//      `bind_task_branch_tools()` having been called (checked together, `merge_quota_ != nullptr`,
+//      before any of the four tools is even contributed to `on_context()`'s table) -- see that
+//      method's own comment for why this is a second, deliberately separate opt-in from
+//      `bind_sandbox()` itself.
+//   2. The NEW static gate: `invoke_tool()`'s own step 4/7 (`core/tool_pipeline.hpp`) binds each
+//      declared capability against the calling session's OWN granted `CapabilitySet`
+//      (`AgentSession::capabilities()`, set via `set_capabilities()` -- `agent_session.hpp` defaults
+//      this to a genuinely EMPTY `CapabilitySet::grant_root({})` when never called, never to
+//      "unrestricted"). A host that calls `bind_task_branch_tools()` but never separately grants
+//      `cap::TaskBranch`/`cap::TaskBranchCommit` on the session gets tools that are CONTRIBUTED (they
+//      appear in the tool table, the model can see and attempt to call them) but every real call
+//      through `invoke_tool()` is rejected at step 4 with the pipeline's own generic "no leaked
+//      capability" error (names neither what's missing nor what IS held) -- fail-closed, matching
+//      007 §6's empty-by-default rule, the identical contract the real, shipped `RunShellTool`
+//      (`src/backends/native_jail/session_shell_wiring.hpp`, ADR-096) already lives under for
+//      `cap::decl::FsRead<"work">`/`cap::decl::FsWrite<"work">`.
+//
+// REAL, DISCLOSED BEHAVIOR CHANGE from this file's own ADR-114 original: before this widening, a
+// session that called `bind_sandbox()` + `bind_task_branch_tools()` could reach all four verbs
+// through the real pipeline with NO capability grant at all (gate 1 alone was sufficient, since gate
+// 2 didn't exist -- `declared_capabilities()` returned an empty vector, so `invoke_tool()`'s step 4/7
+// loop had nothing to bind). Landing gate 2 on the SAME day as ADR-114 itself, before any real host
+// outside `tests/test_task_branch_tools.cpp` has adopted the old contract, is deliberately the lowest
+// -risk moment to make this change -- see ADR-117 for why this was judged worth doing now rather than
+// deferred again. `tests/test_task_branch_tools.cpp`'s own real-pipeline section [6] is updated to
+// grant both tags; every other section calls the plain provider methods directly
+// (`start_task_branch()` etc.), bypassing `Tool<>`/`invoke_tool()` entirely, so gate 2 has no effect
+// on those and needed no change.
+struct StartTaskBranchTool
+    : agentengine::Tool<StartTaskBranchTool, agentengine::Capabilities<agentengine::cap::decl::TaskBranch>> {
     static constexpr std::string_view name = "start_task_branch";
     static constexpr std::string_view description =
         "Start a new, isolated task branch forked from this session's current sandbox state. Run "
@@ -207,7 +230,8 @@ struct StartTaskBranchTool : agentengine::Tool<StartTaskBranchTool> {
     }
 };
 
-struct RunInTaskBranchTool : agentengine::Tool<RunInTaskBranchTool> {
+struct RunInTaskBranchTool
+    : agentengine::Tool<RunInTaskBranchTool, agentengine::Capabilities<agentengine::cap::decl::TaskBranch>> {
     static constexpr std::string_view name = "run_in_task_branch";
     static constexpr std::string_view description =
         "Run a shell command inside a task branch previously created by start_task_branch. Never "
@@ -223,7 +247,10 @@ struct RunInTaskBranchTool : agentengine::Tool<RunInTaskBranchTool> {
     }
 };
 
-struct CommitTaskBranchTool : agentengine::Tool<CommitTaskBranchTool> {
+struct CommitTaskBranchTool
+    : agentengine::Tool<CommitTaskBranchTool,
+                         agentengine::Capabilities<agentengine::cap::decl::TaskBranch,
+                                                    agentengine::cap::decl::TaskBranchCommit>> {
     static constexpr std::string_view name = "commit_task_branch";
     static constexpr std::string_view description =
         "Fold a task branch's accumulated work into the session's main branch as a new checkpoint. "
@@ -240,7 +267,8 @@ struct CommitTaskBranchTool : agentengine::Tool<CommitTaskBranchTool> {
     }
 };
 
-struct DiscardTaskBranchTool : agentengine::Tool<DiscardTaskBranchTool> {
+struct DiscardTaskBranchTool
+    : agentengine::Tool<DiscardTaskBranchTool, agentengine::Capabilities<agentengine::cap::decl::TaskBranch>> {
     static constexpr std::string_view name = "discard_task_branch";
     static constexpr std::string_view description =
         "Throw away a task branch and everything it did, with no lasting effect on the main branch.";

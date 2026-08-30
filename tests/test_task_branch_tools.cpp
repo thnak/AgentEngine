@@ -26,7 +26,12 @@
 //       (or was already consumed by a prior commit/discard).
 //   [6] driven through the REAL invoke_tool() pipeline: a ScriptedChatClient issues start/run/commit
 //       as three real tool calls; session.history() shows all three real role::tool results, and the
-//       committed file is independently readable on the parent's branch afterward.
+//       committed file is independently readable on the parent's branch afterward. The session is
+//       granted cap::TaskBranch + cap::TaskBranchCommit (ADR-117) -- required for this section since
+//       these tools now carry a real Capabilities<...> ceiling, unlike when this section was written.
+//   [7] ADR-117's new static gate actually fails closed: the SAME bound + opted-in session, but with
+//       NO cap::TaskBranch grant, gets start_task_branch rejected by invoke_tool()'s own step 4/7 --
+//       proving the capability ceiling is load-bearing through the real pipeline, not merely declared.
 
 #include "agentengine/sandbox/docker_execution_surface.hpp"
 #include "agentengine/sandbox/mandatory_sandbox_provider.hpp"
@@ -521,7 +526,11 @@ int main() {
                 {{"label", json::Value::make_string("pipeline test")}}));
             client.set_script({tool_call_message("call-start", "start_task_branch", start_args)});
 
-            CapabilitySet const held = CapabilitySet::grant_root({});
+            // ADR-117: these tools now declare a real Capabilities<...> ceiling -- start/run need only
+            // cap::TaskBranch, commit needs both. Granting both up front covers all three calls this
+            // section drives.
+            CapabilitySet const held =
+                CapabilitySet::grant_root({Capability{cap::TaskBranch{}}, Capability{cap::TaskBranchCommit{}}});
             live.set_capabilities(&held);
 
             auto start_response = drive(live.start_run(agentengine::rt::StartRun{user_message("go")}));
@@ -566,13 +575,76 @@ int main() {
         }
     }
 
+    // [7] ADR-117's new static gate fails closed through the REAL pipeline: same bind_sandbox() +
+    // bind_task_branch_tools() opt-in as section [6], but the session's own granted CapabilitySet is
+    // explicitly EMPTY (the exact grant section [6] itself used to run under, before this widening) --
+    // proving the capability ceiling is load-bearing, not merely declared and never actually checked.
+    {
+        Session ungranted;
+        ungranted.initialize("ungranted-session", real_owner_principal);
+        auto root_r = drive(ledger.create_root_branch(owner, "tb-ungranted"));
+        check(root_r.has_value(), "create_root_branch(owner, \"tb-ungranted\") succeeds");
+        if (root_r.has_value()) {
+            ungranted.history_provider().bind_sandbox(ledger, std::move(*root_r), owner,
+                                                        scratch_root / "ungranted", branch_quota, run_quota,
+                                                        storage_quota);
+            ungranted.history_provider().bind_task_branch_tools(merge_quota);
+
+            ScriptedChatClient& client = ungranted.emplace_chat_client();
+            std::string const start_args = json::dump(json::Value::make_object(
+                {{"label", json::Value::make_string("no-capability test")}}));
+            client.set_script({tool_call_message("call-start", "start_task_branch", start_args)});
+
+            CapabilitySet const no_caps = CapabilitySet::grant_root({});
+            ungranted.set_capabilities(&no_caps);
+
+            std::uint64_t const before = branch_quota.remaining();
+            auto start_response = drive(ungranted.start_run(agentengine::rt::StartRun{user_message("go")}));
+            check(start_response.has_value(),
+                  "start_run() itself still completes -- invoke_tool()'s rejection is a normal "
+                  "role::tool error result, not a thrown/aborted run");
+
+            bool found_capability_error = false;
+            std::string leaked_handle_id;
+            for (Message const& m : ungranted.history()) {
+                if (m.role != role::tool) continue;
+                for (ContentItem const& item : m.content) {
+                    auto const* tr = std::get_if<ToolResult>(&item.value);
+                    if (!tr) continue;
+                    if (tr->is_error) {
+                        found_capability_error = true;
+                        continue;
+                    }
+                    auto reply_json = tool_reply_json_of(m);
+                    if (!reply_json.has_value()) continue;
+                    auto parsed = json::parse(*reply_json);
+                    if (parsed.has_value() && parsed->is_object()) {
+                        auto const* h = parsed->find("handle_id");
+                        if (h && h->is_string()) leaked_handle_id = h->as_string();
+                    }
+                }
+            }
+            check(found_capability_error,
+                  "start_task_branch is rejected as a real role::tool error result when the session "
+                  "holds no cap::TaskBranch grant, even though bind_sandbox()+bind_task_branch_tools() "
+                  "were both called");
+            check(leaked_handle_id.empty(),
+                  "no real start_task_branch call ever ran -- no handle_id anywhere in history");
+            check(branch_quota.remaining() == before,
+                  "a rejected-at-authorization call never reaches call_sandbox() at all, so it spends "
+                  "no BranchCost unit -- the ceiling check runs strictly before the real verb");
+        }
+    }
+
     std::filesystem::remove_all(scratch_root, ec);
 
     if (g_failures == 0) {
         std::printf("ALL CHECKS PASSED -- MandatorySandboxProvider's task-branch tools give "
                      "SandboxRuntime::merge_into() its first real production caller, proven through "
-                     "direct calls, a best-of-N/conflict-reclaim sequence, and the real, unmodified "
-                     "session.start_run() -> invoke_tool() pipeline, against a REAL Docker daemon.\n");
+                     "direct calls, a best-of-N/conflict-reclaim sequence, the real, unmodified "
+                     "session.start_run() -> invoke_tool() pipeline, and ADR-117's real "
+                     "cap::TaskBranch/cap::TaskBranchCommit capability ceiling fail-closed proof, "
+                     "against a REAL Docker daemon.\n");
     }
     return g_failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }
