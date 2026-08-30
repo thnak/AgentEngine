@@ -84,10 +84,12 @@ reachable by a real caller" property ADR-117's own red-team confirmed for the ta
 real production tools after the change (not merely the library) surfaced a genuine, ADR-119-caused
 MSVC `C1128` ("number of sections exceeded object file format limit") on `agentengine_sandboxed_
 shell_chat` — confirmed, not assumed, by `git stash`-scoping the change: the SAME target built clean on
-the unmodified tree. (`agentengine_cli_chat`'s own identical-looking `C1128` failure was separately
+the unmodified tree. (~~`agentengine_cli_chat`'s own identical-looking `C1128` failure was separately
 confirmed, the same way, to be pre-existing and unrelated to this change — ADR-114's own commit message
 already named it, and it already carries the project's own `/bigobj` fix, which is no longer sufficient
-for that file's own, larger reasons unrelated to this ADR.) Fixed by giving `agentengine_sandboxed_
+for that file's own, larger reasons unrelated to this ADR.~~ **That comparison was against a stale,
+orphaned `.vcxproj` in a drifted build directory — corrected by ADR-122: `agentengine_cli_chat` builds
+clean with the existing `/bigobj` fix once the target is actually live.**) Fixed by giving `agentengine_sandboxed_
 shell_chat` the identical, already-established `/bigobj` remedy `agentengine_cli_chat` already uses,
 scoped to that one target (`CMakeLists.txt`). `agentengine_containerd_shell_chat` is Linux-only
 (`NOT WIN32`-gated) and GCC has no equivalent COFF section-count limit, so no analogous fix is needed
@@ -146,9 +148,12 @@ line always does: temporarily reverted `RunCommandTool`'s ceiling back to `Tool<
 `Capabilities<...>`, the ADR-102 Phase 4 shape) and confirmed all four of section [7]'s new assertions
 genuinely FAIL against that pre-fix code — then restored and re-confirmed a full pass.
 
-Built `agentengine_cli_chat`: reproduces the SAME pre-existing `C1128` the unmodified tree also
+~~Built `agentengine_cli_chat`: reproduces the SAME pre-existing `C1128` the unmodified tree also
 produces (confirmed via `git stash`) — not a regression, not fixed here (out of this ADR's own scope;
-named as a pre-existing, disclosed, unrelated defect). Built `agentengine_sandboxed_shell_chat` (via the
+named as a pre-existing, disclosed, unrelated defect).~~ **Corrected by ADR-122: that comparison was
+against a stale, orphaned `.vcxproj` from a drifted build-directory cache state, not the real target —
+`agentengine_cli_chat` builds and links clean with zero code changes once properly reconfigured.**
+Built `agentengine_sandboxed_shell_chat` (via the
 `AGENTENGINE_WITH_HTTPS=ON` build directory): failed with a NEW `C1128` before the `/bigobj` fix
 (confirmed via `git stash` to be genuinely introduced by this ADR's own change, not pre-existing);
 builds clean after the fix. `agentengine_containerd_shell_chat` is Linux-only and not buildable in this
@@ -183,9 +188,9 @@ special-case entry needed.
 ## 6. Residuals
 
 - Everything named in §5 not otherwise closed.
-- `agentengine_cli_chat`'s own pre-existing `C1128` (`/bigobj` already applied, still insufficient) is
-  unrelated to this ADR and remains unfixed — a real, disclosed, separate build-limit issue for whoever
-  picks it up next.
+- ~~`agentengine_cli_chat`'s own pre-existing `C1128` ... remains unfixed~~ **Closed by ADR-122**:
+  there was no real defect — the `/bigobj` fix already works; the observation was a stale-build-artifact
+  false positive.
 - The two new fieldless-marker capability kinds (`task_branch`/`task_branch_commit` from ADR-117, now
   `run_command` from this ADR) bring the real `Capability` variant to 22 alternatives — any future
   exhaustive switch written without grepping for the now-five sites (four in `capability.hpp`, one in

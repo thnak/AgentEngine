@@ -134,10 +134,16 @@ looked wrong. Fixed by resetting `call_count` inside the test fixture's own `set
 
 Also confirmed (git-stash-scoped): the one pre-existing `test_reference_agent_task_corpus` failure in
 the full `ctest` run reproduces identically with this ADR's entire diff stashed out — unrelated,
-pre-existing, matplotlib/pandas-in-this-environment, not touched by anything here. The MSVC `C1128`
+pre-existing, matplotlib/pandas-in-this-environment, not touched by anything here. ~~The MSVC `C1128`
 (`number of sections exceeded`) failure encountered while probing `agentengine_cli_chat`'s build was
 independently confirmed pre-existing the same way (identical failure on the stashed, unmodified tree)
-— a known large-translation-unit MSVC limit unrelated to this change, not investigated further here.
+— a known large-translation-unit MSVC limit unrelated to this change, not investigated further here.~~
+**Corrected by ADR-122** (2026-08-30): that C1128 was never a real defect in the current build — the
+`git stash` comparison was run against a STALE, orphaned `agentengine_cli_chat.vcxproj` left over from
+an earlier, drifted `AGENTENGINE_WITH_HTTPS` cache state in this build directory, silently detached
+from the actual, current `CMakeLists.txt` (which already carried a working `/bigobj` fix this stale
+file never had). A properly-reconfigured build compiles and links `agentengine_cli_chat` clean, zero
+errors. See ADR-122 for the full root cause.
 `agentengine_sandboxed_shell_chat` and `test_composed_sandbox_providers_live` (the `AGENTENGINE_WITH_HTTPS`
 build) both compile and pass clean against a real Docker daemon, confirming
 `ComposedContextProvider<SandboxToolProvider, MandatorySandboxProvider<Surface>>` is unaffected — it
