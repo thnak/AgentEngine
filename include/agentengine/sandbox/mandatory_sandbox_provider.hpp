@@ -50,6 +50,8 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -62,6 +64,7 @@
 #include "agentengine/core/ledger.hpp"
 #include "agentengine/core/tool.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
+#include "agentengine/rt/async_mutex.hpp"
 #include "agentengine/rt/async_quota.hpp"
 #include "agentengine/rt/block_on.hpp"
 #include "agentengine/rt/task.hpp"
@@ -103,6 +106,151 @@ struct RunCommandTool : agentengine::Tool<RunCommandTool> {
             agentengine::failure_class::fatal,
             "RunCommandTool::invoke() must never run directly -- real dispatch goes through the "
             "session-capturing closure make_tool_descriptor_with_invoke() installs.",
+            "mandatory_sandbox_provider.invoke_unreachable"});
+    }
+};
+
+// A10 promotion (identity-native sandbox/worktree design, ADR-099 §7's own real-world-use-case
+// finding: every actively-developed coding agent surveyed ships branch/worktree isolation as a
+// PRIMARY tool-facing primitive -- "isolate one attempt, evaluate it, merge or discard"). Gives
+// `SandboxRuntime::merge_into()` (Phase 3, ADR-111's `MergeCost`-gated form) its first real
+// production caller. Ported from `docs/planning/proofs/task_branch_tool/task_branch_sandbox.hpp`
+// (ADR-099's own standalone, three-independent-red-team-round, prove-phase original) -- but NOT as a
+// separate `TaskBranchSandbox<Surface>` sibling object: this class already owns exactly what that
+// design's own header comment required its "main" parameter to be (`runtime_`, a `SandboxRuntime`
+// this class exclusively owns) plus every quota its constructor threads through
+// (`branch_quota_`/`run_quota_`/`storage_quota_`), so a second object holding its own copies of the
+// same pointers would be duplication, not a real seam.
+//
+// Args/Reply schemas mirror the prove-phase original's own shapes exactly (`TaskBranchStartArgs`'s
+// `label` field is agent-supplied free text for logging ONLY -- I3: never used to select which
+// branch/authority is operated on; every operation's real authority comes from this class's own
+// already-bound state and the calling turn's own `ctx.principal`, never from a tool argument).
+struct TaskBranchStartArgs {
+    std::string label;
+};
+AE_JSON_SCHEMA(TaskBranchStartArgs, label)
+
+struct TaskBranchStartReply {
+    std::string handle_id;
+};
+AE_JSON_SCHEMA(TaskBranchStartReply, handle_id)
+
+struct TaskBranchRunArgs {
+    std::string handle_id;
+    std::string command;
+};
+AE_JSON_SCHEMA(TaskBranchRunArgs, handle_id, command)
+
+struct TaskBranchRunReply {
+    int         exit_code = -1;
+    std::string stdout_text;
+};
+AE_JSON_SCHEMA(TaskBranchRunReply, exit_code, stdout_text)
+
+struct TaskBranchCommitArgs {
+    std::string handle_id;
+};
+AE_JSON_SCHEMA(TaskBranchCommitArgs, handle_id)
+
+struct TaskBranchCommitReply {
+    bool          ok = false;
+    std::uint64_t turn_index = 0;
+};
+AE_JSON_SCHEMA(TaskBranchCommitReply, ok, turn_index)
+
+struct TaskBranchDiscardArgs {
+    std::string handle_id;
+};
+AE_JSON_SCHEMA(TaskBranchDiscardArgs, handle_id)
+
+struct TaskBranchDiscardReply {
+    bool ok = false;
+};
+AE_JSON_SCHEMA(TaskBranchDiscardReply, ok)
+
+// CAPABILITY-GATING DECISION for all four tools below (this promotion's own, not silently inherited):
+// mirrors `RunCommandTool`'s own precedent exactly -- zero static `Capabilities<...>` ceiling,
+// authorized entirely through this design's `Grant<T>`/`AsyncQuota<T>`/`is_bound()`-based model (this
+// file's own top comment). The prove-phase original (`task_branch_capability.hpp`) designed a real,
+// two-tag `CapabilitySet` membership gate (`cap::decl::TaskBranch`/`cap::decl::TaskBranchCommit`,
+// confirmed with the project owner) as the intended REAL gate for these verbs -- but that tag pair
+// was never promoted into the real, closed `agentengine::Capability` variant (19 alternatives,
+// exhaustive switches throughout `core/capability*.hpp`), and widening that variant is real,
+// security-critical surgery this design line has consistently declined absent a real caller to design
+// it against. This promotion's own scope is "give `merge_into()` a real caller," not "widen the
+// `Capability` variant." Note for whoever does that follow-on work: a task-branch commit is
+// arguably LESS consequential per call than what `RunCommandTool` already ships ungated today --
+// `run_command` grants unconditional, ungated main-branch-write authority on EVERY call (no
+// isolation step at all), where `commit_task_branch` requires an explicit prior `start_task_branch`
+// plus an explicit, separate commit call before anything reaches main. Not a justification for
+// leaving the `Capability`-variant gap unclosed forever, only for not blocking this promotion on it.
+//
+// The REAL, dynamic gate for all four: `MandatorySandboxProvider::is_bound()` AND
+// `bind_task_branch_tools()` having been called (checked together, `merge_quota_ != nullptr`, before
+// any of the four tools is even contributed to `on_context()`'s table) -- see that method's own
+// comment for why this is a second, deliberately separate opt-in from `bind_sandbox()` itself.
+struct StartTaskBranchTool : agentengine::Tool<StartTaskBranchTool> {
+    static constexpr std::string_view name = "start_task_branch";
+    static constexpr std::string_view description =
+        "Start a new, isolated task branch forked from this session's current sandbox state. Run "
+        "commands on it freely via run_in_task_branch, then commit_task_branch to fold the result "
+        "into the main branch, or discard_task_branch to throw it away with no lasting effect.";
+    using Args = TaskBranchStartArgs;
+    using Reply = TaskBranchStartReply;
+    [[nodiscard]] static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) {
+        return std::unexpected(agentengine::error{
+            agentengine::failure_class::fatal,
+            "StartTaskBranchTool::invoke() must never run directly -- real dispatch goes through the "
+            "session-capturing closure MandatorySandboxProvider::on_context() installs.",
+            "mandatory_sandbox_provider.invoke_unreachable"});
+    }
+};
+
+struct RunInTaskBranchTool : agentengine::Tool<RunInTaskBranchTool> {
+    static constexpr std::string_view name = "run_in_task_branch";
+    static constexpr std::string_view description =
+        "Run a shell command inside a task branch previously created by start_task_branch. Never "
+        "touches the session's main branch.";
+    using Args = TaskBranchRunArgs;
+    using Reply = TaskBranchRunReply;
+    [[nodiscard]] static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) {
+        return std::unexpected(agentengine::error{
+            agentengine::failure_class::fatal,
+            "RunInTaskBranchTool::invoke() must never run directly -- real dispatch goes through the "
+            "session-capturing closure MandatorySandboxProvider::on_context() installs.",
+            "mandatory_sandbox_provider.invoke_unreachable"});
+    }
+};
+
+struct CommitTaskBranchTool : agentengine::Tool<CommitTaskBranchTool> {
+    static constexpr std::string_view name = "commit_task_branch";
+    static constexpr std::string_view description =
+        "Fold a task branch's accumulated work into the session's main branch as a new checkpoint. "
+        "On a real conflict, the rejection is reported and the same handle stays usable for a retry "
+        "or a discard -- the work is never silently lost.";
+    using Args = TaskBranchCommitArgs;
+    using Reply = TaskBranchCommitReply;
+    [[nodiscard]] static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) {
+        return std::unexpected(agentengine::error{
+            agentengine::failure_class::fatal,
+            "CommitTaskBranchTool::invoke() must never run directly -- real dispatch goes through the "
+            "session-capturing closure MandatorySandboxProvider::on_context() installs.",
+            "mandatory_sandbox_provider.invoke_unreachable"});
+    }
+};
+
+struct DiscardTaskBranchTool : agentengine::Tool<DiscardTaskBranchTool> {
+    static constexpr std::string_view name = "discard_task_branch";
+    static constexpr std::string_view description =
+        "Throw away a task branch and everything it did, with no lasting effect on the main branch.";
+    using Args = TaskBranchDiscardArgs;
+    using Reply = TaskBranchDiscardReply;
+    [[nodiscard]] static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) {
+        return std::unexpected(agentengine::error{
+            agentengine::failure_class::fatal,
+            "DiscardTaskBranchTool::invoke() must never run directly -- real dispatch goes through "
+            "the session-capturing closure MandatorySandboxProvider::on_context() installs.",
             "mandatory_sandbox_provider.invoke_unreachable"});
     }
 };
@@ -176,6 +324,24 @@ public:
         storage_quota_ = &storage_quota;
         runtime_.emplace(ledger, std::move(branch), std::move(staging_root));
         surface_.emplace();
+        // Defensive reset, not load-bearing for a first-ever bind: a re-bind of an already-used
+        // provider must not silently carry forward a PRIOR binding's task-branch state (a stale
+        // handle_id, or a merge_quota_ pointer describing the OLD runtime_) into the fresh one.
+        merge_quota_ = nullptr;
+        task_branches_.clear();
+        task_branch_mutex_ = std::make_unique<agentengine::rt::AsyncMutex>();
+    }
+
+    // Second, deliberately SEPARATE opt-in from `bind_sandbox()` itself -- a host that calls
+    // `bind_sandbox()` alone gets `run_command` only, exactly as before this promotion existed; the
+    // task-branch/commit tool surface (a strictly more consequential capability than `run_command`,
+    // per this file's own capability-gating comment above `StartTaskBranchTool`) is only contributed
+    // once a host explicitly calls this too, mirroring ADR-070's Delegated Decision Seam discipline
+    // (host opt-in, fails closed/absent when unset). Must be called AFTER `bind_sandbox()` -- calling
+    // it first is harmless (the pointer is simply stored) but the tools stay uncontributed until
+    // `is_bound()` is also true, since `on_context()` checks both.
+    void bind_task_branch_tools(agentengine::rt::AsyncQuota<agentengine::MergeCost>& merge_quota) {
+        merge_quota_ = &merge_quota;
     }
 
     [[nodiscard]] bool is_bound() const noexcept { return runtime_.has_value(); }
@@ -225,6 +391,9 @@ public:
             storage_quota_ = nullptr;
             runtime_.reset();
             surface_.reset();
+            merge_quota_ = nullptr;
+            task_branches_.clear();
+            task_branch_mutex_.reset();
             return *this;
         }
         auto child = agentengine::rt::block_on(other.runtime_->spawn_child_branch(
@@ -240,6 +409,9 @@ public:
             storage_quota_ = nullptr;
             runtime_.reset();
             surface_.reset();
+            merge_quota_ = nullptr;
+            task_branches_.clear();
+            task_branch_mutex_.reset();
             return *this;
         }
         ledger_ = other.ledger_;
@@ -249,6 +421,15 @@ public:
         storage_quota_ = other.storage_quota_;
         runtime_.emplace(std::move(*child));
         surface_.emplace();
+        // `merge_quota_` is a SHARED resource reference, exactly like `branch_quota_`/`run_quota_`/
+        // `storage_quota_` above -- carried forward so a forked child retains the same task-branch
+        // capability its parent had. `task_branches_`/`task_branch_mutex_` are NOT carried forward:
+        // the child starts with zero active task branches of its own (I2 -- a fork shares AUTHORITY,
+        // it never inherits another instance's ACTIVE, in-flight state) and its own fresh mutex,
+        // matching `SandboxRuntime`'s own "possession, not reference" discipline for `BranchHandle`.
+        merge_quota_ = other.merge_quota_;
+        task_branches_.clear();
+        task_branch_mutex_ = std::make_unique<agentengine::rt::AsyncMutex>();
         return *this;
     }
     MandatorySandboxProvider(MandatorySandboxProvider&&) = default;
@@ -279,6 +460,48 @@ public:
                     if (!outcome.has_value()) return std::unexpected(outcome.error());
                     return RunCommandReply{true, outcome->exec.exit_code, outcome->exec.stdout_text,
                                              outcome->checkpoint.tree, outcome->checkpoint.turn_index};
+                }));
+        }
+        // Second, deliberately separate gate (`bind_task_branch_tools()`'s own comment) -- these four
+        // tools are contributed only once BOTH `runtime_` is bound AND a host has opted in with a
+        // real `MergeCost` quota. Every closure re-derives its own `caller` from `ctx.principal`, the
+        // same "never assume owner_" discipline `run_command`'s own closure already established.
+        if (runtime_.has_value() && merge_quota_ != nullptr) {
+            contribution.tools.push_back(agentengine::make_tool_descriptor_with_invoke<StartTaskBranchTool>(
+                [this](TaskBranchStartArgs, agentengine::EffectContext& ctx)
+                    -> agentengine::result<TaskBranchStartReply> {
+                    agentengine::IdentityHandle caller =
+                        agentengine::IdentityAuthority::bootstrap().adopt(ctx.principal);
+                    auto outcome = agentengine::rt::block_on(start_task_branch(caller));
+                    if (!outcome.has_value()) return std::unexpected(outcome.error());
+                    return *outcome;
+                }));
+            contribution.tools.push_back(agentengine::make_tool_descriptor_with_invoke<RunInTaskBranchTool>(
+                [this](TaskBranchRunArgs args, agentengine::EffectContext& ctx)
+                    -> agentengine::result<TaskBranchRunReply> {
+                    agentengine::IdentityHandle caller =
+                        agentengine::IdentityAuthority::bootstrap().adopt(ctx.principal);
+                    auto outcome = agentengine::rt::block_on(
+                        run_in_task_branch(std::move(args.handle_id), std::move(args.command), caller));
+                    if (!outcome.has_value()) return std::unexpected(outcome.error());
+                    return *outcome;
+                }));
+            contribution.tools.push_back(agentengine::make_tool_descriptor_with_invoke<CommitTaskBranchTool>(
+                [this](TaskBranchCommitArgs args, agentengine::EffectContext& ctx)
+                    -> agentengine::result<TaskBranchCommitReply> {
+                    agentengine::IdentityHandle caller =
+                        agentengine::IdentityAuthority::bootstrap().adopt(ctx.principal);
+                    auto outcome =
+                        agentengine::rt::block_on(commit_task_branch(std::move(args.handle_id), caller));
+                    if (!outcome.has_value()) return std::unexpected(outcome.error());
+                    return *outcome;
+                }));
+            contribution.tools.push_back(agentengine::make_tool_descriptor_with_invoke<DiscardTaskBranchTool>(
+                [this](TaskBranchDiscardArgs args, agentengine::EffectContext&)
+                    -> agentengine::result<TaskBranchDiscardReply> {
+                    auto outcome = agentengine::rt::block_on(discard_task_branch(std::move(args.handle_id)));
+                    if (!outcome.has_value()) return std::unexpected(outcome.error());
+                    return *outcome;
                 }));
         }
         co_return contribution;
@@ -313,6 +536,128 @@ public:
         co_return co_await runtime_->reset_to_turn(target_turn_index, requested_by, reset_quota);
     }
 
+    // The four task-branch verbs (A10 promotion, this file's own top comment above
+    // `StartTaskBranchTool`). Public and host-callable the same way `reset_to_turn()` already is,
+    // independent of whether `on_context()` also wires them as tools -- `requested_by` is always
+    // taken explicitly, never defaulted to `owner_`, matching every other method on this class.
+    //
+    // Every one of the four fails closed with the SAME `task_branch_not_enabled` error if either
+    // `bind_sandbox()` was never called (no `runtime_`) or `bind_task_branch_tools()` was never
+    // called (`merge_quota_ == nullptr`) -- a host that only wants `run_command` sees these four
+    // simply refuse to work, never a crash and never partial/inconsistent behavior.
+    [[nodiscard]] agentengine::rt::task<agentengine::result<TaskBranchStartReply>> start_task_branch(
+        agentengine::IdentityHandle requested_by) {
+        if (!runtime_.has_value() || merge_quota_ == nullptr) {
+            co_return std::unexpected(agentengine::error{
+                agentengine::failure_class::contract,
+                "cannot start a task branch: sandbox not bound or task-branch tools not enabled",
+                "mandatory_sandbox_provider.task_branch_not_enabled"});
+        }
+        agentengine::rt::AsyncMutex::Guard guard = co_await task_branch_mutex_->lock();
+        auto child = co_await runtime_->spawn_child_branch(requested_by, *branch_quota_,
+                                                              runtime_->staging_root().parent_path());
+        if (!child.has_value()) co_return std::unexpected(child.error());
+        std::string handle_id = child->branch_name();  // unique by construction (Ledger::branch_
+                                                          // from()'s own internal sequence counter) --
+                                                          // unguessability is not this design's own
+                                                          // security boundary, per-instance map
+                                                          // scoping is (task_branch_sandbox.hpp's own
+                                                          // header comment, carried forward unchanged).
+        task_branches_.insert_or_assign(handle_id, std::move(*child));
+        co_return TaskBranchStartReply{std::move(handle_id)};
+    }
+
+    [[nodiscard]] agentengine::rt::task<agentengine::result<TaskBranchRunReply>> run_in_task_branch(
+        std::string handle_id, std::string command, agentengine::IdentityHandle requested_by) {
+        if (!runtime_.has_value() || merge_quota_ == nullptr) {
+            co_return std::unexpected(agentengine::error{
+                agentengine::failure_class::contract,
+                "cannot run in a task branch: sandbox not bound or task-branch tools not enabled",
+                "mandatory_sandbox_provider.task_branch_not_enabled"});
+        }
+        agentengine::rt::AsyncMutex::Guard guard = co_await task_branch_mutex_->lock();
+        auto it = task_branches_.find(handle_id);
+        if (it == task_branches_.end()) {
+            co_return std::unexpected(agentengine::error{
+                agentengine::failure_class::contract, "unknown task-branch handle: " + handle_id,
+                "mandatory_sandbox_provider.task_branch_unknown_handle"});
+        }
+        auto outcome = co_await it->second.run(*surface_, std::move(command), requested_by,
+                                                  *run_quota_, *storage_quota_);
+        if (!outcome.has_value()) co_return std::unexpected(outcome.error());
+        co_return TaskBranchRunReply{outcome->exec.exit_code, outcome->exec.stdout_text};
+    }
+
+    // Mirrors docs/planning/proofs/task_branch_tool/task_branch_sandbox.hpp's own A10 fix
+    // (`commit_task_branch`, header-comment finding 3): `Ledger::merge()` registers the child branch
+    // into its own orphan set on EVERY rejection path (not just this call's own reasoning -- already
+    // proven at the `Ledger`/`SandboxRuntime::merge_into()` layer), so a REJECTED commit (most
+    // commonly a real merge conflict) is reclaimed immediately and re-surfaced under the SAME
+    // `handle_id` -- the caller still sees the ORIGINAL rejection error, but the handle keeps working
+    // afterward (retry, run more work, or discard) instead of becoming "unknown handle" on the very
+    // next call.
+    [[nodiscard]] agentengine::rt::task<agentengine::result<TaskBranchCommitReply>> commit_task_branch(
+        std::string handle_id, agentengine::IdentityHandle requested_by) {
+        if (!runtime_.has_value() || merge_quota_ == nullptr) {
+            co_return std::unexpected(agentengine::error{
+                agentengine::failure_class::contract,
+                "cannot commit a task branch: sandbox not bound or task-branch tools not enabled",
+                "mandatory_sandbox_provider.task_branch_not_enabled"});
+        }
+        agentengine::rt::AsyncMutex::Guard guard = co_await task_branch_mutex_->lock();
+        auto it = task_branches_.find(handle_id);
+        if (it == task_branches_.end()) {
+            co_return std::unexpected(agentengine::error{
+                agentengine::failure_class::contract, "unknown task-branch handle: " + handle_id,
+                "mandatory_sandbox_provider.task_branch_unknown_handle"});
+        }
+        SandboxRuntime child = std::move(it->second);
+        task_branches_.erase(it);
+        std::string const branch_name = child.branch_name();  // captured BEFORE merge_into() moves child
+        auto cp = co_await std::move(child).merge_into(*runtime_, requested_by, *merge_quota_);
+        if (cp.has_value()) co_return TaskBranchCommitReply{true, cp->turn_index};
+
+        auto reclaimed = co_await runtime_->reclaim_orphaned_child(
+            branch_name, requested_by, runtime_->staging_root().parent_path());
+        if (!reclaimed.has_value()) {
+            // A genuine internal inconsistency, not the ordinary conflict case -- merge() registers
+            // every rejection as an orphan unconditionally, so a reclaim failure here means something
+            // else is wrong. Surfaced distinctly so it is never mistaken for an ordinary conflict.
+            co_return std::unexpected(agentengine::error{
+                cp.error().klass,
+                "commit was rejected (" + cp.error().message +
+                    ") and the branch could not be reclaimed for retry (" + reclaimed.error().message +
+                    ") -- the work may be reachable only via the lower-level Ledger orphan-reclaim API",
+                "mandatory_sandbox_provider.task_branch_commit_rejected_and_reclaim_failed"});
+        }
+        task_branches_.insert_or_assign(std::move(handle_id), std::move(*reclaimed));
+        co_return std::unexpected(cp.error());
+    }
+
+    [[nodiscard]] agentengine::rt::task<agentengine::result<TaskBranchDiscardReply>> discard_task_branch(
+        std::string handle_id) {
+        if (!runtime_.has_value() || merge_quota_ == nullptr) {
+            co_return std::unexpected(agentengine::error{
+                agentengine::failure_class::contract,
+                "cannot discard a task branch: sandbox not bound or task-branch tools not enabled",
+                "mandatory_sandbox_provider.task_branch_not_enabled"});
+        }
+        agentengine::rt::AsyncMutex::Guard guard = co_await task_branch_mutex_->lock();
+        auto it = task_branches_.find(handle_id);
+        if (it == task_branches_.end()) {
+            co_return std::unexpected(agentengine::error{
+                agentengine::failure_class::contract, "unknown task-branch handle: " + handle_id,
+                "mandatory_sandbox_provider.task_branch_unknown_handle"});
+        }
+        SandboxRuntime child = std::move(it->second);
+        task_branches_.erase(it);
+        auto discarded = co_await std::move(child).discard();
+        if (!discarded.has_value()) co_return std::unexpected(discarded.error());
+        (void)co_await branch_quota_->refund(1);  // discarded work costs nothing lasting, matching
+                                                     // RunCost's own refund-on-"nothing kept" precedent
+        co_return TaskBranchDiscardReply{true};
+    }
+
 private:
     agentengine::Ledger<>* ledger_ = nullptr;
     // `IdentityHandle` deliberately has NO default constructor of its own (Phase 1's own "identity-
@@ -326,6 +671,13 @@ private:
     agentengine::rt::AsyncQuota<agentengine::StorageBytes>* storage_quota_ = nullptr;
     std::optional<SandboxRuntime> runtime_;
     std::optional<Surface> surface_;
+
+    // A10 promotion state (StartTaskBranchTool's own top comment). `merge_quota_` starts null --
+    // `bind_task_branch_tools()` is the only thing that ever sets it, and every task-branch method
+    // checks it alongside `runtime_.has_value()` before doing anything.
+    agentengine::rt::AsyncQuota<agentengine::MergeCost>* merge_quota_ = nullptr;
+    std::map<std::string, SandboxRuntime> task_branches_;
+    std::unique_ptr<agentengine::rt::AsyncMutex> task_branch_mutex_;
 };
 
 }  // namespace agentengine

@@ -3206,6 +3206,15 @@ add_executable(test_mandatory_sandbox_provider test_mandatory_sandbox_provider.c
 target_link_libraries(test_mandatory_sandbox_provider PRIVATE agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)
 add_test(NAME test_mandatory_sandbox_provider COMMAND test_mandatory_sandbox_provider)
 
+# ---- ADR-114 -- MandatorySandboxProvider<Surface>'s task-branch tools (start_task_branch/
+# run_in_task_branch/commit_task_branch/discard_task_branch), the A10 promotion giving
+# SandboxRuntime::merge_into() its first real production caller. Same link requirements as
+# test_mandatory_sandbox_provider (real Ledger/compute_digest/open_within_mount_root + Docker).
+# REQUIRES a running Docker daemon reachable via `docker` on PATH.
+add_executable(test_task_branch_tools test_task_branch_tools.cpp)
+target_link_libraries(test_task_branch_tools PRIVATE agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)
+add_test(NAME test_task_branch_tools COMMAND test_task_branch_tools)
+
 # ---- ADR-102 Phase 4 -- agentengine::rt::block_on<T>() (rt/block_on.hpp), the real fix for a real,
 # independent-red-team-found, empirically-proven AsyncMutex mutual-exclusion violation the naive
 # "while (!t.done()) t.resume();" drive loop has under genuine cross-thread contention. Real OS threads
