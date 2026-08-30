@@ -1109,6 +1109,27 @@ template <class Inner>
 constexpr char const* kSessionId = "cli-chat-session";
 
 int main() {
+    // ADR-136: this CLI's own top comment (~line 1088) already discloses that a real container from
+    // `run_command` is orphaned on EVERY ordinary exit here (the `std::_Exit(0)` teardown below skips
+    // `DockerExecutionSurface::~DockerExecutionSurface()` deliberately, to dodge a real CPython
+    // finalize-thread crash) -- yet, unlike its three siblings (`sandboxed_shell_chat.cpp`,
+    // `containerd_shell_chat.cpp`, `durable_sandboxed_shell_chat.cpp`, all of which got this same
+    // ADR-108 §7 sweep), this file never actually ran the self-healing startup sweep for what a PRIOR
+    // run of itself orphaned. Closed here, identical pattern: best-effort, never fatal -- a daemon
+    // that's briefly unreachable or a sweep that finds nothing must never block this CLI's own real
+    // purpose.
+    {
+        DockerCliBackend orphan_sweep;
+        auto swept = orphan_sweep.reap_orphans();
+        if (swept.has_value() && (swept->reaped > 0 || !swept->reap_failures.empty())) {
+            std::cerr << "startup orphan sweep: inspected " << swept->inspected << ", reaped "
+                      << swept->reaped << ", " << swept->reap_failures.size()
+                      << " destroy failure(s)\n";
+        } else if (!swept.has_value()) {
+            std::cerr << "startup orphan sweep skipped (non-fatal): " << swept.error().message << "\n";
+        }
+    }
+
     // AGENTENGINE_PROVIDER selects which real backend this run talks to -- "openai" (direct
     // api.openai.com), "anthropic" (direct Anthropic Messages API), or "openrouter" (OpenRouter's own
     // OpenAI-compatible endpoint -- what "openai" used to mean here before this was split into two
