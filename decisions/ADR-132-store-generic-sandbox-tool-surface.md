@@ -2,7 +2,8 @@
 
 - **Status:** Proposed — implemented, verified (Windows/MSVC), full rebuild (zero errors, 318 targets)
   and full `ctest` clean (292 total, 1 failure, pre-existing/environment, zero regression),
-  `naming_lint.py` clean. NOT Judged — no independent red-team pass yet, no Linux verification yet.
+  `naming_lint.py` clean. SAME-DAY INDEPENDENT RED-TEAM (§7): clean bill of health, no defect found.
+  Still NOT Judged — no Linux verification yet.
 - **Date:** 2026-08-30.
 - **Scope:** `include/agentengine/sandbox/sandbox_runtime.hpp`, `include/agentengine/sandbox/real_io_
   filesystem.hpp`, `include/agentengine/sandbox/mandatory_sandbox_provider.hpp` (all three widened, no
@@ -136,3 +137,65 @@ findings (unchanged — no new exported type, `Store` is a template parameter, n
   area (no new class-level template parameter propagating to every OTHER method/member on that class,
   none of which touch `Ledger` at all) while still achieving full `Store`-genericity for the methods that
   need it. Worth naming explicitly so a future reader does not assume it was missed.
+- No Linux verification yet (unchanged by §7 — that round was Windows/MSVC only, same as this ADR's own
+  original pass).
+
+## 7. Independent red-team round (same day)
+
+An independent adversarial pass, briefed with zero prior context beyond this ADR and told explicitly to
+treat this as the highest-stakes review in the session's design line (the two touched files are, by
+this ADR's own account, the two most heavily-verified files in the entire line). Read the full diff
+(`git show 28fc845`) directly rather than trusting this ADR's own account, then went after five specific
+risk claims:
+
+- **Backward compatibility, not just "it compiled."** Re-ran, from a real, just-rebuilt binary (not
+  reasoned about), the four real-Docker tests that construct `SandboxRuntime`/`MandatorySandboxProvider`
+  against a genuine Docker daemon: `test_sandbox_runtime`, `test_mandatory_sandbox_provider`,
+  `test_task_branch_tools`, `test_composed_sandbox_providers_live`. All four pass, unchanged output,
+  confirming zero behavioral difference for the default, 1-template-argument case this ADR claims is
+  untouched.
+- **The injected-class-name reasoning (§3), verified as correct C++, not a compiler-specific accident.**
+  Wrote a genuine negative-compile probe (`SandboxRuntime<InMemoryWorktreeObjectStore>::merge_into()`
+  called with a `SandboxRuntime<FileWorktreeObjectStore> const&` parent) and built it through the real
+  project build system (a temporary CMake target, removed after use). MSVC correctly rejected it with
+  C2664 — `merge_into()`'s unqualified `SandboxRuntime` parameter resolves, via the injected class name,
+  to the SAME specialization as `this`, exactly as §3 claims, and this is standard C++ behavior (not an
+  MSVC-specific accident) since the injected class name inside a class template's own body always denotes
+  the current instantiation, per the standard's own class-template-declaration rules — nothing here relies
+  on implementation-defined behavior.
+- **The `RealIoFileSystem` method-template design.** Traced `SandboxRuntime<Store>::run()`'s calls into
+  `io_fs_.materialize()`/`io_fs_.scan_and_drain_into_tree()` (both take `Ledger<Store>&`, deduced from
+  `*ledger_`, itself `Ledger<Store>*` where `Store` is the ENCLOSING class template's own parameter) — no
+  ambiguity, no cross-`Store` mixing possible: the method template's own `Store` parameter name shadows
+  the class template's `Store` only lexically, deduction still binds it to whatever concrete type
+  `*ledger_`'s type actually is. Confirmed by the full rebuild succeeding with zero errors and the probe
+  above failing exactly where a mismatch was deliberately introduced (proving deduction isn't silently
+  papering over a real type error).
+- **I2/I3 — no widened authority.** Line-by-line diffed `bind_sandbox()`/`bind_root_branch()`/
+  `commit_task_branch()`/`start_task_branch()`/`discard_task_branch()` bodies against the pre-ADR-132
+  version (`git show 28fc845`): every change is a parameter/member TYPE (`Ledger<>` → `Ledger<Store>`,
+  `SandboxRuntime` → `SandboxRuntime<Store>`), zero logic/control-flow lines touched, zero new code paths
+  that could bind a caller to content it does not already own via the SAME `Store` instance it was
+  constructed against.
+- **The new integration test's own claim.** Re-ran `test_task_branch_content_durability_integration`
+  (ALL CHECKS PASSED, real Docker-independent `FakeSurface`, real disk). Independently reproduced the
+  ADR's own documented sanity check — not merely trusted its account — by editing a scratch copy back to
+  `InMemoryWorktreeObjectStore` throughout (type alias, both `Ledger<>` template arguments, both
+  constructor calls corrected to `InMemoryWorktreeObjectStore{}`'s own actual default-constructible
+  signature), rebuilding, and confirming checks [5]/[6] genuinely FAIL with the exact original disclosed
+  error (`ledger.merge_tree_load_failed`, `merge could not load base/ours/theirs from the object store`)
+  rather than silently passing — then restored the original file, rebuilt, and reconfirmed a full pass.
+
+**Full re-verification after the round** (no production code changed — this round found nothing to fix):
+full rebuild (`cmake --build . --config Debug`, zero errors), full `ctest` — 292 total, 1 failure
+(`test_reference_agent_task_corpus`, the same pre-existing, disclosed pandas/matplotlib environment gap),
+zero regression anywhere else — and `python tools/naming_lint.py` clean (361 suppressed findings,
+unchanged). The temporary negative-compile probe target and the temporary sanity-check edit to the
+integration test were both fully reverted; the working tree carries no artifact from this round.
+
+**Verdict: clean bill of health.** Every one of this ADR's own central claims (purely additive,
+zero-call-site-change widening; the injected-class-name reasoning; the method-template deduction
+correctness; the new integration test's own genuine proof) held up under independent, executed
+verification — including the two claims (injected-class-name correctness, the sanity-check reproduction)
+this round specifically declined to take on the ADR's word alone. No real, fixable defect found — this
+section documents a genuine attempt, not a rubber stamp.
