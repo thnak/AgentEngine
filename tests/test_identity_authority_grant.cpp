@@ -16,8 +16,12 @@
 //        succeeds and decrements remaining().
 //   [7]  ADR-102 §3 C3: try_consume() by an unrelated IdentityHandle (no owner/child-share
 //        relationship) is refused.
-//   [8]  allocate_child_share() + try_consume() by the child IdentityHandle succeeds.
-//   [9]  release_child_share() is anti-replay: a second release of the same (child, amount) fails.
+//   [8]  ADR-141: allocate_child_share() splits an independent quota object; the child can spend
+//        through THAT object, but try_consume() on the PARENT now refuses the child directly (closes
+//        a real, shipped unbounded-drain bug -- see async_quota.hpp's own top comment).
+//   [9]  ADR-141: release_child_share() credits back only the child's own object's genuine leftover
+//        (never a caller-supplied number), and is anti-replay for a second release of an identity
+//        with no live allocation.
 //   [10] refund() re-credits remaining().
 //   [11] Grant<T>/authorized(): a grant issued to a descendant is authorized for that descendant,
 //        never for an unrelated IdentityHandle.
@@ -163,32 +167,60 @@ int main() {
     check(quota.remaining() == 70,
           "a refused try_consume() does not decrement remaining() -- fails closed, not partially");
 
-    // ---- [8] allocate_child_share() + try_consume() by the child succeeds. ---------------------
+    // ---- [8] allocate_child_share() splits an independent quota object; the child can NO LONGER ----
+    // ---- spend directly against the PARENT (ADR-141 -- see async_quota.hpp's own top comment for --
+    // ---- the real double-spend/double-credit bug this closes), only through its own returned -------
+    // ---- object. ------------------------------------------------------------------------------------
     IdentityHandle branch_child = authority.derive_child(owner, "branch-child");
     auto share_r = drive(quota.allocate_child_share(branch_child, 20));
     check(share_r.has_value(), "allocate_child_share() succeeds within remaining budget");
     check(quota.remaining() == 50, "allocate_child_share() decrements the PARENT quota's remaining()");
-    auto& child_quota = *share_r;
-    auto child_consume_r = drive(quota.try_consume(5, branch_child));
-    check(child_consume_r.has_value(),
-          "try_consume() by a subject the quota split a share TO succeeds on the parent quota");
+    agentengine::rt::AsyncQuota<BranchCost> child_quota = std::move(*share_r);
 
-    // ---- [9] release_child_share() is anti-replay. ----------------------------------------------
-    auto release_r = drive(quota.release_child_share(branch_child, 20));
+    auto direct_parent_spend_r = drive(quota.try_consume(5, branch_child));
+    check(!direct_parent_spend_r.has_value(),
+          "ADR-141: a child with a live share can no longer try_consume() directly against the "
+          "PARENT quota -- closes the real unbounded-drain hole this once allowed");
+    check(direct_parent_spend_r.error().code == "async_quota.unauthorized_spender",
+          "the refusal is the specific unauthorized_spender error");
+    check(quota.remaining() == 50, "the refused direct-parent spend did not touch remaining()");
+
+    auto child_consume_r = drive(child_quota.try_consume(5, branch_child));
+    check(child_consume_r.has_value(),
+          "try_consume() by the child, on its OWN returned AsyncQuota object, still succeeds");
+    check(child_quota.remaining() == 15, "the spend decremented the CHILD's own object, not the parent");
+    check(quota.remaining() == 50, "spending via the child's own object never touches the parent's remaining()");
+
+    // ---- [9] release_child_share() credits back exactly what the child's own object never spent --
+    // ---- (15, not the original 20 -- ADR-141's own real fix for the double-credit half of the ------
+    // ---- bug), and is anti-replay for a second release of the same, now-exhausted child identity. --
+    auto release_r = drive(quota.release_child_share(std::move(child_quota)));
     check(release_r.has_value(), "release_child_share() succeeds for a live, matching allocation");
-    check(quota.remaining() == 65, "release_child_share() re-credits the parent quota");
-    auto replay_r = drive(quota.release_child_share(branch_child, 20));
+    check(quota.remaining() == 65,
+          "release_child_share() re-credits ONLY the genuinely-unspent 15, not the original 20 -- "
+          "50 + 15 == 65, never the pre-fix double-credited 70");
+
+    auto share2_r = drive(quota.allocate_child_share(branch_child, 8));
+    check(share2_r.has_value(), "a fresh allocation for the SAME child identity, after a full "
+                                  "release, is allowed");
+    check(quota.remaining() == 57, "the fresh allocation decremented remaining() again");
+    agentengine::rt::AsyncQuota<BranchCost> child_quota2 = std::move(*share2_r);
+    auto release2_r = drive(quota.release_child_share(std::move(child_quota2)));
+    check(release2_r.has_value(), "releasing the fresh, entirely-unspent allocation succeeds");
+    check(quota.remaining() == 65, "releasing all 8 unspent units re-credits fully: 57 + 8 == 65");
+
+    auto replay_r = drive(quota.release_child_share(std::move(child_quota2)));
     check(!replay_r.has_value(),
-          "a SECOND release_child_share() with the same (child, amount) fails closed -- anti-replay, "
-          "does not re-credit a second time");
+          "a SECOND release_child_share() for an identity with no LIVE allocation fails closed -- "
+          "anti-replay, does not re-credit a second time");
+    check(replay_r.error().code == "async_quota.release_not_owed",
+          "the refusal is the specific release_not_owed error");
     check(quota.remaining() == 65, "the replayed release did not double-credit remaining()");
 
     // ---- [10] refund() re-credits. ---------------------------------------------------------------
     auto refund_r = drive(quota.refund(10));
     check(refund_r.has_value(), "refund() succeeds");
     check(quota.remaining() == 75, "refund() re-credits remaining()");
-
-    (void)child_quota;
 
     // ---- [11] Grant<T>/authorized(): a grant is authorized for a descendant, not an unrelated. ----
     struct FsScope { std::string mount; };
