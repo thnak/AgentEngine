@@ -32,11 +32,14 @@
 #include "agentengine/core/worktree_types.hpp"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <vector>
 
 namespace agentengine {
@@ -52,6 +55,27 @@ namespace agentengine {
     return std::ranges::all_of(digest, [](unsigned char c) {
         return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
     });
+}
+
+// ADR-137: a real, per-call-unique suffix for temp-file names -- NOT the digest alone. Before this,
+// `put_blob()`/`put_tree()` derived the temp filename purely from the content digest, which is
+// IDENTICAL across every concurrent writer of the same content (exactly the scenario
+// `tests/test_content_durability_concurrency.cpp`'s own `[1b]` same-digest race section exercises).
+// That was harmless under the pre-ADR-137 shape (a rename failure was silently ignored, and nothing
+// ever deleted the shared temp file), but adding real write/rename-failure handling (this same ADR,
+// see put_blob()'s own comment) made it actively unsafe: one racing writer's failure-path cleanup
+// (`std::filesystem::remove(temp, ...)`) could delete the SAME temp file a sibling writer still had
+// open or was about to rename -- an own-goal this ADR's own first draft introduced and its own
+// sanity-check run caught (the `[1b]` section began failing: "the final on-disk blob file exists
+// after every iteration" no longer held for every one of 16 threads x 20 iterations). Seeded from a
+// nanosecond timestamp at first use then monotonically incremented, mirroring the identical,
+// already-established pattern `docker_execution_surface.hpp`'s own `g_next_container_seq` uses for
+// the same "make cross-process collisions astronomically unlikely, cross-thread collisions
+// impossible" property.
+[[nodiscard]] inline std::uint64_t next_temp_file_suffix() {
+    static std::atomic<std::uint64_t> counter{
+        static_cast<std::uint64_t>(std::chrono::system_clock::now().time_since_epoch().count())};
+    return counter.fetch_add(1, std::memory_order_relaxed);
 }
 
 // A real `WorktreeObjectStore` conformer backed by real files on real disk -- one regular file per
@@ -71,19 +95,82 @@ public:
         if (!digest) return std::unexpected(digest.error());
         std::lock_guard<std::mutex> guard(*mutex_);
         std::filesystem::path path = root_ / "blobs" / *digest;
-        if (!std::filesystem::exists(path)) {   // real dedup: an existing blob file is never rewritten
+        // Deliberately `is_regular_file`, not bare `exists` -- this review's own adversarial probe
+        // (a directory pre-created at the exact digest-named path, proving the gap for real) found
+        // that `exists()` alone treats ANY filesystem object at this name -- including a directory --
+        // as "already have this blob", skipping the write and reporting success with digest content
+        // that was never actually placed on disk anywhere: a genuine I4 attributability gap, distinct
+        // from and predating ADR-137's write/rename-failure handling below. `is_regular_file` forces
+        // that case through the real write+rename path instead, where it now fails closed correctly.
+        if (!std::filesystem::is_regular_file(path)) {   // real dedup: an existing blob file is never rewritten
             // Temp-file + atomic-rename, the same discipline `persist_snapshot_locked()`
             // (`ledger.hpp`) and `identity_authority.hpp`'s `persist_high_water_mark()` already use
             // elsewhere in this codebase -- a crash mid-write must never leave a half-written file
             // sitting at the final digest-named path, where a later `get_blob()` would return
             // truncated content under a digest that no longer matches its own bytes.
-            std::filesystem::path temp = root_ / "blobs" / (*digest + ".tmp");
+            //
+            // ADR-137: both the write and the rename are now checked, unlike this port's own original
+            // silent-failure shape -- this store is the ONLY durability layer for content (unlike
+            // `Ledger::persist_snapshot_locked()`, whose own comment explicitly accepts a rename
+            // failure since it merely loses durability atop an already-successful in-memory mutation).
+            // Returning `Ok(digest)` here when the bytes never actually landed on disk would let a
+            // caller believe content is durable when it silently is not -- a later `get_blob()` on
+            // that "successful" digest would fail with `worktree.blob_not_found`, indistinguishable
+            // from real corruption, an I4 attributability gap. Fails closed instead, and best-effort
+            // removes the temp file so a half-written artifact never lingers under a `.tmp` name. The
+            // temp filename itself carries a real per-call-unique suffix, not just the digest -- see
+            // next_temp_file_suffix()'s own comment for the real cross-writer cleanup hazard a
+            // digest-only temp name created once this method started actually deleting on failure.
+            std::filesystem::path temp =
+                root_ / "blobs" / (*digest + "." + std::to_string(next_temp_file_suffix()) + ".tmp");
             {
                 std::ofstream out(temp, std::ios::binary | std::ios::trunc);
                 out.write(reinterpret_cast<char const*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+                if (!out) {
+                    out.close();
+                    std::error_code cleanup_ec;
+                    std::filesystem::remove(temp, cleanup_ec);
+                    return std::unexpected(agentengine::error{
+                        agentengine::failure_class::resource,
+                        "failed to write blob content to the durable object store",
+                        "worktree.blob_write_failed"});
+                }
             }
             std::error_code ec;
             std::filesystem::rename(temp, path, ec);
+            if (ec) {
+                std::error_code cleanup_ec;
+                std::filesystem::remove(temp, cleanup_ec);
+                // A rename failure here is NOT automatically a real durability failure: this method's
+                // own mutex_ only serializes calls made through THIS store instance, never calls made
+                // through a DIFFERENT FileWorktreeObjectStore instance racing on the SAME on-disk
+                // `root_` (real, reproduced case: two Ledger<FileWorktreeObjectStore> instances, each
+                // with its own store object, sharing one durable_dir -- exactly what
+                // tests/test_content_durability_concurrency.cpp's [2c] section constructs). Content
+                // addressing makes this safe to detect after the fact: this digest is a function of
+                // `bytes` alone, so if `path` exists NOW, it holds these exact bytes regardless of
+                // which racing writer's rename actually won -- confirmed to genuinely happen on
+                // Windows (MoveFileExW denies a rename onto a destination another thread's rename just
+                // populated, "Access is denied", not the POSIX silently-atomic-replace semantics this
+                // code was written assuming) via a dedicated probe (833/1000 renames of identical
+                // content from two racing store instances succeeded, 167 hit exactly this path -- 0
+                // corruption in every case). Deliberately does NOT trust bare existence, though --
+                // `exists(path)` alone can't distinguish "a sibling writer's rename won" from "some
+                // unrelated file happens to already sit at this digest-named path" (e.g. an operator
+                // error, or a future bug that writes there through a path other than this method's own
+                // discipline); a readback-and-recompute closes that gap and costs nothing on the common,
+                // non-racing path since it only runs after a rename failure already happened. Only a
+                // genuine content mismatch (or the destination still being absent) is a reportable
+                // durability failure.
+                if (auto existing = get_blob(*digest); existing.has_value() &&
+                    agentengine::compute_digest(existing.value()).value_or(std::string{}) == *digest) {
+                    return *digest;
+                }
+                return std::unexpected(agentengine::error{
+                    agentengine::failure_class::resource,
+                    "failed to durably commit blob content (rename failed): " + ec.message(),
+                    "worktree.blob_write_failed"});
+            }
         }
         return *digest;
     }
@@ -119,13 +206,47 @@ public:
         // harmless no-op rewrite, not a correctness issue; kept simple rather than adding an existence
         // check with no real benefit here. Same temp-file + atomic-rename discipline as put_blob().
         {
-            std::filesystem::path temp = root_ / "trees" / (*digest + ".tmp");
+            // ADR-137: same write/rename-failure checks, and the same real per-call-unique temp
+            // filename, as put_blob() above -- see that method's own comments for why.
+            std::filesystem::path temp =
+                root_ / "trees" / (*digest + "." + std::to_string(next_temp_file_suffix()) + ".tmp");
             {
                 std::ofstream out(temp, std::ios::binary | std::ios::trunc);
                 out.write(reinterpret_cast<char const*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+                if (!out) {
+                    out.close();
+                    std::error_code cleanup_ec;
+                    std::filesystem::remove(temp, cleanup_ec);
+                    return std::unexpected(agentengine::error{
+                        agentengine::failure_class::resource,
+                        "failed to write tree content to the durable object store",
+                        "worktree.tree_write_failed"});
+                }
             }
             std::error_code ec;
             std::filesystem::rename(temp, path, ec);
+            if (ec) {
+                std::error_code cleanup_ec;
+                std::filesystem::remove(temp, cleanup_ec);
+                // Same real, reproduced cross-instance rename race as put_blob() above, and the same
+                // readback-and-recompute discipline (not bare existence) -- see that method's own
+                // comment for both.
+                std::ifstream verify_in(path, std::ios::binary);
+                if (verify_in) {
+                    std::vector<char> raw((std::istreambuf_iterator<char>(verify_in)), std::istreambuf_iterator<char>());
+                    std::vector<std::byte> existing_bytes(raw.size());
+                    for (std::size_t i = 0; i < raw.size(); ++i) existing_bytes[i] = static_cast<std::byte>(raw[i]);
+                    verify_in.close();
+                    auto existing_digest = agentengine::compute_digest(existing_bytes);
+                    if (existing_digest.has_value() && *existing_digest == *digest) {
+                        return *digest;
+                    }
+                }
+                return std::unexpected(agentengine::error{
+                    agentengine::failure_class::resource,
+                    "failed to durably commit tree content (rename failed): " + ec.message(),
+                    "worktree.tree_write_failed"});
+            }
         }
         return *digest;
     }
