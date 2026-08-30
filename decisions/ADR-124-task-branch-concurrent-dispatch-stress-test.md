@@ -2,8 +2,11 @@
 
 - **Status:** Proposed — a real, two-OS-thread stress test added and verified against a REAL Docker
   daemon (Windows/MSVC); no production code changed. Full rebuild (zero errors) and full `ctest` clean
-  (285/286, same pre-existing unrelated matplotlib/pandas gap), `naming_lint.py` clean. Not yet
-  independently red-teamed; not yet Linux-verified.
+  (285/286, same pre-existing unrelated matplotlib/pandas gap), `naming_lint.py` clean. **Same-day
+  independent red-team round complete (§7): this ADR's own `exclusivity_` explanation for its
+  inconclusive sanity check was verified directly against `spawn_child_branch()`'s real implementation
+  and holds up; no issue found in this ADR's own scope** (the real finding from the same round landed
+  against ADR-123 instead — see that ADR's §7). Not yet Linux-verified.
 - **Date:** 2026-08-30.
 - **Scope:** `tests/test_task_branch_concurrent_dispatch.cpp` (new), `tests/CMakeLists.txt` (one new
   test target). `decisions/ADR-114-task-branch-tools-promotion.md` (disclosure correction pointing
@@ -121,3 +124,24 @@ lint.py`: clean, no new exported vocabulary.
   fast, in-memory mutation guarded by a lock whose dominant cost is real I/O — a revert-and-fail check
   may not reliably reproduce even a genuine hazard under that shape, and a negative result there should
   be treated as inconclusive, not as proof of safety, without independently reasoning about the code.
+
+## 7. Independent red-team round (same day)
+
+Reviewed as the sibling ADR to ADR-123 in the same red-team pass (see that ADR's own §7 for the full
+methodology and the real finding it produced, which landed against ADR-123's fix, not this one).
+
+Specific to this ADR: independently re-read `SandboxRuntime::spawn_child_branch()`
+(`include/agentengine/sandbox/sandbox_runtime.hpp`) and `MandatorySandboxProvider::start_task_branch()`
+(`include/agentengine/sandbox/mandatory_sandbox_provider.hpp`) to check §2's claimed explanation for the
+inconclusive revert-and-confirm-fail sanity check. Confirmed accurate: `start_task_branch()` acquires
+`task_branch_mutex_` and then `co_await`s `runtime_->spawn_child_branch(...)`; `spawn_child_branch()`
+itself immediately takes `exclusivity_->lock()` for its entire body, including the real, slow
+`ledger_->branch_from()` call — so even with `task_branch_mutex_` removed, the dominant work genuinely
+is already serialized by this second, independent lock on the shared `runtime_`. No correction needed.
+
+Rebuilt and reran `test_task_branch_concurrent_dispatch` against a real Docker daemon (`docker info`
+confirmed available): **ALL CHECKS PASSED**, all three sections, unchanged from the ADR's own claimed
+result. Full `ctest`: 285/286, the one failure the same pre-existing `test_reference_agent_task_corpus`
+pandas/matplotlib gap. No forced, artificially-synchronized repro of the `std::map` race (§5's own named
+gap) was attempted this round either — the same proportionality judgment this ADR already made for it
+still applies, and nothing in this round's findings changes that calculus.

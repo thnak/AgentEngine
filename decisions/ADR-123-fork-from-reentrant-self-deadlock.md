@@ -2,7 +2,10 @@
 
 - **Status:** Proposed — implemented, verified (Windows/MSVC), full rebuild (zero errors) and full
   `ctest` clean (285/286, same pre-existing unrelated matplotlib/pandas gap), `naming_lint.py` clean.
-  Not yet independently red-teamed; not yet Linux-verified.
+  **Same-day independent red-team round complete (§7): a real, disclosed scope gap found in the fix's
+  own safety argument (a narrower, still-open self-deadlock reachable via cross-thread coroutine
+  resumption), corrected in-comment rather than code-fixed this pass — see §7 for the full account and
+  the reasoning for that call.** Not yet Linux-verified.
 - **Date:** 2026-08-30.
 - **Scope:** `include/agentengine/rt/async_mutex.hpp` (one new field, one new public method, two small
   edits to `unlock()`, both purely additive — no behavior change for any existing caller),
@@ -153,3 +156,101 @@ vocabulary (the new `AsyncMutex` method is not itself an exported "concept" this
   FUTURE reentrant-call hazard against a different `AsyncMutex`-guarded critical section (e.g.
   `task_branch_mutex_`, `SandboxRuntime::exclusivity_`) has a ready-made, already-proven tool to close
   it with, rather than needing to re-derive this same design question from scratch.
+
+## 7. Independent red-team round (same day)
+
+- **Scope of the check:** a fresh session, no prior context beyond this ADR and the real diffs/code,
+  tasked specifically with stress-testing `owner_`'s memory-ordering/write-timing correctness and
+  whether the fix's own core safety argument ("if the calling thread already holds
+  `source.session_mutex_`, I1 guarantees no other thread is touching `source`") actually holds.
+- **Verified clean, no action needed:**
+  - `is_held_by_current_thread()`'s memory ordering is sound as written (acquire load against a
+    release store, both `owner_` writes correctly scoped under `m_`'s own critical sections where
+    `held_` transitions) — no torn or out-of-thin-air read possible.
+  - The reentrant-call scenario ADR-123 was actually built to close (a tool closure calling
+    `fork_from()` **synchronously**, no intervening suspension, from inside `chat()`) is correctly and
+    completely fixed. Confirmed empirically: reverted `fork_from()`'s conditional-lock logic back to
+    unconditional locking, rebuilt, reran `test_rt_agent_session_fork_from_serialization` — section
+    [3] genuinely **FAILED** ("[3] a fork_from() call made reentrantly from inside chat() ... does NOT
+    self-deadlock" — the check itself failed, process exited cleanly via the detach path, exit code 1),
+    confirming the pre-fix code really does still deadlock. Restored the fix, rebuilt, reran: full pass
+    again. `git diff --stat` on the restored file showed no residual changes.
+  - The `void* self_` round-trip in the test fixture (`ReentrantChatClient::self_`, set to `&source`
+    where `source` is `ReentrantSession` i.e. `AgentSession<ReentrantChatClient>`, cast back via
+    `static_cast<AgentSession<ReentrantChatClient>*>(self_)` inside `chat()`) is well-defined — the
+    round-trip is through the exact same, complete static type on both ends, the ordinary "cast to
+    `void*` and back to the SAME type" case the standard permits. No UB.
+  - Full project rebuild (Debug/MSVC): zero errors. Full `ctest`: 285/286, the one failure
+    (`test_reference_agent_task_corpus`, the pandas-groupby/matplotlib-not-installed checks) confirmed
+    byte-for-byte the same pre-existing, unrelated gap both this ADR and ADR-124 already name — no
+    regression.
+  - ADR-124's own `SandboxRuntime::spawn_child_branch()`/`exclusivity_` explanation for its
+    inconclusive sanity check was independently verified by reading `spawn_child_branch()` directly
+    (`sandbox_runtime.hpp`): it takes `exclusivity_->lock()` for its whole body, including the real,
+    slow `ledger_->branch_from()` call, and `MandatorySandboxProvider::start_task_branch()`
+    (`mandatory_sandbox_provider.hpp`) calls it from inside its own `task_branch_mutex_` guard — so
+    the dominant work genuinely is already serialized by a second lock regardless of
+    `task_branch_mutex_`. ADR-124's account holds up; no correction needed there.
+- **REAL FINDING, a genuine gap in this ADR's own §2 safety argument, not fixed in this pass (see
+  below for why):** `owner_` is stamped exactly ONCE, at the moment `LockAwaiter::await_resume()` runs
+  for a given acquisition, to whichever OS thread is physically executing at that instant — it is never
+  re-stamped as the holder's own execution continues. This codebase's own `rt/block_on.hpp` file banner
+  already documents, as a real, exercised production scenario (not a hypothetical) — motivated by
+  genuine `RunCommandTool`/shared-`AsyncQuota` contention — that a coroutine's continuation can resume
+  on a **different OS thread** than the one that suspended it. Consequence: if `source`'s own in-flight
+  round suspends on some OTHER async primitive inside `chat()` (a real `ChatClient::chat()` awaiting
+  network I/O is the ordinary case; `chat()`'s own concept signature, `core/chat_client.hpp`, requires
+  it to be a genuine coroutine, `ae::task<result<ChatResponse>>`) and its continuation resumes on a
+  different OS thread **before** a tool closure reentrantly calls `fork_from()`, then
+  `is_held_by_current_thread()` returns a **false negative** on that new thread (`owner_` still names
+  the original one) — `fork_from()` then tries to re-acquire `source.session_mutex_` itself and
+  self-deadlocks again, the exact failure mode this ADR exists to close, reachable via a narrower
+  trigger than the one this ADR's own test covers.
+  - **Empirically confirmed**, not just reasoned about: built a throwaway, uncommitted repro
+    (`ChatClient::chat()` that `co_await`s a custom always-suspend awaiter whose `await_suspend()`
+    resumes the coroutine from a brand-new, dedicated `std::thread` — forcing the rest of the round's
+    execution onto a genuinely different OS thread — then reentrantly calls `fork_from()`) driven
+    through `agentengine::rt::block_on()` (the real, production-correct driver, not the test suite's
+    own naive `drive()` loop, which is separately documented as unsafe under genuine cross-thread
+    suspension and would have muddied this specific result). Output confirmed the hop was real
+    (`chat()` resumed on a different `std::this_thread::get_id()` than the one that acquired the lock)
+    and that the round then **timed out** under the same bounded-wait methodology `test_rt_agent_
+    session_fork_from_serialization.cpp`'s own section [3] uses — `reentrant_fork_ran` stayed `false`,
+    proving the reentrant `fork_from()` call never even completed, consistent with a self-deadlock
+    inside its own `block_on()` re-acquisition attempt, not some other failure. The throwaway repro
+    file and its temporary `CMakeLists.txt` registration were removed after use — `git diff --stat`
+    confirmed both files matched their committed state exactly afterward, the same "restore and
+    confirm clean" discipline ADR-124 §2's own sanity-check investigation used.
+  - **Why not code-fixed this pass:** the failure mode is not reachable through any real call site in
+    this codebase today — identical in that respect to the ORIGINAL hazard's own pre-ADR-123 status
+    (every `fork_from()` caller today is a top-level `main()`; no reentrant caller of any shape exists
+    yet). A general, correct fix needs to track the in-flight ROUND's own identity (a coroutine/
+    call-chain property that survives a thread hop) rather than OS-thread identity — and this is not a
+    narrow patch: it was checked directly whether a `thread_local` marker (set by `start_run()`/
+    `resolve_interaction()` around the whole round instead of by `AsyncMutex` at acquisition) would do
+    better, and it would not — `thread_local` storage is exactly as thread-pinned as `owner_` is, so it
+    inherits the identical blind spot the instant the round's own execution migrates threads. Closing
+    this properly needs new state that survives a coroutine hopping OS threads (e.g. plumbing a
+    round-identity token through `EffectContext&`, which every `chat()`/tool-closure call site already
+    receives, and having `fork_from()` accept and check it) — a real API-shape change to `fork_from()`
+    and/or `EffectContext`, out of proportion for a same-day round to invent and land against the two
+    most foundational concurrency primitives in the codebase without its own design → red-team → prove
+    → judge pass. Matches this codebase's own established "residuals named, not fixed" convention
+    (`async_mutex.hpp`'s own file banner; ADR-124 §5's identical judgment call on its own out-of-scope
+    finding) rather than rushing a speculative, unreviewed change into `AsyncMutex`/`AgentSession`
+    under time pressure.
+  - **What WAS done instead:** corrected the overstated safety-argument language both in this ADR's own
+    §2 (implicitly, via this section) and in the two in-code comments that stated the guarantee too
+    broadly — `agent_session.hpp`'s `fork_from()` comment and `async_mutex.hpp`'s
+    `is_held_by_current_thread()` comment now both explicitly scope the guarantee to "the entire held
+    duration runs on one unchanging OS thread" and name this exact residual, so a future reader (or a
+    future caller wiring up the `agent.spawn`-style tool this whole design line anticipates) does not
+    mistake the current fix for a general solution to reentrant `fork_from()` calls of every shape.
+  - **Disposition:** SHOULD-FIX, disclosed, not blocking — the fix as shipped correctly closes the
+    specific, real, 100%-reproducible hazard it was built for (same-OS-thread-throughout reentrancy,
+    the only shape actually named as a near-future risk); the narrower cross-thread-hop variant found
+    here is unreachable today, requires a genuinely different mechanism to close correctly, and is now
+    honestly named rather than silently open behind an overstated guarantee.
+- **Verification of the round's other changes:** full rebuild and full `ctest` re-run after the
+  in-code comment corrections above (the only code-adjacent change made this round) — zero build
+  errors, 285/286 unchanged, same pre-existing gap.

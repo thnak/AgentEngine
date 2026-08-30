@@ -1253,11 +1253,31 @@ public:
     // same thread) -- 100% reproducible hang before this fix. NOT reachable through any real call site
     // in this codebase today (every `fork_from()` caller is a top-level `main()`), but exactly the shape
     // a near-future `agent.spawn`-style tool wired to call `fork_from()` directly from its own closure
-    // would hit. CLOSED via `AsyncMutex::is_held_by_current_thread()` (`rt/async_mutex.hpp`, ADR-123) --
-    // a small, additive owner-thread query on the primitive itself (no new locking discipline, no
-    // behavior change for any existing caller), checked below: if the calling thread already holds
-    // `source.session_mutex_`, I1 already guarantees no other thread can be touching `source`
-    // concurrently, so the lock is safely skipped rather than re-acquired.
+    // would hit. CLOSED, FOR THE SAME-OS-THREAD-THROUGHOUT CASE, via `AsyncMutex::
+    // is_held_by_current_thread()` (`rt/async_mutex.hpp`, ADR-123) -- a small, additive owner-thread
+    // query on the primitive itself (no new locking discipline, no behavior change for any existing
+    // caller), checked below: if the calling thread already holds `source.session_mutex_`, I1 already
+    // guarantees no other thread can be touching `source` concurrently, so the lock is safely skipped
+    // rather than re-acquired.
+    //
+    // SCOPE CORRECTION (same-day independent red-team round, ADR-123 §7): `owner_` is written ONCE, at
+    // the moment `source.session_mutex_` is acquired (`LockAwaiter::await_resume()`), to whichever OS
+    // thread happens to be physically running at that instant -- it is NOT re-stamped as the round's
+    // own execution proceeds. `agentengine::rt::block_on()`'s own file banner already documents, as a
+    // normal and exercised case (not hypothetical -- `RunCommandTool`/`AsyncQuota` contention hits it
+    // for real), that a coroutine's continuation can resume on a DIFFERENT OS thread than the one that
+    // suspended it. If `source`'s own in-flight round suspends on some OTHER async primitive (e.g. a
+    // real `ChatClient::chat()` awaiting network I/O) and its continuation resumes on a different OS
+    // thread BEFORE a tool closure reentrantly calls `fork_from()`, `is_held_by_current_thread()`
+    // returns a FALSE NEGATIVE on that new thread (`owner_` still names the original thread) --
+    // `fork_from()` then tries to re-acquire `source.session_mutex_` and self-deadlocks again, the
+    // exact failure mode this fix exists to close, just via a narrower trigger. Empirically confirmed
+    // with a throwaway repro (forced thread hop before the reentrant call; not committed -- see
+    // ADR-123 §7). NOT fixed in this pass: a general fix needs tracking the in-flight ROUND's own
+    // identity (a coroutine/call-chain property) rather than OS-thread identity, which no thread-keyed
+    // mechanism (this one included) can give by construction -- real, contained follow-on work, not a
+    // same-pass mechanical tightening. Matches this hazard's own pre-ADR-123 status: not reachable
+    // through any real call site in this codebase today.
     void fork_from(AgentSession const& source, std::string new_session_id,
                     std::optional<std::size_t> history_prefix_len = std::nullopt) {
         AsyncMutex::Guard source_guard;

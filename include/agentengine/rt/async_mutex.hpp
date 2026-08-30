@@ -176,6 +176,18 @@ public:
     // uncontended or freshly handed off via `unlock()`'s own trampoline, itself already serialized by
     // `m_`) and cleared only where `unlock()` already sets `held_ = false` under `m_`. No existing
     // caller's behavior changes -- nothing reads `owner_` unless it explicitly calls this method.
+    //
+    // KNOWN LIMITATION (same-day independent red-team round, ADR-123 §7): `owner_` is stamped ONCE, at
+    // acquisition, to whichever OS thread is physically running at that instant -- it is NOT updated as
+    // the holder's own execution continues. If the coroutine holding the Guard later suspends on some
+    // OTHER async primitive and its continuation resumes on a DIFFERENT OS thread (this file's sibling
+    // `block_on.hpp` documents that as a normal, exercised case, not a hypothetical), this method gives
+    // a FALSE NEGATIVE on that new thread -- it reports "not held by you" even though the calling
+    // (new) thread is, in fact, the sole physical executor of the still-open critical section. Correct
+    // only for reentrancy checks where the ENTIRE held duration, from acquisition to the check, runs on
+    // one unchanging OS thread (`AgentSession::fork_from()`'s own reentrant-call fix, `agent_
+    // session.hpp`, is scoped to exactly that case and documents this same limitation). A general fix
+    // needs coroutine/round identity, not OS-thread identity -- out of this method's own scope.
     [[nodiscard]] bool is_held_by_current_thread() const noexcept {
         return owner_.load(std::memory_order_acquire) == std::this_thread::get_id();
     }
