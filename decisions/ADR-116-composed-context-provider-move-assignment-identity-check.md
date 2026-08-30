@@ -3,7 +3,9 @@
 - **Status:** Proposed — implemented, verified (Windows/MSVC), full rebuild + `ctest` clean.
   Independent red-team round completed same day (§7): found and fixed two real MUST-FIX issues (a
   two/three-hop bypass through an untagged intermediate variable, and a genuine ABA hole from using a
-  raw session address as the identity tag). NOT yet re-verified on Linux.
+  raw session address as the identity tag). **Linux-verified, ADR-121** (2026-08-30, same day): B20/
+  B23/B24/B25 all pass on real GCC 14.2.0, including B25's own ABA scenario genuinely reproduced on a
+  second, independent allocator (glibc, not MSVC's CRT) and confirmed closed there too.
 - **Date:** 2026-08-30.
 - **Scope:** `include/agentengine/core/composed_context_provider.hpp` (new `owner_` member, new private
   `bind_owner()`, `operator=(ComposedContextProvider&&)` body, one new `#include`), `include/agentengine/
@@ -150,8 +152,9 @@ pop` and re-verified all checks pass again before landing.
 - ~~No independent red-team pass yet.~~ **Done, same day — see §7.** This design line's own repeated
   finding — every fresh, independent pass has found something real (ADR-108, ADR-109, ADR-111,
   ADR-114's own same-day follow-on) — held true here too: two real MUST-FIX issues found and fixed.
-- **No Linux verification.** Same residual every recent ADR in this line discloses; ADR-115's own
-  Linux pass predates this change.
+- ~~No Linux verification.~~ **Closed by ADR-121** (2026-08-30, same day): `test_session_builder`
+  passes completely on real GCC 14.2.0, including B25's own ABA scenario reproduced for real on
+  glibc's allocator, independent of the original MSVC CRT finding.
 - **The accessor-shape alternative (§2) was reasoned through and rejected, not tried and abandoned** —
   no code exists to compare it against empirically. If a future caller's own needs change (e.g., a
   second `HistoryProviderT` shape gains the same live-resource-holding property `ComposedContextProvider`
@@ -165,7 +168,7 @@ pop` and re-verified all checks pass again before landing.
 
 ## 6. Residuals
 
-- Awaiting Linux re-verification, per §5.
+- ~~Awaiting Linux re-verification, per §5.~~ Closed by ADR-121.
 - `composed_context_provider.hpp` now `#include`s `agentengine/rt/agent_session.hpp` — a real, if
   small, compile-time cost disclosed at the `#include` site itself: this is a widely-included header
   (ADR-102 §51), so `agent_session.hpp` changes now trigger a rebuild of everything that composes
