@@ -65,7 +65,8 @@
 #ifdef _WIN32
 #include <cstdlib>  // _putenv_s
 #else
-#include <cstdlib>  // setenv/unsetenv
+#include <cstdlib>    // setenv/unsetenv
+#include <sys/wait.h>  // WIFEXITED/WEXITSTATUS
 #endif
 
 namespace {
@@ -135,14 +136,30 @@ void set_fake_home(std::filesystem::path const& dir) {
 // platform's null device on BOTH platforms -- belt-and-suspenders alongside [a] above: even if
 // OPENAI_API_KEY were somehow still present, the child's own std::getline() sees immediate EOF rather
 // than blocking this test on whatever stdin this test process itself inherited from ctest.
+//
+// REAL FINDING made by this repo's own real Linux verification pass (decisions/ADR-135-linux-
+// verification-adr134.md), not assumed from `test_content_durability_cross_process.cpp`'s own pattern:
+// that sibling file only ever compares std::system()'s return value against 0, which is safe on BOTH
+// platforms' own encodings (a raw wait() status is 0 iff the child both exited normally AND returned 0,
+// same as Windows' own direct-exit-code return). This test instead needs to check for a SPECIFIC NONZERO
+// exit code (1, the tool's own documented quickstart_builder.no_store failure) -- and POSIX std::system()
+// does NOT return the child's exit code directly the way Windows' own std::system() does: it returns the
+// raw wait() status, which encodes a plain `return 1;` as 256, not 1 (confirmed empirically: `system("exit
+// 1")` on this real WSL2 GCC 14.2.0 returned 256). Decoded here via WIFEXITED/WEXITSTATUS so the exit-code
+// checks below mean the same thing on both platforms; the raw std::system() failure sentinel (-1, e.g. the
+// shell itself could not be started) and a not-normally-exited child (WIFEXITED false, e.g. killed by a
+// signal) both map to -1 here, which never equals the expected 1 and so still fails the check correctly.
 [[nodiscard]] int run_once(std::filesystem::path const& exe_path) {
 #ifdef _WIN32
     std::string const inner = "\"" + exe_path.string() + "\" < NUL";
     std::string const command = "\"" + inner + "\"";
+    return std::system(command.c_str());
 #else
     std::string const command = "\"" + exe_path.string() + "\" < /dev/null";
+    int const raw_status = std::system(command.c_str());
+    if (raw_status == -1 || !WIFEXITED(raw_status)) return -1;
+    return WEXITSTATUS(raw_status);
 #endif
-    return std::system(command.c_str());
 }
 
 }  // namespace

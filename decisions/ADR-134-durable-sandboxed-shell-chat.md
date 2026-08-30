@@ -8,7 +8,11 @@
   automated regression test (`tests/test_durable_sandboxed_shell_chat_cross_process.cpp`) that checks a
   strictly stronger, decisive signal than tree-object count alone. Full rebuild (zero errors) and full
   `ctest` (293 total — one more than before, the new test — 1 pre-existing failure, zero regression) and
-  `naming_lint.py` clean after every change. Still NOT Judged — no Linux verification yet. **Honestly
+  `naming_lint.py` clean after every change. **Linux-verified, ADR-135**: the tool itself
+  (`agentengine_durable_sandboxed_shell_chat`) built clean on real GCC 14.2.0 with zero source changes
+  needed (a genuinely new claim, not merely a re-confirmed one), and the new cross-process regression
+  test passes completely there too after one real, POSIX-specific fix to its own `std::system()`
+  exit-status decoding (unrelated to this tool's own production code). Still NOT Judged. **Honestly
   disclosed, not a blocker**: the actual interactive chat loop (`Bundle::ask()` against a real OpenAI
   endpoint) was NOT exercised in this pass — no `OPENAI_API_KEY` was available in the verification
   environment. That code path is unmodified, already-shipped machinery `tools/sandboxed_shell_chat.cpp`
@@ -101,9 +105,11 @@ file is a tool, not a library header).
 - **No independent red-team pass yet.** A new production tool composing `MandatorySandboxProvider<
   Surface, Store>` for the first time with a real, non-default `Store` — the expected next step for
   anything touching this design line.
-- **No Linux verification yet.** Same established next-step pattern as every other ADR in this line;
-  this tool was specifically designed to be portable (no `SandboxToolProvider`/HMAC dependency), but that
-  claim has not yet been executed on real Linux/GCC.
+- ~~No Linux verification yet.~~ **Closed by ADR-135** — the tool itself built clean on real Linux/
+  GCC 14.2.0 with zero source changes needed, confirming this file's own portability claim for the
+  first time; the new cross-process regression test needed one real, POSIX-specific fix (`std::system()`
+  exit-status decoding, unrelated to this tool's own production code) before it passed completely and
+  stably there too.
 - **No `run_shell`/native-jail tool composed alongside `run_command`** — unlike `sandboxed_shell_chat.cpp`,
   this tool demonstrates ONE provider only, by design (§2), to keep the durable-content story isolated
   and legible.
