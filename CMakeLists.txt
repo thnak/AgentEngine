@@ -956,6 +956,25 @@ if(AGENTENGINE_WITH_HTTPS)
   endif()
 endif()
 
+# ---- ADR-132 §5 residual, closed: tools/durable_sandboxed_shell_chat.cpp -- the FIRST real,
+# user-reachable production consumer of agentengine::FileWorktreeObjectStore (ADR-130),
+# bind_root_branch() (ADR-128), and the Store-generic tool surface (ADR-132), composed the way
+# tests/test_task_branch_content_durability_integration.cpp already proved works, through a real
+# interactive CLI. Deliberately does NOT use SandboxToolProvider/QuarantineSecretStore (unlike its
+# sibling tools/sandboxed_shell_chat.cpp) -- no hmac/mediated_shell_runner dependency, so this target is
+# portable on BOTH platforms from the start, gated only on AGENTENGINE_WITH_HTTPS (real network calls to
+# OpenAI) the same way agentengine_batch_infer below is.
+if(AGENTENGINE_WITH_HTTPS)
+  add_executable(agentengine_durable_sandboxed_shell_chat tools/durable_sandboxed_shell_chat.cpp)
+  target_link_libraries(agentengine_durable_sandboxed_shell_chat PRIVATE
+    agentengine::core agentengine::provider_http_client
+    agentengine::worktree_store agentengine::sandbox_io agentengine_warnings
+    MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+  if(MSVC)
+    target_compile_options(agentengine_durable_sandboxed_shell_chat PRIVATE /bigobj)
+  endif()
+endif()
+
 # ---- ADR-106 §7 residual, closed: tools/containerd_shell_chat.cpp -- the ContainerdExecutionSurface
 # counterpart to tools/sandboxed_shell_chat.cpp just above, composing SandboxToolProvider and
 # MandatorySandboxProvider<ContainerdExecutionSurface> into ONE session the same way. Linux-only

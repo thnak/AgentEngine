@@ -125,14 +125,13 @@ findings (unchanged — no new exported type, `Store` is a template parameter, n
   MSVC on the injected-class-name/CTAD/method-template-deduction reasoning this templatization
   depends on, and `test_task_branch_content_durability_integration` (along with every other
   Docker-independent test in this design line) passes completely on Linux too.
-- **`RunCommandTool`/task-branch tools are still only wired for the default `Store`.** Nothing in this ADR
-  changes `tools/cli_chat.cpp`/`tools/sandboxed_shell_chat.cpp`/`tools/containerd_shell_chat.cpp` or any
-  other real production caller to actually USE a non-default `Store` — this ADR proves the CAPABILITY
-  exists and works correctly (§4's integration test), it does not wire any real host to opt into it. A
-  real host wanting durable content still has to explicitly instantiate
-  `MandatorySandboxProvider<Surface, FileWorktreeObjectStore>` itself and pass a
-  `Ledger<FileWorktreeObjectStore>` to `bind_sandbox()`/`bind_root_branch()` — no new convenience wiring
-  was added for that choice.
+- ~~`RunCommandTool`/task-branch tools are still only wired for the default `Store`.~~ **Closed by
+  ADR-134** — `tools/durable_sandboxed_shell_chat.cpp` is a real, user-reachable host that explicitly
+  instantiates `MandatorySandboxProvider<DockerExecutionSurface, FileWorktreeObjectStore>` and verified,
+  across two genuinely separate real process invocations, that `bind_root_branch()` reattaches to durable
+  state correctly. `tools/cli_chat.cpp`/`tools/sandboxed_shell_chat.cpp`/`tools/containerd_shell_chat.cpp`
+  remain unchanged, deliberately ephemeral tools — this closes the residual by adding a new host, not by
+  changing those three.
 - **The `FileWorktreeObjectStore`↔`durable_dir` configuration-consistency residual named in ADR-130 §6
   remains unchanged** — nothing here forces or checks that a host configures `Ledger`'s own `durable_dir`
   and the store's own root directory consistently.
