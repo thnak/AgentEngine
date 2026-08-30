@@ -3,7 +3,11 @@
 - **Status:** Proposed — implemented, verified (Windows/MSVC), full rebuild (zero errors, 318 targets)
   and full `ctest` clean (292 total, 1 failure, pre-existing/environment, zero regression),
   `naming_lint.py` clean. SAME-DAY INDEPENDENT RED-TEAM (§7): clean bill of health, no defect found.
-  Still NOT Judged — no Linux verification yet.
+  **Linux-verified, ADR-133**: a complete rebuild (46 build steps, zero errors, zero warnings) and
+  test pass on real GCC 14.2.0 — the whole tree compiled clean, confirming GCC agrees with MSVC on
+  the injected-class-name/CTAD/method-template-deduction reasoning this templatization depends on,
+  and `test_task_branch_content_durability_integration` passes completely on Linux too. Still NOT
+  Judged.
 - **Date:** 2026-08-30.
 - **Scope:** `include/agentengine/sandbox/sandbox_runtime.hpp`, `include/agentengine/sandbox/real_io_
   filesystem.hpp`, `include/agentengine/sandbox/mandatory_sandbox_provider.hpp` (all three widened, no
@@ -116,7 +120,11 @@ findings (unchanged — no new exported type, `Store` is a template parameter, n
   session's design line (`sandbox_runtime.hpp`/`mandatory_sandbox_provider.hpp`) — a same-day adversarial
   round is the expected next step, matching this design line's own unbroken track record (ADR-102/114/
   117/119/126/128 each got one).
-- **No Linux verification yet.** Same established next-step pattern as every other ADR in this line.
+- ~~No Linux verification yet.~~ **Closed by ADR-133** — a complete rebuild and test pass on real
+  GCC 14.2.0: the whole tree compiled clean (zero errors, zero warnings) confirming GCC agrees with
+  MSVC on the injected-class-name/CTAD/method-template-deduction reasoning this templatization
+  depends on, and `test_task_branch_content_durability_integration` (along with every other
+  Docker-independent test in this design line) passes completely on Linux too.
 - **`RunCommandTool`/task-branch tools are still only wired for the default `Store`.** Nothing in this ADR
   changes `tools/cli_chat.cpp`/`tools/sandboxed_shell_chat.cpp`/`tools/containerd_shell_chat.cpp` or any
   other real production caller to actually USE a non-default `Store` — this ADR proves the CAPABILITY
@@ -137,8 +145,8 @@ findings (unchanged — no new exported type, `Store` is a template parameter, n
   area (no new class-level template parameter propagating to every OTHER method/member on that class,
   none of which touch `Ledger` at all) while still achieving full `Store`-genericity for the methods that
   need it. Worth naming explicitly so a future reader does not assume it was missed.
-- No Linux verification yet (unchanged by §7 — that round was Windows/MSVC only, same as this ADR's own
-  original pass).
+- ~~No Linux verification yet (unchanged by §7 — that round was Windows/MSVC only, same as this ADR's
+  own original pass).~~ **Closed by ADR-133** — see §5.
 
 ## 7. Independent red-team round (same day)
 
