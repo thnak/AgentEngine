@@ -29,6 +29,7 @@
 // `docker_cli_reject_unsafe_for_unquoted_arg()` (per-platform, real second check on Windows only) --
 // see their own comments below for why.
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -49,6 +50,9 @@
 #else
 #include <csignal>
 #include <cerrno>
+#include <fcntl.h>
+#include <poll.h>
+#include <spawn.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #endif
@@ -56,51 +60,275 @@
 #include "agentengine/core/error.hpp"
 #include "agentengine/sandbox/execution_surface.hpp"
 
+#ifndef _WIN32
+// Global scope, matching `ctr_cli_detail`'s own identical declaration
+// (containerd_execution_surface.hpp) -- POSIX `environ` is a real global, not something a nested
+// namespace `extern` declaration can bind to; declaring it inside `agentengine::docker_cli_detail`
+// would instead declare a distinct, unresolvable `agentengine::docker_cli_detail::environ` symbol.
+extern char** environ;
+#endif
+
 namespace agentengine {
 
 namespace docker_cli_detail {
-// Runs a command, captures stdout+stderr (merged), returns the real process exit code. Windows CRT
-// `_popen`/`_pclose` on Windows; POSIX `popen`/`pclose` (same shape, invokes `/bin/sh -c` instead of
-// `cmd.exe /c`) on Linux -- decisions/ADR-104-real-io-filesystem-linux-parity.md §2. The HOST shell
-// this spawns differs by platform, which is exactly why the rejection functions below are NOT a
-// mechanical rename of the Windows character set -- see their own comments.
-[[nodiscard]] inline SurfaceRunOutcome run_capture(std::string const& command) {
+
+// ADR-139: matches `ctr_cli_detail::kProcessTimeoutSeconds`/`kOutputSafetyCapBytes`
+// (containerd_execution_surface.hpp) exactly -- the sibling `ExecutionSurface` conformer this file
+// always should have had parity with. Before this ADR, `run_capture()` had neither a wall-clock
+// deadline nor an output cap at all: a model-issued `run_command` reaching a non-terminating
+// container process (`tail -f`, `yes`, a backgrounded daemon) hung the calling coroutine forever
+// (via popen/pclose blocking until the pipe hit EOF), and unbounded stdout grew this HOST process's
+// memory without limit -- a real, reachable I8 gap (CLAUDE.md "sandbox and hostile tests are
+// resource-capped") the containerd conformer's own header comment already cites this exact rule for,
+// but this file never carried the rule over.
+constexpr int kProcessTimeoutSeconds = 30;
+constexpr std::size_t kOutputSafetyCapBytes = 1u << 20;  // 1 MiB, merged stdout+stderr
+
+#ifdef _WIN32
+// Real `CreateProcessA` + anonymous pipe (stdout AND stderr redirected to the SAME write end,
+// reproducing `_popen`'s own "2>&1"-equivalent merge), replacing `_popen`/`_pclose` -- unlike that
+// CRT wrapper, this gives a real process HANDLE, so a hung/non-terminating child can actually be
+// killed on a wall-clock deadline instead of blocking this call forever, and the read loop below
+// caps total bytes retained instead of accumulating without bound.
+//
+// The spawned process is `cmd.exe /c <command>`, and `command` is itself typically `docker ...`
+// (`create()`/`exec()`/etc. below) -- so the process this call actually needs to be able to kill on
+// timeout is NOT `cmd.exe` itself but `docker.exe`, a genuine CHILD `cmd.exe` spawns to run it (Windows
+// has no exec()-style process-image replacement the way POSIX `sh -c "single simple command"` does, so
+// `cmd.exe` always stays alive as a real parent). A first draft of this fix (`TerminateProcess` on just
+// `pi.hProcess`, no job object) was independently probed against a real Docker daemon after landing:
+// `run_capture("docker exec <id> sh -c \"tail -f /dev/null\"", timeout_seconds=5)` DID return within
+// 5s (the coroutine-hang half of the original bug was genuinely fixed) but left `docker.exe` itself
+// running as an orphaned HOST process afterward, AND the containerized `tail` process still alive
+// inside the container (confirmed via `docker top`) -- the timeout kill never reached anything past
+// `cmd.exe`. Fixed with a Job Object (`CREATE_SUSPENDED` + `AssignProcessToJobObject()` BEFORE
+// `ResumeThread()`, so `cmd.exe` can never spawn a child before it is job-bound) configured with
+// `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`: `TerminateJobObject()` on timeout kills `cmd.exe` AND every
+// descendant it spawned (Windows job membership is inherited by children unless a process explicitly
+// opts out via `CREATE_BREAKAWAY_FROM_JOB`, which neither `cmd.exe` nor `docker.exe` do), closing the
+// exact gap the probe found. `CreateJobObject`/`AssignProcessToJobObject` failing (rare) degrades to
+// the prior single-process `TerminateProcess` behavior rather than aborting the whole call -- a
+// best-effort kill of the top-level process is still strictly better than none.
+//
+// `command` is concatenated onto `cmd.exe /c ` RAW -- deliberately NOT re-escaped through the
+// Microsoft C runtime argv-quoting algorithm (`native_process_spawn.cpp`'s own
+// `detail::quote_one_argument`), even though that looked like the obviously-correct choice at first:
+// a real, executed regression found the hard way (this ADR's own build/test pass) that `cmd.exe`'s
+// `/c`-remainder parsing does NOT apply CRT-style backslash-before-quote unescaping to what it finds
+// there -- it is a completely different, much simpler grammar (roughly: strip one matching outer
+// quote pair if the whole remainder is exactly that, otherwise take it verbatim). CRT-quoting a
+// `command` string that already contains ITS OWN literal `"..."` (e.g. `docker exec <id> sh -c
+// "<cmd>"`, built by this file's own callers) turned every embedded quote into a literal backslash-
+// quote PAIR cmd.exe then passed straight through to `docker`/`sh` as two literal characters, silently
+// corrupting every quoted argument -- this is exactly what `_popen` itself avoids by NOT re-escaping:
+// it hands `command` to `cmd.exe /c` essentially as-is, which is why this file's own existing
+// shell-quoting discipline (`docker_cli_win_double_trailing_backslashes`,
+// `docker_cli_reject_shell_breakout`, etc.) was always designed and tested against a raw, unescaped
+// concatenation -- reproduced here, not reinvented.
+[[nodiscard]] inline SurfaceRunOutcome run_capture(std::string const& command,
+                                                     int timeout_seconds = kProcessTimeoutSeconds,
+                                                     std::size_t output_cap = kOutputSafetyCapBytes) {
     SurfaceRunOutcome out;
-#ifdef _WIN32
-    FILE* pipe = _popen((command + " 2>&1").c_str(), "r");
-#else
-    FILE* pipe = popen((command + " 2>&1").c_str(), "r");
-#endif
-    if (!pipe) { out.exit_code = -1; return out; }
-    std::array<char, 4096> buffer{};
-    while (std::fgets(buffer.data(), static_cast<int>(buffer.size()), pipe)) {
-        out.stdout_text += buffer.data();
+    SECURITY_ATTRIBUTES sa{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
+    HANDLE read_h = nullptr;
+    HANDLE write_h = nullptr;
+    if (!CreatePipe(&read_h, &write_h, &sa, 0)) { out.exit_code = -1; return out; }
+    SetHandleInformation(read_h, HANDLE_FLAG_INHERIT, 0);
+
+    STARTUPINFOA si{};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdOutput = write_h;
+    si.hStdError = write_h;
+    si.hStdInput = nullptr;
+    PROCESS_INFORMATION pi{};
+
+    std::string cmdline = "cmd.exe /c " + command;
+    std::vector<char> mutable_cmdline(cmdline.begin(), cmdline.end());
+    mutable_cmdline.push_back('\0');
+
+    // Job object so a timeout kill reaches the whole process TREE (`cmd.exe` and whatever real child
+    // it spawns to run `command`, e.g. `docker.exe`), not just the top-level `cmd.exe` -- see the
+    // function-level comment above for the real, probed leak this closes. Created and configured
+    // BEFORE the process itself, and the process is started SUSPENDED and only assigned to the job
+    // before its first instruction runs, so there is no window where `cmd.exe` could spawn a child
+    // that escapes the job.
+    HANDLE job = CreateJobObjectA(nullptr, nullptr);
+    if (job != nullptr) {
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits))) {
+            CloseHandle(job);
+            job = nullptr;
+        }
     }
-#ifdef _WIN32
-    out.exit_code = _pclose(pipe);
-#else
-    // REAL, previously-undiscovered bug (2026-08-29, found the hard way -- a real Docker daemon
-    // became reachable in this session's WSL2 environment for the first time, and
-    // test_sandbox_runtime's `check(r3->exec.exit_code == 7, ...)` genuinely failed): unlike
-    // Windows' `_pclose`, which returns the child's plain exit code directly, POSIX `pclose()`
-    // returns the same wait-status ENCODING `waitpid()` does (`WEXITSTATUS(status)` extracts the
-    // real 0-255 exit code; the raw status is NOT that value -- for `exit 7`, `pclose()`'s raw
-    // return was 1792, not 7). This is exactly why the `_popen`->`popen` port could not be a
-    // mechanical rename for THIS call either, same reasoning as the shell-injection guards above.
-    int const status = pclose(pipe);
-    if (status < 0) {
-        out.exit_code = -1;  // pclose() itself failed (e.g. the child was never reaped)
-    } else if (WIFEXITED(status)) {
-        out.exit_code = WEXITSTATUS(status);
-    } else {
-        // Signal-terminated or otherwise abnormal -- matches this codebase's own existing
-        // "abnormal/never-truly-ran" sentinel convention (DockerExecutionSurface's own `-1` use
-        // for "never launched"), rather than inventing a second, differently-shaped sentinel.
+
+    DWORD const creation_flags = CREATE_NO_WINDOW | (job != nullptr ? CREATE_SUSPENDED : 0);
+    BOOL created = CreateProcessA(nullptr, mutable_cmdline.data(), nullptr, nullptr,
+                                   /*bInheritHandles=*/TRUE, creation_flags, nullptr, nullptr, &si, &pi);
+    CloseHandle(write_h);
+    if (!created) {
+        CloseHandle(read_h);
+        if (job != nullptr) CloseHandle(job);
         out.exit_code = -1;
+        return out;
     }
-#endif
+    if (job != nullptr) {
+        if (!AssignProcessToJobObject(job, pi.hProcess)) {
+            // Could not bind the process to the job after all (rare) -- fall back to the
+            // single-process kill path rather than leaving the process suspended forever.
+            CloseHandle(job);
+            job = nullptr;
+        }
+        ResumeThread(pi.hThread);
+    }
+
+    // Bounded, non-blocking-relative-to-deadline read: PeekNamedPipe tells us whether data is
+    // available without blocking, so this loop can honor the wall-clock deadline even while the
+    // child stays silent, unlike a plain blocking ReadFile.
+    auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeout_seconds);
+    bool stopped_early = false;
+    char buf[4096];
+    for (;;) {
+        if (out.stdout_text.size() >= output_cap) { stopped_early = true; break; }
+        if (std::chrono::steady_clock::now() >= deadline) { stopped_early = true; break; }
+        DWORD available = 0;
+        if (!PeekNamedPipe(read_h, nullptr, 0, nullptr, &available, nullptr)) break;  // pipe closed/error -- natural EOF
+        if (available == 0) {
+            DWORD const wait_rc = WaitForSingleObject(pi.hProcess, 20);
+            if (wait_rc == WAIT_OBJECT_0) {
+                // Process exited; drain whatever it left buffered before treating this as EOF.
+                if (!PeekNamedPipe(read_h, nullptr, 0, nullptr, &available, nullptr) || available == 0) break;
+            } else {
+                continue;
+            }
+        }
+        DWORD to_read = static_cast<DWORD>(std::min<std::size_t>(sizeof(buf), available));
+        DWORD read = 0;
+        if (!ReadFile(read_h, buf, to_read, &read, nullptr) || read == 0) break;
+        std::size_t const remaining = output_cap > out.stdout_text.size() ? output_cap - out.stdout_text.size() : 0;
+        std::size_t const take = static_cast<std::size_t>(read) < remaining ? static_cast<std::size_t>(read) : remaining;
+        out.stdout_text.append(buf, take);
+    }
+    CloseHandle(read_h);
+
+    DWORD exit_code = 0;
+    if (stopped_early) {
+        // `TerminateJobObject` (when the job bind above succeeded) kills `cmd.exe` AND every real
+        // child it spawned to run `command` -- `TerminateProcess` alone only reaches `cmd.exe`,
+        // leaving e.g. `docker.exe` (and, transitively, whatever it was waiting on) running as a real
+        // orphan; see the function-level comment above.
+        if (job != nullptr) {
+            TerminateJobObject(job, 1);
+        } else {
+            TerminateProcess(pi.hProcess, 1);
+        }
+        WaitForSingleObject(pi.hProcess, 5000);
+        out.exit_code = -1;
+    } else {
+        WaitForSingleObject(pi.hProcess, INFINITE);
+        if (GetExitCodeProcess(pi.hProcess, &exit_code)) {
+            out.exit_code = static_cast<int>(exit_code);
+        } else {
+            out.exit_code = -1;
+        }
+    }
+    if (job != nullptr) CloseHandle(job);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
     return out;
 }
+#else
+// Real `posix_spawn("/bin/sh", {"/bin/sh", "-c", command})` + anonymous pipe (stdout AND stderr
+// dup2'd to the SAME write end, reproducing the "2>&1" merge the previous `popen((command + "
+// 2>&1").c_str(), "r")` shape relied on) + poll()-based bounded read, replacing `popen`/`pclose` --
+// unlike that libc wrapper, this exposes the real child pid, so a hung/non-terminating child can
+// actually be SIGKILLed on a wall-clock deadline instead of blocking this call forever
+// (`ctr_cli_detail::run_argv`, containerd_execution_surface.hpp, is the proven precedent this
+// mirrors -- single merged stream here instead of that function's two, since `SurfaceRunOutcome` has
+// only one text field to begin with).
+[[nodiscard]] inline SurfaceRunOutcome run_capture(std::string const& command,
+                                                     int timeout_seconds = kProcessTimeoutSeconds,
+                                                     std::size_t output_cap = kOutputSafetyCapBytes) {
+    SurfaceRunOutcome out;
+    std::array<int, 2> pipe_fds{-1, -1};
+    if (::pipe(pipe_fds.data()) != 0) { out.exit_code = -1; return out; }
+    ::fcntl(pipe_fds[0], F_SETFD, FD_CLOEXEC);
+
+    posix_spawn_file_actions_t actions;
+    posix_spawn_file_actions_init(&actions);
+    posix_spawn_file_actions_adddup2(&actions, pipe_fds[1], STDOUT_FILENO);
+    posix_spawn_file_actions_adddup2(&actions, pipe_fds[1], STDERR_FILENO);
+    posix_spawn_file_actions_addclose(&actions, pipe_fds[0]);
+    posix_spawn_file_actions_addclose(&actions, pipe_fds[1]);
+    posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
+
+    char shell[] = "/bin/sh";
+    char flag[] = "-c";
+    std::vector<char> command_buf(command.begin(), command.end());
+    command_buf.push_back('\0');
+    char* argv[] = {shell, flag, command_buf.data(), nullptr};
+
+    pid_t pid = -1;
+    int const spawn_rc = ::posix_spawn(&pid, "/bin/sh", &actions, nullptr, argv, environ);
+    posix_spawn_file_actions_destroy(&actions);
+    ::close(pipe_fds[1]);
+    if (spawn_rc != 0) {
+        ::close(pipe_fds[0]);
+        out.exit_code = -1;
+        return out;
+    }
+
+    auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeout_seconds);
+    bool stopped_early = false;
+    char buf[4096];
+    for (;;) {
+        if (out.stdout_text.size() >= output_cap) { stopped_early = true; break; }
+        auto const now = std::chrono::steady_clock::now();
+        if (now >= deadline) { stopped_early = true; break; }
+        struct pollfd pfd{pipe_fds[0], POLLIN, 0};
+        int const timeout_ms = static_cast<int>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count());
+        int const rc = ::poll(&pfd, 1, timeout_ms > 0 ? timeout_ms : 0);
+        if (rc < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        if (rc == 0) { stopped_early = true; break; }  // poll's own timeout hit the deadline
+        if ((pfd.revents & (POLLIN | POLLHUP | POLLERR)) == 0) continue;
+        ssize_t const n = ::read(pipe_fds[0], buf, sizeof(buf));
+        if (n <= 0) break;  // natural EOF -- child closed its output
+        std::size_t const remaining = output_cap > out.stdout_text.size() ? output_cap - out.stdout_text.size() : 0;
+        std::size_t const take = static_cast<std::size_t>(n) < remaining ? static_cast<std::size_t>(n) : remaining;
+        out.stdout_text.append(buf, take);
+    }
+    ::close(pipe_fds[0]);
+
+    int status = 0;
+    if (stopped_early) {
+        // Deadline or output cap hit before the child closed its own output -- it must be assumed
+        // still running (or blocked writing into a pipe we've stopped draining) and is force-killed,
+        // never waited on with a plain blocking waitpid(), which could hang this call just as long as
+        // the child it was meant to bound.
+        ::kill(pid, SIGKILL);
+        ::waitpid(pid, &status, 0);
+        out.exit_code = -1;
+    } else {
+        // Natural EOF: the child has already closed its output, so it is expected to exit
+        // imminently -- a bounded, blocking reap here mirrors `ctr_cli_detail::run_argv`'s own
+        // "Bounded reap even in the non-timeout path" comment.
+        pid_t const reaped = ::waitpid(pid, &status, 0);
+        if (reaped == pid && WIFEXITED(status)) {
+            out.exit_code = WEXITSTATUS(status);
+        } else if (reaped == pid && WIFSIGNALED(status)) {
+            out.exit_code = 128 + WTERMSIG(status);
+        } else {
+            out.exit_code = -1;
+        }
+    }
+    return out;
+}
+#endif
 [[nodiscard]] inline long current_pid() {
 #ifdef _WIN32
     return static_cast<long>(_getpid());
