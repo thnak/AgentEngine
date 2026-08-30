@@ -9,9 +9,11 @@
   broken on POSIX (not merely unverified), reproduced directly against a real `/bin/sh -c`, and fixed by
   making the Windows-`cmd.exe`-specific outer quote wrap conditional. Gate item 4's own named coverage
   gap (the same-digest concurrent-write sub-case) was also closed with a new, real, barrier-synchronized
-  test section, found safe by construction. Still NOT Judged: no Linux verification yet (unchanged from
-  this ADR's own original disclosure — the red-team round found and fixed a Linux-blocking defect but did
-  not itself run on Linux).
+  test section, found safe by construction. **Linux-verified, ADR-131** (2026-08-30, same day): a
+  complete, unconditional pass on real GCC 14.2.0 — both self-relaunching tests pass completely against
+  real `/bin/sh`, confirming the red-team's own quoting fix genuinely works (not merely the string
+  reproduction §7 used), and the concurrency probe's full claim set, including the new same-digest race
+  section, reproduces on a second, independent allocator and filesystem.
 - **Date:** 2026-08-30.
 - **Scope:** `include/agentengine/core/file_worktree_object_store.hpp` (new), `tests/test_content_
   durability_cross_process.cpp` (new), `tests/test_content_durability_concurrency.cpp` (new), `tests/
@@ -157,8 +159,12 @@ line, the same suppression pattern its sibling `InMemoryWorktreeObjectStore` alr
   ADR operates at the raw `Ledger<Store>` level directly.
 - **No independent red-team pass yet.** This is new, real on-disk content-storage code — the design
   draft's own gate item 7 named this as expected, not optional, for exactly this class of change.
-- **No Linux verification yet.** Same established next-step pattern as every other ADR in this design
-  line.
+- ~~No Linux verification yet.~~ **Closed by ADR-131** — a complete, unconditional pass on real
+  GCC 14.2.0: both self-relaunching tests (`test_content_durability_cross_process`,
+  `test_identity_durability_precondition`) pass completely against real `/bin/sh`, confirming the
+  red-team's own `_WIN32`-conditional quoting fix genuinely works (not merely the string
+  reproduction §7 used), and `test_content_durability_concurrency`'s full claim set, including the
+  new same-digest race section, reproduces on a second, independent allocator and filesystem.
 - **No garbage collection**, no cross-process file locking beyond what already exists, no migration path
   for existing in-memory data, no encryption/compression — all explicitly out of scope per the design
   draft's own §6, unchanged here.
