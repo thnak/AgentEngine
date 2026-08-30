@@ -160,8 +160,9 @@ pre-existing, separately-disclosed concern per §6, not something this ADR's own
 
 ## 5. What was NOT done
 
-- **No Linux verification.** This change touches two Linux-and-Windows-shared headers
-  (`ledger.hpp`/`sandbox_runtime.hpp`); only Windows/MSVC was exercised this pass.
+- ~~No Linux verification.~~ **Closed by ADR-115** (2026-08-30): `test_ledger` — including this ADR's
+  own case [4]/[5]/[12] additions — passes ALL CHECKS on real GCC 14.2.0/Ubuntu 24.04, no daemon
+  dependency at all.
 - **`SandboxRuntime::merge_into()` remains uncalled by any real production code or test.** This ADR
   keeps it compiling and correctly threaded, but does not give it its own first real caller — that
   remains separate, pre-existing, unaddressed scope (ADR-102's own Phase 5 §47 already named the whole

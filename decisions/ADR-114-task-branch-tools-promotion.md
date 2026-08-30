@@ -149,7 +149,12 @@ gate holds in the composed setting too, not just standalone.
 - ~~No independent red-team pass yet.~~ **Done same day, §7** — found one MUST-FIX and one SHOULD-FIX,
   both fixed and re-verified, continuing this design line's own unbroken streak (ADR-108, ADR-109,
   ADR-111) of every independent pass finding something real.
-- **No Linux verification.** Windows/MSVC only this pass.
+- **No Linux verification.** **Narrowed by ADR-115** (2026-08-30): the full project (including this
+  ADR's own new code) compiles clean on real Linux/GCC-14.2.0, and the underlying `Ledger`/
+  `SandboxRuntime`/`reap_orphans()` machinery this promotion depends on is fully re-proven under a
+  REAL containerd runtime there (31/31). Still NOT run for real: `tests/test_task_branch_tools.cpp`
+  itself is hardcoded to `DockerExecutionSurface`, and no Linux-native Docker daemon was reachable in
+  that environment — a disclosed, environment-caused gap, not a code defect, but not yet eliminated.
 - **The `Capability`-variant widening question (§2) remains open**, named explicitly as follow-on
   work rather than resolved or silently skipped.
 - **Concurrency across MULTIPLE task branches on the SAME `MandatorySandboxProvider` instance is

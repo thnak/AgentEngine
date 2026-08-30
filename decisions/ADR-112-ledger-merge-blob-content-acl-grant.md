@@ -83,7 +83,9 @@ exported vocabulary — this ADR adds no new type, only extends an existing meth
   independent pass on this design finds something real (ADR-108, ADR-109, ADR-111's own MUST-FIX all
   demonstrate this) — this should not be assumed clean merely because the change is small and the
   existing suite stayed green.
-- **No Linux verification.** Windows/MSVC only this pass.
+- ~~No Linux verification.~~ **Closed by ADR-115** (2026-08-30): `test_ledger` — including this ADR's
+  own case [4] extension (the positive proof + negative control) — passes ALL CHECKS on real GCC
+  14.2.0/Ubuntu 24.04, no daemon dependency at all.
 - **Nested-subtree entries are logically covered by the same loop (`entry.is_tree` routes to
   `tree_acl_`) but not separately exercised by a dedicated test** — every existing `test_ledger.cpp`
   scenario uses flat, single-level trees (`is_tree=false` entries only). The loop's own logic doesn't
