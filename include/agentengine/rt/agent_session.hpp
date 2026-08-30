@@ -1240,32 +1240,31 @@ public:
     // it here would invent new semantics for a usage pattern nothing else in this codebase exercises,
     // rather than closing the specific, real, already-named hazard.
     //
-    // REAL, EMPIRICALLY-CONFIRMED HAZARD this fix itself introduces, found by an independent red-team
-    // pass and disclosed here rather than left implicit: `AsyncMutex` has no reentrancy check (`held_`
-    // is a plain bool, no owner-thread tracking, `rt/async_mutex.hpp`). Before this fix, `fork_from()`
-    // touched no lock at all, so it could never deadlock. Now, calling `fork_from(source, ...)` (self-
-    // fork included, `source == *this`) from code ALREADY running on the same OS thread inside an
-    // in-flight `start_run()`/`resolve_interaction()` round on `source` -- e.g. synchronously, from a
-    // tool closure's own body, the exact shape `schedule_wakeup`'s own closure already has to route
-    // around via an internal `_impl` bypass for this identical reason (see that closure's own comment)
-    // -- would genuinely, reproducibly self-deadlock: `block_on()`'s own busy-wait spins forever,
-    // because the only thing that could ever call `unlock()` is the very `start_run()`/
-    // `resolve_interaction()` Guard already parked one frame up on the SAME stack, waiting for this
-    // call to return. Confirmed via a real, targeted repro (a `ChatClient::chat()` that calls
-    // `self->fork_from(*self, ...)` from inside a live round, same thread) -- 100% reproducible hang,
-    // not a rare race. NOT reachable through any real call site in this codebase today (every
-    // `fork_from()` caller is a top-level `main()`, never a tool closure or `ChatClient::chat()` body)
-    // -- but exactly the shape a near-future `agent.spawn`-style tool wired to call `fork_from()`
-    // directly from its own closure would hit, silently (an indefinite CPU-spinning hang, no crash, no
-    // diagnostic -- a materially worse failure mode than a clean, fast error). Not fixed in this pass:
-    // doing so correctly needs either owner-thread tracking on `AsyncMutex` itself (a broader change to
-    // a low-level primitive several other real call sites also rely on, out of this fix's own narrow
-    // scope) or a `fork_from()`-local reentrancy guard -- real, contained follow-on work for whichever
-    // future session wires a caller that could reach this path, not a same-pass mechanical addition.
+    // REAL HAZARD this fix itself introduced, found by an independent red-team pass, disclosed, and NOW
+    // CLOSED (ADR-123, same design line, later pass): `AsyncMutex` had no reentrancy check, so calling
+    // `fork_from(source, ...)` from code ALREADY running on the same OS thread inside an in-flight
+    // `start_run()`/`resolve_interaction()` round on `source` -- e.g. synchronously, from a tool
+    // closure's own body, the exact shape `schedule_wakeup`'s own closure already has to route around
+    // via an internal `_impl` bypass for this identical reason -- would genuinely, reproducibly
+    // self-deadlock: `block_on()`'s own busy-wait spins forever, because the only thing that could ever
+    // call `unlock()` is the very `start_run()`/`resolve_interaction()` Guard already parked one frame
+    // up on the SAME stack, waiting for this call to return. Confirmed via a real, targeted repro (a
+    // `ChatClient::chat()` that calls `fork_from()` on the in-flight session from inside a live round,
+    // same thread) -- 100% reproducible hang before this fix. NOT reachable through any real call site
+    // in this codebase today (every `fork_from()` caller is a top-level `main()`), but exactly the shape
+    // a near-future `agent.spawn`-style tool wired to call `fork_from()` directly from its own closure
+    // would hit. CLOSED via `AsyncMutex::is_held_by_current_thread()` (`rt/async_mutex.hpp`, ADR-123) --
+    // a small, additive owner-thread query on the primitive itself (no new locking discipline, no
+    // behavior change for any existing caller), checked below: if the calling thread already holds
+    // `source.session_mutex_`, I1 already guarantees no other thread can be touching `source`
+    // concurrently, so the lock is safely skipped rather than re-acquired.
     void fork_from(AgentSession const& source, std::string new_session_id,
                     std::optional<std::size_t> history_prefix_len = std::nullopt) {
-        AsyncMutex::Guard source_guard = agentengine::rt::block_on(
-            agent_session_detail::acquire_session_mutex(source.session_mutex_));
+        AsyncMutex::Guard source_guard;
+        if (!source.session_mutex_.is_held_by_current_thread()) {
+            source_guard = agentengine::rt::block_on(
+                agent_session_detail::acquire_session_mutex(source.session_mutex_));
+        }
         session_id_ = std::move(new_session_id);
         principal_  = source.principal_;
         // ADR-061 §22.1/§21a Finding 1: fail-closed carry-forward -- a fork of a Tier-3 session must

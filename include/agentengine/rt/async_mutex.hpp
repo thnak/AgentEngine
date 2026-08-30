@@ -64,9 +64,11 @@
 // `unlock()`'s own body for the loop.
 
 #include <algorithm>
+#include <atomic>
 #include <coroutine>
 #include <deque>
 #include <mutex>
+#include <thread>
 #include <utility>
 
 namespace agentengine::rt {
@@ -143,6 +145,11 @@ public:
 
         [[nodiscard]] Guard await_resume() noexcept {
             parked = false;  // reached the ordinary way -- nothing stale for the destructor to remove
+            // Runs on the thread that is about to actually hold the mutex -- both the uncontended fast
+            // path and the resumed-after-hand-off path reach here synchronously on that exact thread
+            // (unlock()'s own trampoline calls next.resume() directly, not via a scheduler hop), so
+            // std::this_thread::get_id() here is always the real, current owner.
+            self->owner_.store(std::this_thread::get_id(), std::memory_order_release);
             return Guard{self};
         }
 
@@ -159,6 +166,19 @@ public:
     };
 
     [[nodiscard]] LockAwaiter lock() noexcept { return LockAwaiter{this}; }
+
+    // ADR-123 -- a real, disclosed reentrant-self-deadlock hazard (AgentSession::fork_from(), agent_
+    // session.hpp's own comment) needed a way to ask "does the CALLING thread already own this mutex"
+    // without adding a second, incompatible locking discipline (a recursive mutex would silently change
+    // this type's own semantics for every existing caller). Purely additive: `owner_` is written only
+    // where mutual exclusion already guarantees exactly one thread can be doing so (`LockAwaiter::
+    // await_resume()`, reached only by whichever coroutine has just become the sole, exclusive holder --
+    // uncontended or freshly handed off via `unlock()`'s own trampoline, itself already serialized by
+    // `m_`) and cleared only where `unlock()` already sets `held_ = false` under `m_`. No existing
+    // caller's behavior changes -- nothing reads `owner_` unless it explicitly calls this method.
+    [[nodiscard]] bool is_held_by_current_thread() const noexcept {
+        return owner_.load(std::memory_order_acquire) == std::this_thread::get_id();
+    }
 
 private:
     friend struct LockAwaiter;
@@ -188,6 +208,7 @@ private:
                 waiters_.pop_front();
             } else {
                 held_ = false;
+                owner_.store(std::thread::id{}, std::memory_order_release);
             }
         }
 
@@ -209,6 +230,7 @@ private:
                 waiters_.pop_front();
             } else {
                 held_ = false;
+                owner_.store(std::thread::id{}, std::memory_order_release);
                 next = {};
                 draining_ = false;
                 return;
@@ -221,6 +243,10 @@ private:
     bool draining_ = false;
     bool pending_release_ = false;
     std::deque<std::coroutine_handle<>> waiters_;
+    // ADR-123 -- default-constructed std::thread::id{} means "not held," and no real running thread's
+    // own get_id() can ever equal it (the standard's own "not-a-thread" guarantee), so
+    // is_held_by_current_thread() above never false-positives against an unheld mutex.
+    std::atomic<std::thread::id> owner_{};
 };
 
 }  // namespace agentengine::rt

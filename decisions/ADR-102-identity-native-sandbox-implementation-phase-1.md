@@ -84,8 +84,12 @@ Real, compiled, tested:
   two-thread race test whose own status as a genuine positive control was empirically verified via a
   forced-revert (fails 3/3 without the fix, passes with it). An independent, dedicated red-team round
   found and disclosed (not fixed) a real, empirically-confirmed new hazard the fix itself introduces —
-  a self-deadlock if `fork_from()` is ever called reentrantly against a lock the calling thread already
-  holds — not reachable through any real call site today, but plausibly exactly what a near-future
+  ~~a self-deadlock if `fork_from()` is ever called reentrantly against a lock the calling thread already
+  holds~~ (**closed by ADR-123**, 2026-08-30: `AsyncMutex::is_held_by_current_thread()`, a small,
+  additive owner-thread query, lets `fork_from()` skip re-acquiring a lock its own calling thread
+  already holds — proven via a real repro, a `ChatClient::chat()` that calls `fork_from()` reentrantly
+  from inside a live round, which hung 100% of the time before the fix and completes correctly after
+  it) — not reachable through any real call site today, but plausibly exactly what a near-future
   `agent.spawn`-style tool would hit. A real process incident during this same work is also disclosed
   (§39): a red-team subagent's own cleanup step reverted `tests/CMakeLists.txt` via git rather than
   undoing only its own scratch additions, silently discarding seven of this session's own legitimate

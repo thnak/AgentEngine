@@ -19,6 +19,12 @@
 //   [2] the self-fork case (source IS the calling session) still works correctly and does not
 //       self-deadlock -- fork_from() never held session_mutex_ before acquiring it fresh here, so the
 //       uncontended fast path applies even when source and *this are the same object.
+//   [3] ADR-123: the REENTRANT case -- fork_from() called on the CALLING thread from INSIDE an
+//       already-in-flight start_run() round on the very session being forked FROM (e.g. synchronously
+//       from a tool closure/ChatClient::chat() body) does NOT self-deadlock. Before ADR-123 this hung
+//       forever (block_on()'s own busy-wait spinning against a lock only the caller's own already-
+//       parked outer Guard could ever release) -- proven here with a bounded wait, not an infinite
+//       join, so a real regression fails this test instead of hanging the whole suite.
 
 #include "agentengine/rt/agent_session.hpp"
 
@@ -29,6 +35,7 @@
 #include <thread>
 
 using namespace agentengine;
+using agentengine::rt::AgentResponse;
 using agentengine::rt::AgentSession;
 using agentengine::rt::StartRun;
 
@@ -87,6 +94,52 @@ public:
 static_assert(agentengine::ChatClient<SlowChatClient>);
 
 using SlowSession = AgentSession<SlowChatClient>;
+
+// [3]'s own fixture: a ChatClient that, from INSIDE its own chat() call (i.e. while the owning
+// session's session_mutex_ is held on THIS exact thread by the in-flight start_run() round), calls
+// fork_from() reentrantly -- the exact shape ADR-123's own file-banner comment (agent_session.hpp)
+// names as the near-future agent.spawn-style hazard. Forks FROM the live, in-flight session INTO a
+// separate, freshly-constructed target (not self-into-self) -- a self-into-self fork's own semantics
+// mid-round are deliberately out of scope (fork_from()'s own comment: "forking into an already-live,
+// concurrently-running session is not a documented or supported operation"); this fixture only tests
+// the property that actually matters here, whether the call deadlocks, not what a self-into-self copy
+// would mean.
+std::atomic<bool> g_reentrant_fork_ran{false};
+
+// `self_` is deliberately `void*`, not `AgentSession<ReentrantChatClient>*` -- naming that
+// concept-constrained template-id ANYWHERE in this class's own declarative region (even just to form a
+// pointer TYPE, not instantiate the class) requires evaluating `ChatClient<ReentrantChatClient>`,
+// which needs `ReentrantChatClient` to already be a COMPLETE type; it isn't yet, mid-definition. Only
+// `chat()`'s own BODY (an inline member function, compiled as if placed immediately after this class's
+// closing brace, by which point `ReentrantChatClient` is complete) can safely name
+// `AgentSession<ReentrantChatClient>` directly -- confirmed the hard way, by a real, initially-failed
+// compile attempt using a pre-declared `ReentrantSession` alias in the member signature/field instead.
+class ReentrantChatClient {
+public:
+    [[nodiscard]] ChatClientCapabilities capabilities() const { return {}; }
+
+    // Set once, right after emplace_chat_client() returns a reference to this object -- the owning
+    // session must exist first, so this can't be done from a constructor.
+    void set_self(void* self) { self_ = self; }
+
+    agentengine::task<result<ChatResponse>> chat(ChatRequest, EffectContext&) {
+        auto* self = static_cast<AgentSession<ReentrantChatClient>*>(self_);
+        AgentSession<ReentrantChatClient> target;
+        target.initialize("reentrant-fork-target", Principal{"reentrant-target-owner", ""});
+        target.fork_from(*self, "reentrant-fork-target-renamed");
+        g_reentrant_fork_ran.store(true, std::memory_order_release);
+        co_return ChatResponse{text_message("reentrant round complete"), Usage{1, 1, 0, 0, 0.0}};
+    }
+    [[nodiscard]] agentengine::stream<ChatResponseUpdate> chat_stream(ChatRequest, EffectContext&) {
+        return {};
+    }
+
+private:
+    void* self_ = nullptr;
+};
+static_assert(agentengine::ChatClient<ReentrantChatClient>);
+
+using ReentrantSession = AgentSession<ReentrantChatClient>;
 
 }  // namespace
 
@@ -148,11 +201,59 @@ int main() {
         check(self_fork_session.session_id() != session_id_before, "session_id_ genuinely changed");
     }
 
+    // [3] ADR-123: the REENTRANT case -- fork_from() called from INSIDE an in-flight start_run() round
+    // on the very session being forked FROM, on the SAME thread. Bounded wait, never an infinite join:
+    // before ADR-123 this hung forever (block_on()'s own busy-wait spinning against a lock only the
+    // caller's own already-parked outer Guard could ever release), so a real regression here must FAIL
+    // this check, not hang the whole test binary.
+    {
+        ReentrantSession source;
+        source.initialize("reentrant-source", Principal{"reentrant-source-owner", ""});
+        ReentrantChatClient& client = source.emplace_chat_client();
+        client.set_self(&source);
+        CapabilitySet const held = CapabilitySet::grant_root({});
+        source.set_capabilities(&held);
+
+        std::atomic<bool> round_done{false};
+        result<AgentResponse> round_result;
+        std::thread round_thread([&] {
+            round_result = drive(source.start_run(StartRun{user_message("go")}));
+            round_done.store(true, std::memory_order_release);
+        });
+
+        bool completed_in_time = false;
+        for (int i = 0; i < 500; ++i) {  // up to ~5 seconds
+            if (round_done.load(std::memory_order_acquire)) {
+                completed_in_time = true;
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+
+        check(completed_in_time,
+              "[3] a fork_from() call made reentrantly from inside chat() (same thread, session_mutex_ "
+              "already held by the in-flight round) does NOT self-deadlock -- the round completes "
+              "within a bounded wait instead of hanging forever");
+        if (completed_in_time) {
+            round_thread.join();
+            check(round_result.has_value(), "[3] the round itself still converges successfully");
+            check(g_reentrant_fork_ran.load(std::memory_order_acquire),
+                  "[3] the reentrant fork_from() call inside chat() genuinely ran to completion, not "
+                  "skipped or short-circuited");
+        } else {
+            // Never join a thread that may be permanently spinning in block_on()'s own busy-wait --
+            // detach and let process exit reclaim it (this whole binary is about to return FAILURE).
+            round_thread.detach();
+        }
+    }
+
     if (g_failures == 0) {
         std::printf("ALL CHECKS PASSED -- AgentSession::fork_from() genuinely serializes against a "
                      "concurrent in-flight start_run() on its own source (real, two-thread race, not "
                      "merely reasoned about), closing the structural gap ADR-102 Phase 3/4 both "
-                     "independently disclosed, without introducing a self-fork deadlock.\n");
+                     "independently disclosed, without introducing a self-fork deadlock, AND (ADR-123) "
+                     "does not self-deadlock when called reentrantly from inside a live round on the "
+                     "same thread.\n");
     }
     return g_failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }
