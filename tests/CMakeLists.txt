@@ -3290,3 +3290,11 @@ add_test(NAME test_mandatory_sandbox_provider_composed COMMAND test_mandatory_sa
 add_executable(test_rt_agent_session_fork_from_serialization test_rt_agent_session_fork_from_serialization.cpp)
 target_link_libraries(test_rt_agent_session_fork_from_serialization PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_agent_session_fork_from_serialization COMMAND test_rt_agent_session_fork_from_serialization)
+
+# ---- ADR-132 -- THE definitive, full-stack proof: MandatorySandboxProvider::commit_task_branch(),
+# through the REAL, unmodified production tool surface, genuinely succeeds after a simulated crash with
+# real, durable content -- root-branch recovery (ADR-128), child-branch recovery (ADR-126), content
+# durability (ADR-130), and the Store-genericity fix that lets them compose (ADR-132) all together.
+add_executable(test_task_branch_content_durability_integration test_task_branch_content_durability_integration.cpp)
+target_link_libraries(test_task_branch_content_durability_integration PRIVATE agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)
+add_test(NAME test_task_branch_content_durability_integration COMMAND test_task_branch_content_durability_integration)

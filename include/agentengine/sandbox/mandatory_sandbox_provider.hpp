@@ -327,7 +327,19 @@ struct DiscardTaskBranchTool
 // confirmed by search; `agent.spawn`, the only real spawn path, does not use it), but real follow-on
 // work before any future caller wires `fork_from()` up to run concurrently with an in-flight tool call.
 
-template <ExecutionSurface Surface>
+// ADR-132 -- gained a second template parameter, `Store` (defaulted to
+// `agentengine::InMemoryWorktreeObjectStore`, matching `Ledger<Store>`/`SandboxRuntime<Store>`'s own
+// default), closing the "hardcoded to `Ledger<>`, not `Store`-generic" gap `ADR-130` §2 found while
+// building a real, durable `WorktreeObjectStore` conformer (`FileWorktreeObjectStore`) and explicitly
+// left as separate, larger follow-on work rather than folded into that ADR. Every `Ledger<>`/
+// `BranchHandle<>`/bare `SandboxRuntime` reference below became `Ledger<Store>`/`BranchHandle<Store>`/
+// `SandboxRuntime<Store>` -- purely a widened parameter/member type, no method BODY changed. Every
+// existing, already-verified caller (every real production tool, every test in this whole session's own
+// task-branch/crash-recovery line) that only ever named `MandatorySandboxProvider<Surface>` with ONE
+// template argument continues to compile and behave IDENTICALLY -- `Store` defaults to the same
+// `InMemoryWorktreeObjectStore` it was hardcoded to before, and ordinary template default-argument rules
+// mean a 1-argument use of a 2-parameter template stays valid with no call-site change anywhere.
+template <ExecutionSurface Surface, class Store = agentengine::InMemoryWorktreeObjectStore>
 class MandatorySandboxProvider {
 public:
     static constexpr std::string_view name = "mandatory_sandbox_provider";
@@ -353,7 +365,7 @@ public:
     // for the crash-recovery case where a branch already exists (in this same Ledger's durable store)
     // and the caller just needs to reattach to it without hand-computing `Ledger`'s own root-name
     // format or hand-sequencing `reclaim_orphaned_branch()`/`create_root_branch()` itself.
-    void bind_sandbox(agentengine::Ledger<>& ledger, agentengine::BranchHandle<> branch,
+    void bind_sandbox(agentengine::Ledger<Store>& ledger, agentengine::BranchHandle<Store> branch,
                         agentengine::IdentityHandle owner, std::filesystem::path staging_root,
                         agentengine::rt::AsyncQuota<agentengine::BranchCost>& branch_quota,
                         agentengine::rt::AsyncQuota<agentengine::RunCost>& run_quota,
@@ -418,7 +430,7 @@ public:
     // correctly less error-prone for the crash-recovery case; it does not add a new safety property
     // `create_root_branch()` did not already have, and must not be read as one.
     [[nodiscard]] agentengine::result<void> bind_root_branch(
-            agentengine::Ledger<>& ledger, agentengine::IdentityHandle owner,
+            agentengine::Ledger<Store>& ledger, agentengine::IdentityHandle owner,
             std::filesystem::path staging_root,
             agentengine::rt::AsyncQuota<agentengine::BranchCost>& branch_quota,
             agentengine::rt::AsyncQuota<agentengine::RunCost>& run_quota,
@@ -430,7 +442,7 @@ public:
         for (std::string const& orphan_name : ledger.orphaned_branches()) {
             if (orphan_name == root_name) { is_orphan = true; break; }
         }
-        agentengine::result<agentengine::BranchHandle<>> resolved =
+        agentengine::result<agentengine::BranchHandle<Store>> resolved =
             is_orphan ? ledger.reclaim_orphaned_branch(root_name, owner)
                       : agentengine::rt::block_on(ledger.create_root_branch(owner, disambiguator));
         if (!resolved.has_value()) return std::unexpected(resolved.error());
@@ -700,7 +712,7 @@ public:
         co_return std::monostate{};
     }
 
-    [[nodiscard]] SandboxRuntime const* runtime() const noexcept {
+    [[nodiscard]] SandboxRuntime<Store> const* runtime() const noexcept {
         return runtime_.has_value() ? &*runtime_ : nullptr;
     }
 
@@ -800,7 +812,7 @@ public:
                 agentengine::failure_class::contract, "unknown task-branch handle: " + handle_id,
                 "mandatory_sandbox_provider.task_branch_unknown_handle"});
         }
-        SandboxRuntime child = std::move(it->second);
+        SandboxRuntime<Store> child = std::move(it->second);
         task_branches_.erase(it);
         std::string const branch_name = child.branch_name();  // captured BEFORE merge_into() moves child
         auto cp = co_await std::move(child).merge_into(*runtime_, requested_by, *merge_quota_);
@@ -875,7 +887,7 @@ public:
                 agentengine::failure_class::contract, "unknown task-branch handle: " + handle_id,
                 "mandatory_sandbox_provider.task_branch_unknown_handle"});
         }
-        SandboxRuntime child = std::move(it->second);
+        SandboxRuntime<Store> child = std::move(it->second);
         task_branches_.erase(it);
         auto discarded = co_await std::move(child).discard();
         if (!discarded.has_value()) co_return std::unexpected(discarded.error());
@@ -885,7 +897,7 @@ public:
     }
 
 private:
-    agentengine::Ledger<>* ledger_ = nullptr;
+    agentengine::Ledger<Store>* ledger_ = nullptr;
     // `IdentityHandle` deliberately has NO default constructor of its own (Phase 1's own "identity-
     // only, no minting power" design -- construction is friend-gated to `IdentityAuthority`) --
     // `optional<>` is what lets THIS type still be default-constructible (required for
@@ -895,14 +907,14 @@ private:
     agentengine::rt::AsyncQuota<agentengine::BranchCost>* branch_quota_ = nullptr;
     agentengine::rt::AsyncQuota<agentengine::RunCost>* run_quota_ = nullptr;
     agentengine::rt::AsyncQuota<agentengine::StorageBytes>* storage_quota_ = nullptr;
-    std::optional<SandboxRuntime> runtime_;
+    std::optional<SandboxRuntime<Store>> runtime_;
     std::optional<Surface> surface_;
 
     // A10 promotion state (StartTaskBranchTool's own top comment). `merge_quota_` starts null --
     // `bind_task_branch_tools()` is the only thing that ever sets it, and every task-branch method
     // checks it alongside `runtime_.has_value()` before doing anything.
     agentengine::rt::AsyncQuota<agentengine::MergeCost>* merge_quota_ = nullptr;
-    std::map<std::string, SandboxRuntime> task_branches_;
+    std::map<std::string, SandboxRuntime<Store>> task_branches_;
     std::unique_ptr<agentengine::rt::AsyncMutex> task_branch_mutex_;
 };
 

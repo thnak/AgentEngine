@@ -126,12 +126,23 @@ public:
 
     // Walks every path touched since the last drain, reads each one back OFF REAL DISK (a genuine
     // round trip, not the in-memory bytes write() was originally given), puts each as a REAL blob
-    // into the object store via `Ledger`, and builds a REAL, sorted `Tree`. Takes `Ledger<>&`, not a
-    // raw object store -- routing every access through `Ledger`'s own mutex_-guarded
+    // into the object store via `Ledger`, and builds a REAL, sorted `Tree`. Takes `Ledger<Store>&`, not
+    // a raw object store -- routing every access through `Ledger`'s own mutex_-guarded
     // put_blob_safe()/get_tree_safe()/etc. is what keeps a real concurrent multi-session run from
     // racing two unsynchronized accesses to the same underlying store.
+    //
+    // ADR-132 -- widened from a hardcoded `Ledger<>&` (the default `InMemoryWorktreeObjectStore`) to a
+    // template `Ledger<Store>&`, closing part of the "SandboxRuntime/MandatorySandboxProvider are
+    // hardcoded to Ledger<>, not Store-generic despite Ledger<Store> being a template" gap ADR-130 §2
+    // found and explicitly left as separate, larger follow-on work. Purely a widened parameter type --
+    // every call inside this method (`put_blob_safe()`, etc.) is already a plain, non-template-specific
+    // `Ledger<Store>` member, so this needed no logic change, only the signature. `RealIoFileSystem`
+    // itself stays a non-template class (its only `Store`-dependent surface is these three method
+    // parameters) -- every existing caller passing a concrete `Ledger<>&` continues to compile
+    // unchanged, `Store` deduced as `InMemoryWorktreeObjectStore` from the argument exactly as before.
+    template <class Store>
     [[nodiscard]] agentengine::rt::task<agentengine::result<agentengine::Tree>> drain_into_tree(
-            agentengine::Ledger<>& ledger, agentengine::IdentityHandle author) {
+            agentengine::Ledger<Store>& ledger, agentengine::IdentityHandle author) {
         std::set<std::string> paths;
         {
             std::lock_guard<std::mutex> guard(*sync_mutex_);
@@ -165,8 +176,9 @@ public:
     // collecting every file's bytes first, then checking `would_accept_blob_write()` for the whole
     // set, then writing -- so a rejection partway through never leaves earlier files durably
     // persisted with no Tree/Checkpoint ever referencing them.
+    template <class Store>
     [[nodiscard]] agentengine::rt::task<agentengine::result<agentengine::Tree>> scan_and_drain_into_tree(
-            agentengine::Ledger<>& ledger, agentengine::IdentityHandle author) {
+            agentengine::Ledger<Store>& ledger, agentengine::IdentityHandle author) {
         agentengine::rt::AsyncMutex::Guard commit_guard = co_await commit_lock_->lock();
 
         std::vector<std::pair<std::string, std::vector<std::byte>>> collected;
@@ -207,8 +219,9 @@ public:
     // to REAL files on real disk, wiping whatever was there before. This is what a real rollback
     // must do to actually restore a session's working directory, not just move a pointer in the
     // Ledger.
+    template <class Store>
     [[nodiscard]] agentengine::rt::task<agentengine::result<void>> materialize(
-            agentengine::Ledger<>& ledger, agentengine::Digest const& tree_digest,
+            agentengine::Ledger<Store>& ledger, agentengine::Digest const& tree_digest,
             agentengine::IdentityHandle caller) {
         agentengine::rt::AsyncMutex::Guard commit_guard = co_await commit_lock_->lock();
 

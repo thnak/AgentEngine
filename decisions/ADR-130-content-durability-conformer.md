@@ -154,9 +154,10 @@ line, the same suppression pattern its sibling `InMemoryWorktreeObjectStore` alr
 
 ## 5. What was NOT done
 
-- **No integration with `SandboxRuntime`/`MandatorySandboxProvider`.** See §2 — this is real, separate,
-  larger follow-on work (templatizing both classes on `Store`), not attempted here. Every proof in this
-  ADR operates at the raw `Ledger<Store>` level directly.
+- ~~No integration with `SandboxRuntime`/`MandatorySandboxProvider`.~~ **Closed by ADR-132** — both
+  classes gained a `Store` template parameter (defaulted, purely additive), and a new full-stack
+  integration test proves `MandatorySandboxProvider::commit_task_branch()` genuinely succeeds after a
+  simulated crash with real, durable content, through the real, unmodified production tool surface.
 - **No independent red-team pass yet.** This is new, real on-disk content-storage code — the design
   draft's own gate item 7 named this as expected, not optional, for exactly this class of change.
 - ~~No Linux verification yet.~~ **Closed by ADR-131** — a complete, unconditional pass on real

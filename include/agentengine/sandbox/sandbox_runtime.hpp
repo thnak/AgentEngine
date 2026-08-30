@@ -1,7 +1,8 @@
 #pragma once
 // Implements ADR-102 Phase 3 (identity-native sandbox/worktree design, ADR-099 §7 A3) --
 // `SandboxRuntime`: the real `run(command)`-shaped verb this design's own A3 probe first closed --
-// composes `Ledger<>` (core/ledger.hpp, Phase 2) + `RealIoFileSystem` (sandbox/real_io_filesystem.hpp)
+// composes `Ledger<Store>` (core/ledger.hpp, Phase 2; `Store` defaulted to `InMemoryWorktreeObjectStore`,
+// see this file's own ADR-132 comment below) + `RealIoFileSystem` (sandbox/real_io_filesystem.hpp)
 // + any real `ExecutionSurface` conformer (sandbox/execution_surface.hpp) into one quota-gated,
 // checkpoint-producing operation.
 //
@@ -30,6 +31,18 @@
 // pass on the prove-phase original found and fixed BEFORE this port -- carried forward verbatim as
 // disclosure, not re-litigated here. This port's OWN red-team round (required before Phase 3 is
 // considered done, matching Phase 1/2's own track record) is recorded in ADR-102, not in this file.
+//
+// ADR-132 -- `SandboxRuntime` gained a `Store` template parameter (defaulted to
+// `agentengine::InMemoryWorktreeObjectStore`, matching `Ledger<Store>`'s own default), closing the
+// "hardcoded to `Ledger<>`, not `Store`-generic" gap `ADR-130` §2 found and explicitly left as separate,
+// larger follow-on work. Every member's `Ledger<>`/`BranchHandle<>` became `Ledger<Store>`/
+// `BranchHandle<Store>`; every method BODY is otherwise unchanged -- this is a pure widening of what
+// `Store` this class can be bound to, not a behavior change for the default case. Every existing,
+// already-verified caller that never named `Store` explicitly (every real production tool, every test in
+// this whole session's own task-branch/crash-recovery line) continues to compile and behave IDENTICALLY,
+// since omitting the template argument (or relying on C++17 class template argument deduction from a
+// `Ledger<>&` constructor argument) still resolves to the same `InMemoryWorktreeObjectStore` default it
+// was hardcoded to before.
 
 #include <cstddef>
 #include <cstdint>
@@ -83,9 +96,10 @@ struct SandboxRunOutcome {
                                             // changed
 };
 
+template <class Store = agentengine::InMemoryWorktreeObjectStore>
 class SandboxRuntime {
 public:
-    SandboxRuntime(agentengine::Ledger<>& ledger, agentengine::BranchHandle<> branch,
+    SandboxRuntime(agentengine::Ledger<Store>& ledger, agentengine::BranchHandle<Store> branch,
                     std::filesystem::path staging_root)
         : ledger_(&ledger), branch_(std::move(branch)), io_fs_(std::move(staging_root)),
           exclusivity_(std::make_unique<agentengine::rt::AsyncMutex>()) {}
@@ -334,8 +348,8 @@ public:
     }
 
 private:
-    agentengine::Ledger<>* ledger_;
-    agentengine::BranchHandle<> branch_;
+    agentengine::Ledger<Store>* ledger_;
+    agentengine::BranchHandle<Store> branch_;
     agentengine::RealIoFileSystem io_fs_;
     std::unique_ptr<agentengine::rt::AsyncMutex> exclusivity_;
 };
