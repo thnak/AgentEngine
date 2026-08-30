@@ -1,8 +1,11 @@
 # ADR-117 — Widening the real `Capability` variant for task-branch tools
 
 - **Status:** Proposed — implemented, verified against a REAL Docker daemon (Windows/MSVC), full
-  project rebuild (zero errors) and full `ctest` clean, `naming_lint.py` clean. Not yet independently
-  red-teamed; not yet Linux-verified.
+  project rebuild (zero errors) and full `ctest` clean, `naming_lint.py` clean. Independent red-team
+  round completed same day: clean bill of health, no fix needed (see the red-team's own report;
+  no §7 was added to this file since nothing real was found). **Linux-verified same day, ADR-118**:
+  the widened variant and the new double gate both hold completely under real GCC 14.2.0, independent
+  of this environment's own pre-existing, disclosed Docker-CLI-reachability gap.
 - **Date:** 2026-08-30.
 - **Scope:** `include/agentengine/trust/capability.hpp` (two new `cap::`/`cap::decl::` alternatives,
   two new `capability_kind` enumerators, four exhaustive-switch/`if constexpr` sites extended),
@@ -156,12 +159,14 @@ checked directly and confirmed to need no change (§2).
   itself (widening the closed variant every `CapabilitySet`/`subsumes()`/`bind()` call site depends
   on) — a red-team round is the expected next step before this is considered closed, not optional
   polish.
-- **No Linux verification.** Same disclosed gap as ADR-114/115: `tests/test_task_branch_tools.cpp` is
-  hardcoded to `DockerExecutionSurface`, and ADR-115's own Linux pass had no Linux-native Docker daemon
-  reachable in that environment. The pure `capability.hpp`/`policy_reachability.hpp` changes have no
-  platform-specific code in them (no `#ifdef`, no OS-specific type), so they are LOW risk on Linux by
-  inspection, but "low risk by inspection" is not the same standard this design line holds everything
-  else to, and is named here honestly rather than silently assumed.
+- ~~No Linux verification.~~ **Closed by ADR-118** (2026-08-30, same day): rebuilt and retested on real
+  GCC 14.2.0 (the same WSL2 checkout ADR-115 used, fast-forwarded to this ADR's exact commit). The
+  widened variant and every extended exhaustive switch compile clean, and — the part that actually
+  matters — the new double gate is proven completely and unconditionally in both directions (granted
+  -> allowed, withheld -> rejected with no side effects) through the real `invoke_tool()` pipeline,
+  independent of the same pre-existing Docker-CLI-reachability gap ADR-115 already disclosed for this
+  environment (which still leaves the Docker-command-execution half of `test_task_branch_tools`
+  unverified on Linux — a narrower, pre-existing residual, not new to this ADR).
 - **`agent_library_manifest.hpp`'s discovery registry was not given a "task-branch" module row.** Named
   in §2/§4 as checked-and-optional, not a gap silently introduced — no existing module row names any of
   the four task-branch tools by any name today, so this is pre-existing scope, not something this ADR
