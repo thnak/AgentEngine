@@ -174,10 +174,11 @@ gate holds in the composed setting too, not just standalone.
   methodology itself (removing the lock did not reliably reproduce corruption in this specific
   I/O-timing profile, since the dominant work is already serialized by a different lock for most of
   these call paths — not evidence the lock is unnecessary).
-- **`active_`'s table has no durability of its own** — a process crash mid-task-branch strands it
-  from this tool surface's own verbs even in a durable-`Store` `Ledger` configuration, though the
-  underlying branch itself survives and remains reclaimable via the lower-level orphan-reclaim API.
-  Inherited, disclosed, unchanged from the prove-phase original's own finding 6.
+- ~~`active_`'s table has no durability of its own~~ **Closed by ADR-126** (2026-08-30): `bind_
+  sandbox()` now recovers orphaned child task branches from `Ledger::orphaned_branches()` after a
+  simulated crash, so `commit_task_branch()`/`discard_task_branch()`/`run_in_task_branch()` on an
+  original `handle_id` work again through the normal tool surface — see that ADR for the precise,
+  empirically-found scope boundary against the SEPARATE, still-open content-durability gap.
 - **Whether `commit_task_branch`/`discard_task_branch` should touch an `AgentSession`'s own
   conversation/turn history is unaddressed** — inherited unchanged from the prove-phase original's
   own finding 5 (industry precedent, per that file's own research citation, treats file-restore and

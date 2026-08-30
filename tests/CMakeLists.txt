@@ -3225,6 +3225,13 @@ add_executable(test_task_branch_concurrent_dispatch test_task_branch_concurrent_
 target_link_libraries(test_task_branch_concurrent_dispatch PRIVATE agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)
 add_test(NAME test_task_branch_concurrent_dispatch COMMAND test_task_branch_concurrent_dispatch)
 
+# ---- ADR-126 -- closes ADR-114 §5/§6's own "active_'s table has no durability of its own" residual:
+# bind_sandbox() now recovers orphaned child task branches from a durable-Store Ledger after a
+# simulated crash. Docker-independent (never calls run_in_task_branch()).
+add_executable(test_task_branch_durability_recovery test_task_branch_durability_recovery.cpp)
+target_link_libraries(test_task_branch_durability_recovery PRIVATE agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)
+add_test(NAME test_task_branch_durability_recovery COMMAND test_task_branch_durability_recovery)
+
 # ---- ADR-102 Phase 4 -- agentengine::rt::block_on<T>() (rt/block_on.hpp), the real fix for a real,
 # independent-red-team-found, empirically-proven AsyncMutex mutual-exclusion violation the naive
 # "while (!t.done()) t.resume();" drive loop has under genuine cross-thread contention. Real OS threads

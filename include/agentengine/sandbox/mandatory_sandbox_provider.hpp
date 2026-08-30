@@ -369,6 +369,17 @@ public:
         // merge_quota_ pointer describing the OLD runtime_) into the fresh one.
         merge_quota_ = nullptr;
         task_branch_mutex_ = std::make_unique<agentengine::rt::AsyncMutex>();
+        // ADR-126 -- closes the "`active_`'s table has no durability of its own" residual (ADR-114
+        // §5/§6, inherited unchanged from the prove-phase original's own finding 6): if `ledger`'s own
+        // durable Store already remembers child branches of `branch` that were live-but-unresolved at
+        // the moment of a prior crash (`Ledger::orphaned_branches()`, populated by `load_durable_
+        // state()` at THIS Ledger's own construction), rehydrate them back into `task_branches_` here
+        // -- so a resumed session whose own durable history still shows an unresolved `start_task_
+        // branch` reply can `commit_task_branch()`/`discard_task_branch()`/`run_in_task_branch()` that
+        // SAME `handle_id` again through this tool surface's own normal verbs, instead of permanently
+        // needing the lower-level `Ledger::reclaim_orphaned_branch()` API. See that method's own
+        // comment for the exact matching rule and its own honestly-disclosed scope.
+        recover_orphaned_task_branches();
     }
 
     // SHOULD-FIX (independent red-team, 2026-08-30): silently `task_branches_.clear()`-ing at any of
@@ -391,6 +402,34 @@ public:
             if (branch_quota_ != nullptr) (void)agentengine::rt::block_on(branch_quota_->refund(1));
         }
         task_branches_.clear();
+    }
+
+    // ADR-126 -- the durability-recovery half of `bind_sandbox()`'s own new call. Branch names are
+    // deterministic (`Ledger::branch_from()`'s own comment: "<parent>/child-<id>-<seq>"), so a child of
+    // `runtime_`'s own branch is identified by NAME PREFIX alone, with no separate parent-lineage index
+    // needed. Matches ONLY direct children of THIS root branch -- a grandchild (a task branch forked
+    // from another task branch, not a shape this design offers anywhere) would carry a DIFFERENT
+    // prefix and is correctly left alone; not a real scenario today, named for precision, not because
+    // it is reachable. `reclaim_orphaned_child()` re-checks `owner_`'s own authorization for each
+    // candidate independently (the same ACL gate every other read in this design goes through) --
+    // failing to reclaim one candidate (a genuine auth mismatch, or a race with some other, unrelated
+    // reclaim of the SAME orphan) is not fatal to the others; each is attempted independently and
+    // silently skipped on its own failure, matching this method's own best-effort, convenience-only
+    // framing -- a host that needs the authoritative list already has it via `Ledger::
+    // orphaned_branches()`/`reclaim_orphaned_branch()` directly. Deliberately BEST-EFFORT, not
+    // guaranteed: `BranchCost` itself is NOT durable (a fresh `AsyncQuota<BranchCost>` after a restart
+    // has no memory of what was spent before the crash) -- recovering these entries here does not, and
+    // should not, re-charge it a second time; a real, but unchanged and separately-disclosed, part of
+    // this whole design's existing "quotas are in-process state, not durable" posture.
+    void recover_orphaned_task_branches() {
+        std::string const child_prefix = runtime_->branch_name() + "/child-";
+        for (std::string const& orphan_name : ledger_->orphaned_branches()) {
+            if (orphan_name.compare(0, child_prefix.size(), child_prefix) != 0) continue;
+            auto reclaimed = agentengine::rt::block_on(runtime_->reclaim_orphaned_child(
+                orphan_name, *owner_, runtime_->staging_root().parent_path()));
+            if (!reclaimed.has_value()) continue;
+            task_branches_.insert_or_assign(orphan_name, std::move(*reclaimed));
+        }
     }
 
     // Second, deliberately SEPARATE opt-in from `bind_sandbox()` itself -- a host that calls
