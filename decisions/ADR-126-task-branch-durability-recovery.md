@@ -5,7 +5,9 @@
   `naming_lint.py` clean. **SAME-DAY INDEPENDENT RED-TEAM (§7): one real MUST-FIX found and fixed** (a
   grandchild-shaped orphan could be misfiled into `task_branches_` as a direct child, contrary to the
   original code's own comment — the I2/cross-owner-authorization boundary itself checked out clean).
-  Re-verified 286/287 and a clean full rebuild after the fix. Not yet Linux-verified.
+  Re-verified 286/287 and a clean full rebuild after the fix. **Linux-verified, ADR-127** (2026-08-30,
+  same day): a complete, unconditional pass on real GCC 14.2.0 -- no Docker dependency at all, so
+  every phase, including the red-team's own grandchild-exclusion regression, is fully proven there too.
 - **Date:** 2026-08-30.
 - **Scope:** `include/agentengine/sandbox/mandatory_sandbox_provider.hpp` (`bind_sandbox()` gets one new
   call; a new private `recover_orphaned_task_branches()` method), `tests/test_task_branch_durability_
@@ -137,7 +139,8 @@ nothing newly broken. `python tools/naming_lint.py`: clean, no new exported voca
 - **No independent red-team pass yet.** This is new logic in `mandatory_sandbox_provider.hpp`, a file
   this design line has already hardened through several real red-team rounds (ADR-102, ADR-114,
   ADR-117, ADR-119) — a fresh pass is the expected next step, not optional polish.
-- **No Linux verification.**
+- ~~No Linux verification.~~ **Closed by ADR-127** — a complete, unconditional pass (this test has no
+  Docker dependency at all).
 - **Content durability remains unclosed** — a real, separate, materially larger piece of work (a
   durable object-store conformer for blob/tree content, not merely branch/ACL bookkeeping), already
   disclosed by `tests/test_ledger.cpp` itself and explicitly out of this ADR's own scope.
