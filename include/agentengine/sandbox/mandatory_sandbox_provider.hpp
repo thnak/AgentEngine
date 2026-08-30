@@ -343,9 +343,16 @@ public:
     // session with no execution capability, never a crash and never a session that silently aliases
     // another session's sandbox. HONEST, DISCLOSED GAP inherited unchanged from the prove-phase
     // original: this design's own stronger "a session with no execution capability still owns a
-    // branch" requirement (ADR-099 §1 item 2) is NOT established here -- the unbound state owns no
-    // branch at all. Not attempted in this phase; a `bind_branch_only()` variant is real follow-on
-    // work.
+    // branch" requirement (ADR-099 §1 item 2) is NOT established here -- a provider that has never
+    // once been bound (in THIS or any prior process) still owns no branch at all, and that remains
+    // ~~Not attempted in this phase; a `bind_branch_only()` variant is real follow-on work.~~ **out of
+    // this file's own scope** -- it is a session-lifecycle question (should an unbound session even
+    // exist), not a durability one, and ADR-128 does not attempt it. What ADR-128 DOES close is the
+    // narrower, durability-shaped half of the SAME disclosed gap: `bind_root_branch()` below resolves
+    // (reclaim-if-orphaned, create-if-not) `owner`'s own deterministic root branch by identity alone,
+    // for the crash-recovery case where a branch already exists (in this same Ledger's durable store)
+    // and the caller just needs to reattach to it without hand-computing `Ledger`'s own root-name
+    // format or hand-sequencing `reclaim_orphaned_branch()`/`create_root_branch()` itself.
     void bind_sandbox(agentengine::Ledger<>& ledger, agentengine::BranchHandle<> branch,
                         agentengine::IdentityHandle owner, std::filesystem::path staging_root,
                         agentengine::rt::AsyncQuota<agentengine::BranchCost>& branch_quota,
@@ -380,6 +387,56 @@ public:
         // needing the lower-level `Ledger::reclaim_orphaned_branch()` API. See that method's own
         // comment for the exact matching rule and its own honestly-disclosed scope.
         recover_orphaned_task_branches();
+    }
+
+    // ADR-128 -- closes the "root-branch recovery remains the caller's own, separate, already-
+    // disclosed responsibility" residual ADR-126 §5 named (itself tracing back to ADR-102's own
+    // `bind_branch_only()` note, see `bind_sandbox()`'s own comment above for the precise scope this
+    // does and does not close). Computes `owner`'s own deterministic root-branch name EXACTLY the way
+    // `Ledger::create_root_branch()` itself does (`"root-" + owner.id() [+ "-" + disambiguator]`) --
+    // duplicated here rather than exposed as a separate `Ledger` accessor, the same "caller recomputes
+    // a documented deterministic name" shape `recover_orphaned_task_branches()`'s own child-prefix
+    // match already established for this file. Two, and only two, real outcomes:
+    //   - the name is currently in `ledger.orphaned_branches()` (this owner's root branch was left
+    //     live-but-unresolved by a prior process's crash or clean exit) -- reclaimed via `Ledger::
+    //     reclaim_orphaned_branch()`, which independently re-checks `owner`'s own authorization for the
+    //     branch's current head tree and fails closed (a real `ledger.reclaim_unauthorized`/`ledger.
+    //     not_an_orphan` error, not a crash or a silent no-op) if that check fails;
+    //   - it is not -- treated as a genuine first-ever bind for this owner/disambiguator pair and a
+    //     fresh root branch is created via `Ledger::create_root_branch()`, identical to what a host
+    //     calling that API directly and then `bind_sandbox()` would have done by hand.
+    // HONEST, NOT-WIDENED RESIDUAL: this does not, and cannot, distinguish "no branch has ever existed
+    // for this owner" from "a branch already exists and is currently LIVE (bound in this same process,
+    // or in some other process that has not exited)" -- `Ledger::orphaned_branches()` only ever
+    // contains what `load_durable_state()` restored at THIS Ledger's own construction, so a live branch
+    // is invisible to it by construction. Calling `bind_root_branch()` a second time for the same
+    // owner/disambiguator while a branch from the first call is still live elsewhere reaches the
+    // "create a fresh one" path and silently produces a duplicate-named branch that overwrites the
+    // live one's `branches_` entry -- the EXACT SAME pre-existing hazard `Ledger::create_root_branch()`
+    // itself already documents and leaves as the caller's own responsibility (ADR-102 §43.2's own
+    // disambiguator fix narrows, not eliminates, this). `bind_root_branch()` makes calling that API
+    // correctly less error-prone for the crash-recovery case; it does not add a new safety property
+    // `create_root_branch()` did not already have, and must not be read as one.
+    [[nodiscard]] agentengine::result<void> bind_root_branch(
+            agentengine::Ledger<>& ledger, agentengine::IdentityHandle owner,
+            std::filesystem::path staging_root,
+            agentengine::rt::AsyncQuota<agentengine::BranchCost>& branch_quota,
+            agentengine::rt::AsyncQuota<agentengine::RunCost>& run_quota,
+            agentengine::rt::AsyncQuota<agentengine::StorageBytes>& storage_quota,
+            std::string disambiguator = {}) {
+        std::string root_name = "root-" + std::to_string(owner.id());
+        if (!disambiguator.empty()) root_name += "-" + disambiguator;
+        bool is_orphan = false;
+        for (std::string const& orphan_name : ledger.orphaned_branches()) {
+            if (orphan_name == root_name) { is_orphan = true; break; }
+        }
+        agentengine::result<agentengine::BranchHandle<>> resolved =
+            is_orphan ? ledger.reclaim_orphaned_branch(root_name, owner)
+                      : agentengine::rt::block_on(ledger.create_root_branch(owner, disambiguator));
+        if (!resolved.has_value()) return std::unexpected(resolved.error());
+        bind_sandbox(ledger, std::move(*resolved), owner, std::move(staging_root), branch_quota,
+                     run_quota, storage_quota);
+        return agentengine::result<void>{};
     }
 
     // SHOULD-FIX (independent red-team, 2026-08-30): silently `task_branches_.clear()`-ing at any of

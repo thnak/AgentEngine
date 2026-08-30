@@ -796,7 +796,33 @@ public:
     // Mints a genuinely fresh, legitimate BranchHandle for a branch this Ledger's own restart logic
     // identified as orphaned -- NOT a general "resolve any branch by name" bypass: fails closed if
     // the name was never actually in orphaned_from_restart_, and fails closed if `requested_by` is
-    // not authorized for the branch's own current head tree.
+    // not this branch's own true owner (its recorded `created_by_id`, or an ancestor of it).
+    //
+    // MUST-FIX (independent red-team, 2026-08-30, found while reviewing ADR-128's reliance on this
+    // method): the ORIGINAL check here was `authorized_for(tree_acl_, head_tree_digest, requested_by)`
+    // -- i.e. "is `requested_by` in the ACL set for this branch's CURRENT TREE CONTENT's digest",
+    // not "is `requested_by` this branch's actual owner". Those are NOT the same question:
+    // `create_root_branch()`'s freshly-minted, never-committed root branch has its head tree at the
+    // digest of an EMPTY `Tree{}` -- CONTENT-ADDRESSED, and therefore IDENTICAL across every owner,
+    // since an empty tree carries no owner-specific content at all. `insert_acl_root_bounded()` adds
+    // EVERY owner who has EVER created ANY fresh root/child branch into `tree_acl_[empty_tree_
+    // digest]` -- so ANY owner B who has created their own, entirely unrelated branch was ALREADY
+    // "authorized_for" that same shared digest, and could reclaim owner A's still-orphaned, never-
+    // committed root branch using only B's own, legitimately-held identity. Empirically confirmed
+    // with a real probe (owner B, having created only their own root branch, successfully reclaimed
+    // owner A's orphaned "root-<A>" via a direct `reclaim_orphaned_branch(root_a_name, B)` call) --
+    // this is a real I2 violation (B obtains a live, controlling handle to A's branch with no
+    // authority A ever granted B), not a hypothetical. Root cause: digest-ACL membership answers "can
+    // this principal read/write THIS CONTENT", which is the wrong question for "is this principal
+    // this BRANCH's rightful owner" whenever two branches can independently arrive at identical
+    // content (trivially true for any two never-yet-committed branches, and possible more generally
+    // for any content collision). Fixed by checking `BranchState::created_by_id` (the field
+    // `reap_pending_abandons()` already treats as this branch's authoritative owner for its own,
+    // internal, unauthenticated cleanup path) directly, with the same ancestor-of-owner allowance
+    // `authorized_for()` already extends elsewhere in this class -- this is authorization by real
+    // branch identity, never by incidental content overlap. `created_by_id` round-trips through
+    // `persist_snapshot_locked()`/`load_durable_state()` unchanged, so this fix costs nothing across
+    // a genuine crash-recovery reconstruction either.
     [[nodiscard]] agentengine::result<BranchHandle<Store>> reclaim_orphaned_branch(
             std::string const& branch_name, agentengine::IdentityHandle requested_by) {
         std::lock_guard<std::mutex> g(mutex_);
@@ -812,18 +838,19 @@ public:
             return std::unexpected(agentengine::error{agentengine::failure_class::contract,
                                                           "unknown branch", "ledger.unknown_branch"});
         }
-        if (!authorized_for(tree_acl_, it->second.head_tree_digest, requested_by)) {
+        if (!is_branch_owner(it->second, requested_by)) {
             return std::unexpected(agentengine::error{
                 agentengine::failure_class::policy,
-                "requester is not authorized for this orphaned branch's current head tree",
+                "requester is not this orphaned branch's own creator (or an ancestor of it)",
                 "ledger.reclaim_unauthorized"});
         }
         orphaned_from_restart_.erase(branch_name);
         return BranchHandle<Store>(this, branch_name, requested_by.id(), it->second.base_tree_digest);
     }
 
-    // The explicit "discard, don't reclaim" decision -- same orphan-only and ACL gating as
-    // reclaim_orphaned_branch(), but erases the branch instead of handing back a live handle for it.
+    // The explicit "discard, don't reclaim" decision -- same orphan-only and true-ownership gating as
+    // reclaim_orphaned_branch() (see that method's own MUST-FIX comment: this used to share its now-
+    // fixed digest-ACL-based check, and the same fix applies here for the identical reason).
     [[nodiscard]] agentengine::rt::task<agentengine::result<void>> abandon_orphaned_branch(
             std::string const& branch_name, agentengine::IdentityHandle requested_by) {
         std::optional<std::uint64_t> base_owner_check;
@@ -841,10 +868,10 @@ public:
                                                                  "unknown branch",
                                                                  "ledger.unknown_branch"});
             }
-            if (!authorized_for(tree_acl_, it->second.head_tree_digest, requested_by)) {
+            if (!is_branch_owner(it->second, requested_by)) {
                 co_return std::unexpected(agentengine::error{
                     agentengine::failure_class::policy,
-                    "requester is not authorized for this orphaned branch's current head tree",
+                    "requester is not this orphaned branch's own creator (or an ancestor of it)",
                     "ledger.reclaim_unauthorized"});
             }
             base = it->second.base_tree_digest;
@@ -860,6 +887,18 @@ private:
     void queue_pending_abandon(std::string const& name) {
         std::lock_guard<std::mutex> g(mutex_);
         pending_abandons_.push_back(name);
+    }
+
+    // True iff `requested_by` is `state`'s own recorded creator, or an ancestor of that creator (the
+    // same ancestor-inclusion `authorized_for()` already extends for content-digest ACLs) -- i.e.
+    // real branch ownership, never incidental content-digest overlap. See `reclaim_orphaned_branch()`'s
+    // own MUST-FIX comment for why this is a distinct question from `authorized_for()` and must not be
+    // answered by it. Must be called with mutex_ already held.
+    [[nodiscard]] static bool is_branch_owner(BranchState const& state,
+                                                 agentengine::IdentityHandle const& requested_by) {
+        return requested_by.id() == state.created_by_id ||
+               agentengine::IdentityAuthority::bootstrap().is_ancestor_of(state.created_by_id,
+                                                                             requested_by.id());
     }
 
     // True iff `caller` (or an ancestor of `caller`, via the real IdentityAuthority ancestry table)

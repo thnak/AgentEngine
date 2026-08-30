@@ -3232,6 +3232,14 @@ add_executable(test_task_branch_durability_recovery test_task_branch_durability_
 target_link_libraries(test_task_branch_durability_recovery PRIVATE agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)
 add_test(NAME test_task_branch_durability_recovery COMMAND test_task_branch_durability_recovery)
 
+# ---- ADR-128 -- closes ADR-126 §5's own "root-branch recovery remains the caller's own, separate,
+# already-disclosed responsibility" residual: MandatorySandboxProvider::bind_root_branch() resolves
+# (reclaim-if-orphaned, create-if-not) an owner's own deterministic root branch by identity alone.
+# Docker-independent (never calls run_in_task_branch()).
+add_executable(test_root_branch_recovery test_root_branch_recovery.cpp)
+target_link_libraries(test_root_branch_recovery PRIVATE agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)
+add_test(NAME test_root_branch_recovery COMMAND test_root_branch_recovery)
+
 # ---- ADR-102 Phase 4 -- agentengine::rt::block_on<T>() (rt/block_on.hpp), the real fix for a real,
 # independent-red-team-found, empirically-proven AsyncMutex mutual-exclusion violation the naive
 # "while (!t.done()) t.resume();" drive loop has under genuine cross-thread contention. Real OS threads

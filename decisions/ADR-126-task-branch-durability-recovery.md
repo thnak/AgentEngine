@@ -81,14 +81,16 @@ branches into `task_branches_` does not re-consume `BranchCost` for them (`recla
 touches no quota at all), which is the correct behavior given the existing, accepted, unrelated
 non-durability of `AsyncQuota` itself — not a new gap this fix introduces or should attempt to close.
 
-**Root-branch recovery remains a separate, still-open, explicitly-not-attempted residual.**
+~~**Root-branch recovery remains a separate, still-open, explicitly-not-attempted residual.**
 `bind_sandbox()` takes an already-resolved `BranchHandle` as an explicit parameter — recovering the
 ROOT branch itself (as opposed to its children) after a crash is the caller's own responsibility, and
 this ADR's own test does that one step by hand (`ledger.reclaim_orphaned_branch(root_name, owner)`
 before calling `bind_sandbox()`), matching what a real host's own recovery flow would need to do too.
 This is the SAME gap ADR-102's own disclosed "the unbound state owns no branch at all... a `bind_
 branch_only()` variant is real follow-on work" already named — not something this ADR attempts to
-close, and not conflated with the narrower `task_branches_`-specific gap it does close.
+close, and not conflated with the narrower `task_branches_`-specific gap it does close.~~ **Closed by
+ADR-128**: `MandatorySandboxProvider::bind_root_branch()` now automates exactly the by-hand step this
+ADR's own test performed, for real production callers.
 
 ## 3. What was built
 
@@ -144,9 +146,11 @@ nothing newly broken. `python tools/naming_lint.py`: clean, no new exported voca
 - **Content durability remains unclosed** — a real, separate, materially larger piece of work (a
   durable object-store conformer for blob/tree content, not merely branch/ACL bookkeeping), already
   disclosed by `tests/test_ledger.cpp` itself and explicitly out of this ADR's own scope.
-- **Root-branch recovery remains the caller's own responsibility** — `bind_sandbox()`'s own explicit
-  `BranchHandle` parameter is unchanged; this ADR does not attempt ADR-102's own separately-disclosed
-  "`bind_branch_only()` is real follow-on work" gap.
+- ~~Root-branch recovery remains the caller's own responsibility~~ **Closed by ADR-128** —
+  `MandatorySandboxProvider::bind_root_branch()` automates the reclaim-or-create decision for a durably-
+  tracked owner's own root branch, the crash-recovery-shaped half of ADR-102's own "`bind_branch_only()`
+  is real follow-on work" gap. `bind_sandbox()`'s own explicit `BranchHandle` parameter is itself
+  unchanged (`bind_root_branch()` is a new, additional entry point, not a replacement).
 - **No AgentSession-level integration** — this ADR closes the gap at `MandatorySandboxProvider`'s own
   layer (the tool surface can find its recovered branches again); whether/how a real host wires a full
   "session resumed after a crash" flow (reclaiming the session's own root branch, re-minting quotas,
