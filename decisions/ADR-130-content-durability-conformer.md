@@ -2,13 +2,16 @@
 
 - **Status:** Proposed — implemented, verified (Windows/MSVC), full rebuild (zero errors, 317 targets)
   and full `ctest` clean (291 total, 1 failure, pre-existing/environment, zero regression),
-  `naming_lint.py` clean. **NOT Judged.** This closes gate items 1, 2, 3, and 6 of
+  `naming_lint.py` clean. This closes gate items 1, 2, 3, and 6 of
   `docs/planning/content-durability-conformer-design-draft.md` §5 with real, executed evidence, and
-  provides a real (if informal) measurement for item 4 — but item 5 (independent red-team) has not yet
-  run, and the design draft's own item 7 framing ("every ADR in this design line that touches
-  `mandatory_sandbox_provider.hpp`/`ledger.hpp` has gotten one... there is no reason to expect this
-  line's first genuine on-disk content-storage change would be the exception") is taken seriously here:
-  this ADR is `Proposed`, not `Judged`, until that round runs.
+  provides a real (if informal) measurement for item 4. **SAME-DAY INDEPENDENT RED-TEAM COMPLETE (§7):
+  one real MUST-FIX found and fixed** — both cross-process tests' self-relaunch quoting was genuinely
+  broken on POSIX (not merely unverified), reproduced directly against a real `/bin/sh -c`, and fixed by
+  making the Windows-`cmd.exe`-specific outer quote wrap conditional. Gate item 4's own named coverage
+  gap (the same-digest concurrent-write sub-case) was also closed with a new, real, barrier-synchronized
+  test section, found safe by construction. Still NOT Judged: no Linux verification yet (unchanged from
+  this ADR's own original disclosure — the red-team round found and fixed a Linux-blocking defect but did
+  not itself run on Linux).
 - **Date:** 2026-08-30.
 - **Scope:** `include/agentengine/core/file_worktree_object_store.hpp` (new), `tests/test_content_
   durability_cross_process.cpp` (new), `tests/test_content_durability_concurrency.cpp` (new), `tests/
@@ -177,3 +180,127 @@ line, the same suppression pattern its sibling `InMemoryWorktreeObjectStore` alr
   own identity-precondition proof demonstrates for `IdentityAuthority`, though unlike that case there is
   no ACL-keyed cross-content-leak mechanism at stake here — merely two independently-durable stores that
   a caller could point at mismatched directories and get confusing, not dangerous, results).
+
+## 7. Independent red-team round (same day)
+
+**Scope of this round.** A fresh agent, with no prior context on this change beyond the commit and this
+ADR, independently re-derived and checked every claim in §2-§6 by reading the real diff (`git show
+1a4b6b2`) and code directly, then rebuilt and reran every new test itself rather than trusting this ADR's
+own account. Focus areas: `FileWorktreeObjectStore` port fidelity, `decode_tree()`/`is_well_formed_digest()`
+adversarial soundness, I2/I3 (no ACL bypass through the new store), the cross-process self-relaunch
+quoting mechanism, the concurrency probe's own decisiveness (including gate item 4's own named coverage
+gap), and the identity-precondition proof's generality.
+
+**[1] `FileWorktreeObjectStore` port fidelity and the `unique_ptr<mutex>` claim — confirmed, no changes
+needed.** Diffed `include/agentengine/core/file_worktree_object_store.hpp` against `docs/planning/proofs/
+worktree_io/file_object_store.hpp` line by line: identical storage shape, identical temp-file-plus-
+atomic-rename discipline, identical `decode_tree()`/`is_well_formed_digest()` logic. The only functional
+delta is an improvement, not a regression: `blob_count()`/`tree_count()` use the `directory_iterator(path,
+error_code&)` overload (fails closed, no exception) where the prove-phase original used the throwing
+overload. Independently traced `Ledger<Store>`'s constructor (`ledger.hpp:310-318`,
+`: store_(std::move(store)), ...`) myself: this ADR's own claim that the `Store` parameter is
+unconditionally moved into `store_` on every construction, and that `std::mutex` is neither movable nor
+copyable, both check out exactly as stated — the `std::unique_ptr<std::mutex>` indirection is genuinely
+load-bearing, not legacy caution carried forward unexamined.
+
+**[2] `decode_tree()`/`is_well_formed_digest()` — adversarially probed against crafted files, not just
+re-read.** `is_well_formed_digest()`'s 64-lowercase-hex-only gate is sound by inspection (rejects any `..`
+or path-separator content by construction, since neither survives the character-class check). For
+`decode_tree()`, wrote a temporary probe (`probe_decode_tree_corruption.cpp`, since removed) that bypassed
+`put_tree()` entirely and wrote six hand-crafted byte sequences directly to a `trees/<digest>` file on
+disk: an empty file, a `count` field with no entry data, `count=0xFFFFFFFF` with no entry data (checking
+for a loop-bound/pre-allocation DoS — none exists, since entries are `push_back`-accumulated one at a time
+and the very first `read_str()` inside the loop fails closed immediately), an oversized name-length field
+with only one byte actually present, an oversized digest-length field with nothing following, and a
+complete name+digest pair missing only the final `is_tree` byte. **Every one of the six failed closed with
+`worktree.tree_decode_failed`, zero crashes** — plus a seventh, positive-control case (a genuinely
+well-formed single-entry tree) decoded correctly, confirming the failures above are real corruption
+detection, not `decode_tree()` being universally broken. No fix needed.
+
+**[3] I2/I3 — no ACL bypass through the new store, confirmed by tracing every `store_` access, not
+assumed.** Grepped `ledger.hpp` for every `store_.put_blob/get_blob/put_tree/get_tree` call site: all four
+`_safe()` public entry points (`put_blob_safe`, `get_blob_safe`, `get_tree_safe`, and the `commit()`/
+`create_root_branch()`/`perform_three_way_merge_locked()` internal paths) take `Ledger`'s own `mutex_` and
+either call `authorized_for()` or `insert_acl_root_bounded()` before ever touching `store_`.
+`FileWorktreeObjectStore` itself has no ACL awareness of its own and no code path that could be reached
+without going through one of these gated methods first — confirmed genuinely true for every call site in
+this file, not merely for the ones this ADR's own tests happen to exercise. No finding.
+
+**[4] THE REAL MUST-FIX: the cross-process self-relaunch quoting was genuinely broken on POSIX, not
+merely unverified.** Both `test_content_durability_cross_process.cpp` and `test_identity_durability_
+precondition.cpp`'s comments claimed the Windows-`cmd.exe`-specific outer quote wrap was "harmless" on
+POSIX `/bin/sh -c` too ("a plain no-op pair around the whole string"). Checked this directly rather than
+accepting it: `std::system()` on POSIX runs the command via `/bin/sh -c <command>`, and reproduced the
+EXACT command-string construction both files use against a real `sh -c` (this environment's Git Bash
+`/bin/sh`, which implements the same POSIX quote-removal rules any Linux `/bin/sh` would). The
+double-wrapped form failed immediately: `sh: line 1: <path> --writer-role <dir1> <dir2> <dir3>: No such
+file or directory` (exit 127) — the executable path and every argument collapsed into ONE bad, nonexistent
+command name, because the extra quote pair shifts POSIX quote-state parity by one, leaving the executable
+path unquoted and spuriously quoting the space before the first argument, merging the two. The identical
+command string WITHOUT the extra wrap parsed correctly into four separate `argv` elements. Reproduced the
+same failure/fix pair for `test_identity_durability_precondition.cpp`'s own `run_child()` helper (identical
+pattern). **This would have made both tests fail unconditionally the first time this design line's
+established "Linux-verified" follow-on ADR ran them** — not merely be unverified, since `std::system()`
+invokes `/bin/sh -c` on Linux exactly as it does in this Git-Bash reproduction. **Fixed** by making the
+extra outer wrap conditional on `_WIN32` in both files, leaving POSIX to pass the correctly-quoted inner
+command directly (verified via the same direct `sh -c` reproduction: the fixed form parses into the
+correct four arguments). **Verified**: rebuilt both tests, reran each three times on Windows — unchanged,
+still `ALL CHECKS PASSED`, exit 0 every time (the `#ifdef _WIN32` branch is byte-identical to the original
+code, so Windows behavior could not have changed). The revert-to-confirm-fail side of this fix was done via
+the same direct `sh -c` reproduction rather than an actual Linux build of this repo (none available in this
+round) — the broken form was shown to fail, the fixed form was shown to succeed, on the identical shell
+semantics `std::system()` would actually invoke.
+
+**[5] Gate item 4's own named coverage gap — same-digest concurrent write — closed, found safe by
+construction.** This ADR's own §5/§6 already disclosed that the shipped `test_content_durability_
+concurrency.cpp` only ever writes DISTINCT blobs per thread, never exercising two writers racing to
+produce the IDENTICAL digest (and therefore the identical temp-file name). Wrote a temporary probe first
+(`probe_same_digest_race.cpp`, since removed): 16-24 real threads, a spin-wait barrier holding every
+thread until all are constructed and ready before releasing them together, writing IDENTICAL 3 MiB content
+(large enough to force multiple internal `WriteFile()` calls per writer, not one atomic buffer flush) —
+checked directly against the on-disk file after the race, never through a repair `put_blob()` call that
+would silently paper over a missing/corrupt result. **Found safe across ~6,000 racing attempts, including
+under a deliberately sabotaged version of `put_blob()` with the temp-file/atomic-rename discipline and the
+mutex both removed entirely** — concurrent writers of the same digest are, by the content-addressing
+invariant itself, always writing byte-identical bytes, and a Windows file handle stays bound to its
+underlying file object across a path rename, so no interleaving of these racing writes can strand a final
+file with anything other than correct bytes. Converted this into a permanent, real test-coverage addition
+(`test_content_durability_concurrency.cpp`'s new `[1b]` section, 16 threads × 20 iterations of the 3 MiB
+same-digest race) rather than leaving it as a deleted probe, since it closes a real, explicitly-named gap.
+**Confirmed the new check has genuine teeth**, not a vacuous pass: temporarily sabotaged `put_blob()` to
+write only the first half of the bytes, rebuilt, reran — both `[1]` and the new `[1b]` correctly FAILED;
+restored the original code, rebuilt, reran — clean pass again, three consecutive times.
+
+**[6] Concurrency probe `[2c]` hazard reproducibility — reconfirmed, unchanged.** Reran
+`test_content_durability_concurrency` (with the new `[1b]` section included) five consecutive times: every
+run showed 200/200 byte-exact distinct-digest writes, the new same-digest race clean, and the genuine
+concurrent-`Ledger`-construction hazard losing exactly one of two branches every time — deterministic, not
+a fluke, matching this ADR's own §3 claim.
+
+**[7] Identity-precondition proof — reran, and a more general pattern worth naming (not separately
+tested).** Reran `test_identity_durability_precondition` three times: identical result each time (attacker
+id 1 / genuine leak in the vulnerable configuration; attacker id 2 / `ledger.blob_access_denied` in the
+correct one). The test's own framing centers on "the FIRST `mint_root()` call in each process" (id 1) —
+worth stating explicitly, though not a separate gap needing its own test, since the mechanism this ADR's
+own §4 already describes generalizes cleanly: `IdentityAuthority::mint_root()`'s allocator is a bare
+in-process call counter, so the collision is not specific to "id 1" at all — ANY two processes whose
+`mint_root()`/`adopt()` call-count history up to the point of minting the identity in question happens to
+match (e.g., both processes call `mint_root()` exactly three times before minting the identity that ends up
+colliding) receive the identical id and collide identically. The shipped test demonstrates the simplest,
+most easily-triggered instance of this pattern (the very first call in each process) — the general pattern
+is already implied by the mechanism this ADR documents, not a distinct, unproven claim, and does not
+change the fix (`IdentityAuthority::bootstrap()`'s own `durable_dir`, configured consistently, closes every
+instance of it, not just the id-1 case).
+
+**Net effect of this round.** One real, Linux-blocking defect found and fixed (the quoting bug, §7 item
+4) — genuinely material, since it would have silently broken exactly the "Linux verification" step this
+ADR's own §5/§6 already lists as the expected next step. One real, meaningful test-coverage gap (gate item
+4's same-digest race) closed with a permanent addition, found safe rather than broken. Everything else
+checked out clean under genuine adversarial pressure: the port is faithful, `decode_tree()` is genuinely
+bounds-safe, I2/I3 hold structurally (not by omission), and the concurrency/identity claims reproduce
+deterministically. Full rebuild (zero errors) and full `ctest` (291 total, the same one pre-existing,
+unrelated `test_reference_agent_task_corpus` failure, zero regression) after every change; `python
+tools/naming_lint.py` clean throughout (no new exported type introduced by this round). No Linux
+verification was attempted this round (no Linux checkout available) — the quoting fix's own correctness
+was established via direct `sh -c` reproduction of the exact command strings involved, not a full Linux
+build of this repository; that full verification pass remains this ADR's own disclosed residual.

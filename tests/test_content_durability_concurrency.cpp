@@ -15,6 +15,15 @@
 //       writes -- confirming the temp-file-plus-atomic-rename discipline holds under genuine
 //       concurrent, unsynchronized use across independent store instances, not just within one
 //       instance's own internal mutex.
+//   [1b] SAME-DIGEST CONCURRENT WRITE (added by an independent red-team round, same day): [1] above
+//       only ever writes DISTINCT blobs per thread, so the "two writers race to write the IDENTICAL
+//       digest, hence the IDENTICAL temp-file name" sub-case this design line's own residuals section
+//       named was never actually exercised until now. A real, barrier-synchronized repro (16 threads,
+//       3 MiB content -- large enough to force multiple internal WriteFile() calls per writer, not one
+//       atomic buffer flush) found this SAFE by construction: concurrent writers of the same digest
+//       always write byte-identical bytes, and a Windows file handle stays bound to its underlying
+//       file object across a path rename, so no interleaving of these racing writes can strand a final
+//       file with anything other than the same correct bytes.
 //   [2] METADATA IS NOT SAFE, reproduced deterministically (this hazard needs no thread-timing luck to
 //       demonstrate -- it is a structural property of `persist_snapshot_locked()`'s own full, not
 //       merge, rewrite): two SEPARATE `Ledger<FileWorktreeObjectStore>` instances, each constructed
@@ -125,6 +134,74 @@ int main() {
         check(verify_store.blob_count() == static_cast<std::size_t>(kThreads * kBlobsPerThread),
               "[1] the real on-disk blob count matches EXACTLY 200 -- every concurrent writer's "
               "distinct blob genuinely landed as its own file, none overwritten or lost");
+
+        fs::remove_all(objects_dir, ec);
+    }
+
+    // ---- [1b] SAME-DIGEST CONCURRENT WRITE: a real repro of the sub-case this design line's own
+    // ---- residuals section names but [1] above never exercises (every thread there writes a
+    // ---- DISTINCT blob). Many real, concurrent, SEPARATE store instances (no shared mutex_ at all)
+    // ---- race to put_blob() the IDENTICAL content -- and therefore the IDENTICAL digest, hence the
+    // ---- IDENTICAL temp-file name -- at genuinely the same instant (a spin-wait barrier holds every
+    // ---- thread until all are constructed and ready, then releases them together). Content is 3 MiB,
+    // ---- deliberately larger than a single internal ofstream buffer, forcing MULTIPLE WriteFile()
+    // ---- calls per writer -- a single small write that fits in one internal buffer flush would never
+    // ---- expose a genuine torn-write window. Checked directly against the ON-DISK file after the race
+    // ---- (never through a repair put_blob() call, which would silently paper over a missing/corrupt
+    // ---- result). Confirmed SAFE by construction, not merely by luck: two writers computing the SAME
+    // ---- digest are, by the content-addressing invariant itself, always writing BYTE-IDENTICAL bytes,
+    // ---- and a Windows file handle stays bound to its underlying file object across a rename of its
+    // ---- path -- so even a `rename()` racing against another thread's still-open write handle for the
+    // ---- same temp name cannot strand a final file with foreign bytes, only ever the same bytes.
+    {
+        fs::path const objects_dir = fs::temp_directory_path() / "ae_test_content_durability_concurrency_same_digest";
+        std::error_code ec;
+
+        constexpr int kThreads = 16;
+        constexpr int kIterations = 20;
+        std::string content(3 * 1024 * 1024, '\0');
+        for (std::size_t i = 0; i < content.size(); ++i) content[i] = static_cast<char>('a' + (i % 26));
+        auto const bytes = to_bytes(content);
+
+        int corrupted = 0, missing = 0;
+        for (int iter = 0; iter < kIterations; ++iter) {
+            fs::remove_all(objects_dir, ec);
+            fs::create_directories(objects_dir);
+
+            std::atomic<int> ready{0};
+            std::atomic<bool> go{false};
+            std::vector<std::thread> threads;
+            for (int t = 0; t < kThreads; ++t) {
+                threads.emplace_back([&objects_dir, &bytes, &ready, &go] {
+                    FileWorktreeObjectStore store(objects_dir);
+                    ++ready;
+                    while (!go.load(std::memory_order_acquire)) std::this_thread::yield();
+                    auto put_r = store.put_blob(bytes);
+                    (void)put_r;
+                });
+            }
+            while (ready.load() < kThreads) std::this_thread::yield();
+            go.store(true, std::memory_order_release);
+            for (auto& th : threads) th.join();
+
+            // Read the raw on-disk file directly -- deliberately NOT via another put_blob() call,
+            // which would silently repair a missing/short file and hide the exact failure mode this
+            // check exists to catch.
+            FileWorktreeObjectStore probe(objects_dir);
+            auto digest_r = agentengine::compute_digest(bytes);
+            if (!digest_r.has_value()) { ++missing; continue; }
+            auto get_r = probe.get_blob(*digest_r);
+            if (!get_r.has_value()) { ++missing; continue; }
+            if (get_r->size() != bytes.size() || *get_r != bytes) ++corrupted;
+        }
+
+        check(missing == 0, "[1b] same-digest concurrent write: the final on-disk blob file exists "
+                             "after every iteration of genuinely concurrent, barrier-synchronized "
+                             "same-content writers (16 threads x 20 iterations)");
+        check(corrupted == 0, "[1b] same-digest concurrent write: the final on-disk blob is "
+                               "byte-for-byte correct after every iteration -- no torn write, no "
+                               "stale-truncation artifact survives, even for large (3 MiB, multi-"
+                               "WriteFile-call) content racing under a real synchronized-start barrier");
 
         fs::remove_all(objects_dir, ec);
     }

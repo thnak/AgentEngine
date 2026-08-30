@@ -171,11 +171,27 @@ int run_reader_role(std::filesystem::path const& self_exe) {
     // misparses which quoted substring is the executable name unless the WHOLE command is wrapped in
     // one more, redundant pair of quotes -- found empirically (the unwrapped form failed with "The
     // filename, directory name, or volume label syntax is incorrect", not a real logic bug in this
-    // test), not assumed from documentation alone. POSIX `/bin/sh -c` has no such quirk, but the extra
-    // wrapping quotes are harmless there too (a plain no-op pair around the whole string).
+    // test), not assumed from documentation alone.
+    //
+    // REAL FINDING an independent red-team pass caught (2026-08-30, same day as the port): the original
+    // comment here claimed the extra outer wrap is "harmless" on POSIX `/bin/sh -c` too -- that claim was
+    // FALSE, not merely untested. std::system() on POSIX runs the command via `/bin/sh -c <command>`,
+    // which applies standard shell quote-removal: wrapping an ALREADY-quoted command in one more pair of
+    // quotes shifts quote-state parity by one, which (a) leaves the leading token (the executable path)
+    // UNQUOTED -- reintroducing exactly the space-in-path fragility this quoting exists to prevent -- and
+    // (b) makes the space between the executable path and its first argument spuriously QUOTED, merging
+    // them into ONE argv element instead of two. Empirically confirmed with `sh -c` directly: the
+    // double-wrapped form collapses the executable path AND all four arguments into a single, nonexistent
+    // command name ("No such file or directory"); the SAME command string without the extra wrap parses
+    // into the correct four separate arguments. The workaround is therefore genuinely Windows-`cmd.exe`-
+    // specific, not a universally-harmless no-op -- applied conditionally here rather than unconditionally.
     std::string const inner = "\"" + self_exe.string() + "\" --writer-role \"" + objects_dir.string() +
                                "\" \"" + ledger_dir.string() + "\" \"" + identity_dir.string() + "\"";
+#ifdef _WIN32
     std::string const command = "\"" + inner + "\"";
+#else
+    std::string const command = inner;
+#endif
     int const writer_exit = std::system(command.c_str());
     check(writer_exit == 0, "[1] reader: process 1 (the writer) exits with a real, clean, successful "
                              "exit code, as a genuinely separate OS process");

@@ -139,7 +139,16 @@ int run_attacker_role(std::filesystem::path const& objects_dir, std::filesystem:
     std::error_code ec;
     std::filesystem::remove(result_file, ec);
     std::string const inner = "\"" + self_exe.string() + "\" " + args;
+    // Windows-`cmd.exe`-specific workaround only -- see `test_content_durability_cross_process.cpp`'s own
+    // identically-shaped comment (same red-team round, same day) for why the ADDITIONAL outer quote pair
+    // is NOT a portable no-op: on POSIX `/bin/sh -c`, it shifts quote-state parity and merges the
+    // executable path with its first argument into one bad argv element (empirically confirmed with `sh
+    // -c` directly -- unconditionally wrapping breaks this test on any POSIX host).
+#ifdef _WIN32
     std::string const command = "\"" + inner + "\"";
+#else
+    std::string const command = inner;
+#endif
     int const exit_code = std::system(command.c_str());
     if (exit_code != 0) return {};
     std::ifstream in(result_file);
