@@ -1,7 +1,8 @@
 // Positive control for tests/compile_fail/sandbox_tool_provider_rejects_fork_from.cpp -- see
 // tests/CMakeLists.txt's try_compile() gate and that file's own top comment for the full claim
-// (ADR-096 C2) and its own disclosed residual (the public `history_provider()` move-assignment
-// bypass this pair does NOT prove is closed). A fail-only probe cannot distinguish "correctly
+// (ADR-096 C2); that file's own comment also covers the public `history_provider()` move-assignment
+// bypass this pair does NOT (and cannot) prove anything about -- closed at runtime by ADR-116
+// instead, not by this compile-time gate. A fail-only probe cannot distinguish "correctly
 // rejected the forbidden line" from "this file never compiled for an unrelated reason" (the same
 // two-file idiom every other tests/compile_fail/*.cpp pair in this repo already uses). This file is
 // IDENTICAL to the negative probe except it never calls `fork_from()` -- proving that `Session` (an

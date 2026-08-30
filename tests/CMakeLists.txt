@@ -268,10 +268,12 @@ endif()
 # proven" via a throwaway MSVC probe compiled once during that ADR's own red-team round and then
 # discarded -- never preserved as a durable, checked-in regression guard. This pair closes that
 # residual, same two-file idiom as every other tests/compile_fail/*.cpp pair in this file. It does NOT
-# close (and does not claim to close) a separate, disclosed residual found by this same gate's own
-# 2026-08-28 red-team round: `ComposedContextProvider<Ms...>`'s move-assignment is not deleted, so
-# `target.history_provider() = std::move(source.history_provider());` still compiles and still aliases
-# live provider state across sessions -- see that class's own comment and ADR-102 §48.
+# close (and does not claim to close) a separate residual found by this same gate's own 2026-08-28
+# red-team round: `ComposedContextProvider<Ms...>`'s move-assignment is not deleted, so
+# `target.history_provider() = std::move(source.history_provider());` still compiles -- see that
+# class's own comment and ADR-102 §48. CLOSED at runtime, not by this compile-time gate, by ADR-116
+# (2026-08-30): that statement no longer aliases live provider state across sessions -- `operator=`
+# refuses it as a silent no-op, proven by tests/test_session_builder.cpp's own B20.
 #
 # Portable across Windows and Linux (2026-08-29, decisions/ADR-105-sandbox-tool-provider-composed-
 # linux-parity.md) -- previously WIN32-gated on the same stale "SandboxToolProvider's own current

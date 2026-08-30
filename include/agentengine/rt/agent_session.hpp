@@ -672,7 +672,19 @@ public:
     // routes through `assemble_context()` internally, no change needed here) -- using this single-
     // provider slot as-is is a deliberate, acknowledged trade for the simpler API, not an
     // undiscovered gap.
-    [[nodiscard]] HistoryProviderT& history_provider() noexcept { return history_provider_; }
+    // ADR-116: stamps `history_provider_` with this session's own identity on every call, when
+    // `HistoryProviderT` happens to be a type that tracks one (currently only `ComposedContextProvider
+    // <Ms...>`'s own private `bind_owner()`, which this class is friended for -- see that method's
+    // own comment). `if constexpr` keeps this a true no-op, not just harmless, for every OTHER
+    // `HistoryProviderT` (e.g. the default `HistoryProvider<Window<0>>`), which never declares
+    // `bind_owner()` at all -- the closing hazard this exists to prevent (cross-session aliasing of
+    // LIVE, capability-bearing provider state) doesn't apply to a plain, copyable history buffer.
+    [[nodiscard]] HistoryProviderT& history_provider() noexcept {
+        if constexpr (requires { history_provider_.bind_owner(static_cast<void const*>(this)); }) {
+            history_provider_.bind_owner(static_cast<void const*>(this));
+        }
+        return history_provider_;
+    }
 
     void set_suspend_for_approval(bool suspend) noexcept { suspend_for_approval_ = suspend; }
     [[nodiscard]] bool suspend_for_approval() const noexcept { return suspend_for_approval_; }

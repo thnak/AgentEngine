@@ -35,6 +35,14 @@
 #include "agentengine/core/context_assembly.hpp"
 #include "agentengine/core/context_provider.hpp"
 #include "agentengine/core/error.hpp"
+// ADR-116: needed ONLY for the `friend` declaration on `bind_owner()` below (this class has no other
+// dependency on `AgentSession` or anything else in `rt/`). `agent_session.hpp` never includes this
+// file back, so this is a one-directional edge, not a cycle -- and `core/session_builder.hpp`
+// (this exact directory) already includes `agentengine/rt/agent_session.hpp` directly for the same
+// kind of reason, so this is a repeated pattern, not a new one. Real, disclosed cost: this is a
+// widely-included header (ADR-102 §51's own note), so this pulls the larger `agent_session.hpp` into
+// every translation unit that composes providers, even ones that never touch `AgentSession` directly.
+#include "agentengine/rt/agent_session.hpp"
 
 namespace agentengine {
 
@@ -97,26 +105,32 @@ public:
     // instead -- `fork_from()` is only compiled when actually called, so this has zero effect on any
     // already-passing construction/`engage()`/`on_context()`/`on_turn_end()` path.
     //
-    // NECESSARY, NOT SUFFICIENT (2026-08-28 red-team, ADR-102 §41-48's own follow-on round on
-    // `tests/compile_fail/sandbox_tool_provider_rejects_fork_from.cpp`) -- the identical hazard shape
-    // this comment describes for `fork_from()`'s COPY is still fully reachable through the public
-    // `history_provider()` accessor's plain MOVE-assignment, which this class deliberately keeps
-    // `=default`-shaped, not deleted: `target.history_provider() = std::move(source.history_provider());`
-    // compiles cleanly and transfers a live, already-`engage()`d contributor set (e.g. a real
+    // CLOSED (2026-08-30, ADR-116) -- previously disclosed here as "necessary, not sufficient"
+    // (2026-08-28 red-team, ADR-102 §41-48's own follow-on round): the identical hazard shape above
+    // was still fully reachable through the public `history_provider()` accessor's plain MOVE-
+    // assignment -- `target.history_provider() = std::move(source.history_provider());` compiled
+    // cleanly and transferred a live, already-`engage()`d contributor set (e.g. a real
     // `SandboxToolProvider`, whose `unique_ptr<SessionShellSandbox>` is rooted at a host directory
     // named after `source`'s OWN `session_id` digest) into `target`, while `target`'s `session_id_`/
-    // `principal_` stay untouched -- the same I1/I4-adjacent identity/effect-attribution mismatch the
-    // deleted copy above exists to prevent, reached through a second, undisclosed route. Not a new
-    // discovery in kind: `core/session_builder.hpp`'s sibling `LazyComposedContextProvider` already
-    // named this EXACT bypass route for itself (that file's own finding 9/11 comments, "the exact
-    // bypass route `on_context()`'s own comment below already names") -- this type was simply never
-    // updated to carry the same disclosure once ADR-074's consolidation made it move-only too. Not
-    // fixed here: closing it needs either a non-assignable accessor shape (a real API change to every
-    // caller of `history_provider()`, several of which rely on ordinary mutation, e.g.
-    // `ComposedQuickstartSessionBuilder::build()`'s own `engage()` call) or an owning-session-identity
-    // check inside `operator=` itself (this type has no back-reference to its owning `AgentSession` to
-    // check against) -- real, contained follow-on work, named as a residual, not attempted in this
-    // pass.
+    // `principal_` stayed untouched. Not a new discovery in kind: `core/session_builder.hpp`'s sibling
+    // `LazyComposedContextProvider` already named this EXACT bypass route for itself (that file's own
+    // finding 9/11) before ADR-074's consolidation folded it into this type without carrying the
+    // disclosure forward.
+    //
+    // Of the two remediations that comment named -- a non-assignable accessor shape (touching every
+    // `history_provider()` caller across ~30 files, most of which use an unrelated, non-composed
+    // `HistoryProviderT` this hazard never applied to) or an owning-session-identity check inside
+    // `operator=` itself -- ADR-116 implements the second, narrower one: `owner_` (below) is an
+    // opaque, non-owning identity tag that `AgentSession::history_provider()` stamps with its own
+    // `this` on every call (see `bind_owner()`'s own comment). `operator=` refuses -- as a silent,
+    // fully-disclosed no-op, not a crash, matching this codebase's own established best-effort-
+    // disclosed precedent (ADR-112 §2's per-entry ACL-grant cap) -- only when BOTH sides are tagged
+    // with two DIFFERENT sessions' own addresses. A bare, standalone instance (`owner_ == nullptr` on
+    // both sides, e.g. every `tests/test_composed_context_provider.cpp` instance and every move-
+    // CONSTRUCTION-based check in `tests/test_session_builder.cpp`) and a session assigning to itself
+    // (same address, or caught by the identity check just above) are both completely unaffected --
+    // this is why `history_provider().engage(...)`, `ComposedQuickstartSessionBuilder::build()`, and
+    // every other real caller needed zero changes for this fix.
     //
     // Declared explicitly (not `=default`): a defaulted move would trivially copy the plain `bool
     // engaged_`, leaving it `true` on the moved-from side even though its `contributors_` is now
@@ -129,12 +143,19 @@ public:
         other.contributors_.clear();
     }
     ComposedContextProvider& operator=(ComposedContextProvider&& other) noexcept {
-        if (this != &other) {
-            contributors_ = std::move(other.contributors_);
-            engaged_      = other.engaged_;
-            other.engaged_ = false;
-            other.contributors_.clear();
+        if (this == &other) return *this;
+        // ADR-116: refuse a cross-session transfer -- see this class's own top comment and
+        // `bind_owner()`'s comment for the full rationale. Both sides untouched by an
+        // `AgentSession::history_provider()` accessor (`owner_ == nullptr`, ordinary standalone use)
+        // or both tagged with the SAME session are unaffected; only two DIFFERENT, non-null tags
+        // trigger the refusal.
+        if (owner_ != nullptr && other.owner_ != nullptr && owner_ != other.owner_) {
+            return *this;
         }
+        contributors_ = std::move(other.contributors_);
+        engaged_      = other.engaged_;
+        other.engaged_ = false;
+        other.contributors_.clear();
         return *this;
     }
     ComposedContextProvider(ComposedContextProvider const&) = delete;
@@ -213,8 +234,36 @@ private:
         return built;
     }
 
+    // ADR-116: called ONLY from `AgentSession::history_provider()` (friended below), once per
+    // accessor call, with that session's own `this` -- idempotent (a session's address is stable for
+    // its whole lifetime, per `session_builder.hpp`'s own always-heap-allocated-via-`make_unique`
+    // construction), so calling it repeatedly on the same session's provider is a no-op in effect.
+    // Deliberately NOT public: this is `AgentSession` stamping identity on its OWN member, not a knob
+    // for an arbitrary caller -- a caller able to invoke this directly could simply retag one side to
+    // spoof a match and defeat the very check in `operator=` above that reads `owner_`.
+    void bind_owner(void const* owner) noexcept { owner_ = owner; }
+
+    // Must repeat `AgentSession`'s own requires-clause verbatim (agent_session.hpp) -- MSVC treats a
+    // friend template declaration as a real redeclaration of the entity for constraint-matching
+    // purposes, and rejects a friend declaration whose constraints don't match the real one
+    // (`error C3864: requires clause is incompatible with the declaration`, empirically confirmed).
+    template <class ChatClientT, class StateT, class HistoryProviderT>
+        requires (agentengine::ChatClient<ChatClientT> || agentengine::ModelCallGatewayLike<ChatClientT>) &&
+                 agentengine::ContextProvider<HistoryProviderT>
+    friend class agentengine::rt::AgentSession;
+
     std::vector<ContextProviderDescriptor> contributors_;
     bool engaged_ = false;
+    // Opaque, non-owning identity tag -- see `bind_owner()`'s own comment and `operator=`'s use of it
+    // above. `nullptr` for a bare, standalone instance never reached through
+    // `AgentSession::history_provider()` (every instance this class's own test file constructs
+    // directly). Deliberately NOT touched by the move constructor below (a freshly move-constructed
+    // instance is, by construction, not yet embedded in any session's member slot -- it gets tagged
+    // the first time ITS OWN eventual owner's `history_provider()` is called, same as any other fresh
+    // instance) and NOT reset by `operator=`'s own moved-from logic (`owner_` describes which
+    // session's member slot `other` itself IS, not what content it currently holds -- consuming its
+    // content via a legitimate same-session move does not change which session `other` lives in).
+    void const* owner_ = nullptr;
 };
 
 }  // namespace agentengine

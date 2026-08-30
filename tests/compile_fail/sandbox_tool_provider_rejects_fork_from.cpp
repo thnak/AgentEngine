@@ -24,12 +24,14 @@
 // NOT CLOSED BY THIS GATE (2026-08-28 red-team, disclosed in ADR-102 §48 and
 // composed_context_provider.hpp's own comment): this only proves the COPY path fails to compile.
 // `ComposedContextProvider<Ms...>`'s move-assignment is deliberately NOT deleted, and
-// `target.history_provider() = std::move(source.history_provider());` compiles cleanly through the
-// public `history_provider()` accessor, silently transferring a live, already-engaged
-// `SandboxToolProvider` (including its `session_id`-derived sandbox directory) into a session with a
-// DIFFERENT `session_id`/`principal_` -- the same aliasing hazard this file's own negative probe
-// proves is blocked for the copy path, reachable through a second, disclosed-but-unclosed route. This
-// pair does not, and cannot, prove that hazard is closed.
+// `target.history_provider() = std::move(source.history_provider());` still compiles cleanly through
+// the public `history_provider()` accessor -- this pair does not, and cannot, prove anything about
+// the move path, since it never calls it. CLOSED, but NOT by this gate (2026-08-30, ADR-116): that
+// statement now compiles but is a RUNTIME no-op, not a compile error -- `operator=` refuses the
+// transfer whenever both sides are tagged with two different sessions' own addresses (an identity tag
+// `AgentSession::history_provider()` stamps on every call), leaving both sessions' own provider state
+// untouched. Proven by `tests/test_session_builder.cpp`'s own B20, a runtime test, not a `try_compile()`
+// gate like this one -- a compile-fail idiom cannot express "compiles, but does nothing."
 
 #include "agentengine/core/chat_client.hpp"
 #include "agentengine/core/composed_context_provider.hpp"

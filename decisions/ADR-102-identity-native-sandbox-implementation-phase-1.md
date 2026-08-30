@@ -1497,7 +1497,11 @@ Two real findings, both fixed same day:
    caller, several of which rely on ordinary mutation, e.g. `ComposedQuickstartSessionBuilder::build()`'s
    own `engage()` call) or an owning-session-identity check inside `operator=` itself (this type has no
    back-reference to its owning `AgentSession` to check against) — real, contained follow-on work, named
-   here and at the code site, not attempted in this pass.
+   here and at the code site, not attempted in this pass. **Closed by ADR-116** (2026-08-30): implemented
+   the owning-session-identity check — `ComposedContextProvider` now carries an opaque `owner_` tag that
+   `AgentSession::history_provider()` stamps on every call, and `operator=` refuses (a silent no-op) a
+   transfer between two differently-tagged instances. `tests/test_session_builder.cpp`'s own B20 (which
+   used to demonstrate this transfer succeeding) now proves the refusal instead.
 
 Everything else the round checked came back clean: no vacuous-failure risk (the real C2280 was
 independently reproduced via direct `cl.exe`, at the correct line, correct type, correct operator); no
@@ -1534,13 +1538,12 @@ move from a temporary, not a copy).
 
 ## 51. Residual risks (Phase 5, `fork_from`-becomes-compile-error negative-probe slice)
 
-- **`ComposedContextProvider<Ms...>`'s move-assignment bypass (§48 finding 2)** — the central residual
-  of this slice: the compile-fail gate proves the COPY path is closed, not that the underlying
-  aliasing hazard is closed in general. `target.history_provider() = std::move(source.history_provider());`
-  remains a real, disclosed, not-yet-closed route to the same hazard, now documented at three sites
-  (`composed_context_provider.hpp`, both new `.cpp` files) rather than silently undiscovered. Real,
-  contained follow-on work (a non-assignable accessor shape, or an owning-session-identity check) is
-  named but not attempted here.
+- ~~`ComposedContextProvider<Ms...>`'s move-assignment bypass (§48 finding 2)~~ **Closed by ADR-116**
+  (2026-08-30): the compile-fail gate here still proves only the COPY path fails to compile (unchanged,
+  and doesn't need to change — a runtime refusal isn't a compile-fail-shaped claim), but the underlying
+  aliasing hazard itself is now closed at runtime: `operator=` refuses a transfer between two
+  differently-tagged sessions' own providers as a silent no-op, proven by
+  `tests/test_session_builder.cpp`'s own B20.
 - **This gate is specific to `SandboxToolProvider`+`ComposedContextProvider<Ms...>`** — it does not
   generalize to every possible non-copyable `ContextProvider` a future session might compose;
   `LazyComposedContextProvider` (`session_builder.hpp`) already carries its own, separately-maintained

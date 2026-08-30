@@ -582,10 +582,16 @@ int main() {
         }
     }
     {
-        // B20: round 5 red-team finding A -- moving a ComposedContextProvider (reachable through
-        // AgentSession::history_provider()'s own mutable accessor) must leave the MOVED-FROM instance
-        // genuinely `not_engaged`, not silently `engaged_ == true` over an empty contributors_. Proves
-        // the class's own invariant ("engaged_ implies contributors_ is populated") survives a move.
+        // B20 (rewritten 2026-08-30, ADR-116): this used to prove the OPPOSITE of what it proves now.
+        // Originally (round 5 red-team finding A) it demonstrated that `target.history_provider() =
+        // std::move(source.history_provider())` -- a real cross-SESSION move through the public
+        // accessor -- successfully transferred live provider state, and merely checked the move
+        // mechanics (moved-from correctly `not_engaged`, recoverable via re-`engage()`) were sound.
+        // ADR-116 closed that transfer itself as a disclosed, live I1/I4-adjacent aliasing hazard
+        // (composed_context_provider.hpp's own top comment, ADR-102 §48/§51) -- `operator=` now
+        // refuses (a silent, fully-disclosed no-op) whenever both sides are tagged with two DIFFERENT
+        // sessions' own addresses. This test now proves THAT: the exact same statement that used to
+        // succeed now leaves BOTH sessions' own content completely untouched.
         using SingleBuilder = ComposedQuickstartSessionBuilder<quickstart::Provider::openai,
                                                                   InMemorySecretStore, RequiredArgProvider>;
         auto counter1 = std::make_shared<std::size_t>(0);
@@ -600,7 +606,8 @@ int main() {
                           .build();
         check(built1.has_value() && built2.has_value(), "B20 setup: both sessions build() successfully");
         if (built1.has_value() && built2.has_value()) {
-            // The exact move the red-team's probe used, through the same public accessor.
+            // The exact statement ADR-116 closes -- a real cross-session move through the same public
+            // accessor this file's own B20 has exercised since round 5.
             built2->session().history_provider() = std::move(built1->session().history_provider());
 
             Principal principal{"p-move", ""};
@@ -608,28 +615,21 @@ int main() {
             SessionContext session_ctx{"s-move", principal, empty_history};
             EffectContext effect_ctx{};
 
-            auto moved_from = agentengine::test_support::run_task_sync<result<ContextContribution>>(
+            auto still_session1 = agentengine::test_support::run_task_sync<result<ContextContribution>>(
                 built1->session().history_provider().on_context(session_ctx, effect_ctx));
-            check(!moved_from.has_value(),
-                  "B20: the MOVED-FROM session's on_context() now genuinely fails ('not_engaged'), "
-                  "instead of silently succeeding with zero messages");
-            if (!moved_from.has_value()) {
-                check(moved_from.error().code == "composed_context.not_engaged",
-                      "B20: the failure is specifically 'not_engaged', not a different error");
-            }
+            check(still_session1.has_value() && still_session1->messages.size() == 1 &&
+                      std::get<Text>(still_session1->messages[0].content.front().value).text ==
+                          "session-1",
+                  "B20: the refused move leaves session1's OWN provider completely untouched -- "
+                  "still engaged, still its own original content, not reset to not_engaged");
 
-            auto re_engage = built1->session().history_provider().engage(
-                std::make_tuple(RequiredArgProvider{"session-1-recovered", counter1}));
-            check(re_engage.has_value(),
-                  "B20: the moved-from instance can be engage()d again -- a real recovery path, not "
-                  "permanently bricked by the stale 'already_engaged' guard");
-
-            auto moved_to = agentengine::test_support::run_task_sync<result<ContextContribution>>(
+            auto still_session2 = agentengine::test_support::run_task_sync<result<ContextContribution>>(
                 built2->session().history_provider().on_context(session_ctx, effect_ctx));
-            check(moved_to.has_value() && moved_to->messages.size() == 1 &&
-                      std::get<Text>(moved_to->messages[0].content.front().value).text == "session-1",
-                  "B20: the MOVED-TO session correctly carries session1's own moved-in contribution "
-                  "(ordinary, expected operator= replacement semantics -- not itself a finding)");
+            check(still_session2.has_value() && still_session2->messages.size() == 1 &&
+                      std::get<Text>(still_session2->messages[0].content.front().value).text ==
+                          "session-2",
+                  "B20: the refused move leaves session2's OWN provider completely untouched -- "
+                  "still its own original content, NOT silently overwritten with session1's");
         }
     }
     {
