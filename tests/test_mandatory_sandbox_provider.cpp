@@ -25,6 +25,10 @@
 //   [5] the REAL clear_in_process_state() relinquishes the branch and leaves the session re-bindable.
 //   [6] would_fork_succeed() reflects real, live BranchCost quota exhaustion once a REAL fork_from()
 //       call actually spends it.
+//   [7] ADR-119's new static Capabilities<cap::decl::RunCommand> ceiling fails closed through the real
+//       pipeline: bind_sandbox() alone (the identity/quota gate) is not enough -- a session with no
+//       cap::RunCommand grant gets run_command rejected as a role::tool error, spends no RunCost, and
+//       never touches the real filesystem.
 
 #include "agentengine/sandbox/docker_execution_surface.hpp"
 #include "agentengine/sandbox/mandatory_sandbox_provider.hpp"
@@ -263,7 +267,8 @@ int main() {
                                  "cat pipeline.txt")}}));
             client.set_script({tool_call_message("call-1", "run_command", args_json)});
 
-            CapabilitySet const held = CapabilitySet::grant_root({});
+            // ADR-119: run_command now carries a real Capabilities<cap::decl::RunCommand> ceiling.
+            CapabilitySet const held = CapabilitySet::grant_root({Capability{cap::RunCommand{}}});
             live.set_capabilities(&held);
 
             auto response = drive(live.start_run(agentengine::rt::StartRun{user_message("go")}));
@@ -394,6 +399,63 @@ int main() {
         }
     }
 
+    // [7] ADR-119's new static Capabilities<cap::decl::RunCommand> ceiling fails closed through the
+    // REAL pipeline: bind_sandbox() alone (the identity/quota gate, satisfied), but the session's own
+    // granted CapabilitySet is explicitly EMPTY -- proving the ceiling is load-bearing, not merely
+    // declared and never actually checked. Mirrors ADR-117 §7's identical proof shape for the
+    // task-branch tools.
+    {
+        Session ungranted;
+        ungranted.initialize("ungranted-session", real_owner_principal);
+        auto root_r = drive(ledger.create_root_branch(owner, "ungranted"));
+        check(root_r.has_value(), "create_root_branch(owner, \"ungranted\") succeeds");
+        if (root_r.has_value()) {
+            ungranted.history_provider().bind_sandbox(ledger, std::move(*root_r), owner,
+                                                        scratch_root / "ungranted", branch_quota,
+                                                        run_quota, storage_quota);
+            check(ungranted.history_provider().is_bound(),
+                  "bind_sandbox() alone leaves the provider bound (the identity/quota gate)");
+
+            ScriptedChatClient& client = ungranted.emplace_chat_client();
+            std::string const args_json = json::dump(json::Value::make_object(
+                {{"command", json::Value::make_string(
+                                 "echo -n 'should never run' > no_capability.txt")}}));
+            client.set_script({tool_call_message("call-1", "run_command", args_json)});
+
+            CapabilitySet const no_caps = CapabilitySet::grant_root({});
+            ungranted.set_capabilities(&no_caps);
+
+            std::uint64_t const run_quota_before = run_quota.remaining();
+            auto response = drive(ungranted.start_run(agentengine::rt::StartRun{user_message("go")}));
+            check(response.has_value(),
+                  "start_run() itself still completes -- invoke_tool()'s rejection is a normal "
+                  "role::tool error result, not a thrown/aborted run");
+
+            bool found_capability_error = false;
+            bool found_real_reply = false;
+            for (Message const& m : ungranted.history()) {
+                if (m.role != role::tool) continue;
+                for (ContentItem const& item : m.content) {
+                    auto const* tr = std::get_if<ToolResult>(&item.value);
+                    if (!tr) continue;
+                    if (tr->is_error) found_capability_error = true;
+                }
+                if (tool_reply_json_of(m).has_value()) found_real_reply = true;
+            }
+            check(found_capability_error,
+                  "run_command is rejected as a real role::tool error result when the session holds no "
+                  "cap::RunCommand grant, even though bind_sandbox() alone was called");
+            check(!found_real_reply, "no real run_command call ever ran -- no real reply anywhere in history");
+            check(run_quota.remaining() == run_quota_before,
+                  "a rejected-at-authorization call never reaches SandboxRuntime::run() at all, so it "
+                  "spends no RunCost unit -- the ceiling check runs strictly before the real verb");
+
+            auto leaked = read_entry(ledger, ungranted.history_provider().runtime()->branch_name(), owner,
+                                       "no_capability.txt");
+            check(!leaked.has_value(), "the command never ran, so no_capability.txt was never written");
+        }
+    }
+
     std::filesystem::remove_all(scratch_root, ec);
 
     if (g_failures == 0) {
@@ -401,7 +463,8 @@ int main() {
                      "agentengine::rt::AgentSession's actual HistoryProviderT, including -- for the "
                      "first time in this design's entire history -- a run_command tool call driven end "
                      "to end through the real, unmodified session.start_run() -> invoke_tool() 10-step "
-                     "pipeline, against a REAL Docker daemon.\n");
+                     "pipeline, and ADR-119's real cap::RunCommand capability ceiling fail-closed proof, "
+                     "against a REAL Docker daemon.\n");
     }
     return g_failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

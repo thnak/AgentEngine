@@ -38,15 +38,20 @@
 //     policy/retry layer keyed on `failure_class`) sees the REAL classification of what actually
 //     failed, not a fixed placeholder.
 //
-// SCOPE, matching ADR-102's own Phase 4 boundary: `RunCommandTool` deliberately declares NO static
-// `Capabilities<...>` ceiling (unlike the real, shipped `RunShellTool`, ADR-096) -- it authorizes
-// entirely against THIS design's own `Grant<T>`/`IdentityAuthority`/`AsyncQuota<T>` model, which has
-// no `CapabilitySet`-shaped capability notion at all (007 §3's ceiling machinery does not apply to a
-// tool with nothing to declare against it). The real, dynamic gate is `MandatorySandboxProvider::
-// is_bound()` (checked inside `on_context()` before the tool is even contributed to the table) plus
-// `SandboxRuntime::run()`'s own `AsyncQuota<RunCost>`/`AsyncQuota<StorageBytes>` gates (Phase 3,
-// already proven) -- a materially different, identity/quota-based authorization model than
-// `CapabilitySet`, not a gap in this port.
+// SCOPE, UPDATED by ADR-119 (2026-08-30): `RunCommandTool` originally (ADR-102 Phase 4) declared NO
+// static `Capabilities<...>` ceiling, authorized entirely against THIS design's own `Grant<T>`/
+// `IdentityAuthority`/`AsyncQuota<T>` model. That model is UNCHANGED and remains the real, dynamic
+// gate bounding how much/how far a call can go: `MandatorySandboxProvider::is_bound()` (checked
+// inside `on_context()` before the tool is even contributed to the table) plus `SandboxRuntime::
+// run()`'s own `AsyncQuota<RunCost>`/`AsyncQuota<StorageBytes>` gates (Phase 3). ADR-119 layers a
+// SECOND, static `Capabilities<cap::decl::RunCommand>` ceiling on top -- a pure membership/audit gate
+// ("is this agent even allowed to have run_command tooling at all"), mirroring the exact double-gate
+// shape ADR-117 already established for the task-branch tools immediately below. This is a real,
+// disclosed BEHAVIOR CHANGE: every real production caller (`tools/cli_chat.cpp`, `tools/
+// sandboxed_shell_chat.cpp`, `tools/containerd_shell_chat.cpp`) must now also grant `cap::RunCommand`
+// on the session, or the real `invoke_tool()` pipeline rejects every `run_command` call with
+// `tool.capability_not_held` even though the identity/quota gate would have allowed it -- see ADR-119
+// for the full list of real callers updated in the same change.
 
 #include <cstdint>
 #include <filesystem>
@@ -88,12 +93,13 @@ struct RunCommandReply {
 };
 AE_JSON_SCHEMA(RunCommandReply, ok, exit_code, stdout_text, tree_digest, turn_index)
 
-// Deliberately `agentengine::Tool<RunCommandTool>` with ZERO policy parameters -- see this file's own
-// top comment for why (this design's own `Grant<T>`/`IdentityAuthority` authorization model has no
-// `CapabilitySet`-shaped capability notion for a static ceiling to express). `invoke()`'s body is an
-// unreachable sentinel -- real dispatch is entirely through the `make_tool_descriptor_with_invoke()`
-// closure `MandatorySandboxProvider::on_context()` installs below.
-struct RunCommandTool : agentengine::Tool<RunCommandTool> {
+// ADR-119: now declares a real `Capabilities<cap::decl::RunCommand>` ceiling -- see this file's own
+// top comment for the double-gate shape this creates (the identity/quota model is unchanged and
+// still does the real bounding; this ceiling is a separate, static membership/audit gate on top).
+// `invoke()`'s body is an unreachable sentinel -- real dispatch is entirely through the
+// `make_tool_descriptor_with_invoke()` closure `MandatorySandboxProvider::on_context()` installs below.
+struct RunCommandTool
+    : agentengine::Tool<RunCommandTool, agentengine::Capabilities<agentengine::cap::decl::RunCommand>> {
     static constexpr std::string_view name = "run_command";
     static constexpr std::string_view description =
         "Run a shell command in this session's own isolated sandbox, backed by a real, independent "

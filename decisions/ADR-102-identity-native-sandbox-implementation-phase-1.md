@@ -779,8 +779,12 @@ here ever drives two concurrent invocations into the SAME `MandatorySandboxProvi
 instance from two different threads."
 
 1. **C10/C11 verified in full** — the `ContextProvider`/`Tool<>` composition itself, and the new
-   `invoke_tool()`-pipeline-driven claim, both faithful and correct. `RunCommandTool`'s zero
-   `Capabilities<>` ceiling confirmed harmless by direct comparison: the real, shipped `RunShellTool`
+   `invoke_tool()`-pipeline-driven claim, both faithful and correct. ~~`RunCommandTool`'s zero
+   `Capabilities<>` ceiling confirmed harmless~~ **Superseded by ADR-119** (2026-08-30): `RunCommandTool`
+   now declares a real `Capabilities<cap::decl::RunCommand>` ceiling, layered on top of the
+   identity/quota model this point's own finding correctly identified as the real authorization —
+   that model is UNCHANGED by ADR-119, only a second, static membership gate was added on top. At the
+   time this point was written, by direct comparison: the real, shipped `RunShellTool`
    also declares no `Approval<...>`, so BOTH tools skip step 5's human-approval gate by the library's
    own default — the empty ceiling is not a Phase-4-introduced gap, `RunCommandTool`'s real
    authorization genuinely is the `is_bound()` + quota model, as disclosed. The Phase 4 change to
@@ -836,7 +840,8 @@ instance from two different threads."
 6. No further findings — the pass concluded that beyond the `block_on()` gap and its own related
    `fork_from()` residual, the port is a faithful translation with no other new defect found after
    genuinely trying (the disclosed "unbound owns no branch" gap re-checked accurate, not worse than
-   stated; the zero-`Capabilities<>` design re-confirmed harmless per point 1 above).
+   stated; ~~the zero-`Capabilities<>` design re-confirmed harmless per point 1 above~~ **superseded by
+   ADR-119**, see point 1's own strikethrough).
 
 ## 27. Executed evidence (Phase 4)
 

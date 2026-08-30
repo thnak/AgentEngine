@@ -207,9 +207,11 @@ int main() {
     check(engaged.has_value(), "setup: engage() succeeds with both real, already-bound providers");
     if (!engaged.has_value()) return EXIT_FAILURE;
 
+    // ADR-119: run_command now carries a real Capabilities<cap::decl::RunCommand> ceiling.
     CapabilitySet const held = CapabilitySet::grant_root({
         Capability{cap::FsRead{"work", "", std::nullopt}},
         Capability{cap::FsWrite{"work", "", std::nullopt, std::nullopt}},
+        Capability{cap::RunCommand{}},
     });
     live.set_capabilities(&held);
 

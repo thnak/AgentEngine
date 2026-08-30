@@ -1167,7 +1167,11 @@ int main() {
         std::vector<Capability> grants = {
             Capability{cap::Secret{kOpenAiSecretName, std::chrono::seconds{0}}},
             Capability{cap::FsRead{kWorkMount, "", std::nullopt}},
-            Capability{cap::FsWrite{kWorkMount, "", std::nullopt, std::nullopt}}};
+            Capability{cap::FsWrite{kWorkMount, "", std::nullopt, std::nullopt}},
+            // ADR-119: run_command now carries a real Capabilities<> ceiling on top of its unchanged
+            // IdentityAuthority/Grant<T>/AsyncQuota<T> gate -- see run_command_provider().bind_sandbox()
+            // below, which this session actually uses.
+            Capability{cap::RunCommand{}}};
         for (auto const& [mount_id, host_dir] : *materialized) {
             (void)host_dir;
             grants.push_back(Capability{cap::FsRead{mount_id, "", std::nullopt}});
@@ -1212,7 +1216,10 @@ int main() {
         std::vector<Capability> grants = {
             Capability{cap::Secret{kOpenRouterSecretName, std::chrono::seconds{0}}},
             Capability{cap::FsRead{kWorkMount, "", std::nullopt}},
-            Capability{cap::FsWrite{kWorkMount, "", std::nullopt, std::nullopt}}};
+            Capability{cap::FsWrite{kWorkMount, "", std::nullopt, std::nullopt}},
+            // ADR-119: run_command now carries a real Capabilities<> ceiling on top of its unchanged
+            // IdentityAuthority/Grant<T>/AsyncQuota<T> gate.
+            Capability{cap::RunCommand{}}};
         for (auto const& [mount_id, host_dir] : *materialized) {
             (void)host_dir;
             grants.push_back(Capability{cap::FsRead{mount_id, "", std::nullopt}});
@@ -1249,7 +1256,10 @@ int main() {
     std::vector<Capability> grants = {
         Capability{cap::Secret{kAnthropicSecretName, std::chrono::seconds{0}}},
         Capability{cap::FsRead{kWorkMount, "", std::nullopt}},
-        Capability{cap::FsWrite{kWorkMount, "", std::nullopt, std::nullopt}}};
+        Capability{cap::FsWrite{kWorkMount, "", std::nullopt, std::nullopt}},
+        // ADR-119: run_command now carries a real Capabilities<> ceiling on top of its unchanged
+        // IdentityAuthority/Grant<T>/AsyncQuota<T> gate.
+        Capability{cap::RunCommand{}}};
     for (auto const& [mount_id, host_dir] : *materialized) {
         (void)host_dir;
         grants.push_back(Capability{cap::FsRead{mount_id, "", std::nullopt}});

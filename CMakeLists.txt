@@ -947,6 +947,13 @@ if(AGENTENGINE_WITH_HTTPS)
     agentengine::core agentengine::provider_http_client agentengine::mediated_shell_runner
     agentengine::worktree_store agentengine::sandbox_io agentengine::hmac agentengine_warnings
     MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+  # ADR-119: the extra ADR-119 cap::RunCommand grant/comment pushed this file's one .obj past MSVC's
+  # COFF section-count limit (C1128) -- the identical mechanical-limit class agentengine_cli_chat's
+  # own comment above already names, not a real code defect. Same documented fix, scoped to this one
+  # target (confirmed: this target built clean without /bigobj before this ADR's change).
+  if(MSVC)
+    target_compile_options(agentengine_sandboxed_shell_chat PRIVATE /bigobj)
+  endif()
 endif()
 
 # ---- ADR-106 §7 residual, closed: tools/containerd_shell_chat.cpp -- the ContainerdExecutionSurface

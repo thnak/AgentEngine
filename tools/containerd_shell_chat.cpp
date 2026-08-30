@@ -113,14 +113,17 @@ int main(int argc, char** argv) {
         MandatorySandboxProvider<ContainerdExecutionSurface>>;
     // `run_shell` (SandboxToolProvider) declares a static Capabilities<> ceiling checked by the real
     // invoke_tool() pipeline -- FsRead/FsWrite scoped to "work", matching tests/test_sandbox_tool_
-    // provider.cpp's own real usage. `run_command` (MandatorySandboxProvider) deliberately has NO
-    // static ceiling here -- it authorizes through IdentityAuthority/Grant<T>/AsyncQuota<T> instead
-    // (ADR-102 Phase 4's own design), so it needs no capability grant.
+    // provider.cpp's own real usage. `run_command` (MandatorySandboxProvider) authorizes through
+    // IdentityAuthority/Grant<T>/AsyncQuota<T> (ADR-102 Phase 4's own design, unchanged) PLUS, as of
+    // ADR-119, a real static Capabilities<cap::decl::RunCommand> ceiling layered on top -- granted
+    // explicitly below, or every real run_command call would now be rejected by invoke_tool() step
+    // 4/7 even though the identity/quota gate would have allowed it.
     auto built = Builder(model)
                      .session_id(session_id)
                      .principal(cli_principal)
                      .grant(Capability{cap::FsRead{"work", "", std::nullopt}})
                      .grant(Capability{cap::FsWrite{"work", "", std::nullopt, std::nullopt}})
+                     .grant(Capability{cap::RunCommand{}})
                      .api_key_from_env("openai-api-key", "OPENAI_API_KEY")
                      .providers(std::make_tuple(std::move(shell_provider), std::move(sandbox_provider)))
                      .build();
