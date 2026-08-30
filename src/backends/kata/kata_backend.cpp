@@ -970,8 +970,60 @@ result<SandboxHandle> KataBackend::create(SandboxSpec const& spec, EffectContext
     // `MountSpec::guest_path` -- both are always directories in this codebase's own convention
     // (matching `LinuxNativeJailBackend`'s identical treatment of `MountSpec`), so `create_directories`
     // is always the right call, never a file-touch.
+    //
+    // ADR-140: real host-side symlink-escape guard, independently found by this session's own
+    // final-review pass (not previously disclosed anywhere in this file). `rootfs_dir` is a live
+    // overlay whose LOWER layer is `image_` -- an arbitrary registry reference this file's own
+    // `/etc/hosts` block already treats as "not trusted-by-construction" a few lines below.
+    // `fs::create_directories`/`std::ofstream` follow symlinks by default (`fs::status`, not
+    // `fs::symlink_status`): a malicious image shipping, say, `/etc` as a symlink to an absolute host
+    // path would make the loops below create real directories, or write `/etc/hosts` content, OUTSIDE
+    // `rootfs_dir`, on the real host filesystem, at whatever privilege this process runs under. The
+    // existing lexical `.`/`..` rejection on caller-supplied `guest_path` (well upstream of here) does
+    // not cover this -- a symlink is not a literal `..` path component. Mirrors the same "walk to the
+    // longest existing ancestor, canonicalize it, verify containment" shape
+    // `real_filesystem_adapter.cpp`'s own symlink-escape guard already uses for the identical class of
+    // bug (case-folding/UNC handling dropped here -- Linux paths are case-sensitive and this file has
+    // no drive-letter/UNC concept).
+    fs::path const rootfs_canonical = fs::canonical(rootfs_dir, fs_ec);
+    if (fs_ec) {
+        cleanup_partial();
+        return std::unexpected(error{
+            failure_class::fatal,
+            "kata_backend: rootfs directory cannot be canonicalized: " + fs_ec.message(),
+            "kata_backend.mount_point_precreate_failed"});
+    }
+    auto escapes_rootfs_via_symlink = [&](fs::path const& target) -> bool {
+        std::error_code walk_ec;
+        fs::path existing_ancestor = target;
+        for (;;) {
+            if (fs::exists(existing_ancestor, walk_ec)) break;
+            fs::path const parent = existing_ancestor.parent_path();
+            if (parent == existing_ancestor) break;  // reached a filesystem root, nothing existing
+            existing_ancestor = parent;
+        }
+        if (!fs::exists(existing_ancestor, walk_ec)) return false;  // nothing exists yet along this
+                                                                      // path -- create_directories()
+                                                                      // will build real, non-symlink
+                                                                      // directories; nothing to escape
+                                                                      // through.
+        fs::path const canonical_ancestor = fs::canonical(existing_ancestor, walk_ec);
+        if (walk_ec) return true;  // fail closed: containment cannot be verified
+        fs::path const rel = canonical_ancestor.lexically_relative(rootfs_canonical);
+        if (rel.empty()) return true;
+        auto it = rel.begin();
+        return it != rel.end() && *it == "..";
+    };
     for (char const* guest_dir : {"/proc", "/dev", "/dev/pts", "/dev/shm", "/dev/mqueue", "/sys", "/run"}) {
         fs::path const p = rootfs_dir / fs::path(guest_dir).relative_path();
+        if (escapes_rootfs_via_symlink(p)) {
+            cleanup_partial();
+            return std::unexpected(error{
+                failure_class::policy,
+                "kata_backend: mount-point pre-creation path escapes the rootfs via a symlink from "
+                "the untrusted image layer: " + p.string(),
+                "kata_backend.mount_point_escape"});
+        }
         fs::create_directories(p, fs_ec);
         if (fs_ec) {
             cleanup_partial();
@@ -984,6 +1036,14 @@ result<SandboxHandle> KataBackend::create(SandboxSpec const& spec, EffectContext
     }
     for (MountSpec const& m : spec.mounts) {
         fs::path const p = rootfs_dir / fs::path(m.guest_path).relative_path();
+        if (escapes_rootfs_via_symlink(p)) {
+            cleanup_partial();
+            return std::unexpected(error{
+                failure_class::policy,
+                "kata_backend: mount-point pre-creation path escapes the rootfs via a symlink from "
+                "the untrusted image layer: " + p.string(),
+                "kata_backend.mount_point_escape"});
+        }
         fs::create_directories(p, fs_ec);
         if (fs_ec) {
             cleanup_partial();
@@ -1010,6 +1070,17 @@ result<SandboxHandle> KataBackend::create(SandboxSpec const& spec, EffectContext
         {
             fs::path const etc_dir = rootfs_dir / "etc";
             fs::path const hosts_dest = etc_dir / "hosts";
+            // ADR-140: same guard as the two loops above -- `/etc` and `/etc/hosts` are each real,
+            // independent opportunities for a symlink planted by the untrusted image layer to redirect
+            // `create_directories`/`ofstream` outside `rootfs_dir`.
+            if (escapes_rootfs_via_symlink(etc_dir) || escapes_rootfs_via_symlink(hosts_dest)) {
+                cleanup_partial();
+                return std::unexpected(error{
+                    failure_class::policy,
+                    "kata_backend: /etc/hosts mount-point pre-creation path escapes the rootfs via a "
+                    "symlink from the untrusted image layer",
+                    "kata_backend.mount_point_escape"});
+            }
             fs::create_directories(etc_dir, fs_ec);
             // REAL, independent-red-team-found finding (fixed same day, before landing): a plain
             // `fs::exists()` check does not distinguish file vs. directory -- if an image ever shipped
