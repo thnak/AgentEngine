@@ -5,7 +5,9 @@
   **Same-day independent red-team round complete (§7): a real, disclosed scope gap found in the fix's
   own safety argument (a narrower, still-open self-deadlock reachable via cross-thread coroutine
   resumption), corrected in-comment rather than code-fixed this pass — see §7 for the full account and
-  the reasoning for that call.** Not yet Linux-verified.
+  the reasoning for that call.** **Linux-verified, ADR-125** (2026-08-30, same day): the reentrancy fix
+  (section [3]) passes completely on real GCC 14.2.0, a full, unconditional proof (no Docker
+  dependency).
 - **Date:** 2026-08-30.
 - **Scope:** `include/agentengine/rt/async_mutex.hpp` (one new field, one new public method, two small
   edits to `unlock()`, both purely additive — no behavior change for any existing caller),
@@ -142,7 +144,7 @@ vocabulary (the new `AsyncMutex` method is not itself an exported "concept" this
   heavily-shared low-level concurrency primitive in the codebase (`AsyncMutex`) plus the single most
   heavily-used class (`AgentSession`) — a red-team round is the expected next step before this is
   considered fully closed, matching every other concurrency-adjacent change in this design line.
-- **No Linux verification.**
+- ~~No Linux verification.~~ **Closed by ADR-125.**
 - **The hazard remains, by design, unreachable by any real caller today** — this ADR closes the
   disclosed gap before a future caller can hit it, not in response to a live incident.
 - **`is_held_by_current_thread()` was not adopted by any OTHER `AsyncMutex` call site** — this ADR's

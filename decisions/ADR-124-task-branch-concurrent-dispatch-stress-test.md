@@ -6,7 +6,9 @@
   independent red-team round complete (§7): this ADR's own `exclusivity_` explanation for its
   inconclusive sanity check was verified directly against `spawn_child_branch()`'s real implementation
   and holds up; no issue found in this ADR's own scope** (the real finding from the same round landed
-  against ADR-123 instead — see that ADR's §7). Not yet Linux-verified.
+  against ADR-123 instead — see that ADR's §7). **Linux-verified, ADR-125** (2026-08-30, same day):
+  section [1] (the test's own core, Docker-independent claim) passes completely on real GCC 14.2.0 --
+  8 concurrent threads, 5 rounds, correct `task_branches_`/`BranchCost` accounting every time.
 - **Date:** 2026-08-30.
 - **Scope:** `tests/test_task_branch_concurrent_dispatch.cpp` (new), `tests/CMakeLists.txt` (one new
   test target). `decisions/ADR-114-task-branch-tools-promotion.md` (disclosure correction pointing
@@ -103,7 +105,9 @@ lint.py`: clean, no new exported vocabulary.
 ## 5. What was NOT done
 
 - **No independent red-team pass yet.**
-- **No Linux verification.**
+- ~~No Linux verification.~~ **Closed by ADR-125** for section [1] (the core, Docker-independent
+  claim); sections [2]/[3]'s own Docker-dependent check remains unverified there, same pre-existing
+  environment gap every other Docker-backed test in that environment shares.
 - **No forced, artificially-synchronized repro of the map-mutation race** (e.g. injecting a barrier
   immediately before the map touch inside the production method bodies, purely for testing) was
   attempted — that would require instrumenting production code for a test-only need, which this ADR
