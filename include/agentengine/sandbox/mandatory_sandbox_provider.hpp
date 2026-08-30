@@ -317,6 +317,12 @@ public:
                         agentengine::rt::AsyncQuota<agentengine::BranchCost>& branch_quota,
                         agentengine::rt::AsyncQuota<agentengine::RunCost>& run_quota,
                         agentengine::rt::AsyncQuota<agentengine::StorageBytes>& storage_quota) {
+        // MUST run BEFORE any member below is reassigned -- uses THIS object's OWN, OLD
+        // branch_quota_/task_branches_ (whatever it was previously bound to, if anything), refunding
+        // into the quota that actually granted them. Calling it after `branch_quota_ = &branch_quota`
+        // below would refund into the WRONG (new) quota object instead. See the method's own comment
+        // for why this matters at all.
+        discard_all_active_task_branches_and_refund();
         ledger_ = &ledger;
         owner_.emplace(owner);
         branch_quota_ = &branch_quota;
@@ -326,10 +332,31 @@ public:
         surface_.emplace();
         // Defensive reset, not load-bearing for a first-ever bind: a re-bind of an already-used
         // provider must not silently carry forward a PRIOR binding's task-branch state (a stale
-        // handle_id, or a merge_quota_ pointer describing the OLD runtime_) into the fresh one.
+        // merge_quota_ pointer describing the OLD runtime_) into the fresh one.
         merge_quota_ = nullptr;
-        task_branches_.clear();
         task_branch_mutex_ = std::make_unique<agentengine::rt::AsyncMutex>();
+    }
+
+    // SHOULD-FIX (independent red-team, 2026-08-30): silently `task_branches_.clear()`-ing at any of
+    // this class's three reassignment points (`bind_sandbox()`'s own re-bind, and both paths of
+    // `operator=`) would drop every active `SandboxRuntime` without discarding it -- the underlying
+    // branch survives as an eventual `reap_pending_abandons()` orphan at the LOWER Ledger level, but
+    // the `BranchCost` unit `start_task_branch()` spent for it would be gone with no refund and no
+    // error, a silent, permanent quota leak. Not reachable through any real production caller today
+    // (every real tool binds exactly once at startup; `fork_from()`, the only caller of the
+    // copy-assignment operator, has zero real production callers anywhere in this tree -- confirmed by
+    // grep) but a real gap this promotion introduced and must not silently regress once one does.
+    // Synchronous (not a coroutine) via the same `agentengine::rt::block_on()` mechanism `operator=`'s
+    // own `spawn_child_branch()` call already relies on (this file's own top comment) -- needed because
+    // `bind_sandbox()`/`operator=` are deliberately plain functions, not coroutines, and changing that
+    // would ripple into every real caller's own signature for a path nothing currently reaches.
+    void discard_all_active_task_branches_and_refund() {
+        for (auto& [handle_id, runtime] : task_branches_) {
+            (void)handle_id;
+            (void)agentengine::rt::block_on(std::move(runtime).discard());
+            if (branch_quota_ != nullptr) (void)agentengine::rt::block_on(branch_quota_->refund(1));
+        }
+        task_branches_.clear();
     }
 
     // Second, deliberately SEPARATE opt-in from `bind_sandbox()` itself -- a host that calls
@@ -383,6 +410,10 @@ public:
     MandatorySandboxProvider(MandatorySandboxProvider const& other) { *this = other; }
     MandatorySandboxProvider& operator=(MandatorySandboxProvider const& other) {
         if (this == &other) return *this;
+        // MUST run BEFORE anything below is reassigned -- uses THIS object's OWN, OLD state (whatever
+        // *this* was previously bound to, independent of `other`), refunding into the quota that
+        // actually granted them. See that method's own comment.
+        discard_all_active_task_branches_and_refund();
         if (!other.runtime_.has_value()) {
             ledger_ = nullptr;
             owner_.reset();
@@ -392,7 +423,6 @@ public:
             runtime_.reset();
             surface_.reset();
             merge_quota_ = nullptr;
-            task_branches_.clear();
             task_branch_mutex_.reset();
             return *this;
         }
@@ -410,7 +440,6 @@ public:
             runtime_.reset();
             surface_.reset();
             merge_quota_ = nullptr;
-            task_branches_.clear();
             task_branch_mutex_.reset();
             return *this;
         }
@@ -427,8 +456,9 @@ public:
         // the child starts with zero active task branches of its own (I2 -- a fork shares AUTHORITY,
         // it never inherits another instance's ACTIVE, in-flight state) and its own fresh mutex,
         // matching `SandboxRuntime`'s own "possession, not reference" discipline for `BranchHandle`.
+        // (`task_branches_` is already empty here -- the discard-and-refund call above cleared THIS
+        // object's own prior entries before any of the reassignment above happened.)
         merge_quota_ = other.merge_quota_;
-        task_branches_.clear();
         task_branch_mutex_ = std::make_unique<agentengine::rt::AsyncMutex>();
         return *this;
     }
@@ -629,6 +659,43 @@ public:
                     ") and the branch could not be reclaimed for retry (" + reclaimed.error().message +
                     ") -- the work may be reachable only via the lower-level Ledger orphan-reclaim API",
                 "mandatory_sandbox_provider.task_branch_commit_rejected_and_reclaim_failed"});
+        }
+
+        // MUST-FIX (independent red-team, 2026-08-30): `Ledger::merge()` refunds its own `MergeCost`
+        // unit on EVERY rejection (ADR-111's own contract), including a real CONFLICT -- which is only
+        // detected AFTER real, expensive work (three tree loads plus a full `merge_trees()` diff,
+        // `core/ledger.hpp`'s own `merge()`). Re-inserting the reclaimed branch under the SAME
+        // `handle_id` with no further charge let a caller repeat that real, expensive work
+        // indefinitely for a NET `MergeCost` cost of zero -- empirically proven: 50/50 rejected retries
+        // on one permanently-conflicting handle, 0 net units spent, each call also briefly holding
+        // `Ledger::mutex_` (shared by every session on that ledger) -- a real, LIVE I8/availability gap
+        // this promotion made reachable for the first time (ADR-111 itself disclosed `merge()` had no
+        // real caller yet, so this exact free-loop was never live until this file existed). The
+        // underlying `Ledger::merge()` refund-on-rejection contract is intentionally left UNTOUCHED
+        // here (other, already-tested callers still get it unchanged) -- instead, THIS tool surface
+        // re-charges 1 `MergeCost` unit, to the SAME identity that just attempted the commit,
+        // immediately after a successful reclaim: every retry now costs real budget again before the
+        // handle becomes usable a second time, bounding the total free work to whatever `MergeCost`
+        // remained at the time of the first rejection.
+        auto retry_charge = co_await merge_quota_->try_consume(1, requested_by);
+        if (!retry_charge.has_value()) {
+            // Cannot afford to keep this handle retryable. Rather than leaving `*reclaimed` unresolved
+            // (which would silently queue a REAL erasure on the next `reap_pending_abandons()` cycle --
+            // the exact implicit-destructor hazard ADR-111's own MUST-FIX already closed for
+            // `merge_into()` itself, one layer down), discard it explicitly and refund the `BranchCost`
+            // unit `start_task_branch()` spent -- the same, already-established `discard_task_branch()`
+            // contract, just triggered here instead of by an explicit caller request. `Ledger::abandon()`
+            // has no failure mode (this file's own `discard_task_branch()` comment), so this is safe to
+            // fire without checking its result.
+            (void)co_await std::move(*reclaimed).discard();
+            (void)co_await branch_quota_->refund(1);
+            co_return std::unexpected(agentengine::error{
+                cp.error().klass,
+                "commit was rejected (" + cp.error().message +
+                    ") and the retry quota needed to keep this handle usable is exhausted (" +
+                    retry_charge.error().message +
+                    ") -- the work has been discarded and its BranchCost unit refunded",
+                "mandatory_sandbox_provider.task_branch_commit_rejected_and_retry_quota_exhausted"});
         }
         task_branches_.insert_or_assign(std::move(handle_id), std::move(*reclaimed));
         co_return std::unexpected(cp.error());

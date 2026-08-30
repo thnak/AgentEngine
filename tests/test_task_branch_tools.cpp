@@ -355,6 +355,156 @@ int main() {
         }
     }
 
+    // [7] MUST-FIX (independent red-team, 2026-08-30): repeatedly committing a permanently-conflicting
+    //     handle must NOT be a free, unbounded loop -- Ledger::merge() refunds MergeCost on every
+    //     rejection (even a real conflict, which only happens after real, expensive tree-load+diff
+    //     work), so without a re-charge at THIS layer, the same handle could be retried forever for a
+    //     net MergeCost cost of zero. Uses a dedicated, deliberately tiny MergeCost quota so the bound
+    //     is small and deterministic to prove, not a 50-iteration loop against the shared quota.
+    {
+        auto tiny_merge_quota_r = agentengine::rt::AsyncQuota<MergeCost>::mint_root(authority, owner, 3);
+        check(tiny_merge_quota_r.has_value(), "mint_root(MergeCost, 3) for the retry-bound check succeeds");
+        if (tiny_merge_quota_r.has_value()) {
+            auto& tiny_merge_quota = *tiny_merge_quota_r;
+            Session retry_session;
+            retry_session.initialize("retry-session", real_owner_principal);
+            auto root_r = drive(ledger.create_root_branch(owner, "tb-retry"));
+            check(root_r.has_value(), "create_root_branch(owner, \"tb-retry\") succeeds");
+            if (root_r.has_value()) {
+                retry_session.history_provider().bind_sandbox(
+                    ledger, std::move(*root_r), owner, scratch_root / "retry", branch_quota, run_quota,
+                    storage_quota);
+                retry_session.history_provider().bind_task_branch_tools(tiny_merge_quota);
+
+                auto child_x = drive(retry_session.history_provider().start_task_branch(owner));
+                auto child_y = drive(retry_session.history_provider().start_task_branch(owner));
+                check(child_x.has_value() && child_y.has_value(), "both retry-check children start");
+                if (child_x.has_value() && child_y.has_value()) {
+                    (void)drive(retry_session.history_provider().run_in_task_branch(
+                        child_x->handle_id, "echo -n 'X wins' > loop_target.txt", owner));
+                    (void)drive(retry_session.history_provider().run_in_task_branch(
+                        child_y->handle_id, "echo -n 'Y loses' > loop_target.txt", owner));
+
+                    auto commit_x =
+                        drive(retry_session.history_provider().commit_task_branch(child_x->handle_id, owner));
+                    check(commit_x.has_value(), "X's commit is clean (moves the head)");
+                    check(tiny_merge_quota.remaining() == 2, "X's clean commit spends 1 of 3 MergeCost units");
+
+                    // Y is now permanently stale/conflicting. Two retries should still be ordinary
+                    // rejections (retry-charge succeeds, handle stays usable); the THIRD must hit the
+                    // retry-quota-exhausted path, since only 2 units remain for 3 total attempts.
+                    std::uint64_t const before_first_retry = tiny_merge_quota.remaining();
+                    auto commit_y_1 =
+                        drive(retry_session.history_provider().commit_task_branch(child_y->handle_id, owner));
+                    check(!commit_y_1.has_value() &&
+                              commit_y_1.error().code !=
+                                  "mandatory_sandbox_provider.task_branch_commit_rejected_and_retry_quota_exhausted",
+                          "Y's 1st rejection is an ordinary conflict, not a retry-quota exhaustion");
+                    check(tiny_merge_quota.remaining() == before_first_retry - 1,
+                          "the 1st rejected retry still nets -1 MergeCost unit (the free-loop is closed)");
+
+                    auto still_usable = drive(
+                        retry_session.history_provider().run_in_task_branch(child_y->handle_id, "echo hi", owner));
+                    check(still_usable.has_value(), "Y's handle is still usable after the 1st rejection");
+
+                    auto commit_y_2 =
+                        drive(retry_session.history_provider().commit_task_branch(child_y->handle_id, owner));
+                    check(!commit_y_2.has_value() &&
+                              commit_y_2.error().code !=
+                                  "mandatory_sandbox_provider.task_branch_commit_rejected_and_retry_quota_exhausted",
+                          "Y's 2nd rejection is STILL an ordinary conflict (1 unit remained to retry with)");
+                    check(tiny_merge_quota.remaining() == 0,
+                          "the 2nd rejected retry spends the LAST MergeCost unit");
+
+                    // The THIRD attempt cannot afford the retry charge -- must fail closed, discard Y,
+                    // and refund Y's own BranchCost, not loop forever for free.
+                    std::uint64_t const branch_before_exhaustion = branch_quota.remaining();
+                    auto commit_y_3 =
+                        drive(retry_session.history_provider().commit_task_branch(child_y->handle_id, owner));
+                    check(!commit_y_3.has_value() &&
+                              commit_y_3.error().code ==
+                                  "mandatory_sandbox_provider.task_branch_commit_rejected_and_retry_quota_exhausted",
+                          "the 3rd attempt fails closed with retry_quota_exhausted, not another silent "
+                          "free retry");
+                    check(branch_quota.remaining() == branch_before_exhaustion + 1,
+                          "Y's BranchCost unit is refunded when it is force-discarded on quota exhaustion");
+
+                    auto after_exhaustion = drive(
+                        retry_session.history_provider().run_in_task_branch(child_y->handle_id, "echo hi", owner));
+                    check(!after_exhaustion.has_value() &&
+                              after_exhaustion.error().code ==
+                                  "mandatory_sandbox_provider.task_branch_unknown_handle",
+                          "Y's handle is genuinely gone after forced discard -- not a zombie entry");
+                    check(tiny_merge_quota.remaining() == 0,
+                          "no further MergeCost is spent once the handle is gone (the loop is truly bounded)");
+                }
+            }
+        }
+    }
+
+    // [8] SHOULD-FIX (independent red-team, 2026-08-30): re-binding an already-bound provider that
+    //     still has an ACTIVE task branch must not silently leak its BranchCost unit.
+    {
+        Session rebind_leak;
+        rebind_leak.initialize("rebind-leak-session", real_owner_principal);
+        auto root1 = drive(ledger.create_root_branch(owner, "tb-rebind-1"));
+        check(root1.has_value(), "create_root_branch(owner, \"tb-rebind-1\") succeeds");
+        if (root1.has_value()) {
+            rebind_leak.history_provider().bind_sandbox(ledger, std::move(*root1), owner,
+                                                            scratch_root / "rebind1", branch_quota,
+                                                            run_quota, storage_quota);
+            rebind_leak.history_provider().bind_task_branch_tools(merge_quota);
+
+            std::uint64_t const branch_before = branch_quota.remaining();
+            auto started = drive(rebind_leak.history_provider().start_task_branch(owner));
+            check(started.has_value(), "start_task_branch() before the re-bind succeeds");
+            check(branch_quota.remaining() == branch_before - 1, "starting spends 1 BranchCost unit");
+
+            auto root2 = drive(ledger.create_root_branch(owner, "tb-rebind-2"));
+            check(root2.has_value(), "create_root_branch(owner, \"tb-rebind-2\") succeeds");
+            if (root2.has_value()) {
+                // Re-bind WHILE the task branch from root1 is still active and un-discarded.
+                rebind_leak.history_provider().bind_sandbox(ledger, std::move(*root2), owner,
+                                                                scratch_root / "rebind2", branch_quota,
+                                                                run_quota, storage_quota);
+                check(branch_quota.remaining() == branch_before,
+                      "re-binding discards the still-active task branch and refunds its BranchCost -- "
+                      "no silent leak");
+            }
+        }
+    }
+
+    // [9] SHOULD-FIX (independent red-team, 2026-08-30): fork_from() overwriting a session that still
+    //     has an ACTIVE task branch of its OWN must refund that branch's BranchCost before adopting the
+    //     new forked state, not leak it underneath the new fork's own genuine cost.
+    {
+        Session fork_leak_target;
+        fork_leak_target.initialize("fork-leak-target", Principal{"fork-leak-owner", ""});
+        auto root_r = drive(ledger.create_root_branch(owner, "tb-fork-leak"));
+        check(root_r.has_value(), "create_root_branch(owner, \"tb-fork-leak\") succeeds");
+        if (root_r.has_value()) {
+            fork_leak_target.history_provider().bind_sandbox(ledger, std::move(*root_r), owner,
+                                                                  scratch_root / "fork-leak", branch_quota,
+                                                                  run_quota, storage_quota);
+            fork_leak_target.history_provider().bind_task_branch_tools(merge_quota);
+
+            std::uint64_t const before_all = branch_quota.remaining();
+            auto started = drive(fork_leak_target.history_provider().start_task_branch(owner));
+            check(started.has_value(), "start_task_branch() on the fork-overwrite target succeeds");
+            check(branch_quota.remaining() == before_all - 1, "starting spends 1 BranchCost unit");
+
+            // Overwrite via fork_from() -- PARENT is a completely different, already-bound session
+            // (reusing `parent` from earlier checks). A leaked-unit bug would show branch_before - 2
+            // here (the old, never-refunded unit PLUS the new fork's own genuine cost); the fix shows
+            // exactly branch_before - 1 (the old unit refunded, only the new fork's own cost remains).
+            fork_leak_target.fork_from(parent, "fork-leak-target-forked");
+            check(fork_leak_target.history_provider().is_bound(), "the fork itself succeeds");
+            check(branch_quota.remaining() == before_all - 1,
+                  "exactly 1 net BranchCost unit is spent overall -- the stale active branch's unit was "
+                  "refunded, not leaked underneath the new fork's own genuine cost");
+        }
+    }
+
     // [6] driven through the REAL invoke_tool() pipeline: start/run/commit as three real tool calls.
     {
         Session live;

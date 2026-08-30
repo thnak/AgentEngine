@@ -3,8 +3,11 @@
 - **Status:** Proposed — implemented, verified against a REAL Docker daemon (Windows/MSVC), full
   project rebuild (zero errors) and full `ctest` (251/252 — the one failure is the same pre-existing,
   unrelated matplotlib/pandas Python-worker gap this branch's own ADR-111/112 verification already
-  named), `naming_lint.py` clean. Not yet independently red-teamed by a fresh agent; not yet
-  Linux-verified.
+  named), `naming_lint.py` clean. **Independent red-team round completed same day (§7): found one
+  MUST-FIX (a real, live I8/availability gap — a rejected commit could be retried for free,
+  indefinitely) and one SHOULD-FIX (a silent BranchCost leak on re-bind/fork-overwrite, not currently
+  reachable by any real caller) — both fixed and re-verified, including a sanity check that the new
+  tests genuinely fail against the pre-fix code.** Not yet Linux-verified.
 - **Date:** 2026-08-30.
 - **Scope:** `include/agentengine/sandbox/mandatory_sandbox_provider.hpp` (new tools, new methods, new
   opt-in binding call, no change to `bind_sandbox()`'s existing signature), `tests/test_task_branch_tools.cpp`
@@ -141,12 +144,11 @@ build) both compile and pass clean against a real Docker daemon, confirming
 still contributes exactly 2 tools (never opting into `bind_task_branch_tools()`), proving the opt-in
 gate holds in the composed setting too, not just standalone.
 
-## 5. What was NOT done
+## 5. What was NOT done (at first landing — §7 closes the red-team item same day)
 
-- **No independent red-team pass yet.** This design line's own history (ADR-108, ADR-109, ADR-111's
-  own MUST-FIX) shows every independent pass finds something real; this should not be assumed clean
-  merely because the underlying primitives (`Ledger::merge()`, `SandboxRuntime::merge_into()`) were
-  already proven separately.
+- ~~No independent red-team pass yet.~~ **Done same day, §7** — found one MUST-FIX and one SHOULD-FIX,
+  both fixed and re-verified, continuing this design line's own unbroken streak (ADR-108, ADR-109,
+  ADR-111) of every independent pass finding something real.
 - **No Linux verification.** Windows/MSVC only this pass.
 - **The `Capability`-variant widening question (§2) remains open**, named explicitly as follow-on
   work rather than resolved or silently skipped.
@@ -167,8 +169,76 @@ gate holds in the composed setting too, not just standalone.
 
 ## 6. Residuals
 
-- Everything named in §5.
+- Everything named in §5 not struck through.
 - This is now the SECOND real production caller pattern layered onto `MandatorySandboxProvider`
   (after `RunCommandTool`) — a third tool wanting a genuinely different authorization model (a real
   `CapabilitySet` ceiling, say) would need to resolve the same tension §2 named, not invent a third
   approach.
+
+## 7. Independent red-team round (2026-08-30, same day) — one MUST-FIX, one SHOULD-FIX, both closed
+
+A fresh, independent agent — no prior context on this change, briefed only with the file list and an
+explicit "find what's real, don't confirm it's fine" instruction, matching this design line's own
+established red-team discipline — reviewed the landed diff empirically (built and ran real, temporary
+repro executables against the actual Docker/Ledger stack, then removed them; confirmed `git status`
+was clean afterward). It reproduced every existing test claim, found the concurrency/lock-ordering,
+I2/I3 tool-arg, quota-double-refund, and handle-uniqueness properties genuinely clean — and found two
+real, previously-undisclosed gaps:
+
+**MUST-FIX — a rejected commit could be retried for free, indefinitely (live, I8/availability).**
+`Ledger::merge()` refunds its own `MergeCost` unit on EVERY rejection, including a real conflict —
+which is only detected AFTER real, expensive work (three tree loads plus a full `merge_trees()`
+diff). `commit_task_branch()`'s own reclaim-and-re-surface behavior (§3) re-inserted the reclaimed
+branch under the same `handle_id` with no further charge, so a caller could call `commit_task_branch`
+on a permanently-conflicting handle in a tight loop for a NET `MergeCost` cost of zero. Empirically
+proven: 50 rejected retries on one handle, 0 net units spent, 16ms wall time, each call also briefly
+holding `Ledger::mutex_` (shared by every session on that ledger — a real cross-session availability
+lever, not just a self-inflicted budget bypass). This is exactly what ADR-111 itself flagged as a
+risk it couldn't yet observe ("`merge_into()` still has no real first caller anywhere in the tree") —
+ADR-114 is what made the already-Judged refund-on-rejection contract live and agent-reachable for the
+first time, and this promotion is what needed to close the resulting gap, not `Ledger::merge()`
+itself (whose contract is untouched and unchanged for every other caller). **Fixed** by re-consuming 1
+`MergeCost` unit at the `commit_task_branch()` layer immediately after a successful reclaim — every
+retry now costs real budget again before the handle becomes usable a second time. If that re-charge
+itself fails (quota exhausted), the reclaimed branch is explicitly discarded and its `BranchCost`
+refunded (mirroring `discard_task_branch()`'s own contract) rather than left to a later, implicit
+destructor-triggered `reap_pending_abandons()` — the exact "explicit over implicit" precedent ADR-111's
+own MUST-FIX already established one layer down for `merge_into()` itself.
+
+**SHOULD-FIX — a silent `BranchCost` leak on re-bind or fork-overwrite (real, not currently
+reachable).** `bind_sandbox()`'s own defensive reset and both paths of `operator=` (`fork_from()`'s
+mechanism) called `task_branches_.clear()` without discarding whatever `SandboxRuntime` entries the
+map held — `AsyncQuota` has no destructor-based reclamation, so any `BranchCost` unit an active,
+un-discarded task branch had spent was gone with no refund and no error. Empirically confirmed via a
+temporary repro (start a task branch, re-bind, observe the unit never comes back). Not reachable
+through any real production caller today — every real tool binds exactly once at startup, and
+`fork_from()` (the copy-assignment operator's only caller) has zero real production callers anywhere
+in the tree (ADR-102 Phase 4's own disclosure, unchanged) — but a real gap ADR-114 §5 had not named,
+distinct from the "child starts with zero active branches of its own" property §3 already covered
+(that property is about the FRESH child; this gap was about the TARGET's own pre-existing state being
+silently dropped on overwrite). **Fixed** by a new `discard_all_active_task_branches_and_refund()`
+helper, called at the very start of `bind_sandbox()`/`operator=()` — before any member is reassigned,
+so it always refunds into the quota that actually granted the branches, never a newly-assigned one —
+using the same `agentengine::rt::block_on()` mechanism `operator=`'s own `spawn_child_branch()` call
+already relies on (no signature change to either method).
+
+**Verification of both fixes**: `tests/test_task_branch_tools.cpp` grew three new checks — a bounded
+retry-loop proof (a dedicated 3-unit `MergeCost` quota; the 1st and 2nd rejected retries still net
+real MergeCost spend and stay usable, the 3rd fails closed with a distinct
+`task_branch_commit_rejected_and_retry_quota_exhausted` code, force-discarding the handle and
+refunding its `BranchCost`), a re-bind leak proof, and a fork-overwrite leak proof. **Sanity-checked
+the tests themselves, not just the fix**: temporarily reverted only the source fix (`git stash` scoped
+to `mandatory_sandbox_provider.hpp`, keeping the new tests), rebuilt, and confirmed all 8 new
+assertions fail exactly as expected against the pre-fix code — then restored and re-verified all
+checks pass again. Full re-verification after landing both fixes: `test_task_branch_tools` and the two
+other real consumers of this header (`test_mandatory_sandbox_provider`,
+`test_mandatory_sandbox_provider_composed`) pass clean against a real Docker daemon; full project
+rebuild zero errors; full `ctest` 251/252 (the same single pre-existing, unrelated failure); no new
+exported vocabulary, `naming_lint.py` unaffected.
+
+**What §7 itself did not do**: no second, independent red-team round on these two fixes themselves
+(this design line's own history suggests that's not free of risk, but was judged reasonable to stop
+here rather than recurse indefinitely); no Linux verification of the fixes; the minor "capability
+comparison doesn't distinguish `run_in_task_branch` from `run_command`" observation the same red-team
+round raised (§2's comparison is about the MERGE step specifically, not command execution — the
+round agreed this doesn't undermine §2's core claim) was noted but not acted on as a separate finding.
