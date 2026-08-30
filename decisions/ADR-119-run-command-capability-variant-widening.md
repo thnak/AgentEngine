@@ -4,7 +4,11 @@
   project rebuild (zero errors) and full `ctest` clean (251/252, same pre-existing unrelated
   matplotlib/pandas gap), `naming_lint.py` clean. Independent red-team round completed same day:
   clean bill of health, no fix needed (see §7; no new fix was required so the working tree was left
-  clean, matching ADR-117's own precedent for a clean result). Not yet Linux-verified.
+  clean, matching ADR-117's own precedent for a clean result). **Linux-verified same day, ADR-120**:
+  the widened variant and the new double gate both hold completely under real GCC 14.2.0, and —
+  the one thing this ADR itself could not check on Windows — `tools/containerd_shell_chat.cpp`
+  compiles clean and genuinely executes a real `run_command` call against a real containerd container
+  carrying the new grant, end to end.
 - **Date:** 2026-08-30.
 - **Scope:** `include/agentengine/trust/capability.hpp` (one new `cap::`/`cap::decl::` alternative,
   one new `capability_kind` enumerator, four exhaustive-switch/`if constexpr` sites extended),
@@ -160,10 +164,11 @@ special-case entry needed.
 
 ## 5. What was NOT done
 
-- **No Linux verification.** `tools/containerd_shell_chat.cpp` and `tests/test_composed_containerd_
-  providers_live.cpp` were both edited but never built or run in this pass (Linux-only, `NOT WIN32`) —
-  named as a real, disclosed gap, not silently assumed correct by analogy to the Docker-shaped
-  sibling files.
+- ~~No Linux verification.~~ **Closed by ADR-120** (2026-08-30, same day): `tools/containerd_shell_
+  chat.cpp` and `tests/test_composed_containerd_providers_live.cpp` were both edited but never built or
+  run in this pass — both now built and run for real, on real GCC 14.2.0 against a real containerd
+  daemon, with `test_composed_containerd_providers_live` passing completely (a genuine `run_command`
+  call, carrying the new `cap::RunCommand` grant, actually executing in a real container end to end).
 - **`RunShellTool` (ADR-096, `src/backends/native_jail/`) was not touched.** It already has a real
   `Capabilities<cap::decl::FsRead<"work">, cap::decl::FsWrite<"work">>` ceiling — this ADR only closes
   the `RunCommandTool` gap, which is `RunShellTool`'s own sibling on `ComposedContextProvider`, not a
