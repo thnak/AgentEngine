@@ -143,9 +143,15 @@ nothing newly broken. `python tools/naming_lint.py`: clean, no new exported voca
   ADR-117, ADR-119) — a fresh pass is the expected next step, not optional polish.
 - ~~No Linux verification.~~ **Closed by ADR-127** — a complete, unconditional pass (this test has no
   Docker dependency at all).
-- **Content durability remains unclosed** — a real, separate, materially larger piece of work (a
-  durable object-store conformer for blob/tree content, not merely branch/ACL bookkeeping), already
-  disclosed by `tests/test_ledger.cpp` itself and explicitly out of this ADR's own scope.
+- ~~Content durability remains unclosed~~ **Partially closed by ADR-130** — a real, durable
+  `WorktreeObjectStore` conformer (`agentengine::FileWorktreeObjectStore`) now exists and is proven, via
+  a genuine two-real-process test, to work correctly at the raw `Ledger<Store>` level (the exact
+  scenario this ADR's own `merge_tree_load_failed` assertion documents). **Still NOT closed for THIS
+  ADR's own tool surface**: ADR-130 §2 found `MandatorySandboxProvider`/`SandboxRuntime` are hardcoded
+  to `Ledger<>` (the default `InMemoryWorktreeObjectStore`), not `Store`-generic despite `Ledger<Store>`
+  being a template — so `commit_task_branch()` on a recovered handle still hits exactly the failure this
+  ADR's own test asserts, until that separate, larger integration (templatizing both classes on `Store`
+  too) is done as its own follow-on.
 - ~~Root-branch recovery remains the caller's own responsibility~~ **Closed by ADR-128** —
   `MandatorySandboxProvider::bind_root_branch()` automates the reclaim-or-create decision for a durably-
   tracked owner's own root branch, the crash-recovery-shaped half of ADR-102's own "`bind_branch_only()`

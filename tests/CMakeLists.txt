@@ -3240,6 +3240,31 @@ add_executable(test_root_branch_recovery test_root_branch_recovery.cpp)
 target_link_libraries(test_root_branch_recovery PRIVATE agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)
 add_test(NAME test_root_branch_recovery COMMAND test_root_branch_recovery)
 
+# ---- Content-durability conformer: agentengine::FileWorktreeObjectStore (ported from
+# docs/planning/proofs/worktree_io/file_object_store.hpp), closing the blob/tree content half of the
+# gap ADR-102/ADR-126/ADR-128 each named and declined to close. A genuine TWO-PROCESS proof -- this one
+# executable self-relaunches via std::system() to play both roles as real, separate OS processes.
+add_executable(test_content_durability_cross_process test_content_durability_cross_process.cpp)
+target_link_libraries(test_content_durability_cross_process PRIVATE agentengine::worktree_store agentengine_warnings)
+add_test(NAME test_content_durability_cross_process COMMAND test_content_durability_cross_process)
+
+# ---- Real, executed adversarial probe of the content-durability design draft's own §3/gate-item-3
+# disclosure: content writes are safe under genuine concurrent cross-instance access; the pre-existing
+# metadata-bookkeeping race under genuinely concurrent Ledger construction is real, reproduced with
+# real threads, and confirmed unchanged (not worsened, not fixed) by adding durable content.
+add_executable(test_content_durability_concurrency test_content_durability_concurrency.cpp)
+target_link_libraries(test_content_durability_concurrency PRIVATE agentengine::worktree_store agentengine_warnings)
+add_test(NAME test_content_durability_concurrency COMMAND test_content_durability_concurrency)
+
+# ---- Real, adversarial, two-process proof of the content-durability design draft's own gate item 6:
+# making Ledger content durable turns IdentityAuthority's own previously-latent id-recycling risk
+# (identity-native-sandbox-worktree-design.md §33) into a live cross-principal leak when a host does not
+# ALSO configure IdentityAuthority::bootstrap() durably and consistently -- proven both vulnerable and
+# fixed-when-configured-correctly, on current production code.
+add_executable(test_identity_durability_precondition test_identity_durability_precondition.cpp)
+target_link_libraries(test_identity_durability_precondition PRIVATE agentengine::worktree_store agentengine_warnings)
+add_test(NAME test_identity_durability_precondition COMMAND test_identity_durability_precondition)
+
 # ---- ADR-102 Phase 4 -- agentengine::rt::block_on<T>() (rt/block_on.hpp), the real fix for a real,
 # independent-red-team-found, empirically-proven AsyncMutex mutual-exclusion violation the naive
 # "while (!t.done()) t.resume();" drive loop has under genuine cross-thread contention. Real OS threads
