@@ -2,8 +2,9 @@
 
 - **Status:** Proposed — implemented, verified against a REAL Docker daemon (Windows/MSVC), full
   project rebuild (zero errors) and full `ctest` clean (251/252, same pre-existing unrelated
-  matplotlib/pandas gap), `naming_lint.py` clean. Not yet independently red-teamed; not yet
-  Linux-verified.
+  matplotlib/pandas gap), `naming_lint.py` clean. Independent red-team round completed same day:
+  clean bill of health, no fix needed (see §7; no new fix was required so the working tree was left
+  clean, matching ADR-117's own precedent for a clean result). Not yet Linux-verified.
 - **Date:** 2026-08-30.
 - **Scope:** `include/agentengine/trust/capability.hpp` (one new `cap::`/`cap::decl::` alternative,
   one new `capability_kind` enumerator, four exhaustive-switch/`if constexpr` sites extended),
@@ -159,9 +160,6 @@ special-case entry needed.
 
 ## 5. What was NOT done
 
-- **No independent red-team pass yet.** Given the materially larger blast radius than ADR-117 (three
-  real production tools, not zero), a red-team round is the expected next step before this is
-  considered closed — arguably more load-bearing here than for ADR-117, not optional polish.
 - **No Linux verification.** `tools/containerd_shell_chat.cpp` and `tests/test_composed_containerd_
   providers_live.cpp` were both edited but never built or run in this pass (Linux-only, `NOT WIN32`) —
   named as a real, disclosed gap, not silently assumed correct by analogy to the Docker-shaped
@@ -172,7 +170,10 @@ special-case entry needed.
   broader audit of every tool's capability posture.
 - **`agent_library_manifest.hpp`'s discovery registry was not checked this time** (ADR-117 §5 checked
   its equivalent and found nothing needed) — a real, disclosed gap in this ADR's own diligence, named
-  honestly rather than silently assumed clean by analogy.
+  honestly rather than silently assumed clean by analogy. **Closed by §7's red-team round**: grepped
+  `include/agentengine/trust/agent_library_manifest.hpp` for `run_command`/`RunCommand`/`run_shell`
+  (the sibling `RunShellTool` name, as a control) — neither appears under any name, matching ADR-117's
+  own finding for the task-branch tools; nothing in that registry needed a new row.
 
 ## 6. Residuals
 
@@ -184,3 +185,93 @@ special-case entry needed.
   `run_command` from this ADR) bring the real `Capability` variant to 22 alternatives — any future
   exhaustive switch written without grepping for the now-five sites (four in `capability.hpp`, one in
   `policy_reachability.hpp`) risks silently missing an arm, the same risk ADR-117 §6 already named.
+
+## 7. Independent red-team round (same day)
+
+**Scope of this round.** A fresh agent, with no prior context on this change beyond the commit and
+this ADR, independently re-derived and checked every claim in §2-§4 by reading the real diff and code
+(`git show 6b6b2e2`) rather than trusting this ADR's own account, given the higher stakes this ADR
+itself names (three real production callers, not zero).
+
+**[1] Exhaustive real-caller audit, redone independently.** Grepped the ENTIRE repository (not just
+`tools/`/`tests/`) for `MandatorySandboxProvider`, `run_command`, and `bind_sandbox` — 26-34 files
+matched. Beyond the three production tools and three test files this ADR already names, the only
+other real-pipeline-shaped hit was `docs/planning/proofs/mandatory_sandbox/probe_mandatory_sandbox_
+real_agent_session.cpp` (a prove-phase probe) — confirmed it drives `run_command` by calling
+`contribution->tools[0].invoke(args, call.ctx)` directly on the tool descriptor's own closure, the
+identical `Tool<>`-ceiling bypass this ADR's §2 already established for `tests/test_mandatory_sandbox_
+provider.cpp` sections [2]/[4] — unaffected. Confirmed `docs/planning/proofs/` is not referenced by
+any `CMakeLists.txt` anywhere in the tree (not built, not run) — a frozen historical artifact, not a
+live caller. Confirmed `examples/` (built by default, `AGENTENGINE_BUILD_EXAMPLES ON`) contains zero
+references to `MandatorySandboxProvider`/`run_command` — no example silently broken. Independently
+re-confirmed `tests/test_mandatory_sandbox_provider_composed.cpp` and `tests/test_task_branch_tools.
+cpp` only check tool *declaration*/*presence*, never invoke the real closure or drive through
+`invoke_tool()` — unaffected, as this ADR's §2 already claimed. No missed real caller found.
+
+**[2] All three `cli_chat.cpp` branches individually verified, not assumed symmetric.** Read
+`tools/cli_chat.cpp:1111-1280` in full. All three branches (openai, openrouter, anthropic) build their
+own `grants` vector, each independently gaining `Capability{cap::RunCommand{}}` (lines 1174, 1222,
+1262) before constructing `CapabilitySet held = CapabilitySet::grant_root(std::move(grants))`, and all
+three pass `held` into the one shared `run_interactive()`, which calls `actor.set_capabilities(&held)`
+(line 952). No early return before the grant, no fourth path, no copy-paste omission. `tools/
+sandboxed_shell_chat.cpp` and `tools/containerd_shell_chat.cpp` each have exactly one `main()` path
+and one `Builder` chain, both correctly carrying `.grant(Capability{cap::RunCommand{}})`.
+
+**[3] MSVC C1128 fix independently reproduced.** Built `agentengine_sandboxed_shell_chat` in
+`build-https` (Debug): succeeds. Confirmed the `if(MSVC)` guard in `CMakeLists.txt` is scoped to
+exactly that one target, inside the `AGENTENGINE_WITH_HTTPS` block, matching `agentengine_cli_chat`'s
+own precedent. Temporarily changed the guard to `if(MSVC AND FALSE)` (an in-tree edit, not `git
+stash`, but the same effect — disabling `/bigobj` for this one target against the otherwise-unmodified
+tree) and rebuilt: reproduced the exact same `C1128` ("number of sections exceeded object file format
+limit: compile with /bigobj") on `tools/sandboxed_shell_chat.cpp`. Restored the guard and rebuilt:
+clean again. `git diff --stat CMakeLists.txt` confirmed no residual diff. The claimed regression and
+fix are both genuine.
+
+**[4] Fail-closed test section independently sanity-checked.** With a real Docker daemon confirmed
+live (`docker info` succeeds), built and ran `test_mandatory_sandbox_provider` in the main `build`
+tree: ALL CHECKS PASSED, including new section [7]. Temporarily reverted `RunCommandTool` to `Tool<
+RunCommandTool>` (no `Capabilities<...>`, the ADR-102 Phase 4 shape) in `mandatory_sandbox_provider.
+hpp`, rebuilt, and reran: all four of section [7]'s new assertions genuinely FAILED (`FAIL: run_command
+is rejected...`, `FAIL: no real run_command call ever ran...`, `FAIL: a rejected-at-authorization call
+never reaches SandboxRuntime::run()...`, `FAIL: the command never ran, so no_capability.txt was never
+written`). Restored the real ceiling, rebuilt, reran: ALL CHECKS PASSED again. Also ran `test_composed_
+sandbox_providers_live` (real Docker + real native jail composed): ALL CHECKS PASSED, including the
+composed `run_command`+`run_shell` real-pipeline section this ADR's grant addition touches. Ran the
+full `ctest` suite (252 tests): 251/252, the one failure (`test_reference_agent_task_corpus`, three
+pandas/matplotlib-artifact checks) independently confirmed to be the same pre-existing, unrelated
+gap this ADR's own account names (missing `matplotlib`/possibly-stale `pandas` in this environment,
+nothing to do with capability enforcement). `python tools/naming_lint.py`: clean.
+
+**[5] `is_inert_for_text_derived_declassification()` polarity re-checked for `run_command`
+specifically.** Its one real caller, `tool_pipeline_detail::is_auto_declassifiable_text_derived_call()`
+(`include/agentengine/core/tool_pipeline.hpp:448-454`), requires `tool.effect_class == effect_class::
+pure` AND every capability in the tool's declared ceiling to be inert — `std::all_of` over an empty
+range is vacuously `true`, so an EMPTY ceiling (RunCommandTool's pre-ADR-119 shape) would already have
+auto-declassified IF `RunCommandTool` had ever declared `effect_class::pure`. It never did: `Tool<>`'s
+`declared_effect_class()` defaults to `effect_class::at_most_once` (confirmed in `include/agentengine/
+core/tool.hpp:152` and cross-checked against `tests/test_effect_reexecution.cpp`'s own
+`UndeclaredTool::declared_effect_class() == effect_class::at_most_once` assertion), and
+`mandatory_sandbox_provider.hpp` never overrides it for `RunCommandTool`. So the auto-declassification
+gate was never actually reachable for `run_command` either before or after this ADR — `run_command`
+returning `false` from `is_inert_for_text_derived_declassification()` is the correct, conservative
+choice (blocks the auto-declassify path outright, the same direction every other mutating kind takes),
+and this ADR introduces no behavior change on this axis; it simply removes any future fragility if
+`RunCommandTool` were ever changed to declare `effect_class::pure` without also revisiting this.
+
+**[6] `cap::Exec` non-reuse claim independently verified.** Grepped every real (non-`decisions/`,
+non-`docs/planning/`) reference to `cap::Exec`/`cap::decl::Exec`: it appears only in `capability.hpp`
+itself (the variant/switch machinery) — no `.hpp`/`.cpp` file anywhere in `include/`, `src/`, or
+`tools/` actually reads or checks a `cap::Exec` grant to gate anything. This matches ADR-094 §3's own,
+separately-recorded finding ("`cap::Exec` is a real, unenforced gap... nothing anywhere checks whether
+a caller holds `Exec<profile>`"), independently re-confirmed here rather than trusted from that ADR's
+account. There is therefore no real tool anywhere using `cap::Exec` for anything semantically
+equivalent to `RunCommandTool` — minting a dedicated `cap::RunCommand` tag instead of reusing `cap::
+Exec` is not merely a clean design call, it is the only option that actually gates anything, since
+`cap::Exec` gates nothing today.
+
+**No MUST-FIX or SHOULD-FIX issue found.** The exhaustive real-caller audit, the three-branch symmetry
+check, the C1128 regression/fix, the fail-closed test's revert-and-restore sanity check, the
+declassification-polarity trace, and the `cap::Exec` reuse claim were all independently redone from
+the actual code and diff, not accepted from this ADR's own account — all six came back matching this
+ADR's claims exactly. Working tree left clean (all temporary reverts restored; `git status --short` /
+`git diff --stat` both empty after this round).
