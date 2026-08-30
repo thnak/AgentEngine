@@ -51,6 +51,28 @@
 //   [4] a normal (non-recovered) discard_task_branch() call still works unchanged, and BranchCost is
 //       refunded correctly under the fresh, post-crash quota -- this fix touches only bind_sandbox()'s
 //       own recovery pass, never the four verbs' own bodies.
+//
+// [5]/[6] MUST-FIX (independent red-team, 2026-08-30): `recover_orphaned_task_branches()`'s ORIGINAL
+// matching rule was a bare prefix check (`orphan_name` starts with `runtime_->branch_name() +
+// "/child-"`), and its own comment claimed a grandchild (a branch forked from another branch that is
+// itself already a child) "would carry a DIFFERENT prefix and is correctly left alone." That claim was
+// FALSE: `Ledger::branch_from()` names a child as `parent.name() + "/child-" + id + "-" + seq`
+// UNCONDITIONALLY, so a grandchild's name is `"<root>/child-A-B/child-C-D"`, which DOES start with
+// `"<root>/child-"`. The ORIGINAL code would have silently misfiled such a grandchild into
+// `task_branches_` as if this root had created it directly -- a real I4 attribution defect, latent only
+// because nothing in THIS tool surface's own call graph currently chains `branch_from()` off a task
+// branch (that invariant lives in `start_task_branch()`, not in the recovery method, and `Ledger::
+// branch_from()` itself enforces no such restriction for any OTHER caller of the same `Ledger`). Fixed
+// by additionally requiring no further `/` in the matched suffix. This case builds a genuine grandchild
+// via DIRECT `Ledger::branch_from()` calls (bypassing the tool surface entirely, exactly the way a
+// lower-level or future caller could) to prove the fix's boundary empirically, not by assuming the
+// current call graph is the only thing keeping this safe:
+//   [5] after a simulated crash, the grandchild orphan is correctly left unrecovered -- it never enters
+//       `task_branches_` (discard_task_branch() on its name fails with task_branch_unknown_handle), and
+//       remains a genuine orphan in the Ledger (still reachable via the lower-level
+//       reclaim_orphaned_branch() API, exactly like any other out-of-scope orphan -- not silently lost).
+//   [6] the TRUE direct child (same crash, same reconstruction) is still recovered normally --
+//       confirming the added guard narrows correctly rather than breaking the [2]/[3] case above.
 
 #include "agentengine/core/tool.hpp"
 #include "agentengine/sandbox/mandatory_sandbox_provider.hpp"
@@ -257,6 +279,117 @@ int main() {
         check(branch_quota_r->remaining() == branch_before,
               "[4] BranchCost is refunded correctly for an ordinary discard (back to its pre-start "
               "level), unaffected by this fix");
+    }
+
+    // ---- Phase D: MUST-FIX regression -- a Ledger-API-constructed GRANDCHILD orphan must NOT be -------
+    // ---- recovered as if it were a direct child, even though its name textually starts with the -------
+    // ---- same root-branch child-prefix (see the [5]/[6] header comment above for the full finding). ---
+    std::string root_d_name;
+    std::string direct_child_name;
+    std::string grandchild_name;
+    {
+        auto branch_quota_r = agentengine::rt::AsyncQuota<BranchCost>::mint_root(authority, owner, 100);
+        check(branch_quota_r.has_value(), "Phase D setup: BranchCost quota mint_root() succeeds");
+        if (!branch_quota_r.has_value()) return EXIT_FAILURE;
+
+        Ledger<> durable_ledger_d(InMemoryWorktreeObjectStore{}, durable_dir);
+        auto root_d_r = drive(durable_ledger_d.create_root_branch(owner, "grandchild-boundary"));
+        check(root_d_r.has_value(), "Phase D setup: create_root_branch() succeeds");
+        if (!root_d_r.has_value()) return EXIT_FAILURE;
+        root_d_name = root_d_r->name();
+
+        // A direct child, via the SAME primitive SandboxRuntime::spawn_child_branch() uses internally --
+        // this one MUST be recovered.
+        auto child_r = drive(durable_ledger_d.branch_from(*root_d_r, owner, *branch_quota_r));
+        check(child_r.has_value(), "Phase D setup: direct child branch_from() succeeds");
+        if (!child_r.has_value()) return EXIT_FAILURE;
+        direct_child_name = child_r->name();
+
+        // A GRANDCHILD -- branch_from() called with the CHILD (not the root) as parent. Nothing in
+        // MandatorySandboxProvider's own call graph does this today (start_task_branch() only ever
+        // calls spawn_child_branch() on `runtime_` itself), but Ledger::branch_from() itself enforces no
+        // such restriction for any OTHER caller -- this is exactly what tests the recovery method's OWN
+        // filtering discipline, not the rest of the codebase's current call-graph shape.
+        auto grandchild_r = drive(durable_ledger_d.branch_from(*child_r, owner, *branch_quota_r));
+        check(grandchild_r.has_value(), "Phase D setup: grandchild branch_from() succeeds");
+        if (!grandchild_r.has_value()) return EXIT_FAILURE;
+        grandchild_name = grandchild_r->name();
+
+        std::string const naive_prefix = root_d_name + "/child-";
+        check(grandchild_name.compare(0, naive_prefix.size(), naive_prefix) == 0,
+              "Phase D setup: sanity -- the grandchild's real name DOES textually start with the root's "
+              "own child-prefix (this is exactly the false claim the ORIGINAL comment made about "
+              "grandchildren carrying a \"different prefix\" -- disproven here directly)");
+
+        // durable_ledger_d (and every live BranchHandle it holds) goes out of scope HERE -- same
+        // crash-simulation reasoning as Phase A.
+    }
+
+    check(!root_d_name.empty() && !direct_child_name.empty() && !grandchild_name.empty(),
+          "Phase D setup: all three names captured before scope exit");
+    if (root_d_name.empty() || direct_child_name.empty() || grandchild_name.empty()) return EXIT_FAILURE;
+
+    {
+        auto branch_quota_r = agentengine::rt::AsyncQuota<BranchCost>::mint_root(authority, owner, 100);
+        auto run_quota_r = agentengine::rt::AsyncQuota<RunCost>::mint_root(authority, owner, 100);
+        auto storage_quota_r = agentengine::rt::AsyncQuota<StorageBytes>::mint_root(authority, owner, 10'000'000);
+        auto merge_quota_r = agentengine::rt::AsyncQuota<MergeCost>::mint_root(authority, owner, 100);
+        check(branch_quota_r.has_value() && run_quota_r.has_value() && storage_quota_r.has_value() &&
+                  merge_quota_r.has_value(),
+              "Phase D: all four quota mint_root() calls succeed");
+        if (!branch_quota_r.has_value() || !run_quota_r.has_value() || !storage_quota_r.has_value() ||
+            !merge_quota_r.has_value()) {
+            return EXIT_FAILURE;
+        }
+
+        Ledger<> reopened_ledger_d(InMemoryWorktreeObjectStore{}, durable_dir);
+        auto orphans_d = reopened_ledger_d.orphaned_branches();
+        bool const root_d_restored =
+            std::find(orphans_d.begin(), orphans_d.end(), root_d_name) != orphans_d.end();
+        bool const grandchild_restored_as_orphan =
+            std::find(orphans_d.begin(), orphans_d.end(), grandchild_name) != orphans_d.end();
+        check(root_d_restored, "Phase D: the root branch is restored as a real orphan too");
+        check(grandchild_restored_as_orphan,
+              "Phase D setup: the grandchild is ALSO restored as a real orphan by load_durable_state() "
+              "(it has no live handle either) -- this is what recover_orphaned_task_branches() must "
+              "correctly decline to touch");
+        if (!root_d_restored) return EXIT_FAILURE;
+
+        auto root_d_reclaim_r = reopened_ledger_d.reclaim_orphaned_branch(root_d_name, owner);
+        check(root_d_reclaim_r.has_value(), "Phase D setup: the restored root branch is reclaimable");
+        if (!root_d_reclaim_r.has_value()) return EXIT_FAILURE;
+
+        Provider provider;
+        provider.bind_sandbox(reopened_ledger_d, std::move(*root_d_reclaim_r), owner,
+                                scratch_root / "phase-d", *branch_quota_r, *run_quota_r, *storage_quota_r);
+        provider.bind_task_branch_tools(*merge_quota_r);
+
+        // [5] THE MUST-FIX CLAIM: the grandchild must NOT have been recovered into task_branches_ --
+        // discard_task_branch() on its name must fail with task_branch_unknown_handle, exactly as it
+        // would for any name this provider never saw.
+        auto grandchild_discard_r = drive(provider.discard_task_branch(grandchild_name));
+        check(!grandchild_discard_r.has_value() &&
+                  grandchild_discard_r.error().code ==
+                      "mandatory_sandbox_provider.task_branch_unknown_handle",
+              "[5] the grandchild orphan is correctly left unrecovered by bind_sandbox() -- "
+              "discard_task_branch() on its name fails with task_branch_unknown_handle, not success "
+              "(reverting the recover_orphaned_task_branches() fix makes this fail: the grandchild would "
+              "have been wrongly recovered and this discard would succeed instead)");
+
+        // And it must still be a genuine orphan afterward -- not silently lost, just correctly left for
+        // the lower-level API, matching this method's own "not the authoritative list" framing.
+        auto orphans_after = reopened_ledger_d.orphaned_branches();
+        check(std::find(orphans_after.begin(), orphans_after.end(), grandchild_name) != orphans_after.end(),
+              "[5] the grandchild remains a genuine, un-consumed orphan after bind_sandbox() -- "
+              "correctly left for Ledger::reclaim_orphaned_branch() directly, not lost or double-touched");
+
+        // [6] THE TRUE direct child, same crash, same reconstruction, must still be recovered normally --
+        // proving the added guard narrows correctly rather than over-broadly excluding real children.
+        auto direct_child_discard_r = drive(provider.discard_task_branch(direct_child_name));
+        check(direct_child_discard_r.has_value() && direct_child_discard_r->ok,
+              "[6] the TRUE direct child is still recovered and usable through the normal tool surface "
+              "after the same crash+reconstruction -- the grandchild-exclusion fix does not regress the "
+              "ordinary direct-child recovery case");
     }
 
     fs::remove_all(durable_dir, ec);

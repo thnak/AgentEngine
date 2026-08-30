@@ -407,24 +407,53 @@ public:
     // ADR-126 -- the durability-recovery half of `bind_sandbox()`'s own new call. Branch names are
     // deterministic (`Ledger::branch_from()`'s own comment: "<parent>/child-<id>-<seq>"), so a child of
     // `runtime_`'s own branch is identified by NAME PREFIX alone, with no separate parent-lineage index
-    // needed. Matches ONLY direct children of THIS root branch -- a grandchild (a task branch forked
-    // from another task branch, not a shape this design offers anywhere) would carry a DIFFERENT
-    // prefix and is correctly left alone; not a real scenario today, named for precision, not because
-    // it is reachable. `reclaim_orphaned_child()` re-checks `owner_`'s own authorization for each
-    // candidate independently (the same ACL gate every other read in this design goes through) --
-    // failing to reclaim one candidate (a genuine auth mismatch, or a race with some other, unrelated
-    // reclaim of the SAME orphan) is not fatal to the others; each is attempted independently and
-    // silently skipped on its own failure, matching this method's own best-effort, convenience-only
-    // framing -- a host that needs the authoritative list already has it via `Ledger::
-    // orphaned_branches()`/`reclaim_orphaned_branch()` directly. Deliberately BEST-EFFORT, not
-    // guaranteed: `BranchCost` itself is NOT durable (a fresh `AsyncQuota<BranchCost>` after a restart
-    // has no memory of what was spent before the crash) -- recovering these entries here does not, and
-    // should not, re-charge it a second time; a real, but unchanged and separately-disclosed, part of
-    // this whole design's existing "quotas are in-process state, not durable" posture.
+    // needed. Matches ONLY direct children of THIS root branch.
+    //
+    // MUST-FIX (independent red-team, 2026-08-30): the ORIGINAL version of this method matched on
+    // `child_prefix` alone (`orphan_name.compare(0, child_prefix.size(), child_prefix) != 0`) and its
+    // own comment claimed a grandchild "would carry a DIFFERENT prefix and is correctly left alone" --
+    // that claim was FALSE as stated. `Ledger::branch_from()` names a child as `parent.name() +
+    // "/child-" + id + "-" + seq` UNCONDITIONALLY, including when `parent` is itself already a child --
+    // so a grandchild's name is literally `"<root>/child-A-B/child-C-D"`, which DOES start with
+    // `"<root>/child-"` (a plain prefix match cannot distinguish "direct child" from "any descendant,
+    // however deep"). The ORIGINAL comment's safety argument rested entirely on the UNENFORCED, then-
+    // undocumented-as-load-bearing observation that nothing in THIS tool surface's own call graph ever
+    // invokes `branch_from()`/`spawn_child_branch()` with a task branch (rather than `runtime_`'s own
+    // bound branch) as parent -- true today (`start_task_branch()` always calls `runtime_->
+    // spawn_child_branch()`, never a `task_branches_` entry's own), but that invariant lives in a
+    // DIFFERENT method entirely, is not enforced by this one, and `Ledger::branch_from()` itself places
+    // no restriction on chaining -- a future feature, or any other lower-level caller of the same
+    // `Ledger`, could produce a genuine grandchild-shaped orphan with NO code change needed here for it
+    // to be silently misfiled into `task_branches_` as if it were this root's own direct child (a real
+    // I4 attribution/scope defect: a handle recovered under this root's own tool surface would then
+    // actually name a branch this root never directly created). The fix: after the prefix match,
+    // require NO further `/` in the remainder -- a direct child's own suffix is exactly `<id>-<seq>`,
+    // which never contains `/`; a descendant deeper than one hop always does. Empirically proven with a
+    // new regression case in `tests/test_task_branch_durability_recovery.cpp` ([5]/[6]): a
+    // Ledger-API-constructed grandchild orphan is correctly left an orphan (never enters
+    // `task_branches_`, remains reachable only via the lower-level `Ledger::reclaim_orphaned_branch()`
+    // API, exactly like any other out-of-scope orphan), while a genuine direct child is still recovered
+    // normally -- reverting this guard makes that new case fail (the grandchild gets wrongly recovered).
+    //
+    // `reclaim_orphaned_child()` re-checks `owner_`'s own authorization for each candidate independently
+    // (the same ACL gate every other read in this design goes through) -- failing to reclaim one
+    // candidate (a genuine auth mismatch, or a race with some other, unrelated reclaim of the SAME
+    // orphan) is not fatal to the others; each is attempted independently and silently skipped on its
+    // own failure, matching this method's own best-effort, convenience-only framing -- a host that needs
+    // the authoritative list already has it via `Ledger::orphaned_branches()`/`reclaim_orphaned_branch()`
+    // directly. Deliberately BEST-EFFORT, not guaranteed: `BranchCost` itself is NOT durable (a fresh
+    // `AsyncQuota<BranchCost>` after a restart has no memory of what was spent before the crash) --
+    // recovering these entries here does not, and should not, re-charge it a second time; a real, but
+    // unchanged and separately-disclosed, part of this whole design's existing "quotas are in-process
+    // state, not durable" posture.
     void recover_orphaned_task_branches() {
         std::string const child_prefix = runtime_->branch_name() + "/child-";
         for (std::string const& orphan_name : ledger_->orphaned_branches()) {
             if (orphan_name.compare(0, child_prefix.size(), child_prefix) != 0) continue;
+            // Direct child only: the suffix after `child_prefix` must contain no further `/` -- a
+            // deeper descendant (a "grandchild" or beyond) carries at least one more "/child-" segment
+            // and is correctly left as an orphan, reachable only via the lower-level Ledger API.
+            if (orphan_name.find('/', child_prefix.size()) != std::string::npos) continue;
             auto reclaimed = agentengine::rt::block_on(runtime_->reclaim_orphaned_child(
                 orphan_name, *owner_, runtime_->staging_root().parent_path()));
             if (!reclaimed.has_value()) continue;

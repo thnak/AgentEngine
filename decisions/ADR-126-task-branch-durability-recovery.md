@@ -2,7 +2,10 @@
 
 - **Status:** Proposed — implemented, verified (Windows/MSVC, Docker-independent), full rebuild (zero
   errors) and full `ctest` clean (286/287, same pre-existing unrelated matplotlib/pandas gap),
-  `naming_lint.py` clean. Not yet independently red-teamed; not yet Linux-verified.
+  `naming_lint.py` clean. **SAME-DAY INDEPENDENT RED-TEAM (§7): one real MUST-FIX found and fixed** (a
+  grandchild-shaped orphan could be misfiled into `task_branches_` as a direct child, contrary to the
+  original code's own comment — the I2/cross-owner-authorization boundary itself checked out clean).
+  Re-verified 286/287 and a clean full rebuild after the fix. Not yet Linux-verified.
 - **Date:** 2026-08-30.
 - **Scope:** `include/agentengine/sandbox/mandatory_sandbox_provider.hpp` (`bind_sandbox()` gets one new
   call; a new private `recover_orphaned_task_branches()` method), `tests/test_task_branch_durability_
@@ -154,3 +157,106 @@ nothing newly broken. `python tools/naming_lint.py`: clean, no new exported voca
   `task_branches_` and stay there — a real, disclosed, but low-consequence asymmetry (the caller simply
   sees fewer recovered handles than existed, never a corrupted or partially-applied state), matching
   the "attempted independently, not fatal to the others" design already stated in §2.
+
+## 7. Independent red-team round (same day)
+
+**Scope of the pass.** A fresh, independent review (no prior context beyond this ADR and the real diff)
+worked adversarially through the I2/I4 questions §5 flagged as not yet done: (1) whether recovery could
+materialize a capability without an explicit host grant, (2) whether `reclaim_orphaned_child()`'s own
+ACL check genuinely blocks cross-owner leakage and fails silently-safe when it does, (3) whether
+`child_prefix` prefix-matching is sound against a determined adversary or an unlucky collision given
+`Ledger::branch_from()`'s exact deterministic naming, (4) real build/test verification independent of
+this ADR's own account, (5) whether the "best-effort, not fatal to the others" partial-recovery
+behavior can lose a reclaimed branch in the window between `Ledger::reclaim_orphaned_branch()`'s success
+and this method's own `task_branches_.insert_or_assign()`.
+
+**(1)/(2) I2/cross-owner leakage: correctly scoped, no MUST-FIX found.** `owner_` is the same
+host-supplied `IdentityHandle` the current `bind_sandbox()` call already received — recovery only ever
+narrows already-possessed authority (finding a durable record of THIS root's own prior children), never
+mints new authority, matching `ADR-070`'s Delegated Decision Seam framing. Traced `Ledger::
+reclaim_orphaned_branch()` (`include/agentengine/core/ledger.hpp:965-988`) directly: it fails closed on
+`ledger.not_an_orphan` if the name was never a real orphan, and fails closed on `ledger.
+reclaim_unauthorized` if `requested_by` is not `authorized_for()` the branch's own current head tree
+digest (`authorized_for()`, line 1033, is the SAME per-content-digest ACL check — set membership plus
+`IdentityAuthority` ancestry — every other read in this design already uses; nothing about the recovery
+path weakens or bypasses it). Constructed the adversarial two-owner scenario by hand (owner A's root
+"root-3", owner B's root "root-31", each with real children, shared durable Ledger, simulated crash):
+because `Ledger::create_root_branch()` names roots as `"root-" + to_string(owner.id())` with an OPTIONAL
+`"-" + disambiguator` (`ledger.hpp:422-424`) and `Ledger::branch_from()` names children as
+`parent.name() + "/child-" + id + "-" + seq` (`ledger.hpp:605-607`), the mandatory literal `"-"`
+separator between a root's numeric id and any disambiguator means a `/` can NEVER appear immediately
+after a root's own id substring from `create_root_branch()` alone — so no unrelated root or its children
+can ever produce a name starting with `"root-3/child-"` unless it is genuinely a descendant of THIS
+exact root branch entry. Confirmed a rejection is silent-and-safe: `reclaim_orphaned_branch()`'s failure
+path returns a plain `agentengine::error` with no side effect on `orphaned_from_restart_` (the name stays
+orphaned, available for a legitimate reclaim later) and `recover_orphaned_task_branches()`'s own loop
+just `continue`s — no timing signal, no error propagated to the caller of `bind_sandbox()`, no partial
+state. Cross-owner leakage via this path is not reachable.
+
+**(3) MUST-FIX found and fixed: `child_prefix` matching was not actually "direct children only," contrary
+to its own comment.** The ORIGINAL `recover_orphaned_task_branches()` (`include/agentengine/sandbox/
+mandatory_sandbox_provider.hpp`, the `bind_sandbox()`-appended method) matched an orphan by prefix alone
+(`orphan_name.compare(0, child_prefix.size(), child_prefix) != 0`) and its own comment claimed a
+grandchild "would carry a DIFFERENT prefix and is correctly left alone." Tracing `Ledger::branch_from()`
+directly (`ledger.hpp:605-607`) shows this is FALSE as stated: a child is named `parent.name() +
+"/child-" + id + "-" + seq` UNCONDITIONALLY, including when `parent` is itself already a child — so a
+grandchild's real name is `"<root>/child-A-B/child-C-D"`, which DOES start with `"<root>/child-"` (a bare
+prefix check cannot distinguish "direct child" from "any descendant, however deep"). The comment's safety
+claim rested entirely on an UNENFORCED fact living in a DIFFERENT method (`start_task_branch()` always
+calls `runtime_->spawn_child_branch()` on `runtime_`'s own bound branch, never on a `task_branches_`
+entry — confirmed by reading `spawn_child_branch()`'s own two callers), not on anything
+`recover_orphaned_task_branches()` itself checks, and `Ledger::branch_from()` places no restriction on
+chaining for any OTHER caller of the same `Ledger`. This is a real I4 attribution/scope defect: had a
+grandchild-shaped orphan ever existed (a future feature, or any other lower-level `Ledger` caller), it
+would have been silently misfiled into `task_branches_` as if this root had created it directly — not a
+cross-owner leak (the ACL check in (1)/(2) still gates it to the SAME owner), but a real violation of this
+method's own documented "direct children only" scope.
+**Fix**: after the prefix match, additionally require no further `/` in the matched remainder — a direct
+child's own suffix is exactly `<id>-<seq>` (never containing `/`); any deeper descendant always does.
+**Proof it was real**: added Phase D (`tests/test_task_branch_durability_recovery.cpp`, checks [5]/[6]) —
+builds a genuine grandchild via direct `Ledger::branch_from()` calls (bypassing the tool surface
+entirely, the same way any other lower-level caller could), simulates a crash, reconstructs, and asserts
+the grandchild is correctly left an unrecovered orphan while the true direct child is still recovered
+normally. Reverting only the new `orphan_name.find('/', child_prefix.size()) != std::string::npos`
+guard line (prefix check left in place) and rebuilding reproduced two genuine, expected `FAIL`s (checks
+[5]) — confirming the test catches the exact defect, not a tautology — then the guard was restored and a
+full pass reconfirmed.
+
+**(4) Build/test verification, independent of this ADR's own account.** Built and ran
+`test_task_branch_durability_recovery` directly: **ALL CHECKS PASSED** (including the new [5]/[6] cases).
+Independently repeated this ADR's own sanity check (not merely trusted it): commented out the
+`recover_orphaned_task_branches()` call in `bind_sandbox()`, rebuilt, reran — checks [2] and both halves
+of [3] genuinely **FAILED** as expected — then restored and reran, confirming a full pass again (`git
+diff --stat` on the production file was empty after restoring, confirming a clean revert with no leftover
+artifacts). Rebuilt and reran `test_task_branch_tools`, `test_task_branch_concurrent_dispatch`,
+`test_mandatory_sandbox_provider`, `test_mandatory_sandbox_provider_composed`, and (a real Docker daemon
+was reachable — confirmed via `docker info` first) `test_composed_sandbox_providers_live`: **all pass
+unchanged**. Full project rebuild: zero errors (same pre-existing, unrelated MSVC warnings only). Full
+`ctest`, run twice (once before this round's fix, once after): **286/287 both times**, the one failure
+being the same pre-existing, unrelated `test_reference_agent_task_corpus` matplotlib/pandas gap — nothing
+newly broken by either this ADR's original change or this round's fix. `python tools/naming_lint.py`:
+clean, no new exported vocabulary, both times.
+
+**(5) Partial-recovery "lost branch" window: not a real gap.** Traced `Ledger::reclaim_orphaned_branch()`
+directly (`ledger.hpp:965-988`): it holds `mutex_` for its entire body, and erases the name from
+`orphaned_from_restart_` SYNCHRONOUSLY as part of the same locked critical section that returns the fresh
+`BranchHandle` — there is no `co_await` inside it, so no other coroutine can interleave between the erase
+and the return. `reclaim_orphaned_child()` (`sandbox_runtime.hpp`) calls it as a plain synchronous call,
+not an awaited one. The only real question is what happens across an ACTUAL process crash (not a
+same-process race) between one orphan's successful reclaim and `recover_orphaned_task_branches()`'s own
+`task_branches_.insert_or_assign()`: `orphaned_from_restart_` is never itself persisted — it is
+recomputed FRESH by `load_durable_state()` at every `Ledger` construction from durable branch state alone
+(`ledger.hpp:1141`) — so a hard crash at ANY point in this loop reverts all of this method's in-memory
+work uniformly; the next restart's `load_durable_state()` will find that branch's durable state
+unchanged (nothing in this method persists anything of its own) and correctly re-list it as an orphan
+again. Recovery is naturally idempotent across a real crash — matching §6's own "best-effort, not
+transactional" framing, and never the corrupted/lost state the partial-recovery question raised. The one
+theoretical non-crash window (an exception thrown by `task_branches_.insert_or_assign()`'s own allocation
+between a successful reclaim and the insert, which would queue the freshly-reclaimed `BranchHandle` for
+abandonment via its own destructor) is the same pre-existing `unordered_map`-insert-after-acquire pattern
+this whole file already uses everywhere (e.g. `start_task_branch()`'s own `task_branches_.insert_or_assign()`
+after `spawn_child_branch()`) — not a new risk introduced by this ADR, and not fixed here.
+
+**Verdict**: one real MUST-FIX (the grandchild-prefix scope defect in finding (3) above), fixed and
+proven; everything else in items (1), (2), (4), (5) checked out clean under genuine adversarial
+construction, not assumed.
