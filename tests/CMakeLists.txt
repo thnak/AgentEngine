@@ -3217,6 +3217,14 @@ add_executable(test_task_branch_tools test_task_branch_tools.cpp)
 target_link_libraries(test_task_branch_tools PRIVATE agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)
 add_test(NAME test_task_branch_tools COMMAND test_task_branch_tools)
 
+# ---- ADR-114 §5/§6 residual, closed: real, two-OS-thread concurrent dispatch across all four
+# task-branch verbs on ONE MandatorySandboxProvider instance -- mirrors test_rt_block_on's own real
+# cross-thread contention methodology, applied to this class's own task_branch_mutex_ specifically
+# rather than to the generic AsyncMutex primitive alone. REQUIRES a running Docker daemon.
+add_executable(test_task_branch_concurrent_dispatch test_task_branch_concurrent_dispatch.cpp)
+target_link_libraries(test_task_branch_concurrent_dispatch PRIVATE agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)
+add_test(NAME test_task_branch_concurrent_dispatch COMMAND test_task_branch_concurrent_dispatch)
+
 # ---- ADR-102 Phase 4 -- agentengine::rt::block_on<T>() (rt/block_on.hpp), the real fix for a real,
 # independent-red-team-found, empirically-proven AsyncMutex mutual-exclusion violation the naive
 # "while (!t.done()) t.resume();" drive loop has under genuine cross-thread contention. Real OS threads
