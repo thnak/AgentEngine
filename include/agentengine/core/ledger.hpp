@@ -457,31 +457,10 @@ public:
         auto consumed = co_await quota.try_consume(approx_bytes, authored_by);
         if (!consumed.has_value()) co_return std::unexpected(consumed.error());
 
-        // A case-folding collision check (git's own real CVE-2014-9390 fix direction): two tree
-        // entries whose NAMES case-fold to the same real path (e.g. "readme.txt" and "README.txt")
-        // are two perfectly legal, genuinely distinct digests as far as the content-addressed store
-        // is concerned, but silently collide on a case-insensitive filesystem (Windows NTFS/FAT,
-        // default macOS HFS+) on materialize. Rejected outright rather than silently dropping one.
-        // HONEST RESIDUAL: this checks ASCII case-folding only (`tolower` per byte) -- not Unicode
-        // "ignorable" codepoints, a materially harder problem this check does not attempt.
-        for (std::size_t i = 0; i < tree.entries.size(); ++i) {
-            std::string folded_i = tree.entries[i].name;
-            for (char& c : folded_i) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-            for (std::size_t j = i + 1; j < tree.entries.size(); ++j) {
-                std::string folded_j = tree.entries[j].name;
-                for (char& c : folded_j) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-                if (folded_i == folded_j && tree.entries[i].name != tree.entries[j].name) {
-                    (void)co_await quota.refund(approx_bytes);
-                    co_return std::unexpected(agentengine::error{
-                        agentengine::failure_class::contract,
-                        "tree contains two entries that case-fold to the same real path ('" +
-                            tree.entries[i].name + "' and '" + tree.entries[j].name +
-                            "') -- rejected before materialize() could silently drop one of them on a "
-                            "case-insensitive filesystem, matching git's own real CVE-2014-9390 fix "
-                            "direction",
-                        "ledger.case_folding_collision"});
-                }
-            }
+        auto folding_check = check_case_folding_collision(tree);
+        if (!folding_check.has_value()) {
+            (void)co_await quota.refund(approx_bytes);
+            co_return std::unexpected(folding_check.error());
         }
 
         // Computed with `mutex_` released before any `co_await` (a lock held across a coroutine
@@ -670,188 +649,44 @@ public:
             // header comment names.
             {
                 std::lock_guard<std::mutex> g(mutex_);
-                if (branches_.find(child.name()) != branches_.end()) {
-                    orphaned_from_restart_.insert(child.name());
-                }
+                orphan_child_locked(child);
             }
-            child.resolved_ = true;
             co_return std::unexpected(consumed.error());
         }
 
         agentengine::result<Checkpoint> outcome = [&]() -> agentengine::result<Checkpoint> {
             std::lock_guard<std::mutex> g(mutex_);
-            auto child_it = branches_.find(child.name());
-            auto parent_it = branches_.find(parent.name());
-            if (child_it == branches_.end() || parent_it == branches_.end()) {
-                // The child branch itself may still be unknown too (a stale/already-consumed handle) --
-                // only register it as a reclaimable orphan if it genuinely still exists.
-                if (child_it != branches_.end()) orphaned_from_restart_.insert(child.name());
-                child.resolved_ = true;
-                return std::unexpected(agentengine::error{agentengine::failure_class::contract,
-                                                                 "unknown branch in merge()",
-                                                                 "ledger.unknown_branch"});
-            }
-            BranchState const& child_state = child_it->second;
-            BranchState& parent_state = parent_it->second;
-            agentengine::Digest const theirs_digest = child_state.head_tree_digest;
-            agentengine::Digest const ours_digest = parent_state.head_tree_digest;
-            agentengine::Digest const base_digest = child_state.base_tree_digest;
+            auto participants = load_merge_participants_locked(child, parent, requested_by);
+            if (!participants.has_value()) return std::unexpected(participants.error());
+            BranchState& parent_state = *participants->parent_state;
 
-            if (!authorized_for(tree_acl_, theirs_digest, requested_by)) {
-                orphaned_from_restart_.insert(child.name());
-                child.resolved_ = true;
-                return std::unexpected(agentengine::error{
-                    agentengine::failure_class::policy,
-                    "merge requester is not authorized for the child branch's head tree digest",
-                    "ledger.merge_unauthorized_reference"});
-            }
+            auto merge_result = perform_three_way_merge_locked(
+                participants->base_digest, participants->ours_digest, participants->theirs_digest, child);
+            if (!merge_result.has_value()) return std::unexpected(merge_result.error());
 
-            auto base_tree = store_.get_tree(base_digest);
-            auto ours_tree = store_.get_tree(ours_digest);
-            auto theirs_tree = store_.get_tree(theirs_digest);
-            if (!base_tree.has_value() || !ours_tree.has_value() || !theirs_tree.has_value()) {
-                orphaned_from_restart_.insert(child.name());
-                child.resolved_ = true;
-                return std::unexpected(agentengine::error{
-                    agentengine::failure_class::fatal,
-                    "merge could not load base/ours/theirs from the object store",
-                    "ledger.merge_tree_load_failed"});
-            }
+            auto committed = commit_merged_tree_locked(std::move(*merge_result), requested_by,
+                                                          parent_state, child);
+            if (!committed.has_value()) return std::unexpected(committed.error());
 
-            LedgerMergeResult merged = merge_trees(*base_tree, *ours_tree, *theirs_tree);
-            if (!merged.conflicts.empty()) {
-                orphaned_from_restart_.insert(child.name());
-                child.resolved_ = true;
-                return std::unexpected(agentengine::error{
-                    agentengine::failure_class::contract,
-                    "merge produced " + std::to_string(merged.conflicts.size()) +
-                        " real conflicting path(s) (first: '" + merged.conflicts.front().path +
-                        "') -- automatic conflict resolution is explicitly out of this design's scope; "
-                        "the merge is rejected rather than silently picking a side",
-                    "ledger.merge_conflict"});
-            }
-
-            for (auto const& entry : merged.merged.entries) {
-                auto const& acl = entry.is_tree ? tree_acl_ : blob_acl_;
-                if (!authorized_for(acl, entry.digest, requested_by)) {
-                    orphaned_from_restart_.insert(child.name());
-                    child.resolved_ = true;
-                    return std::unexpected(agentengine::error{
-                        agentengine::failure_class::policy,
-                        "merge result references digest '" + entry.digest.substr(0, 12) + "...' (path '" +
-                            entry.name + "') that the merge requester is not authorized for",
-                        "ledger.merge_unauthorized_reference"});
-                }
-            }
-
-            // ADR-112: a snapshot of the merged entries, taken ONLY when the parent owner grant below
-            // will actually run, since `merged.merged` is moved-from immediately after this point --
-            // needed for the per-entry content-level grants that close this method's own long-disclosed
-            // "structural, not content-wise" scope limit (see the comment after the parent-owner grant
-            // below). Cheap relative to everything else this function already does per call (a handful
-            // of small {name, digest, bool} structs, not blob/tree content itself).
-            std::vector<TreeEntry> merged_entries_for_owner_grant;
-            if (parent_state.created_by_id != requested_by.id()) {
-                merged_entries_for_owner_grant = merged.merged.entries;
-            }
-
-            auto merged_tree_digest = store_.put_tree(std::move(merged.merged));
-            if (!merged_tree_digest.has_value()) {
-                orphaned_from_restart_.insert(child.name());
-                child.resolved_ = true;
-                return std::unexpected(agentengine::error{agentengine::failure_class::fatal,
-                                                                 merged_tree_digest.error().message,
-                                                                 "ledger.put_tree_failed"});
-            }
-            auto acl_ok = insert_acl_root_bounded(tree_acl_, *merged_tree_digest, requested_by.id(),
-                                                     max_acl_roots_per_digest_);
-            if (!acl_ok.has_value()) {
-                orphaned_from_restart_.insert(child.name());
-                child.resolved_ = true;
-                return std::unexpected(acl_ok.error());
-            }
-            // REAL FINDING an independent red-team pass caught (2026-08-28, same day as the port),
-            // empirically confirmed with a live probe, not just reasoned about: `authorized_for()`'s
-            // ancestry check flows DOWNWARD only (a descendant inherits what an ancestor wrote, never the
-            // reverse) -- so without this second grant, `parent_state`'s own creator (the branch's OWN
-            // OWNER, who created `parent` and still holds its BranchHandle) would be permanently denied
-            // read access to their OWN branch's new head the moment ANY authorized descendant merges into
-            // it, with no narrow recovery path (only `mark_digest_shared()`'s global "readable by
-            // literally anyone" escape hatch). This directly broke the exact "an orchestrator spawns a
-            // sub-agent, the sub-agent merges its work back, the orchestrator resumes" flow this whole
-            // design exists to support -- confirmed BROKEN for real (a live probe reproduced
-            // `ledger.tree_access_denied` on the parent's own creator immediately after a successful
-            // merge) before this fix. A comment on an earlier version of this file's own test claimed
-            // this "matches" the real task-branch tool track's (A10) own merge flow -- independently
-            // re-checked against `docs/planning/proofs/task_branch_tool/task_branch_sandbox.hpp` and
-            // found FALSE: A10 uses exactly ONE identity throughout (`spawn_child_branch(owner_,...)`,
-            // `merge_into(*main_, owner_)`), never a real `derive_child()`-distinct sub-identity, so A10
-            // never actually exercises (or is protected from) this gap at all -- it sidesteps the
-            // question entirely rather than answering it. FIXED here, not merely disclosed: the merged
-            // tree's ACL also grants `parent_state.created_by_id` (the parent branch's own owner) direct
-            // root access, alongside `requested_by` (the actual merger) -- neither widens authority to a
-            // NEW principal that didn't already have a legitimate relationship to this branch; it
-            // preserves an already-legitimate owner's own continued access to their own resource, the
-            // same category of grant `branch_from()` itself already makes to a new child's creator.
-            if (parent_state.created_by_id != requested_by.id()) {
-                auto owner_acl_ok = insert_acl_root_bounded(tree_acl_, *merged_tree_digest,
-                                                                parent_state.created_by_id,
-                                                                max_acl_roots_per_digest_);
-                if (!owner_acl_ok.has_value()) {
-                    orphaned_from_restart_.insert(child.name());
-                    child.resolved_ = true;
-                    return std::unexpected(owner_acl_ok.error());
-                }
-                // ADR-112: closes this method's own long-disclosed "structural, not content-wise" scope
-                // limit below -- the grant above is TREE-DIGEST-LEVEL only (`tree_acl_[merged_tree_digest]`),
-                // so `parent_state`'s own owner could list the merged tree's structure
-                // (`get_tree_safe()`/`head_tree_digest()`) but not fetch the actual bytes of a blob (or
-                // read a nested subtree) the child alone contributed (`get_blob_safe()`/`get_tree_safe()`
-                // on it still failed `ledger.blob_access_denied`/`ledger.tree_access_denied`). Same
-                // reasoning as the tree-level grant above: `parent_state.created_by_id` already owns the
-                // branch this merge lands on, so granting them content-level access to what just became
-                // their own branch's new state is not widening authority to a stranger -- it completes
-                // the identical category of grant already made one level up.
-                //
-                // Deliberately BEST-EFFORT, not fail-closed: a per-entry grant hitting
-                // `ledger.acl_root_cap_exceeded` (a digest already at its configured cap of distinct
-                // roots) does NOT reject an otherwise-successful merge -- the tree-level grant above, the
-                // one property this method's own callers actually depend on structurally, has already
-                // succeeded, and unwinding that decision here to fail the whole merge over one capped
-                // blob would trade a narrow, pre-existing content-access residual for a much more
-                // surprising full-merge rejection. A capped entry is left exactly as inaccessible to the
-                // parent owner as it already was before this fix -- no regression, not a new hazard,
-                // just not fully closed for that one digest.
-                for (auto const& entry : merged_entries_for_owner_grant) {
-                    auto& entry_acl = entry.is_tree ? tree_acl_ : blob_acl_;
-                    (void)insert_acl_root_bounded(entry_acl, entry.digest, parent_state.created_by_id,
-                                                     max_acl_roots_per_digest_);
-                }
-            }
-            // SCOPE LIMIT, since NARROWED (ADR-112): the tree-level grant above only ever covered
-            // `merged_tree_digest` itself; the per-entry loop just above extends the SAME grant to every
-            // blob/subtree the merged tree references, best-effort. What remains open: a digest already
-            // at its ACL root cap (`ledger.acl_root_cap_exceeded`, rare in practice) stays inaccessible
-            // to the parent owner unless an already-authorized principal calls `mark_digest_shared()`
-            // instead; and this grant only ever covers digests reachable from THIS merge's own resulting
-            // tree, never digests the child wrote but which did not survive into the final merged result
-            // (an intentional, not accidental, boundary -- content that isn't part of the branch's new
-            // state was never meant to become reachable through it).
+            auto granted = grant_parent_owner_access_locked(committed->merged_tree_digest,
+                                                                committed->entries_for_owner_grant,
+                                                                parent_state, requested_by, child);
+            if (!granted.has_value()) return std::unexpected(granted.error());
 
             std::uint64_t const new_turn = parent_state.head_turn_index + 1;
-            auto self = compute_self_digest(*merged_tree_digest, parent_state.head_self_digest,
+            auto self = compute_self_digest(committed->merged_tree_digest, parent_state.head_self_digest,
                                               requested_by.id(), new_turn);
             if (!self.has_value()) {
-                orphaned_from_restart_.insert(child.name());
-                child.resolved_ = true;
+                orphan_child_locked(child);
                 return std::unexpected(self.error());
             }
-            Checkpoint cp{*self, *merged_tree_digest, parent_state.head_self_digest, requested_by.id(), new_turn};
+            Checkpoint cp{*self, committed->merged_tree_digest, parent_state.head_self_digest,
+                             requested_by.id(), new_turn};
             parent_state.head_self_digest = *self;
-            parent_state.head_tree_digest = *merged_tree_digest;
+            parent_state.head_tree_digest = committed->merged_tree_digest;
             parent_state.head_turn_index = new_turn;
             parent_state.checkpoints.insert_or_assign(new_turn, cp);
-            branches_.erase(child_it);
+            branches_.erase(child.name());
             child.resolved_ = true;
             persist_snapshot_locked();
             return cp;
@@ -1067,6 +902,244 @@ private:
         }
         set.insert(root_id);
         return agentengine::result<void>{};
+    }
+
+    // A case-folding collision check (git's own real CVE-2014-9390 fix direction): two tree
+    // entries whose NAMES case-fold to the same real path (e.g. "readme.txt" and "README.txt")
+    // are two perfectly legal, genuinely distinct digests as far as the content-addressed store
+    // is concerned, but silently collide on a case-insensitive filesystem (Windows NTFS/FAT,
+    // default macOS HFS+) on materialize. Rejected outright rather than silently dropping one.
+    // HONEST RESIDUAL: this checks ASCII case-folding only (`tolower` per byte) -- not Unicode
+    // "ignorable" codepoints, a materially harder problem this check does not attempt.
+    [[nodiscard]] static agentengine::result<void> check_case_folding_collision(agentengine::Tree const& tree) {
+        for (std::size_t i = 0; i < tree.entries.size(); ++i) {
+            std::string folded_i = tree.entries[i].name;
+            for (char& c : folded_i) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            for (std::size_t j = i + 1; j < tree.entries.size(); ++j) {
+                std::string folded_j = tree.entries[j].name;
+                for (char& c : folded_j) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                if (folded_i == folded_j && tree.entries[i].name != tree.entries[j].name) {
+                    return std::unexpected(agentengine::error{
+                        agentengine::failure_class::contract,
+                        "tree contains two entries that case-fold to the same real path ('" +
+                            tree.entries[i].name + "' and '" + tree.entries[j].name +
+                            "') -- rejected before materialize() could silently drop one of them on a "
+                            "case-insensitive filesystem, matching git's own real CVE-2014-9390 fix "
+                            "direction",
+                        "ledger.case_folding_collision"});
+                }
+            }
+        }
+        return {};
+    }
+
+    // Must be called with mutex_ already held. Marks `child` as a reclaimable orphan iff it still
+    // exists in branches_ (a stale/already-consumed handle may not), and marks the handle resolved --
+    // the single shared shape every merge() rejection path below needs: register the child so
+    // `reclaim_orphaned_branch()` remains a real recovery path, and prevent
+    // `BranchHandle::~BranchHandle()`'s `maybe_queue_abandon()` from later queuing a real, destructive
+    // abandon for a handle that already resolved here.
+    void orphan_child_locked(BranchHandle<Store>& child) {
+        if (branches_.find(child.name()) != branches_.end()) {
+            orphaned_from_restart_.insert(child.name());
+        }
+        child.resolved_ = true;
+    }
+
+    // merge() step 1/4. Must be called with mutex_ already held. Validates both branches exist and
+    // `requested_by` is authorized for the child's head tree digest; returns the three digests
+    // `perform_three_way_merge_locked()` needs plus a stable pointer to the parent's own BranchState
+    // (unordered_map references/pointers to existing elements survive later insertions into OTHER
+    // buckets/maps within the same locked critical section, per the container's own guarantee).
+    struct MergeParticipants {
+        BranchState* parent_state = nullptr;
+        agentengine::Digest theirs_digest;
+        agentengine::Digest ours_digest;
+        agentengine::Digest base_digest;
+    };
+    [[nodiscard]] agentengine::result<MergeParticipants> load_merge_participants_locked(
+            BranchHandle<Store>& child, BranchHandle<Store> const& parent,
+            agentengine::IdentityHandle requested_by) {
+        auto child_it = branches_.find(child.name());
+        auto parent_it = branches_.find(parent.name());
+        if (child_it == branches_.end() || parent_it == branches_.end()) {
+            // The child branch itself may still be unknown too (a stale/already-consumed handle) --
+            // only register it as a reclaimable orphan if it genuinely still exists.
+            orphan_child_locked(child);
+            return std::unexpected(agentengine::error{agentengine::failure_class::contract,
+                                                             "unknown branch in merge()",
+                                                             "ledger.unknown_branch"});
+        }
+        BranchState const& child_state = child_it->second;
+        BranchState& parent_state = parent_it->second;
+        agentengine::Digest const theirs_digest = child_state.head_tree_digest;
+        agentengine::Digest const ours_digest = parent_state.head_tree_digest;
+        agentengine::Digest const base_digest = child_state.base_tree_digest;
+
+        if (!authorized_for(tree_acl_, theirs_digest, requested_by)) {
+            orphan_child_locked(child);
+            return std::unexpected(agentengine::error{
+                agentengine::failure_class::policy,
+                "merge requester is not authorized for the child branch's head tree digest",
+                "ledger.merge_unauthorized_reference"});
+        }
+        return MergeParticipants{&parent_state, theirs_digest, ours_digest, base_digest};
+    }
+
+    // merge() step 2/4. Must be called with mutex_ already held. Loads base/ours/theirs from the
+    // object store and runs the real three-way `merge_trees()` above; a real conflict fails closed
+    // (`ledger.merge_conflict`) rather than silently picking a side.
+    [[nodiscard]] agentengine::result<LedgerMergeResult> perform_three_way_merge_locked(
+            agentengine::Digest const& base_digest, agentengine::Digest const& ours_digest,
+            agentengine::Digest const& theirs_digest, BranchHandle<Store>& child) {
+        auto base_tree = store_.get_tree(base_digest);
+        auto ours_tree = store_.get_tree(ours_digest);
+        auto theirs_tree = store_.get_tree(theirs_digest);
+        if (!base_tree.has_value() || !ours_tree.has_value() || !theirs_tree.has_value()) {
+            orphan_child_locked(child);
+            return std::unexpected(agentengine::error{
+                agentengine::failure_class::fatal,
+                "merge could not load base/ours/theirs from the object store",
+                "ledger.merge_tree_load_failed"});
+        }
+
+        LedgerMergeResult merged = merge_trees(*base_tree, *ours_tree, *theirs_tree);
+        if (!merged.conflicts.empty()) {
+            orphan_child_locked(child);
+            return std::unexpected(agentengine::error{
+                agentengine::failure_class::contract,
+                "merge produced " + std::to_string(merged.conflicts.size()) +
+                    " real conflicting path(s) (first: '" + merged.conflicts.front().path +
+                    "') -- automatic conflict resolution is explicitly out of this design's scope; "
+                    "the merge is rejected rather than silently picking a side",
+                "ledger.merge_conflict"});
+        }
+        return merged;
+    }
+
+    // merge() step 3/4. Must be called with mutex_ already held. Validates every merged entry is
+    // authorized for `requested_by`, writes the merged tree, and grants `requested_by` the tree-level
+    // ACL root -- the same per-entry authorization commit() itself already requires.
+    struct CommittedMergeTree {
+        agentengine::Digest merged_tree_digest;
+        // ADR-112: a snapshot of the merged entries, taken ONLY when the parent owner grant in
+        // `grant_parent_owner_access_locked()` below will actually run, since `merged.merged` is
+        // moved-from immediately after this point -- needed for the per-entry content-level grants
+        // that close this method's own long-disclosed "structural, not content-wise" scope limit.
+        // Cheap relative to everything else this step already does per call (a handful of small
+        // {name, digest, bool} structs, not blob/tree content itself). Empty when the parent already
+        // owns the branch (`parent_state.created_by_id == requested_by.id()`).
+        std::vector<TreeEntry> entries_for_owner_grant;
+    };
+    [[nodiscard]] agentengine::result<CommittedMergeTree> commit_merged_tree_locked(
+            LedgerMergeResult merged, agentengine::IdentityHandle requested_by,
+            BranchState const& parent_state, BranchHandle<Store>& child) {
+        for (auto const& entry : merged.merged.entries) {
+            auto const& acl = entry.is_tree ? tree_acl_ : blob_acl_;
+            if (!authorized_for(acl, entry.digest, requested_by)) {
+                orphan_child_locked(child);
+                return std::unexpected(agentengine::error{
+                    agentengine::failure_class::policy,
+                    "merge result references digest '" + entry.digest.substr(0, 12) + "...' (path '" +
+                        entry.name + "') that the merge requester is not authorized for",
+                    "ledger.merge_unauthorized_reference"});
+            }
+        }
+
+        std::vector<TreeEntry> merged_entries_for_owner_grant;
+        if (parent_state.created_by_id != requested_by.id()) {
+            merged_entries_for_owner_grant = merged.merged.entries;
+        }
+
+        auto merged_tree_digest = store_.put_tree(std::move(merged.merged));
+        if (!merged_tree_digest.has_value()) {
+            orphan_child_locked(child);
+            return std::unexpected(agentengine::error{agentengine::failure_class::fatal,
+                                                             merged_tree_digest.error().message,
+                                                             "ledger.put_tree_failed"});
+        }
+        auto acl_ok = insert_acl_root_bounded(tree_acl_, *merged_tree_digest, requested_by.id(),
+                                                 max_acl_roots_per_digest_);
+        if (!acl_ok.has_value()) {
+            orphan_child_locked(child);
+            return std::unexpected(acl_ok.error());
+        }
+        return CommittedMergeTree{*merged_tree_digest, std::move(merged_entries_for_owner_grant)};
+    }
+
+    // merge() step 4/4. Must be called with mutex_ already held.
+    //
+    // REAL FINDING an independent red-team pass caught (2026-08-28, same day as the port),
+    // empirically confirmed with a live probe, not just reasoned about: `authorized_for()`'s
+    // ancestry check flows DOWNWARD only (a descendant inherits what an ancestor wrote, never the
+    // reverse) -- so without this second grant, `parent_state`'s own creator (the branch's OWN
+    // OWNER, who created `parent` and still holds its BranchHandle) would be permanently denied
+    // read access to their OWN branch's new head the moment ANY authorized descendant merges into
+    // it, with no narrow recovery path (only `mark_digest_shared()`'s global "readable by
+    // literally anyone" escape hatch). This directly broke the exact "an orchestrator spawns a
+    // sub-agent, the sub-agent merges its work back, the orchestrator resumes" flow this whole
+    // design exists to support -- confirmed BROKEN for real (a live probe reproduced
+    // `ledger.tree_access_denied` on the parent's own creator immediately after a successful
+    // merge) before this fix. A comment on an earlier version of this file's own test claimed
+    // this "matches" the real task-branch tool track's (A10) own merge flow -- independently
+    // re-checked against `docs/planning/proofs/task_branch_tool/task_branch_sandbox.hpp` and
+    // found FALSE: A10 uses exactly ONE identity throughout (`spawn_child_branch(owner_,...)`,
+    // `merge_into(*main_, owner_)`), never a real `derive_child()`-distinct sub-identity, so A10
+    // never actually exercises (or is protected from) this gap at all -- it sidesteps the
+    // question entirely rather than answering it. FIXED here, not merely disclosed: the merged
+    // tree's ACL also grants `parent_state.created_by_id` (the parent branch's own owner) direct
+    // root access, alongside `requested_by` (the actual merger) -- neither widens authority to a
+    // NEW principal that didn't already have a legitimate relationship to this branch; it
+    // preserves an already-legitimate owner's own continued access to their own resource, the
+    // same category of grant `branch_from()` itself already makes to a new child's creator.
+    [[nodiscard]] agentengine::result<void> grant_parent_owner_access_locked(
+            agentengine::Digest const& merged_tree_digest,
+            std::vector<TreeEntry> const& merged_entries_for_owner_grant, BranchState const& parent_state,
+            agentengine::IdentityHandle requested_by, BranchHandle<Store>& child) {
+        if (parent_state.created_by_id != requested_by.id()) {
+            auto owner_acl_ok = insert_acl_root_bounded(tree_acl_, merged_tree_digest,
+                                                            parent_state.created_by_id,
+                                                            max_acl_roots_per_digest_);
+            if (!owner_acl_ok.has_value()) {
+                orphan_child_locked(child);
+                return std::unexpected(owner_acl_ok.error());
+            }
+            // ADR-112: closes this method's own long-disclosed "structural, not content-wise" scope
+            // limit below -- the grant above is TREE-DIGEST-LEVEL only (`tree_acl_[merged_tree_digest]`),
+            // so `parent_state`'s own owner could list the merged tree's structure
+            // (`get_tree_safe()`/`head_tree_digest()`) but not fetch the actual bytes of a blob (or
+            // read a nested subtree) the child alone contributed (`get_blob_safe()`/`get_tree_safe()`
+            // on it still failed `ledger.blob_access_denied`/`ledger.tree_access_denied`). Same
+            // reasoning as the tree-level grant above: `parent_state.created_by_id` already owns the
+            // branch this merge lands on, so granting them content-level access to what just became
+            // their own branch's new state is not widening authority to a stranger -- it completes
+            // the identical category of grant already made one level up.
+            //
+            // Deliberately BEST-EFFORT, not fail-closed: a per-entry grant hitting
+            // `ledger.acl_root_cap_exceeded` (a digest already at its configured cap of distinct
+            // roots) does NOT reject an otherwise-successful merge -- the tree-level grant above, the
+            // one property this method's own callers actually depend on structurally, has already
+            // succeeded, and unwinding that decision here to fail the whole merge over one capped
+            // blob would trade a narrow, pre-existing content-access residual for a much more
+            // surprising full-merge rejection. A capped entry is left exactly as inaccessible to the
+            // parent owner as it already was before this fix -- no regression, not a new hazard,
+            // just not fully closed for that one digest.
+            for (auto const& entry : merged_entries_for_owner_grant) {
+                auto& entry_acl = entry.is_tree ? tree_acl_ : blob_acl_;
+                (void)insert_acl_root_bounded(entry_acl, entry.digest, parent_state.created_by_id,
+                                                 max_acl_roots_per_digest_);
+            }
+        }
+        // SCOPE LIMIT, since NARROWED (ADR-112): the tree-level grant above only ever covered
+        // `merged_tree_digest` itself; the per-entry loop just above extends the SAME grant to every
+        // blob/subtree the merged tree references, best-effort. What remains open: a digest already
+        // at its ACL root cap (`ledger.acl_root_cap_exceeded`, rare in practice) stays inaccessible
+        // to the parent owner unless an already-authorized principal calls `mark_digest_shared()`
+        // instead; and this grant only ever covers digests reachable from THIS merge's own resulting
+        // tree, never digests the child wrote but which did not survive into the final merged result
+        // (an intentional, not accidental, boundary -- content that isn't part of the branch's new
+        // state was never meant to become reachable through it).
+        return {};
     }
 
     // Durable branches_/ACL persistence, atop whatever durability `Store` itself already provides for
