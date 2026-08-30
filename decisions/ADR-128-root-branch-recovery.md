@@ -10,7 +10,10 @@
   identical for every owner). Empirically confirmed with a real probe, fixed by checking `BranchState::
   created_by_id` directly, re-verified with a full rebuild + full `ctest` + revert-to-confirm-fail
   cycle. §2's own "cross-owner name/ACL mismatch is impossible by construction" claim is corrected by
-  this finding — see §7.
+  this finding — see §7. **Linux-verified, ADR-129** (2026-08-30, same day): a complete, unconditional
+  pass on real GCC 14.2.0 -- both `bind_root_branch()` itself and the red-team's own `is_branch_owner()`
+  cross-owner fix hold, neither has any Docker dependency, `test_root_branch_recovery` and `test_ledger`
+  both confirmed passing directly.
 - **Date:** 2026-08-30.
 - **Scope:** `include/agentengine/sandbox/mandatory_sandbox_provider.hpp` (one new public method,
   `bind_root_branch()`, plus a comment correction on `bind_sandbox()`), `tests/test_root_branch_recovery.cpp`
@@ -152,8 +155,9 @@ requiring a table entry (`bind_root_branch()` is a method, not an exported type)
 - **No independent red-team pass yet.** This is new logic in `mandatory_sandbox_provider.hpp`, the same
   file ADR-102/114/117/119/126 have each already hardened through a same-day adversarial round -- expected
   next step, not optional polish.
-- **No Linux verification yet.** Same established next-step pattern as every other ADR in this design
-  line (ADR-118/120/121/125/127).
+- ~~No Linux verification yet.~~ **Closed by ADR-129** -- a complete, unconditional pass (both
+  `bind_root_branch()` and the red-team's own `is_branch_owner()` fix have no Docker dependency in the
+  tests that exercise them).
 - **The fuller ADR-099 §1 item 2 claim remains open** -- an entirely never-bound session (before ANY
   `bind_sandbox()`/`bind_root_branch()` call, in any process) still owns no branch at all. This ADR closes
   the crash-recovery-shaped half of the disclosed gap, not the session-lifecycle-shaped half; see
