@@ -1,7 +1,9 @@
 # ADR-116 — `ComposedContextProvider`'s move-assignment cross-session bypass, closed for real
 
-- **Status:** Proposed — implemented, verified (Windows/MSVC), full rebuild + `ctest` clean; NOT yet
-  independently red-teamed by a fresh agent, and not yet re-verified on Linux.
+- **Status:** Proposed — implemented, verified (Windows/MSVC), full rebuild + `ctest` clean.
+  Independent red-team round completed same day (§7): found and fixed two real MUST-FIX issues (a
+  two/three-hop bypass through an untagged intermediate variable, and a genuine ABA hole from using a
+  raw session address as the identity tag). NOT yet re-verified on Linux.
 - **Date:** 2026-08-30.
 - **Scope:** `include/agentengine/core/composed_context_provider.hpp` (new `owner_` member, new private
   `bind_owner()`, `operator=(ComposedContextProvider&&)` body, one new `#include`), `include/agentengine/
@@ -55,6 +57,10 @@ previously-fixed "`engaged_` not reset" bug) with no legitimate substitute, sinc
 CONSTRUCTION isn't a meaningful operation and B21a's whole point is testing `operator=`'s own guard.
 
 ## 3. The fix: an owning-session identity tag
+
+*(§7 below revises this section's own shape same-day — `owner_`'s type, and what the move
+constructor/`operator=` do with it, changed; this section is kept as originally written for the
+historical record of what shipped first.)*
 
 `ComposedContextProvider` gains one new private member, `void const* owner_ = nullptr;` — an opaque,
 non-owning tag, never dereferenced, purely a comparison key. `AgentSession::history_provider()`'s
@@ -141,10 +147,9 @@ pop` and re-verified all checks pass again before landing.
 
 ## 5. What was NOT done
 
-- **No independent red-team pass yet.** This design line's own repeated finding — every fresh,
-  independent pass has found something real (ADR-108, ADR-109, ADR-111, ADR-114's own same-day
-  follow-on) — applies here too; this should not be assumed clean merely because the mechanism is
-  small and self-contained.
+- ~~No independent red-team pass yet.~~ **Done, same day — see §7.** This design line's own repeated
+  finding — every fresh, independent pass has found something real (ADR-108, ADR-109, ADR-111,
+  ADR-114's own same-day follow-on) — held true here too: two real MUST-FIX issues found and fixed.
 - **No Linux verification.** Same residual every recent ADR in this line discloses; ADR-115's own
   Linux pass predates this change.
 - **The accessor-shape alternative (§2) was reasoned through and rejected, not tried and abandoned** —
@@ -160,7 +165,7 @@ pop` and re-verified all checks pass again before landing.
 
 ## 6. Residuals
 
-- Awaiting an independent red-team round and Linux re-verification, per §5.
+- Awaiting Linux re-verification, per §5.
 - `composed_context_provider.hpp` now `#include`s `agentengine/rt/agent_session.hpp` — a real, if
   small, compile-time cost disclosed at the `#include` site itself: this is a widely-included header
   (ADR-102 §51), so `agent_session.hpp` changes now trigger a rebuild of everything that composes
@@ -173,3 +178,80 @@ pop` and re-verified all checks pass again before landing.
   in practice.
 - Every residual ADR-102/§51 already named beyond this one is unchanged and out of this ADR's own
   scope.
+- §7's own residuals: `AgentSession::session_identity_` is a `uint64_t` counter that never wraps in
+  any realistic process lifetime (2^64 sessions is not a real exhaustion path) but is not literally
+  unbounded; a hypothetical future `AgentSession` pooling/reuse pattern (`clear_in_process_state()`'s
+  own comment names a prospective "`Stateless<N>`" pattern that does not exist anywhere in the
+  codebase today) would reuse one `session_identity_` value across multiple logical sessions occupying
+  the same pooled object over time — not a bug against anything that exists now, named for whoever
+  builds that pattern later, not fixed speculatively here.
+
+## 7. Independent red-team round (2026-08-30, same day)
+
+A fresh, independent `general-purpose` agent (no access to the design conversation above, briefed only
+with the ADR text and the actual diff) was asked to adversarially review this change and do REAL,
+executed verification, not just read the code — matching this design line's own established
+discipline. It built and ran the affected tests directly (MSVC, via the real `build/` tree), wrote and
+ran real repros for every hypothesis rather than reasoning about them in prose, and — for each finding
+below — fixed it, then sanity-checked the fix by temporarily reverting it and confirming a new
+permanent regression test genuinely failed against the pre-fix code before restoring.
+
+**MUST-FIX #1 — a two/three-hop bypass through an untagged intermediate variable.** §3's own guard
+(`owner_ != nullptr && other.owner_ != nullptr && owner_ != other.owner_`) is trivially defeated by
+routing the move through any variable the accessor never touched: `auto smuggler =
+std::move(session1.history_provider());` produced an UNTAGGED `smuggler` (the original move
+constructor deliberately left `owner_` at its default, reasoning "not yet embedded in any session's
+member slot") that still held session1's live content — one side being untagged was enough to skip the
+refusal regardless of the other side's own tag. `session2.history_provider() = std::move(smuggler);`
+then leaked session1's content into session2 in two ordinary-looking lines, with zero further
+trickery. Empirically confirmed: a new permanent test (`tests/test_session_builder.cpp`'s B23) failed
+against the pre-fix code. A second variant (B24) proved a THIRD hop — through a bare `relay` variable
+populated via `operator=` rather than move-construction — independently required `operator=` itself
+(not just the move constructor) to propagate an untagged destination's tag, or the bypass reopens one
+hop later. **Fixed**: `owner_` is now treated as a PROVENANCE tag that follows the content, not a
+slot-identity tag only the owning session ever sets — the move constructor propagates `other.owner_`
+(instead of defaulting away), and `operator=` propagates `other.owner_` onto `this` whenever `this`
+was itself untagged (an already-tagged `this` — a real session's own member slot — never has its tag
+overwritten; that identity is sticky for the object's whole lifetime).
+
+**MUST-FIX #2 — a real ABA hole from using a raw address as the identity tag.** `owner_` was
+originally `AgentSession`'s own raw `this` (a `void const*`), with no generation/epoch concept.
+Empirically confirmed, not theoretical: heap-allocate session1 via the real
+`ComposedQuickstartSessionBuilder` (`make_unique`), move-construct its provider out into a `smuggler`
+(tagging it with session1's address), destroy session1, then heap-allocate a second, completely
+unrelated session3 — the MSVC CRT allocator **reliably** handed back the exact same freed block (every
+run, not a rare flake), so session3's own address collided with `smuggler`'s stale tag and `operator=`
+wrongly treated them as the same session, leaking session1's content into session3. This is a live
+I1/I4 violation reachable through ordinary session churn (build → destroy → build), not adversarial
+code. **Fixed**: added `agent_session_detail::g_next_session_identity`, a monotonic,
+process-wide, `inline std::atomic<std::uint64_t>` counter (starts at 1; `inline` so every
+`AgentSession<...>` specialization shares one counter rather than each starting its own from 1 and
+colliding with each other), and a new `AgentSession::session_identity_ const` member assigned once, at
+construction, from it. `owner_`'s type changed from `void const*` to `std::uint64_t` (`0` = untagged)
+throughout `composed_context_provider.hpp`. Verified by reverting just the counter (temporarily
+deriving `session_identity_` from `this` again) — the new permanent regression test B25 failed exactly
+as expected (with the address-reuse precondition itself confirmed to hold), then restored.
+
+**Checked and found genuinely clean**: the `bind_owner()` friend restriction (a real negative-compile
+probe confirmed private access is actually enforced); the `if constexpr` gate's true-no-op behavior
+for the default, non-composed `HistoryProviderT`; B21a/B21b/B21c/B21d all still pass unchanged after
+both fixes; no other real (non-test) caller of `.history_provider()` performs cross-session
+assignment (`tools/cli_chat.cpp` and `session_builder.hpp`'s own `.engage()` call are the only
+production call sites, neither touches `operator=`); `AgentSession` is non-movable/non-copyable as a
+whole (its `AsyncMutex` member suppresses both implicitly), so an object's OWN address is genuinely
+stable for its C++ lifetime — the real bug was address REUSE after destruction, not intra-lifetime
+movement.
+
+**Inaccurate claim found and corrected**: §3's original text justified address stability via
+"`AgentSession` is heap-allocated via `make_unique`... so the address is valid for the session's whole
+lifetime" — true as a conclusion but not because of a universal `make_unique` convention (plain stack-
+local `AgentSession<...> session;` is pervasive throughout the real test suite); the actual reason is
+non-movability from the `AsyncMutex` member, which was never the exploitable gap in the first place
+(the exploitable gap was post-destruction address reuse, which MUST-FIX #2 closes regardless of stack
+vs. heap placement). Comments updated accordingly.
+
+Full re-verification after both fixes (independently re-run by the coordinating session, not just
+trusted from the red-team's own report): full project rebuild, zero new errors; full `ctest` 251/252
+(the same single pre-existing, unrelated matplotlib/pandas gap); `naming_lint.py` clean;
+`test_session_builder` standalone run confirms B20/B23/B24/B25 all pass alongside every pre-existing
+B-series check.

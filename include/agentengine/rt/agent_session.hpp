@@ -213,6 +213,7 @@
 // this migration).
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -565,6 +566,24 @@ namespace agent_session_detail {
 [[nodiscard]] inline agentengine::rt::task<AsyncMutex::Guard> acquire_session_mutex(AsyncMutex& m) {
     co_return co_await m.lock();
 }
+
+// ADR-116 follow-on (2026-08-30, independent red-team, same day): a monotonically-increasing,
+// process-wide, NEVER-reused session-identity counter. `ComposedContextProvider`'s own `owner_` tag
+// used to be a raw `this` (a `void const*`) -- a real, empirically-confirmed ABA hole, not a
+// theoretical one: heap-allocate a session, extract its `history_provider()` via move-construction
+// (tagged with that session's address), destroy the session, heap-allocate a SECOND, completely
+// unrelated session, and the CRT allocator handing back the exact same freed block (reliably
+// reproduced against this codebase's own `ComposedQuickstartSessionBuilder`, which heap-allocates
+// `AgentSession` via `make_unique`) makes the new session's own address collide with the stale
+// extracted instance's tag -- `operator=`'s guard sees two "matching" non-null tags and wrongly allows
+// the merge, leaking the FIRST session's content into the SECOND. A plain, ever-incrementing counter
+// never repeats across the life of the process (2^64 sessions is not a real exhaustion path), so
+// tagging with THIS instead of `this` closes the hole structurally rather than relying on allocator
+// behavior never colliding. `inline` (C++17) so every translation unit -- regardless of which
+// `AgentSession<...>` specialization it instantiates -- shares the exact same counter; a per-
+// specialization static would let two different `ChatClientT`/`StateT`/`HistoryProviderT`
+// combinations each start counting from 1 and collide with each other instead.
+inline std::atomic<std::uint64_t> g_next_session_identity{1};
 }  // namespace agent_session_detail
 
 template <class ChatClientT, class StateT = NoSessionState,
@@ -679,9 +698,16 @@ public:
     // `HistoryProviderT` (e.g. the default `HistoryProvider<Window<0>>`), which never declares
     // `bind_owner()` at all -- the closing hazard this exists to prevent (cross-session aliasing of
     // LIVE, capability-bearing provider state) doesn't apply to a plain, copyable history buffer.
+    //
+    // ADR-116 follow-on: stamps `session_identity_` (a permanent, never-reused counter value), NOT
+    // this session's raw `this` address -- an independent, same-day red-team pass empirically
+    // confirmed the raw-address version had a real ABA hole (this object's own comment on
+    // `session_identity_` has the full repro: destroy a session, heap-allocate an unrelated one that
+    // happens to land at the same freed address, and a stale tagged `ComposedContextProvider` from the
+    // FIRST session wrongly matches the SECOND).
     [[nodiscard]] HistoryProviderT& history_provider() noexcept {
-        if constexpr (requires { history_provider_.bind_owner(static_cast<void const*>(this)); }) {
-            history_provider_.bind_owner(static_cast<void const*>(this));
+        if constexpr (requires { history_provider_.bind_owner(session_identity_); }) {
+            history_provider_.bind_owner(session_identity_);
         }
         return history_provider_;
     }
@@ -2627,6 +2653,14 @@ private:
     // deleter) construction never deletes the pointee -- ownership of the real CapabilitySet stays
     // with whoever calls set_capabilities(), unchanged from before this type change.
     std::shared_ptr<CapabilitySet const>                capabilities_;
+    // ADR-116 follow-on: this object's own permanent, process-wide-unique identity -- see
+    // `agent_session_detail::g_next_session_identity`'s own comment for why this exists (a real,
+    // empirically-confirmed ABA hole from using this session's raw address as `ComposedContextProvider
+    // ::owner_`'s tag instead). Assigned ONCE, at construction, from a monotonic counter that never
+    // repeats -- unlike this object's own address, which the heap allocator can and does hand to a
+    // LATER, unrelated `AgentSession` once this one is destroyed.
+    std::uint64_t const                                 session_identity_ =
+        agent_session_detail::g_next_session_identity.fetch_add(1, std::memory_order_relaxed);
     HistoryProviderT                                    history_provider_;
     EffectContext                                       effect_context_;
     // ADR-061 §20.2: session-level, set once at wiring time by whichever Tier-3 listener fronts this

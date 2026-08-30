@@ -26,6 +26,7 @@
 #include <array>
 #include <concepts>
 #include <cstddef>
+#include <cstdint>
 #include <expected>
 #include <string_view>
 #include <tuple>
@@ -122,23 +123,54 @@ public:
     // `HistoryProviderT` this hazard never applied to) or an owning-session-identity check inside
     // `operator=` itself -- ADR-116 implements the second, narrower one: `owner_` (below) is an
     // opaque, non-owning identity tag that `AgentSession::history_provider()` stamps with its own
-    // `this` on every call (see `bind_owner()`'s own comment). `operator=` refuses -- as a silent,
+    // identity on every call (see `bind_owner()`'s own comment). `operator=` refuses -- as a silent,
     // fully-disclosed no-op, not a crash, matching this codebase's own established best-effort-
     // disclosed precedent (ADR-112 §2's per-entry ACL-grant cap) -- only when BOTH sides are tagged
-    // with two DIFFERENT sessions' own addresses. A bare, standalone instance (`owner_ == nullptr` on
+    // with two DIFFERENT sessions' own identities. A bare, standalone instance (`owner_ == 0` on
     // both sides, e.g. every `tests/test_composed_context_provider.cpp` instance and every move-
     // CONSTRUCTION-based check in `tests/test_session_builder.cpp`) and a session assigning to itself
-    // (same address, or caught by the identity check just above) are both completely unaffected --
+    // (same identity, or caught by the identity check just above) are both completely unaffected --
     // this is why `history_provider().engage(...)`, `ComposedQuickstartSessionBuilder::build()`, and
     // every other real caller needed zero changes for this fix.
+    //
+    // ADR-116 FOLLOW-ON #2 (2026-08-30, independent red-team, same day): `owner_` was originally a raw
+    // `void const*` (the owning `AgentSession`'s own `this`). Empirically confirmed real ABA hole: heap-
+    // allocate a session via `ComposedQuickstartSessionBuilder` (real `make_unique`), move-construct its
+    // `history_provider()` out into a `smuggler` (tagging it with that address), destroy the session,
+    // then heap-allocate a SECOND, unrelated session -- the CRT allocator handing back the exact same
+    // freed block (reliably reproduced, not a rare coincidence) made the second session's own address
+    // collide with `smuggler`'s stale tag, and `operator=` wrongly allowed the merge, leaking the FIRST
+    // session's content into the SECOND. Closed by retagging with `AgentSession::session_identity_` (a
+    // monotonic, process-wide, never-reused counter value -- `agent_session.hpp`'s own comment on that
+    // member and `agent_session_detail::g_next_session_identity`) instead of `this`. `owner_`'s TYPE
+    // changed accordingly, from `void const*` to `std::uint64_t` (`0` now means "untagged", matching
+    // `nullptr`'s old role -- real identities start at `1`).
     //
     // Declared explicitly (not `=default`): a defaulted move would trivially copy the plain `bool
     // engaged_`, leaving it `true` on the moved-from side even though its `contributors_` is now
     // empty -- desyncing the class's own "`engaged_ == true` iff `contributors_` is populated"
     // invariant (this exact bug, live-reproduced, is why the type being consolidated here fixed it
     // this way originally -- see decisions/ADR-074-composed-context-provider-consolidation.md).
+    // ADR-116 FOLLOW-ON (2026-08-30, independent red-team, same day): the ORIGINAL ADR-116 shape left
+    // `owner_` unset (`nullptr`) on a freshly move-CONSTRUCTED instance, reasoning that "a freshly
+    // move-constructed instance is not yet embedded in any session's member slot". That reasoning
+    // enabled a real, empirically-confirmed two-hop bypass of the whole check: `auto smuggler =
+    // std::move(session1.history_provider());` produced an untagged `smuggler` that still held
+    // session1's LIVE content, and `session2.history_provider() = std::move(smuggler);` then passed
+    // `operator=`'s guard cleanly (`other.owner_ == nullptr` on the smuggler side is enough to skip the
+    // refusal, regardless of `this`'s own tag) -- session2 ends up with session1's content, silently,
+    // with ZERO source changes needed beyond the two ordinary-looking lines above. Confirmed via a real
+    // rebuild + run (`test_session_builder`'s own scratch probe FAILED against the original ADR-116
+    // code before this fix, then passed after it). Closed by treating `owner_` as a PROVENANCE tag that
+    // follows the CONTENT, not a slot-identity tag that only the owning `AgentSession` ever sets: the
+    // move constructor now propagates `other.owner_` instead of defaulting to `nullptr`, and
+    // `operator=` propagates `other.owner_` onto `this` whenever `this` was itself untagged (a
+    // standalone, non-session-embedded destination) so a chain of moves through any number of
+    // untagged intermediates still carries the original tag forward. A `this` that IS already tagged
+    // (a real `AgentSession` member slot) never has its own tag overwritten by this -- that identity is
+    // sticky for the object's whole lifetime, exactly as `bind_owner()`'s own comment already required.
     ComposedContextProvider(ComposedContextProvider&& other) noexcept
-        : contributors_(std::move(other.contributors_)), engaged_(other.engaged_) {
+        : contributors_(std::move(other.contributors_)), engaged_(other.engaged_), owner_(other.owner_) {
         other.engaged_ = false;
         other.contributors_.clear();
     }
@@ -146,16 +178,25 @@ public:
         if (this == &other) return *this;
         // ADR-116: refuse a cross-session transfer -- see this class's own top comment and
         // `bind_owner()`'s comment for the full rationale. Both sides untouched by an
-        // `AgentSession::history_provider()` accessor (`owner_ == nullptr`, ordinary standalone use)
-        // or both tagged with the SAME session are unaffected; only two DIFFERENT, non-null tags
+        // `AgentSession::history_provider()` accessor (`owner_ == 0`, ordinary standalone use)
+        // or both tagged with the SAME session are unaffected; only two DIFFERENT, non-zero tags
         // trigger the refusal.
-        if (owner_ != nullptr && other.owner_ != nullptr && owner_ != other.owner_) {
+        if (owner_ != 0 && other.owner_ != 0 && owner_ != other.owner_) {
             return *this;
         }
         contributors_ = std::move(other.contributors_);
         engaged_      = other.engaged_;
         other.engaged_ = false;
         other.contributors_.clear();
+        // Same-day follow-on (see move constructor's own comment above): if `this` was itself an
+        // untagged, non-session-embedded instance, it now adopts `other`'s own tag (which may itself be
+        // `0`, a no-op) so the provenance this content carries survives being funneled through
+        // this intermediate too. A `this` that was ALREADY tagged (a real session's member slot) keeps
+        // its own tag unconditionally -- that identity never changes, regardless of what content flows
+        // into it.
+        if (owner_ == 0) {
+            owner_ = other.owner_;
+        }
         return *this;
     }
     ComposedContextProvider(ComposedContextProvider const&) = delete;
@@ -235,13 +276,17 @@ private:
     }
 
     // ADR-116: called ONLY from `AgentSession::history_provider()` (friended below), once per
-    // accessor call, with that session's own `this` -- idempotent (a session's address is stable for
-    // its whole lifetime, per `session_builder.hpp`'s own always-heap-allocated-via-`make_unique`
-    // construction), so calling it repeatedly on the same session's provider is a no-op in effect.
-    // Deliberately NOT public: this is `AgentSession` stamping identity on its OWN member, not a knob
-    // for an arbitrary caller -- a caller able to invoke this directly could simply retag one side to
-    // spoof a match and defeat the very check in `operator=` above that reads `owner_`.
-    void bind_owner(void const* owner) noexcept { owner_ = owner; }
+    // accessor call, with that session's own `session_identity_` -- idempotent (that value is assigned
+    // once, at construction, and never changes for the object's whole lifetime), so calling it
+    // repeatedly on the same session's provider is a no-op in effect. Deliberately NOT public: this is
+    // `AgentSession` stamping identity on its OWN member, not a knob for an arbitrary caller -- a
+    // caller able to invoke this directly could simply retag one side to spoof a match and defeat the
+    // very check in `operator=` above that reads `owner_`.
+    //
+    // Takes a `std::uint64_t`, NOT `AgentSession`'s raw `this` (ADR-116 FOLLOW-ON #2's own comment on
+    // `owner_` below has the full, empirically-confirmed ABA rationale for why a raw address was
+    // unsafe here).
+    void bind_owner(std::uint64_t owner) noexcept { owner_ = owner; }
 
     // Must repeat `AgentSession`'s own requires-clause verbatim (agent_session.hpp) -- MSVC treats a
     // friend template declaration as a real redeclaration of the entity for constraint-matching
@@ -254,16 +299,26 @@ private:
 
     std::vector<ContextProviderDescriptor> contributors_;
     bool engaged_ = false;
-    // Opaque, non-owning identity tag -- see `bind_owner()`'s own comment and `operator=`'s use of it
-    // above. `nullptr` for a bare, standalone instance never reached through
-    // `AgentSession::history_provider()` (every instance this class's own test file constructs
-    // directly). Deliberately NOT touched by the move constructor below (a freshly move-constructed
-    // instance is, by construction, not yet embedded in any session's member slot -- it gets tagged
-    // the first time ITS OWN eventual owner's `history_provider()` is called, same as any other fresh
-    // instance) and NOT reset by `operator=`'s own moved-from logic (`owner_` describes which
-    // session's member slot `other` itself IS, not what content it currently holds -- consuming its
-    // content via a legitimate same-session move does not change which session `other` lives in).
-    void const* owner_ = nullptr;
+    // Opaque, non-owning identity/provenance tag -- see `bind_owner()`'s own comment and the move
+    // constructor/`operator=`'s own comments above for the full, same-day-revised rationale. `0` for a
+    // bare, standalone instance never reached through `AgentSession::history_provider()` and never
+    // move-constructed/move-assigned from anything that was (real identities from
+    // `agent_session_detail::g_next_session_identity` start at `1`). PROPAGATED (not reset) by the move
+    // constructor above -- the original ADR-116 shape left this unset on every freshly move-constructed
+    // instance, which a same-day independent red-team pass found let a session's live, tagged content
+    // pass through an untagged intermediate variable and defeat `operator=`'s whole check; propagating
+    // the tag closes that. NOT reset by `operator=`'s own moved-from logic (`owner_` describes which
+    // session's member slot `other` itself IS when `other` is already tagged, or which content's
+    // provenance it carries when it isn't -- consuming its content via a legitimate same-session move
+    // does not change which session `other` lives in).
+    //
+    // TYPE, ADR-116 FOLLOW-ON #2 (2026-08-30): `std::uint64_t`, NOT the original `void const*` (the
+    // owning `AgentSession`'s raw `this`) -- a raw address has a real, empirically-confirmed ABA hole
+    // (destroy a session, heap-allocate an unrelated one that happens to land at the same freed
+    // address, and this tag wrongly matches). `AgentSession::session_identity_` is a monotonic,
+    // process-wide, NEVER-reused counter value instead, so two genuinely different sessions can never
+    // carry equal non-zero tags.
+    std::uint64_t owner_ = 0;
 };
 
 }  // namespace agentengine
