@@ -1,0 +1,106 @@
+# ADR-138 — POSIX `open_within_mount_root` gets the same creation-escape cleanup its Windows sibling already has
+
+- **Status:** Proposed — implemented (Linux-only file, `if(NOT WIN32)` gated, so this pass could not
+  compile or execute it on this Windows session). **Independent red-team round (§7) found and fixed
+  one real, deterministic logic bug in the first draft.** Full static verification done by hand
+  (every branch traced); real compilation/execution verification deferred to the Linux-verify pass
+  this ADR names as still outstanding.
+- **Date:** 2026-08-30/31.
+- **Scope:** `src/core/worktree_mount_fs_posix.cpp` only (`open_within_mount_root()`).
+- **Related specs:** `decisions/ADR-014-worktree-mount-fs-toctou.md` and its own addendum (the
+  Windows-side fix this mirrors, `src/core/worktree_mount_fs.cpp`), `decisions/ADR-103-105-*` (this
+  file's own Linux-parity lineage), `decisions/ADR-104-real-io-filesystem-linux-parity.md`.
+
+## 1. The question
+
+A final-review pass found that the same PR's Windows-side fix to `worktree_mount_fs.cpp` (unwinding a
+just-created object through its own handle when a creating `CreateFileW` disposition plants something
+outside `mount_root` before the containment check runs) was never ported to the POSIX sibling. POSIX
+`open()` with `O_CREAT` (no `O_NOFOLLOW`) follows a symlink at the final path component and, if
+dangling, creates a REAL file at the symlink's target — outside `mount_root` — before the post-open
+containment check (`resolved_path_of_fd` + `is_within_root`) catches it and returns
+`worktree.mount_path_escapes_root`; the old code never unwound the just-created file. Reachable
+directly: `mediated_filesystem_adapter_posix.cpp:289-290`'s `write_file()` opens with `O_CREAT`
+(without `O_EXCL`), and a dangling symlink pointing outside the mount can pre-exist in a checked-out
+worktree without any shell access (git tracks symlinks).
+
+## 2. Findings
+
+Unlike Windows' `CreateFileW`, POSIX `open()` has no single-call way to report "did this call create a
+new object." `O_EXCL` is the idiomatic way to get that signal atomically, but only for a call that
+itself uses it — a caller here wants ordinary "create if missing, open if exists" semantics
+(`O_CREAT` without `O_EXCL`), which needs a genuine two-step emulation. See §7 for the real correctness
+gap this introduced in the first draft, and its fix.
+
+## 3. What was built
+
+When `open_flags` requests `O_CREAT` without the caller's own `O_EXCL`: probe first with `O_EXCL`
+added. Success means this call created a new object — unwind-eligible. `EEXIST` means something already
+sat at the final path component (regular file or symlink) — the code then falls back to a plain reopen
+(original `open_flags`, no `O_EXCL`) to actually get the intended handle. A caller that already passed
+`O_EXCL` itself keeps its own real create-or-fail semantics, unaffected. On the post-open containment
+check finding an escape, `::unlink()` unwinds via the resolved, canonical path just verified — never a
+re-parsed relative string — best-effort (a failed unlink still correctly rejects the call to the
+caller).
+
+## 4. Verification
+
+**Not compiled or executed this pass** — `src/core/worktree_mount_fs_posix.cpp` is gated
+`if(NOT WIN32)` in `CMakeLists.txt` and does not build on this Windows session at all. Verified by hand:
+every branch of the `(O_CREAT present/absent) x (O_EXCL present/absent)` matrix traced for correct
+`created_new_object` assignment; compared line-for-line against the Windows sibling's own equivalent
+logic to confirm the two platforms' fixes are actually equivalent in effect, not merely in intent; the
+unrelated `redteam::naive_check_within_root`/`naive_open_checked_path` control functions confirmed
+untouched and unaffected.
+
+Real compilation and execution verification is deferred to a dedicated Linux-verify ADR (not yet run as
+of this writing) — see §6.
+
+## 5. Not done
+
+- No attempt to close the disclosed, narrower TOCTOU residual named in-comment (a concurrent process
+  racing the exact window between the O_EXCL probe and the plain reopen) — a materially different,
+  stronger threat model than the one this mediation layer defends against today (model output as
+  untrusted data, not a live concurrent attacker racing this exact syscall sequence).
+
+## 6. Residuals
+
+- **Not yet compiled or run on any real Linux system** — this whole file only exists in the `NOT WIN32`
+  build. A dedicated Linux-verify pass must: (a) confirm the code compiles clean on GCC, (b) build a
+  concrete repro (a dangling symlink inside a mount, pointing outside root, reached through
+  `write_file()`) and confirm a file is NOT planted outside the mount and IS correctly unlinked when the
+  first draft's bug (see §7) would have missed it, (c) run the existing
+  `test_worktree_mount_fs_escape_corpus` suite and confirm no regression.
+- The disclosed TOCTOU residual named in §5.
+
+## 7. Independent red-team round (same day, this session's own consolidated final-review pass)
+
+**Static-only review (execution not possible on this platform for this file) found one real,
+deterministic bug in the first draft — not merely a theoretical concurrent-race case.**
+
+In the `O_CREAT` without caller-`O_EXCL` branch, the `EEXIST` fallback reopen (`open(joined.c_str(),
+open_flags, create_mode)`, no `O_EXCL`) never set `created_new_object = true`, unconditionally. But
+`EEXIST` from the probe only proves SOME directory entry already sits at the final path component — it
+does not distinguish "a symlink to something that already exists" (the fallback reopen creates
+nothing) from "a DANGLING symlink" (the fallback's own `O_CREAT` is exactly the call that brings a new
+object into existence at the symlink's target, single-threaded, no race required). The first draft
+left `created_new_object` false unconditionally for this branch, meaning the escape was still correctly
+*rejected* to the caller, but the newly-planted file was silently left on disk outside the mount root —
+precisely the residual this whole ADR exists to close, still open for exactly this one deterministic
+path.
+
+**Fixed**: before the fallback reopen, `stat()` (follows symlinks, unlike `lstat()`) the pre-resolution
+`joined` path. Success means the target already exists (the fallback will only reopen it — must NOT be
+treated as "created," or the escape-unwind would delete an arbitrary PRE-EXISTING file reached through
+the symlink, a real, WORSE bug than the one being fixed — confirmed by hand-tracing the alternative
+"always treat fallback as created" fix that was considered and rejected for exactly this reason).
+`ENOENT` means the symlink is dangling and the fallback's own `O_CREAT` is about to create a new object
+at its target — `created_new_object` is set accordingly. A narrow TOCTOU window between this `stat()`
+and the fallback `open()` is a strictly narrower instance of this function's own already-disclosed
+residual (§5/§6), not a new one.
+
+This fix is included in the diff described in §3 above (i.e., §3 already describes the corrected,
+post-red-team logic) — it could not be verified by execution for the reason given throughout this ADR;
+the Linux-verify pass named in §6 must specifically exercise this exact branch (a dangling symlink
+pointing outside the mount, reached with `O_CREAT` and no caller `O_EXCL`) to confirm the fix holds on
+real Linux, not merely on paper.

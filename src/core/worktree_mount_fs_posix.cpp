@@ -7,6 +7,7 @@
 #include "agentengine/core/worktree_mount_fs_posix.hpp"
 
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <cerrno>
@@ -141,8 +142,67 @@ result<SafeFileHandlePosix> open_within_mount_root(std::string const& mount_root
     // identical in-mount junction is followed" property ADR-014's Windows corpus proved) -- what
     // matters is where the FINAL resolved location lands, checked below, not whether a symlink was
     // involved along the way.
-    int target_fd = ::open(joined.c_str(), open_flags, create_mode);
-    if (target_fd < 0) return posix_error_t<SafeFileHandlePosix>("open(target)", errno);
+    //
+    // ADR-138: mirrors the Windows-sibling fix this same PR added to `worktree_mount_fs.cpp` -- a
+    // creating `open_flags` (O_CREAT) can succeed in planting a brand-new object on real disk BEFORE
+    // the containment check below ever runs: `open()` with O_CREAT and no O_NOFOLLOW follows a
+    // symlink at the final path component and, if it's dangling, creates a REAL file at the
+    // symlink's TARGET -- which can be outside `mount_root` even though `joined` itself never
+    // contained a literal `..`. Unlike Windows' `CreateFileW`, POSIX `open()` has no single-call way
+    // to report "did this call create a new object" -- O_EXCL is the idiomatic way to get that
+    // signal atomically: probe with O_EXCL added first when the caller asked for O_CREAT without it
+    // themselves; EEXIST there means nothing new was planted (an object -- regular file or symlink to
+    // reopen ordinarily -- already sat at the resolved location), success means THIS call is the one
+    // that created it and must be able to unwind it below. A caller that already passed O_EXCL itself
+    // gets its own real create-or-fail semantics unchanged (no probe/retry needed: success there IS
+    // "we created it"). Disclosed, narrow residual: the O_CREAT-without-O_EXCL path is two separate
+    // syscalls, not one -- a concurrent process racing the exact window between the failed O_EXCL
+    // probe and the plain reopen could in principle still create-and-escape without being detected as
+    // "new." This is a materially different, stronger threat model (a live concurrent process racing
+    // this exact mount, not the model-output-as-untrusted-data threat this mediation layer defends
+    // against today) and is not attempted to be closed here.
+    bool created_new_object = false;
+    int target_fd = -1;
+    if (open_flags & O_CREAT) {
+        if (open_flags & O_EXCL) {
+            target_fd = ::open(joined.c_str(), open_flags, create_mode);
+            if (target_fd < 0) return posix_error_t<SafeFileHandlePosix>("open(target)", errno);
+            created_new_object = true;
+        } else {
+            target_fd = ::open(joined.c_str(), open_flags | O_EXCL, create_mode);
+            if (target_fd >= 0) {
+                created_new_object = true;
+            } else if (errno == EEXIST) {
+                // ADR-138 follow-on (independent red-team round, same day): EEXIST here only means
+                // SOME directory entry sits at the final path component -- a regular file, or a
+                // symlink, dangling or not. It does NOT by itself say whether the fallback reopen
+                // below will find an EXISTING target (a symlink to something real -- this call
+                // creates nothing, and must NOT be treated as having done so, or the escape-unwind
+                // below would delete an arbitrary PRE-EXISTING file reached through the symlink -- a
+                // real, worse bug this fix's own first draft had: it left `created_new_object` false
+                // for every fallback-reopen outcome, which was safe against over-deletion but wrong
+                // the OTHER direction -- a dangling symlink's newly-created target went un-unwound).
+                // `stat()` (follows symlinks, unlike `lstat()`) on the pre-resolution `joined` path
+                // distinguishes the two cases before the fallback open can create anything: success
+                // means the target already exists (fallback will only reopen it, nothing new);
+                // ENOENT means it's dangling and the fallback's own O_CREAT is about to bring a new
+                // object into existence at the symlink's target. A narrow TOCTOU window between this
+                // `stat()` and the fallback `open()` below is a strictly narrower instance of this
+                // function's own already-disclosed residual (a concurrent process racing this exact
+                // window), not a new one.
+                struct stat pre_stat{};
+                bool const target_already_exists = ::stat(joined.c_str(), &pre_stat) == 0;
+                target_fd = ::open(joined.c_str(), open_flags, create_mode);
+                if (target_fd < 0) return posix_error_t<SafeFileHandlePosix>("open(target)", errno);
+                created_new_object = !target_already_exists;
+            } else {
+                return posix_error_t<SafeFileHandlePosix>("open(target)", errno);
+            }
+        }
+    } else {
+        target_fd = ::open(joined.c_str(), open_flags, create_mode);
+        if (target_fd < 0) return posix_error_t<SafeFileHandlePosix>("open(target)", errno);
+    }
     SafeFileHandlePosix target(target_fd);
 
     // Verify what was ACTUALLY opened -- read from the descriptor, not re-derived from `joined` --
@@ -151,6 +211,14 @@ result<SafeFileHandlePosix> open_within_mount_root(std::string const& mount_root
     auto target_canonical = resolved_path_of_fd(target.get());
     if (!target_canonical) return std::unexpected(target_canonical.error());
     if (!is_within_root(*root_canonical, *target_canonical)) {
+        if (created_new_object) {
+            // Unwind via the resolved, canonical path just verified -- never a re-parsed relative
+            // string -- so this cleanup introduces no check-then-use gap of its own. Best-effort: if
+            // this itself fails (e.g. a permission error on the escaped-to location), the escape is
+            // still correctly REJECTED to the caller either way; only whether the planted artifact
+            // also gets removed is affected, never whether the write is honored.
+            ::unlink(target_canonical->c_str());
+        }
         // native_code = EACCES (2026-08-28, ADR-103): mirrors the Windows sibling's own
         // ERROR_ACCESS_DENIED sentinel for the identical situation -- a mount escape is a policy
         // denial, not a real OS-level lookup failure, so there is no genuine errno behind it; EACCES
