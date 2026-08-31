@@ -135,9 +135,9 @@ int main() {
     }
 
     MagenticWorkflowBuilder<TaskMsg, ReportMsg> builder("research-writer-magentic");
-    builder.manager(TypedExecutor<ReportMsg, TaskMsg>{.id = "moderator"});
-    builder.participant(TypedExecutor<TaskMsg, ReportMsg>{.id = "researcher"});  // the WRAPPED workflow
-    builder.participant(TypedExecutor<TaskMsg, ReportMsg>{.id = "writer"});      // an ordinary function
+    builder.manager(TypedExecutor<ReportMsg, TaskMsg>{.id = "moderator", .capability_ceiling = {}});
+    builder.participant(TypedExecutor<TaskMsg, ReportMsg>{.id = "researcher", .capability_ceiling = {}});  // the WRAPPED workflow
+    builder.participant(TypedExecutor<TaskMsg, ReportMsg>{.id = "writer", .capability_ceiling = {}});      // an ordinary function
     builder.max_rounds(10);
 
     result<MagenticGraph> built = builder.build();
