@@ -181,6 +181,8 @@ Full design: `docs/planning/sub-workflow-nested-request-port-design-draft.md`.
 | 9 | The example (`examples/27_sub_workflow_nested_request_port.cpp`) proves the same properties end-to-end against a realistic "approval pipeline wrapped inside a publishing workflow" scenario, mirroring MAF's `sub_workflow_request_interception.py` in spirit. | CORRECT | Run directly: suspends, resumes, completes with the inner's real resolution routed through the outer's own downstream node |
 | 10 | Every pre-existing test still passes; the wider repo-wide suite is unaffected except for one test that needed updating to match the intentionally-changed `check_workflow_executable()` contract. | CORRECT | Full `ctest -C Debug`: 310/312 passed. `test_workflow_agent_executor_gate`'s own G6 case asserted the OLD "sub_workflow refused unconditionally by the contexts-aware overload" behavior this ADR deliberately changes — updated to assert the new, intentional contract, confirmed passing. The two failures are both pre-existing and unrelated: `test_reference_agent_task_corpus` (the same long-documented matplotlib/pandas environment gap named in ADR-149's own row) and `test_rt_spawn_cost_budget` (confirmed genuinely flaky by direct rerun — 2/3 clean, 1/3 fails on its own T2 concurrency assertion under real 8-thread contention — a pre-existing, unrelated subsystem this pass never touches). |
 | 11 | The full project builds clean, including under `-Werror`/`/WX`. | CORRECT | Full `cmake --build` (Debug, Visual Studio 18 2026, MSVC), exit code 0, zero errors |
+| 12 | **Follow-up** (post-ship, closing §4's own named-but-unenforced caller contract): binding a non-`sub_workflow`-kind `executor_id` is refused — the node stays unbound, not silently mis-targeted. This was already CLAIMED by `bind_sub_workflow()`'s own comment at ship time but never actually checked in code; caught during a later audit, not by any red team. | CORRECT (fixed) | `test_rt_workflow_sub_workflow.cpp` S9 |
+| 13 | **Follow-up**: binding the SAME `inner` instance to a SECOND `sub_workflow` executor_index in one graph is refused — closing the exact gap §4 disclosed ("does not enforce (only documents) that one `inner` instance must be bound to at most one executor_index"), which would otherwise defeat the OQ-19-generalized quarantine's own per-executor_index concurrency guarantee. A genuinely distinct second `inner` instance still binds normally. | CORRECT (fixed) | S10 |
 
 ## 6. Files changed
 
@@ -202,12 +204,22 @@ Full design: `docs/planning/sub-workflow-nested-request-port-design-draft.md`.
   contract (see claim 10).
 - `tests/CMakeLists.txt`, `examples/CMakeLists.txt` — new target registrations.
 
+**Follow-up edits** (closing §4's two named residuals — see claims 12/13): further changes to
+`include/agentengine/rt/workflow_supervisor.hpp`'s `bind_sub_workflow()` (the missing `kind` check,
+and the new duplicate-`inner`-instance refusal) and `tests/test_rt_workflow_sub_workflow.cpp` (S9,
+S10). Of ADR-157's own four named residuals, three (bounded-nesting depth beyond 2 levels, the
+`ThreadPool` resource-budgeting mechanism, and forwarding ADR-152's multiplexed events across
+nesting) remain open, tracked in a dedicated follow-up issue rather than silently left to be
+rediscovered — see that issue for the settled design work already done for the `ThreadPool`
+question (`docs/planning/nested-workflow-threadpool-budget-design-draft.md`, red-teamed).
+
 ## Status
 
 **Proposed — implemented, red-teamed once (design draft before any code existed, revised against
 every MUST-FIX finding), the single most severe claim (§5 #7) adversarially verified — including
 catching and fixing a false-negative in the FIRST verification attempt (a `fan_in`-edge test
 topology that silently prevented the hazard from ever being exercised) before trusting a clean
-result — 22/22 new test checks passing, the new example run directly and passing, full project
-building clean, 310/312 repo-wide `ctest` passing (both failures pre-existing and confirmed
-unrelated), pending project-owner sign-off.**
+result — 26/26 test checks passing (22 at ship time, 4 more from the follow-up closing two of the
+four named residuals), the new example run directly and passing, full project building clean,
+314/316 repo-wide `ctest` passing (both failures pre-existing and confirmed unrelated), pending
+project-owner sign-off.**

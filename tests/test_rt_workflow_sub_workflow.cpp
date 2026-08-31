@@ -25,6 +25,11 @@
 //       reproduces a real crash/hang, confirming the fix is load-bearing.
 // S8 -- bounded 2-level nesting completes in bounded wall-clock time (a real, CLAUDE.md-compliant
 //       bounded test, not a claim about unbounded nesting).
+// S9 -- binding a non-sub_workflow-kind executor_id is silently refused (the node stays unbound,
+//       proven via overall graph validity, not just a documented-but-unchecked claim).
+// S10 -- the same `inner` instance cannot be bound to two different sub_workflow nodes in one
+//        graph -- the second bind is refused (a genuinely distinct second instance still works
+//        fine), closing the caller-contract gap ADR-157 §4 documented but did not enforce.
 //
 // MACHINE SAFETY (CLAUDE.md): every loop below is bounded.
 //
@@ -440,6 +445,94 @@ void s8_bounded_two_level_nesting() {
           "documented, tested nesting shape (2 levels, 3-wide fan-out)");
 }
 
+// ---- S9: binding a non-sub_workflow-kind executor_id is silently refused ------------------------
+
+void s9_bind_wrong_kind_is_refused() {
+    WorkflowSupervisor sup;
+    sup.initialize(outer_graph(), outer_bodies());  // "start" (function), "sub" (sub_workflow), "sink" (function)
+
+    auto inner = std::make_shared<WorkflowSupervisor>();
+    inner->initialize(inner_graph_with_port(), inner_bodies_with_port());
+
+    // Wrong kind -- "start" is function-kind, not sub_workflow-kind.
+    sup.bind_sub_workflow("start", inner);
+    WorkflowResult r1 = drive(sup.run_workflow(RunWorkflow{text_message("go")}));
+    check(r1.status == workflow_status::invalid,
+          "S9: binding to a non-sub_workflow-kind executor_id is a no-op -- 'sub' is still unbound, "
+          "so the graph is still invalid (proves the bind was genuinely refused, not silently "
+          "mis-targeted onto the wrong node)");
+
+    // The REAL sub_workflow node still binds normally afterward.
+    sup.bind_sub_workflow("sub", inner);
+    WorkflowResult r2 = drive(sup.run_workflow(RunWorkflow{text_message("go")}));
+    check(r2.status == workflow_status::suspended,
+          "S9: binding to the CORRECT sub_workflow-kind node still works after the refused attempt");
+}
+
+// ---- S10: the same `inner` instance cannot be bound to two different sub_workflow nodes ----------
+
+[[nodiscard]] Workflow two_sub_workflow_nodes_graph() {
+    Workflow wf;
+    wf.id        = "two-sub-workflow-nodes";
+    wf.executors = {node_desc("root"), node_desc("sub1", executor_kind::sub_workflow),
+                     node_desc("sub2", executor_kind::sub_workflow), node_desc("join")};
+    wf.edges.push_back(Edge{"root", "sub1", edge_kind::fan_out, {}});
+    wf.edges.push_back(Edge{"root", "sub2", edge_kind::fan_out, {}});
+    wf.edges.push_back(Edge{"sub1", "join", edge_kind::fan_in, {}});
+    wf.edges.push_back(Edge{"sub2", "join", edge_kind::fan_in, {}});
+    wf.start = "root";
+    wf.output_selection.push_back("join");
+    wf.bound.max_rounds = 8;
+    return wf;
+}
+
+void s10_duplicate_inner_binding_is_refused() {
+    WorkflowSupervisor sup;
+    std::vector<ExecutorBody> bodies = {
+        [](Message const& in, EffectContext&) -> result<ExecutorOutcome> { return ExecutorOutcome{in}; },
+        {},  // sub1
+        {},  // sub2
+        [](Message const& in, EffectContext&) -> result<ExecutorOutcome> { return ExecutorOutcome{in}; },
+    };
+    sup.initialize(two_sub_workflow_nodes_graph(), bodies);
+
+    auto inner = std::make_shared<WorkflowSupervisor>();
+    Workflow trivial;
+    trivial.id        = "trivial";
+    trivial.executors = {node_desc("leaf")};
+    trivial.start     = "leaf";
+    trivial.output_selection.push_back("leaf");
+    trivial.bound.max_rounds = 4;
+    inner->initialize(trivial,
+                       {[](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
+                           return ExecutorOutcome{in};
+                       }});
+
+    sup.bind_sub_workflow("sub1", inner);
+    // Binding the SAME `inner` to a SECOND executor_index must be refused -- otherwise the
+    // OQ-19-generalized quarantine's own per-executor_index dedup (ADR-157) would not protect
+    // against two DIFFERENT nodes dispatching concurrently into the same inner instance.
+    sup.bind_sub_workflow("sub2", inner);
+
+    WorkflowResult r1 = drive(sup.run_workflow(RunWorkflow{text_message("go")}));
+    check(r1.status == workflow_status::invalid,
+          "S10: 'sub2' stays unbound (the duplicate bind was refused) -- the graph is still "
+          "invalid even though 'sub1' bound successfully");
+
+    // A genuinely DIFFERENT inner instance for sub2 works fine.
+    auto inner2 = std::make_shared<WorkflowSupervisor>();
+    inner2->initialize(trivial,
+                        {[](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
+                            return ExecutorOutcome{in};
+                        }});
+    sup.bind_sub_workflow("sub2", inner2);
+    WorkflowResult r2 = drive(sup.run_workflow(RunWorkflow{text_message("go")}));
+    check(r2.status == workflow_status::completed,
+          "S10: binding a SECOND, genuinely distinct inner instance to 'sub2' succeeds -- the "
+          "refusal is specifically about reusing the SAME instance, not about having two "
+          "sub_workflow nodes at all");
+}
+
 }  // namespace
 
 int main() {
@@ -451,6 +544,8 @@ int main() {
     s6_restored_run_fails_closed_on_stale_pending_interaction();
     s7_quarantine_generalization_proof();
     s8_bounded_two_level_nesting();
+    s9_bind_wrong_kind_is_refused();
+    s10_duplicate_inner_binding_is_refused();
 
     std::fprintf(stderr, g_failures == 0 ? "test_rt_workflow_sub_workflow: ALL PASS\n"
                                           : "test_rt_workflow_sub_workflow: FAIL\n");

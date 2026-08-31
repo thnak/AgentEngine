@@ -697,11 +697,23 @@ public:
     // constructor parameter. Recomputes `valid_` immediately (from the cached `valid_base_` plus a
     // fresh `sub_workflow_kind_nodes_are_bound()` check) so a caller does NOT need to call
     // `initialize()` a second time after binding every sub_workflow-kind node -- `valid_` simply
-    // flips true the moment the last one is bound. A non-`sub_workflow`-kind `executor_id`, or one
-    // not present in `graph()` at all, is silently ignored -- mirroring `set_checkpoint_hook()`'s
-    // own "caller-injected callback, no ambient validation" shape; `sub_workflow_kind_nodes_are_
-    // bound()` is what would catch a real mismatch (an unbound or wrongly-targeted node), not this
-    // call itself.
+    // flips true the moment the last one is bound.
+    //
+    // SILENTLY REFUSED (this node stays unbound; `sub_workflow_kind_nodes_are_bound()` is what
+    // surfaces it as invalid, not this call -- mirroring `set_checkpoint_hook()`'s own
+    // "caller-injected callback, no ambient validation" shape) in THREE cases:
+    //   - `executor_id` names a node not present in `graph()` at all.
+    //   - `executor_id` names a real node that is NOT `sub_workflow`-kind (the comment above this
+    //     ADR-157 pass claimed this was already refused; it was not actually checked -- fixed here).
+    //   - `inner` is ALREADY bound to a DIFFERENT executor_index in THIS SAME graph (ADR-157 §4's
+    //     own documented-but-unenforced caller contract: a single `inner` instance must be bound to
+    //     at MOST one executor_index, because the OQ-19-generalized same-round quarantine dedupes
+    //     by executor_index, not by which `WorkflowSupervisor` a node happens to be bound to -- two
+    //     DIFFERENT sub_workflow nodes both wrapping the SAME `inner` would defeat that quarantine's
+    //     own per-instance concurrency guarantee (docs/planning/sub-workflow-nested-request-port-
+    //     design-draft.md's own `drive()` comment). Checked by pointer identity (`inner.get()`)
+    //     against every value already in `sub_workflows_` -- cheap, and this map is expected to stay
+    //     small (one entry per sub_workflow-kind node in a graph, not a hot-path structure).
     //
     // See docs/planning/sub-workflow-nested-request-port-design-draft.md §3a for the full design.
     // `inner` capability sourcing: entirely decoupled from this node's own `capability_ceiling`,
@@ -711,6 +723,10 @@ public:
     void bind_sub_workflow(std::string const& executor_id, std::shared_ptr<WorkflowSupervisor> inner) {
         std::size_t const idx = index_of(executor_id);
         if (idx >= graph_.executors.size() || graph_.executors[idx].id != executor_id) return;
+        if (graph_.executors[idx].kind != agentengine::workflow::executor_kind::sub_workflow) return;
+        for (auto const& [bound_idx, bound_inner] : sub_workflows_) {
+            if (bound_idx != idx && bound_inner.get() == inner.get()) return;
+        }
         sub_workflows_[idx] = std::move(inner);
         valid_ = valid_base_ && sub_workflow_kind_nodes_are_bound();
     }
