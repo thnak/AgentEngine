@@ -1,10 +1,18 @@
 # Design draft: bounding `ThreadPool` resource usage across nested `WorkflowSupervisor` instances
 # (ADR-157 §4's own named residual)
 
-Status: **red-teamed once (fresh agent, zero prior context); design settled below. Not yet
-implemented** — queued as its own future implementation pass per project-owner sequencing (design
-questions resolved first; #1 of the four ADR-157 residuals — enforcing "one `inner` per
-executor_index" — is the next thing actually built). Written per CLAUDE.md's
+Status: **implemented and proven** — `split_worker_budget()`, the `WorkflowSupervisor(worker_budget)`
+constructor, the automatic `nesting_depth_`/`kMaxNestingDepth` cap, and `live_worker_thread_count()`
+all shipped; both §6 proofs executed (positive: S12 in `tests/test_rt_workflow_sub_workflow.cpp`;
+negative/mutation: a temporary `pool_(0 * worker_budget)` mutation reproduced a real ceiling breach
+— 21 live threads against a declared budget of 7 — confirming S12's assertion is load-bearing, not
+vacuous; the mutation also caught and fixed a real bug in S12 itself: a background sampler thread
+racing a fast, synchronous `drive()` call could legitimately take zero samples before the run
+finished, silently passing regardless of the actual peak — replaced with a deterministic direct
+sample, since `ThreadPool` workers are created once at construction and live for the whole
+`WorkflowSupervisor` instance's lifetime, not per-round). S13 additionally proves the
+`kMaxNestingDepth` boundary is real and reachable, not dead code. Full local regression run pending
+confirmation; ADR write-up (addendum to ADR-157) in progress. Written per CLAUDE.md's
 `design → red-team → prove → judge` discipline.
 
 ## 1. The question

@@ -641,6 +641,23 @@ struct RunStateRecord {
 // ae-naming-lint: allow WorkflowSupervisor — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class WorkflowSupervisor {
 public:
+    // docs/planning/nested-workflow-threadpool-budget-design-draft.md (red-teamed; issue #42 item
+    // 2): `worker_budget` forwards directly to `pool_`'s own existing constructor --
+    // `ThreadPool`'s own `worker_count == 0` sentinel already means "use `default_worker_count()`,"
+    // so `worker_budget`'s own default of `0` is source-compatible with every existing
+    // `WorkflowSupervisor sup;`/`std::make_shared<WorkflowSupervisor>()` call site (zero breakage).
+    // NOT a `bind_sub_workflow()` parameter -- by the time any bind call could happen, `pool_`'s
+    // workers already exist, already running at whatever size this constructor gave them (confirmed
+    // by red-team: no real or plausible call site in this codebase ever constructs-then-binds in
+    // the other order). A caller composing a nested tree calls `split_worker_budget()`
+    // (thread_pool.hpp) once per level and constructs each `inner` with its own share.
+    explicit WorkflowSupervisor(std::size_t worker_budget = 0) : pool_(worker_budget) {}
+
+    // Public read of the private `kMaxNestingDepth` bound -- a plain compile-time constant with no
+    // encapsulation risk; exposed so callers/tests can reason about the declared ceiling without
+    // duplicating the literal (a duplicated literal would silently drift from the real bound).
+    [[nodiscard]] static constexpr std::size_t max_nesting_depth() noexcept { return kMaxNestingDepth; }
+
     // `bodies`/`contexts` are parallel to `graph.executors` by INDEX -- the same convention the
     // original's `refs_` used (see that file's own comment: it was originally forced by the 192-byte
     // wire cell, but index-addressing is kept here anyway since the graph description already
@@ -727,6 +744,14 @@ public:
         for (auto const& [bound_idx, bound_inner] : sub_workflows_) {
             if (bound_idx != idx && bound_inner.get() == inner.get()) return;
         }
+        // docs/planning/nested-workflow-threadpool-budget-design-draft.md (issue #42 item 2):
+        // structural nesting-depth cap -- refuse rather than let a runaway/buggy graph author
+        // build an unbounded chain of bind_sub_workflow() calls. `inner` is not left with a
+        // dangling depth on refusal: it simply never gets marked deeper than whatever it already
+        // was (0 for a freshly-constructed instance), matching every other refusal in this
+        // function leaving the CALLER's own state untouched.
+        if (!inner || nesting_depth_ + 1 > kMaxNestingDepth) return;
+        inner->nesting_depth_ = nesting_depth_ + 1;
         sub_workflows_[idx] = std::move(inner);
         valid_ = valid_base_ && sub_workflow_kind_nodes_are_bound();
     }
@@ -1958,6 +1983,22 @@ private:
     // what makes `resume_workflow()`'s fail-closed behavior against a stale interaction_id work
     // (falls through to "not found," `workflow_status::invalid`, never silent misrouting).
     std::unordered_map<std::string, PendingSubWorkflow> pending_sub_workflows_;
+    // docs/planning/nested-workflow-threadpool-budget-design-draft.md (issue #42 item 2): tracked
+    // automatically through `bind_sub_workflow()`, never caller-set directly -- 0 for a
+    // standalone/root instance; `bind_sub_workflow()` sets an `inner`'s own `nesting_depth_` to
+    // `this->nesting_depth_ + 1` and REFUSES the bind (mirroring every other refusal shape that
+    // function already has -- the node stays unbound, `sub_workflow_kind_nodes_are_bound()` is what
+    // surfaces it, not the bind call itself) if that would exceed `kMaxNestingDepth`. This is a
+    // LOAD-BEARING precondition for `split_worker_budget()`'s own arithmetic to be a real ceiling,
+    // not merely "recommended defense in depth" -- without a depth cap, a subtree's worst-case
+    // thread count is unbounded once fan-out is unbounded, regardless of how carefully any single
+    // level's own budget is computed (red-team finding, same design draft).
+    std::size_t nesting_depth_ = 0;
+    // A generous but real ceiling -- S11 (tests/test_rt_workflow_sub_workflow.cpp) proves 3 levels
+    // genuinely work; this is not tuned to that number, just chosen as a small, structural,
+    // CLAUDE.md-compliant bound rather than left unbounded. A host that legitimately needs deeper
+    // nesting is free to raise this constant, but the DEFAULT must not be "unbounded."
+    static constexpr std::size_t kMaxNestingDepth = 16;
     // Sized 0 (system-determined default) -- a round's own fan-out width varies by graph, so a fixed
     // worker count chosen here would either under-parallelize a wide round or waste threads on a
     // narrow one; ThreadPool's own default already picks a reasonable system-wide figure.

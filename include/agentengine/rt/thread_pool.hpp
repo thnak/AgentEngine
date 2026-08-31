@@ -79,6 +79,7 @@
 // from an unhandled exception; if the belt-and-suspenders catch ever actually fires, that is itself a
 // signal task<void>'s contract changed underneath this file.
 
+#include <atomic>
 #include <condition_variable>
 #include <cstddef>
 #include <deque>
@@ -91,6 +92,7 @@
 #include <utility>
 #include <vector>
 
+#include "agentengine/core/error.hpp"
 #include "agentengine/rt/task.hpp"
 
 namespace agentengine::rt {
@@ -100,6 +102,40 @@ namespace agentengine::rt {
 [[nodiscard]] inline std::size_t default_worker_count() noexcept {
     unsigned const n = std::thread::hardware_concurrency();
     return n == 0 ? 1 : static_cast<std::size_t>(n);
+}
+
+// docs/planning/nested-workflow-threadpool-budget-design-draft.md §4/Q4 (red-teamed): evenly
+// distributes `total` real workers across `child_count` callers (e.g. `WorkflowSupervisor::
+// bind_sub_workflow()` splitting an outer's own worker budget across N bound sub_workflow nodes),
+// remainder to the first few. FAILS CLOSED -- returns a real error, never silently floors a
+// starved child's share to 0 -- if `child_count > total`. This guards a real landmine: `ThreadPool`'s
+// own constructor treats a LITERAL `worker_count == 0` as "use the system default" (see
+// `default_worker_count()` above), not "construct a zero-worker pool" -- so an unguarded, naively-
+// computed `0` share handed to a starved child would silently grant it a full, UNBOUNDED
+// default-sized pool, invisibly defeating the entire ceiling this mechanism exists to enforce. A
+// caller MUST treat that as a real, diagnosable bind-time failure, not something to floor to 1 and
+// continue past -- if `child_count` genuinely exceeds the available budget, the caller's own
+// intended ceiling cannot be honored as declared, and pretending otherwise is worse than refusing.
+// Deliberately NOT recursive/depth-aware across multiple nesting levels -- a caller composing
+// several levels calls this once per level, explicitly (see the design draft's own §5 Q4 reasoning
+// for why auto-splitting across an entire tree is rejected as premature generality).
+[[nodiscard]] inline agentengine::result<std::vector<std::size_t>> split_worker_budget(
+    std::size_t total, std::size_t child_count) {
+    if (child_count == 0) return std::vector<std::size_t>{};
+    if (child_count > total) {
+        return std::unexpected(agentengine::error{
+            agentengine::failure_class::resource,
+            "split_worker_budget: " + std::to_string(child_count) + " children requested but only " +
+                std::to_string(total) +
+                " total worker(s) budgeted -- refusing rather than silently granting a starved "
+                "child an unbounded default-sized pool (ThreadPool's own worker_count==0 sentinel "
+                "means \"use the system default\", not \"zero workers\")",
+            "rt.thread_pool.worker_budget_exhausted"});
+    }
+    std::vector<std::size_t> shares(child_count, total / child_count);
+    std::size_t remainder = total % child_count;
+    for (std::size_t i = 0; i < remainder; ++i) ++shares[i];
+    return shares;
 }
 
 // What submit() hands back: whether the job's task<void> body completed WITHOUT faulting, and, if it
@@ -126,6 +162,34 @@ struct JobOutcome {
 // invalidate every one of those captures; a pool is meant to be constructed once and held by reference
 // or through a stable owner (e.g. a unique_ptr), matching how a fixed thread pool is used everywhere
 // else in C++ (std::jthread itself is the same non-movable-while-running shape, one level down).
+// docs/planning/nested-workflow-threadpool-budget-design-draft.md §6 (issue #42 item 2): a real,
+// permanently-available, process-wide gauge of how many `ThreadPool` worker OS threads currently
+// exist across EVERY live `ThreadPool` instance in this process -- not test-only scaffolding. This
+// is what a caller composing a nested `WorkflowSupervisor` tree (each level owning its own,
+// separately-budgeted pool, per this same design's own §3/§4) can sample to confirm the actual
+// peak thread count a real run produces stays within whatever ceiling its own `worker_budget`
+// choices intended -- the positive proof half of §6's own required-before-shipping bar. A plain
+// `std::atomic<std::size_t>` at namespace (inline variable) scope, incremented the instant a worker
+// thread's own lambda starts running and decremented via RAII the instant it returns (including on
+// an exceptional exit, though `worker_loop()`'s own `run_job()` catch-all should make that path
+// unreachable in practice -- see this file's own FAULT SAFETY paragraph).
+namespace detail {
+[[nodiscard]] inline std::atomic<std::size_t>& live_worker_thread_count_ref() noexcept {
+    static std::atomic<std::size_t> count{0};
+    return count;
+}
+struct LiveWorkerCountGuard {
+    LiveWorkerCountGuard() noexcept { live_worker_thread_count_ref().fetch_add(1, std::memory_order_relaxed); }
+    ~LiveWorkerCountGuard() noexcept { live_worker_thread_count_ref().fetch_sub(1, std::memory_order_relaxed); }
+    LiveWorkerCountGuard(LiveWorkerCountGuard const&) = delete;
+    LiveWorkerCountGuard& operator=(LiveWorkerCountGuard const&) = delete;
+};
+}  // namespace detail
+
+[[nodiscard]] inline std::size_t live_worker_thread_count() noexcept {
+    return detail::live_worker_thread_count_ref().load(std::memory_order_relaxed);
+}
+
 // ae-naming-lint: allow ThreadPool — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class ThreadPool {
 public:
@@ -137,7 +201,10 @@ public:
         std::size_t const n = worker_count == 0 ? default_worker_count() : worker_count;
         workers_.reserve(n);
         for (std::size_t i = 0; i < n; ++i) {
-            workers_.emplace_back([this](std::stop_token stop) { worker_loop(std::move(stop)); });
+            workers_.emplace_back([this](std::stop_token stop) {
+                detail::LiveWorkerCountGuard const guard;
+                worker_loop(std::move(stop));
+            });
         }
     }
 

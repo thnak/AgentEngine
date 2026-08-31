@@ -152,19 +152,29 @@ Full design: `docs/planning/sub-workflow-nested-request-port-design-draft.md`.
 - Does not forward an inner graph's own multiplexed ADR-152 events (agent-kind/moderator streaming)
   to the outer's `enable_event_stream()` consumer — only the structural
   `request_port_opened`/`_resolved` signal composes. Real, disclosed limitation, not solved here.
-- Does not redesign `ThreadPool` sharing/ceilings across nested `WorkflowSupervisor` instances — a
-  host nesting deeply or widely is responsible for bounding that itself; only a specific, bounded
-  2-level/3-wide-fan-out shape is tested and claimed safe.
+  Still open as of the follow-up work below (§6) — tracked as issue #42 item 3, scope already
+  settled (multiplexed bucket only, full-path tagging), not yet designed as a concrete mechanism.
+  This is now the ONLY one of ADR-157's four originally-named residuals still open.
+- ~~Does not redesign `ThreadPool` sharing/ceilings across nested `WorkflowSupervisor` instances~~
+  **RESOLVED — see claims 15/16.** A static per-instance worker budget (`WorkflowSupervisor(
+  worker_budget)`), a fail-closed `split_worker_budget()` helper, and a mandatory, automatic
+  `nesting_depth_`/`kMaxNestingDepth` cap now bound real, live OS thread count across an arbitrarily
+  deep (up to the cap) nested tree — not just the specific bounded 2-level/3-wide shape originally
+  tested.
 - Does not give `sub_workflow`-kind nodes anything beyond `TypedExecutor<In,Out>`'s existing
   compile-time type check.
 - Does not claim `WorkflowResult::partial` discloses a suspended sub_workflow's own nested
   question — this matches EXISTING `request_port` behavior (no `partial` entry until resolved), not
   a new gap.
-- Does not enforce that a single `inner` instance is bound to at most one executor_index across the
-  whole outer graph — a documented caller contract (mirroring `workflow_as_executor_body()`'s own
-  reference-overload lifetime contract), not runtime-checked. Binding the same `inner` to two
-  different sub_workflow nodes would defeat the per-index quarantine's own dedup and is unsupported.
-- Does not attempt or claim safety for 3+ level nesting — untested, not asserted either way.
+- ~~Does not enforce that a single `inner` instance is bound to at most one executor_index~~
+  **RESOLVED — see claim 13.**
+- ~~Does not attempt or claim safety for 3+ level nesting~~ **RESOLVED — see claim 14.**
+- Does not persist `worker_budget`/`nesting_depth_` through checkpoint/resume — a host resuming a
+  checkpointed run must reconstruct `inner` with the SAME budget it originally used, or the
+  effective ceiling silently drifts across a resume cycle. Named, not solved (mirrors the
+  already-disclosed "bindings are not checkpoint-durable" limitation for `sub_workflows_` itself).
+- Does not make `split_worker_budget()` recursive/depth-aware across multiple nesting levels — a
+  caller composing several levels calls it once per level, explicitly.
 
 ## 5. Falsifiable claims and verdicts
 
@@ -183,6 +193,10 @@ Full design: `docs/planning/sub-workflow-nested-request-port-design-draft.md`.
 | 11 | The full project builds clean, including under `-Werror`/`/WX`. | CORRECT | Full `cmake --build` (Debug, Visual Studio 18 2026, MSVC), exit code 0, zero errors |
 | 12 | **Follow-up** (post-ship, closing §4's own named-but-unenforced caller contract): binding a non-`sub_workflow`-kind `executor_id` is refused — the node stays unbound, not silently mis-targeted. This was already CLAIMED by `bind_sub_workflow()`'s own comment at ship time but never actually checked in code; caught during a later audit, not by any red team. | CORRECT (fixed) | `test_rt_workflow_sub_workflow.cpp` S9 |
 | 13 | **Follow-up**: binding the SAME `inner` instance to a SECOND `sub_workflow` executor_index in one graph is refused — closing the exact gap §4 disclosed ("does not enforce (only documents) that one `inner` instance must be bound to at most one executor_index"), which would otherwise defeat the OQ-19-generalized quarantine's own per-executor_index concurrency guarantee. A genuinely distinct second `inner` instance still binds normally. | CORRECT (fixed) | S10 |
+| 14 | **Follow-up** (issue #42 item 1): the mechanism genuinely generalizes to 3-level nesting (outer → a 3-wide fan-out middle level → each branch its own further-nested sub_workflow), not just claimed by extrapolation from the 2-level shape claim 8 proves — completes correctly, in bounded wall-clock time. | CORRECT | S11 |
+| 15 | **Follow-up** (issue #42 item 2): a `WorkflowSupervisor(worker_budget)`-constructed nested tree's real, live OS worker-thread count never exceeds the declared per-level budget sum, measured via a process-wide `live_worker_thread_count()` gauge, both immediately after constructing the whole tree and again after the run completes. | CORRECT | S12 |
+| 16 | **Follow-up**: claim 15's own check is genuinely load-bearing, not vacuous — adversarially verified by mutation. | CORRECT (adversarially verified) | Temporarily changed the constructor to `pool_(0 * worker_budget)` (ignoring the requested budget, forcing every instance to the system default). Rebuilt and reran: live thread count after constructing the same 5-instance tree was 21 against a declared ceiling of 7 — a real, measured breach, not a hypothetical one. The mutation ALSO caught a real bug in claim 15's own first implementation: an earlier version of S12 sampled the peak via a background thread racing a fast, synchronous `drive()` call, which could legitimately take zero samples before the run finished and silently pass regardless of the true peak — the same class of false-negative ADR-157 Pass 2 (§2 finding 6 / this table's claim 7) already found once with a `fan_in`-merged test topology. Fixed by replacing the racy sampler with a deterministic direct sample: `ThreadPool` creates its worker `jthread`s once, in its own constructor, and they live for the whole `WorkflowSupervisor` instance's lifetime (never created/destroyed per round or per dispatch), so a sample taken any time after full construction (while every instance is still in scope) already reflects the true peak. Reverted the mutation; reran — clean, 34/34 checks passing across the whole file. |
+| 17 | **Follow-up**: the mandatory `kMaxNestingDepth` cap (=16) — the load-bearing precondition that makes claim 15's budget arithmetic a genuine ceiling at all, not merely "recommended defense in depth" — actually refuses a bind at its declared boundary, not just claimed. Tested via a genuinely bounded configuration (`worker_budget=1` per level, an 18-level chain), never risking unbounded real resource use even to prove the cap works, per CLAUDE.md's own machine-safety discipline. | CORRECT | S13: binding succeeds through exactly depth 16, refused at depth 17 |
 
 ## 6. Files changed
 
@@ -204,14 +218,24 @@ Full design: `docs/planning/sub-workflow-nested-request-port-design-draft.md`.
   contract (see claim 10).
 - `tests/CMakeLists.txt`, `examples/CMakeLists.txt` — new target registrations.
 
-**Follow-up edits** (closing §4's two named residuals — see claims 12/13): further changes to
-`include/agentengine/rt/workflow_supervisor.hpp`'s `bind_sub_workflow()` (the missing `kind` check,
-and the new duplicate-`inner`-instance refusal) and `tests/test_rt_workflow_sub_workflow.cpp` (S9,
-S10). Of ADR-157's own four named residuals, three (bounded-nesting depth beyond 2 levels, the
-`ThreadPool` resource-budgeting mechanism, and forwarding ADR-152's multiplexed events across
-nesting) remain open, tracked in a dedicated follow-up issue rather than silently left to be
-rediscovered — see that issue for the settled design work already done for the `ThreadPool`
-question (`docs/planning/nested-workflow-threadpool-budget-design-draft.md`, red-teamed).
+**Follow-up edits** (closing three of ADR-157's own four named residuals — see claims 12-17):
+- Bind-contract enforcement (claims 12/13): further changes to `bind_sub_workflow()` (the missing
+  `kind` check, and the new duplicate-`inner`-instance refusal); `test_rt_workflow_sub_workflow.cpp`
+  gained S9, S10.
+- 3-level nesting (claim 14): `test_rt_workflow_sub_workflow.cpp` gained S11.
+- `ThreadPool` resource budgeting (issue #42 item 2; claims 15-17): `include/agentengine/rt/
+  thread_pool.hpp` gained `split_worker_budget()` and `live_worker_thread_count()` (plus the
+  `LiveWorkerCountGuard` instrumentation each worker thread now carries); `workflow_supervisor.hpp`
+  gained the `WorkflowSupervisor(worker_budget)` constructor, `max_nesting_depth()`, `nesting_depth_`,
+  and `kMaxNestingDepth`, with `bind_sub_workflow()`'s depth-ceiling refusal wired in;
+  `test_rt_workflow_sub_workflow.cpp` gained S12, S13; `test_rt_thread_pool.cpp` gained T7
+  (`split_worker_budget()`) and T8 (`live_worker_thread_count()`). Design:
+  `docs/planning/nested-workflow-threadpool-budget-design-draft.md` (red-teamed, now implemented and
+  proven).
+
+Of ADR-157's own four originally-named residuals, only ONE remains open: forwarding ADR-152's
+multiplexed events across nesting (issue #42 item 3 — scope already settled: multiplexed bucket
+only, full-path tagging; not yet designed as a concrete mechanism or red-teamed).
 
 ## Status
 
@@ -219,7 +243,13 @@ question (`docs/planning/nested-workflow-threadpool-budget-design-draft.md`, red
 every MUST-FIX finding), the single most severe claim (§5 #7) adversarially verified — including
 catching and fixing a false-negative in the FIRST verification attempt (a `fan_in`-edge test
 topology that silently prevented the hazard from ever being exercised) before trusting a clean
-result — 26/26 test checks passing (22 at ship time, 4 more from the follow-up closing two of the
-four named residuals), the new example run directly and passing, full project building clean,
-314/316 repo-wide `ctest` passing (both failures pre-existing and confirmed unrelated), pending
-project-owner sign-off.**
+result — and the SAME class of false-negative caught a second time, independently, during the
+`ThreadPool` budget follow-up (§5 #16: a racy background-sampler test bug, caught by mutation before
+trusting a clean result). 34/34 test checks passing in `test_rt_workflow_sub_workflow.cpp` (22 at
+ship time, 12 more from the two follow-up passes closing three of the four originally-named
+residuals — only forwarding ADR-152 events across nesting remains open, issue #42 item 3), plus 4
+new checks in `test_rt_thread_pool.cpp` (T7/T8). The new example and both budget-mechanism proofs
+(positive: claim 15; negative/mutation: claim 16) run directly and pass. Full project building
+clean. 315/316 repo-wide `ctest` passing (the one failure pre-existing and confirmed unrelated —
+the long-documented matplotlib/pandas environment gap; `test_rt_spawn_cost_budget`, previously
+observed flaky, passed clean this run). Pending project-owner sign-off.**

@@ -30,6 +30,14 @@
 // S10 -- the same `inner` instance cannot be bound to two different sub_workflow nodes in one
 //        graph -- the second bind is refused (a genuinely distinct second instance still works
 //        fine), closing the caller-contract gap ADR-157 §4 documented but did not enforce.
+// S11 -- bounded 3-level nesting (issue #42 item 1): the mechanism genuinely generalizes past S8's
+//        own 2-level shape, not just claimed by extrapolation.
+// S12 -- (issue #42 item 2) the worker-budget constructor genuinely bounds real, live OS thread
+//        count across a nested tree -- positive proof via live_worker_thread_count().
+// S13 -- the mandatory nesting-depth cap (kMaxNestingDepth) actually refuses at its declared
+//        boundary, not just claimed -- a genuinely bounded test (small worker_budget=1 per level,
+//        matching CLAUDE.md's own machine-safety discipline: proving a cap works must never itself
+//        risk the resource it caps).
 //
 // MACHINE SAFETY (CLAUDE.md): every loop below is bounded.
 //
@@ -445,6 +453,237 @@ void s8_bounded_two_level_nesting() {
           "documented, tested nesting shape (2 levels, 3-wide fan-out)");
 }
 
+// ---- S11: bounded 3-level nesting (issue #42 item 1 -- ADR-157 §4 only claimed 2 levels) ---------
+
+void s11_bounded_three_level_nesting() {
+    // Level 3 (innermost): a plain 1-node graph.
+    Workflow level3_graph;
+    level3_graph.id        = "level3";
+    level3_graph.executors = {node_desc("leaf")};
+    level3_graph.start     = "leaf";
+    level3_graph.output_selection.push_back("leaf");
+    level3_graph.bound.max_rounds = 4;
+
+    // Level 2: a SINGLE sub_workflow node wrapping level3 -- this is the genuinely new nesting
+    // depth S8 never exercised (S8's own "level2" was a plain leaf, never itself a sub_workflow
+    // wrapper).
+    Workflow level2_graph;
+    level2_graph.id        = "level2";
+    level2_graph.executors = {node_desc("wrap", executor_kind::sub_workflow)};
+    level2_graph.start     = "wrap";
+    level2_graph.output_selection.push_back("wrap");
+    level2_graph.bound.max_rounds = 4;
+
+    // Level 1: the SAME 3-wide fan-out/fan-in shape S8 already proves at this level, each branch
+    // now wrapping its OWN level2 (which itself wraps its OWN level3) -- so this is genuinely 3
+    // real nesting levels deep on every one of the 3 parallel branches, not just 1.
+    Workflow level1_graph;
+    level1_graph.id = "level1";
+    level1_graph.executors = {node_desc("root"), node_desc("s1", executor_kind::sub_workflow),
+                               node_desc("s2", executor_kind::sub_workflow),
+                               node_desc("s3", executor_kind::sub_workflow), node_desc("join")};
+    level1_graph.edges.push_back(Edge{"root", "s1", edge_kind::fan_out, {}});
+    level1_graph.edges.push_back(Edge{"root", "s2", edge_kind::fan_out, {}});
+    level1_graph.edges.push_back(Edge{"root", "s3", edge_kind::fan_out, {}});
+    level1_graph.edges.push_back(Edge{"s1", "join", edge_kind::fan_in, {}});
+    level1_graph.edges.push_back(Edge{"s2", "join", edge_kind::fan_in, {}});
+    level1_graph.edges.push_back(Edge{"s3", "join", edge_kind::fan_in, {}});
+    level1_graph.start = "root";
+    level1_graph.output_selection.push_back("join");
+    level1_graph.bound.max_rounds = 8;
+
+    auto level1 = std::make_shared<WorkflowSupervisor>();
+    level1->initialize(level1_graph,
+                        {[](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
+                            return ExecutorOutcome{in};
+                        },
+                         {}, {}, {},
+                         [](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
+                             return ExecutorOutcome{in};
+                         }});
+    for (char const* id : {"s1", "s2", "s3"}) {
+        auto level2 = std::make_shared<WorkflowSupervisor>();
+        level2->initialize(level2_graph, {{}});  // "wrap" is sub_workflow-kind -- no body
+        auto level3 = std::make_shared<WorkflowSupervisor>();
+        level3->initialize(level3_graph,
+                            {[](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
+                                return ExecutorOutcome{text_message(text_of(in) + ">leaf")};
+                            }});
+        level2->bind_sub_workflow("wrap", level3);
+        level1->bind_sub_workflow(id, level2);
+    }
+
+    WorkflowSupervisor outer;
+    outer.initialize(outer_graph(), outer_bodies());
+    outer.bind_sub_workflow("sub", level1);
+
+    auto const started = std::chrono::steady_clock::now();
+    WorkflowResult r    = drive(outer.run_workflow(RunWorkflow{text_message("go")}));
+    auto const elapsed  = std::chrono::steady_clock::now() - started;
+
+    check(r.status == workflow_status::completed,
+          "S11: bounded 3-level nesting (outer -> level1's 3-wide fan-out -> level2 -> level3) "
+          "completes -- the mechanism genuinely generalizes past the 2-level shape S8 proves, not "
+          "just claimed by extrapolation");
+    check(std::chrono::duration_cast<std::chrono::seconds>(elapsed).count() < 10,
+          "S11: completes in bounded wall-clock time at this deeper, still-bounded nesting shape");
+}
+
+// ---- S12: the worker-budget constructor genuinely bounds real, live thread count -----------------
+
+void s12_worker_budget_bounds_real_thread_count() {
+    std::size_t const baseline = agentengine::rt::live_worker_thread_count();
+
+    // Same 2-level, 3-wide-fan-out shape as S8, but every instance now EXPLICITLY budgeted via the
+    // new constructor instead of taking the system default -- outer gets 2, level1 gets 2, and
+    // each of the 3 level2 instances gets 1 (split_worker_budget(3, 3)).
+    auto level2_shares = agentengine::rt::split_worker_budget(3, 3);
+    check(level2_shares.has_value() && level2_shares->size() == 3,
+          "S12: split_worker_budget(3, 3) succeeds for the 3-wide level2 fan-out");
+
+    Workflow level2_graph;
+    level2_graph.id        = "level2-budgeted";
+    level2_graph.executors = {node_desc("leaf")};
+    level2_graph.start     = "leaf";
+    level2_graph.output_selection.push_back("leaf");
+    level2_graph.bound.max_rounds = 4;
+
+    Workflow level1_graph;
+    level1_graph.id = "level1-budgeted";
+    level1_graph.executors = {node_desc("root"), node_desc("s1", executor_kind::sub_workflow),
+                               node_desc("s2", executor_kind::sub_workflow),
+                               node_desc("s3", executor_kind::sub_workflow), node_desc("join")};
+    level1_graph.edges.push_back(Edge{"root", "s1", edge_kind::fan_out, {}});
+    level1_graph.edges.push_back(Edge{"root", "s2", edge_kind::fan_out, {}});
+    level1_graph.edges.push_back(Edge{"root", "s3", edge_kind::fan_out, {}});
+    level1_graph.edges.push_back(Edge{"s1", "join", edge_kind::fan_in, {}});
+    level1_graph.edges.push_back(Edge{"s2", "join", edge_kind::fan_in, {}});
+    level1_graph.edges.push_back(Edge{"s3", "join", edge_kind::fan_in, {}});
+    level1_graph.start = "root";
+    level1_graph.output_selection.push_back("join");
+    level1_graph.bound.max_rounds = 8;
+
+    auto level1 = std::make_shared<WorkflowSupervisor>(/*worker_budget=*/2);
+    level1->initialize(level1_graph,
+                        {[](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
+                            return ExecutorOutcome{in};
+                        },
+                         {}, {}, {},
+                         [](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
+                             return ExecutorOutcome{in};
+                         }});
+    std::vector<std::shared_ptr<WorkflowSupervisor>> level2_instances;
+    std::size_t const* share = level2_shares->data();
+    for (char const* id : {"s1", "s2", "s3"}) {
+        auto inner = std::make_shared<WorkflowSupervisor>(*share++);
+        inner->initialize(level2_graph,
+                           {[](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
+                               return ExecutorOutcome{text_message(text_of(in) + ">leaf")};
+                           }});
+        level1->bind_sub_workflow(id, inner);
+        level2_instances.push_back(std::move(inner));  // keep alive for the whole run
+    }
+
+    auto outer = std::make_shared<WorkflowSupervisor>(/*worker_budget=*/2);
+    outer->initialize(outer_graph(), outer_bodies());
+    outer->bind_sub_workflow("sub", level1);
+
+    // Declared ceiling for this tree: outer(2) + level1(2) + 3*level2(1 each) = 7.
+    constexpr std::size_t kDeclaredCeiling = 2 + 2 + 3;
+
+    // NOT a background sampler racing the run: `ThreadPool` creates its worker `jthread`s ONCE, in
+    // its own constructor, and they live for the whole `WorkflowSupervisor` instance's lifetime --
+    // nothing here creates or destroys pool workers per round or per dispatch. So the live count is
+    // already at its true peak for this tree the moment every instance above is constructed (all
+    // five -- outer, level1, three level2s -- are still in scope, so none has torn its pool down
+    // yet), and stays exactly there through the run. A background poll-while-running thread would
+    // race a fast, synchronous `drive()` call and could legitimately take zero samples before the
+    // run already finished -- caught via mutation: an earlier version of this test used exactly that
+    // racy sampler and it silently passed even when the budget was deliberately made a no-op,
+    // because the sampler thread never got scheduled before `keep_sampling` flipped false.
+    std::size_t const after_construction = agentengine::rt::live_worker_thread_count();
+    std::size_t const relative_after_construction =
+        after_construction > baseline ? after_construction - baseline : 0;
+    check(relative_after_construction <= kDeclaredCeiling,
+          "S12: live worker thread count right after constructing the whole budgeted tree (outer=2 "
+          "+ level1=2 + 3*level2=1 each = 7) never exceeds the declared ceiling -- the positive "
+          "proof this whole mechanism exists to provide, not just 'the constructor accepts a "
+          "number'");
+
+    WorkflowResult r = drive(outer->run_workflow(RunWorkflow{text_message("go")}));
+
+    std::size_t const after_run = agentengine::rt::live_worker_thread_count();
+    std::size_t const relative_after_run = after_run > baseline ? after_run - baseline : 0;
+    check(relative_after_run <= kDeclaredCeiling,
+          "S12: live worker thread count after the run completes still never exceeds the declared "
+          "ceiling -- no additional pools were spun up mid-run");
+    check(r.status == workflow_status::completed, "S12: the budgeted nested run completes");
+}
+
+// ---- S13: the mandatory nesting-depth cap actually refuses at its declared boundary --------------
+
+void s13_nesting_depth_cap_boundary() {
+    // A real chain of kMaxNestingDepth+2 levels, each budgeted to exactly 1 worker -- total real OS
+    // thread cost is small and bounded (worker_budget=1 per level) regardless of how deep
+    // kMaxNestingDepth itself is, matching CLAUDE.md's own machine-safety discipline: this test
+    // must never risk the resource its own subject exists to cap.
+    constexpr std::size_t kChainLength = 18;  // > kMaxNestingDepth (16) by a small, safe margin
+
+    Workflow leaf_graph;
+    leaf_graph.id        = "chain-leaf";
+    leaf_graph.executors = {node_desc("leaf")};
+    leaf_graph.start     = "leaf";
+    leaf_graph.output_selection.push_back("leaf");
+    leaf_graph.bound.max_rounds = 4;
+
+    Workflow wrap_graph;
+    wrap_graph.id        = "chain-wrap";
+    wrap_graph.executors = {node_desc("wrap", executor_kind::sub_workflow)};
+    wrap_graph.start     = "wrap";
+    wrap_graph.output_selection.push_back("wrap");
+    wrap_graph.bound.max_rounds = 4;
+
+    std::vector<std::shared_ptr<WorkflowSupervisor>> chain;
+    chain.reserve(kChainLength);
+    for (std::size_t i = 0; i < kChainLength; ++i) {
+        auto sup = std::make_shared<WorkflowSupervisor>(/*worker_budget=*/1);
+        if (i == kChainLength - 1) {
+            sup->initialize(leaf_graph,
+                             {[](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
+                                 return ExecutorOutcome{in};
+                             }});
+        } else {
+            sup->initialize(wrap_graph, {{}});  // "wrap" is sub_workflow-kind -- no body
+        }
+        chain.push_back(sup);
+    }
+
+    // Bind from the outermost inward: chain[0] is the root (nesting_depth_ == 0, never itself bound
+    // as anyone's inner); chain[i-1] binds chain[i] as ITS OWN inner. `bind_sub_workflow()` derives
+    // an inner's depth from the CALLER's own already-established `nesting_depth_` at bind time
+    // (`inner->nesting_depth_ = this->nesting_depth_ + 1`), so binding must proceed outer-to-inner --
+    // binding inner-to-outer would read every caller's depth as its still-default 0 and never
+    // accumulate. `run_workflow()` on the OUTER (caller) side of each just-attempted bind reports
+    // `workflow_status::invalid` immediately (before any dispatch) iff that specific bind was
+    // refused -- a black-box check through the same public surface a real caller would observe,
+    // not a re-derivation of the private `nesting_depth_` field.
+    std::size_t last_successful_depth = 0;
+    for (std::size_t i = 1; i < kChainLength; ++i) {
+        chain[i - 1]->bind_sub_workflow("wrap", chain[i]);
+        WorkflowResult const probe =
+            drive(chain[i - 1]->run_workflow(RunWorkflow{text_message("probe")}));
+        if (probe.status == workflow_status::invalid) break;
+        last_successful_depth = i;
+    }
+
+    check(last_successful_depth >= WorkflowSupervisor::max_nesting_depth(),
+          "S13: binding succeeds up through at least the declared kMaxNestingDepth -- the cap is "
+          "not off-by-one in the OVER-restrictive direction");
+    check(last_successful_depth < kChainLength - 1,
+          "S13: binding genuinely stops being refused somewhere before the full chain length -- "
+          "the cap is real and reachable, not dead code that never actually refuses anything");
+}
+
 // ---- S9: binding a non-sub_workflow-kind executor_id is silently refused ------------------------
 
 void s9_bind_wrong_kind_is_refused() {
@@ -544,8 +783,11 @@ int main() {
     s6_restored_run_fails_closed_on_stale_pending_interaction();
     s7_quarantine_generalization_proof();
     s8_bounded_two_level_nesting();
+    s11_bounded_three_level_nesting();
     s9_bind_wrong_kind_is_refused();
     s10_duplicate_inner_binding_is_refused();
+    s12_worker_budget_bounds_real_thread_count();
+    s13_nesting_depth_cap_boundary();
 
     std::fprintf(stderr, g_failures == 0 ? "test_rt_workflow_sub_workflow: ALL PASS\n"
                                           : "test_rt_workflow_sub_workflow: FAIL\n");

@@ -270,6 +270,71 @@ int main() {
               "corruption behind");
     }
 
+    // ---- T7: split_worker_budget() (issue #42 item 2 -- nested WorkflowSupervisor resource
+    // budgeting design, docs/planning/nested-workflow-threadpool-budget-design-draft.md) ----------
+    {
+        auto const even = agentengine::rt::split_worker_budget(6, 3);
+        check(even.has_value() && even->size() == 3 &&
+                  (*even)[0] == 2 && (*even)[1] == 2 && (*even)[2] == 2,
+              "T7: an evenly-divisible budget splits exactly");
+
+        auto const remainder = agentengine::rt::split_worker_budget(7, 3);
+        check(remainder.has_value() && remainder->size() == 3 &&
+                  (*remainder)[0] == 3 && (*remainder)[1] == 2 && (*remainder)[2] == 2,
+              "T7: a remainder goes to the first child(ren), not silently dropped -- every share "
+              "still sums back to the original total");
+
+        auto const zero_children = agentengine::rt::split_worker_budget(6, 0);
+        check(zero_children.has_value() && zero_children->empty(),
+              "T7: zero children is a valid, empty-vector answer, not an error");
+
+        // The landmine this function exists to close (design draft §4/red-team): MUST fail
+        // closed, never silently floor a starved child's share to the literal `0` ThreadPool's
+        // own constructor would misinterpret as "use the system default" -- i.e. handing a
+        // starved child an UNBOUNDED pool instead of a capped one.
+        auto const starved = agentengine::rt::split_worker_budget(2, 5);
+        check(!starved.has_value() &&
+                  starved.error().code == "rt.thread_pool.worker_budget_exhausted",
+              "T7: more children than total budget FAILS CLOSED with a real, diagnosable error -- "
+              "never silently grants a starved child a literal 0 (which ThreadPool's own "
+              "worker_count==0 sentinel would silently reinterpret as 'use the unbounded system "
+              "default', defeating the whole budget mechanism invisibly)");
+    }
+
+    // ---- T8: live_worker_thread_count() -- a real, permanently-available, process-wide gauge,
+    // not test-only scaffolding. Sanity-checks it actually tracks real pool lifetime. ---------------
+    {
+        std::size_t const before = agentengine::rt::live_worker_thread_count();
+        {
+            ThreadPool const budgeted(3);
+            // A jthread's own lambda body (and so the LiveWorkerCountGuard inside it) starts
+            // running asynchronously -- the constructor returning only means every std::jthread
+            // was successfully CREATED, not that each one has reached its first line yet. Poll
+            // with a bounded wait rather than assume synchronous ordering.
+            std::size_t during = agentengine::rt::live_worker_thread_count();
+            for (int i = 0; i < 50 && during < before + 3; ++i) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                during = agentengine::rt::live_worker_thread_count();
+            }
+            check(during >= before + 3,
+                  "T8: constructing a 3-worker pool increases the live process-wide worker count "
+                  "by at least 3 (>= rather than == -- other tests/threads in this same process "
+                  "may also be running concurrently)");
+        }
+        // Pool destroyed (RAII join) -- give the OS a moment to finish tearing down; the guard's
+        // destructor runs synchronously inside worker_loop()'s own thread before jthread::join()
+        // returns, so by the time the ThreadPool destructor itself returns, every worker's count
+        // decrement has already happened -- no sleep should be needed, but a short bounded wait
+        // guards against any scheduler quirk without risking a real hang.
+        for (int i = 0; i < 50 && agentengine::rt::live_worker_thread_count() > before; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        check(agentengine::rt::live_worker_thread_count() <= before,
+              "T8: destroying the pool (RAII join, no leaked/detached threads) brings the "
+              "process-wide count back down -- proving this is a genuinely LIVE gauge, not a "
+              "monotonic counter that only ever goes up");
+    }
+
     if (g_failures != 0) {
         std::fprintf(stderr, "%d check(s) failed.\n", g_failures);
         return 1;
