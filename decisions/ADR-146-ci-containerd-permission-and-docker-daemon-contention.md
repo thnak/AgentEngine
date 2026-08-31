@@ -1,12 +1,14 @@
 # ADR-146 — CI: containerd needs root, and live-Docker/containerd tests need `RESOURCE_LOCK` against daemon contention
 
-- **Status:** Proposed — implemented, and the `RESOURCE_LOCK` half is REAL-CI-CONFIRMED (§7): a live
-  CI run dropped from 5 non-deterministic failures to exactly 1, and that 1 is now a different,
-  isolated, unrelated failure, not this ADR's own target. The containerd-permission half's own first
-  CI attempt was never actually exercised (a real bug in this ADR's own first version — GitHub
-  Actions skipped the step outright — found and fixed in §7); its next CI run is still pending as of
-  this writing. **`test_composed_sandbox_providers_live`'s own failure (§7) is NOT fixed by this ADR
-  and remains open** — disclosed, not silently left out.
+- **Status:** Proposed — implemented, and BOTH halves are now REAL-CI-CONFIRMED at the mechanism
+  level: the `RESOURCE_LOCK` fix dropped 5 non-deterministic failures to exactly 1 (§7), and the
+  containerd-socket permission fix eliminated the `permission denied` error entirely (§8) — `ctr` now
+  reaches the daemon as root, exactly as designed. Two residual, DIFFERENT gaps found from those same
+  real runs, both disclosed rather than folded into a false "done": (1) `ctr` needs its own explicit
+  image pull, fixed in §8, next CI run pending; (2) **the composed-provider tests
+  (`test_composed_sandbox_providers_live` AND, newly, `test_composed_containerd_providers_live`) fail
+  identically on two independent execution-surface implementations — real evidence of a shared
+  composition-layer bug, narrowed but NOT root-caused or fixed by this ADR** (§7/§8).
 - **Date:** 2026-08-31.
 - **Scope:** `.github/workflows/ci.yml` (`linux` job's `Test` step only), `tests/CMakeLists.txt`
   (`RESOURCE_LOCK` property additions to 8 existing `add_test()` registrations, no new tests, no
@@ -174,3 +176,29 @@ ONE session and drives both through ONE `invoke_tool()`-pipeline `start_run()`, 
 closure's `agentengine::rt::block_on(runtime_->run(...))` call is a plausible but unconfirmed
 suspect) is disclosed here, not fixed, and needs either live-Linux-Docker repro or further tracing
 this session did not complete before this ADR was written.
+
+## 8. The `if: always()` fix's own CI run: permission gap CONFIRMED FIXED, one new gap found
+
+The `if: always()` fix's own CI run proved the containerd step now actually executes (§7's bug is
+closed): `test_containerd_execution_surface` no longer fails with `permission denied` on the socket
+— §1's actual target is fixed. It now fails differently: `ctr: image "docker.io/library/alpine:
+latest": not found`. A real, different, previously-masked gap: `docker` (used by every Docker-daemon
+test, all passing) pulls that exact image fine on this runner, but `ctr` — probably because
+`ubuntu-latest`'s Docker uses its own containerd namespace (`moby`), distinct from the `default`
+namespace plain `ctr` targets — never sees it. Fixed by adding an explicit `ctr image pull` step
+before the containerd `Test` step (§3's code now reflects this).
+
+**A new, useful signal from this same run**: `test_composed_containerd_providers_live` failed with
+the IDENTICAL check-level signature as `test_composed_sandbox_providers_live` ("`run_command`
+genuinely executed... " / "the real Ledger checkpoint... " both FAIL, everything else in the test
+passes) — but `ContainerdExecutionSurface`/`ctr_cli_detail::run_argv()` is a completely separate,
+independently-implemented code path from `DockerExecutionSurface`/`docker_cli_detail::run_capture()`
+(different file, different daemon, different CLI). Two independent implementations failing the exact
+same way, only when composed with `SandboxToolProvider` in the same session, is real evidence the
+open residual (§7) is NOT specific to either execution surface's own implementation — it narrows
+toward something in the composition/pipeline machinery both share (`ComposedContextProvider`,
+`invoke_tool()`, or the nested `agentengine::rt::block_on()` pattern §7 already named as a suspect).
+Whether the containerd-composed test's failure was ALSO partly caused by the same image-pull gap
+(masked identically, since neither composed test's own `check()` calls print the underlying surface
+error) or is purely the shared composition bug is exactly what the next CI run (after this section's
+own fix) will show — expected to narrow, not close, the open residual either way.

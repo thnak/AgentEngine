@@ -323,6 +323,17 @@ jobs:
       # the unrelated reason. `always()` runs it unconditionally; the job's own overall result still
       # reflects a failure here exactly as it would without this line, since a failed step fails the
       # job regardless of which other steps ran.
+      # The permission fix alone surfaced a second, real gap on this runner (found from an actual CI
+      # run, not assumed): `ctr run` failed with `image "docker.io/library/alpine:latest": not
+      # found`, even though `docker` (see the unprivileged Test step above) pulls that exact image
+      # fine. `docker` and `ctr` don't share an image store here -- ubuntu-latest's Docker uses its
+      # own containerd namespace (`moby`), distinct from the `default` namespace plain `ctr` targets
+      # -- so a `docker pull` is invisible to `ctr run`. Pre-pulling explicitly through `ctr` itself
+      # closes the gap regardless of which of those two explanations is the exact mechanism.
+      - name: Pull containerd test image
+        if: always()
+        run: sudo ctr image pull docker.io/library/alpine:latest
+
       - name: Test (containerd, root)
         if: always()
         run: |
