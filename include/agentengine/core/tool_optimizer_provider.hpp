@@ -201,9 +201,10 @@ public:
     }
 
 private:
-    [[nodiscard]] static bool is_management_tool_name(std::string const& name) {
-        return name == std::string(SearchToolsTool::name) || name == std::string(MountToolTool::name) ||
-               name == std::string(UnmountToolTool::name);
+    [[nodiscard]] static bool is_management_tool_name(std::string const& tool_name) {
+        return tool_name == std::string(SearchToolsTool::name) ||
+               tool_name == std::string(MountToolTool::name) ||
+               tool_name == std::string(UnmountToolTool::name);
     }
 
     // Reuses union_codeact_tools's already-tested cross-source collision rejection (empty

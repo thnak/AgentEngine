@@ -358,8 +358,17 @@ int main() {
         check(re_engage.has_value(),
               "P3b: the moved-from instance can be engage()d again -- a real recovery path");
 
-        // Self-move-assignment must be a safe no-op (the `if (this != &other)` guard).
+        // Self-move-assignment must be a safe no-op (the `if (this != &other)` guard). The
+        // `std::move(target)` below is deliberately self-targeting -- that IS the case under test --
+        // so silence gcc/clang's -Wself-move rather than obscuring the assignment to dodge it.
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wself-move"
+#endif
         target = std::move(target);
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
         auto self_moved = ae::test_support::run_task_sync<ae::result<ae::ContextContribution>>(
             target.on_context(session_ctx, ctx));
         check(self_moved.has_value() && self_moved->messages.size() == 1 &&

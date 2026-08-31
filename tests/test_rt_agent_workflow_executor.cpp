@@ -136,9 +136,15 @@ using ScriptedSession = AgentSession<ScriptedChatClient>;
     };
 }
 
-[[nodiscard]] Executor func_desc(char const* id) { return Executor{id, executor_kind::function, "T", "T"}; }
-[[nodiscard]] Executor agent_desc(char const* id) { return Executor{id, executor_kind::agent, "T", "T"}; }
-[[nodiscard]] Executor port_desc(char const* id) { return Executor{id, executor_kind::request_port, "T", "T"}; }
+[[nodiscard]] Executor func_desc(char const* id) {
+    return Executor{.id = id, .kind = executor_kind::function, .input_type = "T", .output_type = "T"};
+}
+[[nodiscard]] Executor agent_desc(char const* id) {
+    return Executor{.id = id, .kind = executor_kind::agent, .input_type = "T", .output_type = "T"};
+}
+[[nodiscard]] Executor port_desc(char const* id) {
+    return Executor{.id = id, .kind = executor_kind::request_port, .input_type = "T", .output_type = "T"};
+}
 
 }  // namespace
 
@@ -209,7 +215,7 @@ int main() {
         Workflow wf;
         wf.id = "t4";
         Executor a = agent_desc("a");
-        a.capability_ceiling = {cap::FsRead{"work", ""}};
+        a.capability_ceiling = {cap::FsRead{.mount_id = "work", .path_prefix = ""}};
         wf.executors = {a};
         wf.start = "a";
         wf.output_selection.push_back("a");

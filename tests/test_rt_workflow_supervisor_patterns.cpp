@@ -117,7 +117,7 @@ using agentengine::workflow::validate_workflow;
 [[nodiscard]] std::size_t content_count(Message const& m) { return m.content.size(); }
 
 [[nodiscard]] Executor node_desc(char const* id) {
-    return Executor{id, executor_kind::function, "T", "T"};
+    return Executor{.id = id, .kind = executor_kind::function, .input_type = "T", .output_type = "T"};
 }
 
 // A plain node: appends its name to the incoming (joined) text, routes nowhere.

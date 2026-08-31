@@ -125,7 +125,9 @@ The Quark dev-box rule applies verbatim to this repo, because the Quark suite ru
   Windows). Never spawn `hardware_concurrency()` threads.
 - **Sandbox tests are hostile by design** and must be pinned and resource-capped: a test that
   proves a fork bomb is contained must not be able to take the dev box with it.
-- Compile clean under **MSVC 19.4x**, **g++ 14+**, and **clang 20+**, `-std=c++23 /W4 -Wall -Wextra`.
+- Compile clean under **MSVC 19.4x**, **g++ 14+**, and **clang 20+**, `-std=c++23 /W4 -Wall -Wextra`,
+  enforced as a hard build failure via `/WX`/`-Werror` (`cmake/AgentEngineWarnings.cmake`) — a
+  warning is fixed at its site, never silenced with a blanket `-Wno-*`/`/wd*`.
 - Correctness tests run under **ASan/UBSan**, and **TSan** for anything with cross-thread edges.
 - **A load-bearing invariant without a test, a hot path without a bench, or a protocol claim
   without a conformance run, is not done.**

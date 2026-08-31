@@ -92,9 +92,11 @@ using agentengine::workflow::validate_workflow;
     return {};
 }
 
-[[nodiscard]] Executor node_desc(char const* id) { return Executor{id, executor_kind::function, "T", "T"}; }
+[[nodiscard]] Executor node_desc(char const* id) {
+    return Executor{.id = id, .kind = executor_kind::function, .input_type = "T", .output_type = "T"};
+}
 [[nodiscard]] Executor port_desc(char const* id) {
-    return Executor{id, executor_kind::request_port, "T", "T"};
+    return Executor{.id = id, .kind = executor_kind::request_port, .input_type = "T", .output_type = "T"};
 }
 
 [[nodiscard]] ExecutorBody appender(std::string name) {

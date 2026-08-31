@@ -166,7 +166,8 @@ int main() {
 
         Workflow wf;
         wf.id = "proj-wf";
-        wf.executors = {Executor{"a", executor_kind::function, "T", "T"}};
+        wf.executors = {
+            Executor{.id = "a", .kind = executor_kind::function, .input_type = "T", .output_type = "T"}};
         wf.start = "a";
         wf.output_selection.push_back("a");
         wf.bound.max_rounds = 4;

@@ -306,6 +306,8 @@ private:
         // which branch below runs, so a malformed call always gets its own schema error rather than
         // either branch's error masking a genuinely separate contract violation.
         d.invoke = [this](json::Value const& args_value, EffectContext& ctx) -> result<json::Value> {
+            (void)this;  // only the `synchronous_leaf` branch below actually touches members; the
+                         // other branch's own instantiation would otherwise trip -Wunused-lambda-capture
             auto args = schema::from_json<RagRecallArgs>(args_value);
             if (!args) return std::unexpected(args.error());
 

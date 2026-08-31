@@ -159,7 +159,7 @@ void test_happy_path_under_threshold() {
     FakeEgressBackend backend;
     backend.response = sandbox::NetEgressResponse{200, {{"Content-Type", "text/plain"}}, "hello world"};
 
-    auto reply = ReadContent::invoke_via(ReadContent::Args{"http://example.com/data"}, ctx, backend);
+    auto reply = ReadContent::invoke_via(ReadContent::Args{.url = "http://example.com/data"}, ctx, backend);
     check(reply.has_value(), "happy path succeeds");
     if (reply) {
         check(reply->preview == "hello world", "preview is the whole body under threshold");
@@ -199,7 +199,7 @@ void test_over_threshold_with_blob_sink() {
         return agentengine::BlobRef{"deadbeef", media_type, bytes.size(), "test-store"};
     };
 
-    auto reply = ReadContent::invoke_via(ReadContent::Args{"http://example.com/big"}, ctx, backend);
+    auto reply = ReadContent::invoke_via(ReadContent::Args{.url = "http://example.com/big"}, ctx, backend);
     check(reply.has_value(), "over-threshold call still succeeds when a sink is wired");
     if (reply) {
         check(reply->truncated, "flagged truncated over threshold");
@@ -225,7 +225,7 @@ void test_over_threshold_without_blob_sink() {
     FakeEgressBackend backend;
     backend.response = sandbox::NetEgressResponse{200, {}, std::string(50, 'y')};
 
-    auto reply = ReadContent::invoke_via(ReadContent::Args{"http://example.com/big"}, ctx, backend);
+    auto reply = ReadContent::invoke_via(ReadContent::Args{.url = "http://example.com/big"}, ctx, backend);
     check(reply.has_value(), "over-threshold with no sink still succeeds -- a bounded preview, not a hard failure");
     if (reply) {
         check(reply->truncated, "still flagged truncated");
@@ -240,7 +240,7 @@ void test_capability_not_held_never_calls_backend() {
     auto ctx = make_ctx(held);
 
     FakeEgressBackend backend;
-    auto reply = ReadContent::invoke_via(ReadContent::Args{"http://example.com/data"}, ctx, backend);
+    auto reply = ReadContent::invoke_via(ReadContent::Args{.url = "http://example.com/data"}, ctx, backend);
     check(!reply.has_value(), "no NetOut grant -> denied");
     if (!reply) check(reply.error().code == "tool.capability_not_held", "denial uses the standard capability error code");
     check(backend.fetch_calls == 0, "the backend is never touched when the capability check fails (I2)");
@@ -253,7 +253,7 @@ void test_grant_for_different_host_is_not_used() {
     auto ctx = make_ctx(held);
 
     FakeEgressBackend backend;
-    auto reply = ReadContent::invoke_via(ReadContent::Args{"http://example.com/data"}, ctx, backend);
+    auto reply = ReadContent::invoke_via(ReadContent::Args{.url = "http://example.com/data"}, ctx, backend);
     check(!reply.has_value(), "a NetOut grant for a DIFFERENT host does not cover this request");
     check(backend.fetch_calls == 0, "backend never touched -- no capability laundering across hosts");
 }
@@ -267,7 +267,7 @@ void test_http_error_status_is_mapped() {
     FakeEgressBackend backend;
     backend.response = sandbox::NetEgressResponse{404, {}, "not found"};
 
-    auto reply = ReadContent::invoke_via(ReadContent::Args{"http://example.com/missing"}, ctx, backend);
+    auto reply = ReadContent::invoke_via(ReadContent::Args{.url = "http://example.com/missing"}, ctx, backend);
     check(!reply.has_value(), "a non-2xx status is a tool error, not a success with a body");
     if (!reply) check(reply.error().code == "read_content.http_error", "http error uses its own error code");
 }
@@ -279,7 +279,7 @@ void test_malformed_url_never_calls_backend() {
     auto ctx = make_ctx(held);
 
     FakeEgressBackend backend;
-    auto reply = ReadContent::invoke_via(ReadContent::Args{"not-a-url"}, ctx, backend);
+    auto reply = ReadContent::invoke_via(ReadContent::Args{.url = "not-a-url"}, ctx, backend);
     check(!reply.has_value(), "a malformed url is rejected before any capability check or fetch");
     check(backend.fetch_calls == 0, "backend never touched for a malformed url");
 }

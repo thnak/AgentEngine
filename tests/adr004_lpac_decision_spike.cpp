@@ -219,10 +219,19 @@ std::string run_in_appcontainer(AppContainerProfile const& profile, std::wstring
 }  // namespace
 
 int main() {
-    char const* windir = std::getenv("WINDIR");
-    if (windir == nullptr) windir = "C:\\Windows";
-    std::string win_ini = std::string(windir) + "\\win.ini";
-    std::string hosts = std::string(windir) + "\\System32\\drivers\\etc\\hosts";
+    std::string windir;
+    {
+        char* buf = nullptr;
+        std::size_t len = 0;
+        if (_dupenv_s(&buf, &len, "WINDIR") == 0 && buf != nullptr) {
+            windir = buf;
+            std::free(buf);
+        } else {
+            windir = "C:\\Windows";
+        }
+    }
+    std::string win_ini = windir + "\\win.ini";
+    std::string hosts = windir + "\\System32\\drivers\\etc\\hosts";
     std::string secret_path =
         (std::filesystem::temp_directory_path() / "ae_adr004_lpac_spike_secret.txt").string();
     {

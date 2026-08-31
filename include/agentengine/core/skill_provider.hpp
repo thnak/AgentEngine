@@ -170,8 +170,8 @@ public:
     [[nodiscard]] std::vector<std::string> allowed_tool_names_for(
         std::vector<std::string> const& mounted_names) const {
         std::vector<std::string> out;
-        for (auto const& name : mounted_names) {
-            auto it = per_skill_allowed_tools_.find(name);
+        for (auto const& skill_name : mounted_names) {
+            auto it = per_skill_allowed_tools_.find(skill_name);
             if (it == per_skill_allowed_tools_.end()) continue;
             for (auto const& tool_name : it->second) {
                 if (std::ranges::find(out, tool_name) == out.end()) out.push_back(tool_name);
@@ -213,18 +213,18 @@ private:
             if (!resolved) return std::unexpected(resolved.error());
 
             for (auto& item : *resolved) {
-                std::string const& name = item.skill.frontmatter.name;
+                std::string const& skill_name = item.skill.frontmatter.name;
                 for (std::size_t i = 0; i < claimed_names.size(); ++i) {
-                    if (claimed_names[i] == name) {
+                    if (claimed_names[i] == skill_name) {
                         return std::unexpected(error{
                             failure_class::contract,
-                            "skill '" + name + "' is declared by both '" + claimed_origins[i] +
+                            "skill '" + skill_name + "' is declared by both '" + claimed_origins[i] +
                                 "' and '" + source.origin_id + "' -- a skill from one source must "
                                 "never shadow a skill from another (009 §8c)",
                             "skill.name_collision_across_sources"});
                     }
                 }
-                claimed_names.push_back(name);
+                claimed_names.push_back(skill_name);
                 claimed_origins.push_back(source.origin_id);
 
                 std::vector<skill_provider_detail::PendingTreeEntry> pending;
@@ -240,15 +240,15 @@ private:
                 auto tree_digest = skill_provider_detail::assemble_tree(object_store_, std::move(pending));
                 if (!tree_digest) return std::unexpected(tree_digest.error());
 
-                auto committed_ref = commit_ref(*ref_store_, "skill:" + name, *tree_digest);
+                auto committed_ref = commit_ref(*ref_store_, "skill:" + skill_name, *tree_digest);
                 if (!committed_ref) return std::unexpected(committed_ref.error());
 
                 // Bare skill name, not "/skills/" + name -- see this file's own top comment for why
                 // mount_id is a capability-matching key, distinct from the skill's logical path.
-                pending_mounts.push_back(Mount{name, committed_ref->name, ""});
-                pending_summaries.push_back(PromptSkillSummary{name, item.skill.frontmatter.description});
-                pending_per_skill_allowed_tools[name] = item.skill.frontmatter.allowed_tools;
-                pending_body_by_name[name] = item.skill.body;
+                pending_mounts.push_back(Mount{skill_name, committed_ref->name, ""});
+                pending_summaries.push_back(PromptSkillSummary{skill_name, item.skill.frontmatter.description});
+                pending_per_skill_allowed_tools[skill_name] = item.skill.frontmatter.allowed_tools;
+                pending_body_by_name[skill_name] = item.skill.body;
                 for (auto const& tool_name : item.skill.frontmatter.allowed_tools) {
                     if (std::ranges::find(pending_allowed_tools, tool_name) == pending_allowed_tools.end()) {
                         pending_allowed_tools.push_back(tool_name);

@@ -112,7 +112,8 @@ constexpr std::size_t kNodeCount = 20;
     for (std::size_t i = 0; i < kNodeCount; ++i) {
         char buf[8];
         std::snprintf(buf, sizeof(buf), "n%02zu", i);
-        wf.executors.push_back(Executor{buf, executor_kind::function, "T", "T"});
+        wf.executors.push_back(
+            Executor{.id = buf, .kind = executor_kind::function, .input_type = "T", .output_type = "T"});
     }
     for (std::size_t i = 0; i + 1 < kNodeCount; ++i) {
         wf.edges.push_back(Edge{wf.executors[i].id, wf.executors[i + 1].id, edge_kind::direct, {}});

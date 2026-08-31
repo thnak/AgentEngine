@@ -105,10 +105,10 @@ using agentengine::workflow::executor_kind;
 }
 
 [[nodiscard]] Executor node_desc(char const* id) {
-    return Executor{id, executor_kind::function, "T", "T"};
+    return Executor{.id = id, .kind = executor_kind::function, .input_type = "T", .output_type = "T"};
 }
 [[nodiscard]] Executor port_desc(char const* id) {
-    return Executor{id, executor_kind::request_port, "T", "T"};
+    return Executor{.id = id, .kind = executor_kind::request_port, .input_type = "T", .output_type = "T"};
 }
 
 // Drain-to-empty -- see file banner for why no bounded-deadline loop is needed here.

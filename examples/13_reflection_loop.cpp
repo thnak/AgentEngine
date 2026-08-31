@@ -71,7 +71,9 @@ void check(bool cond, char const* what) {
     };
 }
 
-[[nodiscard]] Executor node_desc(char const* id) { return Executor{id, executor_kind::function, "T", "T"}; }
+[[nodiscard]] Executor node_desc(char const* id) {
+    return Executor{.id = id, .kind = executor_kind::function, .input_type = "T", .output_type = "T"};
+}
 
 // Safe here: run_workflow()'s only suspension points are the run mutex's uncontended fast path and
 // a nested co_await whose own body never suspends either -- see

@@ -94,7 +94,7 @@ using agentengine::workflow::validate_workflow;
 }
 
 [[nodiscard]] Executor node_desc(char const* id) {
-    return Executor{id, executor_kind::function, "T", "T"};
+    return Executor{.id = id, .kind = executor_kind::function, .input_type = "T", .output_type = "T"};
 }
 
 constexpr int kBranchCount = 4;

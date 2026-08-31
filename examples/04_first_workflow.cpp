@@ -92,8 +92,9 @@ int main() {
     // The graph itself: two executors, one edge, "Uppercase" first, "Reverse"'s output selected.
     Workflow wf;
     wf.id        = "uppercase-then-reverse";
-    wf.executors = {Executor{"Uppercase", executor_kind::function, "Text", "Text"},
-                     Executor{"Reverse", executor_kind::function, "Text", "Text"}};
+    wf.executors = {
+        Executor{.id = "Uppercase", .kind = executor_kind::function, .input_type = "Text", .output_type = "Text"},
+        Executor{.id = "Reverse", .kind = executor_kind::function, .input_type = "Text", .output_type = "Text"}};
     wf.edges.push_back(Edge{"Uppercase", "Reverse", edge_kind::chain, {}});
     wf.start = "Uppercase";
     wf.output_selection.push_back("Reverse");

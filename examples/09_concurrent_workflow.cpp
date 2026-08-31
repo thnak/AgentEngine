@@ -94,14 +94,20 @@ void check(bool cond, char const* what) {
 // `FunctionExecutor::invocations()` actor state, so this example can still measure (not just infer)
 // that the aggregator ran exactly once.
 [[nodiscard]] ExecutorBody counted(ExecutorBody body, std::shared_ptr<std::atomic<std::uint32_t>> count) {
-    return [body = std::move(body), count](Message const& in,
+    // Both captures are by value (body moved, count copied) into the closure's own storage, so
+    // nothing here references the parameters' stack slots -- clang-analyzer's core.StackAddressEscape
+    // is a known false positive on this std::function-returning-lambda shape (misreads MSVC STL's
+    // <functional> internals during the implicit result<Message> -> result<ExecutorOutcome> wrap).
+    return [body = std::move(body), count](Message const& in,  // NOLINT(clang-analyzer-core.StackAddressEscape)
                                            EffectContext& ctx) -> agentengine::result<ExecutorOutcome> {
         count->fetch_add(1, std::memory_order_relaxed);
         return body(in, ctx);
     };
 }
 
-[[nodiscard]] Executor node_desc(char const* id) { return Executor{id, executor_kind::function, "T", "T"}; }
+[[nodiscard]] Executor node_desc(char const* id) {
+    return Executor{.id = id, .kind = executor_kind::function, .input_type = "T", .output_type = "T"};
+}
 
 // Drives an agentengine::rt::task<T> to completion. Safe here: nothing in a WorkflowSupervisor
 // round genuinely suspends on an external wake (fan-out concurrency happens through
