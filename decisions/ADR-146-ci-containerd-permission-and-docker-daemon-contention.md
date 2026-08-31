@@ -15,7 +15,13 @@
   pre-existing (present on this branch's own tip before this ADR's work began, §12) and unrelated to
   §11's fix: `windows-latest` GitHub-hosted runners have no Docker daemon at all. §12 excludes those 6
   tests from both Windows CI jobs, the only fix available (no daemon exists to grant access to,
-  unlike the Linux containerd case).
+  unlike the Linux containerd case). **§12's own push then went green across the ENTIRE CI matrix**
+  (Linux both legs, Windows MSVC ASan+Release, Windows clang-cl Release+ASanUBSan, naming lint,
+  milestone lint, shell fuzz) except two isolated single-test failures (`test_rt_spawn_cost_budget`,
+  `test_content_durability_concurrency` — different test in each of the two duplicate runs, neither
+  touching Docker/CI config) — reran just those two failed jobs with zero code changes and both came
+  back 100% green, confirming pre-existing CI-runner flakiness unrelated to this ADR, not a
+  regression. **Every check on the PR is green as of this writing.**
 - **Date:** 2026-08-31.
 - **Scope:** `.github/workflows/ci.yml` (`linux` job's `Test` step only), `tests/CMakeLists.txt`
   (`RESOURCE_LOCK` property additions to 8 existing `add_test()` registrations, no new tests, no
