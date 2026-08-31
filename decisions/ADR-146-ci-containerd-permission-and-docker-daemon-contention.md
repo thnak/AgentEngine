@@ -9,8 +9,13 @@
   **100% locally reproduced (necessary) and 100% locally verified fixed (sufficient) against a real
   Docker daemon with the image deliberately evicted, matching the exact CI failure signature
   byte-for-byte** — not a theoretical fix. Full rebuild + `ctest` 294/294 (minus the one pre-existing,
-  disclosed, unrelated environment gap) confirm zero regression. Next CI run pending as final
-  end-to-end confirmation.
+  disclosed, unrelated environment gap) confirm zero regression. **Both Linux CI legs went green on
+  the very next push** (§11 fix confirmed for real on `ubuntu-latest`, not just locally). That same
+  push's Windows matrix then failed all 4 configs on the SAME 6 Docker-daemon tests — confirmed
+  pre-existing (present on this branch's own tip before this ADR's work began, §12) and unrelated to
+  §11's fix: `windows-latest` GitHub-hosted runners have no Docker daemon at all. §12 excludes those 6
+  tests from both Windows CI jobs, the only fix available (no daemon exists to grant access to,
+  unlike the Linux containerd case).
 - **Date:** 2026-08-31.
 - **Scope:** `.github/workflows/ci.yml` (`linux` job's `Test` step only), `tests/CMakeLists.txt`
   (`RESOURCE_LOCK` property additions to 8 existing `add_test()` registrations, no new tests, no
@@ -357,3 +362,43 @@ guarantee its id is the final line of output on success — a different Docker s
 this same capture path without that same guarantee would need its own, not-yet-written extraction
 logic, not a blind copy of this one. Not a gap in THIS fix; a note for whoever adds the next
 `docker_cli_detail`-backed command that parses structured output from a merged stream.
+
+## 12. §11's fix confirmed on real Linux CI — and Windows CI turned up a separate, pre-existing gap
+
+§11's push landed clean on both Linux CI legs (duplicate `push`/`pull_request` runs of the same
+commit): `Linux / gcc-14 / Release` passed in full, both times — `test_composed_sandbox_providers_live`
+included. §11's fix is now real-CI-confirmed, not just locally verified.
+
+That same push's Windows matrix then failed all 4 configs (`MSVC Release`/`ASan`,
+`clang-cl Release`/`ASanUBSan`), all 4 for the identical reason:
+
+```
+docker run failed: failed to connect to the docker API at npipe:////./pipe/docker_engine; check if
+the path is correct and if the daemon is running: open //./pipe/docker_engine: The system cannot
+find the file specified.
+```
+
+The exact same 6 Docker-daemon tests §7 named (`test_composed_sandbox_providers_live`,
+`test_sandbox_runtime`, `test_docker_orphan_reap`, `test_mandatory_sandbox_provider`,
+`test_task_branch_tools`, `test_task_branch_concurrent_dispatch`) — every one of them, nothing else.
+**Checked whether this was a regression from this ADR's own work before touching anything**: the
+Windows CI run at this branch's own pre-ADR-146 tip (commit `3403873e`, run `33351201268`, timestamped
+before any of this ADR's commits) shows the identical 4-way Windows failure, same 6 tests. Confirmed
+pre-existing, not introduced here — `windows-latest` GitHub-hosted runners simply have no Docker
+daemon at all, a gap that was always going to surface the first time these 6 tests' own CI legs were
+checked end-to-end, independent of anything else this ADR did.
+
+**Fix**: excluded the same 6 tests from both Windows CI jobs' `ctest` invocations (`-E` regex,
+mirroring the Linux job's own containerd exclusion pattern from §1/§3) — the only fix available here,
+since unlike the Linux containerd case (a real daemon that just needed root) there is no daemon on
+this runner class to grant access to. Matches this project's own existing precedent
+(`kata-backend-ci.yml`'s self-hosted-only gate) for "a live-daemon dependency some CI tier structurally
+cannot provide gets excluded from that tier, not faked or worked around." Local developer verification
+against a real Windows Docker Desktop daemon — this session's own established discipline for every
+change in this ADR — is completely unaffected; this exclusion is CI-configuration-only.
+
+Verified the workflow file itself parses correctly post-edit (`yaml.safe_load` via a real Python
+interpreter, not just visual review) before pushing, given multi-line PowerShell blocks inside YAML
+`run: |` blocks are exactly the kind of thing that can look right and still be malformed. Not yet
+confirmed against a real CI run as of this writing — pending, and will be the final piece needed
+before the whole PR can be called green.
