@@ -774,8 +774,14 @@ void print_skills_banner(std::vector<native_jail::MaterializedSkillMount> const&
         std::cout << "  (none)\n";
     } else {
         for (auto const& [mount_id, host_dir] : materialized) {
-            std::cout << "  - mount_id=" << mount_id
-                       << " host_dir=" << std::string(host_dir.begin(), host_dir.end()) << "\n";
+            // Deliberate, explicit narrowing (pre-existing behavior, byte-truncating for any
+            // non-ASCII path component -- unchanged here, just made explicit rather than left as an
+            // implicit `char`<-`wchar_t` conversion, which /WX now flags as C4244) -- this is
+            // diagnostic banner output only, not a path used for any real filesystem operation.
+            std::string narrow_host_dir;
+            narrow_host_dir.reserve(host_dir.size());
+            for (wchar_t const wc : host_dir) narrow_host_dir.push_back(static_cast<char>(wc));
+            std::cout << "  - mount_id=" << mount_id << " host_dir=" << narrow_host_dir << "\n";
         }
     }
 

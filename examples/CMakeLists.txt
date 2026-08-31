@@ -184,3 +184,25 @@ if(WIN32)
     agentengine::core agentengine::worktree_store agentengine_warnings)
   add_test(NAME example_24_delegated_agent_approval COMMAND agentengine_example_24_delegated_agent_approval)
 endif()
+
+# 25: ADR-152 (issue #29) -- WorkflowSupervisor's fine-grained, genuinely-live per-executor event
+# stream, watched live across a real concurrent fan-out round. Fully offline.
+add_executable(agentengine_example_25_workflow_event_stream_live 25_workflow_event_stream_live.cpp)
+target_link_libraries(agentengine_example_25_workflow_event_stream_live PRIVATE
+  agentengine::core agentengine_warnings)
+add_test(NAME example_25_workflow_event_stream_live COMMAND agentengine_example_25_workflow_event_stream_live)
+
+# 26: the live counterpart to 25 -- ADR-152's agent_turn_event bridge proven against a REAL model
+# (OpenRouter), not just the offline scripted W8/W9 proofs. Needs AGENTENGINE_WITH_HTTPS; SKIPS
+# (exit 0) rather than failing when AGENTENGINE_OPENROUTER_API_KEY isn't set, same as 16/19.
+if(AGENTENGINE_WITH_HTTPS)
+  add_executable(agentengine_example_26_workflow_event_stream_live_openrouter
+    26_workflow_event_stream_live_openrouter.cpp)
+  target_link_libraries(agentengine_example_26_workflow_event_stream_live_openrouter PRIVATE
+    agentengine::core agentengine::provider_http_client agentengine_warnings
+    MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+  add_test(NAME example_26_workflow_event_stream_live_openrouter
+    COMMAND agentengine_example_26_workflow_event_stream_live_openrouter)
+  set_tests_properties(example_26_workflow_event_stream_live_openrouter PROPERTIES
+    LABELS "live-network" TIMEOUT 300)
+endif()

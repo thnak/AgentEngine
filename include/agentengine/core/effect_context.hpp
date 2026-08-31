@@ -15,6 +15,7 @@
 
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/error.hpp"
+#include "agentengine/core/run_event.hpp"
 #include "agentengine/sandbox/filesystem_adapter.hpp"
 #include "agentengine/trust/capability.hpp"
 #include "agentengine/trust/principal.hpp"
@@ -111,6 +112,36 @@ struct EffectContext {
     // before constructing the event -- a tool never gets to mark its own pushed content trusted; see
     // `rt/agent_session.hpp`'s `force_tainted()`.
     std::function<void(ContentItem)> report_progress = [](ContentItem) {};
+
+    // ADR-152 (issue #29): two DEDICATED bridge fields for WorkflowSupervisor's per-node
+    // multiplexed live event stream (workflow/workflow_event.hpp) -- deliberately NOT the same
+    // field as `report_progress` above. A red-team pass on the design found a real collision, not
+    // a hypothetical one: a plain `function`-kind executor body is free to call `Tool<>::invoke()`
+    // directly (a normal, already-supported pattern, no AgentSession involved), and that call site
+    // also reads `ctx.report_progress` -- reusing the same field for the workflow bridge would
+    // silently reinterpret that tool's own progress as a workflow-stream event. Same "one field per
+    // audience" precedent this file already establishes (`report_progress`/
+    // `codeact_preseeded_answers`/`blob_sink` are all separately scoped for exactly this reason).
+    //
+    // Both default no-op (this file's own "optional-but-always-safe-to-call" idiom). Populated by
+    // WorkflowSupervisor, per delivery, ONLY when a workflow-level event stream is actually
+    // attached (`WorkflowSupervisor::enable_event_stream()` was called) -- otherwise left at the
+    // default no-op, so a body that calls either costs nothing beyond one no-op call when nobody is
+    // listening (`workflow_supervisor.hpp`'s own `run_executor_job`).
+    //
+    // `agent_turn_sink`: `rt::agent_session_as_executor_body()` (ADR-077,
+    // rt/agent_workflow_executor.hpp) wires this to the inner AgentSession's own
+    // `set_run_event_tap()` for the duration of exactly one call, so the session's REAL RunEvents
+    // (model_delta, tool_call_*, ...) reach the workflow stream the instant they're emitted --
+    // synchronous, no polling, no restructuring of that adapter's existing drive-to-completion loop
+    // needed (the tap fires from inside `emit_run_event_for()`, on whatever thread is already
+    // running that coroutine's resumption).
+    std::function<void(RunEvent const&)> agent_turn_sink = [](RunEvent const&) {};
+    // `moderator_delta_sink`: for a plain `function`-kind body (a moderator/router/planner node)
+    // that chooses to call `chat_stream()` itself and forward its own deltas -- opt-in, no engine
+    // enforcement that any body actually does this (I3: a body that stays non-streaming is simply
+    // coarser-grained observability for that node, never a violation).
+    std::function<void(std::string const&)> moderator_delta_sink = [](std::string const&) {};
 
     // 006 §7 / 028 §2: an oversized tool result is promoted to a `BlobRef` rather than inlined into
     // the model's context. Both fields below default OFF (`nullopt` / an empty `std::function`) --

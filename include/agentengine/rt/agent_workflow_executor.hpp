@@ -98,8 +98,25 @@ template <class ChatClientT, class StateT, class HistoryProviderT>
             // codebase today, but nothing here forbids it) is honored rather than silently stale.
             session.set_capabilities(ctx.capabilities.get());
 
+            // ADR-152 (issue #29): forward this call's real RunEvents live -- model_delta,
+            // tool_call_*, everything emit_run_event_for() fires -- through whatever
+            // ctx.agent_turn_sink currently points at. Default no-op when no workflow event stream
+            // is attached (WorkflowSupervisor only wires a real forwarding closure onto `ctx` when
+            // enable_event_stream() has been called; see workflow_supervisor.hpp's
+            // run_executor_job). Bracketed to exactly this one call via AgentSession's own
+            // set_run_event_tap() (call-scoped, mirroring report_progress's ADR-060 discipline) --
+            // reset with a genuinely EMPTY function (not another no-op lambda) immediately after,
+            // so AgentSession::run_event_tap_attached_ correctly flips back to false and a second,
+            // unrelated call into this same session (a cyclic node revisited later, or an app
+            // calling start_run() directly outside any workflow) pays zero cost and never inherits
+            // a closure captured by reference into this since-returned EffectContext.
+            session.set_run_event_tap([&ctx](agentengine::RunEvent const& ev) { ctx.agent_turn_sink(ev); });
+
             agentengine::result<AgentResponse> driven =
                 agent_executor_detail::drive(session.start_run(StartRun{in}));
+
+            session.set_run_event_tap({});
+
             if (!driven) return std::unexpected(driven.error());
             return ExecutorOutcome{driven->message};
         });

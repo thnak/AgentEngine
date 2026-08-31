@@ -1674,6 +1674,12 @@ add_executable(test_rt_workflow_as_executor test_rt_workflow_as_executor.cpp)
 target_link_libraries(test_rt_workflow_as_executor PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_workflow_as_executor COMMAND test_rt_workflow_as_executor)
 
+# ---- ADR-152 (issue #29): WorkflowSupervisor's fine-grained, genuinely-live per-executor event
+# stream. Design draft: docs/planning/workflow-event-stream-design-draft.md.
+add_executable(test_rt_workflow_event_stream test_rt_workflow_event_stream.cpp)
+target_link_libraries(test_rt_workflow_event_stream PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_workflow_event_stream COMMAND test_rt_workflow_event_stream)
+
 # ---- Milestone 5 Phase G1 -- ChatCallRecording JSON codec (core/chat_recording.hpp), the shared
 # foundation RecordingChatClient<Inner> and ReplayChatClient both depend on.
 add_executable(test_chat_recording_codec test_chat_recording_codec.cpp)

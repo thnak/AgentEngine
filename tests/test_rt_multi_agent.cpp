@@ -529,9 +529,16 @@ int main() {
             ThreadPool pool(4);
             Budget budget(/*max_spawns=*/10, /*max_tokens=*/10000, /*max_in_flight=*/2);
             std::vector<std::function<task<result<agentengine::rt::AgentResponse>>()>> throwing_thunks;
+            // `always_throws` is `volatile` so the compiler cannot prove the `throw` below
+            // unconditional and flag the trailing `co_return` as unreachable (MSVC C4702, an error
+            // under this project's /WX -- CONVENTIONS.md/pal/env.hpp's own precedent: a warning is
+            // fixed at its real site, never silenced with a #pragma). The `co_return` itself is
+            // required regardless -- it is what makes this lambda's body a coroutine at all, since
+            // `task<T>` has no non-coroutine construction path.
+            static volatile bool const always_throws = true;
             throwing_thunks.push_back([]() -> task<result<agentengine::rt::AgentResponse>> {
-                throw std::runtime_error("thunk-boom");
-                co_return agentengine::rt::AgentResponse{};  // unreachable
+                if (always_throws) throw std::runtime_error("thunk-boom");
+                co_return agentengine::rt::AgentResponse{};
             });
             auto first = drive(parallel(pool, budget, std::move(throwing_thunks)));
             check(!first[0].has_value() && first[0].error().code == "multi_agent.child_threw",

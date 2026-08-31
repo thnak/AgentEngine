@@ -176,6 +176,7 @@
 #include "agentengine/rt/thread_pool.hpp"
 #include "agentengine/workflow/graph.hpp"
 #include "agentengine/workflow/live_view.hpp"
+#include "agentengine/workflow/workflow_event.hpp"
 
 namespace agentengine::rt {
 
@@ -286,6 +287,26 @@ enum class workflow_status {
     bound_max_resets,
     invalid,
 };
+
+// ADR-152 (issue #29): the plain-string form of `workflow_status` used ONLY for
+// workflow_event_payload::RunFailed's `status_tag` field (workflow/workflow_event.hpp) --
+// workflow/ does not depend on rt/ (this file already depends on workflow/; the reverse would be
+// circular), so the payload carries a string, and this is the one place that converts.
+[[nodiscard]] inline char const* workflow_status_tag(workflow_status s) noexcept {
+    switch (s) {
+        case workflow_status::completed:         return "completed";
+        case workflow_status::suspended:         return "suspended";
+        case workflow_status::bound_max_rounds:  return "bound_max_rounds";
+        case workflow_status::bound_deadline:    return "bound_deadline";
+        case workflow_status::executor_failed:   return "executor_failed";
+        case workflow_status::routing_failed:    return "routing_failed";
+        case workflow_status::merge_conflict:    return "merge_conflict";
+        case workflow_status::bound_max_stalls:  return "bound_max_stalls";
+        case workflow_status::bound_max_resets:  return "bound_max_resets";
+        case workflow_status::invalid:           return "invalid";
+    }
+    return "invalid";
+}
 
 struct RunWorkflow {
     agentengine::Message input;
@@ -707,9 +728,36 @@ public:
         return std::move(pair.consumer);
     }
 
+    // ADR-152 (issue #29): the fine-grained, genuinely-live sibling of enable_live_view() above --
+    // docs/planning/workflow-event-stream-design-draft.md has the full design and the red-team pass
+    // that shaped it. Same "second call replaces the [structural] producer" single-consumer
+    // convention enable_live_view()/AgentSession::enable_event_stream() already use. Once called:
+    // every round's structural decisions are pushed live (single-writer, execute()'s own thread,
+    // the SAME safe shape enable_live_view() already uses -- zero new concurrency risk), AND every
+    // dispatched executor's own multiplexed events (an agent-kind node's real per-token deltas, or
+    // a function-kind moderator's own forwarded chat_stream() deltas) are forwarded the instant
+    // they happen, through a dedicated non-blocking sink (workflow/multiplex_sink.hpp) -- never the
+    // blocking channel the structural bucket rides, precisely because a ThreadPool worker thread
+    // doing real workflow compute must never be able to stall on a lagging consumer (see the design
+    // draft §2 for the full red-teamed reasoning this split exists to satisfy).
+    [[nodiscard]] agentengine::workflow::WorkflowEventStream enable_event_stream(
+        std::pmr::memory_resource* mr,
+        agentengine::stream_config<agentengine::workflow::WorkflowEvent> cfg = {}) {
+        auto pair = agentengine::make_stream<agentengine::workflow::WorkflowEvent>(mr, cfg);
+        workflow_event_producer_       = std::move(pair.producer);
+        workflow_event_stream_enabled_ = true;
+        return agentengine::workflow::WorkflowEventStream(std::move(pair.consumer), multiplex_sink_);
+    }
+
     task<WorkflowResult> run_workflow(RunWorkflow request) {
+        using agentengine::workflow::workflow_event_kind;
+        using agentengine::workflow::workflow_event_payload::RunFailed;
         AsyncMutex::Guard guard = co_await run_mutex_.lock();  // I1 -- see file banner
-        if (!valid_) co_return WorkflowResult{workflow_status::invalid};
+        if (!valid_) {
+            push_structural_event(workflow_event_kind::workflow_run_failed,
+                                   RunFailed{workflow_status_tag(workflow_status::invalid)});
+            co_return WorkflowResult{workflow_status::invalid};
+        }
 
         ++run_counter_;
         run_id_ = graph_.id + ":run:" + std::to_string(run_counter_);
@@ -718,18 +766,27 @@ public:
         rounds_ = 0;
         state_.pending.push_back(Delivery{index_of(graph_.start), request.input});
 
+        push_structural_event(workflow_event_kind::workflow_run_started);
         co_return co_await execute();
     }
 
     task<WorkflowResult> resume_workflow(ResumeWorkflow request) {
+        using agentengine::workflow::workflow_event_kind;
+        using agentengine::workflow::workflow_event_payload::RunFailed;
         AsyncMutex::Guard guard = co_await run_mutex_.lock();  // I1 -- see file banner
-        if (!valid_) co_return WorkflowResult{workflow_status::invalid};
+        if (!valid_) {
+            push_structural_event(workflow_event_kind::workflow_run_failed,
+                                   RunFailed{workflow_status_tag(workflow_status::invalid)});
+            co_return WorkflowResult{workflow_status::invalid};
+        }
 
         OpenPort* port = nullptr;
         for (auto& p : ports_) {
             if (p.interaction.interaction_id == request.interaction_id) { port = &p; break; }
         }
         if (port == nullptr || port->resolved) {
+            push_structural_event(workflow_event_kind::workflow_run_failed,
+                                   RunFailed{workflow_status_tag(workflow_status::invalid)});
             WorkflowResult r{workflow_status::invalid};
             r.rounds            = rounds_;
             r.open_interactions = open_interactions();
@@ -742,6 +799,11 @@ public:
 
         for (auto const& p : ports_) {
             if (p.resolved) continue;
+            // Re-affirms the run is STILL suspended (other ports remain open) -- distinct from
+            // finish()'s own workflow_run_suspended, which only fires once a full execute() pass
+            // confirms suspension; this is the "you resolved one of several, the run hasn't moved
+            // yet" case.
+            push_structural_event(workflow_event_kind::workflow_run_suspended);
             WorkflowResult r{workflow_status::suspended};
             r.rounds            = rounds_;
             r.partial           = state_.partial;
@@ -750,12 +812,20 @@ public:
             co_return r;
         }
 
+        push_structural_event(workflow_event_kind::workflow_run_resumed);
         co_return co_await execute();
     }
 
     task<WorkflowResult> continue_workflow(ContinueWorkflow) {
+        using agentengine::workflow::workflow_event_kind;
+        using agentengine::workflow::workflow_event_payload::RunFailed;
         AsyncMutex::Guard guard = co_await run_mutex_.lock();  // I1 -- see file banner
-        if (!valid_) co_return WorkflowResult{workflow_status::invalid};
+        if (!valid_) {
+            push_structural_event(workflow_event_kind::workflow_run_failed,
+                                   RunFailed{workflow_status_tag(workflow_status::invalid)});
+            co_return WorkflowResult{workflow_status::invalid};
+        }
+        push_structural_event(workflow_event_kind::workflow_run_resumed);
         co_return co_await execute();
     }
 
@@ -856,9 +926,36 @@ private:
     // copies, not references into the caller's stack -- the same "coroutine frame owns its inputs"
     // discipline this project's own AsyncMutex test debugging (async_mutex.hpp's own history) already
     // established as load-bearing, not just tidy.
-    static task<void> run_executor_job(ExecutorBody body, agentengine::Message payload,
-                                        agentengine::EffectContext ctx,
-                                        std::shared_ptr<ExecuteReply> out) {
+    // ADR-152 (issue #29): `sink`/`executor_id`/`round`/`attempt` wire EffectContext's two dedicated
+    // multiplexed-event fields (`agent_turn_sink`/`moderator_delta_sink`, core/effect_context.hpp)
+    // for the duration of THIS one call, before `body(payload, ctx)` runs -- `sink` is null unless
+    // `enable_event_stream()` has been called (execute()'s own dispatch loop passes
+    // `workflow_event_stream_enabled_ ? multiplex_sink_ : nullptr`), so a caller that never wires
+    // the event stream pays nothing beyond one pointer check. `multiplex_sink<T>::push()` never
+    // blocks (workflow/multiplex_sink.hpp) -- safe to call from this ThreadPool worker thread even
+    // under a concurrently-dispatched fan-out round.
+    static task<void> run_executor_job(
+        ExecutorBody body, agentengine::Message payload, agentengine::EffectContext ctx,
+        std::shared_ptr<ExecuteReply> out,
+        std::shared_ptr<agentengine::workflow::multiplex_sink<agentengine::workflow::WorkflowEvent>> sink,
+        std::string executor_id, std::uint32_t round, std::uint32_t attempt) {
+        if (sink) {
+            ctx.agent_turn_sink = [sink, executor_id, round, attempt](agentengine::RunEvent const& ev) {
+                agentengine::workflow::WorkflowEvent we;
+                we.kind    = agentengine::workflow::workflow_event_kind::agent_turn_event;
+                we.round   = round;
+                we.payload = agentengine::workflow::workflow_event_payload::AgentTurn{executor_id, attempt, ev};
+                (void)sink->push(std::move(we));
+            };
+            ctx.moderator_delta_sink = [sink, executor_id, round, attempt](std::string const& delta) {
+                agentengine::workflow::WorkflowEvent we;
+                we.kind    = agentengine::workflow::workflow_event_kind::moderator_stream_delta;
+                we.round   = round;
+                we.payload =
+                    agentengine::workflow::workflow_event_payload::ModeratorDelta{executor_id, attempt, delta};
+                (void)sink->push(std::move(we));
+            };
+        }
         if (!body) {
             *out = ExecuteReply{agentengine::Message{}, {}, false, agentengine::failure_class::contract};
             co_return;
@@ -879,7 +976,12 @@ private:
 
         if (!ports_.empty()) {
             std::vector<Delivery> next = state_.pending;
+            fan_in_edges_this_round_.clear();
             for (auto const& p : ports_) {
+                push_structural_event(
+                    agentengine::workflow::workflow_event_kind::request_port_resolved,
+                    agentengine::workflow::workflow_event_payload::PortRef{
+                        graph_.executors[p.executor_index].id, p.interaction.interaction_id});
                 ExecuteReply const reply{p.response, p.routes, true, agentengine::failure_class::fatal};
                 record_partial(state_.partial, p.executor_index, rounds_ - 1, p.response);
                 if (is_output_selected(p.executor_index)) state_.selected_output = p.response;
@@ -889,9 +991,11 @@ private:
                 status = rr == route_result::routing_failed ? workflow_status::routing_failed
                                                               : workflow_status::executor_failed;
                 ports_.clear();
+                push_fan_in_aggregated_events();
                 co_return finish(status, entered_at);
             }
             ports_.clear();
+            push_fan_in_aggregated_events();
             state_.pending = std::move(next);
         }
 
@@ -919,6 +1023,16 @@ private:
                 } else {
                     exec_deliveries.push_back(std::move(d));
                 }
+            }
+
+            {
+                std::vector<std::string> ids;
+                ids.reserve(exec_deliveries.size() + port_deliveries.size());
+                for (auto const& d : exec_deliveries) ids.push_back(graph_.executors[d.executor_index].id);
+                for (auto const& d : port_deliveries) ids.push_back(graph_.executors[d.executor_index].id);
+                push_structural_event(agentengine::workflow::workflow_event_kind::superstep_started,
+                                       agentengine::workflow::workflow_event_payload::SuperstepBounds{
+                                           std::move(ids)});
             }
 
             // OQ-19 design draft §5 item 2: two ordinary (non-fan_in) edges converging on the SAME
@@ -969,18 +1083,30 @@ private:
                 }
             }
 
+            // ADR-152: the round number every executor_dispatched/agent_turn_event/moderator_stream_
+            // delta this round is tagged with -- computed once, BEFORE the retry-attempt loop below
+            // (round doesn't change across retries within one round; ++rounds_ hasn't run yet),
+            // matching what record_partial()'s own post-increment `rounds_ - 1` will resolve to
+            // once `++rounds_` DOES run a few lines down.
+            std::uint32_t const this_round = static_cast<std::uint32_t>(rounds_) + 1;
+
             for (std::uint32_t attempt = 0; !todo.empty(); ++attempt) {
                 // ---- decision 5, first half: ISSUE every job before awaiting any ----------------
                 std::vector<std::future<JobOutcome>>        in_flight;
                 std::vector<std::shared_ptr<ExecuteReply>>  slots;
                 in_flight.reserve(todo.size());
                 slots.reserve(todo.size());
+                auto const event_sink = workflow_event_stream_enabled_ ? multiplex_sink_ : nullptr;
                 for (std::size_t const i : todo) {
                     std::size_t const idx = exec_deliveries[i].executor_index;
                     auto slot = std::make_shared<ExecuteReply>();
                     slots.push_back(slot);
-                    in_flight.push_back(pool_.submit(
-                        run_executor_job(bodies_[idx], exec_deliveries[i].payload, contexts_[idx], slot)));
+                    push_structural_event(
+                        agentengine::workflow::workflow_event_kind::executor_dispatched,
+                        agentengine::workflow::workflow_event_payload::ExecutorRef{graph_.executors[idx].id});
+                    in_flight.push_back(pool_.submit(run_executor_job(
+                        bodies_[idx], exec_deliveries[i].payload, contexts_[idx], slot, event_sink,
+                        graph_.executors[idx].id, this_round, attempt)));
                 }
 
                 // ---- decision 5, second half: COLLECT in fixed index order ---------------------
@@ -1011,8 +1137,12 @@ private:
 
             bool merge_failed = false;
             for (std::size_t i = 0; i < exec_deliveries.size(); ++i) {
-                if (!replies[i].ok) continue;
                 std::size_t const idx = exec_deliveries[i].executor_index;
+                push_structural_event(
+                    agentengine::workflow::workflow_event_kind::executor_completed,
+                    agentengine::workflow::workflow_event_payload::ExecutorResult{
+                        graph_.executors[idx].id, replies[i].ok});
+                if (!replies[i].ok) continue;
                 record_partial(state_.partial, idx, rounds_ - 1, replies[i].payload);
                 if (is_output_selected(idx)) {
                     state_.selected_output = replies[i].payload;
@@ -1027,6 +1157,13 @@ private:
                     if (!merged) {
                         state_.failed_executor = graph_.executors[idx].id;
                         merge_failed = true;
+                        push_structural_event(
+                            agentengine::workflow::workflow_event_kind::merge_conflict,
+                            agentengine::workflow::workflow_event_payload::MergeRef{graph_.executors[idx].id});
+                    } else {
+                        push_structural_event(
+                            agentengine::workflow::workflow_event_kind::merge_completed,
+                            agentengine::workflow::workflow_event_payload::MergeRef{graph_.executors[idx].id});
                     }
                 }
             }
@@ -1040,6 +1177,7 @@ private:
 
             std::vector<Delivery> next;
             bool                  broke = false;
+            fan_in_edges_this_round_.clear();
             for (std::size_t i = 0; i < exec_deliveries.size(); ++i) {
                 route_result const rr = route_from(exec_deliveries[i].executor_index, replies[i], next);
                 if (rr == route_result::ok) continue;
@@ -1049,6 +1187,7 @@ private:
                 broke = true;
                 break;
             }
+            push_fan_in_aggregated_events();
             if (broke) {
                 for (auto const& d : port_deliveries) {
                     state_.unopened_ports.push_back(graph_.executors[d.executor_index].id);
@@ -1119,8 +1258,12 @@ private:
             }
 
             for (auto const& d : port_deliveries) {
-                ports_.push_back(OpenPort{mint_interaction(d.executor_index), d.executor_index,
-                                          d.payload, {}, false});
+                agentengine::Interaction const interaction = mint_interaction(d.executor_index);
+                push_structural_event(
+                    agentengine::workflow::workflow_event_kind::request_port_opened,
+                    agentengine::workflow::workflow_event_payload::PortRef{
+                        graph_.executors[d.executor_index].id, interaction.interaction_id});
+                ports_.push_back(OpenPort{interaction, d.executor_index, d.payload, {}, false});
             }
             state_.pending = std::move(next);
 
@@ -1128,7 +1271,11 @@ private:
             // folded into state_/ports_, round N+1 (or a suspension) has not started yet. Fires
             // whether or not this round is about to suspend, so a checkpoint taken here always has
             // enough to resume from either way -- see file banner's "Checkpoint hook" paragraph.
-            if (checkpoint_hook_) checkpoint_hook_(rounds_, to_record());
+            if (checkpoint_hook_) {
+                checkpoint_hook_(rounds_, to_record());
+                push_structural_event(agentengine::workflow::workflow_event_kind::checkpoint_saved,
+                                       agentengine::workflow::workflow_event_payload::CheckpointSaved{rounds_});
+            }
 
             // 014 §7's live-view bullet, same superstep boundary -- see file banner. `exec_deliveries`/
             // `replies`/`port_deliveries` are still this iteration's locals, built fresh from THIS
@@ -1152,6 +1299,7 @@ private:
                 ev.in_flight_message_count = state_.pending.size();
                 (void)live_view_producer_.push(std::move(ev));
             }
+            push_structural_event(agentengine::workflow::workflow_event_kind::superstep_completed);
 
             if (!ports_.empty()) {
                 status = workflow_status::suspended;
@@ -1175,6 +1323,27 @@ private:
         r.failed_executor = state_.failed_executor;
         if (status == workflow_status::suspended) r.open_interactions = open_interactions();
         r.unopened_ports = state_.unopened_ports;
+
+        // ADR-152 (issue #29): the one choke point every execute()-driven terminal outcome passes
+        // through -- covers the round-loop happy path AND every early `co_return finish(...)` this
+        // file has (the port-prologue's own routing failure, `merge_failed`, `broke`, the stall/
+        // reset trip, `bound_max_rounds`/`bound_deadline`). A consumer reads THIS event, not stream
+        // termination, to learn "the run is over" -- see workflow/workflow_event.hpp's own
+        // WorkflowEventStream comment for why the underlying producer is never explicitly closed.
+        using agentengine::workflow::workflow_event_kind;
+        using agentengine::workflow::workflow_event_payload::RunFailed;
+        switch (status) {
+            case workflow_status::completed:
+                push_structural_event(workflow_event_kind::workflow_run_completed);
+                break;
+            case workflow_status::suspended:
+                push_structural_event(workflow_event_kind::workflow_run_suspended);
+                break;
+            default:
+                push_structural_event(workflow_event_kind::workflow_run_failed,
+                                       RunFailed{workflow_status_tag(status)});
+                break;
+        }
         return r;
     }
 
@@ -1187,8 +1356,15 @@ private:
         return i;
     }
 
+    // ADR-152 (issue #29): emits message_routed/fan_out_dispatched/route_selected as it decides
+    // each edge, and appends to fan_in_edges_this_round_ for every firing fan_in edge -- the
+    // caller (execute()) clears that member before its own routing loop and drains it via
+    // push_fan_in_aggregated_events() after, so a fan_in target that receives contributions from
+    // SEVERAL different route_from() calls within one round gets ONE aggregated event, not one per
+    // contributing call. No longer `const` -- pushing a structural event mutates
+    // workflow_event_producer_'s underlying channel state.
     [[nodiscard]] route_result route_from(std::size_t from_index, ExecuteReply const& reply,
-                                          std::vector<Delivery>& next) const {
+                                          std::vector<Delivery>& next) {
         using agentengine::workflow::edge_kind;
         using agentengine::workflow::edge_failure_policy;
         std::string const& from_id = graph_.executors[from_index].id;
@@ -1221,14 +1397,32 @@ private:
 
         std::size_t switch_edges = 0;
         std::size_t switch_fired = 0;
+        std::vector<std::string> fan_out_targets;
+        std::vector<std::string> available_cases;
+        std::vector<std::string> chosen_cases;
 
         for (auto const& edge : graph_.edges) {
             if (edge.from != from_id) continue;
             if (edge.kind == edge_kind::switch_case) ++switch_edges;
+            if (edge.kind == edge_kind::switch_case || edge.kind == edge_kind::multi_selection) {
+                available_cases.push_back(edge.case_label);
+            }
             if (!edge_fires(edge, reply)) continue;
             if (edge.kind == edge_kind::switch_case) ++switch_fired;
 
             std::size_t const target = index_of(edge.to);
+            std::string const& to_id = graph_.executors[target].id;
+
+            if (edge.kind == edge_kind::switch_case || edge.kind == edge_kind::multi_selection) {
+                chosen_cases.push_back(edge.case_label);
+            }
+            if (edge.kind == edge_kind::fan_out) fan_out_targets.push_back(to_id);
+            if (edge.kind == edge_kind::fan_in) fan_in_edges_this_round_.emplace_back(target, from_id);
+
+            push_structural_event(
+                agentengine::workflow::workflow_event_kind::message_routed,
+                agentengine::workflow::workflow_event_payload::MessageRouted{
+                    from_id, to_id, edge.kind, edge.case_label});
 
             if (edge.kind == edge_kind::fan_in) {
                 bool merged = false;
@@ -1245,8 +1439,45 @@ private:
             next.push_back(Delivery{target, reply.payload});
         }
 
+        if (!fan_out_targets.empty()) {
+            push_structural_event(
+                agentengine::workflow::workflow_event_kind::fan_out_dispatched,
+                agentengine::workflow::workflow_event_payload::FanOut{from_id, std::move(fan_out_targets)});
+        }
+        if (!available_cases.empty()) {
+            push_structural_event(
+                agentengine::workflow::workflow_event_kind::route_selected,
+                agentengine::workflow::workflow_event_payload::RouteSelected{
+                    from_id, std::move(chosen_cases), std::move(available_cases)});
+        }
+
         if (switch_edges > 0 && switch_fired != 1) return route_result::routing_failed;
         return route_result::ok;
+    }
+
+    // Drains fan_in_edges_this_round_ (populated by route_from() above) and emits ONE
+    // fan_in_aggregated event per distinct target, listing every contributing source -- see
+    // route_from()'s own comment for why this aggregation cannot happen inside route_from() itself.
+    void push_fan_in_aggregated_events() {
+        if (fan_in_edges_this_round_.empty()) return;
+        std::vector<std::size_t> targets_seen;
+        for (auto const& [target, from_id] : fan_in_edges_this_round_) {
+            bool already = false;
+            for (std::size_t const t : targets_seen) {
+                if (t == target) { already = true; break; }
+            }
+            if (already) continue;
+            targets_seen.push_back(target);
+            std::vector<std::string> sources;
+            for (auto const& [t2, from_id2] : fan_in_edges_this_round_) {
+                if (t2 == target) sources.push_back(from_id2);
+            }
+            push_structural_event(
+                agentengine::workflow::workflow_event_kind::fan_in_aggregated,
+                agentengine::workflow::workflow_event_payload::FanIn{
+                    graph_.executors[target].id, std::move(sources)});
+        }
+        fan_in_edges_this_round_.clear();
     }
 
     [[nodiscard]] static bool is_retryable(agentengine::failure_class klass) noexcept {
@@ -1368,6 +1599,43 @@ private:
     // simply never gets an on-completion callback, matching this codebase's own "additive, existing
     // callers unaffected" convention for every optional hook in this class).
     MergeOnJoinHook merge_on_join_hook_;
+
+    // ADR-152 (issue #29) -- see enable_event_stream()'s own comment above.
+    //
+    // Structural bucket: same single-writer channel shape live_view_producer_ already uses --
+    // invalid until enable_event_stream() is called.
+    agentengine::stream_producer<agentengine::workflow::WorkflowEvent> workflow_event_producer_;
+    // Multiplexed bucket: never null (constructed once, up front) so run_executor_job's per-
+    // delivery wiring never needs a null check on THIS -- workflow_event_stream_enabled_ below is
+    // the actual gate on whether it's ever handed to a delivery at all. shared_ptr (not a plain
+    // member) because it is captured, by value, into closures that outlive this round's stack
+    // frame (WorkflowEventStream also holds a copy, handed out by enable_event_stream()).
+    std::shared_ptr<agentengine::workflow::multiplex_sink<agentengine::workflow::WorkflowEvent>>
+        multiplex_sink_ =
+            std::make_shared<agentengine::workflow::multiplex_sink<agentengine::workflow::WorkflowEvent>>();
+    // Zero-cost-when-unattached gate (matching live_view_producer_.valid()'s own role for the
+    // structural bucket): false until enable_event_stream() is called, at which point every
+    // subsequent dispatch wires the multiplexed bridge; never reset back to false afterward
+    // (matches enable_live_view()'s own "once attached, stays attached for this instance's
+    // lifetime unless replaced" shape -- there is no disable_event_stream()).
+    bool workflow_event_stream_enabled_ = false;
+    // Scratch state for push_fan_in_aggregated_events() -- see route_from()'s own comment. Cleared
+    // by execute() before each routing loop that calls route_from(), drained (and re-cleared) by
+    // push_fan_in_aggregated_events() right after. Never holds state across a co_await suspension
+    // point (both routing loops are fully synchronous), so this being a plain member rather than a
+    // loop-local is a convenience only, not a concurrency concern.
+    std::vector<std::pair<std::size_t, std::string>> fan_in_edges_this_round_;
+
+    void push_structural_event(agentengine::workflow::workflow_event_kind kind,
+                                agentengine::workflow::WorkflowEventPayload payload =
+                                    agentengine::workflow::workflow_event_payload::Empty{}) {
+        if (!workflow_event_producer_.valid()) return;
+        agentengine::workflow::WorkflowEvent ev;
+        ev.kind    = kind;
+        ev.round   = rounds_;
+        ev.payload = std::move(payload);
+        (void)workflow_event_producer_.push(std::move(ev));
+    }
 };
 
 // Save `supervisor`'s current run under its own run_id() -- see file banner and snapshot_record()'s

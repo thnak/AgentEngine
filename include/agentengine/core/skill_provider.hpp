@@ -184,8 +184,8 @@ public:
     // `tools/cli_chat.cpp` injects as an additional system message once a skill is mounted, so the
     // agent doesn't need a fresh `open()` call to see it again on a later turn. `std::nullopt` for an
     // unresolved name.
-    [[nodiscard]] std::optional<std::string> body_of(std::string const& name) const {
-        auto it = body_by_name_.find(name);
+    [[nodiscard]] std::optional<std::string> body_of(std::string const& skill_name) const {
+        auto it = body_by_name_.find(skill_name);
         if (it == body_by_name_.end()) return std::nullopt;
         return it->second;
     }

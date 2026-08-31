@@ -783,6 +783,28 @@ public:
         return std::move(pair.consumer);
     }
 
+    // ADR-152 (issue #29): a second, INDEPENDENT tap into emit_run_event_for(), parallel to (never
+    // replacing) enable_event_stream() above. A red-team pass found a real conflict in the first
+    // design that would have had WorkflowSupervisor's own bridge call enable_event_stream() a
+    // second time on this session: that unconditionally REPLACES run_event_producer_ (the same
+    // "second call replaces the producer" convention WorkflowSupervisor::enable_live_view() also
+    // uses), silently evicting any consumer an application had already attached directly to this
+    // session -- a real, legitimate usage pattern (an app wanting both a workflow-level dashboard
+    // AND a focused per-agent debug stream on the same node) would break with no error, just an
+    // orphaned, permanently-empty consumer. A plain callback field sidesteps the single-consumer
+    // contract entirely: both this tap and a channel-based enable_event_stream() consumer, if both
+    // are wired, independently observe every event, from the same emit_run_event_for() call site.
+    // Default no-op; call-scoped, matching report_progress's own bracket discipline (ADR-060) --
+    // rt::agent_session_as_executor_body() (rt/agent_workflow_executor.hpp) sets a real closure
+    // immediately before start_run() and resets it to the no-op immediately after, so a second,
+    // unrelated call into this same session (a cyclic node revisited later, or an app calling
+    // start_run() directly outside any workflow) never inherits a stale closure captured by
+    // reference into a since-destroyed EffectContext.
+    void set_run_event_tap(std::function<void(RunEvent const&)> tap) {
+        run_event_tap_attached_ = static_cast<bool>(tap);
+        run_event_tap_ = tap ? std::move(tap) : std::function<void(RunEvent const&)>([](RunEvent const&) {});
+    }
+
     [[nodiscard]] std::vector<Message> const& history() const noexcept { return history_; }
     [[nodiscard]] std::string const& session_id() const noexcept { return session_id_; }
     [[nodiscard]] agentengine::Principal const& principal() const noexcept { return principal_; }
@@ -1630,13 +1652,20 @@ private:
     }
     void emit_run_event_for(std::string const& run_id, run_event_kind kind,
                              RunEventPayload payload = run_event_payload::Empty{}) {
-        if (!run_event_producer_.valid()) return;
+        // ADR-152: skip constructing/sequencing an event when NEITHER sink is attached -- the
+        // pre-existing "zero cost when unattached" guarantee this method already provided for
+        // run_event_producer_ alone, extended to cover the new tap without changing it for a
+        // caller that only ever used the producer (run_event_tap_ defaults to a real, always-
+        // callable no-op, so `static_cast<bool>` on it is not a meaningful "is a tap attached"
+        // check -- the boolean guard belongs here, at the call site, not on the field itself).
+        if (!run_event_producer_.valid() && !run_event_tap_attached_) return;
         RunEvent ev;
         ev.run_id  = run_id;
         ev.seq     = ++run_event_seq_by_run_[run_id];
         ev.kind    = kind;
         ev.payload = std::move(payload);
-        (void)run_event_producer_.push(std::move(ev));
+        run_event_tap_(ev);
+        if (run_event_producer_.valid()) (void)run_event_producer_.push(std::move(ev));
     }
 
     // `force_tainted()`, `filter_cross_provider_reasoning()`, and `drain_streaming_response()` now
@@ -2716,6 +2745,15 @@ private:
     std::uint64_t                                         admission_denied_count_ = 0;
     stream_producer<RunEvent>                             run_event_producer_;
     std::unordered_map<std::string, std::uint64_t>        run_event_seq_by_run_;
+    // ADR-152 (issue #29) -- see set_run_event_tap()'s own comment above. Default no-op;
+    // run_event_tap_attached_ tracks whether the LAST set_run_event_tap() call passed a real
+    // (non-empty) function, independent of what run_event_tap_ itself currently holds (which is
+    // never truly empty -- see set_run_event_tap()'s own substitution) -- this is what lets
+    // emit_run_event_for() skip constructing an event entirely when NEITHER this tap NOR
+    // run_event_producer_ is attached, the same zero-cost-when-unattached guarantee that method
+    // already provided for the producer alone.
+    std::function<void(RunEvent const&)>                  run_event_tap_ = [](RunEvent const&) {};
+    bool                                                   run_event_tap_attached_ = false;
     // Slice 3 -- see file banner's "SLICE 3 ADDITION" paragraph, and
     // docs/planning/agent-session-decomposition-design-draft.md §2a. Owns the standing-effect
     // storage and the background-completion queue (rt/standing_effect_registry.hpp); its own

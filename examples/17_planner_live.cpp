@@ -79,7 +79,8 @@ void check(bool cond, char const* what) {
 }
 
 [[nodiscard]] std::string upper(std::string s) {
-    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return std::toupper(c); });
+    std::transform(s.begin(), s.end(), s.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
     return s;
 }
 
