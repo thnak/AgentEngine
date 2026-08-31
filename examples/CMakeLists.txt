@@ -138,3 +138,12 @@ add_executable(agentengine_example_18_custom_context_provider 18_custom_context_
 target_link_libraries(agentengine_example_18_custom_context_provider PRIVATE
   agentengine::core agentengine_warnings)
 add_test(NAME example_18_custom_context_provider COMMAND agentengine_example_18_custom_context_provider)
+
+# 20: the workflow-level counterpart to 12 -- ADR-147's WorkflowCheckpointManager
+# (rt/workflow_checkpoint_manager.hpp), mirroring MAF's samples/03-workflows/checkpoint/
+# checkpoint_with_resume.py. Fully offline, no special build flags; uses a real on-disk
+# FileSessionStore (like 12) so "surviving a restart" is genuine, not just in-memory re-reading.
+add_executable(agentengine_example_20_workflow_checkpoint_resume 20_workflow_checkpoint_resume.cpp)
+target_link_libraries(agentengine_example_20_workflow_checkpoint_resume PRIVATE
+  agentengine::core agentengine_warnings)
+add_test(NAME example_20_workflow_checkpoint_resume COMMAND agentengine_example_20_workflow_checkpoint_resume)

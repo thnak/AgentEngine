@@ -1,5 +1,16 @@
 // AgentEngine "get started" examples, 10 -- conditional routing (014 §3's "Router" pattern).
 //
+// The exact same graph shape -- a router node choosing exactly one downstream branch by returning
+// its case label -- IS also 014 §3's "Handoff" pattern ("switch/case on a routing decision, control
+// transfer"; see tests/test_rt_workflow_supervisor_patterns.cpp's own "SW-1" scenario, which builds
+// this identical triage->billing/tech shape under the graph id "handoff"). MAF ships Router and
+// Handoff as separate samples/builders (ConditionalEdges vs. HandoffBuilder's auto-generated
+// per-agent handoff tools + mesh topology); AgentEngine intentionally does not need a second
+// mechanism for it -- 014 §1's closed `Edge` enumeration already covers the shape, and which
+// executor decides the label (a classifier function here, an LLM choosing a tool call in a live
+// handoff scenario) is the caller's own body logic either way, not something the engine needs to
+// know about.
+//
 // Mirrors MAF's samples/03-workflows/ConditionalEdges: one executor's own output decides which of
 // several downstream branches actually runs. In AgentEngine this is `edge_kind::switch_case`: each
 // candidate edge out of the router carries a `case_label` (`Edge::case_label`, graph.hpp), and the
