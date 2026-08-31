@@ -2311,6 +2311,16 @@ target_link_libraries(test_composed_sandbox_providers_live PRIVATE
   agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store
   agentengine::sandbox_io agentengine_warnings)
 add_test(NAME test_composed_sandbox_providers_live COMMAND test_composed_sandbox_providers_live)
+# RESOURCE_LOCK, not a lower -j: this and every other real-Docker-daemon test below share ONE
+# `docker_daemon` lock name, so CTest never schedules two of them concurrently regardless of -j,
+# while everything else in the suite keeps running at full parallelism. Added after a real CI
+# failure (not a hypothetical): ubuntu-latest's `-j 4` ran this test alongside test_sandbox_runtime/
+# test_docker_orphan_reap/test_mandatory_sandbox_provider against the SAME shared daemon, and
+# test_docker_orphan_reap's own POSITIVE CONTROL (a container matching THIS process's live
+# pid+start-key must NOT be reaped) failed under that contention -- daemon-level flakiness, not a
+# logic bug (the identical code passed clean, repeatedly, in this session's own non-concurrent
+# Windows/MSVC verification runs).
+set_tests_properties(test_composed_sandbox_providers_live PROPERTIES RESOURCE_LOCK docker_daemon)
 
 # ---- ADR-106 (ContainerdExecutionSurface promotion): the SECOND real ExecutionSurface conformer,
 # closing the identity-native design's own "only one conformer exists, does the three-verb shape
@@ -2324,7 +2334,10 @@ if(NOT WIN32)
   add_executable(test_containerd_execution_surface test_containerd_execution_surface.cpp)
   target_link_libraries(test_containerd_execution_surface PRIVATE agentengine::core agentengine_warnings)
   add_test(NAME test_containerd_execution_surface COMMAND test_containerd_execution_surface)
-  set_tests_properties(test_containerd_execution_surface PROPERTIES TIMEOUT 60)
+  # Same RESOURCE_LOCK reasoning as docker_daemon above, a separate lock name because this and its
+  # sibling below hit a DIFFERENT shared daemon (containerd, via `ctr`) than the docker_daemon-locked
+  # tests do.
+  set_tests_properties(test_containerd_execution_surface PROPERTIES TIMEOUT 60 RESOURCE_LOCK containerd_daemon)
 
   # ---- ADR-106 §7 residual, closed: the ContainerdExecutionSurface counterpart to
   # test_composed_sandbox_providers_live above -- proves MandatorySandboxProvider<
@@ -2336,6 +2349,7 @@ if(NOT WIN32)
     agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store
     agentengine::sandbox_io agentengine_warnings)
   add_test(NAME test_composed_containerd_providers_live COMMAND test_composed_containerd_providers_live)
+  set_tests_properties(test_composed_containerd_providers_live PROPERTIES RESOURCE_LOCK containerd_daemon)
 endif()
 
 # ---- Everything below stays WIN32-only, a real, disclosed platform-parity gap (not a stale gate):
@@ -3238,6 +3252,7 @@ add_test(NAME test_ledger COMMAND test_ledger)
 add_executable(test_sandbox_runtime test_sandbox_runtime.cpp)
 target_link_libraries(test_sandbox_runtime PRIVATE agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)
 add_test(NAME test_sandbox_runtime COMMAND test_sandbox_runtime)
+set_tests_properties(test_sandbox_runtime PROPERTIES RESOURCE_LOCK docker_daemon)
 
 # ---- ADR-108 -- DockerCliBackend::reap_orphans(), the real orphan-container garbage-collection fix
 # for the residual DockerExecutionSurface's own header comment has disclosed since ADR-104/ADR-106.
@@ -3246,6 +3261,7 @@ add_test(NAME test_sandbox_runtime COMMAND test_sandbox_runtime)
 add_executable(test_docker_orphan_reap test_docker_orphan_reap.cpp)
 target_link_libraries(test_docker_orphan_reap PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_docker_orphan_reap COMMAND test_docker_orphan_reap)
+set_tests_properties(test_docker_orphan_reap PROPERTIES RESOURCE_LOCK docker_daemon)
 
 # ---- ADR-102 Phase 4 -- MandatorySandboxProvider<Surface>/RunCommandTool
 # (sandbox/mandatory_sandbox_provider.hpp), composed as a REAL agentengine::rt::AgentSession's actual
@@ -3256,6 +3272,7 @@ add_test(NAME test_docker_orphan_reap COMMAND test_docker_orphan_reap)
 add_executable(test_mandatory_sandbox_provider test_mandatory_sandbox_provider.cpp)
 target_link_libraries(test_mandatory_sandbox_provider PRIVATE agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)
 add_test(NAME test_mandatory_sandbox_provider COMMAND test_mandatory_sandbox_provider)
+set_tests_properties(test_mandatory_sandbox_provider PROPERTIES RESOURCE_LOCK docker_daemon)
 
 # ---- ADR-114 -- MandatorySandboxProvider<Surface>'s task-branch tools (start_task_branch/
 # run_in_task_branch/commit_task_branch/discard_task_branch), the A10 promotion giving
@@ -3265,6 +3282,7 @@ add_test(NAME test_mandatory_sandbox_provider COMMAND test_mandatory_sandbox_pro
 add_executable(test_task_branch_tools test_task_branch_tools.cpp)
 target_link_libraries(test_task_branch_tools PRIVATE agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)
 add_test(NAME test_task_branch_tools COMMAND test_task_branch_tools)
+set_tests_properties(test_task_branch_tools PROPERTIES RESOURCE_LOCK docker_daemon)
 
 # ---- ADR-114 §5/§6 residual, closed: real, two-OS-thread concurrent dispatch across all four
 # task-branch verbs on ONE MandatorySandboxProvider instance -- mirrors test_rt_block_on's own real
@@ -3273,6 +3291,7 @@ add_test(NAME test_task_branch_tools COMMAND test_task_branch_tools)
 add_executable(test_task_branch_concurrent_dispatch test_task_branch_concurrent_dispatch.cpp)
 target_link_libraries(test_task_branch_concurrent_dispatch PRIVATE agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)
 add_test(NAME test_task_branch_concurrent_dispatch COMMAND test_task_branch_concurrent_dispatch)
+set_tests_properties(test_task_branch_concurrent_dispatch PROPERTIES RESOURCE_LOCK docker_daemon)
 
 # ---- ADR-126 -- closes ADR-114 §5/§6's own "active_'s table has no durability of its own" residual:
 # bind_sandbox() now recovers orphaned child task branches from a durable-Store Ledger after a

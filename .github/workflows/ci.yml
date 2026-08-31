@@ -301,8 +301,25 @@ jobs:
       - name: Build
         run: cmake --build build -j 4
 
+      # test_containerd_execution_surface / test_composed_containerd_providers_live talk to
+      # /run/containerd/containerd.sock directly via the raw `ctr` CLI. Unlike the Docker socket
+      # (already runner-user-accessible on ubuntu-latest, see test_docker_orphan_reap passing
+      # unprivileged), containerd's socket is root-only by default and was never granted equivalent
+      # access -- ADR-145 (ex-ADR-106)'s own text already said "Run as root (containerd's default
+      # socket permissions require it)" when this suite was first verified; it just never had a CI
+      # leg to run on until this branch. Root is scoped to ONLY these two tests, not the whole
+      # suite: several tests (the escape-corpus permission-denial suites) specifically assert a
+      # POSIX permission check REJECTS an operation, which root bypasses -- running everything as
+      # root would silently flip that signal.
       - name: Test
-        run: ctest --test-dir build -j 4 --output-on-failure --timeout 180
+        run: |
+          ctest --test-dir build -j 4 --output-on-failure --timeout 180 \
+            -E '^(test_containerd_execution_surface|test_composed_containerd_providers_live)$'
+
+      - name: Test (containerd, root)
+        run: |
+          sudo ctest --test-dir build -j 4 --output-on-failure --timeout 180 \
+            -R '^(test_containerd_execution_surface|test_composed_containerd_providers_live)$'
 
   naming-lint:
     name: 027 naming lint (stub)
