@@ -202,6 +202,7 @@ if(WIN32)
   add_library(agentengine_native_jail_backend STATIC
     src/backends/native_jail/app_container_profile.cpp
     src/backends/native_jail/native_jail_backend.cpp
+    src/backends/native_jail/native_jail_handle_relay.cpp
     src/backends/native_jail/jailed_worker_rpc.cpp)
   target_include_directories(agentengine_native_jail_backend PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/src")
