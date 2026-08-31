@@ -849,8 +849,28 @@ public:
                                                           "docker run failed: " + r.stdout_text,
                                                           "docker_cli_backend.create_failed"});
         }
-        std::string id = r.stdout_text;
-        while (!id.empty() && (id.back() == '\n' || id.back() == '\r')) id.pop_back();
+        // ADR-146 §11: a REAL, reproduced-on-CI bug found here, not the naive trailing-newline trim
+        // this used to be. `run_capture()` merges stdout AND stderr into one stream (by design, see
+        // its own header comment). When `image` is not yet cached locally, `docker run` writes
+        // multi-line pull-progress noise ("Unable to find image '...' locally", "Pulling from...",
+        // "Status: Downloaded newer image for...") BEFORE its own final, single-line, machine-
+        // readable container id -- the ONLY output `docker run -d` guarantees on success is that its
+        // LAST line is the id. Trimming only trailing whitespace kept that entire pull-progress
+        // preamble glued onto the id, which then got embedded verbatim into `copy_to_container()`'s
+        // generated `docker cp <id>:<path>` command -- multiple embedded newlines/spaces there is
+        // exactly what turned one shell argument into several, producing the CI failure this ADR's
+        // own diagnostic finally captured: `docker: 'docker cp' requires 2 arguments`. Fixed by
+        // extracting only the LAST NON-EMPTY line of the captured output, unconditionally correct
+        // whether or not a pull preamble is present (a cache-hit `docker run` output IS just the id,
+        // a single line, so this is a strict generalization, not a special case).
+        std::string const trimmed = [&] {
+            std::string s = r.stdout_text;
+            while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back();
+            return s;
+        }();
+        auto const last_newline = trimmed.find_last_of('\n');
+        std::string id = (last_newline == std::string::npos) ? trimmed : trimmed.substr(last_newline + 1);
+        while (!id.empty() && id.back() == '\r') id.pop_back();
         return Instance{id};
     }
 

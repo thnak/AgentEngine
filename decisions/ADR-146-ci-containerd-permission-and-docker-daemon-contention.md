@@ -2,15 +2,15 @@
 
 - **Status:** Proposed — implemented and REAL-CI-CONFIRMED for everything this ADR set out to fix:
   the `RESOURCE_LOCK` fix (dropped 5 non-deterministic failures to 0), the containerd-socket
-  permission fix (`permission denied` gone), and the `ctr` image-pull gap (both containerd tests now
-  pass 100%, disproving an earlier "shared composition bug" theory — see §9). **One test remains red
-  and is NOT fixed by this ADR: `test_composed_sandbox_providers_live`** (Docker-specific, composed-
-  provider-specific). Investigated extensively (§9: real native-Linux Docker repro, CI-matching
-  full-suite runs under matched core constraints, 45+ local runs) with NO successful local
-  reproduction — genuinely appears to be a low-frequency, CI-environment-specific race whose exact
-  trigger was not identified. Diagnostic instrumentation added (§9) so the next real CI failure is
-  directly diagnosable. Disclosed as an open, investigated-but-unresolved residual, not silently
-  folded into a false "done."
+  permission fix (`permission denied` gone), the `ctr` image-pull gap (both containerd tests now
+  pass 100%), and — root-caused and fixed for real, §11 — `DockerCliBackend::create()`'s container-id
+  extraction, which took Docker's own cold-pull progress output as part of the id whenever the image
+  wasn't already cached, corrupting every downstream `docker cp`/`docker exec` call that embedded it.
+  **100% locally reproduced (necessary) and 100% locally verified fixed (sufficient) against a real
+  Docker daemon with the image deliberately evicted, matching the exact CI failure signature
+  byte-for-byte** — not a theoretical fix. Full rebuild + `ctest` 294/294 (minus the one pre-existing,
+  disclosed, unrelated environment gap) confirm zero regression. Next CI run pending as final
+  end-to-end confirmation.
 - **Date:** 2026-08-31.
 - **Scope:** `.github/workflows/ci.yml` (`linux` job's `Test` step only), `tests/CMakeLists.txt`
   (`RESOURCE_LOCK` property additions to 8 existing `add_test()` registrations, no new tests, no
@@ -257,14 +257,13 @@ systematic CI occurrences — they share a symptom (fast failure, empty/missing 
 CI-specific trigger (Docker version, storage driver, cgroup driver, or some other `ubuntu-latest`-
 specific characteristic none of this session's local environments share) was not identified.
 
-**What this ADR leaves behind, honestly**: the diagnostic instrumentation (kept, inert on the
-passing path, verified via naming_lint and repeated local runs) is the load-bearing artifact for
-whoever hits this next — the next real CI failure's log will show the actual reply content instead
-of a bare "FAIL" with no context. Root-causing further from here needs either interactive access to
-a failing `ubuntu-latest` run (this session had none) or accepting the diagnostic's next real capture
-as the next lead. Not fixed. Not quarantined. Disclosed, with the actual investigative trail, so a
-future session does not have to re-derive that image-pull, composition-layer, and general-resource-
-contention are all ruled out before making progress.
+**What this section leaves behind**: the diagnostic instrumentation (kept, inert on the passing path,
+verified via naming_lint and repeated local runs) is the load-bearing artifact for whoever hits this
+next — the next real CI failure's log will show the actual reply content instead of a bare "FAIL"
+with no context. As it turned out, that "next real CI failure" was the very next push (§10), and its
+diagnostic output is what §11 root-causes and fixes for real — this section's "not fixed, not
+quarantined" framing was accurate when written and is superseded below, kept here rather than
+rewritten after the fact so the actual investigative sequence stays legible.
 
 ## 10. §9's diagnostic delivered a real answer — and a genuinely new, specific lead
 
@@ -295,3 +294,66 @@ clean, `naming_lint.py` clean, full `ctest` 294/294 minus the one pre-existing, 
 `test_reference_agent_task_corpus` environment gap — zero regression from this change. Pushed; the
 next CI failure (if it recurs) will show the literal `docker cp` command that was generated, which
 should make the actual mechanism unambiguous instead of theorized.
+
+## 11. Root-caused and fixed for real — `create()`'s container-id extraction, confirmed by reproducing the exact CI failure locally
+
+§10's own push landed on CI and delivered the answer in one shot. The generated command, now visible
+verbatim in the error message —
+
+```
+(command: docker cp "/tmp/ae_test_composed_sandbox_providers/ledger/." Unable to find image
+'alpine:latest' locally
+latest: Pulling from library/alpine
+...
+Status: Downloaded newer image for alpine:latest
+74b61e1d66e9...:/workspace)
+```
+
+— makes the bug obvious: `inst.container_id` was not a container id, it was Docker's ENTIRE
+cold-pull progress transcript with the real id glued onto the end. `DockerCliBackend::create()`
+(`docker_execution_surface.hpp`) captured `docker run -d`'s output via `run_capture()`, which merges
+stdout AND stderr into one stream by design (§ elsewhere in this file), and extracted the container
+id by trimming only trailing newlines from the WHOLE captured blob. That is correct exactly when the
+image is already cached (the only output `docker run -d` produces then IS the id, one line) and
+wrong whenever it is not: `docker run` writes `Unable to find image '...' locally`, `Pulling from
+...`, per-layer progress, and `Status: Downloaded newer image for ...` BEFORE its own final,
+single-line id, and every prior code path in this file simply never triggered the cold-pull case
+during its own verification (the image was always already present on whatever daemon was being
+tested against — every other Docker test in the suite, and every prior manual/CI verification pass
+this session ran, executed AFTER something had already pulled `alpine:latest`).
+
+That is also exactly why this was invisible everywhere except a genuinely fresh CI VM:
+`test_composed_sandbox_providers_live` happens to be the FIRST `docker_daemon`-locked test CTest
+schedules (§7's own log evidence), so on a brand-new `ubuntu-latest` runner it is the very first
+thing to ever `docker run alpine:latest` — no prior test has pulled the image yet. Every one of
+this session's 45+ local repro attempts (§9) ran against a daemon that already had `alpine:latest`
+cached from earlier manual work, so the cold-pull code path was never actually exercised locally
+until this section deliberately forced it.
+
+**Fix**: extract only the LAST NON-EMPTY LINE of the captured output as the id, not the whole
+trimmed blob — unconditionally correct whether or not a pull preamble is present, since `docker run
+-d`'s own contract guarantees its last line of output is the id regardless of what else it printed
+first.
+
+**Proven necessary AND sufficient, not theoretical** — reproduced the EXACT CI failure locally for
+the first time this session, on demand:
+1. `docker rmi alpine:latest` (evict the cached image — the missing precondition every earlier local
+   attempt had, without realizing it).
+2. Stashed the fix, rebuilt, ran the test: failed with the byte-for-byte identical signature CI
+   showed, container-id field polluted with the identical pull-progress transcript, `docker cp`
+   "requires 2 arguments." Necessary confirmed.
+3. Restored the fix, rebuilt, ran the test against the same freshly-evicted image: passed clean, all
+   checks green, and the container it created was properly cleaned up afterward (no leak) — the
+   pre-fix run's own corrupted-id container was ALSO found still leaked on the daemon afterward
+   (`destroy()` can't tear down a container it can't correctly identify), a connected consequence of
+   the same bug, closed by the same fix, not a separate defect. Sufficient confirmed.
+4. Full rebuild, `naming_lint.py`, full `ctest` 294/294 (minus the one pre-existing, disclosed,
+   unrelated `test_reference_agent_task_corpus` gap) — zero regression.
+
+**Residual**: `run_capture()`'s stdout/stderr merge (an intentional, disclosed design choice
+elsewhere in this file, needed to reproduce `_popen`'s/`popen`'s original combined-stream behavior)
+means `create()`'s new last-line extraction is only correct because `docker run -d` happens to
+guarantee its id is the final line of output on success — a different Docker subcommand relying on
+this same capture path without that same guarantee would need its own, not-yet-written extraction
+logic, not a blind copy of this one. Not a gap in THIS fix; a note for whoever adds the next
+`docker_cli_detail`-backed command that parses structured output from a merged stream.
