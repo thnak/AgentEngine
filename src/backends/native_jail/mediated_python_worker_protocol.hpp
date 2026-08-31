@@ -58,6 +58,15 @@ inline constexpr char const* kQueryConnectClose = "connect_close";
 inline constexpr char const* kQueryFileRead = "file_read";
 inline constexpr char const* kQueryFileWrite = "file_write";
 inline constexpr char const* kQueryFileClose = "file_close";
+// decisions/ADR-155-agent-progress-codeact-module.md, 026 §5's `agent.progress`. Deliberately reuses
+// the EXISTING worker_query/worker_query_response request-response envelope (kWorkerQuery/
+// kWorkerQueryResponse above) rather than a genuinely new frame TYPE the way GitHub issue #31's own
+// first sketch proposed: RT1 Finding 1's exec_seq-mismatch fail-closed check (native_jail_backend.cpp's
+// exec_session()) already applies uniformly to every worker_query KIND, so adding one more kind here
+// gets that same protection for free, with no new branch needed in exec_session()'s own frame-type
+// dispatch loop at all -- the identical "small, boring, reuse the pipe already proven safe" bar 026 §5
+// itself sets for the Python surface, applied to the transport layer too.
+inline constexpr char const* kQueryProgress = "progress";
 
 // Returned by the host's dispatch handler for a `call_tool` query when no tool bridge is configured
 // for this session at all (native_jail_backend.cpp's dispatch_worker_query) -- named once here so the

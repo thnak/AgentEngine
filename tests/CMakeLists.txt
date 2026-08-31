@@ -1674,7 +1674,7 @@ add_executable(test_rt_workflow_as_executor test_rt_workflow_as_executor.cpp)
 target_link_libraries(test_rt_workflow_as_executor PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_workflow_as_executor COMMAND test_rt_workflow_as_executor)
 
-# ---- ADR-152 (issue #29): WorkflowSupervisor's fine-grained, genuinely-live per-executor event
+# ---- ADR-153 (issue #29): WorkflowSupervisor's fine-grained, genuinely-live per-executor event
 # stream. Design draft: docs/planning/workflow-event-stream-design-draft.md.
 add_executable(test_rt_workflow_event_stream test_rt_workflow_event_stream.cpp)
 target_link_libraries(test_rt_workflow_event_stream PRIVATE agentengine::core agentengine_warnings)
@@ -2906,6 +2906,34 @@ if(WIN32)
   set_tests_properties(test_skill_mount_materializer PROPERTIES TIMEOUT 60)
 endif()
 
+# ---- decisions/ADR-153-agent-memory-codeact-bridging.md -- src/backends/native_jail/
+# memory_mount_materializer.hpp (the same materialize_mount shape as skill_mount_materializer, narrowed
+# to one principal's own memory mount) plus MemoryProvider::make_recall_tool_descriptor() now public and
+# proven through the real bridge_tool_call() path (tool_bridge.hpp), not merely through
+# ContextContribution.tools the way test_memory_provider.cpp already covers it.
+if(WIN32)
+  add_executable(test_memory_codeact_bridging test_memory_codeact_bridging.cpp)
+  target_include_directories(test_memory_codeact_bridging PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../src")
+  target_link_libraries(test_memory_codeact_bridging PRIVATE
+    agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_memory_codeact_bridging COMMAND test_memory_codeact_bridging)
+  set_tests_properties(test_memory_codeact_bridging PROPERTIES TIMEOUT 60)
+endif()
+
+# ---- decisions/ADR-156-agent-notes-write-back.md -- src/backends/native_jail/
+# memory_notes_materializer.hpp: a dedicated notes-inbox subtree (isolated from write_memory_item()'s
+# own structural <kind>/<id> storage) plus harvest_memory_notes(), converting a script's real file
+# writes into durable AgentAuthored MemoryItems, discoverable through the SAME rank_memory_items()/
+# recall path other memory items use.
+if(WIN32)
+  add_executable(test_memory_notes_write_back test_memory_notes_write_back.cpp)
+  target_include_directories(test_memory_notes_write_back PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../src")
+  target_link_libraries(test_memory_notes_write_back PRIVATE
+    agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_memory_notes_write_back COMMAND test_memory_notes_write_back)
+  set_tests_properties(test_memory_notes_write_back PROPERTIES TIMEOUT 60)
+endif()
+
 # ---- Worktree mount<->real-directory sync (025 §5/§7, Milestone 3 Phase F1) ---------------------
 # Proves materialize_mount/harvest_mount (src/backends/native_jail/worktree_mount_sync.hpp) against
 # the REAL MediatedFileSystemAdapter (ADR-014), not a test double -- needs
@@ -3016,6 +3044,32 @@ if(AGENTENGINE_BUILD_PYTHON_RUNNER)
     AE_PYTHON_HOME="${AGENTENGINE_PYTHON_HOME}")
   add_test(NAME test_native_jail_python_worker_slice1 COMMAND test_native_jail_python_worker_slice1)
   set_tests_properties(test_native_jail_python_worker_slice1 PROPERTIES
+    ENVIRONMENT "${AE_PYTHON_TEST_ENV}" TIMEOUT 60)
+
+  # ---- decisions/ADR-154-agent-output-codeact-module.md -- GitHub issue #39, 026 §5's `agent.output`.
+  # A real script calling agent.output.set(value) against the real agentengine_python_worker.exe,
+  # round-tripping into ExecOutcome::structured_output_json; proves the opt-in gate, last-call-wins,
+  # and no cross-execution leak on the same worker.
+  add_executable(test_agent_output_codegen test_agent_output_codegen.cpp)
+  target_link_libraries(test_agent_output_codegen PRIVATE
+    agentengine::core agentengine::mediated_python_runner agentengine_warnings)
+  target_compile_definitions(test_agent_output_codegen PRIVATE
+    AE_PYTHON_HOME="${AGENTENGINE_PYTHON_HOME}")
+  add_test(NAME test_agent_output_codegen COMMAND test_agent_output_codegen)
+  set_tests_properties(test_agent_output_codegen PROPERTIES
+    ENVIRONMENT "${AE_PYTHON_TEST_ENV}" TIMEOUT 60)
+
+  # ---- decisions/ADR-155-agent-progress-codeact-module.md -- GitHub issue #31's own three-piece gap.
+  # A real script calling agent.progress.report(text) against the real agentengine_python_worker.exe,
+  # proving ctx.report_progress() fires for real, the worker survives (never hits exec_session()'s
+  # fail-closed terminate_worker() fallback), and multiple calls stream as multiple events.
+  add_executable(test_agent_progress_codegen test_agent_progress_codegen.cpp)
+  target_link_libraries(test_agent_progress_codegen PRIVATE
+    agentengine::core agentengine::mediated_python_runner agentengine_warnings)
+  target_compile_definitions(test_agent_progress_codegen PRIVATE
+    AE_PYTHON_HOME="${AGENTENGINE_PYTHON_HOME}")
+  add_test(NAME test_agent_progress_codegen COMMAND test_agent_progress_codegen)
+  set_tests_properties(test_agent_progress_codegen PROPERTIES
     ENVIRONMENT "${AE_PYTHON_TEST_ENV}" TIMEOUT 60)
 
   # ---- HandleRelay (ADR-081 Slice 2, decisions/ADR-085-jailed-python-worker-slice-2-handle-relay.md):

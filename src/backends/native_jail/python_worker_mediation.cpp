@@ -40,6 +40,8 @@
 
 #include "backends/native_jail/agent_ask_codegen.hpp"         // ADR-057 §9, 026 §5
 #include "backends/native_jail/agent_files_data_codegen.hpp"  // Milestone 3 Phase G2, 026 §5
+#include "backends/native_jail/agent_output_codegen.hpp"      // ADR-154, 026 §5
+#include "backends/native_jail/agent_progress_codegen.hpp"    // ADR-155, 026 §5
 #include "backends/native_jail/mediated_python_worker_protocol.hpp"
 #include "backends/native_jail/native_jail_win32_helpers.hpp"  // widen/narrow -- see that header's
                                                                   // own comment for why this TU needs
@@ -84,6 +86,12 @@ bool g_initialized = false;
 
 std::vector<std::string> const* g_preseeded_answers = nullptr;
 std::size_t                     g_preseeded_answer_index = 0;
+// decisions/ADR-154-agent-output-codeact-module.md: the JSON-encoded value from the MOST RECENT
+// `agent.output.set(...)` call this execution, or empty if never called (see WorkerExecResult's own
+// field comment for why empty is unambiguous). Reset at the top of every `run()` call -- one script
+// execution's own call must never leak into the NEXT execution the way `g_preseeded_answer_index`
+// above is already reset per-run for the identical reason.
+std::string g_structured_output_json;
 
 PyObject* g_ask_pending_exc_type = nullptr;
 
@@ -579,6 +587,23 @@ PyObject* Internal_call_tool(PyObject* /*self*/, PyObject* args) {
     return PyUnicode_FromString(reply_json.c_str());
 }
 
+// `_ae_internal.report_progress(text) -> None` -- decisions/ADR-155-agent-progress-codeact-module.md.
+// Reuses `query_or_raise` verbatim (the SAME `g_query_fn` round trip `Internal_call_tool`/`Internal_
+// open`/etc. above already use) -- a synchronous, blocking call the script waits on, exactly like any
+// other worker_query, NOT a fire-and-forget send: this is a deliberate, simpler alternative to GitHub
+// issue #31's own "new frame type, no waiting" sketch (see kQueryProgress's own comment,
+// mediated_python_worker_protocol.hpp), not an oversight. The script continues running normally once
+// the host's ack comes back -- this does NOT abort or suspend, unlike `agent.ask`.
+PyObject* Internal_report_progress(PyObject* /*self*/, PyObject* args) {
+    char const* text_c = nullptr;
+    if (!PyArg_ParseTuple(args, "s", &text_c)) return nullptr;
+
+    json::Value payload = json::Value::make_object({{"text", json::Value::make_string(text_c)}});
+    auto resp = query_or_raise(wp::kQueryProgress, std::move(payload));
+    if (!resp) return nullptr;  // query_or_raise already raised
+    Py_RETURN_NONE;
+}
+
 // `_ae_internal.ask_or_raise(prompt) -> str` -- UNCHANGED from mediated_python_runner.cpp's own
 // version: purely worker-local, no `g_query_fn` round trip (see this file's own header note and
 // 026 §5/ADR-057 §9 for why `agent.ask` is the one deliberate no-IPC exception).
@@ -601,6 +626,20 @@ PyObject* Internal_ask_or_raise(PyObject* /*self*/, PyObject* args) {
     return nullptr;
 }
 
+// `_ae_internal.set_output(json_text) -> None` -- decisions/ADR-154-agent-output-codeact-module.md.
+// Stores the ALREADY-JSON-ENCODED text verbatim (the generated Python module does the `json.dumps`,
+// matching `agent.tools`' own established "the C side never re-parses what it can pass through as
+// opaque text" convention, `agent_tools_codegen.hpp`'s own file comment) into a plain global -- no IPC
+// round trip (this is a same-process, synchronous write, unlike `call_tool`), no exception-based
+// signal (unlike `agent.ask`'s `AskPending`: this call does not abort or suspend the script, it just
+// records a value for `run()` to read once the WHOLE script finishes). Last-call-wins.
+PyObject* Internal_set_output(PyObject* /*self*/, PyObject* args) {
+    char const* json_text = nullptr;
+    if (!PyArg_ParseTuple(args, "s", &json_text)) return nullptr;
+    g_structured_output_json = json_text;
+    Py_RETURN_NONE;
+}
+
 PyMethodDef g_internal_methods[] = {
     {"open", Internal_open, METH_VARARGS, nullptr},
     {"listdir", Internal_listdir, METH_VARARGS, nullptr},
@@ -613,6 +652,8 @@ PyMethodDef g_internal_methods[] = {
     {"connect_close", Internal_connect_close, METH_VARARGS, nullptr},
     {"call_tool", Internal_call_tool, METH_VARARGS, nullptr},
     {"ask_or_raise", Internal_ask_or_raise, METH_VARARGS, nullptr},
+    {"set_output", Internal_set_output, METH_VARARGS, nullptr},
+    {"report_progress", Internal_report_progress, METH_VARARGS, nullptr},
     {nullptr, nullptr, 0, nullptr},
 };
 
@@ -944,6 +985,16 @@ result<void> run_agent_files_data_bootstrap() {
 
 result<void> run_agent_ask_bootstrap() {
     return run_private_bootstrap(generate_agent_ask_module_source(), "python.agent_ask_bootstrap_failed");
+}
+
+result<void> run_agent_output_bootstrap() {
+    return run_private_bootstrap(generate_agent_output_module_source(),
+                                  "python.agent_output_bootstrap_failed");
+}
+
+result<void> run_agent_progress_bootstrap() {
+    return run_private_bootstrap(generate_agent_progress_module_source(),
+                                  "python.agent_progress_bootstrap_failed");
 }
 
 std::unordered_set<std::string> snapshot_current_module_names() {
@@ -1292,6 +1343,14 @@ result<void> initialize(WorkerInitConfig config, QueryFn query_fn) {
         auto agent_ask = run_agent_ask_bootstrap();
         if (!agent_ask) return std::unexpected(agent_ask.error());
     }
+    if (g_config.expose_agent_output) {
+        auto agent_output = run_agent_output_bootstrap();
+        if (!agent_output) return std::unexpected(agent_output.error());
+    }
+    if (g_config.expose_agent_progress) {
+        auto agent_progress = run_agent_progress_bootstrap();
+        if (!agent_progress) return std::unexpected(agent_progress.error());
+    }
 
     compute_effective_keep_set(pre_bootstrap_modules);
     sweep_to_keep_set();
@@ -1317,6 +1376,7 @@ result<WorkerExecResult> run(std::string const& source, std::vector<std::string>
 
     g_preseeded_answers = &preseeded_answers;
     g_preseeded_answer_index = 0;
+    g_structured_output_json.clear();
     sync_state_into_process(cwd, env);
 
     auto captured = run_capturing(source);
@@ -1345,6 +1405,7 @@ result<WorkerExecResult> run(std::string const& source, std::vector<std::string>
     outcome.stdout_text = std::move(stdout_capped.text);
     outcome.stderr_text = std::move(stderr_capped.text);
     outcome.result_repr = std::move(repr_capped.text);
+    outcome.structured_output_json = std::move(g_structured_output_json);
     return outcome;
 }
 

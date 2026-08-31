@@ -747,6 +747,8 @@ result<SandboxHandle> NativeJailBackend::create_python_worker(SandboxSpec const&
         {"caller_gated_modules", json::Value::make_array(std::move(gated_json))},
         {"expose_agent_files_data", json::Value::make_bool(session.expose_agent_files_data)},
         {"expose_agent_ask", json::Value::make_bool(session.expose_agent_ask)},
+        {"expose_agent_output", json::Value::make_bool(session.expose_agent_output)},
+        {"expose_agent_progress", json::Value::make_bool(session.expose_agent_progress)},
         {"output_cap_bytes", json::Value::make_number(static_cast<double>(session.output_cap_bytes))},
         {"agent_tools_module_source", json::Value::make_string(agent_tools_module_source)},
     });
@@ -870,6 +872,18 @@ void NativeJailBackend::dispatch_worker_query(Instance& inst, json::Value const&
         fields = dispatch_file_write(ws, *payload);
     } else if (kind == wp::kQueryFileClose && payload != nullptr) {
         fields = dispatch_file_close(ws, *payload);
+    } else if (kind == wp::kQueryProgress && payload != nullptr) {
+        // decisions/ADR-155-agent-progress-codeact-module.md. `ctx` here is the SAME EffectContext
+        // `exec_session()` was called with -- which, because `execute_code` itself is invoked as an
+        // ordinary tool through one of `rt/agent_session.hpp`'s three real `invoke_tool()` call sites
+        // (ADR-060 §2), already has `report_progress` bound to that call's own live
+        // `[this, call_id]` closure for free. No AgentSession-side change was needed to reach this --
+        // ADR-060 §3 named this exact follow-on and this is it. `force_tainted()` (agent_session.hpp)
+        // runs inside that closure before the event is emitted, so this call site does not (and must
+        // not) mark the content trusted itself.
+        std::string const text = wp::get_string(*payload, "text");
+        ctx.report_progress(ContentItem{.value = Text{text}});
+        fields = {{"ok", json::Value::make_bool(true)}};
     } else if (kind == wp::kQueryConnectAuthorize && payload != nullptr) {
         fields = dispatch_connect_authorize(ws, ctx, *payload);
     } else if (kind == wp::kQueryConnectSend && payload != nullptr) {
@@ -1001,6 +1015,7 @@ result<ExecOutcome> NativeJailBackend::exec_session(SandboxHandle const& handle,
             outcome.stderr_text = wp::get_string(*frame, "stderr_text");
             outcome.result_repr = wp::get_string(*frame, "result_repr");
             outcome.ask_prompt = wp::get_string(*frame, "ask_prompt");
+            outcome.structured_output_json = wp::get_string(*frame, "structured_output_json");
             state.cwd = wp::get_string(*frame, "cwd");
             state.env = wp::get_string_map(*frame, "env");
             got_final = true;

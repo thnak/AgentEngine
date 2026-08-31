@@ -57,6 +57,12 @@ struct WorkerInitConfig {
                                                               // unchanged from mediated_python_runner.hpp
     bool expose_agent_files_data = false;
     bool expose_agent_ask = false;
+    // decisions/ADR-154-agent-output-codeact-module.md, 026 §5's `agent.output` (zero capability,
+    // same opt-in-per-module shape `expose_agent_ask` above already establishes for another
+    // zero-capability module -- a session may hold no reason to want it even though it costs nothing).
+    bool expose_agent_output = false;
+    // decisions/ADR-155-agent-progress-codeact-module.md, 026 §5's `agent.progress` (zero capability).
+    bool expose_agent_progress = false;
     std::uint64_t output_cap_bytes = 0;       // 0 -> this engine's own default (output_discipline.hpp)
     std::string agent_tools_module_source;    // empty -> agent.tools is not bridged this session
 };
@@ -75,6 +81,9 @@ struct WorkerExecResult {
     std::string stderr_text;
     std::string result_repr;   // meaningful only when klass == "ok"
     std::string ask_prompt;    // meaningful only when klass == "ask_pending"
+    // decisions/ADR-154-agent-output-codeact-module.md: JSON-encoded value from `agent.output.set(...)`,
+    // meaningful only when klass == "ok" -- empty means never called, same convention as result_repr.
+    std::string structured_output_json;
 };
 
 // The ONE bridge out of this process. `kind` is one of mediated_python_worker_protocol.hpp's

@@ -81,6 +81,7 @@ Value build_exec_response(std::uint64_t exec_seq, worker::WorkerExecResult const
         {"stderr_text", Value::make_string(r.stderr_text)},
         {"result_repr", Value::make_string(r.result_repr)},
         {"ask_prompt", Value::make_string(r.ask_prompt)},
+        {"structured_output_json", Value::make_string(r.structured_output_json)},
         {"cwd", Value::make_string(cwd)},
         {"env", wp::make_string_map(env)},
     });
@@ -130,6 +131,8 @@ int main(int argc, char** argv) {
     }
     config.expose_agent_files_data = wp::get_bool(*init_frame, "expose_agent_files_data");
     config.expose_agent_ask = wp::get_bool(*init_frame, "expose_agent_ask");
+    config.expose_agent_output = wp::get_bool(*init_frame, "expose_agent_output");
+    config.expose_agent_progress = wp::get_bool(*init_frame, "expose_agent_progress");
     config.output_cap_bytes = static_cast<std::uint64_t>(wp::get_number(*init_frame, "output_cap_bytes"));
     config.agent_tools_module_source = wp::get_string(*init_frame, "agent_tools_module_source");
 

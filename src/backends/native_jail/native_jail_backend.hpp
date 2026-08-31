@@ -148,6 +148,8 @@ struct PythonWorkerSessionConfig {
     std::unordered_map<std::string, std::wstring> mount_roots;
     bool   expose_agent_files_data = false;
     bool   expose_agent_ask = false;
+    bool   expose_agent_output = false;  // decisions/ADR-154-agent-output-codeact-module.md, 026 §5
+    bool   expose_agent_progress = false;  // decisions/ADR-155-agent-progress-codeact-module.md, 026 §5
     std::size_t output_cap_bytes = 0;  // 0 -> the worker's own default (output_discipline.hpp)
     std::wstring worker_exe_path;      // fixed, host-controlled path to agentengine_python_worker.exe
                                         // -- NEVER derived from anything guest/model-influenced (I2).

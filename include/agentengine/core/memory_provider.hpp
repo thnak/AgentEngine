@@ -265,6 +265,65 @@ public:
         co_return contribution;
     }
 
+    // decisions/ADR-153-agent-memory-codeact-bridging.md: made PUBLIC (was private, reachable only
+    // from `on_context()`'s own push into `ContextContribution.tools` above) so a host embedding both
+    // this provider and a CodeAct sandbox (`src/backends/native_jail/`) can explicitly fold the SAME
+    // `ToolDescriptor` into their own, separately-assembled `ToolBridgeConfig::bridged_tools`
+    // (`tool_bridge.hpp`) -- the only thing that makes a tool reachable as `agent.tools.recall(...)`
+    // from inside a running `execute_code` script (026 §5's own spec for `agent.memory`'s ranked
+    // view). This does not widen what the tool does or who may call it: `on_context()` above still
+    // gates its OWN native-tool-calling exposure on the session's resolved capabilities exactly as
+    // before, and a host must independently decide to add this descriptor to a `ToolBridgeConfig`
+    // (I2 -- no automatic ContextContribution-to-sandbox wiring exists anywhere in this codebase, and
+    // this change does not add any); it only removes an accidental encapsulation blocker that left the
+    // CodeAct path with no way to reach an already-real, already-tested capability at all.
+    [[nodiscard]] ToolDescriptor make_recall_tool_descriptor() const {
+        ToolDescriptor d;
+        d.name              = "recall";
+        d.description       = "Search memory for items matching a query.";
+        d.approval           = approval_mode::never_require;
+        d.args_schema_json  = schema::json_schema_of<RecallArgs>();
+        d.reply_schema_json = schema::json_schema_of<RecallReply>();
+        // decisions/ADR-153-agent-memory-codeact-bridging.md red-team, must-fix: without this, the
+        // closure below's authority comes ENTIRELY from `read_cap_` -- a value baked in at THIS
+        // provider's own construction, never re-derived from whatever `held` CapabilitySet the
+        // CALLER of `invoke_tool()` actually passes (`tool_pipeline.hpp`'s step 4/7 only binds
+        // against `capability_ceiling`; an empty one, as this was before, means step 4/7 is a no-op
+        // for this tool regardless of what the caller holds). That is harmless through
+        // `on_context()`'s own native-tool-calling path (the session's own resolved capabilities are
+        // exactly what this provider was constructed with, by the same host, in the first place) but
+        // would be a real I2 violation if this descriptor is bridged into a sandbox's
+        // `ToolBridgeConfig` (`tool_bridge.hpp`) as `make_recall_tool_descriptor()`'s own public-ness
+        // now permits: a sandbox holding NO matching FsRead grant would still read memory, reaching
+        // straight through to the native session's own authority rather than the sandbox's
+        // separately host-configured one. Declaring the ceiling here closes that door the same way
+        // every OTHER capability-gated tool in this codebase already is gated, for both callers alike.
+        d.capability_ceiling = {Capability{read_cap_}};
+
+        OS* object_store = object_store_;
+        RS* ref_store    = ref_store_;
+        Mount mount      = mount_;
+        cap::FsRead read_cap = read_cap_;
+        d.invoke = [object_store, ref_store, mount, read_cap](
+                       json::Value const& args_value, EffectContext&) -> result<json::Value> {
+            auto args = schema::from_json<RecallArgs>(args_value);
+            if (!args) return std::unexpected(args.error());
+            auto ranked = rank_memory_items(*object_store, *ref_store, mount, read_cap, args->query,
+                                             /*max_results=*/10);
+            if (!ranked) return std::unexpected(ranked.error());
+            // Gap-audit finding 17 applies here identically to `on_context()`'s default injection --
+            // an item fetched on-demand via this tool is exactly as much "memory rendered for the
+            // agent to read" as a pre-injected one, so it gets the same confidence label.
+            RecallReply reply;
+            reply.results.reserve(ranked->size());
+            for (auto const& item : *ranked) {
+                reply.results.push_back(memory_detail::memory_item_to_labeled_text(item));
+            }
+            return schema::to_json(reply);
+        };
+        return d;
+    }
+
     // Phase G3: "ContextProvider.on_turn_end is where memory is written... may call a declared
     // ChatClient to extract candidate MemoryItems from the turn — an ordinary, budgeted,
     // EffectContext-carrying model call" (029 §4). Best-effort: an extraction failure (the
@@ -335,38 +394,6 @@ private:
         m.message_id = "memory:" + item.id;
         m.content.push_back(std::move(ci));
         return m;
-    }
-
-    [[nodiscard]] ToolDescriptor make_recall_tool_descriptor() const {
-        ToolDescriptor d;
-        d.name              = "recall";
-        d.description       = "Search memory for items matching a query.";
-        d.approval           = approval_mode::never_require;
-        d.args_schema_json  = schema::json_schema_of<RecallArgs>();
-        d.reply_schema_json = schema::json_schema_of<RecallReply>();
-
-        OS* object_store = object_store_;
-        RS* ref_store    = ref_store_;
-        Mount mount      = mount_;
-        cap::FsRead read_cap = read_cap_;
-        d.invoke = [object_store, ref_store, mount, read_cap](
-                       json::Value const& args_value, EffectContext&) -> result<json::Value> {
-            auto args = schema::from_json<RecallArgs>(args_value);
-            if (!args) return std::unexpected(args.error());
-            auto ranked = rank_memory_items(*object_store, *ref_store, mount, read_cap, args->query,
-                                             /*max_results=*/10);
-            if (!ranked) return std::unexpected(ranked.error());
-            // Gap-audit finding 17 applies here identically to `on_context()`'s default injection --
-            // an item fetched on-demand via this tool is exactly as much "memory rendered for the
-            // agent to read" as a pre-injected one, so it gets the same confidence label.
-            RecallReply reply;
-            reply.results.reserve(ranked->size());
-            for (auto const& item : *ranked) {
-                reply.results.push_back(memory_detail::memory_item_to_labeled_text(item));
-            }
-            return schema::to_json(reply);
-        };
-        return d;
     }
 
     OS*             object_store_;

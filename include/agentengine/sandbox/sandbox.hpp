@@ -344,6 +344,23 @@ struct ExecOutcome {  // ae-naming-lint: allow ExecOutcome — pre-existing M0 s
     // unpopulated" convention `result_repr` above already documents for exactly this reason (a
     // `Runner` that never implements `agent.ask()` never sets this field either).
     std::string ask_prompt;
+    // decisions/ADR-154-agent-output-codeact-module.md (026 §5's `agent.output`): the JSON-encoded
+    // value a script's `agent.output.set(value)` call declared, if any -- empty means "never called,"
+    // the SAME "empty means legitimately absent" convention `result_repr`/`ask_prompt` above already
+    // establish (a JSON-encoded value is never the literal empty string: `json.dumps("")` is `'""'`,
+    // two characters, so there is no ambiguity between "called with an empty string" and "never
+    // called"). Last-call-wins if a script calls `agent.output.set()` more than once (026 §5's own
+    // "declares the final value" framing, not a streaming/accumulating channel). Populated by
+    // whichever `Runner` implements `agent.output` (today: the native-jail Python worker only, see
+    // `python_worker_mediation.cpp`'s `Internal_set_output`); a `Runner` that never implements it
+    // (Shell) never sets this field, matching `ask_prompt`'s own precedent exactly. This ADR is
+    // DELIBERATELY narrow: this field lands in the `execute_code` TOOL's own result, visible to the
+    // model as ordinary tool output -- it does NOT automatically populate `rt::AgentSession`'s own
+    // `structured_output_json` (ADR-058), which stays keyed off the model's own final chat message.
+    // Wiring a tool result into the RUN's own structured output (an early-exit-the-round-loop
+    // decision) is a separate, larger follow-on this ADR does not attempt -- named, not silently
+    // assumed, in ADR-154 §3/§7.
+    std::string structured_output_json;
 };
 
 // concept, not a base class (008 §2). Return types are constrained to their synchronous

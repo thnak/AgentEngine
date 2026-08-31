@@ -80,16 +80,16 @@ struct MemoryItem {  // ae-naming-lint: allow MemoryItem — pre-existing M0 sca
     return "principal:" + principal.tenant_id + ":" + principal.id;
 }
 
-// Bootstraps a principal's memory worktree if it doesn't exist yet (an empty tree committed under
-// its Ref), or returns the existing one unchanged — idempotent, so callers never need to know
-// whether this is the first write. `mount_write`/`mount_read` both require a ref that has already
-// been committed at least once (worktree.hpp's own contract: "this mount's ref has never been
-// committed" is a hard error, not an implicit bootstrap) — this is that one bootstrap step, real
-// and needed, not assumed away.
+// Bootstraps ANY named ref if it doesn't exist yet (an empty tree committed under it), or returns the
+// existing one unchanged — idempotent, so callers never need to know whether this is the first write.
+// `mount_write`/`mount_read` both require a ref that has already been committed at least once
+// (worktree.hpp's own contract: "this mount's ref has never been committed" is a hard error, not an
+// implicit bootstrap) — this is that one bootstrap step, real and needed, not assumed away. Generic
+// over the ref NAME (not a `Principal`) so callers bootstrapping a differently-derived ref (e.g.
+// ADR-156's own dedicated notes-inbox ref, `memory_notes_materializer.hpp`) reuse this exact logic
+// rather than a byte-for-byte copy of it (code-review finding on that ADR's own pass).
 template <WorktreeObjectStore OS, rt::AppendLogStore RS>
-[[nodiscard]] result<Ref> ensure_memory_worktree(OS& object_store, RS& ref_store,
-                                                   Principal const& principal) {
-    auto const name = memory_ref_name(principal);
+[[nodiscard]] result<Ref> ensure_worktree_ref(OS& object_store, RS& ref_store, std::string const& name) {
     auto existing = read_ref(ref_store, name);
     if (!existing) return std::unexpected(existing.error());
     if (existing->has_value()) return **existing;
@@ -97,6 +97,14 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
     auto empty = object_store.put_tree(Tree{});
     if (!empty) return std::unexpected(empty.error());
     return commit_ref(ref_store, name, *empty);
+}
+
+// Bootstraps a principal's memory worktree specifically -- see `ensure_worktree_ref()` above for the
+// underlying (now-shared) bootstrap logic.
+template <WorktreeObjectStore OS, rt::AppendLogStore RS>
+[[nodiscard]] result<Ref> ensure_memory_worktree(OS& object_store, RS& ref_store,
+                                                   Principal const& principal) {
+    return ensure_worktree_ref(object_store, ref_store, memory_ref_name(principal));
 }
 
 // Milestone 4 Phase G5 (029 §8/§9 G5: "cross-principal memory leakage through a shared index

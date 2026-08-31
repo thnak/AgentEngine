@@ -86,6 +86,10 @@ struct MediatedPythonConfig {
     // `mount_roots`/`tool_bridge` rather than derived from them.
     bool expose_agent_files_data = false;
     bool expose_agent_ask = false;
+    // decisions/ADR-154-agent-output-codeact-module.md, 026 §5's `agent.output`.
+    bool expose_agent_output = false;
+    // decisions/ADR-155-agent-progress-codeact-module.md, 026 §5's `agent.progress`.
+    bool expose_agent_progress = false;
 
     // Milestone 3 Phase F3 (010 §3 items 4/5): the per-session output-discipline cap.
     std::uint64_t output_cap_bytes = kDefaultOutputCapBytes;

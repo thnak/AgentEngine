@@ -45,6 +45,8 @@ result<void> MediatedPythonRunner::initialize() {
     session.tool_bridge = config_.tool_bridge;
     session.expose_agent_files_data = config_.expose_agent_files_data;
     session.expose_agent_ask = config_.expose_agent_ask;
+    session.expose_agent_output = config_.expose_agent_output;
+    session.expose_agent_progress = config_.expose_agent_progress;
     session.output_cap_bytes = config_.output_cap_bytes;
     session.worker_exe_path = widen(std::string(AE_PYTHON_WORKER_EXE_PATH));
     // HandleRelay design draft §1 item 2: the SAME map that seeds `spec.mounts` below (the OS-level
