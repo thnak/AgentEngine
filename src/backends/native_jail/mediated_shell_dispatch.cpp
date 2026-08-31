@@ -375,11 +375,22 @@ result<ExecOutcome> evaluate_and_or(AndOrNode const& node, CommandRegistry const
 result<ExecOutcome> evaluate_statements(std::pmr::vector<StatementNode*> const& statements,
                                          CommandRegistry const& registry, FileSystemAdapter& fs,
                                          std::string const& mount_id, ExecState& state, EffectContext& ctx,
-                                         LocalScope const& locals);
+                                         LocalScope const& locals,
+                                         std::chrono::steady_clock::time_point deadline);
 
 result<ExecOutcome> evaluate_statement(StatementNode const& stmt, CommandRegistry const& registry,
                                         FileSystemAdapter& fs, std::string const& mount_id, ExecState& state,
-                                        EffectContext& ctx, LocalScope const& locals) {
+                                        EffectContext& ctx, LocalScope const& locals,
+                                        std::chrono::steady_clock::time_point deadline) {
+    // ADR-100 §4 F3 fix: checked here, not just at the top of `evaluate_statements`'s own loop --
+    // this is the ONE point every statement passes through, top-level or nested-loop-body alike, so
+    // a single check here bounds the whole N^32-body-executions nested-loop shape this file's own
+    // top comment names, not just a straight-line top-level sequence.
+    if (std::chrono::steady_clock::now() >= deadline) {
+        return std::unexpected(error{failure_class::resource,
+                                      "shell script exceeded its wall-clock execution budget",
+                                      "shell.wall_clock_timeout"});
+    }
     return std::visit(
         [&](auto const& node) -> result<ExecOutcome> {
             using T = std::decay_t<decltype(node)>;
@@ -390,13 +401,13 @@ result<ExecOutcome> evaluate_statement(StatementNode const& stmt, CommandRegistr
                 if (!cond) return std::unexpected(cond.error());
                 bool succeeded = cond->klass == exec_outcome_class::ok;
                 return evaluate_statements(succeeded ? node.then_body : node.else_body, registry, fs, mount_id,
-                                            state, ctx, locals);
+                                            state, ctx, locals, deadline);
             } else {  // ForNode
                 ExecOutcome last{};
                 for (auto const& item_word : node.items) {
                     LocalScope loop_locals = locals;
                     loop_locals[std::string(node.var.begin(), node.var.end())] = expand_word(item_word, state, locals);
-                    auto r = evaluate_statements(node.body, registry, fs, mount_id, state, ctx, loop_locals);
+                    auto r = evaluate_statements(node.body, registry, fs, mount_id, state, ctx, loop_locals, deadline);
                     if (!r) return std::unexpected(r.error());
                     last = *r;
                 }
@@ -409,10 +420,11 @@ result<ExecOutcome> evaluate_statement(StatementNode const& stmt, CommandRegistr
 result<ExecOutcome> evaluate_statements(std::pmr::vector<StatementNode*> const& statements,
                                          CommandRegistry const& registry, FileSystemAdapter& fs,
                                          std::string const& mount_id, ExecState& state, EffectContext& ctx,
-                                         LocalScope const& locals) {
+                                         LocalScope const& locals,
+                                         std::chrono::steady_clock::time_point deadline) {
     ExecOutcome last{};
     for (auto const* stmt : statements) {
-        auto r = evaluate_statement(*stmt, registry, fs, mount_id, state, ctx, locals);
+        auto r = evaluate_statement(*stmt, registry, fs, mount_id, state, ctx, locals, deadline);
         if (!r) return std::unexpected(r.error());  // fail-fast: the first error stops the whole script
         last = *r;
     }
@@ -422,9 +434,10 @@ result<ExecOutcome> evaluate_statements(std::pmr::vector<StatementNode*> const& 
 }  // namespace
 
 result<ExecOutcome> evaluate(ScriptNode const& script, CommandRegistry const& registry, FileSystemAdapter& fs,
-                              std::string const& mount_id, ExecState& state, EffectContext& ctx) {
+                              std::string const& mount_id, ExecState& state, EffectContext& ctx,
+                              std::chrono::steady_clock::time_point deadline) {
     LocalScope empty_locals;
-    return evaluate_statements(script.statements, registry, fs, mount_id, state, ctx, empty_locals);
+    return evaluate_statements(script.statements, registry, fs, mount_id, state, ctx, empty_locals, deadline);
 }
 
 }  // namespace agentengine::native_jail::mediated_shell

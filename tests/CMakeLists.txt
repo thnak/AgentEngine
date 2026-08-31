@@ -73,6 +73,41 @@ endif()
 message(STATUS
   "007 §9 G1 compile-fail proof: OK (CapabilitySet rejects direct construction; grant_root() compiles)")
 
+# ---- ADR-102 §3 C1 compile-fail proof (IdentityHandle/IdentityAuthority construction discipline) --
+# Same try_compile() idiom as the CapabilitySet gate above: `IdentityHandle` has no public
+# constructor (friend-gated to IdentityAuthority only), and `IdentityAuthority` itself is
+# non-copyable (the one real singleton for this whole authority model). The main runtime test
+# (test_identity_authority_grant.cpp) already exercises the legitimate mint_root()/adopt() paths for
+# real, serving as this pair's own positive control -- no separate positive-control compile_fail file
+# needed.
+try_compile(AE_IDENTITY_HANDLE_REJECTS_DIRECT_CONSTRUCTION
+  "${CMAKE_CURRENT_BINARY_DIR}/compile_fail_checks/identity_handle_no_direct_construction"
+  "${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/identity_handle_no_direct_construction.cpp"
+  CXX_STANDARD 23
+  CMAKE_FLAGS "-DINCLUDE_DIRECTORIES=${PROJECT_SOURCE_DIR}/include"
+  OUTPUT_VARIABLE AE_IDENTITY_HANDLE_REJECTS_DIRECT_CONSTRUCTION_LOG)
+if(AE_IDENTITY_HANDLE_REJECTS_DIRECT_CONSTRUCTION)
+  message(FATAL_ERROR
+    "ADR-102 §3 C1 VIOLATED: tests/compile_fail/identity_handle_no_direct_construction.cpp compiled, "
+    "but IdentityHandle must have NO public constructor. "
+    "Build log:\n${AE_IDENTITY_HANDLE_REJECTS_DIRECT_CONSTRUCTION_LOG}")
+endif()
+
+try_compile(AE_IDENTITY_AUTHORITY_REJECTS_COPY
+  "${CMAKE_CURRENT_BINARY_DIR}/compile_fail_checks/identity_authority_no_copy"
+  "${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/identity_authority_no_copy.cpp"
+  CXX_STANDARD 23
+  CMAKE_FLAGS "-DINCLUDE_DIRECTORIES=${PROJECT_SOURCE_DIR}/include"
+  OUTPUT_VARIABLE AE_IDENTITY_AUTHORITY_REJECTS_COPY_LOG)
+if(AE_IDENTITY_AUTHORITY_REJECTS_COPY)
+  message(FATAL_ERROR
+    "ADR-102 §3 C1 VIOLATED: tests/compile_fail/identity_authority_no_copy.cpp compiled, but "
+    "IdentityAuthority must be non-copyable (the one real singleton for this authority model). "
+    "Build log:\n${AE_IDENTITY_AUTHORITY_REJECTS_COPY_LOG}")
+endif()
+message(STATUS
+  "ADR-102 §3 C1 compile-fail proof: OK (IdentityHandle rejects direct construction; IdentityAuthority rejects copy)")
+
 # ---- ADR-012 compile-fail proof (SandboxProfile<P>'s template-parameter kind) -------------------
 # Same try_compile() idiom as the two gates above: `SandboxProfile<P>` (core/agent.hpp) constrains
 # `P` via `SandboxProfileArg` (sandbox/sandbox.hpp) -- a real `SandboxBackend`, or the `Strict`
@@ -217,6 +252,100 @@ if(WIN32)
     "Milestone 3 A3 compile-fail proof: OK (put_blob/put_tree reject a caller-supplied digest; the "
     "real one-argument signatures compile)")
 endif()
+
+# ---- ADR-096 C2 compile-fail proof (SandboxToolProvider composed into a session makes
+# AgentSession::fork_from() a compile error) -- ADR-102 Phase 5 residual -----------------------------
+# `ComposedContextProvider<Ms...>`'s own copy-assignment operator is UNCONDITIONALLY `= delete`d
+# (core/composed_context_provider.hpp:119-120, ADR-074) -- for ANY `Ms`, not specifically because
+# `SandboxToolProvider` (src/backends/native_jail/sandbox_tool_provider.hpp, non-copyable by
+# construction, holds `std::unique_ptr<SessionShellSandbox>`) happens to be non-copyable itself; this
+# gate composes the REAL, production `SandboxToolProvider` (rather than a synthetic minimal stand-in)
+# to exercise the exact composed type tools/sandboxed_shell_chat.cpp and
+# tests/test_composed_sandbox_providers_live.cpp both use as a real session's `HistoryProviderT`. That
+# unconditionally-deleted copy-assignment is load-bearing at `AgentSession::fork_from()`'s
+# `history_provider_ = source.history_provider_;` statement, which must therefore fail to compile for
+# that session type. ADR-096 §6 already recorded a claim shaped like this one "CORRECT, empirically
+# proven" via a throwaway MSVC probe compiled once during that ADR's own red-team round and then
+# discarded -- never preserved as a durable, checked-in regression guard. This pair closes that
+# residual, same two-file idiom as every other tests/compile_fail/*.cpp pair in this file. It does NOT
+# close (and does not claim to close) a separate residual found by this same gate's own 2026-08-28
+# red-team round: `ComposedContextProvider<Ms...>`'s move-assignment is not deleted, so
+# `target.history_provider() = std::move(source.history_provider());` still compiles -- see that
+# class's own comment and ADR-102 §48. CLOSED at runtime, not by this compile-time gate, by ADR-116
+# (2026-08-30): that statement no longer aliases live provider state across sessions -- `operator=`
+# refuses it as a silent no-op, proven by tests/test_session_builder.cpp's own B20.
+#
+# Portable across Windows and Linux (2026-08-29, decisions/ADR-105-sandbox-tool-provider-composed-
+# linux-parity.md) -- previously WIN32-gated on the same stale "SandboxToolProvider's own current
+# platform scope" claim already corrected above; `agentengine_mediated_shell_runner`/
+# `agentengine_worktree_store` have both had real Linux twins since ADR-103/ADR-014 Phase C4. Links
+# the real `SandboxToolProvider` dependency chain directly as extra SOURCES -- same reason as the
+# Milestone 3 A3 block above: try_compile() runs in an isolated mini-project with no visibility into
+# this build's own ALIAS targets (agentengine::mediated_shell_runner, agentengine::worktree_store do
+# not exist there), so the three .cpp files `agentengine_mediated_shell_runner` is built from
+# (top-level CMakeLists.txt) plus the two `agentengine_worktree_store` is built from are compiled
+# alongside the probe itself -- the Windows sources link `bcrypt` directly for `compute_digest`'s real
+# Windows implementation, the Linux sources need no extra system library (the Linux `compute_digest`
+# is a self-contained FIPS 180-4 implementation, `worktree_digest_posix.cpp`) -- deliberately, even
+# for the probe that is EXPECTED to fail, so a permanently-missing link dependency can never
+# masquerade as "correctly rejected."
+if(WIN32)
+  set(AE_SANDBOX_TOOL_PROVIDER_FORK_FROM_DEPS
+    "${PROJECT_SOURCE_DIR}/src/backends/native_jail/mediated_shell_parser.cpp"
+    "${PROJECT_SOURCE_DIR}/src/backends/native_jail/mediated_shell_dispatch.cpp"
+    "${PROJECT_SOURCE_DIR}/src/backends/native_jail/mediated_filesystem_adapter.cpp"
+    "${PROJECT_SOURCE_DIR}/src/core/worktree_digest.cpp"
+    "${PROJECT_SOURCE_DIR}/src/core/worktree_mount_fs.cpp")
+  set(AE_SANDBOX_TOOL_PROVIDER_FORK_FROM_LINK_LIBRARIES bcrypt)
+else()
+  set(AE_SANDBOX_TOOL_PROVIDER_FORK_FROM_DEPS
+    "${PROJECT_SOURCE_DIR}/src/backends/native_jail/mediated_shell_parser.cpp"
+    "${PROJECT_SOURCE_DIR}/src/backends/native_jail/mediated_shell_dispatch.cpp"
+    "${PROJECT_SOURCE_DIR}/src/backends/native_jail/mediated_filesystem_adapter_posix.cpp"
+    "${PROJECT_SOURCE_DIR}/src/core/worktree_digest_posix.cpp"
+    "${PROJECT_SOURCE_DIR}/src/core/worktree_mount_fs_posix.cpp")
+  set(AE_SANDBOX_TOOL_PROVIDER_FORK_FROM_LINK_LIBRARIES)
+endif()
+
+try_compile(AE_SANDBOX_TOOL_PROVIDER_REJECTS_FORK_FROM
+  "${CMAKE_CURRENT_BINARY_DIR}/compile_fail_checks/sandbox_tool_provider_rejects_fork_from"
+  SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/sandbox_tool_provider_rejects_fork_from.cpp"
+    ${AE_SANDBOX_TOOL_PROVIDER_FORK_FROM_DEPS}
+  CMAKE_FLAGS
+    "-DINCLUDE_DIRECTORIES=${PROJECT_SOURCE_DIR}/include;${PROJECT_SOURCE_DIR}/src"
+    "-DCMAKE_CXX_STANDARD=23" "-DCMAKE_CXX_STANDARD_REQUIRED=ON"
+  LINK_LIBRARIES ${AE_SANDBOX_TOOL_PROVIDER_FORK_FROM_LINK_LIBRARIES}
+  OUTPUT_VARIABLE AE_SANDBOX_TOOL_PROVIDER_REJECTS_FORK_FROM_LOG)
+if(AE_SANDBOX_TOOL_PROVIDER_REJECTS_FORK_FROM)
+  message(FATAL_ERROR
+    "ADR-096 C2 VIOLATED: tests/compile_fail/sandbox_tool_provider_rejects_fork_from.cpp compiled, "
+    "but composing SandboxToolProvider into a session's HistoryProviderT (via "
+    "ComposedContextProvider<Ms...>) must make AgentSession::fork_from() fail to compile -- a fork "
+    "must never alias one session's live sandbox filesystem view with another's. "
+    "Build log:\n${AE_SANDBOX_TOOL_PROVIDER_REJECTS_FORK_FROM_LOG}")
+endif()
+
+try_compile(AE_SANDBOX_TOOL_PROVIDER_FORK_FROM_POSITIVE_CONTROL
+  "${CMAKE_CURRENT_BINARY_DIR}/compile_fail_checks/sandbox_tool_provider_fork_from_positive_control"
+  SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/sandbox_tool_provider_fork_from_positive_control.cpp"
+    ${AE_SANDBOX_TOOL_PROVIDER_FORK_FROM_DEPS}
+  CMAKE_FLAGS
+    "-DINCLUDE_DIRECTORIES=${PROJECT_SOURCE_DIR}/include;${PROJECT_SOURCE_DIR}/src"
+    "-DCMAKE_CXX_STANDARD=23" "-DCMAKE_CXX_STANDARD_REQUIRED=ON"
+  LINK_LIBRARIES ${AE_SANDBOX_TOOL_PROVIDER_FORK_FROM_LINK_LIBRARIES}
+  OUTPUT_VARIABLE AE_SANDBOX_TOOL_PROVIDER_FORK_FROM_POSITIVE_CONTROL_LOG)
+if(NOT AE_SANDBOX_TOOL_PROVIDER_FORK_FROM_POSITIVE_CONTROL)
+  message(FATAL_ERROR
+    "ADR-096 C2 positive control FAILED: tests/compile_fail/"
+    "sandbox_tool_provider_fork_from_positive_control.cpp must compile and link (the same Session "
+    "type, minus the fork_from() call, is otherwise ordinary and legitimate) but did not. "
+    "Build log:\n${AE_SANDBOX_TOOL_PROVIDER_FORK_FROM_POSITIVE_CONTROL_LOG}")
+endif()
+message(STATUS
+  "ADR-096 C2 compile-fail proof: OK (composing SandboxToolProvider into a session makes "
+  "fork_from() fail to compile; the same session type minus that call compiles and links cleanly)")
 
 # ---- ADR-071 compile-fail proof (native-execution family distinctness) -------------------------
 # `NativeCapabilityAnnouncer<Ps...>` (src/backends/native_process/native_capability_announcer.hpp)
@@ -1009,10 +1138,16 @@ if(AGENTENGINE_WITH_HTTPS)
   # never instantiated -- linked against provider_http_client only because session_builder.hpp's own
   # file-wide AGENTENGINE_WITH_HTTPS guard requires the real OpenAIChatClient/AnthropicChatClient types
   # to be visible at all, same reason test_json_schema_described above needs the same link with no live
-  # network call either.
+  # network call either. Also links agentengine::hmac (decisions/ADR-107-hmac-sha256-linux-parity.md):
+  # B7 below builds a real session against QuarantineSecretStore (trust/secret_quarantine.hpp), whose
+  # quarantine() ODR-uses trust::hmac_sha256 -- a real, pre-existing missing-link-dependency bug this
+  # target carried on EVERY platform (not just Linux), only ever masked because nothing had linked
+  # AGENTENGINE_WITH_HTTPS on for a from-scratch Linux configure before ADR-105/106 to surface it, and
+  # apparently never exercised as a from-scratch relink on Windows either; fixed here, not merely
+  # disclosed, since it is a one-line addition with no design question attached.
   add_executable(test_session_builder test_session_builder.cpp)
   target_link_libraries(test_session_builder PRIVATE
-    agentengine::core agentengine::provider_http_client agentengine_warnings)
+    agentengine::core agentengine::provider_http_client agentengine::hmac agentengine_warnings)
   add_test(NAME test_session_builder COMMAND test_session_builder)
 
   # ---- unified-streaming-design-draft.md §4 (Piece D), live proof: Bundle::ask()/ask_stream() against
@@ -1067,17 +1202,27 @@ target_link_libraries(test_secret_store PRIVATE agentengine::core agentengine_wa
 add_test(NAME test_secret_store COMMAND test_secret_store)
 
 # decisions/ADR-068-runtime-secret-quarantine-host-delegated-detection.md's prove phase.
-# QuarantineSecretStore's content-addressed naming reuses trust::hmac_sha256 (trust/hmac.cpp,
-# ADR-021) rather than a second, unaudited digest implementation -- that primitive lives in the
-# Windows-only agentengine::capability_token library (CMakeLists.txt's own "Cross-process capability
-# tokens -- Windows only" section), so this test needs the same link, same as that section's own
-# consumers (capability_token.cpp/bearer_token.cpp).
-if(WIN32)
-  add_executable(test_secret_quarantine test_secret_quarantine.cpp)
-  target_link_libraries(test_secret_quarantine PRIVATE
-    agentengine::core agentengine::capability_token agentengine_warnings)
-  add_test(NAME test_secret_quarantine COMMAND test_secret_quarantine)
-endif()
+# QuarantineSecretStore's content-addressed naming reuses trust::hmac_sha256 (trust/hmac.cpp/
+# hmac_posix.cpp, ADR-021, Linux parity ADR-107) rather than a second, unaudited digest
+# implementation -- that primitive now lives in the portable agentengine::hmac library
+# (CMakeLists.txt's own "HMAC-SHA256 primitive -- Windows AND Linux" section), built on both
+# platforms, so this test needs no platform gate any more (previously WIN32-only, when hmac_sha256
+# was only reachable via the Windows-only agentengine::capability_token library).
+add_executable(test_secret_quarantine test_secret_quarantine.cpp)
+target_link_libraries(test_secret_quarantine PRIVATE
+  agentengine::core agentengine::hmac agentengine_warnings)
+add_test(NAME test_secret_quarantine COMMAND test_secret_quarantine)
+
+# ---- decisions/ADR-107-hmac-sha256-linux-parity.md's own direct regression test -----------------
+# A dedicated RFC 4231 known-answer test for trust::hmac_sha256()/constant_time_equal() -- prior
+# coverage of this primitive was only INDIRECT (test_capability_token_proof/redteam.cpp,
+# test_secret_quarantine.cpp, test_rt_agent_session_quarantine_tool.cpp above). Portable: only calls
+# the platform-independent hmac.hpp interface, so it is wired unconditionally against
+# agentengine::hmac (Windows: hmac.cpp/CNG-BCrypt; Linux: hmac_posix.cpp/RFC 2104-from-scratch) --
+# the same source proves both backends agree with the real published standard.
+add_executable(test_hmac_sha256 test_hmac_sha256.cpp)
+target_link_libraries(test_hmac_sha256 PRIVATE agentengine::core agentengine::hmac agentengine_warnings)
+add_test(NAME test_hmac_sha256 COMMAND test_hmac_sha256)
 
 # ---- Milestone 5 Phase B1/B2/B5/B6 -- the ChatClient concept made real -------------------------
 # ChatRequest.tools/output_schema_json, the completed ChatClientCapabilities bitset,
@@ -1154,12 +1299,12 @@ add_test(NAME test_rt_agent_session_context_provenance COMMAND test_rt_agent_ses
 # ---- decisions/ADR-068-runtime-secret-quarantine-host-delegated-detection.md wired for real:
 # QuarantineToolProvider (trust/secret_quarantine.hpp) occupies AgentSession's HistoryProviderT slot;
 # a real tool-call round reaches the quarantine store through the actual invoke_tool() pipeline.
-# Windows-only (QuarantineSecretStore depends on trust::hmac_sha256, agentengine::capability_token).
-if(WIN32)
-  add_executable(test_rt_agent_session_quarantine_tool test_rt_agent_session_quarantine_tool.cpp)
-  target_link_libraries(test_rt_agent_session_quarantine_tool PRIVATE agentengine::core agentengine::capability_token agentengine_warnings)
-  add_test(NAME test_rt_agent_session_quarantine_tool COMMAND test_rt_agent_session_quarantine_tool)
-endif()
+# QuarantineSecretStore depends on trust::hmac_sha256, now the portable agentengine::hmac library
+# (decisions/ADR-107-hmac-sha256-linux-parity.md) -- previously WIN32-only when hmac_sha256 was only
+# reachable via agentengine::capability_token.
+add_executable(test_rt_agent_session_quarantine_tool test_rt_agent_session_quarantine_tool.cpp)
+target_link_libraries(test_rt_agent_session_quarantine_tool PRIVATE agentengine::core agentengine::hmac agentengine_warnings)
+add_test(NAME test_rt_agent_session_quarantine_tool COMMAND test_rt_agent_session_quarantine_tool)
 
 # ---- decisions/ADR-069-content-triggered-model-response-replay.md §7's own open question, answered
 # with real evidence: ADR-067's turn/pre_model hook and ADR-069's ContentReplayGateway, both wired
@@ -2038,9 +2183,27 @@ set_tests_properties(test_shell_parser_adversarial PROPERTIES TIMEOUT 60)
 
 # Sh-S1's static half: no process-creation symbol is referenced anywhere in the
 # agentengine_shell_runner library's compiled object code (ADR-001 §7 finding 1's link-target-
-# granularity fix). Checked via llvm-nm against the actual built artifact; skips (CTest
-# SKIP_RETURN_CODE) if llvm-nm isn't found rather than silently passing.
-find_program(AE_LLVM_NM_EXECUTABLE NAMES llvm-nm llvm-nm.exe)
+# granularity fix). Checked via llvm-nm (or, when that specific LLVM tool isn't installed, plain
+# GNU binutils `nm` -- both implement the same `--undefined-only` output shape this check's own
+# parser relies on; ADR-103 §7's own residual note named this gap: a dev/CI Linux box very often has
+# `nm` without ever having `llvm-nm`, and this check should not be silently vacuous there) against
+# the actual built artifact; skips (CTest SKIP_RETURN_CODE) if neither is found rather than silently
+# passing.
+#
+# PLATFORM-ORDERED search, not just a wider NAMES list: on a genuine Windows host only `llvm-nm`/
+# `llvm-nm.exe` is ever a real option (GNU `nm` doesn't exist there), unchanged from before this
+# pass. On Linux, `nm` is searched FIRST -- a real, ordinary Linux dev/CI box almost always has GNU
+# binutils `nm` and often has no LLVM toolchain at all; `llvm-nm` stays a fallback for the (rarer)
+# clang-only environment. Discovered the hard way in THIS session's own WSL2 test environment: WSL's
+# default Windows-PATH interop makes a cross-mounted `llvm-nm.exe` reachable from inside Linux too,
+# which would otherwise get picked over the native tool by pure NAMES-list ordering -- an artifact of
+# this one dev box, not representative of a real, Windows-less Linux CI runner this check must also
+# work correctly on.
+if(WIN32)
+  find_program(AE_LLVM_NM_EXECUTABLE NAMES llvm-nm llvm-nm.exe)
+else()
+  find_program(AE_LLVM_NM_EXECUTABLE NAMES nm llvm-nm)
+endif()
 add_executable(test_shell_runner_no_process_creation test_shell_runner_no_process_creation.cpp)
 target_link_libraries(test_shell_runner_no_process_creation PRIVATE
   agentengine::core agentengine_warnings)
@@ -2051,61 +2214,150 @@ add_test(NAME test_shell_runner_no_process_creation COMMAND test_shell_runner_no
 set_tests_properties(test_shell_runner_no_process_creation PROPERTIES SKIP_RETURN_CODE 77)
 
 # ---- Milestone 3 Phase E3's real ShellRunner (mediated_shell_*.{hpp,cpp}) -----------------------
-# Windows only (matches agentengine_mediated_shell_runner's own scope, CMakeLists.txt).
+# Portable across Windows and Linux (2026-08-28, ADR-103, the Linux-parity pass) -- moved OUT of the
+# surrounding `if(WIN32)` block below, since `agentengine::mediated_shell_runner` (CMakeLists.txt's
+# own WIN32/`NOT WIN32` split) and every test in this section now build and run on both platforms.
+# Registered unconditionally, matching how `agentengine::worktree_store`'s own already-portable
+# consumers are registered. (Was "Windows only, matches agentengine_mediated_shell_runner's own
+# scope" before this pass -- that scope itself is what changed.)
+add_executable(test_mediated_shell_runner_smoke test_mediated_shell_runner_smoke.cpp)
+target_link_libraries(test_mediated_shell_runner_smoke PRIVATE
+  agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store agentengine_warnings)
+add_test(NAME test_mediated_shell_runner_smoke COMMAND test_mediated_shell_runner_smoke)
+set_tests_properties(test_mediated_shell_runner_smoke PROPERTIES TIMEOUT 60)
+
+# ---- ADR-100 §4 F3 fix: the mediated-shell evaluation loop's wall-clock budget -----------------
+add_executable(test_mediated_shell_runner_wall_clock_timeout test_mediated_shell_runner_wall_clock_timeout.cpp)
+target_link_libraries(test_mediated_shell_runner_wall_clock_timeout PRIVATE
+  agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store agentengine_warnings)
+add_test(NAME test_mediated_shell_runner_wall_clock_timeout COMMAND test_mediated_shell_runner_wall_clock_timeout)
+set_tests_properties(test_mediated_shell_runner_wall_clock_timeout PROPERTIES TIMEOUT 60)
+
+# ---- EffectContext::sandbox_fs seam (first-party-tools follow-up, Phase 0): tools/
+# read_sandbox_file.hpp's worked example, proven against a real MediatedFileSystemAdapter.
+add_executable(test_effect_context_sandbox_fs test_effect_context_sandbox_fs.cpp)
+target_link_libraries(test_effect_context_sandbox_fs PRIVATE
+  agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store agentengine_warnings)
+add_test(NAME test_effect_context_sandbox_fs COMMAND test_effect_context_sandbox_fs)
+
+# ---- Session-scoped shell wiring (every-session-gets-a-sandbox roadmap, Phase 1):
+# backends/native_jail/session_shell_wiring.hpp's SessionShellSandbox, proven end to end through
+# the real invoke_tool pipeline against a real host directory.
+add_executable(test_session_shell_wiring test_session_shell_wiring.cpp)
+target_link_libraries(test_session_shell_wiring PRIVATE
+  agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store agentengine_warnings)
+add_test(NAME test_session_shell_wiring COMMAND test_session_shell_wiring)
+
+# ---- ADR-096 Design B: SandboxToolProvider (backends/native_jail/sandbox_tool_provider.hpp) --
+# -- a ContextProvider composed via ComposedContextProvider<Ms...>, giving Shell a real,
+# reusable, per-session lifecycle. Proven end to end: composition/concept conformance, lazy
+# sandbox construction + ctx.sandbox_fs population + run_shell contribution on on_context(),
+# reuse across a later round, the real invoke_tool() pipeline, and the digest-subdirectory
+# defense-in-depth check (C8).
+add_executable(test_sandbox_tool_provider test_sandbox_tool_provider.cpp)
+target_link_libraries(test_sandbox_tool_provider PRIVATE
+  agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store agentengine_warnings)
+add_test(NAME test_sandbox_tool_provider COMMAND test_sandbox_tool_provider)
+
+# ---- Milestone 3 Phase E4: hostile-corpus/mediation proof (010 §9 G2/G7), platform-adapted
+# (2026-08-28, ADR-103): SH7-SH10's backslash-leaf payloads have genuinely different, correctly
+# adapted expected outcomes per platform (Windows: rejected escape; Linux: harmless in-mount
+# create, backslash having no separator meaning there) -- see that test file's own top-of-block
+# comment for the full reasoning, not silently ported or silently skipped.
+add_executable(test_mediated_shell_runner_hostile_corpus test_mediated_shell_runner_hostile_corpus.cpp)
+target_link_libraries(test_mediated_shell_runner_hostile_corpus PRIVATE
+  agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store agentengine_warnings)
+add_test(NAME test_mediated_shell_runner_hostile_corpus COMMAND test_mediated_shell_runner_hostile_corpus)
+set_tests_properties(test_mediated_shell_runner_hostile_corpus PROPERTIES TIMEOUT 60)
+
+# G2's ShellRunner-specific "must not exist as a reachable code path" bar, structural half, against
+# the REAL agentengine_mediated_shell_runner artifact (test_shell_runner_no_process_creation.cpp
+# already covers the untouched spike). Reuses the same llvm-nm/nm discovered above.
+#
+# Portable across Windows and Linux (2026-08-29, decisions/ADR-104-real-io-filesystem-linux-parity.md's
+# own named follow-on) -- moved OUT of the surrounding `if(WIN32)` block below, same reasoning as the
+# other mediated_shell_runner tests just above. The hardcoded Windows-only hostile-symbol list
+# (CreateProcessA/W etc.) is now `#ifdef _WIN32`/`#else`-branched in the test source itself, with a
+# separately-reasoned POSIX process-creation symbol list (fork/exec*/posix_spawn*/clone) -- NOT a
+# mechanical rename, since the Windows list and the POSIX list name genuinely different platform
+# APIs for the identical underlying property this check exists to prove ("no reachable code path to
+# process creation").
+add_executable(test_mediated_shell_runner_no_process_creation
+  test_mediated_shell_runner_no_process_creation.cpp)
+target_link_libraries(test_mediated_shell_runner_no_process_creation PRIVATE
+  agentengine::core agentengine_warnings)
+target_compile_definitions(test_mediated_shell_runner_no_process_creation PRIVATE
+  AE_MEDIATED_SHELL_RUNNER_LIB_PATH="$<TARGET_FILE:agentengine_mediated_shell_runner>"
+  AE_LLVM_NM_PATH="${AE_LLVM_NM_EXECUTABLE}")
+add_test(NAME test_mediated_shell_runner_no_process_creation
+  COMMAND test_mediated_shell_runner_no_process_creation)
+set_tests_properties(test_mediated_shell_runner_no_process_creation PROPERTIES SKIP_RETURN_CODE 77)
+
+# ---- ADR-102 Phase 5 (ComposedContextProvider<Ms...> real production consumer slice):
+# SandboxToolProvider (above) and MandatorySandboxProvider<DockerExecutionSurface> (ADR-102 Phase 4)
+# composed into ONE real AgentSession's actual HistoryProviderT via ComposedContextProvider<Ms...> --
+# the first time ComposedContextProvider<Ms...> is driven through a real session.start_run() anywhere
+# in this codebase.
+#
+# Portable across Windows and Linux (2026-08-29, decisions/ADR-105-sandbox-tool-provider-composed-
+# linux-parity.md) -- moved OUT of the surrounding `if(WIN32)` block below, same reasoning as
+# test_mediated_shell_runner_no_process_creation above: `agentengine::mediated_shell_runner`
+# (SandboxToolProvider/SessionShellSandbox/MediatedFileSystemAdapter) has built on both platforms
+# since ADR-103; this target's own WIN32 gate was a stale leftover from before that parity landed,
+# never a real dependency of this test's own code. REQUIRES a real Docker daemon on PATH, same as
+# every other MandatorySandboxProvider<DockerExecutionSurface> consumer, on either platform.
+add_executable(test_composed_sandbox_providers_live test_composed_sandbox_providers_live.cpp)
+target_link_libraries(test_composed_sandbox_providers_live PRIVATE
+  agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store
+  agentengine::sandbox_io agentengine_warnings)
+add_test(NAME test_composed_sandbox_providers_live COMMAND test_composed_sandbox_providers_live)
+# RESOURCE_LOCK, not a lower -j: this and every other real-Docker-daemon test below share ONE
+# `docker_daemon` lock name, so CTest never schedules two of them concurrently regardless of -j,
+# while everything else in the suite keeps running at full parallelism. Added after a real CI
+# failure (not a hypothetical): ubuntu-latest's `-j 4` ran this test alongside test_sandbox_runtime/
+# test_docker_orphan_reap/test_mandatory_sandbox_provider against the SAME shared daemon, and
+# test_docker_orphan_reap's own POSITIVE CONTROL (a container matching THIS process's live
+# pid+start-key must NOT be reaped) failed under that contention -- daemon-level flakiness, not a
+# logic bug (the identical code passed clean, repeatedly, in this session's own non-concurrent
+# Windows/MSVC verification runs).
+set_tests_properties(test_composed_sandbox_providers_live PROPERTIES RESOURCE_LOCK docker_daemon)
+
+# ---- ADR-106 (ContainerdExecutionSurface promotion): the SECOND real ExecutionSurface conformer,
+# closing the identity-native design's own "only one conformer exists, does the three-verb shape
+# generalize" residual. Linux-only (agentengine/sandbox/containerd_execution_surface.hpp's own top
+# comment -- `ctr` only meaningfully talks to a local containerd Unix socket), header-only (no new
+# CMake library target needed, matching DockerExecutionSurface's own shape). REQUIRES a running
+# containerd daemon reachable via the `ctr` CLI on PATH -- same "test just fails cleanly if the daemon
+# isn't reachable" posture as every other ExecutionSurface conformer's own test, not a special opt-in
+# flag (unlike test_kata_backend_linux, which needs a materially heavier KVM/Kata deployment).
+if(NOT WIN32)
+  add_executable(test_containerd_execution_surface test_containerd_execution_surface.cpp)
+  target_link_libraries(test_containerd_execution_surface PRIVATE agentengine::core agentengine_warnings)
+  add_test(NAME test_containerd_execution_surface COMMAND test_containerd_execution_surface)
+  # Same RESOURCE_LOCK reasoning as docker_daemon above, a separate lock name because this and its
+  # sibling below hit a DIFFERENT shared daemon (containerd, via `ctr`) than the docker_daemon-locked
+  # tests do.
+  set_tests_properties(test_containerd_execution_surface PROPERTIES TIMEOUT 60 RESOURCE_LOCK containerd_daemon)
+
+  # ---- ADR-106 §7 residual, closed: the ContainerdExecutionSurface counterpart to
+  # test_composed_sandbox_providers_live above -- proves MandatorySandboxProvider<
+  # ContainerdExecutionSurface> (not just ContainerdExecutionSurface standalone) works through the
+  # real, unmodified session.start_run() -> invoke_tool() pipeline, composed alongside
+  # SandboxToolProvider. Same REQUIRES as test_containerd_execution_surface above.
+  add_executable(test_composed_containerd_providers_live test_composed_containerd_providers_live.cpp)
+  target_link_libraries(test_composed_containerd_providers_live PRIVATE
+    agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store
+    agentengine::sandbox_io agentengine_warnings)
+  add_test(NAME test_composed_containerd_providers_live COMMAND test_composed_containerd_providers_live)
+  set_tests_properties(test_composed_containerd_providers_live PROPERTIES RESOURCE_LOCK containerd_daemon)
+endif()
+
+# ---- Everything below stays WIN32-only, a real, disclosed platform-parity gap (not a stale gate):
+# the embedded-CPython Python-runner composition tests (AGENTENGINE_BUILD_PYTHON_RUNNER) need the
+# embedded native CPython interpreter, itself Windows-only for reasons unrelated to SandboxToolProvider
+# (CLAUDE.md's locked "embedded native CPython interpreter" decision) -- a materially larger, unrelated
+# platform-parity question, not attempted here.
 if(WIN32)
-  add_executable(test_mediated_shell_runner_smoke test_mediated_shell_runner_smoke.cpp)
-  target_link_libraries(test_mediated_shell_runner_smoke PRIVATE
-    agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store agentengine_warnings)
-  add_test(NAME test_mediated_shell_runner_smoke COMMAND test_mediated_shell_runner_smoke)
-  set_tests_properties(test_mediated_shell_runner_smoke PROPERTIES TIMEOUT 60)
-
-  # ---- EffectContext::sandbox_fs seam (first-party-tools follow-up, Phase 0): tools/
-  # read_sandbox_file.hpp's worked example, proven against a real MediatedFileSystemAdapter.
-  add_executable(test_effect_context_sandbox_fs test_effect_context_sandbox_fs.cpp)
-  target_link_libraries(test_effect_context_sandbox_fs PRIVATE
-    agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store agentengine_warnings)
-  add_test(NAME test_effect_context_sandbox_fs COMMAND test_effect_context_sandbox_fs)
-
-  # ---- Session-scoped shell wiring (every-session-gets-a-sandbox roadmap, Phase 1):
-  # backends/native_jail/session_shell_wiring.hpp's SessionShellSandbox, proven end to end through
-  # the real invoke_tool pipeline against a real host directory.
-  add_executable(test_session_shell_wiring test_session_shell_wiring.cpp)
-  target_link_libraries(test_session_shell_wiring PRIVATE
-    agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store agentengine_warnings)
-  add_test(NAME test_session_shell_wiring COMMAND test_session_shell_wiring)
-
-  # ---- ADR-096 Design B: SandboxToolProvider (backends/native_jail/sandbox_tool_provider.hpp) --
-  # -- a ContextProvider composed via ComposedContextProvider<Ms...>, giving Shell a real,
-  # reusable, per-session lifecycle. Proven end to end: composition/concept conformance, lazy
-  # sandbox construction + ctx.sandbox_fs population + run_shell contribution on on_context(),
-  # reuse across a later round, the real invoke_tool() pipeline, and the digest-subdirectory
-  # defense-in-depth check (C8).
-  add_executable(test_sandbox_tool_provider test_sandbox_tool_provider.cpp)
-  target_link_libraries(test_sandbox_tool_provider PRIVATE
-    agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store agentengine_warnings)
-  add_test(NAME test_sandbox_tool_provider COMMAND test_sandbox_tool_provider)
-
-  # ---- Milestone 3 Phase E4: hostile-corpus/mediation proof (010 §9 G2/G7) ---------------------
-  add_executable(test_mediated_shell_runner_hostile_corpus test_mediated_shell_runner_hostile_corpus.cpp)
-  target_link_libraries(test_mediated_shell_runner_hostile_corpus PRIVATE
-    agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store agentengine_warnings)
-  add_test(NAME test_mediated_shell_runner_hostile_corpus COMMAND test_mediated_shell_runner_hostile_corpus)
-  set_tests_properties(test_mediated_shell_runner_hostile_corpus PROPERTIES TIMEOUT 60)
-
-  # G2's ShellRunner-specific "must not exist as a reachable code path" bar, structural half,
-  # against the REAL agentengine_mediated_shell_runner artifact (test_shell_runner_no_process_
-  # creation.cpp already covers the untouched spike). Reuses the same llvm-nm discovered above.
-  add_executable(test_mediated_shell_runner_no_process_creation
-    test_mediated_shell_runner_no_process_creation.cpp)
-  target_link_libraries(test_mediated_shell_runner_no_process_creation PRIVATE
-    agentengine::core agentengine_warnings)
-  target_compile_definitions(test_mediated_shell_runner_no_process_creation PRIVATE
-    AE_MEDIATED_SHELL_RUNNER_LIB_PATH="$<TARGET_FILE:agentengine_mediated_shell_runner>"
-    AE_LLVM_NM_PATH="${AE_LLVM_NM_EXECUTABLE}")
-  add_test(NAME test_mediated_shell_runner_no_process_creation
-    COMMAND test_mediated_shell_runner_no_process_creation)
-  set_tests_properties(test_mediated_shell_runner_no_process_creation PROPERTIES SKIP_RETURN_CODE 77)
-
   # RunnerCall<python> composition against the REAL MediatedPythonRunner (E2) -- only built when
   # AGENTENGINE_BUILD_PYTHON_RUNNER is also ON (needs a real CPython install).
   if(AGENTENGINE_BUILD_PYTHON_RUNNER)
@@ -2123,6 +2375,24 @@ if(WIN32)
     # (set by the root CMakeLists.txt before add_subdirectory(tests) runs) for the identical
     # Windows-has-no-rpath reason those tests need it.
     set_tests_properties(test_mediated_shell_runner_python_composition PROPERTIES
+      ENVIRONMENT "PATH=${AGENTENGINE_PYTHON_DLL_DIR};$ENV{PATH}" TIMEOUT 60)
+
+    # PROVE-PHASE test (docs/planning/identity-native-sandbox-worktree-design.md §30's own disclosed
+    # gap: Shell and Python are never pointed at the same real host directory in the shipped
+    # tools/cli_chat.cpp wiring) -- proves that explicitly setting Python's mount_roots["work"] to
+    # the SAME directory Shell's own MediatedFileSystemAdapter uses gives them genuine cross-visible
+    # file sharing, with no accidental authority widening. Additive only -- tools/cli_chat.cpp's own
+    # real wiring is untouched by this test.
+    add_executable(test_shell_python_shared_mount_prove
+      test_shell_python_shared_mount_prove.cpp)
+    target_link_libraries(test_shell_python_shared_mount_prove PRIVATE
+      agentengine::core agentengine::mediated_shell_runner agentengine::mediated_python_runner
+      agentengine::worktree_store agentengine_warnings)
+    target_compile_definitions(test_shell_python_shared_mount_prove PRIVATE
+      AE_PYTHON_HOME="${AGENTENGINE_PYTHON_HOME}")
+    add_test(NAME test_shell_python_shared_mount_prove
+      COMMAND test_shell_python_shared_mount_prove)
+    set_tests_properties(test_shell_python_shared_mount_prove PROPERTIES
       ENVIRONMENT "PATH=${AGENTENGINE_PYTHON_DLL_DIR};$ENV{PATH}" TIMEOUT 60)
   endif()
 endif()
@@ -2955,4 +3225,165 @@ if(AGENTENGINE_BUILD_PYTHON_RUNNER)
     COMMAND test_python_trusted_loader_proxy_heap_type_negative_control)
   set_tests_properties(test_python_trusted_loader_proxy_heap_type_negative_control PROPERTIES
     ENVIRONMENT "${AE_PYTHON_TEST_ENV}" TIMEOUT 60)
+endif()
+
+# ---- ADR-102 Phase 1 (decisions/ADR-102-identity-native-sandbox-implementation-phase-1.md) ------
+# IdentityAuthority/IdentityHandle/Grant<T> (trust/identity_authority.hpp) and AsyncQuota<T>
+# (rt/async_quota.hpp) -- the identity-native sandbox/worktree design's (ADR-099) first primitives
+# ported into production. Header-only; agentengine::core alone provides the include path.
+add_executable(test_identity_authority_grant test_identity_authority_grant.cpp)
+target_link_libraries(test_identity_authority_grant PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_identity_authority_grant COMMAND test_identity_authority_grant)
+
+# ---- ADR-102 Phase 2 -- Ledger<Store>/BranchHandle/Checkpoint (core/ledger.hpp) ------------------
+# Built on the real agentengine::WorktreeObjectStore/InMemoryWorktreeObjectStore/compute_digest --
+# needs agentengine::worktree_store (real SHA-256 via Windows CNG/BCrypt or the Linux FIPS 180-4
+# fallback), not just agentengine::core.
+add_executable(test_ledger test_ledger.cpp)
+target_link_libraries(test_ledger PRIVATE agentengine::worktree_store agentengine_warnings)
+add_test(NAME test_ledger COMMAND test_ledger)
+
+# ---- ADR-102 Phase 3 -- ExecutionSurface/SandboxRuntime/DockerExecutionSurface/RealIoFileSystem ---
+# (sandbox/{execution_surface,docker_execution_surface,real_io_filesystem,sandbox_runtime}.hpp).
+# Needs agentengine::worktree_store the same way test_ledger does (real Ledger/compute_digest), plus
+# RealIoFileSystem's own real open_within_mount_root/WriteFile/ReadFile use, from the same target.
+# REQUIRES a running Docker daemon reachable via `docker` on PATH -- every check shells out to a real
+# container, matching this phase's own "never a mock" discipline; not run in an environment without one.
+add_executable(test_sandbox_runtime test_sandbox_runtime.cpp)
+target_link_libraries(test_sandbox_runtime PRIVATE agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)
+add_test(NAME test_sandbox_runtime COMMAND test_sandbox_runtime)
+set_tests_properties(test_sandbox_runtime PROPERTIES RESOURCE_LOCK docker_daemon)
+
+# ---- ADR-108 -- DockerCliBackend::reap_orphans(), the real orphan-container garbage-collection fix
+# for the residual DockerExecutionSurface's own header comment has disclosed since ADR-104/ADR-106.
+# REQUIRES a running Docker daemon reachable via `docker` on PATH, same posture as test_sandbox_runtime
+# above.
+add_executable(test_docker_orphan_reap test_docker_orphan_reap.cpp)
+target_link_libraries(test_docker_orphan_reap PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_docker_orphan_reap COMMAND test_docker_orphan_reap)
+set_tests_properties(test_docker_orphan_reap PROPERTIES RESOURCE_LOCK docker_daemon)
+
+# ---- ADR-102 Phase 4 -- MandatorySandboxProvider<Surface>/RunCommandTool
+# (sandbox/mandatory_sandbox_provider.hpp), composed as a REAL agentengine::rt::AgentSession's actual
+# HistoryProviderT, driven through the real, unmodified invoke_tool() 10-step pipeline for the first
+# time in this design's history. Needs agentengine::worktree_store the same way test_ledger/
+# test_sandbox_runtime do (real Ledger/compute_digest/open_within_mount_root).
+# REQUIRES a running Docker daemon reachable via `docker` on PATH.
+add_executable(test_mandatory_sandbox_provider test_mandatory_sandbox_provider.cpp)
+target_link_libraries(test_mandatory_sandbox_provider PRIVATE agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)
+add_test(NAME test_mandatory_sandbox_provider COMMAND test_mandatory_sandbox_provider)
+set_tests_properties(test_mandatory_sandbox_provider PROPERTIES RESOURCE_LOCK docker_daemon)
+
+# ---- ADR-114 -- MandatorySandboxProvider<Surface>'s task-branch tools (start_task_branch/
+# run_in_task_branch/commit_task_branch/discard_task_branch), the A10 promotion giving
+# SandboxRuntime::merge_into() its first real production caller. Same link requirements as
+# test_mandatory_sandbox_provider (real Ledger/compute_digest/open_within_mount_root + Docker).
+# REQUIRES a running Docker daemon reachable via `docker` on PATH.
+add_executable(test_task_branch_tools test_task_branch_tools.cpp)
+target_link_libraries(test_task_branch_tools PRIVATE agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)
+add_test(NAME test_task_branch_tools COMMAND test_task_branch_tools)
+set_tests_properties(test_task_branch_tools PROPERTIES RESOURCE_LOCK docker_daemon)
+
+# ---- ADR-114 §5/§6 residual, closed: real, two-OS-thread concurrent dispatch across all four
+# task-branch verbs on ONE MandatorySandboxProvider instance -- mirrors test_rt_block_on's own real
+# cross-thread contention methodology, applied to this class's own task_branch_mutex_ specifically
+# rather than to the generic AsyncMutex primitive alone. REQUIRES a running Docker daemon.
+add_executable(test_task_branch_concurrent_dispatch test_task_branch_concurrent_dispatch.cpp)
+target_link_libraries(test_task_branch_concurrent_dispatch PRIVATE agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)
+add_test(NAME test_task_branch_concurrent_dispatch COMMAND test_task_branch_concurrent_dispatch)
+set_tests_properties(test_task_branch_concurrent_dispatch PROPERTIES RESOURCE_LOCK docker_daemon)
+
+# ---- ADR-126 -- closes ADR-114 §5/§6's own "active_'s table has no durability of its own" residual:
+# bind_sandbox() now recovers orphaned child task branches from a durable-Store Ledger after a
+# simulated crash. Docker-independent (never calls run_in_task_branch()).
+add_executable(test_task_branch_durability_recovery test_task_branch_durability_recovery.cpp)
+target_link_libraries(test_task_branch_durability_recovery PRIVATE agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)
+add_test(NAME test_task_branch_durability_recovery COMMAND test_task_branch_durability_recovery)
+
+# ---- ADR-128 -- closes ADR-126 §5's own "root-branch recovery remains the caller's own, separate,
+# already-disclosed responsibility" residual: MandatorySandboxProvider::bind_root_branch() resolves
+# (reclaim-if-orphaned, create-if-not) an owner's own deterministic root branch by identity alone.
+# Docker-independent (never calls run_in_task_branch()).
+add_executable(test_root_branch_recovery test_root_branch_recovery.cpp)
+target_link_libraries(test_root_branch_recovery PRIVATE agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)
+add_test(NAME test_root_branch_recovery COMMAND test_root_branch_recovery)
+
+# ---- Content-durability conformer: agentengine::FileWorktreeObjectStore (ported from
+# docs/planning/proofs/worktree_io/file_object_store.hpp), closing the blob/tree content half of the
+# gap ADR-102/ADR-126/ADR-128 each named and declined to close. A genuine TWO-PROCESS proof -- this one
+# executable self-relaunches via std::system() to play both roles as real, separate OS processes.
+add_executable(test_content_durability_cross_process test_content_durability_cross_process.cpp)
+target_link_libraries(test_content_durability_cross_process PRIVATE agentengine::worktree_store agentengine_warnings)
+add_test(NAME test_content_durability_cross_process COMMAND test_content_durability_cross_process)
+
+# ---- Real, executed adversarial probe of the content-durability design draft's own §3/gate-item-3
+# disclosure: content writes are safe under genuine concurrent cross-instance access; the pre-existing
+# metadata-bookkeeping race under genuinely concurrent Ledger construction is real, reproduced with
+# real threads, and confirmed unchanged (not worsened, not fixed) by adding durable content.
+add_executable(test_content_durability_concurrency test_content_durability_concurrency.cpp)
+target_link_libraries(test_content_durability_concurrency PRIVATE agentengine::worktree_store agentengine_warnings)
+add_test(NAME test_content_durability_concurrency COMMAND test_content_durability_concurrency)
+
+# ---- Real, adversarial, two-process proof of the content-durability design draft's own gate item 6:
+# making Ledger content durable turns IdentityAuthority's own previously-latent id-recycling risk
+# (identity-native-sandbox-worktree-design.md §33) into a live cross-principal leak when a host does not
+# ALSO configure IdentityAuthority::bootstrap() durably and consistently -- proven both vulnerable and
+# fixed-when-configured-correctly, on current production code.
+add_executable(test_identity_durability_precondition test_identity_durability_precondition.cpp)
+target_link_libraries(test_identity_durability_precondition PRIVATE agentengine::worktree_store agentengine_warnings)
+add_test(NAME test_identity_durability_precondition COMMAND test_identity_durability_precondition)
+
+# ---- ADR-102 Phase 4 -- agentengine::rt::block_on<T>() (rt/block_on.hpp), the real fix for a real,
+# independent-red-team-found, empirically-proven AsyncMutex mutual-exclusion violation the naive
+# "while (!t.done()) t.resume();" drive loop has under genuine cross-thread contention. Real OS threads
+# (<thread>), no Docker/Ledger needed -- agentengine::core alone provides AsyncMutex/task<T>.
+add_executable(test_rt_block_on test_rt_block_on.cpp)
+target_link_libraries(test_rt_block_on PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_block_on COMMAND test_rt_block_on)
+
+# ---- ADR-102 Phase 5 -- the real cli_chat.cpp composition pattern (one ContextProvider embedding
+# MandatorySandboxProvider and merging its contribution outside any skill-scoping), against a FAKE
+# ExecutionSurface -- no Docker daemon needed, this proves the DECLARATION-time composition, not
+# run_command's real execution (already proven against real Docker by test_sandbox_runtime/
+# test_mandatory_sandbox_provider). Closes a real gap an independent red-team pass found: this exact
+# composition had zero automated coverage before this file.
+add_executable(test_mandatory_sandbox_provider_composed test_mandatory_sandbox_provider_composed.cpp)
+target_link_libraries(test_mandatory_sandbox_provider_composed PRIVATE agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)
+add_test(NAME test_mandatory_sandbox_provider_composed COMMAND test_mandatory_sandbox_provider_composed)
+
+# ---- ADR-102 Phase 5 (agent_session.hpp fix) -- AgentSession::fork_from() now acquires
+# source.session_mutex_ (I1) for the whole copy, closing a real, twice-independently-disclosed
+# structural gap (ADR-102 Phase 3 SandboxRuntime::merge_into()/discard(), Phase 4's own residual naming
+# fork_from() itself). Real two-thread race, not merely a re-run of the existing suite.
+add_executable(test_rt_agent_session_fork_from_serialization test_rt_agent_session_fork_from_serialization.cpp)
+target_link_libraries(test_rt_agent_session_fork_from_serialization PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_agent_session_fork_from_serialization COMMAND test_rt_agent_session_fork_from_serialization)
+
+# ---- ADR-132 -- THE definitive, full-stack proof: MandatorySandboxProvider::commit_task_branch(),
+# through the REAL, unmodified production tool surface, genuinely succeeds after a simulated crash with
+# real, durable content -- root-branch recovery (ADR-128), child-branch recovery (ADR-126), content
+# durability (ADR-130), and the Store-genericity fix that lets them compose (ADR-132) all together.
+add_executable(test_task_branch_content_durability_integration test_task_branch_content_durability_integration.cpp)
+target_link_libraries(test_task_branch_content_durability_integration PRIVATE agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)
+add_test(NAME test_task_branch_content_durability_integration COMMAND test_task_branch_content_durability_integration)
+
+# ---- ADR-134 independent red-team round -- tools/durable_sandboxed_shell_chat.cpp had ZERO automated
+# coverage of its own (ADR-134 §3's own evidence was a human manually re-running the compiled binary
+# twice and eyeballing the filesystem). This turns that same claim into a permanent regression guard:
+# invokes the REAL, already-built agentengine_durable_sandboxed_shell_chat.exe TWICE via std::system(),
+# as two genuinely separate OS process invocations, and checks THE CORE CLAIM directly on real disk (the
+# on-disk tree-object count stays at exactly 1, not 2). Gated identically to the tool target itself
+# (AGENTENGINE_WITH_HTTPS) -- the target this test invokes does not exist otherwise.
+if(AGENTENGINE_WITH_HTTPS)
+  add_executable(test_durable_sandboxed_shell_chat_cross_process
+    test_durable_sandboxed_shell_chat_cross_process.cpp)
+  target_link_libraries(test_durable_sandboxed_shell_chat_cross_process PRIVATE agentengine_warnings)
+  target_compile_definitions(test_durable_sandboxed_shell_chat_cross_process PRIVATE
+    AE_DURABLE_SHELL_CHAT_EXE="$<TARGET_FILE:agentengine_durable_sandboxed_shell_chat>")
+  add_dependencies(test_durable_sandboxed_shell_chat_cross_process agentengine_durable_sandboxed_shell_chat)
+  add_test(NAME test_durable_sandboxed_shell_chat_cross_process
+    COMMAND test_durable_sandboxed_shell_chat_cross_process)
+  # Two real subprocess launches plus real filesystem I/O -- generous but finite, matching this design
+  # line's own established TIMEOUT posture for cross-process proofs of this shape.
+  set_tests_properties(test_durable_sandboxed_shell_chat_cross_process PROPERTIES TIMEOUT 60)
 endif()

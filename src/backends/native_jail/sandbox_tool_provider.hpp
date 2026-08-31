@@ -36,8 +36,12 @@
 // as-is, the same posture `create_directories` on an already-existing path already has (a no-op, not
 // an error).
 //
-// Windows-only for this pass, matching `SessionShellSandbox`/`MediatedFileSystemAdapter`'s own
-// current platform scope (021 §2's Windows-now/Linux-next ordering).
+// Platform-portable as of 2026-08-28 (ADR-103, the Linux-parity pass) -- `SessionShellSandbox`/
+// `MediatedFileSystemAdapter` now build and run on Linux too, verified for real against a Linux
+// build (see that ADR for the evidence). Nothing in THIS file needed to change beyond
+// `session_dir.wstring()` above becoming a plain `session_dir` (the shared `create()` signature is
+// now `std::filesystem::path`, portable by construction) -- `compute_digest`/hex-validation/
+// directory-creation here were already portable C++ with no Windows API dependency of their own.
 
 #include <cstddef>
 #include <filesystem>
@@ -139,7 +143,7 @@ private:
                                           "sandbox_tool_provider.mkdir_failed"});
         }
 
-        auto created = SessionShellSandbox::create(session_dir.wstring());
+        auto created = SessionShellSandbox::create(session_dir);
         if (!created) return std::unexpected(created.error());
         sandbox_ = std::move(*created);
         return {};

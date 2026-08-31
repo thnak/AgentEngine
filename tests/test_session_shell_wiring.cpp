@@ -12,7 +12,6 @@
 #include <fstream>
 #include <string>
 
-#include "agentengine/pal/env.hpp"
 #include "backends/native_jail/session_shell_wiring.hpp"
 
 namespace {
@@ -42,13 +41,15 @@ int main() {
     using agentengine::ToolTable;
     using agentengine::invoke_tool;
 
-    std::string const scratch = agentengine::pal::env_var("TEMP").value_or("C:/Windows/Temp") +
-                                 "/ae_session_shell_wiring_test";
+    // std::filesystem::temp_directory_path() (portable -- TEMP/TMP on Windows, TMPDIR/"/tmp" on
+    // Linux) rather than a hand-read TEMP env var with a Windows-only fallback path (2026-08-28,
+    // ADR-103, the Linux-parity pass).
+    std::filesystem::path const scratch =
+        std::filesystem::temp_directory_path() / "ae_session_shell_wiring_test";
     std::filesystem::remove_all(scratch);
     std::filesystem::create_directories(scratch);
-    std::wstring const scratch_w(scratch.begin(), scratch.end());
 
-    auto sandbox = SessionShellSandbox::create(scratch_w);
+    auto sandbox = SessionShellSandbox::create(scratch);
     check(sandbox.has_value(), "setup: SessionShellSandbox::create succeeds against a real directory");
     if (!sandbox) {
         std::fprintf(stderr, "test_session_shell_wiring: setup failed, cannot continue\n");
@@ -91,7 +92,7 @@ int main() {
 
         // The write actually landed on the REAL host filesystem -- not just trusted from the tool's
         // own report.
-        std::ifstream in(scratch + "/out.txt");
+        std::ifstream in(scratch / "out.txt");
         std::string line;
         std::getline(in, line);
         check(in.good() || !line.empty(), "the file the shell wrote is readable directly from the host fs");
@@ -111,7 +112,7 @@ int main() {
         auto const* err = std::get_if<agentengine::Error>(&result.content[0].value);
         check(err != nullptr, "denial is a structured Error content item, not a crash or silent no-op");
 
-        check(!std::filesystem::exists(scratch + "/denied.txt"),
+        check(!std::filesystem::exists(scratch / "denied.txt"),
               "a denied call never reaches the real shell -- no file was written");
     }
 

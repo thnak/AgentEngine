@@ -174,10 +174,26 @@ result<SafeFileHandle> open_within_mount_root(std::wstring const& mount_root, st
     // host from deleting or replacing the underlying file (e.g. during a later sync/merge pass) --
     // found via this ADR's own C2-7e/C2-7f TOCTOU proof, where an open target handle's default
     // sharing silently defeated a same-name delete-then-recreate the test performed around it.
-    SafeFileHandle target(CreateFileW(joined.c_str(), desired_access, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr,
-                                       creation_disposition, flags_and_attributes | FILE_FLAG_BACKUP_SEMANTICS,
-                                       nullptr));
+    // `| DELETE` on top of whatever the caller asked for: a creating disposition below can succeed in
+    // planting a brand-new object on real disk BEFORE the containment check ever runs (Windows itself
+    // performs the create as part of resolving `joined`) -- if that object turns out to be outside
+    // `mount_root`, this function must be able to unwind it through the SAME handle, never a re-parsed
+    // path string (see the post-containment-check block below; a sibling design's own external-
+    // validation pass caught the missing-cleanup gap this closes -- see decisions/ADR-014's addendum).
+    SafeFileHandle target(CreateFileW(joined.c_str(), desired_access | DELETE,
+                                       FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, creation_disposition,
+                                       flags_and_attributes | FILE_FLAG_BACKUP_SEMANTICS, nullptr));
     if (!target.valid()) return win_error_t<SafeFileHandle>("CreateFileW(target)", GetLastError());
+
+    // A creating disposition that reports ERROR_ALREADY_EXISTS truncated/reopened a PRE-EXISTING
+    // object -- nothing new was planted, nothing to ever unwind. Any other outcome for one of these
+    // three dispositions means Windows just created a brand-new object at `joined`, real, on disk,
+    // as a side effect of THIS call -- captured immediately, before any further API call has a chance
+    // to reset GetLastError()'s value out from under this check.
+    DWORD const create_last_error   = GetLastError();
+    bool const  could_have_created  = creation_disposition == CREATE_ALWAYS ||
+                                      creation_disposition == CREATE_NEW || creation_disposition == OPEN_ALWAYS;
+    bool const created_new_object = could_have_created && create_last_error != ERROR_ALREADY_EXISTS;
 
     // Verify what was ACTUALLY opened -- read from the handle, not re-derived from `joined` -- is
     // still inside the root. A reparse point crossing the boundary, an 8.3 short-name alias, or any
@@ -185,6 +201,16 @@ result<SafeFileHandle> open_within_mount_root(std::wstring const& mount_root, st
     auto target_canonical = final_path_name(target.get());
     if (!target_canonical) return std::unexpected(target_canonical.error());
     if (!is_within_root(*root_canonical, *target_canonical)) {
+        if (created_new_object) {
+            // Unwind the just-planted object through the SAME handle just verified -- never a
+            // re-parsed string -- so this cleanup step introduces no check-then-use gap of its own.
+            // Best-effort: if this itself fails (e.g. an intervening AV lock), the escape is still
+            // correctly REJECTED to the caller either way; only whether the planted artifact also
+            // gets removed is affected, never whether the write is honored.
+            FILE_DISPOSITION_INFO dispo{};
+            dispo.DeleteFile = TRUE;
+            SetFileInformationByHandle(target.get(), FileDispositionInfo, &dispo, sizeof(dispo));
+        }
         // native_code = ERROR_ACCESS_DENIED (Milestone 3 Phase G4): a mount escape is a policy denial,
         // not an OS-level lookup failure, so there is no real win32 code behind it the way a genuine
         // not-found/access-denied CreateFileW failure has one -- ERROR_ACCESS_DENIED is the closest

@@ -336,3 +336,51 @@ kernel 6.6.87.2, gcc 15.2.0): all worktree-store targets and this corpus build a
 broader Linux `ctest` suite (native-jail's own privileged-only tests excluded by
 `AGENTENGINE_LINUX_SANDBOX_TESTS` staying at its default OFF, unrelated to this primitive) shows no
 regression.
+
+## 10. Addendum (2026-08-27) — a real, previously-undiscovered gap in `open_within_mount_root` itself: rejection didn't undo the side effect
+
+Found by an unrelated, independent design's own external-validation work
+(`docs/planning/identity-native-sandbox-worktree-design.md` §38.6), which adopted this ADR's
+`open_within_mount_root` for its own mediated-filesystem primitive and, in doing so, was the first
+caller to route a real *write* (`GENERIC_WRITE`/`CREATE_ALWAYS`) through it against an escaping
+junction. Every check in this ADR's own corpus (§6, C2-1 through C2-9, all Judged) uses
+`GENERIC_READ`/`OPEN_EXISTING`, which cannot itself have a side effect on rejection. A creating
+disposition is different: `CreateFileW(..., CREATE_ALWAYS, ...)` performs the create as part of
+resolving the path — including transparently crossing a reparse point — *before*
+`open_within_mount_root`'s own containment check runs, so a rejected escape attempt still left a
+real, empty file planted at the escaped, outside-the-mount-root location. The verdict returned
+(`worktree.mount_path_escapes_root`) was always correct; the side effect of getting there was not
+undone.
+
+**Fixed** in `src/core/worktree_mount_fs.cpp`: `open_within_mount_root` now requests `DELETE`
+access alongside whatever the caller asked for, reads `GetLastError()` immediately after
+`CreateFileW` to determine whether a creating disposition (`CREATE_ALWAYS`/`CREATE_NEW`/
+`OPEN_ALWAYS`) actually planted a brand-new object (`ERROR_ALREADY_EXISTS` means it merely
+truncated/reopened a pre-existing one — nothing to unwind), and, only when containment fails *and*
+a new object was created, unwinds it via `SetFileInformationByHandle(FileDispositionInfo,
+Delete=TRUE)` on the SAME handle already verified — never a re-parsed path string, so the cleanup
+step itself introduces no new check-then-use gap, preserving this ADR's own "the object verified is
+the object used" property one step further than before.
+
+**Proven**: a new **C2-10** in `tests/test_worktree_mount_fs_escape_corpus.cpp` — a creating
+`CREATE_ALWAYS` open through the existing `escape_link` junction is still rejected, and now leaves
+nothing planted at the escaped location (`GetFileAttributesW` on the would-be planted path returns
+`INVALID_FILE_ATTRIBUTES`), paired with a positive control proving an ordinary, legitimate inside
+`CREATE_ALWAYS` still succeeds and its file still persists. Full pre-existing corpus (C2-1..C2-9,
+22 checks) reverified green alongside the 4 new C2-10 checks — no regressions. Isolated before/after
+proof (a minimal standalone probe against `open_within_mount_root` directly, independent of the
+consuming design's own code): before the fix, `file exists at OUTSIDE location despite rejection: 1`
+(0 bytes); after, `0`.
+
+**What this shows, beyond the specific bug**: this ADR's own corpus, despite being real, executed,
+and Judged, had a genuine blind spot — every crossing-junction case it exercises is a read. A
+different caller exercising a different operation shape (write) against the same already-proven
+primitive found a real gap the original red-team rounds did not, simply because that shape had
+never been tried. Consistent with this whole project's standing practice of external, not purely
+self-referential, validation.
+
+**Named platform gap, not silently assumed closed**: this addendum's fix and its C2-10 proof are
+Windows-only, matching this ADR's own scope. `worktree_mount_fs_posix.hpp`'s Linux analogue was not
+audited or fixed for the equivalent gap (a POSIX `open()` with `O_CREAT` similarly creates before
+any userspace verification could run) as part of this addendum — a real, named, not-yet-closed
+residual for a future pass, not assumed safe by symmetry with §9's otherwise-clean Linux parity.

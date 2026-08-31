@@ -16,7 +16,6 @@
 
 #include "agentengine/core/composed_context_provider.hpp"
 #include "agentengine/core/worktree.hpp"
-#include "agentengine/pal/env.hpp"
 #include "backends/native_jail/sandbox_tool_provider.hpp"
 #include "support/run_task_sync.hpp"
 
@@ -62,8 +61,10 @@ int main() {
     namespace json = agentengine::json;
     using agentengine::SandboxToolProvider;
 
-    std::string const scratch_root = agentengine::pal::env_var("TEMP").value_or("C:/Windows/Temp") +
-                                      "/ae_sandbox_tool_provider_test";
+    // std::filesystem::temp_directory_path() (portable) rather than a hand-read TEMP env var with a
+    // Windows-only fallback path (2026-08-28, ADR-103, the Linux-parity pass).
+    std::string const scratch_root =
+        (std::filesystem::temp_directory_path() / "ae_sandbox_tool_provider_test").string();
     std::filesystem::remove_all(scratch_root);
     // Deliberately do NOT create scratch_root itself -- proves the provider's own idempotent
     // create_directories() (ADR-096 §8 residual) handles a root that does not exist yet.

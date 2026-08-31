@@ -1,4 +1,4 @@
-// Implements kata_backend.hpp -- see that file's header comment for full scope/residuals.
+﻿// Implements kata_backend.hpp -- see that file's header comment for full scope/residuals.
 #include "backends/kata/kata_backend.hpp"
 
 #include <fcntl.h>
@@ -24,10 +24,11 @@
 #include <variant>
 #include <vector>
 
-#include "agentengine/core/json_value.hpp"
 #include "agentengine/sandbox/net_egress_proxy.hpp"
-
-extern char** environ;
+#include "backends/kata/kata_backend_detail.hpp"  // run_ctr/fresh_id/ipv4_to_dotted/
+                                                     // parse_allowlist_entry/build_oci_spec_json --
+                                                     // see that header's own top comment for why
+                                                     // these moved here verbatim.
 
 namespace agentengine::kata {
 
@@ -35,473 +36,9 @@ namespace {
 
 namespace fs = std::filesystem;
 
-// Red-team finding #1 (BLOCKING, verified by execution -- a 200MB guest `exec()` output landed in
-// full in host RSS with no cap): matches `LinuxNativeJailBackend::drain_pipe_bounded()`'s own
-// `kDefaultSafetyCapBytes` (linux_native_jail_backend.cpp) -- a host-safety cap independent of and
-// underneath any future `SandboxSpec::limits`/`output_discipline.hpp` wiring, not a substitute for
-// either.
-constexpr std::size_t kOutputSafetyCapBytes = 16ull * 1024 * 1024;
-
-// Red-team finding #2 (BLOCKING, verified by execution -- a hung/slow `ctr` call had no bound at
-// all, including inside destroy()'s own cleanup sequence). No `SandboxSpec`/`ResourceLimits` axis
-// covers this -- it bounds THIS backend's own host-side subprocess wait, not guest wall-clock time.
-constexpr int kProcessTimeoutSeconds = 30;
-
-struct ProcessOutcome {
-    int exit_code = -1;
-    bool timed_out = false;
-    bool output_truncated = false;
-    // SLICE 5 (2026-08-24): distinct from `output_truncated` above -- see the red-teamed reasoning at
-    // this flag's own set-site below for why the two are NOT interchangeable (a read landing exactly
-    // on the cap boundary force-closes a stream without dropping any bytes on that particular read,
-    // so `output_truncated` alone silently misses it). `output_capped` is the reliable "this stream
-    // was force-closed because it hit its cap" signal `KataBackend::exec()` needs to decide whether a
-    // guest-side kill/classification is warranted; `output_truncated` keeps its original narrower
-    // meaning (bytes were actually dropped) for anyone reading it in the future.
-    bool output_capped = false;
-    std::string stdout_text;
-    std::string stderr_text;
-};
-
-// Spawns `argv[0]` with `argv[1..]`, waits for exit (bounded by `timeout_seconds`), captures
-// stdout/stderr (each capped at `output_cap_bytes`). Uses `posix_spawn_file_actions_t` to wire
-// exactly three fds (stdin closed, stdout/stderr to fresh pipes) into the child -- POSIX_SPAWN gives
-// no equivalent of Win32's implicit "every inheritable handle crosses by default" hazard (a POSIX
-// child only inherits fds the parent hasn't marked `FD_CLOEXEC`), but this backend still opens every
-// pipe end with `O_CLOEXEC` explicitly and closes the child-side ends in the parent immediately after
-// spawn, rather than relying on that platform default alone -- the same "don't rely on the platform
-// default being safe, make it explicit" posture `decisions/ADR-004-...md` §12 Finding 6 named on the
-// Windows side of this project after a real, reproduced ambient-authority leak there.
-//
-// Both pipes are drained via `poll()`, interleaved, rather than sequentially (stdout to EOF, then
-// stderr) -- a child writing substantial output to BOTH streams concurrently could otherwise block
-// on a full stderr pipe while this function is still fully draining stdout, a classic pipe deadlock
-// this function's own predecessor (sequential `drain()`) was silently exposed to.
-//
-// Slice 2: `timeout_seconds`/`output_cap_bytes` default to the Slice-1 red-team fix's own fixed
-// constants but are now caller-overridable -- `KataBackend::exec()`/`destroy()` pass
-// `SandboxSpec::limits.wall_ms`/`output_bytes` through when an `Instance` was created with them set
-// (kata_backend.hpp's own header comment has the full mapping).
-//
-// SLICE 9/10 (2026-08-24): despite the name, this helper is generic over any `argv[0]` -- SLICE 1-8
-// only ever spawned `ctr`, but `create()`/`destroy()` now also spawn `ip`, `cnitool`, and `nft` for
-// the `--config`-mode rootfs/netns/CNI/nftables pipeline (ADR-093). `extra_env`, when non-empty,
-// gives the child THIS backend's own explicit key=value pairs (e.g. `cnitool`'s `CNI_PATH`/
-// `NETCONFPATH`) IN ADDITION TO this process's ambient environment, rather than requiring the caller
-// to mutate this process's own `environ` (not thread-safe against concurrent `posix_spawn` calls, and
-// a wrong "the source of authority is inherited host env state" posture -- I2: this backend's own
-// configuration should be what selects a CNI plugin directory, not ambient process state).
-[[nodiscard]] result<ProcessOutcome> run_ctr(std::vector<std::string> const& args,
-                                              int timeout_seconds = kProcessTimeoutSeconds,
-                                              std::size_t output_cap_bytes = kOutputSafetyCapBytes,
-                                              std::vector<std::string> const& extra_env = {}) {
-    std::array<int, 2> out_pipe{-1, -1};
-    std::array<int, 2> err_pipe{-1, -1};
-    if (pipe2(out_pipe.data(), O_CLOEXEC) != 0) {
-        return std::unexpected(error{failure_class::fatal,
-                                      "kata_backend: pipe2() failed while preparing to spawn ctr",
-                                      "kata_backend.pipe_failed"});
-    }
-    if (pipe2(err_pipe.data(), O_CLOEXEC) != 0) {
-        // Red-team finding #3 (MINOR, code reading): the first pipe's two fds must be closed on
-        // this path too -- every other error path in this function closes what it opened, this one
-        // originally didn't.
-        close(out_pipe[0]);
-        close(out_pipe[1]);
-        return std::unexpected(error{failure_class::fatal,
-                                      "kata_backend: pipe2() failed while preparing to spawn ctr",
-                                      "kata_backend.pipe_failed"});
-    }
-
-    posix_spawn_file_actions_t actions;
-    posix_spawn_file_actions_init(&actions);
-    // dup2 the write ends onto 1/2 in the child -- dup2'd fds are never CLOEXEC, so this is the one
-    // deliberate exception, exactly the two fds this child is meant to have.
-    posix_spawn_file_actions_adddup2(&actions, out_pipe[1], STDOUT_FILENO);
-    posix_spawn_file_actions_adddup2(&actions, err_pipe[1], STDERR_FILENO);
-    posix_spawn_file_actions_addclose(&actions, out_pipe[0]);
-    posix_spawn_file_actions_addclose(&actions, err_pipe[0]);
-    posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
-
-    std::vector<char*> argv;
-    argv.reserve(args.size() + 1);
-    for (auto const& a : args) argv.push_back(const_cast<char*>(a.c_str()));
-    argv.push_back(nullptr);
-
-    // SLICE 9/10: build an explicit envp only when `extra_env` is non-empty -- every pre-existing
-    // call site (empty `extra_env`) keeps using `environ` directly, byte-for-byte the same spawn
-    // this function has always done, no behavior change for SLICE 1-8's own call sites.
-    std::vector<char*> envp;
-    if (!extra_env.empty()) {
-        for (char** e = environ; e != nullptr && *e != nullptr; ++e) envp.push_back(*e);
-        for (auto const& kv : extra_env) envp.push_back(const_cast<char*>(kv.c_str()));
-        envp.push_back(nullptr);
-    }
-    char** const envp_arg = extra_env.empty() ? environ : envp.data();
-
-    pid_t pid = -1;
-    int const spawn_rc = posix_spawnp(&pid, argv[0], &actions, nullptr, argv.data(), envp_arg);
-    posix_spawn_file_actions_destroy(&actions);
-    close(out_pipe[1]);
-    close(err_pipe[1]);
-    if (spawn_rc != 0) {
-        close(out_pipe[0]);
-        close(err_pipe[0]);
-        return std::unexpected(error{failure_class::fatal,
-                                      std::string("kata_backend: posix_spawnp(") + argv[0] +
-                                          ") failed: " + std::strerror(spawn_rc),
-                                      "kata_backend.spawn_failed"});
-    }
-
-    ProcessOutcome outcome;
-    struct Stream {
-        int fd;
-        std::string* sink;
-        bool open = true;
-    };
-    std::array<Stream, 2> streams{
-        Stream{out_pipe[0], &outcome.stdout_text, true},
-        Stream{err_pipe[0], &outcome.stderr_text, true},
-    };
-
-    auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeout_seconds);
-    char buf[4096];
-    for (;;) {
-        bool const all_closed = !streams[0].open && !streams[1].open;
-        auto const now = std::chrono::steady_clock::now();
-        if (all_closed || now >= deadline) break;
-
-        std::array<struct pollfd, 2> pfds{};
-        int nfds = 0;
-        for (auto& s : streams) {
-            if (s.open) pfds[static_cast<std::size_t>(nfds++)] = pollfd{s.fd, POLLIN, 0};
-        }
-        int const timeout_ms = static_cast<int>(
-            std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count());
-        int const rc = poll(pfds.data(), static_cast<nfds_t>(nfds), timeout_ms > 0 ? timeout_ms : 0);
-        if (rc < 0) {
-            if (errno == EINTR) continue;
-            break;
-        }
-        if (rc == 0) break;  // deadline reached with no activity -- outer loop re-checks `now`
-
-        for (int i = 0; i < nfds; ++i) {
-            if ((pfds[static_cast<std::size_t>(i)].revents & (POLLIN | POLLHUP | POLLERR)) == 0) continue;
-            int const fd = pfds[static_cast<std::size_t>(i)].fd;
-            auto* stream_it = (streams[0].fd == fd) ? &streams[0] : &streams[1];
-            ssize_t const n = read(fd, buf, sizeof(buf));
-            if (n <= 0) {
-                close(fd);
-                stream_it->open = false;
-                continue;
-            }
-            std::size_t const remaining =
-                output_cap_bytes > stream_it->sink->size() ? output_cap_bytes - stream_it->sink->size() : 0;
-            std::size_t const take = static_cast<std::size_t>(n) < remaining ? static_cast<std::size_t>(n) : remaining;
-            stream_it->sink->append(buf, take);
-            if (take < static_cast<std::size_t>(n)) outcome.output_truncated = true;
-            if (stream_it->sink->size() >= output_cap_bytes) {
-                // Real cap reached -- stop reading this stream (leaving the rest unread is fine:
-                // this fd is closed, `ctr`/the guest may see EPIPE/SIGPIPE on further writes, which
-                // is the correct backpressure signal for a runaway output producer).
-                //
-                // SLICE 5 red-team finding #1 (BLOCKING): set `output_capped` HERE, unconditionally,
-                // not folded into the `take < n` check above -- a read that lands EXACTLY on the cap
-                // boundary (`take == n`, e.g. cap sizes that line up with normal read-chunk/pipe-
-                // buffering boundaries, very plausible with round numbers like 4096/65536 against this
-                // function's own 4096-byte `buf`) still force-closes the stream on this line but drops
-                // no bytes on THIS read, so `output_truncated` alone silently misses that this stream
-                // was capped -- the exact gap that would let the tail logic below fall through to an
-                // unconditional blocking waitpid() on realistic cap sizes, reopening the hang this
-                // slice exists to close.
-                outcome.output_capped = true;
-                close(fd);
-                stream_it->open = false;
-            }
-        }
-    }
-    for (auto& s : streams) {
-        if (s.open) {
-            close(s.fd);
-            s.open = false;
-            outcome.timed_out = true;
-        }
-    }
-
-    int status = 0;
-    // SLICE 5 (2026-08-24): `outcome.output_capped` joins `outcome.timed_out` here -- an output-cap
-    // breach previously fell through to the unconditional blocking `waitpid(pid, &status, 0)` below,
-    // the same unbounded-host-side-wait shape ADR-088 already fixed for the wall_ms timeout case (see
-    // that fix's own comment in KataBackend::exec() below) but had explicitly disclosed as NOT fixed
-    // for this case. Real risk closed by folding it in here: if the host-side `ctr` process doesn't
-    // promptly die/error from writing into a pipe whose read end this function just closed (SIGPIPE
-    // ignored/handled, or blocked elsewhere in its own RPC layer), that blocking waitpid could hang
-    // this call indefinitely, defeating this function's own "every subprocess call is bounded"
-    // contract -- not just leaving the guest-side process orphaned (the risk ADR-088 named).
-    bool const force_terminate = outcome.timed_out || outcome.output_capped;
-    if (force_terminate) {
-        // Courtesy non-blocking check FIRST (SLICE 5 red-team finding, applies to the output_capped
-        // case specifically): if the host-side `ctr` process already exited on its own -- plausible
-        // if it does die from EPIPE/SIGPIPE on the write that raced this stream's closure -- prefer
-        // its real exit code over unconditionally discarding it to -1. This is NOT a blocking wait
-        // (that would reintroduce the exact bug above): a single WNOHANG poll, nothing more.
-        if (waitpid(pid, &status, WNOHANG) == pid) {
-            outcome.exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-            return outcome;
-        }
-        kill(pid, SIGKILL);
-        // Bounded reap of a process we just SIGKILL'd -- not an unconditional blocking waitpid().
-        for (int i = 0; i < 50; ++i) {
-            if (waitpid(pid, &status, WNOHANG) != 0) break;
-            struct timespec ts{0, 20'000'000};  // 20ms
-            nanosleep(&ts, nullptr);
-        }
-        outcome.exit_code = -1;
-        return outcome;
-    }
-    if (waitpid(pid, &status, 0) < 0) {
-        return std::unexpected(error{failure_class::fatal,
-                                      "kata_backend: waitpid() failed after spawning ctr",
-                                      "kata_backend.waitpid_failed"});
-    }
-    outcome.exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-    return outcome;
-}
-
-[[nodiscard]] std::string fresh_id(std::string const& prefix) {
-    static thread_local std::mt19937_64 rng{std::random_device{}()};
-    std::ostringstream oss;
-    oss << prefix << "-" << std::hex << rng();
-    return oss.str();
-}
-
-// SLICE 10: `VerifiedEndpoint::ipv4_host_order` -> dotted-decimal, for both the `/etc/hosts` pin and
-// the `nft` rule's `ip daddr` match -- neither consumer wants the raw integer.
-[[nodiscard]] std::string ipv4_to_dotted(std::uint32_t host_order) {
-    std::ostringstream oss;
-    oss << ((host_order >> 24) & 0xFFu) << '.' << ((host_order >> 16) & 0xFFu) << '.'
-        << ((host_order >> 8) & 0xFFu) << '.' << (host_order & 0xFFu);
-    return oss.str();
-}
-
-// `NetPolicy::allowlist` entries are `"host:port:scheme"` (sandbox.hpp's own doc comment) -- exactly
-// two colons, `host` itself must not embed one (no IPv6-literal support in this grammar, matching
-// what the field's own comment promises; a bracketed `[::1]:port:scheme` form is not accepted).
-[[nodiscard]] result<std::tuple<std::string, std::uint16_t, std::string>> parse_allowlist_entry(
-    std::string const& raw) {
-    auto const fail = [&](char const* why) {
-        return std::unexpected(error{failure_class::policy,
-                                      "kata_backend: NetPolicy::allowlist entry '" + raw +
-                                          "' is not valid 'host:port:scheme': " + why,
-                                      "kata_backend.allowlist_entry_malformed"});
-    };
-    std::size_t const c1 = raw.find(':');
-    if (c1 == std::string::npos) return fail("missing ':' separators");
-    std::size_t const c2 = raw.find(':', c1 + 1);
-    if (c2 == std::string::npos) return fail("missing ':' separators");
-    if (raw.find(':', c2 + 1) != std::string::npos) return fail("more than two ':' separators");
-
-    std::string const host = raw.substr(0, c1);
-    std::string const port_str = raw.substr(c1 + 1, c2 - c1 - 1);
-    std::string const scheme = raw.substr(c2 + 1);
-    if (host.empty() || port_str.empty() || scheme.empty()) return fail("an empty host/port/scheme field");
-
-    std::uint16_t port = 0;
-    {
-        std::size_t consumed = 0;
-        unsigned long value = 0;
-        try {
-            value = std::stoul(port_str, &consumed);
-        } catch (...) {
-            return fail("port is not a number");
-        }
-        if (consumed != port_str.size() || value == 0 || value > 65535) return fail("port out of range");
-        port = static_cast<std::uint16_t>(value);
-    }
-    return std::make_tuple(host, port, scheme);
-}
-
-// SLICE 9: everything `--config` mode needs `create()` to have already decided, kept in one place
-// rather than threading eight separate parameters through `build_oci_spec_json()`.
-struct OciSpecInputs {
-    std::string rootfs_path;
-    std::vector<MountSpec> const* mounts;
-    std::uint64_t memory_bytes;
-    std::uint32_t fds;
-    std::uint32_t pids;  // SLICE 11: 0 = unset, same "0 means don't add this resources member" idiom
-                          // memory_bytes already uses.
-    std::string cgroups_path;
-    std::optional<std::string> netns_path;       // unset -> fresh, empty netns (deny_all posture);
-                                                   // set -> join the pre-populated netns SLICE 10 built.
-    std::optional<std::string> hosts_file_path;  // set only when SLICE 10's allowlist wrote DNS pins.
-};
-
-// Hand-authors a complete OCI runtime-spec JSON document -- `--config` mode's `oci.WithSpecFromFile`
-// (containerd's `run_unix.go`, confirmed this pass) applies NO other SpecOpts, so this function alone
-// is responsible for everything the convenience-flag path previously got from
-// `oci.WithDefaultSpecForPlatform`/`oci.WithDefaultUnixDevices` plus this backend's own `--mount`/
-// `--memory-limit`/`--rlimit-nofile` flags. Default namespaces/capabilities/masked-and-readonly-paths/
-// mounts/rlimits below are copied from containerd's real `pkg/oci/spec.go`
-// (`populateDefaultUnixSpec`/`defaultUnixCaps`/`defaultUnixNamespaces`) and `pkg/oci/mounts.go`
-// (`defaultMounts`), fetched and read directly this pass -- real parity with what every container
-// already gets via the convenience-flag path today, not a hand-invented, narrower security posture.
-// Device-cgroup allowlisting beyond the base default-deny rule (`oci.WithDefaultUnixDevices`) is
-// deliberately NOT reproduced -- for a Kata guest, `/dev` is populated by the GUEST's own kernel at
-// boot, not governed by the HOST's device-cgroup rules the way a runc container's shared-kernel `/dev`
-// is, so that specific default carries far less weight here; named as a scoped, deliberate difference
-// from byte-for-byte parity, not an oversight.
-[[nodiscard]] std::string build_oci_spec_json(OciSpecInputs const& in) {
-    using agentengine::json::Value;
-
-    std::vector<Value> caps;
-    for (char const* c : {"CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_FSETID", "CAP_FOWNER", "CAP_MKNOD",
-                           "CAP_NET_RAW", "CAP_SETGID", "CAP_SETUID", "CAP_SETFCAP", "CAP_SETPCAP",
-                           "CAP_NET_BIND_SERVICE", "CAP_SYS_CHROOT", "CAP_KILL", "CAP_AUDIT_WRITE"}) {
-        caps.push_back(Value::make_string(c));
-    }
-    Value const capabilities = Value::make_object({
-        {"bounding", Value::make_array(caps)},
-        {"permitted", Value::make_array(caps)},
-        {"effective", Value::make_array(caps)},
-    });
-
-    // SLICE 7's `fds` -> `RLIMIT_NOFILE` mapping, carried into the spec's own `process.rlimits`
-    // field instead of a `--rlimit-nofile` flag; 1024/1024 is containerd's own default when unset
-    // (`populateDefaultUnixSpec`), not a value this backend invented.
-    std::uint64_t const rlimit_nofile = in.fds > 0 ? in.fds : 1024;
-    Value const rlimits = Value::make_array({Value::make_object({
-        {"type", Value::make_string("RLIMIT_NOFILE")},
-        {"hard", Value::make_number(static_cast<double>(rlimit_nofile))},
-        {"soft", Value::make_number(static_cast<double>(rlimit_nofile))},
-    })});
-
-    Value const process = Value::make_object({
-        {"terminal", Value::make_bool(false)},
-        {"user", Value::make_object({{"uid", Value::make_number(0)}, {"gid", Value::make_number(0)}})},
-        {"args", Value::make_array({Value::make_string("sleep"), Value::make_string("infinity")})},
-        {"cwd", Value::make_string("/")},
-        {"env", Value::make_array({Value::make_string(
-             "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")})},
-        {"noNewPrivileges", Value::make_bool(true)},
-        {"capabilities", capabilities},
-        {"rlimits", rlimits},
-    });
-
-    Value const root = Value::make_object({
-        {"path", Value::make_string(in.rootfs_path)},
-        {"readonly", Value::make_bool(false)},
-    });
-
-    std::vector<Value> mounts_json;
-    auto const push_mount = [&](std::string dest, std::string type, std::string source,
-                                 std::vector<std::string> options) {
-        std::vector<Value> opts_json;
-        opts_json.reserve(options.size());
-        for (auto& o : options) opts_json.push_back(Value::make_string(std::move(o)));
-        mounts_json.push_back(Value::make_object({
-            {"destination", Value::make_string(std::move(dest))},
-            {"type", Value::make_string(std::move(type))},
-            {"source", Value::make_string(std::move(source))},
-            {"options", Value::make_array(std::move(opts_json))},
-        }));
-    };
-    push_mount("/proc", "proc", "proc", {"nosuid", "noexec", "nodev"});
-    push_mount("/dev", "tmpfs", "tmpfs", {"nosuid", "strictatime", "mode=755", "size=65536k"});
-    push_mount("/dev/pts", "devpts", "devpts",
-               {"nosuid", "noexec", "newinstance", "ptmxmode=0666", "mode=0620", "gid=5"});
-    push_mount("/dev/shm", "tmpfs", "shm", {"nosuid", "noexec", "nodev", "mode=1777", "size=65536k"});
-    push_mount("/dev/mqueue", "mqueue", "mqueue", {"nosuid", "noexec", "nodev"});
-    push_mount("/sys", "sysfs", "sysfs", {"nosuid", "noexec", "nodev", "ro"});
-    push_mount("/run", "tmpfs", "tmpfs", {"nosuid", "strictatime", "mode=755", "size=65536k"});
-    if (in.hosts_file_path.has_value()) {
-        // SLICE 10: pins the guest's OWN DNS resolution of each allowlisted hostname to the EXACT IP
-        // this backend resolved+validated+firewalled at create() time -- without this, the guest's
-        // independent resolution of the same hostname could legitimately return a DIFFERENT IP
-        // (round-robin/geo DNS, a different resolver), which the nftables allowlist (scoped to the
-        // create()-time-resolved IP specifically) would then correctly, but unhelpfully, block. A
-        // real correctness gap found during this design, not copied from an existing pattern.
-        push_mount("/etc/hosts", "bind", *in.hosts_file_path, {"rbind", "ro"});
-    }
-    if (in.mounts != nullptr) {
-        for (MountSpec const& m : *in.mounts) {
-            // `MountSpec::source` as a `BlobRef`, and any ',' in either path, are already rejected by
-            // `create()` before this function ever runs -- `std::get` here is safe by that contract,
-            // not re-validated. The ',' check is now VESTIGIAL for injection purposes specifically
-            // (each field is its own escaped JSON string; the old single delimited `--mount` value
-            // this defended is gone) but is kept anyway: no legitimate absolute path needs a literal
-            // comma, and silently widening what create() accepts without a reason is its own kind of
-            // regression risk.
-            std::string const& host_path = std::get<std::string>(m.source);
-            push_mount(m.guest_path, "bind", host_path, {"rbind", m.read_write ? "rw" : "ro"});
-        }
-    }
-
-    std::vector<Value> namespaces_json;
-    namespaces_json.push_back(Value::make_object({{"type", Value::make_string("pid")}}));
-    namespaces_json.push_back(Value::make_object({{"type", Value::make_string("ipc")}}));
-    namespaces_json.push_back(Value::make_object({{"type", Value::make_string("uts")}}));
-    namespaces_json.push_back(Value::make_object({{"type", Value::make_string("mount")}}));
-    // The network namespace entry is ALWAYS present -- omitting it entirely would join the HOST's
-    // own network namespace (OCI runtime-spec semantics: a namespace type absent from this list means
-    // "inherit the runtime's own", not "none"), a full ambient-network regression from today's
-    // behavior. `netns_path` unset -> a FRESH, empty netns (today's `deny_all` posture: isolated,
-    // nothing bridged in -- matches what `oci.WithDefaultSpecForPlatform`'s own default namespace
-    // list already produces for every container the convenience-flag path creates). `netns_path` set
-    // -> join the pre-created, CNI-populated netns SLICE 10 built before this spec was written.
-    if (in.netns_path.has_value()) {
-        namespaces_json.push_back(Value::make_object(
-            {{"type", Value::make_string("network")}, {"path", Value::make_string(*in.netns_path)}}));
-    } else {
-        namespaces_json.push_back(Value::make_object({{"type", Value::make_string("network")}}));
-    }
-
-    std::vector<Value> masked_paths;
-    for (char const* p : {"/proc/acpi", "/proc/asound", "/proc/kcore", "/proc/keys",
-                           "/proc/latency_stats", "/proc/timer_list", "/proc/timer_stats",
-                           "/proc/sched_debug", "/sys/firmware", "/sys/devices/virtual/powercap",
-                           "/proc/scsi"}) {
-        masked_paths.push_back(Value::make_string(p));
-    }
-    std::vector<Value> readonly_paths;
-    for (char const* p : {"/proc/bus", "/proc/fs", "/proc/irq", "/proc/sys", "/proc/sysrq-trigger"}) {
-        readonly_paths.push_back(Value::make_string(p));
-    }
-
-    std::vector<std::pair<std::string, Value>> resources_members;
-    resources_members.emplace_back(
-        "devices", Value::make_array({Value::make_object(
-                       {{"allow", Value::make_bool(false)}, {"access", Value::make_string("rwm")}})}));
-    if (in.memory_bytes > 0) {
-        resources_members.emplace_back(
-            "memory", Value::make_object(
-                          {{"limit", Value::make_number(static_cast<double>(in.memory_bytes))}}));
-    }
-    // SLICE 11 (docs/planning/kata-backend-config-pipeline-pids-disk-net-redesign-draft.md §3):
-    // reopens ADR-090's own negative decision -- that investigation correctly found no `ctr run`
-    // convenience flag for pids, and SLICE 9's own `--config` rewrite (unrelated motivation: the
-    // NetPolicy allowlist) makes this the identical shape memory_bytes already has, no new mechanism.
-    if (in.pids > 0) {
-        resources_members.emplace_back(
-            "pids", Value::make_object({{"limit", Value::make_number(static_cast<double>(in.pids))}}));
-    }
-
-    Value const linux_section = Value::make_object({
-        {"namespaces", Value::make_array(std::move(namespaces_json))},
-        {"maskedPaths", Value::make_array(std::move(masked_paths))},
-        {"readonlyPaths", Value::make_array(std::move(readonly_paths))},
-        {"cgroupsPath", Value::make_string(in.cgroups_path)},
-        {"resources", Value::make_object(std::move(resources_members))},
-    });
-
-    Value const spec = Value::make_object({
-        {"ociVersion", Value::make_string("1.0.2")},
-        {"process", process},
-        {"root", root},
-        {"mounts", Value::make_array(std::move(mounts_json))},
-        {"linux", linux_section},
-    });
-    return agentengine::json::dump(spec);
-}
+// run_ctr()/ProcessOutcome/fresh_id()/ipv4_to_dotted()/parse_allowlist_entry()/
+// OciSpecInputs/build_oci_spec_json() moved to kata_backend_detail.hpp -- see that header's
+// own top comment.
 
 // SLICE 10: the env pair `cnitool` needs on every invocation -- built once per call site rather than
 // duplicated at each of create()'s/destroy()'s several `cnitool` call sites.
@@ -586,6 +123,27 @@ result<SandboxHandle> KataBackend::create(SandboxSpec const& spec, EffectContext
                     std::string(kKataWorkdirRoot) + ") -- rejected outright, independent of any "
                     "cap::SandboxMount grant (this directory is never nameable by a caller)",
                 "kata_backend.workdir_mount_forbidden"});
+        }
+        // SLICE 12 (red-team finding, BLOCKING, fixed before landing): `guest_path` now feeds a REAL
+        // `fs::create_directories()` call under `rootfs_dir` (this function's own new mount-point
+        // pre-creation loop, below) -- `std::filesystem::path::relative_path()` strips only the
+        // leading root-name/root-directory, it does NOT strip embedded `..` components (empirically
+        // verified), so an unvalidated `guest_path` like `/../../../../etc/cron.d/x` would make that
+        // call create real directories OUTSIDE `rootfs_dir`, on the HOST, as whatever privilege this
+        // process runs under. `authorize_spec()` (sandbox.hpp) only rejects a `.`/`..` component when
+        // the caller holds a `cap::SandboxMount` grant -- every existing call site today holds none at
+        // all (that function's own documented "opt-out preserved" shape), so nothing upstream of this
+        // point defends `guest_path` in the common case. Unconditional here, exactly matching
+        // `targets_own_workdir()`'s own unconditional treatment of `host_path` for the identical risk
+        // class on the other side of this same struct -- never gated on a capability grant this
+        // backend's own directory-creation side effect does not depend on.
+        if (agentengine::sandbox_detail::has_dot_or_dotdot_component(mount.guest_path)) {
+            return std::unexpected(error{
+                failure_class::policy,
+                "kata_backend: MountSpec guest_path contains a '.'/'..' path component -- rejected "
+                "outright, independent of any cap::SandboxMount grant (this function creates real "
+                "host-side directories from this value)",
+                "kata_backend.mount_path_invalid"});
         }
     }
 
@@ -741,20 +299,44 @@ result<SandboxHandle> KataBackend::create(SandboxSpec const& spec, EffectContext
     // SLICE 11 (docs/planning/kata-backend-config-pipeline-pids-disk-net-redesign-draft.md §5):
     // `disk_bytes > 0` builds a backend-owned, loop-device-backed, fixed-size ext4 filesystem and
     // uses it as a real overlay's writable half -- enforcement is a real guest-kernel ENOSPC once the
-    // loop filesystem fills, not a heuristic. `disk_bytes == 0` (unset) is a plain bind mount of
-    // `lower_dir` onto `rootfs_dir` -- behaviorally identical to the pre-SLICE-11 single-mount
-    // rootfs, byte-for-byte unchanged for a caller that doesn't opt in.
+    // loop filesystem fills, not a heuristic.
+    //
+    // SLICE 12 fix (this pass, found via the FIRST real deployment this whole subsystem has ever run
+    // against -- see this file's own top comment / decisions/ADR-096-... for the full account):
+    // `disk_bytes == 0` (unset) used to be a PLAIN, READ-ONLY bind mount of `lower_dir` straight onto
+    // `rootfs_dir` -- `ctr images mount` (above) mounts a snapshot's content read-only, and a bind
+    // mount of a read-only source is itself read-only, so `rootfs_dir` was read-only in the default,
+    // no-quota case. Empirically reproduced against a real Kata 4.1.0/cloud-hypervisor deployment:
+    // Kata's Rust guest agent does NOT auto-create a missing mount-point directory before mounting
+    // something there (unlike runc, which does) -- `busybox:latest`'s own image ships ONLY `/dev` as a
+    // pre-existing top-level directory, so every one of `build_oci_spec_json()`'s own default mounts
+    // targeting `/proc`, `/sys`, `/run`, `/dev/pts`, `/dev/shm`, `/dev/mqueue` failed guest-side
+    // `create_container` with a bare `ENOENT`, for EVERY default (no-disk-quota) `create()` call, with
+    // ANY image that doesn't happen to ship all of those directories pre-created. Bisected empirically
+    // (manual `ctr run --config` probes against the real deployment, narrowing field-by-field) before
+    // writing this fix -- confirmed a real, writable overlay with the missing directories pre-created
+    // resolves it (a real `sleep infinity` task reaches RUNNING state and is killable normally).
+    //
+    // Fixed by giving `rootfs_dir` a real, writable overlay UNCONDITIONALLY, not just when a disk
+    // quota was requested: `disk_bytes > 0` still builds the loop-device-backed ext4 filesystem
+    // (enforcement stays real, unchanged); `disk_bytes == 0` now builds a plain, unbounded `tmpfs` at
+    // `quota_root` instead -- existing ONLY so this function can create the missing mount-point
+    // directories into a writable layer, not for any quota-enforcement purpose (a `tmpfs` has no size
+    // cap here, deliberately -- the no-quota case was never meant to enforce one). Both branches feed
+    // the SAME overlay-mount step below, so `rootfs_dir` is a real overlay in every case now -- the
+    // separate plain-bind-mount code path this comment used to describe is gone.
     bool const disk_quota_active = spec.limits.disk_bytes > 0;
-    if (disk_quota_active) {
-        fs::create_directories(quota_root, fs_ec);
-        if (fs_ec) {
-            cleanup_partial();
-            return std::unexpected(error{failure_class::fatal,
-                                          "kata_backend: failed to create disk-quota staging directory " +
-                                              quota_root.string() + ": " + fs_ec.message(),
-                                          "kata_backend.disk_quota_dir_failed"});
-        }
+    fs::create_directories(quota_root, fs_ec);
+    if (fs_ec) {
+        cleanup_partial();
+        return std::unexpected(error{failure_class::fatal,
+                                      "kata_backend: failed to create rootfs writable-layer staging "
+                                      "directory " +
+                                          quota_root.string() + ": " + fs_ec.message(),
+                                      "kata_backend.disk_quota_dir_failed"});
+    }
 
+    if (disk_quota_active) {
         fs::path const upper_img = workdir / "upper.img";
         {
             // SLICE 11 (red-team finding, resolved rather than left open): serializes ONLY this
@@ -833,50 +415,181 @@ result<SandboxHandle> KataBackend::create(SandboxSpec const& spec, EffectContext
             }
             loop_mounted = true;
         }  // disk_quota_lock released here -- overlay mount below needs no serialization.
+    } else {
+        // SLICE 12: the no-quota writable layer -- a SIZE-CAPPED tmpfs, existing only so this function
+        // can create missing mount-point directories (and the empty /etc/hosts file, when network
+        // access was granted) into a writable layer below (see this block's own top comment).
+        //
+        // REAL, independent-red-team-found finding (fixed same day, before landing): an earlier
+        // version of this fix used an UNSIZED tmpfs here -- Linux's kernel default for an unsized
+        // tmpfs is 50% of physical RAM, and because this writable layer is shared into the guest via
+        // Kata's own virtiofs (a HOST-side daemon, entirely outside the guest's own memory cgroup),
+        // ANY writable path in the overlay -- not just the pre-created mount-point directories -- was
+        // a guest-reachable, zero-capability-gated, up-to-50%-of-host-RAM write primitive for every
+        // default (no-disk-quota) `create()` call, composing across concurrently-created instances
+        // with no coordination. This directly reopened a resource-budget question
+        // (docs/planning/kata-backend-config-pipeline-pids-disk-net-redesign-draft.md §"Scope decision
+        // for this draft"/§8) the project's own design doc explicitly deferred as a separate,
+        // owner-decided follow-on -- landing it silently inside an unrelated ENOENT bugfix would have
+        // been exactly the "contested... design landed without design -> red-team -> prove -> judge"
+        // mistake CLAUDE.md's own discipline exists to catch. A real I8 (budgets enforced) regression
+        // versus the ACTUAL prior behavior too: the pre-fix read-only bind mount enforced a budget of
+        // literally zero writable bytes, not "no cap, same as before".
+        //
+        // Fixed by capping the tmpfs at a small, fixed size -- generous for its own STATED purpose
+        // (a handful of empty directory entries plus one empty file; real directory/inode metadata for
+        // that is a tiny fraction of this) but nowhere near enough to matter as a host-RAM DoS vector:
+        // worst case, ANY writable path under this layer now costs the host a few MiB per instance, not
+        // up to half of physical RAM. This does not reopen "should the no-quota case have real
+        // writable capacity for actual data" -- that question stays exactly where the design doc left
+        // it, a separate, not-yet-made decision -- it only makes this code's own already-stated intent
+        // ("existing ONLY so this function can create missing mount-point directories") structurally
+        // true, not merely descriptive.
+        //
+        // `loop_mounted` (not a new, separate flag) marks that SOMETHING is mounted at `quota_root`
+        // needing `umount` at cleanup time -- the exact same cleanup step the loop-device branch
+        // already uses, reused verbatim rather than adding a second, parallel flag for what is, from
+        // cleanup's point of view, the identical obligation ("unmount quota_root"). `loop_attached`/
+        // `loop_device` deliberately stay unset here -- no loop device exists to detach in this branch.
+        auto tmpfs_outcome =
+            run_ctr({"mount", "-t", "tmpfs", "-o", "size=4m", "tmpfs", quota_root.string()});
+        if (!tmpfs_outcome.has_value() || tmpfs_outcome->exit_code != 0) {
+            cleanup_partial();
+            return std::unexpected(error{
+                failure_class::fatal,
+                "kata_backend: tmpfs mount for the rootfs writable layer failed: " +
+                    (tmpfs_outcome.has_value() ? tmpfs_outcome->stderr_text
+                                                : tmpfs_outcome.error().message),
+                "kata_backend.disk_quota_loop_mount_failed"});
+        }
+        loop_mounted = true;
+    }
 
-        // overlayfs requires upperdir/workdir as two empty directories on the SAME filesystem
-        // (kernel requirement, not this design's choice) -- both live inside the just-mounted loop
-        // filesystem, not beside it.
-        fs::path const upper_subdir = quota_root / "upper";
-        fs::path const work_subdir = quota_root / "work";
-        fs::create_directories(upper_subdir, fs_ec);
-        if (!fs_ec) fs::create_directories(work_subdir, fs_ec);
+    // overlayfs requires upperdir/workdir as two empty directories on the SAME filesystem (kernel
+    // requirement, not this design's choice) -- both live inside `quota_root` (the just-mounted loop
+    // filesystem or tmpfs, whichever branch above ran), not beside it. Runs UNCONDITIONALLY now
+    // (SLICE 12) -- `rootfs_dir` is always a real overlay, never a plain bind mount, so every `create()`
+    // call gets a writable rootfs regardless of whether a disk quota was requested.
+    fs::path const upper_subdir = quota_root / "upper";
+    fs::path const work_subdir = quota_root / "work";
+    fs::create_directories(upper_subdir, fs_ec);
+    if (!fs_ec) fs::create_directories(work_subdir, fs_ec);
+    if (fs_ec) {
+        cleanup_partial();
+        return std::unexpected(
+            error{failure_class::fatal,
+                  "kata_backend: failed to create overlay upper/work directories under " +
+                      quota_root.string() + ": " + fs_ec.message(),
+                  "kata_backend.disk_quota_dir_failed"});
+    }
+
+    std::string const overlay_opts = "lowerdir=" + lower_dir.string() +
+                                      ",upperdir=" + upper_subdir.string() +
+                                      ",workdir=" + work_subdir.string();
+    auto overlay_outcome =
+        run_ctr({"mount", "-t", "overlay", "overlay", "-o", overlay_opts, rootfs_dir.string()});
+    if (!overlay_outcome.has_value() || overlay_outcome->exit_code != 0) {
+        cleanup_partial();
+        return std::unexpected(error{
+            failure_class::fatal,
+            "kata_backend: overlay mount for rootfs failed: " +
+                (overlay_outcome.has_value() ? overlay_outcome->stderr_text
+                                              : overlay_outcome.error().message),
+            "kata_backend.disk_quota_overlay_mount_failed"});
+    }
+    overlay_mounted = true;
+
+    // SLICE 12 fix (this block's own top comment has the full account): Kata's guest agent does not
+    // auto-create a missing mount-point directory the way runc does -- every destination
+    // `build_oci_spec_json()` is about to declare below must already exist inside `rootfs_dir`, or
+    // guest-side `create_container` fails closed with a bare ENOENT. Covers this function's own fixed
+    // default mount set (matching that function's own list exactly) and every caller-supplied
+    // `MountSpec::guest_path` -- both are always directories in this codebase's own convention
+    // (matching `LinuxNativeJailBackend`'s identical treatment of `MountSpec`), so `create_directories`
+    // is always the right call, never a file-touch.
+    //
+    // ADR-140: real host-side symlink-escape guard, independently found by this session's own
+    // final-review pass (not previously disclosed anywhere in this file). `rootfs_dir` is a live
+    // overlay whose LOWER layer is `image_` -- an arbitrary registry reference this file's own
+    // `/etc/hosts` block already treats as "not trusted-by-construction" a few lines below.
+    // `fs::create_directories`/`std::ofstream` follow symlinks by default (`fs::status`, not
+    // `fs::symlink_status`): a malicious image shipping, say, `/etc` as a symlink to an absolute host
+    // path would make the loops below create real directories, or write `/etc/hosts` content, OUTSIDE
+    // `rootfs_dir`, on the real host filesystem, at whatever privilege this process runs under. The
+    // existing lexical `.`/`..` rejection on caller-supplied `guest_path` (well upstream of here) does
+    // not cover this -- a symlink is not a literal `..` path component. Mirrors the same "walk to the
+    // longest existing ancestor, canonicalize it, verify containment" shape
+    // `real_filesystem_adapter.cpp`'s own symlink-escape guard already uses for the identical class of
+    // bug (case-folding/UNC handling dropped here -- Linux paths are case-sensitive and this file has
+    // no drive-letter/UNC concept).
+    fs::path const rootfs_canonical = fs::canonical(rootfs_dir, fs_ec);
+    if (fs_ec) {
+        cleanup_partial();
+        return std::unexpected(error{
+            failure_class::fatal,
+            "kata_backend: rootfs directory cannot be canonicalized: " + fs_ec.message(),
+            "kata_backend.mount_point_precreate_failed"});
+    }
+    auto escapes_rootfs_via_symlink = [&](fs::path const& target) -> bool {
+        std::error_code walk_ec;
+        fs::path existing_ancestor = target;
+        for (;;) {
+            if (fs::exists(existing_ancestor, walk_ec)) break;
+            fs::path const parent = existing_ancestor.parent_path();
+            if (parent == existing_ancestor) break;  // reached a filesystem root, nothing existing
+            existing_ancestor = parent;
+        }
+        if (!fs::exists(existing_ancestor, walk_ec)) return false;  // nothing exists yet along this
+                                                                      // path -- create_directories()
+                                                                      // will build real, non-symlink
+                                                                      // directories; nothing to escape
+                                                                      // through.
+        fs::path const canonical_ancestor = fs::canonical(existing_ancestor, walk_ec);
+        if (walk_ec) return true;  // fail closed: containment cannot be verified
+        fs::path const rel = canonical_ancestor.lexically_relative(rootfs_canonical);
+        if (rel.empty()) return true;
+        auto it = rel.begin();
+        return it != rel.end() && *it == "..";
+    };
+    for (char const* guest_dir : {"/proc", "/dev", "/dev/pts", "/dev/shm", "/dev/mqueue", "/sys", "/run"}) {
+        fs::path const p = rootfs_dir / fs::path(guest_dir).relative_path();
+        if (escapes_rootfs_via_symlink(p)) {
+            cleanup_partial();
+            return std::unexpected(error{
+                failure_class::policy,
+                "kata_backend: mount-point pre-creation path escapes the rootfs via a symlink from "
+                "the untrusted image layer: " + p.string(),
+                "kata_backend.mount_point_escape"});
+        }
+        fs::create_directories(p, fs_ec);
         if (fs_ec) {
             cleanup_partial();
-            return std::unexpected(
-                error{failure_class::fatal,
-                      "kata_backend: failed to create overlay upper/work directories under " +
-                          quota_root.string() + ": " + fs_ec.message(),
-                      "kata_backend.disk_quota_dir_failed"});
+            return std::unexpected(error{
+                failure_class::fatal,
+                "kata_backend: failed to pre-create the guest mount-point directory '" +
+                    std::string(guest_dir) + "' inside the rootfs: " + fs_ec.message(),
+                "kata_backend.mount_point_precreate_failed"});
         }
-
-        std::string const overlay_opts = "lowerdir=" + lower_dir.string() +
-                                          ",upperdir=" + upper_subdir.string() +
-                                          ",workdir=" + work_subdir.string();
-        auto overlay_outcome =
-            run_ctr({"mount", "-t", "overlay", "overlay", "-o", overlay_opts, rootfs_dir.string()});
-        if (!overlay_outcome.has_value() || overlay_outcome->exit_code != 0) {
+    }
+    for (MountSpec const& m : spec.mounts) {
+        fs::path const p = rootfs_dir / fs::path(m.guest_path).relative_path();
+        if (escapes_rootfs_via_symlink(p)) {
+            cleanup_partial();
+            return std::unexpected(error{
+                failure_class::policy,
+                "kata_backend: mount-point pre-creation path escapes the rootfs via a symlink from "
+                "the untrusted image layer: " + p.string(),
+                "kata_backend.mount_point_escape"});
+        }
+        fs::create_directories(p, fs_ec);
+        if (fs_ec) {
             cleanup_partial();
             return std::unexpected(error{
                 failure_class::fatal,
-                "kata_backend: overlay mount for disk-quota rootfs failed: " +
-                    (overlay_outcome.has_value() ? overlay_outcome->stderr_text
-                                                  : overlay_outcome.error().message),
-                "kata_backend.disk_quota_overlay_mount_failed"});
+                "kata_backend: failed to pre-create the guest mount-point directory '" + m.guest_path +
+                    "' inside the rootfs: " + fs_ec.message(),
+                "kata_backend.mount_point_precreate_failed"});
         }
-        overlay_mounted = true;
-    } else {
-        auto bind_outcome = run_ctr({"mount", "--bind", lower_dir.string(), rootfs_dir.string()});
-        if (!bind_outcome.has_value() || bind_outcome->exit_code != 0) {
-            cleanup_partial();
-            return std::unexpected(error{
-                failure_class::fatal,
-                "kata_backend: bind mount of rootfs failed: " +
-                    (bind_outcome.has_value() ? bind_outcome->stderr_text : bind_outcome.error().message),
-                "kata_backend.rootfs_bind_failed"});
-        }
-        overlay_mounted = true;  // reuses the same cleanup step -- a plain bind mount unwinds via
-                                  // the identical `umount rootfs_dir` the real overlay case uses.
     }
 
     std::optional<std::string> netns_path;
@@ -886,6 +599,55 @@ result<SandboxHandle> KataBackend::create(SandboxSpec const& spec, EffectContext
         fs::path const hosts_file = workdir / "hosts";
         std::ofstream(hosts_file) << hosts_content.str();
         hosts_file_path = hosts_file.string();
+
+        // SLICE 12: `/etc/hosts` is a FILE bind-mount destination, not a directory -- a bind mount's
+        // destination must already exist as the SAME type as the source (Linux mount(2) requirement),
+        // so the directory-only pre-creation loop above does not cover it. `/etc` itself may not exist
+        // either (busybox does ship it, but this must not assume any particular image does).
+        {
+            fs::path const etc_dir = rootfs_dir / "etc";
+            fs::path const hosts_dest = etc_dir / "hosts";
+            // ADR-140: same guard as the two loops above -- `/etc` and `/etc/hosts` are each real,
+            // independent opportunities for a symlink planted by the untrusted image layer to redirect
+            // `create_directories`/`ofstream` outside `rootfs_dir`.
+            if (escapes_rootfs_via_symlink(etc_dir) || escapes_rootfs_via_symlink(hosts_dest)) {
+                cleanup_partial();
+                return std::unexpected(error{
+                    failure_class::policy,
+                    "kata_backend: /etc/hosts mount-point pre-creation path escapes the rootfs via a "
+                    "symlink from the untrusted image layer",
+                    "kata_backend.mount_point_escape"});
+            }
+            fs::create_directories(etc_dir, fs_ec);
+            // REAL, independent-red-team-found finding (fixed same day, before landing): a plain
+            // `fs::exists()` check does not distinguish file vs. directory -- if an image ever shipped
+            // `/etc/hosts` as a directory (unusual, but `image_` is an arbitrary registry reference,
+            // not trusted-by-construction), the old check would have wrongly reported "already there",
+            // and this method would have returned success with the wrong destination type in place --
+            // the real failure would only have surfaced later as a confusing guest-side ENOTDIR from
+            // Kata's own bind-mount attempt, not the clear host-side pre-flight error this comment
+            // claims to provide. `fs::status()` + `fs::is_regular_file()`/`fs::is_directory()` tell the
+            // two cases apart for real.
+            if (!fs_ec) {
+                std::error_code status_ec;
+                fs::file_status const st = fs::status(hosts_dest, status_ec);
+                bool const missing = status_ec || !fs::exists(st);
+                if (missing) {
+                    std::ofstream(hosts_dest).close();
+                } else if (!fs::is_regular_file(st)) {
+                    fs_ec = std::make_error_code(std::errc::not_a_directory);
+                }
+            }
+            if (fs_ec || !fs::is_regular_file(hosts_dest)) {
+                cleanup_partial();
+                return std::unexpected(error{
+                    failure_class::fatal,
+                    "kata_backend: failed to pre-create the guest /etc/hosts mount-point file inside "
+                    "the rootfs (or it already exists as the wrong type -- a directory, not a file): " +
+                        (fs_ec ? fs_ec.message() : std::string("file still missing after create")),
+                    "kata_backend.mount_point_precreate_failed"});
+            }
+        }
 
         auto netns_outcome = run_ctr({"ip", "netns", "add", id});
         if (!netns_outcome.has_value() || netns_outcome->exit_code != 0) {
@@ -1163,40 +925,33 @@ void KataBackend::destroy(SandboxHandle& handle) {
     // point (the task kill/rm/container-rm loop above already ran) -- overlay/loop teardown must
     // still happen in exact reverse-acquisition order (overlay -> loop mount -> loop detach) BEFORE
     // the real snapshot unmount below, mirroring create()'s own cleanup_partial() discipline.
-    if (it->second.disk_quota_active) {
-        auto overlay_unmount = run_ctr({"umount", it->second.rootfs_dir}, timeout_seconds, output_cap);
-        if (!overlay_unmount.has_value() || overlay_unmount->exit_code != 0) {
+    //
+    // SLICE 12: `rootfs_dir` is a real overlay and `quota_root` has SOMETHING mounted at it
+    // (loop-backed ext4 or a plain tmpfs) UNCONDITIONALLY now, not just when `disk_quota_active` --
+    // both unmounts run every time; only the loop-device DETACH stays conditional on
+    // `disk_quota_active` (a tmpfs has no loop device to detach). See create()'s own SLICE 12 comment
+    // for the full rationale (a real, empirically-reproduced ENOENT this change fixes).
+    auto overlay_unmount = run_ctr({"umount", it->second.rootfs_dir}, timeout_seconds, output_cap);
+    if (!overlay_unmount.has_value() || overlay_unmount->exit_code != 0) {
+        std::fprintf(stderr,
+                      "kata_backend: destroy(%s): overlay unmount ('umount %s') did not succeed "
+                      "cleanly -- possible leaked host mount, see host state directly\n",
+                      id.c_str(), it->second.rootfs_dir.c_str());
+    }
+    auto loop_unmount = run_ctr({"umount", quota_root.string()}, timeout_seconds, output_cap);
+    if (!loop_unmount.has_value() || loop_unmount->exit_code != 0) {
+        std::fprintf(stderr,
+                      "kata_backend: destroy(%s): rootfs writable-layer unmount ('umount %s') did not "
+                      "succeed cleanly -- possible leaked host mount, see host state directly\n",
+                      id.c_str(), quota_root.string().c_str());
+    }
+    if (it->second.disk_quota_active && !it->second.loop_device.empty()) {
+        auto loop_detach = run_ctr({"losetup", "-d", it->second.loop_device}, timeout_seconds, output_cap);
+        if (!loop_detach.has_value() || loop_detach->exit_code != 0) {
             std::fprintf(stderr,
-                          "kata_backend: destroy(%s): overlay unmount ('umount %s') did not succeed "
-                          "cleanly -- possible leaked host mount, see host state directly\n",
-                          id.c_str(), it->second.rootfs_dir.c_str());
-        }
-        auto loop_unmount = run_ctr({"umount", quota_root.string()}, timeout_seconds, output_cap);
-        if (!loop_unmount.has_value() || loop_unmount->exit_code != 0) {
-            std::fprintf(stderr,
-                          "kata_backend: destroy(%s): disk-quota loop filesystem unmount ('umount %s') "
-                          "did not succeed cleanly -- possible leaked host mount, see host state "
-                          "directly\n",
-                          id.c_str(), quota_root.string().c_str());
-        }
-        if (!it->second.loop_device.empty()) {
-            auto loop_detach =
-                run_ctr({"losetup", "-d", it->second.loop_device}, timeout_seconds, output_cap);
-            if (!loop_detach.has_value() || loop_detach->exit_code != 0) {
-                std::fprintf(stderr,
-                              "kata_backend: destroy(%s): 'losetup -d %s' did not succeed cleanly -- "
-                              "possible leaked host loop device, see host state directly\n",
-                              id.c_str(), it->second.loop_device.c_str());
-            }
-        }
-    } else {
-        // disk_bytes == 0 path (SLICE 11 §5 point 1): rootfs_dir is a plain bind mount of lower_dir.
-        auto bind_unmount = run_ctr({"umount", it->second.rootfs_dir}, timeout_seconds, output_cap);
-        if (!bind_unmount.has_value() || bind_unmount->exit_code != 0) {
-            std::fprintf(stderr,
-                          "kata_backend: destroy(%s): rootfs bind unmount ('umount %s') did not "
-                          "succeed cleanly -- possible leaked host mount, see host state directly\n",
-                          id.c_str(), it->second.rootfs_dir.c_str());
+                          "kata_backend: destroy(%s): 'losetup -d %s' did not succeed cleanly -- "
+                          "possible leaked host loop device, see host state directly\n",
+                          id.c_str(), it->second.loop_device.c_str());
         }
     }
 

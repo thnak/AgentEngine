@@ -213,6 +213,7 @@
 // this migration).
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -245,6 +246,7 @@
 #include "agentengine/core/turn_middleware.hpp"
 #include "agentengine/rt/agent_session_trust.hpp"
 #include "agentengine/rt/async_mutex.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/rt/interaction_codec.hpp"
 #include "agentengine/rt/message_codec.hpp"
 #include "agentengine/rt/session_store.hpp"
@@ -549,6 +551,41 @@ struct AgentSessionRecord {
     return agent_session_record_from_json(*parsed);
 }
 
+namespace agent_session_detail {
+// ADR-102 Phase 5: `fork_from()`'s own synchronous acquisition of `source.session_mutex_` --
+// `AsyncMutex::lock()` is `co_await`-only, and `fork_from()` itself stays a plain, synchronous
+// function (no call site anywhere in this codebase should need to change), so the acquisition is
+// driven through `agentengine::rt::block_on()`, matching the same "drive an AsyncMutex-guarded
+// operation from a non-coroutine call site" discipline `sandbox/mandatory_sandbox_provider.hpp`
+// already established for the identical shape of problem, and safe for the identical reason: unlike a
+// naive "resume until done" loop (a real, ASan-confirmed use-after-free hazard under genuine
+// cross-thread contention, `rt/block_on.hpp`'s own top comment), `block_on()`'s dedicated
+// final-suspend-as-last-touch driver survives a lock that genuinely parks and is later resumed by a
+// DIFFERENT thread's `unlock()` -- exactly the scenario this fix exists to make `fork_from()` safe
+// under.
+[[nodiscard]] inline agentengine::rt::task<AsyncMutex::Guard> acquire_session_mutex(AsyncMutex& m) {
+    co_return co_await m.lock();
+}
+
+// ADR-116 follow-on (2026-08-30, independent red-team, same day): a monotonically-increasing,
+// process-wide, NEVER-reused session-identity counter. `ComposedContextProvider`'s own `owner_` tag
+// used to be a raw `this` (a `void const*`) -- a real, empirically-confirmed ABA hole, not a
+// theoretical one: heap-allocate a session, extract its `history_provider()` via move-construction
+// (tagged with that session's address), destroy the session, heap-allocate a SECOND, completely
+// unrelated session, and the CRT allocator handing back the exact same freed block (reliably
+// reproduced against this codebase's own `ComposedQuickstartSessionBuilder`, which heap-allocates
+// `AgentSession` via `make_unique`) makes the new session's own address collide with the stale
+// extracted instance's tag -- `operator=`'s guard sees two "matching" non-null tags and wrongly allows
+// the merge, leaking the FIRST session's content into the SECOND. A plain, ever-incrementing counter
+// never repeats across the life of the process (2^64 sessions is not a real exhaustion path), so
+// tagging with THIS instead of `this` closes the hole structurally rather than relying on allocator
+// behavior never colliding. `inline` (C++17) so every translation unit -- regardless of which
+// `AgentSession<...>` specialization it instantiates -- shares the exact same counter; a per-
+// specialization static would let two different `ChatClientT`/`StateT`/`HistoryProviderT`
+// combinations each start counting from 1 and collide with each other instead.
+inline std::atomic<std::uint64_t> g_next_session_identity{1};
+}  // namespace agent_session_detail
+
 template <class ChatClientT, class StateT = NoSessionState,
           class HistoryProviderT = agentengine::HistoryProvider<agentengine::Window<0>>>
     requires (agentengine::ChatClient<ChatClientT> || agentengine::ModelCallGatewayLike<ChatClientT>) &&
@@ -654,7 +691,26 @@ public:
     // routes through `assemble_context()` internally, no change needed here) -- using this single-
     // provider slot as-is is a deliberate, acknowledged trade for the simpler API, not an
     // undiscovered gap.
-    [[nodiscard]] HistoryProviderT& history_provider() noexcept { return history_provider_; }
+    // ADR-116: stamps `history_provider_` with this session's own identity on every call, when
+    // `HistoryProviderT` happens to be a type that tracks one (currently only `ComposedContextProvider
+    // <Ms...>`'s own private `bind_owner()`, which this class is friended for -- see that method's
+    // own comment). `if constexpr` keeps this a true no-op, not just harmless, for every OTHER
+    // `HistoryProviderT` (e.g. the default `HistoryProvider<Window<0>>`), which never declares
+    // `bind_owner()` at all -- the closing hazard this exists to prevent (cross-session aliasing of
+    // LIVE, capability-bearing provider state) doesn't apply to a plain, copyable history buffer.
+    //
+    // ADR-116 follow-on: stamps `session_identity_` (a permanent, never-reused counter value), NOT
+    // this session's raw `this` address -- an independent, same-day red-team pass empirically
+    // confirmed the raw-address version had a real ABA hole (this object's own comment on
+    // `session_identity_` has the full repro: destroy a session, heap-allocate an unrelated one that
+    // happens to land at the same freed address, and a stale tagged `ComposedContextProvider` from the
+    // FIRST session wrongly matches the SECOND).
+    [[nodiscard]] HistoryProviderT& history_provider() noexcept {
+        if constexpr (requires { history_provider_.bind_owner(session_identity_); }) {
+            history_provider_.bind_owner(session_identity_);
+        }
+        return history_provider_;
+    }
 
     void set_suspend_for_approval(bool suspend) noexcept { suspend_for_approval_ = suspend; }
     [[nodiscard]] bool suspend_for_approval() const noexcept { return suspend_for_approval_; }
@@ -1158,8 +1214,77 @@ public:
     // ---- Pure bookkeeping, unchanged in behavior from core/agent_session.hpp -----------------
     // (no Quark dependency in the original either -- ported verbatim, not redesigned)
 
+    // ADR-102 Phase 5 fix, closing a real, twice-independently-found structural gap (ADR-102 Phase 3
+    // §22's `SandboxRuntime::merge_into()`/`discard()` finding, and Phase 4 §29's own disclosed-not-
+    // fixed residual naming this exact function): `fork_from()` used to run with NO serialization
+    // against `source`'s own in-flight `start_run()`/`resolve_interaction()` at all -- unlike every
+    // OTHER public entry point on this class, which all acquire `session_mutex_` (I1) for their whole
+    // duration. Without it, `history_provider_ = source.history_provider_;` below (a plain copy-
+    // assignment) can run CONCURRENTLY with a `source.start_run()` round already in flight on a
+    // different thread: for a `MandatorySandboxProvider`-shaped `HistoryProviderT`, that
+    // copy-assignment triggers a real `SandboxRuntime::spawn_child_branch()` call, which takes
+    // `SandboxRuntime`'s own `exclusivity_` lock -- the SAME lock an in-flight `run()` call on
+    // `source` may already hold. `rt/block_on.hpp` makes that specific race SURVIVABLE (no more
+    // coroutine-frame use-after-free under contention), but survivable is not the same as CORRECT:
+    // without locking `source.session_mutex_` here, `source`'s other fields (`history_`/`state_`/
+    // `metadata_`) could also be read mid-mutation by a concurrent round. Fixed by acquiring
+    // `source.session_mutex_` for the whole copy, matching every other public entry point's own I1
+    // discipline -- driven synchronously via `agent_session_detail::acquire_session_mutex()` +
+    // `block_on()` (see that helper's own comment) so `fork_from()` itself stays a plain, synchronous
+    // function; no call site anywhere in this codebase needs to change.
+    //
+    // SCOPE, deliberately narrow: only `source`'s own mutex is acquired, not `*this`'s. Every real
+    // call site in this codebase (and this design's own established usage) forks INTO a fresh,
+    // not-yet-`start_run()`-able target -- forking into an already-live, concurrently-running session
+    // is not a documented or supported operation this class offers anywhere else, so guarding against
+    // it here would invent new semantics for a usage pattern nothing else in this codebase exercises,
+    // rather than closing the specific, real, already-named hazard.
+    //
+    // REAL HAZARD this fix itself introduced, found by an independent red-team pass, disclosed, and NOW
+    // CLOSED (ADR-123, same design line, later pass): `AsyncMutex` had no reentrancy check, so calling
+    // `fork_from(source, ...)` from code ALREADY running on the same OS thread inside an in-flight
+    // `start_run()`/`resolve_interaction()` round on `source` -- e.g. synchronously, from a tool
+    // closure's own body, the exact shape `schedule_wakeup`'s own closure already has to route around
+    // via an internal `_impl` bypass for this identical reason -- would genuinely, reproducibly
+    // self-deadlock: `block_on()`'s own busy-wait spins forever, because the only thing that could ever
+    // call `unlock()` is the very `start_run()`/`resolve_interaction()` Guard already parked one frame
+    // up on the SAME stack, waiting for this call to return. Confirmed via a real, targeted repro (a
+    // `ChatClient::chat()` that calls `fork_from()` on the in-flight session from inside a live round,
+    // same thread) -- 100% reproducible hang before this fix. NOT reachable through any real call site
+    // in this codebase today (every `fork_from()` caller is a top-level `main()`), but exactly the shape
+    // a near-future `agent.spawn`-style tool wired to call `fork_from()` directly from its own closure
+    // would hit. CLOSED, FOR THE SAME-OS-THREAD-THROUGHOUT CASE, via `AsyncMutex::
+    // is_held_by_current_thread()` (`rt/async_mutex.hpp`, ADR-123) -- a small, additive owner-thread
+    // query on the primitive itself (no new locking discipline, no behavior change for any existing
+    // caller), checked below: if the calling thread already holds `source.session_mutex_`, I1 already
+    // guarantees no other thread can be touching `source` concurrently, so the lock is safely skipped
+    // rather than re-acquired.
+    //
+    // SCOPE CORRECTION (same-day independent red-team round, ADR-123 §7): `owner_` is written ONCE, at
+    // the moment `source.session_mutex_` is acquired (`LockAwaiter::await_resume()`), to whichever OS
+    // thread happens to be physically running at that instant -- it is NOT re-stamped as the round's
+    // own execution proceeds. `agentengine::rt::block_on()`'s own file banner already documents, as a
+    // normal and exercised case (not hypothetical -- `RunCommandTool`/`AsyncQuota` contention hits it
+    // for real), that a coroutine's continuation can resume on a DIFFERENT OS thread than the one that
+    // suspended it. If `source`'s own in-flight round suspends on some OTHER async primitive (e.g. a
+    // real `ChatClient::chat()` awaiting network I/O) and its continuation resumes on a different OS
+    // thread BEFORE a tool closure reentrantly calls `fork_from()`, `is_held_by_current_thread()`
+    // returns a FALSE NEGATIVE on that new thread (`owner_` still names the original thread) --
+    // `fork_from()` then tries to re-acquire `source.session_mutex_` and self-deadlocks again, the
+    // exact failure mode this fix exists to close, just via a narrower trigger. Empirically confirmed
+    // with a throwaway repro (forced thread hop before the reentrant call; not committed -- see
+    // ADR-123 §7). NOT fixed in this pass: a general fix needs tracking the in-flight ROUND's own
+    // identity (a coroutine/call-chain property) rather than OS-thread identity, which no thread-keyed
+    // mechanism (this one included) can give by construction -- real, contained follow-on work, not a
+    // same-pass mechanical tightening. Matches this hazard's own pre-ADR-123 status: not reachable
+    // through any real call site in this codebase today.
     void fork_from(AgentSession const& source, std::string new_session_id,
                     std::optional<std::size_t> history_prefix_len = std::nullopt) {
+        AsyncMutex::Guard source_guard;
+        if (!source.session_mutex_.is_held_by_current_thread()) {
+            source_guard = agentengine::rt::block_on(
+                agent_session_detail::acquire_session_mutex(source.session_mutex_));
+        }
         session_id_ = std::move(new_session_id);
         principal_  = source.principal_;
         // ADR-061 §22.1/§21a Finding 1: fail-closed carry-forward -- a fork of a Tier-3 session must
@@ -2547,6 +2672,14 @@ private:
     // deleter) construction never deletes the pointee -- ownership of the real CapabilitySet stays
     // with whoever calls set_capabilities(), unchanged from before this type change.
     std::shared_ptr<CapabilitySet const>                capabilities_;
+    // ADR-116 follow-on: this object's own permanent, process-wide-unique identity -- see
+    // `agent_session_detail::g_next_session_identity`'s own comment for why this exists (a real,
+    // empirically-confirmed ABA hole from using this session's raw address as `ComposedContextProvider
+    // ::owner_`'s tag instead). Assigned ONCE, at construction, from a monotonic counter that never
+    // repeats -- unlike this object's own address, which the heap allocator can and does hand to a
+    // LATER, unrelated `AgentSession` once this one is destroyed.
+    std::uint64_t const                                 session_identity_ =
+        agent_session_detail::g_next_session_identity.fetch_add(1, std::memory_order_relaxed);
     HistoryProviderT                                    history_provider_;
     EffectContext                                       effect_context_;
     // ADR-061 §20.2: session-level, set once at wiring time by whichever Tier-3 listener fronts this
@@ -2594,7 +2727,12 @@ private:
     // whole life exactly as its absorbed fields were when they lived directly here.
     StandingEffectRegistry                                standing_effects_registry_;
     // I1 -- see file banner. Every public async entry point acquires this for its whole duration.
-    AsyncMutex                                            session_mutex_;
+    // `mutable` (ADR-102 Phase 5): `fork_from()` below locks `source.session_mutex_` through a
+    // `AgentSession const&` -- the same, already-established rationale `core/ledger.hpp`'s own
+    // `mutable std::mutex mutex_` uses for the identical shape (a real synchronization primitive that
+    // must remain lockable from a conceptually-const access path; taking the lock itself does not
+    // change anything externally observable about `source`).
+    mutable AsyncMutex                                    session_mutex_;
 };
 
 // Save `session`'s narrowed durable record under its own session_id() -- see file banner and

@@ -26,10 +26,14 @@
 // `AgentSession`, whether or not `session_builder.hpp` ever grows a tool-table concept later.
 // `session_builder.hpp` itself is UNTOUCHED by this pass.
 //
-// Windows-only for this pass, matching `MediatedFileSystemAdapter`'s own current platform scope
-// (021 §2's Windows-now/Linux-next ordering) and `cli_chat.cpp`'s own Python wiring, which has the
-// identical scope today.
+// Platform-portable (2026-08-28, ADR-103, the Linux-parity pass) -- `MediatedFileSystemAdapter`
+// (below) now has a real Linux implementation alongside the original Windows one, both satisfying
+// the same declared `create(std::filesystem::path)`/`FileSystemAdapter` surface, so nothing in this
+// file itself needed to change beyond the parameter type below. `cli_chat.cpp`'s own Python wiring
+// remains Windows-only for a different, unrelated reason (the embedded CPython interpreter), not
+// touched by this pass.
 
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -111,7 +115,7 @@ public:
     // `shared_python_runner()` already uses for Python (`tools/cli_chat.cpp:240`,
     // `cfg.mount_roots[kWorkMount] = scratch.wstring()`). The caller owns creating the directory
     // on disk; this function only wraps it in a mediated adapter.
-    [[nodiscard]] static result<std::unique_ptr<SessionShellSandbox>> create(std::wstring host_root) {
+    [[nodiscard]] static result<std::unique_ptr<SessionShellSandbox>> create(std::filesystem::path host_root) {
         auto adapter = native_jail::mediated_shell::MediatedFileSystemAdapter::create(std::move(host_root));
         if (!adapter) return std::unexpected(adapter.error());
         return std::unique_ptr<SessionShellSandbox>(new SessionShellSandbox(std::move(*adapter)));

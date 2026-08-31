@@ -6,9 +6,13 @@
 // HMAC-comparison implementation is exactly the kind of thing that silently re-introduces a timing
 // oracle the first time, even though this project already got it right once (ADR-005 §3.3).
 //
-// Windows-only for now (021 §2), via Windows CNG/BCrypt -- a system API, not a third-party
-// dependency (CONVENTIONS' core tier: "std + Quark only, no third-party dependency, ever"). A Linux
-// backend needs only a different provider (OpenSSL EVP or libsodium) behind these same two functions.
+// Windows: `hmac.cpp`, via Windows CNG/BCrypt -- a system API, not a third-party dependency
+// (CONVENTIONS' core tier: "std + Quark only, no third-party dependency, ever"). Linux:
+// `hmac_posix.cpp` (decisions/ADR-107-hmac-sha256-linux-parity.md), a from-scratch RFC 2104
+// construction on top of `worktree_digest_posix.cpp`'s own SHA-256 primitive -- no third-party
+// dependency there either, same posture. Both are built into the portable `agentengine::hmac`
+// CMake library (top-level CMakeLists.txt) so any consumer needs only that one link, on either
+// platform.
 
 #include <array>
 #include <cstdint>

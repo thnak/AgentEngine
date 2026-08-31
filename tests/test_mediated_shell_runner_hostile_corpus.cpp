@@ -53,13 +53,13 @@ int g_failures = 0;
 }  // namespace
 
 int main() {
-    std::string const scratch = ::agentengine::pal::env_var("TEMP").value_or("C:/Windows/Temp") +
-                                 "/ae_e4_shell_mount";
+    // std::filesystem::temp_directory_path() (portable) rather than a hand-read TEMP env var with a
+    // Windows-only fallback path (2026-08-28, ADR-103, the Linux-parity pass).
+    std::string const scratch = (std::filesystem::temp_directory_path() / "ae_e4_shell_mount").string();
     std::filesystem::remove_all(scratch);
     std::filesystem::create_directories(scratch);
-    std::wstring scratch_w(scratch.begin(), scratch.end());
 
-    auto adapter = MediatedFileSystemAdapter::create(scratch_w);
+    auto adapter = MediatedFileSystemAdapter::create(scratch);
     AE_CHECK(adapter.has_value(), "E4-SH setup: MediatedFileSystemAdapter::create succeeds");
 
     DefaultCommandRegistry registry;
@@ -182,6 +182,20 @@ int main() {
     // backslash has no meaning to this shell's grammar (confirmed above: no escape handling in the
     // lexer), so a payload like "..\\..\\evil" contains no '/' at all and sailed through as one
     // opaque, unchecked leaf segment. No test in this corpus exercised 'mkdir' before this fix.
+    //
+    // Windows/Linux divergence, named rather than silently ported or silently skipped (2026-08-28,
+    // ADR-103, the Linux-parity pass; "isolation parity is a gate, not identical shape,"
+    // CONVENTIONS.md): every payload in this block smuggles its `..` walk-up (or, for SH9, its
+    // forbidden-character test) THROUGH a literal backslash -- Windows-specific BY CONSTRUCTION.
+    // `\` is an ordinary, legal filename character on POSIX (no separator meaning at all, matching
+    // worktree_mount_fs_posix.cpp's own `validate_fs_segment` reasoning), so every one of these
+    // payloads can only ever create a real, harmless, oddly-NAMED directory INSIDE the mount root on
+    // Linux -- there is no walk-up to smuggle and no forbidden character to reject. The two
+    // platforms' EXPECTED outcomes are therefore genuinely different, not just differently-worded:
+    // Windows must reject each as a policy violation; Linux must accept each as an ordinary (if
+    // odd-looking) in-mount directory creation -- proven positively below, not merely "did not
+    // escape," since a no-op mkdir would trivially also satisfy a purely negative check.
+#ifdef _WIN32
     {
         std::string const temp_dir =
             ::agentengine::pal::env_var("TEMP").value_or("C:/Windows/Temp");
@@ -230,6 +244,43 @@ int main() {
 
         std::filesystem::remove_all(sibling_marker);  // best-effort cleanup, should be a no-op
     }
+#else
+    {
+        // Linux counterpart to SH7-SH10: every backslash-laden payload above lands INSIDE the mount
+        // as a literal, odd-looking directory name -- none of them has a walk-up or a forbidden
+        // character to reject on this platform.
+        auto in_mount_out = shell.run(ExecRequest{"shell", "mkdir ..\\ae_e4_mkdir_escape_marker"}, state, ctx);
+        AE_CHECK(in_mount_out.has_value() && in_mount_out->klass == exec_outcome_class::ok,
+                 "E4-SH7 (Linux): 'mkdir ..\\<name>' has no walk-up meaning on POSIX -- succeeds as an "
+                 "ordinary in-mount directory creation, not a rejected escape attempt");
+        AE_CHECK(std::filesystem::exists(scratch + "/..\\ae_e4_mkdir_escape_marker"),
+                 "E4-SH7 (Linux): the literal, backslash-containing directory name was actually "
+                 "created, INSIDE the mount root -- confirms this is a real create, not a silent no-op");
+
+        auto in_mount_p_out =
+            shell.run(ExecRequest{"shell", "mkdir -p ..\\ae_e4_mkdir_escape_marker2"}, state, ctx);
+        AE_CHECK(in_mount_p_out.has_value() && in_mount_p_out->klass == exec_outcome_class::ok,
+                 "E4-SH8 (Linux): 'mkdir -p ..\\<name>' (parents=true path) likewise has no walk-up "
+                 "meaning on POSIX -- succeeds as an ordinary in-mount directory creation");
+        AE_CHECK(std::filesystem::exists(scratch + "/..\\ae_e4_mkdir_escape_marker2"),
+                 "E4-SH8 (Linux): the literal directory name was created, INSIDE the mount root");
+
+        auto backslash_out = shell.run(ExecRequest{"shell", "mkdir sub\\evil_leaf"}, state, ctx);
+        AE_CHECK(backslash_out.has_value() && backslash_out->klass == exec_outcome_class::ok,
+                 "E4-SH9 (Linux): a backslash inside an ordinary (non-'..') leaf is an ordinary, legal "
+                 "filename character on POSIX -- no forbidden-character rejection applies");
+        AE_CHECK(std::filesystem::exists(scratch + "/sub\\evil_leaf"),
+                 "E4-SH9 (Linux): the literal, backslash-containing directory name was created, "
+                 "INSIDE the mount root");
+
+        // Positive control: an ordinary, well-formed mkdir still works -- same shape and same
+        // meaning on both platforms.
+        auto legit_out = shell.run(ExecRequest{"shell", "mkdir legit_after_escape_attempts"}, state, ctx);
+        AE_CHECK(legit_out.has_value(), "E4-SH10 positive control: an ordinary mkdir still succeeds");
+        AE_CHECK(std::filesystem::exists(scratch + "/legit_after_escape_attempts"),
+                 "E4-SH10 positive control: the real directory was created, inside the mount");
+    }
+#endif
 
     std::filesystem::remove_all(scratch);
 

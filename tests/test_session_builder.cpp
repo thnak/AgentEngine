@@ -582,10 +582,16 @@ int main() {
         }
     }
     {
-        // B20: round 5 red-team finding A -- moving a ComposedContextProvider (reachable through
-        // AgentSession::history_provider()'s own mutable accessor) must leave the MOVED-FROM instance
-        // genuinely `not_engaged`, not silently `engaged_ == true` over an empty contributors_. Proves
-        // the class's own invariant ("engaged_ implies contributors_ is populated") survives a move.
+        // B20 (rewritten 2026-08-30, ADR-116): this used to prove the OPPOSITE of what it proves now.
+        // Originally (round 5 red-team finding A) it demonstrated that `target.history_provider() =
+        // std::move(source.history_provider())` -- a real cross-SESSION move through the public
+        // accessor -- successfully transferred live provider state, and merely checked the move
+        // mechanics (moved-from correctly `not_engaged`, recoverable via re-`engage()`) were sound.
+        // ADR-116 closed that transfer itself as a disclosed, live I1/I4-adjacent aliasing hazard
+        // (composed_context_provider.hpp's own top comment, ADR-102 §48/§51) -- `operator=` now
+        // refuses (a silent, fully-disclosed no-op) whenever both sides are tagged with two DIFFERENT
+        // sessions' own addresses. This test now proves THAT: the exact same statement that used to
+        // succeed now leaves BOTH sessions' own content completely untouched.
         using SingleBuilder = ComposedQuickstartSessionBuilder<quickstart::Provider::openai,
                                                                   InMemorySecretStore, RequiredArgProvider>;
         auto counter1 = std::make_shared<std::size_t>(0);
@@ -600,7 +606,8 @@ int main() {
                           .build();
         check(built1.has_value() && built2.has_value(), "B20 setup: both sessions build() successfully");
         if (built1.has_value() && built2.has_value()) {
-            // The exact move the red-team's probe used, through the same public accessor.
+            // The exact statement ADR-116 closes -- a real cross-session move through the same public
+            // accessor this file's own B20 has exercised since round 5.
             built2->session().history_provider() = std::move(built1->session().history_provider());
 
             Principal principal{"p-move", ""};
@@ -608,28 +615,170 @@ int main() {
             SessionContext session_ctx{"s-move", principal, empty_history};
             EffectContext effect_ctx{};
 
-            auto moved_from = agentengine::test_support::run_task_sync<result<ContextContribution>>(
+            auto still_session1 = agentengine::test_support::run_task_sync<result<ContextContribution>>(
                 built1->session().history_provider().on_context(session_ctx, effect_ctx));
-            check(!moved_from.has_value(),
-                  "B20: the MOVED-FROM session's on_context() now genuinely fails ('not_engaged'), "
-                  "instead of silently succeeding with zero messages");
-            if (!moved_from.has_value()) {
-                check(moved_from.error().code == "composed_context.not_engaged",
-                      "B20: the failure is specifically 'not_engaged', not a different error");
-            }
+            check(still_session1.has_value() && still_session1->messages.size() == 1 &&
+                      std::get<Text>(still_session1->messages[0].content.front().value).text ==
+                          "session-1",
+                  "B20: the refused move leaves session1's OWN provider completely untouched -- "
+                  "still engaged, still its own original content, not reset to not_engaged");
 
-            auto re_engage = built1->session().history_provider().engage(
-                std::make_tuple(RequiredArgProvider{"session-1-recovered", counter1}));
-            check(re_engage.has_value(),
-                  "B20: the moved-from instance can be engage()d again -- a real recovery path, not "
-                  "permanently bricked by the stale 'already_engaged' guard");
-
-            auto moved_to = agentengine::test_support::run_task_sync<result<ContextContribution>>(
+            auto still_session2 = agentengine::test_support::run_task_sync<result<ContextContribution>>(
                 built2->session().history_provider().on_context(session_ctx, effect_ctx));
-            check(moved_to.has_value() && moved_to->messages.size() == 1 &&
-                      std::get<Text>(moved_to->messages[0].content.front().value).text == "session-1",
-                  "B20: the MOVED-TO session correctly carries session1's own moved-in contribution "
-                  "(ordinary, expected operator= replacement semantics -- not itself a finding)");
+            check(still_session2.has_value() && still_session2->messages.size() == 1 &&
+                      std::get<Text>(still_session2->messages[0].content.front().value).text ==
+                          "session-2",
+                  "B20: the refused move leaves session2's OWN provider completely untouched -- "
+                  "still its own original content, NOT silently overwritten with session1's");
+        }
+    }
+    {
+        // B23 (independent red-team, same day as ADR-116): the ORIGINAL ADR-116 shape left `owner_`
+        // `nullptr` on a freshly move-CONSTRUCTED instance, reasoning it "is not yet embedded in any
+        // session's member slot". That let session1's LIVE content pass through an untagged
+        // intermediate local and defeat `operator=`'s whole check in exactly two ordinary-looking
+        // lines: `auto smuggler = std::move(session1.history_provider());` (move-CONSTRUCTION, leaves
+        // `smuggler.owner_ == nullptr` under the original shape) then
+        // `session2.history_provider() = std::move(smuggler);` (passes cleanly, since one side being
+        // `nullptr` was enough to skip the refusal regardless of the other side's tag). Empirically
+        // confirmed this FAILED against the original ADR-116 code, before the move constructor was
+        // fixed to propagate `other.owner_` instead of defaulting to `nullptr` (composed_context_
+        // provider.hpp's own comment on that constructor).
+        using SingleBuilder = ComposedQuickstartSessionBuilder<quickstart::Provider::openai,
+                                                                  InMemorySecretStore, RequiredArgProvider>;
+        auto counter1 = std::make_shared<std::size_t>(0);
+        auto counter2 = std::make_shared<std::size_t>(0);
+        auto built1 = SingleBuilder("gpt-4o-mini")
+                          .api_key_from_env("openai-api-key", "AE_TEST_QUICKSTART_KEY")
+                          .providers(std::make_tuple(RequiredArgProvider{"b23-1", counter1}))
+                          .build();
+        auto built2 = SingleBuilder("gpt-4o-mini")
+                          .api_key_from_env("openai-api-key", "AE_TEST_QUICKSTART_KEY")
+                          .providers(std::make_tuple(RequiredArgProvider{"b23-2", counter2}))
+                          .build();
+        check(built1.has_value() && built2.has_value(), "B23 setup: both sessions build() successfully");
+        if (built1.has_value() && built2.has_value()) {
+            auto smuggler = std::move(built1->session().history_provider());  // move-CONSTRUCTION
+            built2->session().history_provider() = std::move(smuggler);      // second hop
+
+            Principal principal{"p-b23", ""};
+            std::vector<Message> empty_history;
+            SessionContext session_ctx{"s-b23", principal, empty_history};
+            EffectContext effect_ctx{};
+            auto session2_now = agentengine::test_support::run_task_sync<result<ContextContribution>>(
+                built2->session().history_provider().on_context(session_ctx, effect_ctx));
+            bool leaked = session2_now.has_value() && session2_now->messages.size() == 1 &&
+                          std::get<Text>(session2_now->messages[0].content.front().value).text ==
+                              "b23-1";
+            check(!leaked,
+                  "B23: a two-hop move through an untagged intermediate LOCAL VARIABLE must NOT leak "
+                  "session1's content into session2 -- closing a real bypass the original ADR-116 shape "
+                  "had, found by a same-day independent red-team pass");
+        }
+    }
+    {
+        // B24 (independent red-team, same day as ADR-116, same finding as B23's own comment): B23
+        // alone would still pass if ONLY the move CONSTRUCTOR propagated `owner_` -- this test proves
+        // the deeper chain also needs `operator=` itself to propagate `other`'s tag onto an untagged
+        // `this`, or a THIRD hop through a standalone `operator=`-assigned "relay" variable (as opposed
+        // to a move-constructed one) reopens the exact same bypass: `relay = std::move(smuggler);`
+        // (operator=, not construction) into a bare, never-session-touched `relay` must leave `relay`
+        // carrying session1's own provenance tag, not `nullptr`, so a later `session2.history_provider()
+        // = std::move(relay);` is still correctly refused.
+        using SingleBuilder = ComposedQuickstartSessionBuilder<quickstart::Provider::openai,
+                                                                  InMemorySecretStore, RequiredArgProvider>;
+        using ProviderT = SingleBuilder::HistoryProviderT;
+        auto counter1 = std::make_shared<std::size_t>(0);
+        auto counter2 = std::make_shared<std::size_t>(0);
+        auto built1 = SingleBuilder("gpt-4o-mini")
+                          .api_key_from_env("openai-api-key", "AE_TEST_QUICKSTART_KEY")
+                          .providers(std::make_tuple(RequiredArgProvider{"b24-1", counter1}))
+                          .build();
+        auto built2 = SingleBuilder("gpt-4o-mini")
+                          .api_key_from_env("openai-api-key", "AE_TEST_QUICKSTART_KEY")
+                          .providers(std::make_tuple(RequiredArgProvider{"b24-2", counter2}))
+                          .build();
+        check(built1.has_value() && built2.has_value(), "B24 setup: both sessions build() successfully");
+        if (built1.has_value() && built2.has_value()) {
+            auto smuggler = std::move(built1->session().history_provider());  // hop 1: move-CONSTRUCTION
+            ProviderT relay;                                                  // bare, never session-touched
+            relay = std::move(smuggler);                                      // hop 2: operator=, not construction
+            built2->session().history_provider() = std::move(relay);         // hop 3: into a DIFFERENT session
+
+            Principal principal{"p-b24", ""};
+            std::vector<Message> empty_history;
+            SessionContext session_ctx{"s-b24", principal, empty_history};
+            EffectContext effect_ctx{};
+            auto session2_now = agentengine::test_support::run_task_sync<result<ContextContribution>>(
+                built2->session().history_provider().on_context(session_ctx, effect_ctx));
+            bool leaked = session2_now.has_value() && session2_now->messages.size() == 1 &&
+                          std::get<Text>(session2_now->messages[0].content.front().value).text ==
+                              "b24-1";
+            check(!leaked,
+                  "B24: a three-hop move through a standalone RELAY variable assigned to (not "
+                  "move-constructed) must NOT leak session1's content into session2 -- proves "
+                  "operator='s own propagation-to-untagged-destination fix is independently necessary, "
+                  "not just the move constructor's");
+        }
+    }
+    {
+        // B25 (independent red-team, same day as ADR-116) -- ABA / address-reuse regression. Before
+        // this same-day follow-on, `owner_` was `AgentSession`'s raw `this` (a `void const*`), with no
+        // generation/epoch counter. Empirically confirmed real hole, not theoretical: heap-allocate
+        // session1 via `ComposedQuickstartSessionBuilder` (real `make_unique`), move-construct its
+        // `history_provider()` out into a `smuggler` (tagging it with session1's address), let session1
+        // (and its heap-owned `AgentSession`) be destroyed, then heap-allocate a completely unrelated
+        // session3 -- the CRT allocator reliably handed back the EXACT SAME freed block in this test
+        // (confirmed below, not assumed), making session3's own address collide with `smuggler`'s stale
+        // tag. Against the original raw-address `owner_`, `operator=` wrongly treated session3 as "the
+        // same session" and allowed the merge, leaking session1's content into session3. Closed by
+        // tagging with `AgentSession::session_identity_` (a monotonic, process-wide, never-reused
+        // counter) instead of the object's address -- see that member's own comment in
+        // agent_session.hpp.
+        using SingleBuilder = ComposedQuickstartSessionBuilder<quickstart::Provider::openai,
+                                                                  InMemorySecretStore, RequiredArgProvider>;
+        void const* addr1 = nullptr;
+        using ProviderT = SingleBuilder::HistoryProviderT;
+        ProviderT smuggler;
+        {
+            auto counter1 = std::make_shared<std::size_t>(0);
+            auto built1 = SingleBuilder("gpt-4o-mini")
+                              .api_key_from_env("openai-api-key", "AE_TEST_QUICKSTART_KEY")
+                              .providers(std::make_tuple(RequiredArgProvider{"b25-1", counter1}))
+                              .build();
+            check(built1.has_value(), "B25 setup: session1 build() succeeds");
+            if (built1.has_value()) {
+                addr1 = static_cast<void const*>(&built1->session());
+                smuggler = std::move(built1->session().history_provider());
+            }
+            // built1 (and its heap-owned AgentSession) is destroyed here, at scope exit.
+        }
+        auto counter3 = std::make_shared<std::size_t>(0);
+        auto built3 = SingleBuilder("gpt-4o-mini")
+                          .api_key_from_env("openai-api-key", "AE_TEST_QUICKSTART_KEY")
+                          .providers(std::make_tuple(RequiredArgProvider{"b25-3", counter3}))
+                          .build();
+        check(built3.has_value(), "B25 setup: session3 build() succeeds");
+        if (built3.has_value()) {
+            void const* addr3 = static_cast<void const*>(&built3->session());
+            check(addr1 == addr3,
+                  "B25 precondition: session3 is heap-allocated at the EXACT SAME address session1 "
+                  "used to occupy -- if this ever stops holding (a different allocator behavior), this "
+                  "test still passes but is no longer exercising the real ABA scenario it was written "
+                  "for");
+            built3->session().history_provider() = std::move(smuggler);
+            Principal principal{"p-b25", ""};
+            std::vector<Message> empty_history;
+            SessionContext session_ctx{"s-b25", principal, empty_history};
+            EffectContext effect_ctx{};
+            auto session3_now = agentengine::test_support::run_task_sync<result<ContextContribution>>(
+                built3->session().history_provider().on_context(session_ctx, effect_ctx));
+            bool leaked = session3_now.has_value() && session3_now->messages.size() == 1 &&
+                          std::get<Text>(session3_now->messages[0].content.front().value).text == "b25-1";
+            check(!leaked,
+                  "B25: session3 must NOT receive session1's content merely because they happened to "
+                  "share the same (reused) heap address -- owner_ must be a never-reused identity, not "
+                  "a raw address");
         }
     }
     {

@@ -82,7 +82,11 @@
 #include "agentengine/protocol/anthropic/chat_client.hpp"
 #include "agentengine/protocol/openai/chat_client.hpp"
 #include "agentengine/rt/agent_session.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/rt/thread_pool.hpp"
+#include "agentengine/sandbox/docker_execution_surface.hpp"
+#include "agentengine/sandbox/mandatory_sandbox_provider.hpp"
+#include "agentengine/trust/identity_authority.hpp"
 #include "agentengine/trust/principal.hpp"
 #include "agentengine/trust/secret.hpp"
 #include "backends/native_jail/mediated_python_runner.hpp"
@@ -560,11 +564,35 @@ public:
             universe, skills_.allowed_tool_names_for(mounted_skills_.all()),
             {std::string(MountSkillTool::name)});
         contribution.tools = scoped.descriptors();
+
+        // ADR-102 Phase 5: `run_command` (MandatorySandboxProvider, sandbox/mandatory_sandbox_
+        // provider.hpp) is a session-level sandbox capability, not a skill-unlocked one -- added
+        // directly to `contribution.tools`, outside `scope_tools_to_mounted_skills()`'s own
+        // skill-permission gating (that mechanism answers "which SKILL-provided tools are currently
+        // reachable," a different question from "is a sandbox bound to this session at all," which
+        // `run_command_provider_.on_context()` itself already answers by contributing zero tools when
+        // unbound -- see that class's own comment). `bind_sandbox()` is called once, by `main()`/
+        // `run_interactive()`, before the first StartRun -- the same "config-time setter" convention
+        // `configure()` above already establishes for the CodeAct provider.
+        auto run_command_contribution =
+            co_await run_command_provider_.on_context(session_ctx, ec);
+        if (!run_command_contribution) co_return std::unexpected(run_command_contribution.error());
+        for (ToolDescriptor& td : run_command_contribution->tools) {
+            contribution.tools.push_back(std::move(td));
+        }
         co_return contribution;
     }
     task<std::monostate> on_turn_end(TurnView, EffectContext&) { co_return std::monostate{}; }
 
     [[nodiscard]] MountedSkillsState const& mounted_skills() const noexcept { return mounted_skills_; }
+
+    // Mutable, matching `AgentSession::history_provider()`'s own real accessor pattern one layer up --
+    // `main()`/`run_interactive()` needs this to call `bind_sandbox()` once, at session-configuration
+    // time, before the first StartRun.
+    [[nodiscard]] agentengine::MandatorySandboxProvider<agentengine::DockerExecutionSurface>&
+    run_command_provider() noexcept {
+        return run_command_provider_;
+    }
 
 private:
     // The real `execute_code` implementation (ADR-030) -- was `ExecuteCodeTool::invoke()`'s body
@@ -675,6 +703,10 @@ private:
     // lifetime), lazily resolved by `real_execute_code()`'s first call (ADR-034 correction; see that
     // function's own comment for why NOT resolved eagerly by configure()/main() anymore).
     CodeActRunnerBinding<native_jail::MediatedPythonRunner>* runner_binding_ = nullptr;
+    // ADR-102 Phase 5: default-constructed into the real, safe "no sandbox bound yet" state -- a
+    // session that never calls `run_command_provider().bind_sandbox(...)` (e.g. a future caller of
+    // this class that skips it) gets zero execution capability from this provider, never a crash.
+    agentengine::MandatorySandboxProvider<agentengine::DockerExecutionSurface> run_command_provider_;
 };
 static_assert(ContextProvider<ToolDeclaringHistoryProvider>);
 
@@ -860,6 +892,54 @@ template <class Inner>
     // thread while THIS thread's drain loop (below) concurrently polls the event stream.
     agentengine::rt::ThreadPool pool(1);
 
+    // ADR-102 Phase 5: this session's real `run_command` sandbox state, declared BEFORE `actor` --
+    // REQUIRED ordering, not cosmetic: `actor`'s own `history_provider_` will embed a
+    // `MandatorySandboxProvider` holding a `SandboxRuntime` whose `BranchHandle` stores a raw
+    // `Ledger<>*` back to `cli_ledger` and whose destructor (`~BranchHandle()`) dereferences it
+    // (`maybe_queue_abandon()`, core/ledger.hpp). C++ destroys locals in REVERSE declaration order --
+    // several `return 1;` paths below reach the end of this scope via ORDINARY destruction (not the
+    // `std::_Exit(0)` this function ends its success path with), so `cli_ledger` must outlive `actor`
+    // under normal destruction too, not only on the path that happens to bypass destructors entirely.
+    // This whole design's own real content-addressed store stays pure in-memory here (`Ledger<>`'s
+    // default `InMemoryWorktreeObjectStore`, no `durable_dir`) -- matching every ADR-102 phase's own
+    // already-disclosed "durable content storage is out of scope" boundary, unchanged by this wiring: a
+    // `run_command` checkpoint history does not survive this CLI process exiting, the same "no durable
+    // session state" property this CLI already has for everything else (013's own event stream, the
+    // CodeAct exec state).
+    agentengine::Ledger<> cli_ledger;
+    agentengine::IdentityAuthority& authority = agentengine::IdentityAuthority::bootstrap();
+    // Adopted from the SAME literal `Principal{"cli-user", ""}` `actor.initialize()` below uses --
+    // REQUIRED, not cosmetic: `MandatorySandboxProvider::on_context()`'s own tool closure re-derives
+    // its caller identity from `ctx.principal` on every real `run_command` call (set by `AgentSession::
+    // start_run()` from THIS SAME session-level `principal_`), and `AsyncQuota::try_consume()` is
+    // identity-scoped -- adopting a DIFFERENT principal here would mint an unrelated identity with no
+    // access to the quotas/branch minted below (a real bug this exact shape caused, found and fixed
+    // during ADR-102 Phase 4's own test bring-up; see that phase's own §27 record).
+    agentengine::IdentityHandle const owner = authority.adopt(agentengine::Principal{"cli-user", ""});
+    // Generous, demo-appropriate ceilings -- this CLI runs exactly one interactive session per process
+    // (this file's own established "one process, one session" convention, see kSessionId's own
+    // comment below) and never forks (no `agent.spawn` wiring exists in this file), so `BranchCost`
+    // is minted but realistically never spent; `RunCost`/`StorageBytes` are sized for an ordinary
+    // interactive session, not tuned against any real workload.
+    auto branch_quota =
+        agentengine::rt::AsyncQuota<agentengine::BranchCost>::mint_root(authority, owner, 100);
+    auto run_quota =
+        agentengine::rt::AsyncQuota<agentengine::RunCost>::mint_root(authority, owner, 10'000);
+    auto storage_quota =
+        agentengine::rt::AsyncQuota<agentengine::StorageBytes>::mint_root(authority, owner, 100'000'000);
+    if (!branch_quota.has_value() || !run_quota.has_value() || !storage_quota.has_value()) {
+        std::cerr << "FATAL: failed to mint this session's real sandbox quotas\n";
+        return 1;
+    }
+    auto root_branch = agentengine::rt::block_on(cli_ledger.create_root_branch(owner, session_id));
+    if (!root_branch.has_value()) {
+        std::cerr << "FATAL: failed to create this session's real sandbox root branch: "
+                   << root_branch.error().message << "\n";
+        return 1;
+    }
+    std::filesystem::path const sandbox_staging_root =
+        std::filesystem::temp_directory_path() / ("ae_cli_chat_sandbox_" + session_id);
+
     CliSession<Inner> actor;
     // `chat_client` already carries the provider-specific `end_user_id=session_id` construction arg
     // `main()` set (for prompt-cache locality -- see that call site's own comment); this call only
@@ -904,6 +984,14 @@ template <class Inner>
                    << "\n";
         return 1;
     }
+
+    // ADR-102 Phase 5: binds this session's real `run_command` sandbox -- the first production wiring
+    // of MandatorySandboxProvider/SandboxRuntime (ADR-102 Phases 1-4) anywhere in this codebase.
+    // `cli_ledger`/`owner`/the three quotas were minted above, before `actor`, for a real lifetime-
+    // ordering reason (see that block's own comment).
+    actor.history_provider().run_command_provider().bind_sandbox(
+        cli_ledger, std::move(*root_branch), owner, sandbox_staging_root, *branch_quota, *run_quota,
+        *storage_quota);
 
     print_skills_banner(materialized, startup_skills, actor.history_provider().mounted_skills());
     std::cout << "\nType a message and press Enter. Type 'exit' or 'quit' to stop.\n\n";
@@ -996,6 +1084,18 @@ template <class Inner>
     // (tests/test_python_subinterpreter_spike.cpp, ADR-002 Section 11): skip the now-known-dangerous
     // teardown path entirely and let the OS reclaim the process. Nothing here needs graceful
     // shutdown -- no other process depends on this one's static destructors running.
+    //
+    // ADR-102 Phase 5, CONFIRMED (not merely reasoned about) during this wiring's own real-Docker
+    // smoke test: skipping destructors here also skips `DockerExecutionSurface::~DockerExecutionSurface()`
+    // if `run_command` was ever actually called this session -- its real, running container is
+    // orphaned on every ordinary CLI exit, not only on a crash. This is the SAME leak residual
+    // Phase 3's own `docker_execution_surface.hpp` already discloses (there found to trigger on a
+    // transient `docker rm -f` failure too, not only a process crash) -- this is a THIRD, now
+    // CONFIRMED trigger, not a new defect: an ordinary `exit`/`quit` from this CLI, after using
+    // `run_command` even once, leaves a real container running until something else (`docker rm`,
+    // a host reboot) cleans it up. Not fixed here -- doing so needs a real reclaim mechanism (the
+    // same "persist instance ids somewhere reclaimable" follow-on work Phase 3's own residual
+    // already named), not a one-off special case in this CLI alone.
     std::_Exit(0);
 }
 
@@ -1009,6 +1109,27 @@ template <class Inner>
 constexpr char const* kSessionId = "cli-chat-session";
 
 int main() {
+    // ADR-136: this CLI's own top comment (~line 1088) already discloses that a real container from
+    // `run_command` is orphaned on EVERY ordinary exit here (the `std::_Exit(0)` teardown below skips
+    // `DockerExecutionSurface::~DockerExecutionSurface()` deliberately, to dodge a real CPython
+    // finalize-thread crash) -- yet, unlike its three siblings (`sandboxed_shell_chat.cpp`,
+    // `containerd_shell_chat.cpp`, `durable_sandboxed_shell_chat.cpp`, all of which got this same
+    // ADR-108 §7 sweep), this file never actually ran the self-healing startup sweep for what a PRIOR
+    // run of itself orphaned. Closed here, identical pattern: best-effort, never fatal -- a daemon
+    // that's briefly unreachable or a sweep that finds nothing must never block this CLI's own real
+    // purpose.
+    {
+        DockerCliBackend orphan_sweep;
+        auto swept = orphan_sweep.reap_orphans();
+        if (swept.has_value() && (swept->reaped > 0 || !swept->reap_failures.empty())) {
+            std::cerr << "startup orphan sweep: inspected " << swept->inspected << ", reaped "
+                      << swept->reaped << ", " << swept->reap_failures.size()
+                      << " destroy failure(s)\n";
+        } else if (!swept.has_value()) {
+            std::cerr << "startup orphan sweep skipped (non-fatal): " << swept.error().message << "\n";
+        }
+    }
+
     // AGENTENGINE_PROVIDER selects which real backend this run talks to -- "openai" (direct
     // api.openai.com), "anthropic" (direct Anthropic Messages API), or "openrouter" (OpenRouter's own
     // OpenAI-compatible endpoint -- what "openai" used to mean here before this was split into two
@@ -1067,7 +1188,11 @@ int main() {
         std::vector<Capability> grants = {
             Capability{cap::Secret{kOpenAiSecretName, std::chrono::seconds{0}}},
             Capability{cap::FsRead{kWorkMount, "", std::nullopt}},
-            Capability{cap::FsWrite{kWorkMount, "", std::nullopt, std::nullopt}}};
+            Capability{cap::FsWrite{kWorkMount, "", std::nullopt, std::nullopt}},
+            // ADR-119: run_command now carries a real Capabilities<> ceiling on top of its unchanged
+            // IdentityAuthority/Grant<T>/AsyncQuota<T> gate -- see run_command_provider().bind_sandbox()
+            // below, which this session actually uses.
+            Capability{cap::RunCommand{}}};
         for (auto const& [mount_id, host_dir] : *materialized) {
             (void)host_dir;
             grants.push_back(Capability{cap::FsRead{mount_id, "", std::nullopt}});
@@ -1112,7 +1237,10 @@ int main() {
         std::vector<Capability> grants = {
             Capability{cap::Secret{kOpenRouterSecretName, std::chrono::seconds{0}}},
             Capability{cap::FsRead{kWorkMount, "", std::nullopt}},
-            Capability{cap::FsWrite{kWorkMount, "", std::nullopt, std::nullopt}}};
+            Capability{cap::FsWrite{kWorkMount, "", std::nullopt, std::nullopt}},
+            // ADR-119: run_command now carries a real Capabilities<> ceiling on top of its unchanged
+            // IdentityAuthority/Grant<T>/AsyncQuota<T> gate.
+            Capability{cap::RunCommand{}}};
         for (auto const& [mount_id, host_dir] : *materialized) {
             (void)host_dir;
             grants.push_back(Capability{cap::FsRead{mount_id, "", std::nullopt}});
@@ -1149,7 +1277,10 @@ int main() {
     std::vector<Capability> grants = {
         Capability{cap::Secret{kAnthropicSecretName, std::chrono::seconds{0}}},
         Capability{cap::FsRead{kWorkMount, "", std::nullopt}},
-        Capability{cap::FsWrite{kWorkMount, "", std::nullopt, std::nullopt}}};
+        Capability{cap::FsWrite{kWorkMount, "", std::nullopt, std::nullopt}},
+        // ADR-119: run_command now carries a real Capabilities<> ceiling on top of its unchanged
+        // IdentityAuthority/Grant<T>/AsyncQuota<T> gate.
+        Capability{cap::RunCommand{}}};
     for (auto const& [mount_id, host_dir] : *materialized) {
         (void)host_dir;
         grants.push_back(Capability{cap::FsRead{mount_id, "", std::nullopt}});

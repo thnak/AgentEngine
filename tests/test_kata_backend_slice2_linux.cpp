@@ -51,15 +51,25 @@ int main() {
     }
 
     // ---- 2. NetPolicy: deny_all=false fails closed, not silently granted or silently denied. ------
+    // STALE-EXPECTATION FIX (found via this session's first-ever real deployment run): both cases
+    // below used to assert `kata_backend.net_allowlist_unsupported`, a Slice 2-era error code SLICE 10
+    // (ADR-093, kata_backend.cpp's own §Slice 10 comment) superseded with a real, capability-gated
+    // NetPolicy mechanism -- `spec.net.deny_all=false`/a nonempty `allowlist` with ZERO
+    // `cap::SandboxNetOut` grants (the default `SandboxSpec` both cases below construct) now fails
+    // closed with `kata_backend.net_capability_required` instead (kata_backend.cpp's own real, current
+    // rejection for "NetPolicy requests real network access... but the caller holds no
+    // cap::SandboxNetOut grant at all"). `net_allowlist_unsupported` no longer appears anywhere in
+    // kata_backend.cpp at all (grep-confirmed) -- this assertion was never actually exercised against
+    // a live deployment before today, so the drift went undetected until this session's real run.
     {
         KataBackend backend;
         SandboxSpec spec;
         spec.net.deny_all = false;
         auto handle = backend.create(spec, ctx);
         check(!handle.has_value() &&
-                  handle.error().code == "kata_backend.net_allowlist_unsupported",
-              "create(): NetPolicy{deny_all=false} fails closed with "
-              "kata_backend.net_allowlist_unsupported, not silently ignored");
+                  handle.error().code == "kata_backend.net_capability_required",
+              "create(): NetPolicy{deny_all=false} with no cap::SandboxNetOut grant fails closed with "
+              "kata_backend.net_capability_required, not silently ignored");
     }
     {
         KataBackend backend;
@@ -67,8 +77,9 @@ int main() {
         spec.net.allowlist.push_back("example.com:443:https");
         auto handle = backend.create(spec, ctx);
         check(!handle.has_value() &&
-                  handle.error().code == "kata_backend.net_allowlist_unsupported",
-              "create(): a nonempty NetPolicy::allowlist also fails closed");
+                  handle.error().code == "kata_backend.net_capability_required",
+              "create(): a nonempty NetPolicy::allowlist with no cap::SandboxNetOut grant also fails "
+              "closed the same way");
     }
 
     // ---- 3. MountSpec: a BlobRef source fails closed. -----------------------------------------------
