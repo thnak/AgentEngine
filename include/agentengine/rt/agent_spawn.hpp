@@ -153,6 +153,15 @@ struct SpawnTargetDescriptor {
     // HOST-configured LLM cost ceiling for the CHILD's own run -- never left unbounded (§9 I2-3).
     std::uint64_t    child_token_budget = 50'000;
     ChildRunner       run_child;
+
+    // GitHub issue #30 / ADR-151: per-TARGET, host-authored-only-at-registry-build-time opt-in
+    // decider(s) for THIS target's own spawned children -- the same scoping as `child_token_budget`/
+    // `worktree_mode` above, threaded into `ChildSpawnRequest::approval_decider`/`policy_decider`
+    // (rt/agent_spawn_child_run.hpp) by `perform_agent_spawn()` below. Default `{}` for both
+    // reproduces exactly today's pre-ADR-151 behavior. See `trust/delegated_approval_policy.hpp` for
+    // a reference `policy_decider` implementation and its own named spawned-child residual.
+    agentengine::ApprovalDecider approval_decider{};
+    agentengine::PolicyDecider   policy_decider{};
 };
 
 // HOST-configured, per-caller-Principal soft ceiling on spawn attempts, checked at step [0] --
@@ -443,6 +452,11 @@ template <agentengine::rt::AppendLogStore StoreT>
     // `push_side_summary(*ctx.capabilities)`, which would misrepresent what the child actually holds.
     child_request.instructions =
         agentengine::trust::push_side_summary(child_grant->capabilities);
+    // GitHub issue #30 / ADR-151: the resolved TARGET's own deciders, never the caller's own session-
+    // level ones (`ctx` carries no reference to those at all here) -- per-target scoping, see
+    // `SpawnTargetDescriptor`'s own comment above.
+    child_request.approval_decider = target->approval_decider;
+    child_request.policy_decider   = target->policy_decider;
 
     agentengine::result<agentengine::rt::AgentResponse> child_response =
         target->run_child(minted_pump->child_id, std::move(child_request));

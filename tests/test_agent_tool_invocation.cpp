@@ -36,6 +36,7 @@
 #include <string>
 
 #include "agentengine/core/agent_registry.hpp"
+#include "agentengine/trust/delegated_approval_policy.hpp"
 
 namespace {
 
@@ -79,6 +80,31 @@ struct EchoAgent
     static constexpr std::string_view instructions = "Declares Tools<EchoTool> and a covering ceiling.";
 };
 
+// GitHub issue #30 / ADR-151: a second tool, declared `policy_driven` (unlike EchoTool above, which
+// declares no `Approval<...>` and so defaults to `never_require`, core/tool.hpp) -- this is what lets
+// case 6 below actually exercise `PolicyDecider`/`resolve_approval_outcome()`'s three-way outcome
+// through the REAL `invoke_agent_tool()` entry point, not a synthetic `resolve_approval_outcome()`
+// unit test (ADR-070's own tests already cover that; this file's whole point is proving the GLUE).
+struct PolicyGatedTool
+    : agentengine::Tool<PolicyGatedTool, agentengine::Capabilities<agentengine::cap::decl::Entropy>,
+                         agentengine::Approval<agentengine::approval_mode::policy_driven>> {
+    static constexpr std::string_view name = "policy_gated";
+    static constexpr std::string_view description = "A tool gated by PolicyDecider.";
+    using Args = EchoArgs;
+    using Reply = EchoReply;
+    static agentengine::result<Reply> invoke(Args args, agentengine::EffectContext&) {
+        return Reply{"policy_gated: " + args.message};
+    }
+};
+
+struct PolicyGatedAgent
+    : agentengine::Agent<PolicyGatedAgent, agentengine::ChatClientId<"anthropic:claude-opus-5">,
+                          agentengine::Tools<PolicyGatedTool>,
+                          agentengine::Capabilities<agentengine::cap::decl::Entropy>> {
+    static constexpr std::string_view name = "policy-gated-agent";
+    static constexpr std::string_view instructions = "Declares Tools<PolicyGatedTool>, policy_driven.";
+};
+
 }  // namespace
 
 int main() {
@@ -92,6 +118,14 @@ int main() {
     if (!meta) {
         std::fprintf(stderr, "test_agent_tool_invocation: registration failed, aborting: %s\n",
                      meta.error().message.c_str());
+        return 1;
+    }
+
+    auto policy_meta = register_agent<PolicyGatedAgent>();
+    check(policy_meta.has_value(), "PolicyGatedAgent registers cleanly");
+    if (!policy_meta) {
+        std::fprintf(stderr, "test_agent_tool_invocation: PolicyGatedAgent registration failed: %s\n",
+                     policy_meta.error().message.c_str());
         return 1;
     }
 
@@ -193,6 +227,113 @@ int main() {
         check(audit.error_code == "agent_call.no_caller_capabilities",
               "fails closed with the dedicated null-capabilities error code, distinct from an "
               "ordinary attenuation rejection");
+    }
+
+    // -- 6. PolicyDecider (ADR-070), driven by the reference delegated-approval policy (ADR-151,
+    //    GitHub issue #30) -- through the REAL invoke_agent_tool() entry point, not a synthetic
+    //    resolve_approval_outcome() unit test (ADR-070's own tests already cover that mechanism in
+    //    the abstract; this file's whole point is proving the glue). --------------------------------
+    {
+        agentengine::PolicyDecider const policy = agentengine::trust::approve_delegated_calls();
+
+        bool approval_decider_called = false;
+        agentengine::ApprovalDecider const tripwire = [&approval_decider_called](
+            agentengine::Principal const&, std::string_view, std::string const&) {
+            approval_decider_called = true;
+            return false;  // would deny if ever reached -- proves auto_approve short-circuits it
+        };
+
+        // 6a. non-delegated (top-level) caller -- require_approval, no ApprovalDecider configured ->
+        //     denied. Proves this reference policy does NOT blanket-approve everyone.
+        {
+            agentengine::EffectContext ctx;
+            ctx.principal    = agentengine::Principal{"top-level-user", ""};  // on_behalf_of empty
+            ctx.capabilities = agentengine::borrow_capabilities(covering_caps);
+            ToolCallRequest req{"call-6a", "policy_gated", *json::parse(R"({"message":"hi"})"),
+                                 /*arguments_tainted=*/true};
+            agentengine::ToolInvocationAudit audit;
+            auto result = invoke_agent_tool(*policy_meta, req, ctx, {}, &audit, policy);
+            check(result.is_error,
+                  "6a: a non-delegated caller's policy_driven call is NOT auto-approved by "
+                  "approve_delegated_calls() -- falls through to the unset ApprovalDecider, denied");
+            check(audit.error_code == "tool.approval_denied",
+                  "6a: denied via the ordinary fallback, not a policy-specific error code -- this "
+                  "reference policy never invents a new denial reason");
+        }
+
+        // 6b. delegated caller (real derive_on_behalf_of() output, matching what agent.spawn/
+        //     invoke_agent_tool()'s own real callers actually produce) -- auto_approve, and the
+        //     ApprovalDecider tripwire is NEVER consulted (a real short-circuit, ADR-070 §5a's own
+        //     claim, re-proven here through invoke_agent_tool() specifically). arguments_tainted is
+        //     deliberately `true` (the real, always-true production value -- see
+        //     delegated_approval_policy.hpp's own file banner) -- this is the exact scenario an
+        //     earlier draft of this policy got wrong.
+        {
+            agentengine::Principal const top_level{"parent-agent", ""};
+            auto delegated = agentengine::derive_on_behalf_of(top_level, "child-agent-1");
+            check(delegated.has_value(), "6b setup: derive_on_behalf_of() succeeds");
+
+            agentengine::EffectContext ctx;
+            ctx.principal            = *delegated;
+            ctx.capabilities         = agentengine::borrow_capabilities(covering_caps);
+            approval_decider_called = false;
+            ToolCallRequest req{"call-6b", "policy_gated", *json::parse(R"({"message":"hi"})"),
+                                 /*arguments_tainted=*/true};
+            agentengine::ToolInvocationAudit audit;
+            auto result = invoke_agent_tool(*policy_meta, req, ctx, tripwire, &audit, policy);
+            check(!result.is_error,
+                  "6b: a delegated caller's policy_driven call auto-approves via "
+                  "approve_delegated_calls(), even though arguments_tainted is true");
+            check(!approval_decider_called,
+                  "6b: auto_approve short-circuits the ApprovalDecider entirely -- never consulted "
+                  "for a delegated caller this policy approves");
+            check(audit.ok, "6b: audit records success, indistinguishable in shape from a "
+                              "decider-approved call (I4)");
+        }
+
+        // 6c. delegated caller past a host-chosen max_depth -- falls back to require_approval exactly
+        //     like a non-delegated caller, proving max_depth is a real, enforced ceiling distinct from
+        //     kMaxDelegationDepth's own structural bound.
+        {
+            agentengine::PolicyDecider const bounded_policy = agentengine::trust::approve_delegated_calls(1);
+            agentengine::Principal const top_level{"parent-agent", ""};
+            auto depth1 = agentengine::derive_on_behalf_of(top_level, "child-1");
+            check(depth1.has_value(), "6c setup: depth-1 derivation succeeds");
+            auto depth2 = depth1.has_value() ? agentengine::derive_on_behalf_of(*depth1, "grandchild-1")
+                                              : agentengine::result<agentengine::Principal>{};
+            check(depth2.has_value() && depth2->delegation_depth == 2, "6c setup: depth is really 2");
+
+            agentengine::EffectContext ctx;
+            ctx.principal    = *depth2;
+            ctx.capabilities = agentengine::borrow_capabilities(covering_caps);
+            ToolCallRequest req{"call-6c", "policy_gated", *json::parse(R"({"message":"hi"})"), true};
+            agentengine::ToolInvocationAudit audit;
+            auto result = invoke_agent_tool(*policy_meta, req, ctx, {}, &audit, bounded_policy);
+            check(result.is_error,
+                  "6c: delegation_depth (2) exceeds max_depth (1) -- falls through to "
+                  "require_approval, denied by the unset ApprovalDecider, exactly as if this policy "
+                  "had never been wired");
+        }
+
+        // 6d. pinned boundary: delegation_depth == max_depth is STILL auto-approved (max_depth is an
+        //     inclusive ceiling) -- removes any off-by-one ambiguity for a future reader.
+        {
+            agentengine::PolicyDecider const bounded_policy = agentengine::trust::approve_delegated_calls(2);
+            agentengine::Principal const top_level{"parent-agent", ""};
+            auto depth1 = agentengine::derive_on_behalf_of(top_level, "child-1");
+            auto depth2 = depth1.has_value() ? agentengine::derive_on_behalf_of(*depth1, "grandchild-1")
+                                              : agentengine::result<agentengine::Principal>{};
+            check(depth2.has_value() && depth2->delegation_depth == 2, "6d setup: depth is really 2");
+
+            agentengine::EffectContext ctx;
+            ctx.principal    = *depth2;
+            ctx.capabilities = agentengine::borrow_capabilities(covering_caps);
+            ToolCallRequest req{"call-6d", "policy_gated", *json::parse(R"({"message":"hi"})"), true};
+            agentengine::ToolInvocationAudit audit;
+            auto result = invoke_agent_tool(*policy_meta, req, ctx, {}, &audit, bounded_policy);
+            check(!result.is_error,
+                  "6d: delegation_depth == max_depth is still auto-approved -- max_depth is inclusive");
+        }
     }
 
     if (g_failures == 0) {

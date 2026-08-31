@@ -171,3 +171,16 @@ add_executable(agentengine_example_23_handoff_mesh 23_handoff_mesh.cpp)
 target_link_libraries(agentengine_example_23_handoff_mesh PRIVATE
   agentengine::core agentengine_warnings)
 add_test(NAME example_23_handoff_mesh COMMAND agentengine_example_23_handoff_mesh)
+
+# 24: GitHub issue #30 / decisions/ADR-151-delegated-agent-approval-policy.md -- a reference
+# PolicyDecider for delegated/spawned-agent calls (trust::approve_delegated_calls()), showing its two
+# distinct wiring points (AgentSession::set_policy_decider() vs. SpawnTargetDescriptor::policy_decider)
+# side by side. rt/agent_spawn.hpp's real perform_agent_spawn() call path needs agent_spawn_worktree.hpp's
+# compute_digest() (compiled, not header-only) -- same Windows-only guard test_rt_agent_spawn.cpp's own
+# CMakeLists.txt entry already carries.
+if(WIN32)
+  add_executable(agentengine_example_24_delegated_agent_approval 24_delegated_agent_approval.cpp)
+  target_link_libraries(agentengine_example_24_delegated_agent_approval PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME example_24_delegated_agent_approval COMMAND agentengine_example_24_delegated_agent_approval)
+endif()

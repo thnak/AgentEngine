@@ -43,6 +43,7 @@
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/history_provider.hpp"
+#include "agentengine/core/tool_pipeline.hpp"  // ApprovalDecider, PolicyDecider (GitHub issue #30 / ADR-151)
 #include "agentengine/rt/agent_session.hpp"
 #include "agentengine/rt/task.hpp"
 #include "agentengine/trust/capability.hpp"
@@ -80,6 +81,21 @@ struct ChildSpawnRequest {
     // itself never computes it -- see this struct's own top comment for why that's item 6's job, not
     // item 2's).
     std::string instructions;
+
+    // GitHub issue #30 / ADR-151: opt-in seam letting a spawned child get its OWN
+    // ApprovalDecider/PolicyDecider, independent of whatever the PARENT session configured for
+    // ITSELF (`AgentSession::approval_decider()`/`policy_decider()`, agent_session.hpp -- neither
+    // one is inherited automatically; a host must supply this explicitly). Default `{}` for both
+    // reproduces exactly today's pre-ADR-151 behavior -- no decider ever reached a spawned child's
+    // own tool-call pipeline -- matching ADR-070 property 2 (fails closed/safe when unset).
+    // Populated by `perform_agent_spawn()` (rt/agent_spawn.hpp) from the resolved target's own
+    // `SpawnTargetDescriptor::approval_decider`/`policy_decider` -- per-TARGET, the SAME
+    // host-authored-only-at-registry-build-time scoping `child_token_budget`/`worktree_mode` already
+    // have, never per-call and never derived from `AgentSpawnArgs` (I3: a model's own `agent_id`
+    // argument only ever SELECTS which already-registered target's own deciders apply, it cannot
+    // supply or influence either decider's actual logic).
+    agentengine::ApprovalDecider approval_decider{};
+    agentengine::PolicyDecider   policy_decider{};
 };
 
 namespace agent_spawn_detail {
@@ -136,6 +152,21 @@ template <class ChatClientT, class StateT = agentengine::rt::NoSessionState,
     if (!req.instructions.empty()) {
         child.set_static_instructions(req.instructions);
     }
+    // GitHub issue #30 / ADR-151: unconditional, matching `set_capabilities()` above -- assigning an
+    // unset (default `{}`) decider is a no-op (a freshly constructed `child` already defaults both to
+    // `{}`), so this is byte-identical to before this ADR for every caller that leaves `req`'s two new
+    // fields untouched. SPAWNED-CHILD RESIDUAL, NAMED NOT FIXED (see
+    // `trust/delegated_approval_policy.hpp`'s own file banner for the full account): `child` is driven
+    // synchronously to completion and destroyed before this function returns (this file's own top
+    // comment) -- it can never genuinely SUSPEND for a later human answer. A `policy_decider` verdict
+    // of `require_approval` (or an unset one, falling through to `tool_call_requires_approval()`'s own
+    // default) resolves through the ordinary step-5 `ApprovalDecider` fallback ONLY -- with no
+    // `approval_decider` supplied, that fallback is an outright denial of that one tool call, not a
+    // pause. A host wiring `policy_decider` onto a spawn target without also giving it a real,
+    // synchronous `approval_decider` should expect every policy_driven call this policy doesn't
+    // auto-approve to fail, not defer.
+    child.set_approval_decider(std::move(req.approval_decider));
+    child.set_policy_decider(std::move(req.policy_decider));
     // RC-1 (this file's own top comment) -- unconditional, not opt-in: every child this mechanism
     // constructs is background-execution-disabled, full stop, before start_run() is ever called.
     child.set_background_execution_disabled(true);

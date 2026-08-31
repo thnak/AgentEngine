@@ -62,6 +62,7 @@
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/tool.hpp"
 #include "agentengine/rt/agent_spawn.hpp"
+#include "agentengine/trust/delegated_approval_policy.hpp"
 
 using agentengine::AgentMetadata;
 using agentengine::CapabilitySet;
@@ -214,6 +215,77 @@ static_assert(agentengine::ChatClient<ScriptedChatClient>);
         return run_child_agent_session<ScriptedChatClient>(
             std::move(child_id), std::move(req), [&child_reply_text](ScriptedChatClient& c) {
                 c.set_script({{text_response(child_reply_text), Usage{1, 1, 0, 0, 0.0}}});
+            });
+    };
+    return d;
+}
+
+// ---------------------------------------------------------------------------------------------
+// GitHub issue #30 / ADR-151: a target whose CHILD, once running, itself calls a `policy_driven`
+// tool ("policy_gated_child") -- what a real `SpawnTargetDescriptor::policy_decider`/`approval_
+// decider` (ADR-151, wired below via `make_policy_gated_target()`) actually governs. Empty
+// `Capabilities<>` ceiling, same reasoning `make_helper_target()`'s own top comment already gives
+// (vacuous coverage-check success -- this fixture is about the APPROVAL mechanism, not the
+// capability system, mirroring examples/05_human_approval.cpp's own `SendMessageTool`).
+// ---------------------------------------------------------------------------------------------
+
+struct PolicyGatedChildArgs { std::string message; };
+AE_JSON_SCHEMA(PolicyGatedChildArgs, message)
+struct PolicyGatedChildReply { bool handled = false; };
+AE_JSON_SCHEMA(PolicyGatedChildReply, handled)
+
+[[nodiscard]] bool& policy_gated_child_invoked() {
+    static bool invoked = false;
+    return invoked;
+}
+
+struct PolicyGatedChildTool
+    : agentengine::Tool<PolicyGatedChildTool, agentengine::Capabilities<>,
+                         agentengine::EffectClass<agentengine::effect_class::pure>,
+                         agentengine::Approval<agentengine::approval_mode::policy_driven>> {
+    static constexpr std::string_view name = "policy_gated_child";
+    static constexpr std::string_view description = "A policy_driven tool the CHILD itself calls.";
+    using Args = PolicyGatedChildArgs;
+    using Reply = PolicyGatedChildReply;
+    static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) {
+        policy_gated_child_invoked() = true;
+        return Reply{true};
+    }
+};
+
+class ChildPolicyHistoryProvider {
+public:
+    [[nodiscard]] task<result<agentengine::ContextContribution>> on_context(agentengine::SessionContext& sc,
+                                                                              EffectContext&) {
+        agentengine::ContextContribution c;
+        c.messages.assign(sc.history.begin(), sc.history.end());
+        c.tools = agentengine::ToolTable::from_tools<PolicyGatedChildTool>().descriptors();
+        co_return c;
+    }
+    task<std::monostate> on_turn_end(agentengine::TurnView, EffectContext&) { co_return std::monostate{}; }
+};
+static_assert(agentengine::ContextProvider<ChildPolicyHistoryProvider>);
+
+// The child's script: one round issuing the policy_driven call, one final converged answer --
+// regardless of whether the tool call was approved or denied (`ScriptedChatClient`'s own
+// call_count-indexed script doesn't inspect the tool result content, matching every other fixture
+// in this file) -- so `perform_agent_spawn()` itself always succeeds here; whether
+// `policy_gated_child_invoked()` actually flipped true is what distinguishes T8 from T9 below.
+[[nodiscard]] SpawnTargetDescriptor make_policy_gated_target(agentengine::PolicyDecider policy_decider,
+                                                                agentengine::ApprovalDecider approval_decider = {}) {
+    SpawnTargetDescriptor d;
+    d.metadata           = AgentMetadata{};
+    d.spawn_cost          = 1;
+    d.worktree_mode        = agentengine::sharing_mode::scratch;
+    d.child_token_budget  = 1000;
+    d.policy_decider      = std::move(policy_decider);
+    d.approval_decider    = std::move(approval_decider);
+    d.run_child = [](std::string child_id, ChildSpawnRequest req) {
+        return run_child_agent_session<ScriptedChatClient, NoSessionState, ChildPolicyHistoryProvider>(
+            std::move(child_id), std::move(req), [](ScriptedChatClient& c) {
+                c.set_script({{tool_call_response("c1", "policy_gated_child", R"({"message":"do it"})"),
+                                Usage{1, 1, 0, 0, 0.0}},
+                               {text_response("child done"), Usage{1, 1, 0, 0, 0.0}}});
             });
     };
     return d;
@@ -523,6 +595,88 @@ int main() {
         check(rounds_with_bad_failure_code == 0,
               "T7: every rejected submit(), every round, failed with the real "
               "spawn_cost_budget.exhausted code -- not a crash, not a wrong/generic error");
+    }
+
+    // ---- T8: SpawnTargetDescriptor::policy_decider (GitHub issue #30 / ADR-151) reaches a REAL
+    //      spawned child's own turn loop -- the reference approve_delegated_calls() auto-approves the
+    //      child's policy_driven tool call, with NO ApprovalDecider ever configured on the child, and
+    //      through the REAL perform_agent_spawn()/AgentSpawnTool call path end to end (not a synthetic
+    //      unit test against resolve_approval_outcome()/PolicyDecider directly). ---------------------
+    {
+        policy_gated_child_invoked() = false;
+        InMemoryAppendLogStore ref_store;
+        SpawnCostBudget        cost_pool;
+        cost_pool.initialize(10);
+        SpawnPump<InMemoryAppendLogStore> pump(cost_pool, ref_store);
+
+        SpawnTargetRegistry registry;
+        auto registered = registry.register_target(
+            "policy-helper", make_policy_gated_target(agentengine::trust::approve_delegated_calls()));
+        check(registered.has_value(), "T8 setup: register_target succeeds");
+
+        SpawnQuota        quota{100};
+        SpawnQuotaTracker tracker;
+
+        // The CALLER (i.e. the parent invoking agent.spawn) is itself NOT delegated -- on_behalf_of
+        // is empty. What makes the CHILD's own principal delegated is run_child_agent_session()'s
+        // OWN unconditional derive_on_behalf_of() call (item 2, unchanged by this ADR) -- proving
+        // this policy really does key off the CHILD's real, structurally-derived identity, not
+        // something this test hand-constructs.
+        CapabilitySet const caller_held =
+            CapabilitySet::grant_root({AgentCall{"policy-helper", SpawnBudget::mint_root(2)}});
+
+        EffectContext ctx;
+        ctx.capabilities = std::make_shared<CapabilitySet const>(caller_held);
+        ctx.principal     = Principal{"caller-t8", ""};
+
+        agentengine::Ref const caller_ref{"session:caller-t8", ""};
+        AgentSpawnArgs const   args{"policy-helper", "do it"};
+        auto reply = perform_agent_spawn(args, ctx, registry, pump, quota, tracker, caller_ref, "/caller");
+
+        check(reply.has_value(), "T8: perform_agent_spawn() succeeds end-to-end");
+        check(policy_gated_child_invoked(),
+              "T8: the child's own policy_gated_child tool actually ran -- auto-approved via "
+              "SpawnTargetDescriptor::policy_decider (approve_delegated_calls()), with NO "
+              "ApprovalDecider ever configured on the child session");
+        if (reply.has_value()) {
+            check(reply->output == "child done",
+                  "T8: the child's converged final answer still flows back normally");
+        }
+    }
+
+    // ---- T9: without a policy_decider wired for the target, ADR-151 changes nothing -- the child's
+    //      policy_driven call is denied by the ordinary fail-closed default (ADR-070 property 2),
+    //      never silently auto-approved. -------------------------------------------------------------
+    {
+        policy_gated_child_invoked() = false;
+        InMemoryAppendLogStore ref_store;
+        SpawnCostBudget        cost_pool;
+        cost_pool.initialize(10);
+        SpawnPump<InMemoryAppendLogStore> pump(cost_pool, ref_store);
+
+        SpawnTargetRegistry registry;
+        auto registered =
+            registry.register_target("policy-helper-unwired", make_policy_gated_target(/*policy_decider=*/{}));
+        check(registered.has_value(), "T9 setup: register_target succeeds");
+
+        SpawnQuota        quota{100};
+        SpawnQuotaTracker tracker;
+        CapabilitySet const caller_held =
+            CapabilitySet::grant_root({AgentCall{"policy-helper-unwired", SpawnBudget::mint_root(2)}});
+        EffectContext ctx;
+        ctx.capabilities = std::make_shared<CapabilitySet const>(caller_held);
+        ctx.principal     = Principal{"caller-t9", ""};
+        agentengine::Ref const caller_ref{"session:caller-t9", ""};
+
+        AgentSpawnArgs const args{"policy-helper-unwired", "do it"};
+        auto reply = perform_agent_spawn(args, ctx, registry, pump, quota, tracker, caller_ref, "/caller");
+
+        check(reply.has_value(), "T9: the outer spawn mechanism still succeeds -- the child's own turn "
+                                  "loop absorbs the denied tool call as an ordinary tool-result error, "
+                                  "not a hard failure of the whole run");
+        check(!policy_gated_child_invoked(),
+              "T9: with no policy_decider wired for this target, the child's policy_driven tool call "
+              "is denied, never silently auto-approved by default");
     }
 
     if (g_failures == 0) {
