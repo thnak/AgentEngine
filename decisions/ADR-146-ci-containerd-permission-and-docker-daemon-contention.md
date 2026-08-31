@@ -1,14 +1,16 @@
 # ADR-146 — CI: containerd needs root, and live-Docker/containerd tests need `RESOURCE_LOCK` against daemon contention
 
-- **Status:** Proposed — implemented, and BOTH halves are now REAL-CI-CONFIRMED at the mechanism
-  level: the `RESOURCE_LOCK` fix dropped 5 non-deterministic failures to exactly 1 (§7), and the
-  containerd-socket permission fix eliminated the `permission denied` error entirely (§8) — `ctr` now
-  reaches the daemon as root, exactly as designed. Two residual, DIFFERENT gaps found from those same
-  real runs, both disclosed rather than folded into a false "done": (1) `ctr` needs its own explicit
-  image pull, fixed in §8, next CI run pending; (2) **the composed-provider tests
-  (`test_composed_sandbox_providers_live` AND, newly, `test_composed_containerd_providers_live`) fail
-  identically on two independent execution-surface implementations — real evidence of a shared
-  composition-layer bug, narrowed but NOT root-caused or fixed by this ADR** (§7/§8).
+- **Status:** Proposed — implemented and REAL-CI-CONFIRMED for everything this ADR set out to fix:
+  the `RESOURCE_LOCK` fix (dropped 5 non-deterministic failures to 0), the containerd-socket
+  permission fix (`permission denied` gone), and the `ctr` image-pull gap (both containerd tests now
+  pass 100%, disproving an earlier "shared composition bug" theory — see §9). **One test remains red
+  and is NOT fixed by this ADR: `test_composed_sandbox_providers_live`** (Docker-specific, composed-
+  provider-specific). Investigated extensively (§9: real native-Linux Docker repro, CI-matching
+  full-suite runs under matched core constraints, 45+ local runs) with NO successful local
+  reproduction — genuinely appears to be a low-frequency, CI-environment-specific race whose exact
+  trigger was not identified. Diagnostic instrumentation added (§9) so the next real CI failure is
+  directly diagnosable. Disclosed as an open, investigated-but-unresolved residual, not silently
+  folded into a false "done."
 - **Date:** 2026-08-31.
 - **Scope:** `.github/workflows/ci.yml` (`linux` job's `Test` step only), `tests/CMakeLists.txt`
   (`RESOURCE_LOCK` property additions to 8 existing `add_test()` registrations, no new tests, no
@@ -202,3 +204,64 @@ Whether the containerd-composed test's failure was ALSO partly caused by the sam
 (masked identically, since neither composed test's own `check()` calls print the underlying surface
 error) or is purely the shared composition bug is exactly what the next CI run (after this section's
 own fix) will show — expected to narrow, not close, the open residual either way.
+
+## 9. The image-pull fix's own CI run DISPROVED the "shared composition bug" theory
+
+That CI run (§8's fix) came back with `test_composed_containerd_providers_live` PASSING clean —
+100%, 0 failures on the containerd side. This disproves §8's "shared composition-layer bug" theory
+outright: the containerd-composed test's earlier failure WAS entirely the same image-pull gap as its
+standalone sibling, masked identically because neither composed test's own `check()` surfaces the
+underlying surface error. `test_composed_sandbox_providers_live` (Docker) is now the ONLY remaining
+red test in the entire CI matrix, and the theory space narrows back to something Docker-specific,
+when composed with `SandboxToolProvider`, on `ubuntu-latest` specifically.
+
+**Extensive real-repro effort, all of it negative** (i.e., could not reproduce):
+- Added instrumentation to the test itself (`tests/test_composed_sandbox_providers_live.cpp`) that
+  dumps every tool-role reply's actual content — error message, JSON, or text — on failure only, so
+  the next real CI failure is diagnosable from the log directly rather than needing another guess.
+  Building this surfaced and fixed a real bug in the instrumentation's own first draft:
+  `ContentItem::value` on a tool-role message holds a `ToolResult` wrapper, not `Error`/`Data`/`Text`
+  directly (missed on the first pass, caught because the fixed version's dry run against a genuine
+  local failure — see below — printed nothing until corrected).
+- Installed a REAL native Linux Docker engine (`docker.io` via `apt`, not Docker Desktop's Windows-
+  hosted translation layer) inside the project's own established WSL2 Ubuntu-24.04 Linux-verify
+  environment specifically so this investigation would run against the same class of daemon
+  `ubuntu-latest` uses, not a cross-platform approximation.
+- Built the exact test in Release mode with gcc-14 (CI's own compiler/build-type), ran it 15 times
+  against real Docker: 0 failures.
+- Ran it another 20 times pinned to 2 CPUs with `stress-ng --cpu 2` saturating them concurrently
+  (deliberately CPU-starved, approximating a resource-constrained hosted runner): 0 failures.
+- Built and ran the ENTIRE CI-excluded-containerd test suite (187 tests) via `ctest -j4`, pinned to 4
+  CPUs (matching a standard GitHub-hosted runner's core count) — the most faithful local
+  reproduction of the actual CI invocation achievable — 4 separate full-suite runs: 100% passed, 0
+  failures, every time.
+- **One genuine local failure DID occur** (Windows, this session's own long-lived Docker Desktop
+  daemon, after many hours of heavy repeated container churn from this same investigation): the test
+  failed with the identical signature (fast, ~0.9s, no timeout), and the container it created was
+  left running afterward with a completely empty `/workspace` — proving the actual `docker exec`
+  command never wrote anything inside the container, not a result-capture bug. Removing a STALE,
+  already-orphaned container left over from an earlier run (created by an interrupted prior
+  invocation, never cleaned up — `DockerExecutionSurface` has no automatic cleanup on object
+  destruction, a pre-existing disclosed residual, not new) made the failure go away, and it could not
+  be reproduced again afterward by deliberately recreating similar conditions (10 extra live
+  containers present did not trigger it; two back-to-back runs of the same test with no cleanup in
+  between did not trigger it).
+
+**Conclusion, honestly stated**: this looks like a genuine, low-frequency race or transient daemon-
+level hiccup — CI-side evidence (3 consecutive fresh-VM failures) shows it is NOT rare on
+`ubuntu-latest` specifically, while 45+ real-Docker runs across two materially different local
+environments (native Linux/WSL2, Windows Docker Desktop) reproduced it exactly once, under
+conditions (accumulated local daemon state from hours of unrelated churn) that don't exist on a
+fresh CI VM. The mechanism is NOT proven to be identical between the one local occurrence and the
+systematic CI occurrences — they share a symptom (fast failure, empty/missing output) but the
+CI-specific trigger (Docker version, storage driver, cgroup driver, or some other `ubuntu-latest`-
+specific characteristic none of this session's local environments share) was not identified.
+
+**What this ADR leaves behind, honestly**: the diagnostic instrumentation (kept, inert on the
+passing path, verified via naming_lint and repeated local runs) is the load-bearing artifact for
+whoever hits this next — the next real CI failure's log will show the actual reply content instead
+of a bare "FAIL" with no context. Root-causing further from here needs either interactive access to
+a failing `ubuntu-latest` run (this session had none) or accepting the diagnostic's next real capture
+as the next lead. Not fixed. Not quarantined. Disclosed, with the actual investigative trail, so a
+future session does not have to re-derive that image-pull, composition-layer, and general-resource-
+contention are all ruled out before making progress.

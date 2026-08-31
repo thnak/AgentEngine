@@ -297,6 +297,40 @@ int main() {
                 found_command_result = true;
             }
         }
+        // ADR-146 §8/§9 diagnostic: this check has failed non-deterministically on GitHub Actions'
+        // ubuntu-latest specifically (never reproduced locally against a real, native Linux Docker
+        // daemon across 45+ runs under both idle and CPU-starved conditions) with no visibility into
+        // WHY -- tool_reply_json_of() above silently discards an is_error==true reply, so a genuine
+        // exec()/reset() failure inside the composed pipeline was indistinguishable from "the check
+        // itself is wrong." Dumps every tool-role reply's actual content (error message, raw JSON, or
+        // text) on failure only, so the next real occurrence is diagnosable from CI logs instead of
+        // needing another live round-trip.
+        if (!found_command_result) {
+            std::fprintf(stderr, "  DIAG: history has %zu messages\n", live.history().size());
+            for (Message const& m : live.history()) {
+                std::fprintf(stderr, "  DIAG: message role=%d, %zu content item(s)\n",
+                              static_cast<int>(m.role), m.content.size());
+                if (m.role != role::tool) continue;
+                for (ContentItem const& item : m.content) {
+                    auto const* tr = std::get_if<ToolResult>(&item.value);
+                    if (!tr) {
+                        std::fprintf(stderr, "  DIAG: tool-role content item is NOT a ToolResult\n");
+                        continue;
+                    }
+                    std::fprintf(stderr, "  DIAG: ToolResult call_id=%s is_error=%d, %zu content item(s)\n",
+                                  tr->call_id.c_str(), tr->is_error ? 1 : 0, tr->content.size());
+                    for (ContentItem const& inner : tr->content) {
+                        if (auto const* err = std::get_if<Error>(&inner.value)) {
+                            std::fprintf(stderr, "  DIAG: tool-role message error: %s\n", err->message.c_str());
+                        } else if (auto const* d = std::get_if<Data>(&inner.value)) {
+                            std::fprintf(stderr, "  DIAG: tool-role message data: %s\n", d->json.c_str());
+                        } else if (auto const* t = std::get_if<Text>(&inner.value)) {
+                            std::fprintf(stderr, "  DIAG: tool-role message text: %s\n", t->text.c_str());
+                        }
+                    }
+                }
+            }
+        }
         check(found_command_result,
               "[2] run_command genuinely executed in a real Docker container through the composed "
               "session's real invoke_tool() pipeline, with SandboxToolProvider also composed in");
