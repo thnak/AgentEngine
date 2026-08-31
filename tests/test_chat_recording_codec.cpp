@@ -144,6 +144,7 @@ void test_chat_response_round_trip() {
     r.usage = Usage{10, 20, 3, 4, 0.0123, 5};
     r.model = "vendor/actual-model";
     r.fallback_tier = 2;
+    r.route_index = 1;  // ADR-148
 
     auto j = chat_response_to_json(r);
     auto back = chat_response_from_json(j);
@@ -154,6 +155,7 @@ void test_chat_response_round_trip() {
           "G1-R3: usage fields preserved, including cache_write_tokens");
     check(back->model == "vendor/actual-model", "G1-R3: model preserved");
     check(back->fallback_tier == 2, "G1-R3: fallback_tier preserved");
+    check(back->route_index == 1, "G1-R3: route_index preserved (ADR-148)");
 }
 
 void test_error_round_trip() {

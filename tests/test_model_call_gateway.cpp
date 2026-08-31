@@ -39,6 +39,19 @@
 //   G11 -- call_stream() commit gate, terminal failure: a primary attempt that pushes ONE chunk and
 //         THEN fails is terminal -- the fallback is never attempted, proving the commit gate actually
 //         gates (Finding 2's own core claim, unproven by any test until now).
+//
+// ADR-148 (GitHub issue #16 Finding 3) -- sticky tier pinning, added to the SAME `ModelCallGateway`:
+//   G12 -- sticky call(): once a call converges on the fallback, the NEXT call starts there directly
+//          -- the primary is never re-attempted, even though it would succeed if tried.
+//   G13 -- sticky call_stream(): the same pinning, proven through the streaming entry point (proves
+//          the tier_index-threading fix into stream_attempt_with_retry() actually reaches
+//          last_successful_tier_).
+//   G14 -- sticky=false (the default): unaffected -- every call still starts fresh at the primary,
+//          proving G12/G13 are opt-in, not a silent behavior change for every existing caller.
+//   G15 -- the named residual, proven not just documented: once stuck on the fallback, a LATER
+//          failure of that SAME tier (with nothing further to cascade to) fails the whole call
+//          without ever falling back to retrying the primary -- and the NEXT call after that still
+//          starts at the fallback again, never automatically un-sticking to a more-preferred tier.
 
 #include <chrono>
 #include <iostream>
@@ -536,6 +549,147 @@ int main() {
         AE_CHECK(primary.call_count() == 1,
                  "G11: exactly one real attempt on the primary -- no retry either, since any_pushed "
                  "gates retry-within-tier the same way it gates failover");
+    }
+
+    // ---- G12: sticky call() -- once the fallback answers, the NEXT call starts there directly -----
+    {
+        ScriptedGatewayBackend primary;
+        primary.outcomes = {
+            ScriptedOutcome::fail(ae::failure_class::contract),  // call 1: fails, non-retryable
+            ScriptedOutcome::ok({text_delta("primary would answer if ever tried again", true,
+                                             ae::Usage{1, 1, 0, 0, 0.0})}),
+        };
+        ScriptedGatewayBackend fallback;
+        fallback.outcomes = {
+            ScriptedOutcome::ok({text_delta("fallback answer 1", true, ae::Usage{1, 1, 0, 0, 0.0})}),
+            ScriptedOutcome::ok({text_delta("fallback answer 2", true, ae::Usage{1, 1, 0, 0, 0.0})}),
+        };
+        ae::ModelCallGateway<ScriptedGatewayBackend, ScriptedGatewayBackend> gw(
+            primary, std::make_tuple(fallback), fast_retry_policy(), ae::BreakerConfig{}, &no_jitter,
+            /*sticky=*/true);
+
+        auto ctx1 = make_ctx();
+        auto r1 = ae::test_support::run_task_sync<ae::result<ae::ChatResponse>>(gw.call(make_request(), ctx1));
+        AE_CHECK(r1.has_value() && r1->fallback_tier == 1,
+                 "G12: call 1 converges via the fallback, tier stamped 1");
+        AE_CHECK(primary.call_count() == 1 && fallback.call_count() == 1,
+                 "G12: call 1 tried the primary once (it failed) then the fallback once");
+
+        auto ctx2 = make_ctx();
+        auto r2 = ae::test_support::run_task_sync<ae::result<ae::ChatResponse>>(gw.call(make_request(), ctx2));
+        AE_CHECK(r2.has_value() && text_of(r2->message) == "fallback answer 2" && r2->fallback_tier == 1,
+                 "G12: call 2 converges directly via the fallback again");
+        AE_CHECK(primary.call_count() == 1,
+                 "G12: primary.call_count is STILL 1 -- sticky started call 2 at tier 1, the primary "
+                 "was never re-attempted even though its own 2nd scripted outcome would have succeeded");
+        AE_CHECK(fallback.call_count() == 2, "G12: the fallback was reached again for call 2");
+    }
+
+    // ---- G13: sticky call_stream() -- same pinning through the streaming entry point ---------------
+    {
+        ScriptedGatewayBackend primary;
+        primary.outcomes = {
+            ScriptedOutcome::fail(ae::failure_class::contract),
+            ScriptedOutcome::ok({text_delta("primary would answer if ever tried again", true,
+                                             ae::Usage{1, 1, 0, 0, 0.0})}),
+        };
+        ScriptedGatewayBackend fallback;
+        fallback.outcomes = {
+            ScriptedOutcome::ok({text_delta("fallback answer 1", true, ae::Usage{1, 1, 0, 0, 0.0})}),
+            ScriptedOutcome::ok({text_delta("fallback answer 2", true, ae::Usage{1, 1, 0, 0, 0.0})}),
+        };
+        ae::ModelCallGateway<ScriptedGatewayBackend, ScriptedGatewayBackend> gw(
+            primary, std::make_tuple(fallback), fast_retry_policy(), ae::BreakerConfig{}, &no_jitter,
+            /*sticky=*/true);
+
+        auto ctx1 = make_ctx();
+        ae::DrainedChatStream d1 = ae::drain_chat_stream(gw.call_stream(make_request(), ctx1));
+        AE_CHECK(d1.ok && text_of(d1.accumulated) == "fallback answer 1",
+                 "G13: call_stream() call 1 converges via the fallback");
+        AE_CHECK(primary.call_count() == 1 && fallback.call_count() == 1,
+                 "G13: call 1 tried the primary once (it failed) then the fallback once");
+
+        auto ctx2 = make_ctx();
+        ae::DrainedChatStream d2 = ae::drain_chat_stream(gw.call_stream(make_request(), ctx2));
+        AE_CHECK(d2.ok && text_of(d2.accumulated) == "fallback answer 2",
+                 "G13: call_stream() call 2 converges directly via the fallback again");
+        AE_CHECK(primary.call_count() == 1,
+                 "G13: primary.call_count is STILL 1 -- the tier_index threaded into "
+                 "stream_attempt_with_retry() correctly stamped last_successful_tier_ from the "
+                 "streaming path, and call 2's call_stream() read it back correctly");
+        AE_CHECK(fallback.call_count() == 2, "G13: the fallback was reached again for call 2");
+    }
+
+    // ---- G14: sticky=false (the default) -- every call starts fresh at the primary -----------------
+    {
+        ScriptedGatewayBackend primary;
+        primary.outcomes = {
+            ScriptedOutcome::fail(ae::failure_class::contract),
+            ScriptedOutcome::ok({text_delta("primary answers on call 2", true, ae::Usage{1, 1, 0, 0, 0.0})}),
+        };
+        ScriptedGatewayBackend fallback;
+        fallback.outcomes = {
+            ScriptedOutcome::ok({text_delta("fallback answer", true, ae::Usage{1, 1, 0, 0, 0.0})}),
+        };
+        ae::ModelCallGateway<ScriptedGatewayBackend, ScriptedGatewayBackend> gw(
+            primary, std::make_tuple(fallback), fast_retry_policy(), ae::BreakerConfig{}, &no_jitter);
+        // sticky left at its default (false) -- deliberately not passed, proving the default itself,
+        // not just "false works when passed explicitly."
+
+        auto ctx1 = make_ctx();
+        auto r1 = ae::test_support::run_task_sync<ae::result<ae::ChatResponse>>(gw.call(make_request(), ctx1));
+        AE_CHECK(r1.has_value() && r1->fallback_tier == 1, "G14: call 1 converges via the fallback");
+
+        auto ctx2 = make_ctx();
+        auto r2 = ae::test_support::run_task_sync<ae::result<ae::ChatResponse>>(gw.call(make_request(), ctx2));
+        AE_CHECK(r2.has_value() && r2->fallback_tier == 0 && text_of(r2->message) == "primary answers on call 2",
+                 "G14: call 2 starts fresh at the primary and succeeds there -- sticky=false means "
+                 "every call always starts at tier 0, unchanged from pre-ADR-148 behavior");
+        AE_CHECK(primary.call_count() == 2,
+                 "G14: the primary WAS re-attempted for call 2 -- proves G12/G13's pinning is strictly "
+                 "opt-in, no behavior change for the default configuration");
+    }
+
+    // ---- G15: the named residual -- stuck-tier failure doesn't fall back to the primary, and the ----
+    // ---- NEXT call after that still starts at the stuck tier again (no auto-recovery upward) --------
+    {
+        ScriptedGatewayBackend primary;
+        primary.outcomes = {
+            ScriptedOutcome::fail(ae::failure_class::contract),  // call 1 only
+        };
+        ScriptedGatewayBackend fallback;
+        fallback.outcomes = {
+            ScriptedOutcome::ok({text_delta("fallback answer 1", true, ae::Usage{1, 1, 0, 0, 0.0})}),
+            ScriptedOutcome::fail(ae::failure_class::contract),  // call 2: the stuck tier itself fails
+            ScriptedOutcome::ok({text_delta("fallback answer 3", true, ae::Usage{1, 1, 0, 0, 0.0})}),
+        };
+        // A single Fallback -- tier 1 is the DEEPEST tier, nothing to cascade to once it fails.
+        ae::ModelCallGateway<ScriptedGatewayBackend, ScriptedGatewayBackend> gw(
+            primary, std::make_tuple(fallback), fast_retry_policy(), ae::BreakerConfig{}, &no_jitter,
+            /*sticky=*/true);
+
+        auto ctx1 = make_ctx();
+        auto r1 = ae::test_support::run_task_sync<ae::result<ae::ChatResponse>>(gw.call(make_request(), ctx1));
+        AE_CHECK(r1.has_value() && r1->fallback_tier == 1, "G15: call 1 converges via the fallback (tier 1)");
+
+        auto ctx2 = make_ctx();
+        auto r2 = ae::test_support::run_task_sync<ae::result<ae::ChatResponse>>(gw.call(make_request(), ctx2));
+        AE_CHECK(!r2.has_value(),
+                 "G15: call 2 starts sticky at tier 1, which fails -- tier 1 is the LAST tier, so the "
+                 "whole call fails rather than falling back to retrying the primary (the named residual, "
+                 "proven, not just documented)");
+        AE_CHECK(primary.call_count() == 1,
+                 "G15: primary.call_count is STILL 1 -- call 2 never touched the primary at all, "
+                 "sticky started it straight at the already-stuck tier 1");
+
+        auto ctx3 = make_ctx();
+        auto r3 = ae::test_support::run_task_sync<ae::result<ae::ChatResponse>>(gw.call(make_request(), ctx3));
+        AE_CHECK(r3.has_value() && text_of(r3->message) == "fallback answer 3" && r3->fallback_tier == 1,
+                 "G15: call 3 starts at tier 1 YET AGAIN (call 2's failure never updated "
+                 "last_successful_tier_, since it only updates on success) and recovers there");
+        AE_CHECK(primary.call_count() == 1,
+                 "G15: primary.call_count is STILL 1 after 3 calls total -- no automatic re-probing of "
+                 "a more-preferred tier ever happens, exactly the named, undesigned residual");
     }
 
     std::cout << (g_failures == 0 ? "test_model_call_gateway: OK\n" : "test_model_call_gateway: FAIL\n");

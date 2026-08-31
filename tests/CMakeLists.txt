@@ -1320,6 +1320,13 @@ target_include_directories(test_model_call_gateway PRIVATE "${CMAKE_CURRENT_SOUR
 target_link_libraries(test_model_call_gateway PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_model_call_gateway COMMAND test_model_call_gateway)
 
+# ---- ADR-148 -- RoutingModelCallGateway<SelectFn, Routes...> (GitHub issue #16 Finding 1), a THIRD
+# ModelCallGatewayLike conformer alongside ModelCallGateway/MiddlewareModelCallGateway above.
+add_executable(test_routing_model_call_gateway test_routing_model_call_gateway.cpp)
+target_include_directories(test_routing_model_call_gateway PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_routing_model_call_gateway PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_routing_model_call_gateway COMMAND test_routing_model_call_gateway)
+
 # ---- ADR-037 Phase 2 -- porting G5 (test_model_call_gateway.cpp's own "AgentSession integration"
 # block, the ONE case in that file that touched AgentSession/quark::TestKit at all) onto
 # agentengine::rt::AgentSession directly. G1-G4/G6-G9 exercise ModelCallGateway/

@@ -463,6 +463,10 @@ namespace recording_detail {
     obj.emplace_back("usage", usage_to_json(r.usage));
     obj.emplace_back("model", json::Value::make_string(r.model));
     obj.emplace_back("fallback_tier", json::Value::make_number(static_cast<double>(r.fallback_tier)));
+    // ADR-148: same field-parity discipline as fallback_tier immediately above -- a codec that
+    // silently drops a real ChatResponse field is exactly the "don't forget to update it" trap this
+    // manual field list already has to guard against by hand.
+    obj.emplace_back("route_index", json::Value::make_number(static_cast<double>(r.route_index)));
     return json::Value::make_object(std::move(obj));
 }
 
@@ -476,6 +480,7 @@ namespace recording_detail {
     if (auto const* usage = j.find("usage"); usage != nullptr) r.usage = usage_from_json(*usage);
     r.model = recording_detail::opt_string(j, "model");
     r.fallback_tier = static_cast<std::uint32_t>(recording_detail::opt_u64(j, "fallback_tier"));
+    r.route_index = static_cast<std::uint32_t>(recording_detail::opt_u64(j, "route_index"));
     return r;
 }
 

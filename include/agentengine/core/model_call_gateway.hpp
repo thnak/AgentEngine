@@ -68,6 +68,22 @@
 // for the narrower case that still applies (a gateway-typed session that does NOT get streaming),
 // matching this codebase's established pattern for named, visible trades (ADR-034's identical warning
 // for `stream_model_calls_`).
+//
+// ADR-148 (GitHub issue #16 Finding 3): optional STICKY tier pinning, `sticky` constructor param /
+// `sticky_`+`last_successful_tier_` members. When enabled, `call()`/`call_stream()` start the SAME
+// forward tier cascade each already runs (`try_tier<I>`/`stream_tier<I>`, both UNCHANGED) at whichever
+// tier last succeeded rather than always at 0 (Primary) -- real for reasoning-continuity-sensitive
+// deployments (a provider's continuation state is provider-specific), a real correctness/cost cost for
+// a cheap-primary/expensive-fallback pairing that would otherwise prefer to keep retrying the cheap
+// tier first; default `false` (today's unchanged behavior). NAMED, NOT SOLVED: once "stuck" on a
+// non-zero tier, this gateway never automatically re-probes a MORE-preferred (lower-numbered) tier
+// that previously failed -- it only un-sticks FORWARD (the current tier's own next full-chain failure
+// moves `last_successful_tier_` to whatever succeeds after it) or stays put. A skipped tier's own
+// `breakers_[i]` also goes stale while skipped -- `on_send()`/`on_result()` are never called for a
+// tier `sticky` is bypassing, so that tier's breaker cannot self-heal Open->HalfOpen via the normal
+// admission-probe mechanism either, compounding the same residual. Periodic re-probing of a
+// more-preferred tier is real, separate, undesigned work (named, not built, by the original design
+// draft this ADR implements, and not resolved here either).
 
 #include <algorithm>
 #include <chrono>
@@ -147,13 +163,19 @@ public:
     // a class template may have only one trailing pack, and a constructor parameter pack must be
     // the LAST parameter for positional construction to work at all (this is exactly why
     // `MiddlewareModelCallGateway` below is a SEPARATE type instead of a second pack on this one).
+    // `sticky` (ADR-148, GitHub issue #16 Finding 3) is APPENDED LAST, after `jitter` -- the same
+    // field/parameter-append discipline `ChatRequest::reasoning_effort`'s own comment establishes
+    // (`chat_client.hpp`): every existing positional call site, which ends at `jitter` or earlier,
+    // keeps compiling and behaving unchanged, defaulting to `false` (today's behavior).
     explicit ModelCallGateway(Primary primary, std::tuple<Fallback...> fallbacks,
                                RetryPolicy retry_policy = {}, BreakerConfig breaker_config = {},
-                               JitterSource jitter = &resilient_chat_client_detail::real_jitter)
+                               JitterSource jitter = &resilient_chat_client_detail::real_jitter,
+                               bool sticky = false)
         : primary_(std::move(primary)),
           fallbacks_(std::move(fallbacks)),
           retry_policy_(retry_policy),
-          jitter_(std::move(jitter)) {
+          jitter_(std::move(jitter)),
+          sticky_(sticky) {
         if (retry_policy_.max_attempts == 0) retry_policy_.max_attempts = 1;
         breakers_.reserve(1 + sizeof...(Fallback));
         for (std::size_t i = 0; i < 1 + sizeof...(Fallback); ++i) {
@@ -174,7 +196,14 @@ public:
         // `ChatRequest::idempotency_key` is not yet read by any real backend adapter (grepped;
         // presently inert), so this is forward-looking, not load-bearing today.
         request.idempotency_key = IdempotencyKey{ctx.run_id, ctx.turn_index, 0, 0}.to_string();
-        result<ChatResponse> outcome = co_await try_tier<0>(request, ctx);
+        // ADR-148 (sticky tier pinning): start the SAME forward cascade `try_tier<0>` always used, at
+        // whichever tier last succeeded instead of always at 0 -- `try_tier<I>`'s own body (unchanged)
+        // already cascades I, I+1, ... to the end on failure, so "start sticky, fail forward through
+        // whatever's left" falls out for free. `last_successful_tier_` only when `sticky_`; nullopt
+        // (never called before, or sticky disabled) means start at 0, today's unchanged behavior.
+        std::size_t const start = (sticky_ && last_successful_tier_.has_value()) ? *last_successful_tier_ : 0;
+        result<ChatResponse> outcome = co_await try_tier_from<0>(start, request, ctx);
+        if (sticky_ && outcome.has_value()) last_successful_tier_ = outcome->fallback_tier;
         co_return outcome;
     }
 
@@ -202,14 +231,16 @@ public:
     // detached thread's next loop iteration. Named here because neither red-team pass traced this
     // specific hazard; `prove`'s own tests should exercise cancel-then-destroy timing directly.
     //
-    // THREAD-SAFETY INVARIANT for the shared `breakers_` state (Finding 6-new, 5th red-team pass):
+    // THREAD-SAFETY INVARIANT for the shared `breakers_` state (Finding 6-new, 5th red-team pass) --
+    // WIDENED (ADR-148) to cover `last_successful_tier_`/`sticky_` too, same reasoning, same guard:
     // `rt::CircuitBreaker` (`rt/circuit_breaker.hpp`) is documented single-writer, no internal
     // synchronization -- safe here ONLY because `AgentSession::session_mutex_` already serializes every
     // `run_model_call()` invocation (I1: one session, one executor), so at most one of `call()`'s
-    // coroutine-driven access or `call_stream()`'s detached-thread access to `breakers_[i]` is ever live
-    // at a time for a given gateway instance. This invariant is the CALLER's responsibility (this class
-    // does not and cannot enforce it) -- a hand-built `ModelCallGateway` driven from two genuinely
-    // concurrent threads outside `AgentSession`'s own serialization would violate it.
+    // coroutine-driven access or `call_stream()`'s detached-thread access to `breakers_[i]` (or, as of
+    // ADR-148, `last_successful_tier_`) is ever live at a time for a given gateway instance. This
+    // invariant is the CALLER's responsibility (this class does not and cannot enforce it) -- a
+    // hand-built `ModelCallGateway` driven from two genuinely concurrent threads outside
+    // `AgentSession`'s own serialization would violate it.
     //
     // Code review finding (2026-08-22): `ctx_copy` below MUST NOT carry `report_progress`/
     // `bound_capabilities` onto the detached thread as-is. `report_progress` is a `std::function` that,
@@ -229,12 +260,16 @@ public:
         EffectContext ctx_copy = ctx;  // never hold a reference back into the caller's frame cross-thread
         ctx_copy.report_progress = [](ContentItem) {};
         ctx_copy.bound_capabilities = nullptr;
+        // ADR-148: same starting-tier computation `call()` does, read here (before the thread spawns)
+        // under the identical single-writer invariant already documented below for `breakers_[i]` --
+        // widened to cover `last_successful_tier_` too, see that comment.
+        std::size_t const start = (sticky_ && last_successful_tier_.has_value()) ? *last_successful_tier_ : 0;
         auto pair = make_stream<ChatResponseUpdate>(std::pmr::get_default_resource());
         std::thread(
             [this, request = std::move(request), ctx = std::move(ctx_copy),
-             producer = std::move(pair.producer)]() mutable {
+             producer = std::move(pair.producer), start]() mutable {
                 std::stop_token const stop = producer.stop_token();
-                stream_tier<0>(request, ctx, producer, stop);
+                stream_tier_from<0>(start, request, ctx, producer, stop);
             })
             .detach();
         return std::move(pair.consumer);
@@ -274,6 +309,26 @@ private:
             } else {
                 co_return attempt;  // the last tier -- its own failure is the whole call's outcome
             }
+        }
+    }
+
+    // ADR-148 (sticky tier pinning): runtime `start` -> compile-time `try_tier<I>` dispatch, walking
+    // I = 0..sizeof...(Fallback) until I == start, then handing off to try_tier<I> UNCHANGED -- that
+    // function's own forward cascade on failure already does everything else needed ("start sticky,
+    // fail forward through whatever tiers remain"). `start` is only ever 0 or a value `call()`/
+    // `call_stream()` themselves previously stamped into `last_successful_tier_` via a real
+    // `fallback_tier` `try_tier`/`stream_tier` produced, so `start > sizeof...(Fallback)` cannot occur
+    // in practice -- the bounds check below is defense-in-depth (never UB, never a silent OOB tuple
+    // access), not a reachable path.
+    template <std::size_t I>
+    task<result<ChatResponse>> try_tier_from(std::size_t start, ChatRequest const& request, EffectContext& ctx) {
+        if constexpr (I <= sizeof...(Fallback)) {
+            if (I == start) co_return co_await try_tier<I>(request, ctx);
+            co_return co_await try_tier_from<I + 1>(start, request, ctx);
+        } else {
+            co_return std::unexpected(error{failure_class::fatal,
+                                             "ModelCallGateway: sticky start tier out of range",
+                                             "gateway.sticky_tier_out_of_range"});
         }
     }
 
@@ -361,7 +416,7 @@ private:
                       stream_producer<ChatResponseUpdate>& producer, std::stop_token const& stop) {
         if constexpr (Tier == 0) {
             std::optional<error> const failure =
-                stream_attempt_with_retry(primary_, breakers_[0], request, ctx, producer, stop);
+                stream_attempt_with_retry(primary_, breakers_[0], Tier, request, ctx, producer, stop);
             if (!failure.has_value()) return;
             if constexpr (sizeof...(Fallback) == 0) {
                 producer.fail(*failure);
@@ -371,13 +426,32 @@ private:
         } else {
             auto& backend = std::get<Tier - 1>(fallbacks_);
             std::optional<error> const failure =
-                stream_attempt_with_retry(backend, breakers_[Tier], request, ctx, producer, stop);
+                stream_attempt_with_retry(backend, breakers_[Tier], Tier, request, ctx, producer, stop);
             if (!failure.has_value()) return;
             if constexpr (Tier < sizeof...(Fallback)) {
                 stream_tier<Tier + 1>(request, ctx, producer, stop);
             } else {
                 producer.fail(*failure);
             }
+        }
+    }
+
+    // ADR-148: the `call_stream()` sibling of `try_tier_from<I>` above -- identical runtime-`start` ->
+    // compile-time dispatch shape, handing off to `stream_tier<I>` UNCHANGED once `I == start`.
+    template <std::size_t I>
+    void stream_tier_from(std::size_t start, ChatRequest const& request, EffectContext& ctx,
+                           stream_producer<ChatResponseUpdate>& producer, std::stop_token const& stop) {
+        if constexpr (I <= sizeof...(Fallback)) {
+            if (I == start) {
+                stream_tier<I>(request, ctx, producer, stop);
+                return;
+            }
+            stream_tier_from<I + 1>(start, request, ctx, producer, stop);
+        } else {
+            // Same defense-in-depth as try_tier_from<I> above -- unreachable in practice, `start` is
+            // only ever 0 or a previously-real tier index.
+            producer.fail(error{failure_class::fatal, "ModelCallGateway: sticky start tier out of range",
+                                 "gateway.sticky_tier_out_of_range"});
         }
     }
 
@@ -393,8 +467,16 @@ private:
     // `call()`'s own single-attempt failure contract for that case via a different, streaming-capable
     // path. `producer.push()` returning anything other than `ok` means the caller dropped/cancelled the
     // stream -- stop immediately, `nullopt` (nothing more to do; there is no caller left to deliver to).
+    // `tier_index` (ADR-148): the caller's own compile-time `Tier`, passed through as a runtime value
+    // purely so the ONE unambiguous real success point below (`producer.close()`) can stamp
+    // `last_successful_tier_` -- `stream_tier<Tier>`'s caller, `call_stream()`, has already returned
+    // the stream to its own caller by the time this runs (detached thread), so there is no other way
+    // for a successful tier's identity to reach `last_successful_tier_` from here. Guarded by
+    // `sticky_`; safe under the same single-writer invariant this file already documents for
+    // `breakers_[i]` on `call_stream()`'s own comment (widened there to name this field too).
     template <class Backend>
     std::optional<error> stream_attempt_with_retry(Backend& backend, rt::CircuitBreaker& breaker,
+                                                      std::size_t tier_index,
                                                       ChatRequest const& request, EffectContext& ctx,
                                                       stream_producer<ChatResponseUpdate>& producer,
                                                       std::stop_token const& stop) {
@@ -438,6 +520,7 @@ private:
             breaker.on_result(succeeded, model_call_gateway_detail::monotonic_now_ns());
 
             if (succeeded) {
+                if (sticky_) last_successful_tier_ = tier_index;
                 producer.close();
                 return std::nullopt;
             }
@@ -494,6 +577,16 @@ private:
     RetryPolicy retry_policy_;
     std::vector<rt::CircuitBreaker> breakers_;  // index 0 = primary's, index I = fallbacks_[I-1]'s
     JitterSource jitter_;
+    // ADR-148 (GitHub issue #16 Finding 3): sticky tier pinning. `last_successful_tier_` is read/
+    // written by `call()`/`call_stream()`/`stream_attempt_with_retry()` under the SAME single-writer
+    // invariant `call_stream()`'s own top comment already documents for `breakers_[i]` (at most one of
+    // `call()`'s coroutine-driven access or `call_stream()`'s detached-thread access is ever live at a
+    // time for a given gateway instance -- the CALLER's responsibility, via `AgentSession::
+    // session_mutex_`, not enforced here). Does NOT survive `AgentSession::restore_from_record()` or
+    // `fork_from()` -- confirmed by direct read, `breakers_` above already doesn't either (neither
+    // function references `chat_client_` at all); a genuinely pre-existing gap, not newly introduced.
+    bool sticky_ = false;
+    std::optional<std::size_t> last_successful_tier_;
 };
 
 // Middleware hooks ONLY, wrapping ANY `ModelCallGatewayLike` `Inner` -- typically a

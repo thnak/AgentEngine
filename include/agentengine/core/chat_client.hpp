@@ -118,6 +118,18 @@ struct ChatResponse {
     // scoping Phase B5 already applied to its own output-schema-strategy trace note -- this field is
     // the "response metadata" half of the gate, real and tested now.
     std::uint32_t fallback_tier = 0;
+    // ADR-148 (`core/routing_model_call_gateway.hpp`'s `RoutingModelCallGateway<SelectFn, Routes...>`),
+    // appended last, same field-ordering discipline `ChatRequest::reasoning_effort`'s own comment
+    // above established ("APPENDED LAST, never inserted earlier"): inserting a field mid-struct
+    // silently breaks every positional aggregate initialization of it. Same 004 §4 "response
+    // metadata" rationale as `fallback_tier` above, orthogonal to it, not a replacement: `route_index`
+    // names WHICH Route a `RoutingModelCallGateway` selected (0 = the first-declared Route); if that
+    // Route is itself a `ModelCallGateway<Primary, Fallback...>`, `fallback_tier` (unchanged, left
+    // exactly as that Route's own `call()` set it) separately names which tier WITHIN that Route
+    // answered -- router-wraps-failover composition is provable from the two fields together, no new
+    // combined field needed. 0 = the first Route answered, OR no `RoutingModelCallGateway` was in the
+    // loop at all -- the identical accepted ambiguity `fallback_tier` already has for "no gateway."
+    std::uint32_t route_index = 0;
 };
 
 // unified-streaming-design-draft.md §1 (Piece B). A raw, possibly-incomplete fragment of ONE tool
