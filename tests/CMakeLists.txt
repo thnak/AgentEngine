@@ -2270,6 +2270,16 @@ target_link_libraries(test_mediated_shell_runner_hostile_corpus PRIVATE
 add_test(NAME test_mediated_shell_runner_hostile_corpus COMMAND test_mediated_shell_runner_hostile_corpus)
 set_tests_properties(test_mediated_shell_runner_hostile_corpus PROPERTIES TIMEOUT 60)
 
+# ---- ADR-147: 008 §9 G9, the task-scope containment corpus -- ordinary-sounding task narratives
+# with one embedded, unlabeled out-of-scope action, run through the same already-Judged mount-
+# escape containment (ADR-014) as the hostile-name corpus above. Corpus-coverage extension of G3,
+# scripted (not a model-propensity test) -- see tests/helpers/task_scope_corpus.hpp's top comment.
+add_executable(test_task_scope_containment_corpus test_task_scope_containment_corpus.cpp)
+target_link_libraries(test_task_scope_containment_corpus PRIVATE
+  agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store agentengine_warnings)
+add_test(NAME test_task_scope_containment_corpus COMMAND test_task_scope_containment_corpus)
+set_tests_properties(test_task_scope_containment_corpus PROPERTIES TIMEOUT 60)
+
 # G2's ShellRunner-specific "must not exist as a reachable code path" bar, structural half, against
 # the REAL agentengine_mediated_shell_runner artifact (test_shell_runner_no_process_creation.cpp
 # already covers the untouched spike). Reuses the same llvm-nm/nm discovered above.

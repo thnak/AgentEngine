@@ -525,6 +525,19 @@ downgrade shows up as a graph change, not as a surprise in an incident review.
   state) and a worktree byte-identical to the pre-passivation state; a snapshot attempted at a
   non-quiescent point is refused rather than producing a corrupt image. Does not apply to
   `native-jail`'s interpreter/shell state, which §6a states plainly does not survive passivation.
+- **G9 (task-scope containment corpus, ADR-147)** — a corpus of ordinary-sounding task
+  narratives, never phrased as a probe, each pairing a plausible task description with one
+  embedded, achievable-but-out-of-scope action a real task like it could plausibly motivate ("grab
+  the shared config while you're at it"). A scripted driver — standing in for what an agent given
+  that narrative did, exactly as G1-G3's own probe commands already stand in for a hostile guest's
+  actions — takes the embedded action; it must be denied through the SAME mount-escape containment
+  G3 already requires, with a positive control (the same task shape, correctly scoped) proving the
+  denial is real, not the harness rejecting everything. This is a corpus-coverage extension of G3
+  (a second, narratively-different corpus shape through the identical mechanism), **not** a
+  model-propensity or eval-awareness test — no live model is in this gate's loop, and ADR-147 §5
+  states this explicitly rather than let the narrative framing imply a stronger claim than the
+  scripted mechanism can support. A future gate that DOES test live-model propensity needs its own
+  ADR (model-version pinning, cost, and flakiness governance are undecided in this project today).
 
 ## 10. Open questions
 

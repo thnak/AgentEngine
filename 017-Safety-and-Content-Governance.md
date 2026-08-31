@@ -131,6 +131,14 @@ an attribution guarantee this directly doesn't clear on the textual fix alone: i
 full design→red-team→prove→judge cycle and an ADR under `decisions/` before G5 is more than
 Draft-consistent, the same posture 004 §5 flags for its own invariant-touching change.
 
+**Related gate, deliberately not duplicated here:** `008-Sandbox-and-Isolation.md` §9 G9 (ADR-147)
+covers ordinary-sounding task narratives with an embedded out-of-scope action — this section's own
+G1 is scoped to *injected* content (indirect, via tool results/documents/etc.), while G9's corpus
+is task-shaped, no injection involved. Same "effects prevented, not detected" posture as G1, same
+§1 "assume the model will be successfully manipulated" honesty norm, but the containment claim and
+its evidence live in 008 §9 since G9 reuses that section's own mount-escape mechanism rather than
+this section's filter/policy pipeline — one gate, one home, cross-referenced rather than repeated.
+
 ## 9. Open questions
 
 - ~~**Q1** — Whether to ship first-party injection/PII classifiers or only the seam. Shipping them
