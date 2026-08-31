@@ -867,9 +867,18 @@ public:
             << inst.container_id << ":" << container_path;
         auto r = docker_cli_detail::run_capture(cmd.str());
         if (r.exit_code != 0) {
-            return std::unexpected(agentengine::error{agentengine::failure_class::fatal,
-                                                          "docker cp (to container) failed: " + r.stdout_text,
-                                                          "docker_cli_backend.copy_to_failed"});
+            // ADR-146 §10: the command itself is included here, not just the daemon's own reply --
+            // `test_composed_sandbox_providers_live` failed on ubuntu-latest CI with `docker: 'docker
+            // cp' requires 2 arguments` and no visibility into what was actually generated (every
+            // input to `cmd` above already passed a strict allowlist, so the malformed shape has to be
+            // in something this function assembles, not in unchecked user input). `cmd.str()` is
+            // already fully allowlist-safe to log by construction (`host_path`/`container_path` both
+            // passed `docker_cli_reject_unsafe_for_shell`/`docker_cli_reject_unsafe_for_unquoted_arg`
+            // above before being embedded).
+            return std::unexpected(agentengine::error{
+                agentengine::failure_class::fatal,
+                "docker cp (to container) failed: " + r.stdout_text + " (command: " + cmd.str() + ")",
+                "docker_cli_backend.copy_to_failed"});
         }
         return agentengine::result<void>{};
     }
@@ -887,9 +896,12 @@ public:
             << docker_cli_win_double_trailing_backslashes(host_path.string()) << "\"";
         auto r = docker_cli_detail::run_capture(cmd.str());
         if (r.exit_code != 0) {
-            return std::unexpected(agentengine::error{agentengine::failure_class::fatal,
-                                                          "docker cp (from container) failed: " + r.stdout_text,
-                                                          "docker_cli_backend.copy_from_failed"});
+            // ADR-146 §10: see copy_to_container()'s own comment above -- same reasoning, kept
+            // symmetric for whichever direction fails next.
+            return std::unexpected(agentengine::error{
+                agentengine::failure_class::fatal,
+                "docker cp (from container) failed: " + r.stdout_text + " (command: " + cmd.str() + ")",
+                "docker_cli_backend.copy_from_failed"});
         }
         return agentengine::result<void>{};
     }

@@ -265,3 +265,33 @@ a failing `ubuntu-latest` run (this session had none) or accepting the diagnosti
 as the next lead. Not fixed. Not quarantined. Disclosed, with the actual investigative trail, so a
 future session does not have to re-derive that image-pull, composition-layer, and general-resource-
 contention are all ruled out before making progress.
+
+## 10. §9's diagnostic delivered a real answer — and a genuinely new, specific lead
+
+The push landed on a fresh CI run and, this time, the diagnostic instrumentation worked exactly as
+designed: `test_composed_sandbox_providers_live` failed again, but now with the ACTUAL underlying
+error visible for the first time —
+
+```
+DIAG: tool-role message error: docker cp (to container) failed: docker: 'docker cp' requires 2 arguments
+```
+
+This is a real, concrete finding, not a guess: `SandboxRuntime::run()`'s step 3 (`surface.reset()`)
+seeds a fresh container by `docker cp`-ing the branch's materialized staging directory into
+`/workspace`, and on this specific CI run that `docker cp` invocation was malformed enough that
+Docker's own CLI parser saw the wrong argument count. `copy_to_container()`
+(`docker_execution_surface.hpp`) already runs `host_path`/`container_path` through a strict allowlist
+before embedding them (rejects space, quotes, and every shell metacharacter), so whatever produced
+this was either an edge case that allowlist doesn't catch (an EMPTY `host_path`, an EMPTY
+`inst.container_id`, or some interaction with the trailing `"/."` convention `reset()` appends) or
+something in `run_capture()`'s own command delivery to `/bin/sh -c` — genuinely ambiguous from the
+error text alone, since `r.stdout_text` never included the command it actually ran.
+
+Closed that ambiguity directly rather than guessing further: `copy_to_container()`/
+`copy_from_container()` now include the exact assembled command string in their own error message
+(`"... (command: " + cmd.str() + ")"`) — safe to log verbatim, since every value embedded in `cmd` has
+already passed the same allowlist check that gates whether the function proceeds at all. Full rebuild
+clean, `naming_lint.py` clean, full `ctest` 294/294 minus the one pre-existing, disclosed, unrelated
+`test_reference_agent_task_corpus` environment gap — zero regression from this change. Pushed; the
+next CI failure (if it recurs) will show the literal `docker cp` command that was generated, which
+should make the actual mechanism unambiguous instead of theorized.
