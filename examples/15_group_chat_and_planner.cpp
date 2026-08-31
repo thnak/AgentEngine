@@ -102,7 +102,8 @@ void check(bool cond, char const* what) {
 }
 
 [[nodiscard]] Executor node_desc(char const* id) {
-    return Executor{.id = id, .kind = executor_kind::function, .input_type = "T", .output_type = "T"};
+    return Executor{.id = id, .kind = executor_kind::function, .input_type = "T", .output_type = "T",
+                     .worktree_mode = sharing_mode::branch, .capability_ceiling = {}};
 }
 
 // Safe here: run_workflow()'s only suspension points are the run mutex's uncontended fast path and

@@ -137,13 +137,16 @@ using ScriptedSession = AgentSession<ScriptedChatClient>;
 }
 
 [[nodiscard]] Executor func_desc(char const* id) {
-    return Executor{.id = id, .kind = executor_kind::function, .input_type = "T", .output_type = "T"};
+    return Executor{.id = id, .kind = executor_kind::function, .input_type = "T", .output_type = "T",
+                     .worktree_mode = sharing_mode::branch, .capability_ceiling = {}};
 }
 [[nodiscard]] Executor agent_desc(char const* id) {
-    return Executor{.id = id, .kind = executor_kind::agent, .input_type = "T", .output_type = "T"};
+    return Executor{.id = id, .kind = executor_kind::agent, .input_type = "T", .output_type = "T",
+                     .worktree_mode = sharing_mode::branch, .capability_ceiling = {}};
 }
 [[nodiscard]] Executor port_desc(char const* id) {
-    return Executor{.id = id, .kind = executor_kind::request_port, .input_type = "T", .output_type = "T"};
+    return Executor{.id = id, .kind = executor_kind::request_port, .input_type = "T", .output_type = "T",
+                     .worktree_mode = sharing_mode::branch, .capability_ceiling = {}};
 }
 
 }  // namespace
@@ -215,7 +218,8 @@ int main() {
         Workflow wf;
         wf.id = "t4";
         Executor a = agent_desc("a");
-        a.capability_ceiling = {cap::FsRead{.mount_id = "work", .path_prefix = ""}};
+        a.capability_ceiling = {
+            cap::FsRead{.mount_id = "work", .path_prefix = "", .size_cap_bytes = std::nullopt}};
         wf.executors = {a};
         wf.start = "a";
         wf.output_selection.push_back("a");

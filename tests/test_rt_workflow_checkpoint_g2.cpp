@@ -74,6 +74,7 @@ using agentengine::workflow::Executor;
 using agentengine::workflow::Workflow;
 using agentengine::workflow::edge_kind;
 using agentengine::workflow::executor_kind;
+using agentengine::sharing_mode;
 using agentengine::workflow::validate_workflow;
 
 [[nodiscard]] Message text_message(std::string text) {
@@ -112,8 +113,9 @@ constexpr std::size_t kNodeCount = 20;
     for (std::size_t i = 0; i < kNodeCount; ++i) {
         char buf[8];
         std::snprintf(buf, sizeof(buf), "n%02zu", i);
-        wf.executors.push_back(
-            Executor{.id = buf, .kind = executor_kind::function, .input_type = "T", .output_type = "T"});
+        wf.executors.push_back(Executor{.id = buf, .kind = executor_kind::function, .input_type = "T",
+                                         .output_type = "T", .worktree_mode = sharing_mode::branch,
+                                         .capability_ceiling = {}});
     }
     for (std::size_t i = 0; i + 1 < kNodeCount; ++i) {
         wf.edges.push_back(Edge{wf.executors[i].id, wf.executors[i + 1].id, edge_kind::direct, {}});

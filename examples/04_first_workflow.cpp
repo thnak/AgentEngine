@@ -93,8 +93,10 @@ int main() {
     Workflow wf;
     wf.id        = "uppercase-then-reverse";
     wf.executors = {
-        Executor{.id = "Uppercase", .kind = executor_kind::function, .input_type = "Text", .output_type = "Text"},
-        Executor{.id = "Reverse", .kind = executor_kind::function, .input_type = "Text", .output_type = "Text"}};
+        Executor{.id = "Uppercase", .kind = executor_kind::function, .input_type = "Text", .output_type = "Text",
+                 .worktree_mode = sharing_mode::branch, .capability_ceiling = {}},
+        Executor{.id = "Reverse", .kind = executor_kind::function, .input_type = "Text", .output_type = "Text",
+                 .worktree_mode = sharing_mode::branch, .capability_ceiling = {}}};
     wf.edges.push_back(Edge{"Uppercase", "Reverse", edge_kind::chain, {}});
     wf.start = "Uppercase";
     wf.output_selection.push_back("Reverse");

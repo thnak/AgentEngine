@@ -162,12 +162,13 @@ int main() {
         using agentengine::workflow::Workflow;
         using agentengine::workflow::edge_kind;
         using agentengine::workflow::executor_kind;
+        using agentengine::sharing_mode;
         using agentengine::workflow::validate_workflow;
 
         Workflow wf;
         wf.id = "proj-wf";
-        wf.executors = {
-            Executor{.id = "a", .kind = executor_kind::function, .input_type = "T", .output_type = "T"}};
+        wf.executors = {Executor{.id = "a", .kind = executor_kind::function, .input_type = "T", .output_type = "T",
+                                  .worktree_mode = sharing_mode::branch, .capability_ceiling = {}}};
         wf.start = "a";
         wf.output_selection.push_back("a");
         wf.bound.max_rounds = 4;

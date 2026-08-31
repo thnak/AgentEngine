@@ -67,6 +67,7 @@ using agentengine::workflow::Executor;
 using agentengine::workflow::Workflow;
 using agentengine::workflow::edge_kind;
 using agentengine::workflow::executor_kind;
+using agentengine::sharing_mode;
 
 [[nodiscard]] Message text_message(std::string text) {
     ContentItem item{};
@@ -105,10 +106,12 @@ using agentengine::workflow::executor_kind;
 }
 
 [[nodiscard]] Executor node_desc(char const* id) {
-    return Executor{.id = id, .kind = executor_kind::function, .input_type = "T", .output_type = "T"};
+    return Executor{.id = id, .kind = executor_kind::function, .input_type = "T", .output_type = "T",
+                     .worktree_mode = sharing_mode::branch, .capability_ceiling = {}};
 }
 [[nodiscard]] Executor port_desc(char const* id) {
-    return Executor{.id = id, .kind = executor_kind::request_port, .input_type = "T", .output_type = "T"};
+    return Executor{.id = id, .kind = executor_kind::request_port, .input_type = "T", .output_type = "T",
+                     .worktree_mode = sharing_mode::branch, .capability_ceiling = {}};
 }
 
 // Drain-to-empty -- see file banner for why no bounded-deadline loop is needed here.

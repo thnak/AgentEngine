@@ -70,6 +70,7 @@ using agentengine::workflow::Executor;
 using agentengine::workflow::Workflow;
 using agentengine::workflow::edge_kind;
 using agentengine::workflow::executor_kind;
+using agentengine::sharing_mode;
 using agentengine::workflow::validate_workflow;
 
 [[nodiscard]] Message text_message(std::string text) {
@@ -94,7 +95,8 @@ using agentengine::workflow::validate_workflow;
 }
 
 [[nodiscard]] Executor node_desc(char const* id) {
-    return Executor{.id = id, .kind = executor_kind::function, .input_type = "T", .output_type = "T"};
+    return Executor{.id = id, .kind = executor_kind::function, .input_type = "T", .output_type = "T",
+                     .worktree_mode = sharing_mode::branch, .capability_ceiling = {}};
 }
 
 constexpr int kBranchCount = 4;
