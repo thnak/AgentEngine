@@ -114,8 +114,8 @@ namespace {
 
 [[nodiscard]] result<MagenticGraph> make_graph() {
     MagenticWorkflowBuilder<TaskMsg, ReportMsg> b("plan-signoff-checkpoint-demo");
-    b.manager(TypedExecutor<ReportMsg, TaskMsg>{.id = "mgr"});
-    b.participant(TypedExecutor<TaskMsg, ReportMsg>{.id = "writer"});
+    b.manager(TypedExecutor<ReportMsg, TaskMsg>{.id = "mgr", .capability_ceiling = {}});
+    b.participant(TypedExecutor<TaskMsg, ReportMsg>{.id = "writer", .capability_ceiling = {}});
     b.require_plan_signoff("plan_review");
     b.max_rounds(20);
     return b.build();
