@@ -155,3 +155,19 @@ add_executable(agentengine_example_21_workflow_as_participant 21_workflow_as_par
 target_link_libraries(agentengine_example_21_workflow_as_participant PRIVATE
   agentengine::core agentengine_warnings)
 add_test(NAME example_21_workflow_as_participant COMMAND agentengine_example_21_workflow_as_participant)
+
+# 22: combines ADR-149 items 3 (typed Magentic plan-signoff HITL) and 4 (WorkflowCheckpointManager),
+# mirroring MAF's magentic_human_plan_review.py + magentic_checkpoint.py together. Fully offline,
+# real on-disk FileSessionStore across a simulated process restart, like 20.
+add_executable(agentengine_example_22_magentic_plan_signoff_checkpoint 22_magentic_plan_signoff_checkpoint.cpp)
+target_link_libraries(agentengine_example_22_magentic_plan_signoff_checkpoint PRIVATE
+  agentengine::core agentengine_warnings)
+add_test(NAME example_22_magentic_plan_signoff_checkpoint COMMAND agentengine_example_22_magentic_plan_signoff_checkpoint)
+
+# 23: a mesh-topology handoff (peer specialists transferring control to EACH OTHER, both
+# directions, plus a request_port escalation to a human), mirroring MAF's handoff_simple.py /
+# handoff_autonomous.py. Fully offline, no special build flags.
+add_executable(agentengine_example_23_handoff_mesh 23_handoff_mesh.cpp)
+target_link_libraries(agentengine_example_23_handoff_mesh PRIVATE
+  agentengine::core agentengine_warnings)
+add_test(NAME example_23_handoff_mesh COMMAND agentengine_example_23_handoff_mesh)
