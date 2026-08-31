@@ -107,6 +107,19 @@ struct ToolDescriptor {
     // (decisions/ADR-067-middleware-turn-point-pre-model-enforcement.md). Appended last, this
     // struct's own established convention.
     std::optional<ContributorProvenance> attribution;
+
+    // Issue #13: `args_schema_json` is compile-time-derived and fixed for the lifetime of a
+    // `ToolTable`/session, but the wire-format `translate_tool()` in the OpenAI/Anthropic backends
+    // re-parsed it into a fresh `json::Value` on every single `chat()`/`chat_stream()` call that
+    // included this tool -- redundant work repeated once per turn per tool, for the whole run.
+    // `make_tool_descriptor<ToolT>()`/`make_tool_descriptor_with_invoke<ToolT>()` below parse it
+    // ONCE, here, at registration time; `args_schema_value_cached` is `false` for any hand-built
+    // descriptor that predates this field (memory_provider.hpp/vector_rag_context_provider.hpp/
+    // mcp_tool_bridge.hpp/native_providers.hpp all assign `args_schema_json` directly, not through
+    // either factory) -- those fail CLOSED to the pre-existing re-parse-every-call behavior, never
+    // silently trusting a default-constructed (null) `args_schema_value`.
+    json::Value args_schema_value;
+    bool args_schema_value_cached = false;
 };
 
 template <class ToolT>
@@ -120,6 +133,10 @@ template <class ToolT>
     d.effect_class = ToolT::declared_effect_class();
     d.args_schema_json = ToolT::args_schema();
     d.reply_schema_json = ToolT::reply_schema();
+    if (auto parsed = json::parse(d.args_schema_json)) {
+        d.args_schema_value = std::move(*parsed);
+        d.args_schema_value_cached = true;
+    }
     d.invoke = [](json::Value const& args_value, EffectContext& ctx) -> result<json::Value> {
         auto args = schema::from_json<typename ToolT::Args>(args_value);
         if (!args) return std::unexpected(args.error());
@@ -151,6 +168,10 @@ template <class ToolT, class InvokeFn>
     d.effect_class = ToolT::declared_effect_class();
     d.args_schema_json = ToolT::args_schema();
     d.reply_schema_json = ToolT::reply_schema();
+    if (auto parsed = json::parse(d.args_schema_json)) {
+        d.args_schema_value = std::move(*parsed);
+        d.args_schema_value_cached = true;
+    }
     d.captures_session_state = true;
     d.invoke = [custom_invoke = std::move(custom_invoke)](
                    json::Value const& args_value, EffectContext& ctx) -> result<json::Value> {

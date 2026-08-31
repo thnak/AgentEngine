@@ -609,14 +609,43 @@ int main() {
                       "emits this key (core/json_schema.hpp), so the injection path is genuinely exercised");
                 auto const* props = schema_v->find("properties");
                 auto const* forecast_prop = props ? props->find("forecast") : nullptr;
-                check(forecast_prop && forecast_prop->find("items") != nullptr,
+                auto const* items = forecast_prop ? forecast_prop->find("items") : nullptr;
+                check(items != nullptr,
                       "D4-R3: the compiled schema's own nested array-of-objects field ('forecast': "
                       "ForecastDay[]) survives translation intact -- proves the pipeline carries a REAL "
                       "compiled schema, not a hand-typed stand-in for it");
+                check(items && items->find("additionalProperties") != nullptr &&
+                          !items->find("additionalProperties")->as_bool(),
+                      "D4-R3 / issue #14: strict mode reshapes NESTED objects too -- 'forecast' items "
+                      "(ForecastDay) get additionalProperties:false, not just the top-level schema");
+                auto const* item_required = items ? items->find("required") : nullptr;
+                check(item_required && item_required->is_array() && item_required->as_array().size() == 3,
+                      "D4-R3 / issue #14: ForecastDay has no optional fields, so all 3 (condition, "
+                      "high_f, low_f) land in its own nested 'required' array");
                 auto const* required = schema_v->find("required");
-                check(required && required->is_array(),
-                      "D4-R3: the compiled schema's own 'required' array (location, forecast -- 'alert' "
-                      "is std::optional and correctly excluded) survives translation");
+                check(required && required->is_array() && required->as_array().size() == 3,
+                      "D4-R3 / issue #14: OpenAI strict:true requires EVERY property in 'required' -- "
+                      "'alert' (std::optional) must be listed too, not omitted");
+                bool has_alert_required = false;
+                if (required) {
+                    for (auto const& r : required->as_array())
+                        if (r.is_string() && r.as_string() == "alert") has_alert_required = true;
+                }
+                check(has_alert_required,
+                      "D4-R3 / issue #14: 'alert' specifically is present in 'required' despite being "
+                      "std::optional<std::string> in the source struct");
+                auto const* alert_prop = props ? props->find("alert") : nullptr;
+                auto const* alert_any_of = alert_prop ? alert_prop->find("anyOf") : nullptr;
+                check(alert_any_of && alert_any_of->is_array() && alert_any_of->as_array().size() == 2,
+                      "D4-R3 / issue #14: 'alert's optionality is instead expressed as a nullable union "
+                      "(anyOf: [{\"type\":\"string\"}, {\"type\":\"null\"}]), satisfying strict mode's "
+                      "all-properties-required contract without losing the field's optionality");
+                if (alert_any_of) {
+                    auto const& variants = alert_any_of->as_array();
+                    auto const* null_type = variants.size() == 2 ? variants[1].find("type") : nullptr;
+                    check(null_type && null_type->is_string() && null_type->as_string() == "null",
+                          "D4-R3 / issue #14: the second anyOf variant is exactly {\"type\":\"null\"}");
+                }
             }
         }
     }

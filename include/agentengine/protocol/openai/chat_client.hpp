@@ -186,20 +186,97 @@ namespace detail {
 // `args_schema_json` already IS the tool's JSON Schema text (006's own real per-run tool table, no
 // second provider-facing declaration shape) -- passed through as raw JSON, matching the SDK's own
 // `WriteRawValue` passthrough for `parameters`/`schema` (it does no client-side schema validation
-// either).
+// either). Issue #13: `build_request_body` calls this once per tool on EVERY `chat()`/`chat_stream()`
+// call, but the schema text is fixed for the tool's lifetime -- `t.args_schema_value_cached` (set once
+// at `make_tool_descriptor<T>()` time, `core/tool_pipeline.hpp`) skips the re-parse when available,
+// falling back to parsing `args_schema_json` for any hand-built descriptor that predates the cache.
 [[nodiscard]] inline result<json::Value> translate_tool(ToolDescriptor const& t) {
-    auto parsed_params = json::parse(t.args_schema_json);
-    if (!parsed_params) return std::unexpected(parsed_params.error());
+    json::Value params;
+    if (t.args_schema_value_cached) {
+        params = t.args_schema_value;
+    } else {
+        auto parsed_params = json::parse(t.args_schema_json);
+        if (!parsed_params) return std::unexpected(parsed_params.error());
+        params = std::move(*parsed_params);
+    }
     std::vector<std::pair<std::string, json::Value>> fn{
         {"name", json::Value::make_string(t.name)},
         {"description", json::Value::make_string(t.description)},
-        {"parameters", std::move(*parsed_params)},
+        {"parameters", std::move(params)},
     };
     std::vector<std::pair<std::string, json::Value>> tool{
         {"type", json::Value::make_string("function")},
         {"function", json::Value::make_object(std::move(fn))},
     };
     return json::Value::make_object(std::move(tool));
+}
+
+// Issue #14: `json_schema.hpp`'s generator represents an optional (`std::optional<U>`) field by
+// omitting it from `required` -- correct for the plain tool-call schema shape it's shared with, but
+// OpenAI's Structured Outputs `strict:true` contract requires EVERY property to be listed in
+// `required`, with optionality instead expressed as a nullable union (`anyOf: [<T>, {"type":"null"}]`)
+// on that property's own schema. This walks the schema tree (recursing through `properties` and array
+// `items`, since a nested struct or array-of-structs can carry its own optional fields) and, for every
+// object node with a `properties` key: adds every property name to `required`, wraps any property that
+// wasn't already required in the nullable-union shape, and forces `additionalProperties: false` (the
+// same requirement D4 already enforced, but only at the top level -- nested objects need it too).
+[[nodiscard]] inline json::Value make_nullable(json::Value fragment) {
+    std::vector<json::Value> variants;
+    variants.push_back(std::move(fragment));
+    variants.push_back(json::Value::make_object(
+        {{"type", json::Value::make_string("null")}}));
+    return json::Value::make_object({{"anyOf", json::Value::make_array(std::move(variants))}});
+}
+
+[[nodiscard]] inline json::Value make_strict_schema(json::Value const& node) {
+    if (node.is_array()) {
+        std::vector<json::Value> items;
+        items.reserve(node.as_array().size());
+        for (auto const& item : node.as_array()) items.push_back(make_strict_schema(item));
+        return json::Value::make_array(std::move(items));
+    }
+    if (!node.is_object()) return node;
+
+    json::Value const* properties = node.find("properties");
+    json::Value const* required = node.find("required");
+    std::vector<std::string> already_required;
+    if (required != nullptr && required->is_array()) {
+        for (auto const& r : required->as_array())
+            if (r.is_string()) already_required.push_back(r.as_string());
+    }
+
+    std::vector<std::pair<std::string, json::Value>> members;
+    for (auto const& [key, value] : node.as_object()) {
+        if (key == "required") continue;  // rebuilt below from `properties`
+        if (key == "properties" && value.is_object()) {
+            std::vector<std::pair<std::string, json::Value>> new_props;
+            new_props.reserve(value.as_object().size());
+            for (auto const& [prop_name, prop_schema] : value.as_object()) {
+                json::Value reshaped = make_strict_schema(prop_schema);
+                bool was_required =
+                    std::find(already_required.begin(), already_required.end(), prop_name) !=
+                    already_required.end();
+                if (!was_required) reshaped = make_nullable(std::move(reshaped));
+                new_props.emplace_back(prop_name, std::move(reshaped));
+            }
+            members.emplace_back(key, json::Value::make_object(std::move(new_props)));
+        } else {
+            members.emplace_back(key, make_strict_schema(value));
+        }
+    }
+
+    if (properties != nullptr && properties->is_object()) {
+        std::vector<json::Value> all_required;
+        all_required.reserve(properties->as_object().size());
+        for (auto const& [prop_name, prop_schema] : properties->as_object())
+            all_required.push_back(json::Value::make_string(prop_name));
+        members.emplace_back("required", json::Value::make_array(std::move(all_required)));
+        if (node.find("additionalProperties") == nullptr) {
+            members.emplace_back("additionalProperties", json::Value::make_bool(false));
+        }
+    }
+
+    return json::Value::make_object(std::move(members));
 }
 
 // D4: 004 §3's other named checklist item -- "structured-output shaping that forces
@@ -210,16 +287,12 @@ namespace detail {
 // {"name","schema","strict"}}`, confirmed field names/order against the SDK's
 // `InternalResponseFormatJsonSchemaJsonSchema` serializer). `name` is required on the wire but 003 §4
 // carries none -- "response" is a fixed, non-semantic placeholder (the schema body, not its name, is
-// what OpenAI actually validates against).
+// what OpenAI actually validates against). `make_strict_schema` (above) reshapes the whole tree for
+// `strict:true`'s all-properties-required contract before it's embedded (issue #14).
 [[nodiscard]] inline result<json::Value> translate_output_schema(std::string const& schema_json) {
     auto parsed = json::parse(schema_json);
     if (!parsed) return std::unexpected(parsed.error());
-    json::Value schema = std::move(*parsed);
-    if (schema.is_object() && schema.find("additionalProperties") == nullptr) {
-        std::vector<std::pair<std::string, json::Value>> members(schema.as_object());
-        members.emplace_back("additionalProperties", json::Value::make_bool(false));
-        schema = json::Value::make_object(std::move(members));
-    }
+    json::Value schema = make_strict_schema(*parsed);
     std::vector<std::pair<std::string, json::Value>> json_schema_obj{
         {"name", json::Value::make_string("response")},
         {"schema", std::move(schema)},

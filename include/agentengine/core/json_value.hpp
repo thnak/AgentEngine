@@ -197,6 +197,7 @@ private:
         }
         ++pos_;
         std::string out;
+        out.reserve(text_.size() - pos_);  // safe upper bound: remaining input can't be shorter
         while (true) {
             if (at_end()) {
                 return std::unexpected(
@@ -404,6 +405,7 @@ inline void dump_into(Value const& v, std::string& out) {
 
 [[nodiscard]] inline std::string dump(Value const& v) {
     std::string out;
+    out.reserve(256);  // modest head-start; no cheap exact bound exists, just cuts reallocation churn
     detail::dump_into(v, out);
     return out;
 }

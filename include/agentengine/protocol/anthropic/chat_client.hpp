@@ -243,15 +243,24 @@ struct SplitMessages {
 
 // One `ToolDescriptor` -> `{"name","description","input_schema"}` -- flat, no "function" wrapper
 // (confirmed against the SDK's `Tool.cs`: `input_schema` is a top-level sibling of `name`, not nested).
-// `cache_ttl` (default empty, (7)) is only consulted when `cache_this_one` is true.
+// `cache_ttl` (default empty, (7)) is only consulted when `cache_this_one` is true. Issue #13: same
+// re-parse-every-call waste as the OpenAI backend's `translate_tool()` -- `t.args_schema_value_cached`
+// (set once at `make_tool_descriptor<T>()` time, `core/tool_pipeline.hpp`) skips the re-parse when
+// available, falling back to parsing `args_schema_json` for any hand-built descriptor without it.
 [[nodiscard]] inline result<json::Value> translate_tool(ToolDescriptor const& t, bool cache_this_one,
                                                           std::string const& cache_ttl = {}) {
-    auto parsed_schema = json::parse(t.args_schema_json);
-    if (!parsed_schema) return std::unexpected(parsed_schema.error());
+    json::Value schema;
+    if (t.args_schema_value_cached) {
+        schema = t.args_schema_value;
+    } else {
+        auto parsed_schema = json::parse(t.args_schema_json);
+        if (!parsed_schema) return std::unexpected(parsed_schema.error());
+        schema = std::move(*parsed_schema);
+    }
     std::vector<std::pair<std::string, json::Value>> obj{
         {"name", json::Value::make_string(t.name)},
         {"description", json::Value::make_string(t.description)},
-        {"input_schema", std::move(*parsed_schema)},
+        {"input_schema", std::move(schema)},
     };
     if (cache_this_one) {
         obj.emplace_back("cache_control", make_cache_control(cache_ttl));
