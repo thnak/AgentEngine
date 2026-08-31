@@ -124,16 +124,29 @@ struct SuperstepBounds {
 };
 
 // The multiplexed bucket -- see file banner's ATTEMPT DISCRIMINATOR note.
+//
+// `path` (issue #42 item 3, docs/planning/nested-workflow-event-forwarding-design-draft.md):
+// the lineage of sub_workflow executor_ids from the outer WorkflowSupervisor down to (but NOT
+// including) `executor_id` itself. Empty for anything dispatched directly by the top-level
+// supervisor -- a non-nested run's events are byte-for-byte unchanged from before this field
+// existed. Deliberately a separate vector<string>, not glued onto `executor_id` with a delimiter:
+// a real node id could itself contain any delimiter chosen, and a consumer should never have to
+// unescape a composite string to recover the real local id. A consumer distinguishing forwarded
+// events from different nesting levels/attempts should key on {path, executor_id, round, attempt},
+// not {executor_id, round, attempt} alone, once nesting is in play -- `round` stays whichever
+// level's OWN internal round counter was live when THAT level pushed the event, never the outer's.
 struct AgentTurn {
-    std::string            executor_id;
-    std::uint32_t          attempt = 0;
-    agentengine::RunEvent  inner;  // wrapped UNCHANGED -- see design draft's I3/taint-preservation note
+    std::string              executor_id;
+    std::uint32_t            attempt = 0;
+    agentengine::RunEvent    inner;  // wrapped UNCHANGED -- see design draft's I3/taint-preservation note
+    std::vector<std::string> path;
 };
 
 struct ModeratorDelta {
-    std::string   executor_id;
-    std::uint32_t attempt = 0;
-    std::string   text_delta;
+    std::string              executor_id;
+    std::uint32_t            attempt = 0;
+    std::string              text_delta;
+    std::vector<std::string> path;
 };
 
 }  // namespace workflow_event_payload

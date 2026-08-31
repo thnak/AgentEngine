@@ -26,13 +26,33 @@
 //       sink's capacity, into a stream NO ONE DRAINS -- the run still completes in bounded time
 //       (worker threads never block), and multiplexed_dropped_count() confirms drops happened
 //       rather than a silent hang.
+// W10-W13 -- issue #42 item 3 (ADR-157 §4's last named residual): forwarding a nested
+//       WorkflowSupervisor run's own multiplexed events outward through the OUTER's stream, wired
+//       transiently at dispatch time (ScopedForwardedEventSink, workflow_supervisor.hpp) rather
+//       than at bind/enable time -- docs/planning/nested-workflow-event-forwarding-design-draft.md.
+//   W10 -- single-level forwarding: the inner node's own moderator_stream_delta is observed on the
+//          OUTER's stream, tagged with path=[the outer's own sub_workflow node id].
+//   W11 -- 3-level forwarding: the innermost node's own event carries the FULL path (both
+//          intermediate sub_workflow node ids, in order), not just the immediate parent.
+//   W12 -- the central liveness property: a nested node's own event is observed on the outer's
+//          stream WHILE the inner run is STILL genuinely in progress (a deliberately-blocked inner
+//          node, released only after the polling thread already confirmed the event arrived) --
+//          not merely present once the whole nested run already finished, ruling out the
+//          "batch after drive() returns" hazard the design draft's Approach 3 was rejected for.
+//   W13 -- bind/enable construction order (bind-then-enable vs enable-then-bind) produces
+//          identical forwarding -- nothing is precomputed at bind/enable time, so order genuinely
+//          does not matter.
 //
 // Run: ./test_rt_workflow_event_stream
 
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <memory_resource>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <variant>
 #include <vector>
 
@@ -532,6 +552,229 @@ void w9_backpressure_never_stalls_compute() {
           "coincidentally fast) rather than silently expanding without bound");
 }
 
+// ---- W10-W13: issue #42 item 3 -- forwarding a nested run's own multiplexed events outward -------
+// docs/planning/nested-workflow-event-forwarding-design-draft.md (red-teamed once; the accepted
+// mechanism wires an inner's multiplex_sink_/event_path_prefix_ transiently, at DISPATCH time, via
+// ScopedForwardedEventSink -- never at bind/enable time, closing both a wrong-path-under-bottom-up-
+// construction bug and a genuine cross-thread reassignment race an earlier bind-time design had).
+
+[[nodiscard]] Workflow w42_leaf_graph(char const* id, char const* node_id) {
+    Workflow wf;
+    wf.id        = id;
+    wf.executors = {node_desc(node_id)};
+    wf.start     = node_id;
+    wf.output_selection.push_back(node_id);
+    wf.bound.max_rounds = 4;
+    return wf;
+}
+
+[[nodiscard]] Workflow w42_wrap_graph(char const* id, char const* sub_node_id) {
+    Workflow wf;
+    wf.id        = id;
+    wf.executors = {node_desc(sub_node_id, executor_kind::sub_workflow)};
+    wf.start     = sub_node_id;
+    wf.output_selection.push_back(sub_node_id);
+    wf.bound.max_rounds = 4;
+    return wf;
+}
+
+[[nodiscard]] Workflow w42_outer_graph(char const* id) {
+    Workflow wf;
+    wf.id        = id;
+    wf.executors = {node_desc("start"), node_desc("sub", executor_kind::sub_workflow), node_desc("sink")};
+    wf.edges.push_back(Edge{"start", "sub", edge_kind::direct, {}});
+    wf.edges.push_back(Edge{"sub", "sink", edge_kind::direct, {}});
+    wf.start = "start";
+    wf.output_selection.push_back("sink");
+    wf.bound.max_rounds = 8;
+    return wf;
+}
+
+[[nodiscard]] std::vector<ExecutorBody> w42_outer_bodies() {
+    return {[](Message const& in, EffectContext&) -> result<ExecutorOutcome> { return ExecutorOutcome{in}; },
+            {},
+            [](Message const& in, EffectContext&) -> result<ExecutorOutcome> { return ExecutorOutcome{in}; }};
+}
+
+[[nodiscard]] std::optional<payload::ModeratorDelta> find_moderator_delta(
+    std::vector<WorkflowEvent> const& evs) {
+    for (auto const& e : evs) {
+        if (e.kind != workflow_event_kind::moderator_stream_delta) continue;
+        if (auto const* p = std::get_if<payload::ModeratorDelta>(&e.payload)) return *p;
+    }
+    return std::nullopt;
+}
+
+void w10_single_level_forwarding_and_path_tagging() {
+    auto inner = std::make_shared<WorkflowSupervisor>();
+    inner->initialize(w42_leaf_graph("w10-inner", "leaf"),
+                       {[](Message const& in, EffectContext& ctx) -> result<ExecutorOutcome> {
+                           ctx.moderator_delta_sink("nested delta");
+                           return ExecutorOutcome{in};
+                       }});
+
+    WorkflowSupervisor outer;
+    outer.initialize(w42_outer_graph("w10-outer"), w42_outer_bodies());
+    outer.bind_sub_workflow("sub", inner);
+    WorkflowEventStream stream = outer.enable_event_stream(std::pmr::get_default_resource());
+
+    WorkflowResult r = drive(outer.run_workflow(RunWorkflow{text_message("go")}));
+    check(r.status == workflow_status::completed, "W10: the nested run completes");
+
+    std::vector<WorkflowEvent> evs = drain_all(stream);
+    std::optional<payload::ModeratorDelta> found = find_moderator_delta(evs);
+    check(found.has_value(), "W10: the INNER node's own moderator_stream_delta is observed on the "
+                              "OUTER's stream -- forwarding actually happens, not just structural "
+                              "request_port_opened/_resolved");
+    check(found.has_value() && found->executor_id == "leaf",
+          "W10: executor_id keeps its EXISTING meaning -- the real originating node's own local id, "
+          "unaffected by nesting");
+    check(found.has_value() && found->path.size() == 1 && found->path[0] == "sub",
+          "W10: path carries exactly the outer's own sub_workflow node id -- the lineage from outer "
+          "to (not including) the originating node");
+    check(found.has_value() && found->text_delta == "nested delta",
+          "W10: the real payload content survives the forwarding hop unchanged");
+}
+
+void w11_three_level_forwarding_carries_the_full_path() {
+    auto leaf = std::make_shared<WorkflowSupervisor>();
+    leaf->initialize(w42_leaf_graph("w11-leaf", "leaf"),
+                      {[](Message const& in, EffectContext& ctx) -> result<ExecutorOutcome> {
+                          ctx.moderator_delta_sink("deep delta");
+                          return ExecutorOutcome{in};
+                      }});
+
+    auto mid = std::make_shared<WorkflowSupervisor>();
+    mid->initialize(w42_wrap_graph("w11-mid", "wrap"), {{}});
+    mid->bind_sub_workflow("wrap", leaf);
+
+    WorkflowSupervisor outer;
+    outer.initialize(w42_outer_graph("w11-outer"), w42_outer_bodies());
+    outer.bind_sub_workflow("sub", mid);
+    WorkflowEventStream stream = outer.enable_event_stream(std::pmr::get_default_resource());
+
+    WorkflowResult r = drive(outer.run_workflow(RunWorkflow{text_message("go")}));
+    check(r.status == workflow_status::completed, "W11: the 3-level nested run completes");
+
+    std::vector<WorkflowEvent> evs = drain_all(stream);
+    std::optional<payload::ModeratorDelta> found = find_moderator_delta(evs);
+    check(found.has_value() && found->path.size() == 2 && found->path[0] == "sub" &&
+              found->path[1] == "wrap",
+          "W11: path carries the FULL lineage (both intermediate sub_workflow node ids, in order), "
+          "not just the immediate parent -- the innermost level's own event is unambiguous even at "
+          "3 levels deep");
+}
+
+void w12_nested_events_are_observed_while_the_run_is_still_in_progress() {
+    // MACHINE SAFETY (CLAUDE.md): the inner node's own wait is bounded (10s), never unbounded, even
+    // though the test always signals it well before that in the success path.
+    std::atomic<bool>      may_proceed{false};
+    std::atomic<bool>      run_finished{false};
+    std::mutex             cv_mutex;
+    std::condition_variable cv;
+
+    auto inner = std::make_shared<WorkflowSupervisor>();
+    inner->initialize(
+        w42_leaf_graph("w12-inner", "blocker"),
+        {[&](Message const& in, EffectContext& ctx) -> result<ExecutorOutcome> {
+            ctx.moderator_delta_sink("nested live delta");
+            std::unique_lock<std::mutex> lock(cv_mutex);
+            cv.wait_for(lock, std::chrono::seconds(10), [&] { return may_proceed.load(); });
+            return ExecutorOutcome{in};
+        }});
+
+    WorkflowSupervisor outer;
+    outer.initialize(w42_outer_graph("w12-outer"), w42_outer_bodies());
+    outer.bind_sub_workflow("sub", inner);
+    WorkflowEventStream stream = outer.enable_event_stream(std::pmr::get_default_resource());
+
+    // Driven on a SEPARATE thread: the inner node's own body genuinely blocks the worker thread
+    // running it (inner->pool_'s own worker, joined-via-.get() by the outer's own worker, joined by
+    // this driver thread's own drive() call) until this test explicitly releases it below -- the
+    // main thread must stay free to poll `stream` concurrently while that block is in effect, which
+    // is the entire point of this proof (ruling out the "batch after drive() returns" hazard the
+    // design draft's Approach 3 was rejected for).
+    std::thread driver([&] {
+        WorkflowResult r = drive(outer.run_workflow(RunWorkflow{text_message("go")}));
+        check(r.status == workflow_status::completed, "W12: the run eventually completes once unblocked");
+        run_finished.store(true);
+    });
+
+    bool observed = false;
+    payload::ModeratorDelta observed_payload{};
+    for (int i = 0; i < 500 && !observed; ++i) {
+        std::optional<WorkflowEvent> ev = stream.next();
+        if (ev && ev->kind == workflow_event_kind::moderator_stream_delta) {
+            if (auto const* p = std::get_if<payload::ModeratorDelta>(&ev->payload)) {
+                observed_payload = *p;
+                observed         = true;
+                break;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    check(observed, "W12: the nested node's own moderator_stream_delta IS observed on the outer's "
+                     "stream (within a bounded 5s poll budget)");
+    // Deterministic, not a race: run_finished can only ever become true AFTER may_proceed is set,
+    // which this test has not done yet at this point -- the inner node is still genuinely parked in
+    // cv.wait_for() right now, so this assertion cannot pass by luck or timing.
+    check(!run_finished.load(),
+          "W12: ...and it was observed WHILE the run was still genuinely in progress (the blocked "
+          "inner node has not yet been released) -- not merely present once the whole nested run "
+          "already finished, which is the actual property this whole mechanism exists to provide");
+    check(observed_payload.path.size() == 1 && observed_payload.path[0] == "sub",
+          "W12: the live-observed event still carries the correct path");
+
+    {
+        std::lock_guard<std::mutex> lock(cv_mutex);
+        may_proceed.store(true);
+    }
+    cv.notify_all();
+    driver.join();
+}
+
+void w13_bind_enable_order_independence() {
+    // Order A: bind, then enable.
+    {
+        auto inner = std::make_shared<WorkflowSupervisor>();
+        inner->initialize(w42_leaf_graph("w13a-inner", "leaf"),
+                           {[](Message const& in, EffectContext& ctx) -> result<ExecutorOutcome> {
+                               ctx.moderator_delta_sink("order-a delta");
+                               return ExecutorOutcome{in};
+                           }});
+        WorkflowSupervisor outer;
+        outer.initialize(w42_outer_graph("w13a-outer"), w42_outer_bodies());
+        outer.bind_sub_workflow("sub", inner);  // bind FIRST
+        WorkflowEventStream stream = outer.enable_event_stream(std::pmr::get_default_resource());  // enable SECOND
+
+        WorkflowResult r = drive(outer.run_workflow(RunWorkflow{text_message("go")}));
+        check(r.status == workflow_status::completed, "W13a: bind-then-enable run completes");
+        std::optional<payload::ModeratorDelta> found = find_moderator_delta(drain_all(stream));
+        check(found.has_value() && found->path.size() == 1 && found->path[0] == "sub",
+              "W13a: bind-then-enable forwards correctly with the right path");
+    }
+    // Order B: enable, then bind.
+    {
+        auto inner = std::make_shared<WorkflowSupervisor>();
+        inner->initialize(w42_leaf_graph("w13b-inner", "leaf"),
+                           {[](Message const& in, EffectContext& ctx) -> result<ExecutorOutcome> {
+                               ctx.moderator_delta_sink("order-b delta");
+                               return ExecutorOutcome{in};
+                           }});
+        WorkflowSupervisor outer;
+        outer.initialize(w42_outer_graph("w13b-outer"), w42_outer_bodies());
+        WorkflowEventStream stream = outer.enable_event_stream(std::pmr::get_default_resource());  // enable FIRST
+        outer.bind_sub_workflow("sub", inner);  // bind SECOND
+
+        WorkflowResult r = drive(outer.run_workflow(RunWorkflow{text_message("go")}));
+        check(r.status == workflow_status::completed, "W13b: enable-then-bind run completes");
+        std::optional<payload::ModeratorDelta> found = find_moderator_delta(drain_all(stream));
+        check(found.has_value() && found->path.size() == 1 && found->path[0] == "sub",
+              "W13b: enable-then-bind forwards identically -- construction order genuinely does not "
+              "matter, since nothing is precomputed at bind/enable time at all");
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -544,6 +787,10 @@ int main() {
     w7_retry_attempt_discriminator();
     w8_agent_bridge_composes_with_direct_tap();
     w9_backpressure_never_stalls_compute();
+    w10_single_level_forwarding_and_path_tagging();
+    w11_three_level_forwarding_carries_the_full_path();
+    w12_nested_events_are_observed_while_the_run_is_still_in_progress();
+    w13_bind_enable_order_independence();
 
     std::fprintf(stderr, g_failures == 0 ? "test_rt_workflow_event_stream: ALL PASS\n"
                                           : "test_rt_workflow_event_stream: FAIL\n");

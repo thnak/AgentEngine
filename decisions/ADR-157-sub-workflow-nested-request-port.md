@@ -149,12 +149,19 @@ Full design: `docs/planning/sub-workflow-nested-request-port-design-draft.md`.
 
 - Does not touch `workflow_as_executor_body()` (ADR-150) — confirmed unaffected by both the red team
   and direct implementation review.
-- Does not forward an inner graph's own multiplexed ADR-152 events (agent-kind/moderator streaming)
-  to the outer's `enable_event_stream()` consumer — only the structural
-  `request_port_opened`/`_resolved` signal composes. Real, disclosed limitation, not solved here.
-  Still open as of the follow-up work below (§6) — tracked as issue #42 item 3, scope already
-  settled (multiplexed bucket only, full-path tagging), not yet designed as a concrete mechanism.
-  This is now the ONLY one of ADR-157's four originally-named residuals still open.
+- ~~Does not forward an inner graph's own multiplexed ADR-152 events (agent-kind/moderator
+  streaming) to the outer's `enable_event_stream()` consumer~~ **RESOLVED — see claims 18-22.** A
+  nested run's own `agent_turn_event`/`moderator_stream_delta` events now surface live on the
+  outer's stream, tagged with the full lineage of sub_workflow executor_ids from outer to
+  originating node (a new `path` field, `workflow_event.hpp`) — wired transiently at DISPATCH time
+  (`ScopedForwardedEventSink`, `workflow_supervisor.hpp`), never at bind/enable time, per an
+  independent red-team pass that found bind-time propagation would have produced wrong paths under
+  this codebase's own real (bottom-up) construction order AND a genuine new cross-thread data race.
+  The structural bucket still does not forward beyond `request_port_opened`/`_resolved` — see
+  `docs/planning/nested-workflow-event-forwarding-design-draft.md` §2 for why that bucket
+  structurally cannot share this mechanism (a single-writer channel, not a multi-producer sink).
+  **This closes the last of ADR-157's four originally-named residuals — issue #42 is now fully
+  closed.**
 - ~~Does not redesign `ThreadPool` sharing/ceilings across nested `WorkflowSupervisor` instances~~
   **RESOLVED — see claims 15/16.** A static per-instance worker budget (`WorkflowSupervisor(
   worker_budget)`), a fail-closed `split_worker_budget()` helper, and a mandatory, automatic
@@ -197,6 +204,12 @@ Full design: `docs/planning/sub-workflow-nested-request-port-design-draft.md`.
 | 15 | **Follow-up** (issue #42 item 2): a `WorkflowSupervisor(worker_budget)`-constructed nested tree's real, live OS worker-thread count never exceeds the declared per-level budget sum, measured via a process-wide `live_worker_thread_count()` gauge, both immediately after constructing the whole tree and again after the run completes. | CORRECT | S12 |
 | 16 | **Follow-up**: claim 15's own check is genuinely load-bearing, not vacuous — adversarially verified by mutation. | CORRECT (adversarially verified) | Temporarily changed the constructor to `pool_(0 * worker_budget)` (ignoring the requested budget, forcing every instance to the system default). Rebuilt and reran: live thread count after constructing the same 5-instance tree was 21 against a declared ceiling of 7 — a real, measured breach, not a hypothetical one. The mutation ALSO caught a real bug in claim 15's own first implementation: an earlier version of S12 sampled the peak via a background thread racing a fast, synchronous `drive()` call, which could legitimately take zero samples before the run finished and silently pass regardless of the true peak — the same class of false-negative ADR-157 Pass 2 (§2 finding 6 / this table's claim 7) already found once with a `fan_in`-merged test topology. Fixed by replacing the racy sampler with a deterministic direct sample: `ThreadPool` creates its worker `jthread`s once, in its own constructor, and they live for the whole `WorkflowSupervisor` instance's lifetime (never created/destroyed per round or per dispatch), so a sample taken any time after full construction (while every instance is still in scope) already reflects the true peak. Reverted the mutation; reran — clean, 34/34 checks passing across the whole file. |
 | 17 | **Follow-up**: the mandatory `kMaxNestingDepth` cap (=16) — the load-bearing precondition that makes claim 15's budget arithmetic a genuine ceiling at all, not merely "recommended defense in depth" — actually refuses a bind at its declared boundary, not just claimed. Tested via a genuinely bounded configuration (`worker_budget=1` per level, an 18-level chain), never risking unbounded real resource use even to prove the cap works, per CLAUDE.md's own machine-safety discipline. | CORRECT | S13: binding succeeds through exactly depth 16, refused at depth 17 |
+| 18 | **Follow-up** (issue #42 item 3): single-level forwarding — a nested run's own `moderator_stream_delta` is observed on the OUTER's `enable_event_stream()` consumer; `executor_id` keeps its existing meaning (the real originating node's own local id); `path` carries exactly the outer's own sub_workflow node id; the real payload content survives the hop unchanged. | CORRECT | `test_rt_workflow_event_stream.cpp` W10 |
+| 19 | **Follow-up**: multi-level forwarding — at 3 levels of nesting, the innermost node's own event carries the FULL path (both intermediate sub_workflow node ids, in order), not just the immediate parent — proving the mechanism's claimed automatic cascade (no recursive method, no cascade code; each level just reads its own current, freshly-wired state) actually works past 2 levels. | CORRECT | W11 |
+| 20 | **Follow-up — the central property this whole mechanism exists to provide**: a nested node's own event is observed on the outer's stream WHILE the inner run is STILL genuinely in progress, not merely present once the whole nested run already finished — ruling out the design draft's own rejected "batch after drive() returns" alternative (Approach 3) having shipped by accident. Proven deterministically, not by a timing race: a deliberately-blocked inner node (parked on a bounded-wait `condition_variable`) is driven on a background thread; the main thread polls and observes the event while a `run_finished` flag is STRUCTURALLY guaranteed still false (it can only become true after the test itself releases the block, which has not happened yet at the assertion point). | CORRECT | W12 |
+| 21 | **Follow-up**: bind/enable construction order (bind-then-enable vs. enable-then-bind) produces identical forwarding for the same tree shape — confirming the dispatch-time mechanism genuinely has no order dependency, unlike the bind-time-propagation design the red team rejected (claim 22). | CORRECT | W13a/W13b |
+| 22 | **Follow-up — the mechanism's central design decision was independently red-teamed BEFORE implementation, and found genuinely wrong as first drafted**: a bind-time/enable-time propagation design (`adopt_multiplex_sink()`, cascading at `bind_sub_workflow()`/`enable_event_stream()` time) would have produced WRONG `path` values under this codebase's own real bottom-up construction order (every real nested tree, including S8/S11, binds innermost-first — a bind-time-computed prefix can only reflect what an ancestor's own prefix was AT THAT MOMENT, before any of ITS OWN later binds happen) — traced by the red team to break claim 19's own validation scenario specifically. The SAME pass also found a genuine, NEW cross-thread data race the bind-time design would have introduced: `enable_event_stream()`'s own existing doc comment already blesses being called more than once, and nothing prevents `bind_sub_workflow()`/`enable_event_stream()` from running on one thread while a previous run against the same `inner` is mid-flight on another — a bind-time cascade would plainly write into a live object's members while its own dispatch loop concurrently reads them, a hazard that cannot happen in the shipped code today (nothing reassigns `multiplex_sink_` post-construction at all). **Both findings were confirmed genuine, not hypothetical, and the mechanism was redesigned before any of it shipped** — dispatch-time wiring (`ScopedForwardedEventSink`, wired immediately before and restored immediately after each nested `drive()` call, on the calling thread) closes both by construction: nothing is ever precomputed at bind/enable time, and the write always immediately precedes, on the same thread, the one call whose own worker threads are the only readers. | CORRECT (caught pre-implementation) | Independent red-team pass (fresh agent, zero prior context); full findings in `docs/planning/nested-workflow-event-forwarding-design-draft.md` §3b |
+| 23 | **Follow-up**: claims 18-21's own forwarding checks are genuinely load-bearing, not vacuous — adversarially verified by mutation. | CORRECT (adversarially verified) | Temporarily short-circuited `ScopedForwardedEventSink`'s constructor (`if (false && sink)`, disabling all forwarding). Rebuilt and reran: every forwarding-dependent check in W10/W11/W13a/W13b failed (8 failures) exactly as expected; W12's own presence check failed too (its "still in progress" check passed vacuously in that state, as expected — the presence check failing is what correctly signals the mutation broke forwarding, not a flaw in that proof). Reverted; rebuilt; reran — clean, 53/53 checks passing in `test_rt_workflow_event_stream.cpp` again. |
 
 ## 6. Files changed
 
@@ -233,23 +246,46 @@ Full design: `docs/planning/sub-workflow-nested-request-port-design-draft.md`.
   `docs/planning/nested-workflow-threadpool-budget-design-draft.md` (red-teamed, now implemented and
   proven).
 
-Of ADR-157's own four originally-named residuals, only ONE remains open: forwarding ADR-152's
-multiplexed events across nesting (issue #42 item 3 — scope already settled: multiplexed bucket
-only, full-path tagging; not yet designed as a concrete mechanism or red-teamed).
+**Follow-up edits, pass 3** (closing the last of ADR-157's own four named residuals — issue #42
+item 3, claims 18-23):
+- `include/agentengine/workflow/workflow_event.hpp` — `AgentTurn::path`/`ModeratorDelta::path`.
+- `include/agentengine/rt/workflow_supervisor.hpp` — `event_path_prefix_` member,
+  `ScopedForwardedEventSink` (new private nested RAII class), `run_executor_job()`'s new
+  `path_prefix` parameter, `run_sub_workflow_job()`'s new `sink`/`path_prefix` parameters and
+  guard-wrapped `drive()` call, `execute()`'s two dispatch sites (ordinary exec_deliveries +
+  sub_workflow) now passing the new parameters, `resume_workflow()`'s pending-sub-workflow branch's
+  guard-wrapped `drive()` call.
+- `tests/test_rt_workflow_event_stream.cpp` — W10-W13, plus `<atomic>`/`<condition_variable>`/
+  `<mutex>`/`<thread>` includes.
+- Design: `docs/planning/nested-workflow-event-forwarding-design-draft.md` (independently
+  red-teamed BEFORE implementation — two MUST-FIX findings, both closed by redesigning the
+  mechanism before any of it shipped, see claim 22 — then implemented and proven).
+
+**All four of ADR-157's originally-named residuals are now closed. Issue #42 is fully closed.**
 
 ## Status
 
-**Proposed — implemented, red-teamed once (design draft before any code existed, revised against
-every MUST-FIX finding), the single most severe claim (§5 #7) adversarially verified — including
-catching and fixing a false-negative in the FIRST verification attempt (a `fan_in`-edge test
-topology that silently prevented the hazard from ever being exercised) before trusting a clean
-result — and the SAME class of false-negative caught a second time, independently, during the
-`ThreadPool` budget follow-up (§5 #16: a racy background-sampler test bug, caught by mutation before
-trusting a clean result). 34/34 test checks passing in `test_rt_workflow_sub_workflow.cpp` (22 at
-ship time, 12 more from the two follow-up passes closing three of the four originally-named
-residuals — only forwarding ADR-152 events across nesting remains open, issue #42 item 3), plus 4
-new checks in `test_rt_thread_pool.cpp` (T7/T8). The new example and both budget-mechanism proofs
-(positive: claim 15; negative/mutation: claim 16) run directly and pass. Full project building
-clean. 315/316 repo-wide `ctest` passing (the one failure pre-existing and confirmed unrelated —
-the long-documented matplotlib/pandas environment gap; `test_rt_spawn_cost_budget`, previously
-observed flaky, passed clean this run). Pending project-owner sign-off.**
+**Proposed — implemented across three passes, ALL FOUR originally-named residuals now closed,
+issue #42 fully closed, pending project-owner sign-off.**
+
+Red-teamed three times total across this ADR's lifetime — once before any code existed (the
+original mechanism, §2), and once more specifically for the event-forwarding follow-up (fresh
+agent, zero prior context, BEFORE any of that code was written) which found the first-drafted
+bind-time propagation design was genuinely wrong (claim 22: would have produced incorrect `path`
+values under this codebase's own real bottom-up construction order, AND introduced a genuine new
+cross-thread data race) — caught and redesigned before shipping, not discovered after. Two
+independent classes of false-negative test bug were also caught and fixed via adversarial mutation
+across this ADR's own history, never trusted on a first clean pass: the original `fan_in`-edge
+concurrency test (§2 Pass 2), the `ThreadPool` budget work's racy background sampler (claim 16), and
+most recently the event-forwarding proofs themselves (claim 23) — each confirmed genuinely
+load-bearing by temporarily breaking the mechanism and observing the expected failures before
+reverting.
+
+Test evidence: 34/34 checks in `test_rt_workflow_sub_workflow.cpp` (S1-S13), 4 in
+`test_rt_thread_pool.cpp` (T7/T8), 53/53 in `test_rt_workflow_event_stream.cpp` (W1-W13, up from
+28 pre-existing W1-W9 checks). The new example and every mechanism-specific proof (ThreadPool
+budget: claims 15/16; event forwarding: claims 18-23) run directly and pass. Full project building
+clean (zero errors, MSVC/Visual Studio 18, Debug). Full repo-wide `ctest`: 315/317 passing — the
+two failures both pre-existing and confirmed unrelated (the long-documented matplotlib/pandas
+environment gap; `test_rt_spawn_cost_budget`, this ADR's own already-documented flaky concurrency
+assertion under real thread contention, confirmed clean 3/3 on direct rerun).

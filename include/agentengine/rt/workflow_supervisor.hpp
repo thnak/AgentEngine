@@ -896,9 +896,20 @@ public:
                 r.open_interactions = open_interactions();
                 co_return r;
             }
-            WorkflowResult const inner_result =
-                drive(inner->resume_workflow(ResumeWorkflow{pending.inner_interaction_id, request.response,
-                                                              request.routes}));
+            // issue #42 item 3: wire this resume dispatch's own forwarded sink/path exactly like
+            // run_sub_workflow_job()'s own initial dispatch does -- a resumed nested run is driven
+            // through this SAME call shape, just re-entered later, so it needs the identical
+            // ScopedForwardedEventSink treatment for events THIS resumption's own inner rounds push.
+            WorkflowResult inner_result;
+            {
+                auto const event_sink = workflow_event_stream_enabled_ ? multiplex_sink_ : nullptr;
+                std::vector<std::string> child_path = event_path_prefix_;
+                child_path.push_back(graph_.executors[pending.executor_index].id);
+                ScopedForwardedEventSink const event_sink_guard(*inner, event_sink, std::move(child_path));
+                inner_result =
+                    drive(inner->resume_workflow(ResumeWorkflow{pending.inner_interaction_id,
+                                                                  request.response, request.routes}));
+            }
             if (inner_result.status == workflow_status::suspended) {
                 // Suspended again -- mint a fresh outer interaction, re-track, report suspended
                 // exactly like "other ports still unresolved" already does below for ordinary ports.
@@ -1124,25 +1135,34 @@ private:
     // the event stream pays nothing beyond one pointer check. `multiplex_sink<T>::push()` never
     // blocks (workflow/multiplex_sink.hpp) -- safe to call from this ThreadPool worker thread even
     // under a concurrently-dispatched fan-out round.
+    // `path_prefix` (issue #42 item 3): this SUPERVISOR's own current `event_path_prefix_`, passed
+    // by value like everything else here -- empty for an ordinary top-level dispatch, non-empty only
+    // while THIS supervisor is itself being driven as a nested inner (see
+    // ScopedForwardedEventSink below). A static function has no `this` to read it from directly, so
+    // the caller (execute()'s dispatch loop) passes its own current value explicitly.
     static task<void> run_executor_job(
         ExecutorBody body, agentengine::Message payload, agentengine::EffectContext ctx,
         std::shared_ptr<ExecuteReply> out,
         std::shared_ptr<agentengine::workflow::multiplex_sink<agentengine::workflow::WorkflowEvent>> sink,
-        std::string executor_id, std::uint32_t round, std::uint32_t attempt) {
+        std::string executor_id, std::uint32_t round, std::uint32_t attempt,
+        std::vector<std::string> path_prefix) {
         if (sink) {
-            ctx.agent_turn_sink = [sink, executor_id, round, attempt](agentengine::RunEvent const& ev) {
+            ctx.agent_turn_sink = [sink, executor_id, round, attempt,
+                                    path_prefix](agentengine::RunEvent const& ev) {
                 agentengine::workflow::WorkflowEvent we;
                 we.kind    = agentengine::workflow::workflow_event_kind::agent_turn_event;
                 we.round   = round;
-                we.payload = agentengine::workflow::workflow_event_payload::AgentTurn{executor_id, attempt, ev};
+                we.payload = agentengine::workflow::workflow_event_payload::AgentTurn{
+                    executor_id, attempt, ev, path_prefix};
                 (void)sink->push(std::move(we));
             };
-            ctx.moderator_delta_sink = [sink, executor_id, round, attempt](std::string const& delta) {
+            ctx.moderator_delta_sink = [sink, executor_id, round, attempt,
+                                         path_prefix](std::string const& delta) {
                 agentengine::workflow::WorkflowEvent we;
                 we.kind    = agentengine::workflow::workflow_event_kind::moderator_stream_delta;
                 we.round   = round;
-                we.payload =
-                    agentengine::workflow::workflow_event_payload::ModeratorDelta{executor_id, attempt, delta};
+                we.payload = agentengine::workflow::workflow_event_payload::ModeratorDelta{
+                    executor_id, attempt, delta, path_prefix};
                 (void)sink->push(std::move(we));
             };
         }
@@ -1186,18 +1206,69 @@ private:
         return t.take_value();
     }
 
+    // docs/planning/nested-workflow-event-forwarding-design-draft.md (issue #42 item 3, red-teamed):
+    // wires `inner`'s multiplexed event sink + path prefix for EXACTLY the scope of one nested
+    // `drive()` call, restoring `inner`'s own prior state on destruction. Computed fresh at
+    // DISPATCH time by whichever caller is about to drive `inner` -- see event_path_prefix_'s own
+    // comment for why this must never be precomputed at bind/enable time. `sink` may be null (the
+    // forwarding supervisor's own stream isn't enabled); in that case this is a pure no-op --
+    // `inner`'s own prior state (e.g. an independently-configured stream some other owner already
+    // set up directly on `inner`, before or after it was bound here -- unsupported for the DURATION
+    // of a forwarding dispatch, but otherwise untouched, see the design draft §5) is saved and
+    // written back unchanged.
+    class ScopedForwardedEventSink {
+    public:
+        ScopedForwardedEventSink(
+            WorkflowSupervisor& inner,
+            std::shared_ptr<agentengine::workflow::multiplex_sink<agentengine::workflow::WorkflowEvent>>
+                sink,
+            std::vector<std::string> path_prefix)
+            : inner_(inner), saved_sink_(inner.multiplex_sink_),
+              saved_enabled_(inner.workflow_event_stream_enabled_),
+              saved_prefix_(inner.event_path_prefix_) {
+            if (sink) {
+                inner_.multiplex_sink_             = std::move(sink);
+                inner_.workflow_event_stream_enabled_ = true;
+                inner_.event_path_prefix_          = std::move(path_prefix);
+            }
+        }
+        ~ScopedForwardedEventSink() {
+            inner_.multiplex_sink_             = std::move(saved_sink_);
+            inner_.workflow_event_stream_enabled_ = saved_enabled_;
+            inner_.event_path_prefix_          = std::move(saved_prefix_);
+        }
+        ScopedForwardedEventSink(ScopedForwardedEventSink const&)            = delete;
+        ScopedForwardedEventSink& operator=(ScopedForwardedEventSink const&) = delete;
+
+    private:
+        WorkflowSupervisor& inner_;
+        std::shared_ptr<agentengine::workflow::multiplex_sink<agentengine::workflow::WorkflowEvent>>
+            saved_sink_;
+        bool                      saved_enabled_;
+        std::vector<std::string> saved_prefix_;
+    };
+
     // One dispatch attempt against a bound inner WorkflowSupervisor -- see the design draft
     // (docs/planning/sub-workflow-nested-request-port-design-draft.md) §3b. `out`'s
     // `pending_sub_workflow_inner_interaction_id` is set ONLY when the inner run suspended; every
     // other field is left default in that case (execute()'s own handling below never reads them).
-    static task<void> run_sub_workflow_job(std::shared_ptr<WorkflowSupervisor> inner,
-                                            agentengine::Message payload,
-                                            std::shared_ptr<ExecuteReply> out) {
+    // `sink`/`path_prefix` (issue #42 item 3): forwarded into `inner` for exactly the scope of the
+    // nested `drive()` call below via ScopedForwardedEventSink -- see that class and
+    // event_path_prefix_'s own comments.
+    static task<void> run_sub_workflow_job(
+        std::shared_ptr<WorkflowSupervisor> inner, agentengine::Message payload,
+        std::shared_ptr<ExecuteReply> out,
+        std::shared_ptr<agentengine::workflow::multiplex_sink<agentengine::workflow::WorkflowEvent>> sink,
+        std::vector<std::string> path_prefix) {
         if (!inner) {
             *out = ExecuteReply{agentengine::Message{}, {}, false, agentengine::failure_class::contract};
             co_return;
         }
-        WorkflowResult const r = drive(inner->run_workflow(RunWorkflow{payload}));
+        WorkflowResult r;
+        {
+            ScopedForwardedEventSink const guard(*inner, std::move(sink), std::move(path_prefix));
+            r = drive(inner->run_workflow(RunWorkflow{payload}));
+        }
         if (r.status == workflow_status::completed) {
             *out = ExecuteReply{r.output, {}, true, agentengine::failure_class::fatal};
             co_return;
@@ -1361,7 +1432,7 @@ private:
                         agentengine::workflow::workflow_event_payload::ExecutorRef{graph_.executors[idx].id});
                     in_flight.push_back(pool_.submit(run_executor_job(
                         bodies_[idx], exec_deliveries[i].payload, contexts_[idx], slot, event_sink,
-                        graph_.executors[idx].id, this_round, attempt)));
+                        graph_.executors[idx].id, this_round, attempt, event_path_prefix_)));
                 }
 
                 // ---- decision 5, second half: COLLECT in fixed index order ---------------------
@@ -1427,6 +1498,10 @@ private:
                         sub_todo.push_back(i);
                     }
                 }
+                // ADR-152/issue #42 item 3: `event_sink` mirrors the identical local exec_deliveries'
+                // own retry loop above already computes -- re-derived here since that one is scoped
+                // to that loop's own block.
+                auto const event_sink = workflow_event_stream_enabled_ ? multiplex_sink_ : nullptr;
                 for (std::uint32_t attempt = 0; !sub_todo.empty(); ++attempt) {
                     std::vector<std::future<JobOutcome>>       sub_in_flight;
                     std::vector<std::shared_ptr<ExecuteReply>> sub_slots;
@@ -1440,9 +1515,16 @@ private:
                             agentengine::workflow::workflow_event_kind::executor_dispatched,
                             agentengine::workflow::workflow_event_payload::ExecutorRef{
                                 graph_.executors[idx].id});
+                        // issue #42 item 3: this dispatch's own child path prefix is THIS
+                        // supervisor's current event_path_prefix_ plus the sub_workflow node's own
+                        // local id -- computed fresh here, at dispatch time, never cached on `inner`
+                        // across calls (see event_path_prefix_'s own comment for why).
+                        std::vector<std::string> child_path = event_path_prefix_;
+                        child_path.push_back(graph_.executors[idx].id);
                         sub_in_flight.push_back(pool_.submit(run_sub_workflow_job(
                             sub_workflows_.count(idx) ? sub_workflows_.at(idx) : nullptr,
-                            sub_workflow_deliveries[i].payload, slot)));
+                            sub_workflow_deliveries[i].payload, slot, event_sink,
+                            std::move(child_path))));
                     }
                     std::vector<std::size_t> sub_retry_next;
                     for (std::size_t k = 0; k < sub_in_flight.size(); ++k) {
@@ -2036,6 +2118,29 @@ private:
     // (matches enable_live_view()'s own "once attached, stays attached for this instance's
     // lifetime unless replaced" shape -- there is no disable_event_stream()).
     bool workflow_event_stream_enabled_ = false;
+    // docs/planning/nested-workflow-event-forwarding-design-draft.md (issue #42 item 3): this
+    // supervisor's own accumulated lineage of sub_workflow executor_ids, from the OUTERMOST
+    // supervisor currently forwarding into it down to (but not including) this instance's own
+    // graph. Empty for a standalone/root instance FOREVER -- unlike `nesting_depth_`, this is
+    // NEVER set at bind_sub_workflow() time. It is wired transiently, immediately before this
+    // instance is driven as a nested inner, and restored immediately after, by
+    // ScopedForwardedEventSink below -- computed fresh at DISPATCH time on the calling thread, not
+    // precomputed at bind/enable time. Two real defects a bind-time/enable-time design would have
+    // had, closed by construction:
+    //   - WRONG VALUES under bottom-up construction order (build innermost first, bind upward --
+    //     exactly how every real nested tree in this codebase, including S8/S11, is built): a
+    //     value baked in at bind_sub_workflow() time can only reflect what the OUTER's own prefix
+    //     was AT THAT MOMENT, which is wrong if more binding happens above it afterward.
+    //   - A genuine cross-thread data race: `enable_event_stream()`'s own doc comment already
+    //     blesses calling it more than once, and nothing prevents `bind_sub_workflow()`/
+    //     `enable_event_stream()` from running on one thread while a PREVIOUS run against the same
+    //     `inner` is still mid-flight on another -- a bind-time/enable-time cascade would plainly
+    //     write into a live object's members while its own dispatch loop concurrently reads them.
+    // Dispatch-time wiring has neither problem: the write always immediately precedes, on the SAME
+    // thread, the one `drive()` call whose own worker threads are the only readers, and those
+    // workers are always spawned AND joined strictly inside that one call's own synchronous
+    // extent -- never outside the window ScopedForwardedEventSink's own lifetime covers.
+    std::vector<std::string> event_path_prefix_;
     // Scratch state for push_fan_in_aggregated_events() -- see route_from()'s own comment. Cleared
     // by execute() before each routing loop that calls route_from(), drained (and re-cleared) by
     // push_fan_in_aggregated_events() right after. Never holds state across a co_await suspension
