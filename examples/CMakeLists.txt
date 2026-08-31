@@ -147,3 +147,11 @@ add_executable(agentengine_example_20_workflow_checkpoint_resume 20_workflow_che
 target_link_libraries(agentengine_example_20_workflow_checkpoint_resume PRIVATE
   agentengine::core agentengine_warnings)
 add_test(NAME example_20_workflow_checkpoint_resume COMMAND agentengine_example_20_workflow_checkpoint_resume)
+
+# 21: adjacent to GitHub issue #35 -- workflow_as_executor_body() (rt/workflow_as_executor.hpp), a
+# whole inner Workflow wrapped and reused as ONE participant inside an OUTER MagenticWorkflowBuilder
+# graph. Fully offline, no special build flags.
+add_executable(agentengine_example_21_workflow_as_participant 21_workflow_as_participant.cpp)
+target_link_libraries(agentengine_example_21_workflow_as_participant PRIVATE
+  agentengine::core agentengine_warnings)
+add_test(NAME example_21_workflow_as_participant COMMAND agentengine_example_21_workflow_as_participant)
