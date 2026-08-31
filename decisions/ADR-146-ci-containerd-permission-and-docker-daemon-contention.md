@@ -1,11 +1,12 @@
 # ADR-146 — CI: containerd needs root, and live-Docker/containerd tests need `RESOURCE_LOCK` against daemon contention
 
-- **Status:** Proposed — implemented, verified by re-configuring/re-listing under CTest on this
-  session's own Windows/MSVC checkout (`RESOURCE_LOCK` values confirmed registered via
-  `ctest --show-only=json-v1`), `naming_lint.py` clean. **The actual fix target is GitHub Actions'
-  `ubuntu-latest` runner — verification of the fix's real effect is the next CI run on this PR,
-  not a local build**, since neither a containerd daemon nor the multi-test daemon-contention
-  scenario this ADR fixes exists on this Windows session.
+- **Status:** Proposed — implemented, and the `RESOURCE_LOCK` half is REAL-CI-CONFIRMED (§7): a live
+  CI run dropped from 5 non-deterministic failures to exactly 1, and that 1 is now a different,
+  isolated, unrelated failure, not this ADR's own target. The containerd-permission half's own first
+  CI attempt was never actually exercised (a real bug in this ADR's own first version — GitHub
+  Actions skipped the step outright — found and fixed in §7); its next CI run is still pending as of
+  this writing. **`test_composed_sandbox_providers_live`'s own failure (§7) is NOT fixed by this ADR
+  and remains open** — disclosed, not silently left out.
 - **Date:** 2026-08-31.
 - **Scope:** `.github/workflows/ci.yml` (`linux` job's `Test` step only), `tests/CMakeLists.txt`
   (`RESOURCE_LOCK` property additions to 8 existing `add_test()` registrations, no new tests, no
@@ -141,3 +142,35 @@ here rather than silently deferred.
   lock (or a Docker test added without `docker_daemon`) would silently reintroduce the exact
   contention this ADR fixes — no automated check enforces the pairing, same class of residual as
   every other "must remember to tag it" convention in this codebase.
+
+## 7. Real CI results (post-push) and a real bug found in this ADR's own first fix
+
+The pushed commit's actual CI run confirmed the `RESOURCE_LOCK` fix directly: all 5 previously
+non-deterministic failures (`test_composed_sandbox_providers_live`, `test_sandbox_runtime`,
+`test_docker_orphan_reap`, plus the two containerd tests, which by then were excluded into their own
+step) dropped to exactly ONE — `test_composed_sandbox_providers_live`, now failing consistently and
+fast (0.91s, not a timeout), no longer alongside the others. `test_sandbox_runtime`/
+`test_docker_orphan_reap`/`test_mandatory_sandbox_provider`/`test_task_branch_tools`/
+`test_task_branch_concurrent_dispatch` all passed clean once serialized — daemon contention
+confirmed as the real cause for those 4, not a logic bug, exactly as §2 reasoned.
+
+**A real bug in THIS ADR's own first version was found from that same run**: because the main `Test`
+step failed (due to the still-unrelated `test_composed_sandbox_providers_live` failure), GitHub
+Actions' default step-gating SKIPPED the new `Test (containerd, root)` step entirely rather than
+running it — so §1's actual fix target (the containerd permission gap) was never exercised by that
+run at all, silently. Fixed by adding `if: always()` to that step (§3's code now reflects this).
+Caught by checking the job's raw log for evidence the containerd step ran, not by assuming a green
+partial result meant the intended fix worked — this session's own "verify FOR REAL, don't assume"
+discipline applied to this ADR's own change, not just production code.
+
+**`test_composed_sandbox_providers_live`'s own remaining failure is NOT part of this ADR's fix** —
+traced far enough to rule out several hypotheses (not image-pull-related: other tests share the same
+`alpine:latest` image on the same daemon and pass; not the POSIX `run_capture()` rewrite in general:
+the exact same function is exercised successfully by 5 sibling tests in the same run; not the docker
+command sequence itself: reproduced byte-identical against a live Docker daemon from this Windows
+session and it returns the expected output) but not yet root-caused — the composed-provider-specific
+angle (this is the only test that composes `SandboxToolProvider` and `MandatorySandboxProvider` in
+ONE session and drives both through ONE `invoke_tool()`-pipeline `start_run()`, and the RunCommandTool
+closure's `agentengine::rt::block_on(runtime_->run(...))` call is a plausible but unconfirmed
+suspect) is disclosed here, not fixed, and needs either live-Linux-Docker repro or further tracing
+this session did not complete before this ADR was written.

@@ -316,7 +316,15 @@ jobs:
           ctest --test-dir build -j 4 --output-on-failure --timeout 180 \
             -E '^(test_containerd_execution_surface|test_composed_containerd_providers_live)$'
 
+      # `if: always()`: a GitHub Actions step only runs if every prior step in the job succeeded,
+      # by default -- without this, an unrelated failure in the step above (any of the ~185 other
+      # tests) would silently SKIP this step entirely rather than fail it, leaving the containerd
+      # fix this ADR exists for completely unexercised while the job still correctly shows red for
+      # the unrelated reason. `always()` runs it unconditionally; the job's own overall result still
+      # reflects a failure here exactly as it would without this line, since a failed step fails the
+      # job regardless of which other steps ran.
       - name: Test (containerd, root)
+        if: always()
         run: |
           sudo ctest --test-dir build -j 4 --output-on-failure --timeout 180 \
             -R '^(test_containerd_execution_surface|test_composed_containerd_providers_live)$'
