@@ -82,8 +82,10 @@ void check(bool cond, char const* what) {
 [[nodiscard]] Workflow make_graph() {
     Workflow wf;
     wf.id        = "checkpoint-resume-demo";
-    wf.executors = {Executor{"planner", executor_kind::function, "T", "T"},
-                     Executor{"review", executor_kind::request_port, "T", "T"}};
+    wf.executors = {Executor{.id = "planner", .kind = executor_kind::function, .input_type = "T", .output_type = "T",
+                              .capability_ceiling = {}},
+                     Executor{.id = "review", .kind = executor_kind::request_port, .input_type = "T", .output_type = "T",
+                              .capability_ceiling = {}}};
     wf.edges.push_back(Edge{"planner", "review", edge_kind::direct, {}});
     wf.start = "planner";
     wf.output_selection.push_back("review");

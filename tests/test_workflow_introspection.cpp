@@ -34,7 +34,8 @@ void check(bool cond, char const* what) {
 }
 
 [[nodiscard]] Executor node(char const* id, executor_kind kind = executor_kind::function) {
-    return Executor{id, kind, "T", "T"};
+    return Executor{.id = id, .kind = kind, .input_type = "T", .output_type = "T",
+                     .capability_ceiling = {}};
 }
 
 }  // namespace

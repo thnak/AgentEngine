@@ -20,8 +20,8 @@ AE_WORKFLOW_MESSAGE(Verdict, "Verdict");
 int main() {
     using namespace agentengine::workflow;
 
-    TypedExecutor<Question, Draft> writer{"writer", executor_kind::agent};
-    TypedExecutor<Draft, Verdict>  critic{"critic", executor_kind::agent};
+    TypedExecutor<Question, Draft> writer{.id = "writer", .kind = executor_kind::agent, .capability_ceiling = {}};
+    TypedExecutor<Draft, Verdict>  critic{.id = "critic", .kind = executor_kind::agent, .capability_ceiling = {}};
 
     WorkflowBuilder b("match");
     auto built = b.add(writer).add(critic).connect(writer, critic).start_at("writer")

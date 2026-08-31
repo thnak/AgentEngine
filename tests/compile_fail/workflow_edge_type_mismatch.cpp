@@ -23,8 +23,8 @@ AE_WORKFLOW_MESSAGE(Verdict, "Verdict");
 int main() {
     using namespace agentengine::workflow;
 
-    TypedExecutor<Question, Draft> writer{"writer", executor_kind::agent};
-    TypedExecutor<Verdict, Verdict> sink{"sink", executor_kind::function};
+    TypedExecutor<Question, Draft> writer{.id = "writer", .kind = executor_kind::agent, .capability_ceiling = {}};
+    TypedExecutor<Verdict, Verdict> sink{.id = "sink", .kind = executor_kind::function, .capability_ceiling = {}};
 
     WorkflowBuilder b("mismatch");
     // Draft -> Verdict: incompatible. This line is the one that must not compile.

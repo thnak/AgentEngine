@@ -64,8 +64,10 @@ void check_rejected(result<void> const& r, char const* expected_code, char const
 [[nodiscard]] Workflow baseline() {
     Workflow wf;
     wf.id = "review";
-    wf.executors.push_back(Executor{"writer", executor_kind::agent, "Question", "Draft"});
-    wf.executors.push_back(Executor{"critic", executor_kind::agent, "Draft", "Verdict"});
+    wf.executors.push_back(Executor{.id = "writer", .kind = executor_kind::agent, .input_type = "Question", .output_type = "Draft",
+                                     .worktree_mode = sharing_mode::branch, .capability_ceiling = {}});
+    wf.executors.push_back(Executor{.id = "critic", .kind = executor_kind::agent, .input_type = "Draft", .output_type = "Verdict",
+                                     .worktree_mode = sharing_mode::branch, .capability_ceiling = {}});
     wf.edges.push_back(Edge{"writer", "critic", edge_kind::direct, {}});
     wf.start = "writer";
     wf.output_selection.push_back("critic");
@@ -91,7 +93,8 @@ int main() {
         // 014 §9 Q2: cycles are ALLOWED. The loop-closing edge is type-checked exactly like any
         // other, and §2's whole-workflow round counter bounds its iterations. A validator that
         // rejected this would make §3's reflection/critic and group-chat patterns unbuildable.
-        cyclic.executors.push_back(Executor{"revise", executor_kind::agent, "Verdict", "Draft"});
+        cyclic.executors.push_back(Executor{.id = "revise", .kind = executor_kind::agent, .input_type = "Verdict", .output_type = "Draft",
+                                             .worktree_mode = sharing_mode::branch, .capability_ceiling = {}});
         cyclic.edges.push_back(Edge{"critic", "revise", edge_kind::direct, {}});
         cyclic.edges.push_back(Edge{"revise", "critic", edge_kind::direct, {}});
         check(validate_workflow(cyclic).has_value(),
@@ -144,7 +147,8 @@ int main() {
     // ---- A4: structural integrity ----------------------------------------------------------------
     {
         Workflow dup = baseline();
-        dup.executors.push_back(Executor{"writer", executor_kind::function, "Question", "Draft"});
+        dup.executors.push_back(Executor{.id = "writer", .kind = executor_kind::function, .input_type = "Question", .output_type = "Draft",
+                                          .worktree_mode = sharing_mode::branch, .capability_ceiling = {}});
         check_rejected(validate_workflow(dup), "workflow.duplicate_executor_id",
                        "A4: a duplicate executor id is reported AS a duplicate, not as whichever "
                        "downstream lookup happened to trip over it first");
@@ -165,7 +169,8 @@ int main() {
                        "A4: output_selection naming an undeclared executor is rejected");
 
         Workflow orphan = baseline();
-        orphan.executors.push_back(Executor{"stranded", executor_kind::function, "Draft", "Verdict"});
+        orphan.executors.push_back(Executor{.id = "stranded", .kind = executor_kind::function, .input_type = "Draft", .output_type = "Verdict",
+                                             .worktree_mode = sharing_mode::branch, .capability_ceiling = {}});
         check_rejected(validate_workflow(orphan), "workflow.unreachable_executor",
                        "A4: an executor no edge can reach from start is rejected -- 014 §7 makes the "
                        "graph reviewable, and a node nothing reaches is an authoring slip");
@@ -185,7 +190,8 @@ int main() {
         // The reachability walk must handle cycles without looping forever. This is the case that
         // would hang rather than fail, so it is asserted explicitly.
         Workflow self_loop = baseline();
-        self_loop.executors.push_back(Executor{"revise", executor_kind::agent, "Verdict", "Verdict"});
+        self_loop.executors.push_back(Executor{.id = "revise", .kind = executor_kind::agent, .input_type = "Verdict", .output_type = "Verdict",
+                                                .worktree_mode = sharing_mode::branch, .capability_ceiling = {}});
         self_loop.edges.push_back(Edge{"critic", "revise", edge_kind::direct, {}});
         self_loop.edges.push_back(Edge{"revise", "revise", edge_kind::direct, {}});
         check(validate_workflow(self_loop).has_value(),
@@ -224,8 +230,8 @@ int main() {
     // declarative form rejects -- two surfaces, two behaviours, which is the drift decision 6 exists
     // to prevent.
     {
-        TypedExecutor<Question, Draft>  writer{"writer", executor_kind::agent};
-        TypedExecutor<Draft, Verdict>   critic{"critic", executor_kind::agent};
+        TypedExecutor<Question, Draft>  writer{.id = "writer", .kind = executor_kind::agent, .capability_ceiling = {}};
+        TypedExecutor<Draft, Verdict>   critic{.id = "critic", .kind = executor_kind::agent, .capability_ceiling = {}};
 
         WorkflowBuilder b("review");
         auto built = b.add(writer).add(critic).connect(writer, critic).start_at("writer")

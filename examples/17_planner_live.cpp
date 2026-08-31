@@ -148,7 +148,10 @@ using RealClient = openai::OpenAIChatClient<InMemorySecretStore>;
     };
 }
 
-[[nodiscard]] Executor node_desc(char const* id) { return Executor{id, executor_kind::function, "T", "T"}; }
+[[nodiscard]] Executor node_desc(char const* id) {
+    return Executor{.id = id, .kind = executor_kind::function, .input_type = "T", .output_type = "T",
+                     .worktree_mode = sharing_mode::branch, .capability_ceiling = {}};
+}
 
 [[nodiscard]] std::string env_or(char const* name, char const* fallback) {
     auto const v = ::agentengine::pal::env_var(name);
