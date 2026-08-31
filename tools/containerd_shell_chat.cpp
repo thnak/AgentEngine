@@ -1,4 +1,4 @@
-// ADR-106 (decisions/ADR-106-containerd-execution-surface-promotion.md) residual, closed here:
+// ADR-145 (decisions/ADR-145-containerd-execution-surface-promotion.md) residual, closed here:
 // "Not wired into tools/cli_chat.cpp/tools/sandboxed_shell_chat.cpp or any real session builder --
 // this ADR promotes the CONFORMER... A future pass wiring ContainerdExecutionSurface into a real,
 // user-reachable tool surface is real, contained, disclosed follow-on work, not attempted here."
@@ -161,6 +161,6 @@ int main(int argc, char** argv) {
     // Ctrl+C caveat that file discloses applies here too (no SIGINT handler installed anywhere in
     // this codebase): an interactive user's Ctrl+C runs the platform's own default signal handler,
     // which does not unwind main()'s stack, so this specific "closes the leak" claim covers ordinary
-    // return only -- the ADR-106 §7 orphan-reclaim residual this same session already disclosed.
+    // return only -- the ADR-145 §7 orphan-reclaim residual this same session already disclosed.
     return 0;
 }

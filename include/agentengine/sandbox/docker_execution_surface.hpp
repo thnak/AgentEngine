@@ -921,7 +921,7 @@ public:
 
     // Closes the "container orphaned on abrupt host-process death or a destructor-time transient
     // `docker rm -f` failure" residual this class's own accompanying `DockerExecutionSurface` comment
-    // (ADR-104/ADR-106) has disclosed since it was first written -- true, and unchanged by this
+    // (ADR-104/ADR-145) has disclosed since it was first written -- true, and unchanged by this
     // method: nothing can run a destructor for a process that no longer exists, and this doesn't
     // retry a failed destructor-time `destroy()` either. What it adds is the "persisting instance ids
     // somewhere reclaimable" follow-on that comment itself pointed at: `create()` now names every

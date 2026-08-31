@@ -10,8 +10,8 @@
   Windows toolchain access (disclosed below, §7, as it was written) — closed the same day once merged
   into a session with real MSVC access: full Windows rebuild (348/348 targets, `ninja -k 0`, zero
   errors) and full `ctest` (**288/288, 100%**, including `test_hmac_sha256` and every target this ADR
-  un-gated), zero regressions. This ADR was also renumbered from its original ADR-106 to ADR-107 during
-  merge, having been developed in parallel with (and independently of) ADR-106
+  un-gated), zero regressions. This ADR was also renumbered from its original ADR-145 to ADR-107 during
+  merge, having been developed in parallel with (and independently of) ADR-145
   (`ContainerdExecutionSurface` promotion), which claimed that number first.
 - **Date:** 2026-08-29.
 - **Scope:** New `include/agentengine/detail/sha256_posix.hpp` (a shared, header-only SHA-256 primitive
@@ -30,7 +30,7 @@
   **Excludes**: `agentengine_capability_token`'s other three files (`capability_token.cpp`,
   `capability_registry.cpp`, `bearer_token.cpp`) — these call `BCryptGenRandom` directly for
   cross-process bearer-token key generation, a genuinely Windows-only concern, deliberately NOT ported
-  (see §2); `ContainerdExecutionSurface`/ADR-106 (a parallel effort within the same session, developed
+  (see §2); `ContainerdExecutionSurface`/ADR-145 (a parallel effort within the same session, developed
   independently and merged same day — see the Status line's own renumbering note), `native_jail`/`kata`
   backends, and anything under `docs/planning/proofs/execution_surface/` (untouched, confirmed via
   `git status`).

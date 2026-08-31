@@ -316,7 +316,7 @@ effect, proven against the real compiled fixture, not a hand-crafted test double
   (2026-08-29) — a TEST bug, not a security bug; claim C5 itself holds, unaffected.** First surfaced
   as a disclosed, out-of-scope residual across three unrelated same-day passes
   (`decisions/ADR-105-sandbox-tool-provider-composed-linux-parity.md`,
-  `decisions/ADR-106-containerd-execution-surface-promotion.md`,
+  `decisions/ADR-145-containerd-execution-surface-promotion.md`,
   `decisions/ADR-107-hmac-sha256-linux-parity.md`), each of which found it purely as a byproduct of
   turning `AGENTENGINE_WITH_HTTPS` on for a Linux build for the first time and correctly declined to
   investigate it further. Root cause, empirically traced: the failing check asserted BOTH
@@ -366,7 +366,7 @@ effect, proven against the real compiled fixture, not a hand-crafted test double
   chunked-transfer-encoding entry just above. **Real evidence, both platforms**: full Linux `ctest`
   (212 tests, WSL2 Ubuntu): **207/212 passed** — the 5 failures are all pre-existing and
   environment-dependent (`test_containerd_execution_surface` needs root/an ACL for the containerd
-  socket, `decisions/ADR-106-containerd-execution-surface-promotion.md`; the 4
+  socket, `decisions/ADR-145-containerd-execution-surface-promotion.md`; the 4
   `test_kata_backend_*_linux` tests need a working Kata/KVM runtime this environment doesn't have),
   none newly broken by this fix. Full Windows `ctest` (288 tests): **288/288 passed, 100%**, zero
   regressions. `test_provider_egress_address_policy` itself: `ALL PASS` on both platforms.

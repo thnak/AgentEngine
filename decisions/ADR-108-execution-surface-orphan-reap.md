@@ -27,7 +27,7 @@
   automatically from any constructor/destructor/verb.
 - **Related specs:** `decisions/ADR-104-real-io-filesystem-linux-parity.md` (where `DockerExecutionSurface`'s
   own header comment first disclosed this residual, "HONEST RESIDUAL, disclosed not solved", and its
-  2026-08-28 correction widening it past "crash only") · `decisions/ADR-106-containerd-execution-surface-
+  2026-08-28 correction widening it past "crash only") · `decisions/ADR-145-containerd-execution-surface-
   promotion.md` §5/§7 (independently reproduced the identical residual for `ContainerdExecutionSurface`
   via a real SIGKILL test, named the fix direction: "persisting instance ids somewhere reclaimable,
   mirroring `Ledger`'s own orphan-branch/A7 design") · `docs/planning/proofs/worktree_io/worktree_ledger.hpp`
@@ -155,7 +155,7 @@ every prior independent pass on this code has found something real.
    timestamp instead of a fixed 0, so two independent process starts collide only by an astronomically
    unlikely coincidence.
 3. **Undisclosed Docker/Containerd naming-scheme asymmetry, same collision class.** `ContainerdExecution
-   Surface::seq_` is a per-INSTANCE member (pre-existing from ADR-106, not touched by today's diff)
+   Surface::seq_` is a per-INSTANCE member (pre-existing from ADR-145, not touched by today's diff)
    that also starts at 0 — this ADR's own §2 claimed the two naming schemes "mirror" each other without
    this piece actually matching, and two `ContainerdExecutionSurface` instances alive concurrently in
    one process (or the same pid-reuse-after-orphan scenario as finding 2) would collide identically.

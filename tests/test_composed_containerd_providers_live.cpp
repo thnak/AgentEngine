@@ -1,4 +1,4 @@
-// ADR-106 (decisions/ADR-106-containerd-execution-surface-promotion.md) §7 residual, closed here: the
+// ADR-145 (decisions/ADR-145-containerd-execution-surface-promotion.md) §7 residual, closed here: the
 // ContainerdExecutionSurface counterpart to test_composed_sandbox_providers_live.cpp (that file's own
 // original ADR-102 Phase 5 slice). Proves the SAME claim that file proves for Docker, but for
 // containerd: ComposedContextProvider<SandboxToolProvider, MandatorySandboxProvider<

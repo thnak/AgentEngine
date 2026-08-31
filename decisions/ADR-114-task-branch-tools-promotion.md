@@ -28,7 +28,7 @@ red-teamed since ADR-111 — but nothing in `include/agentengine/` has ever call
 `MandatorySandboxProvider` gives sessions `run_command`; A10's own prove-phase design
 (`TaskBranchSandbox`) already worked out start/run/commit/discard, three independent red-team
 rounds, and a real capability-gating decision — but it was never promoted. Is promoting it a
-mostly-mechanical port (matching ADR-106/108's own precedent for promoting prove-phase code), or
+mostly-mechanical port (matching ADR-145/108's own precedent for promoting prove-phase code), or
 does it need new design work first?
 
 ## 2. Findings

@@ -8,7 +8,7 @@
 - **Date:** 2026-08-30/31.
 - **Scope:** `include/agentengine/sandbox/docker_execution_surface.hpp` only
   (`docker_cli_detail::run_capture()`, both platform arms, completely rewritten).
-- **Related specs:** `decisions/ADR-106-containerd-execution-surface.md`/`ADR-107` (`ctr_cli_detail::
+- **Related specs:** `decisions/ADR-145-containerd-execution-surface.md`/`ADR-107` (`ctr_cli_detail::
   run_argv()`, the sibling this now has parity with — same 30s timeout, same 1 MiB cap, cites the same
   CLAUDE.md machine-safety rule), `decisions/ADR-104-real-io-filesystem-linux-parity.md` (the POSIX
   `pclose()` exit-status bug this file's own comment already documents, unaffected by this rewrite).

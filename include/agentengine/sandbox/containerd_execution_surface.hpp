@@ -12,7 +12,7 @@
 // `SandboxRuntime::run()`'s materialize()-before-reset() sequence empirically PROVEN benign for a real
 // containerd 2.2.2/runc 1.4.0/WSL2-ext4-on-virtio combination, C3's "reject_chars() reused verbatim"
 // claim DISPROVEN and replaced by the real POSIX-correct analog, `reject_embedded_nul()`). Real
-// changes made during THIS promotion pass (production port, ADR-106):
+// changes made during THIS promotion pass (production port, ADR-145):
 //   - `probe::ContainerdBackend`/`probe::ContainerdExecutionSurface` -> `agentengine::
 //     ContainerdCliBackend`/`agentengine::ContainerdExecutionSurface`, `ContainerdCliBackend` (not bare
 //     `ContainerdBackend`) mirroring `DockerCliBackend`'s own naming: this type does not conform to
@@ -502,10 +502,10 @@ public:
     }
 
     // Closes the "container orphaned on abrupt host-process death" residual this class's own
-    // production header comment (ADR-106 §7) and ADR-106 §5's own red-team round both named as
+    // production header comment (ADR-145 §7) and ADR-145 §5's own red-team round both named as
     // structurally unavoidable AT DESTRUCT TIME -- true, and unchanged by this method: nothing can run
     // a destructor for a process that no longer exists. What this method adds is the "persisting
-    // instance ids somewhere reclaimable" follow-on ADR-106 §7 itself pointed at: `reset()` already
+    // instance ids somewhere reclaimable" follow-on ADR-145 §7 itself pointed at: `reset()` already
     // names every container `ae_ces_<pid>_<seq>`, so a LATER process (the next invocation of this same
     // tool, a cron-style maintenance call, or a test) can list containerd's own container table, find
     // ids matching that scheme whose embedded pid is no longer alive, and destroy them for real --
@@ -595,12 +595,12 @@ private:
 // environment, not the general case across every possible backing filesystem (design doc §5) -- a real
 // deployment targeting a different filesystem/snapshotter/kernel combination should re-verify.
 //
-// ORPHAN RESIDUAL (ADR-106 §7): if the host process dies (SIGKILL, abrupt crash) between a successful
+// ORPHAN RESIDUAL (ADR-145 §7): if the host process dies (SIGKILL, abrupt crash) between a successful
 // `reset()` and this class's own destructor ever running, the container is orphaned and keeps running
 // indefinitely -- confirmed structurally unavoidable at DESTRUCT time (nothing can run a destructor
 // for a process that no longer exists), same residual class `DockerExecutionSurface`'s own header
 // comment discloses for itself. SINCE ADDED (ADR-108): `ContainerdCliBackend::reap_orphans()` is the
-// follow-on "persisting instance ids somewhere reclaimable" fix ADR-106 §7 itself pointed at --
+// follow-on "persisting instance ids somewhere reclaimable" fix ADR-145 §7 itself pointed at --
 // `reset()` already names every container `ae_ces_<pid>_<seq>`; `reap_orphans()` lists them back,
 // checks each embedded pid for liveness, and destroys the ones that are dead. Deliberately NOT wired
 // to run automatically (see `reap_orphans()`'s own comment for why); still a real residual after this

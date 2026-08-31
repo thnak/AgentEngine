@@ -10,7 +10,7 @@
   miss) and a minor unqualified-vs-qualified style inconsistency; both fixed same day (`027-Vocabulary-
   and-Naming.md` row added, `sandbox_runtime.hpp`'s `agentengine::MergeCost` unqualified to match its
   sibling `BranchCost` usage three lines away) — `python3 tools/naming_lint.py` now reports clean.
-  While fixing it, also closed two PRE-EXISTING, unrelated vocabulary-doc gaps from ADR-106
+  While fixing it, also closed two PRE-EXISTING, unrelated vocabulary-doc gaps from ADR-145
   (`ContainerdCliBackend`/`ContainerdExecutionSurface` had shipped with no vocabulary rows at all) that
   `naming_lint.py` surfaced in the same run — not this ADR's own defect, but cheap and directly
   actionable once found, matching this lineage's own "fix what an independent pass surfaces" posture.

@@ -1,4 +1,4 @@
-// ADR-106 (decisions/ADR-106-containerd-execution-surface-promotion.md) -- drives the real, production
+// ADR-145 (decisions/ADR-145-containerd-execution-surface-promotion.md) -- drives the real, production
 // `agentengine::ContainerdExecutionSurface` (include/agentengine/sandbox/containerd_execution_surface.hpp)
 // directly. Ported from docs/planning/proofs/execution_surface/probe_containerd_execution_surface.cpp
 // (the design-and-prove-phase original, 16/16 checks against a live containerd/runc deployment) --
@@ -103,7 +103,7 @@ int main() {
     fs::remove_all(root, ec);  // idempotent -- clean any leftover state from a prior interrupted run
     fs::create_directories(host_dir, ec);
 
-    std::printf("=== ContainerdExecutionSurface production test (ADR-106) ===\n");
+    std::printf("=== ContainerdExecutionSurface production test (ADR-145) ===\n");
 
     {
         agentengine::ContainerdExecutionSurface surface;

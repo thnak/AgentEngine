@@ -1,4 +1,4 @@
-# ADR-106 — Does `ContainerdExecutionSurface` (design-only per `docs/planning/oci-execution-surface-design-draft.md`, proven standalone in the prove-phase tree) promote cleanly into real production code, as the second real `ExecutionSurface` conformer alongside `DockerExecutionSurface`?
+# ADR-145 — Does `ContainerdExecutionSurface` (design-only per `docs/planning/oci-execution-surface-design-draft.md`, proven standalone in the prove-phase tree) promote cleanly into real production code, as the second real `ExecutionSurface` conformer alongside `DockerExecutionSurface`?
 
 - **Status:** Proposed — implemented, verified, and independently red-teamed (2026-08-29), real builds
   and real test runs against a live containerd/runc deployment. The red-team round found two real,
@@ -125,7 +125,7 @@ that gate exists for.
   the design/prove phase provisioned): **18/18 checks passed** (16 from the original probe, plus 2 new
   — the `drain_to(different dir)` pair closing C29). Full output:
   ```
-  === ContainerdExecutionSurface production test (ADR-106) ===
+  === ContainerdExecutionSurface production test (ADR-145) ===
   [ok]   reset() #1 (fresh container, bind-mounted at host_dir, image auto-pulled if needed)
   [ok]   run(): container reads turn-1 content
   [ok]   run(): container's view of a.txt matches exactly what host_dir held
@@ -240,7 +240,7 @@ over the `ExecutionSurface` concept, `include/agentengine/sandbox/mandatory_sand
   files). An independent red-team round `diff -u`'d both new files against their templates line by
   line and found the port genuinely faithful — every non-comment difference is exactly the template
   argument, session/branch-name string literals, scratch-directory paths, and banner text; zero silent
-  logic changes (unlike ADR-104's `pclose()` finding or ADR-106's own earlier move-semantics finding,
+  logic changes (unlike ADR-104's `pclose()` finding or ADR-145's own earlier move-semantics finding,
   this port introduced none). It also independently reproduced every empirical claim (rebuilt both
   targets from scratch; re-ran the composed test as root, `ALL CHECKS PASSED`; ran it twice
   back-to-back with no cleanup between runs, both passed, since containers are named

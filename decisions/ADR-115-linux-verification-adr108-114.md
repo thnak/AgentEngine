@@ -8,7 +8,7 @@
 - **Scope:** No files changed. This ADR records a verification run, not a code change — the "what was
   built" section of ADR-108 through ADR-114 is unaffected.
 - **Related specs:** Closes the "no Linux verification" residual named by ADR-109 §5, ADR-111 §7,
-  ADR-112 §5, and ADR-114 §5/§7 (all four). Also re-confirms ADR-106/108's own containerd/`reap_orphans()`
+  ADR-112 §5, and ADR-114 §5/§7 (all four). Also re-confirms ADR-145/108's own containerd/`reap_orphans()`
   work against a genuinely fresh environment, independent of whatever state any prior WSL2 session
   left behind.
 
@@ -79,7 +79,7 @@ not attempted without separately deciding to make it.
 
 **Closes for real**: ADR-111/ADR-112's own "no Linux verification" residual — `test_ledger` needs no
 container runtime at all, so this is a complete, unconditional closure, not a partial one.
-ADR-106/ADR-108's containerd-path work is re-confirmed end-to-end on a fresh environment (31/31,
+ADR-145/ADR-108's containerd-path work is re-confirmed end-to-end on a fresh environment (31/31,
 including the ADR-108 follow-on's own pid-reuse fix).
 
 **Does NOT close**: ADR-114's own "no Linux verification" residual only partially — the task-branch
