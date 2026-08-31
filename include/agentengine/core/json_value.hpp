@@ -94,15 +94,28 @@ private:
         data_;
 };
 
+// Bounds `Parser` against tainted/adversarial input (006 §7 marks tool results `tainted = true`;
+// this parser also sits under MCP server responses and raw model tool-call arguments, none of
+// which are trusted to be well-formed or small). Mirrors `schema::ValidationBudget`'s shape
+// (json_schema_validator.hpp) -- `max_depth` bounds recursion (parse_value/parse_array/parse_object
+// mutually recurse with no other stack guard, so this is what stands between a deeply-nested
+// payload like `[[[[...` and a real C++ call-stack overflow) and `max_nodes_visited` bounds total
+// work independent of nesting shape (a huge but shallow array trips this, not max_depth).
+// ae-naming-lint: allow ParseBudget — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
+struct ParseBudget {
+    std::uint32_t max_depth = 64;
+    std::uint64_t max_nodes_visited = 100'000;
+};
+
 namespace detail {
 
 class Parser {
 public:
-    explicit Parser(std::string_view text) : text_(text) {}
+    explicit Parser(std::string_view text, ParseBudget budget = {}) : text_(text), budget_(budget) {}
 
     result<Value> parse() {
         skip_ws();
-        auto v = parse_value();
+        auto v = parse_value(0);
         if (!v) return v;
         skip_ws();
         if (pos_ != text_.size()) {
@@ -115,6 +128,8 @@ public:
 private:
     std::string_view text_;
     std::size_t pos_ = 0;
+    ParseBudget budget_;
+    std::uint64_t nodes_visited_ = 0;
 
     [[nodiscard]] bool at_end() const noexcept { return pos_ >= text_.size(); }
     [[nodiscard]] char peek() const noexcept { return text_[pos_]; }
@@ -127,11 +142,25 @@ private:
         return std::unexpected(error{failure_class::contract, std::string(message), std::string(code)});
     }
 
-    result<Value> parse_value() {
+    // Budget-exceeded is a resource-limit failure (error.hpp: "resource -- budget, quota, or limit
+    // exceeded (023)"), distinct from the malformed-syntax `contract` failures `fail()` reports.
+    static result<Value> fail_budget(std::string_view code, std::string_view message) {
+        return std::unexpected(error{failure_class::resource, std::string(message), std::string(code)});
+    }
+
+    result<Value> parse_value(std::uint32_t depth) {
+        if (depth > budget_.max_depth) {
+            return fail_budget("json.max_depth_exceeded",
+                                "nesting exceeds the configured max_depth budget");
+        }
+        if (++nodes_visited_ > budget_.max_nodes_visited) {
+            return fail_budget("json.max_nodes_visited_exceeded",
+                                "parse exceeded the configured max_nodes_visited budget");
+        }
         if (at_end()) return fail("json.unexpected_eof", "unexpected end of input");
         switch (peek()) {
-            case '{': return parse_object();
-            case '[': return parse_array();
+            case '{': return parse_object(depth);
+            case '[': return parse_array(depth);
             case '"': return parse_string_value();
             case 't':
             case 'f': return parse_bool();
@@ -271,7 +300,7 @@ private:
         return Value::make_string(std::move(*s));
     }
 
-    result<Value> parse_array() {
+    result<Value> parse_array(std::uint32_t depth) {
         ++pos_;  // consume '['
         std::vector<Value> items;
         skip_ws();
@@ -281,7 +310,7 @@ private:
         }
         while (true) {
             skip_ws();
-            auto v = parse_value();
+            auto v = parse_value(depth + 1);
             if (!v) return v;
             items.push_back(std::move(*v));
             skip_ws();
@@ -298,7 +327,7 @@ private:
         }
     }
 
-    result<Value> parse_object() {
+    result<Value> parse_object(std::uint32_t depth) {
         ++pos_;  // consume '{'
         std::vector<std::pair<std::string, Value>> members;
         skip_ws();
@@ -314,7 +343,7 @@ private:
             if (at_end() || peek() != ':') return fail("json.malformed_object", "expected ':'");
             ++pos_;
             skip_ws();
-            auto v = parse_value();
+            auto v = parse_value(depth + 1);
             if (!v) return v;
             members.emplace_back(std::move(*key), std::move(*v));
             skip_ws();
@@ -401,7 +430,9 @@ inline void dump_into(Value const& v, std::string& out) {
 
 }  // namespace detail
 
-[[nodiscard]] inline result<Value> parse(std::string_view text) { return detail::Parser(text).parse(); }
+[[nodiscard]] inline result<Value> parse(std::string_view text, ParseBudget budget = {}) {
+    return detail::Parser(text, budget).parse();
+}
 
 [[nodiscard]] inline std::string dump(Value const& v) {
     std::string out;

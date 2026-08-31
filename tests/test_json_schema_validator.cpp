@@ -26,8 +26,8 @@ void check(bool cond, char const* what) {
 namespace json = agentengine::json;
 namespace schema = agentengine::schema;
 
-json::Value parse(std::string const& text) {
-    auto v = json::parse(text);
+json::Value parse(std::string const& text, json::ParseBudget budget = {}) {
+    auto v = json::parse(text, budget);
     if (!v) {
         std::fprintf(stderr, "FATAL: test fixture JSON failed to parse: %s\n", text.c_str());
         std::exit(1);
@@ -165,7 +165,10 @@ int main() {
         deep_instance += "}";
         for (int i = 0; i < 200; ++i) deep_instance += "}";
         auto s = parse(deep_schema);
-        auto i = parse(deep_instance);
+        // This fixture is deliberately deeper than json::Parser's own default ParseBudget
+        // (max_depth=64) -- it's exercising validate_instance()'s budget, not the parser's, so the
+        // parse itself needs enough headroom to actually produce the 200-deep instance below.
+        auto i = parse(deep_instance, json::ParseBudget{/*max_depth=*/256, /*max_nodes_visited=*/100'000});
         schema::ValidationBudget tight_depth;
         tight_depth.max_depth = 32;
         auto result = schema::validate_instance(s, i, tight_depth);

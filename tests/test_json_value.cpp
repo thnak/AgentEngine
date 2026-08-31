@@ -63,6 +63,49 @@ int main() {
     check(!parse("").has_value(), "empty input rejected");
     check(!parse(R"("unterminated)").has_value(), "unterminated string rejected");
 
+    // -- ParseBudget: hostile input is rejected, not a stack overflow --------------------------------
+    // A deeply-nested payload used to recurse parse_value/parse_array with no depth bound at all;
+    // this drives it well past the default budget (64) and must fail cleanly, not crash the process.
+    {
+        std::string deep_nesting(100'000, '[');
+        auto deep = parse(deep_nesting);
+        check(!deep.has_value(), "pathologically deep nesting is rejected, not stack-overflowed");
+        if (!deep.has_value()) {
+            check(deep.error().klass == agentengine::failure_class::resource,
+                  "depth-budget rejection reports failure_class::resource");
+            check(deep.error().code == "json.max_depth_exceeded",
+                  "depth-budget rejection reports the max_depth_exceeded code");
+        }
+    }
+
+    // A wide-but-shallow payload (one big flat array) must trip the node-count budget rather than
+    // being let through unbounded just because it never nests deeply.
+    {
+        std::string wide_array = "[";
+        for (int i = 0; i < 200'001; ++i) {
+            if (i > 0) wide_array += ',';
+            wide_array += "0";
+        }
+        wide_array += "]";
+        auto wide = parse(wide_array);
+        check(!wide.has_value(), "pathologically wide array is rejected by the node-count budget");
+        if (!wide.has_value()) {
+            check(wide.error().klass == agentengine::failure_class::resource,
+                  "node-count-budget rejection reports failure_class::resource");
+        }
+    }
+
+    // A document that's ordinarily well within budget still parses fine.
+    check(parse(R"([[[[[1]]]]])").has_value(), "ordinary nested input parses under the default budget");
+
+    // A caller-supplied tighter budget rejects input the default budget would accept.
+    {
+        ParseBudget tiny{/*max_depth=*/2, /*max_nodes_visited=*/100'000};
+        check(!parse(R"([[[1]]])", tiny).has_value(),
+              "a caller-supplied lower max_depth rejects input the default budget would accept");
+        check(parse(R"([[1]])", tiny).has_value(), "input within a caller-supplied budget still parses");
+    }
+
     if (g_failures == 0) {
         std::fprintf(stdout, "test_json_value: all checks passed\n");
         return 0;
