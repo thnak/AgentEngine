@@ -347,6 +347,46 @@ message(STATUS
   "ADR-096 C2 compile-fail proof: OK (composing SandboxToolProvider into a session makes "
   "fork_from() fail to compile; the same session type minus that call compiles and links cleanly)")
 
+# ---- ADR-158 compile-fail proofs (tool concurrency-exclusivity policy, MUST-FIX 1 / §5) ---------
+# `Tool<Derived, Policies...>` (core/tool.hpp) must reject, at compile time: (1) a tool declaring
+# both `Parallelizable` and `ExclusivityGroup<Name>` -- two different, contradictory concurrency
+# claims about the same tool (MUST-FIX 1); (2) a tool declaring more than one `ExclusivityGroup<
+# Name>` -- ambiguous, and this project rejects outright rather than silently keeping only the
+# last-declared one (§5's multi-declaration question). Header-only; no linking needed. No separate
+# positive-control file, matching the ADR-102 §3 C1 gate's own precedent above: the real runtime
+# test (tests/test_tool_exclusivity_group.cpp) already compiles and passes with bare `Parallelizable`
+# alone, `ExclusivityGroup<Name>` alone, and two independent tools sharing one group name, serving as
+# this pair's own positive control.
+try_compile(AE_TOOL_REJECTS_PARALLELIZABLE_AND_EXCLUSIVITY_GROUP
+  "${CMAKE_CURRENT_BINARY_DIR}/compile_fail_checks/tool_rejects_parallelizable_and_exclusivity_group"
+  "${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/tool_rejects_parallelizable_and_exclusivity_group.cpp"
+  CXX_STANDARD 23
+  CMAKE_FLAGS "-DINCLUDE_DIRECTORIES=${PROJECT_SOURCE_DIR}/include"
+  OUTPUT_VARIABLE AE_TOOL_REJECTS_PARALLELIZABLE_AND_EXCLUSIVITY_GROUP_LOG)
+if(AE_TOOL_REJECTS_PARALLELIZABLE_AND_EXCLUSIVITY_GROUP)
+  message(FATAL_ERROR
+    "ADR-158 MUST-FIX 1 VIOLATED: tests/compile_fail/"
+    "tool_rejects_parallelizable_and_exclusivity_group.cpp compiled, but a tool must not be able to "
+    "declare both Parallelizable and ExclusivityGroup<Name>. "
+    "Build log:\n${AE_TOOL_REJECTS_PARALLELIZABLE_AND_EXCLUSIVITY_GROUP_LOG}")
+endif()
+
+try_compile(AE_TOOL_REJECTS_DUPLICATE_EXCLUSIVITY_GROUP
+  "${CMAKE_CURRENT_BINARY_DIR}/compile_fail_checks/tool_rejects_duplicate_exclusivity_group"
+  "${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/tool_rejects_duplicate_exclusivity_group.cpp"
+  CXX_STANDARD 23
+  CMAKE_FLAGS "-DINCLUDE_DIRECTORIES=${PROJECT_SOURCE_DIR}/include"
+  OUTPUT_VARIABLE AE_TOOL_REJECTS_DUPLICATE_EXCLUSIVITY_GROUP_LOG)
+if(AE_TOOL_REJECTS_DUPLICATE_EXCLUSIVITY_GROUP)
+  message(FATAL_ERROR
+    "ADR-158 §5 VIOLATED: tests/compile_fail/tool_rejects_duplicate_exclusivity_group.cpp compiled, "
+    "but a tool must not be able to declare more than one ExclusivityGroup<Name>. "
+    "Build log:\n${AE_TOOL_REJECTS_DUPLICATE_EXCLUSIVITY_GROUP_LOG}")
+endif()
+message(STATUS
+  "ADR-158 compile-fail proof: OK (a tool declaring both Parallelizable and ExclusivityGroup<Name>, "
+  "or more than one ExclusivityGroup<Name>, both fail to compile)")
+
 # ---- ADR-071 compile-fail proof (native-execution family distinctness) -------------------------
 # `NativeCapabilityAnnouncer<Ps...>` (src/backends/native_process/native_capability_announcer.hpp)
 # must reject composing two providers sharing the same declared family name (e.g. two
@@ -1995,6 +2035,12 @@ add_test(NAME test_json_schema_codec COMMAND test_json_schema_codec)
 add_executable(test_tool_pipeline test_tool_pipeline.cpp)
 target_link_libraries(test_tool_pipeline PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_tool_pipeline COMMAND test_tool_pipeline)
+
+# ---- ADR-158: tool concurrency-exclusivity policy (declared tag only, no pipeline logic yet, ----
+# matching Parallelizable's own existing state -- 006 §8 G4 is still deferred). Header-only.
+add_executable(test_tool_exclusivity_group test_tool_exclusivity_group.cpp)
+target_link_libraries(test_tool_exclusivity_group PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_tool_exclusivity_group COMMAND test_tool_exclusivity_group)
 
 # ---- Tool-result-to-BlobRef promotion (006 §7 / 028 §2), first-party-tools Track A --------------
 # Header-only (core/tool_pipeline.hpp's normalize_success, shared by invoke_tool/background_task),

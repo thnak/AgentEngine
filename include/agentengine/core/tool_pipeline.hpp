@@ -120,6 +120,13 @@ struct ToolDescriptor {
     // silently trusting a default-constructed (null) `args_schema_value`.
     json::Value args_schema_value;
     bool args_schema_value_cached = false;
+
+    // decisions/ADR-158-tool-concurrency-exclusivity-policy.md §4: `nullopt` unless the tool
+    // declared `ExclusivityGroup<Name>` (`core/tool.hpp`). Read by no pipeline logic yet -- like
+    // `Parallelizable` itself, this is reserved ahead of 006 §8 G4's still-deferred parallel-batch
+    // scheduler, not consulted by any dispatch path today. Appended last, this struct's own
+    // established convention.
+    std::optional<std::string> exclusivity_group;
 };
 
 template <class ToolT>
@@ -131,6 +138,7 @@ template <class ToolT>
     d.approval = ToolT::declared_approval();
     d.backgroundable = ToolT::declared_backgroundable();
     d.effect_class = ToolT::declared_effect_class();
+    d.exclusivity_group = ToolT::declared_exclusivity_group();
     d.args_schema_json = ToolT::args_schema();
     d.reply_schema_json = ToolT::reply_schema();
     if (auto parsed = json::parse(d.args_schema_json)) {
@@ -166,6 +174,7 @@ template <class ToolT, class InvokeFn>
     d.approval = ToolT::declared_approval();
     d.backgroundable = ToolT::declared_backgroundable();
     d.effect_class = ToolT::declared_effect_class();
+    d.exclusivity_group = ToolT::declared_exclusivity_group();
     d.args_schema_json = ToolT::args_schema();
     d.reply_schema_json = ToolT::reply_schema();
     if (auto parsed = json::parse(d.args_schema_json)) {

@@ -6,10 +6,12 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/error.hpp"
+#include "agentengine/core/fixed_string.hpp"
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/policy_tags.hpp"
 #include "agentengine/trust/capability.hpp"
@@ -27,6 +29,23 @@ struct Approval {};  // ae-naming-lint: allow Approval — pre-existing M0 scaff
 // tag only; M2 proves a single native tool call, never a parallel batch (006 §8 G4 is deferred,
 // see the M2 breakdown's "what's explicitly deferred" list), so this carries no pipeline logic yet.
 struct Parallelizable {};  // ae-naming-lint: allow Parallelizable — pre-existing M0 scaffolding, reconcile at owning milestone
+
+// decisions/ADR-158-tool-concurrency-exclusivity-policy.md §4: a DISTINCT, alternative concurrency
+// claim from `Parallelizable` above, not layered on top of it -- a tool declares EITHER bare
+// `Parallelizable` (unconditional: safe alongside every other tool) OR `ExclusivityGroup<Name>`
+// (narrower: safe alongside any call outside group `Name`, but must serialize with any other
+// in-flight call that also declares `Name`), never both (enforced below, `Tool<Derived,
+// Policies...>`'s own static_assert). Like `Parallelizable`, this carries no pipeline logic yet --
+// 006 §8 G4's parallel-batch scheduler is still deferred; this only reserves the declaration
+// surface ahead of that scheduler landing, per ADR-158's own scope. `Name` is an `agentengine::
+// fixed_string` NTTP, matching the ALREADY-SHIPPED precedent for "two independently-compiled
+// declarations correlate by name, no RTTI" -- `trust/capability.hpp`'s `cap::decl::ToolCall<Name>`
+// and siblings -- not a `typeid`-erased type parameter, which `CONVENTIONS.md`'s no-RTTI-for-policy
+// rule would forbid (ADR-158 §3 MUST-FIX 3).
+template <agentengine::fixed_string Name>
+struct ExclusivityGroup {  // ae-naming-lint: allow ExclusivityGroup — ADR-158, same idiom as cap::decl::ToolCall<Name>
+    static constexpr std::string_view exclusivity_group_name = std::string_view{Name};
+};
 
 // §6b's sibling to `Parallelizable` above: "safe to detach from the turn that called it." Unlike
 // `Parallelizable`, this ONE carries real pipeline logic from the phase that declares it (Milestone 7
@@ -98,6 +117,32 @@ struct policy_backgroundable<Backgroundable> {
     static bool get() { return true; }
 };
 
+// ADR-158: compile-time detection so `Tool<Derived, Policies...>` can reject an author declaring
+// both `Parallelizable` and `ExclusivityGroup<Name>` (MUST-FIX 1) and more than one
+// `ExclusivityGroup<Name>` (§5's multi-declaration open question, resolved as a compile error --
+// this project's own "reject outright, never silently narrow" precedent, e.g.
+// `reject_embedded_nul()`) -- both as `static constexpr` values usable inside a fold in a
+// `static_assert`, not merely at runtime.
+template <class Policy>
+struct policy_is_parallelizable {
+    static constexpr bool value = false;
+};
+template <>
+struct policy_is_parallelizable<Parallelizable> {
+    static constexpr bool value = true;
+};
+
+template <class Policy>
+struct policy_exclusivity_group {
+    static constexpr bool declared = false;
+    static std::optional<std::string> get() { return std::nullopt; }
+};
+template <agentengine::fixed_string Name>
+struct policy_exclusivity_group<ExclusivityGroup<Name>> {
+    static constexpr bool declared = true;
+    static std::optional<std::string> get() { return std::string(std::string_view{Name}); }
+};
+
 }  // namespace tool_detail
 
 // The ten-step invocation pipeline (006 §3) is host machinery, not part of a tool's own shape, and
@@ -114,6 +159,44 @@ struct policy_backgroundable<Backgroundable> {
 // (decision 2, no gate item this milestone needs real coroutine concurrency to prove).
 template <class Derived, class... Policies>
 struct Tool {
+    // decisions/ADR-158-tool-concurrency-exclusivity-policy.md §4/§5: `Parallelizable` and
+    // `ExclusivityGroup<Name>` are two DIFFERENT, MUTUALLY EXCLUSIVE concurrency claims (MUST-FIX
+    // 1) -- declaring both would silently make two contradictory promises about the same tool
+    // (unconditionally safe with everyone, vs. safe with everyone except its own group). At most
+    // one `ExclusivityGroup<Name>` may be declared (§5's multi-declaration question, resolved as a
+    // compile error rather than the ordinary policy-tag fold's silent last-wins behavior, since
+    // silently narrowing a concurrency-safety guarantee is a materially worse failure mode than
+    // silently narrowing e.g. an approval mode). Fires at `Tool<Derived,Policies...>` instantiation
+    // -- i.e. for every real tool declaration, since `Derived : Tool<Derived,...>` requires this
+    // base to be complete.
+    // Written as an immediately-invoked lambda over a comma-operator fold, matching this struct's
+    // own established idiom below (`declared_capabilities()` et al.) rather than a raw arithmetic
+    // fold -- MSVC (Visual Studio 18) rejects `(static_cast<int>(pack_expr) + ...)` with C3520
+    // ("parameter pack must be expanded in this context") for at least one real instantiation in
+    // this codebase (`Tool<ScheduleWakeupTool>`, an EMPTY `Policies...`), while the lambda-fold form
+    // compiles cleanly for both the empty- and non-empty-pack cases.
+    static constexpr bool kHasParallelizable = [] {
+        bool has = false;
+        ([&has] {
+            if (tool_detail::policy_is_parallelizable<Policies>::value) has = true;
+        }(), ...);
+        return has;
+    }();
+    static constexpr int kExclusivityGroupCount = [] {
+        int count = 0;
+        ([&count] {
+            if (tool_detail::policy_exclusivity_group<Policies>::declared) ++count;
+        }(), ...);
+        return count;
+    }();
+    static_assert(!(kHasParallelizable && kExclusivityGroupCount > 0),
+                  "ADR-158: a tool must declare either Parallelizable (unconditional concurrency) "
+                  "or ExclusivityGroup<Name> (group-scoped concurrency), never both -- see "
+                  "decisions/ADR-158-tool-concurrency-exclusivity-policy.md §4");
+    static_assert(kExclusivityGroupCount <= 1,
+                  "ADR-158: a tool may declare at most one ExclusivityGroup<Name> -- see "
+                  "decisions/ADR-158-tool-concurrency-exclusivity-policy.md §5");
+
     [[nodiscard]] static std::string args_schema() {
         return schema::json_schema_of<typename Derived::Args>();
     }
@@ -166,6 +249,19 @@ struct Tool {
             if (tool_detail::policy_backgroundable<Policies>::get()) backgroundable = true;
         }(), ...);
         return backgroundable;
+    }
+
+    // decisions/ADR-158-tool-concurrency-exclusivity-policy.md §4: `std::nullopt` if the tool
+    // declared no `ExclusivityGroup<Name>` (including every tool that instead declares bare
+    // `Parallelizable`, or declares neither -- both leave this unset). `kExclusivityGroupCount <= 1`
+    // is already enforced above, so at most one iteration of this fold ever assigns.
+    [[nodiscard]] static std::optional<std::string> declared_exclusivity_group() {
+        std::optional<std::string> group;
+        ([&group] {
+            if (auto g = tool_detail::policy_exclusivity_group<Policies>::get(); g.has_value())
+                group = std::move(*g);
+        }(), ...);
+        return group;
     }
 };
 
