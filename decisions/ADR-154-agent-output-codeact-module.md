@@ -1,10 +1,9 @@
 # ADR-154 — `agent.output` for CodeAct: declaring a script's structured result
 
-**Status:** Proposed. Designed, implemented, and proven end to end against the REAL
-`agentengine_python_worker.exe` process — 12 checks (R1-R4) all pass, and the full related
-native-jail/python-worker test suite (7 targets, including ADR-057's own `agent.ask` end-to-end test,
-which shares the same wire frame this ADR extends) shows no regression. See §5/§6. **Not yet Judged**
-— per this project's own governance, only the project owner marks an ADR Judged.
+**Status:** Judged (2026-08-31, project-owner sign-off). Designed, implemented, and proven end to end
+against the REAL `agentengine_python_worker.exe` process — 12 checks (R1-R4) all pass, and the full
+related native-jail/python-worker test suite (7 targets, including ADR-057's own `agent.ask` end-to-end
+test, which shares the same wire frame this ADR extends) shows no regression. See §5/§6.
 
 **Relates to:** `026-Agent-Facing-Runtime-Surface.md` §5 (`agent.output`'s spec, "Emit structured
 output conforming to the run's schema", zero capability), GitHub issue #39 (filed from the same audit

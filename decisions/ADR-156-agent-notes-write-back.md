@@ -1,9 +1,9 @@
 # ADR-156 — `agent.notes` write-back: a dedicated inbox ref, harvested into real `MemoryItem`s
 
-**Status:** Proposed. Designed, red-teamed by an actual failing test (not merely reasoned about),
-corrected, implemented, and proven — 18 checks (R1-R5) all pass against real in-memory object/ref
-stores, and the full related memory-suite (8 targets) shows no regression. See §4/§5/§6. **Not yet
-Judged.**
+**Status:** Judged (2026-08-31, project-owner sign-off). Designed, red-teamed by an actual failing test
+(not merely reasoned about), corrected, implemented, and proven — 18 checks (R1-R5) all pass against
+real in-memory object/ref stores, and the full related memory-suite (8 targets) shows no regression.
+See §4/§5/§6.
 
 **Relates to:** `026-Agent-Facing-Runtime-Surface.md` §5 (`agent.notes`'s spec: "ordinary writes into
 `/memory`, landing as `AgentAuthored` `MemoryItem`s", `FsWrite<mount>`), GitHub issue #40 (`agent.notes`

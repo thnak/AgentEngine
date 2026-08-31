@@ -1,11 +1,10 @@
 # ADR-153 — Reaching `agent.memory` from a CodeAct sandbox: `recall` bridging + a read-only `/memory` mount
 
-**Status:** Proposed. Red-teamed, implemented (with two named must-fix corrections to the original
-sketch, not the draft verbatim), and proven — real code, 12 new checks (R1-R3) all pass against a real
-`MemoryProvider`/`bridge_tool_call()`/`materialize_memory_mount()`, and a full rebuild of every test
-target that touches `MemoryProvider` or `ToolBridgeConfig` confirms no regression — see §5/§6 below.
-**Not yet Judged** — per this project's own governance (`decisions/README.md`), only the project owner
-marks an ADR Judged.
+**Status:** Judged (2026-08-31, project-owner sign-off). Red-teamed, implemented (with two named
+must-fix corrections to the original sketch, not the draft verbatim), and proven — real code, 12 new
+checks (R1-R3) all pass against a real `MemoryProvider`/`bridge_tool_call()`/`materialize_memory_mount()`,
+and a full rebuild of every test target that touches `MemoryProvider` or `ToolBridgeConfig` confirms no
+regression — see §5/§6 below.
 
 **Relates to:** `026-Agent-Facing-Runtime-Surface.md` §5 (`agent.memory`'s spec: "ordinary read access
 to the memory worktree's files under `/memory`... the ranked/on-demand view is `agent.tools.recall`, an

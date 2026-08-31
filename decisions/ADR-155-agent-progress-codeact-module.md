@@ -1,10 +1,10 @@
 # ADR-155 — `agent.progress` for CodeAct: streaming progress without a new frame type
 
-**Status:** Proposed. Designed (deliberately diverging from GitHub issue #31's own first sketch, with
-the divergence named explicitly — §2), implemented, and proven end to end against the REAL
-`agentengine_python_worker.exe` process — 10 checks (R1-R4) all pass, and the full related
-native-jail/python-worker/report-progress test suite (7 targets, including ADR-060's own
-`test_agent_session_tool_call_progress.cpp`) shows no regression. See §5/§6. **Not yet Judged.**
+**Status:** Judged (2026-08-31, project-owner sign-off). Designed (deliberately diverging from GitHub
+issue #31's own first sketch, with the divergence named explicitly — §2), implemented, and proven end
+to end against the REAL `agentengine_python_worker.exe` process — 10 checks (R1-R4) all pass, and the
+full related native-jail/python-worker/report-progress test suite (7 targets, including ADR-060's own
+`test_agent_session_tool_call_progress.cpp`) shows no regression. See §5/§6.
 
 **Relates to:** `026-Agent-Facing-Runtime-Surface.md` §5 (`agent.progress`'s spec, "Report progress on
 long work → run event stream", zero capability), GitHub issue #31 (the full three-piece gap this ADR
