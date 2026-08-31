@@ -1650,6 +1650,24 @@ add_executable(test_rt_workflow_checkpoint_g2 test_rt_workflow_checkpoint_g2.cpp
 target_link_libraries(test_rt_workflow_checkpoint_g2 PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_workflow_checkpoint_g2 COMMAND test_rt_workflow_checkpoint_g2)
 
+# ---- ADR-149 (GitHub issue #28): a Magentic-shaped workflow convenience API. Design draft:
+# docs/planning/magentic-workflow-convenience-api-design-draft.md.
+add_executable(test_rt_workflow_stall_reset_bounds test_rt_workflow_stall_reset_bounds.cpp)
+target_link_libraries(test_rt_workflow_stall_reset_bounds PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_workflow_stall_reset_bounds COMMAND test_rt_workflow_stall_reset_bounds)
+
+add_executable(test_workflow_magentic_builder test_workflow_magentic_builder.cpp)
+target_link_libraries(test_workflow_magentic_builder PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_workflow_magentic_builder COMMAND test_workflow_magentic_builder)
+
+add_executable(test_workflow_magentic_plan_signoff test_workflow_magentic_plan_signoff.cpp)
+target_link_libraries(test_workflow_magentic_plan_signoff PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_workflow_magentic_plan_signoff COMMAND test_workflow_magentic_plan_signoff)
+
+add_executable(test_rt_workflow_checkpoint_manager test_rt_workflow_checkpoint_manager.cpp)
+target_link_libraries(test_rt_workflow_checkpoint_manager PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_workflow_checkpoint_manager COMMAND test_rt_workflow_checkpoint_manager)
+
 # ---- Milestone 5 Phase G1 -- ChatCallRecording JSON codec (core/chat_recording.hpp), the shared
 # foundation RecordingChatClient<Inner> and ReplayChatClient both depend on.
 add_executable(test_chat_recording_codec test_chat_recording_codec.cpp)

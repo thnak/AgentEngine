@@ -118,6 +118,17 @@ if(AGENTENGINE_WITH_HTTPS)
     MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
   add_test(NAME example_17_planner_live COMMAND agentengine_example_17_planner_live)
   set_tests_properties(example_17_planner_live PROPERTIES LABELS "live-network" TIMEOUT 300)
+
+  # 19: ADR-149 (GitHub issue #28) -- the same live moderator/researcher/writer cycle as 17, rebuilt
+  # with MagenticWorkflowBuilder instead of a hand-wired Workflow/Edge list, using two genuinely
+  # distinct declared message types and max_stalls() composed with a live moderator.
+  add_executable(agentengine_example_19_magentic_builder_live 19_magentic_builder_live.cpp)
+  target_include_directories(agentengine_example_19_magentic_builder_live PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../tests")
+  target_link_libraries(agentengine_example_19_magentic_builder_live PRIVATE
+    agentengine::core agentengine::provider_http_client agentengine_warnings
+    MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+  add_test(NAME example_19_magentic_builder_live COMMAND agentengine_example_19_magentic_builder_live)
+  set_tests_properties(example_19_magentic_builder_live PROPERTIES LABELS "live-network" TIMEOUT 300)
 endif()
 
 # 18: not part of MAF's own progression -- closes docs/planning/2026-08-22-component-role-audit-

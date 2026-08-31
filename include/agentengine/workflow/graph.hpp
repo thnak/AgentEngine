@@ -218,8 +218,27 @@ struct TerminationBound {
     // this is documented rather than either quietly enforced or quietly dropped.
     std::optional<std::uint64_t> token_budget;
 
+    // ADR-149 (issue #28 item 2): a Magentic-shaped moderator's stall/reset safety valve.
+    // ENGINE-ENFORCED, unlike `token_budget` above -- but only ever fed by ONE host-designated
+    // executor's self-report (`WorkflowSupervisor::initialize()`'s `designated_stall_reporter`
+    // parameter), never any executor's raw output. See that parameter's own comment for the full
+    // I2/I3 reasoning (ADR-149 §3 finding 1): this is deliberately narrower than "any output can
+    // end the run" -- a host that never names a reporter gets these fields silently inert, exactly
+    // ADR-070/ADR-071's "fails closed/safe when unset" Delegated Decision Seam shape.
+    //
+    // `max_stalls` -- consecutive rounds the designated reporter self-reports `stalled` before a
+    // "reset" is counted. `max_resets` -- how many resets are tolerated before the run ends
+    // (`workflow_status::bound_max_resets`); if unset, the FIRST stall trip ends the run
+    // (`workflow_status::bound_max_stalls`). Neither field infers what a stall MEANS -- the engine
+    // only counts an explicit boolean the reporter chose to set, never decides to force a replan
+    // itself (that stays the moderator's own job, per 014 §3's "safety valve, not the termination
+    // contract").
+    std::optional<std::uint32_t> max_stalls;
+    std::optional<std::uint32_t> max_resets;
+
     [[nodiscard]] bool any() const noexcept {
-        return max_rounds.has_value() || deadline_ms.has_value() || token_budget.has_value();
+        return max_rounds.has_value() || deadline_ms.has_value() || token_budget.has_value() ||
+               max_stalls.has_value() || max_resets.has_value();
     }
 
     friend bool operator==(TerminationBound const&, TerminationBound const&) = default;
@@ -623,6 +642,19 @@ public:
 
     WorkflowBuilder& token_budget(std::uint64_t tokens) {
         wf_.bound.token_budget = tokens;
+        return *this;
+    }
+
+    // ADR-149: forwards to `TerminationBound::max_stalls`/`max_resets` -- see that field's own
+    // comment. Available on the plain builder (not only `MagenticWorkflowBuilder`) since the
+    // underlying engine mechanism is a generic `WorkflowSupervisor` feature, not Magentic-specific.
+    WorkflowBuilder& max_stalls(std::uint32_t n) {
+        wf_.bound.max_stalls = n;
+        return *this;
+    }
+
+    WorkflowBuilder& max_resets(std::uint32_t n) {
+        wf_.bound.max_resets = n;
         return *this;
     }
 

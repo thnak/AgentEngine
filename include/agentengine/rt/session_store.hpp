@@ -281,8 +281,43 @@ public:
     }
 
 private:
+    // ADR-149 follow-on finding: `agentengine::rt::WorkflowSupervisor::run_id()` always has the
+    // shape `"<graph.id>:run:<counter>"` -- a real caller (`save_workflow_checkpoint()`/
+    // `WorkflowCheckpointManager::attach()`, both rt/workflow_supervisor.hpp resp.
+    // rt/workflow_checkpoint_manager.hpp) uses THAT id verbatim as a `SessionStore` key. `:` is a
+    // legal, ordinary `SessionId` character -- it just isn't a legal Windows filename character
+    // (reserved for drive letters / NTFS alternate data streams), so `std::ofstream(path, ...)`
+    // fails to open outright, confirmed by a direct repro during this pass, not asserted from
+    // memory. This means every workflow checkpoint through this store was silently unusable on
+    // Windows before this fix -- a real, pre-existing, platform-specific defect this pass found and
+    // fixed, not a hypothetical. This function closes it for `:` and the rest of Windows' reserved-
+    // character set, percent-escaped (also escaping a literal `%`, so the mapping stays
+    // unambiguous/injective -- two different ids can never sanitize to the same on-disk name).
+    [[nodiscard]] static std::string sanitize_for_filesystem(std::string const& id) {
+        static constexpr char kHex[] = "0123456789ABCDEF";
+        std::string out;
+        out.reserve(id.size());
+        for (unsigned char c : id) {
+            bool const needs_escape =
+                c == ':' || c == '<' || c == '>' || c == '"' || c == '|' || c == '?' || c == '*' ||
+                c == '%' || c < 0x20;
+            if (needs_escape) {
+                out += '%';
+                out += kHex[(c >> 4) & 0xF];
+                out += kHex[c & 0xF];
+            } else {
+                out += static_cast<char>(c);
+            }
+        }
+        return out;
+    }
+
     // Rejects an id that could escape `root_` via a path separator or a `..` component (see the
-    // class banner). Returns the full on-disk path for a well-formed id.
+    // class banner) -- kept as an outright REJECT, not sanitized, since this specific check exists
+    // to catch a caller's mistake (a raw file path where an id was expected), not merely to make an
+    // otherwise-legitimate id filesystem-safe. Every other Windows-reserved-but-otherwise-legal
+    // character is sanitized via `sanitize_for_filesystem()` instead. Returns the full on-disk path
+    // for a well-formed id.
     [[nodiscard]] result<std::filesystem::path> path_for(SessionId const& id) const {
         if (id.empty()) {
             return std::unexpected(error{failure_class::contract, "session id must not be empty",
@@ -296,7 +331,7 @@ private:
                       "session id must not contain path separators or '..': '" + id + "'",
                       "rt.session_store.invalid_id"});
         }
-        return root_ / id;
+        return root_ / sanitize_for_filesystem(id);
     }
 
     std::filesystem::path root_;

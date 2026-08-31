@@ -185,6 +185,14 @@ namespace agentengine::rt {
 struct ExecutorOutcome {
     agentengine::Message     payload;
     std::vector<std::string> routes;
+    // ADR-149 (issue #28 item 2): an explicit, opt-in "no progress this round" self-report. Trusted
+    // by `execute()`'s stall/reset bookkeeping ONLY when this executor's id matches
+    // `WorkflowSupervisor::initialize()`'s `designated_stall_reporter` -- every other executor
+    // setting this is inert, by design (ADR-149 §3 finding 1: NOT a generic "any output can end the
+    // run" signal, which would cross I2/I3 the way `routes` -- bounded to edges the graph author
+    // already wired -- does not). Default `false`; appended as a trailing field so every existing
+    // `ExecutorOutcome{message}`/`{message, routes}` call site is unaffected.
+    bool stalled = false;
 
     ExecutorOutcome() = default;
     ExecutorOutcome(agentengine::Message m) : payload(std::move(m)) {}  // NOLINT(google-explicit-constructor)
@@ -229,6 +237,9 @@ struct ExecuteReply {
     std::vector<std::string> routes;
     bool                     ok    = true;
     agentengine::failure_class klass = agentengine::failure_class::fatal;
+    // ADR-149: threaded from `ExecutorOutcome::stalled` the same way `routes` already is. Default
+    // `false`, appended trailing so every existing 4-arg brace-init keeps compiling unchanged.
+    bool stalled = false;
 };
 
 [[nodiscard]] inline agentengine::Message failure_marker(std::string const& executor_id,
@@ -266,6 +277,13 @@ enum class workflow_status {
     // "never resolved by guessing" rule means this is a terminal outcome, never auto-retried, the
     // same shape `executor_failed`/`routing_failed` already are.
     merge_conflict,
+    // ADR-149 (issue #28 item 2): `TerminationBound::max_stalls`/`max_resets` tripped. `bound_max_
+    // stalls` -- `max_resets` was never set, so the FIRST stall trip ends the run. `bound_max_resets`
+    // -- `max_resets` WAS set, and stall trips exceeded it (every trip under the ceiling is silently
+    // absorbed and the run continues). Mirrors `bound_max_rounds`'s own shape: an honest, expected,
+    // non-error termination, not a fault.
+    bound_max_stalls,
+    bound_max_resets,
     invalid,
 };
 
@@ -299,6 +317,25 @@ struct WorkflowResult {
     std::vector<agentengine::Interaction> open_interactions{};
     std::vector<std::string> unopened_ports{};
 };
+
+// ADR-149 (issue #28 item 6), REVISED SCOPE -- ADR-149 §3 finding 8 (a red-team pass found this
+// during design, before any code existed): `record_partial()` keeps AT MOST ONE entry per
+// `executor_id` in `partial` (overwritten in place on every revisit, never appended) -- so a cyclic
+// graph (which is what Magentic/Planner IS: the manager and every participant are revisited across
+// many rounds) has no "round order" left to extract by the time a run completes. This is therefore
+// NOT a full multi-visit transcript -- it is exactly what `partial` actually contains, honestly
+// named: the most recent message each executor produced. A genuine multi-visit transcript needs a
+// per-round hook into `execute()`'s dispatch loop (right where `record_partial()` currently
+// overwrites) -- the SAME mechanism a follow-on ADR/issue #29's per-executor event multiplexing needs to
+// build anyway, so it is deferred there rather than building a second, throwaway hook here.
+using Transcript = std::vector<agentengine::Message>;
+
+[[nodiscard]] inline Transcript latest_outputs_of(WorkflowResult const& r) {
+    Transcript out;
+    out.reserve(r.partial.size());
+    for (ExecutorOutput const& o : r.partial) out.push_back(o.payload);
+    return out;
+}
 
 // -- Slice 2: the checkpoint record + its JSON codec (see file banner) -----------------------------
 
@@ -336,6 +373,13 @@ struct RunStateRecord {
     std::vector<std::string> unopened_ports;
     std::int64_t              elapsed_ns = 0;
     std::vector<OpenPortRecord> ports;
+    // ADR-149 (issue #28 item 2/5): must round-trip through checkpoint/resume, or a host that
+    // checkpoints a Magentic run at all (the normal, encouraged persistence pattern) would silently
+    // reset stall bookkeeping to zero on every resume -- an unlimited-stall-budget bypass of the
+    // exact safety valve this field exists to provide. Optional on read (default 0) so a checkpoint
+    // taken before ADR-149 still decodes.
+    std::uint32_t stall_streak = 0;
+    std::uint32_t resets_used  = 0;
 };
 
 // interaction_to_json()/interaction_from_json() live in interaction_codec.hpp -- shared with
@@ -470,6 +514,8 @@ struct RunStateRecord {
         {"unopened_ports", agentengine::json::Value::make_array(std::move(unopened_ports))},
         {"elapsed_ns", agentengine::json::Value::make_number(static_cast<double>(rec.elapsed_ns))},
         {"ports", agentengine::json::Value::make_array(std::move(ports))},
+        {"stall_streak", agentengine::json::Value::make_number(static_cast<double>(rec.stall_streak))},
+        {"resets_used", agentengine::json::Value::make_number(static_cast<double>(rec.resets_used))},
     });
 }
 
@@ -531,6 +577,16 @@ struct RunStateRecord {
         if (!p) return std::unexpected(p.error());
         rec.ports.push_back(std::move(*p));
     }
+    // ADR-149: optional on read -- a pre-ADR-149 checkpoint has neither field, and 0 is the correct
+    // "no stall bookkeeping yet" value for one, matching this record's other additive-field precedent.
+    if (agentengine::json::Value const* stall_streak = v.find("stall_streak");
+        stall_streak != nullptr && stall_streak->is_number()) {
+        rec.stall_streak = static_cast<std::uint32_t>(stall_streak->as_number());
+    }
+    if (agentengine::json::Value const* resets_used = v.find("resets_used");
+        resets_used != nullptr && resets_used->is_number()) {
+        rec.resets_used = static_cast<std::uint32_t>(resets_used->as_number());
+    }
     return rec;
 }
 
@@ -574,17 +630,33 @@ public:
     // a COPY of that shared_ptr for the whole lifetime of this instance) is what keeps the pointee
     // alive across rounds; a per-call `EffectContext` copy handed to `run_executor_job()` below is
     // only ever a SHORT-LIVED alias of the same underlying object, never its owner.
+    // `designated_stall_reporter`: ADR-149 (issue #28 item 2) -- the ONE executor id whose
+    // `ExecutorOutcome::stalled` self-report `execute()` trusts for `TerminationBound::max_stalls`/
+    // `max_resets` bookkeeping; every other executor's `stalled` is inert. Empty (default) disables
+    // stall/reset tracking entirely, regardless of what `TerminationBound` declares -- an explicit
+    // host opt-in, matching ADR-070/ADR-071's "fails closed/safe when unset" Delegated Decision Seam
+    // shape. See `ExecutorOutcome::stalled`'s own comment for the full I2/I3 reasoning.
     void initialize(agentengine::workflow::Workflow graph, std::vector<ExecutorBody> bodies,
-                     std::vector<agentengine::EffectContext> contexts = {}) {
+                     std::vector<agentengine::EffectContext> contexts = {},
+                     std::string designated_stall_reporter = {}) {
         graph_    = std::move(graph);
         bodies_   = std::move(bodies);
         contexts_ = std::move(contexts);
         contexts_.resize(graph_.executors.size());
+        designated_stall_reporter_ = std::move(designated_stall_reporter);
+        stall_streak_ = 0;
+        resets_used_  = 0;
         valid_ = agentengine::workflow::validate_workflow(graph_).has_value() &&
                  bodies_.size() == graph_.executors.size() &&
                  agentengine::workflow::check_workflow_executable(graph_, contexts_).has_value() &&
                  agent_kind_bodies_are_structurally_agent_backed();
     }
+
+    [[nodiscard]] std::string const& designated_stall_reporter() const noexcept {
+        return designated_stall_reporter_;
+    }
+    [[nodiscard]] std::uint32_t stall_streak() const noexcept { return stall_streak_; }
+    [[nodiscard]] std::uint32_t resets_used() const noexcept { return resets_used_; }
 
     [[nodiscard]] agentengine::workflow::Workflow const& graph() const noexcept { return graph_; }
     [[nodiscard]] std::uint32_t rounds_executed() const noexcept { return rounds_; }
@@ -713,6 +785,8 @@ public:
             rec.ports.push_back(OpenPortRecord{p.interaction, static_cast<std::uint64_t>(p.executor_index),
                                                p.response, p.routes, p.resolved});
         }
+        rec.stall_streak = stall_streak_;
+        rec.resets_used  = resets_used_;
         return rec;
     }
 
@@ -739,6 +813,8 @@ public:
             ports_.push_back(OpenPort{p.interaction, static_cast<std::size_t>(p.executor_index),
                                       p.response, p.routes, p.resolved});
         }
+        stall_streak_ = rec.stall_streak;
+        resets_used_  = rec.resets_used;
     }
 
     // The in-flight-safe read: acquires run_mutex_ for the whole read, the same I1 guard every
@@ -793,7 +869,7 @@ private:
             co_return;
         }
         *out = ExecuteReply{std::move(outcome->payload), std::move(outcome->routes), true,
-                             agentengine::failure_class::fatal};
+                             agentengine::failure_class::fatal, outcome->stalled};
         co_return;
     }
 
@@ -978,6 +1054,68 @@ private:
                     state_.unopened_ports.push_back(graph_.executors[d.executor_index].id);
                 }
                 break;
+            }
+
+            // ADR-149 (issue #28 item 2): stall/reset safety valve. Checked here, using THIS round's
+            // already-computed `replies`, in the exact same position as the `broke`/`merge_failed`
+            // checks above -- so a trip that ends the run gets the identical terminal-path treatment
+            // (unresolved `port_deliveries` become `unopened_ports`, `ports_` stays untouched, never
+            // reported as a stale open interaction on a run that has actually ended). This position
+            // also FIXES the precedence against `max_rounds`/`deadline_ms`, which are only re-checked
+            // at the TOP of the loop for a would-be next round: a stall/reset trip on round N always
+            // takes effect before that next check is ever reached (ADR-149 §3 finding 5).
+            if (!designated_stall_reporter_.empty()) {
+                // A REAL bug an early implementation had, caught by an end-to-end test against a
+                // builder-produced manager/participant graph (not the self-loop-only unit tests
+                // written first, none of which happened to exercise this): the designated reporter
+                // does NOT run every round in a normal manager/participant alternation (the manager
+                // runs, then a participant runs, then the manager again). Resetting stall_streak_ on
+                // ANY round the reporter didn't run -- as an earlier version of this block did --
+                // means the streak can never accumulate past 1 in that shape, silently defeating
+                // max_stalls for exactly the graph this feature targets. A round the reporter did
+                // not run in is NEUTRAL (leaves stall_streak_ unchanged) -- only a round the reporter
+                // DID run in updates it, from that reply's own `stalled` value.
+                //
+                // A SECOND real bug, found by an independent post-implementation audit: the
+                // quarantine block above only dedupes concurrent same-round deliveries to an
+                // `agent`-kind executor -- a `function`-kind (or any non-agent-kind) designated
+                // reporter can genuinely receive TWO deliveries in one round (e.g. two ordinary
+                // edges converging on it), and an earlier version of this loop took only the FIRST
+                // matching delivery's `stalled` value and `break`-ed, silently discarding a real
+                // stall self-report on the second. Fixed by OR-aggregating `stalled` across EVERY
+                // delivery to the reporter's index this round -- a safety valve must fail toward
+                // counting a real stall report, not discarding one because of dispatch order.
+                bool reporter_ran     = false;
+                bool reporter_stalled = false;
+                for (std::size_t i = 0; i < exec_deliveries.size(); ++i) {
+                    if (graph_.executors[exec_deliveries[i].executor_index].id != designated_stall_reporter_) {
+                        continue;
+                    }
+                    reporter_ran = true;
+                    if (replies[i].stalled) reporter_stalled = true;
+                }
+                if (reporter_ran) {
+                    stall_streak_ = reporter_stalled ? stall_streak_ + 1 : 0;
+                }
+
+                if (graph_.bound.max_stalls.has_value() && stall_streak_ >= *graph_.bound.max_stalls) {
+                    ++resets_used_;
+                    stall_streak_ = 0;
+                    bool const trip_ends_run = !graph_.bound.max_resets.has_value() ||
+                                                resets_used_ > *graph_.bound.max_resets;
+                    if (trip_ends_run) {
+                        status = graph_.bound.max_resets.has_value() ? workflow_status::bound_max_resets
+                                                                       : workflow_status::bound_max_stalls;
+                        for (auto const& d : port_deliveries) {
+                            state_.unopened_ports.push_back(graph_.executors[d.executor_index].id);
+                        }
+                        break;
+                    }
+                    // Under the ceiling: this reset is silently absorbed and the run continues -- MAF's
+                    // own "force a replan, capped total resets" shape. The engine never forces a
+                    // replan itself; that stays the moderator's own job on its next invocation (014
+                    // §3: "safety valve, not the termination contract").
+                }
             }
 
             for (auto const& d : port_deliveries) {
@@ -1202,6 +1340,15 @@ private:
     std::uint32_t  rounds_      = 0;
     std::uint64_t  run_counter_ = 0;
     std::string    run_id_;
+    // ADR-149 (issue #28 item 2). `designated_stall_reporter_` is host configuration set fresh at
+    // `initialize()` -- like `bodies_`/`contexts_`, deliberately NOT part of `RunStateRecord`
+    // (a resumed run's caller re-supplies it, same "caller supplies fresh at initialize()"
+    // convention `agent_workflow_executor.hpp`'s own checkpoint/resume limitation already
+    // established). `stall_streak_`/`resets_used_` ARE run-durable state and DO round-trip through
+    // `to_record()`/`restore_from_record()` -- see `RunStateRecord`'s own fields.
+    std::string    designated_stall_reporter_;
+    std::uint32_t  stall_streak_ = 0;
+    std::uint32_t  resets_used_  = 0;
     RunState       state_;
     std::vector<OpenPort> ports_;
     // Sized 0 (system-determined default) -- a round's own fan-out width varies by graph, so a fixed
