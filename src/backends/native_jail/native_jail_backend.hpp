@@ -180,6 +180,21 @@ public:
     result<ExecOutcome> exec(SandboxHandle& handle, ExecRequest const& request, EffectContext& ctx);
     void destroy(SandboxHandle& handle);
 
+    // Grants this backend's shared, deployment-scoped AppContainer profile read+execute access to a
+    // FIXED, host-controlled path (never a caller/model-supplied one -- I2), deduplicated for the life
+    // of the process the same way `python_home`/`extra_sys_path`/the worker-binary directory already
+    // are internally for `create_python_worker()`. Exists so a caller outside this translation unit
+    // (e.g. a first-party `Tool<>` that needs one fixed scratch directory readable by an
+    // AppContainer'd worker it spawns via plain `create()`/`exec()`, not `create_python_worker()`) can
+    // reach that same dedup guarantee -- `grant_ro_deduped()`/`shared_profile()` are anonymous-
+    // namespace internals of native_jail_backend.cpp and were never reachable from outside it before
+    // this method (docs/planning/pdf-text-extraction-design-draft.md Revision 6, round-5/round-6
+    // red-team finding). Calling this repeatedly with the SAME `path` is a safe no-op after the first
+    // call -- it does not grow the shared profile's DACL. Does not itself add `path` to any
+    // `SandboxSpec::mounts` list; the grant lives on the AppContainer SID's own ACL, independent of any
+    // particular `SandboxHandle`'s `SandboxSpec` bookkeeping.
+    [[nodiscard]] result<void> grant_ro_path_once(std::wstring const& path);
+
     // ---- Jailed-Python-worker surface (additive; NOT part of the SandboxBackend concept -- see
     // sandbox/sandbox.hpp's own `exec_session` is intentionally absent from that `requires` clause,
     // matching the final spec §4's "additive non-concept method" statement). ----

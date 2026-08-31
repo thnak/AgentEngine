@@ -432,6 +432,12 @@ void NativeJailBackend::destroy(SandboxHandle& handle) {
     instances_.erase(handle.opaque_id);
 }
 
+result<void> NativeJailBackend::grant_ro_path_once(std::wstring const& path) {
+    auto profile = shared_profile();
+    if (!profile.has_value()) return std::unexpected(profile.error());
+    return grant_ro_deduped(**profile, path);
+}
+
 // ================================================================================================
 // Jailed-Python-worker surface (008 §1b/§3, 010 §2/§6 -- decisions/ADR-081-jailed-python-worker-
 // process-slice-1.md is the ADR superseding this file's former "Correction (2026-08-23)" comment on

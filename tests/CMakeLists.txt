@@ -1968,6 +1968,47 @@ add_executable(test_read_content test_read_content.cpp)
 target_link_libraries(test_read_content PRIVATE agentengine::core agentengine::net_egress_proxy agentengine_warnings)
 add_test(NAME test_read_content COMMAND test_read_content)
 
+# ---- ExtractPdfText, 009 §7's PDF-text-layer document-extraction candidate (ADR-106, docs/planning/
+# pdf-text-extraction-design-draft.md Revision 7) -- only built when AGENTENGINE_WITH_PDF is
+# explicitly turned ON (root CMakeLists.txt), the same opt-in posture AGENTENGINE_WITH_WASM/
+# AGENTENGINE_BUILD_PYTHON_RUNNER already have for a big, untrusted-input-handling dependency. Real
+# end-to-end: spawns the REAL sandboxed agentengine_pdf_worker against a real, embedded minimal PDF.
+if(AGENTENGINE_WITH_PDF)
+  add_executable(test_extract_pdf_text test_extract_pdf_text.cpp)
+  target_link_libraries(test_extract_pdf_text PRIVATE
+    agentengine::core agentengine::net_egress_proxy agentengine::extract_pdf_text agentengine_warnings)
+  add_test(NAME test_extract_pdf_text COMMAND test_extract_pdf_text)
+  # Spawns a real sandboxed child process (AppContainer/Job Object on Windows, namespaces/cgroups on
+  # Linux) and runs a real PDFium decode -- generous but finite headroom over ordinary run time.
+  set_tests_properties(test_extract_pdf_text PROPERTIES TIMEOUT 60)
+
+  # ---- ExtractPdfToc, a second candidate sharing the same sandboxed worker (extract_pdf_toc.hpp's
+  # own file-top comment explains why this one shares rather than duplicates).
+  add_executable(test_extract_pdf_toc test_extract_pdf_toc.cpp)
+  target_link_libraries(test_extract_pdf_toc PRIVATE
+    agentengine::core agentengine::net_egress_proxy agentengine::extract_pdf_text agentengine_warnings)
+  add_test(NAME test_extract_pdf_toc COMMAND test_extract_pdf_toc)
+  set_tests_properties(test_extract_pdf_toc PROPERTIES TIMEOUT 60)
+
+  # ---- ExtractPdfImages, a third candidate sharing the same sandboxed worker -- embedded-image
+  # METADATA listing only (position/dimensions/format, never bytes; extract_pdf_images.hpp's own
+  # file-top comment explains the scope cut and why this shares rather than duplicates).
+  add_executable(test_extract_pdf_images test_extract_pdf_images.cpp)
+  target_link_libraries(test_extract_pdf_images PRIVATE
+    agentengine::core agentengine::net_egress_proxy agentengine::extract_pdf_text agentengine_warnings)
+  add_test(NAME test_extract_pdf_images COMMAND test_extract_pdf_images)
+  set_tests_properties(test_extract_pdf_images PROPERTIES TIMEOUT 60)
+
+  # ---- ExtractPdfMetadata, a fourth candidate sharing the same sandboxed worker
+  # (extract_pdf_metadata.hpp's own file-top comment explains why this one shares rather than
+  # duplicates).
+  add_executable(test_extract_pdf_metadata test_extract_pdf_metadata.cpp)
+  target_link_libraries(test_extract_pdf_metadata PRIVATE
+    agentengine::core agentengine::net_egress_proxy agentengine::extract_pdf_text agentengine_warnings)
+  add_test(NAME test_extract_pdf_metadata COMMAND test_extract_pdf_metadata)
+  set_tests_properties(test_extract_pdf_metadata PROPERTIES TIMEOUT 60)
+endif()
+
 # ---- Skills Phase 2: core/skill_tool_scoping.hpp -- pure ToolTable filtering plus the negative
 # control proving invoke_tool actually rejects a real tool absent from the scoped table (not just
 # cosmetic list-shortening). No skills/sandbox dependency -- core-tier only.
@@ -2439,6 +2480,14 @@ if(WIN32)
   # RUN_SERIAL: minimizes overlap with sibling tests that share job_object_hostile_child.exe (a
   # real -j4 run surfaced this -- see the test file's own comment on hostile_child_name_lower).
   set_tests_properties(test_native_jail_teardown_cycles_windows PROPERTIES TIMEOUT 150 RUN_SERIAL TRUE)
+
+  # ---- NativeJailBackend::grant_ro_path_once() (docs/planning/pdf-text-extraction-design-draft.md
+  # Revision 6/7 -- the public entry point round-5/round-6 red-team found missing) -----------------
+  add_executable(test_native_jail_grant_ro_path_once_windows test_native_jail_grant_ro_path_once_windows.cpp)
+  target_link_libraries(test_native_jail_grant_ro_path_once_windows PRIVATE
+    agentengine::core agentengine::native_jail_backend agentengine_warnings)
+  add_test(NAME test_native_jail_grant_ro_path_once_windows COMMAND test_native_jail_grant_ro_path_once_windows)
+  set_tests_properties(test_native_jail_grant_ro_path_once_windows PROPERTIES TIMEOUT 30)
 endif()
 
 # ---- LinuxNativeJailBackend end-to-end (M2 Phase C task C2's Linux follow-up, 008 §1b/§2/§3) ---
