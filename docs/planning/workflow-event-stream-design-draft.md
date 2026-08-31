@@ -215,7 +215,7 @@ recommendation, adopted here:
   red team's scratchpad version into a real, repo-tracked test)
 - `examples/24_*.cpp` (new — a fan-out round with 2+ concurrently-streaming agent-kind nodes,
   proving live interleaving under a deliberately slow consumer, not just presence of events)
-- `decisions/ADR-15x-workflow-event-streaming.md` (new, once implemented and proven)
+- `decisions/ADR-152-workflow-event-streaming.md` (shipped)
 
 ## 7. Recommended next step
 

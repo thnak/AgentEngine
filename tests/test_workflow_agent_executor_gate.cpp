@@ -125,15 +125,23 @@ int main() {
                     "rejected");
     }
 
-    // ---- G6: sub_workflow stays refused unconditionally, even via the contexts-aware overload -----
+    // ---- G6: ADR-157 (issues #33/#38) -- sub_workflow now HAS a real runtime bridge
+    // (WorkflowSupervisor::bind_sub_workflow()), so the contexts-aware overload no longer
+    // unconditionally refuses the KIND -- mirroring agent-kind's own two-layer shape exactly. The
+    // structural check that an executor DECLARED sub_workflow-kind is actually BOUND to a real
+    // inner WorkflowSupervisor lives in WorkflowSupervisor::initialize() itself
+    // (sub_workflow_kind_nodes_are_bound()), which this graph-only function has no way to see
+    // (bindings are an rt:: concept, same reason agent-kind's own body-backing check lives there
+    // too, not here). G1 above still proves the CONTEXTS-FREE overload's own unconditional refusal
+    // is unchanged -- this function's own comment (workflow/graph.hpp) explains why that one stays
+    // conservative.
     {
         Workflow sub = one_agent_node();
         sub.executors.front().kind = executor_kind::sub_workflow;
         std::vector<EffectContext> contexts(1);
-        check_error(check_workflow_executable(sub, contexts), failure_class::contract,
-                    "workflow.executor_kind_unsupported",
-                    "G6: sub_workflow is refused by the contexts-aware overload too -- out of "
-                    "OQ-19's scope");
+        check(check_workflow_executable(sub, contexts).has_value(),
+              "G6: sub_workflow is accepted by the contexts-aware overload (ADR-157) -- the real "
+              "bound/unbound check now lives in WorkflowSupervisor::initialize() itself");
     }
 
     // ---- G7: TypedExecutor's capability_ceiling escape hatch round-trips through describe() -------

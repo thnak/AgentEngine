@@ -506,29 +506,31 @@ struct Workflow {
     return {};
 }
 
-// OQ-19's contexts-aware sibling of the check above (design draft §5). `sub_workflow` stays refused
-// unconditionally -- no runtime bridge for it exists yet, out of OQ-19's scope. `agent`-kind is
-// accepted ONLY once `contexts[i]`'s granted capabilities (whatever `WorkflowSupervisor::
-// initialize()`'s caller populated there -- rt/workflow_supervisor.hpp) satisfy this node's own
-// declared `capability_ceiling`; this function sees only the graph and per-executor contexts, never
-// `bodies_` (an `rt::` type this `workflow::` header must not depend on) -- the SEPARATE structural
-// check that a bound body is genuinely agent-backed (not an ordinary function pretending to be one)
-// lives in `WorkflowSupervisor::initialize()` itself, the only place that has both a body and a
-// declared kind to compare.
+// OQ-19's contexts-aware sibling of the check above (design draft §5). `agent`-kind is accepted ONLY
+// once `contexts[i]`'s granted capabilities (whatever `WorkflowSupervisor::initialize()`'s caller
+// populated there -- rt/workflow_supervisor.hpp) satisfy this node's own declared
+// `capability_ceiling`; this function sees only the graph and per-executor contexts, never `bodies_`
+// (an `rt::` type this `workflow::` header must not depend on) -- the SEPARATE structural check that
+// a bound body is genuinely agent-backed (not an ordinary function pretending to be one) lives in
+// `WorkflowSupervisor::initialize()` itself, the only place that has both a body and a declared kind
+// to compare.
+//
+// ADR-157 (issues #33/#38): `sub_workflow`-kind is no longer unconditionally refused here -- a real
+// runtime bridge exists (`WorkflowSupervisor::bind_sub_workflow()`). This function still cannot see
+// bindings (an `rt::` concept this `workflow::` header must not depend on, same reason agent-kind's
+// own structural check lives in `WorkflowSupervisor::initialize()` and not here) -- so, mirroring
+// agent-kind's own two-layer shape exactly, a `sub_workflow`-kind node passes THIS check
+// unconditionally (no capability-ceiling enforcement, matching `workflow_as_executor_body()`'s own
+// I2 answer that a wrapped inner workflow's capability sourcing is entirely decoupled from the
+// wrapping node's own capabilities -- "zero implicit flow" is both the safest answer and what
+// `function`-kind nodes already mean everywhere else in this codebase), and
+// `WorkflowSupervisor::initialize()`'s own SEPARATE structural check
+// (`sub_workflow_kind_nodes_are_bound()`) is what actually refuses an UNBOUND `sub_workflow` node.
 [[nodiscard]] inline result<void> check_workflow_executable(
         Workflow const& wf, std::vector<agentengine::EffectContext> const& contexts) {
     static agentengine::EffectContext const kEmptyContext{};
     for (std::size_t i = 0; i < wf.executors.size(); ++i) {
         Executor const& e = wf.executors[i];
-        if (e.kind == executor_kind::sub_workflow) {
-            return std::unexpected(error{
-                failure_class::contract,
-                "executor '" + e.id +
-                    "' declares an executor kind this build does not implement (014 §1's "
-                    "`sub_workflow` node is not built yet); running it would treat it as a plain "
-                    "function node, which is not what the graph says",
-                "workflow.executor_kind_unsupported"});
-        }
         if (e.kind != executor_kind::agent) continue;
 
         agentengine::EffectContext const& ctx = i < contexts.size() ? contexts[i] : kEmptyContext;

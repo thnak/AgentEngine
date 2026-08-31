@@ -152,13 +152,16 @@
 // sessions: `rt::AsyncMutex run_mutex_`, acquired for the whole duration of every public async entry
 // point (`run_workflow()`/`resume_workflow()`/`continue_workflow()`).
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <functional>
 #include <future>
 #include <memory>
 #include <memory_resource>
+#include <optional>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -241,6 +244,13 @@ struct ExecuteReply {
     // ADR-149: threaded from `ExecutorOutcome::stalled` the same way `routes` already is. Default
     // `false`, appended trailing so every existing 4-arg brace-init keeps compiling unchanged.
     bool stalled = false;
+    // ADR-157 (issues #33/#38): set ONLY by run_sub_workflow_job(), ONLY when a sub_workflow-kind
+    // delivery's inner run status was `suspended` -- every other field above is unused/default in
+    // that case. A round-local, transient marker (never persisted/checkpointed, unlike OpenPort --
+    // see docs/planning/sub-workflow-nested-request-port-design-draft.md §2 finding 2 for why THAT
+    // distinction is what keeps this safe) telling execute()'s five per-index loops to skip this
+    // entry entirely rather than treat it as a real reply.
+    std::optional<std::string> pending_sub_workflow_inner_interaction_id;
 };
 
 [[nodiscard]] inline agentengine::Message failure_marker(std::string const& executor_id,
@@ -667,10 +677,42 @@ public:
         designated_stall_reporter_ = std::move(designated_stall_reporter);
         stall_streak_ = 0;
         resets_used_  = 0;
-        valid_ = agentengine::workflow::validate_workflow(graph_).has_value() &&
-                 bodies_.size() == graph_.executors.size() &&
-                 agentengine::workflow::check_workflow_executable(graph_, contexts_).has_value() &&
-                 agent_kind_bodies_are_structurally_agent_backed();
+        sub_workflows_.clear();
+        pending_sub_workflows_.clear();
+        // `valid_base_` covers everything EXCEPT sub_workflow binding -- cached so
+        // `bind_sub_workflow()` below can recompute `valid_` directly after each bind, without
+        // requiring the caller to call `initialize()` a second time just to pick up bindings that
+        // (structurally) can only ever be supplied AFTER this call returns.
+        valid_base_ = agentengine::workflow::validate_workflow(graph_).has_value() &&
+                      bodies_.size() == graph_.executors.size() &&
+                      agentengine::workflow::check_workflow_executable(graph_, contexts_).has_value() &&
+                      agent_kind_bodies_are_structurally_agent_backed();
+        valid_ = valid_base_ && sub_workflow_kind_nodes_are_bound();
+    }
+
+    // ADR-157 (issues #33/#38): binds a `sub_workflow`-kind node (declared, until now,
+    // unconditionally refused -- see graph.hpp's own updated comment) to a real, already-
+    // `initialize()`-d inner `WorkflowSupervisor`. Called AFTER `initialize()` -- like
+    // `set_checkpoint_hook()`/`set_merge_on_join_hook()`, an opt-in configuration call, not a
+    // constructor parameter. Recomputes `valid_` immediately (from the cached `valid_base_` plus a
+    // fresh `sub_workflow_kind_nodes_are_bound()` check) so a caller does NOT need to call
+    // `initialize()` a second time after binding every sub_workflow-kind node -- `valid_` simply
+    // flips true the moment the last one is bound. A non-`sub_workflow`-kind `executor_id`, or one
+    // not present in `graph()` at all, is silently ignored -- mirroring `set_checkpoint_hook()`'s
+    // own "caller-injected callback, no ambient validation" shape; `sub_workflow_kind_nodes_are_
+    // bound()` is what would catch a real mismatch (an unbound or wrongly-targeted node), not this
+    // call itself.
+    //
+    // See docs/planning/sub-workflow-nested-request-port-design-draft.md §3a for the full design.
+    // `inner` capability sourcing: entirely decoupled from this node's own `capability_ceiling`,
+    // mirroring `workflow_as_executor_body()`'s (ADR-150) own I2 answer exactly -- `inner`'s own
+    // executors run under whatever `EffectContext`s were passed to `inner->initialize(...)` before
+    // ever binding it here.
+    void bind_sub_workflow(std::string const& executor_id, std::shared_ptr<WorkflowSupervisor> inner) {
+        std::size_t const idx = index_of(executor_id);
+        if (idx >= graph_.executors.size() || graph_.executors[idx].id != executor_id) return;
+        sub_workflows_[idx] = std::move(inner);
+        valid_ = valid_base_ && sub_workflow_kind_nodes_are_bound();
     }
 
     [[nodiscard]] std::string const& designated_stall_reporter() const noexcept {
@@ -693,10 +735,20 @@ public:
         return graph_.bound.token_budget.has_value();
     }
 
+    // ADR-157: also unions `pending_sub_workflows_` -- every entry there is, by construction,
+    // always "open" (an entry is erased the instant it resolves, see resume_workflow()'s new
+    // branch), unlike `ports_`, which retains resolved entries until execute()'s own port-prologue
+    // folds them. See §3e of the sub-workflow design draft for why this union must be unconditional
+    // (not gated behind a particular `status`) -- an unrelated round abort must never silently
+    // orphan a real, live nested interaction.
     [[nodiscard]] std::vector<agentengine::Interaction> open_interactions() const {
         std::vector<agentengine::Interaction> out;
         for (auto const& p : ports_) {
             if (!p.resolved) out.push_back(p.interaction);
+        }
+        for (auto const& [id, pending] : pending_sub_workflows_) {
+            (void)id;
+            out.push_back(pending.interaction);
         }
         return out;
     }
@@ -763,6 +815,7 @@ public:
         run_id_ = graph_.id + ":run:" + std::to_string(run_counter_);
         state_  = RunState{};
         ports_.clear();
+        pending_sub_workflows_.clear();  // ADR-157 -- a fresh run carries no stale nested interactions
         rounds_ = 0;
         state_.pending.push_back(Delivery{index_of(graph_.start), request.input});
 
@@ -778,6 +831,84 @@ public:
             push_structural_event(workflow_event_kind::workflow_run_failed,
                                    RunFailed{workflow_status_tag(workflow_status::invalid)});
             co_return WorkflowResult{workflow_status::invalid};
+        }
+
+        // ADR-157 (issues #33/#38): checked FIRST, before ports_ at all -- see the design draft's
+        // §2 finding 2/§4 for why this must be a genuinely separate lookup, not a marker on
+        // OpenPort. A stale interaction_id here (e.g. from a restored checkpoint that never
+        // persisted pending_sub_workflows_) simply falls through to "not found" below -- fails
+        // closed, never misroutes.
+        if (auto it = pending_sub_workflows_.find(request.interaction_id); it != pending_sub_workflows_.end()) {
+            PendingSubWorkflow const pending = it->second;
+            pending_sub_workflows_.erase(it);
+            std::shared_ptr<WorkflowSupervisor> const inner = sub_workflows_.count(pending.executor_index)
+                                                                    ? sub_workflows_.at(pending.executor_index)
+                                                                    : nullptr;
+            if (!inner) {
+                // The binding was removed (a fresh initialize() since this interaction opened,
+                // matching the same "bindings not checkpoint-durable" limitation §4 documents) --
+                // fail closed rather than silently drop.
+                push_structural_event(agentengine::workflow::workflow_event_kind::workflow_run_failed,
+                                       RunFailed{workflow_status_tag(workflow_status::invalid)});
+                WorkflowResult r{workflow_status::invalid};
+                r.rounds            = rounds_;
+                r.open_interactions = open_interactions();
+                co_return r;
+            }
+            WorkflowResult const inner_result =
+                drive(inner->resume_workflow(ResumeWorkflow{pending.inner_interaction_id, request.response,
+                                                              request.routes}));
+            if (inner_result.status == workflow_status::suspended) {
+                // Suspended again -- mint a fresh outer interaction, re-track, report suspended
+                // exactly like "other ports still unresolved" already does below for ordinary ports.
+                agentengine::Interaction const fresh = mint_interaction(pending.executor_index);
+                pending_sub_workflows_[fresh.interaction_id] =
+                    PendingSubWorkflow{fresh, pending.executor_index,
+                                       inner_result.open_interactions.empty()
+                                           ? std::string{}
+                                           : inner_result.open_interactions.front().interaction_id};
+                push_structural_event(
+                    agentengine::workflow::workflow_event_kind::request_port_opened,
+                    agentengine::workflow::workflow_event_payload::PortRef{
+                        graph_.executors[pending.executor_index].id, fresh.interaction_id});
+                WorkflowResult r{workflow_status::suspended};
+                r.rounds            = rounds_;
+                r.partial           = state_.partial;
+                r.output            = state_.selected_output;
+                r.open_interactions = open_interactions();
+                co_return r;
+            }
+            // completed, or any terminal failure -- construct an ORDINARY, freshly-built OpenPort.
+            // OpenPort's own fields mean exactly what they always meant: the derived value
+            // (inner_result.output, or a failure marker) is computed HERE, before this OpenPort is
+            // ever constructed, never written into a pre-existing one.
+            agentengine::Message const reply_payload = inner_result.status == workflow_status::completed
+                ? inner_result.output
+                : failure_marker(graph_.executors[pending.executor_index].id, agentengine::failure_class::fatal);
+            ports_.push_back(OpenPort{pending.interaction, pending.executor_index, reply_payload, {},
+                                       /*resolved=*/true});
+            push_structural_event(
+                agentengine::workflow::workflow_event_kind::request_port_resolved,
+                agentengine::workflow::workflow_event_payload::PortRef{
+                    graph_.executors[pending.executor_index].id, pending.interaction.interaction_id});
+            // ADR-157: "still unresolved" must also account for OTHER pending sub-workflow
+            // interactions (the one just resolved is already erased above), not just ports_ --
+            // otherwise a still-open nested interaction elsewhere would be silently ignored and
+            // execute() called prematurely.
+            bool const still_unresolved =
+                !pending_sub_workflows_.empty() ||
+                std::any_of(ports_.begin(), ports_.end(), [](OpenPort const& p) { return !p.resolved; });
+            if (still_unresolved) {
+                push_structural_event(workflow_event_kind::workflow_run_suspended);
+                WorkflowResult r{workflow_status::suspended};
+                r.rounds            = rounds_;
+                r.partial           = state_.partial;
+                r.output            = state_.selected_output;
+                r.open_interactions = open_interactions();
+                co_return r;
+            }
+            push_structural_event(workflow_event_kind::workflow_run_resumed);
+            co_return co_await execute();
         }
 
         OpenPort* port = nullptr;
@@ -797,12 +928,16 @@ public:
         port->response = request.response;
         port->routes   = request.routes;
 
-        for (auto const& p : ports_) {
-            if (p.resolved) continue;
-            // Re-affirms the run is STILL suspended (other ports remain open) -- distinct from
-            // finish()'s own workflow_run_suspended, which only fires once a full execute() pass
-            // confirms suspension; this is the "you resolved one of several, the run hasn't moved
-            // yet" case.
+        // ADR-157: also checks pending_sub_workflows_ -- a still-open nested interaction must keep
+        // the run suspended exactly like an unresolved ordinary port already does.
+        bool const still_unresolved =
+            !pending_sub_workflows_.empty() ||
+            std::any_of(ports_.begin(), ports_.end(), [](OpenPort const& p) { return !p.resolved; });
+        if (still_unresolved) {
+            // Re-affirms the run is STILL suspended (other ports/interactions remain open) --
+            // distinct from finish()'s own workflow_run_suspended, which only fires once a full
+            // execute() pass confirms suspension; this is the "you resolved one of several, the run
+            // hasn't moved yet" case.
             push_structural_event(workflow_event_kind::workflow_run_suspended);
             WorkflowResult r{workflow_status::suspended};
             r.rounds            = rounds_;
@@ -918,6 +1053,20 @@ private:
         bool                     resolved = false;
     };
 
+    // ADR-157 (issues #33/#38) -- see docs/planning/sub-workflow-nested-request-port-design-draft.md
+    // §3c. Deliberately NOT a variant/extension of OpenPort -- the design draft's own §2 finding 2
+    // traces exactly why mixing "ordinary HITL answer, fold verbatim" and "nested sub-workflow
+    // request, needs a synchronous resume call before anything is foldable" into one struct is a
+    // real hazard, not a hypothetical one (`OpenPort::response` gets written unconditionally by
+    // resume_workflow() before any marker could be checked). `inner_interaction_id` is NEVER
+    // exposed outside WorkflowSupervisor -- the caller only ever sees `interaction`, the ordinary,
+    // unmodified `Interaction` shape `mint_interaction()` already produces.
+    struct PendingSubWorkflow {
+        agentengine::Interaction interaction;
+        std::size_t              executor_index = 0;
+        std::string              inner_interaction_id;
+    };
+
     enum class route_result { ok, routing_failed, workflow_failed };
 
     // One round's worth of concurrent fan-out. Wraps ONE synchronous ExecutorBody call -- never
@@ -970,6 +1119,59 @@ private:
         co_return;
     }
 
+    // ADR-157 (issues #33/#38): the SAME hand-rolled "resume until done" drive loop
+    // rt/workflow_as_executor.hpp's own `workflow_as_executor_detail::drive()` already duplicates
+    // (no shared helper exists for it anywhere in this codebase, matching that file's own comment
+    // on why). Safe here for the identical reason ADR-150 established for that adapter, PLUS one
+    // additional guarantee specific to nesting: `inner->run_workflow()`/`inner->resume_workflow()`
+    // are only ever called from (a) inside THIS supervisor's own execute() round loop (via
+    // run_sub_workflow_job, below) or (b) THIS supervisor's own resume_workflow()'s pending-sub-
+    // workflow branch -- and BOTH (a) and (b) only ever run while THIS (the OUTER) supervisor's own
+    // `run_mutex_` is held (I1) by run_workflow()/resume_workflow()/continue_workflow(), which
+    // serializes them against each other. So at most ONE thread can ever be driving a GIVEN `inner`
+    // at a time, structurally, regardless of how many worker threads this round's fan-out uses --
+    // `inner`'s own `run_mutex_` is therefore never genuinely contended by two callers from this
+    // supervisor. The OQ-19-style quarantine extension (below, in execute()) additionally prevents
+    // two DIFFERENT deliveries in the SAME round from targeting the SAME `inner` via the same
+    // executor_index. CALLER CONTRACT this does NOT enforce, matching this codebase's existing
+    // trust-based lifetime contracts (e.g. workflow_as_executor_body()'s own reference-overload
+    // documentation): a single `inner` instance must be bound via bind_sub_workflow() to AT MOST
+    // ONE executor_index across the whole outer graph -- binding the same `inner` to two different
+    // sub_workflow nodes is unsupported and not guarded against, and would defeat the quarantine's
+    // own per-index dedup.
+    template <class T>
+    [[nodiscard]] static T drive(agentengine::rt::task<T> t) {
+        while (!t.done()) t.resume();
+        return t.take_value();
+    }
+
+    // One dispatch attempt against a bound inner WorkflowSupervisor -- see the design draft
+    // (docs/planning/sub-workflow-nested-request-port-design-draft.md) §3b. `out`'s
+    // `pending_sub_workflow_inner_interaction_id` is set ONLY when the inner run suspended; every
+    // other field is left default in that case (execute()'s own handling below never reads them).
+    static task<void> run_sub_workflow_job(std::shared_ptr<WorkflowSupervisor> inner,
+                                            agentengine::Message payload,
+                                            std::shared_ptr<ExecuteReply> out) {
+        if (!inner) {
+            *out = ExecuteReply{agentengine::Message{}, {}, false, agentengine::failure_class::contract};
+            co_return;
+        }
+        WorkflowResult const r = drive(inner->run_workflow(RunWorkflow{payload}));
+        if (r.status == workflow_status::completed) {
+            *out = ExecuteReply{r.output, {}, true, agentengine::failure_class::fatal};
+            co_return;
+        }
+        if (r.status == workflow_status::suspended) {
+            ExecuteReply reply{};
+            reply.pending_sub_workflow_inner_interaction_id =
+                r.open_interactions.empty() ? std::string{} : r.open_interactions.front().interaction_id;
+            *out = std::move(reply);
+            co_return;
+        }
+        *out = ExecuteReply{agentengine::Message{}, {}, false, agentengine::failure_class::fatal};
+        co_return;
+    }
+
     task<WorkflowResult> execute() {
         auto const entered_at = std::chrono::steady_clock::now();
         workflow_status status = workflow_status::completed;
@@ -1016,10 +1218,21 @@ private:
 
             std::vector<Delivery> exec_deliveries;
             std::vector<Delivery> port_deliveries;
+            // ADR-157 (issues #33/#38): a third bucket, gathered the same way -- see the design
+            // draft §3b. Dispatched separately from exec_deliveries below (own quarantine, own
+            // retry loop, own job function -- there is no ExecutorBody/bodies_[idx] for a
+            // sub_workflow-kind node, exactly like request_port has none), then a RESOLVED
+            // (non-pending) sub_workflow reply is appended onto exec_deliveries/replies before the
+            // existing fold loop runs, so every downstream loop (fold/merge-hook/routing/stall-
+            // report/eventing) needs zero new branches -- a resolved sub_workflow entry looks
+            // exactly like an ordinary exec_deliveries entry to all of them.
+            std::vector<Delivery> sub_workflow_deliveries;
             for (auto& d : state_.pending) {
-                if (graph_.executors[d.executor_index].kind ==
-                    agentengine::workflow::executor_kind::request_port) {
+                agentengine::workflow::executor_kind const kind = graph_.executors[d.executor_index].kind;
+                if (kind == agentengine::workflow::executor_kind::request_port) {
                     port_deliveries.push_back(std::move(d));
+                } else if (kind == agentengine::workflow::executor_kind::sub_workflow) {
+                    sub_workflow_deliveries.push_back(std::move(d));
                 } else {
                     exec_deliveries.push_back(std::move(d));
                 }
@@ -1027,9 +1240,10 @@ private:
 
             {
                 std::vector<std::string> ids;
-                ids.reserve(exec_deliveries.size() + port_deliveries.size());
+                ids.reserve(exec_deliveries.size() + port_deliveries.size() + sub_workflow_deliveries.size());
                 for (auto const& d : exec_deliveries) ids.push_back(graph_.executors[d.executor_index].id);
                 for (auto const& d : port_deliveries) ids.push_back(graph_.executors[d.executor_index].id);
+                for (auto const& d : sub_workflow_deliveries) ids.push_back(graph_.executors[d.executor_index].id);
                 push_structural_event(agentengine::workflow::workflow_event_kind::superstep_started,
                                        agentengine::workflow::workflow_event_payload::SuperstepBounds{
                                            std::move(ids)});
@@ -1131,6 +1345,107 @@ private:
                     }
                 }
                 todo = std::move(retry_next);
+            }
+
+            // ADR-157 (issues #33/#38): sub_workflow dispatch -- deliberately sequential AFTER
+            // exec_deliveries' own retry loop above completes, not concurrent with it (a documented
+            // simplification, trading some fan-out parallelism for a simpler, easier-to-verify
+            // implementation in this first pass; see the design draft §3b).
+            //
+            // Quarantine: the SAME same-round-duplicate-delivery dedup exec_deliveries' own OQ-19
+            // block already applies to agent-kind, scoped to this separate list -- only the FIRST
+            // same-round delivery to a given sub_workflow executor_index is ever dispatched; a
+            // second is synthetically quarantined (contract-class, never retried) and merged in
+            // below exactly like any other quarantined failure.
+            std::vector<bool> sub_workflow_quarantined(sub_workflow_deliveries.size(), false);
+            {
+                std::vector<std::size_t> seen_sub_workflow_indices;
+                for (std::size_t i = 0; i < sub_workflow_deliveries.size(); ++i) {
+                    std::size_t const idx = sub_workflow_deliveries[i].executor_index;
+                    bool seen = false;
+                    for (std::size_t const s : seen_sub_workflow_indices) {
+                        if (s == idx) { seen = true; break; }
+                    }
+                    if (seen) {
+                        sub_workflow_quarantined[i] = true;
+                        continue;
+                    }
+                    seen_sub_workflow_indices.push_back(idx);
+                }
+            }
+
+            std::vector<ExecuteReply> sub_workflow_replies(sub_workflow_deliveries.size());
+            {
+                std::vector<std::size_t> sub_todo;
+                sub_todo.reserve(sub_workflow_deliveries.size());
+                for (std::size_t i = 0; i < sub_workflow_deliveries.size(); ++i) {
+                    if (sub_workflow_quarantined[i]) {
+                        sub_workflow_replies[i] = ExecuteReply{agentengine::Message{}, {}, false,
+                                                                agentengine::failure_class::contract};
+                    } else {
+                        sub_todo.push_back(i);
+                    }
+                }
+                for (std::uint32_t attempt = 0; !sub_todo.empty(); ++attempt) {
+                    std::vector<std::future<JobOutcome>>       sub_in_flight;
+                    std::vector<std::shared_ptr<ExecuteReply>> sub_slots;
+                    sub_in_flight.reserve(sub_todo.size());
+                    sub_slots.reserve(sub_todo.size());
+                    for (std::size_t const i : sub_todo) {
+                        std::size_t const idx = sub_workflow_deliveries[i].executor_index;
+                        auto slot = std::make_shared<ExecuteReply>();
+                        sub_slots.push_back(slot);
+                        push_structural_event(
+                            agentengine::workflow::workflow_event_kind::executor_dispatched,
+                            agentengine::workflow::workflow_event_payload::ExecutorRef{
+                                graph_.executors[idx].id});
+                        sub_in_flight.push_back(pool_.submit(run_sub_workflow_job(
+                            sub_workflows_.count(idx) ? sub_workflows_.at(idx) : nullptr,
+                            sub_workflow_deliveries[i].payload, slot)));
+                    }
+                    std::vector<std::size_t> sub_retry_next;
+                    for (std::size_t k = 0; k < sub_in_flight.size(); ++k) {
+                        std::size_t const i       = sub_todo[k];
+                        JobOutcome         outcome = sub_in_flight[k].get();
+                        if (outcome.faulted) {
+                            sub_workflow_replies[i] = ExecuteReply{agentengine::Message{}, {}, false,
+                                                                    agentengine::failure_class::transient};
+                        } else {
+                            sub_workflow_replies[i] = std::move(*sub_slots[k]);
+                        }
+                        if (sub_workflow_replies[i].ok ||
+                            sub_workflow_replies[i].pending_sub_workflow_inner_interaction_id) {
+                            continue;
+                        }
+                        EdgeFailurePolicy const pol = policy_for(sub_workflow_deliveries[i].executor_index);
+                        if (pol.kind == agentengine::workflow::edge_failure_policy::retry &&
+                            attempt < pol.attempts && is_retryable(sub_workflow_replies[i].klass)) {
+                            sub_retry_next.push_back(i);
+                        }
+                    }
+                    sub_todo = std::move(sub_retry_next);
+                }
+            }
+
+            // Split sub_workflow_replies: a PENDING one becomes a tracked nested interaction (never
+            // a reply); everything else (completed or terminally failed) is appended onto
+            // exec_deliveries/replies, reusing every downstream loop unchanged (§3d of the design
+            // draft).
+            for (std::size_t i = 0; i < sub_workflow_deliveries.size(); ++i) {
+                std::size_t const idx = sub_workflow_deliveries[i].executor_index;
+                if (sub_workflow_replies[i].pending_sub_workflow_inner_interaction_id) {
+                    agentengine::Interaction const interaction = mint_interaction(idx);
+                    pending_sub_workflows_[interaction.interaction_id] =
+                        PendingSubWorkflow{interaction, idx,
+                                           *sub_workflow_replies[i].pending_sub_workflow_inner_interaction_id};
+                    push_structural_event(
+                        agentengine::workflow::workflow_event_kind::request_port_opened,
+                        agentengine::workflow::workflow_event_payload::PortRef{
+                            graph_.executors[idx].id, interaction.interaction_id});
+                    continue;
+                }
+                exec_deliveries.push_back(std::move(sub_workflow_deliveries[i]));
+                replies.push_back(std::move(sub_workflow_replies[i]));
             }
 
             ++rounds_;
@@ -1301,7 +1616,11 @@ private:
             }
             push_structural_event(agentengine::workflow::workflow_event_kind::superstep_completed);
 
-            if (!ports_.empty()) {
+            // ADR-157: also checks pending_sub_workflows_ -- a round whose ONLY "open" thing is a
+            // newly-suspended nested sub-workflow (no ordinary ports_, state_.pending now empty)
+            // must still report suspended, not fall through to `completed` (this round loop's own
+            // initial status).
+            if (!ports_.empty() || !pending_sub_workflows_.empty()) {
                 status = workflow_status::suspended;
                 break;
             }
@@ -1321,7 +1640,16 @@ private:
         r.output          = state_.selected_output;
         r.partial         = state_.partial;
         r.failed_executor = state_.failed_executor;
-        if (status == workflow_status::suspended) r.open_interactions = open_interactions();
+        // ADR-157 (issues #33/#38): UNCONDITIONAL, not gated behind `status == suspended` anymore.
+        // A sub_workflow node can suspend (added to pending_sub_workflows_) and then a DIFFERENT
+        // executor's failure abort the SAME round with a non-suspended status -- pending_sub_
+        // workflows_ is a persistent member, never cleared by an unrelated abort, and the caller
+        // must still be told a real, live nested interaction exists regardless of the round's own
+        // dominant terminal reason (design draft §3e/§4). For every run that has neither open
+        // ports_ nor pending sub-workflows (the overwhelming common case), open_interactions()
+        // still returns empty -- this is a strict widening of what gets reported, never a behavior
+        // change for a graph with no request_port/sub_workflow nodes.
+        r.open_interactions = open_interactions();
         r.unopened_ports = state_.unopened_ports;
 
         // ADR-152 (issue #29): the one choke point every execute()-driven terminal outcome passes
@@ -1564,10 +1892,31 @@ private:
         return true;
     }
 
+    // ADR-157 (issues #33/#38) -- the sub_workflow-kind sibling of the check above. `sub_workflows_`
+    // is populated by `bind_sub_workflow()`, called AFTER `initialize()` -- so this check, run
+    // DURING `initialize()`, only ever sees bindings from a PRIOR call (or none, for a fresh
+    // instance). A caller must therefore call `initialize()`, then `bind_sub_workflow()` for every
+    // sub_workflow-kind node, then `initialize()` AGAIN (re-validating with the now-populated
+    // `sub_workflows_`) -- an unusual two-pass sequence, but the only one that keeps
+    // `check_workflow_executable()` (workflow/graph.hpp) genuinely `rt::`-free while still letting
+    // `WorkflowSupervisor` itself enforce the structural binding requirement, mirroring the
+    // agent-kind check's own established shape exactly.
+    [[nodiscard]] bool sub_workflow_kind_nodes_are_bound() const {
+        for (std::size_t i = 0; i < graph_.executors.size(); ++i) {
+            if (graph_.executors[i].kind != agentengine::workflow::executor_kind::sub_workflow) continue;
+            auto const it = sub_workflows_.find(i);
+            if (it == sub_workflows_.end() || !it->second) return false;
+        }
+        return true;
+    }
+
     agentengine::workflow::Workflow         graph_;
     std::vector<ExecutorBody>               bodies_;
     std::vector<agentengine::EffectContext> contexts_;
     bool           valid_       = false;
+    // ADR-157 -- see initialize()'s own comment. Everything `valid_` depends on EXCEPT sub_workflow
+    // binding; set once per initialize() call, read by bind_sub_workflow() to recompute `valid_`.
+    bool           valid_base_  = false;
     std::uint32_t  rounds_      = 0;
     std::uint64_t  run_counter_ = 0;
     std::string    run_id_;
@@ -1582,6 +1931,17 @@ private:
     std::uint32_t  resets_used_  = 0;
     RunState       state_;
     std::vector<OpenPort> ports_;
+    // ADR-157 (issues #33/#38) -- see docs/planning/sub-workflow-nested-request-port-design-draft.md.
+    // `sub_workflows_`: bindings supplied by `bind_sub_workflow()`, keyed by executor_index -- like
+    // `bodies_`/`contexts_`, deliberately NOT part of `RunStateRecord` (a resumed run's caller
+    // re-supplies fresh bindings, same "caller supplies fresh at initialize()-time" convention
+    // `agent_session_as_executor_body()`'s own checkpoint limitation already established).
+    std::unordered_map<std::size_t, std::shared_ptr<WorkflowSupervisor>> sub_workflows_;
+    // `pending_sub_workflows_`: keyed by the OUTER-visible interaction_id. NOT persisted (§4 of the
+    // design draft) -- a restored/fresh instance always starts with this empty, which is exactly
+    // what makes `resume_workflow()`'s fail-closed behavior against a stale interaction_id work
+    // (falls through to "not found," `workflow_status::invalid`, never silent misrouting).
+    std::unordered_map<std::string, PendingSubWorkflow> pending_sub_workflows_;
     // Sized 0 (system-determined default) -- a round's own fan-out width varies by graph, so a fixed
     // worker count chosen here would either under-parallelize a wide round or waste threads on a
     // narrow one; ThreadPool's own default already picks a reasonable system-wide figure.

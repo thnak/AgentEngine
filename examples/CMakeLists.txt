@@ -206,3 +206,12 @@ if(AGENTENGINE_WITH_HTTPS)
   set_tests_properties(example_26_workflow_event_stream_live_openrouter PROPERTIES
     LABELS "live-network" TIMEOUT 300)
 endif()
+
+# 27: ADR-157 (issues #33/#38) -- executor_kind::sub_workflow's real runtime bridge, with nested
+# request_port proxying. Fully offline.
+add_executable(agentengine_example_27_sub_workflow_nested_request_port
+  27_sub_workflow_nested_request_port.cpp)
+target_link_libraries(agentengine_example_27_sub_workflow_nested_request_port PRIVATE
+  agentengine::core agentengine_warnings)
+add_test(NAME example_27_sub_workflow_nested_request_port
+  COMMAND agentengine_example_27_sub_workflow_nested_request_port)
